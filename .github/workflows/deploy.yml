@@ -1,3 +1,4 @@
+# Trigger: push to master or manual (Actions → Deploy to Server → Run workflow)
 name: Deploy to Server
 
 on:
