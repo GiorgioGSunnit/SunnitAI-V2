@@ -10,15 +10,37 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      - name: Verify required secrets
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          missing=0
+          if [ -z "$SSH_HOST" ]; then echo "::error::Secret SSH_HOST mancante o vuoto"; missing=1; fi
+          if [ -z "$SSH_USER" ]; then echo "::error::Secret SSH_USER mancante o vuoto"; missing=1; fi
+          if [ -z "$SSH_KEY" ]; then echo "::error::Secret SSH_PRIVATE_KEY mancante o vuoto"; missing=1; fi
+          if [ "$missing" -ne 0 ]; then exit 1; fi
+          echo "Secrets obbligatori presenti."
+
+      - name: Resolve SSH port
+        id: sshport
+        env:
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+        run: |
+          PORT="${SSH_PORT:-22}"
+          echo "port=$PORT" >> "$GITHUB_OUTPUT"
+          echo "Using SSH port: $PORT"
+
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
-          # Se SSH_PORT non è definito nei secrets, usa 22
-          port: ${{ secrets.SSH_PORT != '' && secrets.SSH_PORT || '22' }}
+          port: ${{ steps.sshport.outputs.port }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # Pip / torch stack può richiedere diversi minuti
+          # Necessario per sudo (apt) senza TTY reale
+          request_pty: true
           command_timeout: 45m
           script_stop: true
           script: |
