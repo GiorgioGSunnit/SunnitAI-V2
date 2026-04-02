@@ -39,6 +39,8 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           port: ${{ steps.sshport.outputs.port }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          # Log SSH più verbosi (diagnostica; disattivare dopo il fix)
+          debug: true
           # Necessario per sudo (apt) senza TTY reale
           request_pty: true
           command_timeout: 45m
