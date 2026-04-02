@@ -1,7 +1,11 @@
-# Trigger: push to master o manuale (Actions → Deploy to Server → Run workflow)
+# Trigger: push a master o manuale (Actions → Deploy to Server → Run workflow)
 #
-# Diagnostica: se fallisce lo step "SSH smoke (solo echo)" → rete / firewall / chiave / host.
-# Se smoke OK e fallisce "Deploy via SSH" → comandi sul server (git, pip, sudo, restart).
+# Diagnostica:
+# - "ssh.ParsePrivateKey: ssh: no key found" → il secret SSH_PRIVATE_KEY non è una PEM valida
+#   (testo troncato, virgolette, una sola riga senza newline, oppure .ppk PuTTY senza conversione).
+#   Incolla l’intero file (BEGIN…END) nei Secrets, con a capo come nel file originale.
+# - Se la chiave ha passphrase, aggiungi anche il secret opzionale previsto da appleboy/ssh-action.
+# - Se fallisce solo "SSH smoke" → rete/firewall/chiave/host; se smoke OK e deploy no → git/pip/sudo.
 name: Deploy to Server
 
 on:
@@ -45,6 +49,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           port: ${{ steps.sshport.outputs.port }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.SSH_KEY_PASSPHRASE }}
           debug: true
           timeout: 2m
           command_timeout: 2m
@@ -66,6 +71,7 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           port: ${{ steps.sshport.outputs.port }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          passphrase: ${{ secrets.SSH_KEY_PASSPHRASE }}
           debug: true
           request_pty: true
           timeout: 2m
