@@ -1,10 +1,9 @@
 # Trigger: push a master o manuale (Actions → Deploy to Server → Run workflow)
 #
 # Diagnostica:
-# - "ssh.ParsePrivateKey: ssh: no key found" → il secret SSH_PRIVATE_KEY non è una PEM valida
-#   (testo troncato, virgolette, una sola riga senza newline, oppure .ppk PuTTY senza conversione).
-#   Incolla l’intero file (BEGIN…END) nei Secrets, con a capo come nel file originale.
-# - Se la chiave ha passphrase, aggiungi anche il secret opzionale previsto da appleboy/ssh-action.
+# - "ssh.ParsePrivateKey: ssh: no key found" → SSH_PRIVATE_KEY non è PEM valida (o .ppk senza conversione).
+# - "this private key is passphrase protected" → crea il secret SSH_KEY_PASSPHRASE con la stessa passphrase
+#   usata in PuTTYgen per aprire la chiave (obbligatorio se la chiave è cifrata).
 # - Se fallisce solo "SSH smoke" → rete/firewall/chiave/host; se smoke OK e deploy no → git/pip/sudo.
 name: Deploy to Server
 
