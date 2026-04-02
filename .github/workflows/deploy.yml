@@ -1,0 +1,67 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ secrets.SSH_PORT || '22' }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+
+            APP_DIR="${{ secrets.APP_DIR }}"
+            if [ -z "${APP_DIR}" ]; then
+              APP_DIR="/opt/chatbot"
+            fi
+
+            REPO_URL="https://github.com/GiorgioGSunnit/SunnitAI-V2.git"
+            BRANCH="master"
+            VENV_DIR="$APP_DIR/.venv"
+
+            echo "Deploy target: $APP_DIR"
+
+            mkdir -p "$(dirname "$APP_DIR")"
+            if [ ! -d "$APP_DIR/.git" ]; then
+              echo "First deploy: cloning repository"
+              git clone "$REPO_URL" "$APP_DIR"
+            fi
+
+            cd "$APP_DIR"
+            git fetch origin "$BRANCH"
+            git checkout "$BRANCH"
+            git reset --hard "origin/$BRANCH"
+
+            if ! command -v python3 >/dev/null 2>&1; then
+              echo "python3 not found on server"
+              exit 1
+            fi
+
+            python3 -m venv "$VENV_DIR"
+            . "$VENV_DIR/bin/activate"
+            pip install --upgrade pip setuptools wheel
+            pip install -e .
+
+            if [ ! -f "$APP_DIR/.env" ] && [ -f "$APP_DIR/.env.production" ]; then
+              cp "$APP_DIR/.env.production" "$APP_DIR/.env"
+            fi
+
+            RESTART_CMD="${{ secrets.DEPLOY_RESTART_CMD }}"
+            if [ -n "${RESTART_CMD}" ]; then
+              echo "Running restart command"
+              bash -lc "$RESTART_CMD"
+            else
+              echo "No DEPLOY_RESTART_CMD provided; skipping restart."
+            fi
+
+            echo "Deploy complete."

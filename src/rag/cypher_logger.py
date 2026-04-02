@@ -15,6 +15,11 @@ _lock = threading.Lock()
 _DEFAULT_MAX_BYTES = 5 * 1024 * 1024  # 5 MiB
 
 
+def _timestamp_utc() -> str:
+    """Compact UTC timestamp with millisecond precision."""
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
+
+
 def _project_root() -> str:
     """Resolve deploy directory (folder that contains pyproject.toml), not site-packages."""
     env = os.getenv("CHATBOT_PROJECT_ROOT")
@@ -88,7 +93,7 @@ def ensure_cypher_log_ready() -> str:
         try:
             with open(path, "a", encoding="utf-8") as f:
                 f.write(
-                    f"{datetime.now(timezone.utc).isoformat()} [startup] "
+                    f"{_timestamp_utc()} [startup] "
                     f"cypher log ready at {path}\n"
                 )
         except OSError as e:
@@ -106,7 +111,7 @@ def log_cypher_event(
     path = _log_path()
     max_bytes = _max_bytes()
     line = (
-        f"{datetime.now(timezone.utc).isoformat()} [{phase}] {message}"
+        f"{_timestamp_utc()} [{phase}] {message}"
     )
     if detail is not None:
         line += f" | {detail!r}"
@@ -132,7 +137,7 @@ def log_cypher_multiline(
     """Append a header plus exact multi-line text (no truncation). Use delimiter_label e.g. LLM_VERDICT for non-Cypher."""
     path = _log_path()
     max_bytes = _max_bytes()
-    ts = datetime.now(timezone.utc).isoformat()
+    ts = _timestamp_utc()
     text = body if body is not None else ""
     if text and not text.endswith("\n"):
         text = text + "\n"
