@@ -1,0 +1,37 @@
+---
+description: Workflow per testare e validare i miglioramenti del pipeline RAG.
+globs: ["src/rag/main.py"]
+alwaysApply: true
+---
+# Workflow di Test per il Pipeline RAG
+
+Quando si implementa una modifica al pipeline RAG, in particolare al nodo `entity_linking`, è fondamentale seguire questo processo di validazione per misurare l'impatto e identificare regressività o aree di miglioramento.
+
+## Procedura di Test
+
+Per ogni modifica implementata, seguire questi tre passaggi:
+
+1.  **Eseguire il Pipeline con una Domanda di Test**
+    -   Scegliere una domanda pertinente dal file `test_questions_20.json`.
+    -   Eseguire il pipeline RAG da riga di comando:
+        ```bash
+        python3 -m src.rag.main "La tua domanda qui"
+        ```
+    -   Assicurarsi che il logging sia configurato a livello `INFO` o `DEBUG` per visualizzare l'output dei nodi.
+
+2.  **Analizzare gli `entry_nodes`**
+    -   Ispezionare i log per identificare i nodi restituiti dal `entity_linking`. Prestare attenzione a:
+        -   `element_id` dei nodi trovati.
+        -   `labels` dei nodi.
+        -   `sources` (es. `btree`, `fulltext:entity_names`, `vector:company_embeddings`).
+    -   Verificare se i nodi trovati sono pertinenti alla domanda e se la fonte del match è quella attesa (es. un match B-tree per un nome esatto).
+
+3.  **Verificare la Rilevanza dei Nodi con `cypher_cli.py`**
+    -   Utilizzare `cypher_cli.py` per ispezionare le proprietà dei nodi identificati nel passaggio precedente.
+    -   Eseguire una query per ogni `element_id`:
+        ```bash
+        python3 -m src.cypher_cli --pretty "MATCH (n) WHERE elementId(n) = '<element_id>' RETURN properties(n) AS properties, labels(n) AS labels"
+        ```
+    -   Valutare se le proprietà del nodo corrispondono esattamente a ciò che la domanda stava cercando.
+
+Questo processo iterativo permette di capire dove il `entity_linking` fallisce o dove può essere migliorato, garantendo che ogni modifica porti a un miglioramento effettivo.

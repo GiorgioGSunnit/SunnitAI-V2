@@ -1,0 +1,59 @@
+---
+description: Pipeline end-to-end preprocessing from markdown to Neo4j graph
+globs: src/preprocessing/**/*
+alwaysApply: false
+---
+# Preprocessing & Ingestion Pipeline
+
+## Overview
+
+We transform markdown legal document files into a fully indexed Neo4j graph through five deterministic steps. Each step must run in order because every stage enriches the payload the next stage expects.
+
+1. **Parse markdown** with `src/preprocessing/parser.py` → structured JSON in `parsed_data/`.
+2. **Validate & normalize** with `src/preprocessing/validate_and_normalize.py` → canonical `.normalized.json` in `normalized_data/`.
+3. **Extract graph facts** with `src/preprocessing/extractor.py` → `*.extracted.jsonl` in `extracted_data/`.
+4. **Prepare Neo4j schema** with `src/preprocessing/schema/indexing.py` → constraints, full-text, vector indexes.
+5. **Ingest graph** with `src/preprocessing/write_kg.py` → MERGE nodes/relationships into Neo4j.
+
+## Primary Entry Point
+
+- Run `python -m src.preprocessing.main` to execute all five stages.
+- Optional flag `--limit N` processes only the first `N` markdown files; omit it to ingest the entire dataset under `app/data/files/`.
+- The script automatically:
+  - Creates output directories (`parsed_data/`, `normalized_data/`, `extracted_data/`).
+  - Calls `schema/indexing.py` before ingestion to ensure indexes exist.
+  - Loads every generated `*.extracted.jsonl` via `write_kg_from_extracted`.
+
+## Step-by-Step (Manual Execution)
+
+```bash
+# 1) Parse markdown → JSON
+python -m src.preprocessing.parse 50                 # or use parser.parse_file for a single doc
+
+# 2) Validate & normalize one file
+python /Users/a.i./Downloads/gra/app/src/preprocessing/validate_and_normalize.py \
+  /Users/a.i./Downloads/gra/app/parsed_data/FILE.json --out-dir /Users/a.i./Downloads/gra/app/normalized_data
+
+# 3) Extract graph facts
+python /Users/a.i./Downloads/gra/app/src/preprocessing/extractor.py \
+  /Users/a.i./Downloads/gra/app/normalized_data/FILE.normalized.json --out-dir /Users/a.i./Downloads/gra/app/extracted_data
+
+# 4) Ensure Neo4j indexes/constraints
+python /Users/a.i./Downloads/gra/app/src/preprocessing/schema/indexing.py
+
+# 5) Ingest into Neo4j
+python /Users/a.i./Downloads/gra/app/src/preprocessing/write_kg.py \
+  /Users/a.i./Downloads/gra/app/extracted_data/FILE.normalized.extracted.jsonl
+```
+
+## Implementation Notes
+
+- Upstream scripts must attach a `document_id`; otherwise `extractor` derives a stable hash and writes it back for consistent relations.
+- `write_kg_from_extracted` expects `.env` to provide `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASS`.
+- Keep utility helpers (`norm_spaces`, `canonical_name`, `LEGAL_ACT_TYPES`) consistent between normalize and extract stages; extractors assume normalized chunk types.
+
+## Testing & Validation
+
+- Spot-check the pipeline with one document end to end before bulk ingestion.
+- After ingestion, use Neo4j Browser (`SHOW INDEXES`, `MATCH (n) RETURN count(n)`) to confirm load.
+- If any stage fails, fix the source issue before re-running downstream steps to maintain data integrity.

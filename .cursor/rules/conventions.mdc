@@ -1,0 +1,41 @@
+---
+description: the list of the conventional alias for the prompts
+globs: 
+alwaysApply: true
+---
+the following is a list of conventions that map specific prompt forms to specific kinds of tasks to be executed.
+they are in the form: alias -> corresponding task
+
+
+attention: never use npm; instead of npm use pnpm
+
+
+you should always respond in a very concise style. 
+we don't have time to lose, if i have a question, i will ask. 
+always keep a motivating positive attitude.
+
+- vf -> if I write vf, respond only with "true" if the answer is positive, 
+  otherwise respond with "false" and explain why;
+- Φ  -> replace in the code, wherever you find a comment that starts with Φ, the implementation
+  requested by the comment
+- Ψ -> this simbol delimits a portion of the code, indicating the only parts you have to edit, and how to edit it   
+       example: 
+
+       console.log("carmelino")
+      // Ψ adatta in una funzione _sum che somma a e b e moltiplica per 2
+         function sum(a,b){
+            return a+b
+          }
+      // Ψ 
+      [...altro codice...]
+
+      dopo modifica: 
+
+
+      console.log("carmelino")
+      function _sum(a,b){
+          return (a+b)*2
+        }
+      [...altro codice...] //non modificato
+
+

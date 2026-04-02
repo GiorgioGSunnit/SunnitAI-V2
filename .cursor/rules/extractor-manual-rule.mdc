@@ -1,0 +1,18 @@
+---
+description: Regola per consultare la documentazione dell'estrattore quando si lavora sui file di preprocessing.
+globs: ["src/preprocessing/**/*"]
+alwaysApply: false
+---
+# Regola: Consulta il Manuale dell'Estrattore
+
+Quando modifichi un qualsiasi file all'interno della directory `src/preprocessing/`, in particolare `extractor.py`, `validate_and_normalize.py`, o `parser.py`, assicurati di consultare il manuale operativo dell'estrattore.
+
+**File di riferimento:** `src/preprocessing/extractor-manual.md`
+
+Questo documento contiene informazioni cruciali su:
+- Architettura e flusso di lavoro dell'estrattore.
+- Come vengono gestiti i `chunk_type` e l'estrazione opportunistica.
+- Il formato dell'output (`.extracted.jsonl`).
+- Le best practice per aggiungere nuove funzionalità o migliorare quelle esistenti.
+
+Leggere questo file prima di apportare modifiche aiuta a mantenere la coerenza e a comprendere l'impatto delle proprie modifiche sul resto della pipeline.

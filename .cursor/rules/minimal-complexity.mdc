@@ -1,0 +1,70 @@
+---
+alwaysApply: true
+---
+
+# Rule: Minimal Complexity
+
+**⚠️ RULE TO ALWAYS READ ⚠️**
+
+## Objective
+After every code generation, once verified that the solution is working, ALWAYS review the generated solution to perform refactoring aimed at maximum simplicity and cleanliness.
+
+## Fundamental Principles
+
+### 1. Mandatory Refactoring
+- ✅ **ALWAYS** review the code after verifying it works
+- ✅ Perform refactoring to obtain the cleanest and simplest possible solution
+- ✅ Keep only **strictly necessary** code
+- ✅ If needed, perform **multiple consecutive refactorings** until maximum simplicity is achieved
+
+### 2. Maximum Cleanliness
+- 🧹 Eliminate redundant code
+- 🧹 Remove unused variables
+- 🧹 Simplify complex logic
+- 🧹 Optimize imports and dependencies
+
+### 3. Rigorous Implementation
+- 🎯 Implement **ONLY** the functionalities expressly requested by the user
+- 🎯 **NOTHING MORE** than what is requested
+- 🎯 Avoid over-engineering
+
+## Verification Process
+1. ✅ Does the code work correctly?
+2. 🔄 Can it be simplified while maintaining functionality?
+3. 🧹 Is all present code strictly necessary?
+4. 🎯 Am I implementing only what was requested?
+
+**If the answer to 2, 3 or 4 is "NO", perform refactoring.**
+# Rule: Minimal Complexity
+
+**⚠️ RULE TO ALWAYS READ ⚠️**
+
+## Objective
+After every code generation, once verified that the solution is working, ALWAYS review the generated solution to perform refactoring aimed at maximum simplicity and cleanliness.
+
+## Fundamental Principles
+
+### 1. Mandatory Refactoring
+- ✅ **ALWAYS** review the code after verifying it works
+- ✅ Perform refactoring to obtain the cleanest and simplest possible solution
+- ✅ Keep only **strictly necessary** code
+- ✅ If needed, perform **multiple consecutive refactorings** until maximum simplicity is achieved
+
+### 2. Maximum Cleanliness
+- 🧹 Eliminate redundant code
+- 🧹 Remove unused variables
+- 🧹 Simplify complex logic
+- 🧹 Optimize imports and dependencies
+
+### 3. Rigorous Implementation
+- 🎯 Implement **ONLY** the functionalities expressly requested by the user
+- 🎯 **NOTHING MORE** than what is requested
+- 🎯 Avoid over-engineering
+
+## Verification Process
+1. ✅ Does the code work correctly?
+2. 🔄 Can it be simplified while maintaining functionality?
+3. 🧹 Is all present code strictly necessary?
+4. 🎯 Am I implementing only what was requested?
+
+**If the answer to 2, 3 or 4 is "NO", perform refactoring.**

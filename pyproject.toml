@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=40.8.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sunnitai-chatbot"
+version = "1.0.0"
+description = "RAG-powered chatbot over legal documents with Neo4j knowledge graph"
+readme = "README.md"
+requires-python = ">=3.12"
+
+dependencies = [
+    # Graph database
+    "neo4j>=5.20.0",
+    # LLM & embeddings
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.20",
+    "langchain-openai>=0.0.8",
+    "langchain-huggingface>=0.1.0",
+    "sentence-transformers>=2.6.0",
+    "langgraph>=0.0.26",
+    "openai>=1.12.0",
+    # Data validation
+    "pydantic>=2.5.0",
+    # Config
+    "python-dotenv>=1.0.0",
+    # Async
+    "aiofiles>=23.2.1",
+    "typing-extensions>=4.9.0",
+    # CLI
+    "click>=8.1.7",
+    # API server
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "httpx>=0.26.0",
+]
+
+[project.scripts]
+main = "src.main:main"

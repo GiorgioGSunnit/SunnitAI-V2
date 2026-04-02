@@ -1,0 +1,28 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Build and packaging
+build/
+dist/
+*.egg-info/
+
+# Logs and runtime data
+*.log
+data/logs/

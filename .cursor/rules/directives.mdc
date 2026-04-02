@@ -1,0 +1,23 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+these are the general rules to always follow in this app: 
+
+
+this is a nextjs application 
+the components used are from shadcn, preferably from the components/ui/ directory
+the style is given by tailwind classes (see tailwind.config.ts)
+when implementing a CRUD operation remember the following 3 things: 
+
+1. the server actions are in app/lib/actions/actions.ts, 
+2. we use zod for validation, the zod schemas are in app/lib/actions/entity-zod-schemas.ts
+3. the definitions of the entities of the database are in app/lib/definitions.ts
+
+always maintain the definitions, the schemas and the actions synchronized
+
+!! IMPORTANT:
+
+never edit the package.json file changing the name of the app!!
+never edit the next-env.d.ts unless explicitly required in the prompt!!

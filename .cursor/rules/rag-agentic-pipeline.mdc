@@ -1,0 +1,75 @@
+---
+description: Reference workflow for the LangGraph-based SunnitAI RAG agent
+globs: src/rag/**
+alwaysApply: false
+---
+# Agentic RAG Pipeline (LangGraph)
+
+## Overview
+- Purpose: orchestrate end-to-end question answering over the Neo4j legal knowledge graph for SunnitAI.
+- Location: `src/rag/main.py`
+- Main entrypoint: `run(query: str)` and CLI `python -m rag.main "<question>"`.
+
+## Shared Dependencies
+1. Environment variables required before importing `rag.main`:
+   - `NEO4J_URI`, `NEO4J_USER`, `NEO4J_PASSWORD` (or `NEO4J_PASS`), optional `NEO4J_DATABASE`.
+   - `OPENAI_API_KEY`, optional overrides `OPENAI_MODEL`, `OPENAI_EMBEDDING_MODEL`.
+2. Global clients instantiated once:
+   - `GraphDatabase.driver` stored in `driver`, closed via `atexit`.
+   - `ChatOpenAI` (temperature `0`) for all LLM prompts.
+   - `OpenAIEmbeddings` for vector lookups.
+3. Schema context pulled from `preprocessing.schema.schema` (`entities`, `relations`).
+
+## State Shape (TypedDict `AgentState`)
+- `query`: original user request (required).
+- `generalized_query`: step-back query variant (from node A).
+- `entities`: list of strings extracted from the original question.
+- `entry_nodes`: list of dicts with `id`, `labels`, `entities`, `sources`.
+- `cypher_query`: generated Cypher (if any) or `None` on failure.
+- `cypher_generation_error` / `execution_error`: propagated diagnostic strings.
+- `raw_result`: list of Neo4j record dicts.
+- `answer`: final textual synthesis returned to the caller.
+
+## Node Responsibilities
+1. **`decompose_query`**
+   - Inputs: `query`.
+   - Outputs: `generalized_query`, `entities`.
+   - Prompts: step-back summarization + JSON entity extraction; parsing handled by `_parse_entities` with JSON+fallback strategies.
+
+2. **`entity_linking`**
+   - Inputs: `entities`.
+   - Operations (per entity string):
+     - B-tree matches on configured label/property pairs (`LookupConfig`).
+     - Full-text lookup (`CALL db.index.fulltext.queryNodes` on `entity_names`).
+     - Vector lookup (`CALL db.index.vector.queryNodes` on `entity_embeddings`, default `k=5`).
+   - Output: merged, deduplicated `entry_nodes` containing IDs, labels, contributing entities, and source provenance.
+   - Guard: returns empty list when no entities extracted.
+
+3. **`generate_cypher`**
+   - Inputs: `query`, `entry_nodes`.
+   - Uses compiled schema string (`SCHEMA_TEXT`).
+   - Prompt instructs LLM to traverse from supplied node IDs; failure (no entry nodes) sets `cypher_generation_error`.
+
+4. **`execute_cypher`**
+   - Inputs: `cypher_query`.
+   - Executes against `NEO4J_DATABASE`; captures Neo4j driver errors into `execution_error`.
+   - Output: list of record dicts stored as `raw_result`.
+
+5. **`synthesize_answer`**
+   - Inputs: `query`, `raw_result`, `cypher_generation_error`, `execution_error`.
+   - Branches:
+     - On errors → concise explanation with follow-up suggestion.
+     - On empty result set → explicit "no data" response.
+     - On data → Italian factual summary (JSON payload passed verbatim to prompt).
+
+## Graph Wiring
+```
+decompose_query → entity_linking → generate_cypher → execute_cypher → synthesize_answer → END
+```
+- Built via `StateGraph(AgentState)` inside `build_graph()`; compiled graph invoked for every `run()` call.
+
+## Extension Guidelines
+- Preserve node contracts (inputs/outputs) to avoid state mismatches.
+- Log or surface debugging info via additional state keys rather than print statements when expanding functionality.
+- Reuse global clients; prefer dependency injection in tests via monkeypatching the module-level models/driver.
+- When adding new nodes (e.g., reranking, caching), insert them in `build_graph()` and update this rule.
