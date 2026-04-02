@@ -1,4 +1,7 @@
-# Trigger: push to master or manual (Actions → Deploy to Server → Run workflow)
+# Trigger: push to master o manuale (Actions → Deploy to Server → Run workflow)
+#
+# Diagnostica: se fallisce lo step "SSH smoke (solo echo)" → rete / firewall / chiave / host.
+# Se smoke OK e fallisce "Deploy via SSH" → comandi sul server (git, pip, sudo, restart).
 name: Deploy to Server
 
 on:
@@ -32,6 +35,30 @@ jobs:
           echo "port=$PORT" >> "$GITHUB_OUTPUT"
           echo "Using SSH port: $PORT"
 
+      # -----------------------------------------------------------------
+      # 1) Solo connessione SSH — niente git/pip/sudo
+      # -----------------------------------------------------------------
+      - name: SSH smoke (solo echo)
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          port: ${{ steps.sshport.outputs.port }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          debug: true
+          timeout: 2m
+          command_timeout: 2m
+          script_stop: true
+          script: |
+            set -e
+            echo "=== SSH_SMOKE_OK ==="
+            whoami
+            hostname || true
+            uname -a || true
+
+      # -----------------------------------------------------------------
+      # 2) Deploy completo
+      # -----------------------------------------------------------------
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
         with:
@@ -39,10 +66,9 @@ jobs:
           username: ${{ secrets.SSH_USER }}
           port: ${{ steps.sshport.outputs.port }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          # Log SSH più verbosi (diagnostica; disattivare dopo il fix)
           debug: true
-          # Necessario per sudo (apt) senza TTY reale
           request_pty: true
+          timeout: 2m
           command_timeout: 45m
           script_stop: true
           script: |
@@ -109,7 +135,11 @@ jobs:
             ensure_venv
             . "$VENV_DIR/bin/activate"
             pip install --upgrade pip setuptools wheel
-            pip install -e .
+            export PIP_DISABLE_PIP_VERSION_CHECK=1
+            if ! pip install -e . --no-cache-dir; then
+              echo "::error::pip install -e . fallito (vedi log sopra)."
+              exit 1
+            fi
 
             if [ ! -f "$APP_DIR/.env" ] && [ -f "$APP_DIR/.env.production" ]; then
               cp "$APP_DIR/.env.production" "$APP_DIR/.env"
