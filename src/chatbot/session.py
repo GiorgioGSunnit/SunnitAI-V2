@@ -56,6 +56,7 @@ class ChatSession:
     def add_message(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> Message:
         self._last_active = time.monotonic()
         msg = Message(role=role, content=content, metadata=metadata)
+        self.messages.append(msg)
         # Trim old messages to prevent unbounded growth
         if len(self.messages) > MAX_HISTORY_TURNS * 2:
             self.messages = self.messages[-(MAX_HISTORY_TURNS * 2):]
