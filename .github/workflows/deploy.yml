@@ -86,7 +86,8 @@ jobs:
 
             REPO_URL="https://github.com/GiorgioGSunnit/SunnitAI-V2.git"
             BRANCH="master"
-            VENV_DIR="$APP_DIR/.venv"
+            # Allineato a deploy.sh (venv sotto APP_DIR, non .venv)
+            VENV_DIR="$APP_DIR/venv"
 
             echo "=== Deploy start ==="
             echo "APP_DIR=$APP_DIR"
@@ -119,8 +120,9 @@ jobs:
             fi
 
             ensure_venv() {
-              if [ -d "$VENV_DIR" ]; then
+              if [ -x "$VENV_DIR/bin/python" ]; then
                 echo "Riutilizzo venv esistente: $VENV_DIR"
+                return 0
               fi
               if python3 -m venv "$VENV_DIR" 2>/dev/null; then
                 return 0
