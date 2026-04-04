@@ -19,7 +19,7 @@ _llm_kwargs = {
     "temperature": 0,
     "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
 }
-_llm_base_url = os.getenv("LLM_BASE_URL", "https://m3vke16xgzhstu-8000.proxy.runpod.net/v1")
+_llm_base_url = os.getenv("LLM_BASE_URL")
 if _llm_base_url:
     _llm_kwargs["base_url"] = _llm_base_url
 
@@ -252,3 +252,5 @@ def process_document_batch(json_data={}, batch_size: int = 5):
 
 if __name__ == "__main__":
     process_document_batch()
+
+    

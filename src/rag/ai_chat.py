@@ -31,7 +31,7 @@ _chat_kwargs = {
     "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
 }
 
-_llm_base_url = os.getenv("LLM_BASE_URL", "https://m3vke16xgzhstu-8000.proxy.runpod.net/v1")
+_llm_base_url = os.getenv("LLM_BASE_URL")
 if _llm_base_url:
     _chat_kwargs["base_url"] = _llm_base_url
 
