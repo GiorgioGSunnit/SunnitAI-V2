@@ -99,8 +99,14 @@ def health_check():
 
 
 @app.get("/api/debug")
-def debug_check():
+async def debug_check():
     """Check connectivity to LLM and Neo4j."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _debug_check_sync)
+
+
+def _debug_check_sync() -> dict:
+    """Synchronous debug checks (runs in thread pool to avoid blocking event loop)."""
     import os
     from dotenv import load_dotenv
 
