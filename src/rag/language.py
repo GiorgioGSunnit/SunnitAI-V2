@@ -154,7 +154,3 @@ def _detect_explicit_language_switch_llm(text: str, current: SessionLang) -> Opt
     if token in ("it", "en", "es") and token != current:
         return token  # type: ignore[return-value]
     return None
-
-
-# Keep old name as alias for backward compatibility
-detect_explicit_language_switch_llm = detect_explicit_language_switch

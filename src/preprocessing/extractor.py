@@ -1,32 +1,17 @@
 import json
-import os
+import logging
 from typing import Optional
 
-from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_openai import ChatOpenAI
 
+from ..rag.ai_chat import chat_model
 from .schema.schema import KnowledgeGraphExtraction
 from .write_kg import save_to_neo4j
 
-project_root = os.path.dirname(os.path.dirname(__file__))
-load_dotenv(os.path.join(project_root, ".env"))
+logger = logging.getLogger(__name__)
 
-
-# 1. Setup del Modello con Structured Output
-_llm_kwargs = {
-    "model": os.getenv("LLM_MODEL", os.getenv("OPENAI_MODEL", "nemotron-2-30B-A3B")),
-    "temperature": 0,
-    "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
-}
-_llm_base_url = os.getenv(
-    "LLM_BASE_URL", "https://m3vke16xgzhstu-8000.proxy.runpod.net/v1"
-)
-if _llm_base_url:
-    _llm_kwargs["base_url"] = _llm_base_url
-
-llm = ChatOpenAI(**_llm_kwargs)
-structured_llm = llm.with_structured_output(
+# Reuse the shared chat_model from ai_chat instead of duplicating LLM config
+structured_llm = chat_model.with_structured_output(
     KnowledgeGraphExtraction,
     method="function_calling"
 )
@@ -208,47 +193,31 @@ test_json_extracts = [
 ]
 
 
-def process_document_batch(json_data={}, batch_size: int = 5):
-    """
-    Process document texts in parallel batches.
-    """
+def process_document_batch(json_data=None, batch_size: int = 5):
+    """Process document texts in parallel batches."""
+    json_extracts = json_data if json_data else test_json_extracts
 
-    if not json_data:
-        json_extracts = test_json_extracts
-
-    # Preparazione input per la chain
     batch_inputs = [{"json": t} for t in json_extracts]
 
-    print(f"Starting batch processing of {len(batch_inputs)} pages...")
+    logger.info("Starting batch processing of %d pages...", len(batch_inputs))
 
     try:
-        # 2. ESECUZIONE BATCH
-        # config={'max_concurrency': X} controlla quante chiamate parallele fare.
-        results = extractor_chain.batch(batch_inputs, config={"max_concurrency": 5})
+        results = extractor_chain.batch(batch_inputs, config={"max_concurrency": batch_size})
 
-        # 3. Aggregazione Risultati
         total_nodes = 0
         total_rels = 0
 
         for i, res in enumerate(results):
-            # 'res' è un oggetto KnowledgeGraphExtraction validato
-            print(f"--- Page {i + 1} Results ---")
-            print(f"Nodes found: {len(res.nodes)}")
-            print(f"Relationships found: {len(res.relationships)}")
-
+            logger.info("Page %d: %d nodes, %d relationships", i + 1, len(res.nodes), len(res.relationships))
             save_to_neo4j(res)
-
             total_nodes += len(res.nodes)
             total_rels += len(res.relationships)
 
-        print(
-            f"\n✅ BATCH COMPLETE. Total Nodes: {total_nodes}, Total Edges: {total_rels}"
-        )
+        logger.info("Batch complete. Total nodes: %d, total edges: %d", total_nodes, total_rels)
         return results
 
     except Exception as e:
-        print(f"❌ Batch processing failed: {e}")
-        # In un contesto reale, gestiresti il retry dei singoli elementi falliti
+        logger.error("Batch processing failed: %s", e, exc_info=True)
         return None
 
 

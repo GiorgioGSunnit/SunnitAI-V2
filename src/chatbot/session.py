@@ -17,7 +17,7 @@ from ..rag.main import run as rag_run
 from ..rag.ai_chat import _call_chat
 from ..rag.language import (
     DEFAULT_LANGUAGE,
-    detect_explicit_language_switch_llm,
+    detect_explicit_language_switch,
     detect_language_llm,
     normalize_lang,
     should_auto_detect_language,
@@ -56,6 +56,7 @@ class ChatSession:
     def add_message(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> Message:
         self._last_active = time.monotonic()
         msg = Message(role=role, content=content, metadata=metadata)
+        self.messages.append(msg)
         # Trim old messages to prevent unbounded growth
         if len(self.messages) > MAX_HISTORY_TURNS * 2:
             self.messages = self.messages[-(MAX_HISTORY_TURNS * 2):]
@@ -190,7 +191,7 @@ class ChatBot:
         session.add_message("user", user_message)
 
         # Session language: explicit switch, or auto-detect on first long message (default Italian)
-        switch = detect_explicit_language_switch_llm(
+        switch = detect_explicit_language_switch(
             user_message, normalize_lang(session.session_language)
         )
         if switch:

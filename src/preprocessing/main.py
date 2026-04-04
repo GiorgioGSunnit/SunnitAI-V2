@@ -1034,7 +1034,7 @@ async def run_pipeline_parallel(
     neo4j_uri = os.getenv("NEO4J_URI")
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
-    neo4j_database = os.getenv("NEO4J_DATABASE") or os.getenv("NEO4J_DB") or "kwuait"
+    neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j")
 
     if not all([neo4j_uri, neo4j_user, neo4j_password]):
         print(
@@ -1167,7 +1167,7 @@ def run_pipeline(limit: Optional[int] = None, skip: int = 0) -> Dict[str, Any]:
     neo4j_uri = os.getenv("NEO4J_URI")
     neo4j_user = os.getenv("NEO4J_USER")
     neo4j_password = os.getenv("NEO4J_PASSWORD")
-    neo4j_database = os.getenv("NEO4J_DATABASE") or os.getenv("NEO4J_DB") or "kwuait"
+    neo4j_database = os.getenv("NEO4J_DATABASE", "neo4j")
 
     if not all([neo4j_uri, neo4j_user, neo4j_password]):
         print(

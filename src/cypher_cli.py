@@ -19,7 +19,7 @@ class CypherCLI:
     def __init__(self):
         self.driver = None
         self._connected = False
-        self.database = os.getenv("NEO4J_DB") or os.getenv("NEO4J_DATABASE") or "kwuait"
+        self.database = os.getenv("NEO4J_DATABASE", "neo4j")
 
     async def connect(self) -> bool:
         """Connect to Neo4j database."""
