@@ -201,12 +201,16 @@ class ChatBot:
             session._language_fixed_from_first_turn = True
 
         # Rewrite query with conversation context for follow-ups
-        recent_history = session.get_recent_context()
-        # Exclude the message we just added (last one) from rewrite context
-        context_for_rewrite = recent_history[:-1] if len(recent_history) > 1 else []
-        resolved_query = _rewrite_query_with_context(
-            user_message, context_for_rewrite, session.session_language
-        )
+        # Skip rewrite entirely on first message (no prior context to resolve against)
+        if len(session.messages) <= 1:
+            resolved_query = user_message
+        else:
+            recent_history = session.get_recent_context()
+            # Exclude the message we just added (last one) from rewrite context
+            context_for_rewrite = recent_history[:-1] if len(recent_history) > 1 else []
+            resolved_query = _rewrite_query_with_context(
+                user_message, context_for_rewrite, session.session_language
+            )
 
         # Run through the RAG pipeline
         try:
