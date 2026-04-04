@@ -2,6 +2,7 @@
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -71,52 +72,23 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         delimiter_label="USER_QUESTION",
     )
 
-    # Step 1: Generalize the query
-    generalization_prompt = (
-        "Original question: {query}\n"
-        "Respond with a short generalized phrase (max 8 words) capturing the main topic."
-    ).format(query=query)
-    generalized = _call_chat(
-        [
-            SystemMessage(
-                content=(
-                    f"{legal_consultant_system_prefix(lang)} "
-                    "You generalize user questions about legal documents into concise search-focused phrases."
-                )
-            ),
-            HumanMessage(content=generalization_prompt),
-        ]
-    )
-    logger.info(f"Generalized query: '{generalized}'")
-    log_cypher_event(
-        "a_generalized",
-        "generalized topic phrase (used for context / vector retrieval)",
-        detail=generalized,
-    )
+    # Step 1 (generalize) and Step 2 (entity extraction) are independent —
+    # run them in parallel to cut decomposition latency roughly in half.
+    generalization_messages = [
+        SystemMessage(
+            content=(
+                f"{legal_consultant_system_prefix(lang)} "
+                "You generalize user questions about legal documents into concise search-focused phrases."
+            )
+        ),
+        HumanMessage(
+            content=(
+                "Original question: {query}\n"
+                "Respond with a short generalized phrase (max 8 words) capturing the main topic."
+            ).format(query=query)
+        ),
+    ]
 
-    # Step 1b: Keywords (1–3) for retrieval context logging
-    kw_raw = _call_chat(
-        [
-            SystemMessage(
-                content=(
-                    f"{legal_consultant_system_prefix(lang)} "
-                    "Extract one to three keywords or short noun phrases that capture the core legal subject matter. "
-                    "Output only a comma-separated list, no numbering or extra text."
-                )
-            ),
-            HumanMessage(
-                content=f"Question:\n{query}\n\nGeneralized topic:\n{generalized}\n\nKeywords:"
-            ),
-        ]
-    )
-    retrieval_keywords = [k.strip() for k in (kw_raw or "").split(",") if k.strip()][:3]
-    log_cypher_event(
-        "a_keywords",
-        "extracted keywords",
-        detail=retrieval_keywords,
-    )
-
-    # Step 2: Extract structured entities and relationships
     entity_extraction_prompt = (
         "Schema:\n{schema}\n\n"
         "Based on the schema, extract a graph of nodes and relationships from the following question.\n"
@@ -141,18 +113,51 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         '{{"source_id": "node3", "target_id": "node1", "type": "APPOINTS"}}'
         "]}}}}"
     ).format(schema=SCHEMA_TEXT, query=query)
+    entity_extraction_messages = [
+        SystemMessage(
+            content=(
+                f"{legal_consultant_system_prefix(lang)} "
+                "You are an expert graph extractor for legal documents. "
+                "Identify nodes and relationships from the user's query based on the provided graph schema."
+            )
+        ),
+        HumanMessage(content=entity_extraction_prompt),
+    ]
 
-    entities_payload = structured_entities_model.invoke(
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        future_generalize = pool.submit(_call_chat, generalization_messages)
+        future_entities = pool.submit(structured_entities_model.invoke, entity_extraction_messages)
+
+        generalized = future_generalize.result()
+        entities_payload = future_entities.result()
+
+    logger.info(f"Generalized query: '{generalized}'")
+    log_cypher_event(
+        "a_generalized",
+        "generalized topic phrase (used for context / vector retrieval)",
+        detail=generalized,
+    )
+
+    # Step 1b: Keywords (1–3) — depends on generalized, so runs after
+    kw_raw = _call_chat(
         [
             SystemMessage(
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
-                    "You are an expert graph extractor for legal documents. "
-                    "Identify nodes and relationships from the user's query based on the provided graph schema."
+                    "Extract one to three keywords or short noun phrases that capture the core legal subject matter. "
+                    "Output only a comma-separated list, no numbering or extra text."
                 )
             ),
-            HumanMessage(content=entity_extraction_prompt),
+            HumanMessage(
+                content=f"Question:\n{query}\n\nGeneralized topic:\n{generalized}\n\nKeywords:"
+            ),
         ]
+    )
+    retrieval_keywords = [k.strip() for k in (kw_raw or "").split(",") if k.strip()][:3]
+    log_cypher_event(
+        "a_keywords",
+        "extracted keywords",
+        detail=retrieval_keywords,
     )
 
     # Step 3: Validate and normalize the extracted graph

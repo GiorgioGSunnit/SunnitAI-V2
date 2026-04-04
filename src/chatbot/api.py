@@ -9,8 +9,10 @@ Endpoints:
     GET    /api/health            — Health check
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
+from functools import partial
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
@@ -97,8 +99,14 @@ def health_check():
 
 
 @app.get("/api/debug")
-def debug_check():
+async def debug_check():
     """Check connectivity to LLM and Neo4j."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _debug_check_sync)
+
+
+def _debug_check_sync() -> dict:
+    """Synchronous debug checks (runs in thread pool to avoid blocking event loop)."""
     import os
     from dotenv import load_dotenv
 
@@ -194,7 +202,7 @@ def delete_session(session_id: str):
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
+async def chat(request: ChatRequest):
     """Send a message and get a response.
 
     If session_id is provided, continues the conversation.
@@ -206,7 +214,10 @@ def chat(request: ChatRequest):
         session_id = session.session_id
 
     try:
-        result = chatbot.chat(session_id, request.message)
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, partial(chatbot.chat, session_id, request.message)
+        )
     except Exception as e:
         logger.error("Chat error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

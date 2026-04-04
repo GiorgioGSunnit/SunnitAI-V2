@@ -6,6 +6,8 @@ resolve follow-up questions (e.g. "tell me more about that decree").
 """
 
 import logging
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 MAX_HISTORY_TURNS = 20  # Max conversation turns to keep in memory
 MAX_CONTEXT_TURNS = 6   # Max recent turns to feed into query rewriting
+SESSION_TTL_SECONDS = 3600  # Evict sessions idle for more than 1 hour
+SESSION_CLEANUP_INTERVAL = 300  # Run cleanup every 5 minutes
 
 
 @dataclass
@@ -47,10 +51,11 @@ class ChatSession:
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     session_language: str = field(default=DEFAULT_LANGUAGE)
     _language_fixed_from_first_turn: bool = field(default=False)
+    _last_active: float = field(default_factory=time.monotonic)
 
     def add_message(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> Message:
+        self._last_active = time.monotonic()
         msg = Message(role=role, content=content, metadata=metadata)
-        self.messages.append(msg)
         # Trim old messages to prevent unbounded growth
         if len(self.messages) > MAX_HISTORY_TURNS * 2:
             self.messages = self.messages[-(MAX_HISTORY_TURNS * 2):]
@@ -112,6 +117,31 @@ class ChatBot:
 
     def __init__(self):
         self._sessions: Dict[str, ChatSession] = {}
+        self._lock = threading.Lock()
+        # Start background cleanup daemon
+        self._cleanup_thread = threading.Thread(
+            target=self._cleanup_loop, daemon=True
+        )
+        self._cleanup_thread.start()
+
+    def _cleanup_loop(self) -> None:
+        """Periodically evict sessions that have been idle beyond SESSION_TTL_SECONDS."""
+        while True:
+            time.sleep(SESSION_CLEANUP_INTERVAL)
+            self._evict_expired_sessions()
+
+    def _evict_expired_sessions(self) -> None:
+        now = time.monotonic()
+        with self._lock:
+            expired = [
+                sid
+                for sid, s in self._sessions.items()
+                if now - s._last_active > SESSION_TTL_SECONDS
+            ]
+            for sid in expired:
+                del self._sessions[sid]
+        if expired:
+            logger.info("Evicted %d idle session(s)", len(expired))
 
     def create_session(self) -> ChatSession:
         session = ChatSession()
@@ -171,12 +201,16 @@ class ChatBot:
             session._language_fixed_from_first_turn = True
 
         # Rewrite query with conversation context for follow-ups
-        recent_history = session.get_recent_context()
-        # Exclude the message we just added (last one) from rewrite context
-        context_for_rewrite = recent_history[:-1] if len(recent_history) > 1 else []
-        resolved_query = _rewrite_query_with_context(
-            user_message, context_for_rewrite, session.session_language
-        )
+        # Skip rewrite entirely on first message (no prior context to resolve against)
+        if len(session.messages) <= 1:
+            resolved_query = user_message
+        else:
+            recent_history = session.get_recent_context()
+            # Exclude the message we just added (last one) from rewrite context
+            context_for_rewrite = recent_history[:-1] if len(recent_history) > 1 else []
+            resolved_query = _rewrite_query_with_context(
+                user_message, context_for_rewrite, session.session_language
+            )
 
         # Run through the RAG pipeline
         try:

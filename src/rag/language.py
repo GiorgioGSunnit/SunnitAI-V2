@@ -72,8 +72,62 @@ def detect_language_llm(text: str) -> SessionLang:
     return DEFAULT_LANGUAGE
 
 
-def detect_explicit_language_switch_llm(text: str, current: SessionLang) -> Optional[SessionLang]:
-    """If the user explicitly asks to switch conversation language, return the new code."""
+# Regex patterns for explicit language switch requests (avoids LLM call in >95% of messages)
+_SWITCH_PATTERNS: dict[str, re.Pattern[str]] = {
+    "it": re.compile(
+        r"\b(?:(?:switch|change|continue|respond|reply|answer|speak|write|talk)\s+(?:in|to)\s+italian"
+        r"|(?:rispondi|continua|parla|scrivi)\s+in\s+italiano"
+        r"|in\s+italiano\s*(?:per\s+favore|prego)?)\b",
+        re.IGNORECASE,
+    ),
+    "en": re.compile(
+        r"\b(?:(?:switch|change|continue|respond|reply|answer|speak|write|talk)\s+(?:in|to)\s+english"
+        r"|(?:rispondi|continua|parla|scrivi)\s+in\s+inglese"
+        r"|(?:responde|continúa|habla|escribe)\s+en\s+inglés"
+        r"|in\s+english\s*please?)\b",
+        re.IGNORECASE,
+    ),
+    "es": re.compile(
+        r"\b(?:(?:switch|change|continue|respond|reply|answer|speak|write|talk)\s+(?:in|to)\s+spanish"
+        r"|(?:rispondi|continua|parla|scrivi)\s+in\s+spagnolo"
+        r"|(?:responde|continúa|habla|escribe)\s+en\s+español"
+        r"|in\s+spanish\s*please?)\b",
+        re.IGNORECASE,
+    ),
+}
+
+# Quick pre-filter: if message doesn't contain any of these tokens, skip entirely
+_SWITCH_HINT_TOKENS = frozenset({
+    "switch", "change", "continue", "respond", "reply", "answer", "speak", "write", "talk",
+    "italian", "english", "spanish", "italiano", "inglese", "spagnolo", "inglés", "español",
+    "rispondi", "continua", "parla", "scrivi", "responde", "continúa", "habla", "escribe",
+})
+
+
+def detect_explicit_language_switch(text: str, current: SessionLang) -> Optional[SessionLang]:
+    """Detect an explicit language-switch request using fast regex, falling back to LLM only if ambiguous."""
+    lowered = text.lower()
+
+    # Fast path: skip if no switch-related tokens are present
+    words = set(re.findall(r"\w+", lowered))
+    if not words & _SWITCH_HINT_TOKENS:
+        return None
+
+    # Regex path: check each language pattern
+    for lang_code, pattern in _SWITCH_PATTERNS.items():
+        if pattern.search(text):
+            if lang_code != current:
+                logger.info("Language switch detected via regex: %s → %s", current, lang_code)
+                return lang_code  # type: ignore[return-value]
+            return None
+
+    # Ambiguous case: hint tokens present but no regex match — fall back to LLM
+    logger.debug("Language switch hint tokens found but no regex match; falling back to LLM")
+    return _detect_explicit_language_switch_llm(text, current)
+
+
+def _detect_explicit_language_switch_llm(text: str, current: SessionLang) -> Optional[SessionLang]:
+    """LLM fallback for ambiguous language switch detection."""
     raw = _call_chat(
         [
             SystemMessage(
@@ -100,3 +154,7 @@ def detect_explicit_language_switch_llm(text: str, current: SessionLang) -> Opti
     if token in ("it", "en", "es") and token != current:
         return token  # type: ignore[return-value]
     return None
+
+
+# Keep old name as alias for backward compatibility
+detect_explicit_language_switch_llm = detect_explicit_language_switch

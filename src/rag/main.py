@@ -156,12 +156,27 @@ def build_graph(compile_graph: bool = True):
 
 
 # ---------------------------------------------------------------------------
+# Compiled graph singleton (built once, reused across all queries)
+# ---------------------------------------------------------------------------
+
+_compiled_graph = None
+
+
+def _get_compiled_graph():
+    """Return the compiled LangGraph, building it once on first call."""
+    global _compiled_graph
+    if _compiled_graph is None:
+        _compiled_graph = build_graph(compile_graph=True)
+    return _compiled_graph
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def run(query: str, session_language: str = "it") -> Dict[str, Any]:
     """Run a single query through the agent graph."""
-    compiled = build_graph()
+    compiled = _get_compiled_graph()
     initial_state: AgentState = {
         "query": query,
         "session_language": session_language or "it",
