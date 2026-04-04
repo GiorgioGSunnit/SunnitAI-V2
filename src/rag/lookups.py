@@ -3,6 +3,7 @@
 import logging
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Pattern, Set, Tuple
 
 from neo4j.exceptions import Neo4jError
@@ -77,6 +78,12 @@ LABEL_VECTOR_HINTS: Dict[str, List[str]] = {
 }
 
 DEFAULT_VECTOR_INDEXES = ["document_embeddings"]
+
+
+@lru_cache(maxsize=64)
+def _cached_embed_query(text: str) -> tuple:
+    """Embed text and cache the result. Returns a tuple (hashable) for LRU cache compatibility."""
+    return tuple(embedding_model.embed_query(text))
 
 
 # ---------------------------------------------------------------------------
@@ -491,7 +498,7 @@ def vector_lookup(
     source_prefix: str = "vector",
 ) -> Iterable[Dict[str, Any]]:
     try:
-        embedding = embedding_model.embed_query(value)
+        embedding = list(_cached_embed_query(value))
     except Exception as exc:
         logger.warning(
             "Embedding generation failed",
