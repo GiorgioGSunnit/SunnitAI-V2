@@ -1,10 +1,19 @@
-# Trigger: push a master o manuale (Actions → Deploy to Server → Run workflow)
+# Trigger: push su master o manuale → https://github.com/GiorgioGSunnit/SunnitAI-V2/actions
+#
+# Secret obbligatori (repo → Settings → Secrets and variables → Actions):
+#   SSH_HOST          es. 204.168.183.198
+#   SSH_USER          es. root o ubuntu
+#   SSH_PRIVATE_KEY   chiave privata OpenSSH (PEM), intera riga -----BEGIN ... END-----
+# Secret opzionali:
+#   SSH_PORT              default 22
+#   SSH_KEY_PASSPHRASE    se la chiave privata è protetta da passphrase
+#   APP_DIR               default /opt/chatbot
+#   DEPLOY_RESTART_CMD    es. sudo systemctl restart chatbot (se vuoto: riavvio automatico se esiste chatbot.service)
 #
 # Diagnostica:
 # - "ssh.ParsePrivateKey: ssh: no key found" → SSH_PRIVATE_KEY non è PEM valida (o .ppk senza conversione).
-# - "this private key is passphrase protected" → crea il secret SSH_KEY_PASSPHRASE con la stessa passphrase
-#   usata in PuTTYgen per aprire la chiave (obbligatorio se la chiave è cifrata).
-# - Se fallisce solo "SSH smoke" → rete/firewall/chiave/host; se smoke OK e deploy no → git/pip/sudo.
+# - "this private key is passphrase protected" → secret SSH_KEY_PASSPHRASE
+# - Smoke OK, deploy no → git/pip/sudo; controlla che l'utente SSH possa sudo senza password per apt/systemctl.
 name: Deploy to Server
 
 on:
@@ -148,16 +157,28 @@ jobs:
               exit 1
             fi
 
-            if [ ! -f "$APP_DIR/.env" ] && [ -f "$APP_DIR/.env.production" ]; then
-              cp "$APP_DIR/.env.production" "$APP_DIR/.env"
+            if [ ! -f "$APP_DIR/.env" ]; then
+              if [ -f "$APP_DIR/.env.production" ]; then
+                echo "Creo .env da .env.production (solo sul server, non in repo)."
+                cp "$APP_DIR/.env.production" "$APP_DIR/.env"
+              elif [ -f "$APP_DIR/env.production.template" ]; then
+                echo "Creo .env da env.production.template — modifica segreti sul server prima di usare in prod."
+                cp "$APP_DIR/env.production.template" "$APP_DIR/.env"
+              else
+                echo "::warning::Nessun .env sul server e nessun template: crea $APP_DIR/.env a mano."
+              fi
             fi
 
             RESTART_CMD="${{ secrets.DEPLOY_RESTART_CMD }}"
             if [ -n "${RESTART_CMD}" ]; then
-              echo "Esecuzione comando restart..."
+              echo "Esecuzione DEPLOY_RESTART_CMD..."
               bash -lc "$RESTART_CMD"
+            elif [ -f /etc/systemd/system/chatbot.service ]; then
+              echo "DEPLOY_RESTART_CMD vuoto: riavvio chatbot.service..."
+              sudo systemctl daemon-reload 2>/dev/null || true
+              sudo systemctl restart chatbot
             else
-              echo "DEPLOY_RESTART_CMD non impostato: salto restart servizio."
+              echo "Nessun restart: imposta DEPLOY_RESTART_CMD o installa il servizio chatbot (deploy.sh)."
             fi
 
             echo "=== Deploy completato ==="
