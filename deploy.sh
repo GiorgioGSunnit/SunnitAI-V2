@@ -4,8 +4,9 @@
 #
 # Usage:
 #   scp -r /path/to/ChatBot-1/app root@YOUR_SERVER:/opt/chatbot
-#   scp deploy.sh root@YOUR_SERVER:/opt/chatbot/
+#   scp deploy.sh env.production.template root@YOUR_SERVER:/opt/chatbot/
 #   ssh root@YOUR_SERVER "bash /opt/chatbot/deploy.sh"
+#   If .env is missing, deploy copies env.production.template → .env (edit secrets on server).
 # =============================================================================
 
 set -euo pipefail
@@ -58,10 +59,16 @@ echo "  Dependencies installed"
 # -------------------------------------------------------
 echo "[4/7] Checking configuration..."
 if [ ! -f "$APP_DIR/.env" ]; then
-    echo ""
-    echo "ERROR: .env file not found at $APP_DIR/.env"
-    echo "Fix: cp $APP_DIR/.env.production $APP_DIR/.env"
-    exit 1
+    if [ -f "$APP_DIR/env.production.template" ]; then
+        echo "  No .env — creating from env.production.template (edit secrets before relying in prod)"
+        cp "$APP_DIR/env.production.template" "$APP_DIR/.env"
+    else
+        echo ""
+        echo "ERROR: .env file not found at $APP_DIR/.env"
+        echo "Fix: cp $APP_DIR/env.production.template $APP_DIR/.env"
+        echo "     (or copy your own .env.production to .env if you keep it on the server only)"
+        exit 1
+    fi
 fi
 echo "  .env found"
 
