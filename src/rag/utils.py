@@ -31,7 +31,7 @@ def canonical_name(value: str) -> Optional[str]:
 
 
 def _build_schema_text() -> str:
-    # Build schema text for LLM prompts
+    """Full schema text (used for entity extraction where all types matter)."""
     entities_block = "\n".join(
         f'- {item["label"]} ({", ".join(item["key"])})' for item in schema_entities
     )
@@ -43,6 +43,60 @@ def _build_schema_text() -> str:
         f"{entities_block}\n\n"
         "Relationship Types:\n"
         f"{relations_block}"
+    )
+
+
+def _build_filtered_schema_text(relevant_labels: set) -> str:
+    """Schema text filtered to only node types and relations relevant to a query.
+
+    Includes any node type that appears in relevant_labels, plus any node type
+    that is connected to a relevant label via a relationship (1-hop neighborhood).
+    """
+    if not relevant_labels:
+        return _build_schema_text()
+
+    # Expand to 1-hop neighbors so the LLM can traverse from anchors
+    expanded = set(relevant_labels)
+    for rel in schema_relations:
+        if rel["from"] in relevant_labels or rel["to"] in relevant_labels:
+            expanded.add(rel["from"])
+            expanded.add(rel["to"])
+
+    entities_block = "\n".join(
+        f'- {item["label"]} ({", ".join(item["key"])})'
+        for item in schema_entities
+        if item["label"] in expanded
+    )
+    relations_block = "\n".join(
+        f'- {item["from"]} -[:{item["type"]}]-> {item["to"]}'
+        for item in schema_relations
+        if item["from"] in expanded and item["to"] in expanded
+    )
+    return (
+        "Node Labels and Primary Keys:\n"
+        f"{entities_block}\n\n"
+        "Relationship Types:\n"
+        f"{relations_block}"
+    )
+
+
+def _build_filtered_relation_hints(relevant_labels: set) -> str:
+    """Relation hints filtered to only relationships touching relevant labels."""
+    if not relevant_labels:
+        return "\n".join(
+            f"- {item['from']} -[:{item['type']}]-> {item['to']}" for item in schema_relations
+        )
+
+    expanded = set(relevant_labels)
+    for rel in schema_relations:
+        if rel["from"] in relevant_labels or rel["to"] in relevant_labels:
+            expanded.add(rel["from"])
+            expanded.add(rel["to"])
+
+    return "\n".join(
+        f"- {item['from']} -[:{item['type']}]-> {item['to']}"
+        for item in schema_relations
+        if item["from"] in expanded and item["to"] in expanded
     )
 
 

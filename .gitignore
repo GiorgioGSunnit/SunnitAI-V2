@@ -26,3 +26,6 @@ dist/
 # Logs and runtime data
 *.log
 data/logs/
+
+# Server diagnostics (contains connection details)
+server_check.sh
