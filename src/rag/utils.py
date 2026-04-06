@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import unicodedata
@@ -10,6 +11,9 @@ from ..preprocessing.schema.schema import relations as schema_relations
 
 _CODE_BLOCK_PATTERN = re.compile(r"```(?:cypher)?\n(.*?)\n```", re.DOTALL)
 _AL_PREFIX_PATTERN = re.compile(r"^\b(al-?|el-?)\b", re.IGNORECASE)
+
+# Pre-built label list — used as fallback in _select_schema_for_query Step 1
+_ALL_SCHEMA_LABELS: List[str] = [item["label"] for item in schema_entities]
 
 
 def canonical_name(value: str) -> Optional[str]:
@@ -98,6 +102,47 @@ def _build_filtered_relation_hints(relevant_labels: set) -> str:
         for item in schema_relations
         if item["from"] in expanded and item["to"] in expanded
     )
+
+
+def _strict_filter_relations(selected_labels: set) -> List[Dict]:
+    """Return schema relations where BOTH endpoints are in selected_labels.
+
+    No 1-hop expansion — only edges that directly connect the chosen labels.
+    Used as the Python pre-filter before the Step 2 LLM call in the
+    three-step Cypher generation pipeline.
+    Returns all relations if selected_labels is empty.
+    """
+    if not selected_labels:
+        return list(schema_relations)
+    return [
+        r for r in schema_relations
+        if r["from"] in selected_labels and r["to"] in selected_labels
+    ]
+
+
+def _parse_json_list(response: str) -> List[str]:
+    """Robustly parse an LLM response that should be a JSON array of strings.
+
+    Strips markdown fences, finds the first [...] block, removes trailing
+    commas before ], and attempts JSON parsing. Returns [] on any failure.
+    """
+    if not response:
+        return []
+    # Strip markdown fences (```json ... ``` or ``` ... ```)
+    text = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`").strip()
+    # Extract the first [...] block — the LLM may add prose before/after
+    match = re.search(r"\[.*?\]", text, re.DOTALL)
+    if match:
+        text = match.group(0)
+    # Remove trailing commas before ] — a common LLM formatting mistake
+    text = re.sub(r",\s*\]", "]", text)
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return [str(x) for x in parsed if x]
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return []
 
 
 def _enforce_relation_directions(cypher: str) -> str:

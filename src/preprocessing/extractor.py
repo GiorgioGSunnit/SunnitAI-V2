@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 from langchain_core.prompts import ChatPromptTemplate
 
@@ -9,6 +10,32 @@ from .schema.schema import KnowledgeGraphExtraction
 from .write_kg import save_to_neo4j
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class Node:
+    """A graph node produced by the document extraction pipeline."""
+    label: str
+    key: Dict[str, Any]
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class Rel:
+    """A directed graph relationship produced by the document extraction pipeline."""
+    type: str
+    from_: Node
+    to: Node
+    properties: Dict[str, Any] = field(default_factory=dict)
+
+
+def extract_from_document(payload: Dict[str, Any]) -> tuple:
+    """Extract Node and Rel objects from a normalized document payload.
+
+    Returns (nodes: List[Node], rels: List[Rel]).
+    Stub — full implementation pending.
+    """
+    return [], []
 
 # Reuse the shared chat_model from ai_chat instead of duplicating LLM config
 structured_llm = chat_model.with_structured_output(

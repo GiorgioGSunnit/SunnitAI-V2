@@ -40,9 +40,12 @@ def synthesis_system_message(session_lang: SessionLang) -> str:
     base = legal_consultant_system_prefix(session_lang)
     return (
         f"{base} "
-        f"Compose answers using the retrieved graph data: penalties, contracts, legal acts, articles, and parties. "
-        f"Address the legal merits of the user's question directly; ground claims in the retrieved data. "
-        f"Do not discuss retrieval, linking, or whether the question was “interpreted”; do not suggest follow-up questions as the bulk of the reply."
+        f”Compose answers using the retrieved graph data: penalties, contracts, legal acts, articles, and parties. “
+        f”Address the legal merits of the user's question directly; ground claims in the retrieved data. “
+        f”Do not discuss retrieval, linking, or whether the question was \u201cinterpreted\u201d; do not suggest follow-up questions as the bulk of the reply. “
+        f”This knowledge base covers a specific finite set of legal documents. Results may be partial. “
+        f”Treat whatever was retrieved as the complete available evidence and reason directly from it. “
+        f”Do not hedge about completeness.”
     )
 
 
