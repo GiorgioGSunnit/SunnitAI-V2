@@ -25,18 +25,23 @@ logger = logging.getLogger(__name__)
 
 from langchain_openai import ChatOpenAI
 
-_chat_kwargs = {
-    "model": os.getenv("LLM_MODEL", os.getenv("OPENAI_MODEL", "nemotron-2-30B-A3B")),
-    "temperature": 0,
-    "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
-}
+_llm_base_url = os.getenv("LLM_BASE_URL")
+_llm_model = os.getenv("LLM_MODEL", os.getenv("OPENAI_MODEL", "gpt-4o"))
+_llm_api_key = os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY"))
 
-_llm_base_url = os.getenv(
-    "LLM_BASE_URL", "https://m3vke16xgzhstu-8000.proxy.runpod.net/v1"
-)
+if not _llm_api_key:
+    logger.warning("No LLM API key found (LLM_API_KEY / OPENAI_API_KEY). LLM calls will fail.")
+
+_chat_kwargs = {
+    "model": _llm_model,
+    "temperature": 0,
+    "api_key": _llm_api_key,
+    "request_timeout": 120,
+}
 if _llm_base_url:
     _chat_kwargs["base_url"] = _llm_base_url
 
+logger.info("LLM config: model=%s, base_url=%s", _llm_model, _llm_base_url or "(OpenAI default)")
 chat_model = ChatOpenAI(**_chat_kwargs)
 
 # ---------------------------------------------------------------------------

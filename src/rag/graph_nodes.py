@@ -36,6 +36,8 @@ from .lookups import (
 )
 from .models import DocumentEntities
 from .utils import (
+    _build_filtered_relation_hints,
+    _build_filtered_schema_text,
     _build_schema_text,
     _clean_cypher,
     _enforce_relation_directions,
@@ -44,13 +46,26 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+# Max nodes to pass into Cypher generation prompts (keeps tokens under control)
+_MAX_ENTRY_NODES_FOR_PROMPT = 8
+_MAX_CONTEXT_NODES_FOR_PROMPT = 6
+
 
 def _session_lang(state: Dict[str, Any]) -> SessionLang:
     return normalize_lang(state.get("session_language"))
 
 
+def _collect_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
+    """Extract all unique labels from a list of node dicts."""
+    labels: Set[str] = set()
+    for n in nodes:
+        for lbl in n.get("labels", []):
+            labels.add(lbl)
+    return labels
+
+
 _ENTITY_LABELS_TEXT = ", ".join(DocumentEntities.allowed_labels())
-SCHEMA_TEXT = _build_schema_text()
+SCHEMA_TEXT = _build_schema_text()  # full schema — used only for entity extraction
 RELATION_HINTS = "\n".join(
     f"- {item['from']} -[:{item['type']}]-> {item['to']}" for item in schema_relations
 )
@@ -608,8 +623,12 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
             "cypher_attempt": "intersection",
         }
 
-    entry_block = _format_entry_lines(entry_nodes)
-    context_block = _format_context_lines(context_nodes)
+    # Cap nodes to keep prompt within token limits
+    capped_entries = entry_nodes[:_MAX_ENTRY_NODES_FOR_PROMPT]
+    capped_context = context_nodes[:_MAX_CONTEXT_NODES_FOR_PROMPT]
+
+    entry_block = _format_entry_lines(capped_entries)
+    context_block = _format_context_lines(capped_context)
 
     rel_context_parts = []
     for rel in extracted_relationships:
@@ -627,12 +646,12 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     grouped_entries: Dict[str, List[str]] = {}
-    for item in entry_nodes:
+    for item in capped_entries:
         for label in item.get("labels", []):
             grouped_entries.setdefault(label, []).append(item["element_id"])
 
     grouped_context: Dict[str, List[str]] = {}
-    for item in context_nodes:
+    for item in capped_context:
         for label in item.get("labels", []):
             grouped_context.setdefault(label, []).append(item["element_id"])
 
@@ -650,6 +669,11 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
         )
         or "(no grouped context IDs)"
     )
+
+    # Filter schema to only relevant node types (keeps prompt small)
+    relevant_labels = _collect_labels(capped_entries) | _collect_labels(capped_context)
+    filtered_schema = _build_filtered_schema_text(relevant_labels)
+    filtered_relations = _build_filtered_relation_hints(relevant_labels)
 
     prompt = _call_chat(
         [
@@ -676,8 +700,8 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
                     "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
-                    schema=SCHEMA_TEXT,
-                    relations=RELATION_HINTS,
+                    schema=filtered_schema,
+                    relations=filtered_relations,
                     entries=entry_block,
                     entry_groups=grouped_entries_text,
                     contexts=context_block,
@@ -720,9 +744,10 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
             "cypher_attempt": "context_only",
         }
 
-    context_block = _format_context_lines(context_nodes)
+    capped_context = context_nodes[:_MAX_CONTEXT_NODES_FOR_PROMPT]
+    context_block = _format_context_lines(capped_context)
     grouped_context: Dict[str, List[str]] = {}
-    for item in context_nodes:
+    for item in capped_context:
         for label in item.get("labels", []):
             grouped_context.setdefault(label, []).append(item["element_id"])
     grouped_context_text = (
@@ -733,11 +758,15 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
         or "(no grouped context IDs)"
     )
 
+    relevant_labels = _collect_labels(capped_context)
+    filtered_schema = _build_filtered_schema_text(relevant_labels)
+    filtered_relations = _build_filtered_relation_hints(relevant_labels)
+
     log_cypher_event(
         "b_prepare",
         "context-only Cypher (no entry nodes)",
         detail={
-            "context_count": len(context_nodes),
+            "context_count": len(capped_context),
             "keywords": state.get("retrieval_keywords") or [],
         },
     )
@@ -769,8 +798,8 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     question=state["query"],
                     generalized=state.get("generalized_query") or state["query"],
                     keywords=", ".join(state.get("retrieval_keywords") or []),
-                    schema=SCHEMA_TEXT,
-                    relations=RELATION_HINTS,
+                    schema=filtered_schema,
+                    relations=filtered_relations,
                     contexts=context_block,
                     context_groups=grouped_context_text,
                 )
@@ -821,9 +850,20 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
             "cypher_attempt": "fallback",
         }
 
-    entry_block = _format_entry_lines(entry_nodes)
+    context_nodes = state.get("context_nodes") or []
+
+    # Cap nodes to avoid exceeding token limits
+    capped_entries = entry_nodes[:_MAX_ENTRY_NODES_FOR_PROMPT]
+    capped_context = context_nodes[:_MAX_CONTEXT_NODES_FOR_PROMPT]
+
+    # Build filtered schema based on relevant node labels
+    relevant_labels = _collect_labels(capped_entries) | _collect_labels(capped_context)
+    filtered_schema = _build_filtered_schema_text(relevant_labels)
+    filtered_relations = _build_filtered_relation_hints(relevant_labels)
+
+    entry_block = _format_entry_lines(capped_entries)
     grouped_entries: Dict[str, List[str]] = {}
-    for item in entry_nodes:
+    for item in capped_entries:
         for label in item.get("labels", []):
             grouped_entries.setdefault(label, []).append(item["element_id"])
 
@@ -836,7 +876,7 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     fallback_reason = state.get("cypher_generation_error") or "Intersection attempt returned no rows."
-    context_summary = _format_context_lines(state.get("context_nodes") or [])
+    context_summary = _format_context_lines(capped_context)
 
     rel_context_parts = []
     for rel in extracted_relationships:
@@ -881,8 +921,8 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                 ).format(
                     question=state["query"],
                     reason=fallback_reason,
-                    schema=SCHEMA_TEXT,
-                    relations=RELATION_HINTS,
+                    schema=filtered_schema,
+                    relations=filtered_relations,
                     entries=entry_block,
                     entry_groups=grouped_entries_text,
                     contexts=context_summary,
@@ -928,9 +968,17 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
             "cypher_attempt": "reformulation",
         }
 
-    entry_block = _format_entry_lines(entry_nodes)
+    # Cap nodes to avoid exceeding token limits
+    capped_entries = entry_nodes[:_MAX_ENTRY_NODES_FOR_PROMPT]
+
+    # Build filtered schema based on relevant node labels
+    relevant_labels = _collect_labels(capped_entries)
+    filtered_schema = _build_filtered_schema_text(relevant_labels)
+    filtered_relations = _build_filtered_relation_hints(relevant_labels)
+
+    entry_block = _format_entry_lines(capped_entries)
     grouped_entries: Dict[str, List[str]] = {}
-    for item in entry_nodes:
+    for item in capped_entries:
         for label in item.get("labels", []):
             grouped_entries.setdefault(label, []).append(item["element_id"])
     grouped_entries_text = (
@@ -991,8 +1039,8 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     question=state["query"],
                     feedback=feedback,
                     previous=previous or "(none)",
-                    schema=SCHEMA_TEXT,
-                    relations=RELATION_HINTS,
+                    schema=filtered_schema,
+                    relations=filtered_relations,
                     entries=entry_block,
                     entry_groups=grouped_entries_text,
                     relationship_context=relationship_context,
