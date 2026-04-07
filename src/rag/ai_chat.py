@@ -29,7 +29,7 @@ _chat_kwargs = {
     "model": os.getenv("LLM_MODEL", os.getenv("OPENAI_MODEL", "nemotron-2-30B-A3B")),
     "temperature": 0,
     "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
-    "request_timeout": 120,
+    "request_timeout": 240,
 }
 
 _llm_base_url = os.getenv("LLM_BASE_URL")
