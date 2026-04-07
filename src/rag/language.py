@@ -53,17 +53,19 @@ def detect_language_llm(text: str) -> SessionLang:
     raw = _call_chat(
         [
             SystemMessage(
-                content=(
-                    "You classify the primary language of a user message for a legal assistant. "
-                    "Allowed outputs exactly one token: it, en, or es "
-                    "(Italian, English, Spanish). "
-                    "If uncertain or mixed with no clear primary language, output it."
-                )
+                content="Detect the language. Reply with only one of these three codes and nothing else: it, en, es"
             ),
             HumanMessage(
-                content=f"Message:\n{text}\n\nReply with only: it, en, or es"
+                content=(
+                    "Examples:\n"
+                    "Input: Ciao come stai -> it\n"
+                    "Input: Hello how are you -> en\n"
+                    "Input: Hola como estas -> es\n\n"
+                    f"Input: {text} ->"
+                )
             ),
-        ]
+        ],
+        max_tokens=3,
     )
     token = re.sub(r"\s+", "", (raw or "").lower())[:2]
     if token in ("it", "en", "es"):
