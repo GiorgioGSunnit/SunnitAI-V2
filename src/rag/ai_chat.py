@@ -30,6 +30,7 @@ _chat_kwargs = {
     "temperature": 0,
     "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
     "request_timeout": 240,
+    "max_tokens": 1500,
 }
 
 _llm_base_url = os.getenv("LLM_BASE_URL")
