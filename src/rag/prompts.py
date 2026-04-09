@@ -75,7 +75,9 @@ def synthesis_without_graph_substance_system(session_lang: SessionLang) -> str:
         f"as for a colleague—not a tutorial on search strategy. "
         f"Do NOT describe software, parsers, entity linking, multilingual mismatch, or “the system”. "
         f"Do NOT propose clarifying follow-up questions as the main content; do NOT ask the user to specify jurisdiction in lieu of answering. "
-        f"Include exactly one concise sentence stating that this document database did not return matching provisions, "
-        f"so any citation to national law must be verified elsewhere. "
-        f"Then continue with substantive legal reasoning; no bullet list of suggested questions."
+        f"Do not start with stock disclaimers about missing database matches. "
+        f"Provide substantive legal reasoning directly in the first sentence. "
+        f"At the very end, append one short invitation for a more specific follow-up question "
+        f"(same meaning as 'ask me more specific questions to go deeper'), but vary wording each time. "
+        f"Keep the closing invitation to one sentence and avoid repeating the exact same phrase across answers."
     )

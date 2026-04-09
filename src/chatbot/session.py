@@ -6,6 +6,7 @@ resolve follow-up questions (e.g. "tell me more about that decree").
 """
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -20,7 +21,6 @@ from ..rag.language import (
     detect_explicit_language_switch,
     detect_language_llm,
     normalize_lang,
-    should_auto_detect_language,
 )
 from ..rag.prompts import query_rewriter_system
 
@@ -32,6 +32,30 @@ MAX_HISTORY_TURNS = 20  # Max conversation turns to keep in memory
 MAX_CONTEXT_TURNS = 6   # Max recent turns to feed into query rewriting
 SESSION_TTL_SECONDS = 3600  # Evict sessions idle for more than 1 hour
 SESSION_CLEANUP_INTERVAL = 300  # Run cleanup every 5 minutes
+DEFAULT_SESSION_LANGUAGE = os.getenv("CHAT_DEFAULT_LANGUAGE", DEFAULT_LANGUAGE)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# In questa fase assumiamo italiano: language detect disattivato di default.
+CHAT_ENABLE_LANGUAGE_DETECT = _env_bool("CHAT_ENABLE_LANGUAGE_DETECT", False)
+
+
+def _sanitize_user_error_message(err: Exception) -> str:
+    raw = str(err or "")
+    low = raw.lower()
+    if "<!doctype html" in low or "<html" in low or "cloudflare" in low:
+        return "Upstream LLM gateway error. Please try again in a few moments."
+    if "bad gateway" in low or "502" in low or "503" in low or "504" in low:
+        return "Temporary upstream service error. Please try again shortly."
+    if "timeout" in low or "timed out" in low:
+        return "Request timed out while contacting the language model. Please retry."
+    return "An internal processing error occurred. Please retry."
 
 
 @dataclass
@@ -49,7 +73,7 @@ class ChatSession:
     session_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     messages: List[Message] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    session_language: str = field(default=DEFAULT_LANGUAGE)
+    session_language: str = field(default=DEFAULT_SESSION_LANGUAGE)
     _language_fixed_from_first_turn: bool = field(default=False)
     _last_active: float = field(default_factory=time.monotonic)
 
@@ -181,28 +205,55 @@ class ChatBot:
                 "resolved_query": str,
             }
         """
+        trace_id = str(uuid.uuid4())[:8]
+        t0 = time.perf_counter()
+        logger.info(
+            "[chat.trace:%s] start session_id=%s message_len=%d",
+            trace_id,
+            session_id,
+            len(user_message or ""),
+        )
+
         session = self._sessions.get(session_id)
         if not session:
             session = self.create_session()
             session.session_id = session_id
             self._sessions[session_id] = session
+            logger.info("[chat.trace:%s] created missing session object", trace_id)
 
         # Record the user message
         session.add_message("user", user_message)
 
-        # Session language: explicit switch, or auto-detect on first long message (default Italian)
-        switch = detect_explicit_language_switch(
-            user_message, normalize_lang(session.session_language)
-        )
-        if switch:
-            session.session_language = switch
-        if not session._language_fixed_from_first_turn:
-            if not switch and should_auto_detect_language(user_message):
-                session.session_language = detect_language_llm(user_message)
+        # Language phase
+        lang_t0 = time.perf_counter()
+        if CHAT_ENABLE_LANGUAGE_DETECT:
+            switch = detect_explicit_language_switch(
+                user_message, normalize_lang(session.session_language)
+            )
+            if switch:
+                session.session_language = switch
+            if not session._language_fixed_from_first_turn:
+                if not switch:
+                    session.session_language = detect_language_llm(user_message)
+                session._language_fixed_from_first_turn = True
+            logger.info(
+                "[chat.trace:%s] language_detect enabled lang=%s elapsed_ms=%d",
+                trace_id,
+                session.session_language,
+                int((time.perf_counter() - lang_t0) * 1000),
+            )
+        else:
+            session.session_language = "it"
             session._language_fixed_from_first_turn = True
+            logger.info(
+                "[chat.trace:%s] language_detect skipped (CHAT_ENABLE_LANGUAGE_DETECT=false) lang=it elapsed_ms=%d",
+                trace_id,
+                int((time.perf_counter() - lang_t0) * 1000),
+            )
 
         # Rewrite query with conversation context for follow-ups
         # Skip rewrite entirely on first message (no prior context to resolve against)
+        rw_t0 = time.perf_counter()
         if len(session.messages) <= 1:
             resolved_query = user_message
         else:
@@ -212,21 +263,51 @@ class ChatBot:
             resolved_query = _rewrite_query_with_context(
                 user_message, context_for_rewrite, session.session_language
             )
+        logger.info(
+            "[chat.trace:%s] rewrite done elapsed_ms=%d resolved_len=%d",
+            trace_id,
+            int((time.perf_counter() - rw_t0) * 1000),
+            len(resolved_query or ""),
+        )
 
         # Run through the RAG pipeline
+        rag_t0 = time.perf_counter()
         try:
-            result = rag_run(resolved_query, session_language=session.session_language)
+            result = rag_run(
+                resolved_query,
+                session_language=session.session_language,
+                trace_id=trace_id,
+            )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = result.get("references", [])
             status_messages = result.get("status_messages") or []
+            logger.info(
+                "[chat.trace:%s] rag ok elapsed_ms=%d refs=%d",
+                trace_id,
+                int((time.perf_counter() - rag_t0) * 1000),
+                len(references),
+            )
         except Exception as e:
             logger.error("RAG pipeline error: %s", e, exc_info=True)
-            answer = f"I'm sorry, I encountered an error processing your question. Error: {e}"
+            user_err = _sanitize_user_error_message(e)
+            answer = f"I'm sorry, I encountered an error processing your question. {user_err}"
             references = []
             status_messages = []
+            logger.error(
+                "[chat.trace:%s] rag error elapsed_ms=%d",
+                trace_id,
+                int((time.perf_counter() - rag_t0) * 1000),
+                exc_info=True,
+            )
 
         # Record the assistant response
         session.add_message("assistant", answer, metadata={"references": references})
+        logger.info(
+            "[chat.trace:%s] end total_ms=%d message_count=%d",
+            trace_id,
+            int((time.perf_counter() - t0) * 1000),
+            len(session.messages),
+        )
 
         return {
             "session_id": session.session_id,

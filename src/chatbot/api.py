@@ -10,7 +10,10 @@ Endpoints:
 """
 
 import asyncio
+import ast
 import logging
+import os
+import re
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Optional
@@ -20,8 +23,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .session import ChatBot
+from ..rag.main import run_diagnostics, run_diagnostics_full
 
 logger = logging.getLogger(__name__)
+CHAT_ENDPOINT_TIMEOUT_SECONDS = int(os.getenv("CHAT_ENDPOINT_TIMEOUT_SECONDS", "600"))
 
 
 @asynccontextmanager
@@ -87,6 +92,20 @@ class SessionResponse(BaseModel):
     session_id: str
     created_at: str
     message_count: int
+
+
+class RagDiagRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="Diagnostic user message")
+    session_language: Optional[str] = Field(
+        default="it",
+        description="Language code (default it)",
+    )
+    max_transitions: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Max graph transitions for full diagnostics loop",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +190,54 @@ def _debug_check_sync() -> dict:
     return checks
 
 
+def _extract_last_cypher_block(text: str) -> str:
+    pattern = re.compile(
+        r"\[c_execute\].*?---BEGIN CYPHER---\n(.*?)\n---END CYPHER---",
+        re.DOTALL,
+    )
+    matches = list(pattern.finditer(text or ""))
+    if not matches:
+        return ""
+    return (matches[-1].group(1) or "").strip()
+
+
+def _extract_recent_timing_events(text: str, phase: str, limit: int = 5) -> list:
+    rows = []
+    for line in (text or "").splitlines():
+        if f"[{phase}]" not in line or " | " not in line:
+            continue
+        ts = line.split(" [", 1)[0].strip()
+        _, detail_str = line.split(" | ", 1)
+        detail = {}
+        try:
+            detail = ast.literal_eval(detail_str.strip())
+        except Exception:
+            detail = {"raw_detail": detail_str.strip()}
+        rows.append({"timestamp": ts, "detail": detail})
+    return rows[-limit:]
+
+
+def _diag_last_run_sync(max_tail_bytes: int = 350000) -> dict:
+    from ..rag.cypher_logger import get_cypher_log_path
+
+    path = get_cypher_log_path()
+    if not os.path.isfile(path):
+        return {"cypher_log_path": path, "error": "cypher log file not found"}
+
+    with open(path, "rb") as f:
+        f.seek(0, os.SEEK_END)
+        size = f.tell()
+        f.seek(max(0, size - max_tail_bytes))
+        chunk = f.read().decode("utf-8", errors="replace")
+
+    return {
+        "cypher_log_path": path,
+        "last_cypher_query": _extract_last_cypher_block(chunk),
+        "recent_llm_calls": _extract_recent_timing_events(chunk, "llm_call", limit=8),
+        "recent_neo4j_exec": _extract_recent_timing_events(chunk, "c_execute", limit=8),
+    }
+
+
 @app.post("/api/sessions", response_model=SessionResponse)
 def create_session():
     session = chatbot.create_session()
@@ -201,6 +268,45 @@ def delete_session(session_id: str):
     return {"status": "deleted", "session_id": session_id}
 
 
+@app.post("/api/diag/rag")
+async def diag_rag(request: RagDiagRequest):
+    """Diagnostics endpoint: run early RAG steps with timings.
+
+    Executes decompose -> linking -> context -> cypher generation (no execute/synthesis).
+    """
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        partial(
+            run_diagnostics,
+            request.message,
+            request.session_language or "it",
+        ),
+    )
+
+
+@app.post("/api/diag/chat")
+async def diag_chat(request: RagDiagRequest):
+    """Diagnostics endpoint: run full RAG flow with per-step timings."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        partial(
+            run_diagnostics_full,
+            request.message,
+            request.session_language or "it",
+            request.max_transitions,
+        ),
+    )
+
+
+@app.get("/api/diag/last-run")
+async def diag_last_run():
+    """Diagnostics endpoint: inspect last Cypher + recent LLM/Neo4j timing events."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _diag_last_run_sync)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Send a message and get a response.
@@ -215,8 +321,22 @@ async def chat(request: ChatRequest):
 
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, partial(chatbot.chat, session_id, request.message)
+        result = await asyncio.wait_for(
+            loop.run_in_executor(None, partial(chatbot.chat, session_id, request.message)),
+            timeout=CHAT_ENDPOINT_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error(
+            "Chat timeout after %ss (session_id=%s)",
+            CHAT_ENDPOINT_TIMEOUT_SECONDS,
+            session_id,
+        )
+        raise HTTPException(
+            status_code=504,
+            detail=(
+                "Chat request timed out. "
+                "Try again with a shorter question or check upstream LLM/Neo4j latency."
+            ),
         )
     except Exception as e:
         logger.error("Chat error: %s", e, exc_info=True)

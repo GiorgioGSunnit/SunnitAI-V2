@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 DEFAULT_FULLTEXT_LIMIT = 3
+RUNTIME_FULLTEXT_INDEX = "legal_text_index"
 GENERIC_REFERENCE_PATTERN = re.compile(r"\bno\.?\b", re.IGNORECASE)
 _AL_PREFIX_PATTERN = re.compile(r"^al[\s\-]+", re.IGNORECASE)
 
@@ -445,7 +446,9 @@ def fulltext_lookup(
     allowed_labels: Optional[Set[str]] = None,
 ) -> Iterable[Dict[str, Any]]:
     limit_value = max(1, limit)
-    indexes_to_use = indexes or FULLTEXT_INDEXES
+    # Use the canonical runtime index created in Neo4j for legal text retrieval.
+    # This avoids scattering lookup attempts across legacy index names.
+    indexes_to_use = [RUNTIME_FULLTEXT_INDEX]
     matches: List[Dict[str, Any]] = []
     for index_name in indexes_to_use:
         label_clause = (

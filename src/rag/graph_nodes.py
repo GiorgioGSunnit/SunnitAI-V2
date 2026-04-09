@@ -2,7 +2,10 @@
 
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import os
+import re
+import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from typing import Any, Dict, List, Optional, Set
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -10,7 +13,7 @@ from neo4j.exceptions import Neo4jError
 
 from ..preprocessing.schema.schema import entities as schema_entities
 from ..preprocessing.schema.schema import relations as schema_relations
-from .ai_chat import _call_chat, structured_entities_model
+from .ai_chat import _call_chat, invoke_entity_extraction
 from .cypher_logger import log_cypher_event, log_cypher_multiline
 from .language import SessionLang, normalize_lang
 from .prompts import (
@@ -23,6 +26,7 @@ from .prompts import (
 from .lookup_indexes import (
     CONTEXT_NODE_LIMIT,
     CONTEXT_VECTOR_INDEXES,
+    ENTITY_VECTOR_INDEXES,
     FULLTEXT_INDEXES,
 )
 from .lookups import (
@@ -43,6 +47,122 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+# Optional bypass for context retrieval input:
+# when enabled, we ignore generalized/user query and retrieve context from a fixed phrase.
+RAG_USE_DEFAULT_CONTEXT = _env_bool("RAG_USE_DEFAULT_CONTEXT", False)
+RAG_DEFAULT_CONTEXT_QUERY = os.getenv("RAG_DEFAULT_CONTEXT_QUERY", "leggi italiane").strip()
+# If disabled, skip LLM query optimization and use user phrase directly as keyword seed.
+CYPHER_OPTIMIZATION_ENABLED = _env_bool("CYPHER_OPTIMIZATION_ENABLED", True)
+KEYWORD_EXTRACTION_ENABLED = _env_bool("KEYWORD_EXTRACTION_ENABLED", True)
+DECOMPOSE_LLM_ENABLED = _env_bool("DECOMPOSE_LLM_ENABLED", True)
+RAG_DEFAULT_KEYWORDS = [
+    k.strip()
+    for k in os.getenv("RAG_DEFAULT_KEYWORDS", "normativa,legge,decreto").split(",")
+    if k.strip()
+]
+CYTHER_GENERATION_TIMEOUT_SECONDS = float(
+    os.getenv("CYPHER_GENERATION_TIMEOUT_SECONDS", "120")
+)
+CYTHER_FALLBACK_KEYWORD = os.getenv("CYPHER_FALLBACK_KEYWORD", "codice civile").strip() or "codice civile"
+_ALLOWED_VECTOR_INDEXES = set(CONTEXT_VECTOR_INDEXES + ENTITY_VECTOR_INDEXES)
+_VECTOR_QUERY_INDEX_RE = re.compile(
+    r"db\.index\.vector\.queryNodes\(\s*['\"]([^'\"]+)['\"]",
+    re.IGNORECASE,
+)
+
+
+def _strip_reasoning_and_markup(text: str) -> str:
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    marker = "</think>"
+    if marker in low:
+        idx = low.rfind(marker)
+        raw = raw[idx + len(marker):].strip()
+    if raw.startswith("```"):
+        raw = raw.strip("`").strip()
+    return raw
+
+
+def _sanitize_generalized_phrase(raw_text: str, fallback_query: str) -> str:
+    cleaned = _strip_reasoning_and_markup(raw_text)
+    if not cleaned:
+        cleaned = (fallback_query or "").strip()
+    first_line = cleaned.splitlines()[0].strip() if cleaned else ""
+    if not first_line:
+        first_line = (fallback_query or "").strip()
+    # Keep compact: max 8 words as requested by the prompt.
+    words = first_line.split()
+    if len(words) > 8:
+        first_line = " ".join(words[:8])
+    return first_line
+
+
+def _escape_cypher_string(value: str) -> str:
+    return (value or "").replace("\\", "\\\\").replace("'", "\\'")
+
+
+def _select_fallback_keyword(state: Dict[str, Any]) -> str:
+    keywords = state.get("retrieval_keywords") or []
+    for kw in keywords:
+        clean = (kw or "").strip()
+        if clean:
+            return clean
+    generalized = (state.get("generalized_query") or "").strip()
+    if generalized:
+        return generalized
+    return CYTHER_FALLBACK_KEYWORD
+
+
+def _base_fallback_cypher() -> str:
+    # Requested emergency fallback query when normal Cypher generation is missing/late.
+    return (
+        "MATCH (n)\n"
+        "WHERE (n:Legal_doc OR n:Legal_action)\n"
+        "AND (\n"
+        "    toLower(n.title) CONTAINS toLower($keyword) OR\n"
+        "    toLower(n.description) CONTAINS toLower($keyword) OR\n"
+        "    toLower(n.text) CONTAINS toLower($keyword)\n"
+        ")\n"
+        "RETURN n;"
+    )
+
+
+def _fallback_cypher_payload(state: Dict[str, Any], reason: str, attempt: str) -> Dict[str, Any]:
+    keyword = _select_fallback_keyword(state)
+    cypher = _base_fallback_cypher()
+    log_cypher_event(
+        "b_fallback_base",
+        f"{attempt}: using base fallback Cypher",
+        detail={"reason": reason, "keyword": keyword},
+    )
+    log_cypher_multiline(
+        "b_draft",
+        f"{attempt}: base fallback Cypher (timeout/empty generation guard)",
+        cypher,
+    )
+    return {
+        "cypher_query": cypher,
+        "cypher_params": {"keyword": keyword},
+        "cypher_generation_error": None,
+        "cypher_attempt": attempt,
+    }
+
+
+def _call_chat_timeout(messages: List[Any], llm_context: Optional[Dict[str, Any]] = None) -> str:
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_call_chat, messages, llm_context)
+        return fut.result(timeout=CYTHER_GENERATION_TIMEOUT_SECONDS)
 
 
 def _session_lang(state: Dict[str, Any]) -> SessionLang:
@@ -72,22 +192,27 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         delimiter_label="USER_QUESTION",
     )
 
-    # Step 1 (generalize) and Step 2 (entity extraction) are independent —
-    # run them in parallel to cut decomposition latency roughly in half.
-    generalization_messages = [
-        SystemMessage(
-            content=(
-                f"{legal_consultant_system_prefix(lang)} "
-                "You generalize user questions about legal documents into concise search-focused phrases."
-            )
-        ),
-        HumanMessage(
-            content=(
-                "Original question: {query}\n"
-                "Respond with a short generalized phrase (max 8 words) capturing the main topic."
-            ).format(query=query)
-        ),
-    ]
+    if not DECOMPOSE_LLM_ENABLED:
+        generalized = (query or "").strip()
+        retrieval_keywords = (RAG_DEFAULT_KEYWORDS[:3] or [generalized][:1])
+        log_cypher_event(
+            "a_generalized",
+            "decompose LLM disabled: using raw user phrase as generalized query",
+            detail=generalized,
+        )
+        log_cypher_event(
+            "a_keywords",
+            "decompose LLM disabled: using configured default keywords",
+            detail=retrieval_keywords,
+        )
+        return {
+            **state,
+            "generalized_query": generalized,
+            "retrieval_keywords": retrieval_keywords,
+            # No LLM extraction => no entities/relationships from query text.
+            "entities": [],
+            "extracted_relationships": [],
+        }
 
     entity_extraction_prompt = (
         "Schema:\n{schema}\n\n"
@@ -123,42 +248,89 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         ),
         HumanMessage(content=entity_extraction_prompt),
     ]
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        future_generalize = pool.submit(_call_chat, generalization_messages)
-        future_entities = pool.submit(structured_entities_model.invoke, entity_extraction_messages)
-
-        generalized = future_generalize.result()
-        entities_payload = future_entities.result()
-
-    logger.info(f"Generalized query: '{generalized}'")
-    log_cypher_event(
-        "a_generalized",
-        "generalized topic phrase (used for context / vector retrieval)",
-        detail=generalized,
-    )
-
-    # Step 1b: Keywords (1–3) — depends on generalized, so runs after
-    kw_raw = _call_chat(
-        [
+    if CYPHER_OPTIMIZATION_ENABLED:
+        # Step 1 (generalize) and Step 2 (entity extraction) are independent —
+        # run them in parallel to cut decomposition latency roughly in half.
+        generalization_messages = [
             SystemMessage(
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
-                    "Extract one to three keywords or short noun phrases that capture the core legal subject matter. "
-                    "Output only a comma-separated list, no numbering or extra text."
+                    "You generalize user questions about legal documents into concise search-focused phrases."
                 )
             ),
             HumanMessage(
-                content=f"Question:\n{query}\n\nGeneralized topic:\n{generalized}\n\nKeywords:"
+                content=(
+                    "Original question: {query}\n"
+                    "Respond with a short generalized phrase (max 8 words) capturing the main topic."
+                ).format(query=query)
             ),
         ]
-    )
-    retrieval_keywords = [k.strip() for k in (kw_raw or "").split(",") if k.strip()][:3]
-    log_cypher_event(
-        "a_keywords",
-        "extracted keywords",
-        detail=retrieval_keywords,
-    )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future_generalize = pool.submit(_call_chat, generalization_messages)
+            future_entities = pool.submit(
+                invoke_entity_extraction, entity_extraction_messages
+            )
+
+            generalized_raw = future_generalize.result()
+            entities_payload = future_entities.result()
+            generalized = _sanitize_generalized_phrase(generalized_raw, query)
+
+        logger.info(f"Generalized query: '{generalized}'")
+        log_cypher_event(
+            "a_generalized",
+            "generalized topic phrase (used for context / vector retrieval)",
+            detail=generalized,
+        )
+
+        # Step 1b: Keywords (1–3) — depends on generalized, so runs after.
+        # Can be disabled to bypass additional LLM call.
+        if KEYWORD_EXTRACTION_ENABLED:
+            kw_raw = _call_chat(
+                [
+                    SystemMessage(
+                        content=(
+                            f"{legal_consultant_system_prefix(lang)} "
+                            "Extract one to three keywords or short noun phrases that capture the core legal subject matter. "
+                            "Output only a comma-separated list, no numbering or extra text."
+                        )
+                    ),
+                    HumanMessage(
+                        content=f"Question:\n{query}\n\nGeneralized topic:\n{generalized}\n\nKeywords:"
+                    ),
+                ]
+            )
+            kw_clean = _strip_reasoning_and_markup(kw_raw or "")
+            retrieval_keywords = [k.strip() for k in kw_clean.split(",") if k.strip()][:3]
+            if not retrieval_keywords:
+                retrieval_keywords = [generalized] if generalized else [query]
+            log_cypher_event(
+                "a_keywords",
+                "extracted keywords",
+                detail=retrieval_keywords,
+            )
+        else:
+            retrieval_keywords = (RAG_DEFAULT_KEYWORDS[:3] or [generalized][:1])
+            log_cypher_event(
+                "a_keywords",
+                "keyword extraction disabled: using configured default keywords",
+                detail=retrieval_keywords,
+            )
+    else:
+        # Bypass optimization: keep original phrase as-is for Cypher keywording.
+        generalized = query
+        retrieval_keywords = [query.strip()] if query and query.strip() else []
+        entities_payload = invoke_entity_extraction(entity_extraction_messages)
+        log_cypher_event(
+            "a_generalized",
+            "cypher optimization disabled: using raw user phrase as generalized query",
+            detail=generalized,
+        )
+        log_cypher_event(
+            "a_keywords",
+            "cypher optimization disabled: using full user phrase as keyword seed",
+            detail=retrieval_keywords,
+        )
 
     # Step 3: Validate and normalize the extracted graph
     raw_graph = entities_payload.graph
@@ -485,13 +657,23 @@ def entity_linking(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 # ---------------------------------------------------------------------------
 
 def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
-    generalized = state.get("generalized_query") or state.get("query")
-    if not generalized:
+    requested = state.get("generalized_query") or state.get("query")
+    if RAG_USE_DEFAULT_CONTEXT:
+        context_seed = RAG_DEFAULT_CONTEXT_QUERY or "leggi italiane"
+        logger.info(
+            "Context retrieval: default context enabled (seed='%s', original='%s')",
+            context_seed,
+            requested,
+        )
+    else:
+        context_seed = requested
+
+    if not context_seed:
         return {"context_nodes": []}
 
     with driver.session(database=database) as session:
         matches = vector_lookup(
-            session, generalized, indexes=CONTEXT_VECTOR_INDEXES,
+            session, context_seed, indexes=CONTEXT_VECTOR_INDEXES,
             index_settings=VECTOR_INDEX_SETTINGS, source_prefix="context",
         )
 
@@ -531,7 +713,11 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
         reverse=True,
     )[:CONTEXT_NODE_LIMIT]
 
-    logger.info("Context retrieval produced %d nodes", len(context_nodes))
+    logger.info(
+        "Context retrieval produced %d nodes (seed='%s')",
+        len(context_nodes),
+        context_seed,
+    )
     return {"context_nodes": context_nodes}
 
 
@@ -587,11 +773,11 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
                 "note": "If context_nodes exist, graph tries context_only Cypher; if both entry and context are empty, Neo4j is skipped.",
             },
         )
-        return {
-            "cypher_query": None,
-            "cypher_generation_error": "Entity linking returned no entry nodes.",
-            "cypher_attempt": "intersection",
-        }
+        return _fallback_cypher_payload(
+            state,
+            "Entity linking returned no entry nodes.",
+            "intersection",
+        )
 
     if not context_nodes:
         log_cypher_event(
@@ -602,11 +788,11 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
                 "next_graph_route": "fallback",
             },
         )
-        return {
-            "cypher_query": None,
-            "cypher_generation_error": "Context retrieval returned no candidate nodes.",
-            "cypher_attempt": "intersection",
-        }
+        return _fallback_cypher_payload(
+            state,
+            "Context retrieval returned no candidate nodes.",
+            "intersection",
+        )
 
     entry_block = _format_entry_lines(entry_nodes)
     context_block = _format_context_lines(context_nodes)
@@ -651,42 +837,60 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
         or "(no grouped context IDs)"
     )
 
-    prompt = _call_chat(
-        [
-            SystemMessage(
-                content=(
-                    f"{legal_consultant_system_prefix(lang)} "
-                    "You are a Cypher expert focusing on legal data. "
-                    "Intersect subject nodes (entity linking) with context nodes (semantic search) to answer the user's question."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    "Original question: {question}\n"
-                    "Schema:\n{schema}\n\n"
-                    "Relation directions:\n{relations}\n\n"
-                    "Subject entry nodes:\n{entries}\n\n"
-                    "Subject IDs by label:\n{entry_groups}\n\n"
-                    "Context candidate nodes:\n{contexts}\n\n"
-                    "Context IDs by label:\n{context_groups}\n\n"
-                    "{relationship_context}\n\n"
-                    "Construct ONE SINGLE Cypher query that finds paths between the Subject and Context nodes. "
-                    "You MUST use the relationships extracted from the query as the primary guide for pathfinding. "
-                    "To filter nodes by their ID, you MUST use the `elementId()` function in a WHERE clause. "
-                    "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN statement at the end."
-                ).format(
-                    question=state["query"],
-                    schema=SCHEMA_TEXT,
-                    relations=RELATION_HINTS,
-                    entries=entry_block,
-                    entry_groups=grouped_entries_text,
-                    contexts=context_block,
-                    context_groups=grouped_context_text,
-                    relationship_context=relationship_context,
-                )
-            ),
-        ]
-    )
+    messages = [
+        SystemMessage(
+            content=(
+                f"{legal_consultant_system_prefix(lang)} "
+                "You are a Cypher expert focusing on legal data. "
+                "Intersect subject nodes (entity linking) with context nodes (semantic search) to answer the user's question."
+            )
+        ),
+        HumanMessage(
+            content=(
+                "Original question: {question}\n"
+                "Schema:\n{schema}\n\n"
+                "Relation directions:\n{relations}\n\n"
+                "Subject entry nodes:\n{entries}\n\n"
+                "Subject IDs by label:\n{entry_groups}\n\n"
+                "Context candidate nodes:\n{contexts}\n\n"
+                "Context IDs by label:\n{context_groups}\n\n"
+                "{relationship_context}\n\n"
+                "Construct ONE SINGLE Cypher query that finds paths between the Subject and Context nodes. "
+                "You MUST use the relationships extracted from the query as the primary guide for pathfinding. "
+                "To filter nodes by their ID, you MUST use the `elementId()` function in a WHERE clause. "
+                "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN statement at the end."
+            ).format(
+                question=state["query"],
+                schema=SCHEMA_TEXT,
+                relations=RELATION_HINTS,
+                entries=entry_block,
+                entry_groups=grouped_entries_text,
+                contexts=context_block,
+                context_groups=grouped_context_text,
+                relationship_context=relationship_context,
+            )
+        ),
+    ]
+    try:
+        prompt = _call_chat_timeout(
+            messages,
+            {
+                "cypher_query": state.get("cypher_query"),
+                "cypher_attempt": "intersection",
+            },
+        )
+    except FuturesTimeoutError:
+        return _fallback_cypher_payload(
+            state,
+            f"LLM generation timeout after {CYTHER_GENERATION_TIMEOUT_SECONDS}s",
+            "intersection",
+        )
+    except Exception as exc:
+        return _fallback_cypher_payload(
+            state,
+            f"LLM generation error: {exc}",
+            "intersection",
+        )
 
     cypher = _clean_cypher(prompt)
     cypher = _enforce_relation_directions(cypher)
@@ -697,8 +901,15 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
         cypher,
     )
 
+    if not cypher:
+        return _fallback_cypher_payload(
+            state,
+            "LLM generated empty Cypher",
+            "intersection",
+        )
     return {
         "cypher_query": cypher,
+        "cypher_params": {},
         "cypher_generation_error": None,
         "cypher_attempt": "intersection",
     }
@@ -714,11 +925,11 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
             "context_only: no Cypher generated (no vector context nodes)",
             detail={"cypher_generation_error": "Context-only path: no vector context nodes."},
         )
-        return {
-            "cypher_query": None,
-            "cypher_generation_error": "Context-only path: no vector context nodes.",
-            "cypher_attempt": "context_only",
-        }
+        return _fallback_cypher_payload(
+            state,
+            "Context-only path: no vector context nodes.",
+            "context_only",
+        )
 
     context_block = _format_context_lines(context_nodes)
     grouped_context: Dict[str, List[str]] = {}
@@ -742,41 +953,59 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     )
 
-    prompt = _call_chat(
-        [
-            SystemMessage(
-                content=(
-                    f"{legal_consultant_system_prefix(lang)} "
-                    "You are a Cypher expert. There was no precise entity match for the user's question, "
-                    "but semantic search produced anchor nodes below. Write ONE query that starts from those elementIds, "
-                    "expands along valid schema relationships (short paths), and returns substantive legal content: "
-                    "Article, Section, Clause, LegalAct, Penalty, Contract, Document, or related nodes useful to answer the question. "
-                    "Filter anchors with elementId() in WHERE. Prefer paths that yield text or normative metadata. "
-                    "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN at the end."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    "Original question: {question}\n"
-                    "Generalized topic: {generalized}\n"
-                    "Keywords: {keywords}\n\n"
-                    "Schema:\n{schema}\n\n"
-                    "Relation directions:\n{relations}\n\n"
-                    "Semantic anchor nodes (use these elementIds):\n{contexts}\n\n"
-                    "Context IDs by label:\n{context_groups}\n\n"
-                    "Construct ONE Cypher query to retrieve material from the graph that best answers the question."
-                ).format(
-                    question=state["query"],
-                    generalized=state.get("generalized_query") or state["query"],
-                    keywords=", ".join(state.get("retrieval_keywords") or []),
-                    schema=SCHEMA_TEXT,
-                    relations=RELATION_HINTS,
-                    contexts=context_block,
-                    context_groups=grouped_context_text,
-                )
-            ),
-        ]
-    )
+    messages = [
+        SystemMessage(
+            content=(
+                f"{legal_consultant_system_prefix(lang)} "
+                "You are a Cypher expert. There was no precise entity match for the user's question, "
+                "but semantic search produced anchor nodes below. Write ONE query that starts from those elementIds, "
+                "expands along valid schema relationships (short paths), and returns substantive legal content: "
+                "Article, Section, Clause, LegalAct, Penalty, Contract, Document, or related nodes useful to answer the question. "
+                "Filter anchors with elementId() in WHERE. Prefer paths that yield text or normative metadata. "
+                "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN at the end."
+            )
+        ),
+        HumanMessage(
+            content=(
+                "Original question: {question}\n"
+                "Generalized topic: {generalized}\n"
+                "Keywords: {keywords}\n\n"
+                "Schema:\n{schema}\n\n"
+                "Relation directions:\n{relations}\n\n"
+                "Semantic anchor nodes (use these elementIds):\n{contexts}\n\n"
+                "Context IDs by label:\n{context_groups}\n\n"
+                "Construct ONE Cypher query to retrieve material from the graph that best answers the question."
+            ).format(
+                question=state["query"],
+                generalized=state.get("generalized_query") or state["query"],
+                keywords=", ".join(state.get("retrieval_keywords") or []),
+                schema=SCHEMA_TEXT,
+                relations=RELATION_HINTS,
+                contexts=context_block,
+                context_groups=grouped_context_text,
+            )
+        ),
+    ]
+    try:
+        prompt = _call_chat_timeout(
+            messages,
+            {
+                "cypher_query": state.get("cypher_query"),
+                "cypher_attempt": "context_only",
+            },
+        )
+    except FuturesTimeoutError:
+        return _fallback_cypher_payload(
+            state,
+            f"LLM generation timeout after {CYTHER_GENERATION_TIMEOUT_SECONDS}s",
+            "context_only",
+        )
+    except Exception as exc:
+        return _fallback_cypher_payload(
+            state,
+            f"LLM generation error: {exc}",
+            "context_only",
+        )
 
     cypher = _clean_cypher(prompt)
     cypher = _enforce_relation_directions(cypher)
@@ -787,8 +1016,15 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
         cypher,
     )
 
+    if not cypher:
+        return _fallback_cypher_payload(
+            state,
+            "LLM generated empty Cypher",
+            "context_only",
+        )
     return {
         "cypher_query": cypher,
+        "cypher_params": {},
         "cypher_generation_error": None,
         "cypher_attempt": "context_only",
     }
@@ -815,11 +1051,11 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
             "fallback: no Cypher generated (no entry nodes)",
             detail={"cypher_generation_error": "Fallback: no subject entry nodes available."},
         )
-        return {
-            "cypher_query": None,
-            "cypher_generation_error": "Fallback: no subject entry nodes available.",
-            "cypher_attempt": "fallback",
-        }
+        return _fallback_cypher_payload(
+            state,
+            "Fallback: no subject entry nodes available.",
+            "fallback",
+        )
 
     entry_block = _format_entry_lines(entry_nodes)
     grouped_entries: Dict[str, List[str]] = {}
@@ -857,40 +1093,58 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
         else ""
     )
 
-    prompt = _call_chat(
-        [
-            SystemMessage(
-                content=(
-                    f"{legal_consultant_system_prefix(lang)} "
-                    "Generate resilient Cypher for the SunnitAI graph. "
-                    "Reuse subject entry node IDs as anchors and traverse relationships using elementId() filters only."
-                )
-            ),
-            HumanMessage(
-                content=(
-                    "Original question: {question}\n"
-                    "Reason for fallback: {reason}\n\n"
-                    "Schema:\n{schema}\n\n"
-                    "Relation directions:\n{relations}\n\n"
-                    "Subject entry nodes:\n{entries}\n\n"
-                    "Subject IDs by label:\n{entry_groups}\n\n"
-                    "Context hints:\n{contexts}\n\n"
-                    "{relationship_context}\n\n"
-                    "Generate a SINGLE Cypher query that starts from the subject IDs using elementId() filters. "
-                    "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN statement at the end."
-                ).format(
-                    question=state["query"],
-                    reason=fallback_reason,
-                    schema=SCHEMA_TEXT,
-                    relations=RELATION_HINTS,
-                    entries=entry_block,
-                    entry_groups=grouped_entries_text,
-                    contexts=context_summary,
-                    relationship_context=relationship_context,
-                )
-            ),
-        ]
-    )
+    messages = [
+        SystemMessage(
+            content=(
+                f"{legal_consultant_system_prefix(lang)} "
+                "Generate resilient Cypher for the SunnitAI graph. "
+                "Reuse subject entry node IDs as anchors and traverse relationships using elementId() filters only."
+            )
+        ),
+        HumanMessage(
+            content=(
+                "Original question: {question}\n"
+                "Reason for fallback: {reason}\n\n"
+                "Schema:\n{schema}\n\n"
+                "Relation directions:\n{relations}\n\n"
+                "Subject entry nodes:\n{entries}\n\n"
+                "Subject IDs by label:\n{entry_groups}\n\n"
+                "Context hints:\n{contexts}\n\n"
+                "{relationship_context}\n\n"
+                "Generate a SINGLE Cypher query that starts from the subject IDs using elementId() filters. "
+                "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN statement at the end."
+            ).format(
+                question=state["query"],
+                reason=fallback_reason,
+                schema=SCHEMA_TEXT,
+                relations=RELATION_HINTS,
+                entries=entry_block,
+                entry_groups=grouped_entries_text,
+                contexts=context_summary,
+                relationship_context=relationship_context,
+            )
+        ),
+    ]
+    try:
+        prompt = _call_chat_timeout(
+            messages,
+            {
+                "cypher_query": state.get("cypher_query"),
+                "cypher_attempt": "fallback",
+            },
+        )
+    except FuturesTimeoutError:
+        return _fallback_cypher_payload(
+            state,
+            f"LLM generation timeout after {CYTHER_GENERATION_TIMEOUT_SECONDS}s",
+            "fallback",
+        )
+    except Exception as exc:
+        return _fallback_cypher_payload(
+            state,
+            f"LLM generation error: {exc}",
+            "fallback",
+        )
 
     cypher = _clean_cypher(prompt)
     cypher = _enforce_relation_directions(cypher)
@@ -901,8 +1155,15 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
         cypher,
     )
 
+    if not cypher:
+        return _fallback_cypher_payload(
+            state,
+            "LLM generated empty Cypher",
+            "fallback",
+        )
     return {
         "cypher_query": cypher,
+        "cypher_params": {},
         "cypher_generation_error": None,
         "cypher_attempt": "fallback",
     }
@@ -998,7 +1259,11 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     relationship_context=relationship_context,
                 )
             ),
-        ]
+        ],
+        llm_context={
+            "cypher_query": state.get("cypher_query"),
+            "cypher_attempt": "reformulation",
+        },
     )
 
     cypher = _clean_cypher(prompt)
@@ -1059,6 +1324,7 @@ def _enrich_with_source_metadata(data: List[Dict[str, Any]]) -> List[Dict[str, A
 
 def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     cypher = state.get("cypher_query")
+    cypher_params = state.get("cypher_params") or {}
     attempt = state.get("cypher_attempt", "unknown")
     if not cypher:
         log_cypher_event(
@@ -1075,6 +1341,32 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             "neo4j_executed": False,
         }
 
+    # Guardrail: if LLM-generated Cypher references non-existing vector indexes,
+    # force deterministic fallback query instead of surfacing Neo4j procedure errors.
+    requested_vector_indexes = {
+        match.group(1).strip()
+        for match in _VECTOR_QUERY_INDEX_RE.finditer(cypher or "")
+        if match.group(1).strip()
+    }
+    invalid_vector_indexes = sorted(
+        idx for idx in requested_vector_indexes if idx not in _ALLOWED_VECTOR_INDEXES
+    )
+    if invalid_vector_indexes:
+        keyword = _select_fallback_keyword(state)
+        fallback_query = _base_fallback_cypher()
+        log_cypher_event(
+            "c_execute",
+            "Cypher rejected due to unknown vector index; forcing fallback query",
+            detail={
+                "invalid_vector_indexes": invalid_vector_indexes,
+                "allowed_vector_indexes": sorted(_ALLOWED_VECTOR_INDEXES),
+                "fallback_keyword": keyword,
+            },
+        )
+        cypher = fallback_query
+        cypher_params = {"keyword": keyword}
+        attempt = "fallback_guard_vector_index"
+
     # Exact string passed to Neo4j driver (verbatim, including whitespace)
     log_cypher_multiline(
         "c_execute",
@@ -1082,16 +1374,22 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
         cypher,
     )
 
+    exec_t0 = time.perf_counter()
     try:
         with driver.session(database=database) as session:
-            records = session.run(cypher)
+            run_t0 = time.perf_counter()
+            records = session.run(cypher, cypher_params)
             data = [record.data() for record in records]
+            run_elapsed_ms = int((time.perf_counter() - run_t0) * 1000)
     except Neo4jError as exc:
         logger.error("Cypher execution failed during %s attempt: %s", attempt, exc)
         log_cypher_event(
             "c_execute",
             f"Neo4j driver error after submit attempt={attempt!r} database={database!r}",
-            detail={"error": str(exc)},
+            detail={
+                "error": str(exc),
+                "elapsed_ms": int((time.perf_counter() - exec_t0) * 1000),
+            },
         )
         return {
             "raw_result": [],
@@ -1103,7 +1401,18 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     log_cypher_event(
         "c_execute",
         f"Neo4j execution finished attempt={attempt!r} rows={len(data)}",
-        detail={"result_column_keys": list(data[0].keys()) if data else []},
+        detail={
+            "result_column_keys": list(data[0].keys()) if data else [],
+            "run_elapsed_ms": run_elapsed_ms,
+            "total_elapsed_ms": int((time.perf_counter() - exec_t0) * 1000),
+        },
+    )
+    preview_rows = data[:10]
+    log_cypher_multiline(
+        "c_execute",
+        f"Neo4j response payload preview rows={len(data)} (showing up to 10)",
+        json.dumps(preview_rows, ensure_ascii=False, indent=2),
+        delimiter_label="NEO4J_RESULT",
     )
     enriched_references = _enrich_with_source_metadata(data)
 
@@ -1172,7 +1481,11 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Verdict:"
                 ).format(q=state["query"], rows=serialized[:45000])
             ),
-        ]
+        ],
+        llm_context={
+            "cypher_query": state.get("cypher_query"),
+            "cypher_attempt": state.get("cypher_attempt"),
+        },
     )
     lines = [ln.strip() for ln in (verdict_raw or "").splitlines() if ln.strip()]
     head = lines[0].upper() if lines else "OK"
@@ -1354,7 +1667,11 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                     ).format(question=state["query"], error=error)
                     + synthesis_human_footer(lang)
                 ),
-            ]
+            ],
+            llm_context={
+                "cypher_query": state.get("cypher_query"),
+                "cypher_attempt": state.get("cypher_attempt"),
+            },
         )
         return {
             "answer": answer,
@@ -1374,7 +1691,11 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                     ).format(question=state["query"])
                     + synthesis_human_footer(lang)
                 ),
-            ]
+            ],
+            llm_context={
+                "cypher_query": state.get("cypher_query"),
+                "cypher_attempt": state.get("cypher_attempt"),
+            },
         )
         return {
             "answer": answer,
@@ -1396,7 +1717,11 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 ).format(question=state["query"], data=serialized)
                 + synthesis_human_footer(lang)
             ),
-        ]
+        ],
+        llm_context={
+            "cypher_query": state.get("cypher_query"),
+            "cypher_attempt": state.get("cypher_attempt"),
+        },
     )
     return {
         "answer": answer,

@@ -33,10 +33,7 @@ BTREE_LOOKUPS: List[LookupConfig] = [
 ]
 
 FULLTEXT_INDEXES: List[str] = [
-    "entity_names",
-    "legal_text_keywords",
-    "event_keywords",
-    "document_keywords",
+    "legal_text_index",
 ]
 ENTITY_VECTOR_INDEXES = [
     "document_embeddings",
