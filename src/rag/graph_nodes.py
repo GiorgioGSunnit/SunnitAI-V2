@@ -140,7 +140,7 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
     ]
 
     with ThreadPoolExecutor(max_workers=2) as pool:
-        future_generalize = pool.submit(_call_chat, generalization_messages)
+        future_generalize = pool.submit(_call_chat, generalization_messages, 60)
         future_entities = pool.submit(structured_entities_model.invoke, entity_extraction_messages)
 
         generalized = future_generalize.result()
@@ -166,7 +166,8 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
             HumanMessage(
                 content=f"Question:\n{query}\n\nGeneralized topic:\n{generalized}\n\nKeywords:"
             ),
-        ]
+        ],
+        max_tokens=40,
     )
     retrieval_keywords = [k.strip() for k in (kw_raw or "").split(",") if k.strip()][:3]
     log_cypher_event(
@@ -709,7 +710,8 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
                     relationship_context=relationship_context,
                 )
             ),
-        ]
+        ],
+        max_tokens=500,
     )
 
     cypher = _clean_cypher(prompt)
@@ -804,7 +806,8 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     context_groups=grouped_context_text,
                 )
             ),
-        ]
+        ],
+        max_tokens=500,
     )
 
     cypher = _clean_cypher(prompt)
@@ -929,7 +932,8 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     relationship_context=relationship_context,
                 )
             ),
-        ]
+        ],
+        max_tokens=500,
     )
 
     cypher = _clean_cypher(prompt)
@@ -1046,7 +1050,8 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     relationship_context=relationship_context,
                 )
             ),
-        ]
+        ],
+        max_tokens=500,
     )
 
     cypher = _clean_cypher(prompt)
@@ -1220,7 +1225,8 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Verdict:"
                 ).format(q=state["query"], rows=serialized[:45000])
             ),
-        ]
+        ],
+        max_tokens=80,
     )
     lines = [ln.strip() for ln in (verdict_raw or "").splitlines() if ln.strip()]
     head = lines[0].upper() if lines else "OK"
@@ -1473,6 +1479,12 @@ def route_after_intersection(state: Dict[str, Any]) -> str:
 
 def route_after_execution(state: Dict[str, Any]) -> str:
     if state.get("execution_error"):
+        error = state["execution_error"]
+        attempt = state.get("cypher_attempt", "")
+        if attempt not in ("fallback", "reformulation") and any(
+            kw in error for kw in ("SyntaxError", "Invalid")
+        ):
+            return "retry"
         return "answer"
     if state.get("raw_result"):
         return "evaluate"

@@ -49,21 +49,26 @@ def should_auto_detect_language(text: str) -> bool:
 
 
 def detect_language_llm(text: str) -> SessionLang:
-    """Classify user text as it, en, or es (LLM)."""
+    """Classify user text as it, en, or es (LLM, few-shot, max_tokens=5)."""
     raw = _call_chat(
         [
             SystemMessage(
                 content=(
-                    "You classify the primary language of a user message for a legal assistant. "
-                    "Allowed outputs exactly one token: it, en, or es "
-                    "(Italian, English, Spanish). "
-                    "If uncertain or mixed with no clear primary language, output it."
+                    "Classify the primary language of the user message. "
+                    "Reply with exactly one of: it  en  es\n\n"
+                    "Examples:\n"
+                    "Message: Qual è la pena prevista per frode fiscale?\nLanguage: it\n"
+                    "Message: What penalty applies to tax fraud?\nLanguage: en\n"
+                    "Message: ¿Cuál es la sanción por fraude fiscal?\nLanguage: es\n"
+                    "Message: Dimmi le clausole del contratto n. 12.\nLanguage: it\n"
+                    "Message: Show me the clauses of contract no. 12.\nLanguage: en"
                 )
             ),
             HumanMessage(
-                content=f"Message:\n{text}\n\nReply with only: it, en, or es"
+                content=f"Message: {text}\nLanguage:"
             ),
-        ]
+        ],
+        max_tokens=5,
     )
     token = re.sub(r"\s+", "", (raw or "").lower())[:2]
     if token in ("it", "en", "es"):
@@ -145,7 +150,8 @@ def _detect_explicit_language_switch_llm(text: str, current: SessionLang) -> Opt
                     "Your reply (one of: it, en, es, no):"
                 )
             ),
-        ]
+        ],
+        max_tokens=10,
     )
     reply = (raw or "").strip().lower()
     if reply in ("no", "none", "n"):

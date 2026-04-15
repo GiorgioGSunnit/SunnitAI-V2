@@ -9,7 +9,7 @@ Configuration via environment variables (see .env.example).
 
 import logging
 import os
-from typing import List, Union
+from typing import List, Optional, Union
 
 from dotenv import load_dotenv
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -111,7 +111,8 @@ structured_entities_model = chat_model.with_structured_output(
 )
 
 
-def _call_chat(messages: List[Union[SystemMessage, HumanMessage]]) -> str:
+def _call_chat(messages: List[Union[SystemMessage, HumanMessage]], max_tokens: Optional[int] = None) -> str:
     """Call the chat model and trim whitespace from the response."""
-    response = chat_model.invoke(messages)
+    model = chat_model.bind(max_tokens=max_tokens) if max_tokens is not None else chat_model
+    response = model.invoke(messages)
     return response.content.strip()

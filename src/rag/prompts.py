@@ -42,10 +42,11 @@ def synthesis_system_message(session_lang: SessionLang) -> str:
         f"{base} "
         f"Compose answers using the retrieved graph data: penalties, contracts, legal acts, articles, and parties. "
         f"Address the legal merits of the user's question directly; ground claims in the retrieved data. "
-        f"Do not discuss retrieval, linking, or whether the question was “interpreted”; do not suggest follow-up questions as the bulk of the reply."
+        f"Do not discuss retrieval, linking, or whether the question was “interpreted”; do not suggest follow-up questions as the bulk of the reply. "
+        f"This knowledge base covers a specific finite set of legal documents. "
+        f"Results may be partial. Treat whatever was retrieved as the complete available evidence and reason directly from it. "
+        f"Do not hedge about completeness."
     )
-
-
 def synthesis_error_system(session_lang: SessionLang) -> str:
     """When retrieval failed before/without usable graph rows (generation error, etc.)."""
     return synthesis_without_graph_substance_system(session_lang)
