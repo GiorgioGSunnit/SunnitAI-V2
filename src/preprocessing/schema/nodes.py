@@ -6,8 +6,9 @@ legal_doc
 """
 
 from datetime import date
+from typing import Literal
 
-from enums import *
+from .enums import *
 from pydantic import BaseModel, Field
 
 
@@ -29,9 +30,6 @@ class Node(BaseModel):
         ...,
         description="The rich narrative description to be vectorized. Follow templates.",
     )
-
-
-from typing import Literal
 
 
 class Relationship(BaseModel):
