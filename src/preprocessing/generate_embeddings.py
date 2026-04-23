@@ -297,18 +297,18 @@ def main() -> None:
 
     database = args.database if args.database != "neo4j" else os.getenv("NEO4J_DATABASE", "neo4j")
 
+    neo4j_user = os.getenv("NEO4J_USER", "neo4j")
+    print(f"[debug] NEO4J_USER={neo4j_user!r}")
+
     from neo4j import GraphDatabase
     driver = GraphDatabase.driver(
         os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-        auth=(os.getenv("NEO4J_USERNAME", "neo4j"), os.getenv("NEO4J_PASSWORD", "")),
+        auth=(neo4j_user, os.getenv("NEO4J_PASSWORD", "")),
     )
 
     embedding_model = _init_embedding_model()
 
     try:
-        if args.create_indexes:
-            _create_vector_indexes(driver, database)
-
         configs = (
             [cfg for cfg in LABEL_CONFIGS if cfg["label"] == args.label]
             if args.label
@@ -326,6 +326,9 @@ def main() -> None:
         total_written = 0
         for cfg in configs:
             total_written += _process_label(driver, database, cfg, embedding_model, args.batch_size)
+
+        if args.create_indexes:
+            _create_vector_indexes(driver, database)
 
         logger.info("Done. Total embeddings written: %d", total_written)
     finally:
