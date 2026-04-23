@@ -1,6 +1,6 @@
 """Entry point for writing Neo4j schema constraints and indexes."""
 
-from ..write_kg import write_indexing
+from ..write_kg import relabel_legacy_nodes, write_indexing
 
 
 def main() -> None:

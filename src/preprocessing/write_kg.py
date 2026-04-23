@@ -1,9 +1,12 @@
 import json
+import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from ..utils.db_client import DBClient
 from .schema.schema import SCHEMA_CONSTRAINTS_AND_INDEXES, KnowledgeGraphExtraction
+
+logger = logging.getLogger(__name__)
 
 
 def save_to_neo4j(extraction: KnowledgeGraphExtraction) -> None:
@@ -74,6 +77,66 @@ def write_indexing():
             if clean_query:
                 db.query(clean_query)
         print("done")
+
+
+LABEL_MIGRATIONS: Dict[str, str] = {
+    "DOCUMENT_SECTION": "Section",
+    "LEGAL_DOC": "Document",
+    "LEGAL_SOURCE": "LegalAct",
+    "LEGAL_CONCEPT": "Topic",
+    "LEGAL_ACTION": "Penalty",
+    "ORGANIZATION": "Institution",
+    "PERSON": "Person",
+    "LOCATION": "Section",
+    "ROLE": "Topic",
+    "DATE": "Section",
+    "EVENT": "Meeting",
+}
+
+
+def _to_pascal(label: str) -> str:
+    return "".join(word.capitalize() for word in label.split("_"))
+
+
+def relabel_legacy_nodes(driver, database: str = "neo4j") -> Dict[str, Tuple[str, int]]:
+    """Migrate fully-uppercase node labels to PascalCase equivalents.
+
+    Detects all labels in the database where label = toUpper(label), maps each
+    to its PascalCase equivalent via LABEL_MIGRATIONS (with auto-conversion fallback),
+    then re-labels nodes in place using SET/REMOVE.
+
+    Args:
+        driver:   A neo4j.Driver instance.
+        database: Neo4j database name.
+
+    Returns:
+        Dict of {old_label: (new_label, migrated_count)} for every label
+        where at least one node was migrated.
+    """
+    detect_query = (
+        "MATCH (n) UNWIND labels(n) AS label "
+        "WITH label WHERE label = toUpper(label) "
+        "RETURN DISTINCT label"
+    )
+    with driver.session(database=database) as session:
+        uppercase_labels = [r["label"] for r in session.run(detect_query)]
+
+    migrated: Dict[str, Tuple[str, int]] = {}
+    for old_label in uppercase_labels:
+        new_label = LABEL_MIGRATIONS.get(old_label) or _to_pascal(old_label)
+        if new_label == old_label:
+            continue
+        migrate_query = (
+            f"MATCH (n:`{old_label}`) SET n:`{new_label}` REMOVE n:`{old_label}` "
+            "RETURN count(n) AS migrated"
+        )
+        with driver.session(database=database) as session:
+            record = session.run(migrate_query).single()
+            count = record["migrated"] if record else 0
+        if count > 0:
+            logger.info("Relabelled %d nodes: %s → %s", count, old_label, new_label)
+            migrated[old_label] = (new_label, count)
+    return migrated
 
 
 def write_kg_from_extracted(path, database: str = "neo4j") -> Tuple[int, int]:

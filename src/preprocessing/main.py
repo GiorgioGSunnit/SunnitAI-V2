@@ -16,8 +16,8 @@ from typing import Any, Dict, List, Optional
 
 from dotenv import load_dotenv
 
-from .embedding_enrichment import enrich_embeddings
-from .extractor import Node, Rel, extract_from_document
+# from .embedding_enrichment import enrich_embeddings  # non-parallel pipeline only
+# from .extractor import Node, Rel, extract_from_document  # non-parallel pipeline only
 from .parser import parse_file as parse_markdown_file
 from .schema import indexing as schema_indexing
 from .validate_and_normalize import process_file as validate_and_normalize_process_file
@@ -89,7 +89,7 @@ def parse_in_parallel(paths: List[Path], output_dir: Path) -> List[Path]:
     return results
 
 
-def _write_extracted_jsonl(out_path: Path, nodes: List[Node], rels: List[Rel]) -> None:                                                                         
+def _write_extracted_jsonl(out_path: Path, nodes: List, rels: List) -> None:                                                                         
     """Persist extracted nodes and relationships into a JSONL file."""
     with out_path.open("w", encoding="utf-8") as f:
         for n in nodes:
@@ -1142,19 +1142,20 @@ def run_pipeline(limit: Optional[int] = None, skip: int = 0) -> Dict[str, Any]:
     extracted_dir = ensure_extracted_dir(app_dir)
     print(f"Extracting graph facts from {len(normalized_outputs)} files...")
     extracted_outputs: List[Path] = []
-    for norm_json in normalized_outputs:
-        try:
-            with norm_json.open("r", encoding="utf-8") as f:
-                payload = json.load(f)
-            nodes, rels = extract_from_document(payload)
-            print("🚨 🚨 nodes before enrichment: ", nodes)
-            enrich_embeddings(nodes)
-            out_path = extracted_dir / f"{norm_json.stem}.extracted.jsonl"
-            _write_extracted_jsonl(out_path, nodes, rels)
-            print(f"Extracted: {norm_json.name} -> {out_path.name}")
-            extracted_outputs.append(out_path)
-        except Exception as exc:
-            print(f"Failed extract: {norm_json} ({exc})")
+    # Non-parallel extraction disabled — requires embedding_enrichment and extractor.Node/Rel
+    # for norm_json in normalized_outputs:
+    #     try:
+    #         with norm_json.open("r", encoding="utf-8") as f:
+    #             payload = json.load(f)
+    #         nodes, rels = extract_from_document(payload)
+    #         print("🚨 🚨 nodes before enrichment: ", nodes)
+    #         enrich_embeddings(nodes)
+    #         out_path = extracted_dir / f"{norm_json.stem}.extracted.jsonl"
+    #         _write_extracted_jsonl(out_path, nodes, rels)
+    #         print(f"Extracted: {norm_json.name} -> {out_path.name}")
+    #         extracted_outputs.append(out_path)
+    #     except Exception as exc:
+    #         print(f"Failed extract: {norm_json} ({exc})")
     print(f"Done. Extracted JSONL files saved to: {extracted_dir}")
     summary["extracted_files"] = len(extracted_outputs)
 
