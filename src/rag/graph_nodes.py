@@ -36,11 +36,12 @@ from .lookups import (
 )
 from .models import DocumentEntities
 from .utils import (
-    _build_filtered_relation_hints,
-    _build_filtered_schema_text,
+    _ALL_SCHEMA_LABELS,
     _build_schema_text,
     _clean_cypher,
     _enforce_relation_directions,
+    _parse_json_list,
+    _strict_filter_relations,
     canonical_name,
 )
 
@@ -62,6 +63,106 @@ def _collect_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
         for lbl in n.get("labels", []):
             labels.add(lbl)
     return labels
+
+
+def _select_schema_for_query(
+    question: str,
+    keywords: List[str],
+    anchor_labels: Set[str],
+) -> tuple:
+    """Steps 1 and 2 of the three-step Cypher generation pipeline.
+
+    Step 1 — Label selection: LLM picks relevant node labels from the full
+             25-label schema list.
+    Step 2 — Relationship selection: Python strictly pre-filters relations to
+             only those whose both endpoints are in the Step 1 result, then
+             LLM picks which of those are actually needed for this query.
+
+    Returns (selected_labels: list[str], selected_rel_types: list[str]).
+
+    Fallback policy (critical for weak/small models):
+      - Any unexpected exception            → full schema labels + all candidate types
+      - Step 1 empty or malformed JSON      → all 25 schema labels
+      - Step 2 empty or malformed JSON      → all types from the pre-filtered candidates
+      - No candidate rels after pre-filter  → (labels, [])
+    """
+    try:
+        all_labels_str = ", ".join(_ALL_SCHEMA_LABELS)
+        anchor_str = ", ".join(sorted(anchor_labels)) if anchor_labels else "(none)"
+        keywords_str = ", ".join(keywords) if keywords else "(none)"
+
+        # --- Step 1: Label selection ---
+        step1_raw = _call_chat(
+            [
+                SystemMessage(
+                    content=(
+                        "You are a schema filter for a legal knowledge graph. "
+                        "Given a question and keywords, select only the node labels "
+                        "relevant to answering it. Return a JSON array of label strings. "
+                        "No explanation."
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"Schema labels:\n{all_labels_str}\n\n"
+                        f"Already-matched labels (always include these): {anchor_str}\n"
+                        f"Question: {question}\n"
+                        f"Keywords: {keywords_str}\n\n"
+                        'Return a JSON array only. Example: ["LegalAct", "Person"]'
+                    )
+                ),
+            ]
+        )
+        selected_labels = _parse_json_list(step1_raw or "")
+        if not selected_labels:
+            logger.warning(
+                "_select_schema_for_query: Step 1 empty/invalid — falling back to all schema labels"
+            )
+            selected_labels = list(_ALL_SCHEMA_LABELS)
+
+        # --- Step 2: Relationship selection (Python pre-filter first) ---
+        candidate_rels = _strict_filter_relations(set(selected_labels))
+        if not candidate_rels:
+            return selected_labels, []
+
+        candidate_lines = "\n".join(
+            f"- {r['from']} -[:{r['type']}]-> {r['to']}" for r in candidate_rels
+        )
+        step2_raw = _call_chat(
+            [
+                SystemMessage(
+                    content=(
+                        "You are a schema filter for a legal knowledge graph. "
+                        "Given selected node labels and candidate relationships, pick only "
+                        "the relationship types needed to answer the question. "
+                        "Return a JSON array of type strings. No explanation."
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        f"Selected labels: {selected_labels}\n\n"
+                        f"Candidate relationships:\n{candidate_lines}\n\n"
+                        f"Question: {question}\n\n"
+                        'Return a JSON array of type strings only. Example: ["ISSUED_BY", "APPOINTS"]'
+                    )
+                ),
+            ]
+        )
+        selected_rel_types = _parse_json_list(step2_raw or "")
+        if not selected_rel_types:
+            logger.warning(
+                "_select_schema_for_query: Step 2 empty/invalid — falling back to all candidate types"
+            )
+            selected_rel_types = list({r["type"] for r in candidate_rels})
+
+        return selected_labels, selected_rel_types
+
+    except Exception:
+        logger.exception(
+            "_select_schema_for_query: unexpected error — returning full schema fallback"
+        )
+        all_rels = _strict_filter_relations(set(_ALL_SCHEMA_LABELS))
+        return list(_ALL_SCHEMA_LABELS), list({r["type"] for r in all_rels})
 
 
 _ENTITY_LABELS_TEXT = ", ".join(DocumentEntities.allowed_labels())
@@ -671,38 +772,45 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
         or "(no grouped context IDs)"
     )
 
-    # Filter schema to only relevant node types (keeps prompt small)
-    relevant_labels = _collect_labels(capped_entries) | _collect_labels(capped_context)
-    filtered_schema = _build_filtered_schema_text(relevant_labels)
-    filtered_relations = _build_filtered_relation_hints(relevant_labels)
+    # Three-step schema selection: Steps 1 & 2 narrow labels and rel types
+    anchor_labels = _collect_labels(capped_entries) | _collect_labels(capped_context)
+    selected_labels, selected_rel_types = _select_schema_for_query(
+        question=state["query"],
+        keywords=state.get("retrieval_keywords") or [],
+        anchor_labels=anchor_labels,
+    )
+    labels_line = ", ".join(selected_labels)
+    rel_types_line = ", ".join(selected_rel_types) if selected_rel_types else "(none selected)"
 
+    # Step 3: Cypher generation with LLM-filtered labels and rel types
     prompt = _call_chat(
         [
             SystemMessage(
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
-                    "You are a Cypher expert focusing on legal data. "
-                    "Intersect subject nodes (entity linking) with context nodes (semantic search) to answer the user's question."
+                    "You are a Cypher expert. Generate ONE Cypher query. "
+                    "Rules: max 2 hops, no variable-length paths (no *), "
+                    "filter nodes with elementId() only, LIMIT 10. "
+                    "Return ONLY the Cypher query, nothing else."
                 )
             ),
             HumanMessage(
                 content=(
-                    "Original question: {question}\n"
-                    "Schema:\n{schema}\n\n"
-                    "Relation directions:\n{relations}\n\n"
+                    "Original question: {question}\n\n"
+                    "Node labels in scope: {labels}\n"
+                    "Allowed relationship types: {rel_types}\n\n"
                     "Subject entry nodes:\n{entries}\n\n"
                     "Subject IDs by label:\n{entry_groups}\n\n"
                     "Context candidate nodes:\n{contexts}\n\n"
                     "Context IDs by label:\n{context_groups}\n\n"
                     "{relationship_context}\n\n"
-                    "Construct ONE SINGLE Cypher query that finds paths between the Subject and Context nodes. "
-                    "You MUST use the relationships extracted from the query as the primary guide for pathfinding. "
-                    "To filter nodes by their ID, you MUST use the `elementId()` function in a WHERE clause. "
-                    "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN statement at the end."
+                    "Construct ONE Cypher query that finds paths between Subject and Context nodes. "
+                    "Use elementId() to filter nodes. Max 2 hops, no variable-length paths. "
+                    "LIMIT 10. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
-                    schema=filtered_schema,
-                    relations=filtered_relations,
+                    labels=labels_line,
+                    rel_types=rel_types_line,
                     entries=entry_block,
                     entry_groups=grouped_entries_text,
                     contexts=context_block,
@@ -760,10 +868,6 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
         or "(no grouped context IDs)"
     )
 
-    relevant_labels = _collect_labels(capped_context)
-    filtered_schema = _build_filtered_schema_text(relevant_labels)
-    filtered_relations = _build_filtered_relation_hints(relevant_labels)
-
     log_cypher_event(
         "b_prepare",
         "context-only Cypher (no entry nodes)",
@@ -773,17 +877,26 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     )
 
+    # Three-step schema selection: Steps 1 & 2 narrow labels and rel types
+    anchor_labels = _collect_labels(capped_context)
+    selected_labels, selected_rel_types = _select_schema_for_query(
+        question=state["query"],
+        keywords=state.get("retrieval_keywords") or [],
+        anchor_labels=anchor_labels,
+    )
+    labels_line = ", ".join(selected_labels)
+    rel_types_line = ", ".join(selected_rel_types) if selected_rel_types else "(none selected)"
+
+    # Step 3: Cypher generation with LLM-filtered labels and rel types
     prompt = _call_chat(
         [
             SystemMessage(
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
-                    "You are a Cypher expert. There was no precise entity match for the user's question, "
-                    "but semantic search produced anchor nodes below. Write ONE query that starts from those elementIds, "
-                    "expands along valid schema relationships (short paths), and returns substantive legal content: "
-                    "Article, Section, Clause, LegalAct, Penalty, Contract, Document, or related nodes useful to answer the question. "
-                    "Filter anchors with elementId() in WHERE. Prefer paths that yield text or normative metadata. "
-                    "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN at the end."
+                    "You are a Cypher expert. Generate ONE Cypher query. "
+                    "Rules: max 2 hops, no variable-length paths (no *), "
+                    "filter nodes with elementId() only, LIMIT 10. "
+                    "Return ONLY the Cypher query, nothing else."
                 )
             ),
             HumanMessage(
@@ -791,17 +904,19 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Original question: {question}\n"
                     "Generalized topic: {generalized}\n"
                     "Keywords: {keywords}\n\n"
-                    "Schema:\n{schema}\n\n"
-                    "Relation directions:\n{relations}\n\n"
+                    "Node labels in scope: {labels}\n"
+                    "Allowed relationship types: {rel_types}\n\n"
                     "Semantic anchor nodes (use these elementIds):\n{contexts}\n\n"
                     "Context IDs by label:\n{context_groups}\n\n"
-                    "Construct ONE Cypher query to retrieve material from the graph that best answers the question."
+                    "Construct ONE Cypher query to retrieve material from the graph that best answers the question. "
+                    "Use elementId() to filter nodes. Max 2 hops, no variable-length paths. "
+                    "LIMIT 10. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     generalized=state.get("generalized_query") or state["query"],
                     keywords=", ".join(state.get("retrieval_keywords") or []),
-                    schema=filtered_schema,
-                    relations=filtered_relations,
+                    labels=labels_line,
+                    rel_types=rel_types_line,
                     contexts=context_block,
                     context_groups=grouped_context_text,
                 )
@@ -859,11 +974,6 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
     capped_entries = entry_nodes[:_MAX_ENTRY_NODES_FOR_PROMPT]
     capped_context = context_nodes[:_MAX_CONTEXT_NODES_FOR_PROMPT]
 
-    # Build filtered schema based on relevant node labels
-    relevant_labels = _collect_labels(capped_entries) | _collect_labels(capped_context)
-    filtered_schema = _build_filtered_schema_text(relevant_labels)
-    filtered_relations = _build_filtered_relation_hints(relevant_labels)
-
     entry_block = _format_entry_lines(capped_entries)
     grouped_entries: Dict[str, List[str]] = {}
     for item in capped_entries:
@@ -900,32 +1010,45 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
         else ""
     )
 
+    # Three-step schema selection: Steps 1 & 2 narrow labels and rel types
+    anchor_labels = _collect_labels(capped_entries) | _collect_labels(capped_context)
+    selected_labels, selected_rel_types = _select_schema_for_query(
+        question=state["query"],
+        keywords=state.get("retrieval_keywords") or [],
+        anchor_labels=anchor_labels,
+    )
+    labels_line = ", ".join(selected_labels)
+    rel_types_line = ", ".join(selected_rel_types) if selected_rel_types else "(none selected)"
+
+    # Step 3: Cypher generation with LLM-filtered labels and rel types
     prompt = _call_chat(
         [
             SystemMessage(
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
-                    "Generate resilient Cypher for the SunnitAI graph. "
-                    "Reuse subject entry node IDs as anchors and traverse relationships using elementId() filters only."
+                    "You are a Cypher expert. Generate ONE Cypher query. "
+                    "Rules: max 2 hops, no variable-length paths (no *), "
+                    "filter nodes with elementId() only, LIMIT 10. "
+                    "Return ONLY the Cypher query, nothing else."
                 )
             ),
             HumanMessage(
                 content=(
                     "Original question: {question}\n"
                     "Reason for fallback: {reason}\n\n"
-                    "Schema:\n{schema}\n\n"
-                    "Relation directions:\n{relations}\n\n"
+                    "Node labels in scope: {labels}\n"
+                    "Allowed relationship types: {rel_types}\n\n"
                     "Subject entry nodes:\n{entries}\n\n"
                     "Subject IDs by label:\n{entry_groups}\n\n"
                     "Context hints:\n{contexts}\n\n"
                     "{relationship_context}\n\n"
-                    "Generate a SINGLE Cypher query that starts from the subject IDs using elementId() filters. "
-                    "CRITICAL: Return ONLY ONE complete Cypher query with ONE RETURN statement at the end."
+                    "Generate ONE Cypher query starting from subject IDs using elementId() filters. "
+                    "Max 2 hops, no variable-length paths. LIMIT 10. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     reason=fallback_reason,
-                    schema=filtered_schema,
-                    relations=filtered_relations,
+                    labels=labels_line,
+                    rel_types=rel_types_line,
                     entries=entry_block,
                     entry_groups=grouped_entries_text,
                     contexts=context_summary,
@@ -975,11 +1098,6 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
     # Cap nodes to avoid exceeding token limits
     capped_entries = entry_nodes[:_MAX_ENTRY_NODES_FOR_PROMPT]
 
-    # Build filtered schema based on relevant node labels
-    relevant_labels = _collect_labels(capped_entries)
-    filtered_schema = _build_filtered_schema_text(relevant_labels)
-    filtered_relations = _build_filtered_relation_hints(relevant_labels)
-
     entry_block = _format_entry_lines(capped_entries)
     grouped_entries: Dict[str, List[str]] = {}
     for item in capped_entries:
@@ -1017,14 +1135,27 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
         detail={"feedback": feedback[:2000], "previous_len": len(previous)},
     )
 
+    # Three-step schema selection: Steps 1 & 2 narrow labels and rel types
+    anchor_labels = _collect_labels(capped_entries)
+    selected_labels, selected_rel_types = _select_schema_for_query(
+        question=state["query"],
+        keywords=state.get("retrieval_keywords") or [],
+        anchor_labels=anchor_labels,
+    )
+    labels_line = ", ".join(selected_labels)
+    rel_types_line = ", ".join(selected_rel_types) if selected_rel_types else "(none selected)"
+
+    # Step 3: Cypher generation with LLM-filtered labels and rel types
     prompt = _call_chat(
         [
             SystemMessage(
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
-                    "Generate improved Cypher for the SunnitAI graph. "
-                    "Address the critique; broaden paths or add node/relationship patterns where useful. "
-                    "Use elementId() filters on subject anchors; respect schema directions."
+                    "You are a Cypher expert. Generate ONE improved Cypher query. "
+                    "Address the critique; broaden paths or add patterns where useful. "
+                    "Rules: max 2 hops, no variable-length paths (no *), "
+                    "filter nodes with elementId() only, LIMIT 10. "
+                    "Return ONLY the Cypher query, nothing else."
                 )
             ),
             HumanMessage(
@@ -1032,19 +1163,19 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Original question: {question}\n"
                     "Critique of previous retrieval: {feedback}\n\n"
                     "Previous Cypher (may be suboptimal):\n{previous}\n\n"
-                    "Schema:\n{schema}\n\n"
-                    "Relation directions:\n{relations}\n\n"
+                    "Node labels in scope: {labels}\n"
+                    "Allowed relationship types: {rel_types}\n\n"
                     "Subject entry nodes:\n{entries}\n\n"
                     "Subject IDs by label:\n{entry_groups}\n\n"
                     "{relationship_context}\n\n"
                     "Produce ONE improved Cypher query with ONE RETURN. "
-                    "Return ONLY the query, nothing else."
+                    "Max 2 hops, no variable-length paths. LIMIT 10."
                 ).format(
                     question=state["query"],
                     feedback=feedback,
                     previous=previous or "(none)",
-                    schema=filtered_schema,
-                    relations=filtered_relations,
+                    labels=labels_line,
+                    rel_types=rel_types_line,
                     entries=entry_block,
                     entry_groups=grouped_entries_text,
                     relationship_context=relationship_context,
@@ -1211,11 +1342,12 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
         [
             SystemMessage(
                 content=(
-                    "You judge whether Neo4j rows are sufficient to answer the user's legal question with concrete substance "
-                    "(articles, acts, parties, obligations, dates, or defined terms). "
+                    "You judge whether Neo4j rows are sufficient to answer the user's legal question. "
                     "Reply with exactly two lines: "
                     "Line 1: OK or POOR (uppercase). "
-                    "Line 2: one short sentence explaining why."
+                    "Line 2: one short sentence explaining why. "
+                    "Mark OK if results contain ANY information relevant to the question, even partial. "
+                    "Mark POOR only if results are completely unrelated or entirely empty."
                 )
             ),
             HumanMessage(

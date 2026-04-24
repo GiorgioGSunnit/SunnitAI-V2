@@ -22,6 +22,7 @@ from .parser import parse_file as parse_markdown_file
 from .schema import indexing as schema_indexing
 from .validate_and_normalize import process_file as validate_and_normalize_process_file
 from .write_kg import write_kg_from_extracted
+from neo4j import GraphDatabase
 # from .parallel_llm_extractor import extract_from_document_parallel, LLMExtractorConfig  # Commented out - imported conditionally where needed
 
 # Configure logging
@@ -1044,11 +1045,15 @@ async def run_pipeline_parallel(
         summary["ingestion_skipped"] = True
         return summary
 
+    driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+
     try:
         print("Ensuring Neo4j constraints and indexes...")
         schema_indexing.main()
+        schema_indexing.relabel_legacy_nodes(driver, database=neo4j_database)
     except Exception as exc:
         print(f"Failed to prepare Neo4j indexes ({exc})")
+        driver.close()
         summary["ingestion_skipped"] = True
         return summary
 
@@ -1078,9 +1083,11 @@ async def run_pipeline_parallel(
     try:
         print("Reapplying Neo4j index definitions after ingestion...")
         schema_indexing.main()
+        schema_indexing.relabel_legacy_nodes(driver, database=neo4j_database)
     except Exception as exc:
         print(f"Failed to refresh Neo4j indexes post-ingestion ({exc})")
 
+    driver.close()
     return summary
 
 
@@ -1178,11 +1185,15 @@ def run_pipeline(limit: Optional[int] = None, skip: int = 0) -> Dict[str, Any]:
         summary["ingestion_skipped"] = True
         return summary
 
+    driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_user, neo4j_password))
+
     try:
         print("Ensuring Neo4j constraints and indexes...")
         schema_indexing.main()
+        schema_indexing.relabel_legacy_nodes(driver, database=neo4j_database)
     except Exception as exc:
         print(f"Failed to prepare Neo4j indexes ({exc})")
+        driver.close()
         summary["ingestion_skipped"] = True
         return summary
 
@@ -1212,9 +1223,11 @@ def run_pipeline(limit: Optional[int] = None, skip: int = 0) -> Dict[str, Any]:
     try:
         print("Reapplying Neo4j index definitions after ingestion...")
         schema_indexing.main()
+        schema_indexing.relabel_legacy_nodes(driver, database=neo4j_database)
     except Exception as exc:
         print(f"Failed to refresh Neo4j indexes post-ingestion ({exc})")
 
+    driver.close()
     return summary
 
 

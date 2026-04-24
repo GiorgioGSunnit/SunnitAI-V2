@@ -45,7 +45,9 @@ def synthesis_system_message(session_lang: SessionLang) -> str:
         f"Do not discuss retrieval, linking, or whether the question was “interpreted”; do not suggest follow-up questions as the bulk of the reply. "
         f"This knowledge base covers a specific finite set of legal documents. "
         f"Results may be partial. Treat whatever was retrieved as the complete available evidence and reason directly from it. "
-        f"Do not hedge about completeness."
+        f"Do not hedge about completeness. "
+        f"End your response with one short sentence in {lang} suggesting a more specific angle the user could explore based on what you just discussed. "
+        f"Phrase it naturally, like a colleague offering to dig deeper. Never use generic phrases like 'let me know if you need help'."
     )
 def synthesis_error_system(session_lang: SessionLang) -> str:
     """When retrieval failed before/without usable graph rows (generation error, etc.)."""
@@ -78,5 +80,7 @@ def synthesis_without_graph_substance_system(session_lang: SessionLang) -> str:
         f"Do NOT propose clarifying follow-up questions as the main content; do NOT ask the user to specify jurisdiction in lieu of answering. "
         f"Include exactly one concise sentence stating that this document database did not return matching provisions, "
         f"so any citation to national law must be verified elsewhere. "
-        f"Then continue with substantive legal reasoning; no bullet list of suggested questions."
+        f"Then continue with substantive legal reasoning; no bullet list of suggested questions. "
+        f"End your response with one short sentence in {lang} suggesting a more specific angle the user could explore based on what you just discussed. "
+        f"Phrase it naturally, like a colleague offering to dig deeper. Never use generic phrases like 'let me know if you need help'."
     )
