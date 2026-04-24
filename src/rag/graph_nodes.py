@@ -261,7 +261,8 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
                     "Extract one to three keywords or short noun phrases that capture the core legal subject matter. "
-                    "Output only a comma-separated list, no numbering or extra text."
+                    "Reply with only the keywords separated by commas. "
+                    "No explanation, no sentences, just the keywords."
                 )
             ),
             HumanMessage(
@@ -791,6 +792,9 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
                     "filter nodes with elementId() only, LIMIT 10. "
+                    "IMPORTANT: Only use relationship types that actually exist in the database. "
+                    "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
+                    "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),
@@ -896,6 +900,9 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
                     "filter nodes with elementId() only, LIMIT 10. "
+                    "IMPORTANT: Only use relationship types that actually exist in the database. "
+                    "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
+                    "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),
@@ -1029,6 +1036,9 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
                     "filter nodes with elementId() only, LIMIT 10. "
+                    "IMPORTANT: Only use relationship types that actually exist in the database. "
+                    "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
+                    "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),
@@ -1155,6 +1165,9 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Address the critique; broaden paths or add patterns where useful. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
                     "filter nodes with elementId() only, LIMIT 10. "
+                    "IMPORTANT: Only use relationship types that actually exist in the database. "
+                    "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
+                    "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),
