@@ -38,6 +38,7 @@ def query_rewriter_system(session_lang: SessionLang) -> str:
 
 def synthesis_system_message(session_lang: SessionLang) -> str:
     base = legal_consultant_system_prefix(session_lang)
+    lang = language_display_name(session_lang)
     return (
         f"{base} "
         f"Compose answers using the retrieved graph data: penalties, contracts, legal acts, articles, and parties. "
@@ -71,6 +72,7 @@ def synthesis_human_footer(session_lang: SessionLang) -> str:
 
 def synthesis_without_graph_substance_system(session_lang: SessionLang) -> str:
     base = legal_consultant_system_prefix(session_lang)
+    lang = language_display_name(session_lang)
     return (
         f"{base} "
         f"No usable excerpts were retrieved from the loaded legal knowledge graph for this question. "
