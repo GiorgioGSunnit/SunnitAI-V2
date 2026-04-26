@@ -177,6 +177,7 @@ RELATION_HINTS = "\n".join(
 # ---------------------------------------------------------------------------
 
 def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
+    state["turn_count"] = state.get("turn_count", 0) + 1
     query = state["query"]
     lang = _session_lang(state)
     logger.info("Starting query decomposition", extra={"query": query})
@@ -723,6 +724,27 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "cypher_query": None,
             "cypher_generation_error": "Context retrieval returned no candidate nodes.",
+            "cypher_attempt": "intersection",
+        }
+
+    turn_count = state.get("turn_count", 1)
+    if turn_count == 1:
+        entry_ids = [n["element_id"] for n in entry_nodes if n.get("element_id")]
+        ids_literal = "[" + ", ".join("'" + eid + "'" for eid in entry_ids) + "]"
+        cypher = (
+            "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
+            "WHERE elementId(d) IN " + ids_literal + "\n"
+            "RETURN d, s\n"
+            "LIMIT 10"
+        )
+        log_cypher_multiline(
+            "b_tier1",
+            "intersection: Tier 1 fixed Cypher (first message, no LLM call)",
+            cypher,
+        )
+        return {
+            "cypher_query": cypher,
+            "cypher_generation_error": None,
             "cypher_attempt": "intersection",
         }
 

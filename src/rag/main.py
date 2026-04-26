@@ -44,6 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class AgentState(TypedDict, total=False):
+    turn_count: int
     query: str
     session_language: str
     generalized_query: str
@@ -182,6 +183,7 @@ def run(query: str, session_language: str = "it") -> Dict[str, Any]:
         "session_language": session_language or "it",
         "quality_reformulation_round": 0,
         "status_messages": [],
+        "turn_count": 0,
     }
     return compiled.invoke(initial_state)
 
