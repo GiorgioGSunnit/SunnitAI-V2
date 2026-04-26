@@ -1561,6 +1561,9 @@ def _summarize_for_synthesis(
             break
         summarized.append(summary_record)
 
+    if len(summarized) > 10:
+        summarized = summarized[:10]
+        summarized.append({"note": "results truncated to 10 items"})
     return summarized
 
 
@@ -1683,6 +1686,8 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
     summarized_data = _summarize_for_synthesis(data)
     serialized = json.dumps(summarized_data, ensure_ascii=False, indent=2)
+    if len(serialized) > 12000:
+        serialized = serialized[:12000] + "\n...[truncated]"
     citations = _extract_citations(data)
 
     human_parts = [
