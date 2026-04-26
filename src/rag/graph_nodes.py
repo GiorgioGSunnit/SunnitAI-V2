@@ -795,6 +795,10 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
                     "IMPORTANT: Only use relationship types that actually exist in the database. "
                     "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
                     "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
+                    "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
+                    "Never write: MATCH (n {elementId: '...'}) "
+                    "Always write: MATCH (n) WHERE elementId(n) = '...' "
+                    "For multiple nodes use: WHERE elementId(n) IN ['...', '...'] "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),
@@ -903,6 +907,10 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     "IMPORTANT: Only use relationship types that actually exist in the database. "
                     "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
                     "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
+                    "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
+                    "Never write: MATCH (n {elementId: '...'}) "
+                    "Always write: MATCH (n) WHERE elementId(n) = '...' "
+                    "For multiple nodes use: WHERE elementId(n) IN ['...', '...'] "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),
@@ -1039,6 +1047,10 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     "IMPORTANT: Only use relationship types that actually exist in the database. "
                     "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
                     "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
+                    "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
+                    "Never write: MATCH (n {elementId: '...'}) "
+                    "Always write: MATCH (n) WHERE elementId(n) = '...' "
+                    "For multiple nodes use: WHERE elementId(n) IN ['...', '...'] "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),
@@ -1168,6 +1180,10 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "IMPORTANT: Only use relationship types that actually exist in the database. "
                     "The available relationships are: CONTAINS, PART_OF, PUBLISHED. "
                     "Do not use REFERENCES, AMENDS, REPEALS or any other relationship type. "
+                    "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
+                    "Never write: MATCH (n {elementId: '...'}) "
+                    "Always write: MATCH (n) WHERE elementId(n) = '...' "
+                    "For multiple nodes use: WHERE elementId(n) IN ['...', '...'] "
                     "Return ONLY the Cypher query, nothing else."
                 )
             ),

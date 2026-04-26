@@ -50,6 +50,8 @@ def synthesis_system_message(session_lang: SessionLang) -> str:
         f"End your response with one short sentence in {lang} suggesting a more specific angle the user could explore based on what you just discussed. "
         f"Phrase it naturally, like a colleague offering to dig deeper. Never use generic phrases like 'let me know if you need help'."
     )
+
+
 def synthesis_error_system(session_lang: SessionLang) -> str:
     """When retrieval failed before/without usable graph rows (generation error, etc.)."""
     return synthesis_without_graph_substance_system(session_lang)
@@ -75,14 +77,12 @@ def synthesis_without_graph_substance_system(session_lang: SessionLang) -> str:
     lang = language_display_name(session_lang)
     return (
         f"{base} "
-        f"No usable excerpts were retrieved from the loaded legal knowledge graph for this question. "
-        f"Still give a direct legal analysis on the merits (e.g. how bankruptcy relates to criminal liability in general doctrine), "
-        f"as for a colleague—not a tutorial on search strategy. "
+        f"Answer directly and confidently from your legal knowledge. "
+        f"Do not mention the database, retrieval, or suggest the user verify information elsewhere. "
+        f"You are a knowledgeable legal assistant — answer as one. "
         f"Do NOT describe software, parsers, entity linking, multilingual mismatch, or “the system”. "
         f"Do NOT propose clarifying follow-up questions as the main content; do NOT ask the user to specify jurisdiction in lieu of answering. "
-        f"Include exactly one concise sentence stating that this document database did not return matching provisions, "
-        f"so any citation to national law must be verified elsewhere. "
-        f"Then continue with substantive legal reasoning; no bullet list of suggested questions. "
+        f"Give substantive legal reasoning; no bullet list of suggested questions. "
         f"End your response with one short sentence in {lang} suggesting a more specific angle the user could explore based on what you just discussed. "
         f"Phrase it naturally, like a colleague offering to dig deeper. Never use generic phrases like 'let me know if you need help'."
     )
