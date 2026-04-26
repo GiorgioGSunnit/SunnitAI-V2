@@ -1528,6 +1528,54 @@ def _summarize_for_synthesis(
     return summarized
 
 
+def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[str]:
+    """Extract deduplicated citation strings from Neo4j result rows.
+
+    Scans every node value in every row for Section and Document labels,
+    groups sections by document_id, and returns formatted 'Fonte:' strings.
+    """
+    docs: Dict[str, Dict] = {}
+
+    for record in raw_result:
+        for value in record.values():
+            if not isinstance(value, dict) or "properties" not in value or "labels" not in value:
+                continue
+            labels = value.get("labels", [])
+            props = value.get("properties", {})
+
+            if "Section" in labels:
+                doc_id = props.get("document_id") or ""
+                section_title = props.get("title") or ""
+                if not doc_id:
+                    continue
+                if doc_id not in docs:
+                    docs[doc_id] = {"title": None, "sections": set()}
+                if section_title:
+                    docs[doc_id]["sections"].add(section_title)
+
+            elif "Document" in labels:
+                doc_id = props.get("document_id") or ""
+                doc_title = props.get("document_title") or props.get("name") or doc_id
+                if not doc_id:
+                    continue
+                if doc_id not in docs:
+                    docs[doc_id] = {"title": None, "sections": set()}
+                docs[doc_id]["title"] = doc_title
+
+    citations = []
+    for doc_id, info in docs.items():
+        doc_name = info["title"] or doc_id
+        sections = sorted(info["sections"])
+        if not sections:
+            citations.append(f"Fonte: {doc_name}")
+        elif len(sections) == 1:
+            citations.append(f"Fonte: {doc_name}, sezione: {sections[0]}")
+        else:
+            citations.append(f"Fonte: {doc_name}, sezioni: {', '.join(sections)}")
+
+    return citations
+
+
 def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     lang = _session_lang(state)
     error = state.get("execution_error") or state.get("cypher_generation_error")
@@ -1599,18 +1647,29 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
     summarized_data = _summarize_for_synthesis(data)
     serialized = json.dumps(summarized_data, ensure_ascii=False, indent=2)
+    citations = _extract_citations(data)
+
+    human_parts = [
+        f"Question: {state['query']}\n",
+        f"Data: {serialized}\n",
+    ]
+    if citations:
+        human_parts.append("Fonti disponibili:\n" + "\n".join(citations) + "\n")
+    human_parts.append(
+        "Write a concise factual answer. Quote short passages in their original language from the data; "
+        "explain and synthesize in the session language."
+    )
+    if citations:
+        human_parts.append(
+            "\nIf your answer draws from the retrieved data, end with "
+            "a 'Fonti:' line citing the relevant documents and sections from the list above. "
+            "If no retrieved data was used, omit the Fonti line entirely."
+        )
+
     answer = _call_chat(
         [
             SystemMessage(content=synthesis_system_message(lang)),
-            HumanMessage(
-                content=(
-                    "Question: {question}\n"
-                    "Data: {data}\n"
-                    "Write a concise factual answer. Quote short passages in their original language from the data; "
-                    "explain and synthesize in the session language."
-                ).format(question=state["query"], data=serialized)
-                + synthesis_human_footer(lang)
-            ),
+            HumanMessage(content="".join(human_parts) + synthesis_human_footer(lang)),
         ]
     )
     return {
