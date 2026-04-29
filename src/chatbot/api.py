@@ -20,6 +20,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .session import ChatBot
+from ..rag.main import run as rag_run
+from ..rag.document_generation import (
+    extract_case_details,
+    generate_opposition_act,
+    is_generation_request,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +73,18 @@ class ChatRequest(BaseModel):
     )
 
 
+class GenerateRequest(BaseModel):
+    message: str = Field(..., min_length=1, description="Free-text request describing the opposition case.")
+    session_id: Optional[str] = Field(None, description="Session ID for context. Omit to auto-create.")
+
+
+class GenerateResponse(BaseModel):
+    draft: str
+    case_details: dict
+    sources: list
+    session_id: str
+
+
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
@@ -87,6 +105,68 @@ class SessionResponse(BaseModel):
     session_id: str
     created_at: str
     message_count: int
+
+
+# ---------------------------------------------------------------------------
+# Generation helpers
+# ---------------------------------------------------------------------------
+
+def _raw_result_to_sections(raw_result: list) -> list:
+    """Convert raw Neo4j result records to flat dicts for _format_retrieved_sections."""
+    sections = []
+    seen: set = set()
+    for record in raw_result:
+        for value in record.values():
+            if not isinstance(value, dict) or "properties" not in value:
+                continue
+            props = value["properties"]
+            labels = value.get("labels", [])
+            title = props.get("heading") or props.get("title") or ""
+            text = props.get("text_en") or props.get("text_it") or props.get("text") or ""
+            source = props.get("document_title") or props.get("document_id") or ""
+            key = (title, source)
+            if key in seen or not (title or text):
+                continue
+            seen.add(key)
+            sections.append({"title": title, "text": text, "document_title": source, "labels": labels})
+    return sections
+
+
+def _get_cached_sections(session) -> Optional[list]:
+    """Return converted sections from the most recent RAG-backed assistant message (last 2 turns).
+
+    The normal chat flow stores raw_result in metadata["references"]. A record is
+    RAG-backed when its values are dicts containing a "properties" key.
+    """
+    if not session:
+        return None
+    assistant_msgs = [m for m in reversed(session.messages) if m.role == "assistant"]
+    for msg in assistant_msgs[:2]:
+        refs = (msg.metadata or {}).get("references") or []
+        if refs and isinstance(refs[0], dict) and "properties" in refs[0]:
+            sections = _raw_result_to_sections(refs)
+            if sections:
+                return sections
+    return None
+
+
+def _run_generation_sync(message: str, session_lang: str, cached_sections: Optional[list] = None) -> dict:
+    case_details = extract_case_details(message)
+    if cached_sections is not None:
+        retrieved_sections = cached_sections
+        sources = sorted({s["document_title"] for s in retrieved_sections if s.get("document_title")})
+    else:
+        try:
+            rag_state = rag_run(message, session_language=session_lang)
+            raw_result = rag_state.get("raw_result") or []
+            retrieved_sections = _raw_result_to_sections(raw_result)
+            sources = sorted({s["document_title"] for s in retrieved_sections if s.get("document_title")})
+        except Exception as exc:
+            logger.warning("RAG retrieval for generation failed: %s", exc)
+            retrieved_sections = []
+            sources = []
+    draft = generate_opposition_act(case_details, retrieved_sections, session_lang)
+    return {"draft": draft, "case_details": case_details, "sources": sources}
 
 
 # ---------------------------------------------------------------------------
@@ -201,17 +281,84 @@ def delete_session(session_id: str):
     return {"status": "deleted", "session_id": session_id}
 
 
+@app.post("/api/generate", response_model=GenerateResponse)
+async def generate(request: GenerateRequest):
+    """Generate an Italian opposition act (atto di opposizione a decreto ingiuntivo).
+
+    Extracts case details from the free-text message, retrieves relevant sections
+    from the knowledge base, and returns a structured draft act.
+    """
+    if not is_generation_request(request.message):
+        raise HTTPException(status_code=400, detail="Not a generation request")
+
+    session_id = request.session_id
+    if not session_id:
+        session = chatbot.create_session()
+        session_id = session.session_id
+
+    session = chatbot.get_session(session_id)
+    if not session:
+        session = chatbot.create_session()
+        session.session_id = session_id
+        chatbot._sessions[session_id] = session
+
+    session_lang = session.session_language
+    cached = _get_cached_sections(session)
+    session.add_message("user", request.message)
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, partial(_run_generation_sync, request.message, session_lang, cached)
+        )
+    except Exception as exc:
+        logger.error("Generation error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    session.add_message("assistant", result["draft"], metadata={"sources": result["sources"]})
+    return GenerateResponse(session_id=session_id, **result)
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Send a message and get a response.
 
     If session_id is provided, continues the conversation.
     If omitted, a new session is created automatically.
+    If the message is a generation request, redirects to the opposition act generation flow.
     """
     session_id = request.session_id
     if not session_id:
         session = chatbot.create_session()
         session_id = session.session_id
+
+    if is_generation_request(request.message):
+        session = chatbot.get_session(session_id)
+        if not session:
+            session = chatbot.create_session()
+            session.session_id = session_id
+            chatbot._sessions[session_id] = session
+        session_lang = session.session_language
+        cached = _get_cached_sections(session)
+        session.add_message("user", request.message)
+        try:
+            loop = asyncio.get_event_loop()
+            gen_result = await loop.run_in_executor(
+                None, partial(_run_generation_sync, request.message, session_lang, cached)
+            )
+        except Exception as exc:
+            logger.error("Generation error: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail=str(exc))
+        session.add_message("assistant", gen_result["draft"], metadata={"sources": gen_result["sources"]})
+        return ChatResponse(
+            session_id=session_id,
+            answer=gen_result["draft"],
+            references=gen_result["sources"],
+            original_query=request.message,
+            resolved_query=request.message,
+            session_language=session_lang,
+            status_messages=["generation_mode"],
+        )
 
     try:
         loop = asyncio.get_event_loop()

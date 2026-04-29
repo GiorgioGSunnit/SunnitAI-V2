@@ -1425,6 +1425,8 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     )
 
+    keywords = state.get("retrieval_keywords") or []
+    q_short = ", ".join(keywords) if keywords else state["query"][:100]
     verdict_raw = _call_chat(
         [
             SystemMessage(
@@ -1442,7 +1444,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Question:\n{q}\n\n"
                     "Summarized rows:\n{rows}\n\n"
                     "Verdict:"
-                ).format(q=state["query"], rows=serialized[:45000])
+                ).format(q=q_short, rows=serialized[:8000])
             ),
         ],
         max_tokens=80,
