@@ -10,13 +10,16 @@ Endpoints:
 """
 
 import asyncio
+import io
 import logging
+import re
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .session import ChatBot
@@ -105,6 +108,14 @@ class SessionResponse(BaseModel):
     session_id: str
     created_at: str
     message_count: int
+
+
+_PH_PATTERN = re.compile(r"\[[A-ZÀÁÂÄÉÈÊËÍÌÎÏÓÒÔÖÚÙÛÜ\s]+\](?:\s*\([^)]*\))?")
+
+_DOC_TITLES = {
+    "es": "ESCRITO DE OPOSICIÓN A DECRETO MONITORIO",
+    "en": "OPPOSITION TO PAYMENT ORDER",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +328,81 @@ async def generate(request: GenerateRequest):
 
     session.add_message("assistant", result["draft"], metadata={"sources": result["sources"]})
     return GenerateResponse(session_id=session_id, **result)
+
+
+@app.post("/api/generate/download")
+async def generate_download(request: GenerateRequest):
+    """Generate opposition act and return as a downloadable .docx file."""
+    try:
+        from docx import Document
+        from docx.shared import Cm, Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="python-docx is not installed. Add 'python-docx>=1.1.0' to pyproject.toml and reinstall.",
+        )
+
+    if not is_generation_request(request.message):
+        raise HTTPException(status_code=400, detail="Not a generation request")
+
+    session_id = request.session_id
+    if not session_id:
+        session = chatbot.create_session()
+        session_id = session.session_id
+    session = chatbot.get_session(session_id)
+    if not session:
+        session = chatbot.create_session()
+        session.session_id = session_id
+        chatbot._sessions[session_id] = session
+    session_lang = session.session_language
+    cached = _get_cached_sections(session)
+    session.add_message("user", request.message)
+
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None, partial(_run_generation_sync, request.message, session_lang, cached)
+        )
+    except Exception as exc:
+        logger.error("Generation error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+    session.add_message("assistant", result["draft"], metadata={"sources": result["sources"]})
+
+    doc_title = _DOC_TITLES.get(session_lang, "ATTO DI OPPOSIZIONE A DECRETO INGIUNTIVO")
+    doc = Document()
+    for section in doc.sections:
+        section.top_margin = Cm(2.5)
+        section.bottom_margin = Cm(2.5)
+        section.left_margin = Cm(2.5)
+        section.right_margin = Cm(2.5)
+
+    title_para = doc.add_paragraph()
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    title_run = title_para.add_run(doc_title)
+    title_run.bold = True
+    title_run.font.size = Pt(14)
+    doc.add_paragraph()
+
+    for line in result["draft"].split("\n"):
+        para = doc.add_paragraph()
+        parts = _PH_PATTERN.split(line)
+        matches = _PH_PATTERN.findall(line)
+        for i, part in enumerate(parts):
+            if part:
+                para.add_run(part)
+            if i < len(matches):
+                hl_run = para.add_run(matches[i])
+                hl_run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="atto_opposizione.docx"'},
+    )
 
 
 @app.post("/api/chat", response_model=ChatResponse)
