@@ -1647,6 +1647,37 @@ def _summarize_for_synthesis(
                         summary_props["plain_text"] = plain_text
 
                 summary_record[key] = {k: v for k, v in summary_props.items() if v is not None}
+            elif isinstance(value, dict):
+                # Flat property dict (no "properties" wrapper) — infer node type
+                node_id = value.get("id") or ""
+                is_doc = key == "d" or node_id.startswith("LEGAL_DOC::")
+                flat_props: Dict[str, Any] = {}
+                if is_doc:
+                    if value.get("name"):
+                        flat_props["name"] = value["name"]
+                    description = (value.get("description") or "")[:200]
+                    if description:
+                        flat_props["description"] = description
+                    if node_id:
+                        flat_props["id"] = node_id
+                else:
+                    # Section or generic flat node
+                    title = (value.get("title") or "")[:80]
+                    if title:
+                        flat_props["title"] = title
+                    if value.get("name"):
+                        flat_props["name"] = value["name"]
+                    text_en = (value.get("text_en") or "")[:80]
+                    if text_en:
+                        flat_props["text_en"] = text_en
+                    abstract = (value.get("abstract") or value.get("description") or "")[:200]
+                    if abstract:
+                        flat_props["abstract"] = abstract
+                    plain_text = (value.get("plain_text") or value.get("text") or "")[:150]
+                    if plain_text:
+                        flat_props["plain_text"] = plain_text
+                if flat_props:
+                    summary_record[key] = flat_props
             elif value is None:
                 continue
             else:
