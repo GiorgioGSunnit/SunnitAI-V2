@@ -81,6 +81,19 @@ class ChatSession:
         }
 
 
+def _strip_embeddings(records: list) -> list:
+    cleaned = []
+    for record in records:
+        clean_record = {}
+        for key, value in record.items():
+            if isinstance(value, dict):
+                clean_record[key] = {k: v for k, v in value.items() if k != "embedding"}
+            else:
+                clean_record[key] = value
+        cleaned.append(clean_record)
+    return cleaned
+
+
 def _rewrite_query_with_context(
     query: str, history: List[Message], session_language: str
 ) -> str:
@@ -217,7 +230,7 @@ class ChatBot:
         try:
             result = rag_run(resolved_query, session_language=session.session_language)
             answer = result.get("answer", "I couldn't find an answer to your question.")
-            references = result.get("references", [])
+            references = _strip_embeddings(result.get("references", []))
             status_messages = result.get("status_messages") or []
             citations = result.get("citations") or []
         except Exception as e:
