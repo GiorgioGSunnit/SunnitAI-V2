@@ -67,6 +67,7 @@ class AgentState(TypedDict, total=False):
     status_messages: List[str]
     neo4j_executed: Optional[bool]
     retrieval_evaluated: Optional[bool]
+    citations: List[Dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------

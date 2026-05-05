@@ -102,6 +102,10 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Pipeline status lines (e.g. retrieval evaluation phase).",
     )
+    citations: list = Field(
+        default_factory=list,
+        description="Structured citation list: [{document_name, document_id, sections}].",
+    )
 
 
 class SessionResponse(BaseModel):

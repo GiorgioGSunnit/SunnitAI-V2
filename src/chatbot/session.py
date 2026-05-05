@@ -219,11 +219,13 @@ class ChatBot:
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = result.get("references", [])
             status_messages = result.get("status_messages") or []
+            citations = result.get("citations") or []
         except Exception as e:
             logger.error("RAG pipeline error: %s", e, exc_info=True)
             answer = f"I'm sorry, I encountered an error processing your question. Error: {e}"
             references = []
             status_messages = []
+            citations = []
 
         # Record the assistant response
         session.add_message("assistant", answer, metadata={"references": references})
@@ -236,4 +238,5 @@ class ChatBot:
             "resolved_query": resolved_query,
             "session_language": session.session_language,
             "status_messages": status_messages,
+            "citations": citations,
         }

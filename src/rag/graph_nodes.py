@@ -1591,11 +1591,12 @@ def _summarize_for_synthesis(
     return summarized
 
 
-def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[str]:
-    """Extract deduplicated citation strings from Neo4j result rows.
+def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Extract deduplicated structured citations from Neo4j result rows.
 
     Scans every node value in every row for Section and Document labels,
-    groups sections by document_id, and returns formatted 'Fonte:' strings.
+    groups sections by document_id, and returns a list of citation dicts:
+    {"document_name": str, "document_id": str, "sections": List[str]}
     """
     docs: Dict[str, Dict] = {}
 
@@ -1625,18 +1626,14 @@ def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[str]:
                     docs[doc_id] = {"title": None, "sections": set()}
                 docs[doc_id]["title"] = doc_title
 
-    citations = []
-    for doc_id, info in docs.items():
-        doc_name = info["title"] or doc_id
-        sections = sorted(info["sections"])
-        if not sections:
-            citations.append(f"Fonte: {doc_name}")
-        elif len(sections) == 1:
-            citations.append(f"Fonte: {doc_name}, sezione: {sections[0]}")
-        else:
-            citations.append(f"Fonte: {doc_name}, sezioni: {', '.join(sections)}")
-
-    return citations
+    return [
+        {
+            "document_name": info["title"] or doc_id,
+            "document_id": doc_id,
+            "sections": sorted(info["sections"]),
+        }
+        for doc_id, info in docs.items()
+    ]
 
 
 def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1713,18 +1710,24 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     if len(serialized) > 12000:
         serialized = serialized[:12000] + "\n...[truncated]"
     citations = _extract_citations(data)
+    citation_strings = [
+        f"Fonte: {c['document_name']}" if not c["sections"]
+        else f"Fonte: {c['document_name']}, sezione: {c['sections'][0]}" if len(c["sections"]) == 1
+        else f"Fonte: {c['document_name']}, sezioni: {', '.join(c['sections'])}"
+        for c in citations
+    ]
 
     human_parts = [
         f"Question: {state['query']}\n",
         f"Data: {serialized}\n",
     ]
-    if citations:
-        human_parts.append("Fonti disponibili:\n" + "\n".join(citations) + "\n")
+    if citation_strings:
+        human_parts.append("Fonti disponibili:\n" + "\n".join(citation_strings) + "\n")
     human_parts.append(
         "Write a concise factual answer. Quote short passages in their original language from the data; "
         "explain and synthesize in the session language."
     )
-    if citations:
+    if citation_strings:
         human_parts.append(
             "\nIf your answer draws from the retrieved data, end with "
             "a 'Fonti:' line citing the relevant documents and sections from the list above. "
@@ -1740,6 +1743,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "answer": answer,
         "references": data,
+        "citations": citations,
         "status_messages": state.get("status_messages") or [],
     }
 
