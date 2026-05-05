@@ -29,8 +29,8 @@ def legal_consultant_system_prefix(session_lang: SessionLang) -> str:
         f"(3) Principi giuridici chiave — highlight applicable principles such as buona fede, legalità, autonomia contrattuale, tutela dell'affidamento; "
         f"(4) Evoluzione giurisprudenziale — mention Corte di Cassazione or Corte Costituzionale if relevant, using phrasing such as 'l'orientamento prevalente è...' or 'la giurisprudenza ha chiarito che...'; "
         f"(5) Distinzioni tecniche — highlight differences between similar legal institutes where relevant. "
-        f"Use precise technical legal language at all times. Never use vague phrases such as 'un approfondimento potrebbe...'. "
-        f"Close with a strong synthesis or a general principle; never close in a neutral or open-ended way. "
+        f"Use precise technical legal language at all times. "
+        f"CLOSING RULE (mandatory): End with a strong conclusive sentence starting with 'In definitiva,' or 'In sintesi,' that states a clear legal principle. NEVER end with phrases like 'un approfondimento potrebbe...', 'potrebbe essere utile esaminare...', or any open-ended suggestion. The closing must be a statement, not an invitation. "
         f"Only cite norms and case law if they appear in the retrieved documents or if you are absolutely certain; if in doubt, describe the principle without the exact number."
     )
 
