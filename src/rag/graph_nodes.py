@@ -1664,7 +1664,9 @@ def _summarize_for_synthesis(
 _VAGUE_CLOSING_PATTERNS = re.compile(
     r"potrebbe esaminare|potrebbe essere utile|un approfondimento|potrebbe approfondire"
     r"|could examine|could be useful|may be useful"
-    r"|podría examinar|podría ser útil",
+    r"|podría examinar|podría ser útil"
+    r"|potrebbe essere interessante|sarebbe interessante|vale la pena esplorare"
+    r"|it would be interesting|it is worth exploring|valdría la pena|sería interesante",
     re.IGNORECASE,
 )
 
