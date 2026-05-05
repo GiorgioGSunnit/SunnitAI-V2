@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set
 
@@ -54,6 +55,38 @@ _MAX_CONTEXT_NODES_FOR_PROMPT = 6
 
 def _session_lang(state: Dict[str, Any]) -> SessionLang:
     return normalize_lang(state.get("session_language"))
+
+
+# ---------------------------------------------------------------------------
+# Document reference detection
+# ---------------------------------------------------------------------------
+
+_DOC_REF_NAMED_PATTERN = re.compile(
+    r'(?:'
+    r'NOA\.\d{2}\.\d{4}\.\d+'   # NOA.XX.YYYY.XXXXXXX
+    r'|BOE-A-\d{4}-\d+'          # BOE-A-YYYY-XXXXX
+    r'|T2LE_[A-Z0-9]+'           # T2LE_XXXXX
+    r')'
+)
+_DOC_REF_FILE_PATTERN = re.compile(r'\S+\.(?:pdf|docx|md)\b', re.IGNORECASE)
+# Uppercase token with at least one digit, separated by dots/dashes/underscores, min 3 chars total
+_DOC_REF_CODE_PATTERN = re.compile(r'\b[A-Z][A-Z0-9]*[-_.](?:[A-Z0-9]+[-_.])*[A-Z0-9]*\d[A-Z0-9]*\b')
+
+
+def _extract_document_references(query: str) -> List[str]:
+    """Detect document reference patterns in the query using regex.
+
+    Matches named formats (NOA, BOE, T2LE), file extensions, and generic
+    uppercase codes with digits separated by dots/dashes/underscores.
+    """
+    seen: set = set()
+    refs: List[str] = []
+    for pat in (_DOC_REF_NAMED_PATTERN, _DOC_REF_FILE_PATTERN, _DOC_REF_CODE_PATTERN):
+        for m in pat.findall(query):
+            if m not in seen:
+                seen.add(m)
+                refs.append(m)
+    return refs
 
 
 def _collect_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
@@ -255,7 +288,15 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         detail=generalized,
     )
 
+    # Pre-processing: detect document reference patterns before LLM keyword extraction
+    doc_refs = _extract_document_references(query)
+
     # Step 1b: Keywords (1–3) — depends on generalized, so runs after
+    ref_instruction = (
+        " These document references were found in the query and must be preserved "
+        f"exactly as-is in the keywords: {', '.join(doc_refs)}. Do not translate or interpret them."
+        if doc_refs else ""
+    )
     kw_raw = _call_chat(
         [
             SystemMessage(
@@ -263,7 +304,7 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
                     f"{legal_consultant_system_prefix(lang)} "
                     "Extract one to three keywords or short noun phrases that capture the core legal subject matter. "
                     "Reply with only the keywords separated by commas. "
-                    "No explanation, no sentences, just the keywords."
+                    f"No explanation, no sentences, just the keywords.{ref_instruction}"
                 )
             ),
             HumanMessage(
@@ -272,7 +313,13 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         ],
         max_tokens=40,
     )
-    retrieval_keywords = [k.strip() for k in (kw_raw or "").split(",") if k.strip()][:3]
+    llm_keywords = [k.strip() for k in (kw_raw or "").split(",") if k.strip()][:3]
+    # Prepend detected doc refs so they're always present regardless of LLM output
+    if doc_refs:
+        existing = set(llm_keywords)
+        retrieval_keywords = [r for r in doc_refs if r not in existing] + llm_keywords
+    else:
+        retrieval_keywords = llm_keywords
     log_cypher_event(
         "a_keywords",
         "extracted keywords",
@@ -391,6 +438,7 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         **state,
         "generalized_query": generalized,
         "retrieval_keywords": retrieval_keywords,
+        "document_references": doc_refs,
         "entities": processed_entities,
         "extracted_relationships": final_relationships,
     }
@@ -402,7 +450,9 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def entity_linking(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     extracted = state.get("entities", [])
-    if not extracted:
+    doc_refs = state.get("document_references") or []
+
+    if not extracted and not doc_refs:
         logger.warning("Entity linking skipped: no extracted entities present")
         return {"entry_nodes": []}
 
@@ -410,6 +460,26 @@ def entity_linking(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     node_id_map: Dict[str, str] = {}
 
     with driver.session(database=database) as session:
+        # Direct name lookup for detected document references — always resolved first
+        for ref in doc_refs:
+            try:
+                records = session.run(
+                    "MATCH (d:Document) WHERE d.name CONTAINS $ref "
+                    "RETURN elementId(d) AS element_id, labels(d) AS labels",
+                    ref=ref,
+                )
+                for record in records:
+                    element_id = record["element_id"]
+                    if element_id not in entries:
+                        entries[element_id] = {
+                            "element_id": element_id,
+                            "labels": record["labels"],
+                            "sources": {"name_lookup:doc_ref"},
+                        }
+                    else:
+                        entries[element_id]["sources"].add("name_lookup:doc_ref")
+            except Neo4jError as exc:
+                logger.warning("Document name lookup for ref '%s' failed: %s", ref, exc)
 
         def merge_entry(match: Dict[str, Any], entity: Dict[str, Any]) -> None:
             element_id = match["element_id"]

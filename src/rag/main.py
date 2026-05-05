@@ -49,6 +49,7 @@ class AgentState(TypedDict, total=False):
     session_language: str
     generalized_query: str
     retrieval_keywords: List[str]
+    document_references: List[str]
     entities: List[str]
     entry_nodes: List[Dict[str, Any]]
     cypher_query: Optional[str]
