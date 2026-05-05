@@ -91,7 +91,6 @@ class GenerateResponse(BaseModel):
 class ChatResponse(BaseModel):
     session_id: str
     answer: str
-    references: list
     original_query: str
     resolved_query: str
     session_language: str = Field(
@@ -443,7 +442,6 @@ async def chat(request: ChatRequest):
         return ChatResponse(
             session_id=session_id,
             answer=gen_result["draft"],
-            references=gen_result["sources"],
             original_query=request.message,
             resolved_query=request.message,
             session_language=session_lang,

@@ -189,7 +189,6 @@ class ChatBot:
             {
                 "session_id": str,
                 "answer": str,
-                "references": list,
                 "original_query": str,
                 "resolved_query": str,
             }
@@ -246,7 +245,6 @@ class ChatBot:
         return {
             "session_id": session.session_id,
             "answer": answer,
-            "references": references,
             "original_query": user_message,
             "resolved_query": resolved_query,
             "session_language": session.session_language,
