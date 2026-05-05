@@ -1639,6 +1639,12 @@ def _summarize_for_synthesis(
                         "name": props.get("name"),
                         "text_en": (props.get("text_en") or "")[:80],
                     })
+                    abstract = (props.get("abstract") or props.get("description") or "")[:200]
+                    if abstract:
+                        summary_props["abstract"] = abstract
+                    plain_text = (props.get("plain_text") or props.get("text") or "")[:150]
+                    if plain_text:
+                        summary_props["plain_text"] = plain_text
 
                 summary_record[key] = {k: v for k, v in summary_props.items() if v is not None}
             elif value is None:
