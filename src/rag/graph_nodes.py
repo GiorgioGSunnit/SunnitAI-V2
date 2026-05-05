@@ -1594,37 +1594,43 @@ def _summarize_for_synthesis(
 def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Extract deduplicated structured citations from Neo4j result rows.
 
-    Scans every node value in every row for Section and Document labels,
-    groups sections by document_id, and returns a list of citation dicts:
+    Each record is a flat dict of {cypher_var: property_dict}.
+    Document nodes: key "d" or id starting with "LEGAL_DOC::"
+    Section nodes: key "s" or id starting with "DOCUMENT_SECTION::{doc_hash}::{section_hash}"
+    Groups sections by document_id and returns structured citation dicts:
     {"document_name": str, "document_id": str, "sections": List[str]}
     """
     docs: Dict[str, Dict] = {}
 
     for record in raw_result:
-        for value in record.values():
-            if not isinstance(value, dict) or "properties" not in value or "labels" not in value:
+        for key, value in record.items():
+            if not isinstance(value, dict):
                 continue
-            labels = value.get("labels", [])
-            props = value.get("properties", {})
+            node_id = value.get("id") or ""
 
-            if "Section" in labels:
-                doc_id = props.get("document_id") or ""
-                section_title = props.get("title") or ""
+            is_doc = key == "d" or node_id.startswith("LEGAL_DOC::")
+            is_section = key == "s" or node_id.startswith("DOCUMENT_SECTION::")
+
+            if is_doc:
+                doc_id = node_id or value.get("document_id") or ""
+                doc_name = value.get("name") or value.get("document_title") or doc_id
                 if not doc_id:
                     continue
                 if doc_id not in docs:
                     docs[doc_id] = {"title": None, "sections": set()}
-                if section_title:
-                    docs[doc_id]["sections"].add(section_title)
+                docs[doc_id]["title"] = doc_name
 
-            elif "Document" in labels:
-                doc_id = props.get("document_id") or ""
-                doc_title = props.get("document_title") or props.get("name") or doc_id
+            elif is_section:
+                section_name = value.get("name") or value.get("title") or ""
+                # Section id format: "DOCUMENT_SECTION::{doc_hash}::{section_hash}"
+                parts = node_id.split("::")
+                doc_id = ("LEGAL_DOC::" + parts[1]) if len(parts) >= 3 else (value.get("document_id") or "")
                 if not doc_id:
                     continue
                 if doc_id not in docs:
                     docs[doc_id] = {"title": None, "sections": set()}
-                docs[doc_id]["title"] = doc_title
+                if section_name:
+                    docs[doc_id]["sections"].add(section_name)
 
     return [
         {
