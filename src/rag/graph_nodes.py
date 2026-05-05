@@ -1661,6 +1661,24 @@ def _summarize_for_synthesis(
     return summarized
 
 
+_VAGUE_CLOSING_PATTERNS = re.compile(
+    r"potrebbe esaminare|potrebbe essere utile|un approfondimento|potrebbe approfondire"
+    r"|could examine|could be useful|may be useful"
+    r"|podría examinar|podría ser útil",
+    re.IGNORECASE,
+)
+
+
+def _strip_vague_closing(text: str) -> str:
+    """Remove a trailing vague/open-ended sentence from an LLM answer."""
+    if not text:
+        return text
+    parts = re.split(r"(?<=[.!?])\s+", text.rstrip())
+    if len(parts) > 1 and _VAGUE_CLOSING_PATTERNS.search(parts[-1]):
+        return " ".join(parts[:-1]).rstrip()
+    return text
+
+
 def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Extract deduplicated structured citations from Neo4j result rows.
 
@@ -1755,6 +1773,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             ]
         )
+        answer = _strip_vague_closing(answer)
         return {
             "answer": answer,
             "references": state.get("raw_result", []) or [],
@@ -1775,6 +1794,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 ),
             ]
         )
+        answer = _strip_vague_closing(answer)
         return {
             "answer": answer,
             "references": [],
@@ -1816,6 +1836,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             HumanMessage(content="".join(human_parts) + synthesis_human_footer(lang)),
         ]
     )
+    answer = _strip_vague_closing(answer)
     return {
         "answer": answer,
         "references": data,
