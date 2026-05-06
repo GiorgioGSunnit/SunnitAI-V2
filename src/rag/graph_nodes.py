@@ -1701,6 +1701,7 @@ def _summarize_for_synthesis(
 
 _VAGUE_CLOSING_PATTERNS = re.compile(
     r"potrebbe esaminare|potrebbe essere utile|un approfondimento|potrebbe approfondire"
+    r"|potremmo esaminare|possiamo esaminare"
     r"|could examine|could be useful|may be useful"
     r"|podría examinar|podría ser útil"
     r"|potrebbe essere interessante|sarebbe interessante|vale la pena esplorare"
@@ -1717,6 +1718,15 @@ def _strip_vague_closing(text: str) -> str:
     if len(parts) > 1 and _VAGUE_CLOSING_PATTERNS.search(parts[-1]):
         return " ".join(parts[:-1]).rstrip()
     return text
+
+
+def _strip_hallucinated_fonti(text: str) -> str:
+    """Remove Fonti:/Fonte: lines written by the LLM — replaced programmatically."""
+    if not text:
+        return text
+    lines = text.splitlines()
+    cleaned = [ln for ln in lines if not re.match(r'^\s*Fonti?:', ln, re.IGNORECASE)]
+    return "\n".join(cleaned).rstrip()
 
 
 def _extract_citations(
@@ -1913,6 +1923,13 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     citations = _extract_citations(
         data, answer=answer, doc_refs=state.get("document_references") or []
     )
+    answer = _strip_hallucinated_fonti(answer)
+    if citations:
+        fonti_line = "Fonti: " + ", ".join(
+            f"{c['document_name']} sezioni: {', '.join(s['name'] for s in c['sections'])}"
+            for c in citations
+        )
+        answer = answer.rstrip() + "\n\n" + fonti_line
     return {
         "answer": answer,
         "references": data,
