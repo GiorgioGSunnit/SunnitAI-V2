@@ -7,12 +7,15 @@ Endpoints:
     GET    /api/sessions/{id}     — Get session history
     DELETE /api/sessions/{id}     — Delete a session
     GET    /api/health            — Health check
+    GET    /api/documents         — List all documents with section counts
+    GET    /api/documents/{id}/sections/{name} — Get full section content
 """
 
 import asyncio
 import io
 import logging
 import re
+import urllib.parse
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Optional
@@ -23,7 +26,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .session import ChatBot
-from ..rag.main import run as rag_run
+from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.document_generation import (
     extract_case_details,
     generate_opposition_act,
@@ -263,6 +266,61 @@ def _debug_check_sync() -> dict:
         checks["embeddings"] = f"error: {e}"
 
     return checks
+
+
+@app.get("/api/documents")
+def list_documents():
+    """List all Document nodes with their section counts."""
+    try:
+        with neo4j_driver.session(database=NEO4J_DATABASE) as session:
+            result = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "RETURN d.name AS document_name, d.id AS document_id, count(s) AS section_count "
+                "ORDER BY d.name"
+            )
+            documents = [
+                {
+                    "document_name": r["document_name"],
+                    "document_id": r["document_id"],
+                    "section_count": r["section_count"],
+                }
+                for r in result
+            ]
+    except Exception as e:
+        logger.error("list_documents error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    return {"documents": documents}
+
+
+@app.get("/api/documents/{document_id}/sections/{section_name}")
+def get_section(document_id: str, section_name: str):
+    """Return full content of a specific section."""
+    decoded_doc_id = urllib.parse.unquote(document_id)
+    decoded_section = urllib.parse.unquote(section_name)
+    parts = decoded_doc_id.split("::")
+    doc_hash = parts[1] if len(parts) >= 2 else decoded_doc_id
+    try:
+        with neo4j_driver.session(database=NEO4J_DATABASE) as session:
+            result = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE d.id CONTAINS $doc_hash AND s.name = $section_name "
+                "RETURN d.name AS document_name, s.name AS section_name, "
+                "s.abstract AS abstract, s.plain_text AS plain_text",
+                doc_hash=doc_hash,
+                section_name=decoded_section,
+            )
+            row = result.single()
+    except Exception as e:
+        logger.error("get_section error: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+    if not row:
+        raise HTTPException(status_code=404, detail="Section not found")
+    return {
+        "document_name": row["document_name"],
+        "section_name": row["section_name"],
+        "abstract": row["abstract"] or "",
+        "plain_text": row["plain_text"] or "",
+    }
 
 
 @app.post("/api/sessions", response_model=SessionResponse)

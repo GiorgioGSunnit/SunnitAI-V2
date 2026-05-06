@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set
 
@@ -1765,7 +1766,16 @@ def _extract_citations(
         {
             "document_name": info["title"] or doc_id,
             "document_id": doc_id,
-            "sections": sorted(info["sections"]),
+            "sections": [
+                {
+                    "name": name,
+                    "url": (
+                        f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
+                        f"sections/{urllib.parse.quote(name, safe='')}"
+                    ),
+                }
+                for name in sorted(info["sections"])
+            ],
         }
         for doc_id, info in docs.items()
     ]
@@ -1798,7 +1808,10 @@ def _validate_citations(
 
     validated = []
     for citation in citations:
-        section_names = citation.get("sections") or []
+        section_names = [
+            s["name"] if isinstance(s, dict) else s
+            for s in (citation.get("sections") or [])
+        ]
         doc_id = citation.get("document_id") or ""
 
         if not section_names:
@@ -1938,8 +1951,8 @@ def synthesize_answer(state: Dict[str, Any], driver=None, database: str = "neo4j
     all_citations = _extract_citations(data)
     citation_strings = [
         f"Fonte: {c['document_name']}" if not c["sections"]
-        else f"Fonte: {c['document_name']}, sezione: {c['sections'][0]}" if len(c["sections"]) == 1
-        else f"Fonte: {c['document_name']}, sezioni: {', '.join(c['sections'])}"
+        else f"Fonte: {c['document_name']}, sezione: {c['sections'][0]['name']}" if len(c["sections"]) == 1
+        else f"Fonte: {c['document_name']}, sezioni: {', '.join(s['name'] for s in c['sections'])}"
         for c in all_citations
     ]
 
