@@ -108,6 +108,10 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Structured citation list: [{document_name, document_id, sections}].",
     )
+    title: str = Field(
+        default="Nuova conversazione",
+        description="Auto-generated session title (set after first message).",
+    )
 
 
 class SessionResponse(BaseModel):

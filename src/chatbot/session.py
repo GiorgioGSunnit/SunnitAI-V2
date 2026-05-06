@@ -275,6 +275,7 @@ class ChatBot:
             "original_query": user_message,
             "resolved_query": resolved_query,
             "session_language": session.session_language,
+            "title": session.title,
             "status_messages": status_messages,
             "citations": citations,
         }
