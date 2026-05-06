@@ -1718,14 +1718,16 @@ def _strip_vague_closing(text: str) -> str:
     return text
 
 
-def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _extract_citations(
+    raw_result: List[Dict[str, Any]],
+    answer: str = "",
+    doc_refs: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """Extract deduplicated structured citations from Neo4j result rows.
 
-    Each record is a flat dict of {cypher_var: property_dict}.
-    Document nodes: key "d" or id starting with "LEGAL_DOC::"
-    Section nodes: key "s" or id starting with "DOCUMENT_SECTION::{doc_hash}::{section_hash}"
-    Groups sections by document_id and returns structured citation dicts:
-    {"document_name": str, "document_id": str, "sections": List[str]}
+    When answer and/or doc_refs are provided, filters to only citations whose
+    document_name appears in the answer text OR whose name/id matches a detected
+    document reference. Without those args, returns all citations unfiltered.
     """
     docs: Dict[str, Dict] = {}
 
@@ -1759,13 +1761,24 @@ def _extract_citations(raw_result: List[Dict[str, Any]]) -> List[Dict[str, Any]]
                 if section_name:
                     docs[doc_id]["sections"].add(section_name)
 
-    return [
+    results = [
         {
             "document_name": info["title"] or doc_id,
             "document_id": doc_id,
             "sections": sorted(info["sections"]),
         }
         for doc_id, info in docs.items()
+    ]
+    if not answer and not doc_refs:
+        return results
+    refs = doc_refs or []
+    return [
+        c for c in results
+        if (c.get("document_name") and c["document_name"] in answer)
+        or any(
+            ref in (c.get("document_name") or "") or ref in (c.get("document_id") or "")
+            for ref in refs
+        )
     ]
 
 
@@ -1844,12 +1857,12 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     serialized = json.dumps(summarized_data, ensure_ascii=False, indent=2)
     if len(serialized) > 12000:
         serialized = serialized[:12000] + "\n...[truncated]"
-    citations = _extract_citations(data)
+    all_citations = _extract_citations(data)
     citation_strings = [
         f"Fonte: {c['document_name']}" if not c["sections"]
         else f"Fonte: {c['document_name']}, sezione: {c['sections'][0]}" if len(c["sections"]) == 1
         else f"Fonte: {c['document_name']}, sezioni: {', '.join(c['sections'])}"
-        for c in citations
+        for c in all_citations
     ]
 
     human_parts = [
@@ -1876,6 +1889,9 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         ]
     )
     answer = _strip_vague_closing(answer)
+    citations = _extract_citations(
+        data, answer=answer, doc_refs=state.get("document_references") or []
+    )
     return {
         "answer": answer,
         "references": data,
