@@ -6,6 +6,7 @@ resolve follow-up questions (e.g. "tell me more about that decree").
 """
 
 import logging
+import re
 import threading
 import time
 import uuid
@@ -50,6 +51,7 @@ class ChatSession:
     messages: List[Message] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     session_language: str = field(default=DEFAULT_LANGUAGE)
+    title: str = field(default="Nuova conversazione")
     _language_fixed_from_first_turn: bool = field(default=False)
     _last_active: float = field(default_factory=time.monotonic)
 
@@ -69,6 +71,7 @@ class ChatSession:
         return {
             "session_id": self.session_id,
             "created_at": self.created_at,
+            "title": self.title,
             "message_count": len(self.messages),
             "messages": [
                 {
@@ -79,6 +82,25 @@ class ChatSession:
                 for m in self.messages
             ],
         }
+
+
+def _generate_session_title(first_message: str) -> str:
+    try:
+        raw = _call_chat(
+            [
+                SystemMessage(
+                    content=(
+                        "Generate a concise 4-6 word title for a legal conversation "
+                        "that starts with this message. Reply with only the title, no punctuation."
+                    )
+                ),
+                HumanMessage(content=first_message[:200]),
+            ],
+            max_tokens=10,
+        )
+        return re.sub(r'["""\'\.\,\:\;\!\?]', "", raw).strip()
+    except Exception:
+        return first_message[:50]
 
 
 def _strip_embeddings(records: list) -> list:
@@ -177,6 +199,7 @@ class ChatBot:
             {
                 "session_id": s.session_id,
                 "created_at": s.created_at,
+                "title": s.title,
                 "message_count": len(s.messages),
             }
             for s in self._sessions.values()
@@ -201,6 +224,10 @@ class ChatBot:
 
         # Record the user message
         session.add_message("user", user_message)
+
+        # Generate title on the first message
+        if len(session.messages) == 1:
+            session.title = _generate_session_title(user_message)
 
         # Session language: explicit switch, or auto-detect on first long message (default Italian)
         switch = detect_explicit_language_switch(

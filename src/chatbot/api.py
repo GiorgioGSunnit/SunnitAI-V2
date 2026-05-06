@@ -114,6 +114,7 @@ class SessionResponse(BaseModel):
     session_id: str
     created_at: str
     message_count: int
+    title: str = "Nuova conversazione"
 
 
 _PH_PATTERN = re.compile(r"\[[A-ZÀÁÂÄÉÈÊËÍÌÎÏÓÒÔÖÚÙÛÜ\s]+\](?:\s*\([^)]*\))?")
@@ -330,6 +331,7 @@ def create_session():
         session_id=session.session_id,
         created_at=session.created_at,
         message_count=0,
+        title=session.title,
     )
 
 
