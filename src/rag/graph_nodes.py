@@ -1782,7 +1782,85 @@ def _extract_citations(
     ]
 
 
-def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_citations(
+    answer: str,
+    citations: List[Dict[str, Any]],
+    driver,
+    database: str,
+) -> List[Dict[str, Any]]:
+    """Validate citations by checking section content against the answer via LLM.
+
+    Citations without sections (document-only hits) are kept unconditionally.
+    On any Neo4j error, the citation is kept as a safe fallback.
+    """
+    if not citations or driver is None:
+        return citations
+
+    validated = []
+    for citation in citations:
+        section_names = citation.get("sections") or []
+        doc_id = citation.get("document_id") or ""
+
+        if not section_names:
+            validated.append(citation)
+            continue
+
+        parts = doc_id.split("::")
+        doc_hash = parts[1] if len(parts) >= 2 else ""
+
+        try:
+            with driver.session(database=database) as session:
+                result = session.run(
+                    "MATCH (s:Section) "
+                    "WHERE s.id CONTAINS $doc_hash AND s.name IN $section_names "
+                    "RETURN s.name AS name, s.abstract AS abstract, s.plain_text AS plain_text",
+                    doc_hash=doc_hash,
+                    section_names=section_names,
+                )
+                rows = [r.data() for r in result]
+        except Exception:
+            validated.append(citation)
+            continue
+
+        if not rows:
+            validated.append(citation)
+            continue
+
+        context = " ".join(
+            (r.get("abstract") or r.get("plain_text") or "")[:300]
+            for r in rows
+            if r.get("abstract") or r.get("plain_text")
+        )
+        if not context:
+            validated.append(citation)
+            continue
+
+        verdict = _call_chat(
+            [
+                SystemMessage(content="You are a citation validator."),
+                HumanMessage(
+                    content=(
+                        "Does this document content support the answer?\n"
+                        "Answer excerpt: {answer}\n"
+                        "Document content: {context}\n"
+                        "Reply with only: RELEVANT or IRRELEVANT"
+                    ).format(answer=answer[:200], context=context)
+                ),
+            ],
+            max_tokens=50,
+        ).strip().upper()
+
+        if "IRRELEVANT" in verdict:
+            continue
+
+        updated = dict(citation)
+        updated["section_context"] = context[:300]
+        validated.append(updated)
+
+    return validated
+
+
+def synthesize_answer(state: Dict[str, Any], driver=None, database: str = "neo4j") -> Dict[str, Any]:
     lang = _session_lang(state)
     error = state.get("execution_error") or state.get("cypher_generation_error")
     data = state.get("raw_result", [])
@@ -1892,6 +1970,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     citations = _extract_citations(
         data, answer=answer, doc_refs=state.get("document_references") or []
     )
+    citations = _validate_citations(answer, citations, driver, database)
     return {
         "answer": answer,
         "references": data,

@@ -116,7 +116,10 @@ def build_graph(compile_graph: bool = True):
         evaluate_retrieval_quality,
     )
     graph.add_node("generate_cypher_reformulation", generate_cypher_reformulation)
-    graph.add_node("synthesize_answer", synthesize_answer)
+    graph.add_node(
+        "synthesize_answer",
+        partial(synthesize_answer, driver=driver, database=NEO4J_DATABASE),
+    )
 
     # Edges
     graph.set_entry_point("decompose_query")
