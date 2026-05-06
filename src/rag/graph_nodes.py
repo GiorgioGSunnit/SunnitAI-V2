@@ -1973,11 +1973,21 @@ def synthesize_answer(state: Dict[str, Any], driver=None, database: str = "neo4j
             "If no retrieved data was used, omit the Fonti line entirely."
         )
 
+    log_cypher_event(
+        "e_synthesize_start",
+        "synthesis LLM call starting",
+        detail={"citations_count": len(all_citations)},
+    )
     answer = _call_chat(
         [
             SystemMessage(content=synthesis_system_message(lang)),
             HumanMessage(content="".join(human_parts) + synthesis_human_footer(lang)),
         ]
+    )
+    log_cypher_event(
+        "e_synthesize_end",
+        "synthesis LLM call complete",
+        detail={"answer_length": len(answer)},
     )
     answer = _strip_vague_closing(answer)
     citations = _extract_citations(
