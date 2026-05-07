@@ -330,12 +330,33 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         HumanMessage(content=entity_extraction_prompt),
     ]
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    query_variants_messages = [
+        SystemMessage(
+            content=(
+                f"{legal_consultant_system_prefix(lang)} "
+                "Generate alternative phrasings of a legal question for broader semantic search coverage."
+            )
+        ),
+        HumanMessage(
+            content=(
+                "Generate 3 alternative ways to phrase this legal question using different but "
+                "equivalent legal terminology. Return as comma-separated phrases, no numbering, "
+                "no explanation.\n\n"
+                f"Question: {query}"
+            )
+        ),
+    ]
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
         future_generalize = pool.submit(_call_chat, generalization_messages, 60)
         future_entities = pool.submit(structured_entities_model.invoke, entity_extraction_messages)
+        future_variants = pool.submit(_call_chat, query_variants_messages, 100)
 
         generalized = future_generalize.result()
         entities_payload = future_entities.result()
+        variants_raw = future_variants.result()
+
+    query_variants = [v.strip() for v in (variants_raw or "").split(",") if v.strip()][:5]
 
     logger.info(f"Generalized query: '{generalized}'")
     log_cypher_event(
@@ -343,11 +364,16 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         "generalized topic phrase (used for context / vector retrieval)",
         detail=generalized,
     )
+    log_cypher_event(
+        "a_variants",
+        "query variant phrasings (used for multi-shot vector retrieval)",
+        detail=query_variants,
+    )
 
     # Pre-processing: detect document reference patterns before LLM keyword extraction
     doc_refs = _extract_document_references(query)
 
-    # Step 1b: Keywords (1–3) — depends on generalized, so runs after
+    # Step 1b: Keywords (up to 5) — depends on generalized, so runs after
     ref_instruction = (
         " These document references were found in the query and must be preserved "
         f"exactly as-is in the keywords: {', '.join(doc_refs)}. Do not translate or interpret them."
@@ -358,18 +384,18 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
             SystemMessage(
                 content=(
                     f"{legal_consultant_system_prefix(lang)} "
-                    "Extract one to three keywords or short noun phrases that capture the core legal subject matter. "
-                    "Reply with only the keywords separated by commas. "
-                    f"No explanation, no sentences, just the keywords.{ref_instruction}"
+                    "Extract 5 specific legal terms or phrases from this question that would most likely appear verbatim in relevant legal documents. "
+                    "Focus on specific concepts, not generic categories. "
+                    f"No explanation, comma-separated.{ref_instruction}"
                 )
             ),
             HumanMessage(
                 content=f"Question:\n{query}\n\nGeneralized topic:\n{generalized}\n\nKeywords:"
             ),
         ],
-        max_tokens=40,
+        max_tokens=60,
     )
-    llm_keywords = [k.split('\n')[0].strip() for k in (kw_raw or "").split(",") if k.split('\n')[0].strip()][:3]
+    llm_keywords = [k.split('\n')[0].strip() for k in (kw_raw or "").split(",") if k.split('\n')[0].strip()][:5]
     # Prepend detected doc refs so they're always present regardless of LLM output
     if doc_refs:
         existing = set(llm_keywords)
@@ -497,6 +523,7 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         "document_references": doc_refs,
         "entities": processed_entities,
         "extracted_relationships": final_relationships,
+        "query_variants": query_variants,
     }
 
 
@@ -734,11 +761,21 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     if not generalized:
         return {"context_nodes": []}
 
+    query_variants = state.get("query_variants") or []
+    original_query = state.get("query", "")
+    search_texts = [generalized] + query_variants + ([original_query] if original_query != generalized else [])
+
     with driver.session(database=database) as session:
-        matches = vector_lookup(
-            session, generalized, indexes=CONTEXT_VECTOR_INDEXES,
-            index_settings=VECTOR_INDEX_SETTINGS, source_prefix="context",
-        )
+        all_matches: List[Dict[str, Any]] = []
+        for i, text in enumerate(search_texts):
+            prefix = "context" if i == 0 else f"context_variant_{i}"
+            all_matches.extend(
+                vector_lookup(
+                    session, text, indexes=CONTEXT_VECTOR_INDEXES,
+                    index_settings=VECTOR_INDEX_SETTINGS, source_prefix=prefix,
+                )
+            )
+    matches = all_matches
 
     aggregated: Dict[str, Dict[str, Any]] = {}
     for match in matches:

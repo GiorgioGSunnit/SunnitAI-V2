@@ -71,6 +71,7 @@ class AgentState(TypedDict, total=False):
     retrieval_evaluated: Optional[bool]
     citations: List[Dict[str, Any]]
     off_topic: Optional[bool]
+    query_variants: List[str]
 
 
 # ---------------------------------------------------------------------------
