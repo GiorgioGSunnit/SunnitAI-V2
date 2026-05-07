@@ -104,7 +104,10 @@ def build_graph(compile_graph: bool = True):
         "context_retrieval",
         partial(context_retrieval, driver=driver, database=NEO4J_DATABASE),
     )
-    graph.add_node("generate_cypher_intersection", generate_cypher_intersection)
+    graph.add_node(
+        "generate_cypher_intersection",
+        partial(generate_cypher_intersection, driver=driver, database=NEO4J_DATABASE),
+    )
     graph.add_node("generate_cypher_context_only", generate_cypher_context_only)
     graph.add_node("generate_cypher_fallback", generate_cypher_fallback)
     graph.add_node(

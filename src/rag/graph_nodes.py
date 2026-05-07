@@ -314,7 +314,7 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         ],
         max_tokens=40,
     )
-    llm_keywords = [k.strip() for k in (kw_raw or "").split(",") if k.strip()][:3]
+    llm_keywords = [k.split('\n')[0].strip() for k in (kw_raw or "").split(",") if k.split('\n')[0].strip()][:3]
     # Prepend detected doc refs so they're always present regardless of LLM output
     if doc_refs:
         existing = set(llm_keywords)
@@ -749,7 +749,7 @@ def _format_context_lines(nodes: List[Dict[str, Any]]) -> str:
     )
 
 
-def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
+def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: str = "neo4j") -> Dict[str, Any]:
     lang = _session_lang(state)
     entry_nodes = state.get("entry_nodes") or []
     context_nodes = state.get("context_nodes") or []
@@ -769,6 +769,53 @@ def generate_cypher_intersection(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     if not entry_nodes:
+        # Last-resort: try a direct keyword search before skipping
+        keywords = state.get("retrieval_keywords") or []
+        keyword = keywords[0] if keywords else None
+        if keyword and driver:
+            try:
+                with driver.session(database=database) as kw_session:
+                    kw_records = kw_session.run(
+                        "MATCH (n) "
+                        "WHERE (n:Document OR n:Section OR n:LegalAct) "
+                        "AND ("
+                        "  toLower(n.name) CONTAINS toLower($keyword) OR "
+                        "  toLower(n.description) CONTAINS toLower($keyword) OR "
+                        "  toLower(n.abstract) CONTAINS toLower($keyword)"
+                        ") "
+                        "RETURN elementId(n) AS element_id, labels(n) AS labels "
+                        "LIMIT 5",
+                        keyword=keyword,
+                    )
+                    kw_rows = [r.data() for r in kw_records]
+            except Exception as exc:
+                logger.warning("b_keyword_fallback failed: %s", exc)
+                kw_rows = []
+            kw_entry_nodes = [
+                {"element_id": row["element_id"], "labels": row["labels"], "sources": ["b_keyword_fallback"]}
+                for row in kw_rows
+                if row.get("element_id")
+            ]
+            if kw_entry_nodes:
+                log_cypher_event(
+                    "b_keyword_fallback",
+                    "keyword fallback search found nodes — generating Cypher",
+                    detail={"keyword": keyword, "count": len(kw_entry_nodes)},
+                )
+                ids_literal = "[" + ", ".join("'" + n["element_id"] + "'" for n in kw_entry_nodes) + "]"
+                cypher = (
+                    "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
+                    "WHERE elementId(d) IN " + ids_literal + "\n"
+                    "RETURN d, s\n"
+                    "LIMIT 10"
+                )
+                log_cypher_multiline("b_keyword_fallback", "keyword fallback Cypher", cypher)
+                return {
+                    "entry_nodes": kw_entry_nodes,
+                    "cypher_query": cypher,
+                    "cypher_generation_error": None,
+                    "cypher_attempt": "intersection",
+                }
         log_cypher_event(
             "b_skip",
             "intersection: no Cypher generated (no entry nodes from entity linking)",
