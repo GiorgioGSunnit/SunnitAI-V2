@@ -33,7 +33,7 @@ LABEL_CONFIGS: List[Dict] = [
         "fetch_cypher": (
             "MATCH (n:Document) "
             "RETURN elementId(n) AS eid, "
-            + _text_expr("document_title", "document_type", "document_date")
+            + _text_expr("document_title", "document_type", "document_date", "name", "description")
             + " AS text"
         ),
     },
@@ -73,7 +73,7 @@ LABEL_CONFIGS: List[Dict] = [
         "fetch_cypher": (
             "MATCH (n:Section) "
             "RETURN elementId(n) AS eid, "
-            + _text_expr("title", "text_en")
+            + _text_expr("title", "text_en", "abstract", "plain_text")
             + " AS text"
         ),
     },
