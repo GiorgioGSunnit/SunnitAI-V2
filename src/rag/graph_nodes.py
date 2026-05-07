@@ -838,6 +838,8 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                         "  toLower(n.description) CONTAINS toLower($keyword) OR "
                         "  toLower(n.abstract) CONTAINS toLower($keyword)"
                         ") "
+                        "AND NOT ('LegalAct' IN labels(n) AND (n.name IS NULL OR n.name = '' OR n.name IN ['string', 'Fonte non classificata'])) "
+                        "AND NOT ('Section' IN labels(n) AND (n.abstract IS NULL OR n.abstract = '') AND (n.plain_text IS NULL OR n.plain_text = '')) "
                         "RETURN elementId(n) AS element_id, labels(n) AS labels "
                         "LIMIT 5",
                         keyword=keyword,
