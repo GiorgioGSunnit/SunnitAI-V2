@@ -210,10 +210,65 @@ RELATION_HINTS = "\n".join(
 # Node A: Query decomposition
 # ---------------------------------------------------------------------------
 
+_OFF_TOPIC_REDIRECTS = {
+    "it": (
+        "Sono specializzato in consulenza legale e non sono in grado di rispondere a questa domanda. "
+        "Posso aiutarti con questioni di diritto civile, penale, amministrativo o con l'analisi di documenti legali. "
+        "C'è qualcosa di legale su cui posso assisterti?"
+    ),
+    "es": (
+        "Estoy especializado en consultoría legal y no puedo responder a esta pregunta. "
+        "Puedo ayudarte con cuestiones de derecho civil, penal, administrativo o con el análisis de documentos legales. "
+        "¿Hay algo legal en lo que pueda ayudarte?"
+    ),
+    "en": (
+        "I specialise in legal consultation and am unable to answer this question. "
+        "I can help you with civil, criminal, administrative law or legal document analysis. "
+        "Is there something legal I can assist you with?"
+    ),
+}
+
+
+def _is_legal_query(query: str, lang: str) -> bool:
+    """Return True if the query is legal/professional; False if off-topic. Fails safe (True)."""
+    try:
+        response = _call_chat(
+            [
+                SystemMessage(
+                    content="You are a legal assistant classifier. Reply with only LEGAL or OFFTOPIC."
+                ),
+                HumanMessage(
+                    content=(
+                        "Is this a legal or professional question?\n"
+                        "Question: {query}\n"
+                        "Reply with only: LEGAL or OFFTOPIC"
+                    ).format(query=query)
+                ),
+            ],
+            max_tokens=5,
+        )
+        return "LEGAL" in (response or "").upper()
+    except Exception:
+        return True
+
+
 def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
     state["turn_count"] = state.get("turn_count", 0) + 1
     query = state["query"]
     lang = _session_lang(state)
+
+    if not _is_legal_query(query, lang):
+        redirect = _OFF_TOPIC_REDIRECTS.get(lang, _OFF_TOPIC_REDIRECTS["en"])
+        logger.info("Off-topic query detected, skipping pipeline: %s", query[:80])
+        return {
+            **state,
+            "answer": redirect,
+            "citations": [],
+            "references": [],
+            "status_messages": [],
+            "off_topic": True,
+        }
+
     logger.info("Starting query decomposition", extra={"query": query})
 
     log_cypher_multiline(
@@ -1988,6 +2043,10 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Routing functions
 # ---------------------------------------------------------------------------
+
+def route_after_decompose(state: Dict[str, Any]) -> str:
+    return "off_topic" if state.get("off_topic") else "legal"
+
 
 def route_after_intersection(state: Dict[str, Any]) -> str:
     cypher = state.get("cypher_query")

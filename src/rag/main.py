@@ -31,6 +31,7 @@ from .graph_nodes import (
     generate_cypher_fallback,
     generate_cypher_intersection,
     generate_cypher_reformulation,
+    route_after_decompose,
     route_after_evaluation,
     route_after_execution,
     route_after_intersection,
@@ -69,6 +70,7 @@ class AgentState(TypedDict, total=False):
     neo4j_executed: Optional[bool]
     retrieval_evaluated: Optional[bool]
     citations: List[Dict[str, Any]]
+    off_topic: Optional[bool]
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +125,11 @@ def build_graph(compile_graph: bool = True):
 
     # Edges
     graph.set_entry_point("decompose_query")
-    graph.add_edge("decompose_query", "entity_linking")
+    graph.add_conditional_edges(
+        "decompose_query",
+        route_after_decompose,
+        {"legal": "entity_linking", "off_topic": END},
+    )
     graph.add_edge("entity_linking", "context_retrieval")
     graph.add_edge("context_retrieval", "generate_cypher_intersection")
     graph.add_conditional_edges(
