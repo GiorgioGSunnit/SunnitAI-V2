@@ -31,7 +31,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Document",
         "index_name": "document_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Document) WHERE n.embedding IS NULL "
+            "MATCH (n:Document) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("document_title", "document_type", "document_date")
             + " AS text"
@@ -41,7 +41,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "LegalAct",
         "index_name": "legalact_embeddings",
         "fetch_cypher": (
-            "MATCH (n:LegalAct) WHERE n.embedding IS NULL "
+            "MATCH (n:LegalAct) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("act_type", "act_number", "act_year", "title", "subject")
             + " AS text"
@@ -51,7 +51,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Article",
         "index_name": "article_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Article) WHERE n.embedding IS NULL "
+            "MATCH (n:Article) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("heading", "text_en")
             + " AS text"
@@ -61,7 +61,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Clause",
         "index_name": "clause_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Clause) WHERE n.embedding IS NULL "
+            "MATCH (n:Clause) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("text_en")
             + " AS text"
@@ -71,7 +71,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Section",
         "index_name": "section_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Section) WHERE n.embedding IS NULL "
+            "MATCH (n:Section) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("title", "text_en")
             + " AS text"
@@ -81,7 +81,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Institution",
         "index_name": "institution_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Institution) WHERE n.embedding IS NULL "
+            "MATCH (n:Institution) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("name", "type")
             + " AS text"
@@ -91,7 +91,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Person",
         "index_name": "person_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Person) WHERE n.embedding IS NULL "
+            "MATCH (n:Person) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("name", "role")
             + " AS text"
@@ -101,7 +101,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Company",
         "index_name": "company_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Company) WHERE n.embedding IS NULL "
+            "MATCH (n:Company) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("name", "legal_form")
             + " AS text"
@@ -111,7 +111,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Court",
         "index_name": "court_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Court) WHERE n.embedding IS NULL "
+            "MATCH (n:Court) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("name")
             + " AS text"
@@ -121,7 +121,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "CourtCase",
         "index_name": "courtcase_embeddings",
         "fetch_cypher": (
-            "MATCH (n:CourtCase) WHERE n.embedding IS NULL "
+            "MATCH (n:CourtCase) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("case_number", "title")
             + " AS text"
@@ -131,7 +131,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "LegalParty",
         "index_name": "legalparty_embeddings",
         "fetch_cypher": (
-            "MATCH (n:LegalParty) WHERE n.embedding IS NULL "
+            "MATCH (n:LegalParty) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("display_name")
             + " AS text"
@@ -141,7 +141,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Tender",
         "index_name": "tender_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Tender) WHERE n.embedding IS NULL "
+            "MATCH (n:Tender) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("title", "subject", "issuer")
             + " AS text"
@@ -151,7 +151,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Award",
         "index_name": "award_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Award) WHERE n.embedding IS NULL "
+            "MATCH (n:Award) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("title", "recommendation_text")
             + " AS text"
@@ -161,7 +161,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Contract",
         "index_name": "contract_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Contract) WHERE n.embedding IS NULL "
+            "MATCH (n:Contract) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("contract_id", "title")
             + " AS text"
@@ -171,7 +171,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "ChangeOrder",
         "index_name": "changeorder_embeddings",
         "fetch_cypher": (
-            "MATCH (n:ChangeOrder) WHERE n.embedding IS NULL "
+            "MATCH (n:ChangeOrder) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("reason")
             + " AS text"
@@ -181,7 +181,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Auction",
         "index_name": "auction_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Auction) WHERE n.embedding IS NULL "
+            "MATCH (n:Auction) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("title", "terms", "conditions")
             + " AS text"
@@ -191,7 +191,7 @@ LABEL_CONFIGS: List[Dict] = [
         "label": "Penalty",
         "index_name": "penalty_embeddings",
         "fetch_cypher": (
-            "MATCH (n:Penalty) WHERE n.embedding IS NULL "
+            "MATCH (n:Penalty) "
             "RETURN elementId(n) AS eid, "
             + _text_expr("type", "reason")
             + " AS text"
