@@ -396,6 +396,15 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         max_tokens=60,
     )
     llm_keywords = [k.split('\n')[0].strip() for k in (kw_raw or "").split(",") if k.split('\n')[0].strip()][:5]
+    _sentence_starters = re.compile(
+        r"^(noto|prevede|stabilisce|dispone|indica|riporta)\b", re.IGNORECASE
+    )
+    llm_keywords = [
+        k for k in llm_keywords
+        if len(k) <= 50
+        and '"' not in k and "'" not in k
+        and not _sentence_starters.match(k)
+    ]
     # Prepend detected doc refs so they're always present regardless of LLM output
     if doc_refs:
         existing = set(llm_keywords)
@@ -942,12 +951,15 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
     turn_count = state.get("turn_count", 1)
     if turn_count == 1:
         entry_ids = [n["element_id"] for n in entry_nodes if n.get("element_id")]
-        ids_literal = "[" + ", ".join("'" + eid + "'" for eid in entry_ids) + "]"
+        context_ids = [n["element_id"] for n in context_nodes if n.get("element_id")]
+        all_node_ids = list(dict.fromkeys(entry_ids + context_ids))
+        ids_literal = "[" + ", ".join("'" + eid + "'" for eid in all_node_ids) + "]"
         cypher = (
             "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
             "WHERE elementId(d) IN " + ids_literal + "\n"
+            "   OR elementId(s) IN " + ids_literal + "\n"
             "RETURN d, s\n"
-            "LIMIT 10"
+            "LIMIT 15"
         )
         log_cypher_multiline(
             "b_tier1",
