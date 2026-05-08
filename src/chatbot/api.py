@@ -32,6 +32,7 @@ from ..rag.document_generation import (
     generate_opposition_act,
     is_generation_request,
 )
+from ..rag.graph_nodes import _extract_citations
 
 logger = logging.getLogger(__name__)
 
@@ -174,6 +175,7 @@ def _get_cached_sections(session) -> Optional[list]:
 
 def _run_generation_sync(message: str, session_lang: str, cached_sections: Optional[list] = None) -> dict:
     case_details = extract_case_details(message)
+    citations = None
     if cached_sections is not None:
         retrieved_sections = cached_sections
         sources = sorted({s["document_title"] for s in retrieved_sections if s.get("document_title")})
@@ -183,11 +185,12 @@ def _run_generation_sync(message: str, session_lang: str, cached_sections: Optio
             raw_result = rag_state.get("raw_result") or []
             retrieved_sections = _raw_result_to_sections(raw_result)
             sources = sorted({s["document_title"] for s in retrieved_sections if s.get("document_title")})
+            citations = _extract_citations(rag_state)
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
             retrieved_sections = []
             sources = []
-    draft = generate_opposition_act(case_details, retrieved_sections, session_lang)
+    draft = generate_opposition_act(case_details, retrieved_sections, session_lang, citations)
     return {"draft": draft, "case_details": case_details, "sources": sources}
 
 

@@ -182,6 +182,7 @@ def generate_opposition_act(
     case_details: Dict[str, Any],
     retrieved_sections: List[Any],
     session_lang: str = "it",
+    citations: list = None,
 ) -> str:
     """Generate an Italian opposition act (atto di opposizione a decreto ingiuntivo).
 
@@ -207,6 +208,20 @@ def generate_opposition_act(
 
     sections_block = _format_retrieved_sections(retrieved_sections, lang)
 
+    system_content = _opposition_system(lang)
+    if citations:
+        citations_text = "\n".join(
+            f"- {cit.get('document_name', '')}, sezione {sec.get('name', '')}"
+            for cit in citations
+            for sec in (cit.get("sections") or [])
+            if sec.get("name")
+        )
+        if citations_text:
+            system_content += (
+                "\nGround the legal arguments in these specific retrieved documents and cite them "
+                "explicitly in the Motivi di opposizione section:\n" + citations_text
+            )
+
     human_content = (
         "Case details:\n"
         f"- Opposing party (plaintiff): {plaintiff}\n"
@@ -223,7 +238,7 @@ def generate_opposition_act(
 
     return _call_chat(
         [
-            SystemMessage(content=_opposition_system(lang)),
+            SystemMessage(content=system_content),
             HumanMessage(content=human_content),
         ],
         max_tokens=2000,

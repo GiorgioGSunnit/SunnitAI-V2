@@ -1931,7 +1931,7 @@ def _extract_citations(
             "document_id": doc_id,
             "sections": [
                 {
-                    "name": name,
+                    "name": name[:50] if len(name) > 50 else name,
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
                         f"sections/{urllib.parse.quote(name, safe='')}"
