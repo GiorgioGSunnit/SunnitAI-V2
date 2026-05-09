@@ -28,8 +28,9 @@ from pydantic import BaseModel, Field
 from .session import ChatBot, ChatSession
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.document_generation import (
-    extract_case_details,
-    generate_opposition_act,
+    DOCUMENT_TYPE_REGISTRY,
+    classify_document_type,
+    generate_document,
     is_generation_request,
 )
 from ..rag.graph_nodes import _extract_citations
@@ -90,6 +91,7 @@ class GenerateResponse(BaseModel):
     case_details: dict
     sources: list
     session_id: str
+    doc_type: str = ""
 
 
 class ChatResponse(BaseModel):
@@ -173,12 +175,23 @@ def _get_cached_sections(session) -> Optional[list]:
     return None
 
 
-def _run_generation_sync(message: str, session_lang: str, cached_sections: Optional[list] = None) -> dict:
-    case_details = extract_case_details(message)
+def _build_clarification_message() -> str:
+    types_list = "\n".join(
+        f"- **{entry['label']}**"
+        for entry in DOCUMENT_TYPE_REGISTRY.values()
+    )
+    return (
+        "Non ho capito che tipo di documento vuoi generare. "
+        "Puoi specificare meglio la tua richiesta? I tipi di documento disponibili sono:\n\n"
+        f"{types_list}\n\n"
+        "Indica quale documento desideri e fornisci i dettagli necessari."
+    )
+
+
+def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None) -> dict:
     citations = None
     if cached_sections is not None:
-        retrieved_sections = cached_sections
-        sources = sorted({s["document_title"] for s in retrieved_sections if s.get("document_title")})
+        sources = sorted({s["document_title"] for s in cached_sections if s.get("document_title")})
     else:
         try:
             rag_state = rag_run(message, session_language=session_lang)
@@ -188,10 +201,9 @@ def _run_generation_sync(message: str, session_lang: str, cached_sections: Optio
             citations = _extract_citations(rag_state)
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
-            retrieved_sections = []
             sources = []
-    draft = generate_opposition_act(case_details, retrieved_sections, session_lang, citations)
-    return {"draft": draft, "case_details": case_details, "sources": sources}
+    gen = generate_document(message, doc_type, session_lang, citations)
+    return {"draft": gen["draft"], "case_details": gen["case_details"], "sources": sources, "doc_type": gen["doc_type"]}
 
 
 # ---------------------------------------------------------------------------
@@ -364,10 +376,10 @@ def delete_session(session_id: str):
 
 @app.post("/api/generate", response_model=GenerateResponse)
 async def generate(request: GenerateRequest):
-    """Generate an Italian opposition act (atto di opposizione a decreto ingiuntivo).
+    """Generate a legal document draft from a free-text request.
 
-    Extracts case details from the free-text message, retrieves relevant sections
-    from the knowledge base, and returns a structured draft act.
+    Classifies the document type, extracts case details, retrieves relevant sections
+    from the knowledge base, and returns a structured draft.
     """
     if not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
@@ -383,13 +395,22 @@ async def generate(request: GenerateRequest):
         chatbot._sessions[session_id] = session
 
     session_lang = session.session_language
+    doc_type = classify_document_type(request.message, session_lang)
+    if doc_type == "unknown":
+        clarification = _build_clarification_message()
+        session.add_message("user", request.message)
+        session.add_message("assistant", clarification)
+        return GenerateResponse(
+            session_id=session_id, draft=clarification, case_details={}, sources=[], doc_type="unknown"
+        )
+
     cached = _get_cached_sections(session)
     session.add_message("user", request.message)
 
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, partial(_run_generation_sync, request.message, session_lang, cached)
+            None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached)
         )
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
@@ -424,13 +445,16 @@ async def generate_download(request: GenerateRequest):
         session = ChatSession(session_id=session_id)
         chatbot._sessions[session_id] = session
     session_lang = session.session_language
+    doc_type = classify_document_type(request.message, session_lang)
+    if doc_type == "unknown":
+        raise HTTPException(status_code=400, detail=_build_clarification_message())
     cached = _get_cached_sections(session)
     session.add_message("user", request.message)
 
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, partial(_run_generation_sync, request.message, session_lang, cached)
+            None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached)
         )
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
@@ -492,12 +516,25 @@ async def chat(request: ChatRequest):
             session = ChatSession(session_id=session_id)
             chatbot._sessions[session_id] = session
         session_lang = session.session_language
+        doc_type = classify_document_type(request.message, session_lang)
+        if doc_type == "unknown":
+            clarification = _build_clarification_message()
+            session.add_message("user", request.message)
+            session.add_message("assistant", clarification)
+            return ChatResponse(
+                session_id=session_id,
+                answer=clarification,
+                original_query=request.message,
+                resolved_query=request.message,
+                session_language=session_lang,
+                status_messages=["generation_mode"],
+            )
         cached = _get_cached_sections(session)
         session.add_message("user", request.message)
         try:
             loop = asyncio.get_event_loop()
             gen_result = await loop.run_in_executor(
-                None, partial(_run_generation_sync, request.message, session_lang, cached)
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached)
             )
         except Exception as exc:
             logger.error("Generation error: %s", exc, exc_info=True)

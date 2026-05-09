@@ -49,6 +49,21 @@ DOCUMENT_TYPE_REGISTRY = {
         "fields": ["parte_locatrice", "parte_conduttrice", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "spese_conduzione", "deposito_cauzionale", "uso_destinato", "data_inizio", "data_fine", "foro_competente"],
         "label": "Contratto di Locazione ad Uso Commerciale",
     },
+    "rental_cancellation": {
+        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto"],
+        "fields": ["conduttore", "indirizzo_conduttore", "locatore", "indirizzo_immobile", "data_stipula", "data_registrazione", "data_consegna", "preavviso_mesi", "modalita_invio"],
+        "label": "Disdetta Contratto di Locazione",
+    },
+    "insurance_cancellation": {
+        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione"],
+        "fields": ["assicurato", "indirizzo_assicurato", "compagnia_assicurativa", "numero_polizza", "data_scadenza", "luogo", "data"],
+        "label": "Disdetta Polizza Assicurativa",
+    },
+    "insurance_declaration": {
+        "keywords": ["dichiarazione sostitutiva polizza", "dichiarazione assicurativa", "sostitutiva assicurazione", "dichiarazione polizza"],
+        "fields": ["dichiarante", "luogo_nascita", "data_nascita", "residenza", "qualita", "organizzazione", "sede_organizzazione", "data_inizio", "data_fine", "attivita_autorizzate"],
+        "label": "Dichiarazione Sostitutiva di Polizza Assicurativa",
+    },
     "demand_letter": {
         "keywords": ["diffida", "messa in mora", "lettera di diffida", "intimazione", "sollecito legale", "burofax", "demand letter"],
         "fields": ["mittente", "destinatario", "oggetto_controversia", "importo_dovuto", "termine_adempimento", "conseguenze", "data"],
@@ -685,37 +700,200 @@ def _rental_commercial_system(lang: str) -> str:
     )
 
 
-def generate_opposition_act(
-    case_details: Dict[str, Any],
-    retrieved_sections: List[Any],
-    session_lang: str = "it",
-    citations: list = None,
-) -> str:
-    """Generate an Italian opposition act (atto di opposizione a decreto ingiuntivo).
+def _rental_cancellation_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un abogado experto en arrendamientos urbanos. "
+            "Redacta una carta de desistimiento de contrato de arrendamiento de vivienda. "
+            "El documento debe ser formalmente correcto y estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Datos del arrendatario (nombre, DNI, domicilio), datos del arrendador "
+            "(nombre, domicilio), medio de envío (carta certificada con acuse de recibo o correo electrónico "
+            "certificado), objeto de la comunicación.\n"
+            "2. DECLARACIÓN DE DESISTIMIENTO — Manifestación expresa de desistir del contrato de "
+            "arrendamiento, fecha de firma del contrato, número de referencia de registro, "
+            "dirección del inmueble arrendado.\n"
+            "3. PLAZO DE ENTREGA — Fecha en la que el inmueble será entregado libre de personas y enseres, "
+            "plazo de preaviso en meses/días desde la recepción de la presente comunicación.\n"
+            "4. CIERRE Y FIRMA — Fórmula de cierre, lugar, fecha, firma del arrendatario.\n\n"
+            f"Usa {ph} para datos que falten. "
+            "No añadas advertencias meta-legales. "
+            "Redacta directamente la carta, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in residential tenancy law. "
+            "Draft a notice of termination of a residential tenancy agreement. "
+            "The document must be formally correct and structured in the following sections:\n\n"
+            "1. HEADING — Tenant's details (name, ID, address), landlord's details (name, address), "
+            "method of delivery (recorded delivery letter or certified email), subject of the notice.\n"
+            "2. NOTICE OF TERMINATION — Express statement of intent to terminate the tenancy agreement, "
+            "date the agreement was signed, land registry or tax registration reference, "
+            "address of the rented property.\n"
+            "3. HANDOVER DATE — Date by which the property will be returned vacant and free of belongings, "
+            "notice period in months/days from receipt of this communication.\n"
+            "4. CLOSING AND SIGNATURE — Closing formula, place, date, tenant's signature.\n\n"
+            f"Use {ph} for any missing data. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un avvocato esperto in locazioni abitative italiane. "
+        "Redigi una disdetta di contratto di locazione da parte del conduttore. "
+        "Il documento deve essere formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Dati del conduttore (nome, cognome, C.F., indirizzo), dati del locatore "
+        "(nome, cognome, indirizzo), modalità di invio (raccomandata A/R o PEC), oggetto della comunicazione.\n"
+        "2. DICHIARAZIONE DI RECESSO — Manifestazione espressa di voler recedere anticipatamente dal "
+        "contratto di locazione, data di stipula del contratto, data di registrazione presso l'Agenzia "
+        "delle Entrate, indirizzo dell'immobile locato.\n"
+        "3. TERMINE DI CONSEGNA — Data entro cui l'immobile sarà consegnato libero da cose e persone, "
+        "preavviso in mesi/giorni dalla ricezione della presente comunicazione.\n"
+        "4. CHIUSURA E FIRMA — Formula di chiusura, luogo, data, firma del conduttore.\n\n"
+        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
+    )
 
-    Args:
-        case_details: Dict with keys plaintiff, defendant, injunction_reference,
-                      court, amount, grounds, date. Any can be empty/None.
-        retrieved_sections: List of section dicts from the RAG knowledge base.
-        session_lang: Session language code (output is always Italian).
+
+def _insurance_cancellation_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un experto en derecho de seguros. "
+            "Redacta una carta de desistimiento o no renovación de póliza de seguro por vencimiento natural. "
+            "El documento debe ser formalmente correcto y estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Lugar y fecha, destinatario (nombre compañía aseguradora, dirección), "
+            "objeto con número de póliza y fecha de vencimiento.\n"
+            "2. CUERPO DE LA CARTA — Solicitud formal de no renovación de la póliza por vencimiento natural, "
+            "referencia a las condiciones generales de la póliza y a la normativa vigente, "
+            "petición de acuse de recibo.\n"
+            "3. FIRMA — Fórmula de cierre cordial, firma del asegurado.\n\n"
+            f"Usa {ph} para datos que falten. "
+            "No añadas advertencias meta-legales. "
+            "Redacta directamente la carta, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in insurance law. "
+            "Draft a notice of cancellation or non-renewal of an insurance policy at natural expiry. "
+            "The document must be formally correct and structured in the following sections:\n\n"
+            "1. HEADING — Place and date, addressee (insurance company name, address), "
+            "subject with policy number and expiry date.\n"
+            "2. BODY OF THE LETTER — Formal request not to renew the policy at natural expiry, "
+            "reference to the general policy conditions and applicable regulations, "
+            "request for acknowledgement of receipt.\n"
+            "3. SIGNATURE — Cordial closing formula, policyholder's signature.\n\n"
+            f"Use {ph} for any missing data. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un esperto in diritto assicurativo. "
+        "Redigi una lettera di disdetta di polizza assicurativa per naturale scadenza. "
+        "Il documento deve essere formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Luogo e data, destinatario (nome compagnia assicurativa, indirizzo), "
+        "oggetto con numero polizza e data di scadenza.\n"
+        "2. CORPO DELLA LETTERA — Richiesta formale di disdetta per naturale scadenza, riferimento "
+        "alle condizioni di polizza e alle norme vigenti, richiesta di ricevuta di ritorno.\n"
+        "3. FIRMA — Formula di chiusura cordiale, firma dell'assicurato.\n\n"
+        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
+    )
+
+
+def _insurance_declaration_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un experto en derecho de seguros y documentación oficial. "
+            "Redacta una declaración sustitutiva de póliza de seguro para una actividad artístico-cultural. "
+            "El documento debe ser formalmente correcto y estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Fac-símil en papel con membrete, título declaración sustitutiva.\n"
+            "2. DATOS DEL DECLARANTE — Nombre y apellidos, lugar y fecha de nacimiento, domicilio, "
+            "calidad en que actúa, nombre de la organización, sede.\n"
+            "3. PERÍODO DE REFERENCIA — Fechas desde/hasta incluidos días de montaje/desmontaje, "
+            "actividades autorizadas objeto de la cobertura.\n"
+            "4. DECLARACIONES — Póliza contra accidentes para actividades artístico-culturales, "
+            "cobertura de daños a cosas de terceros, aviso APL sobre señalización de espacios.\n"
+            "5. CONSENTIMIENTO Y FIRMA — Consentimiento para el tratamiento de datos personales, "
+            "fecha, firma, adjuntar documento de identidad.\n\n"
+            f"Usa {ph} para datos que falten. "
+            "No añadas advertencias meta-legales. "
+            "Redacta directamente el documento, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in insurance law and official documentation. "
+            "Draft a substitute declaration of insurance policy for an artistic-cultural activity. "
+            "The document must be formally correct and structured in the following sections:\n\n"
+            "1. HEADING — Facsimile on headed paper, title of the substitute declaration.\n"
+            "2. DECLARANT'S DETAILS — Full name, place and date of birth, address, "
+            "capacity in which acting, name of the organisation, registered office.\n"
+            "3. REFERENCE PERIOD — Dates from/to including set-up/dismantling days, "
+            "authorised activities covered by the policy.\n"
+            "4. DECLARATIONS — Accident policy for artistic-cultural activities, "
+            "coverage for damage to third-party property, APL notice regarding signage of venues.\n"
+            "5. CONSENT AND SIGNATURE — Consent to personal data processing, "
+            "date, signature, attach identity document.\n\n"
+            f"Use {ph} for any missing data. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un esperto in diritto assicurativo e documentazione ufficiale. "
+        "Redigi una dichiarazione sostitutiva di polizza assicurativa per un'attività artistico-culturale. "
+        "Il documento deve essere formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Fac-simile su carta intestata, titolo dichiarazione sostitutiva.\n"
+        "2. DATI DEL DICHIARANTE — Nome e cognome, luogo e data di nascita, residente in, "
+        "qualità in cui agisce, nome dell'organizzazione, sede.\n"
+        "3. PERIODO DI RIFERIMENTO — Date dal/al inclusi giorni di allestimento/disallestimento, "
+        "attività autorizzate oggetto della copertura.\n"
+        "4. DICHIARAZIONI — Polizza contro infortuni per attività artistico-culturali, copertura danni "
+        "a cose di terzi, avvertenza APL su segnalazione degli spazi.\n"
+        "5. CONSENSO E FIRMA — Consenso al trattamento dei dati personali ai sensi della L. 196/2003, "
+        "data, firma, allegare documento di identità.\n\n"
+        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
+    )
+
+
+def generate_document(
+    user_message: str,
+    doc_type: str,
+    lang: str,
+    citations: list = None,
+) -> Dict[str, Any]:
+    """Generic document generator dispatching on doc_type via DOCUMENT_TYPE_REGISTRY.
 
     Returns:
-        The full generated act as a string.
+        {"draft": str, "case_details": Dict[str, str], "doc_type": str}
     """
-    lang = session_lang or "it"
-    ph = _placeholder(lang)
+    _SYSTEM_FN = {
+        "opposition_act": _opposition_system,
+        "rental_basic": _rental_basic_system,
+        "rental_standard": _rental_standard_system,
+        "rental_student": _rental_student_system,
+        "rental_transitional": _rental_transitional_system,
+        "rental_free_rent": _rental_free_rent_system,
+        "rental_commercial": _rental_commercial_system,
+        "rental_cancellation": _rental_cancellation_system,
+        "insurance_cancellation": _insurance_cancellation_system,
+        "insurance_declaration": _insurance_declaration_system,
+    }
 
-    plaintiff = _field(case_details.get("plaintiff"), "nome opponente / opposing party name", lang)
-    defendant = _field(case_details.get("defendant"), "nome opposto/creditore / creditor name", lang)
-    injunction_ref = _field(case_details.get("injunction_reference"), "n. decreto ingiuntivo / order reference", lang)
-    court = _field(case_details.get("court"), "tribunale / court", lang)
-    amount = _field(case_details.get("amount"), "importo / amount", lang)
-    grounds = (case_details.get("grounds") or "").strip() or ph + " (grounds of opposition)"
-    date = _field(case_details.get("date"), "data / date", lang)
+    system_fn = _SYSTEM_FN.get(doc_type)
+    if system_fn is None:
+        logger.warning(
+            "generate_document: no system prompt function for doc_type=%r, falling back to _opposition_system",
+            doc_type,
+        )
+        system_fn = _opposition_system
 
-    sections_block = _format_retrieved_sections(retrieved_sections, lang)
+    fields_dict = extract_document_fields(user_message, doc_type, lang)
 
-    system_content = _opposition_system(lang)
+    system_content = system_fn(lang)
     if citations:
         citations_text = "\n".join(
             f"- {cit.get('document_name', '')}, sezione {sec.get('name', '')}"
@@ -729,24 +907,35 @@ def generate_opposition_act(
                 "explicitly in the Motivi di opposizione section:\n" + citations_text
             )
 
+    ph = _placeholder(lang)
+    field_lines = "\n".join(
+        f"- {k}: {v if v else ph}"
+        for k, v in fields_dict.items()
+    )
     human_content = (
-        "Case details:\n"
-        f"- Opposing party (plaintiff): {plaintiff}\n"
-        f"- Creditor (defendant): {defendant}\n"
-        f"- Order reference: {injunction_ref}\n"
-        f"- Court: {court}\n"
-        f"- Amount disputed: {amount}\n"
-        f"- Date: {date}\n"
-        f"- Grounds of opposition (client's free text):\n{grounds}\n\n"
-        "Relevant knowledge base sections (use as references in the Grounds section):\n"
-        f"{sections_block}\n\n"
+        f"Document fields:\n{field_lines}\n\n"
         "Draft the complete document following exactly the structure specified in the system prompt."
     )
 
-    return _call_chat(
-        [
-            SystemMessage(content=system_content),
-            HumanMessage(content=human_content),
-        ],
+    raw_output = _call_chat(
+        [SystemMessage(content=system_content), HumanMessage(content=human_content)],
         max_tokens=2000,
     )
+
+    return {"draft": raw_output, "case_details": fields_dict, "doc_type": doc_type}
+
+
+def generate_opposition_act(
+    case_details: Dict[str, Any],
+    retrieved_sections: List[Any],
+    session_lang: str = "it",
+    citations: list = None,
+) -> str:
+    """Thin wrapper around generate_document for backwards compatibility."""
+    lang = session_lang or "it"
+    lines = [f"{k}: {v}" for k, v in case_details.items() if v]
+    if retrieved_sections:
+        lines.append(
+            f"\nRelevant knowledge base sections:\n{_format_retrieved_sections(retrieved_sections, lang)}"
+        )
+    return generate_document("\n".join(lines), "opposition_act", lang, citations)["draft"]
