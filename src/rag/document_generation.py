@@ -20,17 +20,17 @@ DOCUMENT_TYPE_REGISTRY = {
         "label": "Atto di Opposizione a Decreto Ingiuntivo",
     },
     "rental_basic": {
-        "keywords": ["cedolare secca", "affitto semplice", "locazione privata", "contratto base affitto"],
+        "keywords": ["cedolare secca", "affitto semplice", "locazione privata", "contratto base affitto", "affitto"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "durata_anni", "cedolare_secca"],
         "label": "Contratto di Locazione con Cedolare Secca",
     },
     "rental_standard": {
-        "keywords": ["locazione abitativa", "contratto 3+2", "affitto residenziale", "legge 431", "accordo territoriale", "canone concordato"],
+        "keywords": ["locazione abitativa", "contratto 3+2", "affitto residenziale", "legge 431", "accordo territoriale", "canone concordato", "locazione"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "deposito_cauzionale", "data_inizio", "data_fine", "accordo_territoriale", "iban_locatore"],
         "label": "Contratto di Locazione Abitativa (3+2)",
     },
     "rental_student": {
-        "keywords": ["locazione studenti", "affitto universitario", "studente universitario", "fuori sede", "locazione universitaria"],
+        "keywords": ["locazione studenti", "affitto universitario", "studente universitario", "fuori sede", "locazione universitaria", "contratto"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "data_fine", "corso_studi", "nome_universita", "comune_universita"],
         "label": "Locazione Abitativa per Studenti Universitari",
     },
@@ -97,6 +97,7 @@ def is_generation_request(message: str) -> bool:
         "genera", "scrivi", "redigi", "crea", "prepara", "stendi",
         "elabora", "redigimi", "generami", "scrivimi", "fammi",
         "produce", "draft", "write", "create", "redacta",
+        "voglio", "vorrei", "ho bisogno di",
     ]
     strong_triggers = [
         "redigimi", "generami", "scrivimi", "fammi un atto",
