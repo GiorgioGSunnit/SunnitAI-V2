@@ -1931,13 +1931,14 @@ def _extract_citations(
             "document_id": doc_id,
             "sections": [
                 {
-                    "name": name[:50] if len(name) > 50 else name,
+                    "name": name,
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
                         f"sections/{urllib.parse.quote(name, safe='')}"
                     ),
                 }
                 for name in sorted(info["sections"])
+                if len(name) <= 50
             ],
         }
         for doc_id, info in docs.items()

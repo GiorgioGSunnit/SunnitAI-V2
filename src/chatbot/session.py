@@ -181,20 +181,25 @@ class ChatBot:
 
     def create_session(self) -> ChatSession:
         session = ChatSession()
-        self._sessions[session.session_id] = session
+        with self._lock:
+            self._sessions[session.session_id] = session
         logger.info("Created session %s", session.session_id)
         return session
 
     def get_session(self, session_id: str) -> Optional[ChatSession]:
-        return self._sessions.get(session_id)
+        with self._lock:
+            return self._sessions.get(session_id)
 
     def delete_session(self, session_id: str) -> bool:
-        if session_id in self._sessions:
-            del self._sessions[session_id]
-            return True
+        with self._lock:
+            if session_id in self._sessions:
+                del self._sessions[session_id]
+                return True
         return False
 
     def list_sessions(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            sessions = list(self._sessions.values())
         return [
             {
                 "session_id": s.session_id,
@@ -202,7 +207,7 @@ class ChatBot:
                 "title": s.title,
                 "message_count": len(s.messages),
             }
-            for s in self._sessions.values()
+            for s in sessions
         ]
 
     def chat(self, session_id: str, user_message: str) -> Dict[str, Any]:
@@ -216,11 +221,11 @@ class ChatBot:
                 "resolved_query": str,
             }
         """
-        session = self._sessions.get(session_id)
-        if not session:
-            session = self.create_session()
-            session.session_id = session_id
-            self._sessions[session_id] = session
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                session = ChatSession(session_id=session_id)
+                self._sessions[session_id] = session
 
         # Record the user message
         session.add_message("user", user_message)

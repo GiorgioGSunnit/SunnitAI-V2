@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .session import ChatBot
+from .session import ChatBot, ChatSession
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.document_generation import (
     extract_case_details,
@@ -379,8 +379,7 @@ async def generate(request: GenerateRequest):
 
     session = chatbot.get_session(session_id)
     if not session:
-        session = chatbot.create_session()
-        session.session_id = session_id
+        session = ChatSession(session_id=session_id)
         chatbot._sessions[session_id] = session
 
     session_lang = session.session_language
@@ -422,8 +421,7 @@ async def generate_download(request: GenerateRequest):
         session_id = session.session_id
     session = chatbot.get_session(session_id)
     if not session:
-        session = chatbot.create_session()
-        session.session_id = session_id
+        session = ChatSession(session_id=session_id)
         chatbot._sessions[session_id] = session
     session_lang = session.session_language
     cached = _get_cached_sections(session)
@@ -491,8 +489,7 @@ async def chat(request: ChatRequest):
     if is_generation_request(request.message):
         session = chatbot.get_session(session_id)
         if not session:
-            session = chatbot.create_session()
-            session.session_id = session_id
+            session = ChatSession(session_id=session_id)
             chatbot._sessions[session_id] = session
         session_lang = session.session_language
         cached = _get_cached_sections(session)
