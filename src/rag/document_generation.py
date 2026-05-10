@@ -50,12 +50,12 @@ DOCUMENT_TYPE_REGISTRY = {
         "label": "Contratto di Locazione ad Uso Commerciale",
     },
     "rental_cancellation": {
-        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto"],
+        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto", "disdetta del contratto di locazione", "disdetta dell'affitto", "recesso dal contratto"],
         "fields": ["conduttore", "indirizzo_conduttore", "locatore", "indirizzo_immobile", "data_stipula", "data_registrazione", "data_consegna", "preavviso_mesi", "modalita_invio"],
         "label": "Disdetta Contratto di Locazione",
     },
     "insurance_cancellation": {
-        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione"],
+        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione", "disdetta della polizza", "disdetta del contratto assicurativo", "disdetta assicurativa", "rescissione polizza"],
         "fields": ["assicurato", "indirizzo_assicurato", "compagnia_assicurativa", "numero_polizza", "data_scadenza", "luogo", "data"],
         "label": "Disdetta Polizza Assicurativa",
     },
@@ -63,6 +63,16 @@ DOCUMENT_TYPE_REGISTRY = {
         "keywords": ["dichiarazione sostitutiva polizza", "dichiarazione assicurativa", "sostitutiva assicurazione", "dichiarazione polizza"],
         "fields": ["dichiarante", "luogo_nascita", "data_nascita", "residenza", "qualita", "organizzazione", "sede_organizzazione", "data_inizio", "data_fine", "attivita_autorizzate"],
         "label": "Dichiarazione Sostitutiva di Polizza Assicurativa",
+    },
+    "employment_dismissal_appeal": {
+        "keywords": ["impugnativa licenziamento", "impugnare licenziamento", "contestare licenziamento", "ricorso licenziamento", "opposizione licenziamento", "licenziamento illegittimo", "reintegrazione lavoro"],
+        "fields": ["lavoratore", "indirizzo_lavoratore", "datore_lavoro", "indirizzo_datore_lavoro", "data_inizio_rapporto", "data_fine_rapporto", "qualifica", "mansione", "data_licenziamento", "modalita_licenziamento", "motivi_illegittimita", "modalita_invio", "data"],
+        "label": "Impugnativa di Licenziamento",
+    },
+    "employment_termination": {
+        "keywords": ["licenziamento giusta causa", "lettera licenziamento", "licenziare dipendente", "risoluzione rapporto lavoro", "licenziamento immediato"],
+        "fields": ["datore_lavoro", "indirizzo_datore_lavoro", "dipendente", "indirizzo_dipendente", "data_inizio_rapporto", "qualifica", "giusta_causa", "modalita_invio", "luogo", "data"],
+        "label": "Lettera di Licenziamento per Giusta Causa",
     },
     "demand_letter": {
         "keywords": ["diffida", "messa in mora", "lettera di diffida", "intimazione", "sollecito legale", "burofax", "demand letter"],
@@ -272,7 +282,7 @@ def _opposition_system(lang: str) -> str:
             "4. SUPLICO — Peticion precisa: lo que el oponente solicita al Juzgado "
             "(anulacion/suspension del decreto, desestimacion de las pretensiones de la parte contraria, condena en costas).\n"
             "5. FIRMA Y FECHA — Lugar, fecha, firma del letrado.\n\n"
-            f"Usa {ph} para datos que falten y que el cliente debera completar. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No anadas advertencias meta-legales en el propio documento. "
             "Redacta directamente el escrito, sin preambulos ni explicaciones."
         )
@@ -290,7 +300,7 @@ def _opposition_system(lang: str) -> str:
             "4. RELIEF SOUGHT — Precise petitum: what the opposing party requests from the court "
             "(revocation/suspension of the order, dismissal of the claimant's claims, costs award).\n"
             "5. SIGNATURE AND DATE — Place, date, lawyer's signature.\n\n"
-            f"Use {ph} for any missing data that the client must supply. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers to the document itself. "
             "Write the document directly, without preamble or explanation."
         )
@@ -309,7 +319,7 @@ def _opposition_system(lang: str) -> str:
         "4. CONCLUSIONI — Petitum preciso: cosa chiede l'opponente al Tribunale "
         "(revoca/sospensione del decreto, rigetto delle domande avversarie, condanna alle spese).\n"
         "5. FIRMA E DATA — Luogo, data, firma del difensore.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovra' integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente l'atto, senza prefazioni o spiegazioni."
     )
@@ -331,7 +341,7 @@ def _rental_basic_system(lang: str) -> str:
             "mantenimiento ordinario, suministros a cargo del arrendatario.\n"
             "5. DEPÓSITO Y CLÁUSULAS FINALES — Depósito máximo 2 mensualidades, gastos contractuales, "
             "mediación obligatoria, firmas con doble suscripción de cláusulas generales.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -349,7 +359,7 @@ def _rental_basic_system(lang: str) -> str:
             "utilities at tenant's expense.\n"
             "5. DEPOSIT AND FINAL CLAUSES — Deposit capped at 2 monthly rents, contract costs, "
             "mandatory mediation, signatures with express approval of general clauses.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -366,7 +376,7 @@ def _rental_basic_system(lang: str) -> str:
         "utenze a carico del conduttore.\n"
         "5. DEPOSITO E CLAUSOLE FINALI — Deposito massimo 2 mensilità, spese contrattuali, "
         "mediazione obbligatoria, firme con doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -389,7 +399,7 @@ def _rental_standard_system(lang: str) -> str:
             "prohibición de subarriendo, entrega y devolución, obras con consentimiento escrito.\n"
             "5. CLÁUSULAS FINALES Y FIRMAS — Comisión paritaria, RGPD, fuero competente, "
             "doble suscripción de cláusulas generales.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -408,7 +418,7 @@ def _rental_standard_system(lang: str) -> str:
             "no subletting, handover and return, alterations require written consent.\n"
             "5. FINAL CLAUSES AND SIGNATURES — Joint committee, GDPR, jurisdiction, "
             "express approval of general clauses.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -426,7 +436,7 @@ def _rental_standard_system(lang: str) -> str:
         "divieto di sublocazione, consegna e riconsegna, modifiche con consenso scritto.\n"
         "5. CLAUSOLE FINALI E FIRME — Commissione paritetica, GDPR, foro competente, "
         "doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -450,7 +460,7 @@ def _rental_student_system(lang: str) -> str:
             "con preaviso de 3 meses, entrega y devolución del inmueble.\n"
             "5. CLÁUSULAS FINALES Y FIRMAS — Comisión paritaria, RGPD, fuero competente, "
             "doble suscripción de cláusulas generales.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -470,7 +480,7 @@ def _rental_student_system(lang: str) -> str:
             "with 3-month notice, handover and return of the property.\n"
             "5. FINAL CLAUSES AND SIGNATURES — Joint committee, GDPR, jurisdiction, "
             "express approval of general clauses.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -489,7 +499,7 @@ def _rental_student_system(lang: str) -> str:
         "di 3 mesi, consegna e riconsegna dell'immobile.\n"
         "5. CLAUSOLE FINALI E FIRME — Commissione paritetica, GDPR, foro competente, "
         "doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -514,7 +524,7 @@ def _rental_transitional_system(lang: str) -> str:
             "entrega y devolución del inmueble.\n"
             "5. CLÁUSULAS FINALES Y FIRMAS — Comisión paritaria, RGPD, fuero competente, "
             "doble suscripción de cláusulas generales.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -534,7 +544,7 @@ def _rental_transitional_system(lang: str) -> str:
             "not applicable to agreements of 30 days or less, handover and return of the property.\n"
             "5. FINAL CLAUSES AND SIGNATURES — Joint committee, GDPR, jurisdiction, "
             "express approval of general clauses.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -553,7 +563,7 @@ def _rental_transitional_system(lang: str) -> str:
         "non applicabile a contratti di durata ≤ 30 giorni, consegna e riconsegna dell'immobile.\n"
         "5. CLAUSOLE FINALI E FIRME — Commissione paritetica, GDPR, foro competente, "
         "doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -579,7 +589,7 @@ def _rental_free_rent_system(lang: str) -> str:
             "no imputable a renta, eventual garantía suplementaria.\n"
             "5. DISPOSICIONES FINALES Y FIRMAS — Fecha de eficacia, derecho español, RGPD, "
             "registro 50% cada parte, fuero competente, doble suscripción de cláusulas generales.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -599,7 +609,7 @@ def _rental_free_rent_system(lang: str) -> str:
             "interest, not offset against rent, any supplementary guarantee.\n"
             "5. FINAL PROVISIONS AND SIGNATURES — Effective date, governing law, GDPR, registration "
             "costs split 50/50, jurisdiction, express approval of general clauses.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -618,7 +628,7 @@ def _rental_free_rent_system(lang: str) -> str:
         "art. 11 L. 392/78, non imputabile a canone, eventuale garanzia supplementare.\n"
         "5. DISPOSIZIONI FINALI E FIRME — Data di efficacia, diritto italiano, GDPR, "
         "registrazione 50% ciascuna parte, foro competente, doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -648,7 +658,7 @@ def _rental_commercial_system(lang: str) -> str:
             "visita del arrendador con preaviso de 24 horas, comunicaciones por burofax, "
             "timbre y registro 50% arrendataria, fuero competente exclusivo, "
             "firmas con aprobación de cláusulas esenciales.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -671,7 +681,7 @@ def _rental_commercial_system(lang: str) -> str:
             "landlord access with 24-hour notice, notices by recorded delivery or PEC, "
             "stamp duty and registration 50% tenant, exclusive jurisdiction clause, "
             "signatures with express approval of essential clauses.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -694,7 +704,7 @@ def _rental_commercial_system(lang: str) -> str:
         "5. DEPOSITO VARIE E FIRME — Deposito 3 mensilità tramite bonifico, visita della locatrice "
         "con preavviso di 24 ore, comunicazioni tramite PEC, bollo e registro 50% conduttrice, "
         "foro competente esclusivo, firme con approvazione delle clausole essenziali artt. 1341-1342 c.c.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -716,7 +726,7 @@ def _rental_cancellation_system(lang: str) -> str:
             "3. PLAZO DE ENTREGA — Fecha en la que el inmueble será entregado libre de personas y enseres, "
             "plazo de preaviso en meses/días desde la recepción de la presente comunicación.\n"
             "4. CIERRE Y FIRMA — Fórmula de cierre, lugar, fecha, firma del arrendatario.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente la carta, sin preámbulos ni explicaciones."
         )
@@ -733,7 +743,7 @@ def _rental_cancellation_system(lang: str) -> str:
             "3. HANDOVER DATE — Date by which the property will be returned vacant and free of belongings, "
             "notice period in months/days from receipt of this communication.\n"
             "4. CLOSING AND SIGNATURE — Closing formula, place, date, tenant's signature.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -749,7 +759,7 @@ def _rental_cancellation_system(lang: str) -> str:
         "3. TERMINE DI CONSEGNA — Data entro cui l'immobile sarà consegnato libero da cose e persone, "
         "preavviso in mesi/giorni dalla ricezione della presente comunicazione.\n"
         "4. CHIUSURA E FIRMA — Formula di chiusura, luogo, data, firma del conduttore.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
     )
@@ -768,7 +778,7 @@ def _insurance_cancellation_system(lang: str) -> str:
             "referencia a las condiciones generales de la póliza y a la normativa vigente, "
             "petición de acuse de recibo.\n"
             "3. FIRMA — Fórmula de cierre cordial, firma del asegurado.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente la carta, sin preámbulos ni explicaciones."
         )
@@ -783,7 +793,7 @@ def _insurance_cancellation_system(lang: str) -> str:
             "reference to the general policy conditions and applicable regulations, "
             "request for acknowledgement of receipt.\n"
             "3. SIGNATURE — Cordial closing formula, policyholder's signature.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -796,7 +806,7 @@ def _insurance_cancellation_system(lang: str) -> str:
         "2. CORPO DELLA LETTERA — Richiesta formale di disdetta per naturale scadenza, riferimento "
         "alle condizioni di polizza e alle norme vigenti, richiesta di ricevuta di ritorno.\n"
         "3. FIRMA — Formula di chiusura cordiale, firma dell'assicurato.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
     )
@@ -818,7 +828,7 @@ def _insurance_declaration_system(lang: str) -> str:
             "cobertura de daños a cosas de terceros, aviso APL sobre señalización de espacios.\n"
             "5. CONSENTIMIENTO Y FIRMA — Consentimiento para el tratamiento de datos personales, "
             "fecha, firma, adjuntar documento de identidad.\n\n"
-            f"Usa {ph} para datos que falten. "
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el documento, sin preámbulos ni explicaciones."
         )
@@ -836,7 +846,7 @@ def _insurance_declaration_system(lang: str) -> str:
             "coverage for damage to third-party property, APL notice regarding signage of venues.\n"
             "5. CONSENT AND SIGNATURE — Consent to personal data processing, "
             "date, signature, attach identity document.\n\n"
-            f"Use {ph} for any missing data. "
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -853,7 +863,112 @@ def _insurance_declaration_system(lang: str) -> str:
         "a cose di terzi, avvertenza APL su segnalazione degli spazi.\n"
         "5. CONSENSO E FIRMA — Consenso al trattamento dei dati personali ai sensi della L. 196/2003, "
         "data, firma, allegare documento di identità.\n\n"
-        f"Usa {ph} per dati mancanti che il cliente dovrà integrare. "
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
+    )
+
+
+def _employment_dismissal_appeal_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un experto en derecho laboral. "
+            "Redacta una impugnación formal de despido para proteger los derechos del trabajador. "
+            "El documento debe ser formalmente correcto y estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Trabajador remitente con domicilio, empleador destinatario con dirección, "
+            "modalidad de envío (carta certificada con acuse de recibo o PEC), objeto: impugnación de despido.\n"
+            "2. DATOS DE LA RELACIÓN LABORAL — Período de trabajo desde/hasta, categoría y puesto, "
+            "fecha y modalidad del despido (si fue solo verbal, especificarlo).\n"
+            "3. MOTIVOS DE ILEGITIMIDAD — Exposición de las razones por las que el despido se considera nulo y/o ilegítimo.\n"
+            "4. IMPUGNACIÓN Y REQUERIMIENTO — Impugnación formal del despido, requerimiento al empleador "
+            "para que garantice la reincorporación en un plazo de 7 días o abone las indemnizaciones económicas correspondientes, "
+            "advertencia de recurso ante la autoridad judicial en caso de incumplimiento.\n"
+            "5. RESERVAS Y FIRMA — Reserva de reclamar todos los conceptos pendientes no abonados, fecha, firma del trabajador.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            "No añadas advertencias meta-legales. "
+            "Redacta directamente el documento, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in employment law. "
+            "Draft a formal dismissal appeal letter to protect the worker's rights. "
+            "The document must be formally correct and structured in the following sections:\n\n"
+            "1. HEADING — Worker as sender with address, employer as recipient with address, "
+            "delivery method (registered letter with acknowledgement of receipt or PEC), subject: dismissal appeal.\n"
+            "2. EMPLOYMENT DETAILS — Period of employment from/to, job title and duties, "
+            "date and method of dismissal (if only verbal, state so explicitly).\n"
+            "3. GROUNDS OF ILLEGITIMACY — Statement of the reasons why the dismissal is considered void and/or unlawful.\n"
+            "4. FORMAL APPEAL AND NOTICE — Formal contestation of the dismissal, notice to the employer "
+            "to ensure reinstatement within 7 days or pay the applicable financial compensation, "
+            "warning of judicial recourse in the event of non-compliance.\n"
+            "5. RESERVATIONS AND SIGNATURE — Reservation of the right to claim all outstanding entitlements not yet paid, date, worker's signature.\n\n"
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un esperto in diritto del lavoro. "
+        "Redigi un'impugnativa formale di licenziamento a tutela dei diritti del lavoratore. "
+        "Il documento deve essere formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Lavoratore mittente con indirizzo, datore di lavoro destinatario con indirizzo, "
+        "modalità di invio (raccomandata A/R o PEC), oggetto: impugnativa di licenziamento.\n"
+        "2. DATI DEL RAPPORTO DI LAVORO — Periodo di lavoro dal/al, qualifica e mansione, "
+        "data e modalità del licenziamento (se solo verbale, specificarlo).\n"
+        "3. MOTIVI DI ILLEGITTIMITÀ — Esposizione delle ragioni per cui il licenziamento è ritenuto nullo e/o illegittimo.\n"
+        "4. IMPUGNATIVA E DIFFIDA — Impugnazione formale del licenziamento, diffida al datore di lavoro "
+        "a garantire la reintegrazione entro 7 giorni o a corrispondere le indennità economiche spettanti, "
+        "avvertimento di ricorso all'autorità giudiziaria in caso di inottemperanza.\n"
+        "5. RISERVE E FIRMA — Riserva di rivendicare tutte le spettanze non corrisposte, data, firma del lavoratore.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
+    )
+
+
+def _employment_termination_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un experto en derecho laboral. "
+            "Redacta una carta de despido por causa justificada en nombre del empleador. "
+            "El documento debe ser formalmente correcto y estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Empleador remitente con dirección, empleado destinatario con dirección, "
+            "modalidad de envío (carta certificada con acuse de recibo o entrega en mano), objeto: despido por causa justificada.\n"
+            "2. COMUNICACIÓN DE DESPIDO — Comunicación oficial de resolución inmediata de la relación laboral "
+            "conforme al art. 54 del Estatuto de los Trabajadores, indicación de la causa justificada específica.\n"
+            "3. EFECTOS Y CIERRE — Efecto inmediato del despido, invitación a recoger los efectos personales, "
+            "lugar, fecha, firma del empleador.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            "No añadas advertencias meta-legales. "
+            "Redacta directamente el documento, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in employment law. "
+            "Draft a letter of dismissal for just cause on behalf of the employer. "
+            "The document must be formally correct and structured in the following sections:\n\n"
+            "1. HEADING — Employer as sender with address, employee as recipient with address, "
+            "delivery method (registered letter with acknowledgement of receipt or hand delivery), subject: dismissal for just cause.\n"
+            "2. NOTICE OF DISMISSAL — Official communication of immediate termination of the employment relationship "
+            "pursuant to art. 2119 of the Civil Code, specifying the particular just cause.\n"
+            "3. EFFECTS AND CLOSING — Immediate effect of the dismissal, invitation to collect personal belongings, "
+            "place, date, employer's signature.\n\n"
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un esperto in diritto del lavoro. "
+        "Redigi una lettera di licenziamento per giusta causa per conto del datore di lavoro. "
+        "Il documento deve essere formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Datore di lavoro mittente con indirizzo, dipendente destinatario con indirizzo, "
+        "modalità di invio (raccomandata A/R o consegna a mano), oggetto: licenziamento per giusta causa.\n"
+        "2. COMUNICAZIONE DI LICENZIAMENTO — Comunicazione ufficiale di risoluzione immediata del rapporto di lavoro "
+        "ai sensi dell'art. 2119 c.c., indicazione della giusta causa specifica.\n"
+        "3. EFFETTI E CHIUSURA — Effetto immediato del licenziamento, invito a ritirare gli effetti personali, "
+        "luogo, data, firma del datore di lavoro.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
     )
@@ -881,6 +996,8 @@ def generate_document(
         "rental_cancellation": _rental_cancellation_system,
         "insurance_cancellation": _insurance_cancellation_system,
         "insurance_declaration": _insurance_declaration_system,
+        "employment_dismissal_appeal": _employment_dismissal_appeal_system,
+        "employment_termination": _employment_termination_system,
     }
 
     system_fn = _SYSTEM_FN.get(doc_type)
