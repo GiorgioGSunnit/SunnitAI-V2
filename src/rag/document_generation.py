@@ -15,82 +15,87 @@ logger = logging.getLogger(__name__)
 
 DOCUMENT_TYPE_REGISTRY = {
     "opposition_act": {
-        "keywords": ["opposizione", "decreto ingiuntivo", "opporsi", "atto di opposizione", "oposicion", "monitorio", "opposition"],
+        "keywords": ["opposizione", "decreto ingiuntivo", "opporsi", "atto di opposizione", "oposicion", "monitorio", "opposition", "opposizione al decreto", "opporsi al decreto ingiuntivo"],
         "fields": ["plaintiff", "defendant", "injunction_reference", "court", "amount", "grounds", "date"],
         "label": "Atto di Opposizione a Decreto Ingiuntivo",
     },
     "rental_basic": {
-        "keywords": ["cedolare secca", "affitto semplice", "locazione privata", "contratto base affitto", "affitto"],
+        "keywords": ["cedolare secca", "affitto semplice", "locazione privata", "contratto base affitto", "affitto", "affitto con cedolare", "locazione con cedolare"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "durata_anni", "cedolare_secca"],
         "label": "Contratto di Locazione con Cedolare Secca",
     },
     "rental_standard": {
-        "keywords": ["locazione abitativa", "contratto 3+2", "affitto residenziale", "legge 431", "accordo territoriale", "canone concordato", "locazione"],
+        "keywords": ["locazione abitativa", "contratto 3+2", "affitto residenziale", "legge 431", "accordo territoriale", "canone concordato", "locazione", "contratto di locazione abitativa", "locazione 3+2"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "deposito_cauzionale", "data_inizio", "data_fine", "accordo_territoriale", "iban_locatore"],
         "label": "Contratto di Locazione Abitativa (3+2)",
     },
     "rental_student": {
-        "keywords": ["locazione studenti", "affitto universitario", "studente universitario", "fuori sede", "locazione universitaria", "contratto"],
+        "keywords": ["locazione studenti", "affitto universitario", "studente universitario", "fuori sede", "locazione universitaria", "contratto", "contratto per studenti", "affitto per studenti", "locazione per universitari"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "data_fine", "corso_studi", "nome_universita", "comune_universita"],
         "label": "Locazione Abitativa per Studenti Universitari",
     },
     "rental_transitional": {
-        "keywords": ["locazione transitoria", "affitto temporaneo", "contratto transitorio", "locazione breve", "esigenza transitoria"],
+        "keywords": ["locazione transitoria", "affitto temporaneo", "contratto transitorio", "locazione breve", "esigenza transitoria", "affitto di natura transitoria", "locazione di natura transitoria"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "data_fine", "motivazione_transitorietà", "accordo_territoriale"],
         "label": "Locazione Abitativa di Natura Transitoria",
     },
     "rental_free_rent": {
-        "keywords": ["canone libero", "locazione canone libero", "affitto 4+4", "contratto libero"],
+        "keywords": ["canone libero", "locazione canone libero", "affitto 4+4", "contratto libero", "affitto a canone libero", "locazione a canone libero"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "canone_mensile", "deposito_cauzionale", "iban_locatore", "data_efficacia"],
         "label": "Contratto di Locazione ad Uso Abitativo a Canone Libero",
     },
     "rental_commercial": {
-        "keywords": ["locazione commerciale", "affitto commerciale", "uso commerciale", "locazione ufficio", "affitto negozio", "uso diverso abitazione", "legge 392"],
+        "keywords": ["locazione commerciale", "affitto commerciale", "uso commerciale", "locazione ufficio", "affitto negozio", "uso diverso abitazione", "legge 392", "locazione ad uso commerciale", "affitto per ufficio", "contratto commerciale immobile"],
         "fields": ["parte_locatrice", "parte_conduttrice", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "spese_conduzione", "deposito_cauzionale", "uso_destinato", "data_inizio", "data_fine", "foro_competente"],
         "label": "Contratto di Locazione ad Uso Commerciale",
     },
     "rental_cancellation": {
-        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto", "disdetta del contratto di locazione", "disdetta dell'affitto", "recesso dal contratto"],
+        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto", "disdetta del contratto di locazione", "disdetta dell'affitto", "recesso dal contratto", "recesso dal contratto di locazione", "comunicazione di recesso locazione"],
         "fields": ["conduttore", "indirizzo_conduttore", "locatore", "indirizzo_immobile", "data_stipula", "data_registrazione", "data_consegna", "preavviso_mesi", "modalita_invio"],
         "label": "Disdetta Contratto di Locazione",
     },
     "insurance_cancellation": {
-        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione", "disdetta della polizza", "disdetta del contratto assicurativo", "disdetta assicurativa", "rescissione polizza"],
+        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione", "disdetta della polizza", "disdetta del contratto assicurativo", "disdetta assicurativa", "rescissione polizza", "recesso dalla polizza", "cancellazione dell'assicurazione"],
         "fields": ["assicurato", "indirizzo_assicurato", "compagnia_assicurativa", "numero_polizza", "data_scadenza", "luogo", "data"],
         "label": "Disdetta Polizza Assicurativa",
     },
     "insurance_declaration": {
-        "keywords": ["dichiarazione sostitutiva polizza", "dichiarazione assicurativa", "sostitutiva assicurazione", "dichiarazione polizza"],
+        "keywords": ["dichiarazione sostitutiva polizza", "dichiarazione assicurativa", "sostitutiva assicurazione", "dichiarazione polizza", "dichiarazione di polizza", "sostitutiva assicurativa"],
         "fields": ["dichiarante", "luogo_nascita", "data_nascita", "residenza", "qualita", "organizzazione", "sede_organizzazione", "data_inizio", "data_fine", "attivita_autorizzate"],
         "label": "Dichiarazione Sostitutiva di Polizza Assicurativa",
     },
     "employment_dismissal_appeal": {
-        "keywords": ["impugnativa licenziamento", "impugnare licenziamento", "contestare licenziamento", "ricorso licenziamento", "opposizione licenziamento", "licenziamento illegittimo", "reintegrazione lavoro"],
+        "keywords": ["impugnativa licenziamento", "impugnare licenziamento", "contestare licenziamento", "ricorso licenziamento", "opposizione licenziamento", "licenziamento illegittimo", "reintegrazione lavoro", "impugnativa di licenziamento", "impugnare il licenziamento", "contestare il licenziamento", "reintegra", "licenziamento senza giusta causa"],
         "fields": ["lavoratore", "indirizzo_lavoratore", "datore_lavoro", "indirizzo_datore_lavoro", "data_inizio_rapporto", "data_fine_rapporto", "qualifica", "mansione", "data_licenziamento", "modalita_licenziamento", "motivi_illegittimita", "modalita_invio", "data"],
         "label": "Impugnativa di Licenziamento",
     },
     "employment_termination": {
-        "keywords": ["licenziamento giusta causa", "lettera licenziamento", "licenziare dipendente", "risoluzione rapporto lavoro", "licenziamento immediato"],
+        "keywords": ["licenziamento giusta causa", "lettera licenziamento", "licenziare dipendente", "risoluzione rapporto lavoro", "licenziamento immediato", "lettera di licenziamento", "licenziamento per giusta causa", "licenziare", "risoluzione del rapporto di lavoro"],
         "fields": ["datore_lavoro", "indirizzo_datore_lavoro", "dipendente", "indirizzo_dipendente", "data_inizio_rapporto", "qualifica", "giusta_causa", "modalita_invio", "luogo", "data"],
         "label": "Lettera di Licenziamento per Giusta Causa",
     },
+    "franchising_contract": {
+        "keywords": ["contratto di franchising", "franchising", "affiliazione commerciale", "franchisor", "franchisee", "contratto di affiliazione"],
+        "fields": ["franchisor", "indirizzo_franchisor", "franchisee", "indirizzo_franchisee", "settore_attivita", "area_esclusiva", "fee_ingresso", "royalties_percentuale", "incasso_minimo_annuale", "durata_anni", "foro_competente", "luogo", "data"],
+        "label": "Contratto di Franchising",
+    },
     "demand_letter": {
-        "keywords": ["diffida", "messa in mora", "lettera di diffida", "intimazione", "sollecito legale", "burofax", "demand letter"],
+        "keywords": ["diffida", "messa in mora", "lettera di diffida", "intimazione", "sollecito legale", "burofax", "demand letter", "lettera di messa in mora"],
         "fields": ["mittente", "destinatario", "oggetto_controversia", "importo_dovuto", "termine_adempimento", "conseguenze", "data"],
         "label": "Diffida / Lettera di Messa in Mora",
     },
     "appeal": {
-        "keywords": ["ricorso", "appello", "impugnazione", "opposizione al provvedimento", "recurso", "appeal", "petition"],
+        "keywords": ["ricorso", "appello", "impugnazione", "opposizione al provvedimento", "recurso", "appeal", "petition", "atto di appello", "ricorso al tribunale", "impugnazione del provvedimento"],
         "fields": ["appellante", "controparte", "tribunale", "provvedimento_impugnato", "motivi", "petitum", "data"],
         "label": "Ricorso / Atto di Appello",
     },
     "power_of_attorney": {
-        "keywords": ["procura", "delega", "mandato", "rappresentanza legale", "poder notarial", "power of attorney"],
+        "keywords": ["procura", "delega", "mandato", "rappresentanza legale", "poder notarial", "power of attorney", "atto di procura", "delega notarile", "procura speciale"],
         "fields": ["conferente", "procuratore", "oggetto_poteri", "limitazioni", "durata", "data", "notaio"],
         "label": "Procura / Delega",
     },
     "sale_agreement": {
-        "keywords": ["contratto di compravendita", "vendita", "acquisto", "trasferimento proprietà", "compraventa", "sale agreement"],
+        "keywords": ["contratto di compravendita", "vendita", "acquisto", "trasferimento proprietà", "compraventa", "sale agreement", "contratto di vendita", "atto di compravendita", "contratto per la vendita"],
         "fields": ["venditore", "acquirente", "descrizione_bene", "prezzo", "modalita_pagamento", "data_consegna", "garanzie", "data"],
         "label": "Contratto di Compravendita",
     },
@@ -974,6 +979,72 @@ def _employment_termination_system(lang: str) -> str:
     )
 
 
+def _franchising_contract_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un experto en derecho mercantil y contratos de franquicia. "
+            "Redacta un contrato de franquicia completo y formalmente correcto estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO Y CONSIDERANDOS — Franquiciador y franquiciado con datos personales completos, "
+            "declaraciones preliminares (sector de actividad, know-how, marca, local comercial del franquiciado).\n"
+            "2. OBJETO, EXCLUSIVIDAD Y CANON — Concesión de know-how y marca con exclusividad territorial, "
+            "canon de entrada con servicios incluidos, servicios adicionales e importe correspondiente, "
+            "autorizaciones intuitu personae no cedibles.\n"
+            "3. ROYALTIES Y OBLIGACIONES — Porcentaje de royalties sobre volumen de negocio anual, "
+            "facturación mínima anual, obligaciones del franquiciador (know-how, procedimientos, manuales, asistencia, formación), "
+            "obligaciones del franquiciado (gestión autónoma, prohibición de traslado de sede, confidencialidad, respeto de la política empresarial).\n"
+            "4. DURACIÓN, RESOLUCIÓN Y CONTROLES — Duración del contrato con prórroga tácita y preaviso de 6 meses, "
+            "cláusula resolutoria expresa, efectos de la resolución (cese del uso de marca y signos distintivos), "
+            "nulidad por información falsa, controles del franquiciador en el punto de venta.\n"
+            "5. DISPOSICIONES FINALES Y FIRMAS — Resolución de controversias mediante Cámara de Comercio con foro competente, "
+            "tratamiento de datos RGPD, lugar, fecha, firmas del franquiciador y del franquiciado.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            "No añadas advertencias meta-legales. "
+            "Redacta directamente el documento, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in commercial law and franchise agreements. "
+            "Draft a complete and formally correct franchise contract structured in the following sections:\n\n"
+            "1. HEADING AND RECITALS — Franchisor and franchisee with full personal details, "
+            "preliminary declarations (sector of activity, know-how, trademark, franchisee's commercial premises).\n"
+            "2. SUBJECT MATTER, EXCLUSIVITY AND FEE — Grant of know-how and trademark with territorial exclusivity, "
+            "entry fee with included services, additional services and corresponding amount, "
+            "intuitu personae authorisations not transferable.\n"
+            "3. ROYALTIES AND OBLIGATIONS — Royalty percentage on annual turnover, "
+            "annual minimum turnover, franchisor's obligations (know-how, procedures, manuals, assistance, training), "
+            "franchisee's obligations (independent management, prohibition on relocating premises, confidentiality, compliance with company policy).\n"
+            "4. DURATION, TERMINATION AND CONTROLS — Contract duration with tacit renewal and 6-month prior notice for termination, "
+            "express termination clause, effects of termination (cessation of trademark and distinctive signs), "
+            "voidance for false information, franchisor's controls at the point of sale.\n"
+            "5. FINAL PROVISIONS AND SIGNATURES — Dispute resolution through the Chamber of Commerce with competent jurisdiction, "
+            "GDPR data processing, place, date, signatures of franchisor and franchisee.\n\n"
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un esperto in diritto commerciale e contratti di franchising. "
+        "Redigi un contratto di franchising completo e formalmente corretto strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE E PREMESSE — Franchisor e franchisee con dati anagrafici completi, "
+        "dichiarazioni preliminari (settore attività, know-how, marchio, locale commerciale franchisee).\n"
+        "2. OGGETTO, ESCLUSIVA E FEE — Concessione know-how e marchio con esclusiva per area, "
+        "fee di ingresso con servizi inclusi, servizi ulteriori e relativo importo, "
+        "autorizzazioni intuitu personae non cedibili.\n"
+        "3. ROYALTIES E OBBLIGHI — Percentuale royalties su volume d'affari annuo, "
+        "incasso minimo annuale, obblighi del franchisor (know-how, procedure, manuali, assistenza, formazione), "
+        "obblighi del franchisee (gestione autonoma, divieto trasferimento sede, riservatezza, rispetto policy aziendale).\n"
+        "4. DURATA, RISOLUZIONE E CONTROLLI — Durata contratto con rinnovo tacito e disdetta 6 mesi prima, "
+        "clausola risolutiva espressa, effetti risoluzione (cessazione marchio e segni distintivi), "
+        "annullamento per false informazioni, controlli franchisor sul punto vendita.\n"
+        "5. DISPOSIZIONI FINALI E FIRME — Risoluzione controversie tramite Camera di Commercio con foro competente, "
+        "trattamento dati GDPR, luogo, data, firme franchisor e franchisee.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
+    )
+
+
 def generate_document(
     user_message: str,
     doc_type: str,
@@ -998,6 +1069,7 @@ def generate_document(
         "insurance_declaration": _insurance_declaration_system,
         "employment_dismissal_appeal": _employment_dismissal_appeal_system,
         "employment_termination": _employment_termination_system,
+        "franchising_contract": _franchising_contract_system,
     }
 
     system_fn = _SYSTEM_FN.get(doc_type)

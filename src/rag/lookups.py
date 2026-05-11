@@ -511,7 +511,7 @@ def vector_lookup(
         "YIELD node, score "
         "WHERE NOT ("
         "  ('LegalAct' IN labels(node) AND (node.name IS NULL OR node.name = '' OR node.name IN ['string', 'Fonte non classificata']))"
-        "  OR ('Section' IN labels(node) AND (node.abstract IS NULL OR node.abstract = '') AND (node.plain_text IS NULL OR node.plain_text = ''))"
+        "  OR ('Section' IN labels(node) AND (node.plain_text IS NULL OR node.plain_text = ''))"
         ") "
         "RETURN elementId(node) AS element_id, labels(node) AS labels, score ORDER BY score DESC"
     )

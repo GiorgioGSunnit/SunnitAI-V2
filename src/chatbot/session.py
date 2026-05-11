@@ -91,7 +91,8 @@ def _generate_session_title(first_message: str) -> str:
                 SystemMessage(
                     content=(
                         "Generate a concise 4-6 word title for a legal conversation "
-                        "that starts with this message. Reply with only the title, no punctuation."
+                        "that starts with this message. Reply with only the title, no punctuation. "
+                        "Always generate the title in the same language as the user message."
                     )
                 ),
                 HumanMessage(content=first_message[:200]),

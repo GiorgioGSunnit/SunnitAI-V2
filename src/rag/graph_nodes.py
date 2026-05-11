@@ -14,7 +14,7 @@ from ..preprocessing.schema.schema import entities as schema_entities
 from ..preprocessing.schema.schema import relations as schema_relations
 from .ai_chat import _call_chat, structured_entities_model
 from .cypher_logger import log_cypher_event, log_cypher_multiline
-from .language import SessionLang, normalize_lang
+from .language import SessionLang, language_display_name, normalize_lang
 from .prompts import (
     legal_consultant_system_prefix,
     synthesis_empty_system,
@@ -282,15 +282,14 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
     # run them in parallel to cut decomposition latency roughly in half.
     generalization_messages = [
         SystemMessage(
-            content=(
-                f"{legal_consultant_system_prefix(lang)} "
-                "You generalize user questions about legal documents into concise search-focused phrases."
-            )
+            content=f"You are a legal search assistant. Respond in {language_display_name(lang)}."
         ),
         HumanMessage(
             content=(
                 "Original question: {query}\n"
-                "Respond with a short generalized phrase (max 8 words) capturing the main topic."
+                "The question may be phrased colloquially or informally. Translate it into a concise "
+                "formal legal search phrase (max 8 words) capturing the main legal topic, regardless "
+                "of how casually it was expressed."
             ).format(query=query)
         ),
     ]
@@ -332,16 +331,13 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
 
     query_variants_messages = [
         SystemMessage(
-            content=(
-                f"{legal_consultant_system_prefix(lang)} "
-                "Generate alternative phrasings of a legal question for broader semantic search coverage."
-            )
+            content=f"You are a legal search assistant. Respond in {language_display_name(lang)}."
         ),
         HumanMessage(
             content=(
-                "Generate 3 alternative ways to phrase this legal question using different but "
-                "equivalent legal terminology. Return as comma-separated phrases, no numbering, "
-                "no explanation.\n\n"
+                "Generate 3 alternative ways to phrase this legal question for broader search coverage. "
+                "Include both formal legal terminology and more colloquial phrasings a non-lawyer might use. "
+                "Return as comma-separated phrases, no numbering, no explanation.\n\n"
                 f"Question: {query}"
             )
         ),
@@ -1922,7 +1918,8 @@ def _extract_citations(
                     continue
                 if doc_id not in docs:
                     docs[doc_id] = {"title": None, "sections": set()}
-                if section_name:
+                section_plain_text = (value.get("plain_text") or value.get("text") or "").strip()
+                if section_name and section_name != "0" and section_plain_text:
                     docs[doc_id]["sections"].add(section_name)
 
     results = [

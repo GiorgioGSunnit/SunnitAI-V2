@@ -683,6 +683,12 @@ def _write_parallel_results_to_jsonl(out_path: Path, results, normalized_data: D
             
             # Write Section nodes
             for section in result.entities.sections:
+                if not (section.title or "").strip() and not (section.text_en or "").strip():
+                    logger.warning(
+                        "Skipping empty Section node: document_id=%s chunk_id=%s",
+                        section.document_id, section.chunk_id
+                    )
+                    continue
                 section_rec = {
                     "label": "Section",
                     "key": {
