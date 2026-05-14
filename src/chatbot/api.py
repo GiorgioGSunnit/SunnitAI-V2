@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from .session import ChatBot, ChatSession
+from .session import ChatBot, ChatSession, _generate_session_title
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.document_generation import (
     DOCUMENT_TYPE_REGISTRY,
@@ -38,13 +38,37 @@ from ..rag.graph_nodes import _extract_citations
 logger = logging.getLogger(__name__)
 
 
+async def _background_embedding_job():
+    """Periodically generate embeddings for Section nodes missing them."""
+    _running = False
+    while True:
+        await asyncio.sleep(120)  # every 2 minutes
+        if _running:
+            logger.debug("Background embedding job: previous run still in progress, skipping")
+            continue
+        _running = True
+        try:
+            from ..preprocessing.generate_embeddings import embed_missing
+            count = await asyncio.get_event_loop().run_in_executor(
+                None, embed_missing, NEO4J_DATABASE
+            )
+            if count > 0:
+                logger.info(f"Background embedding job: generated {count} embeddings")
+        except Exception as e:
+            logger.warning(f"Background embedding job failed: {e}")
+        finally:
+            _running = False
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     from ..rag.cypher_logger import ensure_cypher_log_ready
 
     log_path = ensure_cypher_log_ready()
     logger.info("Cypher query log file: %s", log_path)
+    task = asyncio.create_task(_background_embedding_job())
     yield
+    task.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -126,10 +150,32 @@ class SessionResponse(BaseModel):
 
 _PH_PATTERN = re.compile(r"\[[A-ZÀÁÂÄÉÈÊËÍÌÎÏÓÒÔÖÚÙÛÜ\s]+\](?:\s*\([^)]*\))?")
 
-_DOC_TITLES = {
-    "es": "ESCRITO DE OPOSICIÓN A DECRETO MONITORIO",
-    "en": "OPPOSITION TO PAYMENT ORDER",
+_DOC_FILENAMES = {
+    "opposition_act": ("ATTO DI OPPOSIZIONE A DECRETO INGIUNTIVO", "ESCRITO DE OPOSICIÓN A DECRETO MONITORIO", "OPPOSITION TO PAYMENT ORDER", "atto_opposizione"),
+    "rental_basic": ("CONTRATTO DI LOCAZIONE CON CEDOLARE SECCA", "CONTRATO DE ARRENDAMIENTO", "RENTAL AGREEMENT", "contratto_locazione_cedolare"),
+    "rental_standard": ("CONTRATTO DI LOCAZIONE ABITATIVA", "CONTRATO DE ARRENDAMIENTO RESIDENCIAL", "RESIDENTIAL RENTAL AGREEMENT", "contratto_locazione_abitativa"),
+    "rental_student": ("LOCAZIONE ABITATIVA PER STUDENTI UNIVERSITARI", "CONTRATO DE ARRENDAMIENTO PARA ESTUDIANTES", "STUDENT RENTAL AGREEMENT", "contratto_locazione_studenti"),
+    "rental_transitional": ("LOCAZIONE ABITATIVA DI NATURA TRANSITORIA", "CONTRATO DE ARRENDAMIENTO TRANSITORIO", "TRANSITIONAL RENTAL AGREEMENT", "contratto_locazione_transitoria"),
+    "rental_free_rent": ("CONTRATTO DI LOCAZIONE A CANONE LIBERO", "CONTRATO DE ARRENDAMIENTO A PRECIO LIBRE", "FREE RENT AGREEMENT", "contratto_locazione_canone_libero"),
+    "rental_commercial": ("CONTRATTO DI LOCAZIONE AD USO COMMERCIALE", "CONTRATO DE ARRENDAMIENTO COMERCIAL", "COMMERCIAL LEASE AGREEMENT", "contratto_locazione_commerciale"),
+    "rental_cancellation": ("DISDETTA CONTRATTO DI LOCAZIONE", "RESCISIÓN CONTRATO DE ARRENDAMIENTO", "RENTAL CANCELLATION NOTICE", "disdetta_locazione"),
+    "insurance_cancellation": ("DISDETTA POLIZZA ASSICURATIVA", "RESCISIÓN PÓLIZA DE SEGUROS", "INSURANCE CANCELLATION NOTICE", "disdetta_polizza"),
+    "insurance_declaration": ("DICHIARAZIONE SOSTITUTIVA DI POLIZZA ASSICURATIVA", "DECLARACIÓN SUSTITUTIVA DE PÓLIZA", "INSURANCE SUBSTITUTIVE DECLARATION", "dichiarazione_polizza"),
+    "employment_dismissal_appeal": ("IMPUGNATIVA DI LICENZIAMENTO", "IMPUGNACIÓN DE DESPIDO", "DISMISSAL APPEAL", "impugnativa_licenziamento"),
+    "employment_termination": ("LETTERA DI LICENZIAMENTO PER GIUSTA CAUSA", "CARTA DE DESPIDO POR CAUSA JUSTIFICADA", "TERMINATION LETTER FOR CAUSE", "lettera_licenziamento"),
+    "franchising_contract": ("CONTRATTO DI FRANCHISING", "CONTRATO DE FRANQUICIA", "FRANCHISING AGREEMENT", "contratto_franchising"),
+    "demand_letter": ("LETTERA DI DIFFIDA", "CARTA DE REQUERIMIENTO", "DEMAND LETTER", "lettera_diffida"),
+    "appeal": ("RICORSO", "RECURSO", "APPEAL", "ricorso"),
+    "power_of_attorney": ("PROCURA", "PODER NOTARIAL", "POWER OF ATTORNEY", "procura"),
+    "sale_agreement": ("CONTRATTO DI COMPRAVENDITA", "CONTRATO DE COMPRAVENTA", "SALE AGREEMENT", "contratto_compravendita"),
+    "verbale_assemblea": ("VERBALE DI ASSEMBLEA CONDOMINIALE", "ACTA DE JUNTA DE PROPIETARIOS", "CONDOMINIUM ASSEMBLY MINUTES", "verbale_assemblea"),
 }
+
+
+def _strip_markdown(text: str) -> str:
+    text = re.sub(r'\*\*|__', '', text)
+    text = re.sub(r'[*_]', '', text)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -461,7 +507,10 @@ async def generate_download(request: GenerateRequest):
         raise HTTPException(status_code=500, detail=str(exc))
     session.add_message("assistant", result["draft"], metadata={"sources": result["sources"]})
 
-    doc_title = _DOC_TITLES.get(session_lang, "ATTO DI OPPOSIZIONE A DECRETO INGIUNTIVO")
+    lang_idx = {"it": 0, "es": 1, "en": 2}.get(session_lang, 0)
+    doc_info = _DOC_FILENAMES.get(doc_type, _DOC_FILENAMES["opposition_act"])
+    doc_title = doc_info[lang_idx]
+    filename = f"{doc_info[3]}.docx"
     doc = Document()
     for section in doc.sections:
         section.top_margin = Cm(2.5)
@@ -476,7 +525,7 @@ async def generate_download(request: GenerateRequest):
     title_run.font.size = Pt(14)
     doc.add_paragraph()
 
-    for line in result["draft"].split("\n"):
+    for line in _strip_markdown(result["draft"]).split("\n"):
         para = doc.add_paragraph()
         parts = _PH_PATTERN.split(line)
         matches = _PH_PATTERN.findall(line)
@@ -493,7 +542,7 @@ async def generate_download(request: GenerateRequest):
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": 'attachment; filename="atto_opposizione.docx"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -531,6 +580,8 @@ async def chat(request: ChatRequest):
             )
         cached = _get_cached_sections(session)
         session.add_message("user", request.message)
+        if len(session.messages) == 1:
+            session.title = _generate_session_title(request.message)
         try:
             loop = asyncio.get_event_loop()
             gen_result = await loop.run_in_executor(
@@ -539,6 +590,7 @@ async def chat(request: ChatRequest):
         except Exception as exc:
             logger.error("Generation error: %s", exc, exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
+        gen_result["draft"] = _strip_markdown(gen_result["draft"])
         session.add_message("assistant", gen_result["draft"], metadata={"sources": gen_result["sources"]})
         return ChatResponse(
             session_id=session_id,
@@ -547,6 +599,7 @@ async def chat(request: ChatRequest):
             resolved_query=request.message,
             session_language=session_lang,
             status_messages=["generation_mode"],
+            title=session.title,
         )
 
     try:

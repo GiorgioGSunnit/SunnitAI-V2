@@ -87,9 +87,10 @@ LABEL_MIGRATIONS: Dict[str, str] = {
     "LEGAL_ACTION": "Penalty",
     "ORGANIZATION": "Institution",
     "PERSON": "Person",
-    "LOCATION": "Section",
-    "ROLE": "Topic",
-    "DATE": "Section",
+    "LOCATION": "Location",
+    "ROLE": "Role",
+    "DATE": "Date",
+    "EDITOR": "Editor",
     "EVENT": "Meeting",
 }
 

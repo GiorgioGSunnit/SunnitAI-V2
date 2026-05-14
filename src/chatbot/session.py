@@ -149,6 +149,40 @@ def _rewrite_query_with_context(
     return rewritten
 
 
+def detect_topic_drift(current_query: str, history: List[Message], lang: str) -> bool:
+    """Return True if the current query is clearly about a different legal topic than recent history."""
+    try:
+        recent = history[-6:]  # up to 3 turns
+        history_text = "\n".join(
+            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content[:300]}"
+            for m in recent
+        )
+        response = _call_chat(
+            [
+                SystemMessage(
+                    content=(
+                        "You are a conversation topic analyzer. Given a conversation history and a new question, "
+                        "return only YES if the new question is about a completely different legal topic than the "
+                        "conversation so far, or NO if it is related or a natural continuation. "
+                        "Be conservative — only return YES for clear topic changes, not for follow-up questions "
+                        "or related subtopics."
+                    )
+                ),
+                HumanMessage(
+                    content=(
+                        "Conversation history:\n{history}\n\n"
+                        "New question: {query}\n\n"
+                        "Answer YES or NO:"
+                    ).format(history=history_text, query=current_query)
+                ),
+            ],
+            max_tokens=5,
+        )
+        return response.strip().upper().startswith("YES")
+    except Exception:
+        return False
+
+
 class ChatBot:
     """Stateful chatbot that wraps the RAG pipeline with conversation memory."""
 
@@ -271,6 +305,18 @@ class ChatBot:
             references = []
             status_messages = []
             citations = []
+
+        # Detect topic drift and append a note when the user switches topics mid-session
+        if len(session.messages) > 4:
+            drift_context = session.get_recent_context()
+            # Exclude the message we just added (the current user message)
+            drift_context = drift_context[:-1] if len(drift_context) > 1 else []
+            if detect_topic_drift(user_message, drift_context, session.session_language):
+                _DRIFT_NOTES = {
+                    "it": "\n\n---\n💡 Questo argomento sembra diverso dalla conversazione precedente. Considera di aprire una nuova chat per mantenere il contesto separato.",
+                    "es": "\n\n---\n💡 Este tema parece diferente a la conversación anterior. Considera abrir un nuevo chat para mantener el contexto separado.",
+                }
+                answer += _DRIFT_NOTES.get(session.session_language, "\n\n---\n💡 This topic seems different from your previous conversation. Consider opening a new chat to keep the context separate.")
 
         # Record the assistant response
         session.add_message("assistant", answer, metadata={"references": references})

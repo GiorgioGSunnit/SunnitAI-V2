@@ -1596,6 +1596,32 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
         f"Neo4j execution finished attempt={attempt!r} rows={len(data)}",
         detail={"result_column_keys": list(data[0].keys()) if data else []},
     )
+
+    # Tier 1 fallback: intersection returned 0 rows but vector search has context nodes.
+    # Trust the vector search results and use them directly so synthesis has something to work
+    # with and route_after_execution routes to "evaluate" instead of "retry".
+    if (
+        not data
+        and state.get("turn_count") == 1
+        and attempt == "intersection"
+    ):
+        context_nodes = state.get("context_nodes") or []
+        if context_nodes:
+            logger.info(
+                "Tier 1 intersection returned 0 rows; falling back to %d context nodes from vector search",
+                len(context_nodes),
+            )
+            log_cypher_event(
+                "c_tier1_fallback",
+                f"Tier 1 intersection empty — using {len(context_nodes)} vector-search context nodes as raw_result",
+                detail={"context_node_count": len(context_nodes)},
+            )
+            return {
+                "raw_result": context_nodes,
+                "execution_error": None,
+                "neo4j_executed": True,
+            }
+
     enriched_references = _enrich_with_source_metadata(data)
 
     return {
@@ -1611,7 +1637,7 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 # ---------------------------------------------------------------------------
 
 
-def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
+def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str = "neo4j") -> Dict[str, Any]:
     """LLM critique of retrieved rows before synthesis; may trigger reformulation (max two)."""
     lang = _session_lang(state)
     data = state.get("raw_result") or []
@@ -1655,8 +1681,11 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Reply with exactly two lines: "
                     "Line 1: OK or POOR (uppercase). "
                     "Line 2: one short sentence explaining why. "
-                    "Mark OK if results contain ANY information relevant to the question, even partial. "
-                    "Mark POOR only if results are completely unrelated or entirely empty."
+                    "Mark OK only if the retrieved results directly and substantively address the specific legal question asked — "
+                    "meaning they contain information about the same legal institute, procedure, or subject matter. "
+                    "Mark POOR if the results are about a different legal topic even if they share some terminology, "
+                    "if they are completely unrelated, or if they are entirely empty. "
+                    "A result that mentions similar words but addresses a different legal matter must be marked POOR."
                 )
             ),
             HumanMessage(
@@ -1717,6 +1746,47 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
             "retrieval_evaluated": True,
         }
     if r < 2:
+        # On the first evaluation of an intersection attempt, if vector search produced
+        # context nodes, trust them directly rather than entering reformulation.
+        if r == 0 and state.get("cypher_attempt") == "intersection":
+            log_cypher_event(
+                "d_evaluate_fallback_debug",
+                "checking vector-search fallback eligibility",
+                detail={
+                    "r": r,
+                    "cypher_attempt": state.get("cypher_attempt"),
+                    "context_nodes_count": len(state.get("context_nodes") or []),
+                },
+            )
+            context_nodes = state.get("context_nodes") or []
+            if context_nodes and driver:
+                element_ids = [n["element_id"] for n in context_nodes if n.get("element_id")]
+                fetched: List[Dict[str, Any]] = []
+                if element_ids:
+                    try:
+                        with driver.session(database=database) as neo4j_session:
+                            records = neo4j_session.run(
+                                "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
+                                "WHERE elementId(s) IN $element_ids\n"
+                                "RETURN d, s",
+                                element_ids=element_ids,
+                            )
+                            fetched = [record.data() for record in records]
+                    except Exception as exc:
+                        logger.warning("Vector-search fallback Neo4j fetch failed: %s", exc)
+                if fetched:
+                    log_cypher_event(
+                        "d_evaluate_vector_fallback",
+                        f"POOR on intersection round 0 — bypassing reformulation, fetched {len(fetched)} records from {len(context_nodes)} vector-search context nodes",
+                        detail={"context_node_count": len(context_nodes), "fetched_row_count": len(fetched), "feedback": feedback},
+                    )
+                    return {
+                        "retrieval_quality_ok": True,
+                        "raw_result": fetched,
+                        "quality_feedback": feedback,
+                        "status_messages": status,
+                        "retrieval_evaluated": True,
+                    }
         return {
             "retrieval_quality_ok": False,
             "quality_reformulation_round": r + 1,
@@ -1724,8 +1794,12 @@ def evaluate_retrieval_quality(state: Dict[str, Any]) -> Dict[str, Any]:
             "status_messages": status,
             "retrieval_evaluated": True,
         }
+    # Cap reached: retrieved data was POOR quality. Clear raw_result so synthesize_answer
+    # uses the empty/no-data path rather than synthesizing from irrelevant results.
+    # retrieval_quality_ok stays True so route_after_evaluation still routes to "synthesize".
     return {
         "retrieval_quality_ok": True,
+        "raw_result": [],
         "quality_feedback": feedback,
         "status_messages": status,
         "retrieval_evaluated": True,

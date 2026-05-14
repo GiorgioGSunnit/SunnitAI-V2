@@ -99,6 +99,11 @@ DOCUMENT_TYPE_REGISTRY = {
         "fields": ["venditore", "acquirente", "descrizione_bene", "prezzo", "modalita_pagamento", "data_consegna", "garanzie", "data"],
         "label": "Contratto di Compravendita",
     },
+    "verbale_assemblea": {
+        "keywords": ["verbale", "assemblea condominiale", "riunione condominiale", "delibera assemblea", "delibera condominiale", "verbale condominio", "riunione condominio", "condominio", "acta", "asamblea", "comunidad de propietarios", "junta de propietarios", "minutes", "condominium meeting", "homeowners association"],
+        "fields": ["data_riunione", "luogo_riunione", "condominio", "indirizzo_condominio", "amministratore", "condomini_presenti", "ordine_del_giorno", "delibere_approvate", "risultati_votazioni"],
+        "label": "Verbale di Assemblea Condominiale",
+    },
 }
 
 
@@ -1045,6 +1050,333 @@ def _franchising_contract_system(lang: str) -> str:
     )
 
 
+def _verbale_assemblea_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un experto en derecho de la propiedad horizontal y comunidades de propietarios. "
+            "Redacta un acta de junta de propietarios formalmente correcta y estructurada en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Nombre de la comunidad de propietarios, domicilio, fecha, hora y lugar de celebracion.\n"
+            "2. ASISTENTES Y QUORUM — Lista de propietarios asistentes o representados con cuotas de participacion, "
+            "comprobacion del quorum necesario, nombre del presidente y del secretario de la junta.\n"
+            "3. ORDEN DEL DIA — Enumeracion de los puntos del orden del dia tal como fueron convocados.\n"
+            "4. DESARROLLO Y ACUERDOS — Para cada punto del orden del dia: resumen del debate, "
+            "acuerdo adoptado con resultado de la votacion (votos a favor, en contra, abstenciones), "
+            "indicacion de si el acuerdo es vinculante conforme a la LPH.\n"
+            "5. CIERRE Y FIRMAS — Hora de cierre, firma del presidente y del secretario.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas fechas, nombres, cuotas ni ningun otro dato. "
+            "No anadas advertencias meta-legales. "
+            "Redacta directamente el acta, sin preambulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in condominium and homeowners association law. "
+            "Draft a formally correct condominium assembly minutes document structured in the following sections:\n\n"
+            "1. HEADING — Name of the condominium, address, date, time and place of the meeting.\n"
+            "2. ATTENDEES AND QUORUM — List of owners present or represented with their ownership shares, "
+            "confirmation that the required quorum is met, name of the chairperson and secretary of the meeting.\n"
+            "3. AGENDA — Numbered list of agenda items as notified in the convening notice.\n"
+            "4. PROCEEDINGS AND RESOLUTIONS — For each agenda item: summary of the discussion, "
+            "resolution passed with voting result (votes in favour, against, abstentions), "
+            "indication of whether the resolution is binding.\n"
+            "5. CLOSING AND SIGNATURES — Time of closure, signatures of the chairperson and secretary.\n\n"
+            f"Use {ph} for every missing piece of information without exception - never invent or assume dates, names, ownership shares or any other data. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un esperto in diritto condominiale italiano. "
+        "Redigi un verbale di assemblea condominiale formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Denominazione del condominio, indirizzo, data, ora e luogo di svolgimento dell'assemblea.\n"
+        "2. PRESENTI E QUORUM — Elenco dei condominii presenti o rappresentati con relative quote millesimali, "
+        "verifica del quorum costitutivo, nome del presidente e del segretario dell'assemblea.\n"
+        "3. ORDINE DEL GIORNO — Elencazione dei punti all'ordine del giorno come convocati.\n"
+        "4. SVOLGIMENTO E DELIBERE — Per ogni punto all'ordine del giorno: sintesi della discussione, "
+        "delibera assunta con esito della votazione (voti favorevoli, contrari, astenuti), "
+        "indicazione se la delibera e vincolante ai sensi del codice civile.\n"
+        "5. CHIUSURA E FIRME — Ora di chiusura, firma del presidente e del segretario.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere date, nomi, quote millesimali o qualsiasi altro dato. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente il verbale, senza prefazioni o spiegazioni."
+    )
+
+
+def _demand_letter_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un abogado experto en derecho civil y mercantil. "
+            "Redacta una carta de requerimiento o burofax formal estructurada en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Datos del remitente (nombre, domicilio), datos del destinatario "
+            "(nombre, domicilio), modalidad de envio (burofax con acuse de recibo o carta certificada), "
+            "objeto de la comunicacion.\n"
+            "2. ANTECEDENTES DE HECHO — Descripcion concisa y cronologica de los hechos relevantes "
+            "que fundamentan el requerimiento.\n"
+            "3. FUNDAMENTO JURIDICO — Base legal de la reclamacion con referencia a los principios "
+            "generales del derecho aplicables.\n"
+            "4. REQUERIMIENTO — Descripcion precisa de lo que se exige al destinatario: cumplimiento "
+            "de la obligacion, pago de cantidad, cese de conducta, entrega de documentacion u otro.\n"
+            "5. PLAZO Y CONSECUENCIAS — Plazo concedido para el cumplimiento (dias habiles desde la "
+            "recepcion), advertencia expresa de las acciones legales que se emprendera en caso de "
+            "incumplimiento (reclamacion judicial, denuncia, ejercicio de otros derechos).\n"
+            "6. FIRMA Y FECHA — Lugar, fecha, firma del remitente o su representante legal.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas fechas, nombres, "
+            "importes ni ningun otro dato no proporcionado explicitamente. "
+            "No anadas advertencias meta-legales. "
+            "Redacta directamente la carta, sin preambulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in civil and commercial law. "
+            "Draft a formal legal demand letter or notice structured in the following sections:\n\n"
+            "1. HEADING — Sender's details (name, address), recipient's details (name, address), "
+            "method of delivery (registered letter with acknowledgement of receipt or certified email), "
+            "subject of the communication.\n"
+            "2. STATEMENT OF FACTS — Concise chronological description of the relevant facts "
+            "underpinning the demand.\n"
+            "3. LEGAL BASIS — Legal foundation of the claim with reference to applicable general "
+            "principles of law.\n"
+            "4. DEMAND — Precise description of what is required from the recipient: performance of "
+            "an obligation, payment of a sum, cessation of conduct, delivery of documents or other.\n"
+            "5. DEADLINE AND CONSEQUENCES — Time allowed for compliance (working days from receipt), "
+            "express warning of the legal action that will be taken in case of non-compliance "
+            "(judicial claim, complaint, exercise of other rights).\n"
+            "6. SIGNATURE AND DATE — Place, date, signature of the sender or their legal representative.\n\n"
+            f"Use {ph} for every missing piece of information without exception - never invent or assume "
+            "dates, names, amounts or any other data not explicitly provided. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un avvocato esperto in diritto civile e commerciale italiano. "
+        "Redigi una lettera di diffida e messa in mora formalmente corretta e strutturata nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Dati del mittente (nome, cognome/ragione sociale, indirizzo), dati del "
+        "destinatario (nome, cognome/ragione sociale, indirizzo), modalita di invio (raccomandata A/R "
+        "o PEC), oggetto della comunicazione.\n"
+        "2. PREMESSE IN FATTO — Descrizione concisa e cronologica dei fatti rilevanti che fondano "
+        "la diffida.\n"
+        "3. FONDAMENTO GIURIDICO — Base legale della pretesa con riferimento ai principi generali "
+        "del diritto applicabili.\n"
+        "4. DIFFIDA E RICHIESTA — Descrizione precisa di cio che si esige dal destinatario: "
+        "adempimento dell'obbligazione, pagamento di somma, cessazione di condotta, consegna di "
+        "documentazione o altro.\n"
+        "5. TERMINE E CONSEGUENZE — Termine concesso per l'adempimento (giorni dalla ricezione), "
+        "avvertimento espresso delle azioni legali che saranno intraprese in caso di inottemperanza "
+        "(azione giudiziaria, esposto, esercizio di altri diritti).\n"
+        "6. FIRMA E DATA — Luogo, data, firma del mittente o del suo rappresentante legale.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere date, nomi, "
+        "importi o qualsiasi altro dato non esplicitamente fornito. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
+    )
+
+
+def _appeal_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un abogado experto en derecho procesal civil y administrativo. "
+            "Redacta un recurso o escrito de apelacion formal estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Organo jurisdiccional o autoridad destinataria, recurrente con datos "
+            "completos y representacion letrada, parte recurrida con datos completos, numero de "
+            "procedimiento y resolucion impugnada.\n"
+            "2. ANTECEDENTES DE HECHO — Descripcion concisa del procedimiento previo, de la resolucion "
+            "impugnada y de los hechos relevantes.\n"
+            "3. FUNDAMENTOS DE DERECHO — Normas procesales que habilitan el recurso, jurisprudencia "
+            "aplicable y principios generales del derecho en que se apoya el recurrente.\n"
+            "4. MOTIVOS DEL RECURSO — Enumeracion y desarrollo de cada motivo de impugnacion: "
+            "infracciones de norma procesal o sustantiva, error en la valoracion de la prueba, "
+            "incongruencia u otras irregularidades.\n"
+            "5. SUPLICO — Peticion precisa al organo: admision del recurso, revocacion o anulacion "
+            "de la resolucion impugnada, resolucion conforme a derecho, condena en costas si procede.\n"
+            "6. FIRMA Y FECHA — Lugar, fecha, firma del letrado.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas fechas, nombres, "
+            "numeros de procedimiento ni ningun otro dato no proporcionado explicitamente. "
+            "No anadas advertencias meta-legales. "
+            "Redacta directamente el escrito, sin preambulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in civil and administrative procedural law. "
+            "Draft a formal appeal or recourse document structured in the following sections:\n\n"
+            "1. HEADING — Court or authority addressed, appellant with full details and legal "
+            "representation, respondent with full details, case number and decision being appealed.\n"
+            "2. STATEMENT OF FACTS — Concise account of the prior proceedings, the decision being "
+            "challenged, and the relevant facts.\n"
+            "3. LEGAL GROUNDS — Procedural rules authorising the appeal, applicable case law and "
+            "general principles of law relied upon by the appellant.\n"
+            "4. GROUNDS OF APPEAL — Enumeration and development of each ground of challenge: "
+            "breaches of procedural or substantive rules, errors in the assessment of evidence, "
+            "inconsistency or other irregularities.\n"
+            "5. RELIEF SOUGHT — Precise request to the court: admission of the appeal, revocation "
+            "or annulment of the challenged decision, decision in accordance with the law, "
+            "costs award where applicable.\n"
+            "6. SIGNATURE AND DATE — Place, date, lawyer's signature.\n\n"
+            f"Use {ph} for every missing piece of information without exception - never invent or assume "
+            "dates, names, case numbers or any other data not explicitly provided. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un avvocato esperto in diritto processuale civile e amministrativo italiano. "
+        "Redigi un ricorso o atto di appello formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Autorita giudiziaria o amministrativa destinataria, ricorrente con dati "
+        "completi e difensore, resistente con dati completi, numero di procedimento e provvedimento "
+        "impugnato.\n"
+        "2. PREMESSE IN FATTO — Descrizione concisa del procedimento pregresso, del provvedimento "
+        "impugnato e dei fatti rilevanti.\n"
+        "3. FONDAMENTI DI DIRITTO — Norme processuali che abilitano l'impugnazione, giurisprudenza "
+        "applicabile e principi generali del diritto su cui si fonda il ricorrente.\n"
+        "4. MOTIVI DEL RICORSO — Enumerazione e sviluppo di ciascun motivo di impugnazione: "
+        "violazioni di norma processuale o sostanziale, errore nella valutazione delle prove, "
+        "contraddittorieta o altre irregolarita.\n"
+        "5. PETITUM — Richiesta precisa all'organo: ammissione del ricorso, revoca o annullamento "
+        "del provvedimento impugnato, pronuncia conforme a diritto, condanna alle spese ove dovuta.\n"
+        "6. FIRMA E DATA — Luogo, data, firma del difensore.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere date, nomi, "
+        "numeri di procedimento o qualsiasi altro dato non esplicitamente fornito. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente l'atto, senza prefazioni o spiegazioni."
+    )
+
+
+def _power_of_attorney_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un notario o abogado experto en derecho notarial y representacion legal. "
+            "Redacta una escritura de poder notarial o documento de delegacion formal estructurado "
+            "en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Titulo del documento (poder especial / poder general / delegacion), "
+            "lugar y fecha de otorgamiento.\n"
+            "2. DATOS DEL PODERDANTE — Nombre completo, DNI/NIE/NIF, domicilio, capacidad legal "
+            "en que actua.\n"
+            "3. DATOS DEL APODERADO — Nombre completo, DNI/NIE/NIF, domicilio, capacidad legal.\n"
+            "4. OBJETO Y PODERES CONFERIDOS — Descripcion precisa del objeto de la delegacion y "
+            "enumeracion detallada de los actos que el apoderado queda facultado a realizar en "
+            "nombre del poderdante.\n"
+            "5. LIMITACIONES Y DURACION — Eventuales limitaciones al ejercicio del poder, duracion "
+            "(indefinida o con fecha de vencimiento), condiciones de revocacion y modalidades.\n"
+            "6. FIRMA Y AUTENTICACION — Firma del poderdante, firma y sello del notario o fedatario "
+            "publico si requerido, datos del notario y numero de protocolo.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas nombres, numeros "
+            "de identificacion, poderes ni ningun otro dato no proporcionado explicitamente. "
+            "No anadas advertencias meta-legales. "
+            "Redacta directamente el documento, sin preambulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are a notary or expert in notarial law and legal representation. "
+            "Draft a power of attorney or formal delegation document structured in the following sections:\n\n"
+            "1. HEADING — Title of the document (special power of attorney / general power of attorney "
+            "/ delegation), place and date of execution.\n"
+            "2. PRINCIPAL'S DETAILS — Full name, ID/tax number, address, legal capacity in which acting.\n"
+            "3. ATTORNEY'S DETAILS — Full name, ID/tax number, address, legal capacity.\n"
+            "4. SCOPE AND POWERS GRANTED — Precise description of the subject matter of the delegation "
+            "and detailed enumeration of the acts the attorney is authorised to perform on behalf "
+            "of the principal.\n"
+            "5. LIMITATIONS AND DURATION — Any limitations on the exercise of the power, duration "
+            "(indefinite or with expiry date), conditions and manner of revocation.\n"
+            "6. SIGNATURE AND AUTHENTICATION — Principal's signature, notary's signature and seal "
+            "if required, notary's details and deed number.\n\n"
+            f"Use {ph} for every missing piece of information without exception - never invent or assume "
+            "names, identification numbers, powers or any other data not explicitly provided. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un notaio o avvocato esperto in diritto notarile e rappresentanza legale italiano. "
+        "Redigi una procura speciale o generale formalmente corretta e strutturata nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Titolo del documento (procura speciale / procura generale / delega), "
+        "luogo e data del conferimento.\n"
+        "2. DATI DEL CONFERENTE — Nome e cognome completi, codice fiscale, domicilio, qualita "
+        "in cui agisce.\n"
+        "3. DATI DEL PROCURATORE — Nome e cognome completi, codice fiscale, domicilio, qualita.\n"
+        "4. OGGETTO E POTERI CONFERITI — Descrizione precisa dell'oggetto della delega ed "
+        "enumerazione dettagliata degli atti che il procuratore e autorizzato a compiere in nome "
+        "e per conto del conferente.\n"
+        "5. LIMITAZIONI E DURATA — Eventuali limitazioni all'esercizio della procura, durata "
+        "(a tempo indeterminato o con data di scadenza), condizioni e modalita di revoca.\n"
+        "6. FIRMA E AUTENTICAZIONE — Firma del conferente, firma e timbro del notaio o pubblico "
+        "ufficiale se richiesto, dati del notaio e numero di repertorio.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere nomi, codici "
+        "fiscali, poteri o qualsiasi altro dato non esplicitamente fornito. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
+    )
+
+
+def _sale_agreement_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un abogado experto en derecho civil patrimonial y contratos de compraventa. "
+            "Redacta un contrato de compraventa formalmente correcto y estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Vendedor y comprador con datos completos (nombre, DNI/NIF, domicilio, "
+            "capacidad legal), lugar y fecha de firma del contrato.\n"
+            "2. OBJETO DE LA VENTA — Descripcion detallada del bien vendido (bien mueble o inmueble, "
+            "referencias identificativas, estado de conservacion, pertenencias incluidas y excluidas).\n"
+            "3. PRECIO Y MODALIDADES DE PAGO — Precio total de venta, modalidad de pago (contado, "
+            "plazos, transferencia bancaria, cheque), fecha o fechas de pago, consecuencias del "
+            "impago.\n"
+            "4. GARANTIAS Y DECLARACIONES — Declaraciones del vendedor sobre titularidad, ausencia "
+            "de cargas y gravamenes, garantia por eviccion y vicios ocultos, obligaciones de "
+            "saneamiento conforme a la normativa aplicable.\n"
+            "5. ENTREGA Y TRANSMISION DE PROPIEDAD — Fecha y modalidades de entrega del bien, "
+            "momento del traspaso de la propiedad y del riesgo, obligaciones de las partes hasta "
+            "la entrega.\n"
+            "6. CLAUSULAS FINALES Y FIRMAS — Resolucion de controversias, ley aplicable y fuero "
+            "competente, gastos e impuestos a cargo de cada parte, firmas de vendedor y comprador.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas precios, datos "
+            "identificativos del bien ni ningun otro dato no proporcionado explicitamente. "
+            "No anadas advertencias meta-legales. "
+            "Redacta directamente el contrato, sin preambulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in property law and sale and purchase agreements. "
+            "Draft a formally correct sale and purchase agreement structured in the following sections:\n\n"
+            "1. HEADING — Seller and buyer with full details (name, ID/tax number, address, legal "
+            "capacity), place and date of signing.\n"
+            "2. SUBJECT MATTER — Detailed description of the goods sold (movable or immovable property, "
+            "identifying references, condition, included and excluded accessories).\n"
+            "3. PRICE AND PAYMENT TERMS — Total sale price, payment method (lump sum, instalments, "
+            "bank transfer, cheque), payment date or dates, consequences of non-payment.\n"
+            "4. WARRANTIES AND REPRESENTATIONS — Seller's representations as to title, freedom from "
+            "encumbrances, warranty against eviction and latent defects, remedies under applicable law.\n"
+            "5. DELIVERY AND TRANSFER OF TITLE — Date and manner of delivery, moment of transfer of "
+            "ownership and risk, obligations of the parties until delivery.\n"
+            "6. FINAL CLAUSES AND SIGNATURES — Dispute resolution, governing law and jurisdiction, "
+            "costs and taxes at each party's expense, signatures of seller and buyer.\n\n"
+            f"Use {ph} for every missing piece of information without exception - never invent or assume "
+            "prices, identifying details of the goods or any other data not explicitly provided. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un avvocato esperto in diritto civile patrimoniale e contratti di compravendita italiani. "
+        "Redigi un contratto di compravendita formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Venditore e acquirente con dati completi (nome e cognome/ragione sociale, "
+        "codice fiscale/P.IVA, domicilio, qualita in cui agisce), luogo e data di stipula.\n"
+        "2. OGGETTO DELLA VENDITA — Descrizione dettagliata del bene venduto (bene mobile o immobile, "
+        "riferimenti identificativi, stato di conservazione, pertinenze incluse ed escluse).\n"
+        "3. PREZZO E MODALITA DI PAGAMENTO — Prezzo totale di vendita, modalita di pagamento "
+        "(contante, rate, bonifico bancario, assegno), data o date di pagamento, conseguenze "
+        "del mancato pagamento.\n"
+        "4. GARANZIE E DICHIARAZIONI — Dichiarazioni del venditore su titolarita, assenza di "
+        "vincoli e gravami, garanzia per evizione e vizi occulti, obblighi di risanamento ai "
+        "sensi della normativa applicabile.\n"
+        "5. CONSEGNA E TRASFERIMENTO DELLA PROPRIETA — Data e modalita di consegna del bene, "
+        "momento del passaggio di proprieta e del rischio, obblighi delle parti fino alla consegna.\n"
+        "6. CLAUSOLE FINALI E FIRME — Risoluzione delle controversie, legge applicabile e foro "
+        "competente, spese e imposte a carico di ciascuna parte, firme di venditore e acquirente.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere prezzi, dati "
+        "identificativi del bene o qualsiasi altro dato non esplicitamente fornito. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
+    )
+
+
 def generate_document(
     user_message: str,
     doc_type: str,
@@ -1070,6 +1402,11 @@ def generate_document(
         "employment_dismissal_appeal": _employment_dismissal_appeal_system,
         "employment_termination": _employment_termination_system,
         "franchising_contract": _franchising_contract_system,
+        "demand_letter": _demand_letter_system,
+        "appeal": _appeal_system,
+        "power_of_attorney": _power_of_attorney_system,
+        "sale_agreement": _sale_agreement_system,
+        "verbale_assemblea": _verbale_assemblea_system,
     }
 
     system_fn = _SYSTEM_FN.get(doc_type)

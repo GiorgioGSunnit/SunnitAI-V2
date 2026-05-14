@@ -119,7 +119,7 @@ def build_graph(compile_graph: bool = True):
     )
     graph.add_node(
         "evaluate_retrieval_quality",
-        evaluate_retrieval_quality,
+        partial(evaluate_retrieval_quality, driver=driver, database=NEO4J_DATABASE),
     )
     graph.add_node("generate_cypher_reformulation", generate_cypher_reformulation)
     graph.add_node("synthesize_answer", synthesize_answer)
