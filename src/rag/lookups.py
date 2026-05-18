@@ -8,13 +8,14 @@ from typing import Any, Dict, Iterable, List, Optional, Pattern, Set, Tuple
 
 from neo4j.exceptions import Neo4jError
 
-from .ai_chat import embedding_model
+from .ai_chat import embedding_model, _embed_query_with_prefix
 from .lookup_indexes import (
     BTREE_LOOKUPS,
     FULLTEXT_INDEXES,
     VECTOR_K,
 )
 from .utils import canonical_name
+from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ VECTOR_INDEX_SETTINGS: Dict[str, Dict[str, Any]] = {
     "institution_embeddings": {"k": 1, "min_score": 0.3},
     "legalact_embeddings": {"k": 2, "min_score": 0.3},
     "document_embeddings": {"min_score": 0.25},
-    "section_embeddings": {"k": 15, "min_score": 0.25},
+    "section_embeddings": {"k": 30, "min_score": 0.25},
     "tender_embeddings": {"k": 2, "min_score": 0.28},
     "contract_embeddings": {"k": 2, "min_score": 0.28},
     "penalty_embeddings": {"k": 1, "min_score": 0.32},
@@ -83,7 +84,7 @@ DEFAULT_VECTOR_INDEXES = ["document_embeddings"]
 @lru_cache(maxsize=64)
 def _cached_embed_query(text: str) -> tuple:
     """Embed text and cache the result. Returns a tuple (hashable) for LRU cache compatibility."""
-    return tuple(embedding_model.embed_query(text))
+    return tuple(_embed_query_with_prefix(text))
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +489,34 @@ def fulltext_lookup(
     return matches
 
 
+def _sanitize_fulltext_query(query: str) -> str:
+    """Remove Lucene special characters that cause fulltext parse errors."""
+    sanitized = re.sub(r'[+\-&|!(){}\[\]^"~*?:\\/]', ' ', query)
+    sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+    return sanitized[:200]
+
+
+def bm25_lookup(query: str, driver, database: str, k: int = 15) -> List[str]:
+    """BM25 fulltext search on Section.plain_text using Neo4j fulltext index."""
+    search_text = _sanitize_fulltext_query(query)
+    try:
+        with driver.session(database=database) as session:
+            result = session.run(
+                'CALL db.index.fulltext.queryNodes("section_fulltext", $search_text, {limit: $k}) '
+                "YIELD node, score "
+                "RETURN elementId(node) AS eid, score "
+                "ORDER BY score DESC",
+                search_text=search_text,
+                k=k,
+            )
+            eids = [r["eid"] for r in result]
+    except Neo4jError as exc:
+        logger.warning("BM25 lookup failed: %s", exc)
+        eids = []
+    vlog("bm25_search", {"query_length": len(query), "results_found": len(eids)})
+    return eids
+
+
 def vector_lookup(
     session,
     value: str,
@@ -533,6 +562,7 @@ def vector_lookup(
                 },
             )
             continue
+        before = len(matches)
         for record in records:
             score = record.get("score")
             if min_score is not None and score is not None and score < min_score:
@@ -545,4 +575,5 @@ def vector_lookup(
                     "score": score,
                 }
             )
+        vlog("vector_search", {"index_name": index, "k": k_value, "result_count": len(matches) - before})
     return matches

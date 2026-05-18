@@ -1419,7 +1419,15 @@ def generate_document(
 
     fields_dict = extract_document_fields(user_message, doc_type, lang)
 
-    system_content = system_fn(lang)
+    _FORMATTING_RULE = (
+        "FORMATTING RULE: Use consistent, professional capitalization throughout. "
+        "Document titles and section headers should use Title Case or ALL CAPS consistently. "
+        "Never mix uppercase and lowercase within a single word "
+        "(e.g. never write 'LOCazione' — write 'Locazione' or 'LOCAZIONE'). "
+        "All placeholder text in brackets should be in UPPERCASE: "
+        "[DA COMPILARE], [INDIRIZZO IMMOBILE], etc.\n\n"
+    )
+    system_content = _FORMATTING_RULE + system_fn(lang)
     if citations:
         citations_text = "\n".join(
             f"- {cit.get('document_name', '')}, sezione {sec.get('name', '')}"

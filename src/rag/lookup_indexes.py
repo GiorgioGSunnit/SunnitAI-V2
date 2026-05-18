@@ -65,4 +65,4 @@ CONTEXT_VECTOR_INDEXES = [
     "courtcase_embeddings",
 ]
 CONTEXT_NODE_LIMIT = 10
-VECTOR_K = 3
+VECTOR_K = 30

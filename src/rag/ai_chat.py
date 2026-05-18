@@ -102,6 +102,15 @@ def _init_local_embeddings():
 
 embedding_model = _init_embedding_model()
 
+
+def _embed_query_with_prefix(text: str) -> list:
+    """Embed a search query, adding an instruction prefix for Qwen models."""
+    provider = os.getenv("EMBEDDING_PROVIDER", "local")
+    model = os.getenv("EMBEDDING_MODEL", "")
+    if provider == "openai" and "qwen" in model.lower():
+        text = f"Instruct: Given a legal query in Italian, retrieve the most relevant legal document sections\nQuery: {text}"
+    return embedding_model.embed_query(text)
+
 # ---------------------------------------------------------------------------
 # Structured output model (entity extraction)
 # ---------------------------------------------------------------------------

@@ -307,16 +307,20 @@ class ChatBot:
             citations = []
 
         # Detect topic drift and append a note when the user switches topics mid-session
-        if len(session.messages) > 4:
+        _DRIFT_NOTES = {
+            "it": "\n\n---\n💡 Questo argomento sembra diverso dalla conversazione precedente. Considera di aprire una nuova chat per mantenere il contesto separato.",
+            "es": "\n\n---\n💡 Este tema parece diferente a la conversación anterior. Considera abrir un nuevo chat para mantener el contexto separado.",
+        }
+        _drift_note = _DRIFT_NOTES.get(session.session_language, "\n\n---\n💡 This topic seems different from your previous conversation. Consider opening a new chat to keep the context separate.")
+        if result.get("off_topic"):
+            if not result.get("answer", "").startswith("💡"):
+                answer += _drift_note
+        elif len(session.messages) > 4:
             drift_context = session.get_recent_context()
             # Exclude the message we just added (the current user message)
             drift_context = drift_context[:-1] if len(drift_context) > 1 else []
-            if detect_topic_drift(user_message, drift_context, session.session_language):
-                _DRIFT_NOTES = {
-                    "it": "\n\n---\n💡 Questo argomento sembra diverso dalla conversazione precedente. Considera di aprire una nuova chat per mantenere il contesto separato.",
-                    "es": "\n\n---\n💡 Este tema parece diferente a la conversación anterior. Considera abrir un nuevo chat para mantener el contexto separado.",
-                }
-                answer += _DRIFT_NOTES.get(session.session_language, "\n\n---\n💡 This topic seems different from your previous conversation. Consider opening a new chat to keep the context separate.")
+            if detect_topic_drift(user_message, drift_context, session.session_language) and not result.get("answer", "").startswith("💡"):
+                answer += _drift_note
 
         # Record the assistant response
         session.add_message("assistant", answer, metadata={"references": references})

@@ -15,6 +15,7 @@ import asyncio
 import io
 import logging
 import re
+import time
 import urllib.parse
 from contextlib import asynccontextmanager
 from functools import partial
@@ -27,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from .session import ChatBot, ChatSession, _generate_session_title
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
+from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
     DOCUMENT_TYPE_REGISTRY,
     classify_document_type,
@@ -559,6 +561,9 @@ async def chat(request: ChatRequest):
         session = chatbot.create_session()
         session_id = session.session_id
 
+    _req_start = time.time()
+    vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
+
     if is_generation_request(request.message):
         session = chatbot.get_session(session_id)
         if not session:
@@ -611,6 +616,7 @@ async def chat(request: ChatRequest):
         logger.error("Chat error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+    vlog("request_end", {"session_id": session_id, "message_length": len(request.message)}, (time.time() - _req_start) * 1000)
     return ChatResponse(**result)
 
 

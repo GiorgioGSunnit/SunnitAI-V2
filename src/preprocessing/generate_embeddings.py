@@ -20,6 +20,15 @@ BATCH_SIZE = 64
 VECTOR_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
 
 
+def _add_doc_prefix(text: str) -> str:
+    """Add instruction prefix for qwen embedding models."""
+    provider = os.getenv("EMBEDDING_PROVIDER", "local")
+    model = os.getenv("EMBEDDING_MODEL", "")
+    if provider == "openai" and "qwen" in model.lower():
+        return f"Instruct: Represent this Italian legal document section for retrieval\n{text}"
+    return text
+
+
 def _text_expr(*props: str) -> str:
     """Cypher expression that concatenates non-null properties into a single string."""
     parts = [f"toString(COALESCE(n.{p}, ''))" for p in props]
@@ -267,7 +276,7 @@ def _process_label(driver, database: str, cfg: Dict, embedding_model, batch_size
         return 0
 
     eids = [r["eid"] for r in records]
-    texts = [r["text"].strip() or label for r in records]
+    texts = [_add_doc_prefix(r["text"].strip() or label) for r in records]
     logger.info("%s: embedding %d nodes", label, len(records))
 
     total_written = 0

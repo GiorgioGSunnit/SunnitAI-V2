@@ -22,6 +22,7 @@ from langgraph.graph import END, StateGraph
 from neo4j import Driver, GraphDatabase
 
 from .graph_nodes import (
+    article_router,
     context_retrieval,
     decompose_query,
     entity_linking,
@@ -31,6 +32,7 @@ from .graph_nodes import (
     generate_cypher_fallback,
     generate_cypher_intersection,
     generate_cypher_reformulation,
+    route_after_article_router,
     route_after_decompose,
     route_after_evaluation,
     route_after_execution,
@@ -72,6 +74,8 @@ class AgentState(TypedDict, total=False):
     citations: List[Dict[str, Any]]
     off_topic: Optional[bool]
     query_variants: List[str]
+    article_router_fired: Optional[bool]
+    article_refs_found: List[str]
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +103,10 @@ def build_graph(compile_graph: bool = True):
 
     # Nodes that need the Neo4j driver are wrapped with partial
     graph.add_node("decompose_query", decompose_query)
+    graph.add_node(
+        "article_router",
+        partial(article_router, driver=driver, database=NEO4J_DATABASE),
+    )
     graph.add_node(
         "entity_linking",
         partial(entity_linking, driver=driver, database=NEO4J_DATABASE),
@@ -129,7 +137,12 @@ def build_graph(compile_graph: bool = True):
     graph.add_conditional_edges(
         "decompose_query",
         route_after_decompose,
-        {"legal": "entity_linking", "off_topic": END},
+        {"legal": "article_router", "off_topic": END},
+    )
+    graph.add_conditional_edges(
+        "article_router",
+        route_after_article_router,
+        {"fired": "evaluate_retrieval_quality", "pass": "entity_linking"},
     )
     graph.add_edge("entity_linking", "context_retrieval")
     graph.add_edge("context_retrieval", "generate_cypher_intersection")

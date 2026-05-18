@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -12,7 +13,8 @@ from neo4j.exceptions import Neo4jError
 
 from ..preprocessing.schema.schema import entities as schema_entities
 from ..preprocessing.schema.schema import relations as schema_relations
-from .ai_chat import _call_chat, structured_entities_model
+from .ai_chat import _call_chat, structured_entities_model, embedding_model, _embed_query_with_prefix
+from .verbose_logger import vlog, Timer
 from .cypher_logger import log_cypher_event, log_cypher_multiline
 from .language import SessionLang, language_display_name, normalize_lang
 from .prompts import (
@@ -31,6 +33,7 @@ from .lookups import (
     LABEL_VECTOR_HINTS,
     VECTOR_INDEX_SETTINGS,
     ParsedLegalAct,
+    bm25_lookup,
     btree_lookup,
     fulltext_lookup,
     legal_act_lookup,
@@ -97,6 +100,48 @@ def _collect_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
         for lbl in n.get("labels", []):
             labels.add(lbl)
     return labels
+
+
+# ---------------------------------------------------------------------------
+# Article number detection
+# ---------------------------------------------------------------------------
+
+_ARTICLE_PATTERNS = [
+    re.compile(r'\bart\.?\s*(\d+)\s*(?:bis|ter|quater|quinquies)?\b', re.IGNORECASE),
+    re.compile(r'\barticolo\s+(\d+)\s*(?:bis|ter|quater|quinquies)?\b', re.IGNORECASE),
+    re.compile(r'\bartículo\s+(\d+)\b', re.IGNORECASE),
+    re.compile(r'\b§\s*(\d+)\b'),
+]
+_LAW_PATTERNS = [
+    re.compile(r'codice\s+civile', re.IGNORECASE),
+    re.compile(r'codice\s+penale', re.IGNORECASE),
+    re.compile(r'codice\s+di\s+procedura\s+(?:civile|penale)', re.IGNORECASE),
+    re.compile(r'd\.?\s*lgs\.?\s*[\d/]+', re.IGNORECASE),
+    re.compile(r'legge\s+[\d/]+', re.IGNORECASE),
+    re.compile(r'costituzione', re.IGNORECASE),
+]
+
+
+def _extract_article_references(query: str) -> List[tuple]:
+    """Return list of (article_number_str, full_match_str) for each unique article found."""
+    results = []
+    seen: Set[str] = set()
+    for pat in _ARTICLE_PATTERNS:
+        for m in pat.finditer(query):
+            number = m.group(1)
+            if number not in seen:
+                seen.add(number)
+                results.append((number, m.group(0).strip()))
+    return results
+
+
+def _extract_law_hint(query: str) -> str:
+    """Return the first law/code reference found in query, lowercased, or empty string."""
+    for pat in _LAW_PATTERNS:
+        m = pat.search(query)
+        if m:
+            return m.group(0).lower()
+    return ""
 
 
 def _select_schema_for_query(
@@ -212,17 +257,17 @@ RELATION_HINTS = "\n".join(
 
 _OFF_TOPIC_REDIRECTS = {
     "it": (
-        "Sono specializzato in consulenza legale e non sono in grado di rispondere a questa domanda. "
+        "💡 Sono specializzato in consulenza legale e non sono in grado di rispondere a questa domanda. "
         "Posso aiutarti con questioni di diritto civile, penale, amministrativo o con l'analisi di documenti legali. "
         "C'è qualcosa di legale su cui posso assisterti?"
     ),
     "es": (
-        "Estoy especializado en consultoría legal y no puedo responder a esta pregunta. "
+        "💡 Estoy especializado en consultoría legal y no puedo responder a esta pregunta. "
         "Puedo ayudarte con cuestiones de derecho civil, penal, administrativo o con el análisis de documentos legales. "
         "¿Hay algo legal en lo que pueda ayudarte?"
     ),
     "en": (
-        "I specialise in legal consultation and am unable to answer this question. "
+        "💡 I specialise in legal consultation and am unable to answer this question. "
         "I can help you with civil, criminal, administrative law or legal document analysis. "
         "Is there something legal I can assist you with?"
     ),
@@ -533,6 +578,62 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Node A1: Article number router (runs before vector search)
+# ---------------------------------------------------------------------------
+
+def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
+    query = state.get("query", "")
+    article_refs = _extract_article_references(query)
+    law_hint = _extract_law_hint(query)
+
+    if not article_refs:
+        vlog("article_router", {"article_refs_found": [], "law_hint": law_hint, "results_found": 0})
+        return {"article_router_fired": False, "article_refs_found": []}
+
+    all_refs = [ref for _, ref in article_refs]
+
+    for article_number, article_ref in article_refs:
+        try:
+            with driver.session(database=database) as session:
+                records = session.run(
+                    "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
+                    "WHERE (s.plain_text CONTAINS $article_ref OR s.name = $article_number)\n"
+                    "AND ($law_hint = '' OR toLower(d.name) CONTAINS $law_hint)\n"
+                    "RETURN d, s LIMIT 15",
+                    article_ref=article_ref,
+                    article_number=article_number,
+                    law_hint=law_hint,
+                )
+                data = [record.data() for record in records]
+        except Neo4jError as exc:
+            logger.warning("[article_router] Cypher failed for ref=%r: %s", article_ref, exc)
+            continue
+
+        vlog(
+            "article_router",
+            {"article_ref": article_ref, "law_hint": law_hint, "results_found": len(data)},
+        )
+
+        if data:
+            enriched = _enrich_with_source_metadata(data)
+            return {
+                "article_router_fired": True,
+                "article_refs_found": all_refs,
+                "raw_result": data,
+                "references": enriched,
+                "execution_error": None,
+                "neo4j_executed": True,
+                "cypher_attempt": "article_router",
+            }
+
+    vlog(
+        "article_router",
+        {"article_refs": all_refs, "law_hint": law_hint, "results_found": 0},
+    )
+    return {"article_router_fired": False, "article_refs_found": all_refs}
+
+
+# ---------------------------------------------------------------------------
 # Node B: Entity linking
 # ---------------------------------------------------------------------------
 
@@ -782,6 +883,21 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
             )
     matches = all_matches
 
+    # Fetch BM25 section content directly
+    bm25_ids = bm25_lookup(original_query, driver, database, k=15)
+    raw_result: List[Dict[str, Any]] = []
+    if bm25_ids:
+        with driver.session(database=database) as session:
+            bm25_rows = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE elementId(s) IN $ids "
+                "RETURN d, s",
+                ids=bm25_ids[:15],
+            ).data()
+        for row in bm25_rows:
+            row["_source"] = "bm25"
+            raw_result.append(row)
+
     aggregated: Dict[str, Dict[str, Any]] = {}
     for match in matches:
         element_id = match["element_id"]
@@ -819,7 +935,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     )[:CONTEXT_NODE_LIMIT]
 
     logger.info("Context retrieval produced %d nodes", len(context_nodes))
-    return {"context_nodes": context_nodes}
+    return {"context_nodes": context_nodes, "raw_result": raw_result}
 
 
 # ---------------------------------------------------------------------------
@@ -1574,9 +1690,12 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     )
 
     try:
+        import time as _time
+        _t0 = _time.time()
         with driver.session(database=database) as session:
             records = session.run(cypher)
             data = [record.data() for record in records]
+        vlog("neo4j_query", {"attempt": attempt, "cypher_length": len(cypher), "row_count": len(data)}, (_time.time() - _t0) * 1000)
     except Neo4jError as exc:
         logger.error("Cypher execution failed during %s attempt: %s", attempt, exc)
         log_cypher_event(
@@ -1624,8 +1743,12 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 
     enriched_references = _enrich_with_source_metadata(data)
 
+    existing_raw = state.get("raw_result", [])
+    bm25_rows = [r for r in existing_raw if r.get("_source") == "bm25"]
+    merged = list(data) + bm25_rows
+
     return {
-        "raw_result": data,
+        "raw_result": merged,
         "execution_error": None,
         "references": enriched_references,
         "neo4j_executed": True,
@@ -1641,6 +1764,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
     """LLM critique of retrieved rows before synthesis; may trigger reformulation (max two)."""
     lang = _session_lang(state)
     data = state.get("raw_result") or []
+    total_row_count = len(data)  # includes BM25 rows pre-populated by context_retrieval
     status = list(state.get("status_messages") or [])
     if state.get("cypher_attempt") != "reformulation":
         if lang == "it":
@@ -1665,7 +1789,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
         "critical retrieval evaluation (LLM) — starting",
         detail={
             "user_query": state["query"],
-            "row_count": len(data),
+            "row_count": total_row_count,
             "cypher_attempt": state.get("cypher_attempt"),
             "quality_reformulation_round_before": r_before,
         },
@@ -1673,6 +1797,8 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
 
     keywords = state.get("retrieval_keywords") or []
     q_short = ", ".join(keywords) if keywords else state["query"][:100]
+    import time as _time
+    _t0 = _time.time()
     verdict_raw = _call_chat(
         [
             SystemMessage(
@@ -1699,9 +1825,11 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
         max_tokens=80,
     )
     lines = [ln.strip() for ln in (verdict_raw or "").splitlines() if ln.strip()]
-    head = lines[0].upper() if lines else "OK"
+    head = lines[0].upper() if lines else "POOR"
     poor = head.startswith("POOR")
     feedback = lines[1] if len(lines) > 1 else ""
+    bm25_rows_in_result = sum(1 for r in data if r.get("_source") == "bm25")
+    vlog("evaluator_llm", {"query": state["query"][:80], "row_count": total_row_count, "bm25_rows_in_result": bm25_rows_in_result, "verdict": head, "reason": feedback[:120], "verdict_overridden_by_bm25": bm25_rows_in_result > 0 and poor}, (_time.time() - _t0) * 1000)
 
     log_cypher_multiline(
         "d_evaluate_llm",
@@ -1709,6 +1837,21 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
         verdict_raw or "",
         delimiter_label="LLM_VERDICT",
     )
+
+    if bm25_rows_in_result > 0 and poor:
+        bm25_only = [r for r in data if r.get("_source") == "bm25"]
+        log_cypher_event(
+            "d_evaluate_bm25_override",
+            f"BM25 found {bm25_rows_in_result} relevant sections — overriding POOR verdict, skipping vector fallback",
+            detail={"bm25_rows_in_result": bm25_rows_in_result, "llm_verdict": head, "feedback": feedback},
+        )
+        return {
+            "retrieval_quality_ok": True,
+            "raw_result": bm25_only,
+            "quality_feedback": None,
+            "status_messages": status,
+            "retrieval_evaluated": True,
+        }
 
     r = int(state.get("quality_reformulation_round") or 0)
     if not poor:
@@ -1775,14 +1918,26 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                     except Exception as exc:
                         logger.warning("Vector-search fallback Neo4j fetch failed: %s", exc)
                 if fetched:
+                    # Merge fetched rows with BM25 rows already in raw_result
+                    bm25_existing = list(state.get("raw_result") or [])
+                    fetched_section_ids = {
+                        row["s"].get("id") for row in fetched
+                        if isinstance(row.get("s"), dict) and row["s"].get("id")
+                    }
+                    merged_result = list(fetched)
+                    for row in bm25_existing:
+                        row_sid = row["s"].get("id") if isinstance(row.get("s"), dict) else None
+                        if row_sid and row_sid not in fetched_section_ids:
+                            merged_result.append(row)
+                            fetched_section_ids.add(row_sid)
                     log_cypher_event(
                         "d_evaluate_vector_fallback",
                         f"POOR on intersection round 0 — bypassing reformulation, fetched {len(fetched)} records from {len(context_nodes)} vector-search context nodes",
-                        detail={"context_node_count": len(context_nodes), "fetched_row_count": len(fetched), "feedback": feedback},
+                        detail={"context_node_count": len(context_nodes), "fetched_row_count": len(fetched), "bm25_row_count": len(merged_result) - len(fetched), "feedback": feedback},
                     )
                     return {
                         "retrieval_quality_ok": True,
-                        "raw_result": fetched,
+                        "raw_result": merged_result,
                         "quality_feedback": feedback,
                         "status_messages": status,
                         "retrieval_evaluated": True,
@@ -1943,13 +2098,23 @@ def _strip_vague_closing(text: str) -> str:
     return text
 
 
-def _strip_hallucinated_fonti(text: str) -> str:
-    """Remove Fonti:/Fonte: lines written by the LLM — replaced programmatically."""
-    if not text:
-        return text
-    lines = text.splitlines()
-    cleaned = [ln for ln in lines if not re.match(r'^\s*Fonti?:', ln, re.IGNORECASE)]
-    return "\n".join(cleaned).rstrip()
+def _strip_hallucinated_fonti(answer: str) -> str:
+    """Remove Fonti:/Fonte: sections written by the LLM — replaced programmatically."""
+    if not answer:
+        return answer
+    # Strip inline "Fonti:" sections appended by the LLM
+    for marker in ["Fonti:", "Fonti :", "Sources:", "Fuentes:"]:
+        idx = answer.find(marker)
+        if idx != -1:
+            answer = answer[:idx].strip()
+    # Also strip line-starting Fonti patterns
+    lines = answer.splitlines()
+    clean = []
+    for line in lines:
+        if re.match(r'^\s*Fonti\s*:', line, re.IGNORECASE):
+            break
+        clean.append(line)
+    return "\n".join(clean).strip()
 
 
 def _extract_citations(
@@ -1980,7 +2145,7 @@ def _extract_citations(
                 if not doc_id:
                     continue
                 if doc_id not in docs:
-                    docs[doc_id] = {"title": None, "sections": set()}
+                    docs[doc_id] = {"title": None, "sections": {}}
                 docs[doc_id]["title"] = doc_name
 
             elif is_section:
@@ -1991,10 +2156,10 @@ def _extract_citations(
                 if not doc_id:
                     continue
                 if doc_id not in docs:
-                    docs[doc_id] = {"title": None, "sections": set()}
+                    docs[doc_id] = {"title": None, "sections": {}}
                 section_plain_text = (value.get("plain_text") or value.get("text") or "").strip()
                 if section_name and section_name != "0" and section_plain_text:
-                    docs[doc_id]["sections"].add(section_name)
+                    docs[doc_id]["sections"].setdefault(section_name, section_plain_text)
 
     results = [
         {
@@ -2003,12 +2168,13 @@ def _extract_citations(
             "sections": [
                 {
                     "name": name,
+                    "plain_text": plain_text,
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
                         f"sections/{urllib.parse.quote(name, safe='')}"
                     ),
                 }
-                for name in sorted(info["sections"])
+                for name, plain_text in sorted(info["sections"].items())
                 if len(name) <= 50
             ],
         }
@@ -2016,22 +2182,145 @@ def _extract_citations(
     ]
     if not answer and not doc_refs:
         return results
-    fonti_tail = "\n".join(answer.strip().splitlines()[-3:])
-    refs = doc_refs or []
-    return [
-        c for c in results
-        if (c.get("document_name") and c["document_name"] in fonti_tail)
-        or any(
-            ref in (c.get("document_name") or "") or ref in (c.get("document_id") or "")
-            for ref in refs
+    if doc_refs:
+        refs = doc_refs
+        return [
+            c for c in results
+            if any(
+                ref in (c.get("document_name") or "") or ref in (c.get("document_id") or "")
+                for ref in refs
+            )
+        ]
+    return results
+
+
+def _citation_is_relevant(answer: str, section_text: str, threshold: float = 0.80) -> bool:
+    if not section_text or not answer:
+        return False
+    try:
+        if len(section_text) <= 800:
+            effective_threshold = threshold - 0.08   # 0.72 for short sections
+        elif len(section_text) <= 3000:
+            effective_threshold = threshold           # 0.80 for medium sections
+        else:
+            effective_threshold = threshold - 0.12   # 0.68 for very long sections
+        answer_emb = _embed_query_with_prefix(answer[:500])
+        section_emb = _embed_query_with_prefix(section_text[:500])
+        dot = sum(a * b for a, b in zip(answer_emb, section_emb))
+        norm_a = sum(a * a for a in answer_emb) ** 0.5
+        norm_b = sum(b * b for b in section_emb) ** 0.5
+        similarity = dot / (norm_a * norm_b + 1e-9)
+        return similarity >= effective_threshold
+    except Exception:
+        return True  # keep citation on error
+
+
+_RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
+_RERANKER_URL = os.getenv("RERANKER_URL", "http://217.160.8.129:8002/v1/rerank")
+
+
+def rerank_results(query: str, rows: list, top_k: int = 10) -> list:
+    """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
+    if not _RERANKER_ENABLED or not rows:
+        return rows
+    import time as _time
+    import requests
+    t0 = _time.time()
+    try:
+        reranker_query = (
+            f"Instruct: Given a legal query in Italian, retrieve the most relevant legal document sections\n"
+            f"Query: {query}"
         )
-    ]
+        payload = {
+            "model": os.getenv("RERANKER_MODEL", "reranker"),
+            "query": reranker_query,
+            "documents": [
+                (row.get("s") or {}).get("plain_text", "")[:512] for row in rows
+            ],
+        }
+        api_key = os.getenv("LLM_API_KEY", "")
+        resp = requests.post(
+            _RERANKER_URL,
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        scored = resp.json().get("results", [])
+        if not scored:
+            return rows
+        for result in scored:
+            original_idx = result["index"]
+            score = result["relevance_score"]
+            if original_idx < len(rows):
+                rows[original_idx]["_reranker_score"] = score
+        reranked = sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)[:top_k]
+        vlog("reranker", {"input_count": len(rows), "output_count": len(reranked)}, (_time.time() - t0) * 1000)
+        return reranked
+    except Exception as exc:
+        logger.warning("Reranker failed (fail-open): %s", exc)
+        vlog("reranker", {"input_count": len(rows), "output_count": len(rows), "error": str(exc)[:120]}, (_time.time() - t0) * 1000)
+        return rows
+
+
+_GAP_PHRASES = [
+    "non è presente nei documenti",
+    "non ho documentazione specifica",
+    "non ho informazioni specifiche",
+    "not present in my knowledge base",
+    "no specific documentation",
+    "no tengo documentacion especifica",
+    "non trovo informazioni",
+    "non sono presenti nei documenti",
+    "non ci siano documenti specifici",
+    "nonostante non ci siano",
+    "non sono presenti documenti",
+    "non risultano documenti",
+    "non trovo documenti",
+    "among the documents provided",
+    "the documents provided do not",
+    "tra i documenti forniti non",
+    "nei documenti forniti non",
+    "documents do not contain",
+    "non è trattata nei documenti",
+    "non sono trattati nei documenti",
+    "non viene trattata nei documenti",
+    "non risulta nei documenti",
+    "trattano temi diversi",
+    "i documenti presenti trattano",
+    "not addressed in the documents",
+    "not covered in the documents",
+    "no se trata en los documentos",
+    "non contengono informazioni specifiche",
+    "non contiene informazioni specifiche",
+    "non contengono informazioni su",
+    "i documenti forniti non contengono",
+    "le fonti disponibili non contengono",
+    "non contengono il testo specifico",
+    "non contengono dettagli specifici",
+    "nessuno dei documenti forniti contiene",
+    "nessuno dei documenti contiene",
+    "non contiene tale articolo",
+    "non contengono tale articolo",
+    "nessun documento fornito contiene",
+    "i documenti disponibili non contengono",
+    "non è possibile fornire dettagli specifici",
+    "non è possibile fornire informazioni specifiche",
+    "non è specificamente menzionata nei documenti",
+    "non è specificamente trattata nei documenti",
+    "non è menzionata nei documenti forniti",
+    "non sono specificamente menzionati nei documenti",
+    "non è esplicitamente menzionata nei documenti",
+    "non viene menzionata nei documenti",
+    "posso aiutarla con domande correlate",
+    "posso aiutarti con domande correlate",
+]
 
 
 def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     lang = _session_lang(state)
     error = state.get("execution_error") or state.get("cypher_generation_error")
-    data = state.get("raw_result", [])
+    data = rerank_results(state.get("query", ""), state.get("raw_result") or [])
 
     qfb = state.get("quality_feedback")
     log_cypher_event(
@@ -2133,12 +2422,15 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         "synthesis LLM call starting",
         detail={"citations_count": len(all_citations)},
     )
+    import time as _time
+    _t1 = _time.time()
     answer = _call_chat(
         [
             SystemMessage(content=synthesis_system_message(lang)),
             HumanMessage(content="".join(human_parts) + synthesis_human_footer(lang)),
         ]
     )
+    vlog("synthesis_llm", {"citations_count": len(all_citations), "answer_length": len(answer)}, (_time.time() - _t1) * 1000)
     log_cypher_event(
         "e_synthesize_end",
         "synthesis LLM call complete",
@@ -2148,7 +2440,73 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     citations = _extract_citations(
         data, answer=answer, doc_refs=state.get("document_references") or []
     )
+    # Limit to top 5 most-cited documents to reduce noise
+    if len(citations) > 5:
+        citations = sorted(citations, key=lambda c: len(c['sections']), reverse=True)[:5]
+    # Filter citations to only sections that survived reranker
+    if data and any(r.get('_reranker_score') is not None for r in data):
+        reranker_texts = {
+            r.get('s', {}).get('plain_text', '')[:100]
+            for r in data
+            if r.get('_reranker_score') is not None and r.get('_reranker_score', 0) >= 0.15
+        }
+        citations = [
+            {**c, 'sections': [
+                s for s in c['sections']
+                if s.get('plain_text', '')[:100] in reranker_texts
+            ]}
+            for c in citations
+        ]
+        citations = [c for c in citations if c['sections']]
     answer = _strip_hallucinated_fonti(answer)
+
+    # Citation quality filter disabled — corpus too small for meaningful filtering
+    # Gap phrase detection handles hallucination prevention instead
+    filtered_citations = citations
+    citations = filtered_citations
+
+    # Hard stop enforcement: if the answer acknowledges a gap, clear all citations.
+    if any(phrase in answer.lower() for phrase in _GAP_PHRASES) and citations:
+        citations = []
+        logger.debug("Hard stop detected: citations cleared")
+
+    # Truncate answer at gap phrase if hard stop detected
+    answer_lower = answer.lower()
+    for phrase in _GAP_PHRASES:
+        idx = answer_lower.find(phrase)
+        if idx != -1:
+            # Find end of the gap phrase sentence
+            gap_sentence_end = answer.find('.', idx + len(phrase))
+            if gap_sentence_end == -1:
+                gap_sentence_end = len(answer) - 1
+            # Count 2 more periods for 2 follow-up sentences (total 3 sentences)
+            period_count = 0
+            cut_pos = len(answer)
+            for i, ch in enumerate(answer[gap_sentence_end + 1:], start=gap_sentence_end + 1):
+                if ch == '.':
+                    period_count += 1
+                    if period_count == 2:
+                        cut_pos = i + 1
+                        break
+            answer = answer[:cut_pos].strip()
+            citations = []
+            logger.debug(f"Hard stop: answer truncated after 3-sentence polite response")
+            break
+
+    # Remove redundant "In definitiva" closing after gap acknowledgment
+    if any(phrase in answer.lower() for phrase in _GAP_PHRASES):
+        for closing in ["In definitiva,", "In definitiva ", "In summary,", "In summary ", "En definitiva,"]:
+            idx = answer.find(closing)
+            if idx != -1:
+                last_period = answer.rfind('.', 0, idx)
+                if last_period != -1:
+                    answer = answer[:last_period + 1].strip()
+                break
+
+    # Clear citations for gap responses
+    if any(phrase in answer.lower() for phrase in _GAP_PHRASES):
+        citations = []
+
     if citations:
         fonti_line = "Fonti: " + ", ".join(
             f"{c['document_name']} sezioni: {', '.join(s['name'] for s in c['sections'])}"
@@ -2169,6 +2527,10 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def route_after_decompose(state: Dict[str, Any]) -> str:
     return "off_topic" if state.get("off_topic") else "legal"
+
+
+def route_after_article_router(state: Dict[str, Any]) -> str:
+    return "fired" if state.get("article_router_fired") else "pass"
 
 
 def route_after_intersection(state: Dict[str, Any]) -> str:

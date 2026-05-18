@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C /Users/flavioporocani/Desktop/SunnitAI-V2 diff HEAD origin/fix_prompts -- src/preprocessing/write_kg.py)",
+      "Bash(git -C /Users/flavioporocani/Desktop/SunnitAI-V2 diff HEAD origin/fix_prompts -- src/rag/ai_chat.py)",
+      "Bash(git -C /Users/flavioporocani/Desktop/SunnitAI-V2 diff HEAD origin/fix_prompts -- src/rag/language.py)",
+      "Bash(git -C /Users/flavioporocani/Desktop/SunnitAI-V2 diff HEAD origin/fix_prompts -- src/rag/prompts.py)",
+      "Bash(git -C /Users/flavioporocani/Desktop/SunnitAI-V2 diff HEAD origin/fix_prompts -- src/rag/utils.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('/Users/flavioporocani/Desktop/SunnitAI-V2/src/rag/document_generation.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(pip show *)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/rag/prompts.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c ' *)",
+      "Bash(python3 /tmp/patch_prompts.py)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/rag/prompts.py'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/rag/graph_nodes.py'\\).read\\(\\)\\); print\\('graph_nodes.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/rag/main.py'\\).read\\(\\)\\); print\\('main.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/rag/lookups.py'\\).read\\(\\)\\); print\\('lookups.py: OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('src/rag/graph_nodes.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('/Users/flavioporocani/Desktop/SunnitAI-V2/src/rag/graph_nodes.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\('/Users/flavioporocani/Desktop/SunnitAI-V2/src/rag/document_generation.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+    ]
+  }
+}
