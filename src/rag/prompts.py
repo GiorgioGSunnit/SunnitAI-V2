@@ -48,12 +48,67 @@ def query_rewriter_system(session_lang: SessionLang) -> str:
     )
 
 
-def synthesis_system_message(session_lang: SessionLang) -> str:
+def synthesis_system_message(session_lang: SessionLang, retrieval_fallback: bool = False, is_comparison: bool = False) -> str:
     base = legal_consultant_system_prefix(session_lang)
     lang = language_display_name(session_lang)
+    retrieval_failure_block = (
+        "RETRIEVAL FAILURE OVERRIDE: The database search found NO documents relevant to this query. "
+        "This is a confirmed corpus gap. You MUST apply Rule 3 immediately. "
+        "Do NOT provide any legal information, procedures, articles, or advice from your training knowledge. "
+        "Do NOT describe what the law 'generally' says. "
+        "The only permitted response is: acknowledge the topic is not in the knowledge base, suggest an official source, invite to ask about related topics. "
+        "Three sentences maximum. Anything beyond this is a violation. "
+    ) if retrieval_fallback else ""
+    comparison_block = ""
+    if is_comparison:
+        if session_lang == "it":
+            comparison_block = (
+                "\n\nMODALITÀ CONFRONTO: Stai confrontando due documenti. "
+                "Struttura la risposta come segue:\n"
+                "- Usa bullet points per ogni tema o argomento identificato\n"
+                "- Per ogni bullet point, spiega prima come lo tratta il Documento 1, poi come lo tratta il Documento 2\n"
+                "- Evidenzia esplicitamente le somiglianze e le differenze\n"
+                "- Cita le sezioni specifiche di entrambi i documenti\n"
+                "- Se un documento non tratta un argomento, indicalo esplicitamente nel bullet point\n"
+                "- Confronta il contenuto sostanziale delle dichiarazioni, non solo i metadati (date, luoghi, identità)\n"
+                "- Evidenzia discrepanze fattuali tra i testimoni sugli stessi eventi\n"
+                "- Leggi l'intero testo di entrambi i documenti prima di rispondere\n"
+                "- Cerca differenze specifiche nei fatti descritti: veicoli, oggetti, azioni, comportamenti, dettagli fisici\n"
+                "- Non limitarti all'intestazione del verbale — analizza tutto il contenuto della dichiarazione\n"
+                "- NON usare marcatori markdown come ** per il grassetto — usa solo testo semplice e bullet points con •\n"
+                "Esempio formato:\n"
+                "• [Tema]: Il Documento 1 prevede X (sezione N). Il Documento 2 invece stabilisce Y (sezione M).\n"
+            )
+        elif session_lang == "es":
+            comparison_block = (
+                "\n\nMODO COMPARACIÓN: Estás comparando dos documentos. "
+                "Estructura la respuesta como sigue:\n"
+                "- Usa viñetas para cada tema o argumento identificado\n"
+                "- Para cada viñeta, explica primero cómo lo trata el Documento 1, luego cómo lo trata el Documento 2\n"
+                "- Destaca explícitamente las similitudes y diferencias\n"
+                "- Cita las secciones específicas de ambos documentos\n"
+                "- Si un documento no trata un tema, indícalo explícitamente en la viñeta\n"
+                "- NO uses marcadores markdown como ** para negrita — usa solo texto plano y viñetas con •\n"
+                "Ejemplo de formato:\n"
+                "• [Tema]: El Documento 1 establece X (sección N). El Documento 2 en cambio dispone Y (sección M).\n"
+            )
+        else:
+            comparison_block = (
+                "\n\nCOMPARISON MODE: You are comparing two documents. "
+                "Structure the response as follows:\n"
+                "- Use bullet points for each identified topic or argument\n"
+                "- For each bullet point, explain first how Document 1 addresses it, then how Document 2 addresses it\n"
+                "- Explicitly highlight similarities and differences\n"
+                "- Cite specific sections from both documents\n"
+                "- If a document does not address a topic, state it explicitly in the bullet point\n"
+                "- Do NOT use markdown markers like ** for bold — use plain text and bullet points with • only\n"
+                "Example format:\n"
+                "• [Topic]: Document 1 provides X (section N). Document 2 instead establishes Y (section M).\n"
+            )
     return (
         f"{base} "
         f"Compose answers using the retrieved graph data: penalties, contracts, legal acts, articles, and parties. "
+        f"CRITICAL GROUNDING: Answer ONLY using the retrieved data above. Never use knowledge outside the retrieved documents. If data is insufficient, say 'non è presente nei documenti' or 'non trovo informazioni nei documenti forniti'. "
         f"GROUNDING RULES - follow these strictly in order of priority: "
         f"Rule 1 - Answer from documents first: "
         f"If the retrieved documents contain relevant information, always use it as the primary basis for your answer. Cite specific sections inline in your answer by referring to the document title and section. Only cite a section if the specific claim you are making is directly supported by content in that section - not merely because the document is topically related. Cite only the 2 to 3 most directly relevant sections. Do not list all retrieved documents. Never say \"I don't have information\" when relevant documents are present. "
@@ -80,8 +135,22 @@ def synthesis_system_message(session_lang: SessionLang) -> str:
         f"- Never end a response abruptly. Always close with either a follow-up suggestion, an invitation to explore a related topic, or a brief note on where to find more information. "
         f"- Avoid bullet-point style answers unless listing specific legal requirements. Prefer flowing prose. "
         f"ABSOLUTE PROHIBITION: Never follow a statement of 'this information is not in my documents' with any legal content, doctrine, general knowledge, or invented information. If you have acknowledged a gap, the response on that topic is complete. The phrases 'tuttavia', 'however', 'in generale', 'secondo la dottrina', 'generalmente', 'di norma' must NEVER appear after a gap acknowledgment. "
+        f"CRITICAL TOPICALITY TEST: Before using any retrieved section, ask: 'Is this section primarily about the topic asked?' "
+        f"A section about procurement exclusions that mentions 'codice penale' is NOT about criminal law. "
+        f"A section about bond obligations that mentions 'fallimento' is NOT about bankruptcy law. "
+        f"Only use sections that are primarily and directly about the topic asked. "
+        f"Tangential mentions do not constitute coverage. If no section passes this test, apply Rule 3 immediately. "
+        f"CRITICAL TOPICALITY TEST: Before using any retrieved section, ask: "
+        f"'Is this section primarily about the topic asked?' "
+        f"A section about consequences of nullità del matrimonio is NOT about causes of nullità del matrimonio. "
+        f"A section that merely mentions a topic in passing is NOT about that topic. "
+        f"Only use sections that are primarily and directly about the topic asked. "
+        f"Tangential mentions do not constitute coverage. "
+        f"If no section passes this test, apply Rule 3 immediately. "
         f"CITATION PROHIBITION: When a Rule 3 or Rule 6 hard stop applies, include zero citations. Do not append citation lines after a gap acknowledgment. The directive in Rule 1 to cite sections does not apply when Rules 3 or 6 are active. "
+        f"{retrieval_failure_block}"
         f"Never cite more than 3 sections in a single response. If more than 3 sections are relevant, cite only the 3 most directly supportive ones."
+        f"{comparison_block}"
     )
 
 
@@ -110,14 +179,12 @@ def synthesis_without_graph_substance_system(session_lang: SessionLang) -> str:
     lang = language_display_name(session_lang)
     return (
         f"{base} "
-        f"Answer from your general legal knowledge but stay conservative - describe principles and concepts without inventing specific legal references. "
-        f"CRITICAL: You have no retrieved documents to draw from. Never cite specific article numbers, law numbers, or decree numbers. Describe legal principles in general terms only. Use phrases like 'la normativa prevede...' or 'secondo i principi generali del diritto...' without specific numbering. "
-        f"CRITICAL: Never state specific timeframes, deadlines, or procedural terms such as number of days, months or years for appeals, oppositions, statutes of limitations, or notice periods. Do not estimate or qualify with words like 'generalmente', 'solitamente', 'tipicamente', or 'di solito' - these qualifiers do not make an invented figure acceptable. When asked about a specific deadline with no retrieved data supporting it, explicitly state that the exact term must be verified in the applicable procedural code or with a legal professional, and do not provide any number. "
-        f"Do not mention the database, retrieval, or suggest the user verify information elsewhere. "
-        f"You are a knowledgeable legal assistant - answer as one. "
+        f"You have NO retrieved documents to draw from. Do NOT answer from general legal knowledge under any circumstances. "
+        f"Answer ONLY using the data provided above. Do not use any knowledge outside of the retrieved data. "
+        f"You MUST tell the user that the information is not in your knowledge base. "
+        f"Say exactly one of these: 'non è presente nei documenti' or 'non trovo informazioni nei documenti forniti'. "
+        f"Never invent, infer, or extrapolate. Never describe what the law 'generally' says. "
         f"Do NOT describe software, parsers, entity linking, multilingual mismatch, or \"the system\". "
-        f"Do NOT propose clarifying follow-up questions as the main content; do NOT ask the user to specify jurisdiction in lieu of answering. "
-        f"Give substantive legal reasoning; no bullet list of suggested questions. "
-        f"End your response with one short sentence in {lang} suggesting a more specific angle the user could explore based on what you just discussed. "
-        f"Phrase it naturally, like a colleague offering to dig deeper. Never use generic phrases like 'let me know if you need help'."
+        f"Do NOT propose clarifying follow-up questions as the main content. "
+        f"End with one short sentence in {lang} inviting the user to ask about related topics in the knowledge base."
     )

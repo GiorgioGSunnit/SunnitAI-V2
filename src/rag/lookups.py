@@ -496,8 +496,11 @@ def _sanitize_fulltext_query(query: str) -> str:
     return sanitized[:200]
 
 
-def bm25_lookup(query: str, driver, database: str, k: int = 15) -> List[str]:
-    """BM25 fulltext search on Section.plain_text using Neo4j fulltext index."""
+def bm25_lookup(query: str, driver, database: str, k: int = 15) -> List[tuple]:
+    """BM25 fulltext search on Section.plain_text using Neo4j fulltext index.
+
+    Returns List[Tuple[str, float]] of (element_id, score) ordered by score desc.
+    """
     search_text = _sanitize_fulltext_query(query)
     try:
         with driver.session(database=database) as session:
@@ -509,12 +512,12 @@ def bm25_lookup(query: str, driver, database: str, k: int = 15) -> List[str]:
                 search_text=search_text,
                 k=k,
             )
-            eids = [r["eid"] for r in result]
+            hits = [(r["eid"], r["score"]) for r in result]
     except Neo4jError as exc:
         logger.warning("BM25 lookup failed: %s", exc)
-        eids = []
-    vlog("bm25_search", {"query_length": len(query), "results_found": len(eids)})
-    return eids
+        hits = []
+    vlog("bm25_search", {"query_length": len(query), "results_found": len(hits)})
+    return hits
 
 
 def vector_lookup(

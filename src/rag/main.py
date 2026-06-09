@@ -23,6 +23,7 @@ from neo4j import Driver, GraphDatabase
 
 from .graph_nodes import (
     article_router,
+    comparison_retrieval,
     context_retrieval,
     decompose_query,
     entity_linking,
@@ -71,11 +72,17 @@ class AgentState(TypedDict, total=False):
     status_messages: List[str]
     neo4j_executed: Optional[bool]
     retrieval_evaluated: Optional[bool]
+    retrieval_fallback: Optional[bool]
     citations: List[Dict[str, Any]]
     off_topic: Optional[bool]
     query_variants: List[str]
     article_router_fired: Optional[bool]
     article_refs_found: List[str]
+    bm25_doc_ids: List[str]
+    bm25_from_article_lookup: Optional[bool]
+    law_hint_doc_id: Optional[str]
+    comparison_doc_ids: List[str]
+    is_comparison: bool
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +137,10 @@ def build_graph(compile_graph: bool = True):
         partial(evaluate_retrieval_quality, driver=driver, database=NEO4J_DATABASE),
     )
     graph.add_node("generate_cypher_reformulation", generate_cypher_reformulation)
+    graph.add_node(
+        "comparison_retrieval",
+        partial(comparison_retrieval, driver=driver, database=NEO4J_DATABASE),
+    )
     graph.add_node("synthesize_answer", synthesize_answer)
 
     # Edges
@@ -137,7 +148,7 @@ def build_graph(compile_graph: bool = True):
     graph.add_conditional_edges(
         "decompose_query",
         route_after_decompose,
-        {"legal": "article_router", "off_topic": END},
+        {"legal": "article_router", "off_topic": END, "comparison": "comparison_retrieval"},
     )
     graph.add_conditional_edges(
         "article_router",
@@ -176,6 +187,14 @@ def build_graph(compile_graph: bool = True):
         },
     )
     graph.add_edge("generate_cypher_reformulation", "execute_cypher")
+    def route_after_comparison(state):
+        return "synthesize"
+
+    graph.add_conditional_edges(
+        "comparison_retrieval",
+        route_after_comparison,
+        {"synthesize": "synthesize_answer"},
+    )
     graph.add_edge("synthesize_answer", END)
 
     return graph.compile() if compile_graph else graph
@@ -209,6 +228,20 @@ def run(query: str, session_language: str = "it") -> Dict[str, Any]:
         "quality_reformulation_round": 0,
         "status_messages": [],
         "turn_count": 0,
+        "bm25_doc_ids": [],
+        "raw_result": [],
+        "is_comparison": False,
+        "comparison_doc_ids": [],
+        "off_topic": False,
+        "article_router_fired": False,
+        "neo4j_executed": False,
+        "retrieval_quality_ok": False,
+        "cypher_query": None,
+        "execution_error": None,
+        "cypher_generation_error": None,
+        "retrieval_evaluated": False,
+        "cypher_attempt": None,
+        "law_hint_doc_id": None,
     }
     return compiled.invoke(initial_state)
 

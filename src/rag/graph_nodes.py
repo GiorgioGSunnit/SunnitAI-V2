@@ -1,5 +1,6 @@
 """LangGraph node functions for the RAG agent pipeline."""
 
+import itertools
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from neo4j.exceptions import Neo4jError
+from neo4j.graph import Node as Neo4jNode
 
 from ..preprocessing.schema.schema import entities as schema_entities
 from ..preprocessing.schema.schema import relations as schema_relations
@@ -51,6 +53,11 @@ from .utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _node_to_dict(v: Any) -> Any:
+    return dict(v) if hasattr(v, "items") and not isinstance(v, dict) else v
+
 
 # Max nodes to pass into Cypher generation prompts (keeps tokens under control)
 _MAX_ENTRY_NODES_FOR_PROMPT = 8
@@ -116,10 +123,110 @@ _LAW_PATTERNS = [
     re.compile(r'codice\s+civile', re.IGNORECASE),
     re.compile(r'codice\s+penale', re.IGNORECASE),
     re.compile(r'codice\s+di\s+procedura\s+(?:civile|penale)', re.IGNORECASE),
+    re.compile(r'codice\s+dei\s+contratti(?:\s+pubblici)?', re.IGNORECASE),
+    re.compile(r'codice\s+degli\s+appalti', re.IGNORECASE),
+    re.compile(r'contratti\s+pubblici', re.IGNORECASE),
+    re.compile(r'codice\s+appalti', re.IGNORECASE),
+    re.compile(r'codice\s+del\s+processo\s+\w+', re.IGNORECASE),
     re.compile(r'd\.?\s*lgs\.?\s*[\d/]+', re.IGNORECASE),
     re.compile(r'legge\s+[\d/]+', re.IGNORECASE),
     re.compile(r'costituzione', re.IGNORECASE),
 ]
+
+# Cache of document names fetched from Neo4j — populated on first article_router call
+_DOC_NAMES_CACHE: list[str] = []
+_DOC_NAMES_CACHE_LOCK = __import__('threading').Lock()
+
+_STOPWORDS = {
+    'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'del', 'della',
+    'dei', 'degli', 'delle', 'a', 'ad', 'al', 'alla', 'ai', 'agli', 'alle', 'da',
+    'dal', 'dalla', 'dai', 'dagli', 'dalle', 'in', 'nel', 'nella', 'nei', 'negli',
+    'nelle', 'su', 'sul', 'sulla', 'sui', 'sugli', 'sulle', 'con', 'per', 'tra',
+    'fra', 'e', 'o', 'ma', 'che', 'chi', 'cui', 'non', 'si', 'mi', 'ti', 'ci',
+    'vi', 'lo', 'li', 'ne', 'the', 'of', 'and', 'or', 'in', 'to', 'a', 'is',
+    'cosa', 'dice', 'come', 'quando', 'dove', 'perché', 'quale', 'quali', 'quanto',
+    'articolo', 'art', 'comma', 'decreto', 'legge', 'n', 'del', 'pdf',
+}
+
+
+def _fetch_doc_names(driver, database: str) -> list[dict]:
+    """Fetch all document id+name pairs from Neo4j, with module-level caching."""
+    global _DOC_NAMES_CACHE
+    with _DOC_NAMES_CACHE_LOCK:
+        if _DOC_NAMES_CACHE:
+            return _DOC_NAMES_CACHE
+        try:
+            with driver.session(database=database) as session:
+                result = session.run(
+                    "MATCH (d:Document)-[:CONTAINS]->(:Section) "
+                    "RETURN DISTINCT d.id AS id, d.name AS name, "
+                    "coalesce(d.aliases, []) AS aliases"
+                )
+                docs = [
+                    {
+                        "id": r["id"],
+                        "name": r["name"],
+                        "aliases": r["aliases"] or [],
+                    }
+                    for r in result if r["name"] and r["id"]
+                ]
+            _DOC_NAMES_CACHE = docs
+            logger.info("_fetch_doc_names: cached %d document names", len(docs))
+            return docs
+        except Exception as exc:
+            logger.warning("_fetch_doc_names failed: %s", exc)
+            return []
+
+
+def _dynamic_law_hint(query: str, driver, database: str) -> str:
+    """
+    Match query tokens against all document names in Neo4j.
+    Returns the document id of the best-matching document,
+    or empty string if no meaningful match is found.
+    Uses regex patterns first for speed, then falls back to token matching.
+    """
+    # Tokenize query — lowercase, strip punctuation, remove stopwords
+    tokens = {
+        re.sub(r'[^\w]', '', t).lower()
+        for t in query.split()
+    }
+    tokens = {t for t in tokens if t and t not in _STOPWORDS and len(t) > 2}
+    if not tokens:
+        return ""
+
+    docs = _fetch_doc_names(driver, database)
+    best_id = ""
+    best_score = 0
+
+    for doc in docs:
+        name = doc.get("name", "")
+        doc_id = doc.get("id", "")
+        # Skip raw filenames
+        if re.search(r'\.(pdf|docx|xlsx|txt)$', name, re.IGNORECASE):
+            continue
+        # Build searchable text from name + aliases
+        alias_text = " ".join(doc.get("aliases", []))
+        searchable = f"{name} {alias_text}"
+        name_tokens = {
+            re.sub(r'[^\w]', '', t).lower()
+            for t in searchable.split()
+        }
+        name_tokens = {t for t in name_tokens if t and t not in _STOPWORDS and len(t) > 2}
+        score = len(tokens & name_tokens)
+        if score > best_score:
+            best_score = score
+            best_id = doc_id
+            best_name = name
+
+    # Require at least 2 meaningful tokens to match to avoid false positives
+    if best_score >= 2:
+        logger.info(
+            "_dynamic_law_hint: matched %r id=%r (score=%d) for query %r",
+            best_name, best_id, best_score, query[:60],
+        )
+        return best_id
+
+    return ""
 
 
 def _extract_article_references(query: str) -> List[tuple]:
@@ -274,6 +381,14 @@ _OFF_TOPIC_REDIRECTS = {
 }
 
 
+_COMPARISON_PATTERNS = re.compile(
+    r'\b(confronta|confronto|paragona|paragon[ao]|'
+    r'compare|comparison|differences?\s+between|'
+    r'compara|comparaci[oó]n|diferencias?\s+entre)\b',
+    re.IGNORECASE,
+)
+
+
 def _is_legal_query(query: str, lang: str) -> bool:
     """Return True if the query is legal/professional; False if off-topic. Fails safe (True)."""
     try:
@@ -313,6 +428,20 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
             "status_messages": [],
             "off_topic": True,
         }
+
+    is_comparison = bool(_COMPARISON_PATTERNS.search(query))
+    logger.info(f"decompose_query: is_comparison={is_comparison} for query={query[:50]!r}")
+    comparison_name_messages = None
+    if is_comparison:
+        comparison_name_messages = [
+            SystemMessage(
+                content=(
+                    "Extract exactly two legal document names being compared. "
+                    "Return only the two names separated by '|||'. No explanation."
+                )
+            ),
+            HumanMessage(content=f"Query: {query}"),
+        ]
 
     logger.info("Starting query decomposition", extra={"query": query})
 
@@ -388,14 +517,28 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         ),
     ]
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         future_generalize = pool.submit(_call_chat, generalization_messages, 60)
         future_entities = pool.submit(structured_entities_model.invoke, entity_extraction_messages)
         future_variants = pool.submit(_call_chat, query_variants_messages, 100)
+        future_comparison = (
+            pool.submit(_call_chat, comparison_name_messages, 80)
+            if comparison_name_messages else None
+        )
 
         generalized = future_generalize.result()
         entities_payload = future_entities.result()
         variants_raw = future_variants.result()
+        try:
+            comparison_names_raw = future_comparison.result() if future_comparison else ""
+        except Exception:
+            comparison_names_raw = ""
+
+    comparison_doc_ids: List[str] = []
+    if is_comparison and comparison_names_raw:
+        comparison_doc_ids = [
+            p.strip() for p in comparison_names_raw.split("|||") if p.strip()
+        ][:2]
 
     query_variants = [v.strip() for v in (variants_raw or "").split(",") if v.strip()][:5]
 
@@ -574,6 +717,8 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         "entities": processed_entities,
         "extracted_relationships": final_relationships,
         "query_variants": query_variants,
+        "is_comparison": is_comparison,
+        "comparison_doc_ids": comparison_doc_ids,
     }
 
 
@@ -584,7 +729,7 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
 def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     query = state.get("query", "")
     article_refs = _extract_article_references(query)
-    law_hint = _extract_law_hint(query)
+    law_hint = _dynamic_law_hint(query, driver, database)
 
     if not article_refs:
         vlog("article_router", {"article_refs_found": [], "law_hint": law_hint, "results_found": 0})
@@ -597,14 +742,42 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             with driver.session(database=database) as session:
                 records = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
-                    "WHERE (s.plain_text CONTAINS $article_ref OR s.name = $article_number)\n"
-                    "AND ($law_hint = '' OR toLower(d.name) CONTAINS $law_hint)\n"
+                    "WHERE (s.name = $article_number OR s.name STARTS WITH $article_number + '.')\n"
+                    "AND ($law_hint = '' OR d.id = $law_hint)\n"
                     "RETURN d, s LIMIT 15",
                     article_ref=article_ref,
                     article_number=article_number,
                     law_hint=law_hint,
                 )
                 data = [record.data() for record in records]
+                data = [{k: _node_to_dict(v) for k, v in row.items()} for row in data]
+                for row in data:
+                    row["_source"] = "bm25"
+
+                # Merge fragment nodes: same article name + same document → one row
+                # This fixes ingestion splits where one article became N Section nodes
+                merged: dict[tuple, dict] = {}
+                for row in data:
+                    d = row.get("d") or {}
+                    s = row.get("s") or {}
+                    key = (d.get("id", ""), s.get("name", ""))
+                    if key not in merged:
+                        merged[key] = {
+                            "d": d,
+                            "s": {**s},
+                            "_source": "bm25",
+                        }
+                    else:
+                        # Append fragment text with a newline separator
+                        existing_text = merged[key]["s"].get("plain_text") or ""
+                        new_text = s.get("plain_text") or ""
+                        if new_text and new_text not in existing_text:
+                            merged[key]["s"]["plain_text"] = existing_text + "\n" + new_text
+                data = list(merged.values())
+                logger.info(
+                    "[article_router] merged fragments: %d raw rows → %d sections",
+                    sum(1 for row in data), len(data),
+                )
         except Neo4jError as exc:
             logger.warning("[article_router] Cypher failed for ref=%r: %s", article_ref, exc)
             continue
@@ -624,6 +797,7 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 "execution_error": None,
                 "neo4j_executed": True,
                 "cypher_attempt": "article_router",
+                "bm25_from_article_lookup": True,
             }
 
     vlog(
@@ -871,6 +1045,9 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     original_query = state.get("query", "")
     search_texts = [generalized] + query_variants + ([original_query] if original_query != generalized else [])
 
+    # Resolve document scope for this query — shared across vector, BM25, and intersection
+    vector_doc_hint = _dynamic_law_hint(original_query, driver, database)
+
     with driver.session(database=database) as session:
         all_matches: List[Dict[str, Any]] = []
         for i, text in enumerate(search_texts):
@@ -881,22 +1058,98 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                     index_settings=VECTOR_INDEX_SETTINGS, source_prefix=prefix,
                 )
             )
+
+        # If a document hint was found, filter vector matches to that document only
+        if vector_doc_hint and all_matches:
+            element_ids = [m["element_id"] for m in all_matches]
+            scoped = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                "RETURN elementId(s) AS eid",
+                ids=element_ids,
+                doc_id=vector_doc_hint,
+            ).data()
+            scoped_ids = {r["eid"] for r in scoped}
+            all_matches = [m for m in all_matches if m["element_id"] in scoped_ids]
+            logger.info(
+                "Vector search scoped to document %r — %d/%d matches kept",
+                vector_doc_hint, len(all_matches), len(element_ids),
+            )
+
     matches = all_matches
 
     # Fetch BM25 section content directly
-    bm25_ids = bm25_lookup(original_query, driver, database, k=15)
+    _BM25_SCORE_THRESHOLD = 8.5
+    # When a law hint is active, use the generalized/keyword query so the document
+    # name itself doesn't dominate the fulltext match. Fall back to original_query.
+    bm25_doc_hint = _dynamic_law_hint(original_query, driver, database)
+    if bm25_doc_hint:
+        _kw = state.get("retrieval_keywords") or []
+        bm25_query = " ".join(_kw) if _kw else (state.get("generalized_query") or original_query)
+    else:
+        bm25_query = original_query
+    bm25_hits = bm25_lookup(bm25_query, driver, database, k=15)
+    filtered_hits = [(eid, score) for eid, score in bm25_hits if score >= _BM25_SCORE_THRESHOLD]
+    vlog("bm25_search", {"results_found": len(bm25_hits), "results_above_threshold": len(filtered_hits)})
     raw_result: List[Dict[str, Any]] = []
-    if bm25_ids:
+    if filtered_hits:
         with driver.session(database=database) as session:
-            bm25_rows = session.run(
-                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                "WHERE elementId(s) IN $ids "
-                "RETURN d, s",
-                ids=bm25_ids[:15],
-            ).data()
+            if bm25_doc_hint:
+                bm25_rows = session.run(
+                    "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                    "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                    "RETURN d, s",
+                    ids=[eid for eid, _ in filtered_hits],
+                    doc_id=bm25_doc_hint,
+                ).data()
+                logger.info(
+                    "BM25 scoped to document %r — %d rows",
+                    bm25_doc_hint, len(bm25_rows),
+                )
+            else:
+                bm25_rows = session.run(
+                    "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                    "WHERE elementId(s) IN $ids "
+                    "RETURN d, s",
+                    ids=[eid for eid, _ in filtered_hits],
+                ).data()
         for row in bm25_rows:
             row["_source"] = "bm25"
             raw_result.append(row)
+
+    # Article-number targeted lookup: "articolo 100" / "art. 100" → match Section.name directly
+    _art_rows: List[Dict[str, Any]] = []
+    _art_match = re.search(r'\b(?:articolo|art\.?)\s*(\d+)', original_query, re.IGNORECASE)
+    if _art_match:
+        art_num = _art_match.group(1)
+        _doc_hint_pat = re.search(
+            r'\b(codice\s+civile|codice\s+penale|codice\s+del\s+\w+|'
+            r'codice\s+dei\s+contratti|contratti\s+pubblici|codice\s+appalti|'
+            r'd\.lgs\.?\s*\d+|decreto\s+legislativo\s+\d+|regolamento|'
+            r'legge\s+n\.?\s*\d+)\b',
+            original_query, re.IGNORECASE,
+        )
+        doc_hint = _doc_hint_pat.group(1).strip() if _doc_hint_pat else None
+        if doc_hint:
+            _art_cypher = (
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE s.name = $art_num AND toLower(d.name) CONTAINS toLower($doc_hint) "
+                "RETURN d, s, elementId(s) AS s_eid"
+            )
+            _art_params: Dict[str, Any] = {"art_num": art_num, "doc_hint": doc_hint}
+        else:
+            _art_cypher = (
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE s.name = $art_num "
+                "RETURN d, s, elementId(s) AS s_eid"
+            )
+            _art_params = {"art_num": art_num}
+        with driver.session(database=database) as _art_session:
+            _art_rows = _art_session.run(_art_cypher, **_art_params).data()
+        for row in _art_rows:
+            row["_source"] = "bm25"
+        raw_result.extend(_art_rows)
+        vlog("article_number_lookup", {"article_number": art_num, "doc_hint": doc_hint, "results_found": len(_art_rows)})
 
     aggregated: Dict[str, Dict[str, Any]] = {}
     for match in matches:
@@ -920,6 +1173,16 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
         if score is not None and (existing.get("score") is None or score > existing["score"]):
             existing["score"] = score
 
+    for row in _art_rows:
+        eid = row.get("s_eid", "")
+        if eid and eid not in aggregated:
+            aggregated[eid] = {
+                "element_id": eid,
+                "labels": ["Section"],
+                "sources": {"bm25"},
+                "score": 999.0,
+            }
+
     context_nodes = sorted(
         (
             {
@@ -935,7 +1198,11 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     )[:CONTEXT_NODE_LIMIT]
 
     logger.info("Context retrieval produced %d nodes", len(context_nodes))
-    return {"context_nodes": context_nodes, "raw_result": raw_result}
+    return {
+        "context_nodes": context_nodes,
+        "raw_result": raw_result,
+        "law_hint_doc_id": vector_doc_hint or "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1677,7 +1944,7 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             },
         )
         return {
-            "raw_result": [],
+            "raw_result": [r for r in state.get("raw_result", []) if r.get("_source") == "bm25"],
             "execution_error": state.get("cypher_generation_error"),
             "neo4j_executed": False,
         }
@@ -1704,7 +1971,7 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             detail={"error": str(exc)},
         )
         return {
-            "raw_result": [],
+            "raw_result": [r for r in state.get("raw_result", []) if r.get("_source") == "bm25"],
             "execution_error": str(exc),
             "neo4j_executed": True,
         }
@@ -1741,6 +2008,22 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 "neo4j_executed": True,
             }
 
+    # Apply document scoping to intersection results if a law hint is present
+    doc_hint = state.get("law_hint_doc_id")
+    if doc_hint and data:
+        before = len(data)
+        data = [
+            row for row in data
+            if any(
+                isinstance(v, dict) and v.get("id", "").startswith(doc_hint)
+                for v in row.values()
+            )
+        ]
+        logger.info(
+            "execute_cypher: scoped intersection results to %r — %d/%d rows kept",
+            doc_hint, len(data), before,
+        )
+
     enriched_references = _enrich_with_source_metadata(data)
 
     existing_raw = state.get("raw_result", [])
@@ -1766,6 +2049,15 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
     data = state.get("raw_result") or []
     total_row_count = len(data)  # includes BM25 rows pre-populated by context_retrieval
     status = list(state.get("status_messages") or [])
+    # Skip LLM evaluation when all rows come from a direct article lookup —
+    # article_router matched by article number, result is already exact, no judgement needed.
+    if data and all(r.get("_source") == "bm25" for r in data) and state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup"):
+        logger.info("DEBUG evaluate: skipping LLM evaluation — all rows from direct article lookup")
+        return {
+            **state,
+            "retrieval_quality_ok": True,
+            "status_messages": status,
+        }
     if state.get("cypher_attempt") != "reformulation":
         if lang == "it":
             status.append(
@@ -1780,7 +2072,10 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                 "Second phase: critical evaluation of results retrieved from the database…"
             )
 
-    summarized_data = _summarize_for_synthesis(data, max_records=8)
+    summarized_data = _summarize_for_synthesis(data, max_records=25)
+    for rec in summarized_data:
+        if rec.get("_source") == "bm25":
+            rec["_source"] = "[BM25] direct fulltext match"
     serialized = json.dumps(summarized_data, ensure_ascii=False, indent=2)
 
     r_before = int(state.get("quality_reformulation_round") or 0)
@@ -1803,15 +2098,16 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
         [
             SystemMessage(
                 content=(
-                    "You judge whether Neo4j rows are sufficient to answer the user's legal question. "
+                    "You judge whether a set of retrieved legal sections contains at least one section that directly addresses the user's question. "
                     "Reply with exactly two lines: "
                     "Line 1: OK or POOR (uppercase). "
                     "Line 2: one short sentence explaining why. "
-                    "Mark OK only if the retrieved results directly and substantively address the specific legal question asked — "
-                    "meaning they contain information about the same legal institute, procedure, or subject matter. "
-                    "Mark POOR if the results are about a different legal topic even if they share some terminology, "
-                    "if they are completely unrelated, or if they are entirely empty. "
-                    "A result that mentions similar words but addresses a different legal matter must be marked POOR."
+                    "Mark OK if ANY single section in the retrieved set directly addresses the question — "
+                    "one relevant section among many irrelevant ones is enough to mark OK. "
+                    "Mark POOR only if EVERY section is completely unrelated to the question, or the set is entirely empty. "
+                    "When in doubt, mark OK. "
+                    "If ANY row is tagged '[BM25] direct fulltext match', treat it as a strong relevance signal — "
+                    "return OK if its plain_text or abstract addresses the question, regardless of other rows."
                 )
             ),
             HumanMessage(
@@ -1828,7 +2124,10 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
     head = lines[0].upper() if lines else "POOR"
     poor = head.startswith("POOR")
     feedback = lines[1] if len(lines) > 1 else ""
-    bm25_rows_in_result = sum(1 for r in data if r.get("_source") == "bm25")
+    bm25_rows_in_result = sum(
+        1 for r in data
+        if r.get("_source") == "bm25" or "bm25" in (r.get("sources") or ())
+    )
     vlog("evaluator_llm", {"query": state["query"][:80], "row_count": total_row_count, "bm25_rows_in_result": bm25_rows_in_result, "verdict": head, "reason": feedback[:120], "verdict_overridden_by_bm25": bm25_rows_in_result > 0 and poor}, (_time.time() - _t0) * 1000)
 
     log_cypher_multiline(
@@ -1838,20 +2137,78 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
         delimiter_label="LLM_VERDICT",
     )
 
-    if bm25_rows_in_result > 0 and poor:
+    if bm25_rows_in_result > 0 and poor and state.get("bm25_from_article_lookup"):
         bm25_only = [r for r in data if r.get("_source") == "bm25"]
         log_cypher_event(
             "d_evaluate_bm25_override",
-            f"BM25 found {bm25_rows_in_result} relevant sections — overriding POOR verdict, skipping vector fallback",
+            f"BM25 found {bm25_rows_in_result} relevant sections from article lookup — overriding POOR verdict",
             detail={"bm25_rows_in_result": bm25_rows_in_result, "llm_verdict": head, "feedback": feedback},
         )
+        bm25_doc_ids = list({r.get("d", {}).get("id", "") for r in bm25_only if r.get("d", {}).get("id")})
+        logger.info("DEBUG evaluate: bm25_override firing (article lookup), bm25_doc_ids=%r", bm25_doc_ids)
         return {
             "retrieval_quality_ok": True,
             "raw_result": bm25_only,
-            "quality_feedback": None,
+            "quality_feedback": feedback,
             "status_messages": status,
             "retrieval_evaluated": True,
+            "bm25_doc_ids": bm25_doc_ids,
+            "bm25_from_article_lookup": True,
         }
+
+    # Second override: scoped BM25 returned results for a general query
+    # The fulltext index already confirmed these sections exist in the right document
+    if bm25_rows_in_result > 0 and poor and not state.get("bm25_from_article_lookup"):
+        bm25_ids = [
+            r.get("d", {}).get("id", "")
+            for r in data
+            if r.get("_source") == "bm25"
+        ]
+        if bm25_ids:
+            logger.info("BM25 general override fired — bm25_rows=%d, routing to synthesis", bm25_rows_in_result)
+            return {
+                "retrieval_quality_ok": True,
+                "bm25_doc_ids": bm25_ids,
+                "retrieval_evaluated": True,
+                "status_messages": state.get("status_messages", []),
+            }
+
+    # Override POOR when the queried article is directly present in the retrieved data
+    if poor and total_row_count >= 1:
+        _art_ref = re.search(r'\b(?:articolo|art\.?)\s*(\d+)', state["query"], re.IGNORECASE)
+        if _art_ref:
+            art_num = _art_ref.group(1)
+            article_rows = [
+                r for r in data
+                if isinstance(r.get("s"), dict) and r["s"].get("name") == art_num
+            ]
+            feedback_mentions_article = art_num in feedback
+            if article_rows or feedback_mentions_article:
+                _override_rows = article_rows or data
+                _override_doc_ids = list({
+                    r.get("d", {}).get("id", "")
+                    for r in _override_rows
+                    if isinstance(r.get("d"), dict) and r.get("d", {}).get("id")
+                })
+                log_cypher_event(
+                    "d_evaluate_article_override",
+                    f"Article {art_num} found in data (rows={len(_override_rows)}) — overriding POOR verdict",
+                    detail={"art_num": art_num, "article_rows": len(article_rows), "feedback_mentions": feedback_mentions_article},
+                )
+                return {
+                    "retrieval_quality_ok": True,
+                    "raw_result": _override_rows,
+                    "quality_feedback": None,
+                    "status_messages": status,
+                    "retrieval_evaluated": True,
+                    "bm25_doc_ids": _override_doc_ids,
+                }
+
+    bm25_doc_ids_from_data = [
+        r.get("d", {}).get("id", "")
+        for r in data
+        if r.get("_source") == "bm25" and r.get("d", {}).get("id", "")
+    ]
 
     r = int(state.get("quality_reformulation_round") or 0)
     if not poor:
@@ -1887,6 +2244,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
             "quality_feedback": None,
             "status_messages": status,
             "retrieval_evaluated": True,
+            "bm25_doc_ids": state.get("bm25_doc_ids") or bm25_doc_ids_from_data,
         }
     if r < 2:
         # On the first evaluation of an intersection attempt, if vector search produced
@@ -1941,6 +2299,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                         "quality_feedback": feedback,
                         "status_messages": status,
                         "retrieval_evaluated": True,
+                        "retrieval_fallback": True,
                     }
         return {
             "retrieval_quality_ok": False,
@@ -1958,6 +2317,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
         "quality_feedback": feedback,
         "status_messages": status,
         "retrieval_evaluated": True,
+        "retrieval_fallback": True,
     }
 
 
@@ -1966,13 +2326,27 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
 # ---------------------------------------------------------------------------
 
 def _summarize_for_synthesis(
-    data: List[Dict[str, Any]], max_records: int = 5
+    data: List[Dict[str, Any]], max_records: int = 5, is_comparison: bool = False
 ) -> List[Dict[str, Any]]:
     summarized = []
     total_chars = 0
-    MAX_TOTAL_CHARS = 50000
+    MAX_TOTAL_CHARS = 10000
 
     for record in data[:max_records]:
+        if is_comparison and record.get("_source") == "comparison":
+            if total_chars > MAX_TOTAL_CHARS:
+                break
+            comparison_count = sum(1 for r in summarized if r.get("_source") == "comparison")
+            if comparison_count >= 5:
+                continue
+            rec = {k: v for k, v in record.items() if k not in ("embedding", "vettore")}
+            for key in ("s", "s2"):
+                if isinstance(rec.get(key), dict) and rec[key].get("plain_text"):
+                    rec[key] = {**rec[key], "plain_text": rec[key]["plain_text"][:500]}
+            rec_json = json.dumps(rec, ensure_ascii=False)
+            total_chars += len(rec_json)
+            summarized.append(rec)
+            continue
         summary_record = {}
         for key, value in record.items():
             if isinstance(value, dict) and "properties" in value:
@@ -2027,10 +2401,15 @@ def _summarize_for_synthesis(
 
                 summary_record[key] = {k: v for k, v in summary_props.items() if v is not None}
             elif isinstance(value, dict):
-                # Flat property dict (no "properties" wrapper) — infer node type
+                # Flat property dict (no "properties" wrapper) — infer labels from key name
                 node_id = value.get("id") or ""
-                is_doc = key == "d" or node_id.startswith("LEGAL_DOC::")
-                flat_props: Dict[str, Any] = {}
+                labels = (
+                    ["Document"] if (key == "d" or node_id.startswith("LEGAL_DOC::"))
+                    else ["Section"] if key == "s"
+                    else []
+                )
+                is_doc = "Document" in labels
+                flat_props: Dict[str, Any] = {"labels": labels} if labels else {}
                 if is_doc:
                     if value.get("name"):
                         flat_props["name"] = value["name"]
@@ -2039,8 +2418,25 @@ def _summarize_for_synthesis(
                         flat_props["description"] = description
                     if node_id:
                         flat_props["id"] = node_id
+                elif key == "s":
+                    # Section node — article number, full text, abstract, parent doc name
+                    if value.get("name"):
+                        flat_props["name"] = value["name"]
+                    abstract = (value.get("abstract") or "")[:200]
+                    if abstract:
+                        flat_props["abstract"] = abstract
+                    plain_text = (value.get("plain_text") or value.get("text") or "")[:500]
+                    if plain_text:
+                        flat_props["plain_text"] = plain_text
+                    d_node = record.get("d") or {}
+                    doc_name = (
+                        d_node.get("name") or d_node.get("nomedocumento")
+                        or d_node.get("document_title") or ""
+                    )
+                    if doc_name:
+                        flat_props["document_name"] = doc_name
                 else:
-                    # Section or generic flat node
+                    # Generic flat node
                     title = (value.get("title") or "")[:80]
                     if title:
                         flat_props["title"] = title
@@ -2132,7 +2528,7 @@ def _extract_citations(
 
     for record in raw_result:
         for key, value in record.items():
-            if not isinstance(value, dict):
+            if not isinstance(value, (dict, Neo4jNode)):
                 continue
             node_id = value.get("id") or ""
 
@@ -2175,7 +2571,7 @@ def _extract_citations(
                     ),
                 }
                 for name, plain_text in sorted(info["sections"].items())
-                if len(name) <= 50
+                if len(name) <= 200 and len(plain_text) > 10  # filter empty sections
             ],
         }
         for doc_id, info in docs.items()
@@ -2219,7 +2615,7 @@ _RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
 _RERANKER_URL = os.getenv("RERANKER_URL", "http://217.160.8.129:8002/v1/rerank")
 
 
-def rerank_results(query: str, rows: list, top_k: int = 10) -> list:
+def rerank_results(query: str, rows: list, top_k: int = 5) -> list:
     """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
     if not _RERANKER_ENABLED or not rows:
         return rows
@@ -2235,7 +2631,7 @@ def rerank_results(query: str, rows: list, top_k: int = 10) -> list:
             "model": os.getenv("RERANKER_MODEL", "reranker"),
             "query": reranker_query,
             "documents": [
-                (row.get("s") or {}).get("plain_text", "")[:512] for row in rows
+                ((row.get("s") or {}).get("abstract") or (row.get("s") or {}).get("plain_text", ""))[:512] for row in rows
             ],
         }
         api_key = os.getenv("LLM_API_KEY", "")
@@ -2254,7 +2650,43 @@ def rerank_results(query: str, rows: list, top_k: int = 10) -> list:
             score = result["relevance_score"]
             if original_idx < len(rows):
                 rows[original_idx]["_reranker_score"] = score
-        reranked = sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)[:top_k]
+        reranker_top = sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)[:top_k - 2]
+
+        bm25_rows = [r for r in rows if r.get("_source") == "bm25"]
+        reranker_ids = {
+            (r.get("s") or {}).get("id") for r in reranker_top
+            if (r.get("s") or {}).get("id")
+        }
+        bm25_top = [
+            r for r in bm25_rows
+            if (r.get("s") or {}).get("id") not in reranker_ids
+        ][:2]
+
+        merged_ids = reranker_ids | {
+            (r.get("s") or {}).get("id") for r in bm25_top
+            if (r.get("s") or {}).get("id")
+        }
+        slots_remaining = top_k - len(reranker_top) - len(bm25_top)
+        overflow = [
+            r for r in sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)
+            if (r.get("s") or {}).get("id") not in merged_ids
+        ][:slots_remaining]
+
+        reranked = reranker_top + bm25_top + overflow
+        logger.info(
+            "Reranker merge: reranker_top=%d bm25_injected=%d overflow=%d total=%d",
+            len(reranker_top), len(bm25_top), len(overflow), len(reranked),
+        )
+
+        score_debug = []
+        for r in reranked:
+            s = r.get("s") or {}
+            if hasattr(s, "get"):
+                name = s.get("name") or s.get("title") or "?"
+            else:
+                name = str(s)[:20]
+            score_debug.append((name, round(r.get("_reranker_score", 0), 3)))
+        logger.info("Reranker scores (top %d): %r", len(score_debug), score_debug)
         vlog("reranker", {"input_count": len(rows), "output_count": len(reranked)}, (_time.time() - t0) * 1000)
         return reranked
     except Exception as exc:
@@ -2315,6 +2747,25 @@ _GAP_PHRASES = [
     "posso aiutarla con domande correlate",
     "posso aiutarti con domande correlate",
 ]
+
+
+def _is_primary_gap_response(answer: str) -> bool:
+    """True only when the answer is primarily a gap acknowledgment.
+
+    Finds the earliest gap phrase occurrence across all phrases, then checks
+    whether it falls within the first min(150, max(100, 15%)) of the answer. Trailing
+    disclaimers after substantive content never fire; only opening gap sentences do.
+    """
+    answer_lower = answer.lower()
+    earliest_idx = len(answer)
+    for phrase in _GAP_PHRASES:
+        idx = answer_lower.find(phrase)
+        if idx != -1:
+            earliest_idx = min(earliest_idx, idx)
+    if earliest_idx == len(answer):
+        return False
+    threshold = min(150, max(100, int(len(answer) * 0.15)))
+    return earliest_idx < threshold
 
 
 def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -2388,10 +2839,14 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             "status_messages": state.get("status_messages") or [],
         }
 
-    summarized_data = _summarize_for_synthesis(data)
+    _is_cmp = state.get("is_comparison", False)
+    summarized_data = _summarize_for_synthesis(data, is_comparison=_is_cmp)
     serialized = json.dumps(summarized_data, ensure_ascii=False, indent=2)
-    if len(serialized) > 12000:
-        serialized = serialized[:12000] + "\n...[truncated]"
+    if len(serialized) > 15000:
+        serialized = json.dumps(
+            _summarize_for_synthesis(data, max_records=5, is_comparison=_is_cmp),
+            ensure_ascii=False, indent=2,
+        )
     all_citations = _extract_citations(data)
     citation_strings = [
         f"Fonte: {c['document_name']}" if not c["sections"]
@@ -2406,16 +2861,37 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if citation_strings:
         human_parts.append("Fonti disponibili:\n" + "\n".join(citation_strings) + "\n")
-    human_parts.append(
-        "Write a concise factual answer. Quote short passages in their original language from the data; "
-        "explain and synthesize in the session language."
-    )
+    if state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup"):
+        human_parts.append(
+            "Answer ONLY using the data provided above. Do not use any knowledge outside of the retrieved data. "
+            "The retrieved data contains sections of the requested article — synthesize them into a coherent answer. "
+            "Do NOT say the article is not present — it IS present in the data above. "
+            "Quote relevant passages directly and explain their meaning."
+        )
+    else:
+        human_parts.append(
+            "Answer ONLY using the data provided above. Do not use any knowledge outside of the retrieved data. "
+            "If the retrieved data does not contain enough information to answer the question, you MUST say one of these phrases: "
+            "'non è presente nei documenti' or 'non trovo informazioni nei documenti forniti'. "
+            "Never invent, infer, or extrapolate beyond what is explicitly stated in the data. "
+            "Quote short passages in their original language from the data; explain and synthesize in the session language."
+        )
     if citation_strings:
         human_parts.append(
             "\nIf your answer draws from the retrieved data, end with "
             "a 'Fonti:' line citing the relevant documents and sections from the list above. "
             "If no retrieved data was used, omit the Fonti line entirely."
         )
+
+    if state.get("retrieval_fallback"):
+        _lang = state.get("session_language", "it")
+        if _lang == "es":
+            fallback_answer = "El tema de su consulta no está presente en los documentos disponibles en mi base de conocimiento. Le recomiendo consultar las fuentes oficiales pertinentes para obtener información precisa. Si lo desea, puedo ayudarle con temas relacionados disponibles en mi base documental."
+        elif _lang == "en":
+            fallback_answer = "The topic of your query is not present in the documents available in my knowledge base. I recommend consulting the relevant official sources for accurate information. If you wish, I can help you with related topics available in my knowledge base."
+        else:
+            fallback_answer = "L'argomento della sua domanda non è presente nei documenti disponibili nella mia base di conoscenza. Le consiglio di consultare le fonti ufficiali pertinenti per ottenere informazioni precise. Se desidera, posso aiutarla con domande correlate presenti nella mia base documentale."
+        return {"answer": fallback_answer, "citations": [], "references": []}
 
     log_cypher_event(
         "e_synthesize_start",
@@ -2424,11 +2900,25 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     )
     import time as _time
     _t1 = _time.time()
+    if state.get("is_comparison"):
+        system_prompt = (
+            "Sei un assistente legale. Confronta i due documenti forniti nei dati. "
+            "Usa bullet points con •. Un bullet per tema. "
+            "Per ogni bullet: Documento 1 dice X, Documento 2 dice Y. "
+            "Solo testo semplice, niente markdown **."
+        )
+    else:
+        system_prompt = synthesis_system_message(
+            lang,
+            retrieval_fallback=state.get("retrieval_fallback", False),
+            is_comparison=False,
+        )
     answer = _call_chat(
         [
-            SystemMessage(content=synthesis_system_message(lang)),
+            SystemMessage(content=system_prompt),
             HumanMessage(content="".join(human_parts) + synthesis_human_footer(lang)),
-        ]
+        ],
+        max_tokens=600,
     )
     vlog("synthesis_llm", {"citations_count": len(all_citations), "answer_length": len(answer)}, (_time.time() - _t1) * 1000)
     log_cypher_event(
@@ -2437,27 +2927,110 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         detail={"answer_length": len(answer)},
     )
     answer = _strip_vague_closing(answer)
+    bm25_doc_ids = state.get("bm25_doc_ids") or []
+    existing_doc_refs = state.get("document_references") or []
+    merged_doc_refs = list(set(existing_doc_refs + bm25_doc_ids))
     citations = _extract_citations(
-        data, answer=answer, doc_refs=state.get("document_references") or []
+        data, answer=answer, doc_refs=merged_doc_refs if merged_doc_refs else None
     )
     # Limit to top 5 most-cited documents to reduce noise
     if len(citations) > 5:
         citations = sorted(citations, key=lambda c: len(c['sections']), reverse=True)[:5]
     # Filter citations to only sections that survived reranker
-    if data and any(r.get('_reranker_score') is not None for r in data):
+    if data and any(r.get('_reranker_score') is not None for r in data) and not state.get("is_comparison"):
         reranker_texts = {
             r.get('s', {}).get('plain_text', '')[:100]
             for r in data
-            if r.get('_reranker_score') is not None and r.get('_reranker_score', 0) >= 0.15
+            if r.get('_reranker_score') is not None and r.get('_reranker_score', 0) >= 0.25
         }
         citations = [
             {**c, 'sections': [
                 s for s in c['sections']
                 if s.get('plain_text', '')[:100] in reranker_texts
+                or c.get('document_id', '') in bm25_doc_ids
             ]}
             for c in citations
         ]
         citations = [c for c in citations if c['sections']]
+
+    # Keyword relevance filter: drop sections that don't contain at least one
+    # meaningful query keyword. Prevents sections that match a single legal term
+    # (e.g. "nullità") from appearing when the query is about a different context
+    # (e.g. "nullità matrimonio" vs "nullità contratti").
+    keywords = [
+        k.lower() for k in (state.get("retrieval_keywords") or [])
+        if len(k) > 3
+    ]
+    if keywords and not state.get("is_comparison"):
+        # Build a set of section plain_text prefixes that came directly from BM25 —
+        # only these specific sections bypass the keyword filter, not the whole document
+        bm25_section_texts = {
+            r.get('s', {}).get('plain_text', '')[:100]
+            for r in data
+            if r.get('_source') == 'bm25'
+        }
+
+        # Also build individual tokens from keyword phrases for partial matching
+        keyword_tokens = {
+            token
+            for kw in keywords
+            for token in kw.split()
+            if len(token) > 4
+        }
+
+        def _section_matches_keywords(section: dict) -> bool:
+            text = (section.get('plain_text') or '').lower()
+            # Match full phrase first
+            if any(kw in text for kw in keywords):
+                return True
+            # Fall back to individual token matching — require at least 2 tokens to match
+            # to avoid false positives from common legal terms
+            token_hits = sum(1 for t in keyword_tokens if t in text)
+            return token_hits >= 2
+
+        def _section_from_bm25(section: dict) -> bool:
+            return section.get('plain_text', '')[:100] in bm25_section_texts
+
+        citations = [
+            {**c, 'sections': [
+                s for s in c['sections']
+                if _section_matches_keywords(s) or _section_from_bm25(s)
+            ]}
+            for c in citations
+        ]
+        citations = [c for c in citations if c['sections']]
+
+    # Answer reference filter: only keep sections whose article number is
+    # explicitly mentioned in the answer, or whose plain_text has substantial
+    # overlap with the answer content. This ensures cited sections were actually used.
+    answer_lower = answer.lower()
+    cited_section_pattern = re.compile(r'\b(?:articolo|art\.?|sezione|sez\.?)\s*(\d+(?:[.\-]\d+)*(?:[\s\-]*(?:bis|ter|quater))?)', re.IGNORECASE)
+    answer_article_refs = {m.group(1).strip().lower().replace(' ', '') for m in cited_section_pattern.finditer(answer)}
+    # Also add base article numbers (e.g. "124" from "124.0.0")
+    answer_article_refs |= {ref.split('.')[0] for ref in answer_article_refs}
+
+    if answer_article_refs and not state.get("is_comparison"):
+        def _section_referenced_in_answer(section: dict, doc_id: str) -> bool:
+            name = (section.get('name') or '').lower().replace(' ', '')
+            base_name = name.split('.')[0]
+            if name in answer_article_refs or base_name in answer_article_refs:
+                return True
+            if doc_id in bm25_doc_ids:
+                return True
+            return False
+
+        filtered = [
+            {**c, 'sections': [
+                s for s in c['sections']
+                if _section_referenced_in_answer(s, c.get('document_id', ''))
+            ]}
+            for c in citations
+        ]
+        # Only apply if filter keeps at least 1 section — avoids wiping all citations
+        # when answer doesn't use article references explicitly
+        if any(fc['sections'] for fc in filtered):
+            citations = [c for c in filtered if c['sections']]
+
     answer = _strip_hallucinated_fonti(answer)
 
     # Citation quality filter disabled — corpus too small for meaningful filtering
@@ -2465,36 +3038,44 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     filtered_citations = citations
     citations = filtered_citations
 
+    logger.info("DEBUG synthesize_answer: bm25_doc_ids=%r, citations_before_gap=%d",
+                state.get("bm25_doc_ids"), len(citations))
     # Hard stop enforcement: if the answer acknowledges a gap, clear all citations.
-    if any(phrase in answer.lower() for phrase in _GAP_PHRASES) and citations:
-        citations = []
-        logger.debug("Hard stop detected: citations cleared")
+    # Comparison answers legitimately say "document X doesn't cover this" — skip gap detection.
+    if state.get("is_comparison"):
+        is_gap = False
+    else:
+        is_gap = _is_primary_gap_response(answer)
+    if is_gap and citations:
+        if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")):
+            citations = []
+            logger.debug("Hard stop detected: citations cleared")
 
     # Truncate answer at gap phrase if hard stop detected
-    answer_lower = answer.lower()
-    for phrase in _GAP_PHRASES:
-        idx = answer_lower.find(phrase)
-        if idx != -1:
-            # Find end of the gap phrase sentence
-            gap_sentence_end = answer.find('.', idx + len(phrase))
-            if gap_sentence_end == -1:
-                gap_sentence_end = len(answer) - 1
-            # Count 2 more periods for 2 follow-up sentences (total 3 sentences)
-            period_count = 0
-            cut_pos = len(answer)
-            for i, ch in enumerate(answer[gap_sentence_end + 1:], start=gap_sentence_end + 1):
-                if ch == '.':
-                    period_count += 1
-                    if period_count == 2:
-                        cut_pos = i + 1
-                        break
-            answer = answer[:cut_pos].strip()
-            citations = []
-            logger.debug(f"Hard stop: answer truncated after 3-sentence polite response")
-            break
+    if is_gap:
+        answer_lower = answer.lower()
+        for phrase in _GAP_PHRASES:
+            idx = answer_lower.find(phrase)
+            if idx != -1:
+                gap_sentence_end = answer.find('.', idx + len(phrase))
+                if gap_sentence_end == -1:
+                    gap_sentence_end = len(answer) - 1
+                period_count = 0
+                cut_pos = len(answer)
+                for i, ch in enumerate(answer[gap_sentence_end + 1:], start=gap_sentence_end + 1):
+                    if ch == '.':
+                        period_count += 1
+                        if period_count == 2:
+                            cut_pos = i + 1
+                            break
+                answer = answer[:cut_pos].strip()
+                if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")):
+                    citations = []
+                logger.debug("Hard stop: answer truncated after 3-sentence polite response")
+                break
 
     # Remove redundant "In definitiva" closing after gap acknowledgment
-    if any(phrase in answer.lower() for phrase in _GAP_PHRASES):
+    if is_gap:
         for closing in ["In definitiva,", "In definitiva ", "In summary,", "In summary ", "En definitiva,"]:
             idx = answer.find(closing)
             if idx != -1:
@@ -2503,9 +3084,10 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                     answer = answer[:last_period + 1].strip()
                 break
 
-    # Clear citations for gap responses
-    if any(phrase in answer.lower() for phrase in _GAP_PHRASES):
-        citations = []
+    # Final citation clear for primary gap responses
+    if is_gap:
+        if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")):
+            citations = []
 
     if citations:
         fonti_line = "Fonti: " + ", ".join(
@@ -2521,12 +3103,237 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _resolve_by_name(name: str, session) -> Optional[str]:
+    """Fallback doc-ID resolver: tries each candidate token and accepts only a unique match."""
+    _STOPWORDS = {"del", "dei", "delle", "della", "dello", "gli", "per", "con", "tra", "fra", "sul", "sulla", "verbale"}
+    raw_tokens = [t for t in name.split() if len(t) > 3 and t.lower() not in _STOPWORDS]
+    # Prioritise: all-caps tokens first (acronyms/proper names), then by descending length
+    candidate_tokens = (
+        [t for t in raw_tokens if t.upper() == t]
+        + sorted([t for t in raw_tokens if t.upper() != t], key=len, reverse=True)
+    )
+    for token in candidate_tokens:
+        results = list(session.run(
+            "MATCH (d:Document) WHERE d.name CONTAINS $token RETURN d.id AS id LIMIT 2",
+            token=token.upper(),
+        ))
+        if len(results) == 1:
+            return results[0]["id"]
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Node: Cross-document comparison retrieval
+# ---------------------------------------------------------------------------
+
+def _node_to_dict(node) -> dict:
+    """Convert a Neo4j node or plain dict to a plain dict."""
+    if node is None:
+        return {}
+    if isinstance(node, dict):
+        return node
+    try:
+        return dict(node)
+    except Exception:
+        return {}
+
+
+def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
+    """Fetch section pairs from two documents for side-by-side comparison synthesis."""
+    names = state.get("comparison_doc_ids") or []
+    query = state.get("query", "")
+    keywords = state.get("retrieval_keywords") or []
+
+    # Resolve names → document IDs (accept either a human name or a bare doc ID)
+    doc_ids: List[str] = []
+    with driver.session(database=database) as session:
+        for name in names[:2]:
+            result = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(:Section) "
+                "WHERE toLower(d.name) CONTAINS toLower($name) OR d.id = $name "
+                "RETURN d.id AS id LIMIT 1",
+                name=name,
+            ).single()
+            if result and result["id"]:
+                doc_ids.append(result["id"])
+
+    # If name lookup failed, try splitting the query at conjunctions/versus
+    if len(doc_ids) < 2:
+        parts = re.split(
+            r'\b(?:e|and|y|vs\.?|versus|rispetto\s+a|con)\b',
+            query, maxsplit=1, flags=re.IGNORECASE,
+        )
+        for part in parts[:2]:
+            hint = _dynamic_law_hint(part.strip(), driver, database)
+            if hint and hint not in doc_ids:
+                doc_ids.append(hint)
+
+    # Fallback: token-based CONTAINS search for any still-unresolved names
+    if len(doc_ids) < 2:
+        with driver.session(database=database) as session:
+            for name in names[:2]:
+                fid = _resolve_by_name(name, session)
+                if fid and fid not in doc_ids:
+                    doc_ids.append(fid)
+
+    doc_id_1 = doc_ids[0] if len(doc_ids) >= 1 else None
+    doc_id_2 = doc_ids[1] if len(doc_ids) >= 2 else None
+
+    if not doc_id_2 or doc_id_1 == doc_id_2:
+        logger.warning(
+            "comparison_retrieval: could not resolve two distinct documents (got %r) — re-routing as regular query",
+            doc_ids,
+        )
+        return {
+            "is_comparison": False,
+            "raw_result": [],
+            "retrieval_quality_ok": False,
+            "neo4j_executed": False,
+        }
+
+    with driver.session(database=database) as session:
+        count1 = (session.run(
+            "MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) RETURN count(s) AS cnt",
+            id=doc_id_1,
+        ).single() or {}).get("cnt", 0)
+        count2 = (session.run(
+            "MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) RETURN count(s) AS cnt",
+            id=doc_id_2,
+        ).single() or {}).get("cnt", 0)
+
+    is_short = count1 < 50 and count2 < 50
+    fetch_limit = 999 if is_short else 30
+    rank_limit = 999 if is_short else 3
+    pair_limit = min(count1 + count2, 100) if is_short else 20
+
+    # Fetch sections with plain_text from each document
+    with driver.session(database=database) as session:
+        rows1 = session.run(
+            "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
+            "WHERE s.plain_text IS NOT NULL AND s.plain_text <> '' "
+            "RETURN d, s ORDER BY s.name LIMIT $lim",
+            doc_id=doc_id_1, lim=fetch_limit,
+        ).data()
+        rows2 = session.run(
+            "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
+            "WHERE s.plain_text IS NOT NULL AND s.plain_text <> '' "
+            "RETURN d, s ORDER BY s.name LIMIT $lim",
+            doc_id=doc_id_2, lim=fetch_limit,
+        ).data()
+
+    if not rows1 or not rows2:
+        return {
+            "comparison_doc_ids": doc_ids,
+            "raw_result": [],
+            "execution_error": "No sections with plain_text found in one or both documents",
+            "neo4j_executed": True,
+        }
+
+    # Short documents: concatenate full text of both docs into a single pair so
+    # the LLM receives complete content without section-pairing losses.
+    if is_short:
+        doc1_text = "\n\n".join(
+            r["s"]["plain_text"] for r in rows1 if r.get("s") and r["s"].get("plain_text")
+        )
+        doc2_text = "\n\n".join(
+            r["s"]["plain_text"] for r in rows2 if r.get("s") and r["s"].get("plain_text")
+        )
+        logger.info(
+            "comparison_retrieval (short): doc1=%r (%d sections), doc2=%r (%d sections)",
+            doc_id_1, len(rows1), doc_id_2, len(rows2),
+        )
+        return {
+            "raw_result": [{
+                "d": rows1[0]["d"],
+                "s": {"name": "verbale_completo", "plain_text": doc1_text, "id": doc_id_1},
+                "d2": rows2[0]["d"],
+                "s2": {"name": "verbale_completo", "plain_text": doc2_text, "id": doc_id_2},
+                "_source": "comparison",
+            }],
+            "is_comparison": True,
+            "comparison_doc_ids": [doc_id_1, doc_id_2],
+            "retrieval_quality_ok": True,
+            "neo4j_executed": True,
+            "execution_error": None,
+        }
+
+    # Rank sections by keyword relevance against the query
+    kw_lower = (
+        [k.lower() for k in keywords]
+        if keywords
+        else [w for w in query.lower().split() if len(w) > 3]
+    )
+
+    def _relevance(row: Dict) -> float:
+        text = ((row.get("s") or {}).get("plain_text") or "").lower()
+        return sum(1.0 for kw in kw_lower if kw in text)
+
+    ranked1 = sorted(rows1, key=_relevance, reverse=True)[:rank_limit]
+    ranked2 = sorted(rows2, key=_relevance, reverse=True)[:rank_limit]
+
+    # Prefer pairing sections that share the same article name across documents
+    by_name1 = {
+        (r.get("s") or {}).get("name", ""): r
+        for r in ranked1 if (r.get("s") or {}).get("name")
+    }
+    by_name2 = {
+        (r.get("s") or {}).get("name", ""): r
+        for r in ranked2 if (r.get("s") or {}).get("name")
+    }
+
+    pairs: List[Dict[str, Any]] = []
+    paired1: set = set()
+    paired2: set = set()
+
+    for name, r1 in by_name1.items():
+        if name in by_name2:
+            r2 = by_name2[name]
+            pairs.append({
+                "d": _node_to_dict(r1.get("d")),
+                "s": _node_to_dict(r1.get("s")),
+                "d2": _node_to_dict(r2.get("d")),
+                "s2": _node_to_dict(r2.get("s")),
+                "_source": "comparison",
+            })
+            paired1.add(id(r1))
+            paired2.add(id(r2))
+
+    # Fill remaining slots — use zip_longest so sections from the longer document
+    # are not silently dropped when one side has fewer sections than the other.
+    rem1 = [r for r in ranked1 if id(r) not in paired1]
+    rem2 = [r for r in ranked2 if id(r) not in paired2]
+    for r1, r2 in itertools.zip_longest(rem1, rem2):
+        pairs.append({
+            "d": _node_to_dict(r1.get("d") if r1 else None),
+            "s": _node_to_dict(r1.get("s") if r1 else None),
+            "d2": _node_to_dict(r2.get("d") if r2 else None),
+            "s2": _node_to_dict(r2.get("s") if r2 else None),
+            "_source": "comparison",
+        })
+
+    logger.info(
+        "comparison_retrieval: doc1=%r (%d sections), doc2=%r (%d sections), pairs=%d",
+        doc_id_1, len(rows1), doc_id_2, len(rows2), len(pairs),
+    )
+
+    return {
+        "comparison_doc_ids": doc_ids,
+        "raw_result": pairs[:3],
+        "neo4j_executed": True,
+        "execution_error": None,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Routing functions
 # ---------------------------------------------------------------------------
 
 def route_after_decompose(state: Dict[str, Any]) -> str:
-    return "off_topic" if state.get("off_topic") else "legal"
+    if state.get("off_topic"):
+        return "off_topic"
+    if state.get("is_comparison"):
+        return "comparison"
+    return "legal"
 
 
 def route_after_article_router(state: Dict[str, Any]) -> str:

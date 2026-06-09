@@ -5,8 +5,11 @@ relevant context from prior turns into the RAG pipeline so the agent can
 resolve follow-up questions (e.g. "tell me more about that decree").
 """
 
+import json
 import logging
+import os
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -29,11 +32,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 logger = logging.getLogger(__name__)
 
+SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "/opt/chatbot/data/sessions.json")
+
 MAX_HISTORY_TURNS = 20  # Max conversation turns to keep in memory
 MAX_CONTEXT_TURNS = 6   # Max recent turns to feed into query rewriting
-SESSION_TTL_SECONDS = 3600  # Evict sessions idle for more than 1 hour
-SESSION_CLEANUP_INTERVAL = 300  # Run cleanup every 5 minutes
-
 
 @dataclass
 class Message:
@@ -41,6 +43,12 @@ class Message:
     content: str
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     metadata: Optional[Dict[str, Any]] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {"role": self.role, "content": self.content, "timestamp": self.timestamp}
+        if self.metadata and "citations" in self.metadata:
+            d["citations"] = self.metadata["citations"]
+        return d
 
 
 @dataclass
@@ -72,16 +80,39 @@ class ChatSession:
             "session_id": self.session_id,
             "created_at": self.created_at,
             "title": self.title,
+            "session_language": self.session_language,
+            "_language_fixed_from_first_turn": self._language_fixed_from_first_turn,
+            "last_active_at": datetime.now(timezone.utc).isoformat(),
             "message_count": len(self.messages),
-            "messages": [
-                {
-                    "role": m.role,
-                    "content": m.content,
-                    "timestamp": m.timestamp,
-                }
-                for m in self.messages
-            ],
+            "messages": [m.to_dict() for m in self.messages],
         }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ChatSession":
+        try:
+            stored_wall = datetime.fromisoformat(data["last_active_at"]).timestamp()
+            elapsed = max(0.0, time.time() - stored_wall)
+            last_active = time.monotonic() - elapsed
+        except (KeyError, ValueError):
+            last_active = time.monotonic()
+        session = cls(
+            session_id=data["session_id"],
+            created_at=data.get("created_at", datetime.now(timezone.utc).isoformat()),
+            title=data.get("title", "Nuova conversazione"),
+            session_language=data.get("session_language", DEFAULT_LANGUAGE),
+            _language_fixed_from_first_turn=data.get("_language_fixed_from_first_turn", False),
+            _last_active=last_active,
+        )
+        session.messages = [
+            Message(
+                role=m["role"],
+                content=m["content"],
+                timestamp=m.get("timestamp", datetime.now(timezone.utc).isoformat()),
+                metadata={"citations": m["citations"]} if "citations" in m else None,
+            )
+            for m in data.get("messages", [])
+        ]
+        return session
 
 
 def _generate_session_title(first_message: str) -> str:
@@ -189,36 +220,53 @@ class ChatBot:
     def __init__(self):
         self._sessions: Dict[str, ChatSession] = {}
         self._lock = threading.Lock()
-        # Start background cleanup daemon
-        self._cleanup_thread = threading.Thread(
-            target=self._cleanup_loop, daemon=True
-        )
-        self._cleanup_thread.start()
+        self._sessions_file = SESSIONS_FILE
+        self._load_sessions()
 
-    def _cleanup_loop(self) -> None:
-        """Periodically evict sessions that have been idle beyond SESSION_TTL_SECONDS."""
-        while True:
-            time.sleep(SESSION_CLEANUP_INTERVAL)
-            self._evict_expired_sessions()
+    def _load_sessions(self) -> None:
+        try:
+            with open(self._sessions_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            loaded = 0
+            for session_data in data.get("sessions", []):
+                try:
+                    session = ChatSession.from_dict(session_data)
+                    self._sessions[session.session_id] = session
+                    loaded += 1
+                except Exception as e:
+                    logger.warning("Skipping corrupt session entry: %s", e)
+            logger.info("Loaded %d session(s) from %s", loaded, self._sessions_file)
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning("Could not load sessions from %s: %s", self._sessions_file, e)
 
-    def _evict_expired_sessions(self) -> None:
-        now = time.monotonic()
+    def _save_sessions(self) -> None:
         with self._lock:
-            expired = [
-                sid
-                for sid, s in self._sessions.items()
-                if now - s._last_active > SESSION_TTL_SECONDS
-            ]
-            for sid in expired:
-                del self._sessions[sid]
-        if expired:
-            logger.info("Evicted %d idle session(s)", len(expired))
+            snapshot = [s.to_dict() for s in self._sessions.values()]
+        try:
+            dir_ = os.path.dirname(self._sessions_file) or "."
+            os.makedirs(dir_, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump({"sessions": snapshot}, f, ensure_ascii=False, indent=2)
+                os.replace(tmp_path, self._sessions_file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as e:
+            logger.error("Failed to save sessions to %s: %s", self._sessions_file, e)
 
     def create_session(self) -> ChatSession:
         session = ChatSession()
         with self._lock:
             self._sessions[session.session_id] = session
         logger.info("Created session %s", session.session_id)
+        self._save_sessions()
         return session
 
     def get_session(self, session_id: str) -> Optional[ChatSession]:
@@ -227,14 +275,16 @@ class ChatBot:
 
     def delete_session(self, session_id: str) -> bool:
         with self._lock:
-            if session_id in self._sessions:
+            deleted = session_id in self._sessions
+            if deleted:
                 del self._sessions[session_id]
-                return True
-        return False
+        if deleted:
+            self._save_sessions()
+        return deleted
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         with self._lock:
-            sessions = list(self._sessions.values())
+            sessions = sorted(self._sessions.values(), key=lambda s: s.created_at, reverse=True)
         return [
             {
                 "session_id": s.session_id,
@@ -301,6 +351,7 @@ class ChatBot:
             citations = result.get("citations") or []
         except Exception as e:
             logger.error("RAG pipeline error: %s", e, exc_info=True)
+            result = {}
             answer = f"I'm sorry, I encountered an error processing your question. Error: {e}"
             references = []
             status_messages = []
@@ -323,7 +374,8 @@ class ChatBot:
                 answer += _drift_note
 
         # Record the assistant response
-        session.add_message("assistant", answer, metadata={"references": references})
+        session.add_message("assistant", answer, metadata={"references": references, "citations": citations})
+        self._save_sessions()
 
         return {
             "session_id": session.session_id,
@@ -334,4 +386,5 @@ class ChatBot:
             "title": session.title,
             "status_messages": status_messages,
             "citations": citations,
+            "is_comparison": bool(result.get("is_comparison")),
         }

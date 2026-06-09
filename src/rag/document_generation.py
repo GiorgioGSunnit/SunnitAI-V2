@@ -15,12 +15,12 @@ logger = logging.getLogger(__name__)
 
 DOCUMENT_TYPE_REGISTRY = {
     "opposition_act": {
-        "keywords": ["opposizione", "decreto ingiuntivo", "opporsi", "atto di opposizione", "oposicion", "monitorio", "opposition", "opposizione al decreto", "opporsi al decreto ingiuntivo"],
+        "keywords": ["opposizione", "decreto ingiuntivo", "opporsi", "atto di opposizione", "oposicion", "monitorio", "opposition", "opposizione al decreto", "opporsi al decreto ingiuntivo", "mi hanno notificato un decreto", "ricevuto decreto ingiuntivo", "oppormi al decreto", "ho ricevuto un decreto ingiuntivo", "notificato decreto"],
         "fields": ["plaintiff", "defendant", "injunction_reference", "court", "amount", "grounds", "date"],
         "label": "Atto di Opposizione a Decreto Ingiuntivo",
     },
     "rental_basic": {
-        "keywords": ["cedolare secca", "affitto semplice", "locazione privata", "contratto base affitto", "affitto", "affitto con cedolare", "locazione con cedolare"],
+        "keywords": ["cedolare secca", "affitto semplice", "locazione privata", "contratto base affitto", "affitto", "affitto con cedolare", "locazione con cedolare", "cedolare", "locare", "dare in affitto", "mettere in affitto", "contratto d'affitto"],
         "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "durata_anni", "cedolare_secca"],
         "label": "Contratto di Locazione con Cedolare Secca",
     },
@@ -50,12 +50,12 @@ DOCUMENT_TYPE_REGISTRY = {
         "label": "Contratto di Locazione ad Uso Commerciale",
     },
     "rental_cancellation": {
-        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto", "disdetta del contratto di locazione", "disdetta dell'affitto", "recesso dal contratto", "recesso dal contratto di locazione", "comunicazione di recesso locazione"],
+        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto", "disdetta del contratto di locazione", "disdetta dell'affitto", "recesso dal contratto", "recesso dal contratto di locazione", "comunicazione di recesso locazione", "disdetta", "uscire dall'affitto", "lasciare l'appartamento", "fine contratto", "non voglio rinnovare", "lasciare la casa", "non rinnovo l'affitto"],
         "fields": ["conduttore", "indirizzo_conduttore", "locatore", "indirizzo_immobile", "data_stipula", "data_registrazione", "data_consegna", "preavviso_mesi", "modalita_invio"],
         "label": "Disdetta Contratto di Locazione",
     },
     "insurance_cancellation": {
-        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione", "disdetta della polizza", "disdetta del contratto assicurativo", "disdetta assicurativa", "rescissione polizza", "recesso dalla polizza", "cancellazione dell'assicurazione"],
+        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione", "disdetta della polizza", "disdetta del contratto assicurativo", "disdetta assicurativa", "rescissione polizza", "recesso dalla polizza", "cancellazione dell'assicurazione", "uscire dalla polizza", "cancellare assicurazione", "non rinnovare polizza", "non voglio rinnovare l'assicurazione", "chiudere la polizza"],
         "fields": ["assicurato", "indirizzo_assicurato", "compagnia_assicurativa", "numero_polizza", "data_scadenza", "luogo", "data"],
         "label": "Disdetta Polizza Assicurativa",
     },
@@ -65,12 +65,12 @@ DOCUMENT_TYPE_REGISTRY = {
         "label": "Dichiarazione Sostitutiva di Polizza Assicurativa",
     },
     "employment_dismissal_appeal": {
-        "keywords": ["impugnativa licenziamento", "impugnare licenziamento", "contestare licenziamento", "ricorso licenziamento", "opposizione licenziamento", "licenziamento illegittimo", "reintegrazione lavoro", "impugnativa di licenziamento", "impugnare il licenziamento", "contestare il licenziamento", "reintegra", "licenziamento senza giusta causa"],
+        "keywords": ["impugnativa licenziamento", "impugnare licenziamento", "contestare licenziamento", "ricorso licenziamento", "opposizione licenziamento", "licenziamento illegittimo", "reintegrazione lavoro", "impugnativa di licenziamento", "impugnare il licenziamento", "contestare il licenziamento", "reintegra", "licenziamento senza giusta causa", "mi hanno licenziato", "sono stato licenziato", "impugnare", "contestare il mio licenziamento", "licenziamento ingiusto", "licenziato ingiustamente", "licenziato illegittimamente"],
         "fields": ["lavoratore", "indirizzo_lavoratore", "datore_lavoro", "indirizzo_datore_lavoro", "data_inizio_rapporto", "data_fine_rapporto", "qualifica", "mansione", "data_licenziamento", "modalita_licenziamento", "motivi_illegittimita", "modalita_invio", "data"],
         "label": "Impugnativa di Licenziamento",
     },
     "employment_termination": {
-        "keywords": ["licenziamento giusta causa", "lettera licenziamento", "licenziare dipendente", "risoluzione rapporto lavoro", "licenziamento immediato", "lettera di licenziamento", "licenziamento per giusta causa", "licenziare", "risoluzione del rapporto di lavoro"],
+        "keywords": ["licenziamento giusta causa", "lettera licenziamento", "licenziare dipendente", "risoluzione rapporto lavoro", "licenziamento immediato", "lettera di licenziamento", "licenziamento per giusta causa", "licenziare", "risoluzione del rapporto di lavoro", "devo licenziare", "allontanare un dipendente", "mandare via un dipendente", "comunicazione di licenziamento", "recesso datoriale"],
         "fields": ["datore_lavoro", "indirizzo_datore_lavoro", "dipendente", "indirizzo_dipendente", "data_inizio_rapporto", "qualifica", "giusta_causa", "modalita_invio", "luogo", "data"],
         "label": "Lettera di Licenziamento per Giusta Causa",
     },
@@ -80,17 +80,17 @@ DOCUMENT_TYPE_REGISTRY = {
         "label": "Contratto di Franchising",
     },
     "demand_letter": {
-        "keywords": ["diffida", "messa in mora", "lettera di diffida", "intimazione", "sollecito legale", "burofax", "demand letter", "lettera di messa in mora"],
+        "keywords": ["diffida", "messa in mora", "lettera di diffida", "intimazione", "sollecito legale", "burofax", "demand letter", "lettera di messa in mora", "non paga", "sollecito", "recupero crediti", "mi deve dei soldi", "debito non pagato", "inadempimento contrattuale", "far pagare", "recuperare un credito"],
         "fields": ["mittente", "destinatario", "oggetto_controversia", "importo_dovuto", "termine_adempimento", "conseguenze", "data"],
         "label": "Diffida / Lettera di Messa in Mora",
     },
     "appeal": {
-        "keywords": ["ricorso", "appello", "impugnazione", "opposizione al provvedimento", "recurso", "appeal", "petition", "atto di appello", "ricorso al tribunale", "impugnazione del provvedimento"],
+        "keywords": ["ricorso", "appello", "impugnazione", "opposizione al provvedimento", "recurso", "appeal", "petition", "atto di appello", "ricorso al tribunale", "impugnazione del provvedimento", "impugnare una sentenza", "contestare una multa", "ricorrere al tribunale", "fare ricorso", "presentare appello", "impugnare il provvedimento"],
         "fields": ["appellante", "controparte", "tribunale", "provvedimento_impugnato", "motivi", "petitum", "data"],
         "label": "Ricorso / Atto di Appello",
     },
     "power_of_attorney": {
-        "keywords": ["procura", "delega", "mandato", "rappresentanza legale", "poder notarial", "power of attorney", "atto di procura", "delega notarile", "procura speciale"],
+        "keywords": ["procura", "delega", "mandato", "rappresentanza legale", "poder notarial", "power of attorney", "atto di procura", "delega notarile", "procura speciale", "delegare", "dare poteri", "agire per conto mio", "rappresentarmi", "autorizzare qualcuno", "conferire poteri"],
         "fields": ["conferente", "procuratore", "oggetto_poteri", "limitazioni", "durata", "data", "notaio"],
         "label": "Procura / Delega",
     },
@@ -100,9 +100,24 @@ DOCUMENT_TYPE_REGISTRY = {
         "label": "Contratto di Compravendita",
     },
     "verbale_assemblea": {
-        "keywords": ["verbale", "assemblea condominiale", "riunione condominiale", "delibera assemblea", "delibera condominiale", "verbale condominio", "riunione condominio", "condominio", "acta", "asamblea", "comunidad de propietarios", "junta de propietarios", "minutes", "condominium meeting", "homeowners association"],
+        "keywords": ["verbale", "assemblea condominiale", "riunione condominiale", "delibera assemblea", "delibera condominiale", "verbale condominio", "riunione condominio", "condominio", "acta", "asamblea", "comunidad de propietarios", "junta de propietarios", "minutes", "condominium meeting", "homeowners association", "assemblea", "riunione condominio", "delibera", "verbale di assemblea", "mettere a verbale", "resoconto assemblea"],
         "fields": ["data_riunione", "luogo_riunione", "condominio", "indirizzo_condominio", "amministratore", "condomini_presenti", "ordine_del_giorno", "delibere_approvate", "risultati_votazioni"],
         "label": "Verbale di Assemblea Condominiale",
+    },
+    "nota_contestazione": {
+        "keywords": ["nota alla contestazione", "contesto", "non ero parte", "non coinvolto", "incidente stradale", "dichiarazione", "contesta", "contesto l'infrazione", "non ero presente", "non sono coinvolto", "contesto la multa", "dichiarazione di non coinvolgimento", "non ho partecipato", "errore di targa", "auto non era mia"],
+        "fields": ["mittente", "indirizzo_mittente", "codice_fiscale_mittente", "ente_contestante", "indirizzo_ente", "numero_contestazione", "data_contestazione", "luogo_incidente", "data_incidente", "ora_incidente", "targa_veicolo_contestato", "descrizione_fatti", "luogo", "data"],
+        "label": "Nota alla Contestazione - Dichiarazione di Non Coinvolgimento",
+    },
+    "memoria_difensiva": {
+        "keywords": ["memoria difensiva", "memoria", "difensiva", "atto difensivo",
+                     "risposta alla denuncia", "rispondere alla denuncia",
+                     "memoria di risposta", "atto di difesa", "difesa penale",
+                     "difesa", "risposta all'accusa", "difendermi", "sono stato denunciato",
+                     "mi hanno denunciato", "rispondere a una denuncia", "mi hanno accusato",
+                     "controdeduzione", "difesa scritta"],
+        "fields": ["plaintiff", "defendant", "injunction_reference", "court", "amount", "grounds", "date"],
+        "label": "Memoria Difensiva",
     },
 }
 
@@ -129,14 +144,36 @@ _GENERATION_COMBOS = [
 def is_generation_request(message: str) -> bool:
     msg = message.lower()
     action_verbs = [
-        "genera", "scrivi", "redigi", "crea", "prepara", "stendi",
-        "elabora", "redigimi", "generami", "scrivimi", "fammi",
-        "produce", "draft", "write", "create", "redacta",
-        "voglio", "vorrei", "ho bisogno di",
+        "genera", "generami", "scrivi", "scrivimi", "redigi", "redigimi",
+        "crea", "creami", "prepara", "preparami", "stendi", "stendimi",
+        "elabora", "elaborami", "formula", "formulami", "produce", "producimi",
+        "fammi", "draft", "write", "create", "redacta",
+        "voglio", "vorrei", "ho bisogno di", "necesito", "quiero",
     ]
     strong_triggers = [
-        "redigimi", "generami", "scrivimi", "fammi un atto",
-        "fammi un contratto", "fammi una lettera",
+        # Italian with mi
+        "redigimi", "generami", "scrivimi", "preparami", "creami", "fammi",
+        "elaborami", "stendimi", "formulami", "producimi", "drafta",
+        # Italian without mi — "un/una" makes them unambiguous
+        "scrivi un", "scrivi una", "redigi un", "redigi una",
+        "genera un", "genera una", "crea un", "crea una",
+        "prepara un", "prepara una", "stendi un", "stendi una",
+        # Common phrases
+        "fammi un atto", "fammi un contratto", "fammi una lettera",
+        "fammi un documento", "fammi una memoria", "fammi un verbale",
+        "ho bisogno di un contratto", "ho bisogno di una lettera",
+        "ho bisogno di un atto", "ho bisogno di una memoria",
+        "voglio un contratto", "voglio una lettera", "voglio un atto",
+        "vorrei un contratto", "vorrei una lettera", "vorrei un atto",
+        # Spanish
+        "redacta un", "redacta una",
+        "necesito un contrato", "necesito una carta",
+        # English
+        "draft a", "draft an", "write a", "write an",
+        "create a", "create an", "generate a", "generate an",
+        "i need a contract", "i need a letter",
+        # Unambiguous Italian situation phrases
+        "mi hanno licenziato",
     ]
     if any(t in msg for t in strong_triggers):
         return True
@@ -162,6 +199,9 @@ def classify_document_type(message: str, lang: str) -> str:
         "- canone libero, 4+4 → rental_free_rent\n"
         "- commerciale, ufficio, negozio, B2B → rental_commercial\n"
         "- locazione abitativa generica senza altri segnali → rental_standard\n"
+        "\nPer distinguere atti difensivi e di opposizione:\n"
+        "- memoria difensiva, risposta denuncia, atto difensivo → memoria_difensiva\n"
+        "- opposizione decreto, decreto ingiuntivo, opporsi → opposition_act\n"
     )
     system = (
         "Sei un classificatore di richieste di documenti legali. "
@@ -178,10 +218,14 @@ def classify_document_type(message: str, lang: str) -> str:
             [SystemMessage(content=system), HumanMessage(content=human)],
             max_tokens=20,
         ).strip().lower()
-        if result not in DOCUMENT_TYPE_REGISTRY and result != "unknown":
-            logger.warning(f"classify_document_type got unexpected value: {result!r}, falling back to unknown")
-            return "unknown"
-        return result
+        if result in DOCUMENT_TYPE_REGISTRY or result == "unknown":
+            return result
+        # fuzzy match — model may have added punctuation or minor variation
+        for key in DOCUMENT_TYPE_REGISTRY:
+            if key in result or result in key:
+                return key
+        logger.warning(f"classify_document_type got unexpected value: {result!r}, falling back to unknown")
+        return "unknown"
     except Exception as e:
         logger.warning(f"classify_document_type failed: {e}, falling back to unknown")
         return "unknown"
@@ -195,30 +239,39 @@ def extract_document_fields(user_message: str, doc_type: str, lang: str) -> Dict
 
     if lang == "es":
         system = (
-            f"Eres un extractor de información legal. "
-            f"Lee el mensaje del usuario y extrae los detalles estructurados para un documento de tipo '{label}'. "
-            f"Devuelve un objeto JSON con exactamente estas claves: {fields_list}. "
-            "Usa el texto original del usuario para los valores. "
-            "Si un campo no se menciona, devuelve una cadena vacía para esa clave. "
-            "Devuelve SOLO el objeto JSON, sin texto adicional, sin markdown."
+            f"Extrae del mensaje del usuario los valores para los siguientes campos del documento '{label}'.\n"
+            f"Devuelve SOLO un objeto JSON válido, sin texto antes ni después, sin markdown.\n"
+            f"Campos requeridos: {json.dumps(fields, ensure_ascii=False)}\n"
+            "Reglas:\n"
+            "- Si un valor está explícitamente mencionado en el mensaje, úsalo exactamente\n"
+            "- Si un valor es claramente deducible del contexto, deducelo (ej: si la duración es 6 meses y la fecha de fin es 15 diciembre 2026, calcula la fecha de inicio como 15 junio 2026)\n"
+            "- Si un valor no está presente ni es deducible, usa cadena vacía \"\"\n"
+            "- No inventes datos no presentes ni deducibles\n"
+            f"Responde SOLO con el JSON, ejemplo: {{\"campo1\": \"valor1\", \"campo2\": \"\"}}"
         )
     elif lang == "en":
         system = (
-            f"You are a legal information extractor. "
-            f"Read the user message and extract structured details for a document of type '{label}'. "
-            f"Return a JSON object with exactly these keys: {fields_list}. "
-            "Use the original user text for values. "
-            "If a field is not mentioned, return an empty string for that key. "
-            "Return ONLY the JSON object, with no extra text, no markdown."
+            f"Extract from the user message the values for the following fields of the document '{label}'.\n"
+            f"Return ONLY a valid JSON object, with no text before or after, no markdown.\n"
+            f"Required fields: {json.dumps(fields, ensure_ascii=False)}\n"
+            "Rules:\n"
+            "- If a value is explicitly mentioned in the message, use it exactly\n"
+            "- If a value is clearly inferable from context, infer it (e.g. if duration is 6 months and end date is 15 December 2026, calculate start date as 15 June 2026)\n"
+            "- If a value is neither present nor inferable, use empty string \"\"\n"
+            "- Do not invent data that is not present or inferable\n"
+            f"Reply ONLY with the JSON, example: {{\"field1\": \"value1\", \"field2\": \"\"}}"
         )
     else:
         system = (
-            f"Sei un estrattore di informazioni legali. "
-            f"Leggi il messaggio dell'utente ed estrai i dettagli strutturati per un documento di tipo '{label}'. "
-            f"Restituisci un oggetto JSON con esattamente queste chiavi: {fields_list}. "
-            "Usa il testo originale dell'utente per i valori. "
-            "Se un campo non è menzionato, restituisci una stringa vuota per quella chiave. "
-            "Restituisci SOLO l'oggetto JSON, senza testo aggiuntivo, senza markdown."
+            f"Estrai dal messaggio dell'utente i valori per i seguenti campi del documento '{label}'.\n"
+            f"Restituisci SOLO un oggetto JSON valido, senza testo prima o dopo, senza markdown.\n"
+            f"Campi richiesti: {json.dumps(fields, ensure_ascii=False)}\n"
+            "Regole:\n"
+            "- Se un valore è esplicitamente menzionato nel messaggio, usalo esattamente\n"
+            "- Se un valore è chiaramente deducibile dal contesto, deducilo (es: se durata è 6 mesi e data fine è 15 dicembre 2026, calcola data inizio come 15 giugno 2026)\n"
+            "- Se un valore non è presente né deducibile, usa stringa vuota \"\"\n"
+            "- Non inventare dati non presenti o non deducibili\n"
+            f"Rispondi SOLO con il JSON, esempio: {{\"campo1\": \"valore1\", \"campo2\": \"\"}}"
         )
 
     human = f"Messaggio dell'utente:\n{user_message}"
@@ -231,8 +284,20 @@ def extract_document_fields(user_message: str, doc_type: str, lang: str) -> Dict
     try:
         parsed = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        logger.warning("extract_document_fields: JSON parse failed for doc_type=%r, raw=%r", doc_type, raw[:200])
-        parsed = {}
+        logger.warning("extract_document_fields: JSON parse failed, retrying for doc_type=%r, raw=%r", doc_type, raw[:200])
+        retry_response = _call_chat(
+            [
+                SystemMessage(content="Rispondi SOLO con JSON valido, nessun testo aggiuntivo."),
+                HumanMessage(content=f"Estrai questi campi: {fields}\nDal testo: {user_message}\nJSON:"),
+            ],
+            max_tokens=400,
+        )
+        clean_retry = re.sub(r"```(?:json)?\s*", "", retry_response).strip().rstrip("`").strip()
+        try:
+            parsed = json.loads(clean_retry)
+        except (json.JSONDecodeError, ValueError):
+            logger.error("extract_document_fields: retry also failed for doc_type=%r", doc_type)
+            parsed = {}
 
     return {k: str(parsed.get(k, "") or "") for k in fields}
 
@@ -293,6 +358,9 @@ def _opposition_system(lang: str) -> str:
             "(anulacion/suspension del decreto, desestimacion de las pretensiones de la parte contraria, condena en costas).\n"
             "5. FIRMA Y FECHA — Lugar, fecha, firma del letrado.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No anadas advertencias meta-legales en el propio documento. "
             "Redacta directamente el escrito, sin preambulos ni explicaciones."
         )
@@ -311,6 +379,9 @@ def _opposition_system(lang: str) -> str:
             "(revocation/suspension of the order, dismissal of the claimant's claims, costs award).\n"
             "5. SIGNATURE AND DATE — Place, date, lawyer's signature.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers to the document itself. "
             "Write the document directly, without preamble or explanation."
         )
@@ -330,6 +401,79 @@ def _opposition_system(lang: str) -> str:
         "(revoca/sospensione del decreto, rigetto delle domande avversarie, condanna alle spese).\n"
         "5. FIRMA E DATA — Luogo, data, firma del difensore.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente l'atto, senza prefazioni o spiegazioni."
+    )
+
+
+def _memoria_difensiva_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un abogado experto en defensa penal y administrativa. "
+            "Redacta una memoria defensiva formal en nombre del investigado o denunciado. "
+            "El documento debe ser formalmente correcto, en terminología jurídica precisa, y estructurado "
+            "en las siguientes secciones en el orden indicado:\n\n"
+            "1. ENCABEZAMIENTO — Autoridad o tribunal destinatario, datos del defendido y del denunciante, "
+            "número de referencia del expediente o denuncia.\n"
+            "2. ANTECEDENTES DE HECHO — Exposición de los hechos desde la perspectiva de la defensa.\n"
+            "3. MOTIVOS DE DEFENSA — Argumentos jurídicos y fácticos a descargo. "
+            "Cita las secciones de la base de conocimiento proporcionadas en el contexto cuando sean pertinentes, "
+            "indicando la fuente entre paréntesis.\n"
+            "4. SUPLICO — Petición precisa: sobreseimiento, archivo de las actuaciones o desestimación "
+            "de los cargos, con reserva de todas las acciones legales pertinentes.\n"
+            "5. FIRMA Y FECHA — Lugar, fecha, firma del letrado o del defendido.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
+            "No añadas advertencias meta-legales en el propio documento. "
+            "Redacta directamente el escrito, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert criminal and administrative defence lawyer. "
+            "Draft a formal defence memorial on behalf of the accused or investigated party. "
+            "The document must be formally correct, in precise legal language, and structured "
+            "in the following sections in the order given:\n\n"
+            "1. HEADING — Competent authority or court, details of the defendant and complainant, "
+            "case or complaint reference number.\n"
+            "2. STATEMENT OF FACTS — Account of events from the defence perspective.\n"
+            "3. GROUNDS OF DEFENCE — Legal and factual arguments in favour of the defendant. "
+            "Cite sections from the knowledge base provided in the context where relevant, "
+            "indicating the source in parentheses.\n"
+            "4. RELIEF SOUGHT — Precise petitum: dismissal of proceedings, closure of the case, "
+            "or rejection of all charges, with reservation of all applicable legal remedies.\n"
+            "5. SIGNATURE AND DATE — Place, date, lawyer's or defendant's signature.\n\n"
+            f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
+            "Do not add meta-legal disclaimers to the document itself. "
+            "Write the document directly, without preamble or explanation."
+        )
+    # Default: Italian
+    return (
+        "Sei un avvocato esperto in difesa penale e amministrativa. "
+        "Redigi una memoria difensiva formale nell'interesse dell'indagato o del denunciato. "
+        "Il documento deve essere formalmente corretto, in italiano giuridico preciso, e strutturato "
+        "nelle seguenti sezioni nell'ordine indicato:\n\n"
+        "1. INTESTAZIONE — Autorità o tribunale destinatario, dati del difeso e del denunciante, "
+        "numero di riferimento del procedimento o della denuncia.\n"
+        "2. PREMESSE IN FATTO — Ricostruzione dei fatti dal punto di vista della difesa.\n"
+        "3. MOTIVI DI DIFESA — Argomenti giuridici e fattuali a discarico. "
+        "Cita le sezioni della knowledge base fornite nel contesto ove pertinenti, "
+        "indicando la fonte tra parentesi.\n"
+        "4. CONCLUSIONI — Petitum preciso: proscioglimento, archiviazione del procedimento o rigetto "
+        "di ogni addebito, con riserva di ogni azione legale opportuna.\n"
+        "5. FIRMA E DATA — Luogo, data, firma del difensore o del difeso.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente l'atto, senza prefazioni o spiegazioni."
     )
@@ -352,6 +496,9 @@ def _rental_basic_system(lang: str) -> str:
             "5. DEPÓSITO Y CLÁUSULAS FINALES — Depósito máximo 2 mensualidades, gastos contractuales, "
             "mediación obligatoria, firmas con doble suscripción de cláusulas generales.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -370,6 +517,9 @@ def _rental_basic_system(lang: str) -> str:
             "5. DEPOSIT AND FINAL CLAUSES — Deposit capped at 2 monthly rents, contract costs, "
             "mandatory mediation, signatures with express approval of general clauses.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -387,6 +537,9 @@ def _rental_basic_system(lang: str) -> str:
         "5. DEPOSITO E CLAUSOLE FINALI — Deposito massimo 2 mensilità, spese contrattuali, "
         "mediazione obbligatoria, firme con doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -410,6 +563,9 @@ def _rental_standard_system(lang: str) -> str:
             "5. CLÁUSULAS FINALES Y FIRMAS — Comisión paritaria, RGPD, fuero competente, "
             "doble suscripción de cláusulas generales.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -429,6 +585,9 @@ def _rental_standard_system(lang: str) -> str:
             "5. FINAL CLAUSES AND SIGNATURES — Joint committee, GDPR, jurisdiction, "
             "express approval of general clauses.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -447,6 +606,9 @@ def _rental_standard_system(lang: str) -> str:
         "5. CLAUSOLE FINALI E FIRME — Commissione paritetica, GDPR, foro competente, "
         "doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -471,6 +633,9 @@ def _rental_student_system(lang: str) -> str:
             "5. CLÁUSULAS FINALES Y FIRMAS — Comisión paritaria, RGPD, fuero competente, "
             "doble suscripción de cláusulas generales.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -491,6 +656,9 @@ def _rental_student_system(lang: str) -> str:
             "5. FINAL CLAUSES AND SIGNATURES — Joint committee, GDPR, jurisdiction, "
             "express approval of general clauses.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -510,6 +678,9 @@ def _rental_student_system(lang: str) -> str:
         "5. CLAUSOLE FINALI E FIRME — Commissione paritetica, GDPR, foro competente, "
         "doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -535,6 +706,9 @@ def _rental_transitional_system(lang: str) -> str:
             "5. CLÁUSULAS FINALES Y FIRMAS — Comisión paritaria, RGPD, fuero competente, "
             "doble suscripción de cláusulas generales.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -555,6 +729,9 @@ def _rental_transitional_system(lang: str) -> str:
             "5. FINAL CLAUSES AND SIGNATURES — Joint committee, GDPR, jurisdiction, "
             "express approval of general clauses.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -574,6 +751,9 @@ def _rental_transitional_system(lang: str) -> str:
         "5. CLAUSOLE FINALI E FIRME — Commissione paritetica, GDPR, foro competente, "
         "doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -600,6 +780,9 @@ def _rental_free_rent_system(lang: str) -> str:
             "5. DISPOSICIONES FINALES Y FIRMAS — Fecha de eficacia, derecho español, RGPD, "
             "registro 50% cada parte, fuero competente, doble suscripción de cláusulas generales.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -620,6 +803,9 @@ def _rental_free_rent_system(lang: str) -> str:
             "5. FINAL PROVISIONS AND SIGNATURES — Effective date, governing law, GDPR, registration "
             "costs split 50/50, jurisdiction, express approval of general clauses.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -639,6 +825,9 @@ def _rental_free_rent_system(lang: str) -> str:
         "5. DISPOSIZIONI FINALI E FIRME — Data di efficacia, diritto italiano, GDPR, "
         "registrazione 50% ciascuna parte, foro competente, doppia sottoscrizione artt. 1341-1342 c.c.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -669,6 +858,9 @@ def _rental_commercial_system(lang: str) -> str:
             "timbre y registro 50% arrendataria, fuero competente exclusivo, "
             "firmas con aprobación de cláusulas esenciales.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preámbulos ni explicaciones."
         )
@@ -692,6 +884,9 @@ def _rental_commercial_system(lang: str) -> str:
             "stamp duty and registration 50% tenant, exclusive jurisdiction clause, "
             "signatures with express approval of essential clauses.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -715,6 +910,9 @@ def _rental_commercial_system(lang: str) -> str:
         "con preavviso di 24 ore, comunicazioni tramite PEC, bollo e registro 50% conduttrice, "
         "foro competente esclusivo, firme con approvazione delle clausole essenziali artt. 1341-1342 c.c.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
     )
@@ -737,6 +935,9 @@ def _rental_cancellation_system(lang: str) -> str:
             "plazo de preaviso en meses/días desde la recepción de la presente comunicación.\n"
             "4. CIERRE Y FIRMA — Fórmula de cierre, lugar, fecha, firma del arrendatario.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente la carta, sin preámbulos ni explicaciones."
         )
@@ -754,6 +955,9 @@ def _rental_cancellation_system(lang: str) -> str:
             "notice period in months/days from receipt of this communication.\n"
             "4. CLOSING AND SIGNATURE — Closing formula, place, date, tenant's signature.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -770,6 +974,9 @@ def _rental_cancellation_system(lang: str) -> str:
         "preavviso in mesi/giorni dalla ricezione della presente comunicazione.\n"
         "4. CHIUSURA E FIRMA — Formula di chiusura, luogo, data, firma del conduttore.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
     )
@@ -789,6 +996,9 @@ def _insurance_cancellation_system(lang: str) -> str:
             "petición de acuse de recibo.\n"
             "3. FIRMA — Fórmula de cierre cordial, firma del asegurado.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente la carta, sin preámbulos ni explicaciones."
         )
@@ -804,6 +1014,9 @@ def _insurance_cancellation_system(lang: str) -> str:
             "request for acknowledgement of receipt.\n"
             "3. SIGNATURE — Cordial closing formula, policyholder's signature.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -817,6 +1030,9 @@ def _insurance_cancellation_system(lang: str) -> str:
         "alle condizioni di polizza e alle norme vigenti, richiesta di ricevuta di ritorno.\n"
         "3. FIRMA — Formula di chiusura cordiale, firma dell'assicurato.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
     )
@@ -839,6 +1055,9 @@ def _insurance_declaration_system(lang: str) -> str:
             "5. CONSENTIMIENTO Y FIRMA — Consentimiento para el tratamiento de datos personales, "
             "fecha, firma, adjuntar documento de identidad.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el documento, sin preámbulos ni explicaciones."
         )
@@ -857,6 +1076,9 @@ def _insurance_declaration_system(lang: str) -> str:
             "5. CONSENT AND SIGNATURE — Consent to personal data processing, "
             "date, signature, attach identity document.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -874,6 +1096,9 @@ def _insurance_declaration_system(lang: str) -> str:
         "5. CONSENSO E FIRMA — Consenso al trattamento dei dati personali ai sensi della L. 196/2003, "
         "data, firma, allegare documento di identità.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
     )
@@ -896,6 +1121,9 @@ def _employment_dismissal_appeal_system(lang: str) -> str:
             "advertencia de recurso ante la autoridad judicial en caso de incumplimiento.\n"
             "5. RESERVAS Y FIRMA — Reserva de reclamar todos los conceptos pendientes no abonados, fecha, firma del trabajador.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el documento, sin preámbulos ni explicaciones."
         )
@@ -914,6 +1142,9 @@ def _employment_dismissal_appeal_system(lang: str) -> str:
             "warning of judicial recourse in the event of non-compliance.\n"
             "5. RESERVATIONS AND SIGNATURE — Reservation of the right to claim all outstanding entitlements not yet paid, date, worker's signature.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -931,6 +1162,9 @@ def _employment_dismissal_appeal_system(lang: str) -> str:
         "avvertimento di ricorso all'autorità giudiziaria in caso di inottemperanza.\n"
         "5. RISERVE E FIRMA — Riserva di rivendicare tutte le spettanze non corrisposte, data, firma del lavoratore.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
     )
@@ -950,6 +1184,9 @@ def _employment_termination_system(lang: str) -> str:
             "3. EFECTOS Y CIERRE — Efecto inmediato del despido, invitación a recoger los efectos personales, "
             "lugar, fecha, firma del empleador.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el documento, sin preámbulos ni explicaciones."
         )
@@ -965,6 +1202,9 @@ def _employment_termination_system(lang: str) -> str:
             "3. EFFECTS AND CLOSING — Immediate effect of the dismissal, invitation to collect personal belongings, "
             "place, date, employer's signature.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -979,6 +1219,9 @@ def _employment_termination_system(lang: str) -> str:
         "3. EFFETTI E CHIUSURA — Effetto immediato del licenziamento, invito a ritirare gli effetti personali, "
         "luogo, data, firma del datore di lavoro.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
     )
@@ -1004,6 +1247,9 @@ def _franchising_contract_system(lang: str) -> str:
             "5. DISPOSICIONES FINALES Y FIRMAS — Resolución de controversias mediante Cámara de Comercio con foro competente, "
             "tratamiento de datos RGPD, lugar, fecha, firmas del franquiciador y del franquiciado.\n\n"
             f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, nombres, códigos, números ni ningún otro dato no proporcionado explícitamente: usa {ph} para fechas, números de identificación, direcciones y referencias numéricas. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No añadas advertencias meta-legales. "
             "Redacta directamente el documento, sin preámbulos ni explicaciones."
         )
@@ -1025,6 +1271,9 @@ def _franchising_contract_system(lang: str) -> str:
             "5. FINAL PROVISIONS AND SIGNATURES — Dispute resolution through the Chamber of Commerce with competent jurisdiction, "
             "GDPR data processing, place, date, signatures of franchisor and franchisee.\n\n"
             f"Use {ph} for every missing piece of information without exception — never invent or assume dates, names, codes, numbers or any other data not explicitly provided: use {ph} for dates, tax codes, addresses and reference numbers. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -1045,6 +1294,9 @@ def _franchising_contract_system(lang: str) -> str:
         "5. DISPOSIZIONI FINALI E FIRME — Risoluzione controversie tramite Camera di Commercio con foro competente, "
         "trattamento dati GDPR, luogo, data, firme franchisor e franchisee.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, nomi, codici, numeri o qualsiasi altro dato non esplicitamente fornito: usa {ph} per date, codici fiscali, indirizzi e riferimenti numerici. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
     )
@@ -1065,6 +1317,9 @@ def _verbale_assemblea_system(lang: str) -> str:
             "indicacion de si el acuerdo es vinculante conforme a la LPH.\n"
             "5. CIERRE Y FIRMAS — Hora de cierre, firma del presidente y del secretario.\n\n"
             f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas fechas, nombres, cuotas ni ningun otro dato. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No anadas advertencias meta-legales. "
             "Redacta directamente el acta, sin preambulos ni explicaciones."
         )
@@ -1081,6 +1336,9 @@ def _verbale_assemblea_system(lang: str) -> str:
             "indication of whether the resolution is binding.\n"
             "5. CLOSING AND SIGNATURES — Time of closure, signatures of the chairperson and secretary.\n\n"
             f"Use {ph} for every missing piece of information without exception - never invent or assume dates, names, ownership shares or any other data. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -1096,6 +1354,9 @@ def _verbale_assemblea_system(lang: str) -> str:
         "indicazione se la delibera e vincolante ai sensi del codice civile.\n"
         "5. CHIUSURA E FIRME — Ora di chiusura, firma del presidente e del segretario.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere date, nomi, quote millesimali o qualsiasi altro dato. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il verbale, senza prefazioni o spiegazioni."
     )
@@ -1122,6 +1383,9 @@ def _demand_letter_system(lang: str) -> str:
             "6. FIRMA Y FECHA — Lugar, fecha, firma del remitente o su representante legal.\n\n"
             f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas fechas, nombres, "
             "importes ni ningun otro dato no proporcionado explicitamente. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No anadas advertencias meta-legales. "
             "Redacta directamente la carta, sin preambulos ni explicaciones."
         )
@@ -1144,6 +1408,9 @@ def _demand_letter_system(lang: str) -> str:
             "6. SIGNATURE AND DATE — Place, date, signature of the sender or their legal representative.\n\n"
             f"Use {ph} for every missing piece of information without exception - never invent or assume "
             "dates, names, amounts or any other data not explicitly provided. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -1166,6 +1433,9 @@ def _demand_letter_system(lang: str) -> str:
         "6. FIRMA E DATA — Luogo, data, firma del mittente o del suo rappresentante legale.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere date, nomi, "
         "importi o qualsiasi altro dato non esplicitamente fornito. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente la lettera, senza prefazioni o spiegazioni."
     )
@@ -1192,6 +1462,9 @@ def _appeal_system(lang: str) -> str:
             "6. FIRMA Y FECHA — Lugar, fecha, firma del letrado.\n\n"
             f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas fechas, nombres, "
             "numeros de procedimiento ni ningun otro dato no proporcionado explicitamente. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No anadas advertencias meta-legales. "
             "Redacta directamente el escrito, sin preambulos ni explicaciones."
         )
@@ -1214,6 +1487,9 @@ def _appeal_system(lang: str) -> str:
             "6. SIGNATURE AND DATE — Place, date, lawyer's signature.\n\n"
             f"Use {ph} for every missing piece of information without exception - never invent or assume "
             "dates, names, case numbers or any other data not explicitly provided. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -1235,6 +1511,9 @@ def _appeal_system(lang: str) -> str:
         "6. FIRMA E DATA — Luogo, data, firma del difensore.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere date, nomi, "
         "numeri di procedimento o qualsiasi altro dato non esplicitamente fornito. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente l'atto, senza prefazioni o spiegazioni."
     )
@@ -1261,6 +1540,9 @@ def _power_of_attorney_system(lang: str) -> str:
             "publico si requerido, datos del notario y numero de protocolo.\n\n"
             f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas nombres, numeros "
             "de identificacion, poderes ni ningun otro dato no proporcionado explicitamente. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No anadas advertencias meta-legales. "
             "Redacta directamente el documento, sin preambulos ni explicaciones."
         )
@@ -1281,6 +1563,9 @@ def _power_of_attorney_system(lang: str) -> str:
             "if required, notary's details and deed number.\n\n"
             f"Use {ph} for every missing piece of information without exception - never invent or assume "
             "names, identification numbers, powers or any other data not explicitly provided. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -1301,6 +1586,9 @@ def _power_of_attorney_system(lang: str) -> str:
         "ufficiale se richiesto, dati del notaio e numero di repertorio.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere nomi, codici "
         "fiscali, poteri o qualsiasi altro dato non esplicitamente fornito. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il documento, senza prefazioni o spiegazioni."
     )
@@ -1329,6 +1617,9 @@ def _sale_agreement_system(lang: str) -> str:
             "competente, gastos e impuestos a cargo de cada parte, firmas de vendedor y comprador.\n\n"
             f"Usa {ph} para cada dato ausente sin excepcion - no inventes ni asumas precios, datos "
             "identificativos del bien ni ningun otro dato no proporcionado explicitamente. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
             "No anadas advertencias meta-legales. "
             "Redacta directamente el contrato, sin preambulos ni explicaciones."
         )
@@ -1350,6 +1641,9 @@ def _sale_agreement_system(lang: str) -> str:
             "costs and taxes at each party's expense, signatures of seller and buyer.\n\n"
             f"Use {ph} for every missing piece of information without exception - never invent or assume "
             "prices, identifying details of the goods or any other data not explicitly provided. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
             "Do not add meta-legal disclaimers. "
             "Write the document directly, without preamble or explanation."
         )
@@ -1372,8 +1666,101 @@ def _sale_agreement_system(lang: str) -> str:
         "competente, spese e imposte a carico di ciascuna parte, firme di venditore e acquirente.\n\n"
         f"Usa {ph} per ogni dato mancante senza eccezioni - non inventare ne assumere prezzi, dati "
         "identificativi del bene o qualsiasi altro dato non esplicitamente fornito. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
         "Non aggiungere avvertenze meta-legali sul documento stesso. "
         "Scrivi direttamente il contratto, senza prefazioni o spiegazioni."
+    )
+
+
+def _nota_contestazione_system(lang: str) -> str:
+    ph = _placeholder(lang)
+    if lang == "es":
+        return (
+            "Eres un experto en derecho administrativo y de tráfico. "
+            "Redacta una nota formal de contestación a una denuncia de tráfico, "
+            "declarando la no participación del remitente en el incidente. "
+            "El documento debe ser formalmente correcto y estructurado en las siguientes secciones:\n\n"
+            "1. ENCABEZAMIENTO — Datos del remitente (nombre, apellidos, C.F./D.N.I., domicilio), "
+            "autoridad destinataria con dirección, número de referencia de la denuncia, fecha de la denuncia.\n"
+            "2. REFERENCIA A LA DENUNCIA RECIBIDA — Indicación precisa de la denuncia recibida: "
+            "número de referencia, fecha, matrícula del vehículo implicado según la denuncia, "
+            "infracción o hecho contestado.\n"
+            "3. DECLARACIÓN DE NO PARTICIPACIÓN — Declaración expresa y formal de no haber estado "
+            "presente ni haber participado en el incidente o infracción indicados, "
+            "con alusión a la matrícula o circunstancias erróneas.\n"
+            "4. DESCRIPCIÓN DE LOS HECHOS — Exposición clara y cronológica de los hechos tal y como "
+            "se desarrollaron según el remitente: lugar donde se encontraba, vehículo utilizado, "
+            "cualquier circunstancia relevante que excluya su participación.\n"
+            "5. SOLICITUD DE ARCHIVO — Solicitud formal de archivo de las actuaciones por falta de "
+            "fundamento, con reserva de ejercitar las acciones legales oportunas en caso de "
+            "continuación indebida del procedimiento.\n"
+            "6. FIRMA — Fórmula de cierre, lugar, fecha, firma del remitente.\n\n"
+            f"Usa {ph} para cada dato ausente sin excepción — no inventes ni asumas fechas, matrículas, "
+            "nombres, números de expediente ni ningún otro dato no proporcionado explícitamente. "
+            f"IMPORTANTE: usa EXCLUSIVAMENTE {ph} para los datos faltantes. "
+            f"ESTÁ PROHIBIDO usar marcadores descriptivos como [NOMBRE], [DIRECCIÓN], [FECHA] o similares. "
+            f"Solo {ph} y nada más para cualquier dato no proporcionado. "
+            "No añadas advertencias meta-legales. "
+            "Redacta directamente la nota, sin preámbulos ni explicaciones."
+        )
+    if lang == "en":
+        return (
+            "You are an expert in administrative and traffic law. "
+            "Draft a formal letter contesting a road traffic dispute notice, "
+            "asserting the sender's non-involvement in the incident. "
+            "The document must be formally correct and structured in the following sections:\n\n"
+            "1. HEADING — Sender's details (full name, tax/ID number, address), "
+            "authority as addressee with address, reference number of the notice, date of the notice.\n"
+            "2. REFERENCE TO THE NOTICE RECEIVED — Precise identification of the notice received: "
+            "reference number, date, vehicle registration plate cited in the notice, "
+            "infraction or event being contested.\n"
+            "3. DECLARATION OF NON-INVOLVEMENT — Express and formal declaration that the sender was "
+            "not present and did not participate in the incident or infraction indicated, "
+            "with reference to the erroneous registration or circumstances.\n"
+            "4. DESCRIPTION OF FACTS — Clear chronological account of events as they actually occurred "
+            "according to the sender: location at the time, vehicle used, any relevant circumstances "
+            "excluding their participation.\n"
+            "5. REQUEST FOR DISMISSAL — Formal request to close the proceedings for lack of grounds, "
+            "with reservation of all legal rights should the proceedings continue improperly.\n"
+            "6. SIGNATURE — Closing formula, place, date, sender's signature.\n\n"
+            f"Use {ph} for every missing piece of information without exception — never invent or assume "
+            "dates, registration plates, names, case numbers or any other data not explicitly provided. "
+            f"IMPORTANT: use EXCLUSIVELY {ph} for missing data. "
+            f"It is FORBIDDEN to use descriptive placeholders such as [NAME], [ADDRESS], [DATE] or similar. "
+            f"Only {ph} and nothing else for any data not provided. "
+            "Do not add meta-legal disclaimers. "
+            "Write the document directly, without preamble or explanation."
+        )
+    return (
+        "Sei un esperto in diritto amministrativo e della circolazione stradale. "
+        "Redigi una nota formale alla contestazione di un verbale stradale, "
+        "dichiarando il non coinvolgimento del mittente nell'incidente. "
+        "Il documento deve essere formalmente corretto e strutturato nelle seguenti sezioni:\n\n"
+        "1. INTESTAZIONE — Dati del mittente (nome, cognome, C.F., indirizzo), "
+        "ente contestante destinatario con indirizzo, numero di riferimento della contestazione, "
+        "data della contestazione.\n"
+        "2. RIFERIMENTO ALLA CONTESTAZIONE RICEVUTA — Indicazione precisa della contestazione ricevuta: "
+        "numero di riferimento, data, targa del veicolo indicata nel verbale, "
+        "infrazione o fatto contestato.\n"
+        "3. DICHIARAZIONE DI NON COINVOLGIMENTO — Dichiarazione espressa e formale di non essere "
+        "stati presenti né di aver preso parte all'incidente o all'infrazione indicati, "
+        "con riferimento alla targa o alle circostanze erronee.\n"
+        "4. DESCRIZIONE DEI FATTI — Esposizione chiara e cronologica dei fatti così come si sono "
+        "svolti secondo il mittente: luogo in cui si trovava, veicolo utilizzato, "
+        "ogni circostanza rilevante che escluda il proprio coinvolgimento.\n"
+        "5. RICHIESTA DI ARCHIVIAZIONE — Richiesta formale di archiviazione del procedimento per "
+        "infondatezza, con riserva di esercitare ogni azione legale opportuna in caso di "
+        "ingiustificata prosecuzione del procedimento.\n"
+        "6. FIRMA — Formula di chiusura, luogo, data, firma del mittente.\n\n"
+        f"Usa {ph} per ogni dato mancante senza eccezioni — non inventare né assumere date, targhe, "
+        "nomi, numeri di protocollo o qualsiasi altro dato non esplicitamente fornito. "
+        f"IMPORTANTE: usa ESCLUSIVAMENTE {ph} per i dati mancanti. "
+        f"È VIETATO usare placeholder descrittivi come [NOME], [INDIRIZZO], [DATA] o simili. "
+        f"Solo {ph} e nient'altro per qualsiasi dato non fornito. "
+        "Non aggiungere avvertenze meta-legali sul documento stesso. "
+        "Scrivi direttamente la nota, senza prefazioni o spiegazioni."
     )
 
 
@@ -1382,6 +1769,7 @@ def generate_document(
     doc_type: str,
     lang: str,
     citations: list = None,
+    studio_name: str = "",
 ) -> Dict[str, Any]:
     """Generic document generator dispatching on doc_type via DOCUMENT_TYPE_REGISTRY.
 
@@ -1407,6 +1795,8 @@ def generate_document(
         "power_of_attorney": _power_of_attorney_system,
         "sale_agreement": _sale_agreement_system,
         "verbale_assemblea": _verbale_assemblea_system,
+        "nota_contestazione": _nota_contestazione_system,
+        "memoria_difensiva": _memoria_difensiva_system,
     }
 
     system_fn = _SYSTEM_FN.get(doc_type)
@@ -1455,6 +1845,12 @@ def generate_document(
         [SystemMessage(content=system_content), HumanMessage(content=human_content)],
         max_tokens=2000,
     )
+
+    raw_output = re.sub(r'\[[^\]]*\]', '[DA COMPILARE]', raw_output)
+
+    if studio_name:
+        header = f"{studio_name}\n{'─' * len(studio_name)}\n\n"
+        raw_output = header + raw_output
 
     return {"draft": raw_output, "case_details": fields_dict, "doc_type": doc_type}
 

@@ -14,6 +14,7 @@ Endpoints:
 import asyncio
 import io
 import logging
+import os
 import re
 import time
 import urllib.parse
@@ -107,9 +108,16 @@ class ChatRequest(BaseModel):
     )
 
 
+DEFAULT_LOGO_PATH = "/opt/chatbot/assets/studio_logo.jpeg"
+
+
 class GenerateRequest(BaseModel):
     message: str = Field(..., min_length=1, description="Free-text request describing the opposition case.")
     session_id: Optional[str] = Field(None, description="Session ID for context. Omit to auto-create.")
+    studio_name: str = Field("", description="Legal studio or organization name for document header.")
+    studio_logo_path: str = Field("", description="Absolute server path to logo image file.")
+    doc_type: str = Field("", description="Pre-classified document type; skips classify_document_type if provided.")
+    draft: str = Field("", description="Pre-generated draft text; skips generation if provided.")
 
 
 class GenerateResponse(BaseModel):
@@ -141,6 +149,10 @@ class ChatResponse(BaseModel):
         default="Nuova conversazione",
         description="Auto-generated session title (set after first message).",
     )
+    is_comparison: bool = Field(
+        default=False,
+        description="True when the answer was produced by the comparison retrieval path.",
+    )
 
 
 class SessionResponse(BaseModel):
@@ -171,6 +183,8 @@ _DOC_FILENAMES = {
     "power_of_attorney": ("PROCURA", "PODER NOTARIAL", "POWER OF ATTORNEY", "procura"),
     "sale_agreement": ("CONTRATTO DI COMPRAVENDITA", "CONTRATO DE COMPRAVENTA", "SALE AGREEMENT", "contratto_compravendita"),
     "verbale_assemblea": ("VERBALE DI ASSEMBLEA CONDOMINIALE", "ACTA DE JUNTA DE PROPIETARIOS", "CONDOMINIUM ASSEMBLY MINUTES", "verbale_assemblea"),
+    "nota_contestazione": ("NOTA ALLA CONTESTAZIONE", "NOTA A LA CONTESTACIÓN", "NOTICE CONTESTING TRAFFIC VIOLATION", "nota_contestazione"),
+    "comparison": ("CONFRONTO TRA DOCUMENTI", "COMPARACIÓN DE DOCUMENTOS", "DOCUMENT COMPARISON", "confronto_documenti"),
 }
 
 
@@ -236,7 +250,7 @@ def _build_clarification_message() -> str:
     )
 
 
-def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None) -> dict:
+def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "") -> dict:
     citations = None
     if cached_sections is not None:
         sources = sorted({s["document_title"] for s in cached_sections if s.get("document_title")})
@@ -250,8 +264,18 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
             sources = []
-    gen = generate_document(message, doc_type, session_lang, citations)
+    gen = generate_document(message, doc_type, session_lang, citations, studio_name)
     return {"draft": gen["draft"], "case_details": gen["case_details"], "sources": sources, "doc_type": gen["doc_type"]}
+
+
+def _run_comparison_sync(message: str, session_lang: str, cached_sections=None) -> dict:
+    """Run a comparison query through the RAG graph and return answer + citations."""
+    rag_state = rag_run(message, session_language=session_lang)
+    return {
+        "answer": rag_state.get("answer", ""),
+        "citations": rag_state.get("citations", []),
+        "is_comparison": bool(rag_state.get("is_comparison")),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -429,7 +453,12 @@ async def generate(request: GenerateRequest):
     Classifies the document type, extracts case details, retrieves relevant sections
     from the knowledge base, and returns a structured draft.
     """
-    if not is_generation_request(request.message):
+    is_comparison_request = bool(re.search(
+        r'\b(confronta|confronto|differenze?\s+tra|compara|paragona|versus|vs\.?)\b',
+        request.message, re.IGNORECASE
+    )) or request.doc_type == "comparison"
+
+    if not is_comparison_request and not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
 
     session_id = request.session_id
@@ -443,28 +472,44 @@ async def generate(request: GenerateRequest):
         chatbot._sessions[session_id] = session
 
     session_lang = session.session_language
-    doc_type = classify_document_type(request.message, session_lang)
-    if doc_type == "unknown":
-        clarification = _build_clarification_message()
-        session.add_message("user", request.message)
-        session.add_message("assistant", clarification)
-        return GenerateResponse(
-            session_id=session_id, draft=clarification, case_details={}, sources=[], doc_type="unknown"
-        )
+
+    if is_comparison_request:
+        doc_type = "comparison"
+    else:
+        doc_type = classify_document_type(request.message, session_lang)
+        if doc_type == "unknown":
+            clarification = _build_clarification_message()
+            session.add_message("user", request.message)
+            session.add_message("assistant", clarification)
+            return GenerateResponse(
+                session_id=session_id, draft=clarification, case_details={}, sources=[], doc_type="unknown"
+            )
 
     cached = _get_cached_sections(session)
     session.add_message("user", request.message)
 
     try:
         loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached)
-        )
+        if is_comparison_request:
+            comparison_result = await loop.run_in_executor(
+                None, partial(_run_comparison_sync, request.message, session_lang, cached)
+            )
+            result = {
+                "draft": comparison_result.get("answer", ""),
+                "case_details": {},
+                "sources": comparison_result.get("citations", []),
+                "doc_type": "comparison",
+                "studio_name": request.studio_name,
+            }
+        else:
+            result = await loop.run_in_executor(
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, request.studio_name)
+            )
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
-    session.add_message("assistant", result["draft"], metadata={"sources": result["sources"]})
+    session.add_message("assistant", result["draft"], metadata={"sources": result.get("sources", [])})
     return GenerateResponse(session_id=session_id, **result)
 
 
@@ -473,7 +518,7 @@ async def generate_download(request: GenerateRequest):
     """Generate opposition act and return as a downloadable .docx file."""
     try:
         from docx import Document
-        from docx.shared import Cm, Pt
+        from docx.shared import Cm, Inches, Pt
         from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
     except ImportError:
         raise HTTPException(
@@ -481,7 +526,12 @@ async def generate_download(request: GenerateRequest):
             detail="python-docx is not installed. Add 'python-docx>=1.1.0' to pyproject.toml and reinstall.",
         )
 
-    if not is_generation_request(request.message):
+    is_comparison_request = bool(re.search(
+        r'\b(confronta|confronto|differenze?\s+tra|compara|paragona|versus|vs\.?)\b',
+        request.message, re.IGNORECASE
+    )) or request.doc_type == "comparison" or bool(request.draft)
+
+    if not is_comparison_request and not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
 
     session_id = request.session_id
@@ -493,21 +543,36 @@ async def generate_download(request: GenerateRequest):
         session = ChatSession(session_id=session_id)
         chatbot._sessions[session_id] = session
     session_lang = session.session_language
-    doc_type = classify_document_type(request.message, session_lang)
-    if doc_type == "unknown":
-        raise HTTPException(status_code=400, detail=_build_clarification_message())
+
+    if is_comparison_request:
+        doc_type = "comparison"
+    elif request.doc_type:
+        doc_type = request.doc_type
+    else:
+        doc_type = classify_document_type(request.message, session_lang)
+        if doc_type == "unknown":
+            raise HTTPException(status_code=400, detail=_build_clarification_message())
     cached = _get_cached_sections(session)
     session.add_message("user", request.message)
 
-    try:
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(
-            None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached)
+    loop = asyncio.get_event_loop()
+    if is_comparison_request and not request.draft:
+        comparison_result = await loop.run_in_executor(
+            None, partial(_run_comparison_sync, request.message, session_lang)
         )
+        request = request.model_copy(update={"draft": comparison_result.get("answer", "")})
+
+    try:
+        if request.draft:
+            result = {"draft": request.draft, "doc_type": doc_type, "sources": []}
+        else:
+            result = await loop.run_in_executor(
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, request.studio_name)
+            )
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
-    session.add_message("assistant", result["draft"], metadata={"sources": result["sources"]})
+    session.add_message("assistant", result["draft"], metadata={"sources": result.get("sources", [])})
 
     lang_idx = {"it": 0, "es": 1, "en": 2}.get(session_lang, 0)
     doc_info = _DOC_FILENAMES.get(doc_type, _DOC_FILENAMES["opposition_act"])
@@ -519,6 +584,18 @@ async def generate_download(request: GenerateRequest):
         section.bottom_margin = Cm(2.5)
         section.left_margin = Cm(2.5)
         section.right_margin = Cm(2.5)
+
+    studio_logo_path = request.studio_logo_path or ""
+    studio_name_val = request.studio_name or ""
+    if not studio_logo_path and os.path.exists(DEFAULT_LOGO_PATH):
+        studio_logo_path = DEFAULT_LOGO_PATH
+
+    if studio_logo_path and os.path.exists(studio_logo_path):
+        logo_para = doc.add_paragraph()
+        logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        logo_run = logo_para.add_run()
+        logo_run.add_picture(studio_logo_path, width=Inches(3.0))
+        doc.add_paragraph()
 
     title_para = doc.add_paragraph()
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
