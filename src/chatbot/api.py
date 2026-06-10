@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -37,6 +37,8 @@ from ..rag.document_generation import (
     is_generation_request,
 )
 from ..rag.graph_nodes import _extract_citations
+from .auth import get_current_user, require_user, create_access_token, verify_password
+from .user_store import get_user_by_email, get_user_by_id
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +167,29 @@ class SessionResponse(BaseModel):
     title: str = "Nuova conversazione"
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: str
+    email: str
+    studio_name: str = ""
+
+
+class UserProfileResponse(BaseModel):
+    user_id: str
+    email: str
+    role: str
+    studio_name: str = ""
+    first_name: str = ""
+    last_name: str = ""
+    tenant_id: str
+
+
 _PH_PATTERN = re.compile(r"\[[A-ZÀÁÂÄÉÈÊËÍÌÎÏÓÒÔÖÚÙÛÜ\s]+\](?:\s*\([^)]*\))?")
 
 _DOC_FILENAMES = {
@@ -284,6 +309,49 @@ def _run_comparison_sync(message: str, session_lang: str, cached_sections=None) 
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@app.post("/api/auth/login", response_model=AuthResponse)
+async def login(request: LoginRequest):
+    user = get_user_by_email(request.email)
+    if not user or not user.get("is_active"):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    if not verify_password(request.password, user["hashed_password"]):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+    token = create_access_token({
+        "sub": str(user["id"]),
+        "email": user["email"],
+        "role": user["role"],
+        "tenant_id": str(user["tenant_id"]),
+    })
+    return AuthResponse(
+        access_token=token,
+        user_id=str(user["id"]),
+        email=user["email"],
+        studio_name=user.get("studio_name") or "",
+    )
+
+
+@app.get("/api/auth/me", response_model=UserProfileResponse)
+async def get_me(current_user: dict = Depends(require_user)):
+    user = get_user_by_id(current_user["sub"])
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserProfileResponse(
+        user_id=str(user["id"]),
+        email=user["email"],
+        role=user["role"],
+        studio_name=user.get("studio_name") or "",
+        first_name=user.get("first_name") or "",
+        last_name=user.get("last_name") or "",
+        tenant_id=str(user["tenant_id"]),
+    )
+
+
+@app.put("/api/auth/me")
+async def update_me(current_user: dict = Depends(require_user)):
+    # Placeholder — profile updates handled by colleague's service
+    raise HTTPException(status_code=501, detail="Profile updates not yet implemented")
+
 
 @app.get("/api/health")
 def health_check():
@@ -450,7 +518,7 @@ def delete_session(session_id: str):
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
-async def generate(request: GenerateRequest):
+async def generate(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user)):
     """Generate a legal document draft from a free-text request.
 
     Classifies the document type, extracts case details, retrieves relevant sections
@@ -475,6 +543,11 @@ async def generate(request: GenerateRequest):
         chatbot._sessions[session_id] = session
 
     session_lang = session.session_language
+
+    if current_user and not request.studio_name:
+        _profile = get_user_by_id(current_user["sub"])
+        if _profile:
+            request = request.model_copy(update={"studio_name": _profile.get("studio_name") or ""})
 
     if is_comparison_request:
         doc_type = "comparison"
@@ -517,7 +590,7 @@ async def generate(request: GenerateRequest):
 
 
 @app.post("/api/generate/download")
-async def generate_download(request: GenerateRequest):
+async def generate_download(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user)):
     """Generate opposition act and return as a downloadable .docx file."""
     try:
         from docx import Document
@@ -546,6 +619,11 @@ async def generate_download(request: GenerateRequest):
         session = ChatSession(session_id=session_id)
         chatbot._sessions[session_id] = session
     session_lang = session.session_language
+
+    if current_user and not request.studio_name:
+        _profile = get_user_by_id(current_user["sub"])
+        if _profile:
+            request = request.model_copy(update={"studio_name": _profile.get("studio_name") or ""})
 
     if is_comparison_request:
         doc_type = "comparison"
@@ -629,7 +707,7 @@ async def generate_download(request: GenerateRequest):
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
+async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user)):
     """Send a message and get a response.
 
     If session_id is provided, continues the conversation.
@@ -690,7 +768,9 @@ async def chat(request: ChatRequest):
     try:
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(
-            None, partial(chatbot.chat, session_id, request.message)
+            None, partial(chatbot.chat, session_id, request.message,
+                          user_id=current_user.get("sub") if current_user else None,
+                          tenant_id=current_user.get("tenant_id") if current_user else None)
         )
     except Exception as e:
         logger.error("Chat error: %s", e, exc_info=True)

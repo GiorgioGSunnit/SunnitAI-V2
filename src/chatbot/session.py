@@ -62,6 +62,8 @@ class ChatSession:
     title: str = field(default="Nuova conversazione")
     _language_fixed_from_first_turn: bool = field(default=False)
     _last_active: float = field(default_factory=time.monotonic)
+    user_id: Optional[str] = None
+    tenant_id: Optional[str] = None
 
     def add_message(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> Message:
         self._last_active = time.monotonic()
@@ -85,6 +87,8 @@ class ChatSession:
             "last_active_at": datetime.now(timezone.utc).isoformat(),
             "message_count": len(self.messages),
             "messages": [m.to_dict() for m in self.messages],
+            "user_id": self.user_id,
+            "tenant_id": self.tenant_id,
         }
 
     @classmethod
@@ -102,6 +106,8 @@ class ChatSession:
             session_language=data.get("session_language", DEFAULT_LANGUAGE),
             _language_fixed_from_first_turn=data.get("_language_fixed_from_first_turn", False),
             _last_active=last_active,
+            user_id=data.get("user_id"),
+            tenant_id=data.get("tenant_id"),
         )
         session.messages = [
             Message(
@@ -261,8 +267,8 @@ class ChatBot:
         except Exception as e:
             logger.error("Failed to save sessions to %s: %s", self._sessions_file, e)
 
-    def create_session(self) -> ChatSession:
-        session = ChatSession()
+    def create_session(self, user_id: Optional[str] = None, tenant_id: Optional[str] = None) -> ChatSession:
+        session = ChatSession(user_id=user_id, tenant_id=tenant_id)
         with self._lock:
             self._sessions[session.session_id] = session
         logger.info("Created session %s", session.session_id)
@@ -295,7 +301,9 @@ class ChatBot:
             for s in sessions
         ]
 
-    def chat(self, session_id: str, user_message: str) -> Dict[str, Any]:
+    def chat(self, session_id: str, user_message: str,
+             user_id: Optional[str] = None,
+             tenant_id: Optional[str] = None) -> Dict[str, Any]:
         """Process a user message within a session and return the response.
 
         Returns:
@@ -311,6 +319,10 @@ class ChatBot:
             if not session:
                 session = ChatSession(session_id=session_id)
                 self._sessions[session_id] = session
+
+        if user_id and session.user_id is None:
+            session.user_id = user_id
+            session.tenant_id = tenant_id
 
         # Record the user message
         session.add_message("user", user_message)
