@@ -1,0 +1,9 @@
+---
+description: context for the project 
+globs: 
+alwaysApply: true
+---
+
+this will be a graph rag project done with neo4j in python
+
+if you don't know something about neo4j, look for the docs online

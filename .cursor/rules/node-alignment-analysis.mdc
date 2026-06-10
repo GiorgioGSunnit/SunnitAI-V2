@@ -1,0 +1,41 @@
+---
+description: Workflow per verificare nodi Neo4j rispetto a una domanda utente ed eseguire analisi di correlazione
+globs: []
+alwaysApply: false
+---
+# Node Alignment Verification
+
+Quando l'utente chiede di "fare le query" per controllare se i nodi trovati rispondono alla domanda, seguire sempre questa procedura:
+
+1. **Preparazione batch**
+   - Raccogli tutti gli `elementId` o le query da verificare (ti verranno forniti nei log di `src.main`).
+   - Le query Cypher vanno eseguite esclusivamente tramite `src/cypher_cli.py`, preferibilmente usando la modalità batch parallela per ridurre i tempi.
+   - Crea un payload JSON nel formato:
+     ```json
+     {
+       "queries": [
+         {"query": "UNWIND $ids AS id MATCH (n) WHERE elementId(n)=id RETURN elementId(n) AS id, labels(n)", "params": {"ids": ["..."]}},
+         {"query": "MATCH (la:LegalAct {act_number: $number, act_year: $year}) RETURN la", "params": {"number": "153", "year": "2024"}}
+       ]
+     }
+     ```
+
+2. **Esecuzione parallela**
+   - Usa lo script `src/cypher_cli.py` con l'opzione `--batch` (ed eventualmente `--workers`) per lanciare tutte le query in parallelo:
+     ```bash
+     /Users/a.i./Downloads/gra/app/venv/bin/python -m src.cypher_cli --batch path/o/json --pretty
+     ```
+
+3. **Analisi dei risultati**
+   - Per ogni nodo rilevante annota label, proprieta chiave e contesto.
+   - Classifica la correlazione (esatta, parziale, rumorosa) e spiega il perche.
+
+4. **Valutazione di `entity_linking`**
+   - Identifica quale indice o tecnica ha prodotto i nodi rumorosi (btree, fulltext, vector) e perche.
+   - Proponi miglioramenti mirati: filtri di label, soglie, mapping indici, copertura b-tree, ecc.
+
+5. **Report all'utente**
+   - Riassumi risultati, correlazioni e suggerimenti in forma sintetica.
+   - Segnala le query eseguite, eventuali mancanze dati e proposte di miglioramento per `entity_linking`.
+
+Seguendo questo flusso otteniamo verifiche rapide (batch parallelo) e feedback consistente sulla qualita di `entity_linking`.

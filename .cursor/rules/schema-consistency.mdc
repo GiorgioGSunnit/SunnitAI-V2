@@ -1,0 +1,25 @@
+---
+description:  source of truth for the graph db, the schema, to which all the project must adhere 
+globs: 
+alwaysApply: true
+---
+
+# Schema Consistency For Neo4j Preprocessing
+
+`src/preprocessing/schema/schema.py` is the source of truth for node labels, key fields, and properties. Every preprocessing or ingestion change must follow that schema exactly.
+
+## Required Checks
+
+1. Review `schema.py` before coding; note the labels, keys, and property names you need.
+2. Ensure extractors (`src/preprocessing/extractor.py`) emit nodes/relationships that match those labels and keys.
+3. Keep `src/preprocessing/schema/indexing.py` (constraints, full-text, vector indexes) in sync with the schema definitions.
+4. Align enrichment helpers (e.g., embeddings) and ingestion logic in `src/preprocessing` with the same field names.
+5. Verify retrieval helpers such as `src/rag/lookup_indexes.py` reference only labels/properties defined in the schema.
+
+## Workflow Guidance
+
+- Before running `python -m preprocessing.main` or `python -m main -p`, re-check that extractor outputs align with schema keys.
+- After ingestion, watch Neo4j logs: any `UnknownLabel` or `UnknownProperty` warnings mean code and schema diverged; fix and rebuild indexes.
+- On every schema change, immediately update extractors, indexing, enrichment, and retrieval configs to stay consistent.
+alwaysApply: true
+---
