@@ -177,19 +177,19 @@ class UserPreferences(Base):
 # Conversations — chat history per user
 # ---------------------------------------------------------------------------
 
-#class Conversation(Base):
-#    __tablename__ = "conversations"
-#
-#    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-#    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"),
-#                     nullable=False)
-#    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"),
-#                       nullable=False)
-#    title = Column(String(255), nullable=True, default="Nuova conversazione")
-#    messages = Column(JSONB, default=list)
-#    session_language = Column(String(10), default="it")
-#    created_at = Column(DateTime(timezone=True), default=utcnow)
-#    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-#
-#    # Relationships
-#    user = relationship("User", back_populates="conversations")
+class Conversation(Base):
+    __tablename__ = "conversations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"),
+                     nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"),
+                       nullable=False)
+    title = Column(String(255), nullable=True, default="Nuova conversazione")
+    messages = Column(JSONB, default=list)
+    session_language = Column(String(10), default="it")
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    # Relationships
+    user = relationship("User", back_populates="conversations")

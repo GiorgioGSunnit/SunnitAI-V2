@@ -41,3 +41,9 @@ async def require_user(token: str = Depends(oauth2_scheme)) -> dict:
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+# Aliases for backwards compatibility with colleague's routes
+decode_access_token = decode_token
+
+def hash_password(password: str) -> str:
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()

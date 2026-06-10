@@ -1088,7 +1088,8 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
         bm25_query = " ".join(_kw) if _kw else (state.get("generalized_query") or original_query)
     else:
         bm25_query = original_query
-    bm25_hits = bm25_lookup(bm25_query, driver, database, k=15)
+    bm25_k = 150 if bm25_doc_hint else 15
+    bm25_hits = bm25_lookup(bm25_query, driver, database, k=bm25_k)
     filtered_hits = [(eid, score) for eid, score in bm25_hits if score >= _BM25_SCORE_THRESHOLD]
     vlog("bm25_search", {"results_found": len(bm25_hits), "results_above_threshold": len(filtered_hits)})
     raw_result: List[Dict[str, Any]] = []
