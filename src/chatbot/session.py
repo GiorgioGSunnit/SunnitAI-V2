@@ -356,7 +356,12 @@ class ChatBot:
 
         # Run through the RAG pipeline
         try:
-            result = rag_run(resolved_query, session_language=session.session_language)
+            result = rag_run(
+                resolved_query,
+                session_language=session.session_language,
+                user_id=session.user_id,
+                tenant_id=session.tenant_id,
+            )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = _strip_embeddings(result.get("references", []))
             status_messages = result.get("status_messages") or []

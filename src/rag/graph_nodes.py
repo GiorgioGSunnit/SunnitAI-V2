@@ -55,6 +55,29 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
+def _visibility_filter(alias: str = "d") -> str:
+    """Returns a Cypher WHERE clause fragment for document visibility.
+    Documents without a visibility property are treated as public.
+    """
+    return (
+        f"(coalesce({alias}.visibility, 'public') = 'public' "
+        f"OR {alias}.owner_id = $user_id "
+        f"OR {alias}.tenant_id = $tenant_id)"
+    )
+
+
+def _fetch_allowed_doc_ids(session, user_id: str, tenant_id: str) -> set:
+    """Fetch all document IDs visible to this user."""
+    result = session.run("""
+        MATCH (d:Document)
+        WHERE coalesce(d.visibility, 'public') = 'public'
+           OR d.owner_id = $user_id
+           OR d.tenant_id = $tenant_id
+        RETURN d.id AS id
+    """, user_id=user_id or "", tenant_id=tenant_id or "")
+    return {r["id"] for r in result}
+
+
 def _node_to_dict(v: Any) -> Any:
     return dict(v) if hasattr(v, "items") and not isinstance(v, dict) else v
 
@@ -133,8 +156,8 @@ _LAW_PATTERNS = [
     re.compile(r'costituzione', re.IGNORECASE),
 ]
 
-# Cache of document names fetched from Neo4j — populated on first article_router call
-_DOC_NAMES_CACHE: list[str] = []
+# Cache of document names fetched from Neo4j — keyed by (user_id, tenant_id)
+_DOC_NAMES_CACHE: dict = {}
 _DOC_NAMES_CACHE_LOCK = __import__('threading').Lock()
 
 _STOPWORDS = {
@@ -149,18 +172,23 @@ _STOPWORDS = {
 }
 
 
-def _fetch_doc_names(driver, database: str) -> list[dict]:
+def _fetch_doc_names(driver, database: str, user_id: str = "", tenant_id: str = "") -> list[dict]:
     """Fetch all document id+name pairs from Neo4j, with module-level caching."""
     global _DOC_NAMES_CACHE
+    cache_key = (user_id, tenant_id)
     with _DOC_NAMES_CACHE_LOCK:
-        if _DOC_NAMES_CACHE:
-            return _DOC_NAMES_CACHE
+        if cache_key in _DOC_NAMES_CACHE:
+            return _DOC_NAMES_CACHE[cache_key]
         try:
             with driver.session(database=database) as session:
                 result = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(:Section) "
+                    "WHERE coalesce(d.visibility, 'public') = 'public' "
+                    "OR d.owner_id = $user_id OR d.tenant_id = $tenant_id "
                     "RETURN DISTINCT d.id AS id, d.name AS name, "
-                    "coalesce(d.aliases, []) AS aliases"
+                    "coalesce(d.aliases, []) AS aliases",
+                    user_id=user_id,
+                    tenant_id=tenant_id,
                 )
                 docs = [
                     {
@@ -170,7 +198,7 @@ def _fetch_doc_names(driver, database: str) -> list[dict]:
                     }
                     for r in result if r["name"] and r["id"]
                 ]
-            _DOC_NAMES_CACHE = docs
+            _DOC_NAMES_CACHE[cache_key] = docs
             logger.info("_fetch_doc_names: cached %d document names", len(docs))
             return docs
         except Exception as exc:
@@ -728,6 +756,8 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     query = state.get("query", "")
+    user_id = state.get("user_id") or ""
+    tenant_id = state.get("tenant_id") or ""
     article_refs = _extract_article_references(query)
     law_hint = _dynamic_law_hint(query, driver, database)
 
@@ -744,10 +774,13 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
                     "WHERE (s.name = $article_number OR s.name STARTS WITH $article_number + '.')\n"
                     "AND ($law_hint = '' OR d.id = $law_hint)\n"
+                    f"AND {_visibility_filter()}\n"
                     "RETURN d, s LIMIT 15",
                     article_ref=article_ref,
                     article_number=article_number,
                     law_hint=law_hint,
+                    user_id=user_id,
+                    tenant_id=tenant_id,
                 )
                 data = [record.data() for record in records]
                 data = [{k: _node_to_dict(v) for k, v in row.items()} for row in data]
@@ -1041,6 +1074,8 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     if not generalized:
         return {"context_nodes": []}
 
+    user_id = state.get("user_id") or ""
+    tenant_id = state.get("tenant_id") or ""
     query_variants = state.get("query_variants") or []
     original_query = state.get("query", "")
     search_texts = [generalized] + query_variants + ([original_query] if original_query != generalized else [])
@@ -1065,9 +1100,12 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
             scoped = session.run(
                 "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                 "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                f"AND {_visibility_filter()} "
                 "RETURN elementId(s) AS eid",
                 ids=element_ids,
                 doc_id=vector_doc_hint,
+                user_id=user_id,
+                tenant_id=tenant_id,
             ).data()
             scoped_ids = {r["eid"] for r in scoped}
             all_matches = [m for m in all_matches if m["element_id"] in scoped_ids]
@@ -1099,9 +1137,12 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                 bm25_rows = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                    f"AND {_visibility_filter()} "
                     "RETURN d, s",
                     ids=[eid for eid, _ in filtered_hits],
                     doc_id=bm25_doc_hint,
+                    user_id=user_id,
+                    tenant_id=tenant_id,
                 ).data()
                 logger.info(
                     "BM25 scoped to document %r — %d rows",
@@ -1111,8 +1152,11 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                 bm25_rows = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "WHERE elementId(s) IN $ids "
+                    f"AND {_visibility_filter()} "
                     "RETURN d, s",
                     ids=[eid for eid, _ in filtered_hits],
+                    user_id=user_id,
+                    tenant_id=tenant_id,
                 ).data()
         for row in bm25_rows:
             row["_source"] = "bm25"
@@ -1135,16 +1179,18 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
             _art_cypher = (
                 "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                 "WHERE s.name = $art_num AND toLower(d.name) CONTAINS toLower($doc_hint) "
+                f"AND {_visibility_filter()} "
                 "RETURN d, s, elementId(s) AS s_eid"
             )
-            _art_params: Dict[str, Any] = {"art_num": art_num, "doc_hint": doc_hint}
+            _art_params: Dict[str, Any] = {"art_num": art_num, "doc_hint": doc_hint, "user_id": user_id, "tenant_id": tenant_id}
         else:
             _art_cypher = (
                 "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                 "WHERE s.name = $art_num "
+                f"AND {_visibility_filter()} "
                 "RETURN d, s, elementId(s) AS s_eid"
             )
-            _art_params = {"art_num": art_num}
+            _art_params = {"art_num": art_num, "user_id": user_id, "tenant_id": tenant_id}
         with driver.session(database=database) as _art_session:
             _art_rows = _art_session.run(_art_cypher, **_art_params).data()
         for row in _art_rows:
@@ -2025,6 +2071,17 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             doc_hint, len(data), before,
         )
 
+    user_id = state.get("user_id") or ""
+    tenant_id = state.get("tenant_id") or ""
+    if user_id or tenant_id:
+        with driver.session(database=database) as _s:
+            allowed_ids = _fetch_allowed_doc_ids(_s, user_id, tenant_id)
+        data = [
+            r for r in data
+            if (r.get("d") or {}).get("id") in allowed_ids
+            or (r.get("s") or {}).get("id", "").startswith("DOCUMENT_SECTION::")
+        ]
+
     enriched_references = _enrich_with_source_metadata(data)
 
     existing_raw = state.get("raw_result", [])
@@ -2265,13 +2322,18 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                 element_ids = [n["element_id"] for n in context_nodes if n.get("element_id")]
                 fetched: List[Dict[str, Any]] = []
                 if element_ids:
+                    _user_id = state.get("user_id") or ""
+                    _tenant_id = state.get("tenant_id") or ""
                     try:
                         with driver.session(database=database) as neo4j_session:
                             records = neo4j_session.run(
                                 "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
                                 "WHERE elementId(s) IN $element_ids\n"
+                                f"AND {_visibility_filter()}\n"
                                 "RETURN d, s",
                                 element_ids=element_ids,
+                                user_id=_user_id,
+                                tenant_id=_tenant_id,
                             )
                             fetched = [record.data() for record in records]
                     except Exception as exc:
@@ -3104,7 +3166,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _resolve_by_name(name: str, session) -> Optional[str]:
+def _resolve_by_name(name: str, session, user_id: str = "", tenant_id: str = "") -> Optional[str]:
     """Fallback doc-ID resolver: tries each candidate token and accepts only a unique match."""
     _STOPWORDS = {"del", "dei", "delle", "della", "dello", "gli", "per", "con", "tra", "fra", "sul", "sulla", "verbale"}
     raw_tokens = [t for t in name.split() if len(t) > 3 and t.lower() not in _STOPWORDS]
@@ -3115,8 +3177,12 @@ def _resolve_by_name(name: str, session) -> Optional[str]:
     )
     for token in candidate_tokens:
         results = list(session.run(
-            "MATCH (d:Document) WHERE d.name CONTAINS $token RETURN d.id AS id LIMIT 2",
+            "MATCH (d:Document) WHERE d.name CONTAINS $token "
+            f"AND {_visibility_filter()} "
+            "RETURN d.id AS id LIMIT 2",
             token=token.upper(),
+            user_id=user_id,
+            tenant_id=tenant_id,
         ))
         if len(results) == 1:
             return results[0]["id"]
@@ -3144,6 +3210,8 @@ def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[s
     names = state.get("comparison_doc_ids") or []
     query = state.get("query", "")
     keywords = state.get("retrieval_keywords") or []
+    user_id = state.get("user_id") or ""
+    tenant_id = state.get("tenant_id") or ""
 
     # Resolve names → document IDs (accept either a human name or a bare doc ID)
     doc_ids: List[str] = []
@@ -3151,9 +3219,12 @@ def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[s
         for name in names[:2]:
             result = session.run(
                 "MATCH (d:Document)-[:CONTAINS]->(:Section) "
-                "WHERE toLower(d.name) CONTAINS toLower($name) OR d.id = $name "
+                "WHERE (toLower(d.name) CONTAINS toLower($name) OR d.id = $name) "
+                f"AND {_visibility_filter()} "
                 "RETURN d.id AS id LIMIT 1",
                 name=name,
+                user_id=user_id,
+                tenant_id=tenant_id,
             ).single()
             if result and result["id"]:
                 doc_ids.append(result["id"])
@@ -3173,7 +3244,7 @@ def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[s
     if len(doc_ids) < 2:
         with driver.session(database=database) as session:
             for name in names[:2]:
-                fid = _resolve_by_name(name, session)
+                fid = _resolve_by_name(name, session, user_id=user_id, tenant_id=tenant_id)
                 if fid and fid not in doc_ids:
                     doc_ids.append(fid)
 
@@ -3194,12 +3265,20 @@ def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[s
 
     with driver.session(database=database) as session:
         count1 = (session.run(
-            "MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) RETURN count(s) AS cnt",
+            "MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) "
+            f"WHERE {_visibility_filter()} "
+            "RETURN count(s) AS cnt",
             id=doc_id_1,
+            user_id=user_id,
+            tenant_id=tenant_id,
         ).single() or {}).get("cnt", 0)
         count2 = (session.run(
-            "MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) RETURN count(s) AS cnt",
+            "MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) "
+            f"WHERE {_visibility_filter()} "
+            "RETURN count(s) AS cnt",
             id=doc_id_2,
+            user_id=user_id,
+            tenant_id=tenant_id,
         ).single() or {}).get("cnt", 0)
 
     is_short = count1 < 50 and count2 < 50
@@ -3212,14 +3291,18 @@ def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[s
         rows1 = session.run(
             "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
             "WHERE s.plain_text IS NOT NULL AND s.plain_text <> '' "
+            f"AND {_visibility_filter()} "
             "RETURN d, s ORDER BY s.name LIMIT $lim",
             doc_id=doc_id_1, lim=fetch_limit,
+            user_id=user_id, tenant_id=tenant_id,
         ).data()
         rows2 = session.run(
             "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
             "WHERE s.plain_text IS NOT NULL AND s.plain_text <> '' "
+            f"AND {_visibility_filter()} "
             "RETURN d, s ORDER BY s.name LIMIT $lim",
             doc_id=doc_id_2, lim=fetch_limit,
+            user_id=user_id, tenant_id=tenant_id,
         ).data()
 
     if not rows1 or not rows2:

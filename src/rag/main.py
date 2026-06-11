@@ -83,6 +83,8 @@ class AgentState(TypedDict, total=False):
     law_hint_doc_id: Optional[str]
     comparison_doc_ids: List[str]
     is_comparison: bool
+    user_id: Optional[str]
+    tenant_id: Optional[str]
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +221,9 @@ def _get_compiled_graph():
 # Public API
 # ---------------------------------------------------------------------------
 
-def run(query: str, session_language: str = "it") -> Dict[str, Any]:
+def run(query: str, session_language: str = "it",
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None) -> Dict[str, Any]:
     """Run a single query through the agent graph."""
     compiled = _get_compiled_graph()
     initial_state: AgentState = {
@@ -242,6 +246,8 @@ def run(query: str, session_language: str = "it") -> Dict[str, Any]:
         "retrieval_evaluated": False,
         "cypher_attempt": None,
         "law_hint_doc_id": None,
+        "user_id": user_id,
+        "tenant_id": tenant_id,
     }
     return compiled.invoke(initial_state)
 
