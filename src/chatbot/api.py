@@ -37,8 +37,10 @@ from ..rag.document_generation import (
     is_generation_request,
 )
 from ..rag.graph_nodes import _extract_citations
-from .auth import get_current_user, require_user, create_access_token, verify_password
-from .user_store import get_user_by_email, get_user_by_id
+from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
+from .user_store import (get_user_by_email, get_user_by_id,
+    get_tenant_by_id, create_studio_and_admin,
+    create_user_with_invite, get_tenant_invite_code)
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +192,31 @@ class UserProfileResponse(BaseModel):
     tenant_id: str
 
 
+class RegisterStudioRequest(BaseModel):
+    email: str
+    password: str
+    first_name: str
+    last_name: str
+    studio_name: str
+
+
+class RegisterUserRequest(BaseModel):
+    email: str
+    password: str
+    first_name: str
+    last_name: str
+    invite_code: str
+
+
+class RegisterStudioResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user_id: str
+    email: str
+    studio_name: str
+    invite_code: str
+
+
 _PH_PATTERN = re.compile(r"\[[A-ZÀÁÂÄÉÈÊËÍÌÎÏÓÒÔÖÚÙÛÜ\s]+\](?:\s*\([^)]*\))?")
 
 _DOC_FILENAMES = {
@@ -326,6 +353,64 @@ async def login(request: LoginRequest):
     return AuthResponse(
         access_token=token,
         user_id=str(user["id"]),
+        email=user["email"],
+        studio_name=user.get("studio_name") or "",
+    )
+
+
+@app.post("/api/auth/register/studio", response_model=RegisterStudioResponse)
+async def register_studio(request: RegisterStudioRequest):
+    existing = get_user_by_email(request.email)
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+    hashed = hash_password(request.password)
+    user = create_studio_and_admin(
+        email=request.email,
+        hashed_password=hashed,
+        first_name=request.first_name,
+        last_name=request.last_name,
+        studio_name=request.studio_name,
+    )
+    token = create_access_token({
+        "sub": user["id"],
+        "email": user["email"],
+        "role": user["role"],
+        "tenant_id": user["tenant_id"],
+    })
+    return RegisterStudioResponse(
+        access_token=token,
+        user_id=user["id"],
+        email=user["email"],
+        studio_name=user["studio_name"],
+        invite_code=user["invite_code"],
+    )
+
+
+@app.post("/api/auth/register", response_model=AuthResponse)
+async def register_user(request: RegisterUserRequest):
+    existing = get_user_by_email(request.email)
+    if existing:
+        raise HTTPException(status_code=409, detail="Email already registered")
+    hashed = hash_password(request.password)
+    try:
+        user = create_user_with_invite(
+            email=request.email,
+            hashed_password=hashed,
+            first_name=request.first_name,
+            last_name=request.last_name,
+            invite_code=request.invite_code,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    token = create_access_token({
+        "sub": user["id"],
+        "email": user["email"],
+        "role": user["role"],
+        "tenant_id": user["tenant_id"],
+    })
+    return AuthResponse(
+        access_token=token,
+        user_id=user["id"],
         email=user["email"],
         studio_name=user.get("studio_name") or "",
     )
