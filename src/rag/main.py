@@ -81,6 +81,10 @@ class AgentState(TypedDict, total=False):
     bm25_doc_ids: List[str]
     bm25_from_article_lookup: Optional[bool]
     law_hint_doc_id: Optional[str]
+    query_intent: Optional[str]
+    law_hint_doc_id_b: Optional[str]
+    intent_entity_a: Optional[str]
+    intent_entity_b: Optional[str]
     comparison_doc_ids: List[str]
     is_comparison: bool
     user_id: Optional[str]
@@ -111,7 +115,7 @@ def build_graph(compile_graph: bool = True):
     graph = StateGraph(AgentState)
 
     # Nodes that need the Neo4j driver are wrapped with partial
-    graph.add_node("decompose_query", decompose_query)
+    graph.add_node("decompose_query", partial(decompose_query, driver=driver, database=NEO4J_DATABASE))
     graph.add_node(
         "article_router",
         partial(article_router, driver=driver, database=NEO4J_DATABASE),
