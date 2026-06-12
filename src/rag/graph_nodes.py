@@ -1300,16 +1300,17 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                     all_matches = all_matches[:30]
 
     # Fetch BM25 section content directly
-    _BM25_SCORE_THRESHOLD = 8.5
     # When a law hint is active, use the generalized/keyword query so the document
     # name itself doesn't dominate the fulltext match. Fall back to original_query.
     bm25_doc_hint = (state.get("law_hint_doc_id") or
                      _dynamic_law_hint(original_query, driver, database))
+    _BM25_SCORE_THRESHOLD = 5.0 if bm25_doc_hint else 8.5
     if bm25_doc_hint:
-        _kw = state.get("retrieval_keywords") or []
-        bm25_query = " ".join(_kw) if _kw else (state.get("generalized_query") or original_query)
-    else:
         bm25_query = original_query
+    else:
+        _kw = state.get("retrieval_keywords") or []
+        bm25_query = " ".join(_kw) if _kw else (
+            state.get("generalized_query") or original_query)
     entity_a = state.get("intent_entity_a") or ""
     entity_b = state.get("intent_entity_b") or ""
     if (state.get("query_intent") == "concept_in_doc"
@@ -1339,6 +1340,35 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                     "BM25 scoped to document %r — %d rows",
                     bm25_doc_hint, len(bm25_rows),
                 )
+                # Supplement with k=300 when scoped results are sparse
+                if bm25_doc_hint and len(bm25_rows) < 10:
+                    extra_hits = bm25_lookup(
+                        bm25_query, driver, database, k=300
+                    )
+                    extra_filtered = [
+                        (eid, score) for eid, score in extra_hits
+                        if score >= _BM25_SCORE_THRESHOLD
+                    ]
+                    if extra_filtered:
+                        with driver.session(database=database) as _sess:
+                            extra_rows = _sess.run(
+                                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                                "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                                "AND (coalesce(d.visibility, 'public') = 'public' "
+                                "OR d.owner_id = $user_id "
+                                "OR d.tenant_id = $tenant_id) "
+                                "RETURN d, s",
+                                ids=[eid for eid, _ in extra_filtered],
+                                doc_id=bm25_doc_hint,
+                                user_id=user_id,
+                                tenant_id=tenant_id,
+                            ).data()
+                        existing_ids = {
+                            (r.get("s") or {}).get("id") for r in bm25_rows
+                        }
+                        for row in extra_rows:
+                            if (row.get("s") or {}).get("id") not in existing_ids:
+                                bm25_rows.append(row)
             else:
                 bm25_rows = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
@@ -3170,6 +3200,15 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             "The retrieved data contains sections of the requested article — synthesize them into a coherent answer. "
             "Do NOT say the article is not present — it IS present in the data above. "
             "Quote relevant passages directly and explain their meaning."
+        )
+    elif state.get("bm25_doc_ids") and not state.get("bm25_from_article_lookup"):
+        human_parts.append(
+            "Answer ONLY using the data provided above. "
+            "The retrieved sections are directly relevant to the question — "
+            "use them as your primary source. "
+            "Do NOT say the information is not present — it IS present in "
+            "the data above. Cite the specific sections that address the "
+            "question most directly."
         )
     else:
         human_parts.append(
