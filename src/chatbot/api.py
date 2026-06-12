@@ -14,6 +14,7 @@ Endpoints:
 import asyncio
 import io
 import logging
+logging.getLogger("src.rag").setLevel(logging.INFO)
 import os
 import re
 import time

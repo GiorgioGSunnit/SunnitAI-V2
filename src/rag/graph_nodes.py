@@ -54,6 +54,8 @@ from .utils import (
 
 logger = logging.getLogger(__name__)
 
+_INTENT_CLASSIFIER_TIMEOUT = 8  # seconds
+
 
 def _visibility_filter(alias: str = "d") -> str:
     """Returns a Cypher WHERE clause fragment for document visibility.
@@ -206,6 +208,8 @@ def _fetch_doc_names(driver, database: str, user_id: str = "", tenant_id: str = 
             return []
 
 
+# Legacy function — replaced by _classify_query_intent in decompose_query
+# Kept for reference only, no longer called by context_retrieval
 def _dynamic_law_hint(query: str, driver, database: str) -> str:
     """
     Match query tokens against all document names in Neo4j.
@@ -225,6 +229,7 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
     docs = _fetch_doc_names(driver, database)
     best_id = ""
     best_score = 0
+    best_name_token_count = 999
 
     for doc in docs:
         name = doc.get("name", "")
@@ -241,10 +246,11 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
         }
         name_tokens = {t for t in name_tokens if t and t not in _STOPWORDS and len(t) > 2}
         score = len(tokens & name_tokens)
-        if score > best_score:
+        if score > best_score or (score == best_score and len(name_tokens) < best_name_token_count):
             best_score = score
             best_id = doc_id
             best_name = name
+            best_name_token_count = len(name_tokens)
 
     # Require at least 2 meaningful tokens to match to avoid false positives
     if best_score >= 2:
@@ -255,6 +261,119 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
         return best_id
 
     return ""
+
+
+def _classify_query_intent(
+    query: str,
+    driver,
+    database: str,
+    user_id: str = "",
+    tenant_id: str = "",
+) -> dict:
+    """
+    LLM-based query intent classification with grounded document resolution.
+    Replaces token-intersection _dynamic_law_hint for document scoping.
+
+    Returns:
+        intent: concept_in_doc | concept_across_docs | doc_comparison | regular
+        doc_a_id: resolved document id or ""
+        doc_b_id: resolved document id or ""
+        entity_a: first concept or ""
+        entity_b: second concept or ""
+    """
+    _default = {"intent": "regular", "doc_a_id": "", "doc_b_id": "",
+                "entity_a": "", "entity_b": ""}
+    try:
+        docs = _fetch_doc_names(driver, database,
+                                user_id=user_id, tenant_id=tenant_id)
+        if not docs:
+            return _default
+
+        doc_list = "\n".join(
+            f"- {d['name']}" for d in docs
+            if d.get("name") and not re.search(
+                r'\.(pdf|docx|xlsx|txt)$', d['name'], re.IGNORECASE
+            )
+        )
+
+        system_prompt = (
+            "You are a query classifier for an Italian legal document system.\n"
+            "Given a user query and a list of available documents, classify the "
+            "intent and identify any document references.\n\n"
+            f"Available documents:\n{doc_list}\n\n"
+            "Respond ONLY with valid JSON, no markdown, no explanation:\n"
+            '{"intent": "...", "doc_a": "...", "doc_b": "...", '
+            '"entity_a": "...", "entity_b": "..."}\n\n'
+            "Intent rules:\n"
+            "- concept_in_doc: user asks about one OR two concepts within "
+            "a SINGLE named document. Use this when two concepts are being "
+            "compared but both exist within the same document "
+            "(e.g. 'differenza tra dolo e colpa nel codice penale')\n"
+            "- concept_across_docs: user compares the SAME concept across "
+            "TWO DIFFERENT documents — requires BOTH doc_a AND doc_b to be "
+            "filled (e.g. 'differenza tra responsabilità nel codice civile "
+            "e nel codice penale')\n"
+            "- doc_comparison: user wants to compare two documents broadly "
+            "— requires BOTH doc_a AND doc_b\n"
+            "- regular: general question with no specific document reference\n\n"
+            "CRITICAL: concept_across_docs and doc_comparison require TWO "
+            "different documents. If only one document is mentioned, use "
+            "concept_in_doc or regular.\n"
+            "Only match doc_a/doc_b if the document name clearly appears "
+            "in the query. Do not guess. If unsure, use intent: regular."
+        )
+
+        from openai import OpenAI
+        client = OpenAI(
+            base_url=os.getenv("LLM_BASE_URL", ""),
+            api_key=os.getenv("LLM_API_KEY", ""),
+        )
+        response = client.chat.completions.create(
+            model=os.getenv("LLM_MODEL", ""),
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": query},
+            ],
+            temperature=0,
+            max_tokens=150,
+            timeout=_INTENT_CLASSIFIER_TIMEOUT,
+        )
+        raw = response.choices[0].message.content.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:].strip()
+        result = json.loads(raw)
+
+        name_to_id = {d["name"]: d["id"] for d in docs}
+        doc_a_id = name_to_id.get(result.get("doc_a", ""), "")
+        doc_b_id = name_to_id.get(result.get("doc_b", ""), "")
+
+        intent = result.get("intent", "regular")
+        if intent not in ("concept_in_doc", "concept_across_docs",
+                          "doc_comparison", "regular"):
+            intent = "regular"
+
+        logger.info(
+            "_classify_query_intent: intent=%r doc_a=%r doc_b=%r "
+            "entity_a=%r entity_b=%r",
+            intent, result.get("doc_a"), result.get("doc_b"),
+            result.get("entity_a"), result.get("entity_b"),
+        )
+
+        return {
+            "intent": intent,
+            "doc_a_id": doc_a_id,
+            "doc_b_id": doc_b_id,
+            "entity_a": result.get("entity_a", ""),
+            "entity_b": result.get("entity_b", ""),
+        }
+
+    except Exception as e:
+        logger.warning(
+            "_classify_query_intent failed: %s — falling back to regular", e
+        )
+        return _default
 
 
 def _extract_article_references(query: str) -> List[tuple]:
@@ -440,7 +559,7 @@ def _is_legal_query(query: str, lang: str) -> bool:
         return True
 
 
-def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
+def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j") -> Dict[str, Any]:
     state["turn_count"] = state.get("turn_count", 0) + 1
     query = state["query"]
     lang = _session_lang(state)
@@ -737,6 +856,23 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         len(final_relationships),
     )
 
+    user_id = state.get("user_id") or ""
+    tenant_id = state.get("tenant_id") or ""
+    intent_result = _classify_query_intent(
+        query, driver, database,
+        user_id=user_id, tenant_id=tenant_id,
+    )
+
+    classifier_intent = intent_result["intent"]
+    if classifier_intent in ("doc_comparison", "concept_across_docs"):
+        is_comparison = True
+        clf_doc_ids = [
+            d for d in [intent_result["doc_a_id"], intent_result["doc_b_id"]]
+            if d
+        ]
+        if len(clf_doc_ids) >= 2:
+            comparison_doc_ids = clf_doc_ids
+
     return {
         **state,
         "generalized_query": generalized,
@@ -747,6 +883,11 @@ def decompose_query(state: Dict[str, Any]) -> Dict[str, Any]:
         "query_variants": query_variants,
         "is_comparison": is_comparison,
         "comparison_doc_ids": comparison_doc_ids,
+        "query_intent": intent_result["intent"],
+        "law_hint_doc_id": intent_result["doc_a_id"],
+        "law_hint_doc_id_b": intent_result["doc_b_id"],
+        "intent_entity_a": intent_result["entity_a"],
+        "intent_entity_b": intent_result["entity_b"],
     }
 
 
@@ -763,7 +904,11 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 
     if not article_refs:
         vlog("article_router", {"article_refs_found": [], "law_hint": law_hint, "results_found": 0})
-        return {"article_router_fired": False, "article_refs_found": []}
+        return {
+            "article_router_fired": False,
+            "article_refs_found": [],
+            "law_hint_doc_id": state.get("law_hint_doc_id") or law_hint,
+        }
 
     all_refs = [ref for _, ref in article_refs]
 
@@ -831,13 +976,18 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 "neo4j_executed": True,
                 "cypher_attempt": "article_router",
                 "bm25_from_article_lookup": True,
+                "law_hint_doc_id": state.get("law_hint_doc_id") or law_hint,
             }
 
     vlog(
         "article_router",
         {"article_refs": all_refs, "law_hint": law_hint, "results_found": 0},
     )
-    return {"article_router_fired": False, "article_refs_found": all_refs}
+    return {
+        "article_router_fired": False,
+        "article_refs_found": all_refs,
+        "law_hint_doc_id": state.get("law_hint_doc_id") or law_hint,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1081,7 +1231,8 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     search_texts = [generalized] + query_variants + ([original_query] if original_query != generalized else [])
 
     # Resolve document scope for this query — shared across vector, BM25, and intersection
-    vector_doc_hint = _dynamic_law_hint(original_query, driver, database)
+    vector_doc_hint = (state.get("law_hint_doc_id") or
+                       _dynamic_law_hint(original_query, driver, database))
 
     with driver.session(database=database) as session:
         all_matches: List[Dict[str, Any]] = []
@@ -1116,16 +1267,57 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
 
     matches = all_matches
 
+    law_hint_doc_id_b = state.get("law_hint_doc_id_b") or ""
+    if (state.get("query_intent") == "concept_across_docs"
+            and law_hint_doc_id_b
+            and law_hint_doc_id_b != vector_doc_hint):
+        with driver.session(database=database) as session_b:
+            all_matches_b: List[Dict[str, Any]] = []
+            for i, text in enumerate(search_texts):
+                prefix = f"context_b_{i}" if i > 0 else "context_b"
+                all_matches_b.extend(
+                    vector_lookup(
+                        session_b, text, indexes=CONTEXT_VECTOR_INDEXES,
+                        index_settings=VECTOR_INDEX_SETTINGS,
+                        source_prefix=prefix,
+                    )
+                )
+            if all_matches_b:
+                element_ids_b = [m["element_id"] for m in all_matches_b]
+                scoped_b = session_b.run(
+                    "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                    "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                    "RETURN elementId(s) AS eid",
+                    ids=element_ids_b,
+                    doc_id=law_hint_doc_id_b,
+                ).data()
+                scoped_ids_b = {r["eid"] for r in scoped_b}
+                matched_b = [m for m in all_matches_b
+                             if m["element_id"] in scoped_ids_b]
+                all_matches.extend(matched_b)
+                # Cap combined matches to avoid synthesis overflow
+                if len(all_matches) > 30:
+                    all_matches = all_matches[:30]
+
     # Fetch BM25 section content directly
-    _BM25_SCORE_THRESHOLD = 8.5
     # When a law hint is active, use the generalized/keyword query so the document
     # name itself doesn't dominate the fulltext match. Fall back to original_query.
-    bm25_doc_hint = _dynamic_law_hint(original_query, driver, database)
+    bm25_doc_hint = (state.get("law_hint_doc_id") or
+                     _dynamic_law_hint(original_query, driver, database))
+    _BM25_SCORE_THRESHOLD = 5.0 if bm25_doc_hint else 8.5
     if bm25_doc_hint:
-        _kw = state.get("retrieval_keywords") or []
-        bm25_query = " ".join(_kw) if _kw else (state.get("generalized_query") or original_query)
-    else:
         bm25_query = original_query
+    else:
+        _kw = state.get("retrieval_keywords") or []
+        bm25_query = " ".join(_kw) if _kw else (
+            state.get("generalized_query") or original_query)
+    entity_a = state.get("intent_entity_a") or ""
+    entity_b = state.get("intent_entity_b") or ""
+    if (state.get("query_intent") == "concept_in_doc"
+            and entity_a and entity_b
+            and entity_a not in bm25_query
+            and entity_b not in bm25_query):
+        bm25_query = f"{entity_a} {entity_b} {bm25_query}".strip()
     bm25_k = 150 if bm25_doc_hint else 15
     bm25_hits = bm25_lookup(bm25_query, driver, database, k=bm25_k)
     filtered_hits = [(eid, score) for eid, score in bm25_hits if score >= _BM25_SCORE_THRESHOLD]
@@ -1148,6 +1340,35 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                     "BM25 scoped to document %r — %d rows",
                     bm25_doc_hint, len(bm25_rows),
                 )
+                # Supplement with k=300 when scoped results are sparse
+                if bm25_doc_hint and len(bm25_rows) < 10:
+                    extra_hits = bm25_lookup(
+                        bm25_query, driver, database, k=300
+                    )
+                    extra_filtered = [
+                        (eid, score) for eid, score in extra_hits
+                        if score >= _BM25_SCORE_THRESHOLD
+                    ]
+                    if extra_filtered:
+                        with driver.session(database=database) as _sess:
+                            extra_rows = _sess.run(
+                                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                                "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                                "AND (coalesce(d.visibility, 'public') = 'public' "
+                                "OR d.owner_id = $user_id "
+                                "OR d.tenant_id = $tenant_id) "
+                                "RETURN d, s",
+                                ids=[eid for eid, _ in extra_filtered],
+                                doc_id=bm25_doc_hint,
+                                user_id=user_id,
+                                tenant_id=tenant_id,
+                            ).data()
+                        existing_ids = {
+                            (r.get("s") or {}).get("id") for r in bm25_rows
+                        }
+                        for row in extra_rows:
+                            if (row.get("s") or {}).get("id") not in existing_ids:
+                                bm25_rows.append(row)
             else:
                 bm25_rows = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
@@ -2134,7 +2355,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
     for rec in summarized_data:
         if rec.get("_source") == "bm25":
             rec["_source"] = "[BM25] direct fulltext match"
-    serialized = json.dumps(summarized_data, ensure_ascii=False, indent=2)
+    serialized = json.dumps(summarized_data, ensure_ascii=False)
 
     r_before = int(state.get("quality_reformulation_round") or 0)
     log_cypher_event(
@@ -2173,7 +2394,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                     "Question:\n{q}\n\n"
                     "Summarized rows:\n{rows}\n\n"
                     "Verdict:"
-                ).format(q=q_short, rows=serialized[:8000])
+                ).format(q=q_short, rows=serialized[:4000])
             ),
         ],
         max_tokens=80,
@@ -2229,6 +2450,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                 "bm25_doc_ids": bm25_ids,
                 "retrieval_evaluated": True,
                 "status_messages": state.get("status_messages", []),
+                "raw_result": [r for r in data if "bm25" in str(r.get("_source", ""))],
             }
 
     # Override POOR when the queried article is directly present in the retrieved data
@@ -2393,7 +2615,7 @@ def _summarize_for_synthesis(
 ) -> List[Dict[str, Any]]:
     summarized = []
     total_chars = 0
-    MAX_TOTAL_CHARS = 10000
+    MAX_TOTAL_CHARS = 4000 if is_comparison else 6000
 
     for record in data[:max_records]:
         if is_comparison and record.get("_source") == "comparison":
@@ -2403,9 +2625,16 @@ def _summarize_for_synthesis(
             if comparison_count >= 5:
                 continue
             rec = {k: v for k, v in record.items() if k not in ("embedding", "vettore")}
-            for key in ("s", "s2"):
-                if isinstance(rec.get(key), dict) and rec[key].get("plain_text"):
-                    rec[key] = {**rec[key], "plain_text": rec[key]["plain_text"][:500]}
+            for node_key in ("s", "s2"):
+                if isinstance(rec.get(node_key), dict):
+                    rec[node_key] = {
+                        k: v for k, v in rec[node_key].items()
+                        if k not in ("embedding", "vettore", "embedding_dim")
+                    }
+                    if rec[node_key].get("plain_text"):
+                        rec[node_key]["plain_text"] = rec[node_key]["plain_text"][:500]
+                    if rec[node_key].get("abstract"):
+                        rec[node_key]["abstract"] = rec[node_key]["abstract"][:200]
             rec_json = json.dumps(rec, ensure_ascii=False)
             total_chars += len(rec_json)
             summarized.append(rec)
@@ -2678,7 +2907,45 @@ _RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
 _RERANKER_URL = os.getenv("RERANKER_URL", "http://217.160.8.129:8002/v1/rerank")
 
 
-def rerank_results(query: str, rows: list, top_k: int = 5) -> list:
+def _format_for_reranker(row: dict) -> str:
+    """Build structured reranker input that emphasises title and
+    document context over raw text length. Works for any document
+    regardless of name, version, or section length."""
+    s = row.get("s") or {}
+    d = row.get("d") or {}
+
+    name = s.get("name", "")
+    abstract = (s.get("abstract") or "").strip()
+    plain_text = (s.get("plain_text") or "").strip()
+    doc_name = d.get("name", "")
+
+    parts = []
+
+    # Document context — skip raw filenames
+    if doc_name and not doc_name.lower().endswith(
+            ('.pdf', '.docx', '.xlsx', '.txt')):
+        parts.append(f"Fonte: {doc_name}")
+
+    # Section identifier
+    if name:
+        parts.append(f"Articolo: {name}")
+
+    # Content — combine abstract and plain_text for maximum signal
+    # Abstract already has title prepended (e.g. "Omicidio - ...")
+    # Plain text has the actual legal provision
+    content = abstract or plain_text
+    if plain_text and plain_text not in (abstract or ""):
+        content = f"{content} {plain_text}"[:500]
+    else:
+        content = content[:500]
+
+    if content:
+        parts.append(content)
+
+    return " | ".join(parts)
+
+
+def rerank_results(query: str, rows: list, top_k: int = 8) -> list:
     """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
     if not _RERANKER_ENABLED or not rows:
         return rows
@@ -2694,7 +2961,7 @@ def rerank_results(query: str, rows: list, top_k: int = 5) -> list:
             "model": os.getenv("RERANKER_MODEL", "reranker"),
             "query": reranker_query,
             "documents": [
-                ((row.get("s") or {}).get("abstract") or (row.get("s") or {}).get("plain_text", ""))[:512] for row in rows
+                _format_for_reranker(row) for row in rows
             ],
         }
         api_key = os.getenv("LLM_API_KEY", "")
@@ -2908,11 +3175,14 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
     _is_cmp = state.get("is_comparison", False)
     summarized_data = _summarize_for_synthesis(data, is_comparison=_is_cmp)
-    serialized = json.dumps(summarized_data, ensure_ascii=False, indent=2)
-    if len(serialized) > 15000:
+    serialized = json.dumps(summarized_data, ensure_ascii=False)
+    char_cap = 4000 if _is_cmp else 15000
+    if len(serialized) > char_cap:
         serialized = json.dumps(
-            _summarize_for_synthesis(data, max_records=5, is_comparison=_is_cmp),
-            ensure_ascii=False, indent=2,
+            _summarize_for_synthesis(data, max_records=3,
+                                     is_comparison=_is_cmp),
+            ensure_ascii=False,
+            indent=None if _is_cmp else 2,
         )
     all_citations = _extract_citations(data)
     citation_strings = [
@@ -2934,6 +3204,15 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             "The retrieved data contains sections of the requested article — synthesize them into a coherent answer. "
             "Do NOT say the article is not present — it IS present in the data above. "
             "Quote relevant passages directly and explain their meaning."
+        )
+    elif state.get("bm25_doc_ids") and not state.get("bm25_from_article_lookup"):
+        human_parts.append(
+            "Answer ONLY using the data provided above. "
+            "The retrieved sections are directly relevant to the question — "
+            "use them as your primary source. "
+            "Do NOT say the information is not present — it IS present in "
+            "the data above. Cite the specific sections that address the "
+            "question most directly."
         )
     else:
         human_parts.append(
