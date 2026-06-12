@@ -27,6 +27,10 @@ from ..rag.language import (
     should_auto_detect_language,
 )
 from ..rag.prompts import query_rewriter_system
+from .user_store import get_user_settings, get_user_settings_by_email
+
+#remove once the frontend sends data
+_FALLBACK_USER_EMAIL = os.environ.get("FALLBACK_USER_EMAIL", "admin@studiorossi.it")
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -354,6 +358,12 @@ class ChatBot:
                 user_message, context_for_rewrite, session.session_language
             )
 
+        # Fetch AI behaviour settings from DB; fall back to test user when unauthenticated
+        if session.user_id:
+            settings = get_user_settings(session.user_id)
+        else:
+            settings = get_user_settings_by_email(_FALLBACK_USER_EMAIL)
+
         # Run through the RAG pipeline
         try:
             result = rag_run(
@@ -361,6 +371,9 @@ class ChatBot:
                 session_language=session.session_language,
                 user_id=session.user_id,
                 tenant_id=session.tenant_id,
+                tone=settings["tone"],
+                standing=settings["standing"],
+                response_length=settings["response_length"],
             )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = _strip_embeddings(result.get("references", []))

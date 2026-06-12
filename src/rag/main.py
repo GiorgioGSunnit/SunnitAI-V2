@@ -85,6 +85,12 @@ class AgentState(TypedDict, total=False):
     is_comparison: bool
     user_id: Optional[str]
     tenant_id: Optional[str]
+    tone: int
+    standing: int
+    response_length: int
+    tone: int
+    standing: int
+    response_length: int
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +229,10 @@ def _get_compiled_graph():
 
 def run(query: str, session_language: str = "it",
         user_id: Optional[str] = None,
-        tenant_id: Optional[str] = None) -> Dict[str, Any]:
+        tenant_id: Optional[str] = None,
+        tone: int = 2,
+        standing: int = 2,
+        response_length: int = 2) -> Dict[str, Any]:
     """Run a single query through the agent graph."""
     compiled = _get_compiled_graph()
     initial_state: AgentState = {
@@ -248,6 +257,9 @@ def run(query: str, session_language: str = "it",
         "law_hint_doc_id": None,
         "user_id": user_id,
         "tenant_id": tenant_id,
+        "tone": tone,
+        "standing": standing,
+        "response_length": response_length,
     }
     return compiled.invoke(initial_state)
 

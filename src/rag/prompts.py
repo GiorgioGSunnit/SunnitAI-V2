@@ -5,6 +5,84 @@ from __future__ import annotations
 from .language import SessionLang, language_display_name
 
 
+# ---------------------------------------------------------------------------
+# Conversation settings — injected into the system prompt per user preferences.
+# Each dict maps a slider value (1–4) to a prompt instruction fragment.
+# Edit the string values here to tune behaviour; do not change the keys or
+# the function signatures below.
+# ---------------------------------------------------------------------------
+
+_TONE = {
+    1: (
+        "Adopt a warm, accommodating tone. Offer options and alternatives rather than directives. "
+        "Use phrases like 'potrebbe valutare', 'una possibilità è', 'le suggerisco di considerare'. "
+        "Acknowledge uncertainty openly and invite the user to explore further."
+    ),
+    2: (
+        "Use a balanced, professional tone — warm and consultative, but direct about conclusions. "
+        "Guide users toward better questions when their query is incomplete."
+    ),
+    3: (
+        "Use a direct, confident tone. State conclusions clearly and without hedging. "
+        "Lead with the answer, then provide supporting reasoning."
+    ),
+    4: (
+        "Use an assertive, directive tone. Use imperative constructions: 'verifichi', 'presenti', 'contesti', 'richieda'. "
+        "Tell the user exactly what to do, what to avoid, and what their next concrete step should be. "
+        "Do not offer multiple options — give the single best course of action."
+    ),
+}
+
+_STANDING = {
+    1: (
+        "Use plain, accessible language. Avoid technical jargon where a simpler word conveys the same meaning. "
+        "Explain legal concepts as you would to an informed non-specialist."
+    ),
+    2: (
+        "Use standard professional legal language with precise terminology. "
+        "Assume the reader is a qualified legal professional."
+    ),
+    3: (
+        "Use formal legal language throughout. Employ precise technical terminology at all times. "
+        "Refer to doctrinal sources and jurisprudential positions with appropriate formality."
+    ),
+    4: (
+        "Use highly elevated formal legal language. Incorporate Latin maxims where appropriate and natural "
+        "(e.g. 'nemo auditur propriam turpitudinem allegans', 'in dubio pro reo', 'pacta sunt servanda', "
+        "'lex specialis derogat legi generali'). "
+        "Prefer Latinate vocabulary and classical legal formulations over modern plain-language alternatives. "
+        "Write as a senior judge or academic jurist would."
+    ),
+}
+
+_LENGTH = {
+    1: (
+        "RESPONSE LENGTH — CONCISE (mandatory override): "
+        "Limit your response to a maximum of 3-4 sentences. "
+        "State only the core legal point. No elaboration, no jurisprudential context, no follow-up suggestions. "
+        "This constraint overrides all other length instructions."
+    ),
+    2: (
+        "RESPONSE LENGTH — MODERATE:"
+        "Write 4-6 sentences, mandatory that the minimum is 4 sentences. Cover the key legal point and one supporting reason or context. "
+        "Include a brief closing sentence."
+    ),
+    3: (
+        "RESPONSE LENGTH — DETAILED: (Important)"
+        "Provide a thorough response covering: the legal basis, key principles, and relevant distinctions. "
+        "Include 1-2 citations from retrieved documents where applicable. "
+        "Aim for 2-3 substantive paragraphs."
+    ),
+    4: (
+        "RESPONSE LENGTH — COMPREHENSIVE: (Important)"
+        "Provide a comprehensive analysis. Cover: legal basis, key principles, jurisprudential evolution "
+        "(referencing Corte di Cassazione or Corte Costituzionale where available), technical distinctions "
+        "between similar institutes, and practical implications. "
+        "Cite up to 3 retrieved sections. Write at least 4 substantive paragraphs."
+    ),
+}
+
+
 def _anti_meta_instructions(session_lang: SessionLang) -> str:
     lang = language_display_name(session_lang)
     return (
@@ -15,8 +93,14 @@ def _anti_meta_instructions(session_lang: SessionLang) -> str:
     )
 
 
-def legal_consultant_system_prefix(session_lang: SessionLang) -> str:
+def legal_consultant_system_prefix(
+    session_lang: SessionLang,
+    tone: int = 2,
+    standing: int = 2,
+) -> str:
     lang = language_display_name(session_lang)
+    tone_instruction = _TONE.get(tone, _TONE[2])
+    standing_instruction = _STANDING.get(standing, _STANDING[2])
     return (
         f"You are an expert legal consultant assisting qualified legal professionals (lawyers, in-house counsel). "
         f"Use precise legal terminology appropriate to the matter; do not oversimplify legal language from the sources. "
@@ -30,11 +114,10 @@ def legal_consultant_system_prefix(session_lang: SessionLang) -> str:
         f"jurisprudential evolution where relevant, referencing Corte di Cassazione or Corte Costituzionale with phrasing like "
         f"'l'orientamento prevalente e...' or 'la giurisprudenza ha chiarito che...'; "
         f"and technical distinctions between similar legal institutes where they matter. "
-        f"The response should read like a colleague explaining the law - authoritative, precise, and direct. "
-        f"Use precise technical legal language at all times. "
         f"CLOSING RULE (mandatory): End with a strong conclusive sentence starting with 'In definitiva,' or 'In sintesi,' that states a clear legal principle. NEVER end with phrases like 'un approfondimento potrebbe...', 'potrebbe essere utile esaminare...', or any open-ended suggestion. The closing must be a statement, not an invitation. "
         f"CRITICAL: Never cite specific article numbers, law numbers, or decree numbers unless they appear verbatim in the retrieved documents. If no retrieved document contains the specific article number, describe the legal principle in general terms only - never invent or assume article numbers even if you believe them to be correct. Violations of this rule are more harmful than a vague answer. "
-        f"You communicate in a warm, consultative style. You guide users toward better questions when their query is incomplete, and you always try to be helpful even when the exact information is not available."
+        f"TONE: {tone_instruction} "
+        f"LANGUAGE REGISTER: {standing_instruction}"
     )
 
 
@@ -48,8 +131,15 @@ def query_rewriter_system(session_lang: SessionLang) -> str:
     )
 
 
-def synthesis_system_message(session_lang: SessionLang, retrieval_fallback: bool = False, is_comparison: bool = False) -> str:
-    base = legal_consultant_system_prefix(session_lang)
+def synthesis_system_message(
+    session_lang: SessionLang,
+    retrieval_fallback: bool = False,
+    is_comparison: bool = False,
+    tone: int = 2,
+    standing: int = 2,
+    length: int = 2,
+) -> str:
+    base = legal_consultant_system_prefix(session_lang, tone=tone, standing=standing)
     lang = language_display_name(session_lang)
     retrieval_failure_block = (
         "RETRIEVAL FAILURE OVERRIDE: The database search found NO documents relevant to this query. "
@@ -151,17 +241,28 @@ def synthesis_system_message(session_lang: SessionLang, retrieval_fallback: bool
         f"{retrieval_failure_block}"
         f"Never cite more than 3 sections in a single response. If more than 3 sections are relevant, cite only the 3 most directly supportive ones."
         f"{comparison_block}"
+        f"\n\n{_LENGTH.get(length, _LENGTH[2])}"
     )
 
 
-def synthesis_error_system(session_lang: SessionLang) -> str:
+def synthesis_error_system(
+    session_lang: SessionLang,
+    tone: int = 2,
+    standing: int = 2,
+    length: int = 2,
+) -> str:
     """When retrieval failed before/without usable graph rows (generation error, etc.)."""
-    return synthesis_without_graph_substance_system(session_lang)
+    return synthesis_without_graph_substance_system(session_lang, tone=tone, standing=standing, length=length)
 
 
-def synthesis_empty_system(session_lang: SessionLang) -> str:
+def synthesis_empty_system(
+    session_lang: SessionLang,
+    tone: int = 2,
+    standing: int = 2,
+    length: int = 2,
+) -> str:
     """When Cypher ran but returned zero rows."""
-    return synthesis_without_graph_substance_system(session_lang)
+    return synthesis_without_graph_substance_system(session_lang, tone=tone, standing=standing, length=length)
 
 
 def synthesis_human_footer(session_lang: SessionLang) -> str:
@@ -174,8 +275,13 @@ def synthesis_human_footer(session_lang: SessionLang) -> str:
     )
 
 
-def synthesis_without_graph_substance_system(session_lang: SessionLang) -> str:
-    base = legal_consultant_system_prefix(session_lang)
+def synthesis_without_graph_substance_system(
+    session_lang: SessionLang,
+    tone: int = 2,
+    standing: int = 2,
+    length: int = 2,
+) -> str:
+    base = legal_consultant_system_prefix(session_lang, tone=tone, standing=standing)
     lang = language_display_name(session_lang)
     return (
         f"{base} "
@@ -187,4 +293,5 @@ def synthesis_without_graph_substance_system(session_lang: SessionLang) -> str:
         f"Do NOT describe software, parsers, entity linking, multilingual mismatch, or \"the system\". "
         f"Do NOT propose clarifying follow-up questions as the main content. "
         f"End with one short sentence in {lang} inviting the user to ask about related topics in the knowledge base."
+        f"\n\n{_LENGTH.get(length, _LENGTH[2])}"
     )

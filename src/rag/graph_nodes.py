@@ -2860,10 +2860,14 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     )
 
+    tone = int(state.get("tone") or 2)
+    standing = int(state.get("standing") or 2)
+    response_length = int(state.get("response_length") or 2)
+
     if error:
         answer = _call_chat(
             [
-                SystemMessage(content=synthesis_error_system(lang)),
+                SystemMessage(content=synthesis_error_system(lang, tone=tone, standing=standing, length=response_length)),
                 HumanMessage(
                     content=(
                         "Original question: {question}\n"
@@ -2884,7 +2888,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     if not data:
         answer = _call_chat(
             [
-                SystemMessage(content=synthesis_empty_system(lang)),
+                SystemMessage(content=synthesis_empty_system(lang, tone=tone, standing=standing, length=response_length)),
                 HumanMessage(
                     content=(
                         "Original question: {question}\n"
@@ -2975,6 +2979,9 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             lang,
             retrieval_fallback=state.get("retrieval_fallback", False),
             is_comparison=False,
+            tone=tone,
+            standing=standing,
+            length=response_length,
         )
     answer = _call_chat(
         [

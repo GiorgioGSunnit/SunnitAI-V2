@@ -22,6 +22,7 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
+pyproject.toml
 
 # Logs and runtime data
 *.log

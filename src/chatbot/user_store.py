@@ -69,6 +69,40 @@ def get_user_by_id(user_id: str) -> Optional[dict]:
     finally:
         _release(conn)
 
+def get_user_settings(user_id: str) -> dict:
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT tone, standing, response_length
+                FROM user_settings WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            if not row:
+                return {"tone": 2, "standing": 2, "response_length": 2}
+            return {"tone": row[0], "standing": row[1], "response_length": row[2]}
+    finally:
+        _release(conn)
+
+
+def get_user_settings_by_email(email: str) -> dict:
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT s.tone, s.standing, s.response_length
+                FROM user_settings s
+                JOIN users u ON u.id = s.user_id
+                WHERE u.email = %s
+            """, (email,))
+            row = cur.fetchone()
+            if not row:
+                return {"tone": 2, "standing": 2, "response_length": 2}
+            return {"tone": row[0], "standing": row[1], "response_length": row[2]}
+    finally:
+        _release(conn)
+
+
 def get_tenant_by_id(tenant_id: str) -> Optional[dict]:
     conn = _conn()
     try:
