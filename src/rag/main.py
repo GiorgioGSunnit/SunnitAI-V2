@@ -92,9 +92,6 @@ class AgentState(TypedDict, total=False):
     tone: int
     standing: int
     response_length: int
-    tone: int
-    standing: int
-    response_length: int
 
 
 # ---------------------------------------------------------------------------
