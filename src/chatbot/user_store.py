@@ -248,3 +248,50 @@ def get_tenant_invite_code(tenant_id: str) -> Optional[str]:
             return row[0] if row else None
     finally:
         _release(conn)
+
+
+def update_user_profile(
+    user_id: str,
+    first_name: Optional[str] = None,
+    last_name: Optional[str] = None,
+    display_name: Optional[str] = None,
+    professional_title: Optional[str] = None,
+    phone: Optional[str] = None,
+) -> Optional[dict]:
+    """Update user profile fields. Only updates fields that are provided."""
+    fields = []
+    values = []
+    if first_name is not None:
+        fields.append("first_name = %s")
+        values.append(first_name)
+    if last_name is not None:
+        fields.append("last_name = %s")
+        values.append(last_name)
+    if display_name is not None:
+        fields.append("display_name = %s")
+        values.append(display_name)
+    if professional_title is not None:
+        fields.append("professional_title = %s")
+        values.append(professional_title)
+    if phone is not None:
+        fields.append("phone = %s")
+        values.append(phone)
+
+    if not fields:
+        return get_user_by_id(user_id)
+
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"UPDATE user_profiles SET {', '.join(fields)} "
+                f"WHERE user_id = %s",
+                values + [user_id]
+            )
+        conn.commit()
+        return get_user_by_id(user_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _release(conn)
