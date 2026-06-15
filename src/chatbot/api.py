@@ -98,6 +98,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+#2FA routes
 from .routes.auth import router as auth_router
 from .routes.totp import router as totp_router
 app.include_router(auth_router)
