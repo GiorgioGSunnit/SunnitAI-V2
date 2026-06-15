@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
+import pyotp
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr
@@ -168,6 +169,22 @@ def login(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated"
         )
+
+    # Check 2FA if enabled
+    if user.totp_enabled:
+        totp_code = form_data.client_secret  # passed as client_secret in the form
+        if not totp_code:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="2FA code required",
+                headers={"X-2FA-Required": "true"},
+            )
+        totp = pyotp.TOTP(user.totp_secret)
+        if not totp.verify(totp_code, valid_window=1):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid 2FA code",
+            )
 
     # Update last login
     user.last_login = datetime.now(timezone.utc)
