@@ -41,7 +41,7 @@ from ..rag.graph_nodes import _extract_citations
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
 from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, create_studio_and_admin,
-    create_user_with_invite, get_tenant_invite_code)
+    create_user_with_invite, get_tenant_invite_code, update_user_profile)
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +193,14 @@ class UserProfileResponse(BaseModel):
     first_name: str = ""
     last_name: str = ""
     tenant_id: str
+
+
+class UpdateProfileRequest(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    display_name: Optional[str] = None
+    professional_title: Optional[str] = None
+    phone: Optional[str] = None
 
 
 class RegisterStudioRequest(BaseModel):
@@ -435,10 +443,33 @@ async def get_me(current_user: dict = Depends(require_user)):
     )
 
 
-@app.put("/api/auth/me")
-async def update_me(current_user: dict = Depends(require_user)):
-    # Placeholder — profile updates handled by colleague's service
-    raise HTTPException(status_code=501, detail="Profile updates not yet implemented")
+@app.put("/api/auth/me", response_model=UserProfileResponse)
+async def update_me(
+    request: UpdateProfileRequest,
+    current_user: dict = Depends(require_user),
+):
+    try:
+        user = update_user_profile(
+            user_id=current_user["sub"],
+            first_name=request.first_name,
+            last_name=request.last_name,
+            display_name=request.display_name,
+            professional_title=request.professional_title,
+            phone=request.phone,
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return UserProfileResponse(
+            user_id=str(user["id"]),
+            email=user["email"],
+            role=user["role"],
+            studio_name=user.get("studio_name") or "",
+            first_name=user.get("first_name") or "",
+            last_name=user.get("last_name") or "",
+            tenant_id=str(user["tenant_id"]),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/health")

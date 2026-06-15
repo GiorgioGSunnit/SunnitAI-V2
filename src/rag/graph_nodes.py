@@ -234,9 +234,6 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
     for doc in docs:
         name = doc.get("name", "")
         doc_id = doc.get("id", "")
-        # Skip raw filenames
-        if re.search(r'\.(pdf|docx|xlsx|txt)$', name, re.IGNORECASE):
-            continue
         # Build searchable text from name + aliases
         alias_text = " ".join(doc.get("aliases", []))
         searchable = f"{name} {alias_text}"
