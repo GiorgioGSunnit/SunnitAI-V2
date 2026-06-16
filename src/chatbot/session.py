@@ -279,12 +279,22 @@ class ChatBot:
         self._save_sessions()
         return session
 
-    def get_session(self, session_id: str) -> Optional[ChatSession]:
+    def get_session(self, session_id: str, user_id: Optional[str] = None) -> Optional[ChatSession]:
         with self._lock:
-            return self._sessions.get(session_id)
+            session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        if user_id is not None and session.user_id != user_id:
+            return None
+        return session
 
-    def delete_session(self, session_id: str) -> bool:
+    def delete_session(self, session_id: str, user_id: Optional[str] = None) -> bool:
         with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                return False
+            if user_id is not None and session.user_id != user_id:
+                return False
             deleted = session_id in self._sessions
             if deleted:
                 del self._sessions[session_id]
@@ -292,9 +302,11 @@ class ChatBot:
             self._save_sessions()
         return deleted
 
-    def list_sessions(self) -> List[Dict[str, Any]]:
+    def list_sessions(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
         with self._lock:
             sessions = sorted(self._sessions.values(), key=lambda s: s.created_at, reverse=True)
+            if user_id is not None:
+                sessions = [s for s in sessions if s.user_id == user_id]
         return [
             {
                 "session_id": s.session_id,

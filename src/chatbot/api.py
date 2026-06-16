@@ -607,8 +607,11 @@ def get_section(document_id: str, section_name: str):
 
 
 @app.post("/api/sessions", response_model=SessionResponse)
-def create_session():
-    session = chatbot.create_session()
+def create_session(current_user: dict = Depends(require_user)):
+    session = chatbot.create_session(
+        user_id=current_user["sub"],
+        tenant_id=current_user.get("tenant_id"),
+    )
     return SessionResponse(
         session_id=session.session_id,
         created_at=session.created_at,
@@ -618,21 +621,21 @@ def create_session():
 
 
 @app.get("/api/sessions")
-def list_sessions():
-    return chatbot.list_sessions()
+def list_sessions(current_user: dict = Depends(require_user)):
+    return chatbot.list_sessions(user_id=current_user["sub"])
 
 
 @app.get("/api/sessions/{session_id}")
-def get_session(session_id: str):
-    session = chatbot.get_session(session_id)
+def get_session(session_id: str, current_user: dict = Depends(require_user)):
+    session = chatbot.get_session(session_id, user_id=current_user["sub"])
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session.to_dict()
 
 
 @app.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str):
-    if not chatbot.delete_session(session_id):
+def delete_session(session_id: str, current_user: dict = Depends(require_user)):
+    if not chatbot.delete_session(session_id, user_id=current_user["sub"]):
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
 
