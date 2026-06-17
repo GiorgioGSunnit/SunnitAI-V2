@@ -115,7 +115,7 @@ def _embed_query_with_prefix(text: str) -> list:
 # Structured output model (entity extraction)
 # ---------------------------------------------------------------------------
 
-structured_entities_model = chat_model.with_structured_output(
+structured_entities_model = chat_model.bind(max_tokens=2500).with_structured_output(
     DocumentEntities, method="json_mode"
 )
 

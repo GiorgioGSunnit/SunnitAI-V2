@@ -639,9 +639,9 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
     entity_extraction_messages = [
         SystemMessage(
             content=(
-                f"{legal_consultant_system_prefix(lang)} "
                 "You are an expert graph extractor for legal documents. "
-                "Identify nodes and relationships from the user's query based on the provided graph schema."
+                "Identify nodes and relationships from the user's query based on the provided graph schema. "
+                f"Respond in {language_display_name(lang)} where any text fields are needed."
             )
         ),
         HumanMessage(content=entity_extraction_prompt),
