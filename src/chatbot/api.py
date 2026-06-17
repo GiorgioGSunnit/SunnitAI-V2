@@ -101,8 +101,8 @@ app.add_middleware(
 #2FA routes
 from .routes.auth import router as auth_router
 from .routes.totp import router as totp_router
-app.include_router(auth_router)
-app.include_router(totp_router)
+app.include_router(auth_router, prefix="/api")
+app.include_router(totp_router, prefix="/api")
 
 chatbot = ChatBot()
 

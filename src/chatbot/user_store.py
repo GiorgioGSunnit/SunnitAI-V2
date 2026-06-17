@@ -165,6 +165,16 @@ def create_studio_and_admin(
             """, (str(uuid.uuid4()), user_id, tenant_id,
                   first_name, last_name, f"{first_name} {last_name}"))
 
+            cur.execute("""
+                INSERT INTO user_settings (id, user_id, tenant_id, tone, standing, response_length)
+                VALUES (%s, %s, %s, 2, 2, 2)
+            """, (str(uuid.uuid4()), user_id, tenant_id))
+
+            cur.execute("""
+                INSERT INTO user_preferences (id, user_id, tenant_id, preferences)
+                VALUES (%s, %s, %s, %s)
+            """, (str(uuid.uuid4()), user_id, tenant_id, '{}'))
+
         conn.commit()
         return {
             "id": user_id,
@@ -220,6 +230,16 @@ def create_user_with_invite(
                 VALUES (%s, %s, %s, %s, %s, %s)
             """, (str(uuid.uuid4()), user_id, str(tenant_id),
                   first_name, last_name, f"{first_name} {last_name}"))
+
+            cur.execute("""
+                INSERT INTO user_settings (id, user_id, tenant_id, tone, standing, response_length)
+                VALUES (%s, %s, %s, 2, 2, 2)
+            """, (str(uuid.uuid4()), user_id, str(tenant_id)))
+
+            cur.execute("""
+                INSERT INTO user_preferences (id, user_id, tenant_id, preferences)
+                VALUES (%s, %s, %s, %s)
+            """, (str(uuid.uuid4()), user_id, str(tenant_id), '{}'))
 
         conn.commit()
         return {

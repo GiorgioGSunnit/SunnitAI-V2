@@ -6,7 +6,7 @@ from typing import Optional
 
 import pyotp
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.security import OAuth2PasswordBearer
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -53,6 +53,7 @@ class UserResponse(BaseModel):
     tone: int = 2
     standing: int = 2
     response_length: int = 2
+    totp_enabled: bool = False
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -141,15 +142,23 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)):
     }
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+    totp_code: Optional[str] = None
+
+
 @router.post("/login", response_model=LoginResponse)
 def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    request: LoginRequest,
     db: Session = Depends(get_db)
 ):
-    """Login with email and password — returns JWT token."""
+    """Login with email and password — returns JWT token.
+    Include totp_code if 2FA is enabled on the account.
+    """
 
     # Find user
-    user = crud.get_user_by_email(db, form_data.username)
+    user = crud.get_user_by_email(db, request.email)
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -157,7 +166,7 @@ def login(
         )
 
     # Verify password
-    if not verify_password(form_data.password, user.hashed_password):
+    if not verify_password(request.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect email or password"
@@ -172,15 +181,14 @@ def login(
 
     # Check 2FA if enabled
     if user.totp_enabled:
-        totp_code = form_data.client_secret  # passed as client_secret in the form
-        if not totp_code:
+        if not request.totp_code:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="2FA code required",
                 headers={"X-2FA-Required": "true"},
             )
         totp = pyotp.TOTP(user.totp_secret)
-        if not totp.verify(totp_code, valid_window=1):
+        if not totp.verify(request.totp_code, valid_window=1):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid 2FA code",
@@ -225,7 +233,8 @@ def get_me(
         professional_title=profile.professional_title if profile else None,
         tone=settings.tone if settings else 2,
         standing=settings.standing if settings else 2,
-        response_length=settings.response_length if settings else 2
+        response_length=settings.response_length if settings else 2,
+        totp_enabled=current_user.totp_enabled or False
     )
 
 
