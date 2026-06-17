@@ -2984,10 +2984,23 @@ def rerank_results(query: str, rows: list, top_k: int = 8) -> list:
             (r.get("s") or {}).get("id") for r in reranker_top
             if (r.get("s") or {}).get("id")
         }
-        bm25_top = [
+        BM25_INJECTION_MIN_RERANKER_SCORE = 0.3
+        bm25_candidates = [
             r for r in bm25_rows
             if (r.get("s") or {}).get("id") not in reranker_ids
-        ][:2]
+            and r.get("_reranker_score", 0) >= BM25_INJECTION_MIN_RERANKER_SCORE
+        ]
+        bm25_top = sorted(
+            bm25_candidates, key=lambda r: r.get("_reranker_score", 0), reverse=True
+        )[:2]
+        print(
+            "[BM25_INJECT_DEBUG] all_bm25_rows="
+            + str([
+                ((r.get("s") or {}).get("id"), round(r.get("_reranker_score", 0), 4))
+                for r in bm25_rows
+            ]),
+            flush=True,
+        )
 
         merged_ids = reranker_ids | {
             (r.get("s") or {}).get("id") for r in bm25_top
