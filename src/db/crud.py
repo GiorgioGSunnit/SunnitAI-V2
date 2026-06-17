@@ -132,14 +132,24 @@ def update_user_settings(
     tone: int,
     standing: int,
     response_length: int
-) -> Optional[UserSettings]:
+) -> UserSettings:
     settings = get_user_settings(db, user_id)
-    if settings:
+    if not settings:
+        user = db.query(User).filter(User.id == user_id).first()
+        settings = UserSettings(
+            user_id=user_id,
+            tenant_id=user.tenant_id,
+            tone=tone,
+            standing=standing,
+            response_length=response_length,
+        )
+        db.add(settings)
+    else:
         settings.tone = tone
         settings.standing = standing
         settings.response_length = response_length
-        db.commit()
-        db.refresh(settings)
+    db.commit()
+    db.refresh(settings)
     return settings
 
 
