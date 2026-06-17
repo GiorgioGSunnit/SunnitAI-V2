@@ -2993,14 +2993,6 @@ def rerank_results(query: str, rows: list, top_k: int = 8) -> list:
         bm25_top = sorted(
             bm25_candidates, key=lambda r: r.get("_reranker_score", 0), reverse=True
         )[:2]
-        print(
-            "[BM25_INJECT_DEBUG] all_bm25_rows="
-            + str([
-                ((r.get("s") or {}).get("id"), round(r.get("_reranker_score", 0), 4))
-                for r in bm25_rows
-            ]),
-            flush=True,
-        )
 
         merged_ids = reranker_ids | {
             (r.get("s") or {}).get("id") for r in bm25_top
