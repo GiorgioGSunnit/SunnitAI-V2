@@ -24,6 +24,7 @@ class UserProfileResponse(BaseModel):
 class UpdateProfileRequest(BaseModel):
     name: Optional[str] = None
     avatar_url: Optional[str] = None
+    organization: Optional[str] = None
 
 
 @router.get("/me", response_model=UserProfileResponse)
@@ -42,7 +43,7 @@ def get_user_profile(
         name=name,
         email=current_user.email,
         role=current_user.role,
-        organization=tenant_profile.legal_name if tenant_profile else None,
+        organization=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
         avatar_url=profile.profile_image_path if profile else None,
     )
 
@@ -66,6 +67,12 @@ def update_user_profile(
     if request.avatar_url is not None:
         profile.profile_image_path = request.avatar_url
 
+    if request.organization is not None and current_user.role == "admin":
+        tenant_profile = current_user.tenant.profile if current_user.tenant else None
+        if tenant_profile:
+            tenant_profile.legal_name = request.organization
+            tenant_profile.display_name = request.organization
+
     db.commit()
 
     tenant_profile = current_user.tenant.profile if current_user.tenant else None
@@ -77,6 +84,6 @@ def update_user_profile(
         name=name,
         email=current_user.email,
         role=current_user.role,
-        organization=tenant_profile.legal_name if tenant_profile else None,
+        organization=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
         avatar_url=profile.profile_image_path,
     )

@@ -105,6 +105,7 @@ def register_tenant_with_admin(
     # Set company name in profile if provided
     if company_name:
         tenant.profile.display_name = company_name
+        tenant.profile.legal_name = company_name
 
     # Create admin user
     admin = create_user(db, tenant.id, email, plain_password, role="admin")

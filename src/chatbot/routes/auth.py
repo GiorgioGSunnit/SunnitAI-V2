@@ -50,12 +50,19 @@ class UserResponse(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     professional_title: Optional[str] = None
+    studio_name: Optional[str] = None
     tone: int = 2
     standing: int = 2
     response_length: int = 2
     dark_mode: bool = False
     primary_color: Optional[str] = None
     totp_enabled: bool = False
+
+
+class UpdateProfileRequest(BaseModel):
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    studio_name: Optional[str] = None
 
 
 class UpdateSettingsRequest(BaseModel):
@@ -228,6 +235,7 @@ def get_me(
     prefs = crud.get_user_preferences(db, current_user.id)
     pref_data = dict(prefs.preferences or {}) if prefs else {}
     profile = current_user.profile
+    tenant_profile = current_user.tenant.profile if current_user.tenant else None
 
     return UserResponse(
         user_id=str(current_user.id),
@@ -237,6 +245,52 @@ def get_me(
         first_name=profile.first_name if profile else None,
         last_name=profile.last_name if profile else None,
         professional_title=profile.professional_title if profile else None,
+        studio_name=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
+        tone=settings.tone if settings else 2,
+        standing=settings.standing if settings else 2,
+        response_length=settings.response_length if settings else 2,
+        dark_mode=pref_data.get("dark_mode", False),
+        primary_color=pref_data.get("primary_color"),
+        totp_enabled=current_user.totp_enabled or False
+    )
+
+
+@router.put("/me", response_model=UserResponse)
+def update_profile(
+    request: UpdateProfileRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update user profile — name and (admin only) studio name."""
+    profile = current_user.profile
+    if profile:
+        if request.first_name is not None:
+            profile.first_name = request.first_name
+        if request.last_name is not None:
+            profile.last_name = request.last_name
+
+    if request.studio_name is not None and current_user.role == "admin":
+        tenant_profile = current_user.tenant.profile if current_user.tenant else None
+        if tenant_profile:
+            tenant_profile.legal_name = request.studio_name
+            tenant_profile.display_name = request.studio_name
+
+    db.commit()
+
+    settings = crud.get_user_settings(db, current_user.id)
+    prefs = crud.get_user_preferences(db, current_user.id)
+    pref_data = dict(prefs.preferences or {}) if prefs else {}
+    tenant_profile = current_user.tenant.profile if current_user.tenant else None
+
+    return UserResponse(
+        user_id=str(current_user.id),
+        email=current_user.email,
+        role=current_user.role,
+        tenant_id=str(current_user.tenant_id),
+        first_name=profile.first_name if profile else None,
+        last_name=profile.last_name if profile else None,
+        professional_title=profile.professional_title if profile else None,
+        studio_name=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
         tone=settings.tone if settings else 2,
         standing=settings.standing if settings else 2,
         response_length=settings.response_length if settings else 2,
