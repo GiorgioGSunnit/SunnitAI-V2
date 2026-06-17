@@ -163,12 +163,20 @@ def update_user_preferences(
     db: Session,
     user_id: uuid.UUID,
     preferences: dict
-) -> Optional[UserPreferences]:
+) -> UserPreferences:
     prefs = get_user_preferences(db, user_id)
-    if prefs:
+    if not prefs:
+        user = db.query(User).filter(User.id == user_id).first()
+        prefs = UserPreferences(
+            user_id=user_id,
+            tenant_id=user.tenant_id,
+            preferences=preferences,
+        )
+        db.add(prefs)
+    else:
         prefs.preferences = preferences
-        db.commit()
-        db.refresh(prefs)
+    db.commit()
+    db.refresh(prefs)
     return prefs
 
 

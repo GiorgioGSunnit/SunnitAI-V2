@@ -53,6 +53,8 @@ class UserResponse(BaseModel):
     tone: int = 2
     standing: int = 2
     response_length: int = 2
+    dark_mode: bool = False
+    primary_color: Optional[str] = None
     totp_enabled: bool = False
 
 
@@ -60,6 +62,8 @@ class UpdateSettingsRequest(BaseModel):
     tone: int
     standing: int
     response_length: int
+    dark_mode: Optional[bool] = None
+    primary_color: Optional[str] = None
 
 
 class UpdatePreferencesRequest(BaseModel):
@@ -221,6 +225,8 @@ def get_me(
 ):
     """Get current user info including settings."""
     settings = crud.get_user_settings(db, current_user.id)
+    prefs = crud.get_user_preferences(db, current_user.id)
+    pref_data = dict(prefs.preferences or {}) if prefs else {}
     profile = current_user.profile
 
     return UserResponse(
@@ -234,6 +240,8 @@ def get_me(
         tone=settings.tone if settings else 2,
         standing=settings.standing if settings else 2,
         response_length=settings.response_length if settings else 2,
+        dark_mode=pref_data.get("dark_mode", False),
+        primary_color=pref_data.get("primary_color"),
         totp_enabled=current_user.totp_enabled or False
     )
 
@@ -264,10 +272,26 @@ def update_settings(
         standing=request.standing,
         response_length=request.response_length
     )
+
+    pref_data = {}
+    if request.dark_mode is not None or request.primary_color is not None:
+        prefs = crud.get_user_preferences(db, current_user.id)
+        pref_data = dict(prefs.preferences or {}) if prefs else {}
+        if request.dark_mode is not None:
+            pref_data["dark_mode"] = request.dark_mode
+        if request.primary_color is not None:
+            pref_data["primary_color"] = request.primary_color
+        crud.update_user_preferences(db, current_user.id, pref_data)
+    else:
+        prefs = crud.get_user_preferences(db, current_user.id)
+        pref_data = dict(prefs.preferences or {}) if prefs else {}
+
     return {"message": "Settings updated", "settings": {
         "tone": settings.tone,
         "standing": settings.standing,
-        "response_length": settings.response_length
+        "response_length": settings.response_length,
+        "dark_mode": pref_data.get("dark_mode", False),
+        "primary_color": pref_data.get("primary_color"),
     }}
 
 
