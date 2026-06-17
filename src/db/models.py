@@ -123,7 +123,7 @@ class UserProfile(Base):
     display_name = Column(String(255), nullable=True)
     professional_title = Column(String(100), nullable=True)
     phone = Column(String(50), nullable=True)
-    profile_image_path = Column(String(500), nullable=True)
+    profile_image_path = Column(Text, nullable=True)
     bio = Column(Text, nullable=True)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
