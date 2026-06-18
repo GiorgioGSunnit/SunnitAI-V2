@@ -2842,9 +2842,11 @@ def _extract_citations(
                 if doc_id not in docs:
                     docs[doc_id] = {"title": None, "sections": {}}
                 section_plain_text = (value.get("plain_text") or value.get("text") or "").strip()
-                section_abstract = (value.get("abstract") or "").strip()
-                title_match = re.match(r"^-\s*(.+?)\s*-", section_abstract)
-                section_title = title_match.group(1) if title_match else None
+                section_title = (value.get("title") or "").strip() or None
+                if not section_title:
+                    section_abstract = (value.get("abstract") or "").strip()
+                    title_match = re.match(r"^-\s*(.+?)\s*-", section_abstract)
+                    section_title = title_match.group(1) if title_match else None
                 section_score = record.get("_reranker_score")
                 if section_name and section_name != "0" and section_plain_text:
                     docs[doc_id]["sections"].setdefault(section_name, {
