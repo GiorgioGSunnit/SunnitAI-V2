@@ -2835,7 +2835,6 @@ def _extract_citations(
 
             elif is_section:
                 section_name = value.get("name") or value.get("title") or ""
-                # Section id format: "DOCUMENT_SECTION::{doc_hash}::{section_hash}"
                 parts = node_id.split("::")
                 doc_id = ("LEGAL_DOC::" + parts[1]) if len(parts) >= 3 else (value.get("document_id") or "")
                 if not doc_id:
@@ -2843,8 +2842,25 @@ def _extract_citations(
                 if doc_id not in docs:
                     docs[doc_id] = {"title": None, "sections": {}}
                 section_plain_text = (value.get("plain_text") or value.get("text") or "").strip()
+                section_title = (value.get("title") or "").strip() or None
+                if not section_title:
+                    section_abstract = (value.get("abstract") or "").strip()
+                    title_match = re.match(r"^-\s*(.+?)\s*-", section_abstract)
+                    section_title = title_match.group(1) if title_match else None
+                section_score = record.get("_reranker_score")
                 if section_name and section_name != "0" and section_plain_text:
-                    docs[doc_id]["sections"].setdefault(section_name, section_plain_text)
+                    docs[doc_id]["sections"].setdefault(section_name, {
+                        "plain_text": section_plain_text,
+                        "title": section_title,
+                        "score": section_score,
+                    })
+
+    def _section_sort_key(item):
+        name, sec = item
+        score = sec.get("score")
+        if score is None:
+            return (1, 0, name)
+        return (0, -score, name)
 
     results = [
         {
@@ -2853,14 +2869,15 @@ def _extract_citations(
             "sections": [
                 {
                     "name": name,
-                    "plain_text": plain_text,
+                    "title": sec["title"],
+                    "plain_text": sec["plain_text"],
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
                         f"sections/{urllib.parse.quote(name, safe='')}"
                     ),
                 }
-                for name, plain_text in sorted(info["sections"].items())
-                if len(name) <= 200 and len(plain_text) > 10  # filter empty sections
+                for name, sec in sorted(info["sections"].items(), key=_section_sort_key)
+                if len(name) <= 200 and len(sec["plain_text"]) > 10
             ],
         }
         for doc_id, info in docs.items()
