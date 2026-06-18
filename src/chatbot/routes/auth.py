@@ -51,6 +51,7 @@ class UserResponse(BaseModel):
     last_name: Optional[str] = None
     professional_title: Optional[str] = None
     studio_name: Optional[str] = None
+    avatar_url: Optional[str] = None
     tone: int = 2
     standing: int = 2
     response_length: int = 2
@@ -246,6 +247,7 @@ def get_me(
         last_name=profile.last_name if profile else None,
         professional_title=profile.professional_title if profile else None,
         studio_name=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
+        avatar_url=profile.profile_image_path if profile else None,
         tone=settings.tone if settings else 2,
         standing=settings.standing if settings else 2,
         response_length=settings.response_length if settings else 2,
@@ -291,6 +293,7 @@ def update_profile(
         last_name=profile.last_name if profile else None,
         professional_title=profile.professional_title if profile else None,
         studio_name=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
+        avatar_url=profile.profile_image_path if profile else None,
         tone=settings.tone if settings else 2,
         standing=settings.standing if settings else 2,
         response_length=settings.response_length if settings else 2,

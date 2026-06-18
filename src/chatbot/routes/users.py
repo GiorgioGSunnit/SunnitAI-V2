@@ -65,6 +65,8 @@ def update_user_profile(
         profile.display_name = request.name.strip()
 
     if request.avatar_url is not None:
+        if len(request.avatar_url) > 200_000:
+            raise HTTPException(status_code=413, detail="Avatar image too large (max ~150KB)")
         profile.profile_image_path = request.avatar_url
 
     if request.organization is not None and current_user.role == "admin":
