@@ -586,11 +586,12 @@ def get_section(document_id: str, section_name: str):
     try:
         with neo4j_driver.session(database=NEO4J_DATABASE) as session:
             result = session.run(
-                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                "WHERE d.id CONTAINS $doc_hash AND s.name = $section_name "
+                "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
+                "WHERE s.name = $section_name "
                 "RETURN d.name AS document_name, s.name AS section_name, "
-                "s.abstract AS abstract, s.plain_text AS plain_text",
-                doc_hash=doc_hash,
+                "s.abstract AS abstract, s.plain_text AS plain_text "
+                "LIMIT 1",
+                doc_id=decoded_doc_id,
                 section_name=decoded_section,
             )
             row = result.single()
