@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, String, Boolean, Integer,
-    DateTime, ForeignKey, Text
+    DateTime, ForeignKey, Text, func
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -82,7 +82,7 @@ class User(Base):
                        nullable=False)
     email = Column(String(255), unique=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
-    role = Column(String(20), default="member")     # admin / member
+    role = Column(String(20), default="member")     # superadmin / admin / member
     is_active = Column(Boolean, default=True)
     email_verified = Column(Boolean, default=False)
     email_verification_token = Column(String(255), nullable=True)
@@ -104,6 +104,8 @@ class User(Base):
                                uselist=False, cascade="all, delete-orphan")
     conversations = relationship("Conversation", back_populates="user",
                                  cascade="all, delete-orphan")
+    documents = relationship("UserDocument", back_populates="user",
+                             cascade="all, delete-orphan")
 
 
 # ---------------------------------------------------------------------------
@@ -193,3 +195,22 @@ class Conversation(Base):
 
     # Relationships
     user = relationship("User", back_populates="conversations")
+
+
+# ---------------------------------------------------------------------------
+# User Documents — private PDFs uploaded by users
+# ---------------------------------------------------------------------------
+
+class UserDocument(Base):
+    __tablename__ = "user_documents"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    storage_path = Column(Text, nullable=False)
+    file_size_bytes = Column(Integer, nullable=True)
+    uploaded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="documents")

@@ -116,11 +116,21 @@ def get_current_user(
 
 
 def get_admin_user(current_user: User = Depends(get_current_user)) -> User:
-    """Only allow admin users."""
+    """Only allow tenant admin users."""
     if current_user.role != "admin":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Admin access required"
+        )
+    return current_user
+
+
+def get_superadmin_user(current_user: User = Depends(get_current_user)) -> User:
+    """Only allow platform superadmin users."""
+    if current_user.role != "superadmin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Superadmin access required"
         )
     return current_user
 

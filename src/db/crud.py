@@ -6,7 +6,7 @@ from .models import (
     Tenant, TenantProfile,
     User, UserProfile,
     UserSettings, UserPreferences,
-    Conversation
+    Conversation, UserDocument
 )
 from ..chatbot.auth import hash_password
 
@@ -251,3 +251,75 @@ def delete_conversation(
         db.commit()
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Superadmin operations
+# ---------------------------------------------------------------------------
+
+def create_superadmin_user(
+    db: Session, email: str, plain_password: str
+) -> User:
+    from ..constants import PLATFORM_TENANT_ID
+    return create_user(db, PLATFORM_TENANT_ID, email, plain_password, role="superadmin")
+
+
+# ---------------------------------------------------------------------------
+# User document operations
+# ---------------------------------------------------------------------------
+
+def get_user_documents(
+    db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID
+) -> list:
+    return (
+        db.query(UserDocument)
+        .filter(UserDocument.user_id == user_id, UserDocument.tenant_id == tenant_id)
+        .order_by(UserDocument.uploaded_at.desc())
+        .all()
+    )
+
+
+def get_user_document(
+    db: Session, doc_id: uuid.UUID, user_id: uuid.UUID, tenant_id: uuid.UUID
+) -> Optional[UserDocument]:
+    return (
+        db.query(UserDocument)
+        .filter(
+            UserDocument.id == doc_id,
+            UserDocument.user_id == user_id,
+            UserDocument.tenant_id == tenant_id,
+        )
+        .first()
+    )
+
+
+def create_user_document(
+    db: Session,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    original_filename: str,
+    storage_path: str,
+    file_size_bytes: Optional[int] = None,
+) -> UserDocument:
+    doc = UserDocument(
+        user_id=user_id,
+        tenant_id=tenant_id,
+        original_filename=original_filename,
+        storage_path=storage_path,
+        file_size_bytes=file_size_bytes,
+    )
+    db.add(doc)
+    db.commit()
+    db.refresh(doc)
+    return doc
+
+
+def delete_user_document(
+    db: Session, doc_id: uuid.UUID, user_id: uuid.UUID, tenant_id: uuid.UUID
+) -> bool:
+    doc = get_user_document(db, doc_id, user_id, tenant_id)
+    if not doc:
+        return False
+    db.delete(doc)
+    db.commit()
+    return True
