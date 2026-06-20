@@ -56,7 +56,7 @@ def generate_title(plain_text: str, section_name: str, existing_abstract: str = 
                 "model": LLM_MODEL,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
-                "max_tokens": 30,
+                "max_tokens": 50,
             },
             headers={
                 "Authorization": f"Bearer {LLM_API_KEY}",
