@@ -34,6 +34,7 @@ from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
     DOCUMENT_TYPE_REGISTRY,
     classify_document_type,
+    classify_system_template,
     generate_document,
     is_generation_request,
 )
@@ -701,6 +702,8 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
     else:
         doc_type = classify_document_type(request.message, session_lang)
         if doc_type == "unknown":
+            doc_type = classify_system_template(request.message, session_lang)
+        if doc_type == "unknown":
             clarification = _build_clarification_message()
             session.add_message("user", request.message)
             session.add_message("assistant", clarification)
@@ -778,6 +781,8 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         doc_type = request.doc_type
     else:
         doc_type = classify_document_type(request.message, session_lang)
+        if doc_type == "unknown":
+            doc_type = classify_system_template(request.message, session_lang)
         if doc_type == "unknown":
             raise HTTPException(status_code=400, detail=_build_clarification_message())
     cached = _get_cached_sections(session)
@@ -876,6 +881,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             chatbot._sessions[session_id] = session
         session_lang = session.session_language
         doc_type = classify_document_type(request.message, session_lang)
+        if doc_type == "unknown":
+            doc_type = classify_system_template(request.message, session_lang)
         if doc_type == "unknown":
             clarification = _build_clarification_message()
             session.add_message("user", request.message)

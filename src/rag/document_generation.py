@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -1764,6 +1765,241 @@ def _nota_contestazione_system(lang: str) -> str:
     )
 
 
+_SYSTEM_TEMPLATES_CATALOG_PATH = os.getenv(
+    "SYSTEM_TEMPLATES_CATALOG_PATH",
+    "/opt/chatbot/data/system_templates/catalog_enriched.json",
+)
+
+
+def _load_system_templates_catalog() -> List[Dict[str, Any]]:
+    try:
+        with open(_SYSTEM_TEMPLATES_CATALOG_PATH, encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Could not load system templates catalog from {_SYSTEM_TEMPLATES_CATALOG_PATH}: {e}")
+        return []
+
+
+SYSTEM_TEMPLATES_CATALOG: List[Dict[str, Any]] = _load_system_templates_catalog()
+SYSTEM_TEMPLATES_BY_KEY: Dict[str, Dict[str, Any]] = {
+    (entry["filename"][:-5] if entry["filename"].endswith(".docx") else entry["filename"]): entry
+    for entry in SYSTEM_TEMPLATES_CATALOG
+}
+logger.info(f"Loaded {len(SYSTEM_TEMPLATES_CATALOG)} system templates from catalog")
+
+
+def classify_system_template(message: str, lang: str) -> str:
+    """
+    3-stage LLM classification against the 383-template system catalog
+    (codice -> categoria -> tipo di atto). Used as a fallback when
+    classify_document_type() returns "unknown" for the legacy 20-type
+    registry. Returns the matched template's key (catalog filename
+    without .docx extension) or "unknown".
+    """
+    if not SYSTEM_TEMPLATES_CATALOG:
+        return "unknown"
+
+    codici = sorted({e["codice"] for e in SYSTEM_TEMPLATES_CATALOG})
+    codice_system = (
+        "Sei un classificatore di richieste di atti giuridici italiani. "
+        "Determina a quale codice di procedura appartiene la richiesta "
+        "dell'utente.\n\nCodici disponibili:\n"
+        + "\n".join(f"- {c}" for c in codici)
+        + "\n\nRestituisci SOLO il nome esatto del codice, nient'altro."
+    )
+    try:
+        codice_result = _call_chat(
+            [SystemMessage(content=codice_system), HumanMessage(content=message)],
+            max_tokens=30,
+        ).strip()
+    except Exception as e:
+        logger.warning(f"classify_system_template stage 1 failed: {e}")
+        return "unknown"
+
+    matched_codice = next(
+        (c for c in codici if c.lower() in codice_result.lower() or codice_result.lower() in c.lower()),
+        None,
+    )
+    if not matched_codice:
+        return "unknown"
+
+    entries_in_codice = [e for e in SYSTEM_TEMPLATES_CATALOG if e["codice"] == matched_codice]
+    categorie = sorted({c for e in entries_in_codice for c in e["categorie"]})
+    categoria_system = (
+        f"Sei un classificatore di richieste di atti giuridici italiani. "
+        f"L'utente sta richiedendo un atto del {matched_codice}. Determina "
+        "a quale fase/categoria processuale appartiene la richiesta.\n\n"
+        "Categorie disponibili:\n"
+        + "\n".join(f"- {c}" for c in categorie)
+        + "\n\nRestituisci SOLO il nome esatto della categoria, nient'altro."
+    )
+    try:
+        categoria_result = _call_chat(
+            [SystemMessage(content=categoria_system), HumanMessage(content=message)],
+            max_tokens=40,
+        ).strip()
+    except Exception as e:
+        logger.warning(f"classify_system_template stage 2 failed: {e}")
+        return "unknown"
+
+    matched_categoria = next(
+        (c for c in categorie if c.lower() in categoria_result.lower() or categoria_result.lower() in c.lower()),
+        None,
+    )
+    if not matched_categoria:
+        return "unknown"
+
+    entries_in_categoria = [e for e in entries_in_codice if matched_categoria in e["categorie"]]
+    if len(entries_in_categoria) == 1:
+        only = entries_in_categoria[0]["filename"]
+        return only[:-5] if only.endswith(".docx") else only
+
+    options_text = "\n".join(f"- {e['tipo_atto']}: {e['description']}" for e in entries_in_categoria)
+    tipo_system = (
+        f"Sei un classificatore di richieste di atti giuridici italiani. "
+        f"L'utente sta richiedendo un atto della categoria "
+        f"'{matched_categoria}'. Determina esattamente quale tipo di atto "
+        "sta richiedendo.\n\nTipi disponibili:\n"
+        + options_text
+        + "\n\nRestituisci SOLO il nome esatto del tipo di atto, nient'altro."
+    )
+    try:
+        tipo_result = _call_chat(
+            [SystemMessage(content=tipo_system), HumanMessage(content=message)],
+            max_tokens=40,
+        ).strip()
+    except Exception as e:
+        logger.warning(f"classify_system_template stage 3 failed: {e}")
+        return "unknown"
+
+    matched_entry = next(
+        (
+            e for e in entries_in_categoria
+            if e["tipo_atto"].lower() in tipo_result.lower() or tipo_result.lower() in e["tipo_atto"].lower()
+        ),
+        None,
+    )
+    if not matched_entry:
+        logger.warning(f"classify_system_template: no match for tipo_result={tipo_result!r}")
+        return "unknown"
+
+    fname = matched_entry["filename"]
+    return fname[:-5] if fname.endswith(".docx") else fname
+
+
+def _build_system_template_prompt(entry: Dict[str, Any], lang: str) -> str:
+    ph = _placeholder(lang)
+    sections = entry.get("sections", [])
+    sections_text = "\n\n".join(
+        f"{s['heading']}\n{s['content']}" for s in sections if s.get("heading")
+    )
+    label = entry.get("label") or entry.get("tipo_atto", "")
+    codice = entry.get("codice", "")
+
+    if lang == "es":
+        lang_instruction = (
+            "IMPORTANTE: el documento sigue siendo un acto procesal italiano, "
+            "presentado ante un tribunal italiano y regido por el derecho "
+            "italiano. NO cambies la jurisdicción ni las referencias legales. "
+            "Redacta el TEXTO en español, manteniendo intactas (sin traducir) "
+            "las referencias a tribunales, códigos y normativa italiana."
+        )
+    elif lang == "en":
+        lang_instruction = (
+            "IMPORTANT: this remains an Italian procedural act, filed with an "
+            "Italian court and governed by Italian law. Do NOT change the "
+            "jurisdiction or legal references. Write the TEXT in English, "
+            "while keeping references to Italian courts, codes, and statutes "
+            "untranslated."
+        )
+    else:
+        lang_instruction = ""
+
+    return (
+        f"Sei un avvocato esperto di diritto processuale italiano. Devi "
+        f"redigere un atto giuridico italiano del tipo '{label}' "
+        f"({codice}).\n\n"
+        f"Segui ESATTAMENTE questa struttura, sezione per sezione — non "
+        f"aggiungere, rimuovere o riordinare le sezioni:\n\n"
+        f"{sections_text}\n\n"
+        f"Per ogni placeholder [DA COMPILARE: ...], sostituiscilo con il "
+        f"contenuto reale se l'informazione è presente nel messaggio "
+        f"dell'utente o nelle fonti fornite. Se l'informazione non è "
+        f"disponibile, mantieni il placeholder come {ph}. Non inventare "
+        f"fatti, nomi, date, importi o riferimenti normativi non forniti.\n\n"
+        f"{lang_instruction}"
+    )
+
+
+def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lang: str) -> Dict[str, str]:
+    fields = entry.get("fields", [])
+    label = entry.get("label") or entry.get("tipo_atto", "")
+
+    if lang == "es":
+        system = (
+            f"Extrae del mensaje del usuario los valores para los siguientes campos del documento '{label}'.\n"
+            f"Devuelve SOLO un objeto JSON válido, sin texto antes ni después, sin markdown.\n"
+            f"Campos requeridos: {json.dumps(fields, ensure_ascii=False)}\n"
+            "Reglas:\n"
+            "- Si un valor está explícitamente mencionado en el mensaje, úsalo exactamente\n"
+            "- Si un valor es claramente deducible del contexto, deducelo\n"
+            "- Si un valor no está presente ni es deducible, usa cadena vacía \"\"\n"
+            "- No inventes datos no presentes ni deducibles\n"
+            f"Responde SOLO con el JSON, ejemplo: {{\"campo1\": \"valor1\", \"campo2\": \"\"}}"
+        )
+    elif lang == "en":
+        system = (
+            f"Extract from the user message the values for the following fields of the document '{label}'.\n"
+            f"Return ONLY a valid JSON object, with no text before or after, no markdown.\n"
+            f"Required fields: {json.dumps(fields, ensure_ascii=False)}\n"
+            "Rules:\n"
+            "- If a value is explicitly mentioned in the message, use it exactly\n"
+            "- If a value is clearly inferable from context, infer it\n"
+            "- If a value is neither present nor inferable, use empty string \"\"\n"
+            "- Do not invent data that is not present or inferable\n"
+            f"Reply ONLY with the JSON, example: {{\"field1\": \"value1\", \"field2\": \"\"}}"
+        )
+    else:
+        system = (
+            f"Estrai dal messaggio dell'utente i valori per i seguenti campi del documento '{label}'.\n"
+            f"Restituisci SOLO un oggetto JSON valido, senza testo prima o dopo, senza markdown.\n"
+            f"Campi richiesti: {json.dumps(fields, ensure_ascii=False)}\n"
+            "Regole:\n"
+            "- Se un valore è esplicitamente menzionato nel messaggio, usalo esattamente\n"
+            "- Se un valore è chiaramente deducibile dal contesto, deducilo\n"
+            "- Se un valore non è presente né deducibile, usa stringa vuota \"\"\n"
+            "- Non inventare dati non presenti o non deducibili\n"
+            f"Rispondi SOLO con il JSON, esempio: {{\"campo1\": \"valore1\", \"campo2\": \"\"}}"
+        )
+
+    human = f"Messaggio dell'utente:\n{user_message}"
+    raw = _call_chat(
+        [SystemMessage(content=system), HumanMessage(content=human)],
+        max_tokens=400,
+    )
+
+    text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("extract_system_template_fields: JSON parse failed for label=%r, raw=%r", label, raw[:200])
+        retry_response = _call_chat(
+            [
+                SystemMessage(content="Rispondi SOLO con JSON valido, nessun testo aggiuntivo."),
+                HumanMessage(content=f"Estrai questi campi: {fields}\nDal testo: {user_message}\nJSON:"),
+            ],
+            max_tokens=400,
+        )
+        clean_retry = re.sub(r"```(?:json)?\s*", "", retry_response).strip().rstrip("`").strip()
+        try:
+            parsed = json.loads(clean_retry)
+        except (json.JSONDecodeError, ValueError):
+            logger.error("extract_system_template_fields: retry also failed for label=%r", label)
+            parsed = {}
+
+    return {k: str(parsed.get(k, "") or "") for k in fields}
+
+
 def generate_document(
     user_message: str,
     doc_type: str,
@@ -1800,14 +2036,22 @@ def generate_document(
     }
 
     system_fn = _SYSTEM_FN.get(doc_type)
-    if system_fn is None:
+    system_template_entry = None if system_fn else SYSTEM_TEMPLATES_BY_KEY.get(doc_type)
+
+    if system_fn is not None:
+        system_text = system_fn(lang)
+        fields_dict = extract_document_fields(user_message, doc_type, lang)
+    elif system_template_entry is not None:
+        system_text = _build_system_template_prompt(system_template_entry, lang)
+        fields_dict = extract_system_template_fields(user_message, system_template_entry, lang)
+    else:
         logger.warning(
-            "generate_document: no system prompt function for doc_type=%r, falling back to _opposition_system",
+            "generate_document: no system prompt function or system template for doc_type=%r, "
+            "falling back to _opposition_system",
             doc_type,
         )
-        system_fn = _opposition_system
-
-    fields_dict = extract_document_fields(user_message, doc_type, lang)
+        system_text = _opposition_system(lang)
+        fields_dict = extract_document_fields(user_message, "opposition_act", lang)
 
     _FORMATTING_RULE = (
         "FORMATTING RULE: Use consistent, professional capitalization throughout. "
@@ -1817,7 +2061,7 @@ def generate_document(
         "All placeholder text in brackets should be in UPPERCASE: "
         "[DA COMPILARE], [INDIRIZZO IMMOBILE], etc.\n\n"
     )
-    system_content = _FORMATTING_RULE + system_fn(lang)
+    system_content = _FORMATTING_RULE + system_text
     if citations:
         citations_text = "\n".join(
             f"- {cit.get('document_name', '')}, sezione {sec.get('name', '')}"
@@ -1826,10 +2070,17 @@ def generate_document(
             if sec.get("name")
         )
         if citations_text:
-            system_content += (
-                "\nGround the legal arguments in these specific retrieved documents and cite them "
-                "explicitly in the Motivi di opposizione section:\n" + citations_text
-            )
+            if system_template_entry is not None:
+                system_content += (
+                    "\nGround the legal arguments in these specific retrieved documents and cite "
+                    "them explicitly where the document argues legal grounds (e.g. in fatto / "
+                    "in diritto / motivi sections):\n" + citations_text
+                )
+            else:
+                system_content += (
+                    "\nGround the legal arguments in these specific retrieved documents and cite them "
+                    "explicitly in the Motivi di opposizione section:\n" + citations_text
+                )
 
     ph = _placeholder(lang)
     field_lines = "\n".join(
