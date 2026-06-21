@@ -126,7 +126,7 @@ def get_tenant_by_id(tenant_id: str) -> Optional[dict]:
 _TENANT_PROFILE_COLUMNS = [
     "legal_name", "display_name", "vat_number", "phone", "website",
     "address_street", "address_city", "address_postal_code",
-    "address_country", "logo_path",
+    "address_country", "logo_path", "document_expiry_hours",
 ]
 
 

@@ -25,7 +25,7 @@ from typing import Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .session import ChatBot, ChatSession, _generate_session_title
@@ -511,23 +511,40 @@ class TenantProfileUpdateRequest(BaseModel):
     address_city: Optional[str] = None
     address_postal_code: Optional[str] = None
     address_country: Optional[str] = None
+    document_expiry_hours: Optional[int] = None
+
+
+@app.get("/api/tenant/profile")
+async def get_tenant_profile(
+    current_user: dict = Depends(require_user),
+):
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant associated with this account")
+    profile = get_tenant_profile_full(tenant_id) or {}
+    if "document_expiry_hours" not in profile or profile["document_expiry_hours"] is None:
+        profile["document_expiry_hours"] = 24
+    return profile
 
 
 @app.patch("/api/tenant/profile")
 async def update_tenant_profile(
     request: TenantProfileUpdateRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user: dict = Depends(require_user),
 ):
-    """Minimal backend-only endpoint to set studio profile text fields
-    used in document letterheads (carta intestata). No FE UI yet — for
-    manual/admin use until a settings page exists."""
     tenant_id = current_user.get("tenant_id")
     if not tenant_id:
         raise HTTPException(status_code=400, detail="No tenant associated with this account")
+    if current_user.get("role") not in ("admin", "superadmin"):
+        raise HTTPException(status_code=403, detail="Only admins can update company settings")
+    if request.document_expiry_hours is not None and request.document_expiry_hours not in (24, 48, 72):
+        raise HTTPException(status_code=400, detail="document_expiry_hours must be 24, 48, or 72")
     fields = {k: v for k, v in request.model_dump().items() if v is not None}
     if not fields:
         raise HTTPException(status_code=400, detail="No fields provided")
     updated = upsert_tenant_profile(tenant_id, fields)
+    if "document_expiry_hours" not in updated or updated["document_expiry_hours"] is None:
+        updated["document_expiry_hours"] = 24
     return updated
 
 
@@ -569,6 +586,20 @@ async def upload_tenant_logo(
 
     updated = upsert_tenant_profile(tenant_id, {"logo_path": logo_path})
     return {"logo_path": updated.get("logo_path")}
+
+
+@app.get("/api/tenant/logo")
+async def get_tenant_logo(
+    current_user: dict = Depends(require_user),
+):
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant associated with this account")
+    profile = get_tenant_profile_full(tenant_id)
+    logo_path = profile.get("logo_path") if profile else None
+    if not logo_path or not os.path.exists(logo_path):
+        raise HTTPException(status_code=404, detail="No logo uploaded yet")
+    return FileResponse(logo_path)
 
 
 @app.get("/api/health")

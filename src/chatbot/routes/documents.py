@@ -17,7 +17,6 @@ from ...db.crud import (
     get_tenant_expiry_hours,
     get_user_document,
     get_user_documents,
-    set_tenant_expiry_hours,
 )
 from .auth import get_current_user
 
@@ -113,24 +112,3 @@ def delete_document(
     delete_user_document(db, doc_id, current_user.id, current_user.tenant_id)
 
 
-@router.put("/expiry-settings")
-def update_expiry_settings(
-    hours: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    if current_user.role not in ("admin", "superadmin"):
-        raise HTTPException(status_code=403, detail="Only admins can change expiry settings")
-    if hours not in (24, 48, 72):
-        raise HTTPException(status_code=400, detail="hours must be 24, 48, or 72")
-    set_tenant_expiry_hours(db, current_user.tenant_id, hours)
-    return {"document_expiry_hours": hours}
-
-
-@router.get("/expiry-settings")
-def get_expiry_settings(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    hours = get_tenant_expiry_hours(db, current_user.tenant_id)
-    return {"document_expiry_hours": hours}
