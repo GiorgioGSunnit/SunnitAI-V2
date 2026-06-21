@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -33,6 +33,7 @@ from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
     DOCUMENT_TYPE_REGISTRY,
+    _placeholder,
     classify_document_type,
     classify_system_template,
     generate_document,
@@ -41,7 +42,7 @@ from ..rag.document_generation import (
 from ..rag.graph_nodes import _extract_citations
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
 from .user_store import (get_user_by_email, get_user_by_id,
-    get_tenant_by_id, create_studio_and_admin,
+    get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile, create_studio_and_admin,
     create_user_with_invite, get_tenant_invite_code, update_user_profile)
 
 logger = logging.getLogger(__name__)
@@ -144,6 +145,9 @@ class ChatRequest(BaseModel):
 
 
 DEFAULT_LOGO_PATH = "/opt/chatbot/assets/studio_logo.jpeg"
+TENANT_LOGOS_BASE = "/opt/chatbot/data/tenant_logos"
+ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg"}
+MAX_LOGO_SIZE_BYTES = 5 * 1024 * 1024  # 5MB
 
 
 class GenerateRequest(BaseModel):
@@ -497,6 +501,76 @@ async def update_me(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class TenantProfileUpdateRequest(BaseModel):
+    legal_name: Optional[str] = None
+    display_name: Optional[str] = None
+    vat_number: Optional[str] = None
+    phone: Optional[str] = None
+    website: Optional[str] = None
+    address_street: Optional[str] = None
+    address_city: Optional[str] = None
+    address_postal_code: Optional[str] = None
+    address_country: Optional[str] = None
+
+
+@app.patch("/api/tenant/profile")
+async def update_tenant_profile(
+    request: TenantProfileUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Minimal backend-only endpoint to set studio profile text fields
+    used in document letterheads (carta intestata). No FE UI yet — for
+    manual/admin use until a settings page exists."""
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant associated with this account")
+    fields = {k: v for k, v in request.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields provided")
+    updated = upsert_tenant_profile(tenant_id, fields)
+    return updated
+
+
+@app.post("/api/tenant/logo")
+async def upload_tenant_logo(
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload (or replace) the studio's logo, used in generated document
+    letterheads. One logo per tenant — re-uploading replaces the existing
+    file. No FE UI yet."""
+    tenant_id = current_user.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="No tenant associated with this account")
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_LOGO_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(ALLOWED_LOGO_EXTENSIONS))}",
+        )
+
+    contents = await file.read()
+    if len(contents) > MAX_LOGO_SIZE_BYTES:
+        raise HTTPException(status_code=400, detail="Logo file too large (max 5MB)")
+
+    folder = os.path.join(TENANT_LOGOS_BASE, str(tenant_id))
+    os.makedirs(folder, exist_ok=True)
+
+    for existing_file in os.listdir(folder):
+        try:
+            os.remove(os.path.join(folder, existing_file))
+        except OSError:
+            pass
+
+    logo_path = os.path.join(folder, f"logo{ext}")
+    with open(logo_path, "wb") as f:
+        f.write(contents)
+
+    updated = upsert_tenant_profile(tenant_id, {"logo_path": logo_path})
+    return {"logo_path": updated.get("logo_path")}
+
+
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
@@ -800,7 +874,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             result = {"draft": request.draft, "doc_type": doc_type, "sources": []}
         else:
             result = await loop.run_in_executor(
-                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, request.studio_name)
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, "")
             )
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
@@ -818,16 +892,43 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         section.left_margin = Cm(2.5)
         section.right_margin = Cm(2.5)
 
-    studio_logo_path = request.studio_logo_path or ""
-    studio_name_val = request.studio_name or ""
-    if not studio_logo_path and os.path.exists(DEFAULT_LOGO_PATH):
-        studio_logo_path = DEFAULT_LOGO_PATH
+    tenant_profile = None
+    if current_user and current_user.get("tenant_id"):
+        tenant_profile = get_tenant_profile_full(current_user["tenant_id"])
 
-    if studio_logo_path and os.path.exists(studio_logo_path):
-        logo_para = doc.add_paragraph()
-        logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        logo_run = logo_para.add_run()
-        logo_run.add_picture(studio_logo_path, width=Inches(3.0))
+    if tenant_profile:
+        ph = _placeholder(session_lang)
+
+        logo_path_val = tenant_profile.get("logo_path") or ""
+        if logo_path_val and os.path.exists(logo_path_val):
+            logo_para = doc.add_paragraph()
+            logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            logo_run = logo_para.add_run()
+            logo_run.add_picture(logo_path_val, width=Inches(3.0))
+
+        name_val = tenant_profile.get("legal_name") or tenant_profile.get("display_name") or ph
+        name_para = doc.add_paragraph()
+        name_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        name_run = name_para.add_run(name_val)
+        name_run.bold = True
+        name_run.font.size = Pt(11)
+
+        address_parts = [
+            tenant_profile.get("address_street") or ph,
+            f"{tenant_profile.get('address_postal_code') or ph} {tenant_profile.get('address_city') or ph}",
+            tenant_profile.get("address_country") or ph,
+        ]
+        address_para = doc.add_paragraph(", ".join(address_parts))
+        address_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        contact_para = doc.add_paragraph(
+            f"Tel: {tenant_profile.get('phone') or ph}  |  Web: {tenant_profile.get('website') or ph}"
+        )
+        contact_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+        vat_para = doc.add_paragraph(f"P.IVA: {tenant_profile.get('vat_number') or ph}")
+        vat_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
         doc.add_paragraph()
 
     title_para = doc.add_paragraph()

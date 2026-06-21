@@ -123,6 +123,70 @@ def get_tenant_by_id(tenant_id: str) -> Optional[dict]:
         _release(conn)
 
 
+_TENANT_PROFILE_COLUMNS = [
+    "legal_name", "display_name", "vat_number", "phone", "website",
+    "address_street", "address_city", "address_postal_code",
+    "address_country", "logo_path",
+]
+
+
+def get_tenant_profile_full(tenant_id: str) -> Optional[dict]:
+    """Fetch the full tenant_profiles row (letterhead-relevant fields)
+    for a given tenant. Returns None if no profile row exists yet."""
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT {', '.join(_TENANT_PROFILE_COLUMNS)}
+                FROM tenant_profiles
+                WHERE tenant_id = %s
+                """,
+                (tenant_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cols = [d[0] for d in cur.description]
+            return dict(zip(cols, row))
+    finally:
+        _release(conn)
+
+
+def upsert_tenant_profile(tenant_id: str, fields: dict) -> dict:
+    """Insert or update tenant_profiles fields for the given tenant.
+    Only keys in _TENANT_PROFILE_COLUMNS are written; others are ignored."""
+    update_fields = {k: v for k, v in fields.items() if k in _TENANT_PROFILE_COLUMNS}
+    if not update_fields:
+        return get_tenant_profile_full(tenant_id) or {}
+
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM tenant_profiles WHERE tenant_id = %s", (tenant_id,))
+            existing = cur.fetchone()
+            if existing:
+                set_clause = ", ".join(f"{k} = %s" for k in update_fields)
+                values = list(update_fields.values()) + [tenant_id]
+                cur.execute(
+                    f"UPDATE tenant_profiles SET {set_clause}, updated_at = now() WHERE tenant_id = %s",
+                    values,
+                )
+            else:
+                import uuid as _uuid
+                cols = ["id", "tenant_id"] + list(update_fields.keys())
+                placeholders = ", ".join(["%s"] * len(cols))
+                values = [str(_uuid.uuid4()), tenant_id] + list(update_fields.values())
+                cur.execute(
+                    f"INSERT INTO tenant_profiles ({', '.join(cols)}) VALUES ({placeholders})",
+                    values,
+                )
+            conn.commit()
+        return get_tenant_profile_full(tenant_id) or {}
+    finally:
+        _release(conn)
+
+
 def create_studio_and_admin(
     email: str,
     hashed_password: str,
