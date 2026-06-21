@@ -739,6 +739,14 @@ def delete_session(session_id: str, current_user: dict = Depends(require_user)):
     return {"status": "deleted", "session_id": session_id}
 
 
+def _build_generation_confirmation(lang: str) -> str:
+    if lang == "es":
+        return "He generado el documento solicitado."
+    if lang == "en":
+        return "I have generated the requested document."
+    return "Ho generato il documento richiesto."
+
+
 @app.post("/api/generate", response_model=GenerateResponse)
 async def generate(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user)):
     """Generate a legal document draft from a free-text request.
@@ -755,13 +763,15 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
         raise HTTPException(status_code=400, detail="Not a generation request")
 
     session_id = request.session_id
+    _uid = current_user["sub"] if current_user else None
+    _tid = current_user.get("tenant_id") if current_user else None
     if not session_id:
-        session = chatbot.create_session()
+        session = chatbot.create_session(user_id=_uid, tenant_id=_tid)
         session_id = session.session_id
 
-    session = chatbot.get_session(session_id)
+    session = chatbot.get_session(session_id, user_id=_uid)
     if not session:
-        session = ChatSession(session_id=session_id)
+        session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
         chatbot._sessions[session_id] = session
 
     session_lang = session.session_language
@@ -809,7 +819,11 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
         logger.error("Generation error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
 
-    session.add_message("assistant", result["draft"], metadata={"sources": result.get("sources", [])})
+    session.add_message(
+        "assistant",
+        _build_generation_confirmation(session_lang),
+        metadata={"sources": result.get("sources", [])},
+    )
     return GenerateResponse(session_id=session_id, **result)
 
 
@@ -835,12 +849,14 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         raise HTTPException(status_code=400, detail="Not a generation request")
 
     session_id = request.session_id
+    _uid = current_user["sub"] if current_user else None
+    _tid = current_user.get("tenant_id") if current_user else None
     if not session_id:
-        session = chatbot.create_session()
+        session = chatbot.create_session(user_id=_uid, tenant_id=_tid)
         session_id = session.session_id
-    session = chatbot.get_session(session_id)
+    session = chatbot.get_session(session_id, user_id=_uid)
     if not session:
-        session = ChatSession(session_id=session_id)
+        session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
         chatbot._sessions[session_id] = session
     session_lang = session.session_language
 
@@ -879,7 +895,11 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
-    session.add_message("assistant", result["draft"], metadata={"sources": result.get("sources", [])})
+    session.add_message(
+        "assistant",
+        _build_generation_confirmation(session_lang),
+        metadata={"sources": result.get("sources", [])},
+    )
 
     lang_idx = {"it": 0, "es": 1, "en": 2}.get(session_lang, 0)
     doc_info = _DOC_FILENAMES.get(doc_type, _DOC_FILENAMES["opposition_act"])
@@ -968,17 +988,19 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
     If the message is a generation request, redirects to the opposition act generation flow.
     """
     session_id = request.session_id
+    _uid = current_user["sub"] if current_user else None
+    _tid = current_user.get("tenant_id") if current_user else None
     if not session_id:
-        session = chatbot.create_session()
+        session = chatbot.create_session(user_id=_uid, tenant_id=_tid)
         session_id = session.session_id
 
     _req_start = time.time()
     vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
 
     if is_generation_request(request.message):
-        session = chatbot.get_session(session_id)
+        session = chatbot.get_session(session_id, user_id=_uid)
         if not session:
-            session = ChatSession(session_id=session_id)
+            session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
             chatbot._sessions[session_id] = session
         session_lang = session.session_language
         doc_type = classify_document_type(request.message, session_lang)
@@ -1009,7 +1031,11 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             logger.error("Generation error: %s", exc, exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
         gen_result["draft"] = _strip_markdown(gen_result["draft"])
-        session.add_message("assistant", gen_result["draft"], metadata={"sources": gen_result["sources"]})
+        session.add_message(
+            "assistant",
+            _build_generation_confirmation(session_lang),
+            metadata={"sources": gen_result["sources"]},
+        )
         return ChatResponse(
             session_id=session_id,
             answer=gen_result["draft"],
@@ -1027,6 +1053,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                           user_id=current_user.get("sub") if current_user else None,
                           tenant_id=current_user.get("tenant_id") if current_user else None)
         )
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="This session does not belong to your account")
     except Exception as e:
         logger.error("Chat error: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

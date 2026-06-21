@@ -336,6 +336,9 @@ class ChatBot:
                 session = ChatSession(session_id=session_id)
                 self._sessions[session_id] = session
 
+        if session.user_id is not None and session.user_id != user_id:
+            raise PermissionError(f"Session {session_id} does not belong to this user")
+
         if user_id and session.user_id is None:
             session.user_id = user_id
             session.tenant_id = tenant_id
