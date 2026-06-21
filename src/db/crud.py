@@ -1,5 +1,7 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Optional
+from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 
 from .models import (
@@ -271,10 +273,18 @@ def create_superadmin_user(
 def get_user_documents(
     db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID
 ) -> list:
+    now = datetime.now(timezone.utc)
+    not_expired = or_(UserDocument.expires_at.is_(None), UserDocument.expires_at > now)
     return (
         db.query(UserDocument)
-        .filter(UserDocument.user_id == user_id, UserDocument.tenant_id == tenant_id)
-        .order_by(UserDocument.uploaded_at.desc())
+        .filter(
+            or_(
+                and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
+                and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
+            ),
+            not_expired,
+        )
+        .order_by(UserDocument.scope, UserDocument.uploaded_at.desc())
         .all()
     )
 
@@ -282,12 +292,16 @@ def get_user_documents(
 def get_user_document(
     db: Session, doc_id: uuid.UUID, user_id: uuid.UUID, tenant_id: uuid.UUID
 ) -> Optional[UserDocument]:
+    now = datetime.now(timezone.utc)
     return (
         db.query(UserDocument)
         .filter(
             UserDocument.id == doc_id,
-            UserDocument.user_id == user_id,
-            UserDocument.tenant_id == tenant_id,
+            or_(
+                and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
+                and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
+            ),
+            or_(UserDocument.expires_at.is_(None), UserDocument.expires_at > now),
         )
         .first()
     )
@@ -300,6 +314,8 @@ def create_user_document(
     original_filename: str,
     storage_path: str,
     file_size_bytes: Optional[int] = None,
+    scope: str = "personal",
+    expires_at=None,
 ) -> UserDocument:
     doc = UserDocument(
         user_id=user_id,
@@ -307,6 +323,8 @@ def create_user_document(
         original_filename=original_filename,
         storage_path=storage_path,
         file_size_bytes=file_size_bytes,
+        scope=scope,
+        expires_at=expires_at,
     )
     db.add(doc)
     db.commit()
@@ -323,3 +341,42 @@ def delete_user_document(
     db.delete(doc)
     db.commit()
     return True
+
+
+DEFAULT_EXPIRY_HOURS = 24
+
+
+def get_tenant_expiry_hours(db: Session, tenant_id: uuid.UUID) -> int:
+    profile = db.query(TenantProfile).filter(TenantProfile.tenant_id == tenant_id).first()
+    if profile and profile.document_expiry_hours is not None:
+        return profile.document_expiry_hours
+    return DEFAULT_EXPIRY_HOURS
+
+
+def set_tenant_expiry_hours(db: Session, tenant_id: uuid.UUID, hours: int) -> Optional[TenantProfile]:
+    profile = db.query(TenantProfile).filter(TenantProfile.tenant_id == tenant_id).first()
+    if not profile:
+        return None
+    profile.document_expiry_hours = hours
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+
+def cleanup_expired_documents(db: Session) -> int:
+    now = datetime.now(timezone.utc)
+    expired = (
+        db.query(UserDocument)
+        .filter(UserDocument.expires_at.isnot(None), UserDocument.expires_at <= now)
+        .all()
+    )
+    count = 0
+    for doc in expired:
+        import os
+        if os.path.exists(doc.storage_path):
+            os.remove(doc.storage_path)
+        db.delete(doc)
+        count += 1
+    if count:
+        db.commit()
+    return count

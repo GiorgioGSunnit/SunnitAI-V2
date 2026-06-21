@@ -68,6 +68,24 @@ async def _background_embedding_job():
             _running = False
 
 
+async def _background_doc_expiry_job():
+    """Delete expired user documents once per hour."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            from ..db.base import SessionLocal
+            from ..db.crud import cleanup_expired_documents
+            db = SessionLocal()
+            try:
+                count = cleanup_expired_documents(db)
+                if count:
+                    logger.info("Doc expiry job: removed %d expired document(s)", count)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Doc expiry job failed: %s", e)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     from ..rag.cypher_logger import ensure_cypher_log_ready
@@ -75,8 +93,10 @@ async def _lifespan(app: FastAPI):
     log_path = ensure_cypher_log_ready()
     logger.info("Cypher query log file: %s", log_path)
     task = asyncio.create_task(_background_embedding_job())
+    expiry_task = asyncio.create_task(_background_doc_expiry_job())
     yield
     task.cancel()
+    expiry_task.cancel()
 
 
 # ---------------------------------------------------------------------------

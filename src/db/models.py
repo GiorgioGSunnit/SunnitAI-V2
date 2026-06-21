@@ -51,6 +51,7 @@ class TenantProfile(Base):
                        nullable=False, unique=True)
     display_name = Column(String(255), nullable=True)
     legal_name = Column(String(255), nullable=True)
+    document_expiry_hours = Column(Integer, nullable=True)  # null = use default (24h)
     vat_number = Column(String(50), nullable=True)
     registration_number = Column(String(100), nullable=True)
     company_type = Column(String(100), nullable=True)
@@ -210,6 +211,8 @@ class UserDocument(Base):
     original_filename = Column(String(255), nullable=False)
     storage_path = Column(Text, nullable=False)
     file_size_bytes = Column(Integer, nullable=True)
+    scope = Column(String(20), nullable=False, server_default="personal")  # personal | tenant
+    expires_at = Column(DateTime(timezone=True), nullable=True)
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Relationships
