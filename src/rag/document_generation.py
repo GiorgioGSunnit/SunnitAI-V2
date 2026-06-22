@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -11,6 +12,13 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import _call_chat
+
+try:
+    from pypdf import PdfReader as _PdfReader
+    _PDF_SUPPORT = True
+except ImportError:
+    _PdfReader = None
+    _PDF_SUPPORT = False
 
 logger = logging.getLogger(__name__)
 
@@ -1902,6 +1910,178 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             parsed = {}
 
     return {k: str(parsed.get(k, "") or "") for k in fields}
+
+
+_PLACEHOLDER_RUN_PATTERN = re.compile(
+    r'_{3,}|\[.+?\]|\(.+?\)|OMISSIS|\b_+\b', re.IGNORECASE
+)
+
+
+def _extract_docx_elements(path: str) -> List[Dict]:
+    """Extract non-empty text elements from a DOCX with sequential indices.
+    Processes body paragraphs first, then table cells."""
+    from docx import Document as _D
+    doc = _D(path)
+    elements: List[Dict] = []
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if text:
+            elements.append({"index": len(elements), "text": text, "type": "paragraph"})
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    text = para.text.strip()
+                    if text:
+                        elements.append({"index": len(elements), "text": text, "type": "cell"})
+    return elements
+
+
+def _extract_pdf_elements(path: str) -> List[Dict]:
+    """Extract non-empty text lines from a PDF file."""
+    if not _PDF_SUPPORT:
+        raise RuntimeError("pypdf not installed; PDF templates not supported")
+    reader = _PdfReader(path)
+    elements: List[Dict] = []
+    for page in reader.pages:
+        for line in (page.extract_text() or "").split("\n"):
+            line = line.strip()
+            if line:
+                elements.append({"index": len(elements), "text": line, "type": "line"})
+    return elements
+
+
+def _fill_template_gaps(
+    elements: List[Dict],
+    user_message: str,
+    carta_intestata: Optional[Dict],
+    lang: str,
+) -> Dict[int, str]:
+    """Ask the LLM to identify blanks in the template elements and fill them.
+    Returns {element_index: replacement_text} — sparse, only changed elements."""
+    ph = _placeholder(lang)
+
+    carta_parts: List[str] = []
+    if carta_intestata:
+        for key, label in [
+            ("legal_name", "Nome studio"),
+            ("address_street", "Indirizzo"),
+            ("address_city", "Città"),
+            ("vat_number", "P.IVA"),
+            ("phone", "Tel"),
+            ("website", "Web"),
+        ]:
+            val = carta_intestata.get(key)
+            if val:
+                carta_parts.append(f"{label}: {val}")
+    carta_text = "\n".join(carta_parts)
+
+    elements_text = "\n".join(
+        f"{e['index']}. {e['text']}" for e in elements[:300]
+    )
+
+    lang_note = {
+        "es": "Rellena los huecos también en italiano (no cambies el idioma del documento).",
+        "en": "Fill the blanks in Italian (do not change the document language).",
+    }.get(lang, "")
+
+    system = (
+        "Sei un assistente che compila documenti legali italiani. "
+        "Ti viene fornito un elenco numerato di elementi testuali di un documento. "
+        "Alcuni elementi contengono spazi vuoti da compilare — possono essere: "
+        "trattini bassi (___), parentesi quadre [NOME], parentesi tonde (nome), "
+        "spazio vuoto dopo un'etichetta (es. 'Locatore:' senza valore), OMISSIS, "
+        "o semplicemente mancanza del dato atteso.\n\n"
+        "Regole:\n"
+        "1. Identifica gli elementi con spazi vuoti.\n"
+        "2. Compila usando le informazioni del messaggio utente e i dati dello studio.\n"
+        f"3. Usa '{ph}' per qualsiasi dato non disponibile.\n"
+        "4. Non includere elementi che non necessitano di modifica.\n"
+        "5. Non inventare dati non forniti esplicitamente.\n"
+        + (f"6. {lang_note}\n" if lang_note else "")
+        + "\nRestituisci SOLO un oggetto JSON valido:\n"
+        "{\"indice\": \"testo_completo_sostituito\", ...}\n"
+        "Dove 'indice' è il numero dell'elemento e 'testo_completo_sostituito' "
+        "è il testo completo della riga compilata (non solo il valore inserito)."
+    )
+
+    human_parts = [f"Messaggio dell'utente:\n{user_message}"]
+    if carta_text:
+        human_parts.append(
+            f"Dati dello studio (per campi relativi al firmatario/studio):\n{carta_text}"
+        )
+    human_parts.append(f"Elementi del documento:\n{elements_text}")
+
+    raw = _call_chat(
+        [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],
+        max_tokens=2000,
+    )
+    text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+    try:
+        parsed = json.loads(text)
+        return {int(k): str(v) for k, v in parsed.items()}
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("_fill_template_gaps: JSON parse failed, raw=%r", raw[:200])
+        return {}
+
+
+def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
+    """Apply fill_map to a DOCX file and return the modified bytes.
+    Preserves formatting: tries run-level replacement first, falls
+    back to rewriting the first run only if no placeholder run is found."""
+    from docx import Document as _D
+    doc = _D(source_path)
+
+    all_paras: List = []
+    for para in doc.paragraphs:
+        if para.text.strip():
+            all_paras.append(para)
+    for table in doc.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    if para.text.strip():
+                        all_paras.append(para)
+
+    for idx, replacement in fill_map.items():
+        if idx >= len(all_paras):
+            continue
+        para = all_paras[idx]
+        replaced = False
+        for run in para.runs:
+            if _PLACEHOLDER_RUN_PATTERN.search(run.text) or not run.text.strip():
+                run.text = replacement
+                replaced = True
+                break
+        if not replaced and para.runs:
+            para.runs[0].text = replacement
+            for run in para.runs[1:]:
+                run.text = ""
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def _build_docx_from_pdf_elements(
+    elements: List[Dict], fill_map: Dict[int, str]
+) -> bytes:
+    """Build a new DOCX from PDF-extracted elements with gap-filling applied.
+    Used when the source was a PDF — cannot preserve original PDF formatting."""
+    from docx import Document as _D
+    doc = _D()
+    for element in elements:
+        idx = element["index"]
+        text = fill_map.get(idx, element["text"])
+        if len(text) < 80 and text.upper() == text and text.strip():
+            doc.add_heading(text, level=2)
+        else:
+            doc.add_paragraph(text)
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 def generate_document(

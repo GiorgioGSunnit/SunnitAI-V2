@@ -34,6 +34,11 @@ from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
     DOCUMENT_TYPE_REGISTRY,
     _placeholder,
+    _extract_docx_elements,
+    _extract_pdf_elements,
+    _fill_template_gaps,
+    _apply_fill_to_docx,
+    _build_docx_from_pdf_elements,
     classify_document_type,
     classify_system_template,
     generate_document,
@@ -42,7 +47,8 @@ from ..rag.document_generation import (
 from ..rag.graph_nodes import _extract_citations
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
 from .user_store import (get_user_by_email, get_user_by_id,
-    get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile, create_studio_and_admin,
+    get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
+    get_user_document_for_generation, create_studio_and_admin,
     create_user_with_invite, get_tenant_invite_code, update_user_profile)
 
 logger = logging.getLogger(__name__)
@@ -525,6 +531,88 @@ async def get_tenant_profile(
     if "document_expiry_hours" not in profile or profile["document_expiry_hours"] is None:
         profile["document_expiry_hours"] = 24
     return profile
+
+
+class UserTemplateRequest(BaseModel):
+    doc_id: str = Field(..., description="UUID of the user's uploaded template")
+    message: str = Field(..., min_length=1, description="Free-text describing what to fill in")
+    session_id: Optional[str] = None
+
+
+@app.post("/api/generate/from-user-template")
+async def generate_from_user_template(
+    request: UserTemplateRequest,
+    current_user: dict = Depends(require_user),
+):
+    """Fill a user's own uploaded template with data from their message.
+    Returns a filled .docx file. PDFs are extracted and rewritten as .docx."""
+    user_id = current_user["sub"]
+    tenant_id = current_user.get("tenant_id")
+
+    doc_meta = get_user_document_for_generation(user_id, tenant_id, request.doc_id)
+    if not doc_meta:
+        raise HTTPException(status_code=404, detail="Template not found or access denied")
+
+    storage_path = doc_meta["storage_path"]
+    original_filename = doc_meta["original_filename"]
+
+    if not os.path.exists(storage_path):
+        raise HTTPException(status_code=500, detail="Template file not found on disk")
+
+    session_id = request.session_id
+    _uid = current_user["sub"]
+    _tid = current_user.get("tenant_id")
+    if not session_id:
+        session = chatbot.create_session(user_id=_uid, tenant_id=_tid)
+        session_id = session.session_id
+    session = chatbot.get_session(session_id, user_id=_uid)
+    if not session:
+        session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
+        chatbot._sessions[session_id] = session
+    session_lang = session.session_language
+    session.add_message("user", request.message)
+
+    carta_intestata = get_tenant_profile_full(tenant_id) if tenant_id else None
+
+    ext = os.path.splitext(storage_path)[1].lower()
+    is_pdf = ext == ".pdf"
+
+    try:
+        elements = _extract_pdf_elements(storage_path) if is_pdf else _extract_docx_elements(storage_path)
+        if not elements:
+            raise HTTPException(status_code=422, detail="Could not extract any text from the template")
+
+        fill_map = _fill_template_gaps(elements, request.message, carta_intestata, session_lang)
+
+        if is_pdf:
+            docx_bytes = _build_docx_from_pdf_elements(elements, fill_map)
+        else:
+            docx_bytes = _apply_fill_to_docx(storage_path, fill_map)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("User template generation error: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    base_name = os.path.splitext(original_filename)[0]
+    output_filename = f"{base_name}_compilato.docx"
+
+    confirmation = _build_generation_confirmation(session_lang)
+    if is_pdf:
+        conversion_note = {
+            "it": " (il tuo PDF è stato convertito in DOCX)",
+            "en": " (your PDF was converted to DOCX)",
+            "es": " (tu PDF fue convertido a DOCX)",
+        }.get(session_lang, " (il tuo PDF è stato convertito in DOCX)")
+        confirmation = confirmation.rstrip(".") + conversion_note + "."
+    session.add_message("assistant", confirmation, metadata={})
+
+    return StreamingResponse(
+        io.BytesIO(docx_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f'attachment; filename="{output_filename}"'},
+    )
 
 
 @app.patch("/api/tenant/profile")

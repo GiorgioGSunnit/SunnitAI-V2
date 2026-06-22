@@ -153,6 +153,35 @@ def get_tenant_profile_full(tenant_id: str) -> Optional[dict]:
         _release(conn)
 
 
+def get_user_document_for_generation(
+    user_id: str, tenant_id: str, doc_id: str
+) -> Optional[dict]:
+    """Verify ownership and return storage_path + original_filename for
+    a user document. Returns None if not found, expired, or access denied."""
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT storage_path, original_filename
+                FROM user_documents
+                WHERE id = %s
+                  AND (
+                    (scope = 'personal' AND user_id = %s)
+                    OR (scope = 'tenant' AND tenant_id = %s)
+                  )
+                  AND (expires_at IS NULL OR expires_at > NOW())
+                """,
+                (doc_id, user_id, tenant_id),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            return {"storage_path": row[0], "original_filename": row[1]}
+    finally:
+        _release(conn)
+
+
 def upsert_tenant_profile(tenant_id: str, fields: dict) -> dict:
     """Insert or update tenant_profiles fields for the given tenant.
     Only keys in _TENANT_PROFILE_COLUMNS are written; others are ignored."""
