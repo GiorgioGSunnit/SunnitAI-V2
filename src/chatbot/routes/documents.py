@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from ...constants import PRIVATE_DOCS_BASE, SUPPORTED_EXTENSIONS
@@ -92,6 +93,24 @@ def list_documents(
         }
         for d in docs
     ]
+
+
+@router.get("/{doc_id}/download")
+def download_document(
+    doc_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    doc = get_user_document(db, doc_id, current_user.id, current_user.tenant_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if not os.path.exists(doc.storage_path):
+        raise HTTPException(status_code=404, detail="File not found on disk")
+    return FileResponse(
+        doc.storage_path,
+        filename=doc.original_filename,
+        media_type="application/octet-stream",
+    )
 
 
 @router.delete("/{doc_id}", status_code=status.HTTP_204_NO_CONTENT)
