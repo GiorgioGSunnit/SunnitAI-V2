@@ -14,113 +14,7 @@ from .ai_chat import _call_chat
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_TYPE_REGISTRY = {
-    "opposition_act": {
-        "keywords": ["opposizione", "decreto ingiuntivo", "opporsi", "atto di opposizione", "oposicion", "monitorio", "opposition", "opposizione al decreto", "opporsi al decreto ingiuntivo", "mi hanno notificato un decreto", "ricevuto decreto ingiuntivo", "oppormi al decreto", "ho ricevuto un decreto ingiuntivo", "notificato decreto"],
-        "fields": ["plaintiff", "defendant", "injunction_reference", "court", "amount", "grounds", "date"],
-        "label": "Atto di Opposizione a Decreto Ingiuntivo",
-    },
-    "rental_basic": {
-        "keywords": ["cedolare secca", "affitto semplice", "locazione privata", "contratto base affitto", "affitto", "affitto con cedolare", "locazione con cedolare", "cedolare", "locare", "dare in affitto", "mettere in affitto", "contratto d'affitto"],
-        "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "durata_anni", "cedolare_secca"],
-        "label": "Contratto di Locazione con Cedolare Secca",
-    },
-    "rental_standard": {
-        "keywords": ["locazione abitativa", "contratto 3+2", "affitto residenziale", "legge 431", "accordo territoriale", "canone concordato", "locazione", "contratto di locazione abitativa", "locazione 3+2"],
-        "fields": ["locatore", "conduttore", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "deposito_cauzionale", "data_inizio", "data_fine", "accordo_territoriale", "iban_locatore"],
-        "label": "Contratto di Locazione Abitativa (3+2)",
-    },
-    "rental_student": {
-        "keywords": ["locazione studenti", "affitto universitario", "studente universitario", "fuori sede", "locazione universitaria", "contratto", "contratto per studenti", "affitto per studenti", "locazione per universitari"],
-        "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "data_fine", "corso_studi", "nome_universita", "comune_universita"],
-        "label": "Locazione Abitativa per Studenti Universitari",
-    },
-    "rental_transitional": {
-        "keywords": ["locazione transitoria", "affitto temporaneo", "contratto transitorio", "locazione breve", "esigenza transitoria", "affitto di natura transitoria", "locazione di natura transitoria"],
-        "fields": ["locatore", "conduttore", "indirizzo_immobile", "canone_mensile", "deposito_cauzionale", "data_inizio", "data_fine", "motivazione_transitorietà", "accordo_territoriale"],
-        "label": "Locazione Abitativa di Natura Transitoria",
-    },
-    "rental_free_rent": {
-        "keywords": ["canone libero", "locazione canone libero", "affitto 4+4", "contratto libero", "affitto a canone libero", "locazione a canone libero"],
-        "fields": ["locatore", "conduttore", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "canone_mensile", "deposito_cauzionale", "iban_locatore", "data_efficacia"],
-        "label": "Contratto di Locazione ad Uso Abitativo a Canone Libero",
-    },
-    "rental_commercial": {
-        "keywords": ["locazione commerciale", "affitto commerciale", "uso commerciale", "locazione ufficio", "affitto negozio", "uso diverso abitazione", "legge 392", "locazione ad uso commerciale", "affitto per ufficio", "contratto commerciale immobile"],
-        "fields": ["parte_locatrice", "parte_conduttrice", "indirizzo_immobile", "riferimenti_catastali", "canone_annuale", "spese_conduzione", "deposito_cauzionale", "uso_destinato", "data_inizio", "data_fine", "foro_competente"],
-        "label": "Contratto di Locazione ad Uso Commerciale",
-    },
-    "rental_cancellation": {
-        "keywords": ["disdetta locazione", "recesso contratto affitto", "disdetta conduttore", "rescissione locazione", "recesso affitto", "disdetta del contratto di locazione", "disdetta dell'affitto", "recesso dal contratto", "recesso dal contratto di locazione", "comunicazione di recesso locazione", "disdetta", "uscire dall'affitto", "lasciare l'appartamento", "fine contratto", "non voglio rinnovare", "lasciare la casa", "non rinnovo l'affitto"],
-        "fields": ["conduttore", "indirizzo_conduttore", "locatore", "indirizzo_immobile", "data_stipula", "data_registrazione", "data_consegna", "preavviso_mesi", "modalita_invio"],
-        "label": "Disdetta Contratto di Locazione",
-    },
-    "insurance_cancellation": {
-        "keywords": ["disdetta polizza", "disdetta assicurazione", "recesso polizza", "cancellazione polizza", "disdetta contratto assicurazione", "disdetta della polizza", "disdetta del contratto assicurativo", "disdetta assicurativa", "rescissione polizza", "recesso dalla polizza", "cancellazione dell'assicurazione", "uscire dalla polizza", "cancellare assicurazione", "non rinnovare polizza", "non voglio rinnovare l'assicurazione", "chiudere la polizza"],
-        "fields": ["assicurato", "indirizzo_assicurato", "compagnia_assicurativa", "numero_polizza", "data_scadenza", "luogo", "data"],
-        "label": "Disdetta Polizza Assicurativa",
-    },
-    "insurance_declaration": {
-        "keywords": ["dichiarazione sostitutiva polizza", "dichiarazione assicurativa", "sostitutiva assicurazione", "dichiarazione polizza", "dichiarazione di polizza", "sostitutiva assicurativa"],
-        "fields": ["dichiarante", "luogo_nascita", "data_nascita", "residenza", "qualita", "organizzazione", "sede_organizzazione", "data_inizio", "data_fine", "attivita_autorizzate"],
-        "label": "Dichiarazione Sostitutiva di Polizza Assicurativa",
-    },
-    "employment_dismissal_appeal": {
-        "keywords": ["impugnativa licenziamento", "impugnare licenziamento", "contestare licenziamento", "ricorso licenziamento", "opposizione licenziamento", "licenziamento illegittimo", "reintegrazione lavoro", "impugnativa di licenziamento", "impugnare il licenziamento", "contestare il licenziamento", "reintegra", "licenziamento senza giusta causa", "mi hanno licenziato", "sono stato licenziato", "impugnare", "contestare il mio licenziamento", "licenziamento ingiusto", "licenziato ingiustamente", "licenziato illegittimamente"],
-        "fields": ["lavoratore", "indirizzo_lavoratore", "datore_lavoro", "indirizzo_datore_lavoro", "data_inizio_rapporto", "data_fine_rapporto", "qualifica", "mansione", "data_licenziamento", "modalita_licenziamento", "motivi_illegittimita", "modalita_invio", "data"],
-        "label": "Impugnativa di Licenziamento",
-    },
-    "employment_termination": {
-        "keywords": ["licenziamento giusta causa", "lettera licenziamento", "licenziare dipendente", "risoluzione rapporto lavoro", "licenziamento immediato", "lettera di licenziamento", "licenziamento per giusta causa", "licenziare", "risoluzione del rapporto di lavoro", "devo licenziare", "allontanare un dipendente", "mandare via un dipendente", "comunicazione di licenziamento", "recesso datoriale"],
-        "fields": ["datore_lavoro", "indirizzo_datore_lavoro", "dipendente", "indirizzo_dipendente", "data_inizio_rapporto", "qualifica", "giusta_causa", "modalita_invio", "luogo", "data"],
-        "label": "Lettera di Licenziamento per Giusta Causa",
-    },
-    "franchising_contract": {
-        "keywords": ["contratto di franchising", "franchising", "affiliazione commerciale", "franchisor", "franchisee", "contratto di affiliazione"],
-        "fields": ["franchisor", "indirizzo_franchisor", "franchisee", "indirizzo_franchisee", "settore_attivita", "area_esclusiva", "fee_ingresso", "royalties_percentuale", "incasso_minimo_annuale", "durata_anni", "foro_competente", "luogo", "data"],
-        "label": "Contratto di Franchising",
-    },
-    "demand_letter": {
-        "keywords": ["diffida", "messa in mora", "lettera di diffida", "intimazione", "sollecito legale", "burofax", "demand letter", "lettera di messa in mora", "non paga", "sollecito", "recupero crediti", "mi deve dei soldi", "debito non pagato", "inadempimento contrattuale", "far pagare", "recuperare un credito"],
-        "fields": ["mittente", "destinatario", "oggetto_controversia", "importo_dovuto", "termine_adempimento", "conseguenze", "data"],
-        "label": "Diffida / Lettera di Messa in Mora",
-    },
-    "appeal": {
-        "keywords": ["ricorso", "appello", "impugnazione", "opposizione al provvedimento", "recurso", "appeal", "petition", "atto di appello", "ricorso al tribunale", "impugnazione del provvedimento", "impugnare una sentenza", "contestare una multa", "ricorrere al tribunale", "fare ricorso", "presentare appello", "impugnare il provvedimento"],
-        "fields": ["appellante", "controparte", "tribunale", "provvedimento_impugnato", "motivi", "petitum", "data"],
-        "label": "Ricorso / Atto di Appello",
-    },
-    "power_of_attorney": {
-        "keywords": ["procura", "delega", "mandato", "rappresentanza legale", "poder notarial", "power of attorney", "atto di procura", "delega notarile", "procura speciale", "delegare", "dare poteri", "agire per conto mio", "rappresentarmi", "autorizzare qualcuno", "conferire poteri"],
-        "fields": ["conferente", "procuratore", "oggetto_poteri", "limitazioni", "durata", "data", "notaio"],
-        "label": "Procura / Delega",
-    },
-    "sale_agreement": {
-        "keywords": ["contratto di compravendita", "vendita", "acquisto", "trasferimento proprietà", "compraventa", "sale agreement", "contratto di vendita", "atto di compravendita", "contratto per la vendita"],
-        "fields": ["venditore", "acquirente", "descrizione_bene", "prezzo", "modalita_pagamento", "data_consegna", "garanzie", "data"],
-        "label": "Contratto di Compravendita",
-    },
-    "verbale_assemblea": {
-        "keywords": ["verbale", "assemblea condominiale", "riunione condominiale", "delibera assemblea", "delibera condominiale", "verbale condominio", "riunione condominio", "condominio", "acta", "asamblea", "comunidad de propietarios", "junta de propietarios", "minutes", "condominium meeting", "homeowners association", "assemblea", "riunione condominio", "delibera", "verbale di assemblea", "mettere a verbale", "resoconto assemblea"],
-        "fields": ["data_riunione", "luogo_riunione", "condominio", "indirizzo_condominio", "amministratore", "condomini_presenti", "ordine_del_giorno", "delibere_approvate", "risultati_votazioni"],
-        "label": "Verbale di Assemblea Condominiale",
-    },
-    "nota_contestazione": {
-        "keywords": ["nota alla contestazione", "contesto", "non ero parte", "non coinvolto", "incidente stradale", "dichiarazione", "contesta", "contesto l'infrazione", "non ero presente", "non sono coinvolto", "contesto la multa", "dichiarazione di non coinvolgimento", "non ho partecipato", "errore di targa", "auto non era mia"],
-        "fields": ["mittente", "indirizzo_mittente", "codice_fiscale_mittente", "ente_contestante", "indirizzo_ente", "numero_contestazione", "data_contestazione", "luogo_incidente", "data_incidente", "ora_incidente", "targa_veicolo_contestato", "descrizione_fatti", "luogo", "data"],
-        "label": "Nota alla Contestazione - Dichiarazione di Non Coinvolgimento",
-    },
-    "memoria_difensiva": {
-        "keywords": ["memoria difensiva", "memoria", "difensiva", "atto difensivo",
-                     "risposta alla denuncia", "rispondere alla denuncia",
-                     "memoria di risposta", "atto di difesa", "difesa penale",
-                     "difesa", "risposta all'accusa", "difendermi", "sono stato denunciato",
-                     "mi hanno denunciato", "rispondere a una denuncia", "mi hanno accusato",
-                     "controdeduzione", "difesa scritta"],
-        "fields": ["plaintiff", "defendant", "injunction_reference", "court", "amount", "grounds", "date"],
-        "label": "Memoria Difensiva",
-    },
-}
+DOCUMENT_TYPE_REGISTRY: dict = {}
 
 
 def _placeholder(lang: str) -> str:
@@ -1800,12 +1694,22 @@ def classify_system_template(message: str, lang: str) -> str:
         return "unknown"
 
     codici = sorted({e["codice"] for e in SYSTEM_TEMPLATES_CATALOG})
+    _CODICE_DESCRIPTIONS = {
+        "Codice di procedura civile": "atti processuali civili: citazioni, ricorsi, memorie, opposizioni, esecuzioni, tutele cautelari",
+        "Codice di procedura penale": "atti processuali penali: difese, istanze, ricorsi, memorie penali, misure cautelari penali",
+        "Codice del processo amministrativo": "atti processuali amministrativi: ricorsi TAR, istanze sospensive, ottemperanza, accesso agli atti",
+        "Contratti e Atti Stragiudiziali": "contratti privati e atti non processuali: locazioni, polizze, lavoro, compravendite, franchising, diffide, messa in mora, verbali, contestazioni",
+    }
+    codici_lines = "\n".join(
+        f"- {c}: {_CODICE_DESCRIPTIONS.get(c, '')}" for c in codici
+    )
     codice_system = (
-        "Sei un classificatore di richieste di atti giuridici italiani. "
-        "Determina a quale codice di procedura appartiene la richiesta "
-        "dell'utente.\n\nCodici disponibili:\n"
-        + "\n".join(f"- {c}" for c in codici)
-        + "\n\nRestituisci SOLO il nome esatto del codice, nient'altro."
+        "Sei un classificatore di richieste di documenti legali italiani. "
+        "Determina a quale categoria appartiene la richiesta dell'utente "
+        "scegliendo tra quelle disponibili.\n\n"
+        "Categorie disponibili:\n"
+        + codici_lines
+        + "\n\nRestituisci SOLO il nome esatto della categoria, nient'altro."
     )
     try:
         codice_result = _call_chat(
@@ -2012,28 +1916,7 @@ def generate_document(
     Returns:
         {"draft": str, "case_details": Dict[str, str], "doc_type": str}
     """
-    _SYSTEM_FN = {
-        "opposition_act": _opposition_system,
-        "rental_basic": _rental_basic_system,
-        "rental_standard": _rental_standard_system,
-        "rental_student": _rental_student_system,
-        "rental_transitional": _rental_transitional_system,
-        "rental_free_rent": _rental_free_rent_system,
-        "rental_commercial": _rental_commercial_system,
-        "rental_cancellation": _rental_cancellation_system,
-        "insurance_cancellation": _insurance_cancellation_system,
-        "insurance_declaration": _insurance_declaration_system,
-        "employment_dismissal_appeal": _employment_dismissal_appeal_system,
-        "employment_termination": _employment_termination_system,
-        "franchising_contract": _franchising_contract_system,
-        "demand_letter": _demand_letter_system,
-        "appeal": _appeal_system,
-        "power_of_attorney": _power_of_attorney_system,
-        "sale_agreement": _sale_agreement_system,
-        "verbale_assemblea": _verbale_assemblea_system,
-        "nota_contestazione": _nota_contestazione_system,
-        "memoria_difensiva": _memoria_difensiva_system,
-    }
+    _SYSTEM_FN: dict = {}
 
     system_fn = _SYSTEM_FN.get(doc_type)
     system_template_entry = None if system_fn else SYSTEM_TEMPLATES_BY_KEY.get(doc_type)
@@ -2051,7 +1934,7 @@ def generate_document(
             doc_type,
         )
         system_text = _opposition_system(lang)
-        fields_dict = extract_document_fields(user_message, "opposition_act", lang)
+        fields_dict = {}
 
     _FORMATTING_RULE = (
         "FORMATTING RULE: Use consistent, professional capitalization throughout. "
