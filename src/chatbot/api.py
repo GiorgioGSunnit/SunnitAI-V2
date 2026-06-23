@@ -288,6 +288,14 @@ _DOC_FILENAMES = {
     "comparison": ("CONFRONTO TRA DOCUMENTI", "COMPARACIÓN DE DOCUMENTOS", "DOCUMENT COMPARISON", "confronto_documenti"),
 }
 
+# Catalog indexed by doc_type key — each entry exposes {"label", "tipo_atto"} so
+# generate_download can produce a human-readable title without relying on the
+# positional tuple layout of _DOC_FILENAMES.
+SYSTEM_TEMPLATES_BY_KEY: dict[str, dict] = {
+    key: {"label": val[0], "tipo_atto": val[0]}
+    for key, val in _DOC_FILENAMES.items()
+}
+
 
 def _strip_markdown(text: str) -> str:
     text = re.sub(r'\*\*|__', '', text)
@@ -962,7 +970,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     is_comparison_request = bool(re.search(
         r'\b(confronta|confronto|differenze?\s+tra|compara|paragona|versus|vs\.?)\b',
         request.message, re.IGNORECASE
-    )) or request.doc_type == "comparison" or bool(request.draft)
+    )) or request.doc_type == "comparison"
 
     if not is_comparison_request and not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
@@ -986,7 +994,10 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
 
     if is_comparison_request:
         doc_type = "comparison"
-    elif request.doc_type:
+    elif request.doc_type and (
+        request.doc_type in SYSTEM_TEMPLATES_BY_KEY
+        or request.doc_type in {"comparison"}
+    ):
         doc_type = request.doc_type
     else:
         doc_type = classify_document_type(request.message, session_lang)
@@ -1021,9 +1032,15 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     )
 
     lang_idx = {"it": 0, "es": 1, "en": 2}.get(session_lang, 0)
-    doc_info = _DOC_FILENAMES.get(doc_type, _DOC_FILENAMES["opposition_act"])
-    doc_title = doc_info[lang_idx]
-    filename = f"{doc_info[3]}.docx"
+    _catalog_entry = SYSTEM_TEMPLATES_BY_KEY.get(doc_type)
+    if _catalog_entry:
+        doc_title = _catalog_entry.get("label") or _catalog_entry.get("tipo_atto", "Documento")
+        _slug = re.sub(r"[^a-z0-9]+", "_", doc_title.lower()).strip("_")
+        filename = f"{_slug}.docx"
+    else:
+        doc_info = _DOC_FILENAMES.get(doc_type, _DOC_FILENAMES["opposition_act"])
+        doc_title = doc_info[lang_idx]
+        filename = f"{doc_info[3]}.docx"
     doc = Document()
     for section in doc.sections:
         section.top_margin = Cm(2.5)

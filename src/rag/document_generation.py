@@ -61,6 +61,15 @@ def is_generation_request(message: str) -> bool:
         "scrivi un", "scrivi una", "redigi un", "redigi una",
         "genera un", "genera una", "crea un", "crea una",
         "prepara un", "prepara una", "stendi un", "stendi una",
+        # Italian without article — verb + specific document type word
+        "scrivi atto", "scrivi contratto", "scrivi lettera",
+        "scrivi documento", "scrivi memoria", "scrivi ricorso",
+        "scrivi istanza", "scrivi verbale", "scrivi diffida",
+        "scrivi procura", "scrivi appello", "scrivi dichiarazione",
+        "redigi atto", "redigi contratto", "redigi lettera",
+        "redigi documento", "redigi ricorso", "redigi memoria",
+        "genera atto", "genera documento", "genera contratto",
+        "generami documento", "generami atto", "generami contratto",
         # Common phrases
         "fammi un atto", "fammi un contratto", "fammi una lettera",
         "fammi un documento", "fammi una memoria", "fammi un verbale",
@@ -80,12 +89,17 @@ def is_generation_request(message: str) -> bool:
     ]
     if any(t in msg for t in strong_triggers):
         return True
-    all_keywords = [
-        kw for entry in DOCUMENT_TYPE_REGISTRY.values()
-        for kw in entry["keywords"]
-    ]
+    # Weak path: action verb + any significant word from the catalog
+    # (DOCUMENT_TYPE_REGISTRY is now empty — use catalog labels instead)
+    _catalog_words = frozenset(
+        word
+        for entry in SYSTEM_TEMPLATES_CATALOG
+        for phrase in [entry.get("tipo_atto", ""), entry.get("label", "")]
+        for word in phrase.lower().split()
+        if len(word) > 5
+    )
     has_verb = any(v in msg for v in action_verbs)
-    has_keyword = any(k in msg for k in all_keywords)
+    has_keyword = any(k in msg for k in _catalog_words)
     return has_verb and has_keyword
 
 

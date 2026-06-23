@@ -38,9 +38,18 @@ async def upload_document(
 
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in SUPPORTED_EXTENSIONS:
+        if ext == ".doc":
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Il formato .doc non è supportato. "
+                    "Converti il file in .docx (Salva con nome → Word .docx) "
+                    "e ricaricalo."
+                ),
+            )
         raise HTTPException(
             status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
+            detail=f"Formato non supportato: '{ext}'. Formati accettati: {', '.join(sorted(SUPPORTED_EXTENSIONS))}",
         )
 
     folder = os.path.join(PRIVATE_DOCS_BASE, str(current_user.tenant_id), str(current_user.id))
