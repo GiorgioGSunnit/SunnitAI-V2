@@ -35,7 +35,7 @@ _DOCUMENT_EXTENSIONS = {".txt"}
 def _infer_document_role(ext: str, explicit_role: Optional[str]) -> str:
     if explicit_role in ("template", "document"):
         return explicit_role
-    return "document" if ext in _DOCUMENT_EXTENSIONS else "template"
+    return "document"
 
 
 # ---------------------------------------------------------------------------
@@ -159,7 +159,7 @@ def list_documents(
             "original_filename": d.original_filename,
             "file_size_bytes": d.file_size_bytes,
             "scope": d.scope,
-            "document_role": getattr(d, "document_role", "template"),
+            "document_role": getattr(d, "document_role", "document"),
             "expires_at": d.expires_at.isoformat() if d.expires_at else None,
             "uploaded_at": d.uploaded_at.isoformat(),
         }
@@ -206,7 +206,7 @@ async def analyse_document(
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    role = getattr(doc, "document_role", "template")
+    role = getattr(doc, "document_role", "document")
     if role != "document":
         raise HTTPException(
             status_code=400,

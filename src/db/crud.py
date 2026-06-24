@@ -382,7 +382,7 @@ def create_user_document(
     file_size_bytes: Optional[int] = None,
     scope: str = "personal",
     expires_at=None,
-    document_role: str = "template",
+    document_role: str = "document",
 ) -> UserDocument:
     doc = UserDocument(
         user_id=user_id,
