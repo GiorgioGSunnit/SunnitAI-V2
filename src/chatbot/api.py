@@ -19,6 +19,7 @@ import os
 import re
 import time
 import urllib.parse
+import uuid
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Optional
@@ -30,6 +31,7 @@ from pydantic import BaseModel, Field
 
 from .session import ChatBot, ChatSession, _generate_session_title
 from ..db.base import get_db
+from ..db.crud import find_user_document_by_name
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
@@ -44,13 +46,14 @@ from ..rag.document_generation import (
     classify_system_template,
     generate_document,
     is_generation_request,
+    _call_chat,
 )
 from ..rag.graph_nodes import _extract_citations
+from langchain_core.messages import SystemMessage, HumanMessage
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
 from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
     get_user_document_for_generation, create_studio_and_admin,
-    find_user_document_by_name,
     create_user_with_invite, get_tenant_invite_code, update_user_profile)
 
 logger = logging.getLogger(__name__)
