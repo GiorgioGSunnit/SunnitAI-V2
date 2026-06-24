@@ -1022,9 +1022,6 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             result = await loop.run_in_executor(
                 None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, "")
             )
-    except ValueError as exc:
-        logger.warning("Generation catalog miss for doc_type=%r: %s", doc_type, exc)
-        raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
@@ -1040,20 +1037,10 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         doc_title = _catalog_entry.get("label") or _catalog_entry.get("tipo_atto", "Documento")
         _slug = re.sub(r"[^a-z0-9]+", "_", doc_title.lower()).strip("_")
         filename = f"{_slug}.docx"
-    elif doc_type in _DOC_FILENAMES:
-        doc_info = _DOC_FILENAMES[doc_type]
+    else:
+        doc_info = _DOC_FILENAMES.get(doc_type, _DOC_FILENAMES["opposition_act"])
         doc_title = doc_info[lang_idx]
         filename = f"{doc_info[3]}.docx"
-    else:
-        logger.error(
-            "generate_download: doc_type=%r not in SYSTEM_TEMPLATES_BY_KEY or _DOC_FILENAMES "
-            "— catalog key mismatch. Returning 400.",
-            doc_type,
-        )
-        raise HTTPException(
-            status_code=400,
-            detail=_build_clarification_message(),
-        )
     doc = Document()
     for section in doc.sections:
         section.top_margin = Cm(2.5)

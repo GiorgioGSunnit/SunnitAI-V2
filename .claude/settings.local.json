@@ -36,7 +36,11 @@
       "Bash(pip3 install *)",
       "Bash(python3 -c \"import fitz; print\\('fitz OK', fitz.__version__\\)\")",
       "Bash(python3.11 -c \"import fitz; print\\('OK', fitz.__version__\\)\")",
-      "Bash(python3.11 -)"
+      "Bash(python3.11 -)",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/rag/document_generation.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/chatbot/api.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/models.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/crud.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

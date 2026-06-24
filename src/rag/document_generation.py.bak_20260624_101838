@@ -104,12 +104,6 @@ def is_generation_request(message: str) -> bool:
 
 
 def classify_document_type(message: str, lang: str) -> str:
-    # DOCUMENT_TYPE_REGISTRY is intentionally empty — the legacy 20-type
-    # registry has been retired. Skip the LLM call entirely and return
-    # "unknown" so the caller falls through to classify_system_template.
-    if not DOCUMENT_TYPE_REGISTRY:
-        return "unknown"
-
     type_list = "\n".join(
         f"- {key}: {entry['label']}"
         for key, entry in DOCUMENT_TYPE_REGISTRY.items()
@@ -1804,57 +1798,16 @@ def classify_system_template(message: str, lang: str) -> str:
         logger.warning(f"classify_system_template stage 3 failed: {e}")
         return "unknown"
 
-    def _normalize(s: str) -> set:
-        """Lowercase, strip punctuation, split to tokens, drop stopwords."""
-        import re as _re
-        _STOP = {
-            "di", "del", "della", "dei", "degli", "delle", "a", "ad", "al",
-            "alla", "alle", "agli", "ai", "da", "dal", "dalla", "dai", "dagli",
-            "dalle", "in", "nel", "nella", "nei", "negli", "nelle", "su", "sul",
-            "sulla", "sui", "sugli", "sulle", "con", "per", "tra", "fra",
-            "e", "o", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
-            "che", "non", "si", "è", "uso", "ad",
-        }
-        tokens = _re.sub(r"[^a-z0-9\s]", " ", s.lower()).split()
-        return {t for t in tokens if t not in _STOP and len(t) > 1}
-
-    def _overlap_score(a: str, b: str) -> float:
-        """Jaccard-style overlap between token sets of two strings."""
-        ta, tb = _normalize(a), _normalize(b)
-        if not ta or not tb:
-            return 0.0
-        return len(ta & tb) / len(ta | tb)
-
-    # Fast path: exact substring match (handles perfect LLM output)
     matched_entry = next(
         (
             e for e in entries_in_categoria
-            if e["tipo_atto"].lower() in tipo_result.lower()
-            or tipo_result.lower() in e["tipo_atto"].lower()
+            if e["tipo_atto"].lower() in tipo_result.lower() or tipo_result.lower() in e["tipo_atto"].lower()
         ),
         None,
     )
-
-    # Fuzzy fallback: pick catalog entry with highest token overlap
     if not matched_entry:
-        scored = [
-            (e, _overlap_score(tipo_result, e["tipo_atto"]))
-            for e in entries_in_categoria
-        ]
-        best_entry, best_score = max(scored, key=lambda x: x[1])
-        if best_score >= 0.35:
-            logger.info(
-                "classify_system_template: fuzzy matched %r → %r (score=%.2f)",
-                tipo_result, best_entry["tipo_atto"], best_score,
-            )
-            matched_entry = best_entry
-        else:
-            logger.warning(
-                "classify_system_template: no match for tipo_result=%r "
-                "(best candidate %r scored %.2f < 0.35)",
-                tipo_result, best_entry["tipo_atto"], best_score,
-            )
-            return "unknown"
+        logger.warning(f"classify_system_template: no match for tipo_result={tipo_result!r}")
+        return "unknown"
 
     fname = matched_entry["filename"]
     return fname[:-5] if fname.endswith(".docx") else fname
@@ -2169,15 +2122,13 @@ def generate_document(
         system_text = _build_system_template_prompt(system_template_entry, lang)
         fields_dict = extract_system_template_fields(user_message, system_template_entry, lang)
     else:
-        logger.error(
-            "generate_document: doc_type=%r not found in _SYSTEM_FN or SYSTEM_TEMPLATES_BY_KEY "
-            "— catalog key mismatch. Raising ValueError instead of falling back to opposition.",
+        logger.warning(
+            "generate_document: no system prompt function or system template for doc_type=%r, "
+            "falling back to _opposition_system",
             doc_type,
         )
-        raise ValueError(
-            f"Tipo di documento '{doc_type}' non trovato nel catalogo. "
-            "Riprova descrivendo il documento in modo più specifico."
-        )
+        system_text = _opposition_system(lang)
+        fields_dict = {}
 
     _FORMATTING_RULE = (
         "FORMATTING RULE: Use consistent, professional capitalization throughout. "
