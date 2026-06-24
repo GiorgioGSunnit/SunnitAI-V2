@@ -1139,8 +1139,14 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
 
 import re as _re_doc
 
-_FILENAME_RE = _re_doc.compile(
-    r'\b[\w\-]+\.(?:pdf|docx?|txt)\b', _re_doc.IGNORECASE
+# Two patterns:
+# 1. Filenames inside quotes (single or double) — captures spaces and special chars
+# 2. Filenames without quotes — word chars and hyphens only
+_FILENAME_QUOTED_RE = _re_doc.compile(
+    r'["\']([^"\'<>\n]+?\.(?:pdf|docx?|txt))["\']', _re_doc.IGNORECASE
+)
+_FILENAME_BARE_RE = _re_doc.compile(
+    r'\b([\w][\w\-]*\.(?:pdf|docx?|txt))\b', _re_doc.IGNORECASE
 )
 
 # Words that strongly signal "I want to READ this document"
@@ -1160,18 +1166,39 @@ _GENERATE_SIGNALS = {
 }
 
 
-def _detect_document_intent(message: str) -> Optional[str]:
+def _detect_document_intent(message: str) -> list:
     """
-    Return the filename mentioned in the message, or None if no filename found.
-    Strips extension for matching purposes — the caller does the DB lookup.
+    Return all filenames mentioned in the message as a list.
+    Handles both quoted filenames (with spaces) and bare word filenames.
+    Returns empty list if none found. Deduplicates case-insensitively.
+
+    Strategy: extract quoted filenames first, then remove them from the
+    message before running bare matching — prevents fragments like '2.pdf'
+    from being captured as separate filenames when they are part of a
+    quoted filename like 'Contratto 2.pdf'.
     """
-    matches = _FILENAME_RE.findall(message)
-    if matches:
-        return matches[0]
-    # Also catch bare names without extension if they look like a document reference
-    # e.g. "riassumi contratto_locazione" where the user forgot the .pdf
-    # We rely on the caller's fuzzy DB lookup to confirm whether it's a real file.
-    return None
+    seen = set()
+    result = []
+
+    # Step 1: quoted matches — most reliable, handles spaces
+    for m in _FILENAME_QUOTED_RE.findall(message):
+        clean = m.strip()
+        if clean and clean.lower() not in seen:
+            seen.add(clean.lower())
+            result.append(clean)
+
+    # Step 2: remove quoted filenames from message before bare matching
+    # so fragments inside them (e.g. '2.pdf', 'IT.pdf') are not re-matched
+    _msg_without_quoted = _FILENAME_QUOTED_RE.sub("", message)
+
+    # Step 3: bare matches on the cleaned message only
+    for m in _FILENAME_BARE_RE.findall(_msg_without_quoted):
+        clean = m.strip()
+        if clean and clean.lower() not in seen:
+            seen.add(clean.lower())
+            result.append(clean)
+
+    return result
 
 
 def _classify_doc_intent(message: str, session_lang: str) -> str:
@@ -1235,52 +1262,321 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
     vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
 
     # ── Document-aware branch ─────────────────────────────────────────────
-    # If the user mentions a filename (or a name that fuzzy-matches one of
-    # their uploaded documents), intercept before the generation and RAG paths.
+    # Detects filename(s) in the message and routes to analyse, compare,
+    # or generate — before the generation and RAG paths.
     if current_user:
-        _mentioned_name = _detect_document_intent(request.message)
-        if _mentioned_name:
-            from .routes.documents import router as _doc_router  # noqa: F401 — side-effect import not needed
-            from ..db.base import get_db as _get_db
+        import os as _os
+        from ..utils.document import extract_text_from_file as _extract
+        from ..db.base import get_db as _get_db
+
+        _mentioned_names = _detect_document_intent(request.message)
+        if _mentioned_names:
             _db_gen = _get_db()
             _db = next(_db_gen)
             try:
-                _matched_doc = find_user_document_by_name(
-                    _db,
-                    uuid.UUID(_uid),
-                    uuid.UUID(_tid),
-                    _mentioned_name,
-                )
+                _matched_docs = []
+                _not_found = []
+                for _name in _mentioned_names:
+                    _doc = find_user_document_by_name(
+                        _db,
+                        uuid.UUID(_uid),
+                        uuid.UUID(_tid),
+                        _name,
+                    )
+                    if _doc:
+                        # Avoid duplicates if two filename mentions resolve to same doc
+                        if not any(d.id == _doc.id for d in _matched_docs):
+                            _matched_docs.append(_doc)
+                    else:
+                        _not_found.append(_name)
             finally:
                 try:
                     _db_gen.close()
                 except Exception:
                     pass
 
-            if _matched_doc:
-                doc_intent = _classify_doc_intent(request.message, "it")
+            if _matched_docs:
+                _session = chatbot.get_session(session_id, user_id=_uid)
+                if not _session:
+                    _session = ChatSession(
+                        session_id=session_id, user_id=_uid, tenant_id=_tid
+                    )
+                    chatbot._sessions[session_id] = _session
+                _session_lang = _session.session_language
 
-                # ── GENERATE intent: signal the FE picker (existing flow) ──
+                _lang_note = {
+                    "es": "Rispondi in spagnolo.",
+                    "en": "Reply in English.",
+                }.get(_session_lang, "Rispondi in italiano.")
+
+                _MAX_CHARS_PER_DOC = 50_000  # full doc — windowing handles truncation
+
+                # ── TWO OR MORE DOCS → comparison path ────────────────────
+                if len(_matched_docs) >= 2:
+                    _doc_texts = []
+                    _missing = []
+                    for _doc in _matched_docs:
+                        if not _os.path.exists(_doc.storage_path):
+                            _missing.append(_doc.original_filename)
+                            continue
+                        try:
+                            _text = _extract(_doc.storage_path)
+                            if _text and _text.strip():
+                                _doc_texts.append((_doc.original_filename, _text[:_MAX_CHARS_PER_DOC]))
+                            else:
+                                _missing.append(_doc.original_filename)
+                        except Exception as _exc:
+                            logger.warning(
+                                "chat: failed to extract text from %s: %s",
+                                _doc.storage_path, _exc,
+                            )
+                            _missing.append(_doc.original_filename)
+
+                    if not _doc_texts:
+                        answer = (
+                            "Non riesco a estrarre il testo dai documenti indicati. "
+                            "Prova a ricaricarli."
+                        )
+                    elif len(_doc_texts) == 1:
+                        answer = (
+                            f"Non riesco a trovare o leggere il documento "
+                            f"'{_missing[0]}'. Puoi ricaricarlo?"
+                        )
+                    else:
+                        # Sequential extraction: one LLM call per document to extract
+                        # only the relevant section, then a final call to compare.
+                        # This keeps every call within the 10k token context limit
+                        # regardless of document size.
+                        _CHUNK = 3_000  # chars per doc chunk (~750 tokens)
+
+                        _WINDOW = 500
+
+                        def _get_dynamic_windows(text: str, keywords: list) -> str:
+                            """
+                            Heading-aware extraction:
+                            1. Split document into named article/section blocks
+                            2. Return blocks whose heading or body contains a keyword
+                            3. Fall back to keyword-window approach if no headings found
+                            """
+                            import re as _re
+
+                            # Match article/section headings in Italian legal docs.
+                            # Handles: ART. 6, Art. 6, ARTICOLO 6, 6., 6.1, SEZIONE 5
+                            # with various dash types (-, –, —) and trailing text.
+                            # Only match explicit ART./ARTICOLO headings — avoids
+                            # false positives from postcodes, isolated numbers, etc.
+                            _HEADING_RE = _re.compile(
+                                r'ART(?:ICOLO)?\.?\s*\d+\w*'
+                                r'(?:\s*[\-–—]\s*[A-ZÀÈÌÒÙ][^\n]{0,80})?'
+                                r'(?:\s{2,}|\n)',
+                                _re.IGNORECASE
+                            )
+
+                            _matches = list(_HEADING_RE.finditer(text))
+                            _blocks = []
+                            for i, m in enumerate(_matches):
+                                h_start = m.start()
+                                h_end = m.end()
+                                b_end = _matches[i + 1].start() if i + 1 < len(_matches) else len(text)
+                                heading = m.group().strip()
+                                body = text[h_end:b_end].strip()
+                                # Count keyword hits in this block
+                                combined = (heading + " " + body).lower()
+                                hits = sum(combined.count(kw.lower()) for kw in keywords)
+                                _blocks.append((h_start, hits, heading, body))
+
+                            # Stem Italian keywords to first 7 chars for fuzzy matching.
+                            # Use 7 chars minimum to avoid false positives from short stems
+                            # (e.g. 'manage' matching 'managed operations' in preambles).
+                            # Only keep stems from keywords >= 7 chars long.
+                            _GENERIC_STEMS = {
+                                'manage', 'gestio', 'clause', 'claus', 'breach',
+                                'penalt', 'paymen', 'remune',
+                            }
+                            _stems = list({
+                                kw[:7].lower()
+                                for kw in keywords
+                                if len(kw) >= 7 and kw[:7].lower() not in _GENERIC_STEMS
+                            })
+                            # Always include these high-signal Italian legal stems
+                            _stems += ['compenso', 'corrispo', 'pagamen', 'inadem',
+                                       'risoluz', 'recesso', 'sanzion', 'penale']
+                            _stems = list(set(_stems))
+
+                            def _hits(text_lower: str) -> int:
+                                return sum(text_lower.count(s) for s in _stems)
+
+                            if _blocks:
+                                _relevant = []
+                                for pos, _, heading, body in _blocks:
+                                    heading_lower = heading.lower()
+                                    body_lower = body.lower()
+                                    heading_hits = _hits(heading_lower)
+                                    body_hits = _hits(body_lower)
+                                    total = heading_hits + body_hits
+                                    if total == 0:
+                                        continue
+                                    # Exclude blocks where keywords appear only incidentally:
+                                    # heading has no keyword hit AND density is < 1 per 300 chars
+                                    density = body_hits / max(len(body), 1) * 300
+                                    if heading_hits == 0 and density < 1.0:
+                                        continue
+                                    _relevant.append((pos, total, f"{heading}\n{body[:800]}"))
+                                if _relevant:
+                                    # Sort by hit density (hits per char) not raw hits,
+                                    # so long preamble blocks don't outrank short precise articles
+                                    _relevant.sort(key=lambda x: (
+                                        -(_hits(x[2].lower()) / max(len(x[2]), 1)),
+                                        x[0]
+                                    ))
+                                    return "\n\n---\n\n".join(
+                                        block for _, _, block in _relevant
+                                    )[:4_000]
+
+                            # Fallback: stem-based keyword-window search
+                            _wins = []
+                            _seen = []
+                            _text_lower = text.lower()
+                            for stem in _stems:
+                                idx = 0
+                                while True:
+                                    idx = _text_lower.find(stem, idx)
+                                    if idx == -1:
+                                        break
+                                    s = max(0, idx - 200)
+                                    e = min(len(text), idx + _WINDOW)
+                                    if not any(max(s, a) < min(e, b) for a, b in _seen):
+                                        _wins.append((s, text[s:e].strip()))
+                                        _seen.append((s, e))
+                                    idx += len(stem)
+                            _wins.sort(key=lambda x: x[0])
+                            return "\n\n---\n\n".join(w for _, w in _wins)[:4_000]
+
+                        try:
+                            loop = asyncio.get_event_loop()
+
+                            # ── Call 1: extract search terms from the user's question ──
+                            # Tiny call — just needs 5-8 Italian legal keywords to search for.
+                            _kw_system = (
+                                "Sei un assistente legale italiano. "
+                                "Data una domanda su documenti legali, restituisci "
+                                "una lista di 6-10 parole chiave italiane (e inglesi se il "
+                                "documento potrebbe essere in inglese) da cercare nei documenti "
+                                "per trovare le clausole rilevanti. "
+                                "Restituisci SOLO le parole chiave separate da virgola, "
+                                "senza testo aggiuntivo. "
+                                "Esempio: corrispettivo, pagamento, fattura, inadempimento, risoluzione"
+                            )
+                            _kw_human = f"Domanda: {request.message}"
+
+                            _kw_raw = await loop.run_in_executor(
+                                None,
+                                partial(
+                                    _call_chat,
+                                    [
+                                        SystemMessage(content=_kw_system),
+                                        HumanMessage(content=_kw_human),
+                                    ],
+                                    80,
+                                ),
+                            )
+                            _keywords = [
+                                k.strip()
+                                for k in _kw_raw.replace("\n", ",").split(",")
+                                if k.strip() and len(k.strip()) > 2
+                            ]
+                            logger.warning(
+                                "chat: multi-doc comparison keywords for question %r: %r",
+                                request.message[:60], _keywords,
+                            )
+
+                            # ── Keyword search (no LLM) ───────────────────────────────
+                            _doc_extracts = []
+                            for fname, text in _doc_texts:
+                                _windows = _get_dynamic_windows(text, _keywords)
+                                if not _windows:
+                                    # Fallback: first 2000 chars if no keyword hits
+                                    _windows = text[:2_000]
+                                _doc_extracts.append((fname, _windows))
+
+                            # ── Call 2: comparison ────────────────────────────────────
+                            # The model cannot reliably acknowledge verbatim context.
+                            # Instead: present the extracted windows directly as the answer,
+                            # then ask the model to write only a brief concluding comparison
+                            # sentence — not to search or summarise the extracts.
+                            _extract_block = "\n\n".join(
+                                f"**{fname}**\n\n{extract}"
+                                for fname, extract in _doc_extracts
+                            )
+                            _compare_system = (
+                                "Sei un assistente legale italiano. "
+                                "Ti vengono forniti due blocchi di testo già estratti da documenti "
+                                "legali. Scrivi UN SOLO paragrafo (max 100 parole) che sintetizza "
+                                "le principali differenze tra i due documenti relativamente alla "
+                                "domanda dell'utente. "
+                                "Non ripetere il contenuto degli estratti — solo le differenze chiave. "
+                                + _lang_note
+                            )
+                            _compare_human = (
+                                "\n\n".join(
+                                    f"DOCUMENTO {i+1} — {fname}:\n{extract}"
+                                    for i, (fname, extract) in enumerate(_doc_extracts)
+                                )
+                                + f"\n\nDomanda: {request.message}"
+                            )
+
+                            try:
+                                _summary = await loop.run_in_executor(
+                                    None,
+                                    partial(
+                                        _call_chat,
+                                        [
+                                            SystemMessage(content=_compare_system),
+                                            HumanMessage(content=_compare_human),
+                                        ],
+                                        200,
+                                    ),
+                                )
+                            except Exception:
+                                _summary = ""
+
+                            # Build the final answer: show extracted clauses + brief summary
+                            _doc_names = " e ".join(f"«{f}»" for f, _ in _doc_extracts)
+                            answer = (
+                                f"Ho trovato le seguenti clausole rilevanti nei documenti {_doc_names}:\n\n"
+                                + _extract_block
+                                + (f"\n\n---\n\n**Sintesi delle differenze:**\n{_summary}" if _summary else "")
+                            )
+                        except Exception as _exc:
+                            logger.error(
+                                "chat: multi-doc comparison LLM call failed: %s",
+                                _exc, exc_info=True,
+                            )
+                            answer = (
+                                "Si è verificato un errore durante il confronto dei documenti. "
+                                "Riprova tra qualche istante."
+                            )
+
+                    _session.add_message("user", request.message)
+                    _session.add_message("assistant", answer)
+                    return ChatResponse(
+                        session_id=session_id,
+                        answer=answer,
+                        original_query=request.message,
+                        resolved_query=request.message,
+                        session_language=_session_lang,
+                        status_messages=["document_analyse_mode"],
+                    )
+
+                # ── ONE DOC → analyse or generate ─────────────────────────
+                _matched_doc = _matched_docs[0]
+                doc_intent = _classify_doc_intent(request.message, _session_lang)
+
                 if doc_intent == "generate":
-                    # Fall through to normal generation path — the FE already
-                    # handles picker display when it sees generation_mode.
-                    # We don't redirect here; just let is_generation_request
-                    # fire below. The FE will filter templates by relevance.
+                    # Fall through to generation path — FE picker handles it
                     pass
 
-                # ── ANALYSE intent: answer inline, never touch Neo4j ───────
                 elif doc_intent == "analyse":
-                    import os as _os
-                    from ..utils.document import extract_text_from_file as _extract
-
-                    _session = chatbot.get_session(session_id, user_id=_uid)
-                    if not _session:
-                        _session = ChatSession(
-                            session_id=session_id, user_id=_uid, tenant_id=_tid
-                        )
-                        chatbot._sessions[session_id] = _session
-                    _session_lang = _session.session_language
-
                     if not _os.path.exists(_matched_doc.storage_path):
                         answer = (
                             "Non riesco a trovare il file sul server. "
@@ -1302,15 +1598,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "non contiene testo estraibile."
                             )
                         else:
-                            _MAX_CHARS = 12_000
-                            _truncated = _text[:_MAX_CHARS]
-                            _was_cut = len(_text) > _MAX_CHARS
-
-                            _lang_note = {
-                                "es": "Rispondi in spagnolo.",
-                                "en": "Reply in English.",
-                            }.get(_session_lang, "Rispondi in italiano.")
-
+                            _truncated = _text[:12_000]
+                            _was_cut = len(_text) > 12_000
                             _system = (
                                 "Sei un assistente legale italiano. "
                                 "L'utente ti ha fornito il testo di un documento privato "
@@ -1319,9 +1608,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "sul contenuto del documento. "
                                 "Non inventare fatti non presenti nel testo. "
                                 "Se l'informazione richiesta non è nel documento, dillo chiaramente. "
-                                "Rispondi in modo conversazionale e naturale, come faresti "
-                                "normalmente in chat — non usare JSON, non usare elenchi numerati "
-                                "a meno che non siano utili, non aggiungere intestazioni. "
+                                "Rispondi in modo conversazionale e naturale — non usare JSON, "
+                                "non aggiungere intestazioni non necessarie. "
                                 + _lang_note
                             )
                             _human = (
@@ -1345,8 +1633,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 )
                             except Exception as _exc:
                                 logger.error(
-                                    "chat: document analyse LLM call failed: %s", _exc,
-                                    exc_info=True,
+                                    "chat: document analyse LLM call failed: %s",
+                                    _exc, exc_info=True,
                                 )
                                 answer = (
                                     "Si è verificato un errore durante l'analisi del documento. "
@@ -1355,27 +1643,23 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
                     _session.add_message("user", request.message)
                     _session.add_message("assistant", answer)
-
                     return ChatResponse(
                         session_id=session_id,
                         answer=answer,
                         original_query=request.message,
                         resolved_query=request.message,
-                        session_language=_session.session_language,
+                        session_language=_session_lang,
                         status_messages=["document_analyse_mode"],
                     )
+                # ── RAG intent: fall through to normal pipeline ────────────
 
-                # ── RAG intent: file mention was incidental, fall through ───
-                # (no else branch needed — falls through to normal pipeline)
-
-            else:
-                # No matching document found — tell the user and fall through
-                # to the normal RAG pipeline so they still get a useful answer
-                # if the corpus has something relevant.
+            elif _not_found:
+                # Filenames mentioned but no matching document found in user_documents.
+                # Fall through to RAG — corpus may have something relevant.
                 logger.info(
-                    "chat: filename %r mentioned but not found in user_documents — "
-                    "falling through to RAG",
-                    _mentioned_name,
+                    "chat: filename(s) %r mentioned but not found in user_documents "
+                    "— falling through to RAG",
+                    _not_found,
                 )
 
     if is_generation_request(request.message):
