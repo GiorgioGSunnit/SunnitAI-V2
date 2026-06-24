@@ -169,6 +169,7 @@ def get_user_document_for_generation(
                   AND (
                     (scope = 'personal' AND user_id = %s)
                     OR (scope = 'tenant' AND tenant_id = %s)
+                    OR scope = 'platform'
                   )
                   AND (expires_at IS NULL OR expires_at > NOW())
                 """,

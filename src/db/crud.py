@@ -281,6 +281,7 @@ def get_user_documents(
             or_(
                 and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
                 and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
+                UserDocument.scope == "platform",
             ),
             not_expired,
         )
@@ -300,6 +301,7 @@ def get_user_document(
             or_(
                 and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
                 and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
+                UserDocument.scope == "platform",
             ),
             or_(UserDocument.expires_at.is_(None), UserDocument.expires_at > now),
         )

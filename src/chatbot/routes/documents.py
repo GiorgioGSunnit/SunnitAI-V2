@@ -131,6 +131,8 @@ def delete_document(
     doc = get_user_document(db, doc_id, current_user.id, current_user.tenant_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    if doc.scope == "platform":
+        raise HTTPException(status_code=403, detail="Platform templates cannot be deleted")
     if doc.scope == "tenant" and current_user.role not in ("admin", "superadmin"):
         raise HTTPException(status_code=403, detail="Only admins can delete tenant documents")
 
