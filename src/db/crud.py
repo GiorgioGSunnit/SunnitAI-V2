@@ -309,6 +309,70 @@ def get_user_document(
     )
 
 
+def find_user_document_by_name(
+    db: Session,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    query: str,
+) -> Optional["UserDocument"]:
+    """
+    Fuzzy-match a user's uploaded documents by filename.
+    Returns the best-matching non-expired document the user can access,
+    or None if nothing scores above the threshold.
+
+    Matching strategy (in priority order):
+      1. Exact filename match (case-insensitive)
+      2. Query is a substring of filename or vice-versa
+      3. Jaccard token overlap >= 0.25 (strips extension and separators)
+    """
+    import re as _re
+
+    def _tokens(s: str) -> set:
+        s = _re.sub(r"[^a-z0-9]", " ", s.lower())
+        return {t for t in s.split() if len(t) > 1}
+
+    now = datetime.now(timezone.utc)
+    candidates = (
+        db.query(UserDocument)
+        .filter(
+            or_(
+                and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
+                and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
+                UserDocument.scope == "platform",
+            ),
+            or_(UserDocument.expires_at.is_(None), UserDocument.expires_at > now),
+        )
+        .all()
+    )
+
+    q_clean = _re.sub(r"\.[a-z]{2,4}$", "", query.lower()).strip()
+    q_tokens = _tokens(q_clean)
+
+    best_doc = None
+    best_score = -1.0
+
+    for doc in candidates:
+        fname = _re.sub(r"\.[a-z]{2,4}$", "", doc.original_filename.lower()).strip()
+
+        # Exact match
+        if fname == q_clean or doc.original_filename.lower() == query.lower():
+            return doc
+
+        # Substring match
+        if q_clean in fname or fname in q_clean:
+            score = 0.8
+        else:
+            f_tokens = _tokens(fname)
+            union = q_tokens | f_tokens
+            score = len(q_tokens & f_tokens) / len(union) if union else 0.0
+
+        if score > best_score:
+            best_score = score
+            best_doc = doc
+
+    return best_doc if best_score >= 0.25 else None
+
+
 def create_user_document(
     db: Session,
     user_id: uuid.UUID,

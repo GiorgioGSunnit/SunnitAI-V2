@@ -29,6 +29,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .session import ChatBot, ChatSession, _generate_session_title
+from ..db.base import get_db
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
@@ -49,6 +50,7 @@ from .auth import get_current_user, require_user, create_access_token, verify_pa
 from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
     get_user_document_for_generation, create_studio_and_admin,
+    find_user_document_by_name,
     create_user_with_invite, get_tenant_invite_code, update_user_profile)
 
 logger = logging.getLogger(__name__)
@@ -1128,6 +1130,89 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     )
 
 
+# ---------------------------------------------------------------------------
+# Document-aware intent detection helper
+# ---------------------------------------------------------------------------
+
+import re as _re_doc
+
+_FILENAME_RE = _re_doc.compile(
+    r'\b[\w\-]+\.(?:pdf|docx?|txt)\b', _re_doc.IGNORECASE
+)
+
+# Words that strongly signal "I want to READ this document"
+_ANALYSE_SIGNALS = {
+    "riassumi", "riassumimi", "analizza", "analizzami", "cosa dice",
+    "cosa prevede", "spiegami", "chi sono le parti", "qual è", "quali sono",
+    "dimmi", "estratto", "estrai", "interpreta", "interpretami",
+    "summarise", "summarize", "explain", "what does", "who are",
+    "résume", "explique",
+}
+
+# Words that strongly signal "I want to GENERATE a document FROM this"
+_GENERATE_SIGNALS = {
+    "compila", "compilami", "riempi", "riempimi", "usa", "usalo", "usala",
+    "usa questo", "usa questa", "genera con", "crea con", "usa come template",
+    "usa come modello", "fill", "use this", "use as template",
+}
+
+
+def _detect_document_intent(message: str) -> Optional[str]:
+    """
+    Return the filename mentioned in the message, or None if no filename found.
+    Strips extension for matching purposes — the caller does the DB lookup.
+    """
+    matches = _FILENAME_RE.findall(message)
+    if matches:
+        return matches[0]
+    # Also catch bare names without extension if they look like a document reference
+    # e.g. "riassumi contratto_locazione" where the user forgot the .pdf
+    # We rely on the caller's fuzzy DB lookup to confirm whether it's a real file.
+    return None
+
+
+def _classify_doc_intent(message: str, session_lang: str) -> str:
+    """
+    Given a message that references an uploaded document, decide whether the
+    user wants to:
+      - 'analyse'  → read, summarise, extract info from the document
+      - 'generate' → use the document as a template to produce a new one
+      - 'rag'      → the file mention was incidental; treat as normal RAG query
+
+    Uses signal words first (fast, no LLM). Falls back to a single LLM call
+    only when signals are ambiguous.
+    """
+    lower = message.lower()
+
+    analyse_hit = any(s in lower for s in _ANALYSE_SIGNALS)
+    generate_hit = any(s in lower for s in _GENERATE_SIGNALS)
+
+    if analyse_hit and not generate_hit:
+        return "analyse"
+    if generate_hit and not analyse_hit:
+        return "generate"
+
+    # Ambiguous or no signal — ask the LLM
+    system = (
+        "Sei un classificatore di intenzioni. L'utente ha menzionato un documento caricato. "
+        "Rispondi con UNA SOLA parola:\n"
+        "- 'analyse' se l'utente vuole leggere, riassumere o estrarre informazioni dal documento\n"
+        "- 'generate' se l'utente vuole usare il documento come template per generarne uno nuovo\n"
+        "- 'rag' se la menzione del file è incidentale e la domanda riguarda altro\n"
+        "Rispondi SOLO con una di queste tre parole."
+    )
+    try:
+        result = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=message)],
+            max_tokens=5,
+        ).strip().lower()
+        if result in ("analyse", "generate", "rag"):
+            return result
+    except Exception:
+        pass
+    return "rag"
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user)):
     """Send a message and get a response.
@@ -1145,6 +1230,150 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
     _req_start = time.time()
     vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
+
+    # ── Document-aware branch ─────────────────────────────────────────────
+    # If the user mentions a filename (or a name that fuzzy-matches one of
+    # their uploaded documents), intercept before the generation and RAG paths.
+    if current_user:
+        _mentioned_name = _detect_document_intent(request.message)
+        if _mentioned_name:
+            from .routes.documents import router as _doc_router  # noqa: F401 — side-effect import not needed
+            from ..db.base import get_db as _get_db
+            _db_gen = _get_db()
+            _db = next(_db_gen)
+            try:
+                _matched_doc = find_user_document_by_name(
+                    _db,
+                    uuid.UUID(_uid),
+                    uuid.UUID(_tid),
+                    _mentioned_name,
+                )
+            finally:
+                try:
+                    _db_gen.close()
+                except Exception:
+                    pass
+
+            if _matched_doc:
+                doc_intent = _classify_doc_intent(request.message, "it")
+
+                # ── GENERATE intent: signal the FE picker (existing flow) ──
+                if doc_intent == "generate":
+                    # Fall through to normal generation path — the FE already
+                    # handles picker display when it sees generation_mode.
+                    # We don't redirect here; just let is_generation_request
+                    # fire below. The FE will filter templates by relevance.
+                    pass
+
+                # ── ANALYSE intent: answer inline, never touch Neo4j ───────
+                elif doc_intent == "analyse":
+                    import os as _os
+                    from ..utils.document import extract_text_from_file as _extract
+
+                    _session = chatbot.get_session(session_id, user_id=_uid)
+                    if not _session:
+                        _session = ChatSession(
+                            session_id=session_id, user_id=_uid, tenant_id=_tid
+                        )
+                        chatbot._sessions[session_id] = _session
+                    _session_lang = _session.session_language
+
+                    if not _os.path.exists(_matched_doc.storage_path):
+                        answer = (
+                            "Non riesco a trovare il file sul server. "
+                            "Prova a caricarlo di nuovo."
+                        )
+                    else:
+                        try:
+                            _text = _extract(_matched_doc.storage_path)
+                        except Exception as _exc:
+                            _text = None
+                            logger.warning(
+                                "chat: failed to extract text from %s: %s",
+                                _matched_doc.storage_path, _exc,
+                            )
+
+                        if not _text or not _text.strip():
+                            answer = (
+                                f"Il documento '{_matched_doc.original_filename}' "
+                                "non contiene testo estraibile."
+                            )
+                        else:
+                            _MAX_CHARS = 12_000
+                            _truncated = _text[:_MAX_CHARS]
+                            _was_cut = len(_text) > _MAX_CHARS
+
+                            _lang_note = {
+                                "es": "Rispondi in spagnolo.",
+                                "en": "Reply in English.",
+                            }.get(_session_lang, "Rispondi in italiano.")
+
+                            _system = (
+                                "Sei un assistente legale italiano. "
+                                "L'utente ti ha fornito il testo di un documento privato "
+                                f"('{_matched_doc.original_filename}'). "
+                                "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE "
+                                "sul contenuto del documento. "
+                                "Non inventare fatti non presenti nel testo. "
+                                "Se l'informazione richiesta non è nel documento, dillo chiaramente. "
+                                "Rispondi in modo conversazionale e naturale, come faresti "
+                                "normalmente in chat — non usare JSON, non usare elenchi numerati "
+                                "a meno che non siano utili, non aggiungere intestazioni. "
+                                + _lang_note
+                            )
+                            _human = (
+                                f"Documento:\n\n{_truncated}"
+                                + ("\n\n[Il documento è stato troncato per limiti di lunghezza.]"
+                                   if _was_cut else "")
+                                + f"\n\nDomanda dell'utente: {request.message}"
+                            )
+                            try:
+                                loop = asyncio.get_event_loop()
+                                answer = await loop.run_in_executor(
+                                    None,
+                                    partial(
+                                        _call_chat,
+                                        [
+                                            SystemMessage(content=_system),
+                                            HumanMessage(content=_human),
+                                        ],
+                                        2000,
+                                    ),
+                                )
+                            except Exception as _exc:
+                                logger.error(
+                                    "chat: document analyse LLM call failed: %s", _exc,
+                                    exc_info=True,
+                                )
+                                answer = (
+                                    "Si è verificato un errore durante l'analisi del documento. "
+                                    "Riprova tra qualche istante."
+                                )
+
+                    _session.add_message("user", request.message)
+                    _session.add_message("assistant", answer)
+
+                    return ChatResponse(
+                        session_id=session_id,
+                        answer=answer,
+                        original_query=request.message,
+                        resolved_query=request.message,
+                        session_language=_session.session_language,
+                        status_messages=["document_analyse_mode"],
+                    )
+
+                # ── RAG intent: file mention was incidental, fall through ───
+                # (no else branch needed — falls through to normal pipeline)
+
+            else:
+                # No matching document found — tell the user and fall through
+                # to the normal RAG pipeline so they still get a useful answer
+                # if the corpus has something relevant.
+                logger.info(
+                    "chat: filename %r mentioned but not found in user_documents — "
+                    "falling through to RAG",
+                    _mentioned_name,
+                )
 
     if is_generation_request(request.message):
         session = chatbot.get_session(session_id, user_id=_uid)
