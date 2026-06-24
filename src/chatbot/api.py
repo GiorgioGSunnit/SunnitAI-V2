@@ -1151,11 +1151,19 @@ _FILENAME_BARE_RE = _re_doc.compile(
 
 # Words that strongly signal "I want to READ this document"
 _ANALYSE_SIGNALS = {
-    "riassumi", "riassumimi", "analizza", "analizzami", "cosa dice",
-    "cosa prevede", "spiegami", "chi sono le parti", "qual è", "quali sono",
-    "dimmi", "estratto", "estrai", "interpreta", "interpretami",
+    # Italian — verb forms
+    "riassumi", "riassumimi", "analizza", "analizzami", "spiegami",
+    "interpreta", "interpretami", "estrai", "dimmi", "descrivimi",
+    "cosa dice", "cosa prevede", "cosa contiene", "cosa stabilisce",
+    "chi sono le parti", "qual è", "quali sono", "come funziona",
+    # Italian — noun forms (e.g. "fammi un riassunto", "voglio un'analisi")
+    "riassunto", "analisi", "sintesi", "estratto", "riepilogo",
+    "fammi un", "dammi un", "vorrei un", "vorrei sapere",
+    # English
     "summarise", "summarize", "explain", "what does", "who are",
-    "résume", "explique",
+    "summary", "analysis", "extract", "tell me",
+    # Spanish/French
+    "résume", "explique", "analiza",
 }
 
 # Words that strongly signal "I want to GENERATE a document FROM this"
