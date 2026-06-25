@@ -195,6 +195,10 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Structured citation list: [{document_name, document_id, sections}].",
     )
+    draft: str = Field(
+        default="",
+        description="Pre-generated draft — used by FE when user picks system template in picker.",
+    )
     title: str = Field(
         default="Nuova conversazione",
         description="Auto-generated session title (set after first message).",
@@ -1548,13 +1552,16 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                             except Exception:
                                 _summary = ""
 
-                            # Build the final answer: show extracted clauses + brief summary
+                            # Chat answer: show only the summary — clause extraction stays server-side
                             _doc_names = " e ".join(f"«{f}»" for f, _ in _doc_extracts)
-                            answer = (
-                                f"Ho trovato le seguenti clausole rilevanti nei documenti {_doc_names}:\n\n"
-                                + _extract_block
-                                + (f"\n\n---\n\n**Sintesi delle differenze:**\n{_summary}" if _summary else "")
-                            )
+                            if _summary:
+                                answer = _summary
+                            else:
+                                answer = (
+                                    f"Ho analizzato i documenti {_doc_names} "
+                                    "ma non è stato possibile generare una sintesi. "
+                                    "Prova a riformulare la domanda."
+                                )
                         except Exception as _exc:
                             logger.error(
                                 "chat: multi-doc comparison LLM call failed: %s",
@@ -1704,14 +1711,15 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             logger.error("Generation error: %s", exc, exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
         gen_result["draft"] = _strip_markdown(gen_result["draft"])
+        _confirmation = _build_generation_confirmation(session_lang)
         session.add_message(
             "assistant",
-            _build_generation_confirmation(session_lang),
+            _confirmation,
             metadata={"sources": gen_result["sources"]},
         )
         return ChatResponse(
             session_id=session_id,
-            answer=gen_result["draft"],
+            answer=_confirmation,
             original_query=request.message,
             resolved_query=request.message,
             session_language=session_lang,
