@@ -22,7 +22,7 @@ import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -158,6 +158,11 @@ class ChatRequest(BaseModel):
         None,
         description="UUID of a user-uploaded document to analyse in this message. "
                     "Used when the user refers to a document without naming it explicitly.",
+    )
+    document_ids: Optional[List[str]] = Field(
+        None,
+        description="UUIDs of multiple user-uploaded documents. "
+                    "Takes priority over document_id when both are supplied.",
     )
 
 
@@ -1303,6 +1308,29 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             if _explicit_doc:
                 _mentioned_names = [_explicit_doc.original_filename]
 
+        # Explicit multi-doc list: look up each UUID directly and add filenames
+        if request.document_ids:
+            _db_gen_ids = _get_db()
+            _db_ids = next(_db_gen_ids)
+            try:
+                for _did in request.document_ids:
+                    try:
+                        _edoc = get_user_document(
+                            _db_ids,
+                            uuid.UUID(_did),
+                            uuid.UUID(_uid),
+                            uuid.UUID(_tid),
+                        )
+                        if _edoc and _edoc.original_filename not in _mentioned_names:
+                            _mentioned_names.append(_edoc.original_filename)
+                    except (ValueError, Exception):
+                        pass
+            finally:
+                try:
+                    _db_gen_ids.close()
+                except Exception:
+                    pass
+
         if _mentioned_names:
             _db_gen = _get_db()
             _db = next(_db_gen)
@@ -1593,8 +1621,13 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "Riprova tra qualche istante."
                             )
 
-                    _session.add_message("user", request.message)
+                    _session.add_message("user", request.message, metadata={
+                        "documents": [{"document_id": str(d.id), "document_name": d.original_filename} for d in _matched_docs],
+                    })
+                    if len(_session.messages) == 1:
+                        _session.title = _generate_session_title(request.message)
                     _session.add_message("assistant", answer)
+                    chatbot._save_sessions()
                     return ChatResponse(
                         session_id=session_id,
                         answer=answer,
@@ -1602,6 +1635,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         resolved_query=request.message,
                         session_language=_session_lang,
                         status_messages=["document_analyse_mode"],
+                        title=_session.title,
                     )
 
                 # ── ONE DOC → analyse or generate ─────────────────────────
@@ -1677,8 +1711,14 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                     "Riprova tra qualche istante."
                                 )
 
-                    _session.add_message("user", request.message)
+                    _session.add_message("user", request.message, metadata={
+                        "document_id": str(_matched_doc.id),
+                        "document_name": _matched_doc.original_filename,
+                    })
+                    if len(_session.messages) == 1:
+                        _session.title = _generate_session_title(request.message)
                     _session.add_message("assistant", answer)
+                    chatbot._save_sessions()
                     return ChatResponse(
                         session_id=session_id,
                         answer=answer,
@@ -1686,6 +1726,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         resolved_query=request.message,
                         session_language=_session_lang,
                         status_messages=["document_analyse_mode"],
+                        title=_session.title,
                     )
                 # ── RAG intent: fall through to normal pipeline ────────────
 
@@ -1710,7 +1751,10 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         if doc_type == "unknown":
             clarification = _build_clarification_message()
             session.add_message("user", request.message)
+            if len(session.messages) == 1:
+                session.title = _generate_session_title(request.message)
             session.add_message("assistant", clarification)
+            chatbot._save_sessions()
             return ChatResponse(
                 session_id=session_id,
                 answer=clarification,
@@ -1718,6 +1762,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 resolved_query=request.message,
                 session_language=session_lang,
                 status_messages=["generation_mode"],
+                title=session.title,
             )
         cached = _get_cached_sections(session)
         session.add_message("user", request.message)

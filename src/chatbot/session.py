@@ -50,8 +50,10 @@ class Message:
 
     def to_dict(self) -> Dict[str, Any]:
         d = {"role": self.role, "content": self.content, "timestamp": self.timestamp}
-        if self.metadata and "citations" in self.metadata:
-            d["citations"] = self.metadata["citations"]
+        if self.metadata:
+            for key in ("citations", "document_id", "document_name", "documents"):
+                if key in self.metadata:
+                    d[key] = self.metadata[key]
         return d
 
 
