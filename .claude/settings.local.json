@@ -41,7 +41,8 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/chatbot/api.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/models.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/crud.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/crud.py'\\).read\\(\\)\\); print\\('crud.py OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/crud.py'\\).read\\(\\)\\); print\\('crud.py OK'\\)\")",
+      "Bash(npx tsc *)"
     ]
   }
 }

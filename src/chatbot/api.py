@@ -36,6 +36,7 @@ from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
     DOCUMENT_TYPE_REGISTRY,
+    SYSTEM_TEMPLATES_BY_KEY,
     _placeholder,
     _extract_docx_elements,
     _extract_pdf_elements,
@@ -297,13 +298,7 @@ _DOC_FILENAMES = {
     "comparison": ("CONFRONTO TRA DOCUMENTI", "COMPARACIÓN DE DOCUMENTOS", "DOCUMENT COMPARISON", "confronto_documenti"),
 }
 
-# Catalog indexed by doc_type key — each entry exposes {"label", "tipo_atto"} so
-# generate_download can produce a human-readable title without relying on the
-# positional tuple layout of _DOC_FILENAMES.
-SYSTEM_TEMPLATES_BY_KEY: dict[str, dict] = {
-    key: {"label": val[0], "tipo_atto": val[0]}
-    for key, val in _DOC_FILENAMES.items()
-}
+
 
 
 def _strip_markdown(text: str) -> str:
