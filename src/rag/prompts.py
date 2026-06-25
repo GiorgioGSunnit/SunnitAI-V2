@@ -70,7 +70,7 @@ _LENGTH = {
     3: (
         "RESPONSE LENGTH — DETAILED: (Important)"
         "Provide a thorough response covering: the legal basis, key principles, and relevant distinctions. "
-        "Include 1-2 citations from retrieved documents where applicable. "
+        "Cite all retrieved document sections that are directly relevant — do not limit citations artificially. "
         "Aim for 2-3 substantive paragraphs."
     ),
     4: (
@@ -78,7 +78,8 @@ _LENGTH = {
         "Provide a comprehensive analysis. Cover: legal basis, key principles, jurisprudential evolution "
         "(referencing Corte di Cassazione or Corte Costituzionale where available), technical distinctions "
         "between similar institutes, and practical implications. "
-        "Cite up to 3 retrieved sections. Write at least 4 substantive paragraphs."
+        "Cite every retrieved section that supports the analysis — include as many citations as are relevant. "
+        "Write at least 4 substantive paragraphs."
     ),
 }
 

@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from .session import ChatBot, ChatSession, _generate_session_title
 from ..db.base import get_db
-from ..db.crud import find_user_document_by_name
+from ..db.crud import find_user_document_by_name, get_user_document
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
@@ -153,6 +153,11 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(
         None,
         description="Session ID for multi-turn conversation. Omit to auto-create a new session.",
+    )
+    document_id: Optional[str] = Field(
+        None,
+        description="UUID of a user-uploaded document to analyse in this message. "
+                    "Used when the user refers to a document without naming it explicitly.",
     )
 
 
@@ -1277,6 +1282,27 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         from ..db.base import get_db as _get_db
 
         _mentioned_names = _detect_document_intent(request.message)
+
+        # Fallback: if no filename detected but FE passed an explicit document_id,
+        # treat it as a single-document analyse request
+        if not _mentioned_names and request.document_id:
+            _db_gen2 = _get_db()
+            _db2 = next(_db_gen2)
+            try:
+                _explicit_doc = get_user_document(
+                    _db2,
+                    uuid.UUID(request.document_id),
+                    uuid.UUID(_uid),
+                    uuid.UUID(_tid),
+                )
+            finally:
+                try:
+                    _db_gen2.close()
+                except Exception:
+                    pass
+            if _explicit_doc:
+                _mentioned_names = [_explicit_doc.original_filename]
+
         if _mentioned_names:
             _db_gen = _get_db()
             _db = next(_db_gen)

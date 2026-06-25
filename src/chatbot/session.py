@@ -169,9 +169,15 @@ def _rewrite_query_with_context(
         return query
 
     lang = normalize_lang(session_language)
+    # Use more content from recent turns and less from older ones.
+    # Recent turns get 500 chars; older turns get 150 chars.
+    # This keeps the rewriter focused on the current topic without
+    # losing the thread of the conversation.
+    total = len(history)
     history_text = "\n".join(
-        f"{'User' if m.role == 'user' else 'Assistant'}: {m.content[:300]}"
-        for m in history
+        f"{'User' if m.role == 'user' else 'Assistant'}: "
+        f"{m.content[:500 if i >= total - 4 else 150]}"
+        for i, m in enumerate(history)
     )
 
     rewritten = _call_chat(

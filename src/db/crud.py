@@ -271,20 +271,32 @@ def create_superadmin_user(
 # ---------------------------------------------------------------------------
 
 def get_user_documents(
-    db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID
+    db: Session, user_id: uuid.UUID, tenant_id: uuid.UUID,
+    include_platform: bool = False,
 ) -> list:
+    """
+    Return documents visible to this user.
+
+    include_platform=False (default): returns only personal + tenant scope.
+        Used by /api/user/documents (FE listing and picker) — platform skeleton
+        templates are system-internal and should not appear in the user's document list.
+    include_platform=True: includes platform scope.
+        Used only by get_user_document_for_generation which needs to resolve
+        platform skeleton doc_ids for template filling.
+    """
     now = datetime.now(timezone.utc)
     not_expired = or_(UserDocument.expires_at.is_(None), UserDocument.expires_at > now)
+
+    scope_filter = or_(
+        and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
+        and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
+    )
+    if include_platform:
+        scope_filter = or_(scope_filter, UserDocument.scope == "platform")
+
     return (
         db.query(UserDocument)
-        .filter(
-            or_(
-                and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
-                and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
-                UserDocument.scope == "platform",
-            ),
-            not_expired,
-        )
+        .filter(scope_filter, not_expired)
         .order_by(UserDocument.scope, UserDocument.uploaded_at.desc())
         .all()
     )

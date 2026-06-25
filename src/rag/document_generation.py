@@ -1864,7 +1864,9 @@ def _build_system_template_prompt(entry: Dict[str, Any], lang: str) -> str:
     ph = _placeholder(lang)
     sections = entry.get("sections", [])
     sections_text = "\n\n".join(
-        f"{s['heading']}\n{s['content']}" for s in sections if s.get("heading")
+        f"{s['heading']}\n{s['content']}"
+        for s in sections
+        if s.get("heading") and s["heading"] != "Campi strutturati"
     )
     label = entry.get("label") or entry.get("tipo_atto", "")
     codice = entry.get("codice", "")
@@ -1888,18 +1890,36 @@ def _build_system_template_prompt(entry: Dict[str, Any], lang: str) -> str:
     else:
         lang_instruction = ""
 
+    # Extract section headings only — don't pass skeleton content verbatim
+    # to avoid the LLM treating it as a fill-in-the-blanks form
+    section_headings_text = "\n".join(
+        f"- {s['heading']}"
+        for s in sections
+        if s.get("heading") and s["heading"] != "Campi strutturati"
+    )
+
     return (
-        f"Sei un avvocato esperto di diritto processuale italiano. Devi "
-        f"redigere un atto giuridico italiano del tipo '{label}' "
+        f"Sei un avvocato esperto di diritto processuale italiano con almeno 20 anni di esperienza. "
+        f"Devi redigere un atto giuridico italiano completo e professionale del tipo '{label}' "
         f"({codice}).\n\n"
-        f"Segui ESATTAMENTE questa struttura, sezione per sezione — non "
-        f"aggiungere, rimuovere o riordinare le sezioni:\n\n"
+        f"OBIETTIVO: produrre un documento legale vero, completo e formalmente corretto, "
+        f"non uno schema da compilare. Ogni sezione deve contenere testo legale autentico, "
+        f"formulazioni tecniche appropriate e il linguaggio giuridico italiano preciso "
+        f"tipico di questo tipo di atto.\n\n"
+        f"STRUTTURA E CONTENUTO DI RIFERIMENTO:\n"
+        f"Di seguito la struttura dell'atto con il contenuto di riferimento per ogni sezione. "
+        f"Usala come guida per capire cosa deve contenere ogni sezione, "
+        f"ma scrivi testo legale completo e professionale — non limitarti a copiare o riempire i placeholder:\n\n"
         f"{sections_text}\n\n"
-        f"Per ogni placeholder [DA COMPILARE: ...], sostituiscilo con il "
-        f"contenuto reale se l'informazione è presente nel messaggio "
-        f"dell'utente o nelle fonti fornite. Se l'informazione non è "
-        f"disponibile, mantieni il placeholder come {ph}. Non inventare "
-        f"fatti, nomi, date, importi o riferimenti normativi non forniti.\n\n"
+        f"ISTRUZIONI PER I DATI:\n"
+        f"- Usa i dati forniti dall'utente per personalizzare il documento\n"
+        f"- Per ogni dato non fornito usa {ph} — MAI inventare nomi, date, importi, codici fiscali\n"
+        f"- Sviluppa ogni sezione con tutto il contenuto legale necessario per questo tipo di atto\n"
+        f"- Usa formule, clausole e riferimenti normativi appropriati\n"
+        f"- Scrivi come un avvocato che redige il documento per un cliente reale\n"
+        f"- NON aggiungere note esplicative, commenti o paragrafi dopo la fine dell'atto\n"
+        f"- Il documento termina con la formula di sottoscrizione — niente altro dopo\n"
+        f"- Per i difensori usa sempre 'Avv.' o 'Avvocato', mai 'Dott.' o 'Dott.ssa'\n\n"
         f"{lang_instruction}"
     )
 
@@ -1915,9 +1935,9 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Campos requeridos: {json.dumps(fields, ensure_ascii=False)}\n"
             "Reglas:\n"
             "- Si un valor está explícitamente mencionado en el mensaje, úsalo exactamente\n"
-            "- Si un valor es claramente deducible del contexto, deducelo\n"
-            "- Si un valor no está presente ni es deducible, usa cadena vacía \"\"\n"
-            "- No inventes datos no presentes ni deducibles\n"
+            "- Si un valor NO está explícitamente mencionado en el mensaje, usa cadena vacía \"\"\n"
+            "- NO deduzcas, NO asumas, NO inventes valores — solo lo que está escrito literalmente\n"
+            "- Datos como fechas, importes, códigos fiscales, direcciones: solo si están explícitamente presentes\n"
             f"Responde SOLO con el JSON, ejemplo: {{\"campo1\": \"valor1\", \"campo2\": \"\"}}"
         )
     elif lang == "en":
@@ -1927,9 +1947,9 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Required fields: {json.dumps(fields, ensure_ascii=False)}\n"
             "Rules:\n"
             "- If a value is explicitly mentioned in the message, use it exactly\n"
-            "- If a value is clearly inferable from context, infer it\n"
-            "- If a value is neither present nor inferable, use empty string \"\"\n"
-            "- Do not invent data that is not present or inferable\n"
+            "- If a value is NOT explicitly mentioned in the message, use empty string \"\"\n"
+            "- Do NOT infer, assume, or invent values — only what is literally written\n"
+            "- Data such as dates, amounts, tax codes, addresses: only if explicitly present\n"
             f"Reply ONLY with the JSON, example: {{\"field1\": \"value1\", \"field2\": \"\"}}"
         )
     else:
@@ -1939,9 +1959,9 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Campi richiesti: {json.dumps(fields, ensure_ascii=False)}\n"
             "Regole:\n"
             "- Se un valore è esplicitamente menzionato nel messaggio, usalo esattamente\n"
-            "- Se un valore è chiaramente deducibile dal contesto, deducilo\n"
-            "- Se un valore non è presente né deducibile, usa stringa vuota \"\"\n"
-            "- Non inventare dati non presenti o non deducibili\n"
+            "- Se un valore NON è esplicitamente menzionato nel messaggio, usa stringa vuota \"\"\n"
+            "- NON dedurre, NON assumere, NON inventare valori — solo ciò che è scritto letteralmente\n"
+            "- Dati come date, importi, codici fiscali, indirizzi: solo se esplicitamente presenti\n"
             f"Rispondi SOLO con il JSON, esempio: {{\"campo1\": \"valore1\", \"campo2\": \"\"}}"
         )
 
@@ -2214,8 +2234,10 @@ def generate_document(
         for k, v in fields_dict.items()
     )
     human_content = (
-        f"Document fields:\n{field_lines}\n\n"
-        "Draft the complete document following exactly the structure specified in the system prompt."
+        f"Dati forniti dall'utente:\n{field_lines}\n\n"
+        f"Redigi l'atto completo. Per ogni sezione scrivi testo legale vero e professionale — "
+        f"non limitarti a riportare i dati, sviluppa il contenuto giuridico appropriato. "
+        f"Usa {ph} per i dati mancanti. Non aggiungere note, spiegazioni o avvertenze fuori dall'atto."
     )
 
     raw_output = _call_chat(
@@ -2224,6 +2246,15 @@ def generate_document(
     )
 
     raw_output = re.sub(r'\[[^\]]*\]', '[DA COMPILARE]', raw_output)
+
+    # Remove the "Campi strutturati" section and everything after it —
+    # it's a skeleton artifact (field names list) not part of the legal document.
+    raw_output = re.split(
+        r'\n+(?:\*{0,2}(?:Campi strutturati|CAMPI STRUTTURATI)\*{0,2})\s*[\n:]',
+        raw_output,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].rstrip()
 
     if studio_name:
         header = f"{studio_name}\n{'─' * len(studio_name)}\n\n"
