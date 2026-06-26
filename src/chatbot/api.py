@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from .session import ChatBot, ChatSession, _generate_session_title
 from ..db.base import get_db
-from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name
+from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name, create_user_document
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
@@ -217,6 +217,14 @@ class ChatResponse(BaseModel):
     is_comparison: bool = Field(
         default=False,
         description="True when the answer was produced by the comparison retrieval path.",
+    )
+    generated_document_id: Optional[str] = Field(
+        default=None,
+        description="UUID of the saved generated document in user_documents. Present when generation_mode.",
+    )
+    generated_document_name: Optional[str] = Field(
+        default=None,
+        description="Original filename of the saved generated document.",
     )
 
 
@@ -880,6 +888,62 @@ def delete_session(session_id: str, current_user: dict = Depends(require_user)):
     return {"status": "deleted", "session_id": session_id}
 
 
+def _persist_generated_docx(
+    draft: str,
+    doc_type: str,
+    user_id: str,
+    tenant_id: str,
+) -> tuple:
+    """Save draft as a DOCX file on disk and create a user_documents record.
+    Returns (document_id_str, original_filename) or (None, None) on failure."""
+    try:
+        from docx import Document as _DocxDoc
+        import io as _io
+        from ..db.base import SessionLocal as _SL
+        from ..constants import PRIVATE_DOCS_BASE as _BASE
+
+        _catalog_entry = SYSTEM_TEMPLATES_BY_KEY.get(doc_type)
+        if _catalog_entry:
+            _label = _catalog_entry.get("label") or _catalog_entry.get("tipo_atto", "Documento")
+        else:
+            _label = doc_type.replace("_", " ").replace("-", " ").title() if doc_type else "Documento"
+        _slug = re.sub(r"[^a-z0-9]+", "_", _label.lower()).strip("_")
+        _filename = f"{_slug}.docx"
+
+        _doc = _DocxDoc()
+        for _line in draft.split("\n"):
+            _doc.add_paragraph(_line)
+
+        _folder = os.path.join(_BASE, tenant_id, user_id)
+        os.makedirs(_folder, exist_ok=True)
+        _storage_path = os.path.join(_folder, f"{uuid.uuid4()}.docx")
+        _buf = _io.BytesIO()
+        _doc.save(_buf)
+        _raw = _buf.getvalue()
+        with open(_storage_path, "wb") as _f:
+            _f.write(_raw)
+
+        _db = _SL()
+        try:
+            _rec = create_user_document(
+                _db,
+                user_id=uuid.UUID(user_id),
+                tenant_id=uuid.UUID(tenant_id),
+                original_filename=_filename,
+                storage_path=_storage_path,
+                file_size_bytes=len(_raw),
+                scope="personal",
+                document_role="generated",
+                expires_at=None,
+            )
+            return str(_rec.id), _filename
+        finally:
+            _db.close()
+    except Exception as _exc:
+        logger.warning("_persist_generated_docx failed: %s", _exc)
+        return None, None
+
+
 def _build_generation_confirmation(lang: str) -> str:
     if lang == "es":
         return "He generado el documento solicitado."
@@ -1020,7 +1084,6 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         if doc_type == "unknown":
             raise HTTPException(status_code=400, detail=_build_clarification_message())
     cached = _get_cached_sections(session)
-    session.add_message("user", request.message)
 
     loop = asyncio.get_event_loop()
     if is_comparison_request and not request.draft:
@@ -1042,11 +1105,6 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=str(exc))
-    session.add_message(
-        "assistant",
-        _build_generation_confirmation(session_lang),
-        metadata={"sources": result.get("sources", [])},
-    )
 
     lang_idx = {"it": 0, "es": 1, "en": 2}.get(session_lang, 0)
     _catalog_entry = SYSTEM_TEMPLATES_BY_KEY.get(doc_type)
@@ -1857,12 +1915,26 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             logger.error("Generation error: %s", exc, exc_info=True)
             raise HTTPException(status_code=500, detail=str(exc))
         gen_result["draft"] = _strip_markdown(gen_result["draft"])
+        _gen_doc_id, _gen_doc_name = None, None
+        logger.info("chat: generation complete doc_type=%r uid=%r tid=%r draft_len=%d",
+                    doc_type, _uid, _tid, len(gen_result["draft"]))
+        if _uid and _tid:
+            _gen_doc_id, _gen_doc_name = _persist_generated_docx(
+                gen_result["draft"], doc_type, _uid, _tid
+            )
+            logger.info("chat: persist result doc_id=%r name=%r", _gen_doc_id, _gen_doc_name)
+        else:
+            logger.warning("chat: skipping persist — uid=%r tid=%r", _uid, _tid)
         _confirmation = _build_generation_confirmation(session_lang)
         session.add_message(
             "assistant",
             _confirmation,
-            metadata={"sources": gen_result["sources"]},
+            metadata={
+                "sources": gen_result["sources"],
+                **({"generated_document_id": _gen_doc_id, "generated_document_name": _gen_doc_name} if _gen_doc_id else {}),
+            },
         )
+        chatbot._save_sessions()
         return ChatResponse(
             session_id=session_id,
             answer=_confirmation,
@@ -1871,6 +1943,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             session_language=session_lang,
             status_messages=["generation_mode"],
             title=session.title,
+            draft=gen_result["draft"],
+            generated_document_id=_gen_doc_id,
+            generated_document_name=_gen_doc_name,
         )
 
     try:

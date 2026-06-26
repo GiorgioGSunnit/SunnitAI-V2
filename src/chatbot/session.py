@@ -51,7 +51,8 @@ class Message:
     def to_dict(self) -> Dict[str, Any]:
         d = {"role": self.role, "content": self.content, "timestamp": self.timestamp}
         if self.metadata:
-            for key in ("citations", "document_id", "document_name", "documents"):
+            for key in ("citations", "document_id", "document_name", "documents",
+                        "generated_document_id", "generated_document_name"):
                 if key in self.metadata:
                     d[key] = self.metadata[key]
         return d
@@ -120,7 +121,12 @@ class ChatSession:
                 role=m["role"],
                 content=m["content"],
                 timestamp=m.get("timestamp", datetime.now(timezone.utc).isoformat()),
-                metadata={"citations": m["citations"]} if "citations" in m else None,
+                metadata={
+                    k: m[k]
+                    for k in ("citations", "document_id", "document_name", "documents",
+                              "generated_document_id", "generated_document_name")
+                    if k in m
+                } or None,
             )
             for m in data.get("messages", [])
         ]
