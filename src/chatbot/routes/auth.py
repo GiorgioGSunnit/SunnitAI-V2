@@ -18,6 +18,7 @@ from ..auth import (
     create_access_token,
     decode_access_token
 )
+from ..billing import serialize_subscription, subscription_is_active
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
@@ -40,6 +41,7 @@ class LoginResponse(BaseModel):
     email: str
     role: str
     tenant_id: str
+    subscription: Optional[dict] = None
 
 
 class UserResponse(BaseModel):
@@ -58,6 +60,7 @@ class UserResponse(BaseModel):
     dark_mode: bool = False
     primary_color: Optional[str] = None
     totp_enabled: bool = False
+    subscription: Optional[dict] = None
 
 
 class UpdateProfileRequest(BaseModel):
@@ -227,12 +230,18 @@ def login(
         "role": user.role
     })
 
+    seats_used = crud.count_active_users_for_tenant(db, user.tenant_id)
     return LoginResponse(
         access_token=token,
         user_id=str(user.id),
         email=user.email,
         role=user.role,
-        tenant_id=str(user.tenant_id)
+        tenant_id=str(user.tenant_id),
+        subscription=serialize_subscription(
+            crud.get_tenant_subscription(db, user.tenant_id),
+            user.tenant,
+            seats_used=seats_used,
+        ),
     )
 
 
@@ -247,6 +256,7 @@ def get_me(
     pref_data = dict(prefs.preferences or {}) if prefs else {}
     profile = current_user.profile
     tenant_profile = current_user.tenant.profile if current_user.tenant else None
+    seats_used = crud.count_active_users_for_tenant(db, current_user.tenant_id)
 
     return UserResponse(
         user_id=str(current_user.id),
@@ -263,7 +273,12 @@ def get_me(
         response_length=settings.response_length if settings else 2,
         dark_mode=pref_data.get("dark_mode", False),
         primary_color=pref_data.get("primary_color"),
-        totp_enabled=current_user.totp_enabled or False
+        totp_enabled=current_user.totp_enabled or False,
+        subscription=serialize_subscription(
+            crud.get_tenant_subscription(db, current_user.tenant_id),
+            current_user.tenant,
+            seats_used=seats_used,
+        ),
     )
 
 
@@ -293,6 +308,7 @@ def update_profile(
     prefs = crud.get_user_preferences(db, current_user.id)
     pref_data = dict(prefs.preferences or {}) if prefs else {}
     tenant_profile = current_user.tenant.profile if current_user.tenant else None
+    seats_used = crud.count_active_users_for_tenant(db, current_user.tenant_id)
 
     return UserResponse(
         user_id=str(current_user.id),
@@ -309,7 +325,12 @@ def update_profile(
         response_length=settings.response_length if settings else 2,
         dark_mode=pref_data.get("dark_mode", False),
         primary_color=pref_data.get("primary_color"),
-        totp_enabled=current_user.totp_enabled or False
+        totp_enabled=current_user.totp_enabled or False,
+        subscription=serialize_subscription(
+            crud.get_tenant_subscription(db, current_user.tenant_id),
+            current_user.tenant,
+            seats_used=seats_used,
+        ),
     )
 
 
@@ -388,6 +409,15 @@ def create_sub_user(
         raise HTTPException(
             status_code=400,
             detail="Email already registered"
+        )
+
+    subscription = crud.get_tenant_subscription(db, current_user.tenant_id)
+    seat_capacity = subscription.seats if subscription and subscription_is_active(subscription.status) else 1
+    seats_used = crud.count_active_users_for_tenant(db, current_user.tenant_id)
+    if seats_used >= seat_capacity:
+        raise HTTPException(
+            status_code=403,
+            detail="No available team seats for this tenant"
         )
 
     user = crud.create_user(
