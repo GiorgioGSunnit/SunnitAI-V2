@@ -403,9 +403,20 @@ class ChatBot:
             status_messages = result.get("status_messages") or []
             citations = result.get("citations") or []
         except Exception as e:
-            logger.error("RAG pipeline error: %s", e, exc_info=True)
+            _e_str = str(e)
+            if "maximum context length" in _e_str or "input_tokens" in _e_str:
+                logger.warning("RAG pipeline context overflow: %s", e)
+                answer = (
+                    "La domanda ha generato troppo contesto per essere elaborata. "
+                    "Si prega di riformulare la domanda in modo più specifico."
+                )
+            else:
+                logger.error("RAG pipeline error: %s", e, exc_info=True)
+                answer = (
+                    "Si è verificato un errore durante l'elaborazione della domanda. "
+                    "Riprova tra qualche istante."
+                )
             result = {}
-            answer = f"I'm sorry, I encountered an error processing your question. Error: {e}"
             references = []
             status_messages = []
             citations = []
@@ -417,11 +428,43 @@ class ChatBot:
         }
         _drift_note = _DRIFT_NOTES.get(session.session_language, "\n\n---\n💡 This topic seems different from your previous conversation. Consider opening a new chat to keep the context separate.")
         if result.get("off_topic"):
-            if not result.get("answer", "").startswith("💡"):
-                answer += _drift_note
+            # off_topic: RAG found nothing relevant — use fixed generic message
+            _generic_fallback = {
+                "it": "Purtroppo la domanda è troppo generica e si è violato il limite sull'uso dell'Intelligenza Artificiale. Si prega di riformulare la domanda in modo più puntuale.",
+                "es": "Lamentablemente la pregunta es demasiado genérica y se ha superado el límite de uso de la Inteligencia Artificial. Por favor, reformule la pregunta de manera más precisa.",
+                "en": "Unfortunately the question is too generic and the AI usage limit has been exceeded. Please rephrase your question more precisely.",
+            }
+            answer = _generic_fallback.get(session.session_language, _generic_fallback["it"])
+        elif not result.get("retrieval_quality_ok"):
+            # retrieval_quality_ok=False — query too broad or no quality results.
+            # Extract document titles from references to show the user what topics exist.
+            _references = result.get("references", [])
+            _doc_titles = []
+            for ref in _references:
+                sources = ref.get("sources", []) if isinstance(ref, dict) else []
+                for src in sources:
+                    title = src.get("document_title") if isinstance(src, dict) else None
+                    if title and title not in _doc_titles:
+                        _doc_titles.append(title)
+                if len(_doc_titles) >= 3:
+                    break
+            if _doc_titles:
+                _topics = ", ".join(_doc_titles[:3])
+                _broad_msg = {
+                    "it": f"Avrei bisogno di una domanda più precisa perché nella base dati trovo notizie in {_topics}. Cosa ti interessa in particolare?",
+                    "es": f"Necesitaría una pregunta más precisa porque en la base de datos encuentro información sobre {_topics}. ¿Qué le interesa en particular?",
+                    "en": f"I would need a more precise question because in the knowledge base I find information on {_topics}. What are you specifically interested in?",
+                }
+                answer = _broad_msg.get(session.session_language, _broad_msg["it"])
+            else:
+                _generic_fallback = {
+                    "it": "Purtroppo la domanda è troppo generica e si è violato il limite sull'uso dell'Intelligenza Artificiale. Si prega di riformulare la domanda in modo più puntuale.",
+                    "es": "Lamentablemente la pregunta es demasiado genérica y se ha superado el límite de uso de la Inteligencia Artificial. Por favor, reformule la pregunta de manera más precisa.",
+                    "en": "Unfortunately the question is too generic and the AI usage limit has been exceeded. Please rephrase your question more precisely.",
+                }
+                answer = _generic_fallback.get(session.session_language, _generic_fallback["it"])
         elif len(session.messages) > 4:
             drift_context = session.get_recent_context()
-            # Exclude the message we just added (the current user message)
             drift_context = drift_context[:-1] if len(drift_context) > 1 else []
             if detect_topic_drift(user_message, drift_context, session.session_language) and not result.get("answer", "").startswith("💡"):
                 answer += _drift_note

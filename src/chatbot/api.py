@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from .session import ChatBot, ChatSession, _generate_session_title
 from ..db.base import get_db
-from ..db.crud import find_user_document_by_name, get_user_document
+from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
@@ -1151,8 +1151,15 @@ import re as _re_doc
 # Two patterns:
 # 1. Filenames inside quotes (single or double) — captures spaces and special chars
 # 2. Filenames without quotes — word chars and hyphens only
+# Two quoted patterns:
+# 1. Quoted with extension — most reliable
+# 2. Quoted without extension — only if name is >= 5 chars (avoids matching
+#    short quoted strings like "ok", "sì", article references etc.)
 _FILENAME_QUOTED_RE = _re_doc.compile(
-    r'["\']([^"\'<>\n]+?\.(?:pdf|docx?|txt))["\']', _re_doc.IGNORECASE
+    r'"([^"<>\n]+?\.(?:pdf|docx?|txt))"', _re_doc.IGNORECASE
+)
+_FILENAME_QUOTED_NO_EXT_RE = _re_doc.compile(
+    r'"([A-Za-z][^"<>\n]{4,}?)"', _re_doc.IGNORECASE
 )
 _FILENAME_BARE_RE = _re_doc.compile(
     r'\b([\w][\w\-]*\.(?:pdf|docx?|txt))\b', _re_doc.IGNORECASE
@@ -1186,34 +1193,42 @@ _GENERATE_SIGNALS = {
 def _detect_document_intent(message: str) -> list:
     """
     Return all filenames mentioned in the message as a list.
-    Handles both quoted filenames (with spaces) and bare word filenames.
-    Returns empty list if none found. Deduplicates case-insensitively.
-
-    Strategy: extract quoted filenames first, then remove them from the
-    message before running bare matching — prevents fragments like '2.pdf'
-    from being captured as separate filenames when they are part of a
-    quoted filename like 'Contratto 2.pdf'.
+    Priority:
+      1. Quoted strings with file extension (.pdf, .docx, .txt) — most reliable
+      2. Bare word filenames with extension
+      3. Quoted strings WITHOUT extension — only used as fallback when (1) and (2)
+         find nothing, to handle cases like "documento X" without .pdf suffix.
+         These are passed to the fuzzy DB lookup which confirms if they match a real file.
     """
     seen = set()
     result = []
 
-    # Step 1: quoted matches — most reliable, handles spaces
+    # Step 1: quoted with extension
     for m in _FILENAME_QUOTED_RE.findall(message):
         clean = m.strip()
         if clean and clean.lower() not in seen:
             seen.add(clean.lower())
             result.append(clean)
 
-    # Step 2: remove quoted filenames from message before bare matching
-    # so fragments inside them (e.g. '2.pdf', 'IT.pdf') are not re-matched
+    # Step 2: bare with extension (on message with quoted filenames removed)
     _msg_without_quoted = _FILENAME_QUOTED_RE.sub("", message)
-
-    # Step 3: bare matches on the cleaned message only
     for m in _FILENAME_BARE_RE.findall(_msg_without_quoted):
         clean = m.strip()
         if clean and clean.lower() not in seen:
             seen.add(clean.lower())
             result.append(clean)
+
+    # Step 3: quoted without extension — only if steps 1+2 found nothing
+    # This handles "documento X" references where user omitted the extension
+    if not result:
+        for m in _FILENAME_QUOTED_NO_EXT_RE.findall(message):
+            clean = m.strip()
+            # Skip very common Italian words and short strings
+            _SKIP = {"documento", "file", "atto", "contratto", "sì", "no",
+                     "ok", "vero", "falso", "questo", "quello", "testo"}
+            if clean and clean.lower() not in seen and clean.lower() not in _SKIP:
+                seen.add(clean.lower())
+                result.append(clean)
 
     return result
 
@@ -1355,6 +1370,54 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     _db_gen.close()
                 except Exception:
                     pass
+
+            # ── Expiry check ──────────────────────────────────────────────
+            # If filename(s) were mentioned but no live doc found, check if
+            # any of them exist but are expired — return a clear message
+            # instead of falling through to RAG or document_id fallback.
+            if not _matched_docs and _not_found:
+                _db_exp_gen = _get_db()
+                _db_exp = next(_db_exp_gen)
+                _expired_msgs = []
+                try:
+                    for _exp_name in _not_found:
+                        _exp_doc = find_expired_user_document_by_name(
+                            _db_exp,
+                            uuid.UUID(_uid),
+                            uuid.UUID(_tid),
+                            _exp_name,
+                        )
+                        if _exp_doc and _exp_doc.expires_at:
+                            _exp_date = _exp_doc.expires_at.strftime("%d/%m/%Y")
+                            _expired_msgs.append(
+                                f"Il documento «{_exp_doc.original_filename}» "
+                                f"è scaduto il {_exp_date}. "
+                                f"Per continuare l'analisi è necessario caricarlo di nuovo."
+                            )
+                finally:
+                    try:
+                        _db_exp_gen.close()
+                    except Exception:
+                        pass
+
+                if _expired_msgs:
+                    _session = chatbot.get_session(session_id, user_id=_uid)
+                    if not _session:
+                        _session = ChatSession(
+                            session_id=session_id, user_id=_uid, tenant_id=_tid
+                        )
+                        chatbot._sessions[session_id] = _session
+                    _exp_answer = "\n\n".join(_expired_msgs)
+                    _session.add_message("user", request.message)
+                    _session.add_message("assistant", _exp_answer)
+                    return ChatResponse(
+                        session_id=session_id,
+                        answer=_exp_answer,
+                        original_query=request.message,
+                        resolved_query=request.message,
+                        session_language=_session.session_language,
+                        status_messages=["document_expired"],
+                    )
 
             if _matched_docs:
                 _session = chatbot.get_session(session_id, user_id=_uid)
@@ -1612,14 +1675,23 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                     "Prova a riformulare la domanda."
                                 )
                         except Exception as _exc:
-                            logger.error(
-                                "chat: multi-doc comparison LLM call failed: %s",
-                                _exc, exc_info=True,
-                            )
-                            answer = (
-                                "Si è verificato un errore durante il confronto dei documenti. "
-                                "Riprova tra qualche istante."
-                            )
+                            _exc_str = str(_exc)
+                            if "maximum context length" in _exc_str or "input_tokens" in _exc_str or "400" in _exc_str:
+                                logger.warning("chat: multi-doc comparison context overflow: %s", _exc)
+                                answer = (
+                                    "I documenti selezionati sono troppo lunghi per essere confrontati insieme. "
+                                    "Prova a fare domande più specifiche su singole clausole, "
+                                    "oppure carica versioni più brevi dei documenti."
+                                )
+                            else:
+                                logger.error(
+                                    "chat: multi-doc comparison LLM call failed: %s",
+                                    _exc, exc_info=True,
+                                )
+                                answer = (
+                                    "Si è verificato un errore durante il confronto dei documenti. "
+                                    "Riprova tra qualche istante."
+                                )
 
                     _session.add_message("user", request.message, metadata={
                         "documents": [{"document_id": str(d.id), "document_name": d.original_filename} for d in _matched_docs],
@@ -1702,14 +1774,22 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                     ),
                                 )
                             except Exception as _exc:
-                                logger.error(
-                                    "chat: document analyse LLM call failed: %s",
-                                    _exc, exc_info=True,
-                                )
-                                answer = (
-                                    "Si è verificato un errore durante l'analisi del documento. "
-                                    "Riprova tra qualche istante."
-                                )
+                                _exc_str = str(_exc)
+                                if "maximum context length" in _exc_str or "input_tokens" in _exc_str or "400" in _exc_str:
+                                    logger.warning("chat: document analyse context overflow: %s", _exc)
+                                    answer = (
+                                        "Il documento è troppo lungo per essere analizzato interamente. "
+                                        "Prova a fare una domanda più specifica su una sezione particolare."
+                                    )
+                                else:
+                                    logger.error(
+                                        "chat: document analyse LLM call failed: %s",
+                                        _exc, exc_info=True,
+                                    )
+                                    answer = (
+                                        "Si è verificato un errore durante l'analisi del documento. "
+                                        "Riprova tra qualche istante."
+                                    )
 
                     _session.add_message("user", request.message, metadata={
                         "document_id": str(_matched_doc.id),

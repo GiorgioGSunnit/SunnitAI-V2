@@ -385,6 +385,59 @@ def find_user_document_by_name(
     return best_doc if best_score >= 0.25 else None
 
 
+def find_expired_user_document_by_name(
+    db: Session,
+    user_id: uuid.UUID,
+    tenant_id: uuid.UUID,
+    query: str,
+) -> Optional["UserDocument"]:
+    """
+    Same fuzzy matching as find_user_document_by_name but includes expired documents.
+    Used to detect when a user references a document that has expired, so we can
+    return a specific expiry message instead of falling through to RAG.
+    """
+    import re as _re
+
+    def _tokens(s: str) -> set:
+        s = _re.sub(r"[^a-z0-9]", " ", s.lower())
+        return {t for t in s.split() if len(t) > 1}
+
+    candidates = (
+        db.query(UserDocument)
+        .filter(
+            or_(
+                and_(UserDocument.scope == "personal", UserDocument.user_id == user_id),
+                and_(UserDocument.scope == "tenant", UserDocument.tenant_id == tenant_id),
+            ),
+            UserDocument.expires_at.isnot(None),
+            UserDocument.expires_at <= datetime.now(timezone.utc),
+        )
+        .all()
+    )
+
+    q_clean = _re.sub(r"\.[a-z]{2,4}$", "", query.lower()).strip()
+    q_tokens = _tokens(q_clean)
+
+    best_doc = None
+    best_score = -1.0
+
+    for doc in candidates:
+        fname = _re.sub(r"\.[a-z]{2,4}$", "", doc.original_filename.lower()).strip()
+        if fname == q_clean or doc.original_filename.lower() == query.lower():
+            return doc
+        if q_clean in fname or fname in q_clean:
+            score = 0.8
+        else:
+            f_tokens = _tokens(fname)
+            union = q_tokens | f_tokens
+            score = len(q_tokens & f_tokens) / len(union) if union else 0.0
+        if score > best_score:
+            best_score = score
+            best_doc = doc
+
+    return best_doc if best_score >= 0.25 else None
+
+
 def create_user_document(
     db: Session,
     user_id: uuid.UUID,
