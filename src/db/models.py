@@ -4,11 +4,12 @@ import uuid
 from datetime import datetime, timezone
 from sqlalchemy import (
     Column, String, Boolean, Integer,
-    DateTime, ForeignKey, Text, func
+    DateTime, ForeignKey, Text, func, Numeric
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from .base import Base
+from pgvector.sqlalchemy import Vector
 
 
 def utcnow():
@@ -218,3 +219,49 @@ class UserDocument(Base):
 
     # Relationships
     user = relationship("User", back_populates="documents")
+
+
+# ---------------------------------------------------------------------------
+# Formula Registry — deterministic calculation engine (Phase 1)
+# ---------------------------------------------------------------------------
+
+class Formula(Base):
+    """Stores formula metadata, parameter schemas, and semantic embeddings.
+
+    expression_type:
+      - 'simple'  → expression field holds a safe Python expression string
+                    evaluated by SafeExpressionEvaluator
+      - 'complex' → plugin_name points to a registered Python plugin function
+    """
+    __tablename__ = "formulas"
+
+    id               = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug             = Column(String(120), unique=True, nullable=False)
+    name_it          = Column(String(255), nullable=False)
+    description_it   = Column(Text, nullable=False)
+    category         = Column(String(80), nullable=False)
+    subcategory      = Column(String(80), nullable=True)
+    expression_type  = Column(String(20), nullable=False)   # CHECK enforced at DB level
+    expression       = Column(Text, nullable=True)          # None for complex formulas
+    plugin_name      = Column(String(120), nullable=True)   # None for simple formulas
+    parameter_schema = Column(JSONB, nullable=False)        # list[ParameterDefinition]
+    source_norm      = Column(String(255), nullable=True)
+    examples         = Column(JSONB, nullable=True)         # list[str] for embedding
+    embedding        = Column(Vector(1024), nullable=True)  # populated by seed script
+    is_active        = Column(Boolean, nullable=False, default=True)
+    created_at       = Column(DateTime(timezone=True), default=utcnow)
+    updated_at       = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class IstatCoefficient(Base):
+    """Annual ISTAT revaluation coefficients used by the TFR plugin.
+
+    WARNING: Values in the seed script are approximate.
+    Verify against official ISTAT publications before use in legal documents.
+    Source: https://www.istat.it/it/archivio/rivalutazione-monetaria
+    """
+    __tablename__ = "istat_coefficients"
+
+    year       = Column(Integer, primary_key=True)
+    cpi_annual = Column(Numeric(6, 4), nullable=False)   # annual CPI rate
+    tfr_coeff  = Column(Numeric(7, 4), nullable=False)   # 1.015 + 0.75 × cpi_annual
