@@ -27,6 +27,7 @@ pyproject.toml
 # Logs and runtime data
 *.log
 data/logs/
+.tmp/
 
 # Server diagnostics (contains connection details)
 server_check.sh

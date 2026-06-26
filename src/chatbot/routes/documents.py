@@ -21,6 +21,7 @@ from ...db.crud import (
 )
 from ...utils.document import extract_text_from_file
 from .auth import get_current_user
+from ..billing import enforce_tenant_product_access
 
 router = APIRouter(prefix="/user/documents", tags=["documents"])
 
@@ -50,6 +51,8 @@ async def upload_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    enforce_tenant_product_access(db, current_user.tenant_id)
+
     # ── 1. All validation before any I/O ───────────────────────────────────
     if scope not in ("personal", "tenant"):
         raise HTTPException(status_code=400, detail="scope must be 'personal' or 'tenant'")
@@ -152,6 +155,7 @@ def list_documents(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    enforce_tenant_product_access(db, current_user.tenant_id)
     docs = get_user_documents(db, current_user.id, current_user.tenant_id)
     return [
         {
@@ -177,6 +181,7 @@ def download_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    enforce_tenant_product_access(db, current_user.tenant_id)
     doc = get_user_document(db, doc_id, current_user.id, current_user.tenant_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -202,6 +207,7 @@ async def analyse_document(
     import asyncio
     from functools import partial
 
+    enforce_tenant_product_access(db, current_user.tenant_id)
     doc = get_user_document(db, doc_id, current_user.id, current_user.tenant_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -296,6 +302,7 @@ def delete_document(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    enforce_tenant_product_access(db, current_user.tenant_id)
     doc = get_user_document(db, doc_id, current_user.id, current_user.tenant_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")

@@ -310,6 +310,23 @@ def create_user_with_invite(
                 raise ValueError("Invalid or expired invite code")
 
             tenant_id, studio_name = row
+            cur.execute(
+                "SELECT seats, status FROM tenant_subscriptions WHERE tenant_id = %s",
+                (str(tenant_id),),
+            )
+            subscription_row = cur.fetchone()
+            seat_capacity = 1
+            if subscription_row and subscription_row[1] in ("active", "trialing"):
+                seat_capacity = max(1, int(subscription_row[0] or 1))
+
+            cur.execute(
+                "SELECT COUNT(*) FROM users WHERE tenant_id = %s AND is_active = true",
+                (str(tenant_id),),
+            )
+            seats_used = int(cur.fetchone()[0])
+            if seats_used >= seat_capacity:
+                raise ValueError("No available team seats for this tenant")
+
             user_id = str(uuid.uuid4())
 
             cur.execute("""

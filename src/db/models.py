@@ -218,3 +218,28 @@ class UserDocument(Base):
 
     # Relationships
     user = relationship("User", back_populates="documents")
+
+
+# ---------------------------------------------------------------------------
+# Tenant Subscriptions — Stripe-backed billing state per tenant
+# ---------------------------------------------------------------------------
+
+class TenantSubscription(Base):
+    __tablename__ = "tenant_subscriptions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, unique=True)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    plan_id = Column(String(50), nullable=True)
+    status = Column(String(50), nullable=False, default="inactive")
+    seats = Column(Integer, nullable=False, default=1)
+    stripe_customer_id = Column(String(255), nullable=True)
+    stripe_subscription_id = Column(String(255), nullable=True, unique=True)
+    stripe_checkout_session_id = Column(String(255), nullable=True, unique=True)
+    trial_started_at = Column(DateTime(timezone=True), nullable=True)
+    trial_ends_at = Column(DateTime(timezone=True), nullable=True)
+    current_period_end = Column(DateTime(timezone=True), nullable=True)
+    cancel_at_period_end = Column(Boolean, nullable=False, default=False)
+    last_payment_status = Column(String(50), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
