@@ -151,11 +151,16 @@ def _resolve_local_subscription(
 
 
 def _get_or_create_customer_id(db: Session, user: User) -> str:
+    stripe_client = get_stripe_client()
     local_subscription = crud.get_tenant_subscription(db, user.tenant_id)
     if local_subscription and local_subscription.stripe_customer_id:
-        return local_subscription.stripe_customer_id
+        try:
+            customer = stripe_client.Customer.retrieve(local_subscription.stripe_customer_id)
+            if _object_id(customer) and not getattr(customer, "deleted", False):
+                return customer.id
+        except stripe.error.InvalidRequestError:
+            pass
 
-    stripe_client = get_stripe_client()
     customers = stripe_client.Customer.list(email=user.email, limit=10)
     for customer in customers.data:
         metadata = _metadata(customer)
