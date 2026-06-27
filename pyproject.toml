@@ -39,6 +39,7 @@ dependencies = [
     "python-multipart>=0.0.6",
     # PostgreSQL
     "psycopg2-binary>=2.9.9",
+    "alembic>=1.13.0",
     # Billing
     "stripe>=10.12.0",
 ]
