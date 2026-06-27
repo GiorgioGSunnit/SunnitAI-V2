@@ -117,6 +117,7 @@ def test_create_checkout_session_uses_fake_stripe_client(monkeypatch):
             "cancel_url": "https://app.astrea.sunnit.ai/plans?billing=cancelled",
             "payment_method_collection": "always",
             "automatic_tax": {"enabled": True},
+            "billing_address_collection": "required",
             "customer_update": {"address": "auto"},
             "line_items": [{"price": "price_multiuser_123", "quantity": 3}],
             "metadata": {
