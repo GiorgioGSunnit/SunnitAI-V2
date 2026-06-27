@@ -335,18 +335,22 @@ def create_checkout_session(
         if trial_is_eligible(existing_subscription):
             subscription_data["trial_period_days"] = get_trial_days()
 
-        checkout_session = stripe_client.checkout.Session.create(
-            mode="subscription",
-            customer=customer_id,
-            client_reference_id=str(current_user.id),
-            success_url=request.success_url,
-            cancel_url=request.cancel_url,
-            payment_method_collection="always",
-            automatic_tax={"enabled": automatic_tax_enabled},
-            line_items=[{"price": price_id, "quantity": quantity}],
-            metadata=metadata,
-            subscription_data=subscription_data,
-        )
+        checkout_session_params = {
+            "mode": "subscription",
+            "customer": customer_id,
+            "client_reference_id": str(current_user.id),
+            "success_url": request.success_url,
+            "cancel_url": request.cancel_url,
+            "payment_method_collection": "always",
+            "automatic_tax": {"enabled": automatic_tax_enabled},
+            "line_items": [{"price": price_id, "quantity": quantity}],
+            "metadata": metadata,
+            "subscription_data": subscription_data,
+        }
+        if automatic_tax_enabled:
+            checkout_session_params["customer_update"] = {"address": "auto"}
+
+        checkout_session = stripe_client.checkout.Session.create(**checkout_session_params)
 
         crud.upsert_tenant_subscription(
             db,
