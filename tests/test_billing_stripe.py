@@ -88,7 +88,7 @@ def test_create_checkout_session_uses_fake_stripe_client(monkeypatch):
     monkeypatch.setenv("STRIPE_PRICE_PLUS_MULTIUSER", "price_multiuser_123")
     monkeypatch.setenv("STRIPE_TRIAL_DAYS", "7")
     monkeypatch.setenv("STRIPE_MULTIUSER_MIN_SEATS", "3")
-    monkeypatch.setenv("STRIPE_AUTOMATIC_TAX_ENABLED", "false")
+    monkeypatch.setenv("STRIPE_AUTOMATIC_TAX_ENABLED", "true")
     monkeypatch.setattr(billing, "get_stripe_client", lambda: fake_stripe)
     monkeypatch.setattr(billing.crud, "get_tenant_subscription", lambda _db, _tenant_id: None)
     monkeypatch.setattr(billing.crud, "upsert_tenant_subscription", fake_upsert)
@@ -116,7 +116,8 @@ def test_create_checkout_session_uses_fake_stripe_client(monkeypatch):
             "success_url": "https://app.astrea.sunnit.ai/plans?billing=success",
             "cancel_url": "https://app.astrea.sunnit.ai/plans?billing=cancelled",
             "payment_method_collection": "always",
-            "automatic_tax": {"enabled": False},
+            "automatic_tax": {"enabled": True},
+            "customer_update": {"address": "auto"},
             "line_items": [{"price": "price_multiuser_123", "quantity": 3}],
             "metadata": {
                 "user_id": str(user.id),
