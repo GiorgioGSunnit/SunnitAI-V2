@@ -28,9 +28,12 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from .session import ChatBot, ChatSession, _generate_session_title
 from ..db.base import get_db
+from ..db import crud
+from ..db.models import Tenant
 from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name, create_user_document
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
@@ -53,6 +56,7 @@ from ..rag.graph_nodes import _extract_citations
 from ..rag.prompts import legal_consultant_system_prefix, _LENGTH
 from langchain_core.messages import SystemMessage, HumanMessage
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
+from .billing import enforce_tenant_product_access, serialize_subscription
 from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
     get_user_document_for_generation, create_studio_and_admin,
@@ -138,10 +142,12 @@ from .routes.auth import router as auth_router
 from .routes.totp import router as totp_router
 from .routes.users import router as users_router
 from .routes.documents import router as documents_router
+from .routes.billing import router as billing_router
 app.include_router(auth_router, prefix="/api")
 app.include_router(totp_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
+app.include_router(billing_router, prefix="/api")
 
 chatbot = ChatBot()
 
@@ -248,6 +254,7 @@ class AuthResponse(BaseModel):
     user_id: str
     email: str
     studio_name: str = ""
+    subscription: Optional[dict] = None
 
 
 class UserProfileResponse(BaseModel):
@@ -258,6 +265,7 @@ class UserProfileResponse(BaseModel):
     first_name: str = ""
     last_name: str = ""
     tenant_id: str
+    subscription: Optional[dict] = None
 
 
 class UpdateProfileRequest(BaseModel):
@@ -416,7 +424,7 @@ def _run_comparison_sync(message: str, session_lang: str, cached_sections=None) 
 # ---------------------------------------------------------------------------
 
 @app.post("/api/auth/login", response_model=AuthResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, db: Session = Depends(get_db)):
     user = get_user_by_email(request.email)
     if not user or not user.get("is_active"):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -428,11 +436,19 @@ async def login(request: LoginRequest):
         "role": user["role"],
         "tenant_id": str(user["tenant_id"]),
     })
+    tenant_uuid = uuid.UUID(str(user["tenant_id"]))
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+    seats_used = crud.count_active_users_for_tenant(db, tenant_uuid)
     return AuthResponse(
         access_token=token,
         user_id=str(user["id"]),
         email=user["email"],
         studio_name=user.get("studio_name") or "",
+        subscription=serialize_subscription(
+            crud.get_tenant_subscription(db, tenant_uuid),
+            tenant,
+            seats_used=seats_used,
+        ),
     )
 
 
@@ -495,10 +511,13 @@ async def register_user(request: RegisterUserRequest):
 
 
 @app.get("/api/auth/me", response_model=UserProfileResponse)
-async def get_me(current_user: dict = Depends(require_user)):
+async def get_me(current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
     user = get_user_by_id(current_user["sub"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    tenant_uuid = uuid.UUID(str(user["tenant_id"]))
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+    seats_used = crud.count_active_users_for_tenant(db, tenant_uuid)
     return UserProfileResponse(
         user_id=str(user["id"]),
         email=user["email"],
@@ -507,6 +526,11 @@ async def get_me(current_user: dict = Depends(require_user)):
         first_name=user.get("first_name") or "",
         last_name=user.get("last_name") or "",
         tenant_id=str(user["tenant_id"]),
+        subscription=serialize_subscription(
+            crud.get_tenant_subscription(db, tenant_uuid),
+            tenant,
+            seats_used=seats_used,
+        ),
     )
 
 
@@ -514,6 +538,7 @@ async def get_me(current_user: dict = Depends(require_user)):
 async def update_me(
     request: UpdateProfileRequest,
     current_user: dict = Depends(require_user),
+    db: Session = Depends(get_db),
 ):
     try:
         user = update_user_profile(
@@ -526,6 +551,9 @@ async def update_me(
         )
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        tenant_uuid = uuid.UUID(str(user["tenant_id"]))
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+        seats_used = crud.count_active_users_for_tenant(db, tenant_uuid)
         return UserProfileResponse(
             user_id=str(user["id"]),
             email=user["email"],
@@ -534,6 +562,11 @@ async def update_me(
             first_name=user.get("first_name") or "",
             last_name=user.get("last_name") or "",
             tenant_id=str(user["tenant_id"]),
+            subscription=serialize_subscription(
+                crud.get_tenant_subscription(db, tenant_uuid),
+                tenant,
+                seats_used=seats_used,
+            ),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -575,11 +608,13 @@ class UserTemplateRequest(BaseModel):
 async def generate_from_user_template(
     request: UserTemplateRequest,
     current_user: dict = Depends(require_user),
+    db: Session = Depends(get_db),
 ):
     """Fill a user's own uploaded template with data from their message.
     Returns a filled .docx file. PDFs are extracted and rewritten as .docx."""
     user_id = current_user["sub"]
     tenant_id = current_user.get("tenant_id")
+    enforce_tenant_product_access(db, uuid.UUID(str(tenant_id)))
 
     doc_meta = get_user_document_for_generation(user_id, tenant_id, request.doc_id)
     if not doc_meta:
@@ -857,7 +892,8 @@ def get_section(document_id: str, section_name: str):
 
 
 @app.post("/api/sessions", response_model=SessionResponse)
-def create_session(current_user: dict = Depends(require_user)):
+def create_session(current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     session = chatbot.create_session(
         user_id=current_user["sub"],
         tenant_id=current_user.get("tenant_id"),
@@ -871,12 +907,14 @@ def create_session(current_user: dict = Depends(require_user)):
 
 
 @app.get("/api/sessions")
-def list_sessions(current_user: dict = Depends(require_user)):
+def list_sessions(current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     return chatbot.list_sessions(user_id=current_user["sub"])
 
 
 @app.get("/api/sessions/{session_id}")
-def get_session(session_id: str, current_user: dict = Depends(require_user)):
+def get_session(session_id: str, current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     session = chatbot.get_session(session_id, user_id=current_user["sub"])
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -884,7 +922,8 @@ def get_session(session_id: str, current_user: dict = Depends(require_user)):
 
 
 @app.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str, current_user: dict = Depends(require_user)):
+def delete_session(session_id: str, current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     if not chatbot.delete_session(session_id, user_id=current_user["sub"]):
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
@@ -955,7 +994,7 @@ def _build_generation_confirmation(lang: str) -> str:
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
-async def generate(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user)):
+async def generate(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Generate a legal document draft from a free-text request.
 
     Classifies the document type, extracts case details, retrieves relevant sections
@@ -968,6 +1007,9 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
 
     if not is_comparison_request and not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
+
+    if current_user:
+        enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
 
     session_id = request.session_id
     _uid = current_user["sub"] if current_user else None
@@ -1035,7 +1077,7 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
 
 
 @app.post("/api/generate/download")
-async def generate_download(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user)):
+async def generate_download(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Generate opposition act and return as a downloadable .docx file."""
     try:
         from docx import Document
@@ -1054,6 +1096,9 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
 
     if not is_comparison_request and not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
+
+    if current_user:
+        enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
 
     session_id = request.session_id
     _uid = current_user["sub"] if current_user else None
@@ -1336,13 +1381,16 @@ def _classify_doc_intent(message: str, session_lang: str) -> str:
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user)):
+async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send a message and get a response.
 
     If session_id is provided, continues the conversation.
     If omitted, a new session is created automatically.
     If the message is a generation request, redirects to the opposition act generation flow.
     """
+    if current_user:
+        enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
+
     session_id = request.session_id
     _uid = current_user["sub"] if current_user else None
     _tid = current_user.get("tenant_id") if current_user else None
