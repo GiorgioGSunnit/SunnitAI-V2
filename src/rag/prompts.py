@@ -79,7 +79,7 @@ _LENGTH = {
         "(referencing Corte di Cassazione or Corte Costituzionale where available), technical distinctions "
         "between similar institutes, and practical implications. "
         "Cite every retrieved section that supports the analysis — include as many citations as are relevant. "
-        "Write at least 4 substantive paragraphs."
+        "Write 4–6 substantive paragraphs."
     ),
 }
 

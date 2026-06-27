@@ -50,12 +50,14 @@ from ..rag.document_generation import (
     _call_chat,
 )
 from ..rag.graph_nodes import _extract_citations
+from ..rag.prompts import legal_consultant_system_prefix, _LENGTH
 from langchain_core.messages import SystemMessage, HumanMessage
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
 from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
     get_user_document_for_generation, create_studio_and_admin,
-    create_user_with_invite, get_tenant_invite_code, update_user_profile)
+    create_user_with_invite, get_tenant_invite_code, update_user_profile,
+    get_user_settings)
 
 logger = logging.getLogger(__name__)
 
@@ -1485,6 +1487,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     )
                     chatbot._sessions[session_id] = _session
                 _session_lang = _session.session_language
+                _doc_settings = get_user_settings(_uid) if _uid else {"tone": 2, "standing": 2, "response_length": 2}
 
                 _lang_note = {
                     "es": "Rispondi in spagnolo.",
@@ -1691,13 +1694,18 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 for fname, extract in _doc_extracts
                             )
                             _compare_system = (
-                                "Sei un assistente legale italiano. "
+                                legal_consultant_system_prefix(
+                                    _session_lang,
+                                    tone=_doc_settings["tone"],
+                                    standing=_doc_settings["standing"],
+                                ) + " "
                                 "Ti vengono forniti due blocchi di testo già estratti da documenti "
-                                "legali. Scrivi UN SOLO paragrafo (max 100 parole) che sintetizza "
+                                "legali. Sintetizza "
                                 "le principali differenze tra i due documenti relativamente alla "
                                 "domanda dell'utente. "
                                 "Non ripetere il contenuto degli estratti — solo le differenze chiave. "
                                 + _lang_note
+                                + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
                             )
                             _compare_human = (
                                 "\n\n".join(
@@ -1716,7 +1724,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                             SystemMessage(content=_compare_system),
                                             HumanMessage(content=_compare_human),
                                         ],
-                                        200,
+                                        2500,
                                     ),
                                 )
                             except Exception:
@@ -1801,7 +1809,11 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                             _truncated = _text[:12_000]
                             _was_cut = len(_text) > 12_000
                             _system = (
-                                "Sei un assistente legale italiano. "
+                                legal_consultant_system_prefix(
+                                    _session_lang,
+                                    tone=_doc_settings["tone"],
+                                    standing=_doc_settings["standing"],
+                                ) + " "
                                 "L'utente ti ha fornito il testo di un documento privato "
                                 f"('{_matched_doc.original_filename}'). "
                                 "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE "
@@ -1811,6 +1823,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "Rispondi in modo conversazionale e naturale — non usare JSON, "
                                 "non aggiungere intestazioni non necessarie. "
                                 + _lang_note
+                                + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
                             )
                             _human = (
                                 f"Documento:\n\n{_truncated}"
@@ -1828,7 +1841,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                             SystemMessage(content=_system),
                                             HumanMessage(content=_human),
                                         ],
-                                        2000,
+                                        2500,
                                     ),
                                 )
                             except Exception as _exc:
