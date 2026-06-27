@@ -82,7 +82,24 @@ def _object_id(value) -> Optional[str]:
 
 
 def _metadata(obj) -> dict:
-    return dict(getattr(obj, "metadata", None) or {})
+    metadata = getattr(obj, "metadata", None)
+    if not metadata:
+        return {}
+    if isinstance(metadata, dict):
+        return dict(metadata)
+
+    to_dict_recursive = getattr(metadata, "to_dict_recursive", None)
+    if callable(to_dict_recursive):
+        return dict(to_dict_recursive())
+
+    to_dict = getattr(metadata, "to_dict", None)
+    if callable(to_dict):
+        return dict(to_dict())
+
+    try:
+        return dict(metadata)
+    except (KeyError, TypeError, ValueError):
+        return {}
 
 
 def _stripe_error_detail(exc: stripe.error.StripeError) -> str:
@@ -130,7 +147,7 @@ def _get_or_create_customer_id(db: Session, user: User) -> str:
     stripe_client = get_stripe_client()
     customers = stripe_client.Customer.list(email=user.email, limit=10)
     for customer in customers.data:
-        metadata = dict(getattr(customer, "metadata", None) or {})
+        metadata = _metadata(customer)
         if metadata.get("tenant_id") == str(user.tenant_id):
             return customer.id
 
