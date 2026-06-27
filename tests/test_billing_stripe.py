@@ -1,7 +1,10 @@
 import uuid
 from types import SimpleNamespace
 
+import pytest
 import stripe
+from fastapi import HTTPException
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.chatbot.routes import billing
 
@@ -142,3 +145,39 @@ def test_create_checkout_session_uses_fake_stripe_client(monkeypatch):
     assert upserts[0]["kwargs"]["stripe_checkout_session_id"] == "cs_test_123"
     assert upserts[0]["kwargs"]["status"] == "checkout_pending"
     assert upserts[0]["kwargs"]["seats"] == 3
+
+
+def test_create_checkout_session_returns_503_when_billing_storage_is_unavailable(monkeypatch):
+    user = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        email="user@example.com",
+    )
+
+    class FakeDb:
+        rolled_back = False
+
+        def rollback(self):
+            self.rolled_back = True
+
+    db = FakeDb()
+
+    def raise_storage_error(_db, _tenant_id):
+        raise SQLAlchemyError("relation tenant_subscriptions does not exist")
+
+    monkeypatch.setattr(billing.crud, "get_tenant_subscription", raise_storage_error)
+
+    with pytest.raises(HTTPException) as exc_info:
+        billing.create_checkout_session(
+            billing.CheckoutSessionRequest(
+                plan_id="plus-single-monthly",
+                success_url="https://app.astrea.sunnit.ai/plans?billing=success",
+                cancel_url="https://app.astrea.sunnit.ai/plans?billing=cancelled",
+            ),
+            current_user=user,
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Billing storage unavailable. Run database migrations and retry checkout."
+    assert db.rolled_back is True

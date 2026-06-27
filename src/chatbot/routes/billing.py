@@ -1,9 +1,11 @@
+import logging
 import uuid
 from typing import Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ...db import crud
@@ -28,6 +30,7 @@ from ..billing import (
 from .auth import get_current_user
 
 router = APIRouter(prefix="/billing", tags=["billing"])
+logger = logging.getLogger(__name__)
 
 
 class CheckoutSessionRequest(BaseModel):
@@ -105,6 +108,14 @@ def _metadata(obj) -> dict:
 def _stripe_error_detail(exc: stripe.error.StripeError) -> str:
     message = getattr(exc, "user_message", None) or str(exc)
     return f"Stripe billing error: {message}"
+
+
+def _billing_storage_unavailable() -> HTTPException:
+    logger.exception("Billing storage unavailable")
+    return HTTPException(
+        status_code=503,
+        detail="Billing storage unavailable. Run database migrations and retry checkout.",
+    )
 
 
 def _subscription_response(db: Session, tenant_id: uuid.UUID) -> dict:
@@ -299,8 +310,8 @@ def create_checkout_session(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    existing_subscription = crud.get_tenant_subscription(db, current_user.tenant_id)
     try:
+        existing_subscription = crud.get_tenant_subscription(db, current_user.tenant_id)
         validate_return_url(request.success_url)
         validate_return_url(request.cancel_url)
         price_id = get_price_id_for_plan(request.plan_id)
@@ -336,23 +347,26 @@ def create_checkout_session(
             metadata=metadata,
             subscription_data=subscription_data,
         )
+
+        crud.upsert_tenant_subscription(
+            db,
+            current_user.tenant_id,
+            user_id=current_user.id,
+            plan_id=(existing_subscription.plan_id if existing_subscription and subscription_is_active(existing_subscription.status) else request.plan_id),
+            status=(existing_subscription.status if existing_subscription and subscription_is_active(existing_subscription.status) else "checkout_pending"),
+            seats=(existing_subscription.seats if existing_subscription and subscription_is_active(existing_subscription.status) else quantity),
+            stripe_customer_id=customer_id,
+            stripe_checkout_session_id=checkout_session.id,
+        )
     except BillingConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     except stripe.error.StripeError as exc:
         raise HTTPException(status_code=502, detail=_stripe_error_detail(exc))
-
-    crud.upsert_tenant_subscription(
-        db,
-        current_user.tenant_id,
-        user_id=current_user.id,
-        plan_id=(existing_subscription.plan_id if existing_subscription and subscription_is_active(existing_subscription.status) else request.plan_id),
-        status=(existing_subscription.status if existing_subscription and subscription_is_active(existing_subscription.status) else "checkout_pending"),
-        seats=(existing_subscription.seats if existing_subscription and subscription_is_active(existing_subscription.status) else quantity),
-        stripe_customer_id=customer_id,
-        stripe_checkout_session_id=checkout_session.id,
-    )
+    except SQLAlchemyError:
+        db.rollback()
+        raise _billing_storage_unavailable()
 
     if not getattr(checkout_session, "url", None):
         raise HTTPException(status_code=502, detail="Stripe did not return a checkout URL")

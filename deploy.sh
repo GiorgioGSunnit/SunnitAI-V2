@@ -22,7 +22,7 @@ echo ""
 # -------------------------------------------------------
 # 1. System dependencies
 # -------------------------------------------------------
-echo "[1/7] Installing system dependencies..."
+echo "[1/8] Installing system dependencies..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-venv python3-pip python3-dev build-essential > /dev/null 2>&1
 
@@ -37,7 +37,7 @@ echo "  Python: $(python3 --version)"
 # -------------------------------------------------------
 # 2. Virtual environment
 # -------------------------------------------------------
-echo "[2/7] Setting up Python virtual environment..."
+echo "[2/8] Setting up Python virtual environment..."
 if [ -d "$VENV_DIR" ]; then
     echo "  Existing venv found — recreating for clean install..."
     rm -rf "$VENV_DIR"
@@ -49,7 +49,7 @@ pip install --upgrade pip setuptools wheel -q
 # -------------------------------------------------------
 # 3. Install dependencies
 # -------------------------------------------------------
-echo "[3/7] Installing Python dependencies (this takes a few minutes)..."
+echo "[3/8] Installing Python dependencies (this takes a few minutes)..."
 cd "$APP_DIR"
 pip install -e "." 2>&1 | tail -5
 echo "  Dependencies installed"
@@ -57,7 +57,7 @@ echo "  Dependencies installed"
 # -------------------------------------------------------
 # 4. Verify .env exists
 # -------------------------------------------------------
-echo "[4/7] Checking configuration..."
+echo "[4/8] Checking configuration..."
 if [ ! -f "$APP_DIR/.env" ]; then
     if [ -f "$APP_DIR/env.production.template" ]; then
         echo "  No .env — creating from env.production.template (edit secrets before relying in prod)"
@@ -75,7 +75,7 @@ echo "  .env found"
 # -------------------------------------------------------
 # 5. Quick smoke test — can Python import the app?
 # -------------------------------------------------------
-echo "[5/7] Smoke test — importing the app..."
+echo "[5/8] Smoke test — importing the app..."
 cd "$APP_DIR"
 if ! "$VENV_DIR/bin/python" -c "from src.chatbot.api import app; print('  Import OK')" 2>&1; then
     echo ""
@@ -85,9 +85,17 @@ if ! "$VENV_DIR/bin/python" -c "from src.chatbot.api import app; print('  Import
 fi
 
 # -------------------------------------------------------
-# 6. Create systemd service
+# 6. Run database migrations
 # -------------------------------------------------------
-echo "[6/7] Creating systemd service..."
+echo "[6/8] Running database migrations..."
+cd "$APP_DIR"
+"$VENV_DIR/bin/alembic" upgrade head
+echo "  Database migrations applied"
+
+# -------------------------------------------------------
+# 7. Create systemd service
+# -------------------------------------------------------
+echo "[7/8] Creating systemd service..."
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
 Description=SunnitAI ChatBot API
@@ -112,9 +120,9 @@ systemctl daemon-reload
 systemctl enable ${SERVICE_NAME} > /dev/null 2>&1
 
 # -------------------------------------------------------
-# 7. Start the service and verify
+# 8. Start the service and verify
 # -------------------------------------------------------
-echo "[7/7] Starting the chatbot service..."
+echo "[8/8] Starting the chatbot service..."
 systemctl restart ${SERVICE_NAME}
 
 # Wait for startup
