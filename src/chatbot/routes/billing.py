@@ -348,6 +348,7 @@ def create_checkout_session(
             "subscription_data": subscription_data,
         }
         if automatic_tax_enabled:
+            checkout_session_params["billing_address_collection"] = "required"
             checkout_session_params["customer_update"] = {"address": "auto"}
 
         checkout_session = stripe_client.checkout.Session.create(**checkout_session_params)
