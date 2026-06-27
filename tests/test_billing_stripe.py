@@ -39,6 +39,122 @@ def test_get_or_create_customer_id_reads_stripe_object_metadata(monkeypatch):
     assert billing._get_or_create_customer_id(SimpleNamespace(), user) == "cus_existing"
 
 
+def test_create_checkout_session_recovers_when_local_customer_id_is_stale(monkeypatch):
+    user = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        email="user@example.com",
+    )
+    db = SimpleNamespace()
+    local_subscription = SimpleNamespace(
+        stripe_customer_id="cus_UmW77x4GxRPrAU",
+        plan_id=None,
+        status=None,
+        seats=None,
+        trial_started_at=None,
+    )
+    existing_customer = stripe.Customer.construct_from(
+        {
+            "id": "cus_existing",
+            "email": user.email,
+            "metadata": {"tenant_id": str(user.tenant_id)},
+        },
+        key=None,
+    )
+    checkout_calls = []
+    upserts = []
+
+    class CustomerApi:
+        @staticmethod
+        def retrieve(customer_id):
+            assert customer_id == "cus_UmW77x4GxRPrAU"
+            raise stripe.error.InvalidRequestError(
+                message="No such customer: 'cus_UmW77x4GxRPrAU'",
+                param="customer",
+            )
+
+        @staticmethod
+        def list(**kwargs):
+            assert kwargs == {"email": user.email, "limit": 10}
+            return SimpleNamespace(data=[existing_customer])
+
+        @staticmethod
+        def create(**_kwargs):
+            raise AssertionError("should reuse the matching Stripe customer")
+
+    class CheckoutSessionApi:
+        @staticmethod
+        def create(**kwargs):
+            checkout_calls.append(kwargs)
+            if kwargs["customer"] == "cus_UmW77x4GxRPrAU":
+                raise stripe.error.InvalidRequestError(
+                    message="No such customer: 'cus_UmW77x4GxRPrAU'",
+                    param="customer",
+                )
+            return SimpleNamespace(
+                id="cs_test_recovered",
+                url="https://checkout.stripe.test/session/cs_test_recovered",
+            )
+
+    fake_stripe = SimpleNamespace(
+        Customer=CustomerApi,
+        checkout=SimpleNamespace(Session=CheckoutSessionApi),
+    )
+
+    def fake_upsert(*args, **kwargs):
+        upserts.append({"args": args, "kwargs": kwargs})
+        return SimpleNamespace()
+
+    monkeypatch.setenv("STRIPE_PRICE_PLUS_SINGLE_MONTHLY", "price_single_123")
+    monkeypatch.setenv("STRIPE_AUTOMATIC_TAX_ENABLED", "false")
+    monkeypatch.setattr(billing, "get_stripe_client", lambda: fake_stripe)
+    monkeypatch.setattr(billing.crud, "get_tenant_subscription", lambda _db, _tenant_id: local_subscription)
+    monkeypatch.setattr(billing.crud, "upsert_tenant_subscription", fake_upsert)
+
+    response = billing.create_checkout_session(
+        billing.CheckoutSessionRequest(
+            plan_id="plus-single-monthly",
+            success_url="https://app.astrea.sunnit.ai/plans?billing=success",
+            cancel_url="https://app.astrea.sunnit.ai/plans?billing=cancelled",
+        ),
+        current_user=user,
+        db=db,
+    )
+
+    assert response.checkout_url == "https://checkout.stripe.test/session/cs_test_recovered"
+    assert response.session_id == "cs_test_recovered"
+    assert checkout_calls == [
+        {
+            "mode": "subscription",
+            "customer": "cus_existing",
+            "client_reference_id": str(user.id),
+            "success_url": "https://app.astrea.sunnit.ai/plans?billing=success",
+            "cancel_url": "https://app.astrea.sunnit.ai/plans?billing=cancelled",
+            "payment_method_collection": "always",
+            "automatic_tax": {"enabled": False},
+            "line_items": [{"price": "price_single_123", "quantity": 1}],
+            "metadata": {
+                "user_id": str(user.id),
+                "tenant_id": str(user.tenant_id),
+                "plan_id": "plus-single-monthly",
+                "seats": "1",
+            },
+            "subscription_data": {
+                "metadata": {
+                    "user_id": str(user.id),
+                    "tenant_id": str(user.tenant_id),
+                    "plan_id": "plus-single-monthly",
+                    "seats": "1",
+                },
+                "trial_period_days": 7,
+            },
+        }
+    ]
+    assert len(upserts) == 1
+    assert upserts[0]["kwargs"]["stripe_customer_id"] == "cus_existing"
+    assert upserts[0]["kwargs"]["stripe_checkout_session_id"] == "cs_test_recovered"
+
+
 def test_create_checkout_session_uses_fake_stripe_client(monkeypatch):
     user = SimpleNamespace(
         id=uuid.uuid4(),
