@@ -1,6 +1,7 @@
 import uuid
 from typing import Optional
 
+import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from ...db.base import get_db
 from ...db.models import Tenant, TenantSubscription, User
 from ..billing import (
     BillingConfigError,
+    get_automatic_tax_enabled,
     get_multiuser_min_seats,
     get_price_id_for_plan,
     get_stripe_client,
@@ -81,6 +83,11 @@ def _object_id(value) -> Optional[str]:
 
 def _metadata(obj) -> dict:
     return dict(getattr(obj, "metadata", None) or {})
+
+
+def _stripe_error_detail(exc: stripe.error.StripeError) -> str:
+    message = getattr(exc, "user_message", None) or str(exc)
+    return f"Stripe billing error: {message}"
 
 
 def _subscription_response(db: Session, tenant_id: uuid.UUID) -> dict:
@@ -283,38 +290,41 @@ def create_checkout_session(
         quantity = normalize_quantity(request.plan_id, request.quantity)
         stripe_client = get_stripe_client()
         customer_id = _get_or_create_customer_id(db, current_user)
+        automatic_tax_enabled = get_automatic_tax_enabled()
+
+        metadata = {
+            "user_id": str(current_user.id),
+            "tenant_id": str(current_user.tenant_id),
+            "plan_id": request.plan_id,
+            "seats": str(quantity),
+        }
+        if request.source:
+            metadata["source"] = request.source
+        if request.return_to:
+            metadata["return_to"] = request.return_to
+
+        subscription_data = {"metadata": metadata}
+        if trial_is_eligible(existing_subscription):
+            subscription_data["trial_period_days"] = get_trial_days()
+
+        checkout_session = stripe_client.checkout.Session.create(
+            mode="subscription",
+            customer=customer_id,
+            client_reference_id=str(current_user.id),
+            success_url=request.success_url,
+            cancel_url=request.cancel_url,
+            payment_method_collection="always",
+            automatic_tax={"enabled": automatic_tax_enabled},
+            line_items=[{"price": price_id, "quantity": quantity}],
+            metadata=metadata,
+            subscription_data=subscription_data,
+        )
     except BillingConfigError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-
-    metadata = {
-        "user_id": str(current_user.id),
-        "tenant_id": str(current_user.tenant_id),
-        "plan_id": request.plan_id,
-        "seats": str(quantity),
-    }
-    if request.source:
-        metadata["source"] = request.source
-    if request.return_to:
-        metadata["return_to"] = request.return_to
-
-    subscription_data = {"metadata": metadata}
-    if trial_is_eligible(existing_subscription):
-        subscription_data["trial_period_days"] = get_trial_days()
-
-    checkout_session = stripe_client.checkout.Session.create(
-        mode="subscription",
-        customer=customer_id,
-        client_reference_id=str(current_user.id),
-        success_url=request.success_url,
-        cancel_url=request.cancel_url,
-        payment_method_collection="always",
-        automatic_tax={"enabled": True},
-        line_items=[{"price": price_id, "quantity": quantity}],
-        metadata=metadata,
-        subscription_data=subscription_data,
-    )
+    except stripe.error.StripeError as exc:
+        raise HTTPException(status_code=502, detail=_stripe_error_detail(exc))
 
     crud.upsert_tenant_subscription(
         db,
@@ -354,12 +364,18 @@ def sync_checkout_session(
             expand=["subscription"],
         )
     except BillingConfigError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc))
+    except stripe.error.StripeError as exc:
+        raise HTTPException(status_code=502, detail=_stripe_error_detail(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Unable to retrieve checkout session: {exc}")
 
-    _verify_checkout_session_ownership(checkout_session, current_user)
-    subscription = _sync_from_checkout_session(db, checkout_session, current_user=current_user)
+    try:
+        _verify_checkout_session_ownership(checkout_session, current_user)
+        subscription = _sync_from_checkout_session(db, checkout_session, current_user=current_user)
+    except stripe.error.StripeError as exc:
+        raise HTTPException(status_code=502, detail=_stripe_error_detail(exc))
+
     tenant = db.query(Tenant).filter(Tenant.id == subscription.tenant_id).first()
     usage = tenant_seat_usage(db, subscription.tenant_id, subscription)
     return serialize_subscription(subscription, tenant, seats_used=usage["seats_used"])
@@ -375,32 +391,35 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
     try:
         event = get_stripe_client().Webhook.construct_event(payload, signature, get_webhook_secret())
     except BillingConfigError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=503, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Invalid webhook: {exc}")
 
     event_type = event["type"]
     data_object = event["data"]["object"]
 
-    if event_type == "checkout.session.completed":
-        _sync_from_checkout_session(db, data_object)
-    elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
-        _sync_from_stripe_subscription(db, data_object)
-    elif event_type == "invoice.payment_succeeded":
-        stripe_subscription_id = _object_id(data_object.get("subscription"))
-        if stripe_subscription_id:
-            stripe_subscription = get_stripe_client().Subscription.retrieve(
-                stripe_subscription_id,
-                expand=["items.data.price"],
-            )
-            _sync_from_stripe_subscription(db, stripe_subscription, last_payment_status="paid")
-    elif event_type == "invoice.payment_failed":
-        stripe_subscription_id = _object_id(data_object.get("subscription"))
-        if stripe_subscription_id:
-            stripe_subscription = get_stripe_client().Subscription.retrieve(
-                stripe_subscription_id,
-                expand=["items.data.price"],
-            )
-            _sync_from_stripe_subscription(db, stripe_subscription, last_payment_status="failed")
+    try:
+        if event_type == "checkout.session.completed":
+            _sync_from_checkout_session(db, data_object)
+        elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
+            _sync_from_stripe_subscription(db, data_object)
+        elif event_type == "invoice.payment_succeeded":
+            stripe_subscription_id = _object_id(data_object.get("subscription"))
+            if stripe_subscription_id:
+                stripe_subscription = get_stripe_client().Subscription.retrieve(
+                    stripe_subscription_id,
+                    expand=["items.data.price"],
+                )
+                _sync_from_stripe_subscription(db, stripe_subscription, last_payment_status="paid")
+        elif event_type == "invoice.payment_failed":
+            stripe_subscription_id = _object_id(data_object.get("subscription"))
+            if stripe_subscription_id:
+                stripe_subscription = get_stripe_client().Subscription.retrieve(
+                    stripe_subscription_id,
+                    expand=["items.data.price"],
+                )
+                _sync_from_stripe_subscription(db, stripe_subscription, last_payment_status="failed")
+    except stripe.error.StripeError as exc:
+        raise HTTPException(status_code=502, detail=_stripe_error_detail(exc))
 
     return {"received": True, "trial_days": get_trial_days(), "min_team_seats": get_multiuser_min_seats()}

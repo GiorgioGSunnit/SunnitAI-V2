@@ -18,8 +18,18 @@ PLAN_PRICE_ENV = {
 
 ACCESSIBLE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
 NON_BLOCKING_PENDING_STATUSES = {"checkout_pending", "checkout_completed"}
-DEFAULT_TRIAL_DAYS = int(os.getenv("STRIPE_TRIAL_DAYS", "7"))
-DEFAULT_MULTIUSER_MIN_SEATS = int(os.getenv("STRIPE_MULTIUSER_MIN_SEATS", "3"))
+
+PLACEHOLDER_VALUES = {
+    "sk_test_your_key_here",
+    "sk_live_your_key_here",
+    "whsec_your_webhook_secret_here",
+    "price_test_single_monthly",
+    "price_test_single_annual",
+    "price_test_multiuser",
+    "price_live_plus_single_monthly",
+    "price_live_plus_single_annual",
+    "price_live_plus_multiuser",
+}
 
 
 class BillingConfigError(RuntimeError):
@@ -31,37 +41,70 @@ class BillingAccessBlocked(HTTPException):
         super().__init__(status_code=402, detail=detail)
 
 
+def _looks_like_placeholder(value: str) -> bool:
+    normalized = value.strip().lower()
+    return (
+        not normalized
+        or normalized in PLACEHOLDER_VALUES
+        or "your-" in normalized
+        or "your_" in normalized
+        or "placeholder" in normalized
+        or normalized.endswith("_here")
+    )
+
+
+def require_stripe_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if _looks_like_placeholder(value):
+        raise BillingConfigError(f"Missing or placeholder {name}")
+    return value
+
+
+def stripe_bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def stripe_int_env(name: str, default: int, minimum: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or raw.strip() == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise BillingConfigError(f"{name} must be an integer") from exc
+    return max(minimum, value)
+
+
 def get_stripe_client():
-    api_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
-    if not api_key:
-        raise BillingConfigError("Missing STRIPE_SECRET_KEY")
+    api_key = require_stripe_env("STRIPE_SECRET_KEY")
     stripe.api_key = api_key
     return stripe
 
 
 def get_webhook_secret() -> str:
-    secret = os.getenv("STRIPE_WEBHOOK_SECRET", "").strip()
-    if not secret:
-        raise BillingConfigError("Missing STRIPE_WEBHOOK_SECRET")
-    return secret
+    return require_stripe_env("STRIPE_WEBHOOK_SECRET")
 
 
 def get_price_id_for_plan(plan_id: str) -> str:
     env_name = PLAN_PRICE_ENV.get(plan_id)
     if not env_name:
         raise ValueError(f"Unsupported plan_id '{plan_id}'")
-    price_id = os.getenv(env_name, "").strip()
-    if not price_id:
-        raise BillingConfigError(f"Missing {env_name}")
-    return price_id
+    return require_stripe_env(env_name)
 
 
 def get_trial_days() -> int:
-    return max(0, DEFAULT_TRIAL_DAYS)
+    return stripe_int_env("STRIPE_TRIAL_DAYS", default=7, minimum=0)
 
 
 def get_multiuser_min_seats() -> int:
-    return max(3, DEFAULT_MULTIUSER_MIN_SEATS)
+    return stripe_int_env("STRIPE_MULTIUSER_MIN_SEATS", default=3, minimum=3)
+
+
+def get_automatic_tax_enabled() -> bool:
+    return stripe_bool_env("STRIPE_AUTOMATIC_TAX_ENABLED", default=False)
 
 
 def is_multiuser_plan(plan_id: Optional[str]) -> bool:
