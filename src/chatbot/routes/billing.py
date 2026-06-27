@@ -310,6 +310,7 @@ def create_checkout_session(
         success_url=request.success_url,
         cancel_url=request.cancel_url,
         payment_method_collection="always",
+        automatic_tax={"enabled": True},
         line_items=[{"price": price_id, "quantity": quantity}],
         metadata=metadata,
         subscription_data=subscription_data,
