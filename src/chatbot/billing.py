@@ -160,7 +160,7 @@ def tenant_seat_usage(db: Session, tenant_id, subscription: Optional[TenantSubsc
 
 def subscription_access_block_reason(subscription: Optional[TenantSubscription]) -> Optional[str]:
     if not subscription:
-        return None
+        return "Nessun piano attivo. Apri Piani per continuare a usare Astrea."
     if subscription.status in NON_BLOCKING_PENDING_STATUSES:
         return None
     now = datetime.now(timezone.utc)
