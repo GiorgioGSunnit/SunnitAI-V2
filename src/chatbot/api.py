@@ -934,11 +934,16 @@ def _persist_generated_docx(
     doc_type: str,
     user_id: str,
     tenant_id: str,
+    case_details: dict | None = None,
 ) -> tuple:
     """Save draft as a DOCX file on disk and create a user_documents record.
+    Applies full letterhead (logo, studio name, address) if tenant profile exists.
+    Uses case_details to build a meaningful filename (e.g. includes client name).
     Returns (document_id_str, original_filename) or (None, None) on failure."""
     try:
         from docx import Document as _DocxDoc
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
         import io as _io
         from ..db.base import SessionLocal as _SL
         from ..constants import PRIVATE_DOCS_BASE as _BASE
@@ -949,10 +954,87 @@ def _persist_generated_docx(
         else:
             _label = doc_type.replace("_", " ").replace("-", " ").title() if doc_type else "Documento"
         _slug = re.sub(r"[^a-z0-9]+", "_", _label.lower()).strip("_")
-        _filename = f"{_slug}.docx"
+
+        # Build meaningful filename from case_details — include client/subject name
+        _name_suffix = ""
+        if case_details:
+            # Try common name fields in priority order
+            _name_candidate = (
+                case_details.get("conduttore") or
+                case_details.get("nome_assistito") or
+                case_details.get("nome_difensore") or
+                case_details.get("debitore") or
+                case_details.get("cliente") or
+                case_details.get("nome") or
+                case_details.get("richiedente") or
+                case_details.get("locatore") or
+                ""
+            )
+            # Only use if it's a real value, not a placeholder
+            if _name_candidate and "[DA COMPILARE]" not in _name_candidate:
+                # Sanitize: keep only letters, numbers, spaces; truncate to 30 chars
+                _clean = re.sub(r"[^a-zA-Z0-9\s]", "", _name_candidate).strip()[:30]
+                _clean_slug = re.sub(r"\s+", "_", _clean).lower()
+                if _clean_slug:
+                    _name_suffix = f"_{_clean_slug}"
+
+        _filename = f"{_slug}{_name_suffix}.docx"
 
         _doc = _DocxDoc()
-        for _line in draft.split("\n"):
+        _ph = "[DA COMPILARE]"
+
+        # ── Letterhead ────────────────────────────────────────────────────
+        _tenant_profile = get_tenant_profile_full(tenant_id) if tenant_id else None
+        if _tenant_profile:
+            _logo_path = _tenant_profile.get("logo_path") or ""
+            if _logo_path and os.path.exists(_logo_path):
+                _logo_para = _doc.add_paragraph()
+                _logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _logo_run = _logo_para.add_run()
+                _logo_run.add_picture(_logo_path, width=Inches(2.5))
+                _logo_para.paragraph_format.space_after = Pt(12)
+
+            _name_val = _tenant_profile.get("legal_name") or _tenant_profile.get("display_name") or _ph
+            _name_para = _doc.add_paragraph()
+            _name_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _name_run = _name_para.add_run(_name_val)
+            _name_run.bold = True
+            _name_run.font.size = Pt(11)
+
+            _addr_parts = [
+                _tenant_profile.get("address_street") or _ph,
+                f"{_tenant_profile.get('address_postal_code') or _ph} {_tenant_profile.get('address_city') or _ph}",
+                _tenant_profile.get("address_country") or _ph,
+            ]
+            _addr_para = _doc.add_paragraph(", ".join(_addr_parts))
+            _addr_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            _contact_para = _doc.add_paragraph(
+                f"Tel: {_tenant_profile.get('phone') or _ph}  |  Web: {_tenant_profile.get('website') or _ph}"
+            )
+            _contact_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            _vat_para = _doc.add_paragraph(f"P.IVA: {_tenant_profile.get('vat_number') or _ph}")
+            _vat_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            _sep_para = _doc.add_paragraph()
+            _sep_para.paragraph_format.space_before = Pt(6)
+            _sep_run = _sep_para.add_run("─" * 60)
+            _sep_run.font.size = Pt(8)
+            _sep_run.font.color.rgb = RGBColor(180, 180, 180)
+            _sep_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _sep_para.paragraph_format.space_after = Pt(12)
+
+        # ── Document title ────────────────────────────────────────────────
+        _title_para = _doc.add_paragraph()
+        _title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _title_run = _title_para.add_run(_label)
+        _title_run.bold = True
+        _title_run.font.size = Pt(14)
+        _doc.add_paragraph()
+
+        # ── Draft content ─────────────────────────────────────────────────
+        for _line in _strip_markdown(draft).split("\n"):
             _doc.add_paragraph(_line)
 
         _folder = os.path.join(_BASE, tenant_id, user_id)
@@ -1001,7 +1083,7 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
     from the knowledge base, and returns a structured draft.
     """
     is_comparison_request = bool(re.search(
-        r'\b(confronta|confronto|differenze?\s+tra|compara|paragona|versus|vs\.?)\b',
+        r'\b(confronta\b|confronto\s+(tra|fra|dei|di|delle|degli)\b|differenze?\s+tra\b|compara\b|paragona\b|versus\b|vs\.?)\b',
         request.message, re.IGNORECASE
     )) or request.doc_type == "comparison"
 
@@ -1081,7 +1163,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     """Generate opposition act and return as a downloadable .docx file."""
     try:
         from docx import Document
-        from docx.shared import Cm, Inches, Pt
+        from docx.shared import Cm, Inches, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
     except ImportError:
         raise HTTPException(
@@ -1090,7 +1172,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         )
 
     is_comparison_request = bool(re.search(
-        r'\b(confronta|confronto|differenze?\s+tra|compara|paragona|versus|vs\.?)\b',
+        r'\b(confronta\b|confronto\s+(tra|fra|dei|di|delle|degli)\b|differenze?\s+tra\b|compara\b|paragona\b|versus\b|vs\.?)\b',
         request.message, re.IGNORECASE
     )) or request.doc_type == "comparison"
 
@@ -1192,7 +1274,9 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             logo_para = doc.add_paragraph()
             logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             logo_run = logo_para.add_run()
-            logo_run.add_picture(logo_path_val, width=Inches(3.0))
+            logo_run.add_picture(logo_path_val, width=Inches(2.5))
+            # Space after logo before studio name
+            logo_para.paragraph_format.space_after = Pt(12)
 
         name_val = tenant_profile.get("legal_name") or tenant_profile.get("display_name") or ph
         name_para = doc.add_paragraph()
@@ -1217,7 +1301,14 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         vat_para = doc.add_paragraph(f"P.IVA: {tenant_profile.get('vat_number') or ph}")
         vat_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        doc.add_paragraph()
+        # Separator line and spacing before document title
+        sep_para = doc.add_paragraph()
+        sep_para.paragraph_format.space_before = Pt(6)
+        sep_run = sep_para.add_run("─" * 60)
+        sep_run.font.size = Pt(8)
+        sep_run.font.color.rgb = RGBColor(180, 180, 180)
+        sep_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sep_para.paragraph_format.space_after = Pt(12)
 
     title_para = doc.add_paragraph()
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1981,7 +2072,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     doc_type, _uid, _tid, len(gen_result["draft"]))
         if _uid and _tid:
             _gen_doc_id, _gen_doc_name = _persist_generated_docx(
-                gen_result["draft"], doc_type, _uid, _tid
+                gen_result["draft"], doc_type, _uid, _tid,
+                case_details=gen_result.get("case_details"),
             )
             logger.info("chat: persist result doc_id=%r name=%r", _gen_doc_id, _gen_doc_name)
         else:

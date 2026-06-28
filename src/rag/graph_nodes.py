@@ -253,10 +253,25 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
             best_name = name
             best_name_token_count = len(name_tokens)
 
-    # Require at least 2 meaningful tokens to match to avoid false positives
-    if best_score >= 2:
+    # Only scope BM25 to a single document for specific article lookup queries.
+    # General legal questions (no article reference) should search the full corpus.
+    # Require score >= 3 AND an article reference in the query to avoid false locks.
+    _has_article_ref = bool(re.search(
+        r'\bart\.?\s*\d+|articolo\s+\d+|comma\s+\d+|art\s+\d+',
+        query, re.IGNORECASE
+    ))
+    # With article reference: score >= 2 is enough to scope BM25 to that document
+    if _has_article_ref and best_score >= 2:
         logger.info(
-            "_dynamic_law_hint: matched %r id=%r (score=%d) for query %r",
+            "_dynamic_law_hint: article lookup — matched %r id=%r (score=%d) for query %r",
+            best_name, best_id, best_score, query[:60],
+        )
+        return best_id
+    # Without article reference: require score >= 4 to avoid locking BM25
+    # to a document just because its name appears in a general query
+    if not _has_article_ref and best_score >= 4:
+        logger.info(
+            "_dynamic_law_hint: strong match — matched %r id=%r (score=%d) for query %r",
             best_name, best_id, best_score, query[:60],
         )
         return best_id
@@ -2882,6 +2897,7 @@ def _extract_citations(
                     "name": name,
                     "title": sec["title"],
                     "plain_text": sec["plain_text"],
+                    "score": sec.get("score"),
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
                         f"sections/{urllib.parse.quote(name, safe='')}"
@@ -2970,7 +2986,7 @@ def _format_for_reranker(row: dict) -> str:
     return " | ".join(parts)
 
 
-def rerank_results(query: str, rows: list, top_k: int = 8) -> list:
+def rerank_results(query: str, rows: list, top_k: int = 12) -> list:
     """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
     if not _RERANKER_ENABLED or not rows:
         return rows
@@ -3388,25 +3404,40 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # Also add base article numbers (e.g. "124" from "124.0.0")
     answer_article_refs |= {ref.split('.')[0] for ref in answer_article_refs}
 
-    if answer_article_refs and not state.get("is_comparison"):
-        def _section_referenced_in_answer(section: dict, doc_id: str) -> bool:
-            name = (section.get('name') or '').lower().replace(' ', '')
-            base_name = name.split('.')[0]
-            if name in answer_article_refs or base_name in answer_article_refs:
+    # Reranker-score-based citation filter.
+    # Trust the reranker's semantic relevance score rather than keyword matching.
+    # Sections with score >= 0.5 are always included.
+    # Sections with score 0.3-0.5 are included only if article number also in answer.
+    # Sections with score < 0.3 are excluded (noise).
+    # BM25 article-lookup sections bypass the filter entirely (already highly targeted).
+    if not state.get("is_comparison"):
+        def _section_passes_quality(section: dict, doc_id: str) -> bool:
+            # BM25 article lookup — always include
+            if doc_id in bm25_doc_ids and state.get("bm25_from_article_lookup"):
                 return True
-            if doc_id in bm25_doc_ids:
+            score = section.get("score")
+            if score is None:
+                # No reranker score — fall back to article reference check
+                name = (section.get('name') or '').lower().replace(' ', '')
+                base_name = name.split('.')[0]
+                return name in answer_article_refs or base_name in answer_article_refs
+            if score >= 0.5:
                 return True
+            if score >= 0.3:
+                # Medium confidence — only include if article number in answer
+                name = (section.get('name') or '').lower().replace(' ', '')
+                base_name = name.split('.')[0]
+                return name in answer_article_refs or base_name in answer_article_refs
             return False
 
         filtered = [
             {**c, 'sections': [
                 s for s in c['sections']
-                if _section_referenced_in_answer(s, c.get('document_id', ''))
+                if _section_passes_quality(s, c.get('document_id', ''))
             ]}
             for c in citations
         ]
-        # Only apply if filter keeps at least 1 section — avoids wiping all citations
-        # when answer doesn't use article references explicitly
+        # Only apply if filter keeps at least 1 section
         if any(fc['sections'] for fc in filtered):
             citations = [c for c in filtered if c['sections']]
 
