@@ -434,11 +434,11 @@ class ChatBot:
         }
         _drift_note = _DRIFT_NOTES.get(session.session_language, "\n\n---\n💡 This topic seems different from your previous conversation. Consider opening a new chat to keep the context separate.")
         if result.get("off_topic"):
-            # off_topic: RAG found nothing relevant — use fixed generic message
+            # off_topic: query classified as outside legal/professional domain
             _generic_fallback = {
-                "it": "Purtroppo la domanda è troppo generica e si è violato il limite sull'uso dell'Intelligenza Artificiale. Si prega di riformulare la domanda in modo più puntuale.",
-                "es": "Lamentablemente la pregunta es demasiado genérica y se ha superado el límite de uso de la Inteligencia Artificial. Por favor, reformule la pregunta de manera más precisa.",
-                "en": "Unfortunately the question is too generic and the AI usage limit has been exceeded. Please rephrase your question more precisely.",
+                "it": "La domanda sembra esulare dall'ambito legale e professionale. Sono qui per assistere su questioni giuridiche, contrattuali o normative.",
+                "es": "La pregunta parece estar fuera del ámbito legal y profesional. Estoy aquí para ayudar con cuestiones jurídicas, contractuales o normativas.",
+                "en": "The question seems to fall outside the legal and professional domain. I am here to assist with legal, contractual, or regulatory matters.",
             }
             answer = _generic_fallback.get(session.session_language, _generic_fallback["it"])
         elif not result.get("retrieval_quality_ok"):
@@ -463,12 +463,12 @@ class ChatBot:
                 }
                 answer = _broad_msg.get(session.session_language, _broad_msg["it"])
             else:
-                _generic_fallback = {
-                    "it": "Purtroppo la domanda è troppo generica e si è violato il limite sull'uso dell'Intelligenza Artificiale. Si prega di riformulare la domanda in modo più puntuale.",
-                    "es": "Lamentablemente la pregunta es demasiado genérica y se ha superado el límite de uso de la Inteligencia Artificial. Por favor, reformule la pregunta de manera más precisa.",
-                    "en": "Unfortunately the question is too generic and the AI usage limit has been exceeded. Please rephrase your question more precisely.",
+                _no_data_fallback = {
+                    "it": "Non ho trovato informazioni sufficienti nel database per rispondere a questa domanda. Prova a specificare meglio l'argomento o a citare un articolo o una norma specifica.",
+                    "es": "No he encontrado información suficiente en la base de datos para responder a esta pregunta. Intenta especificar mejor el tema o citar un artículo o norma específica.",
+                    "en": "I could not find sufficient information in the knowledge base to answer this question. Try specifying the topic further or referencing a specific article or regulation.",
                 }
-                answer = _generic_fallback.get(session.session_language, _generic_fallback["it"])
+                answer = _no_data_fallback.get(session.session_language, _no_data_fallback["it"])
         elif len(session.messages) > 4:
             drift_context = session.get_recent_context()
             drift_context = drift_context[:-1] if len(drift_context) > 1 else []

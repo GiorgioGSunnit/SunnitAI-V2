@@ -159,8 +159,10 @@ _LAW_PATTERNS = [
 ]
 
 # Cache of document names fetched from Neo4j — keyed by (user_id, tenant_id)
+# Each entry is (docs_list, timestamp). TTL: 5 minutes.
 _DOC_NAMES_CACHE: dict = {}
 _DOC_NAMES_CACHE_LOCK = __import__('threading').Lock()
+_DOC_NAMES_CACHE_TTL = 300  # seconds
 
 _STOPWORDS = {
     'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'del', 'della',
@@ -175,12 +177,14 @@ _STOPWORDS = {
 
 
 def _fetch_doc_names(driver, database: str, user_id: str = "", tenant_id: str = "") -> list[dict]:
-    """Fetch all document id+name pairs from Neo4j, with module-level caching."""
+    """Fetch all document id+name pairs from Neo4j, with TTL-based caching."""
+    import time
     global _DOC_NAMES_CACHE
     cache_key = (user_id, tenant_id)
     with _DOC_NAMES_CACHE_LOCK:
-        if cache_key in _DOC_NAMES_CACHE:
-            return _DOC_NAMES_CACHE[cache_key]
+        cached = _DOC_NAMES_CACHE.get(cache_key)
+        if cached and (time.time() - cached[1]) < _DOC_NAMES_CACHE_TTL:
+            return cached[0]
         try:
             with driver.session(database=database) as session:
                 result = session.run(
@@ -200,7 +204,7 @@ def _fetch_doc_names(driver, database: str, user_id: str = "", tenant_id: str = 
                     }
                     for r in result if r["name"] and r["id"]
                 ]
-            _DOC_NAMES_CACHE[cache_key] = docs
+            _DOC_NAMES_CACHE[cache_key] = (docs, time.time())
             logger.info("_fetch_doc_names: cached %d document names", len(docs))
             return docs
         except Exception as exc:
@@ -1554,7 +1558,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
                     "WHERE elementId(d) IN " + ids_literal + "\n"
                     "RETURN d, s\n"
-                    "LIMIT 10"
+                    "LIMIT 8"
                 )
                 log_cypher_multiline("b_keyword_fallback", "keyword fallback Cypher", cypher)
                 return {
@@ -1596,14 +1600,21 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
     if turn_count == 1:
         entry_ids = [n["element_id"] for n in entry_nodes if n.get("element_id")]
         context_ids = [n["element_id"] for n in context_nodes if n.get("element_id")]
-        all_node_ids = list(dict.fromkeys(entry_ids + context_ids))
-        ids_literal = "[" + ", ".join("'" + eid + "'" for eid in all_node_ids) + "]"
+        # Only use section-level IDs so we don't pull arbitrary sections from a matched Document node
+        section_ids = [
+            eid for eid in dict.fromkeys(entry_ids + context_ids)
+            if any(
+                "Section" in (n.get("labels") or [])
+                for n in (entry_nodes + context_nodes)
+                if n.get("element_id") == eid
+            )
+        ] or list(dict.fromkeys(entry_ids + context_ids))
+        ids_literal = "[" + ", ".join("'" + eid + "'" for eid in section_ids) + "]"
         cypher = (
             "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
-            "WHERE elementId(d) IN " + ids_literal + "\n"
-            "   OR elementId(s) IN " + ids_literal + "\n"
+            "WHERE elementId(s) IN " + ids_literal + "\n"
             "RETURN d, s\n"
-            "LIMIT 15"
+            "LIMIT 8"
         )
         log_cypher_multiline(
             "b_tier1",
@@ -1681,7 +1692,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     f"{legal_consultant_system_prefix(lang)} "
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -1693,7 +1704,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -1713,7 +1724,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     "{relationship_context}\n\n"
                     "Construct ONE Cypher query that finds paths between Subject and Context nodes. "
                     "Use elementId() to filter nodes. Max 2 hops, no variable-length paths. "
-                    "LIMIT 10. ONE RETURN statement at the end."
+                    "LIMIT 8. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     labels=labels_line,
@@ -1802,7 +1813,7 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     f"{legal_consultant_system_prefix(lang)} "
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -1814,7 +1825,7 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -1833,7 +1844,7 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Context IDs by label:\n{context_groups}\n\n"
                     "Construct ONE Cypher query to retrieve material from the graph that best answers the question. "
                     "Use elementId() to filter nodes. Max 2 hops, no variable-length paths. "
-                    "LIMIT 10. ONE RETURN statement at the end."
+                    "LIMIT 8. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     generalized=state.get("generalized_query") or state["query"],
@@ -1951,7 +1962,7 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     f"{legal_consultant_system_prefix(lang)} "
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -1963,7 +1974,7 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -1982,7 +1993,7 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Context hints:\n{contexts}\n\n"
                     "{relationship_context}\n\n"
                     "Generate ONE Cypher query starting from subject IDs using elementId() filters. "
-                    "Max 2 hops, no variable-length paths. LIMIT 10. ONE RETURN statement at the end."
+                    "Max 2 hops, no variable-length paths. LIMIT 8. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     reason=fallback_reason,
@@ -2093,7 +2104,7 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "You are a Cypher expert. Generate ONE improved Cypher query. "
                     "Address the critique; broaden paths or add patterns where useful. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -2105,7 +2116,7 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -2124,7 +2135,7 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Subject IDs by label:\n{entry_groups}\n\n"
                     "{relationship_context}\n\n"
                     "Produce ONE improved Cypher query with ONE RETURN. "
-                    "Max 2 hops, no variable-length paths. LIMIT 10."
+                    "Max 2 hops, no variable-length paths. LIMIT 8."
                 ).format(
                     question=state["query"],
                     feedback=feedback,

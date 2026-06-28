@@ -64,5 +64,5 @@ CONTEXT_VECTOR_INDEXES = [
     "penalty_embeddings",
     "courtcase_embeddings",
 ]
-CONTEXT_NODE_LIMIT = 10
+CONTEXT_NODE_LIMIT = 5
 VECTOR_K = 30
