@@ -322,21 +322,33 @@ def _classify_query_intent(
             '"entity_a": "...", "entity_b": "..."}\n\n'
             "Intent rules:\n"
             "- concept_in_doc: user asks about one OR two concepts within "
-            "a SINGLE named document. Use this when two concepts are being "
-            "compared but both exist within the same document "
-            "(e.g. 'differenza tra dolo e colpa nel codice penale')\n"
+            "a SINGLE named document. The document must be EXPLICITLY named "
+            "in the query. Use this ONLY when the query is clearly scoped to "
+            "that one document.\n"
+            "  Example: 'differenza tra dolo e colpa nel codice penale'\n"
             "- concept_across_docs: user compares the SAME concept across "
-            "TWO DIFFERENT documents — requires BOTH doc_a AND doc_b to be "
-            "filled (e.g. 'differenza tra responsabilità nel codice civile "
-            "e nel codice penale')\n"
+            "TWO DIFFERENT documents — requires BOTH doc_a AND doc_b.\n"
+            "  Example: 'differenza tra responsabilità nel codice civile e nel codice penale'\n"
             "- doc_comparison: user wants to compare two documents broadly "
-            "— requires BOTH doc_a AND doc_b\n"
-            "- regular: general question with no specific document reference\n\n"
-            "CRITICAL: concept_across_docs and doc_comparison require TWO "
-            "different documents. If only one document is mentioned, use "
-            "concept_in_doc or regular.\n"
-            "Only match doc_a/doc_b if the document name clearly appears "
-            "in the query. Do not guess. If unsure, use intent: regular."
+            "— requires BOTH doc_a AND doc_b.\n"
+            "- regular: use this for ALL other cases, including:\n"
+            "  * general legal questions with no specific document named\n"
+            "  * cross-domain queries (e.g. criminal + civil/regulatory topics together)\n"
+            "  * queries that mention a legal topic that appears in a document name "
+            "but are asking a general question (e.g. 'conseguenze penali per chi "
+            "viola la privacy' — do NOT lock to GDPR, use regular)\n"
+            "  * any query where you are uncertain\n\n"
+            "CRITICAL RULES:\n"
+            "1. concept_across_docs and doc_comparison require TWO different documents "
+            "explicitly named in the query.\n"
+            "2. concept_in_doc requires the document name to appear EXPLICITLY in the "
+            "query — do NOT infer it from topic keywords alone.\n"
+            "3. Cross-domain queries (combining criminal law with civil/regulatory topics, "
+            "or asking about consequences across multiple legal areas) must use 'regular' "
+            "so all relevant documents are searched.\n"
+            "4. When in doubt, always use 'regular'. A wrong 'concept_in_doc' gives "
+            "incomplete answers; 'regular' always gives complete answers.\n"
+            "5. Leave doc_a and doc_b as empty strings for 'regular' intent."
         )
 
         from openai import OpenAI
@@ -1322,7 +1334,36 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                      _dynamic_law_hint(original_query, driver, database))
     _BM25_SCORE_THRESHOLD = 5.0 if bm25_doc_hint else 8.5
     if bm25_doc_hint:
-        bm25_query = original_query
+        # Use retrieval_keywords instead of full query when scoped to one document.
+        # Full query contains stop words ("quali", "sono", "le", "secondo") that
+        # match everywhere in the corpus, drowning out the specific legal term.
+        # Keywords (e.g. "truffa", "640", "frode") give much more precise results.
+        _kw = state.get("retrieval_keywords") or []
+        if _kw:
+            # For single-document scoped BM25, use ONLY the most domain-specific term.
+            # Common legal words like "pene", "condanna", "reato" match everywhere.
+            # We want the specific crime/concept name (e.g. "truffa", "omicidio").
+            _it_stops = {
+                "di", "del", "della", "dei", "degli", "delle", "il", "lo", "la",
+                "i", "gli", "le", "un", "uno", "una", "e", "o", "a", "da", "in",
+                "con", "su", "per", "tra", "fra", "al", "dal", "nel", "sul",
+                "che", "non", "si", "è", "ha", "sono", "era", "ai", "alle",
+                "come", "se", "ma", "anche", "secondo", "previste", "previsto",
+                # Common legal words that appear everywhere — too broad for scoped BM25
+                "pene", "pena", "reato", "delitto", "articolo", "comma", "codice",
+                "penale", "civile", "legge", "decreto", "norma", "disposizione",
+                "condanna", "sanzione", "sanzioni", "procedura", "processo",
+            }
+            _words = []
+            for phrase in _kw:
+                for word in phrase.lower().split():
+                    w = re.sub(r'[^\w]', '', word)
+                    if w and len(w) > 3 and w not in _it_stops and w not in _words:
+                        _words.append(w)
+            # Use only the 2 most specific terms — fewer terms = more precise BM25
+            bm25_query = " ".join(_words[:2]) if _words else original_query
+        else:
+            bm25_query = original_query
     else:
         _kw = state.get("retrieval_keywords") or []
         bm25_query = " ".join(_kw) if _kw else (

@@ -86,6 +86,30 @@ def is_generation_request(message: str) -> bool:
         "i need a contract", "i need a letter",
         # Unambiguous Italian situation phrases
         "mi hanno licenziato",
+        # Noun-form document requests — user names the document type directly
+        # without an action verb (e.g. "Nomina del difensore di fiducia per...")
+        "nomina del difensore",
+        "nomina difensore",
+        "procura alle liti",
+        "atto di citazione",
+        "atto di appello",
+        "ricorso per",
+        "istanza di",
+        "memoria difensiva",
+        "memorie difensive",
+        "contratto di locazione",
+        "contratto di compravendita",
+        "contratto di lavoro",
+        "lettera di licenziamento",
+        "diffida ad adempiere",
+        "messa in mora",
+        "verbale di assemblea",
+        "dichiarazione sostitutiva",
+        "atto di opposizione",
+        "querela contro",
+        "denuncia contro",
+        "rinuncia al mandato",
+        "revoca della procura",
     ]
     if any(t in msg for t in strong_triggers):
         return True
@@ -1763,7 +1787,16 @@ def classify_system_template(message: str, lang: str) -> str:
         "a quale fase/categoria processuale appartiene la richiesta.\n\n"
         "Categorie disponibili:\n"
         + "\n".join(f"- {c}" for c in categorie)
-        + "\n\nRestituisci SOLO il nome esatto della categoria, nient'altro."
+        + "\n\nREGOLE DI CLASSIFICAZIONE:\n"
+        "- Se l'utente NON specifica la fase processuale (es. non menziona "
+        "'dibattimento', 'udienza', 'appello', 'cassazione', 'indagini'), "
+        "scegli la categoria più generale, di solito '1. ATTI GENERALI DEL "
+        "DIFENSORE (TUTTE LE PARTI)' se disponibile\n"
+        "- Solo se l'utente menziona esplicitamente una fase specifica "
+        "(es. 'per il dibattimento', 'in appello', 'durante le indagini'), "
+        "scegli la categoria corrispondente a quella fase\n"
+        "- In caso di dubbio, scegli sempre la categoria più generale\n\n"
+        "Restituisci SOLO il nome esatto della categoria, nient'altro."
     )
     try:
         categoria_result = _call_chat(
@@ -1793,7 +1826,17 @@ def classify_system_template(message: str, lang: str) -> str:
         f"'{matched_categoria}'. Determina esattamente quale tipo di atto "
         "sta richiedendo.\n\nTipi disponibili:\n"
         + options_text
-        + "\n\nRestituisci SOLO il nome esatto del tipo di atto, nient'altro."
+        + "\n\nREGOLE DI CLASSIFICAZIONE:\n"
+        "- Se il tipo è espresso al singolare (es. 'Memoria difensiva') "
+        "e l'utente usa il singolare, preferisci il tipo singolare\n"
+        "- I tipi al plurale (es. 'Memorie difensive') si usano quando "
+        "l'utente vuole un atto per la fase dibattimentale o specifica "
+        "esplicitamente il plurale\n"
+        "- Se l'utente non specifica la fase processuale, scegli il tipo "
+        "più generico e applicabile (di solito il singolare)\n"
+        "- art. 121 c.p.p. si applica a memorie difensive generali "
+        "presentate al PM o al GIP, non al dibattimento\n\n"
+        "Restituisci SOLO il nome esatto del tipo di atto, nient'altro."
     )
     try:
         tipo_result = _call_chat(
@@ -1913,9 +1956,16 @@ def _build_system_template_prompt(entry: Dict[str, Any], lang: str) -> str:
         f"{sections_text}\n\n"
         f"ISTRUZIONI PER I DATI:\n"
         f"- Usa i dati forniti dall'utente per personalizzare il documento\n"
-        f"- Per ogni dato non fornito usa {ph} — MAI inventare nomi, date, importi, codici fiscali\n"
+        f"- REGOLA ASSOLUTA ANTI-ALLUCINAZIONE: se un dato non è esplicitamente presente "
+        f"nel messaggio dell'utente o nei campi strutturati, scrivi letteralmente {ph} — "
+        f"MAI inventare o dedurre indirizzi, date, nomi, numeri, importi, codici fiscali, "
+        f"riferimenti normativi specifici o qualsiasi altro dato non fornito esplicitamente. "
+        f"Un documento con {ph} visibili è sempre preferibile a uno con dati inventati.\n"
+        f"- Usa tutti i dettagli fattuali presenti nel messaggio originale (nomi, date, luoghi, "
+        f"circostanze, testimoni, alibi) sviluppandoli nel contenuto giuridico appropriato\n"
         f"- Sviluppa ogni sezione con tutto il contenuto legale necessario per questo tipo di atto\n"
-        f"- Usa formule, clausole e riferimenti normativi appropriati\n"
+        f"- Usa formule e clausole appropriate ma NON citare articoli di legge specifici "
+        f"a meno che non siano esplicitamente menzionati dall'utente\n"
         f"- Scrivi come un avvocato che redige il documento per un cliente reale\n"
         f"- NON aggiungere note esplicative, commenti o paragrafi dopo la fine dell'atto\n"
         f"- Il documento termina con la formula di sottoscrizione — niente altro dopo\n"
@@ -2234,10 +2284,13 @@ def generate_document(
         for k, v in fields_dict.items()
     )
     human_content = (
-        f"Dati forniti dall'utente:\n{field_lines}\n\n"
+        f"Messaggio originale dell'utente:\n{user_message}\n\n"
+        f"Campi strutturati estratti:\n{field_lines}\n\n"
         f"Redigi l'atto completo. Per ogni sezione scrivi testo legale vero e professionale — "
-        f"non limitarti a riportare i dati, sviluppa il contenuto giuridico appropriato. "
-        f"Usa {ph} per i dati mancanti. Non aggiungere note, spiegazioni o avvertenze fuori dall'atto."
+        f"usa tutti i dettagli fattuali forniti nel messaggio originale (nomi, date, luoghi, "
+        f"circostanze, testimoni, alibi, ecc.) sviluppandoli nel contenuto giuridico appropriato. "
+        f"Usa {ph} SOLO per dati non presenti né nel messaggio né nei campi strutturati. "
+        f"Non aggiungere note, spiegazioni o avvertenze fuori dall'atto."
     )
 
     raw_output = _call_chat(

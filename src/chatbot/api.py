@@ -1471,6 +1471,93 @@ def _classify_doc_intent(message: str, session_lang: str) -> str:
     return "rag"
 
 
+def _classify_top_level_intent(message: str, session_lang: str) -> str:
+    """
+    Classify the top-level intent of a message as one of:
+      - 'generate'  → user wants a legal document created from scratch
+      - 'compare'   → user wants to compare two specific uploaded documents
+      - 'rag'       → question, analysis, or anything else
+
+    Strategy:
+    1. Fast path: strong unambiguous generation triggers (no LLM needed)
+    2. Fast path: explicit comparison — must have comparison verb AND two quoted names
+    3. LLM call only for ambiguous cases that have some signal
+    4. Default to 'rag' when uncertain
+    """
+    lower = message.lower()
+
+    # ── Fast path: strong generation triggers ─────────────────────────────
+    _GEN_STRONG = [
+        "redigimi", "generami", "scrivimi", "preparami", "creami", "fammi",
+        "elaborami", "stendimi", "formulami", "producimi",
+        "scrivi un", "scrivi una", "redigi un", "redigi una",
+        "genera un", "genera una", "crea un", "crea una",
+        "prepara un", "prepara una",
+        "scrivi atto", "scrivi contratto", "scrivi memoria", "scrivi ricorso",
+        "scrivi istanza", "scrivi diffida", "scrivi dichiarazione",
+        "redigi atto", "redigi contratto", "redigi memoria", "redigi ricorso",
+        "genera atto", "genera documento", "genera contratto",
+        "draft a", "draft an", "write a contract", "write a letter",
+        "redacta un", "redacta una",
+        "ho bisogno di un contratto", "ho bisogno di una lettera",
+        "ho bisogno di un atto", "ho bisogno di una memoria",
+        "voglio un contratto", "voglio una lettera", "voglio un atto",
+        "vorrei un contratto", "vorrei una lettera", "vorrei un atto",
+    ]
+    if any(t in lower for t in _GEN_STRONG):
+        return "generate"
+
+    # ── Fast path: comparison — verb AND two quoted document names ─────────
+    _has_comparison_verb = bool(re.search(
+        r'\b(confronta|paragona|compara|compare|versus|vs\.?)\b'
+        r'|confronto\s+(tra|fra|dei|di|delle|degli)\b'
+        r'|differenze?\s+(tra|fra|dei|di)\b',
+        message, re.IGNORECASE
+    ))
+    _quoted_names = re.findall(r'"[^"]{3,}"', message)
+    if _has_comparison_verb and len(_quoted_names) >= 2:
+        return "compare"
+
+    # ── No signal at all → RAG immediately, no LLM call ───────────────────
+    _has_any_signal = bool(re.search(
+        r'\b(scrivi|redigi|genera|crea|prepara|elabora|formula|'
+        r'stendi|produce|draft|write|create|voglio|vorrei|'
+        r'ho bisogno|confronta|paragona|compara|differenze)\b',
+        message, re.IGNORECASE
+    ))
+    if not _has_any_signal:
+        return "rag"
+
+    # ── LLM fallback for ambiguous cases ──────────────────────────────────
+    system = (
+        "Sei un classificatore di intenzioni per un assistente legale italiano. "
+        "Classifica il messaggio in UNA di queste categorie:\n\n"
+        "- 'generate': l'utente vuole creare un documento legale da zero "
+        "(contratto, memoria difensiva, atto, ricorso, istanza, nomina, ecc.)\n"
+        "- 'compare': l'utente vuole confrontare DUE documenti specifici già "
+        "caricati — richiede esplicitamente due nomi di file tra virgolette\n"
+        "- 'rag': domanda su temi legali, analisi, spiegazione, o qualsiasi "
+        "altro caso\n\n"
+        "REGOLE IMPORTANTI:\n"
+        "- Parole come 'confronto', 'differenze', 'paragone' usate in contesto "
+        "legale generico (es. 'disponibile ad ogni confronto') NON sono richieste "
+        "di confronto documenti → usa 'rag'\n"
+        "- Solo 'generate' quando l'utente vuole un documento NUOVO creato per lui\n"
+        "- In caso di dubbio usa 'rag'\n\n"
+        "Rispondi SOLO con una parola: generate, compare, o rag."
+    )
+    try:
+        result = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=message[:600])],
+            max_tokens=5,
+        ).strip().lower()
+        if result in ("generate", "compare", "rag"):
+            return result
+    except Exception:
+        pass
+    return "rag"
+
+
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send a message and get a response.
@@ -2029,7 +2116,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     _not_found,
                 )
 
-    if is_generation_request(request.message):
+    _top_intent = _classify_top_level_intent(request.message, "it")
+    if _top_intent == "generate" or is_generation_request(request.message):
         session = chatbot.get_session(session_id, user_id=_uid)
         if not session:
             session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
