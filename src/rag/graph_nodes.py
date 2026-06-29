@@ -159,8 +159,10 @@ _LAW_PATTERNS = [
 ]
 
 # Cache of document names fetched from Neo4j — keyed by (user_id, tenant_id)
+# Each entry is (docs_list, timestamp). TTL: 5 minutes.
 _DOC_NAMES_CACHE: dict = {}
 _DOC_NAMES_CACHE_LOCK = __import__('threading').Lock()
+_DOC_NAMES_CACHE_TTL = 300  # seconds
 
 _STOPWORDS = {
     'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', 'di', 'del', 'della',
@@ -175,12 +177,14 @@ _STOPWORDS = {
 
 
 def _fetch_doc_names(driver, database: str, user_id: str = "", tenant_id: str = "") -> list[dict]:
-    """Fetch all document id+name pairs from Neo4j, with module-level caching."""
+    """Fetch all document id+name pairs from Neo4j, with TTL-based caching."""
+    import time
     global _DOC_NAMES_CACHE
     cache_key = (user_id, tenant_id)
     with _DOC_NAMES_CACHE_LOCK:
-        if cache_key in _DOC_NAMES_CACHE:
-            return _DOC_NAMES_CACHE[cache_key]
+        cached = _DOC_NAMES_CACHE.get(cache_key)
+        if cached and (time.time() - cached[1]) < _DOC_NAMES_CACHE_TTL:
+            return cached[0]
         try:
             with driver.session(database=database) as session:
                 result = session.run(
@@ -200,7 +204,7 @@ def _fetch_doc_names(driver, database: str, user_id: str = "", tenant_id: str = 
                     }
                     for r in result if r["name"] and r["id"]
                 ]
-            _DOC_NAMES_CACHE[cache_key] = docs
+            _DOC_NAMES_CACHE[cache_key] = (docs, time.time())
             logger.info("_fetch_doc_names: cached %d document names", len(docs))
             return docs
         except Exception as exc:
@@ -249,10 +253,25 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
             best_name = name
             best_name_token_count = len(name_tokens)
 
-    # Require at least 2 meaningful tokens to match to avoid false positives
-    if best_score >= 2:
+    # Only scope BM25 to a single document for specific article lookup queries.
+    # General legal questions (no article reference) should search the full corpus.
+    # Require score >= 3 AND an article reference in the query to avoid false locks.
+    _has_article_ref = bool(re.search(
+        r'\bart\.?\s*\d+|articolo\s+\d+|comma\s+\d+|art\s+\d+',
+        query, re.IGNORECASE
+    ))
+    # With article reference: score >= 2 is enough to scope BM25 to that document
+    if _has_article_ref and best_score >= 2:
         logger.info(
-            "_dynamic_law_hint: matched %r id=%r (score=%d) for query %r",
+            "_dynamic_law_hint: article lookup — matched %r id=%r (score=%d) for query %r",
+            best_name, best_id, best_score, query[:60],
+        )
+        return best_id
+    # Without article reference: require score >= 4 to avoid locking BM25
+    # to a document just because its name appears in a general query
+    if not _has_article_ref and best_score >= 4:
+        logger.info(
+            "_dynamic_law_hint: strong match — matched %r id=%r (score=%d) for query %r",
             best_name, best_id, best_score, query[:60],
         )
         return best_id
@@ -1554,7 +1573,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
                     "WHERE elementId(d) IN " + ids_literal + "\n"
                     "RETURN d, s\n"
-                    "LIMIT 10"
+                    "LIMIT 8"
                 )
                 log_cypher_multiline("b_keyword_fallback", "keyword fallback Cypher", cypher)
                 return {
@@ -1596,14 +1615,21 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
     if turn_count == 1:
         entry_ids = [n["element_id"] for n in entry_nodes if n.get("element_id")]
         context_ids = [n["element_id"] for n in context_nodes if n.get("element_id")]
-        all_node_ids = list(dict.fromkeys(entry_ids + context_ids))
-        ids_literal = "[" + ", ".join("'" + eid + "'" for eid in all_node_ids) + "]"
+        # Only use section-level IDs so we don't pull arbitrary sections from a matched Document node
+        section_ids = [
+            eid for eid in dict.fromkeys(entry_ids + context_ids)
+            if any(
+                "Section" in (n.get("labels") or [])
+                for n in (entry_nodes + context_nodes)
+                if n.get("element_id") == eid
+            )
+        ] or list(dict.fromkeys(entry_ids + context_ids))
+        ids_literal = "[" + ", ".join("'" + eid + "'" for eid in section_ids) + "]"
         cypher = (
             "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
-            "WHERE elementId(d) IN " + ids_literal + "\n"
-            "   OR elementId(s) IN " + ids_literal + "\n"
+            "WHERE elementId(s) IN " + ids_literal + "\n"
             "RETURN d, s\n"
-            "LIMIT 15"
+            "LIMIT 8"
         )
         log_cypher_multiline(
             "b_tier1",
@@ -1681,7 +1707,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     f"{legal_consultant_system_prefix(lang)} "
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -1693,7 +1719,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -1713,7 +1739,7 @@ def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: s
                     "{relationship_context}\n\n"
                     "Construct ONE Cypher query that finds paths between Subject and Context nodes. "
                     "Use elementId() to filter nodes. Max 2 hops, no variable-length paths. "
-                    "LIMIT 10. ONE RETURN statement at the end."
+                    "LIMIT 8. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     labels=labels_line,
@@ -1802,7 +1828,7 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     f"{legal_consultant_system_prefix(lang)} "
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -1814,7 +1840,7 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -1833,7 +1859,7 @@ def generate_cypher_context_only(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Context IDs by label:\n{context_groups}\n\n"
                     "Construct ONE Cypher query to retrieve material from the graph that best answers the question. "
                     "Use elementId() to filter nodes. Max 2 hops, no variable-length paths. "
-                    "LIMIT 10. ONE RETURN statement at the end."
+                    "LIMIT 8. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     generalized=state.get("generalized_query") or state["query"],
@@ -1951,7 +1977,7 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     f"{legal_consultant_system_prefix(lang)} "
                     "You are a Cypher expert. Generate ONE Cypher query. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -1963,7 +1989,7 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -1982,7 +2008,7 @@ def generate_cypher_fallback(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Context hints:\n{contexts}\n\n"
                     "{relationship_context}\n\n"
                     "Generate ONE Cypher query starting from subject IDs using elementId() filters. "
-                    "Max 2 hops, no variable-length paths. LIMIT 10. ONE RETURN statement at the end."
+                    "Max 2 hops, no variable-length paths. LIMIT 8. ONE RETURN statement at the end."
                 ).format(
                     question=state["query"],
                     reason=fallback_reason,
@@ -2093,7 +2119,7 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "You are a Cypher expert. Generate ONE improved Cypher query. "
                     "Address the critique; broaden paths or add patterns where useful. "
                     "Rules: max 2 hops, no variable-length paths (no *), "
-                    "filter nodes with elementId() only, LIMIT 10. "
+                    "filter nodes with elementId() only, LIMIT 8. "
                     "The ONLY valid Cypher patterns are: "
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                     "MATCH (s:Section)-[:PART_OF]->(d:Document) "
@@ -2105,7 +2131,7 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "WHERE elementId(d) IN ['id1', 'id2'] "
                     "AND elementId(s) IN ['id3', 'id4'] "
                     "RETURN d, s "
-                    "LIMIT 10 "
+                    "LIMIT 8 "
                     "CRITICAL: elementId is a function in Neo4j 5, NOT a property. "
                     "Never write: MATCH (n {elementId: '...'}) "
                     "Always write: MATCH (n) WHERE elementId(n) = '...' "
@@ -2124,7 +2150,7 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
                     "Subject IDs by label:\n{entry_groups}\n\n"
                     "{relationship_context}\n\n"
                     "Produce ONE improved Cypher query with ONE RETURN. "
-                    "Max 2 hops, no variable-length paths. LIMIT 10."
+                    "Max 2 hops, no variable-length paths. LIMIT 8."
                 ).format(
                     question=state["query"],
                     feedback=feedback,
@@ -2871,6 +2897,7 @@ def _extract_citations(
                     "name": name,
                     "title": sec["title"],
                     "plain_text": sec["plain_text"],
+                    "score": sec.get("score"),
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
                         f"sections/{urllib.parse.quote(name, safe='')}"
@@ -2959,7 +2986,7 @@ def _format_for_reranker(row: dict) -> str:
     return " | ".join(parts)
 
 
-def rerank_results(query: str, rows: list, top_k: int = 8) -> list:
+def rerank_results(query: str, rows: list, top_k: int = 12) -> list:
     """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
     if not _RERANKER_ENABLED or not rows:
         return rows
@@ -3377,25 +3404,40 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # Also add base article numbers (e.g. "124" from "124.0.0")
     answer_article_refs |= {ref.split('.')[0] for ref in answer_article_refs}
 
-    if answer_article_refs and not state.get("is_comparison"):
-        def _section_referenced_in_answer(section: dict, doc_id: str) -> bool:
-            name = (section.get('name') or '').lower().replace(' ', '')
-            base_name = name.split('.')[0]
-            if name in answer_article_refs or base_name in answer_article_refs:
+    # Reranker-score-based citation filter.
+    # Trust the reranker's semantic relevance score rather than keyword matching.
+    # Sections with score >= 0.5 are always included.
+    # Sections with score 0.3-0.5 are included only if article number also in answer.
+    # Sections with score < 0.3 are excluded (noise).
+    # BM25 article-lookup sections bypass the filter entirely (already highly targeted).
+    if not state.get("is_comparison"):
+        def _section_passes_quality(section: dict, doc_id: str) -> bool:
+            # BM25 article lookup — always include
+            if doc_id in bm25_doc_ids and state.get("bm25_from_article_lookup"):
                 return True
-            if doc_id in bm25_doc_ids:
+            score = section.get("score")
+            if score is None:
+                # No reranker score — fall back to article reference check
+                name = (section.get('name') or '').lower().replace(' ', '')
+                base_name = name.split('.')[0]
+                return name in answer_article_refs or base_name in answer_article_refs
+            if score >= 0.5:
                 return True
+            if score >= 0.3:
+                # Medium confidence — only include if article number in answer
+                name = (section.get('name') or '').lower().replace(' ', '')
+                base_name = name.split('.')[0]
+                return name in answer_article_refs or base_name in answer_article_refs
             return False
 
         filtered = [
             {**c, 'sections': [
                 s for s in c['sections']
-                if _section_referenced_in_answer(s, c.get('document_id', ''))
+                if _section_passes_quality(s, c.get('document_id', ''))
             ]}
             for c in citations
         ]
-        # Only apply if filter keeps at least 1 section — avoids wiping all citations
-        # when answer doesn't use article references explicitly
+        # Only apply if filter keeps at least 1 section
         if any(fc['sections'] for fc in filtered):
             citations = [c for c in filtered if c['sections']]
 

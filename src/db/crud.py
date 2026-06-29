@@ -5,7 +5,7 @@ from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 
 from .models import (
-    Tenant, TenantProfile,
+    Tenant, TenantProfile, TenantSubscription,
     User, UserProfile,
     UserSettings, UserPreferences,
     Conversation, UserDocument
@@ -513,3 +513,123 @@ def cleanup_expired_documents(db: Session) -> int:
     if count:
         db.commit()
     return count
+
+
+# ---------------------------------------------------------------------------
+# Billing / subscriptions
+# ---------------------------------------------------------------------------
+
+ACTIVE_TENANT_SUBSCRIPTION_STATUSES = {"active", "trialing"}
+
+
+def count_active_users_for_tenant(db: Session, tenant_id: uuid.UUID) -> int:
+    return (
+        db.query(User)
+        .filter(User.tenant_id == tenant_id, User.is_active == True)
+        .count()
+    )
+
+
+def get_tenant_subscription(db: Session, tenant_id: uuid.UUID) -> Optional[TenantSubscription]:
+    return (
+        db.query(TenantSubscription)
+        .filter(TenantSubscription.tenant_id == tenant_id)
+        .first()
+    )
+
+
+def get_tenant_subscription_by_customer_id(
+    db: Session, stripe_customer_id: str
+) -> Optional[TenantSubscription]:
+    return (
+        db.query(TenantSubscription)
+        .filter(TenantSubscription.stripe_customer_id == stripe_customer_id)
+        .first()
+    )
+
+
+def get_tenant_subscription_by_stripe_subscription_id(
+    db: Session, stripe_subscription_id: str
+) -> Optional[TenantSubscription]:
+    return (
+        db.query(TenantSubscription)
+        .filter(TenantSubscription.stripe_subscription_id == stripe_subscription_id)
+        .first()
+    )
+
+
+def get_tenant_subscription_by_checkout_session_id(
+    db: Session, stripe_checkout_session_id: str
+) -> Optional[TenantSubscription]:
+    return (
+        db.query(TenantSubscription)
+        .filter(TenantSubscription.stripe_checkout_session_id == stripe_checkout_session_id)
+        .first()
+    )
+
+
+def upsert_tenant_subscription(
+    db: Session,
+    tenant_id: uuid.UUID,
+    *,
+    user_id: Optional[uuid.UUID] = None,
+    plan_id: Optional[str] = None,
+    status: Optional[str] = None,
+    seats: Optional[int] = None,
+    stripe_customer_id: Optional[str] = None,
+    stripe_subscription_id: Optional[str] = None,
+    stripe_checkout_session_id: Optional[str] = None,
+    trial_started_at=None,
+    trial_ends_at=None,
+    current_period_end=None,
+    cancel_at_period_end: Optional[bool] = None,
+    last_payment_status: Optional[str] = None,
+) -> TenantSubscription:
+    subscription = get_tenant_subscription(db, tenant_id)
+    if not subscription:
+        subscription = TenantSubscription(tenant_id=tenant_id)
+        db.add(subscription)
+        db.flush()
+
+    if user_id is not None:
+        subscription.user_id = user_id
+    if plan_id is not None:
+        subscription.plan_id = plan_id
+    if status is not None:
+        subscription.status = status
+    if seats is not None:
+        subscription.seats = max(1, int(seats))
+    if stripe_customer_id is not None:
+        subscription.stripe_customer_id = stripe_customer_id
+    if stripe_subscription_id is not None:
+        subscription.stripe_subscription_id = stripe_subscription_id
+    if stripe_checkout_session_id is not None:
+        subscription.stripe_checkout_session_id = stripe_checkout_session_id
+    if trial_started_at is not None:
+        subscription.trial_started_at = trial_started_at
+    if trial_ends_at is not None:
+        subscription.trial_ends_at = trial_ends_at
+    if current_period_end is not None:
+        subscription.current_period_end = current_period_end
+    if cancel_at_period_end is not None:
+        subscription.cancel_at_period_end = cancel_at_period_end
+    if last_payment_status is not None:
+        subscription.last_payment_status = last_payment_status
+
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if tenant:
+        now = datetime.now(timezone.utc)
+        if subscription.status in ACTIVE_TENANT_SUBSCRIPTION_STATUSES:
+            if subscription.plan_id:
+                tenant.plan = subscription.plan_id
+            if tenant.subscription_start is None:
+                tenant.subscription_start = now
+            tenant.subscription_end = subscription.current_period_end
+        else:
+            tenant.subscription_end = subscription.current_period_end
+            if subscription.status in {"canceled", "cancelled", "incomplete_expired", "inactive"}:
+                tenant.plan = "basic"
+
+    db.commit()
+    db.refresh(subscription)
+    return subscription

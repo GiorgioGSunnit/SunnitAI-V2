@@ -28,9 +28,12 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
 
 from .session import ChatBot, ChatSession, _generate_session_title
 from ..db.base import get_db
+from ..db import crud
+from ..db.models import Tenant
 from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name, create_user_document
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
@@ -50,12 +53,15 @@ from ..rag.document_generation import (
     _call_chat,
 )
 from ..rag.graph_nodes import _extract_citations
+from ..rag.prompts import legal_consultant_system_prefix, _LENGTH
 from langchain_core.messages import SystemMessage, HumanMessage
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
+from .billing import enforce_tenant_product_access, serialize_subscription
 from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
     get_user_document_for_generation, create_studio_and_admin,
-    create_user_with_invite, get_tenant_invite_code, update_user_profile)
+    create_user_with_invite, get_tenant_invite_code, update_user_profile,
+    get_user_settings)
 
 logger = logging.getLogger(__name__)
 
@@ -136,10 +142,12 @@ from .routes.auth import router as auth_router
 from .routes.totp import router as totp_router
 from .routes.users import router as users_router
 from .routes.documents import router as documents_router
+from .routes.billing import router as billing_router
 app.include_router(auth_router, prefix="/api")
 app.include_router(totp_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
+app.include_router(billing_router, prefix="/api")
 
 chatbot = ChatBot()
 
@@ -246,6 +254,7 @@ class AuthResponse(BaseModel):
     user_id: str
     email: str
     studio_name: str = ""
+    subscription: Optional[dict] = None
 
 
 class UserProfileResponse(BaseModel):
@@ -256,6 +265,7 @@ class UserProfileResponse(BaseModel):
     first_name: str = ""
     last_name: str = ""
     tenant_id: str
+    subscription: Optional[dict] = None
 
 
 class UpdateProfileRequest(BaseModel):
@@ -414,7 +424,7 @@ def _run_comparison_sync(message: str, session_lang: str, cached_sections=None) 
 # ---------------------------------------------------------------------------
 
 @app.post("/api/auth/login", response_model=AuthResponse)
-async def login(request: LoginRequest):
+async def login(request: LoginRequest, db: Session = Depends(get_db)):
     user = get_user_by_email(request.email)
     if not user or not user.get("is_active"):
         raise HTTPException(status_code=401, detail="Invalid credentials")
@@ -426,11 +436,19 @@ async def login(request: LoginRequest):
         "role": user["role"],
         "tenant_id": str(user["tenant_id"]),
     })
+    tenant_uuid = uuid.UUID(str(user["tenant_id"]))
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+    seats_used = crud.count_active_users_for_tenant(db, tenant_uuid)
     return AuthResponse(
         access_token=token,
         user_id=str(user["id"]),
         email=user["email"],
         studio_name=user.get("studio_name") or "",
+        subscription=serialize_subscription(
+            crud.get_tenant_subscription(db, tenant_uuid),
+            tenant,
+            seats_used=seats_used,
+        ),
     )
 
 
@@ -493,10 +511,13 @@ async def register_user(request: RegisterUserRequest):
 
 
 @app.get("/api/auth/me", response_model=UserProfileResponse)
-async def get_me(current_user: dict = Depends(require_user)):
+async def get_me(current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
     user = get_user_by_id(current_user["sub"])
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    tenant_uuid = uuid.UUID(str(user["tenant_id"]))
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+    seats_used = crud.count_active_users_for_tenant(db, tenant_uuid)
     return UserProfileResponse(
         user_id=str(user["id"]),
         email=user["email"],
@@ -505,6 +526,11 @@ async def get_me(current_user: dict = Depends(require_user)):
         first_name=user.get("first_name") or "",
         last_name=user.get("last_name") or "",
         tenant_id=str(user["tenant_id"]),
+        subscription=serialize_subscription(
+            crud.get_tenant_subscription(db, tenant_uuid),
+            tenant,
+            seats_used=seats_used,
+        ),
     )
 
 
@@ -512,6 +538,7 @@ async def get_me(current_user: dict = Depends(require_user)):
 async def update_me(
     request: UpdateProfileRequest,
     current_user: dict = Depends(require_user),
+    db: Session = Depends(get_db),
 ):
     try:
         user = update_user_profile(
@@ -524,6 +551,9 @@ async def update_me(
         )
         if not user:
             raise HTTPException(status_code=404, detail="User not found")
+        tenant_uuid = uuid.UUID(str(user["tenant_id"]))
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_uuid).first()
+        seats_used = crud.count_active_users_for_tenant(db, tenant_uuid)
         return UserProfileResponse(
             user_id=str(user["id"]),
             email=user["email"],
@@ -532,6 +562,11 @@ async def update_me(
             first_name=user.get("first_name") or "",
             last_name=user.get("last_name") or "",
             tenant_id=str(user["tenant_id"]),
+            subscription=serialize_subscription(
+                crud.get_tenant_subscription(db, tenant_uuid),
+                tenant,
+                seats_used=seats_used,
+            ),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -573,11 +608,13 @@ class UserTemplateRequest(BaseModel):
 async def generate_from_user_template(
     request: UserTemplateRequest,
     current_user: dict = Depends(require_user),
+    db: Session = Depends(get_db),
 ):
     """Fill a user's own uploaded template with data from their message.
     Returns a filled .docx file. PDFs are extracted and rewritten as .docx."""
     user_id = current_user["sub"]
     tenant_id = current_user.get("tenant_id")
+    enforce_tenant_product_access(db, uuid.UUID(str(tenant_id)))
 
     doc_meta = get_user_document_for_generation(user_id, tenant_id, request.doc_id)
     if not doc_meta:
@@ -855,7 +892,8 @@ def get_section(document_id: str, section_name: str):
 
 
 @app.post("/api/sessions", response_model=SessionResponse)
-def create_session(current_user: dict = Depends(require_user)):
+def create_session(current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     session = chatbot.create_session(
         user_id=current_user["sub"],
         tenant_id=current_user.get("tenant_id"),
@@ -869,12 +907,14 @@ def create_session(current_user: dict = Depends(require_user)):
 
 
 @app.get("/api/sessions")
-def list_sessions(current_user: dict = Depends(require_user)):
+def list_sessions(current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     return chatbot.list_sessions(user_id=current_user["sub"])
 
 
 @app.get("/api/sessions/{session_id}")
-def get_session(session_id: str, current_user: dict = Depends(require_user)):
+def get_session(session_id: str, current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     session = chatbot.get_session(session_id, user_id=current_user["sub"])
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -882,7 +922,8 @@ def get_session(session_id: str, current_user: dict = Depends(require_user)):
 
 
 @app.delete("/api/sessions/{session_id}")
-def delete_session(session_id: str, current_user: dict = Depends(require_user)):
+def delete_session(session_id: str, current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
+    enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
     if not chatbot.delete_session(session_id, user_id=current_user["sub"]):
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "session_id": session_id}
@@ -893,11 +934,16 @@ def _persist_generated_docx(
     doc_type: str,
     user_id: str,
     tenant_id: str,
+    case_details: dict | None = None,
 ) -> tuple:
     """Save draft as a DOCX file on disk and create a user_documents record.
+    Applies full letterhead (logo, studio name, address) if tenant profile exists.
+    Uses case_details to build a meaningful filename (e.g. includes client name).
     Returns (document_id_str, original_filename) or (None, None) on failure."""
     try:
         from docx import Document as _DocxDoc
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
         import io as _io
         from ..db.base import SessionLocal as _SL
         from ..constants import PRIVATE_DOCS_BASE as _BASE
@@ -908,10 +954,87 @@ def _persist_generated_docx(
         else:
             _label = doc_type.replace("_", " ").replace("-", " ").title() if doc_type else "Documento"
         _slug = re.sub(r"[^a-z0-9]+", "_", _label.lower()).strip("_")
-        _filename = f"{_slug}.docx"
+
+        # Build meaningful filename from case_details — include client/subject name
+        _name_suffix = ""
+        if case_details:
+            # Try common name fields in priority order
+            _name_candidate = (
+                case_details.get("conduttore") or
+                case_details.get("nome_assistito") or
+                case_details.get("nome_difensore") or
+                case_details.get("debitore") or
+                case_details.get("cliente") or
+                case_details.get("nome") or
+                case_details.get("richiedente") or
+                case_details.get("locatore") or
+                ""
+            )
+            # Only use if it's a real value, not a placeholder
+            if _name_candidate and "[DA COMPILARE]" not in _name_candidate:
+                # Sanitize: keep only letters, numbers, spaces; truncate to 30 chars
+                _clean = re.sub(r"[^a-zA-Z0-9\s]", "", _name_candidate).strip()[:30]
+                _clean_slug = re.sub(r"\s+", "_", _clean).lower()
+                if _clean_slug:
+                    _name_suffix = f"_{_clean_slug}"
+
+        _filename = f"{_slug}{_name_suffix}.docx"
 
         _doc = _DocxDoc()
-        for _line in draft.split("\n"):
+        _ph = "[DA COMPILARE]"
+
+        # ── Letterhead ────────────────────────────────────────────────────
+        _tenant_profile = get_tenant_profile_full(tenant_id) if tenant_id else None
+        if _tenant_profile:
+            _logo_path = _tenant_profile.get("logo_path") or ""
+            if _logo_path and os.path.exists(_logo_path):
+                _logo_para = _doc.add_paragraph()
+                _logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                _logo_run = _logo_para.add_run()
+                _logo_run.add_picture(_logo_path, width=Inches(2.5))
+                _logo_para.paragraph_format.space_after = Pt(12)
+
+            _name_val = _tenant_profile.get("legal_name") or _tenant_profile.get("display_name") or _ph
+            _name_para = _doc.add_paragraph()
+            _name_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _name_run = _name_para.add_run(_name_val)
+            _name_run.bold = True
+            _name_run.font.size = Pt(11)
+
+            _addr_parts = [
+                _tenant_profile.get("address_street") or _ph,
+                f"{_tenant_profile.get('address_postal_code') or _ph} {_tenant_profile.get('address_city') or _ph}",
+                _tenant_profile.get("address_country") or _ph,
+            ]
+            _addr_para = _doc.add_paragraph(", ".join(_addr_parts))
+            _addr_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            _contact_para = _doc.add_paragraph(
+                f"Tel: {_tenant_profile.get('phone') or _ph}  |  Web: {_tenant_profile.get('website') or _ph}"
+            )
+            _contact_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            _vat_para = _doc.add_paragraph(f"P.IVA: {_tenant_profile.get('vat_number') or _ph}")
+            _vat_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+            _sep_para = _doc.add_paragraph()
+            _sep_para.paragraph_format.space_before = Pt(6)
+            _sep_run = _sep_para.add_run("─" * 60)
+            _sep_run.font.size = Pt(8)
+            _sep_run.font.color.rgb = RGBColor(180, 180, 180)
+            _sep_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            _sep_para.paragraph_format.space_after = Pt(12)
+
+        # ── Document title ────────────────────────────────────────────────
+        _title_para = _doc.add_paragraph()
+        _title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _title_run = _title_para.add_run(_label)
+        _title_run.bold = True
+        _title_run.font.size = Pt(14)
+        _doc.add_paragraph()
+
+        # ── Draft content ─────────────────────────────────────────────────
+        for _line in _strip_markdown(draft).split("\n"):
             _doc.add_paragraph(_line)
 
         _folder = os.path.join(_BASE, tenant_id, user_id)
@@ -953,19 +1076,22 @@ def _build_generation_confirmation(lang: str) -> str:
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
-async def generate(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user)):
+async def generate(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Generate a legal document draft from a free-text request.
 
     Classifies the document type, extracts case details, retrieves relevant sections
     from the knowledge base, and returns a structured draft.
     """
     is_comparison_request = bool(re.search(
-        r'\b(confronta|confronto|differenze?\s+tra|compara|paragona|versus|vs\.?)\b',
+        r'\b(confronta\b|confronto\s+(tra|fra|dei|di|delle|degli)\b|differenze?\s+tra\b|compara\b|paragona\b|versus\b|vs\.?)\b',
         request.message, re.IGNORECASE
     )) or request.doc_type == "comparison"
 
     if not is_comparison_request and not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
+
+    if current_user:
+        enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
 
     session_id = request.session_id
     _uid = current_user["sub"] if current_user else None
@@ -1033,11 +1159,11 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
 
 
 @app.post("/api/generate/download")
-async def generate_download(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user)):
+async def generate_download(request: GenerateRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Generate opposition act and return as a downloadable .docx file."""
     try:
         from docx import Document
-        from docx.shared import Cm, Inches, Pt
+        from docx.shared import Cm, Inches, Pt, RGBColor
         from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
     except ImportError:
         raise HTTPException(
@@ -1046,12 +1172,15 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         )
 
     is_comparison_request = bool(re.search(
-        r'\b(confronta|confronto|differenze?\s+tra|compara|paragona|versus|vs\.?)\b',
+        r'\b(confronta\b|confronto\s+(tra|fra|dei|di|delle|degli)\b|differenze?\s+tra\b|compara\b|paragona\b|versus\b|vs\.?)\b',
         request.message, re.IGNORECASE
     )) or request.doc_type == "comparison"
 
     if not is_comparison_request and not is_generation_request(request.message):
         raise HTTPException(status_code=400, detail="Not a generation request")
+
+    if current_user:
+        enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
 
     session_id = request.session_id
     _uid = current_user["sub"] if current_user else None
@@ -1145,7 +1274,9 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             logo_para = doc.add_paragraph()
             logo_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
             logo_run = logo_para.add_run()
-            logo_run.add_picture(logo_path_val, width=Inches(3.0))
+            logo_run.add_picture(logo_path_val, width=Inches(2.5))
+            # Space after logo before studio name
+            logo_para.paragraph_format.space_after = Pt(12)
 
         name_val = tenant_profile.get("legal_name") or tenant_profile.get("display_name") or ph
         name_para = doc.add_paragraph()
@@ -1170,7 +1301,14 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
         vat_para = doc.add_paragraph(f"P.IVA: {tenant_profile.get('vat_number') or ph}")
         vat_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-        doc.add_paragraph()
+        # Separator line and spacing before document title
+        sep_para = doc.add_paragraph()
+        sep_para.paragraph_format.space_before = Pt(6)
+        sep_run = sep_para.add_run("─" * 60)
+        sep_run.font.size = Pt(8)
+        sep_run.font.color.rgb = RGBColor(180, 180, 180)
+        sep_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sep_para.paragraph_format.space_after = Pt(12)
 
     title_para = doc.add_paragraph()
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -1334,13 +1472,16 @@ def _classify_doc_intent(message: str, session_lang: str) -> str:
 
 
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user)):
+async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
     """Send a message and get a response.
 
     If session_id is provided, continues the conversation.
     If omitted, a new session is created automatically.
     If the message is a generation request, redirects to the opposition act generation flow.
     """
+    if current_user:
+        enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
+
     session_id = request.session_id
     _uid = current_user["sub"] if current_user else None
     _tid = current_user.get("tenant_id") if current_user else None
@@ -1485,6 +1626,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     )
                     chatbot._sessions[session_id] = _session
                 _session_lang = _session.session_language
+                _doc_settings = get_user_settings(_uid) if _uid else {"tone": 2, "standing": 2, "response_length": 2}
 
                 _lang_note = {
                     "es": "Rispondi in spagnolo.",
@@ -1691,13 +1833,18 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 for fname, extract in _doc_extracts
                             )
                             _compare_system = (
-                                "Sei un assistente legale italiano. "
+                                legal_consultant_system_prefix(
+                                    _session_lang,
+                                    tone=_doc_settings["tone"],
+                                    standing=_doc_settings["standing"],
+                                ) + " "
                                 "Ti vengono forniti due blocchi di testo già estratti da documenti "
-                                "legali. Scrivi UN SOLO paragrafo (max 100 parole) che sintetizza "
+                                "legali. Sintetizza "
                                 "le principali differenze tra i due documenti relativamente alla "
                                 "domanda dell'utente. "
                                 "Non ripetere il contenuto degli estratti — solo le differenze chiave. "
                                 + _lang_note
+                                + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
                             )
                             _compare_human = (
                                 "\n\n".join(
@@ -1716,7 +1863,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                             SystemMessage(content=_compare_system),
                                             HumanMessage(content=_compare_human),
                                         ],
-                                        200,
+                                        2500,
                                     ),
                                 )
                             except Exception:
@@ -1801,7 +1948,11 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                             _truncated = _text[:12_000]
                             _was_cut = len(_text) > 12_000
                             _system = (
-                                "Sei un assistente legale italiano. "
+                                legal_consultant_system_prefix(
+                                    _session_lang,
+                                    tone=_doc_settings["tone"],
+                                    standing=_doc_settings["standing"],
+                                ) + " "
                                 "L'utente ti ha fornito il testo di un documento privato "
                                 f"('{_matched_doc.original_filename}'). "
                                 "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE "
@@ -1811,6 +1962,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "Rispondi in modo conversazionale e naturale — non usare JSON, "
                                 "non aggiungere intestazioni non necessarie. "
                                 + _lang_note
+                                + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
                             )
                             _human = (
                                 f"Documento:\n\n{_truncated}"
@@ -1828,7 +1980,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                             SystemMessage(content=_system),
                                             HumanMessage(content=_human),
                                         ],
-                                        2000,
+                                        2500,
                                     ),
                                 )
                             except Exception as _exc:
@@ -1920,7 +2072,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     doc_type, _uid, _tid, len(gen_result["draft"]))
         if _uid and _tid:
             _gen_doc_id, _gen_doc_name = _persist_generated_docx(
-                gen_result["draft"], doc_type, _uid, _tid
+                gen_result["draft"], doc_type, _uid, _tid,
+                case_details=gen_result.get("case_details"),
             )
             logger.info("chat: persist result doc_id=%r name=%r", _gen_doc_id, _gen_doc_name)
         else:

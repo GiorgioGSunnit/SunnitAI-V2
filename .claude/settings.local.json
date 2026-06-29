@@ -43,7 +43,8 @@
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/crud.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
       "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/db/crud.py'\\).read\\(\\)\\); print\\('crud.py OK'\\)\")",
       "Bash(npx tsc *)",
-      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/chatbot/session.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/chatbot/session.py'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('src/be/src/lex_package/utils/graph_writer.py'\\).read\\(\\)\\); print\\('OK'\\)\")"
     ]
   }
 }

@@ -42,6 +42,8 @@ dependencies = [
     "alembic>=1.13.0",
     # pgvector — vector similarity for formula semantic routing
     "pgvector>=0.2.5",
+    # Billing
+    "stripe>=10.12.0",
 ]
 
 [project.optional-dependencies]
