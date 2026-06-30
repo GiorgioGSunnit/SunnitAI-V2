@@ -299,3 +299,75 @@ def test_create_checkout_session_returns_503_when_billing_storage_is_unavailable
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "Billing storage unavailable. Run database migrations and retry checkout."
     assert db.rolled_back is True
+
+
+def test_sync_checkout_session_does_not_claim_success_while_returning_blocked_access(monkeypatch):
+    user = SimpleNamespace(
+        id=uuid.uuid4(),
+        tenant_id=uuid.uuid4(),
+        email="user@example.com",
+    )
+    checkout_session = SimpleNamespace(
+        id="cs_paid_without_embedded_subscription",
+        subscription=None,
+        customer="cus_paid_without_embedded_subscription",
+        payment_status="paid",
+        metadata={
+            "user_id": str(user.id),
+            "tenant_id": str(user.tenant_id),
+            "plan_id": "plus-single-monthly",
+            "seats": "1",
+        },
+    )
+
+    class CheckoutSessionApi:
+        @staticmethod
+        def retrieve(session_id, **kwargs):
+            assert session_id == "cs_paid_without_embedded_subscription"
+            assert kwargs == {"expand": ["subscription"]}
+            return checkout_session
+
+    class FakeQuery:
+        def filter(self, *_args, **_kwargs):
+            return self
+
+        def first(self):
+            return SimpleNamespace(plan="basic", subscription_end=None)
+
+    class FakeDb:
+        def query(self, _model):
+            return FakeQuery()
+
+    def fake_upsert(_db, tenant_id_arg, **kwargs):
+        payload = {
+            "tenant_id": tenant_id_arg,
+            "current_period_end": None,
+            "cancel_at_period_end": False,
+            "trial_started_at": None,
+            "trial_ends_at": None,
+            "stripe_subscription_id": None,
+            **kwargs,
+        }
+        return SimpleNamespace(**payload)
+
+    monkeypatch.setattr(
+        billing,
+        "get_stripe_client",
+        lambda: SimpleNamespace(checkout=SimpleNamespace(Session=CheckoutSessionApi)),
+    )
+    monkeypatch.setattr(billing.crud, "upsert_tenant_subscription", fake_upsert)
+    monkeypatch.setattr(billing, "_resolve_local_subscription", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        billing,
+        "tenant_seat_usage",
+        lambda *_args, **_kwargs: {"seats_used": 1, "seats_available": 0, "seats_over_limit": 0},
+    )
+
+    response = billing.sync_checkout_session(
+        billing.SyncCheckoutSessionRequest(session_id="cs_paid_without_embedded_subscription"),
+        current_user=user,
+        db=FakeDb(),
+    )
+
+    assert response["access_block_reason"] is None
+    assert response["is_active"] is True
