@@ -132,6 +132,12 @@ def subscription_is_active(status: Optional[str]) -> bool:
     return status in ACCESSIBLE_SUBSCRIPTION_STATUSES
 
 
+def subscription_allows_access(status: Optional[str], access_block_reason: Optional[str]) -> bool:
+    if access_block_reason is not None:
+        return False
+    return subscription_is_active(status) or status in NON_BLOCKING_PENDING_STATUSES
+
+
 def validate_return_url(url: str) -> str:
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -217,7 +223,7 @@ def serialize_subscription(
         "current_period_end": current_period_end.isoformat() if current_period_end else None,
         "cancel_at_period_end": subscription.cancel_at_period_end if subscription else False,
         "last_payment_status": subscription.last_payment_status if subscription else None,
-        "is_active": subscription_is_active(status) and access_block_reason is None,
+        "is_active": subscription_allows_access(status, access_block_reason),
         "access_block_reason": access_block_reason,
         "trial_days": get_trial_days(),
     }

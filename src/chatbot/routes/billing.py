@@ -1,5 +1,6 @@
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 import stripe
@@ -150,6 +151,21 @@ def _resolve_local_subscription(
     return None
 
 
+def _checkout_completed_fallback_status(local_subscription: Optional[TenantSubscription]) -> str:
+    if not local_subscription:
+        return "checkout_completed"
+    if subscription_is_active(local_subscription.status):
+        return local_subscription.status
+
+    trial_end = local_subscription.trial_ends_at or local_subscription.current_period_end
+    if local_subscription.trial_started_at and trial_end and datetime.now(timezone.utc) < trial_end:
+        return "trialing"
+
+    if local_subscription.status in {"checkout_pending", "checkout_completed"}:
+        return local_subscription.status
+    return "checkout_completed"
+
+
 def _get_or_create_customer_id(db: Session, user: User) -> str:
     stripe_client = get_stripe_client()
     local_subscription = crud.get_tenant_subscription(db, user.tenant_id)
@@ -267,13 +283,22 @@ def _sync_from_checkout_session(
         tenant_id = tenant_uuid or (current_user.tenant_id if current_user else None)
         if not tenant_id:
             raise HTTPException(status_code=400, detail="Checkout session has no subscription")
+
+        local_subscription = _resolve_local_subscription(
+            db,
+            stripe_customer_id=_object_id(getattr(checkout_session, "customer", None)),
+            stripe_checkout_session_id=checkout_session.id,
+            tenant_id=tenant_id,
+        )
+        resolved_plan_id = plan_id or (local_subscription.plan_id if local_subscription else None)
+        resolved_quantity = metadata.get("seats") or (local_subscription.seats if local_subscription else 1)
         return crud.upsert_tenant_subscription(
             db,
             tenant_id,
             user_id=user_uuid or (current_user.id if current_user else None),
-            plan_id=plan_id,
-            status="checkout_completed",
-            seats=normalize_quantity(plan_id or "plus-single-monthly", metadata.get("seats") or 1),
+            plan_id=resolved_plan_id,
+            status=_checkout_completed_fallback_status(local_subscription),
+            seats=normalize_quantity(resolved_plan_id or "plus-single-monthly", resolved_quantity),
             stripe_customer_id=_object_id(getattr(checkout_session, "customer", None)),
             stripe_checkout_session_id=checkout_session.id,
             last_payment_status=last_payment_status or getattr(checkout_session, "payment_status", None),
