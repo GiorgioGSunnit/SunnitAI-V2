@@ -770,11 +770,29 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         retrieval_keywords = [r for r in doc_refs if r not in existing] + llm_keywords
     else:
         retrieval_keywords = llm_keywords
+
+    # Keyword-derived article references: the keyword-extraction LLM often
+    # correctly names a specific article (e.g. "art. 575 c.p.") even when
+    # the user's own query text has no number in it (e.g. "omicidio doloso").
+    # _extract_article_references only scans the raw query, missing these —
+    # so we also scan the extracted keywords themselves and surface any
+    # article numbers found, for article_router to use as a fallback.
+    keyword_article_refs: List[tuple] = []
+    _seen_kw_articles: Set[str] = set()
+    for kw in retrieval_keywords:
+        for pat in _ARTICLE_PATTERNS:
+            for m in pat.finditer(kw):
+                number = m.group(1)
+                if number not in _seen_kw_articles:
+                    _seen_kw_articles.add(number)
+                    keyword_article_refs.append((number, m.group(0).strip()))
+
     log_cypher_event(
         "a_keywords",
         "extracted keywords",
         detail=retrieval_keywords,
     )
+    logger.info("DEBUG retrieval_keywords=%r keyword_article_refs=%r", retrieval_keywords, keyword_article_refs)
 
     # Step 3: Validate and normalize the extracted graph
     raw_graph = entities_payload.graph
@@ -905,6 +923,7 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         **state,
         "generalized_query": generalized,
         "retrieval_keywords": retrieval_keywords,
+        "keyword_article_refs": keyword_article_refs,
         "document_references": doc_refs,
         "entities": processed_entities,
         "extracted_relationships": final_relationships,
@@ -928,7 +947,74 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     user_id = state.get("user_id") or ""
     tenant_id = state.get("tenant_id") or ""
     article_refs = _extract_article_references(query)
+
+    # Fallback: the raw query may name a concept ("omicidio doloso") with no
+    # number, while the keyword-extraction LLM (run earlier in decompose_query)
+    # correctly identified the specific article it maps to (e.g. "art. 575
+    # c.p."). Use that as a second source of article references before giving
+    # up on the exact-match path entirely.
+    used_keyword_fallback = False
+    if not article_refs:
+        kw_refs = state.get("keyword_article_refs") or []
+        if kw_refs:
+            article_refs = kw_refs
+            used_keyword_fallback = True
+
     law_hint = _dynamic_law_hint(query, driver, database)
+
+    # Dedicated, single-purpose article lookup — deterministic fallback when
+    # neither the raw query nor the shared keyword-extraction step surfaced
+    # a number. This is a focused LLM call with ONE job (name the article),
+    # not competing with 4 other extraction slots, so it is far less likely
+    # to skip the number than the general keyword-extraction prompt.
+    #
+    # SCOPE GUARD: only attempt this for queries whose phrasing signals a
+    # specific crime/penalty/single-provision question. Broad conceptual
+    # questions ("cosa prevede", "requisiti di", "differenze tra") often
+    # span multiple articles and must NOT be force-narrowed to one — doing
+    # so produced a wrong, overconfident answer in testing (e.g. contract
+    # validity question incorrectly narrowed to a single unrelated article).
+    _single_provision_signal = bool(re.search(
+        r'\b(pena\s+per|pene\s+per|reato\s+di|conseguenze\s+del|conseguenze\s+penali\s+per\s+il\s+reato|'
+        r'sanzioni\s+per|punito\s+con|punizione\s+per|delitto\s+di)\b',
+        query, re.IGNORECASE
+    ))
+    if not article_refs and _single_provision_signal:
+        try:
+            _lookup_system = (
+                "Sei un esperto di diritto penale e civile italiano. "
+                "Data una domanda su un reato o istituto giuridico, rispondi "
+                "SOLO con il numero dell'articolo del Codice Penale o Civile "
+                "italiano che lo disciplina principalmente. "
+                "Esempio: per 'omicidio doloso' rispondi '575'. "
+                "Per 'truffa' rispondi '640'. "
+                "Se non sei certo o la domanda non riguarda un singolo "
+                "articolo specifico, rispondi 'NESSUNO'. "
+                "Rispondi SOLO con il numero o 'NESSUNO', nient'altro."
+            )
+            _lookup_raw = _call_chat(
+                [SystemMessage(content=_lookup_system), HumanMessage(content=query)],
+                max_tokens=10,
+            ).strip()
+            _lookup_match = re.match(r'^(\d+(?:-(?:bis|ter|quater|quinquies))?)\b', _lookup_raw)
+            if _lookup_match:
+                _num = _lookup_match.group(1)
+                article_refs = [(_num, f"art. {_num}")]
+                used_keyword_fallback = True
+                # Scope to the document already identified by
+                # _classify_query_intent in decompose_query (e.g. "Codice
+                # Penale 2026"), if available — otherwise this dedicated
+                # lookup's results match the article number across EVERY
+                # document in the corpus, which is wrong (the same article
+                # number means different things in different codes).
+                if not law_hint:
+                    law_hint = state.get("law_hint_doc_id") or ""
+                logger.info(
+                    "[article_router] dedicated lookup found article %r for query %r, scoped to %r",
+                    _num, query[:60], law_hint,
+                )
+        except Exception as exc:
+            logger.warning("[article_router] dedicated lookup failed: %s", exc)
 
     if not article_refs:
         vlog("article_router", {"article_refs_found": [], "law_hint": law_hint, "results_found": 0})
@@ -984,6 +1070,42 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     "[article_router] merged fragments: %d raw rows → %d sections",
                     sum(1 for row in data), len(data),
                 )
+
+                # Prefer the single clean base node when one exists and is
+                # the only node found (mirrors the base-detection heuristic
+                # in post_process.py for title grounding).
+                if len(data) > 1:
+                    _exact = [
+                        row for row in data
+                        if (row.get("s") or {}).get("name") == article_number
+                    ]
+                    _zero_zero = [
+                        row for row in data
+                        if (row.get("s") or {}).get("name") == f"{article_number}.0.0"
+                    ]
+                    if _exact:
+                        data = _exact
+                    elif len(data) == 1 and _zero_zero:
+                        data = _zero_zero
+
+                # When multiple genuinely distinct fragments remain (e.g. art.
+                # 640's base crime plus 10 real aggravating-circumstance
+                # variants), they are not safe to merge or arbitrarily drop —
+                # but dumping all of them is noisy when the user asked a
+                # general question that only the base provision answers.
+                # Rerank them against the actual query using the same
+                # reranker trusted elsewhere in this pipeline, and keep only
+                # the top-scoring fragments — this is relevance filtering,
+                # not content loss, since the reranker score reflects how
+                # well each fragment actually answers THIS question.
+                if len(data) > 3:
+                    _reranked = rerank_results(query, data, top_k=4)
+                    if _reranked:
+                        data = _reranked
+                        logger.info(
+                            "[article_router] reranked %d fragments for art. %s down to %d relevant",
+                            len(data), article_number, len(_reranked),
+                        )
         except Neo4jError as exc:
             logger.warning("[article_router] Cypher failed for ref=%r: %s", article_ref, exc)
             continue
@@ -995,6 +1117,11 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 
         if data:
             enriched = _enrich_with_source_metadata(data)
+            logger.info(
+                "[article_router] matched via %s: article_ref=%r, %d rows",
+                "keyword-derived reference" if used_keyword_fallback else "query text",
+                article_ref, len(data),
+            )
             return {
                 "article_router_fired": True,
                 "article_refs_found": all_refs,
@@ -3166,19 +3293,46 @@ _GAP_PHRASES = [
 ]
 
 
+# Structural pattern catching gap-acknowledgment phrasings the model invents
+# that aren't on the literal _GAP_PHRASES list (e.g. "non ho trovato
+# informazioni sufficienti", a real production case the literal list missed).
+# Matches the SHAPE of an "I found nothing" sentence rather than exact
+# wording: a negation + a finding/information verb + an information noun,
+# optionally followed by a qualifier like "sufficienti", "specifiche", or
+# a reference to "documenti"/"database"/"fonti".
+_GAP_STRUCTURAL_PATTERN = re.compile(
+    r'\bnon\s+(?:ho\s+trovato|trovo|ho|sono\s+riuscito\s+a\s+trovare|'
+    r'sono\s+stat[oi]\s+in\s+grado\s+di\s+trovare)\s+'
+    r'(?:informazioni|dati|documentazione|dettagli)\b'
+    r'.{0,40}'
+    r'(?:sufficient\w*|specific\w*|necessari\w*|nei?\s+documenti|nel\s+database|'
+    r'nella\s+base|nelle?\s+fonti)?',
+    re.IGNORECASE,
+)
+
+
 def _is_primary_gap_response(answer: str) -> bool:
     """True only when the answer is primarily a gap acknowledgment.
 
-    Finds the earliest gap phrase occurrence across all phrases, then checks
-    whether it falls within the first min(150, max(100, 15%)) of the answer. Trailing
-    disclaimers after substantive content never fire; only opening gap sentences do.
+    Checks both a structural regex pattern (catches phrasings the model
+    invents that don't match the literal phrase list — e.g. "non ho trovato
+    informazioni sufficienti") and the literal _GAP_PHRASES list, then
+    verifies the earliest match falls within the first min(150, max(100,
+    15%)) of the answer. Trailing disclaimers after substantive content
+    never fire; only opening gap sentences do.
     """
     answer_lower = answer.lower()
     earliest_idx = len(answer)
+
+    _struct_match = _GAP_STRUCTURAL_PATTERN.search(answer_lower)
+    if _struct_match:
+        earliest_idx = min(earliest_idx, _struct_match.start())
+
     for phrase in _GAP_PHRASES:
         idx = answer_lower.find(phrase)
         if idx != -1:
             earliest_idx = min(earliest_idx, idx)
+
     if earliest_idx == len(answer):
         return False
     threshold = min(150, max(100, int(len(answer) * 0.15)))
