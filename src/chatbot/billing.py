@@ -17,7 +17,7 @@ PLAN_PRICE_ENV = {
 }
 
 ACCESSIBLE_SUBSCRIPTION_STATUSES = {"active", "trialing"}
-NON_BLOCKING_PENDING_STATUSES = {"checkout_pending", "checkout_completed"}
+NON_BLOCKING_PENDING_STATUSES = {"checkout_completed"}
 
 PLACEHOLDER_VALUES = {
     "sk_test_your_key_here",
@@ -167,6 +167,8 @@ def tenant_seat_usage(db: Session, tenant_id, subscription: Optional[TenantSubsc
 def subscription_access_block_reason(subscription: Optional[TenantSubscription]) -> Optional[str]:
     if not subscription:
         return "Nessun piano attivo. Apri Piani per continuare a usare Astrea."
+    if subscription.status == "checkout_pending":
+        return "Checkout non completato. Apri Piani per attivare la prova gratuita."
     if subscription.status in NON_BLOCKING_PENDING_STATUSES:
         return None
     now = datetime.now(timezone.utc)

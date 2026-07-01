@@ -54,6 +54,25 @@ def test_subscription_access_reason_blocks_when_subscription_is_missing():
     assert "Nessun piano attivo" in billing.subscription_access_block_reason(None)
 
 
+def test_subscription_access_reason_blocks_abandoned_checkout_pending():
+    pending_checkout = _subscription(
+        status="checkout_pending",
+        stripe_subscription_id=None,
+        trial_started_at=None,
+        trial_ends_at=None,
+        current_period_end=None,
+        last_payment_status=None,
+    )
+
+    assert billing.subscription_access_block_reason(pending_checkout) == (
+        "Checkout non completato. Apri Piani per attivare la prova gratuita."
+    )
+    assert billing.subscription_allows_access(
+        pending_checkout.status,
+        billing.subscription_access_block_reason(pending_checkout),
+    ) is False
+
+
 def test_sync_from_stripe_subscription_preserves_trial_cancellation_until_expiry(monkeypatch):
     tenant_id = uuid.uuid4()
     user_id = uuid.uuid4()
