@@ -320,17 +320,27 @@ def _classify_query_intent(
             "Respond ONLY with valid JSON, no markdown, no explanation:\n"
             '{"intent": "...", "doc_a": "...", "doc_b": "...", '
             '"entity_a": "...", "entity_b": "..."}\n\n'
+            "Valid intent values (ONLY these four, no others):\n"
+            "  concept_in_doc | concept_across_docs | doc_comparison | regular\n\n"
             "Intent rules:\n"
             "- concept_in_doc: user asks about one OR two concepts within "
             "a SINGLE named document. The document must be EXPLICITLY named "
             "in the query. Use this ONLY when the query is clearly scoped to "
             "that one document.\n"
             "  Example: 'differenza tra dolo e colpa nel codice penale'\n"
-            "- concept_across_docs: user compares the SAME concept across "
-            "TWO DIFFERENT documents — requires BOTH doc_a AND doc_b.\n"
-            "  Example: 'differenza tra responsabilità nel codice civile e nel codice penale'\n"
+            "- concept_across_docs: user EXPLICITLY asks to COMPARE the same "
+            "concept across TWO DIFFERENT documents — requires BOTH doc_a AND "
+            "doc_b. The user must be asking for a comparison or difference, "
+            "NOT just mentioning two related documents in a substantive legal "
+            "question.\n"
+            "  CORRECT example: 'differenza tra responsabilità nel codice "
+            "civile e nel codice penale' — explicitly asks for a difference.\n"
+            "  WRONG example: 'sanzioni previste dal GDPR e dal codice della "
+            "privacy' — mentions two documents but asks a substantive question "
+            "about sanctions, NOT a comparison. Use concept_in_doc or regular.\n"
             "- doc_comparison: user wants to compare two documents broadly "
-            "— requires BOTH doc_a AND doc_b.\n"
+            "— requires BOTH doc_a AND doc_b. Must explicitly request a "
+            "comparison, not merely mention two documents.\n"
             "- regular: use this for ALL other cases, including:\n"
             "  * general legal questions with no specific document named\n"
             "  * cross-domain queries (e.g. criminal + civil/regulatory topics together)\n"
@@ -340,7 +350,16 @@ def _classify_query_intent(
             "  * any query where you are uncertain\n\n"
             "CRITICAL RULES:\n"
             "1. concept_across_docs and doc_comparison require TWO different documents "
-            "explicitly named in the query.\n"
+            "explicitly named in the query AND an explicit request for comparison or "
+            "difference — merely mentioning two documents in a substantive legal "
+            "question (e.g. asking about sanctions, obligations, or rights that "
+            "span two related laws) is NOT a comparison — use concept_in_doc "
+            "with the most relevant document, or regular.\n"
+            "2. When both a national Italian law (codice, testo unico, decreto "
+            "legislativo) and an EU regulation (regolamento UE, GDPR, direttiva) "
+            "are mentioned, set doc_a to the national law — it is almost always "
+            "the primary source for Italian practitioners. Set doc_b to the EU "
+            "regulation only if the question specifically asks about EU-level rules.\n"
             "2. concept_in_doc requires the document name to appear EXPLICITLY in the "
             "query — do NOT infer it from topic keywords alone.\n"
             "3. Cross-domain queries (combining criminal law with civil/regulatory topics, "
@@ -348,7 +367,10 @@ def _classify_query_intent(
             "so all relevant documents are searched.\n"
             "4. When in doubt, always use 'regular'. A wrong 'concept_in_doc' gives "
             "incomplete answers; 'regular' always gives complete answers.\n"
-            "5. Leave doc_a and doc_b as empty strings for 'regular' intent."
+            "5. Leave doc_a and doc_b as empty strings for 'regular' intent.\n"
+            "6. For concept_in_doc with two documents, set doc_a to the document "
+            "that most directly answers the question (usually the national law), "
+            "and doc_b to the secondary reference."
         )
 
         from openai import OpenAI
@@ -378,6 +400,9 @@ def _classify_query_intent(
         doc_b_id = name_to_id.get(result.get("doc_b", ""), "")
 
         intent = result.get("intent", "regular")
+        # Normalize common LLM shorthand aliases before validation
+        if intent == "comparison":
+            intent = "doc_comparison"
         if intent not in ("concept_in_doc", "concept_across_docs",
                           "doc_comparison", "regular"):
             intent = "regular"
@@ -909,8 +934,43 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         user_id=user_id, tenant_id=tenant_id,
     )
 
+    # --- Deterministic pre-classifier rules ---
+    # Applied BEFORE the LLM classifier result, for patterns where the
+    # LLM is known to be non-deterministic. These rules always win.
+    _privacy_gdpr_pattern = bool(re.search(
+        r'\b(gdpr|regolamento\s+(?:generale\s+)?(?:ue|europeo|sulla\s+protezione))\b',
+        query, re.IGNORECASE
+    ) and re.search(
+        r'\b(privacy|dati\s+personali|codice\s+della\s+privacy)\b',
+        query, re.IGNORECASE
+    ))
+    if _privacy_gdpr_pattern and not intent_result["doc_a_id"]:
+        # Force doc_a = Codice della Privacy 2026 (national law takes priority)
+        # Force doc_b = Regolamento generale sulla protezione dei dati 2019
+        _privacy_id = next(
+            (d["id"] for d in _fetch_doc_names(driver, database)
+             if d["name"] == "Codice della Privacy 2026"), ""
+        )
+        _gdpr_id = next(
+            (d["id"] for d in _fetch_doc_names(driver, database)
+             if d["name"] == "Regolamento generale sulla protezione dei dati 2019"), ""
+        )
+        if _privacy_id:
+            intent_result["doc_a_id"] = _privacy_id
+            intent_result["law_hint_doc_id"] = _privacy_id
+        if _gdpr_id:
+            intent_result["doc_b_id"] = _gdpr_id
+        if _privacy_id and _gdpr_id:
+            intent_result["intent"] = "concept_across_docs"
+            logger.info(
+                "[decompose_query] deterministic rule: privacy+GDPR query "
+                "forced to concept_across_docs doc_a=Privacy doc_b=GDPR"
+            )
+    # --- End deterministic pre-classifier rules ---
+
     classifier_intent = intent_result["intent"]
-    if classifier_intent in ("doc_comparison", "concept_across_docs"):
+    if classifier_intent == "doc_comparison":
+        # Explicit broad document comparison — route to comparison pipeline
         is_comparison = True
         clf_doc_ids = [
             d for d in [intent_result["doc_a_id"], intent_result["doc_b_id"]]
@@ -918,6 +978,10 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         ]
         if len(clf_doc_ids) >= 2:
             comparison_doc_ids = clf_doc_ids
+    elif classifier_intent == "concept_across_docs":
+        # Conceptual query spanning two documents — treat like concept_in_doc:
+        # search both documents via normal RAG rather than comparison pipeline.
+        is_comparison = False
 
     return {
         **state,
@@ -975,46 +1039,131 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     # so produced a wrong, overconfident answer in testing (e.g. contract
     # validity question incorrectly narrowed to a single unrelated article).
     _single_provision_signal = bool(re.search(
-        r'\b(pena\s+per|pene\s+per|reato\s+di|conseguenze\s+del|conseguenze\s+penali\s+per\s+il\s+reato|'
-        r'sanzioni\s+per|punito\s+con|punizione\s+per|delitto\s+di)\b',
+        r'\b(pena\s+per|pene\s+per|reato\s+di|conseguenze\s+del|conseguenze\s+penali|'
+        r'sanzioni\s+per|punito\s+con|punizione\s+per|delitto\s+di|'
+        r'responsabilit[àa]\s+civile|responsabilit[àa]\s+penale|'
+        r'differenz[ae]\s+tra|cosa\s+(?:prevede|dice|stabilisce)\s+il\s+codice|'
+        r'istituto\s+giuridico|disciplina\s+di|elementi\s+del\s+reato)\b',
         query, re.IGNORECASE
     ))
     if not article_refs and _single_provision_signal:
         try:
-            _lookup_system = (
+            # Single multi-article JSON call — ask for up to 3 articles directly.
+            # Corpus validation ensures only articles that actually exist in the
+            # database are used, preventing hallucinated article numbers from
+            # corrupting retrieval.
+            _multi_system = (
                 "Sei un esperto di diritto penale e civile italiano. "
-                "Data una domanda su un reato o istituto giuridico, rispondi "
-                "SOLO con il numero dell'articolo del Codice Penale o Civile "
-                "italiano che lo disciplina principalmente. "
-                "Esempio: per 'omicidio doloso' rispondi '575'. "
-                "Per 'truffa' rispondi '640'. "
-                "Se non sei certo o la domanda non riguarda un singolo "
-                "articolo specifico, rispondi 'NESSUNO'. "
-                "Rispondi SOLO con il numero o 'NESSUNO', nient'altro."
+                "Data una domanda su reati o istituti giuridici, identifica "
+                "gli articoli principali del Codice Penale o Civile (massimo 3). "
+                "Rispondi SOLO con JSON array, nessun testo aggiuntivo:\n"
+                '[{"num": "575", "codice": "penale"}]\n\n'
+                "Esempi:\n"
+                "- 'omicidio doloso' -> [{\"num\": \"575\", \"codice\": \"penale\"}]\n"
+                "- 'truffa' -> [{\"num\": \"640\", \"codice\": \"penale\"}]\n"
+                "- 'furto' -> [{\"num\": \"624\", \"codice\": \"penale\"}, {\"num\": \"625\", \"codice\": \"penale\"}]\n"
+                "- 'rapina' -> [{\"num\": \"628\", \"codice\": \"penale\"}]\n"
+                "- 'lesioni personali' -> [{\"num\": \"582\", \"codice\": \"penale\"}]\n"
+                "- 'diffamazione' -> [{\"num\": \"595\", \"codice\": \"penale\"}]\n"
+                "- 'responsabilità civile e penale' -> [{\"num\": \"185\", \"codice\": \"penale\"}, {\"num\": \"2043\", \"codice\": \"civile\"}]\n"
+                "- 'atti osceni' -> [{\"num\": \"527\", \"codice\": \"penale\"}]\n"
+                "- 'bancarotta fraudolenta' -> [{\"num\": \"216\", \"codice\": \"altro\"}]\n"
+                "- 'violazione privacy' -> [{\"num\": \"167\", \"codice\": \"privacy\"}]\n"
+                "- 'trattamento illecito dati personali' -> [{\"num\": \"167\", \"codice\": \"privacy\"}]\n"
+                "- 'responsabilità medico errore professionale' -> [{\"num\": \"2043\", \"codice\": \"civile\"}, {\"num\": \"1218\", \"codice\": \"civile\"}]\n"
+                "Se la domanda non riguarda articoli specifici: []\n"
+                "Rispondi SOLO con il JSON array."
             )
-            _lookup_raw = _call_chat(
-                [SystemMessage(content=_lookup_system), HumanMessage(content=query)],
-                max_tokens=10,
+            _multi_raw = _call_chat(
+                [SystemMessage(content=_multi_system), HumanMessage(content=query)],
+                max_tokens=80,
             ).strip()
-            _lookup_match = re.match(r'^(\d+(?:-(?:bis|ter|quater|quinquies))?)\b', _lookup_raw)
-            if _lookup_match:
-                _num = _lookup_match.group(1)
-                article_refs = [(_num, f"art. {_num}")]
+            _multi_clean = _multi_raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+            try:
+                _multi_results = json.loads(_multi_clean) if _multi_clean.startswith("[") else []
+            except Exception:
+                _multi_results = []
+
+            _codice_to_doc = {
+                "penale": "Codice Penale 2026",
+                "civile": "Codice Civile 2026",
+                "privacy": "Codice della Privacy 2026",
+                "lavoro": "Codice Civile 2026",
+            }
+            _validated_refs = []
+            if _multi_results and isinstance(_multi_results, list):
+                for entry in _multi_results[:3]:
+                    _num = str(entry.get("num", "")).strip()
+                    _codice = entry.get("codice", "").strip().lower()
+                    if not re.match(r'^\d+(?:-(?:bis|ter|quater|quinquies))?$', _num):
+                        continue
+                    _doc_name = _codice_to_doc.get(_codice, "")
+                    # Corpus validation: only use article if it actually
+                    # exists in the database — prevents hallucinated numbers
+                    # from corrupting retrieval entirely.
+                    # Prefer scoping to the document already identified by
+                    # _classify_query_intent (law_hint_doc_id) when no
+                    # explicit codice mapping exists — avoids matching the
+                    # same article number across unrelated documents.
+                    _scope_doc = _doc_name
+                    if not _scope_doc:
+                        # Try law_hint_doc_id first (set by _classify_query_intent)
+                        _hint_id = state.get("law_hint_doc_id") or ""
+                        if _hint_id:
+                            with driver.session(database=database) as _ns:
+                                _name_row = _ns.run(
+                                    "MATCH (d:Document {id: $id}) RETURN d.name AS name",
+                                    id=_hint_id,
+                                ).single()
+                                if _name_row:
+                                    _scope_doc = _name_row["name"]
+                    # No further fallback — if _scope_doc is still empty here,
+                    # corpus validation runs unscoped across all documents.
+                    # The reranker handles relevance filtering on the results.
+                    with driver.session(database=database) as _vs:
+                        _exists = _vs.run(
+                            "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                            "WHERE (s.name = $num OR s.name STARTS WITH $num + '.') "
+                            "AND ($doc = '' OR d.name = $doc) "
+                            "RETURN count(s) AS cnt",
+                            num=_num, doc=_scope_doc,
+                        ).single()["cnt"]
+                    if _exists > 0 and not _doc_name:
+                        _doc_name = _scope_doc
+                    if _exists > 0:
+                        _validated_refs.append((_num, f"art. {_num}", _doc_name))
+                        logger.info(
+                            "[article_router] validated article %r in %r (%d nodes)",
+                            _num, _doc_name or "any", _exists,
+                        )
+                    else:
+                        logger.warning(
+                            "[article_router] rejected hallucinated article %r in %r",
+                            _num, _doc_name,
+                        )
+
+            if _validated_refs:
+                article_refs = [(_num, ref) for _num, ref, _ in _validated_refs]
                 used_keyword_fallback = True
-                # Scope to the document already identified by
-                # _classify_query_intent in decompose_query (e.g. "Codice
-                # Penale 2026"), if available — otherwise this dedicated
-                # lookup's results match the article number across EVERY
-                # document in the corpus, which is wrong (the same article
-                # number means different things in different codes).
-                if not law_hint:
-                    law_hint = state.get("law_hint_doc_id") or ""
+                state["_multi_article_doc_names"] = {
+                    _num: _doc_name for _num, _, _doc_name in _validated_refs
+                }
                 logger.info(
-                    "[article_router] dedicated lookup found article %r for query %r, scoped to %r",
-                    _num, query[:60], law_hint,
+                    "[article_router] lookup found %r for query %r",
+                    _validated_refs, query[:60],
                 )
+                if not law_hint and _validated_refs[0][2]:
+                    _first_doc = _validated_refs[0][2]
+                    with driver.session(database=database) as _sess:
+                        _doc_row = _sess.run(
+                            "MATCH (d:Document {name: $name}) RETURN d.id AS id",
+                            name=_first_doc,
+                        ).single()
+                        if _doc_row:
+                            law_hint = _doc_row["id"]
+
         except Exception as exc:
-            logger.warning("[article_router] dedicated lookup failed: %s", exc)
+            logger.warning("[article_router] article lookup failed: %s", exc)
 
     if not article_refs:
         vlog("article_router", {"article_refs_found": [], "law_hint": law_hint, "results_found": 0})
@@ -1026,7 +1175,21 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 
     all_refs = [ref for _, ref in article_refs]
 
+    _multi_doc_names = state.get("_multi_article_doc_names") or {}
+    all_data: List[Dict[str, Any]] = []
     for article_number, article_ref in article_refs:
+        # Use per-article document scoping when multi-article lookup provided
+        # specific code names (e.g. 624->penale, 2043->civile)
+        _article_law_hint = law_hint
+        if _multi_doc_names.get(article_number):
+            _doc_name = _multi_doc_names[article_number]
+            with driver.session(database=database) as _s:
+                _row = _s.run(
+                    "MATCH (d:Document {name: $name}) RETURN d.id AS id",
+                    name=_doc_name,
+                ).single()
+                if _row:
+                    _article_law_hint = _row["id"]
         try:
             with driver.session(database=database) as session:
                 records = session.run(
@@ -1037,7 +1200,7 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     "RETURN d, s LIMIT 15",
                     article_ref=article_ref,
                     article_number=article_number,
-                    law_hint=law_hint,
+                    law_hint=_article_law_hint,
                     user_id=user_id,
                     tenant_id=tenant_id,
                 )
@@ -1116,23 +1279,38 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
         )
 
         if data:
-            enriched = _enrich_with_source_metadata(data)
             logger.info(
                 "[article_router] matched via %s: article_ref=%r, %d rows",
                 "keyword-derived reference" if used_keyword_fallback else "query text",
                 article_ref, len(data),
             )
-            return {
-                "article_router_fired": True,
-                "article_refs_found": all_refs,
-                "raw_result": data,
-                "references": enriched,
-                "execution_error": None,
-                "neo4j_executed": True,
-                "cypher_attempt": "article_router",
-                "bm25_from_article_lookup": True,
-                "law_hint_doc_id": state.get("law_hint_doc_id") or law_hint,
-            }
+            # Rerank per-article before accumulating — prevents all fragments
+            # from multiple articles surviving together when only one article
+            # is actually relevant to the question (e.g. furto returning both
+            # 624 and 625 fragments when only 624 answers the general query).
+            if len(data) > 2:
+                _per_article_reranked = rerank_results(query, data, top_k=2)
+                if _per_article_reranked:
+                    data = _per_article_reranked
+            all_data.extend(data)
+
+    if all_data:
+        enriched = _enrich_with_source_metadata(all_data)
+        logger.info(
+            "[article_router] returning %d total rows across %d article(s)",
+            len(all_data), len(article_refs),
+        )
+        return {
+            "article_router_fired": True,
+            "article_refs_found": all_refs,
+            "raw_result": all_data,
+            "references": enriched,
+            "execution_error": None,
+            "neo4j_executed": True,
+            "cypher_attempt": "article_router",
+            "bm25_from_article_lookup": True,
+            "law_hint_doc_id": state.get("law_hint_doc_id") or law_hint,
+        }
 
     vlog(
         "article_router",
@@ -1423,7 +1601,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     matches = all_matches
 
     law_hint_doc_id_b = state.get("law_hint_doc_id_b") or ""
-    if (state.get("query_intent") == "concept_across_docs"
+    if (state.get("query_intent") in ("concept_across_docs", "concept_in_doc")
             and law_hint_doc_id_b
             and law_hint_doc_id_b != vector_doc_hint):
         with driver.session(database=database) as session_b:
@@ -1479,7 +1657,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                 # Common legal words that appear everywhere — too broad for scoped BM25
                 "pene", "pena", "reato", "delitto", "articolo", "comma", "codice",
                 "penale", "civile", "legge", "decreto", "norma", "disposizione",
-                "condanna", "sanzione", "sanzioni", "procedura", "processo",
+                "condanna", "procedura", "processo",
             }
             _words = []
             for phrase in _kw:
@@ -1505,6 +1683,28 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     bm25_k = 150 if bm25_doc_hint else 15
     bm25_hits = bm25_lookup(bm25_query, driver, database, k=bm25_k)
     filtered_hits = [(eid, score) for eid, score in bm25_hits if score >= _BM25_SCORE_THRESHOLD]
+
+    # For concept_across_docs with a second document, run a second BM25
+    # pass scoped to doc_b and merge — doc_b only gets vector search
+    # coverage otherwise, which frequently loses to higher-scoring content
+    # from unrelated corpus documents during the reranker merge.
+    law_hint_doc_id_b = state.get("law_hint_doc_id_b") or ""
+    if (state.get("query_intent") == "concept_across_docs"
+            and law_hint_doc_id_b
+            and law_hint_doc_id_b != bm25_doc_hint):
+        bm25_hits_b = bm25_lookup(bm25_query, driver, database, k=150)
+        filtered_hits_b = [
+            (eid, score) for eid, score in bm25_hits_b
+            if score >= _BM25_SCORE_THRESHOLD
+        ]
+        logger.info(
+            "[context_retrieval] doc_b BM25: %d hits for %r",
+            len(filtered_hits_b), bm25_query,
+        )
+    else:
+        filtered_hits_b = []
+        law_hint_doc_id_b = ""
+
     vlog("bm25_search", {"results_found": len(bm25_hits), "results_above_threshold": len(filtered_hits)})
     raw_result: List[Dict[str, Any]] = []
     if filtered_hits:
@@ -1566,6 +1766,27 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
         for row in bm25_rows:
             row["_source"] = "bm25"
             raw_result.append(row)
+
+    # Second BM25 pass scoped to doc_b for concept_across_docs
+    if filtered_hits_b and law_hint_doc_id_b:
+        with driver.session(database=database) as _sess_b:
+            bm25_rows_b = _sess_b.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE elementId(s) IN $ids AND d.id = $doc_id "
+                f"AND {_visibility_filter()} "
+                "RETURN d, s",
+                ids=[eid for eid, _ in filtered_hits_b],
+                doc_id=law_hint_doc_id_b,
+                user_id=user_id,
+                tenant_id=tenant_id,
+            ).data()
+        for row in bm25_rows_b:
+            row["_source"] = "bm25_doc_b"
+            raw_result.append(row)
+        logger.info(
+            "[context_retrieval] doc_b BM25 added %d rows",
+            len(bm25_rows_b),
+        )
 
     # Article-number targeted lookup: "articolo 100" / "art. 100" → match Section.name directly
     _art_rows: List[Dict[str, Any]] = []
