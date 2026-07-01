@@ -268,6 +268,12 @@ class ChatBot:
     def _save_sessions(self) -> None:
         with self._lock:
             snapshot = [s.to_dict() for s in self._sessions.values()]
+            db_sessions = [
+                s for s in self._sessions.values()
+                if s.user_id and s.tenant_id
+            ]
+
+        # Write to JSON file
         try:
             dir_ = os.path.dirname(self._sessions_file) or "."
             os.makedirs(dir_, exist_ok=True)
@@ -284,6 +290,28 @@ class ChatBot:
                 raise
         except Exception as e:
             logger.error("Failed to save sessions to %s: %s", self._sessions_file, e)
+
+        # Persist to PostgreSQL (failures are logged but never break the JSON save)
+        if db_sessions:
+            try:
+                from ..db.base import SessionLocal
+                from ..db.crud import upsert_conversation_from_session
+                db = SessionLocal()
+                try:
+                    for s in db_sessions:
+                        upsert_conversation_from_session(
+                            db,
+                            session_id=s.session_id,
+                            user_id=s.user_id,
+                            tenant_id=s.tenant_id,
+                            title=s.title,
+                            messages=[m.to_dict() for m in s.messages],
+                            session_language=s.session_language,
+                        )
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.warning("Failed to persist sessions to PostgreSQL: %s", e)
 
     def create_session(self, user_id: Optional[str] = None, tenant_id: Optional[str] = None) -> ChatSession:
         session = ChatSession(user_id=user_id, tenant_id=tenant_id)
@@ -314,6 +342,16 @@ class ChatBot:
                 del self._sessions[session_id]
         if deleted:
             self._save_sessions()
+            try:
+                from ..db.base import SessionLocal
+                from ..db.crud import delete_conversation_by_session_id
+                db = SessionLocal()
+                try:
+                    delete_conversation_by_session_id(db, session_id)
+                finally:
+                    db.close()
+            except Exception as e:
+                logger.warning("Failed to delete session from PostgreSQL: %s", e)
         return deleted
 
     def list_sessions(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:

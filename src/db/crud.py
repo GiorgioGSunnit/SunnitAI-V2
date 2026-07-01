@@ -255,6 +255,43 @@ def delete_conversation(
     return False
 
 
+def upsert_conversation_from_session(
+    db: Session,
+    session_id: str,
+    user_id: str,
+    tenant_id: str,
+    title: str,
+    messages: list,
+    session_language: str = "it",
+) -> None:
+    """Insert or update a conversation row using session_id as the primary key."""
+    conv_id = uuid.UUID(session_id)
+    conv = db.query(Conversation).filter(Conversation.id == conv_id).first()
+    if conv:
+        conv.messages = messages
+        conv.title = title
+        conv.session_language = session_language
+    else:
+        conv = Conversation(
+            id=conv_id,
+            user_id=uuid.UUID(user_id),
+            tenant_id=uuid.UUID(tenant_id),
+            title=title,
+            messages=messages,
+            session_language=session_language,
+        )
+        db.add(conv)
+    db.commit()
+
+
+def delete_conversation_by_session_id(db: Session, session_id: str) -> None:
+    """Delete a conversation by its session_id (used as the conversation PK)."""
+    db.query(Conversation).filter(
+        Conversation.id == uuid.UUID(session_id)
+    ).delete()
+    db.commit()
+
+
 # ---------------------------------------------------------------------------
 # Superadmin operations
 # ---------------------------------------------------------------------------
