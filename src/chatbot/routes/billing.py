@@ -12,6 +12,11 @@ from sqlalchemy.orm import Session
 from ...db import crud
 from ...db.base import get_db
 from ...db.models import Tenant, TenantSubscription, User
+from ..analytics import (
+    build_free_trial_event,
+    build_purchase_event,
+    emit_billing_analytics_event,
+)
 from ..billing import (
     BillingConfigError,
     get_automatic_tax_enabled,
@@ -83,6 +88,17 @@ def _object_id(value) -> Optional[str]:
     if isinstance(value, str):
         return value
     return getattr(value, "id", None)
+
+
+def _object_field(obj, key: str, default=None):
+    if obj is None:
+        return default
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    try:
+        return getattr(obj, key)
+    except AttributeError:
+        return default
 
 
 def _metadata(obj) -> dict:
@@ -462,23 +478,38 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=f"Invalid webhook: {exc}")
 
     event_type = event["type"]
+    event_id = _object_field(event, "id")
     data_object = event["data"]["object"]
 
     try:
         if event_type == "checkout.session.completed":
-            _sync_from_checkout_session(db, data_object)
+            subscription = _sync_from_checkout_session(db, data_object)
+            emit_billing_analytics_event(
+                build_free_trial_event(
+                    subscription,
+                    checkout_session=data_object,
+                    stripe_event_id=event_id,
+                )
+            )
         elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
             _sync_from_stripe_subscription(db, data_object)
         elif event_type == "invoice.payment_succeeded":
-            stripe_subscription_id = _object_id(data_object.get("subscription"))
+            stripe_subscription_id = _object_id(_object_field(data_object, "subscription"))
             if stripe_subscription_id:
                 stripe_subscription = get_stripe_client().Subscription.retrieve(
                     stripe_subscription_id,
                     expand=["items.data.price"],
                 )
-                _sync_from_stripe_subscription(db, stripe_subscription, last_payment_status="paid")
+                subscription = _sync_from_stripe_subscription(db, stripe_subscription, last_payment_status="paid")
+                emit_billing_analytics_event(
+                    build_purchase_event(
+                        data_object,
+                        subscription=subscription,
+                        stripe_event_id=event_id,
+                    )
+                )
         elif event_type == "invoice.payment_failed":
-            stripe_subscription_id = _object_id(data_object.get("subscription"))
+            stripe_subscription_id = _object_id(_object_field(data_object, "subscription"))
             if stripe_subscription_id:
                 stripe_subscription = get_stripe_client().Subscription.retrieve(
                     stripe_subscription_id,
