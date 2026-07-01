@@ -507,6 +507,11 @@ class ChatBot:
                     "en": "I could not find sufficient information in the knowledge base to answer this question. Try specifying the topic further or referencing a specific article or regulation.",
                 }
                 answer = _no_data_fallback.get(session.session_language, _no_data_fallback["it"])
+                # Replacing the answer with a "not found" fallback without
+                # clearing citations leaves the original RAG-generated
+                # citations attached to a message that explicitly says
+                # nothing was found — actively misleading. Clear them here.
+                citations = []
         elif len(session.messages) > 4:
             drift_context = session.get_recent_context()
             drift_context = drift_context[:-1] if len(drift_context) > 1 else []

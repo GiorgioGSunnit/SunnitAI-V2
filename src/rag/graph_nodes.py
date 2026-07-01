@@ -253,10 +253,25 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
             best_name = name
             best_name_token_count = len(name_tokens)
 
-    # Require at least 2 meaningful tokens to match to avoid false positives
-    if best_score >= 2:
+    # Only scope BM25 to a single document for specific article lookup queries.
+    # General legal questions (no article reference) should search the full corpus.
+    # Require score >= 3 AND an article reference in the query to avoid false locks.
+    _has_article_ref = bool(re.search(
+        r'\bart\.?\s*\d+|articolo\s+\d+|comma\s+\d+|art\s+\d+',
+        query, re.IGNORECASE
+    ))
+    # With article reference: score >= 2 is enough to scope BM25 to that document
+    if _has_article_ref and best_score >= 2:
         logger.info(
-            "_dynamic_law_hint: matched %r id=%r (score=%d) for query %r",
+            "_dynamic_law_hint: article lookup — matched %r id=%r (score=%d) for query %r",
+            best_name, best_id, best_score, query[:60],
+        )
+        return best_id
+    # Without article reference: require score >= 4 to avoid locking BM25
+    # to a document just because its name appears in a general query
+    if not _has_article_ref and best_score >= 4:
+        logger.info(
+            "_dynamic_law_hint: strong match — matched %r id=%r (score=%d) for query %r",
             best_name, best_id, best_score, query[:60],
         )
         return best_id
@@ -307,21 +322,33 @@ def _classify_query_intent(
             '"entity_a": "...", "entity_b": "..."}\n\n'
             "Intent rules:\n"
             "- concept_in_doc: user asks about one OR two concepts within "
-            "a SINGLE named document. Use this when two concepts are being "
-            "compared but both exist within the same document "
-            "(e.g. 'differenza tra dolo e colpa nel codice penale')\n"
+            "a SINGLE named document. The document must be EXPLICITLY named "
+            "in the query. Use this ONLY when the query is clearly scoped to "
+            "that one document.\n"
+            "  Example: 'differenza tra dolo e colpa nel codice penale'\n"
             "- concept_across_docs: user compares the SAME concept across "
-            "TWO DIFFERENT documents — requires BOTH doc_a AND doc_b to be "
-            "filled (e.g. 'differenza tra responsabilità nel codice civile "
-            "e nel codice penale')\n"
+            "TWO DIFFERENT documents — requires BOTH doc_a AND doc_b.\n"
+            "  Example: 'differenza tra responsabilità nel codice civile e nel codice penale'\n"
             "- doc_comparison: user wants to compare two documents broadly "
-            "— requires BOTH doc_a AND doc_b\n"
-            "- regular: general question with no specific document reference\n\n"
-            "CRITICAL: concept_across_docs and doc_comparison require TWO "
-            "different documents. If only one document is mentioned, use "
-            "concept_in_doc or regular.\n"
-            "Only match doc_a/doc_b if the document name clearly appears "
-            "in the query. Do not guess. If unsure, use intent: regular."
+            "— requires BOTH doc_a AND doc_b.\n"
+            "- regular: use this for ALL other cases, including:\n"
+            "  * general legal questions with no specific document named\n"
+            "  * cross-domain queries (e.g. criminal + civil/regulatory topics together)\n"
+            "  * queries that mention a legal topic that appears in a document name "
+            "but are asking a general question (e.g. 'conseguenze penali per chi "
+            "viola la privacy' — do NOT lock to GDPR, use regular)\n"
+            "  * any query where you are uncertain\n\n"
+            "CRITICAL RULES:\n"
+            "1. concept_across_docs and doc_comparison require TWO different documents "
+            "explicitly named in the query.\n"
+            "2. concept_in_doc requires the document name to appear EXPLICITLY in the "
+            "query — do NOT infer it from topic keywords alone.\n"
+            "3. Cross-domain queries (combining criminal law with civil/regulatory topics, "
+            "or asking about consequences across multiple legal areas) must use 'regular' "
+            "so all relevant documents are searched.\n"
+            "4. When in doubt, always use 'regular'. A wrong 'concept_in_doc' gives "
+            "incomplete answers; 'regular' always gives complete answers.\n"
+            "5. Leave doc_a and doc_b as empty strings for 'regular' intent."
         )
 
         from openai import OpenAI
@@ -743,11 +770,29 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         retrieval_keywords = [r for r in doc_refs if r not in existing] + llm_keywords
     else:
         retrieval_keywords = llm_keywords
+
+    # Keyword-derived article references: the keyword-extraction LLM often
+    # correctly names a specific article (e.g. "art. 575 c.p.") even when
+    # the user's own query text has no number in it (e.g. "omicidio doloso").
+    # _extract_article_references only scans the raw query, missing these —
+    # so we also scan the extracted keywords themselves and surface any
+    # article numbers found, for article_router to use as a fallback.
+    keyword_article_refs: List[tuple] = []
+    _seen_kw_articles: Set[str] = set()
+    for kw in retrieval_keywords:
+        for pat in _ARTICLE_PATTERNS:
+            for m in pat.finditer(kw):
+                number = m.group(1)
+                if number not in _seen_kw_articles:
+                    _seen_kw_articles.add(number)
+                    keyword_article_refs.append((number, m.group(0).strip()))
+
     log_cypher_event(
         "a_keywords",
         "extracted keywords",
         detail=retrieval_keywords,
     )
+    logger.info("DEBUG retrieval_keywords=%r keyword_article_refs=%r", retrieval_keywords, keyword_article_refs)
 
     # Step 3: Validate and normalize the extracted graph
     raw_graph = entities_payload.graph
@@ -878,6 +923,7 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         **state,
         "generalized_query": generalized,
         "retrieval_keywords": retrieval_keywords,
+        "keyword_article_refs": keyword_article_refs,
         "document_references": doc_refs,
         "entities": processed_entities,
         "extracted_relationships": final_relationships,
@@ -901,7 +947,74 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     user_id = state.get("user_id") or ""
     tenant_id = state.get("tenant_id") or ""
     article_refs = _extract_article_references(query)
+
+    # Fallback: the raw query may name a concept ("omicidio doloso") with no
+    # number, while the keyword-extraction LLM (run earlier in decompose_query)
+    # correctly identified the specific article it maps to (e.g. "art. 575
+    # c.p."). Use that as a second source of article references before giving
+    # up on the exact-match path entirely.
+    used_keyword_fallback = False
+    if not article_refs:
+        kw_refs = state.get("keyword_article_refs") or []
+        if kw_refs:
+            article_refs = kw_refs
+            used_keyword_fallback = True
+
     law_hint = _dynamic_law_hint(query, driver, database)
+
+    # Dedicated, single-purpose article lookup — deterministic fallback when
+    # neither the raw query nor the shared keyword-extraction step surfaced
+    # a number. This is a focused LLM call with ONE job (name the article),
+    # not competing with 4 other extraction slots, so it is far less likely
+    # to skip the number than the general keyword-extraction prompt.
+    #
+    # SCOPE GUARD: only attempt this for queries whose phrasing signals a
+    # specific crime/penalty/single-provision question. Broad conceptual
+    # questions ("cosa prevede", "requisiti di", "differenze tra") often
+    # span multiple articles and must NOT be force-narrowed to one — doing
+    # so produced a wrong, overconfident answer in testing (e.g. contract
+    # validity question incorrectly narrowed to a single unrelated article).
+    _single_provision_signal = bool(re.search(
+        r'\b(pena\s+per|pene\s+per|reato\s+di|conseguenze\s+del|conseguenze\s+penali\s+per\s+il\s+reato|'
+        r'sanzioni\s+per|punito\s+con|punizione\s+per|delitto\s+di)\b',
+        query, re.IGNORECASE
+    ))
+    if not article_refs and _single_provision_signal:
+        try:
+            _lookup_system = (
+                "Sei un esperto di diritto penale e civile italiano. "
+                "Data una domanda su un reato o istituto giuridico, rispondi "
+                "SOLO con il numero dell'articolo del Codice Penale o Civile "
+                "italiano che lo disciplina principalmente. "
+                "Esempio: per 'omicidio doloso' rispondi '575'. "
+                "Per 'truffa' rispondi '640'. "
+                "Se non sei certo o la domanda non riguarda un singolo "
+                "articolo specifico, rispondi 'NESSUNO'. "
+                "Rispondi SOLO con il numero o 'NESSUNO', nient'altro."
+            )
+            _lookup_raw = _call_chat(
+                [SystemMessage(content=_lookup_system), HumanMessage(content=query)],
+                max_tokens=10,
+            ).strip()
+            _lookup_match = re.match(r'^(\d+(?:-(?:bis|ter|quater|quinquies))?)\b', _lookup_raw)
+            if _lookup_match:
+                _num = _lookup_match.group(1)
+                article_refs = [(_num, f"art. {_num}")]
+                used_keyword_fallback = True
+                # Scope to the document already identified by
+                # _classify_query_intent in decompose_query (e.g. "Codice
+                # Penale 2026"), if available — otherwise this dedicated
+                # lookup's results match the article number across EVERY
+                # document in the corpus, which is wrong (the same article
+                # number means different things in different codes).
+                if not law_hint:
+                    law_hint = state.get("law_hint_doc_id") or ""
+                logger.info(
+                    "[article_router] dedicated lookup found article %r for query %r, scoped to %r",
+                    _num, query[:60], law_hint,
+                )
+        except Exception as exc:
+            logger.warning("[article_router] dedicated lookup failed: %s", exc)
 
     if not article_refs:
         vlog("article_router", {"article_refs_found": [], "law_hint": law_hint, "results_found": 0})
@@ -957,6 +1070,42 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     "[article_router] merged fragments: %d raw rows → %d sections",
                     sum(1 for row in data), len(data),
                 )
+
+                # Prefer the single clean base node when one exists and is
+                # the only node found (mirrors the base-detection heuristic
+                # in post_process.py for title grounding).
+                if len(data) > 1:
+                    _exact = [
+                        row for row in data
+                        if (row.get("s") or {}).get("name") == article_number
+                    ]
+                    _zero_zero = [
+                        row for row in data
+                        if (row.get("s") or {}).get("name") == f"{article_number}.0.0"
+                    ]
+                    if _exact:
+                        data = _exact
+                    elif len(data) == 1 and _zero_zero:
+                        data = _zero_zero
+
+                # When multiple genuinely distinct fragments remain (e.g. art.
+                # 640's base crime plus 10 real aggravating-circumstance
+                # variants), they are not safe to merge or arbitrarily drop —
+                # but dumping all of them is noisy when the user asked a
+                # general question that only the base provision answers.
+                # Rerank them against the actual query using the same
+                # reranker trusted elsewhere in this pipeline, and keep only
+                # the top-scoring fragments — this is relevance filtering,
+                # not content loss, since the reranker score reflects how
+                # well each fragment actually answers THIS question.
+                if len(data) > 3:
+                    _reranked = rerank_results(query, data, top_k=4)
+                    if _reranked:
+                        data = _reranked
+                        logger.info(
+                            "[article_router] reranked %d fragments for art. %s down to %d relevant",
+                            len(data), article_number, len(_reranked),
+                        )
         except Neo4jError as exc:
             logger.warning("[article_router] Cypher failed for ref=%r: %s", article_ref, exc)
             continue
@@ -968,6 +1117,11 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 
         if data:
             enriched = _enrich_with_source_metadata(data)
+            logger.info(
+                "[article_router] matched via %s: article_ref=%r, %d rows",
+                "keyword-derived reference" if used_keyword_fallback else "query text",
+                article_ref, len(data),
+            )
             return {
                 "article_router_fired": True,
                 "article_refs_found": all_refs,
@@ -1307,7 +1461,36 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                      _dynamic_law_hint(original_query, driver, database))
     _BM25_SCORE_THRESHOLD = 5.0 if bm25_doc_hint else 8.5
     if bm25_doc_hint:
-        bm25_query = original_query
+        # Use retrieval_keywords instead of full query when scoped to one document.
+        # Full query contains stop words ("quali", "sono", "le", "secondo") that
+        # match everywhere in the corpus, drowning out the specific legal term.
+        # Keywords (e.g. "truffa", "640", "frode") give much more precise results.
+        _kw = state.get("retrieval_keywords") or []
+        if _kw:
+            # For single-document scoped BM25, use ONLY the most domain-specific term.
+            # Common legal words like "pene", "condanna", "reato" match everywhere.
+            # We want the specific crime/concept name (e.g. "truffa", "omicidio").
+            _it_stops = {
+                "di", "del", "della", "dei", "degli", "delle", "il", "lo", "la",
+                "i", "gli", "le", "un", "uno", "una", "e", "o", "a", "da", "in",
+                "con", "su", "per", "tra", "fra", "al", "dal", "nel", "sul",
+                "che", "non", "si", "è", "ha", "sono", "era", "ai", "alle",
+                "come", "se", "ma", "anche", "secondo", "previste", "previsto",
+                # Common legal words that appear everywhere — too broad for scoped BM25
+                "pene", "pena", "reato", "delitto", "articolo", "comma", "codice",
+                "penale", "civile", "legge", "decreto", "norma", "disposizione",
+                "condanna", "sanzione", "sanzioni", "procedura", "processo",
+            }
+            _words = []
+            for phrase in _kw:
+                for word in phrase.lower().split():
+                    w = re.sub(r'[^\w]', '', word)
+                    if w and len(w) > 3 and w not in _it_stops and w not in _words:
+                        _words.append(w)
+            # Use only the 2 most specific terms — fewer terms = more precise BM25
+            bm25_query = " ".join(_words[:2]) if _words else original_query
+        else:
+            bm25_query = original_query
     else:
         _kw = state.get("retrieval_keywords") or []
         bm25_query = " ".join(_kw) if _kw else (
@@ -2882,6 +3065,7 @@ def _extract_citations(
                     "name": name,
                     "title": sec["title"],
                     "plain_text": sec["plain_text"],
+                    "score": sec.get("score"),
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
                         f"sections/{urllib.parse.quote(name, safe='')}"
@@ -2970,7 +3154,7 @@ def _format_for_reranker(row: dict) -> str:
     return " | ".join(parts)
 
 
-def rerank_results(query: str, rows: list, top_k: int = 8) -> list:
+def rerank_results(query: str, rows: list, top_k: int = 12) -> list:
     """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
     if not _RERANKER_ENABLED or not rows:
         return rows
@@ -3109,19 +3293,46 @@ _GAP_PHRASES = [
 ]
 
 
+# Structural pattern catching gap-acknowledgment phrasings the model invents
+# that aren't on the literal _GAP_PHRASES list (e.g. "non ho trovato
+# informazioni sufficienti", a real production case the literal list missed).
+# Matches the SHAPE of an "I found nothing" sentence rather than exact
+# wording: a negation + a finding/information verb + an information noun,
+# optionally followed by a qualifier like "sufficienti", "specifiche", or
+# a reference to "documenti"/"database"/"fonti".
+_GAP_STRUCTURAL_PATTERN = re.compile(
+    r'\bnon\s+(?:ho\s+trovato|trovo|ho|sono\s+riuscito\s+a\s+trovare|'
+    r'sono\s+stat[oi]\s+in\s+grado\s+di\s+trovare)\s+'
+    r'(?:informazioni|dati|documentazione|dettagli)\b'
+    r'.{0,40}'
+    r'(?:sufficient\w*|specific\w*|necessari\w*|nei?\s+documenti|nel\s+database|'
+    r'nella\s+base|nelle?\s+fonti)?',
+    re.IGNORECASE,
+)
+
+
 def _is_primary_gap_response(answer: str) -> bool:
     """True only when the answer is primarily a gap acknowledgment.
 
-    Finds the earliest gap phrase occurrence across all phrases, then checks
-    whether it falls within the first min(150, max(100, 15%)) of the answer. Trailing
-    disclaimers after substantive content never fire; only opening gap sentences do.
+    Checks both a structural regex pattern (catches phrasings the model
+    invents that don't match the literal phrase list — e.g. "non ho trovato
+    informazioni sufficienti") and the literal _GAP_PHRASES list, then
+    verifies the earliest match falls within the first min(150, max(100,
+    15%)) of the answer. Trailing disclaimers after substantive content
+    never fire; only opening gap sentences do.
     """
     answer_lower = answer.lower()
     earliest_idx = len(answer)
+
+    _struct_match = _GAP_STRUCTURAL_PATTERN.search(answer_lower)
+    if _struct_match:
+        earliest_idx = min(earliest_idx, _struct_match.start())
+
     for phrase in _GAP_PHRASES:
         idx = answer_lower.find(phrase)
         if idx != -1:
             earliest_idx = min(earliest_idx, idx)
+
     if earliest_idx == len(answer):
         return False
     threshold = min(150, max(100, int(len(answer) * 0.15)))
@@ -3388,25 +3599,40 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # Also add base article numbers (e.g. "124" from "124.0.0")
     answer_article_refs |= {ref.split('.')[0] for ref in answer_article_refs}
 
-    if answer_article_refs and not state.get("is_comparison"):
-        def _section_referenced_in_answer(section: dict, doc_id: str) -> bool:
-            name = (section.get('name') or '').lower().replace(' ', '')
-            base_name = name.split('.')[0]
-            if name in answer_article_refs or base_name in answer_article_refs:
+    # Reranker-score-based citation filter.
+    # Trust the reranker's semantic relevance score rather than keyword matching.
+    # Sections with score >= 0.5 are always included.
+    # Sections with score 0.3-0.5 are included only if article number also in answer.
+    # Sections with score < 0.3 are excluded (noise).
+    # BM25 article-lookup sections bypass the filter entirely (already highly targeted).
+    if not state.get("is_comparison"):
+        def _section_passes_quality(section: dict, doc_id: str) -> bool:
+            # BM25 article lookup — always include
+            if doc_id in bm25_doc_ids and state.get("bm25_from_article_lookup"):
                 return True
-            if doc_id in bm25_doc_ids:
+            score = section.get("score")
+            if score is None:
+                # No reranker score — fall back to article reference check
+                name = (section.get('name') or '').lower().replace(' ', '')
+                base_name = name.split('.')[0]
+                return name in answer_article_refs or base_name in answer_article_refs
+            if score >= 0.5:
                 return True
+            if score >= 0.3:
+                # Medium confidence — only include if article number in answer
+                name = (section.get('name') or '').lower().replace(' ', '')
+                base_name = name.split('.')[0]
+                return name in answer_article_refs or base_name in answer_article_refs
             return False
 
         filtered = [
             {**c, 'sections': [
                 s for s in c['sections']
-                if _section_referenced_in_answer(s, c.get('document_id', ''))
+                if _section_passes_quality(s, c.get('document_id', ''))
             ]}
             for c in citations
         ]
-        # Only apply if filter keeps at least 1 section — avoids wiping all citations
-        # when answer doesn't use article references explicitly
+        # Only apply if filter keeps at least 1 section
         if any(fc['sections'] for fc in filtered):
             citations = [c for c in filtered if c['sections']]
 

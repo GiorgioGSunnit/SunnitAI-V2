@@ -78,6 +78,7 @@ class AgentState(TypedDict, total=False):
     query_variants: List[str]
     article_router_fired: Optional[bool]
     article_refs_found: List[str]
+    keyword_article_refs: List[tuple]
     bm25_doc_ids: List[str]
     bm25_from_article_lookup: Optional[bool]
     law_hint_doc_id: Optional[str]
