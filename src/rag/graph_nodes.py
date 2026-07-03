@@ -1192,6 +1192,7 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     _article_law_hint = _row["id"]
         try:
             with driver.session(database=database) as session:
+                # Primary search: exact match or standard sub-node prefix
                 records = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
                     "WHERE (s.name = $article_number OR s.name STARTS WITH $article_number + '.')\n"
@@ -1204,7 +1205,40 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     user_id=user_id,
                     tenant_id=tenant_id,
                 )
-                data = [record.data() for record in records]
+                primary_data = [record.data() for record in records]
+
+                # Fallback: prefixed names (e.g. "raccolte_usi.9.0.0") —
+                # only used when primary search returns nothing, to avoid
+                # false matches on sub-nodes of other articles (e.g. "87.9")
+                if not primary_data:
+                    # Match prefixed section names like "raccolte_usi.9.0.0".
+                    # Starts with lowercase letter (rules out "87.9.0").
+                    # After the article number: either end of string or a dot
+                    # followed by anything — prevents matching "foo.91.0" when
+                    # searching for article 9. Verified in Neo4j regex engine.
+                    _prefixed_pattern = f"^[a-z][a-z0-9_]*[.]{article_number}([.].*)?$"
+                    records_fallback = session.run(
+                        "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
+                        "WHERE s.name =~ $pattern\n"
+                        "AND ($law_hint = '' OR d.id = $law_hint)\n"
+                        f"AND {_visibility_filter()}\n"
+                        "RETURN d, s LIMIT 15",
+                        pattern=_prefixed_pattern,
+                        article_ref=article_ref,
+                        article_number=article_number,
+                        law_hint=_article_law_hint,
+                        user_id=user_id,
+                        tenant_id=tenant_id,
+                    )
+                    records = records_fallback
+                else:
+                    # Wrap primary_data back into an iterable the downstream
+                    # code can call .data() on — store result directly
+                    pass
+                if primary_data:
+                    data = primary_data
+                else:
+                    data = [record.data() for record in records]
                 data = [{k: _node_to_dict(v) for k, v in row.items()} for row in data]
                 for row in data:
                     row["_source"] = "bm25"
