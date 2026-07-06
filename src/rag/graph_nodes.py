@@ -1024,7 +1024,11 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             article_refs = kw_refs
             used_keyword_fallback = True
 
-    law_hint = _dynamic_law_hint(query, driver, database)
+    # Prefer the document already identified by _classify_query_intent
+    # (set in decompose_query). Only fall back to _dynamic_law_hint when
+    # the classifier didn't identify a document — avoids wrong-codice matches
+    # e.g. "articolo 90 del codice penale" matching "Codice di procedura penale"
+    law_hint = state.get("law_hint_doc_id") or _dynamic_law_hint(query, driver, database)
 
     # Dedicated, single-purpose article lookup — deterministic fallback when
     # neither the raw query nor the shared keyword-extraction step surfaced
