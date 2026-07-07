@@ -381,6 +381,47 @@ def get_tenant_invite_code(tenant_id: str) -> Optional[str]:
         _release(conn)
 
 
+def update_user_credentials(
+    user_id: str,
+    current_password: str,
+    new_password: Optional[str] = None,
+    username: Optional[str] = None,
+) -> Optional[dict]:
+    """Verify current password then update password and/or display_name."""
+    from .auth import verify_password, hash_password
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT hashed_password FROM users WHERE id = %s", (user_id,))
+            row = cur.fetchone()
+        if not row:
+            return None
+        if not verify_password(current_password, row[0]):
+            raise ValueError("current_password_invalid")
+        if new_password:
+            if len(new_password) < 8:
+                raise ValueError("new_password_too_short")
+            hashed = hash_password(new_password)
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET hashed_password = %s, updated_at = NOW() WHERE id = %s",
+                    (hashed, user_id),
+                )
+        if username is not None:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE user_profiles SET display_name = %s WHERE user_id = %s",
+                    (username, user_id),
+                )
+        conn.commit()
+        return get_user_by_id(user_id)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        _release(conn)
+
+
 def update_user_profile(
     user_id: str,
     first_name: Optional[str] = None,

@@ -61,7 +61,7 @@ from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
     get_user_document_for_generation, create_studio_and_admin,
     create_user_with_invite, get_tenant_invite_code, update_user_profile,
-    get_user_settings)
+    update_user_credentials, get_user_settings)
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +274,12 @@ class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     professional_title: Optional[str] = None
     phone: Optional[str] = None
+
+
+class CredentialsUpdateRequest(BaseModel):
+    current_password: str
+    new_password: Optional[str] = None
+    username: Optional[str] = None
 
 
 class RegisterStudioRequest(BaseModel):
@@ -568,6 +574,33 @@ async def update_me(
                 seats_used=seats_used,
             ),
         )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/auth/me/credentials")
+async def update_credentials(
+    request: CredentialsUpdateRequest,
+    current_user: dict = Depends(require_user),
+):
+    if not request.new_password and request.username is None:
+        raise HTTPException(status_code=400, detail="Provide new_password and/or username")
+    try:
+        user = update_user_credentials(
+            user_id=current_user["sub"],
+            current_password=request.current_password,
+            new_password=request.new_password,
+            username=request.username,
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"ok": True}
+    except ValueError as e:
+        if "current_password_invalid" in str(e):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        if "new_password_too_short" in str(e):
+            raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
