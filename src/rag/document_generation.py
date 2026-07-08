@@ -9,6 +9,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import _call_chat
@@ -1933,14 +1934,6 @@ def _build_system_template_prompt(entry: Dict[str, Any], lang: str) -> str:
     else:
         lang_instruction = ""
 
-    # Extract section headings only — don't pass skeleton content verbatim
-    # to avoid the LLM treating it as a fill-in-the-blanks form
-    section_headings_text = "\n".join(
-        f"- {s['heading']}"
-        for s in sections
-        if s.get("heading") and s["heading"] != "Campi strutturati"
-    )
-
     return (
         f"Sei un avvocato esperto di diritto processuale italiano con almeno 20 anni di esperienza. "
         f"Devi redigere un atto giuridico italiano completo e professionale del tipo '{label}' "
@@ -1985,9 +1978,16 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Campos requeridos: {json.dumps(fields, ensure_ascii=False)}\n"
             "Reglas:\n"
             "- Si un valor está explícitamente mencionado en el mensaje, úsalo exactamente\n"
-            "- Si un valor NO está explícitamente mencionado en el mensaje, usa cadena vacía \"\"\n"
-            "- NO deduzcas, NO asumas, NO inventes valores — solo lo que está escrito literalmente\n"
-            "- Datos como fechas, importes, códigos fiscales, direcciones: solo si están explícitamente presentes\n"
+            "- Deduce valores clara e inequívocamente deducibles del contexto "
+            "(ej: si el usuario escribe \"Mario Rossi como arrendatario\", asigna "
+            "\"Mario Rossi\" a cualquier campo cuyo nombre contenga \"arrendatario\"; "
+            "si tras el nombre de una persona se indica una fecha de nacimiento, "
+            "asígnala al campo de fecha de nacimiento de esa persona)\n"
+            "- Si el mensaje contiene varios sujetos con roles distintos (ej. arrendador "
+            "y arrendatario), asigna los datos de cada sujeto a los campos "
+            "correspondientes a su rol — no mezcles datos entre sujetos distintos\n"
+            "- Para los campos de fecha, normaliza al formato DD/MM/AAAA si es posible\n"
+            "- Si un valor no está presente ni es deducible, usa cadena vacía \"\"\n"
             f"Responde SOLO con el JSON, ejemplo: {{\"campo1\": \"valor1\", \"campo2\": \"\"}}"
         )
     elif lang == "en":
@@ -1997,9 +1997,15 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Required fields: {json.dumps(fields, ensure_ascii=False)}\n"
             "Rules:\n"
             "- If a value is explicitly mentioned in the message, use it exactly\n"
-            "- If a value is NOT explicitly mentioned in the message, use empty string \"\"\n"
-            "- Do NOT infer, assume, or invent values — only what is literally written\n"
-            "- Data such as dates, amounts, tax codes, addresses: only if explicitly present\n"
+            "- Infer values that are clearly and unambiguously deducible from context "
+            "(e.g. if the user writes \"Mario Rossi as tenant\", map \"Mario Rossi\" to "
+            "any field whose name contains \"tenant\"; if a birth date is given right "
+            "after a person's name, assign it to that person's birth date field)\n"
+            "- If the message contains multiple subjects with distinct roles (e.g. "
+            "landlord and tenant), assign each subject's data to the fields matching "
+            "their role — do not mix data between different subjects\n"
+            "- For date fields, normalize to DD/MM/YYYY format where possible\n"
+            "- If a value is neither present nor inferable, use empty string \"\"\n"
             f"Reply ONLY with the JSON, example: {{\"field1\": \"value1\", \"field2\": \"\"}}"
         )
     else:
@@ -2009,16 +2015,23 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Campi richiesti: {json.dumps(fields, ensure_ascii=False)}\n"
             "Regole:\n"
             "- Se un valore è esplicitamente menzionato nel messaggio, usalo esattamente\n"
-            "- Se un valore NON è esplicitamente menzionato nel messaggio, usa stringa vuota \"\"\n"
-            "- NON dedurre, NON assumere, NON inventare valori — solo ciò che è scritto letteralmente\n"
-            "- Dati come date, importi, codici fiscali, indirizzi: solo se esplicitamente presenti\n"
+            "- Deduci valori chiaramente e inequivocabilmente ricavabili dal contesto "
+            "(es. se l'utente scrive \"Mario Rossi come conduttore\", assegna \"Mario Rossi\" "
+            "a qualsiasi campo il cui nome contiene \"conduttore\"; se dopo il nome di una "
+            "persona è indicata una data di nascita, assegnala al campo data di nascita "
+            "di quella persona)\n"
+            "- Se il messaggio contiene più soggetti con ruoli distinti (es. locatore e "
+            "conduttore), assegna i dati di ciascun soggetto ai campi corrispondenti al "
+            "suo ruolo — non mescolare i dati tra soggetti diversi\n"
+            "- Per i campi data, normalizza nel formato GG/MM/AAAA se possibile\n"
+            "- Se un valore non è presente né deducibile, usa stringa vuota \"\"\n"
             f"Rispondi SOLO con il JSON, esempio: {{\"campo1\": \"valore1\", \"campo2\": \"\"}}"
         )
 
     human = f"Messaggio dell'utente:\n{user_message}"
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content=human)],
-        max_tokens=400,
+        max_tokens=800,
     )
 
     text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
@@ -2087,6 +2100,7 @@ def _fill_template_gaps(
     user_message: str,
     carta_intestata: Optional[Dict],
     lang: str,
+    session_messages: List[Dict],
 ) -> Dict[int, str]:
     """Ask the LLM to identify blanks in the template elements and fill them.
     Returns {element_index: replacement_text} — sparse, only changed elements."""
@@ -2107,13 +2121,16 @@ def _fill_template_gaps(
                 carta_parts.append(f"{label}: {val}")
     carta_text = "\n".join(carta_parts)
 
+    # Capped to stay within the max_tokens budget of the _call_chat below —
+    # each element line adds to the prompt, and the model also has to echo
+    # indices back in its JSON response.
     elements_text = "\n".join(
-        f"{e['index']}. {e['text']}" for e in elements[:300]
+        f"{e['index']}. {e['text']}" for e in elements[:600]
     )
 
     lang_note = {
-        "es": "Rellena los huecos también en italiano (no cambies el idioma del documento).",
-        "en": "Fill the blanks in Italian (do not change the document language).",
+        "es": "Rellena los espacios en español (no cambies el idioma del documento).",
+        "en": "Fill the blanks in English (do not change the document language).",
     }.get(lang, "")
 
     system = (
@@ -2126,6 +2143,9 @@ def _fill_template_gaps(
         "Regole:\n"
         "1. Identifica gli elementi con spazi vuoti.\n"
         "2. Compila usando le informazioni del messaggio utente e i dati dello studio.\n"
+        "2b. Per identificare il dato corretto, ragiona sul significato dell'etichetta "
+        "contestuale (es. 'Locatore:' indica il proprietario, 'Conduttore:' indica "
+        "l'inquilino, 'Data:' indica una data rilevante dal contesto).\n"
         f"3. Usa '{ph}' per qualsiasi dato non disponibile.\n"
         "4. Non includere elementi che non necessitano di modifica.\n"
         "5. Non inventare dati non forniti esplicitamente.\n"
@@ -2136,7 +2156,15 @@ def _fill_template_gaps(
         "è il testo completo della riga compilata (non solo il valore inserito)."
     )
 
-    human_parts = [f"Messaggio dell'utente:\n{user_message}"]
+    history = [m for m in (session_messages or []) if m.get("role") != "system"]
+    if history and history[-1].get("content") == user_message:
+        history = history[:-1]
+    history = history[-10:]
+    context_text = "\n".join(f"{m.get('role', '')}: {m.get('content', '')}" for m in history)
+
+    human_parts = [
+        f"Contesto conversazione precedente:\n{context_text}\n\nMessaggio attuale:\n{user_message}"
+    ]
     if carta_text:
         human_parts.append(
             f"Dati dello studio (per campi relativi al firmatario/studio):\n{carta_text}"
@@ -2145,7 +2173,7 @@ def _fill_template_gaps(
 
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],
-        max_tokens=2000,
+        max_tokens=4000,
     )
     text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
     try:
@@ -2153,7 +2181,10 @@ def _fill_template_gaps(
         return {int(k): str(v) for k, v in parsed.items()}
     except (json.JSONDecodeError, ValueError):
         logger.warning("_fill_template_gaps: JSON parse failed, raw=%r", raw[:200])
-        return {}
+        raise HTTPException(
+            status_code=422,
+            detail="Il modello non ha restituito un JSON valido — riprovare.",
+        )
 
 
 def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
@@ -2295,7 +2326,7 @@ def generate_document(
 
     raw_output = _call_chat(
         [SystemMessage(content=system_content), HumanMessage(content=human_content)],
-        max_tokens=2000,
+        max_tokens=4000,
     )
 
     raw_output = re.sub(r'\[[^\]]*\]', '[DA COMPILARE]', raw_output)

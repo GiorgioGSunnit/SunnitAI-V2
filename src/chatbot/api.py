@@ -682,7 +682,10 @@ async def generate_from_user_template(
         if not elements:
             raise HTTPException(status_code=422, detail="Could not extract any text from the template")
 
-        fill_map = _fill_template_gaps(elements, request.message, carta_intestata, session_lang)
+        session_messages = [{"role": m.role, "content": m.content} for m in session.messages]
+        fill_map = _fill_template_gaps(
+            elements, request.message, carta_intestata, session_lang, session_messages
+        )
 
         if is_pdf:
             docx_bytes = _build_docx_from_pdf_elements(elements, fill_map)
@@ -1462,7 +1465,9 @@ def _detect_document_intent(message: str) -> list:
     return result
 
 
-def _classify_doc_intent(message: str, session_lang: str) -> str:
+def _classify_doc_intent(
+    message: str, session_lang: str, filename: str = "", default: str = "rag"
+) -> str:
     """
     Given a message that references an uploaded document, decide whether the
     user wants to:
@@ -1492,16 +1497,19 @@ def _classify_doc_intent(message: str, session_lang: str) -> str:
         "- 'rag' se la menzione del file è incidentale e la domanda riguarda altro\n"
         "Rispondi SOLO con una di queste tre parole."
     )
+    _human = message
+    if filename:
+        _human += f"\nNome file: {filename}"
     try:
         result = _call_chat(
-            [SystemMessage(content=system), HumanMessage(content=message)],
+            [SystemMessage(content=system), HumanMessage(content=_human)],
             max_tokens=5,
         ).strip().lower()
         if result in ("analyse", "generate", "rag"):
             return result
     except Exception:
         pass
-    return "rag"
+    return default
 
 
 def _classify_top_level_intent(message: str, session_lang: str) -> str:
@@ -2037,7 +2045,12 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
                 # ── ONE DOC → analyse or generate ─────────────────────────
                 _matched_doc = _matched_docs[0]
-                doc_intent = _classify_doc_intent(request.message, _session_lang)
+                doc_intent = _classify_doc_intent(
+                    request.message,
+                    _session_lang,
+                    filename=_matched_doc.original_filename,
+                    default="analyse" if getattr(_matched_doc, "document_role", "document") == "document" else "rag",
+                )
 
                 if doc_intent == "generate":
                     # Fall through to generation path — FE picker handles it
