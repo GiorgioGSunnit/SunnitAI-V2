@@ -18,6 +18,7 @@ from ..auth import (
     create_access_token,
     decode_access_token
 )
+from ..analytics import build_sign_up_event, emit_billing_analytics_event
 from ..billing import serialize_subscription, subscription_is_active
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -157,6 +158,8 @@ def register(request: RegisterRequest, db: Session = Depends(get_db)):
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
+
+    emit_billing_analytics_event(build_sign_up_event(admin, tenant=tenant))
 
     return {
         "message": "Registration successful",

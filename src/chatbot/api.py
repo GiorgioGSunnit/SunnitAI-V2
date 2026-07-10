@@ -56,6 +56,7 @@ from ..rag.graph_nodes import _extract_citations
 from ..rag.prompts import legal_consultant_system_prefix, _LENGTH
 from langchain_core.messages import SystemMessage, HumanMessage
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
+from .analytics import build_sign_up_event, emit_billing_analytics_event
 from .billing import enforce_tenant_product_access, serialize_subscription
 from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
@@ -143,11 +144,13 @@ from .routes.totp import router as totp_router
 from .routes.users import router as users_router
 from .routes.documents import router as documents_router
 from .routes.billing import router as billing_router
+from .tracking_ws import router as tracking_router
 app.include_router(auth_router, prefix="/api")
 app.include_router(totp_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(billing_router, prefix="/api")
+app.include_router(tracking_router, prefix="/api")
 
 chatbot = ChatBot()
 
@@ -477,6 +480,7 @@ async def register_studio(request: RegisterStudioRequest):
         "role": user["role"],
         "tenant_id": user["tenant_id"],
     })
+    emit_billing_analytics_event(build_sign_up_event(user))
     return RegisterStudioResponse(
         access_token=token,
         user_id=user["id"],
@@ -508,6 +512,7 @@ async def register_user(request: RegisterUserRequest):
         "role": user["role"],
         "tenant_id": user["tenant_id"],
     })
+    emit_billing_analytics_event(build_sign_up_event(user))
     return AuthResponse(
         access_token=token,
         user_id=user["id"],

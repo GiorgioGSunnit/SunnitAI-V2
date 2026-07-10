@@ -1,24 +1,12 @@
-import json
 import logging
-import os
 from collections.abc import Mapping
 from typing import Any, Optional
-from urllib import error, request
+
+from .tracking_ws import queue_tracking_event
 
 logger = logging.getLogger(__name__)
 
-EVENT_WEBHOOK_URL_ENV_NAMES = ("GTM_EVENT_WEBHOOK_URL", "ANALYTICS_EVENT_WEBHOOK_URL")
-EVENT_WEBHOOK_SECRET_ENV = "GTM_EVENT_WEBHOOK_SECRET"
-EVENT_WEBHOOK_TIMEOUT_ENV = "GTM_EVENT_WEBHOOK_TIMEOUT_SECONDS"
 DEFAULT_CURRENCY = "EUR"
-
-
-def _first_env(names: tuple[str, ...]) -> str:
-    for name in names:
-        value = os.getenv(name, "").strip()
-        if value:
-            return value
-    return ""
 
 
 def _stripe_value(obj: Any, key: str, default: Any = None) -> Any:
@@ -86,6 +74,23 @@ def _optional_str(value: Any) -> Optional[str]:
     if value is None or value == "":
         return None
     return str(value)
+
+
+def build_sign_up_event(
+    user: Any,
+    *,
+    tenant: Any = None,
+    method: str = "account",
+) -> dict[str, Any]:
+    return _clean_payload(
+        {
+            "event": "sign_up",
+            "method": method,
+            "tenant_id": _optional_str(_stripe_value(tenant, "id") or _stripe_value(user, "tenant_id")),
+            "user_id": _optional_str(_stripe_value(user, "id")),
+            "role": _stripe_value(user, "role"),
+        }
+    )
 
 
 def build_free_trial_event(
@@ -224,39 +229,13 @@ def build_purchase_event(
     )
 
 
-def _webhook_timeout_seconds() -> float:
-    raw = os.getenv(EVENT_WEBHOOK_TIMEOUT_ENV, "2").strip()
-    try:
-        return max(0.1, float(raw))
-    except ValueError:
-        return 2.0
-
-
 def emit_billing_analytics_event(payload: Optional[dict[str, Any]]) -> bool:
     if not payload:
         return False
 
-    endpoint = _first_env(EVENT_WEBHOOK_URL_ENV_NAMES)
-    if not endpoint:
-        logger.info("Billing analytics event skipped: no GTM_EVENT_WEBHOOK_URL configured")
+    user_id = payload.get("user_id")
+    if not user_id:
+        logger.info("Billing analytics event skipped: payload has no user_id")
         return False
 
-    body = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": "astrea-billing-webhook/1.0",
-    }
-    secret = os.getenv(EVENT_WEBHOOK_SECRET_ENV, "").strip()
-    if secret:
-        headers["Authorization"] = f"Bearer {secret}"
-
-    outbound_request = request.Request(endpoint, data=body, headers=headers, method="POST")
-    try:
-        with request.urlopen(outbound_request, timeout=_webhook_timeout_seconds()) as response:
-            if response.status >= 400:
-                logger.warning("Billing analytics event rejected with status %s", response.status)
-                return False
-            return True
-    except (OSError, error.URLError, error.HTTPError) as exc:
-        logger.warning("Billing analytics event delivery failed: %s", exc)
-        return False
+    return queue_tracking_event(user_id, payload)

@@ -1,5 +1,4 @@
 import asyncio
-import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -9,9 +8,63 @@ import stripe
 from src.chatbot.analytics import (
     build_free_trial_event,
     build_purchase_event,
+    build_sign_up_event,
     emit_billing_analytics_event,
 )
+from src.chatbot.routes import auth as auth_routes
 from src.chatbot.routes import billing as billing_routes
+
+
+def test_build_sign_up_event_uses_account_method_without_pii():
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant = SimpleNamespace(id=tenant_id)
+    user = SimpleNamespace(id=user_id, tenant_id=tenant_id, role="admin", email="admin@example.com")
+
+    payload = build_sign_up_event(user, tenant=tenant)
+
+    assert payload == {
+        "event": "sign_up",
+        "method": "account",
+        "tenant_id": str(tenant_id),
+        "user_id": str(user_id),
+        "role": "admin",
+    }
+
+
+def test_auth_register_queues_sign_up_account_event(monkeypatch):
+    tenant_id = uuid.uuid4()
+    user_id = uuid.uuid4()
+    tenant = SimpleNamespace(id=tenant_id)
+    admin = SimpleNamespace(id=user_id, tenant_id=tenant_id, email="admin@example.com", role="admin")
+    captured = []
+
+    monkeypatch.setattr(
+        auth_routes.crud,
+        "register_tenant_with_admin",
+        lambda **_kwargs: (tenant, admin),
+    )
+    monkeypatch.setattr(
+        auth_routes,
+        "emit_billing_analytics_event",
+        lambda payload: captured.append(payload) or True,
+    )
+
+    response = auth_routes.register(
+        auth_routes.RegisterRequest(email="admin@example.com", password="secret", company_name="Studio"),
+        db=SimpleNamespace(),
+    )
+
+    assert response["user_id"] == str(user_id)
+    assert captured == [
+        {
+            "event": "sign_up",
+            "method": "account",
+            "tenant_id": str(tenant_id),
+            "user_id": str(user_id),
+            "role": "admin",
+        }
+    ]
 
 
 def test_build_free_trial_event_uses_webhook_subscription_state():
@@ -123,36 +176,24 @@ def test_build_purchase_event_ignores_zero_value_trial_invoice():
     assert build_purchase_event({"id": "in_trial", "amount_paid": 0}) is None
 
 
-def test_emit_billing_analytics_event_posts_configured_webhook(monkeypatch):
+def test_emit_billing_analytics_event_queues_for_payload_user_id(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        status = 204
+    def fake_queue_tracking_event(user_id, payload):
+        captured["user_id"] = user_id
+        captured["payload"] = payload
+        return True
 
-        def __enter__(self):
-            return self
+    monkeypatch.setattr("src.chatbot.analytics.queue_tracking_event", fake_queue_tracking_event)
 
-        def __exit__(self, *_args):
-            return False
+    payload = {"event": "free_trial", "user_id": "user_123"}
 
-    def fake_urlopen(outbound_request, timeout):
-        captured["url"] = outbound_request.full_url
-        captured["body"] = json.loads(outbound_request.data.decode("utf-8"))
-        captured["authorization"] = outbound_request.headers.get("Authorization")
-        captured["timeout"] = timeout
-        return FakeResponse()
+    assert emit_billing_analytics_event(payload) is True
+    assert captured == {"user_id": "user_123", "payload": payload}
 
-    monkeypatch.setenv("GTM_EVENT_WEBHOOK_URL", "https://gtm.example.com/events")
-    monkeypatch.setenv("GTM_EVENT_WEBHOOK_SECRET", "secret")
-    monkeypatch.setattr("src.chatbot.analytics.request.urlopen", fake_urlopen)
 
-    assert emit_billing_analytics_event({"event": "free_trial"}) is True
-    assert captured == {
-        "url": "https://gtm.example.com/events",
-        "body": {"event": "free_trial"},
-        "authorization": "Bearer secret",
-        "timeout": 2.0,
-    }
+def test_emit_billing_analytics_event_skips_payload_without_user_id():
+    assert emit_billing_analytics_event({"event": "free_trial"}) is False
 
 
 def test_stripe_webhook_emits_free_trial_from_checkout_completed(monkeypatch):
