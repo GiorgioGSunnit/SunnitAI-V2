@@ -76,23 +76,6 @@ def _optional_str(value: Any) -> Optional[str]:
     return str(value)
 
 
-def build_sign_up_event(
-    user: Any,
-    *,
-    tenant: Any = None,
-    method: str = "account",
-) -> dict[str, Any]:
-    return _clean_payload(
-        {
-            "event": "sign_up",
-            "method": method,
-            "tenant_id": _optional_str(_stripe_value(tenant, "id") or _stripe_value(user, "tenant_id")),
-            "user_id": _optional_str(_stripe_value(user, "id")),
-            "role": _stripe_value(user, "role"),
-        }
-    )
-
-
 def build_free_trial_event(
     subscription: Any,
     *,

@@ -26,16 +26,16 @@ def teardown_function():
 def test_tracking_websocket_delivers_queued_event_for_authenticated_user():
     user_id = "user_123"
     token = create_access_token({"sub": user_id})
-    assert queue_tracking_event(user_id, {"event": "sign_up", "user_id": user_id, "event_id": "evt_signup"})
+    assert queue_tracking_event(user_id, {"event": "free_trial", "user_id": user_id, "event_id": "evt_trial"})
 
     with _client().websocket_connect(f"/api/tracking/ws?token={token}") as websocket:
         message = websocket.receive_json()
         assert message == {
             "type": "tracking_event",
-            "payload": {"event": "sign_up", "user_id": user_id, "event_id": "evt_signup"},
+            "payload": {"event": "free_trial", "user_id": user_id, "event_id": "evt_trial"},
         }
 
-        websocket.send_json({"type": "ack", "event_id": "evt_signup"})
+        websocket.send_json({"type": "ack", "event_id": "evt_trial"})
         for _ in range(20):
             if tracking_hub.pending_count(user_id) == 0:
                 break
