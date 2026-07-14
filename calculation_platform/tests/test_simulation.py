@@ -39,6 +39,14 @@ def test_extract_values_finds_period_dates():
     assert values["period"] == {"start_date": "2025-10-01", "end_date": "2026-03-31"}
 
 
+def test_extract_values_keeps_dates_in_appearance_order():
+    # The period pair is sorted, but binding to date inputs must follow the
+    # sentence's own order ("scadenza X pagamento Y" == declaration order).
+    values = extract_values("scadenza 2026-07-01 pagamento 2026-06-16")
+    assert values["dates"] == ["2026-07-01", "2026-06-16"]
+    assert values["period"] == {"start_date": "2026-06-16", "end_date": "2026-07-01"}
+
+
 def test_extract_values_marks_monthly_amounts_and_named_booleans():
     values = extract_values("affitto da 900 euro al mese, prima registrazione")
     assert values["numbers"] == [Decimal("900")]
@@ -148,6 +156,57 @@ def test_registration_tax_cedolare_secca_hint_sets_optional_flag():
     assert reply.kind == "answer"
     assert reply.tool_call.inputs["cedolare_secca"] is True
     assert reply.calculation.result["tax_due"] == 0.00
+
+
+# ---------------------------------------------------------------------------
+# Date-typed inputs bound from free text (ravvedimento, termini processuali)
+# ---------------------------------------------------------------------------
+
+def test_ravvedimento_one_shot_conversation():
+    reply = _conversation().send(
+        "ravvedimento operoso per 1000 euro di iva scadenza 2026-06-16 pagamento 2026-07-01"
+    )
+    assert reply.kind == "answer"
+    assert reply.tool_call.inputs["scadenza_originaria"] == "2026-06-16"
+    assert reply.tool_call.inputs["data_pagamento"] == "2026-07-01"
+    # Assert on structure and day count, not euro amounts, so the test
+    # survives parameter-table updates.
+    for key in ("totale_da_versare", "sanzione_ridotta", "interessi", "tributo"):
+        assert key in reply.calculation.result
+    assert reply.calculation.derived_values["giorni_di_ritardo"] == 15
+
+
+def test_ravvedimento_clarification_loop_completes_with_dates():
+    conversation = _conversation()
+    first = conversation.send("ravvedimento operoso per 1000 euro di iva")
+    assert first.kind == "question"
+    assert "scadenza_originaria" in first.text
+    assert "data_pagamento" in first.text
+    assert first.calculation is None  # nothing was guessed
+
+    second = conversation.send("scadenza 2026-06-16, pagato il 2026-07-01")
+    assert second.kind == "answer"
+    assert second.calculation.derived_values["giorni_di_ritardo"] == 15
+
+
+def test_termini_processuali_one_shot_conversation():
+    reply = _conversation().send("termine processuale di 30 giorni dal 2026-07-01")
+    assert reply.kind == "answer"
+    assert reply.tool_call.inputs["data_decorrenza"] == "2026-07-01"
+    assert reply.tool_call.inputs["giorni"] == 30
+    assert reply.calculation.result["scadenza"] == "2026-07-31"
+
+
+def test_ravvedimento_swapped_dates_fail_honestly():
+    # Appearance order binds as written; a payment date before the due date
+    # is the platform's structured error, relayed verbatim — never fixed up
+    # or reordered by the mimic.
+    reply = _conversation().send(
+        "ravvedimento operoso per 1000 euro scadenza 2026-07-01 pagamento 2026-06-16"
+    )
+    assert reply.kind == "no_match"
+    assert reply.calculation.status == "error"
+    assert reply.calculation.errors[0].code == "strategy_execution_failed"
 
 
 # ---------------------------------------------------------------------------

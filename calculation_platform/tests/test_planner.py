@@ -46,6 +46,45 @@ def test_legal_interest_without_period_needs_clarification():
     assert "YYYY-MM-DD" in plan.question
 
 
+def test_ravvedimento_one_shot_is_ready_to_calculate():
+    plan = _plan("ravvedimento operoso per 1000 euro di iva scadenza 2026-06-16 pagamento 2026-07-01")
+    assert plan.status == "ready_to_calculate"
+    assert plan.calculator_id == "legal_it.ravvedimento_operoso"
+    assert plan.inputs["tributo_non_versato"] == 1000.0
+    assert plan.inputs["scadenza_originaria"] == "2026-06-16"
+    assert plan.inputs["data_pagamento"] == "2026-07-01"
+    assert plan.missing_inputs == []
+
+
+def test_ravvedimento_without_dates_needs_clarification():
+    plan = _plan("ravvedimento operoso per 1000 euro di iva")
+    assert plan.status == "needs_clarification"
+    assert plan.calculator_id == "legal_it.ravvedimento_operoso"
+    assert plan.missing_inputs == ["scadenza_originaria", "data_pagamento"]
+
+
+def test_termini_processuali_one_shot_is_ready_to_calculate():
+    plan = _plan("termine processuale di 30 giorni dal 2026-07-01")
+    assert plan.status == "ready_to_calculate"
+    assert plan.calculator_id == "legal_it.termini_processuali_civili"
+    assert plan.inputs["data_decorrenza"] == "2026-07-01"
+    assert plan.inputs["giorni"] == 30
+    assert plan.missing_inputs == []
+
+
+def test_optional_date_inputs_are_not_auto_filled():
+    # A third date in the sentence must not be guessed into the optional
+    # termine_dichiarazione — silently filling an optional legal field is
+    # a hidden default.
+    plan = _plan(
+        "ravvedimento operoso per 1000 euro scadenza 2026-06-16 "
+        "pagamento 2026-07-01 dichiarazione 2026-10-31"
+    )
+    assert plan.status == "ready_to_calculate"
+    assert plan.calculator_id == "legal_it.ravvedimento_operoso"
+    assert "termine_dichiarazione" not in plan.inputs
+
+
 def test_vague_sentence_is_ambiguous_not_guessed():
     plan = _plan("quanto costa?")
     assert plan.status == "ambiguous"

@@ -5,7 +5,8 @@ structured tool call (calculator_id + named inputs). planner.py mimics
 that contract; this module supplies its raw extraction with fully
 deterministic, deliberately naive heuristics:
 
-  - numbers (Italian formats), a tax-year candidate, ISO date periods,
+  - numbers (Italian formats), a tax-year candidate, ISO dates (kept in
+    appearance order; the first two also offered as a sorted period),
     and yes/no words are pulled out of free text;
   - bind_values() assigns them to a calculator's still-missing required
     inputs IN DECLARATION ORDER.
@@ -83,6 +84,7 @@ def extract_values(text: str) -> Dict[str, Any]:
 
     return {
         "numbers": numbers,
+        "dates": dates,
         "tax_year": tax_year,
         "period": period,
         "boolean": boolean,
@@ -106,6 +108,7 @@ def bind_values(definition: CalculatorDefinition, inputs: Dict[str, Any], values
     order the definition declares them. Naive on purpose — see module
     docstring."""
     numbers = list(values["numbers"])
+    dates = list(values.get("dates", []))
     for spec in definition.inputs:
         if spec.name in inputs:
             continue
@@ -116,6 +119,11 @@ def bind_values(definition: CalculatorDefinition, inputs: Dict[str, Any], values
             if spec.unit == "rate" and number > 1:
                 number = number / Decimal("100")
             inputs[spec.name] = int(number) if spec.type == "integer" else number
+        elif spec.type == "date" and dates and spec.required:
+            # ISO strings, in appearance order — the platform's validator
+            # coerces them; optional date inputs (e.g. a declaration
+            # deadline) are never auto-filled, that would be a hidden guess.
+            inputs[spec.name] = dates.pop(0)
         elif spec.type == "boolean" and spec.name in values.get("boolean_hints", {}):
             inputs[spec.name] = values["boolean_hints"][spec.name]
         elif spec.type == "boolean" and spec.required and values["boolean"] is not None:
