@@ -1,0 +1,82 @@
+id: legal_it.legal_interest
+name: Interessi legali (simple interest at the legal rate)
+category: legal_it
+strategy: date_split_interest
+version: "1"
+description: >
+  Computes simple legal interest on a capital over a period, automatically
+  splitting the period into segments wherever the legal rate changes
+  within it (e.g. a period spanning a Jan-1 rate change).
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - interessi legali
+  - saggio di interesse legale
+  - legal interest
+  - simple interest
+  - interessi su capitale
+  - art 1284 codice civile
+aliases:
+  - quanti interessi maturano
+  - calcolo interessi legali
+  - interest owed on a debt
+tags:
+  - interessi
+  - capitale
+  - debito
+intent_examples:
+  - interessi legali su una somma
+  - interessi maturati su un debito
+  - calcolo degli interessi legali su un capitale
+required_context:
+  - periodo di riferimento (start_date e end_date)
+inputs:
+  - name: capital
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Capitale su cui calcolare gli interessi legali
+parameters:
+  - name: legal_interest_rate
+    parameter_id: legal_it.legal_interest_rate
+    resolver: date
+    description: Saggio di interesse legale annuo, versionato per anno
+formula:
+  capital_input: capital
+  rate_parameter_id: legal_it.legal_interest_rate
+  day_count: 365
+output:
+  name: interest
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 1284 Codice Civile — Saggio degli interessi"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+warnings: []
+assumptions:
+  - "Uses simple interest (not compound) over the exact number of calendar days in the period."
+  - "Uses a 365-day year convention (day_count), not 360."
+exclusions:
+  - "Does not apply anatocismo (compound interest on accrued interest), which requires separate legal grounds."
+examples:
+  - description: "Period entirely within 2025 (single rate segment)"
+    inputs:
+      capital: 10000
+    period:
+      start_date: "2025-06-01"
+      end_date: "2025-09-30"
+    expected_result:
+      interest: 66.85
+  - description: "Period crossing the 2025->2026 rate change (split into two segments)"
+    inputs:
+      capital: 10000
+    period:
+      start_date: "2025-10-01"
+      end_date: "2026-03-31"
+    expected_result:
+      interest: 89.86

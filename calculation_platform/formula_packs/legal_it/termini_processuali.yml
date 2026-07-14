@@ -1,0 +1,151 @@
+id: legal_it.termini_processuali_civili
+name: Termini processuali civili (computo a giorni)
+category: legal_it
+strategy: procedural_deadline
+version: "1"
+description: >
+  Calcola la scadenza di un termine processuale civile a giorni: dies a quo
+  escluso e dies ad quem incluso (art. 155 c.p.c.), termini "liberi",
+  sospensione feriale 1-31 agosto (L. 742/1969), proroga di diritto se la
+  scadenza cade di sabato, domenica o giorno festivo, e anticipazione per i
+  termini a ritroso.
+jurisdiction: IT
+keywords:
+  - termini processuali
+  - scadenza termine
+  - computo dei termini
+  - art 155 cpc
+  - sospensione feriale
+  - giorni liberi
+  - termine a ritroso
+  - procedural deadline
+aliases:
+  - scadenza del termine per l'appello
+  - data ultima per depositare un atto
+  - calcolo scadenza processuale
+  - il termine scade di sabato
+tags:
+  - termini
+  - scadenza
+  - processo
+  - deposito
+intent_examples:
+  - scadenza del termine di 30 giorni per impugnare
+  - scadenza del termine con sospensione feriale
+  - termine a ritroso di 10 giorni liberi prima dell'udienza
+negative_examples:
+  - termini di prescrizione del diritto
+  - decadenza sostanziale
+ambiguity_notes: >
+  Copre i termini processuali civili a giorni. Non copre prescrizione e
+  decadenza sostanziali, termini a mesi/anni (computati ex nominatione
+  dierum), né i riti esclusi dalla sospensione feriale.
+required_context:
+  - data di decorrenza del termine
+  - se il rito è soggetto alla sospensione feriale
+inputs:
+  - name: data_decorrenza
+    type: date
+    required: true
+    description: "Dies a quo: la data da cui il termine decorre (es. notifica, comunicazione, udienza per i termini a ritroso)"
+  - name: giorni
+    type: integer
+    required: true
+    min_value: 1
+    description: Durata del termine in giorni
+  - name: giorni_liberi
+    type: boolean
+    required: false
+    default: false
+    description: Il termine è a "giorni liberi" (esclusi sia il giorno iniziale sia quello finale)
+  - name: sospensione_feriale
+    type: boolean
+    required: false
+    default: true
+    description: Applicare la sospensione feriale 1-31 agosto (disattivare per i riti esclusi ex art. 3 L. 742/1969)
+  - name: termine_a_ritroso
+    type: boolean
+    required: false
+    default: false
+    description: Termine calcolato a ritroso da un evento futuro (es. memorie prima dell'udienza)
+parameters:
+  - name: giorni_festivi
+    parameter_id: legal_it.giorni_festivi_nazionali
+    resolver: date
+    description: Festività nazionali agli effetti civili, esplicitate per anno
+formula:
+  holidays_parameter: giorni_festivi
+  feriale:
+    start: "08-01"
+    end: "08-31"
+  saturday_rolls: true
+output:
+  name: scadenza
+citations:
+  - reference: "Art. 155 Codice di procedura civile — computo dei termini"
+    source_name: "Codice di procedura civile (R.D. 28 ottobre 1940, n. 1443)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1940-10-28;1443"
+    official: true
+  - reference: "L. 7 ottobre 1969, n. 742 — sospensione dei termini processuali nel periodo feriale"
+    source_name: "Normattiva — L. 742/1969 (testo vigente)"
+    publisher: "Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:legge:1969-10-07;742"
+    official: true
+  - reference: "Art. 16 D.L. 12 settembre 2014, n. 132, conv. L. 162/2014 — riduzione del periodo feriale a 1-31 agosto"
+    source_name: "Gazzetta Ufficiale Serie Generale n. 212 del 12/09/2014"
+    publisher: "Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "2014-09-12"
+    official: true
+warnings:
+  - >
+    Computo dei soli termini A GIORNI. I termini a mesi o anni si computano
+    ex nominatione dierum (art. 155 co. 2) e non sono coperti.
+  - >
+    Verificare sempre se il rito è escluso dalla sospensione feriale
+    (art. 3 L. 742/1969: es. cause di lavoro, alimenti, procedimenti
+    cautelari, sfratto, opposizione all'esecuzione).
+assumptions:
+  - "La proroga per il sabato (art. 155 co. 5) si applica: impostazione pensata per atti processuali civili."
+exclusions:
+  - "Santo patrono del foro (festivo solo localmente): non incluso nel calendario."
+  - "Termini a mesi o anni (computo ex nominatione dierum)."
+  - "Prescrizione e decadenza sostanziali (regole di computo diverse)."
+  - "Sospensioni straordinarie disposte per singoli uffici giudiziari (eventi eccezionali)."
+examples:
+  - description: "Appello, 30 giorni dalla notifica del 10/01/2026: dies a quo escluso"
+    inputs:
+      data_decorrenza: "2026-01-10"
+      giorni: 30
+    expected_result:
+      scadenza: "2026-02-09"
+  - description: "90 giorni dal 15/06/2026: attraversa la sospensione feriale (31 giorni non contati)"
+    inputs:
+      data_decorrenza: "2026-06-15"
+      giorni: 90
+    expected_result:
+      scadenza: "2026-10-14"
+      giorni_feriale_sospesi: 31
+  - description: "30 giorni dal 05/03/2026: scade sabato 4/4, rinvio oltre Pasqua e Pasquetta a martedì 7/4"
+    inputs:
+      data_decorrenza: "2026-03-05"
+      giorni: 30
+    expected_result:
+      scadenza: "2026-04-07"
+      scadenza_senza_rinvii: "2026-04-04"
+  - description: "Memorie 10 giorni liberi prima dell'udienza del 20/05/2026, a ritroso: sabato 9/5 anticipato a venerdì 8/5"
+    inputs:
+      data_decorrenza: "2026-05-20"
+      giorni: 10
+      giorni_liberi: true
+      termine_a_ritroso: true
+    expected_result:
+      scadenza: "2026-05-08"
+  - description: "Causa di lavoro (sospensione feriale esclusa): 90 giorni dal 15/06/2026 scadono il 13/09/2026, domenica, prorogati a lunedì 14/09"
+    inputs:
+      data_decorrenza: "2026-06-15"
+      giorni: 90
+      sospensione_feriale: false
+    expected_result:
+      scadenza: "2026-09-14"
+      giorni_feriale_sospesi: 0

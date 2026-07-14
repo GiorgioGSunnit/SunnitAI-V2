@@ -1,0 +1,153 @@
+id: legal_it.ravvedimento_operoso
+name: Ravvedimento operoso (omesso o tardivo versamento)
+category: legal_it
+strategy: ravvedimento
+version: "1"
+description: >
+  Calcola quanto versare per regolarizzare un omesso o tardivo versamento
+  di un tributo con il ravvedimento operoso: sanzione ridotta secondo lo
+  scaglione di ritardo (art. 13 D.Lgs. 472/1997, regime D.Lgs. 87/2024) e
+  interessi legali maturati giorno per giorno, oltre al tributo.
+jurisdiction: IT
+output_unit: EUR
+applicable_from: 2024-09-01
+keywords:
+  - ravvedimento operoso
+  - sanzione ridotta
+  - tardivo versamento
+  - omesso versamento
+  - F24 in ritardo
+  - regolarizzazione tributi
+  - ravvedimento sprint
+aliases:
+  - F24 versato in ritardo
+  - regolarizzare un versamento omesso
+  - sanzioni e interessi per pagamento tardivo delle tasse
+tags:
+  - ravvedimento
+  - sanzioni
+  - tributi
+  - versamento
+intent_examples:
+  - ravvedimento operoso per IVA versata in ritardo
+  - sanzioni e interessi per un F24 tardivo
+  - regolarizzare un omesso versamento con ravvedimento operoso
+negative_examples:
+  - sanzioni per omessa dichiarazione
+  - avviso bonario ricevuto dall'agenzia delle entrate
+ambiguity_notes: >
+  Copre il solo omesso/tardivo VERSAMENTO. Le violazioni dichiarative
+  (omessa/infedele dichiarazione) hanno sanzioni base diverse e non sono
+  coperte.
+required_context:
+  - scadenza originaria del versamento
+  - data (prevista) del pagamento
+inputs:
+  - name: tributo_non_versato
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Importo del tributo non versato alla scadenza
+  - name: scadenza_originaria
+    type: date
+    required: true
+    description: Scadenza originaria del versamento omesso
+  - name: data_pagamento
+    type: date
+    required: true
+    description: Data in cui il versamento con ravvedimento sarà effettuato
+  - name: violazione_gia_constatata
+    type: boolean
+    required: false
+    default: false
+    description: La violazione è già stata constatata o sono stati notificati atti di accertamento
+  - name: termine_dichiarazione
+    type: date
+    required: false
+    description: >
+      Termine di presentazione della dichiarazione relativa all'anno della
+      violazione (delimita lo scaglione 1/8; se omesso, approssimato a 365 giorni)
+parameters:
+  - name: ravvedimento_tiers
+    parameter_id: legal_it.ravvedimento_omesso_versamento_tiers
+    resolver: date
+    description: Scaglioni di riduzione della sanzione per ritardo, versionati per regime sanzionatorio
+  - name: legal_interest_rate
+    parameter_id: legal_it.legal_interest_rate
+    resolver: date
+    description: Saggio di interesse legale annuo, versionato per anno
+formula:
+  principal_input: tributo_non_versato
+  due_date_input: scadenza_originaria
+  payment_date_input: data_pagamento
+  tiers_parameter_id: legal_it.ravvedimento_omesso_versamento_tiers
+  interest_parameter_id: legal_it.legal_interest_rate
+  declaration_deadline_input: termine_dichiarazione
+  day_count: 365
+output:
+  name: totale_da_versare
+  round_to: 2
+  rounding: half_up
+citations:
+  - reference: "Art. 13 D.Lgs. 18 dicembre 1997, n. 472 — ravvedimento"
+    source_name: "Normattiva — D.Lgs. 472/1997 (testo vigente)"
+    publisher: "Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.legislativo:1997-12-18;472"
+    official: true
+  - reference: "Art. 13 D.Lgs. 18 dicembre 1997, n. 471 — ritardati od omessi versamenti diretti"
+    source_name: "Normattiva — D.Lgs. 471/1997 (testo vigente)"
+    publisher: "Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.legislativo:1997-12-18;471"
+    official: true
+  - reference: "Art. 1284 Codice Civile e decreti MEF annuali — saggio degli interessi legali"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+warnings:
+  - >
+    Copre le violazioni commesse DAL 1° settembre 2024 (regime D.Lgs.
+    87/2024). Per violazioni anteriori si applicano le sanzioni previgenti
+    (30% base), non calcolate qui.
+  - >
+    Per i tributi dichiarativi indicare 'termine_dichiarazione' (termine di
+    presentazione della dichiarazione dell'anno della violazione): senza
+    questo dato lo scaglione 1/8 è approssimato a 365 giorni e il risultato
+    può differire da quello corretto.
+assumptions:
+  - "Interessi legali semplici, giorno per giorno, su base 365, dal giorno successivo alla scadenza alla data di pagamento inclusa."
+  - "Sanzione e interessi arrotondati separatamente al centesimo (prassi F24); il totale è la somma dei componenti arrotondati."
+exclusions:
+  - "Violazioni dichiarative (omessa, infedele o tardiva dichiarazione)."
+  - "Tributi locali con regole di interesse proprie deliberate dall'ente."
+  - "Cumulo giuridico e concorso di violazioni (art. 12 D.Lgs. 472/1997)."
+  - "Preclusioni da atti già notificati: segnalate come avvertenza, non verificate."
+examples:
+  - description: "Ravvedimento sprint: 10.000 euro versati con 10 giorni di ritardo nel 2026"
+    inputs:
+      tributo_non_versato: 10000
+      scadenza_originaria: "2026-06-30"
+      data_pagamento: "2026-07-10"
+    expected_result:
+      totale_da_versare: 10087.71
+      sanzione_ridotta: 83.33
+      interessi: 4.38
+  - description: "Ravvedimento intermedio: 5.000 euro con 60 giorni di ritardo"
+    inputs:
+      tributo_non_versato: 5000
+      scadenza_originaria: "2026-01-31"
+      data_pagamento: "2026-04-01"
+    expected_result:
+      totale_da_versare: 5082.59
+      sanzione_ridotta: 69.44
+      interessi: 13.15
+  - description: "Ritardo a cavallo d'anno: interessi divisi tra saggio 2025 (2%) e 2026 (1,6%)"
+    inputs:
+      tributo_non_versato: 8000
+      scadenza_originaria: "2025-11-30"
+      data_pagamento: "2026-02-28"
+    expected_result:
+      totale_da_versare: 8145.39
+      sanzione_ridotta: 111.11
+      interessi: 34.28

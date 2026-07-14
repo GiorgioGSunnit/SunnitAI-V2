@@ -1,0 +1,89 @@
+id: legal_it.imu
+name: IMU — imposta municipale sugli immobili
+category: legal_it
+strategy: expression
+version: "1"
+description: >
+  Calcola l'IMU dovuta su un immobile: base imponibile = rendita
+  catastale rivalutata del 5% × moltiplicatore catastale; imposta = base
+  × aliquota deliberata dal comune. Moltiplicatore e aliquota variano per
+  categoria catastale e per comune e sono forniti dal chiamante.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - imu
+  - imposta municipale
+  - rendita catastale
+  - moltiplicatore catastale
+aliases:
+  - quanto pago di imu
+  - calcolo imu seconda casa
+  - imu sulla casa
+tags:
+  - imu
+  - immobili
+  - casa
+  - catasto
+intent_examples:
+  - calcolo dell'imu sulla seconda casa
+  - imu sulla rendita catastale
+  - quanto pago di imu quest'anno
+required_context:
+  - aliquota IMU deliberata dal comune per l'anno di riferimento
+  - moltiplicatore catastale della categoria dell'immobile (es. 160 per gruppo A escluso A/10)
+ambiguity_notes: >
+  Domande generiche su "tasse sulla casa" possono riguardare anche
+  l'imposta di registro (in caso di locazione) o altre imposte locali.
+inputs:
+  - name: rendita_catastale
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Rendita catastale dell'immobile (non rivalutata)
+  - name: moltiplicatore
+    type: decimal
+    required: true
+    min_value: 1
+    description: Moltiplicatore catastale della categoria (es. 160 per abitazioni gruppo A, escluso A/10)
+  - name: aliquota
+    type: decimal
+    required: true
+    unit: rate
+    min_value: 0
+    description: Aliquota IMU deliberata dal comune (es. 0.0086 per 0,86%)
+  - name: rivalutazione_rendita
+    type: decimal
+    required: false
+    default: 0.05
+    unit: rate
+    description: Coefficiente di rivalutazione della rendita catastale (5% ordinario)
+parameters: []
+derived_variables:
+  base_imponibile: "rendita_catastale * (1 + rivalutazione_rendita) * moltiplicatore"
+formula:
+  expression: "base_imponibile * aliquota"
+output:
+  name: imposta_dovuta
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 1, commi 739-783, Legge 27 dicembre 2019, n. 160 — disciplina dell'IMU vigente dal 2020"
+    source_name: "Legge di Bilancio 2020"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "2019-12-27"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:legge:2019-12-27;160"
+    official: true
+assumptions:
+  - "Assume il possesso per l'intero anno e per il 100% della quota; per periodi o quote parziali il risultato va riproporzionato."
+exclusions:
+  - "Non applica l'esenzione per abitazione principale non di lusso né le riduzioni (comodato, canone concordato, pensionati esteri)."
+  - "Non gestisce immobili senza rendita catastale (aree fabbricabili, fabbricati gruppo D non accatastati)."
+examples:
+  - description: "Rendita 500€, moltiplicatore 160, aliquota 0,86%"
+    inputs:
+      rendita_catastale: 500
+      moltiplicatore: 160
+      aliquota: 0.0086
+    expected_result:
+      imposta_dovuta: 722.40

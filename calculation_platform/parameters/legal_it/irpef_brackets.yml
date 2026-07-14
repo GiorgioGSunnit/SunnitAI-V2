@@ -1,0 +1,42 @@
+values:
+  - parameter_id: legal_it.irpef_brackets
+    value:
+      - up_to: 28000
+        rate: 0.23
+      - up_to: 50000
+        rate: 0.35
+      - up_to: null
+        rate: 0.43
+    unit: bracket_table
+    effective_from: 2024-01-01
+    effective_to: 2025-12-31
+    source: "Art. 1, D.Lgs. 30 dicembre 2023, n. 216 (G.U. Serie Generale n. 303 del 30/12/2023)"
+    official: true
+    citations:
+      - reference: "Art. 1, D.Lgs. 30 dicembre 2023, n. 216 — revisione degli scaglioni IRPEF a tre aliquote (23% / 35% / 43%) dal periodo d'imposta 2024"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 303 del 30/12/2023"
+        publisher: "Gazzetta Ufficiale della Repubblica Italiana"
+        publication_date: "2023-12-30"
+        url: "https://www.gazzettaufficiale.it/eli/id/2023/12/30/23G00228/sg"
+        official: true
+
+  - parameter_id: legal_it.irpef_brackets
+    value:
+      - up_to: 28000
+        rate: 0.23
+      - up_to: 50000
+        rate: 0.33
+      - up_to: null
+        rate: 0.43
+    unit: bracket_table
+    effective_from: 2026-01-01
+    effective_to: 2026-12-31
+    source: "Legge 30 dicembre 2025, n. 199 — Legge di Bilancio 2026 (G.U. Serie Generale n. 301 del 30/12/2025, S.O. n. 42)"
+    official: true
+    citations:
+      - reference: "Legge 30 dicembre 2025, n. 199 (Legge di Bilancio 2026) — riduzione della seconda aliquota IRPEF dal 35% al 33% dal periodo d'imposta 2026"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 301 del 30/12/2025, Supplemento Ordinario n. 42"
+        publisher: "Gazzetta Ufficiale della Repubblica Italiana"
+        publication_date: "2025-12-30"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:legge:2025-12-30;199"
+        official: true

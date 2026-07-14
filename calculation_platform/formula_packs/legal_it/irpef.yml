@@ -1,0 +1,95 @@
+id: legal_it.irpef
+name: IRPEF lorda (imposta sul reddito delle persone fisiche)
+category: legal_it
+strategy: progressive_brackets
+version: "1"
+description: >
+  Gross national IRPEF computed via progressive brackets, selected by
+  tax_year. Does not include deductions or surcharges — see exclusions.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - irpef
+  - imposta sul reddito delle persone fisiche
+  - imposta sul reddito
+  - income tax
+  - personal income tax
+  - scaglioni irpef
+  - aliquote irpef
+aliases:
+  - quanto pago di tasse
+  - quante tasse pago sul reddito
+  - calcolo irpef
+  - how much income tax do I pay
+tags:
+  - tasse
+  - reddito
+  - imposta
+  - irpef
+intent_examples:
+  - tasse sul reddito
+  - quanto pago di irpef
+  - imposta sul reddito da lavoro
+  - calcolo dell'irpef lorda
+required_context:
+  - anno d'imposta (tax_year) per selezionare gli scaglioni corretti
+ambiguity_notes: >
+  Richieste generiche su "tasse" senza riferimento al reddito possono
+  confondersi con altre imposte (registro, IMU).
+inputs:
+  - name: taxable_income
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Reddito imponibile IRPEF
+parameters:
+  - name: brackets
+    parameter_id: legal_it.irpef_brackets
+    resolver: date
+    description: Progressive bracket table (soglia/aliquota pairs), selected by tax_year
+formula:
+  base_input: taxable_income
+  brackets_parameter: brackets
+output:
+  name: gross_tax
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 11 D.P.R. 22 dicembre 1986, n. 917 (TUIR) — Determinazione dell'imposta"
+    source_name: "Testo Unico delle Imposte sui Redditi"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1986-12-22"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.del.presidente.della.repubblica:1986-12-22;917"
+    official: true
+  - reference: "Legge 30 dicembre 2025, n. 199 (Legge di Bilancio 2026) — riduzione della seconda aliquota dal 35% al 33%"
+    source_name: "Gazzetta Ufficiale Serie Generale n. 301 del 30/12/2025, Supplemento Ordinario n. 42"
+    publisher: "Gazzetta Ufficiale della Repubblica Italiana"
+    publication_date: "2025-12-30"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:legge:2025-12-30;199"
+    official: true
+regime_selector:
+  by: tax_year
+warnings:
+  - "This calculates gross national IRPEF only."
+  - "It does not include deductions, detrazioni, regional surcharge, municipal surcharge, tax credits, or special regimes."
+assumptions:
+  - "Assumes the taxable_income figure supplied is already net of any deductions the caller wants applied — this calculator does not compute deductions itself."
+exclusions:
+  - "Regional surcharge (addizionale regionale)"
+  - "Municipal surcharge (addizionale comunale)"
+  - "Detrazioni (tax credits for dependents, employment income, etc.)"
+  - "Special regimes (e.g. regime forfettario, flat tax for new residents)"
+examples:
+  - description: "42000 taxable income, 2026 brackets (23/33/43)"
+    inputs:
+      taxable_income: 42000
+    tax_year: 2026
+    expected_result:
+      gross_tax: 11060.00
+  - description: "Same income under the 2024 brackets (23/35/43) for comparison"
+    inputs:
+      taxable_income: 42000
+    tax_year: 2024
+    expected_result:
+      gross_tax: 11340.00

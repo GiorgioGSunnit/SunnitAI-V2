@@ -1,0 +1,42 @@
+values:
+  - parameter_id: legal_it.legal_interest_rate
+    value: 0.025
+    unit: annual_rate
+    effective_from: 2024-01-01
+    effective_to: 2024-12-31
+    source: "Decreto MEF 29 novembre 2023 (G.U. Serie Generale n. 288 del 11/12/2023)"
+    official: true
+    citations:
+      - reference: "Decreto del Ministero dell'Economia e delle Finanze 29 novembre 2023 — saggio degli interessi legali fissato al 2,50% in ragione d'anno dal 1° gennaio 2024"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 288 del 11/12/2023"
+        publisher: "Ministero dell'Economia e delle Finanze"
+        publication_date: "2023-12-11"
+        official: true
+
+  - parameter_id: legal_it.legal_interest_rate
+    value: 0.02
+    unit: annual_rate
+    effective_from: 2025-01-01
+    effective_to: 2025-12-31
+    source: "Decreto MEF 10 dicembre 2024 (G.U. Serie Generale n. 294 del 16/12/2024)"
+    official: true
+    citations:
+      - reference: "Decreto del Ministero dell'Economia e delle Finanze 10 dicembre 2024 — saggio degli interessi legali fissato al 2,00% in ragione d'anno dal 1° gennaio 2025"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 294 del 16/12/2024"
+        publisher: "Ministero dell'Economia e delle Finanze"
+        publication_date: "2024-12-16"
+        official: true
+
+  - parameter_id: legal_it.legal_interest_rate
+    value: 0.016
+    unit: annual_rate
+    effective_from: 2026-01-01
+    effective_to: 2026-12-31
+    source: "Decreto MEF 10 dicembre 2025 (G.U. Serie Generale n. 289 del 13/12/2025)"
+    official: true
+    citations:
+      - reference: "Decreto del Ministero dell'Economia e delle Finanze 10 dicembre 2025 — saggio degli interessi legali fissato all'1,60% in ragione d'anno dal 1° gennaio 2026"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 289 del 13/12/2025"
+        publisher: "Ministero dell'Economia e delle Finanze"
+        publication_date: "2025-12-13"
+        official: true

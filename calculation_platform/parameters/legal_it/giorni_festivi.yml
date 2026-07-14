@@ -1,0 +1,55 @@
+values:
+  - parameter_id: legal_it.giorni_festivi_nazionali
+    value:
+      # Festività nazionali (L. 260/1949 e succ. mod.), esplicitate per anno
+      # perché il lunedì dell'Angelo è mobile. NON include il santo patrono
+      # del foro, che varia per città (v. exclusions del calcolatore).
+      covers_from: "2025-01-01"
+      covers_through: "2027-12-31"
+      dates:
+        # 2025 (Pasqua 20 aprile)
+        - "2025-01-01"
+        - "2025-01-06"
+        - "2025-04-21"
+        - "2025-04-25"
+        - "2025-05-01"
+        - "2025-06-02"
+        - "2025-08-15"
+        - "2025-11-01"
+        - "2025-12-08"
+        - "2025-12-25"
+        - "2025-12-26"
+        # 2026 (Pasqua 5 aprile)
+        - "2026-01-01"
+        - "2026-01-06"
+        - "2026-04-06"
+        - "2026-04-25"
+        - "2026-05-01"
+        - "2026-06-02"
+        - "2026-08-15"
+        - "2026-11-01"
+        - "2026-12-08"
+        - "2026-12-25"
+        - "2026-12-26"
+        # 2027 (Pasqua 28 marzo)
+        - "2027-01-01"
+        - "2027-01-06"
+        - "2027-03-29"
+        - "2027-04-25"
+        - "2027-05-01"
+        - "2027-06-02"
+        - "2027-08-15"
+        - "2027-11-01"
+        - "2027-12-08"
+        - "2027-12-25"
+        - "2027-12-26"
+    effective_from: 2025-01-01
+    effective_to: 2027-12-31
+    source: "L. 27 maggio 1949, n. 260 — giorni festivi agli effetti civili (con successive modificazioni)"
+    official: true
+    citations:
+      - reference: "L. 27 maggio 1949, n. 260 — Razionalizzazione delle festività, giorni festivi agli effetti civili"
+        source_name: "Normattiva — L. 260/1949 (testo vigente)"
+        publisher: "Istituto Poligrafico e Zecca dello Stato"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:legge:1949-05-27;260"
+        official: true

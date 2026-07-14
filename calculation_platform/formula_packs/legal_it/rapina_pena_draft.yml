@@ -1,0 +1,100 @@
+id: legal_it.rapina_pena_draft
+name: "[BOZZA] Cornice edittale — rapina (art. 628 c.p.)"
+category: legal_it
+strategy: penal_range_draft
+version: "0.1-draft"
+description: >
+  BOZZA DIMOSTRATIVA, NON VALIDATA LEGALMENTE. Calcola la cornice
+  edittale per la rapina semplice (reclusione da 5 a 10 anni,
+  art. 628 c.p., minimo elevato dalla L. 36/2019) con la stessa
+  meccanica dimostrativa del modulo penale: circostanze come conteggi
+  generici, scenari art. 69, tetti art. 66, riduzione per rito
+  abbreviato. Non calcola la multa congiunta e non copre la rapina
+  aggravata (co. 3: cornici autonome).
+jurisdiction: IT
+output_unit: null
+keywords:
+  - rapina
+  - pena rapina
+  - rapina semplice
+aliases:
+  - che pena per una rapina
+  - che pena rischia un rapinatore
+tags:
+  - penale
+  - rapina
+  - patrimonio
+intent_examples:
+  - pena per rapina
+  - che pena rischia un rapinatore
+  - rapina a mano armata pena
+required_context:
+  - numero di circostanze aggravanti e attenuanti comuni confermate dall'avvocato
+ambiguity_notes: >
+  La rapina aggravata (art. 628, co. 3: es. mano armata) ha cornici
+  autonome (7-20 anni) non coperte da questa bozza; la richiesta
+  "rapina a mano armata" richiede quindi cautela.
+inputs:
+  - name: aggravanti_comuni
+    type: integer
+    required: true
+    min_value: 0
+    description: Numero di circostanze aggravanti comuni confermate (0 se nessuna)
+  - name: attenuanti_comuni
+    type: integer
+    required: true
+    min_value: 0
+    description: Numero di circostanze attenuanti comuni confermate (0 se nessuna)
+  - name: scenario_art_69
+    type: string
+    required: false
+    description: >
+      Scenario di bilanciamento: aggravanti_prevalenti |
+      attenuanti_prevalenti | equivalenza. Se omesso con entrambe le
+      tipologie presenti, restituisce la matrice degli scenari.
+  - name: rito_abbreviato
+    type: boolean
+    required: false
+    default: false
+    description: Applica la riduzione di 1/3 per giudizio abbreviato (art. 442 c.p.p.)
+parameters: []
+formula:
+  base_min_years: 5
+  base_max_years: 10
+output:
+  name: pena
+citations:
+  - reference: "Art. 628 Codice Penale — Rapina (reclusione da cinque a dieci anni; minimo elevato da art. 6, co. 1, lett. a), L. 26 aprile 2019, n. 36)"
+    source_name: "Codice Penale (R.D. 19 ottobre 1930, n. 1398)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1930-10-19"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1930-10-19;1398"
+    official: true
+warnings:
+  - "BOZZA NON VALIDATA LEGALMENTE: dimostrazione della meccanica di calcolo, non uno strumento professionale."
+  - "Calcolo di cornice edittale sotto ipotesi dichiarate: NON è una previsione della sentenza."
+  - "La multa congiunta (927-2.500 euro) non è calcolata da questa bozza."
+assumptions:
+  - "Le circostanze sono già state qualificate e confermate da un legale: il sistema riceve solo il loro numero."
+  - "Ogni circostanza comune ha effetto discrezionale da 0 a 1/3 (inviluppo massimo di legge)."
+exclusions:
+  - "Rapina aggravata ex art. 628, co. 3 c.p. (es. mano armata: cornice autonoma 7-20 anni)."
+  - "Multa congiunta; recidiva e continuazione; attenuante di lieve entità (Corte cost.)."
+examples:
+  - description: "Rapina semplice, nessuna circostanza"
+    inputs:
+      aggravanti_comuni: 0
+      attenuanti_comuni: 0
+    expected_result:
+      specie: reclusione
+      pena_minima: "5 anni"
+      pena_massima: "10 anni"
+  - description: "Rapina semplice con rito abbreviato: riduzione di 1/3"
+    inputs:
+      aggravanti_comuni: 0
+      attenuanti_comuni: 0
+      rito_abbreviato: true
+    expected_result:
+      specie: reclusione
+      pena_minima: "3 anni e 4 mesi"
+      pena_massima: "6 anni e 8 mesi"

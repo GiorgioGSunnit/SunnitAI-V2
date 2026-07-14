@@ -1,0 +1,82 @@
+id: business.loan_payment
+name: Loan monthly payment (amortized)
+category: business
+strategy: expression
+version: "1"
+description: >
+  Computes the fixed monthly payment for a fully amortizing loan given
+  principal, annual interest rate, and term in months.
+jurisdiction: null
+output_unit: null
+keywords:
+  - loan payment
+  - rata mutuo
+  - rata prestito
+  - mortgage payment
+  - amortization
+  - piano di ammortamento
+aliases:
+  - quanto pago al mese di mutuo
+  - monthly loan installment
+  - how much is my monthly payment
+tags:
+  - mutuo
+  - prestito
+  - rata
+intent_examples:
+  - rata mensile del mutuo
+  - calcolo rata prestito
+  - quanto pago al mese per un prestito
+inputs:
+  - name: principal
+    type: decimal
+    required: true
+    min_value: 0
+    description: Loan principal (amount borrowed)
+  - name: annual_rate
+    type: decimal
+    required: true
+    unit: rate
+    description: Nominal annual interest rate as a fraction (e.g. 0.06 for 6%)
+  - name: months
+    type: integer
+    required: true
+    unit: months
+    min_value: 1
+    description: Loan term in months
+parameters: []
+derived_variables:
+  monthly_rate: "annual_rate / 12"
+formula:
+  expression: "principal * monthly_rate / (1 - pow(1 + monthly_rate, -months))"
+  zero_case:
+    when_variable: monthly_rate
+    equals: 0
+    expression: "principal / months"
+output:
+  name: monthly_payment
+  round_to: 2
+  min: 0
+citations: []
+warnings: []
+assumptions:
+  - "Assumes a standard fixed-rate fully amortizing loan (equal monthly payments)."
+  - "Assumes the annual rate is nominal and divides evenly by 12 for the monthly rate — does not compound rates any other way."
+exclusions:
+  - "Does not account for origination fees, insurance, or other loan costs beyond principal and interest."
+  - "Does not support variable/adjustable rate loans."
+examples:
+  - description: "10000 principal, 6% annual rate, 12 months"
+    inputs:
+      principal: 10000
+      annual_rate: 0.06
+      months: 12
+    expected_result:
+      monthly_payment: 860.66
+  - description: "Zero-interest loan falls back to principal / months"
+    inputs:
+      principal: 12000
+      annual_rate: 0
+      months: 12
+    expected_result:
+      monthly_payment: 1000.00
