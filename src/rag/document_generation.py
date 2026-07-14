@@ -1735,24 +1735,334 @@ SYSTEM_TEMPLATES_BY_KEY: Dict[str, Dict[str, Any]] = {
 logger.info(f"Loaded {len(SYSTEM_TEMPLATES_CATALOG)} system templates from catalog")
 
 
-def classify_system_template(message: str, lang: str) -> str:
+_CODICE_DESCRIPTIONS = {
+    "Codice di procedura civile": "atti processuali civili: citazioni, ricorsi, memorie, opposizioni, esecuzioni, tutele cautelari",
+    "Codice di procedura penale": "atti processuali penali: difese, istanze, ricorsi, memorie penali, misure cautelari penali",
+    "Codice del processo amministrativo": "atti processuali amministrativi: ricorsi TAR, istanze sospensive, ottemperanza, accesso agli atti",
+    "Contratti e Atti Stragiudiziali": "contratti privati e atti non processuali: locazioni, polizze, lavoro, compravendite, franchising, diffide, messa in mora, verbali, contestazioni",
+    "Arbitrato e Procedure Alternative": "Arbitrato rituale e irrituale, lodi arbitrali, clausole arbitrali, ADR, mediazione arbitrale",
+}
+
+
+def _normalize_tokens(s: str) -> set:
+    """Lowercase, strip punctuation, split to tokens, drop stopwords."""
+    _STOP = {
+        "di", "del", "della", "dei", "degli", "delle", "a", "ad", "al",
+        "alla", "alle", "agli", "ai", "da", "dal", "dalla", "dai", "dagli",
+        "dalle", "in", "nel", "nella", "nei", "negli", "nelle", "su", "sul",
+        "sulla", "sui", "sugli", "sulle", "con", "per", "tra", "fra",
+        "e", "o", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
+        "che", "non", "si", "è", "uso", "ad",
+    }
+    tokens = re.sub(r"[^a-z0-9\s]", " ", s.lower()).split()
+    return {t for t in tokens if t not in _STOP and len(t) > 1}
+
+
+def _overlap_score(a: str, b: str) -> float:
+    """Jaccard-style overlap between token sets of two strings."""
+    ta, tb = _normalize_tokens(a), _normalize_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _best_categoria_for_codice(
+    message: str, matched_codice: str, entries_in_codice: List[Dict[str, Any]]
+) -> str | None:
+    """Stage 2: classify which categoria (within one codice) the message belongs to."""
+    categorie = sorted({c for e in entries_in_codice for c in e["categorie"]})
+    categoria_system = (
+        f"Sei un classificatore di richieste di atti giuridici italiani. "
+        f"L'utente sta richiedendo un atto del {matched_codice}. Determina "
+        "a quale fase/categoria processuale appartiene la richiesta.\n\n"
+        "Categorie disponibili:\n"
+        + "\n".join(f"- {c}" for c in categorie)
+        + "\n\nREGOLE DI CLASSIFICAZIONE:\n"
+        "- Se l'utente NON specifica la fase processuale (es. non menziona "
+        "'dibattimento', 'udienza', 'appello', 'cassazione', 'indagini'), "
+        "scegli la categoria più generale, di solito '1. ATTI GENERALI DEL "
+        "DIFENSORE (TUTTE LE PARTI)' se disponibile\n"
+        "- Solo se l'utente menziona esplicitamente una fase specifica "
+        "(es. 'per il dibattimento', 'in appello', 'durante le indagini'), "
+        "scegli la categoria corrispondente a quella fase\n"
+        "- In caso di dubbio, scegli sempre la categoria più generale\n\n"
+        "Restituisci SOLO il nome esatto della categoria, nient'altro."
+    )
+    try:
+        categoria_result = _call_chat(
+            [SystemMessage(content=categoria_system), HumanMessage(content=message)],
+            max_tokens=40,
+        ).strip()
+    except Exception as e:
+        logger.warning(f"classify_system_template stage 2 failed for {matched_codice!r}: {e}")
+        return None
+    return next(
+        (c for c in categorie if c.lower() in categoria_result.lower() or categoria_result.lower() in c.lower()),
+        None,
+    )
+
+
+def _score_all_codici(message: str, codici: List[str]) -> List[Dict[str, Any]]:
+    """
+    Multi-codice stage 1: ask the LLM to score every codice's relevance to the
+    message (0-1 confidence). Returns a list of {"codice", "score"} dicts sorted by
+    score descending, deduplicated by codice (best score kept). Returns [] if the
+    call fails or the response isn't parseable JSON.
+    """
+    codici_lines = "\n".join(f"- {c}: {_CODICE_DESCRIPTIONS.get(c, '')}" for c in codici)
+    system = (
+        "Sei un classificatore di richieste di documenti legali italiani. "
+        "Valuta quanto ciascuna delle categorie seguenti è pertinente alla "
+        "richiesta dell'utente, assegnando un punteggio di confidenza da 0 a 1.\n\n"
+        "Categorie disponibili:\n"
+        + codici_lines
+        + "\n\nRestituisci SOLO un array JSON (nessun altro testo), nella forma "
+        '[{"codice": "<nome esatto>", "score": <numero da 0 a 1>}, ...], '
+        "includendo tutte le categorie disponibili."
+    )
+    try:
+        raw = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=message)],
+            max_tokens=600,
+        ).strip()
+    except Exception as e:
+        logger.warning(f"classify_system_template multi-codice stage 1 failed: {e}")
+        return []
+
+    json_match = re.search(r"\[.*\]", raw, re.DOTALL)
+    try:
+        parsed = json.loads(json_match.group(0) if json_match else raw)
+    except (json.JSONDecodeError, AttributeError) as e:
+        logger.warning(f"classify_system_template multi-codice stage 1: unparseable JSON {raw!r}: {e}")
+        return []
+    if not isinstance(parsed, list):
+        return []
+
+    best_by_codice: Dict[str, float] = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        raw_codice, raw_score = item.get("codice"), item.get("score")
+        if not isinstance(raw_codice, str) or not isinstance(raw_score, (int, float)):
+            continue
+        matched = next(
+            (c for c in codici if c.lower() in raw_codice.lower() or raw_codice.lower() in c.lower()),
+            None,
+        )
+        if matched is None:
+            continue
+        best_by_codice[matched] = max(best_by_codice.get(matched, 0.0), float(raw_score))
+
+    scored = [{"codice": c, "score": s} for c, s in best_by_codice.items()]
+    scored.sort(key=lambda s: s["score"], reverse=True)
+    return scored
+
+
+def _single_codice_multi_candidates(
+    message: str, matched_codice: str, top_k: int
+) -> List[Dict[str, Any]]:
+    """
+    Pre-existing top_k>1 behaviour, preserved as-is: single codice -> single
+    categoria -> multiple tipo_atto candidates thresholded at 0.85. Used by the
+    multi-codice path as the fallback when fewer than 2 codici clear the stage-1
+    0.70 bar (i.e. there's really only one plausible codice).
+    """
+    entries_in_codice = [e for e in SYSTEM_TEMPLATES_CATALOG if e["codice"] == matched_codice]
+
+    matched_categoria = _best_categoria_for_codice(message, matched_codice, entries_in_codice)
+    if not matched_categoria:
+        return []
+
+    entries_in_categoria = [e for e in entries_in_codice if matched_categoria in e["categorie"]]
+    if len(entries_in_categoria) == 1:
+        only_entry = entries_in_categoria[0]
+        only = only_entry["filename"]
+        return [{
+            "key": only[:-5] if only.endswith(".docx") else only,
+            "label": only_entry.get("label", ""),
+            "codice": only_entry["codice"],
+            "score": 1.0,
+        }]
+
+    options_text = "\n".join(f"- {e['tipo_atto']}: {e['description']}" for e in entries_in_categoria)
+    tipo_system = (
+        f"Sei un classificatore di richieste di atti giuridici italiani. "
+        f"L'utente sta richiedendo un atto della categoria "
+        f"'{matched_categoria}'. Determina esattamente quale tipo di atto "
+        "sta richiedendo.\n\nTipi disponibili:\n"
+        + options_text
+        + "\n\nREGOLE DI CLASSIFICAZIONE:\n"
+        "- Se il tipo è espresso al singolare (es. 'Memoria difensiva') "
+        "e l'utente usa il singolare, preferisci il tipo singolare\n"
+        "- I tipi al plurale (es. 'Memorie difensive') si usano quando "
+        "l'utente vuole un atto per la fase dibattimentale o specifica "
+        "esplicitamente il plurale\n"
+        "- Se l'utente non specifica la fase processuale, scegli il tipo "
+        "più generico e applicabile (di solito il singolare)\n"
+        "- art. 121 c.p.p. si applica a memorie difensive generali "
+        "presentate al PM o al GIP, non al dibattimento\n\n"
+        "Restituisci SOLO il nome esatto del tipo di atto, nient'altro."
+    )
+    try:
+        tipo_result = _call_chat(
+            [SystemMessage(content=tipo_system), HumanMessage(content=message)],
+            max_tokens=40,
+        ).strip()
+    except Exception as e:
+        logger.warning(f"classify_system_template stage 3 failed: {e}")
+        return []
+
+    scored = [(e, _overlap_score(tipo_result, e["tipo_atto"])) for e in entries_in_categoria]
+    candidates = sorted(
+        (
+            {
+                "key": e["filename"][:-5] if e["filename"].endswith(".docx") else e["filename"],
+                "label": e.get("label", ""),
+                "codice": e["codice"],
+                "score": score,
+            }
+            for e, score in scored
+            if score > 0.85
+        ),
+        key=lambda c: c["score"],
+        reverse=True,
+    )
+    return candidates[:top_k]
+
+
+def _slugify(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+# Applied (in order) to a title-cased sublabel to restore legal-citation
+# punctuation that title-casing a hyphenated slug strips out. Word-boundary
+# matched so "Cpp"/"Cpc"/"Cp" (distinct whole tokens) never collide.
+_SUBLABEL_ABBREVIATIONS = [
+    (re.compile(r"\bCpp\b"), "c.p.p."),
+    (re.compile(r"\bCpc\b"), "c.p.c."),
+    (re.compile(r"\bCp\b"), "c.p."),
+    (re.compile(r"\bArt\b"), "Art."),
+]
+
+
+def _derive_sublabel(key: str, label: str) -> str:
+    """
+    Derive a sublabel from a catalog key by stripping the codice prefix (the part
+    before "__") and then the base label slug from the start of what remains.
+    E.g. key "penale__memoria-difensiva-ex-art-415-bis-cpp" with label "Memoria
+    difensiva" -> sublabel "Ex Art. 415 Bis c.p.p.". "Generale" if nothing
+    remains (the entry IS the base template).
+    """
+    remainder = key.split("__", 1)[1] if "__" in key else key
+    label_slug = _slugify(label)
+    if label_slug and remainder.startswith(label_slug):
+        remainder = remainder[len(label_slug):].lstrip("-")
+    if not remainder:
+        return "Generale"
+
+    sublabel = remainder.replace("-", " ").title()
+    for pattern, replacement in _SUBLABEL_ABBREVIATIONS:
+        sublabel = pattern.sub(replacement, sublabel)
+    # Letter-by-letter slugs (e.g. "c-p-p") survive the loop above as "C P P"
+    # since each letter is its own token -- collapse those too. Longest first
+    # so " C P P"/" C P C" don't get partially matched by " C P".
+    for old, new in ((" C P P", " c.p.p."), (" C P C", " c.p.c."), (" C P", " c.p.")):
+        sublabel = sublabel.replace(old, new)
+    return sublabel
+
+
+def _classify_system_template_multi_codice(
+    message: str, codici: List[str], top_k: int
+) -> List[Dict[str, Any]]:
+    """
+    Multi-codice top_k>1 pipeline: score ALL codici (stage 1, one LLM call), then
+    for each surviving codice score every entry's tipo_atto against the raw user
+    message with _overlap_score, keeping all entries scoring above 0.15 (not just
+    the best per codice). Each candidate's score is stage1_codice_score *
+    overlap_score. No stage 2 (categoria) or stage 3 (tipo_atto) LLM calls.
+    Total LLM calls in this path: 1 (stage 1 only). Results are unbounded (no
+    top_k cap) once at least 2 candidates qualify.
+    """
+    scored_codici = _score_all_codici(message, codici)
+    logger.info("DEBUG stage1 all scores: %s", scored_codici)
+    top_score = scored_codici[0]["score"] if scored_codici else 0.0
+    surviving = [
+        s for s in scored_codici
+        if s["score"] >= top_score * 0.30 and s["score"] >= 0.15
+    ]
+
+    if len(surviving) < 2:
+        # 0 or 1 codice cleared the relative/absolute bar: not enough signal for a
+        # multi-codice answer. Fall through to the pre-existing single-codice
+        # top_k>1 behaviour, reusing the (only) codice the stage-1 scoring already
+        # identified instead of re-running a separate single-select stage-1 call.
+        fallback_codice = (
+            surviving[0]["codice"] if surviving
+            else scored_codici[0]["codice"] if scored_codici
+            else None
+        )
+        if fallback_codice is None:
+            return []
+        return _single_codice_multi_candidates(message, fallback_codice, top_k)
+
+    candidates: List[Dict[str, Any]] = []
+    for codice_entry in surviving:
+        matched_codice = codice_entry["codice"]
+        entries_in_codice = [e for e in SYSTEM_TEMPLATES_CATALOG if e["codice"] == matched_codice]
+        if not entries_in_codice:
+            continue
+
+        for entry in entries_in_codice:
+            overlap_score = _overlap_score(message, entry["tipo_atto"])
+            if overlap_score <= 0.15:
+                continue
+
+            fname = entry["filename"]
+            key = fname[:-5] if fname.endswith(".docx") else fname
+            label = entry.get("label", "")
+            candidates.append({
+                "key": key,
+                "label": label,
+                "codice": entry["codice"],
+                "sublabel": _derive_sublabel(key, label),
+                "score": codice_entry["score"] * overlap_score,
+            })
+
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    if len(candidates) < 2:
+        return []
+    return candidates
+
+
+def classify_system_template(
+    message: str, lang: str, top_k: int = 1
+) -> str | List[Dict[str, Any]]:
     """
     3-stage LLM classification against the 383-template system catalog
     (codice -> categoria -> tipo di atto). Used as a fallback when
     classify_document_type() returns "unknown" for the legacy 20-type
     registry. Returns the matched template's key (catalog filename
     without .docx extension) or "unknown".
+
+    When top_k > 1, runs a different pipeline: stage 1 scores ALL codici
+    against the message (instead of picking a single winner) and keeps every
+    codice scoring above 0.70. If 2+ codici clear that bar, stages 2 and 3
+    run independently per codice, keeping the single best tipo_atto match per
+    codice (via the same _overlap_score fuzzy logic, admitted only if its
+    score is above 0.60); the results are sorted by stage-1 score descending
+    and capped at top_k, returned as {"key", "label", "codice", "score"}
+    dicts. If fewer than 2 codici clear 0.70, or the multi-codice pipeline
+    ultimately yields fewer than 2 qualifying candidates, returns an empty
+    list. top_k == 1 (the default) is completely unchanged.
     """
     if not SYSTEM_TEMPLATES_CATALOG:
-        return "unknown"
+        return [] if top_k > 1 else "unknown"
 
     codici = sorted({e["codice"] for e in SYSTEM_TEMPLATES_CATALOG})
-    _CODICE_DESCRIPTIONS = {
-        "Codice di procedura civile": "atti processuali civili: citazioni, ricorsi, memorie, opposizioni, esecuzioni, tutele cautelari",
-        "Codice di procedura penale": "atti processuali penali: difese, istanze, ricorsi, memorie penali, misure cautelari penali",
-        "Codice del processo amministrativo": "atti processuali amministrativi: ricorsi TAR, istanze sospensive, ottemperanza, accesso agli atti",
-        "Contratti e Atti Stragiudiziali": "contratti privati e atti non processuali: locazioni, polizze, lavoro, compravendite, franchising, diffide, messa in mora, verbali, contestazioni",
-    }
+
+    if top_k > 1:
+        return _classify_system_template_multi_codice(message, codici, top_k)
+
     codici_lines = "\n".join(
         f"- {c}: {_CODICE_DESCRIPTIONS.get(c, '')}" for c in codici
     )
@@ -1781,37 +2091,7 @@ def classify_system_template(message: str, lang: str) -> str:
         return "unknown"
 
     entries_in_codice = [e for e in SYSTEM_TEMPLATES_CATALOG if e["codice"] == matched_codice]
-    categorie = sorted({c for e in entries_in_codice for c in e["categorie"]})
-    categoria_system = (
-        f"Sei un classificatore di richieste di atti giuridici italiani. "
-        f"L'utente sta richiedendo un atto del {matched_codice}. Determina "
-        "a quale fase/categoria processuale appartiene la richiesta.\n\n"
-        "Categorie disponibili:\n"
-        + "\n".join(f"- {c}" for c in categorie)
-        + "\n\nREGOLE DI CLASSIFICAZIONE:\n"
-        "- Se l'utente NON specifica la fase processuale (es. non menziona "
-        "'dibattimento', 'udienza', 'appello', 'cassazione', 'indagini'), "
-        "scegli la categoria più generale, di solito '1. ATTI GENERALI DEL "
-        "DIFENSORE (TUTTE LE PARTI)' se disponibile\n"
-        "- Solo se l'utente menziona esplicitamente una fase specifica "
-        "(es. 'per il dibattimento', 'in appello', 'durante le indagini'), "
-        "scegli la categoria corrispondente a quella fase\n"
-        "- In caso di dubbio, scegli sempre la categoria più generale\n\n"
-        "Restituisci SOLO il nome esatto della categoria, nient'altro."
-    )
-    try:
-        categoria_result = _call_chat(
-            [SystemMessage(content=categoria_system), HumanMessage(content=message)],
-            max_tokens=40,
-        ).strip()
-    except Exception as e:
-        logger.warning(f"classify_system_template stage 2 failed: {e}")
-        return "unknown"
-
-    matched_categoria = next(
-        (c for c in categorie if c.lower() in categoria_result.lower() or categoria_result.lower() in c.lower()),
-        None,
-    )
+    matched_categoria = _best_categoria_for_codice(message, matched_codice, entries_in_codice)
     if not matched_categoria:
         return "unknown"
 
@@ -1847,27 +2127,6 @@ def classify_system_template(message: str, lang: str) -> str:
     except Exception as e:
         logger.warning(f"classify_system_template stage 3 failed: {e}")
         return "unknown"
-
-    def _normalize(s: str) -> set:
-        """Lowercase, strip punctuation, split to tokens, drop stopwords."""
-        import re as _re
-        _STOP = {
-            "di", "del", "della", "dei", "degli", "delle", "a", "ad", "al",
-            "alla", "alle", "agli", "ai", "da", "dal", "dalla", "dai", "dagli",
-            "dalle", "in", "nel", "nella", "nei", "negli", "nelle", "su", "sul",
-            "sulla", "sui", "sugli", "sulle", "con", "per", "tra", "fra",
-            "e", "o", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
-            "che", "non", "si", "è", "uso", "ad",
-        }
-        tokens = _re.sub(r"[^a-z0-9\s]", " ", s.lower()).split()
-        return {t for t in tokens if t not in _STOP and len(t) > 1}
-
-    def _overlap_score(a: str, b: str) -> float:
-        """Jaccard-style overlap between token sets of two strings."""
-        ta, tb = _normalize(a), _normalize(b)
-        if not ta or not tb:
-            return 0.0
-        return len(ta & tb) / len(ta | tb)
 
     # Fast path: exact substring match (handles perfect LLM output)
     matched_entry = next(

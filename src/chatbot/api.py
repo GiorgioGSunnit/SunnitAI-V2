@@ -236,6 +236,11 @@ class ChatResponse(BaseModel):
         default=None,
         description="Original filename of the saved generated document.",
     )
+    generation_candidates: list = Field(
+        default_factory=list,
+        description="Ranked candidate system templates ({key, label, codice, score}) when "
+        "classify_system_template finds 2+ close matches; FE should prompt the user to pick one.",
+    )
 
 
 class SessionResponse(BaseModel):
@@ -2173,7 +2178,34 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         session_lang = session.session_language
         doc_type = classify_document_type(request.message, session_lang)
         if doc_type == "unknown":
-            doc_type = classify_system_template(request.message, session_lang)
+            _template_result = classify_system_template(request.message, session_lang, top_k=5)
+            logger.info("DEBUG picker: top_k=5 result: %s", _template_result)
+            if isinstance(_template_result, str):
+                # Defensive: classify_system_template(top_k>1) is documented to always
+                # return a list, but if it ever returns a string, treat it as a single
+                # match and skip the picker logic entirely.
+                doc_type = _template_result
+            elif len(_template_result) >= 2:
+                _variant_prompt = "Quale variante preferisci?"
+                session.add_message("user", request.message)
+                if len(session.messages) == 1:
+                    session.title = _generate_session_title(request.message)
+                session.add_message("assistant", _variant_prompt)
+                chatbot._save_sessions()
+                return ChatResponse(
+                    session_id=session_id,
+                    answer=_variant_prompt,
+                    original_query=request.message,
+                    resolved_query=request.message,
+                    session_language=session_lang,
+                    status_messages=["Quale variante preferisci?"],
+                    title=session.title,
+                    generation_candidates=_template_result,
+                )
+            elif len(_template_result) == 1:
+                doc_type = _template_result[0]["key"]
+            else:
+                doc_type = "unknown"
         if doc_type == "unknown":
             clarification = _build_clarification_message()
             session.add_message("user", request.message)
