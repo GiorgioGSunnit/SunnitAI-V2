@@ -1,11 +1,14 @@
 import asyncio
+import json
 import logging
 import uuid
 from collections import OrderedDict, defaultdict
 from threading import RLock
 from typing import Any, Optional
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
+from fastapi import APIRouter, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from .auth import decode_access_token
 
@@ -94,6 +97,13 @@ class TrackingEventHub:
             if not connections:
                 self._connections.pop(user_id, None)
 
+    def pending_events(self, user_id: Any) -> list[TrackingPayload]:
+        user_id_str = _optional_str(user_id)
+        if not user_id_str:
+            return []
+        with self._lock:
+            return list(self._pending.get(user_id_str, {}).values())
+
     def pending_count(self, user_id: Any) -> int:
         user_id_str = _optional_str(user_id)
         if not user_id_str:
@@ -125,6 +135,60 @@ def _optional_str(value: Any) -> Optional[str]:
 
 def queue_tracking_event(user_id: Any, payload: TrackingPayload) -> bool:
     return tracking_hub.queue_event(user_id, payload)
+
+
+class TrackingAckRequest(BaseModel):
+    event_id: str
+
+
+def _user_id_from_bearer(authorization: Optional[str]) -> Optional[str]:
+    if not authorization or not authorization.lower().startswith("bearer "):
+        return None
+    payload = decode_access_token(authorization.split(" ", 1)[1])
+    return _optional_str(payload.get("sub")) if payload else None
+
+
+def _sse_tracking_event(event: TrackingPayload) -> str:
+    event_id = _optional_str(event.get("event_id")) or ""
+    data = json.dumps(event, separators=(",", ":"))
+    return f"id: {event_id}\nevent: tracking_event\ndata: {data}\n\n"
+
+
+@router.get("/events")
+async def tracking_events_sse(request: Request):
+    token = request.query_params.get("token")
+    payload = decode_access_token(token) if token else None
+    user_id = _optional_str(payload.get("sub")) if payload else None
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+    async def event_stream():
+        while not await request.is_disconnected():
+            pending = tracking_hub.pending_events(user_id)
+            if pending:
+                for event in pending:
+                    yield _sse_tracking_event(event)
+            else:
+                yield ": keepalive\n\n"
+            await asyncio.sleep(1)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@router.post("/events/ack")
+def ack_tracking_event(request: TrackingAckRequest, authorization: Optional[str] = Header(default=None)):
+    user_id = _user_id_from_bearer(authorization)
+    if not user_id:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return {"acknowledged": tracking_hub.ack_event(user_id, request.event_id)}
 
 
 @router.websocket("/ws")

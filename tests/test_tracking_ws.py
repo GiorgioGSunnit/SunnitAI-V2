@@ -48,3 +48,25 @@ def test_tracking_websocket_rejects_missing_token():
     with pytest.raises(WebSocketDisconnect):
         with _client().websocket_connect("/api/tracking/ws"):
             pass
+
+
+def test_tracking_sse_rejects_missing_token():
+    response = _client().get("/api/tracking/events")
+
+    assert response.status_code == 401
+
+
+def test_tracking_sse_ack_removes_queued_event_for_authenticated_user():
+    user_id = "user_123"
+    token = create_access_token({"sub": user_id})
+    assert queue_tracking_event(user_id, {"event": "purchase", "user_id": user_id, "event_id": "evt_paid"})
+
+    response = _client().post(
+        "/api/tracking/events/ack",
+        headers={"Authorization": f"Bearer {token}"},
+        json={"event_id": "evt_paid"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"acknowledged": True}
+    assert tracking_hub.pending_count(user_id) == 0
