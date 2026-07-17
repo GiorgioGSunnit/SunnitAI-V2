@@ -189,6 +189,7 @@ class GenerateRequest(BaseModel):
     studio_logo_path: str = Field("", description="Absolute server path to logo image file.")
     doc_type: str = Field("", description="Pre-classified document type; skips classify_document_type if provided.")
     draft: str = Field("", description="Pre-generated draft text; skips generation if provided.")
+    section_hint: str = ""
 
 
 class GenerateResponse(BaseModel):
@@ -404,7 +405,7 @@ def _build_clarification_message() -> str:
     )
 
 
-def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "") -> dict:
+def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "", section_hint: str = "") -> dict:
     citations = None
     if cached_sections is not None:
         sources = sorted({s["document_title"] for s in cached_sections if s.get("document_title")})
@@ -418,7 +419,7 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
             sources = []
-    gen = generate_document(message, doc_type, session_lang, citations, studio_name)
+    gen = generate_document(message, doc_type, session_lang, citations, studio_name, section_hint)
     return {"draft": gen["draft"], "case_details": gen["case_details"], "sources": sources, "doc_type": gen["doc_type"]}
 
 
@@ -691,7 +692,8 @@ async def generate_from_user_template(
 
         session_messages = [{"role": m.role, "content": m.content} for m in session.messages]
         fill_map = _fill_template_gaps(
-            elements, request.message, carta_intestata, session_lang, session_messages
+            elements, request.message, carta_intestata, session_lang, session_messages,
+            docx_path=None if is_pdf else storage_path,
         )
 
         if is_pdf:
@@ -1187,7 +1189,7 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
             }
         else:
             result = await loop.run_in_executor(
-                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, request.studio_name)
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, request.studio_name, request.section_hint)
             )
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
@@ -1269,7 +1271,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             result = {"draft": request.draft, "doc_type": doc_type, "sources": []}
         else:
             result = await loop.run_in_executor(
-                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, "")
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, "", request.section_hint)
             )
     except ValueError as exc:
         logger.warning("Generation catalog miss for doc_type=%r: %s", doc_type, exc)

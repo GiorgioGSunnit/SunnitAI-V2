@@ -2299,12 +2299,132 @@ def _extract_pdf_elements(path: str) -> List[Dict]:
     return elements
 
 
+def _is_heading_paragraph(para) -> bool:
+    """A paragraph counts as a section heading if it's short and either
+    styled as a heading, written in ALL CAPS, or fully bold."""
+    text = para.text.strip()
+    if not text or len(text) >= 100:
+        return False
+    style_name = (para.style.name or "") if para.style else ""
+    if style_name.lower().startswith("heading") or style_name.lower() == "title":
+        return True
+    if text.isupper() and any(c.isalpha() for c in text):
+        return True
+    runs_with_text = [r for r in para.runs if r.text.strip()]
+    if runs_with_text and all(r.bold for r in runs_with_text):
+        return True
+    return False
+
+
+def _select_relevant_section(docx_path: str, user_message: str, lang: str) -> str | None:
+    """Identify the DOCX section heading most relevant to the user's request
+    via a single LLM call. Returns None if the document has fewer than 2
+    identifiable headings (use the whole document), or on failure."""
+    from docx import Document as _D
+    try:
+        doc = _D(docx_path)
+    except Exception as e:
+        logger.warning("_select_relevant_section: could not open %r: %s", docx_path, e)
+        return None
+
+    headings: List[str] = []
+    for para in doc.paragraphs:
+        if _is_heading_paragraph(para):
+            text = para.text.strip()
+            if text not in headings:
+                headings.append(text)
+
+    if len(headings) < 2:
+        return None
+
+    system = (
+        "Sei un assistente legale. Il documento contiene più sezioni. "
+        "Basandoti sulla richiesta dell'utente, restituisci SOLO il testo "
+        "esatto dell'intestazione della sezione più pertinente, senza nessun altro testo."
+    )
+    headings_list = "\n".join(f"{i}. {h}" for i, h in enumerate(headings, 1))
+    human = f"Richiesta utente: {user_message}\n\nIntestazioni disponibili:\n{headings_list}"
+
+    try:
+        result = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=human)],
+            max_tokens=100,
+        ).strip()
+    except Exception as e:
+        logger.warning("_select_relevant_section: LLM call failed: %s", e)
+        return None
+
+    for h in headings:
+        if h.lower() == result.lower():
+            return h
+    for h in headings:
+        if h.lower() in result.lower() or result.lower() in h.lower():
+            return h
+    return None
+
+
+def _normalize_for_hint_match(s: str) -> str:
+    """Lowercase and strip common punctuation for loose substring matching."""
+    return re.sub(r"[^\w\s]", "", s, flags=re.UNICODE).lower().strip()
+
+
+def _find_heading_by_hint(docx_path: str, section_hint: str) -> str | None:
+    """Find a DOCX paragraph whose text contains section_hint, case-insensitive
+    and ignoring common punctuation. Returns the paragraph's exact text, or None."""
+    from docx import Document as _D
+    try:
+        doc = _D(docx_path)
+    except Exception as e:
+        logger.warning("_find_heading_by_hint: could not open %r: %s", docx_path, e)
+        return None
+
+    normalized_hint = _normalize_for_hint_match(section_hint)
+    if not normalized_hint:
+        return None
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if text and normalized_hint in _normalize_for_hint_match(text):
+            return text
+    return None
+
+
+def _extract_section_content(docx_path: str, heading: str) -> str | None:
+    """Extract the text of one section — the matching heading paragraph
+    through the paragraph before the next heading — from a DOCX template."""
+    from docx import Document as _D
+    try:
+        doc = _D(docx_path)
+    except Exception as e:
+        logger.warning("_extract_section_content: could not open %r: %s", docx_path, e)
+        return None
+
+    paragraphs = doc.paragraphs
+    start_idx = next(
+        (i for i, p in enumerate(paragraphs) if p.text.strip().lower() == heading.strip().lower()),
+        None,
+    )
+    if start_idx is None:
+        return None
+
+    section_lines = [paragraphs[start_idx].text.strip()]
+    for para in paragraphs[start_idx + 1:]:
+        if _is_heading_paragraph(para):
+            break
+        text = para.text.strip()
+        if text:
+            section_lines.append(text)
+
+    return "\n".join(section_lines)
+
+
 def _fill_template_gaps(
     elements: List[Dict],
     user_message: str,
     carta_intestata: Optional[Dict],
     lang: str,
     session_messages: List[Dict],
+    docx_path: Optional[str] = None,
 ) -> Dict[int, str]:
     """Ask the LLM to identify blanks in the template elements and fill them.
     Returns {element_index: replacement_text} — sparse, only changed elements."""
@@ -2366,6 +2486,14 @@ def _fill_template_gaps(
     history = history[-10:]
     context_text = "\n".join(f"{m.get('role', '')}: {m.get('content', '')}" for m in history)
 
+    relevant_section_text = None
+    if docx_path:
+        selected_heading = _select_relevant_section(docx_path, user_message, lang)
+        if selected_heading:
+            relevant_section_text = _extract_section_content(docx_path, selected_heading)
+            if relevant_section_text:
+                relevant_section_text = f"{selected_heading}\n\n{relevant_section_text}"
+
     human_parts = [
         f"Contesto conversazione precedente:\n{context_text}\n\nMessaggio attuale:\n{user_message}"
     ]
@@ -2374,6 +2502,15 @@ def _fill_template_gaps(
             f"Dati dello studio (per campi relativi al firmatario/studio):\n{carta_text}"
         )
     human_parts.append(f"Elementi del documento:\n{elements_text}")
+    if relevant_section_text:
+        human_parts.insert(
+            0,
+            f"Testo esatto da usare come base:\n{relevant_section_text}\n\n"
+            "COPIA questo testo ESATTAMENTE come appare. Sostituisci SOLO i segnaposto "
+            "(__________, [DA COMPILARE], spazi vuoti dopo etichette) con i dati forniti "
+            "dall'utente. NON riscrivere, NON riformulare, NON aggiungere contenuto. "
+            "Se un dato non è disponibile, lascia il segnaposto invariato.",
+        )
 
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],
@@ -2456,6 +2593,7 @@ def generate_document(
     lang: str,
     citations: list = None,
     studio_name: str = "",
+    section_hint: str = "",
 ) -> Dict[str, Any]:
     """Generic document generator dispatching on doc_type via DOCUMENT_TYPE_REGISTRY.
 
@@ -2466,11 +2604,25 @@ def generate_document(
 
     system_fn = _SYSTEM_FN.get(doc_type)
     system_template_entry = None if system_fn else SYSTEM_TEMPLATES_BY_KEY.get(doc_type)
+    relevant_section_text = None
 
     if system_fn is not None:
         system_text = system_fn(lang)
         fields_dict = extract_document_fields(user_message, doc_type, lang)
     elif system_template_entry is not None:
+        filename = system_template_entry.get("filename", "")
+        if filename:
+            docx_path = os.path.join(
+                os.path.dirname(_SYSTEM_TEMPLATES_CATALOG_PATH), filename
+            )
+            if section_hint:
+                selected_heading = _find_heading_by_hint(docx_path, section_hint)
+            else:
+                selected_heading = _select_relevant_section(docx_path, user_message, lang)
+            if selected_heading:
+                relevant_section_text = _extract_section_content(docx_path, selected_heading)
+                if relevant_section_text:
+                    relevant_section_text = f"{selected_heading}\n\n{relevant_section_text}"
         system_text = _build_system_template_prompt(system_template_entry, lang)
         fields_dict = extract_system_template_fields(user_message, system_template_entry, lang)
     else:
@@ -2527,6 +2679,14 @@ def generate_document(
         f"Usa {ph} SOLO per dati non presenti né nel messaggio né nei campi strutturati. "
         f"Non aggiungere note, spiegazioni o avvertenze fuori dall'atto."
     )
+    if relevant_section_text:
+        human_content = (
+            f"Testo esatto da usare come base:\n{relevant_section_text}\n\n"
+            "COPIA questo testo ESATTAMENTE come appare. Sostituisci SOLO i segnaposto "
+            "(__________, [DA COMPILARE], spazi vuoti dopo etichette) con i dati forniti "
+            "dall'utente. NON riscrivere, NON riformulare, NON aggiungere contenuto. "
+            "Se un dato non è disponibile, lascia il segnaposto invariato.\n\n"
+        ) + human_content
 
     raw_output = _call_chat(
         [SystemMessage(content=system_content), HumanMessage(content=human_content)],
