@@ -3967,6 +3967,128 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Node: Clarification flow
+# ---------------------------------------------------------------------------
+
+
+def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
+    """When the answer draws on 2+ distinct source documents, ask the user
+    one contextual clarifying question to narrow down which context applies,
+    and stash the candidate sections so the next turn can re-rank instead of
+    re-retrieving from scratch."""
+    citations = state.get("citations") or []
+    unique_doc_names = {c.get("document_name") for c in citations if c.get("document_name")}
+    if len(unique_doc_names) < 2:
+        return {}
+
+    system = (
+        "Sei un assistente legale italiano. Hai appena risposto a una domanda legale citando più fonti diverse. "
+        "Genera UNA SOLA domanda di chiarimento in italiano, breve e specifica, che aiuti a capire quale contesto "
+        "si applica alla situazione dell'utente. La domanda deve essere contestuale alla risposta data, non generica."
+    )
+    human = (
+        f"Domanda originale: {state['query']}\n\n"
+        f"Risposta data: {state['answer']}\n\n"
+        f"Fonti citate: {[c['document_name'] for c in citations]}"
+    )
+
+    try:
+        clarifying_question = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=human)],
+            max_tokens=150,
+        ).strip()
+    except Exception as e:
+        logger.warning("generate_clarifying_question: LLM call failed: %s", e)
+        return {}
+
+    pending_sections: List[Dict[str, Any]] = [
+        {
+            "document_name": c.get("document_name"),
+            "name": s.get("name"),
+            "title": s.get("title"),
+            "plain_text": s.get("plain_text"),
+            "score": s.get("score"),
+        }
+        for c in citations
+        for s in (c.get("sections") or [])
+    ]
+
+    return {
+        "answer": state.get("answer", "") + "\n" + clarifying_question,
+        "awaiting_clarification": True,
+        "pending_sections": pending_sections,
+    }
+
+
+def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-score the sections retrieved last turn against the user's
+    clarification message, instead of re-running retrieval from scratch."""
+    pending_sections = state.get("pending_sections") or []
+    query = state.get("query", "")
+
+    if not pending_sections:
+        return {
+            "raw_result": [],
+            "context_nodes": [],
+            "awaiting_clarification": False,
+        }
+
+    system = (
+        "Sei un assistente legale italiano. L'utente ha chiarito il contesto della sua domanda. "
+        "Devi selezionare quali delle seguenti sezioni di testi legali sono rilevanti per il contesto chiarito. "
+        "Restituisci SOLO un array JSON con gli indici (0-based) delle sezioni rilevanti, in ordine di rilevanza. "
+        "Esempio: [2, 0, 4]"
+    )
+    sections_list = "\n".join(
+        f"{i}. {s.get('document_name', '')} — {s.get('title') or s.get('name') or ''}: "
+        f"{(s.get('plain_text') or '')[:200]}"
+        for i, s in enumerate(pending_sections)
+    )
+    human = f"Chiarimento utente: {query}\n\nSezioni disponibili:\n{sections_list}"
+
+    try:
+        raw = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=human)],
+            max_tokens=200,
+        )
+        text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+        indices = json.loads(text)
+        if not isinstance(indices, list):
+            raise ValueError("LLM did not return a JSON array")
+    except Exception as e:
+        logger.warning("rerank_from_clarification: LLM call/parse failed: %s", e)
+        indices = list(range(len(pending_sections)))
+
+    selected = [
+        pending_sections[i] for i in indices
+        if isinstance(i, int) and 0 <= i < len(pending_sections)
+    ]
+
+    new_raw_result = [
+        {
+            "d": {
+                "id": f"LEGAL_DOC::{s.get('document_name', '')}",
+                "name": s.get("document_name"),
+            },
+            "s": {
+                "id": f"DOCUMENT_SECTION::{s.get('document_name', '')}::{s.get('name', '')}",
+                "name": s.get("name"),
+                "title": s.get("title"),
+                "plain_text": s.get("plain_text"),
+            },
+            "_reranker_score": s.get("score"),
+        }
+        for s in selected
+    ]
+
+    return {
+        "raw_result": new_raw_result,
+        "context_nodes": new_raw_result,
+        "awaiting_clarification": False,
+    }
+
+
 def _resolve_by_name(name: str, session, user_id: str = "", tenant_id: str = "") -> Optional[str]:
     """Fallback doc-ID resolver: tries each candidate token and accepts only a unique match."""
     _STOPWORDS = {"del", "dei", "delle", "della", "dello", "gli", "per", "con", "tra", "fra", "sul", "sulla", "verbale"}

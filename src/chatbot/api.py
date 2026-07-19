@@ -217,6 +217,12 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Structured citation list: [{document_name, document_id, sections}].",
     )
+    awaiting_clarification: bool = Field(
+        default=False,
+        description="True when this turn's answer ends with a clarifying question and the "
+        "next user message will be used to re-rank the previously retrieved sections "
+        "instead of re-running retrieval.",
+    )
     draft: str = Field(
         default="",
         description="Pre-generated draft — used by FE when user picks system template in picker.",
