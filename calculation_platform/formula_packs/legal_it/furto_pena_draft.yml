@@ -16,6 +16,8 @@ keywords:
   - furto
   - pena furto
   - furto semplice
+  - ha rubato
+  - rubato
 aliases:
   - che pena per un furto
   - che pena rischia chi ruba
@@ -26,7 +28,12 @@ tags:
 intent_examples:
   - pena per furto
   - che pena rischia chi ruba
-  - furto in abitazione pena
+  - il mio assistito ha rubato un portafoglio che pena rischia
+negative_examples:
+  - furto in abitazione
+  - furto in casa
+  - rubare in casa
+  - ha rubato in casa
 required_context:
   - numero di circostanze aggravanti e attenuanti comuni confermate dall'avvocato
 ambiguity_notes: >

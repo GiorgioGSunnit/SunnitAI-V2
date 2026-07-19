@@ -106,7 +106,5 @@ def resolve_parameters(definition, parameter_store, request) -> ParameterResolut
 
 
 def _jsonable(value: Any) -> Any:
-    from decimal import Decimal
-    if isinstance(value, Decimal):
-        return float(value)
-    return value
+    from ..core.result_builder import to_jsonable
+    return to_jsonable(value)

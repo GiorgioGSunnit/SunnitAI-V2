@@ -1,0 +1,92 @@
+id: legal_it.rivalutazione_istat
+name: Rivalutazione monetaria (indice ISTAT FOI)
+category: legal_it
+strategy: foi_revaluation
+version: "1"
+description: >
+  Rivaluta una somma di denaro tra due date secondo l'indice ISTAT FOI
+  (indice dei prezzi al consumo per le famiglie di operai e impiegati,
+  senza tabacchi): importo x FOI(mese finale) / FOI(mese iniziale).
+  Convenzione del mese finale: si usa l'indice del mese di calendario in
+  cui cade ciascuna data (stessa convenzione del calcolatore ufficiale
+  ISTAT, rivaluta.istat.it, contro cui il coefficiente e verificabile).
+  Il coefficiente e calcolato in Decimal a precisione piena; l'importo
+  finale e arrotondato secondo la politica dichiarata dal pack.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - rivalutazione monetaria
+  - rivalutazione istat
+  - indice foi
+  - svalutazione monetaria
+  - adeguamento istat
+  - debiti di valore
+  - art 429 codice procedura civile
+aliases:
+  - quanto vale oggi una somma del passato
+  - rivalutare un importo secondo istat
+  - aggiornare un credito all'inflazione
+tags:
+  - rivalutazione
+  - istat
+  - inflazione
+intent_examples:
+  - rivalutazione monetaria di una somma
+  - rivalutazione istat di un credito
+  - adeguamento istat di un importo tra due date
+required_context:
+  - data iniziale e data finale della rivalutazione
+ambiguity_notes: >
+  Domande su "interessi e rivalutazione" insieme riguardano il calcolo
+  combinato ex Cass. SS.UU. 1712/1995 (legal_it.rivalutazione_interessi_1712),
+  non la sola rivalutazione.
+inputs:
+  - name: importo
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Somma da rivalutare, espressa in moneta della data iniziale
+  - name: data_iniziale
+    type: date
+    required: true
+    description: Data di decorrenza della rivalutazione (YYYY-MM-DD)
+  - name: data_finale
+    type: date
+    required: true
+    description: Data finale della rivalutazione (YYYY-MM-DD)
+parameters: []
+formula:
+  amount_input: importo
+  start_date_input: data_iniziale
+  end_date_input: data_finale
+  index_parameter_id: legal_it.foi_index
+output:
+  name: importo_rivalutato
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 429, comma 3, Codice di Procedura Civile — rivalutazione dei crediti di lavoro; l'indice FOI e la serie usata in generale per la rivalutazione dei debiti di valore"
+    source_name: "Codice di Procedura Civile (R.D. 28 ottobre 1940, n. 1443)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1940-10-28"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1940-10-28;1443"
+    official: true
+warnings: []
+assumptions:
+  - "Convenzione del mese finale: coefficiente = FOI(mese di data_finale) / FOI(mese di data_iniziale), senza interpolazione infra-mese."
+  - "La serie FOI usata e quella 'senza tabacchi' pubblicata da ISTAT; un mese assente nella tabella parametri produce un errore, mai un valore stimato."
+exclusions:
+  - "Non calcola interessi (ne semplici ne ex Cass. SS.UU. 1712/1995): per il calcolo combinato usare legal_it.rivalutazione_interessi_1712."
+examples:
+  - description: >
+      Rivalutazione con i mesi SEGNAPOSTO della tabella foi_indices.yml:
+      1000 EUR da novembre 2024 (FOI 100.0) a febbraio 2026 (FOI 102.5):
+      coefficiente 102.5/100.0 = 1.025, importo 1000 x 1.025 = 1025.00.
+      verified_against: TODO (official calculator/source check pending)
+    inputs:
+      importo: 1000
+      data_iniziale: "2024-11-15"
+      data_finale: "2026-02-10"
+    expected_result:
+      importo_rivalutato: "1025.00"

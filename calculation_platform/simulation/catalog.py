@@ -39,7 +39,7 @@ def render_catalog(definitions: Iterable[CalculatorDefinition]) -> str:
         requirements = []
         if d.regime_selector:
             requirements.append(f"richiede {d.regime_selector.get('by', 'tax_year')} per selezionare il regime corretto")
-        if d.strategy == "date_split_interest":
+        if d.requires_period:
             requirements.append("richiede period.start_date e period.end_date (YYYY-MM-DD)")
         if requirements:
             lines.append("Requisiti: " + "; ".join(requirements))

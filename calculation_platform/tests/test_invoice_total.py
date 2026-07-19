@@ -11,7 +11,7 @@ def test_invoice_total_with_discount():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["total"] == 1098.00
+    assert result.result["total"] == "1098.00"
 
 
 def test_invoice_total_discount_defaults_to_zero():
@@ -21,7 +21,7 @@ def test_invoice_total_discount_defaults_to_zero():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["total"] == 1220.00
+    assert result.result["total"] == "1220.00"
 
 
 def test_invoice_total_missing_required_input_errors():

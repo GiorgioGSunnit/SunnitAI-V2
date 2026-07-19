@@ -1,0 +1,76 @@
+_note: >
+  Parametri forensi DM 10 marzo 2014 n. 55, come modificato dal DM 13 agosto
+  2022 n. 147 (in vigore dal 23 ottobre 2022) — valori MEDI di liquidazione
+  per i giudizi ordinari di cognizione, per scaglione di valore della causa
+  e per fase (studio / introduttiva / istruttoria / decisionale).
+
+  FONTE AUTORITATIVA: Allegato (Tabella 2 — giudizi ordinari di cognizione
+  innanzi al Tribunale) al DM 55/2014 aggiornato dal DM 147/2022,
+  G.U. Serie Generale n. 236 dell'08/10/2022.
+
+  ATTENZIONE — VALORI SEGNAPOSTO: SOLO lo scaglione 26.000,01-52.000 e
+  popolato, con numeri SINTETICI (placeholder: true, verified: false) che
+  NON sono i valori ministeriali reali. Gli altri scaglioni sono stub di
+  schema con valore_medio: null (TO_VERIFY) e non risolvono mai: una causa
+  che vi ricade produce un errore strutturato. Prima dell'uso reale caricare
+  l'intera Tabella 2 dal decreto e impostare verified: true /
+  placeholder: false. Vedi docs/TO_VERIFY.md.
+
+values:
+  - parameter_id: legal_it.dm55_compensi_cognizione
+    unit: fee_table
+    effective_from: 2022-10-23
+    source: "DM 10 marzo 2014 n. 55, Tabella 2, come sostituita dal DM 13 agosto 2022 n. 147 (G.U. Serie Generale n. 236 del 08/10/2022) — VALORI SEGNAPOSTO"
+    official: false
+    verified: false
+    placeholder: true
+    citations:
+      - reference: "DM 13 agosto 2022, n. 147 — Regolamento recante modifiche al DM 55/2014 sui parametri per la liquidazione dei compensi per la professione forense (Tabella 2, giudizi ordinari di cognizione)"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 236 del 08/10/2022"
+        publisher: "Gazzetta Ufficiale della Repubblica Italiana"
+        publication_date: "2022-10-08"
+        url: "https://www.gazzettaufficiale.it/eli/id/2022/10/08/22G00156/sg"
+        official: true
+    value:
+      # Scaglione popolato (VALORI SINTETICI SEGNAPOSTO, non ministeriali)
+      - scaglione_min: 26000.01
+        scaglione_max: 52000
+        fase: studio
+        valore_medio: "2000"
+      - scaglione_min: 26000.01
+        scaglione_max: 52000
+        fase: introduttiva
+        valore_medio: "1500"
+      - scaglione_min: 26000.01
+        scaglione_max: 52000
+        fase: istruttoria
+        valore_medio: "5000"
+      - scaglione_min: 26000.01
+        scaglione_max: 52000
+        fase: decisionale
+        valore_medio: "3500"
+      # Stub di schema TO_VERIFY — valore_medio null non risolve mai
+      - scaglione_min: 0
+        scaglione_max: 1100
+        fase: null           # TO_VERIFY: tutte e quattro le fasi
+        valore_medio: null
+      - scaglione_min: 1100.01
+        scaglione_max: 5200
+        fase: null
+        valore_medio: null
+      - scaglione_min: 5200.01
+        scaglione_max: 26000
+        fase: null
+        valore_medio: null
+      - scaglione_min: 52000.01
+        scaglione_max: 260000
+        fase: null
+        valore_medio: null
+      - scaglione_min: 260000.01
+        scaglione_max: 520000
+        fase: null
+        valore_medio: null
+      - scaglione_min: 520000.01
+        scaglione_max: null   # oltre 520.000
+        fase: null
+        valore_medio: null

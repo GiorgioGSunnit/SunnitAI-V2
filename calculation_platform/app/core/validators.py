@@ -35,12 +35,26 @@ def _coerce_boolean(v: Any) -> bool:
     )
 
 
+def _coerce_string_list(v: Any) -> List[str]:
+    if isinstance(v, str):
+        items = [part.strip() for part in v.split(",")]
+    elif isinstance(v, (list, tuple)):
+        items = [str(part).strip() for part in v]
+    else:
+        raise ValueError(f"not a list of strings: {v!r}")
+    items = [item for item in items if item]
+    if not items:
+        raise ValueError("the list must contain at least one element")
+    return items
+
+
 _TYPE_COERCERS = {
     "decimal": lambda v: Decimal(str(v)),
     "integer": lambda v: int(v),
     "boolean": _coerce_boolean,
     "string": lambda v: str(v),
     "date": lambda v: v if isinstance(v, date_cls) else date_cls.fromisoformat(str(v)),
+    "string_list": _coerce_string_list,
 }
 
 
@@ -82,7 +96,7 @@ def validate_inputs(definition: CalculatorDefinition, raw_inputs: Dict[str, Any]
         except (InvalidOperation, ValueError, TypeError) as e:
             raise InputValidationError(
                 f"Invalid value for {spec.name!r}: {raw_value!r} ({e})",
-                details={"input": spec.name, "value": raw_value},
+                details={"input": spec.name, "value": raw_value, "expected": missing_input_spec(spec)},
             ) from e
 
         if spec.min_value is not None and coerced < coercer(spec.min_value):
@@ -101,8 +115,35 @@ def validate_inputs(definition: CalculatorDefinition, raw_inputs: Dict[str, Any]
             result.assumptions.append(f"{spec.name} not provided; assumed default {raw_value!r}")
 
     if missing:
+        missing_set = set(missing)
         raise InputValidationError(
             f"Missing required input(s): {', '.join(missing)}",
-            details={"missing_inputs": missing},
+            details={
+                "missing_inputs": missing,
+                # Machine-actionable spec of each missing input, so an LLM
+                # (or any client) can formulate the clarification question
+                # itself instead of parsing Italian prose.
+                "missing": [
+                    missing_input_spec(spec)
+                    for spec in definition.inputs
+                    if spec.name in missing_set
+                ],
+            },
         )
     return result
+
+
+def missing_input_spec(spec) -> Dict[str, Any]:
+    """A JSON-safe description of one missing input for clarification
+    payloads: name, declared type, and whatever constraints the pack
+    declares (unit, bounds, description)."""
+    entry: Dict[str, Any] = {"name": spec.name, "type": spec.type, "required": spec.required}
+    if spec.description:
+        entry["description"] = spec.description
+    if spec.unit:
+        entry["unit"] = spec.unit
+    if spec.min_value is not None:
+        entry["min_value"] = spec.min_value
+    if spec.max_value is not None:
+        entry["max_value"] = spec.max_value
+    return entry

@@ -33,7 +33,7 @@ from simulation.conversation import SimulatedConversation  # noqa: E402
 
 SCENARIO_1_SENTENCE = "quanto pago di tasse su un reddito di 42000 euro nel 2026"
 SCENARIO_2_SENTENCES = ["quanto pago di irpef nel 2026?", "il reddito è di 42000 euro"]
-SCENARIO_3_SENTENCE = "quanto costa"
+SCENARIO_3_SENTENCE = "quanto pago di interessi"
 
 
 def _dump(payload) -> str:

@@ -87,4 +87,4 @@ examples:
       tasso_riferimento_bce: 0.0215
       giorni: 30
     expected_result:
-      interessi: 8.34
+      interessi: "8.34"

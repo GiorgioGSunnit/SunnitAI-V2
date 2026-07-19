@@ -1,6 +1,8 @@
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import HTMLResponse
 
 from ..core.engine import CalculationEngine
 from ..core.errors import CalculatorNotFoundError
@@ -9,14 +11,42 @@ from ..schemas.calculation_request import CalculationRequest
 from ..schemas.calculation_result import CalculationResult
 from ..schemas.calculator_definition import CalculatorDefinition
 from ..schemas.match_result import MatchRequest, MatchResponse
+from ..schemas.stored_calculation import StoredCalculation, StoredCalculationSummary
+from ..schemas.warning import Warning as CalcWarning
+from ..storage.base import CalculationRecord, CalculationStore
+from ..reporting import render_report_html
+from .tool_schemas import build_all_tool_schemas, build_tool_schema
 
 router = APIRouter()
 _engine: Optional[CalculationEngine] = None
+_store: Optional[CalculationStore] = None
 
 
 def set_engine(engine: CalculationEngine) -> None:
     global _engine
     _engine = engine
+
+
+def set_store(store: CalculationStore) -> None:
+    global _store
+    _store = store
+
+
+def calculate_and_persist(request: CalculationRequest) -> CalculationResult:
+    if request.request_id is None:
+        request = request.model_copy(update={"request_id": uuid4().hex})
+    result = _engine.calculate(request)
+    if result.request_id is None:
+        result.request_id = request.request_id
+
+    try:
+        _store.save(CalculationRecord.from_models(request, result))
+    except Exception as exc:
+        result.warnings.append(CalcWarning(
+            code="persistence_failed",
+            message=f"Il risultato e stato calcolato ma non salvato: {exc}",
+        ))
+    return result
 
 
 @router.get("/health")
@@ -27,6 +57,19 @@ def health() -> Dict[str, str]:
 @router.get("/calculators")
 def list_calculators() -> List[Dict[str, Any]]:
     return _engine.registry.list_all()
+
+
+@router.get("/tool-schemas")
+def list_tool_schemas() -> List[Dict[str, Any]]:
+    return build_all_tool_schemas(_engine.registry)
+
+
+@router.get("/calculators/{calculator_id}/tool-schema")
+def get_tool_schema(calculator_id: str) -> Dict[str, Any]:
+    try:
+        return build_tool_schema(_engine.registry.get(calculator_id))
+    except CalculatorNotFoundError as e:
+        raise HTTPException(status_code=404, detail=e.message)
 
 
 @router.get("/calculators/{calculator_id}", response_model=CalculatorDefinition)
@@ -41,7 +84,66 @@ def get_calculator(calculator_id: str) -> CalculatorDefinition:
 
 @router.post("/calculate", response_model=CalculationResult)
 def calculate(request: CalculationRequest) -> CalculationResult:
-    return _engine.calculate(request)
+    return calculate_and_persist(request)
+
+
+@router.get("/calculations", response_model=List[StoredCalculationSummary])
+def list_calculations(limit: int = 50) -> List[StoredCalculationSummary]:
+    return _store.list_recent(limit=min(limit, 200))
+
+
+@router.get("/calculations/{request_id}", response_model=StoredCalculation)
+def get_calculation(request_id: str) -> StoredCalculation:
+    stored = _store.get(request_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+    return stored
+
+
+@router.get("/calculations/{request_id}/report", response_class=HTMLResponse)
+def get_calculation_report(request_id: str) -> HTMLResponse:
+    stored = _store.get(request_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+
+    definition = None
+    try:
+        definition = _engine.registry.get(stored.calculator_id)
+    except CalculatorNotFoundError:
+        definition = None
+    return HTMLResponse(render_report_html(stored, definition))
+
+
+@router.post("/calculations/{request_id}/replay")
+def replay_calculation(request_id: str) -> Dict[str, Any]:
+    stored = _store.get(request_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail="Calculation not found")
+
+    request = CalculationRequest.model_validate(stored.request)
+    replayed = _engine.calculate(request)
+    replayed_result = replayed.model_dump(mode="json")
+    return {
+        "request_id": request_id,
+        "stored_result": stored.result,
+        "replayed_result": replayed_result,
+        "matches": _results_match(stored.result, replayed_result),
+    }
+
+
+def _results_match(stored_result: Dict[str, Any], replayed_result: Dict[str, Any]) -> bool:
+    keys = (
+        "result",
+        "steps",
+        "inputs_used",
+        "parameters_used",
+        "derived_values",
+        "status",
+        "errors",
+    )
+    return {key: stored_result.get(key) for key in keys} == {
+        key: replayed_result.get(key) for key in keys
+    }
 
 
 @router.post("/match", response_model=MatchResponse)

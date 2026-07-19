@@ -66,7 +66,7 @@ def test_extract_values_marks_cedolare_secca_as_named_boolean():
 def test_irpef_happy_path_single_sentence():
     reply = _conversation().send("quanto pago di tasse su un reddito di 42000 euro nel 2026")
     assert reply.kind == "answer"
-    assert reply.calculation.result["gross_tax"] == 11060.00
+    assert reply.calculation.result["gross_tax"] == "11060.00"
     assert reply.tool_call.calculator_id == "legal_it.irpef"
     assert reply.tool_call.tax_year == 2026
     assert "Fonti:" in reply.text
@@ -76,7 +76,7 @@ def test_irpef_happy_path_single_sentence():
 def test_irpef_regime_switches_with_year_in_sentence():
     reply = _conversation().send("quanto pago di tasse su un reddito di 42000 euro nel 2024")
     assert reply.kind == "answer"
-    assert reply.calculation.result["gross_tax"] == 11340.00  # 35% bracket, not 33%
+    assert reply.calculation.result["gross_tax"] == "11340.00"  # 35% bracket, not 33%
 
 
 def test_irpef_missing_income_triggers_clarification_then_completes():
@@ -87,7 +87,7 @@ def test_irpef_missing_income_triggers_clarification_then_completes():
 
     second = conversation.send("il reddito è di 42000 euro")
     assert second.kind == "answer"
-    assert second.calculation.result["gross_tax"] == 11060.00
+    assert second.calculation.result["gross_tax"] == "11060.00"
 
 
 def test_irpef_invalid_value_is_reported_and_correctable():
@@ -98,7 +98,7 @@ def test_irpef_invalid_value_is_reported_and_correctable():
 
     second = conversation.send("scusa, intendevo 42000")
     assert second.kind == "answer"
-    assert second.calculation.result["gross_tax"] == 11060.00
+    assert second.calculation.result["gross_tax"] == "11060.00"
 
 
 def test_irpef_answer_carries_full_audit_payload():
@@ -121,7 +121,7 @@ def test_unrelated_sentence_is_refused_not_guessed():
 
 
 def test_ambiguous_sentence_asks_user_to_choose():
-    reply = _conversation().send("quanto costa")
+    reply = _conversation().send("quanto pago di interessi")
     assert reply.kind == "ambiguous"
     assert "più calcoli" in reply.text
 
@@ -134,7 +134,7 @@ def test_period_calculator_asks_for_period_then_completes():
 
     second = conversation.send("dal 2025-10-01 al 2026-03-31")
     assert second.kind == "answer"
-    assert second.calculation.result["interest"] == 89.86
+    assert second.calculation.result["interest"] == "89.86"
     assert len(second.calculation.steps) == 2  # split across the rate change
 
 
@@ -143,10 +143,10 @@ def test_registration_tax_normalizes_monthly_rent_before_calculation():
         "imposta di registro per affitto da 800 euro al mese per 4 anni, prima registrazione"
     )
     assert reply.kind == "answer"
-    assert reply.tool_call.inputs["annual_rent"] == Decimal("9600")
-    assert reply.tool_call.inputs["years"] == Decimal("4")
+    assert reply.tool_call.inputs["annual_rent"] == "9600"
+    assert reply.tool_call.inputs["years"] == "4"
     assert reply.tool_call.inputs["first_registration"] is True
-    assert reply.calculation.result["tax_due"] == 768.00
+    assert reply.calculation.result["tax_due"] == "768.00"
 
 
 def test_registration_tax_cedolare_secca_hint_sets_optional_flag():
@@ -155,7 +155,7 @@ def test_registration_tax_cedolare_secca_hint_sets_optional_flag():
     )
     assert reply.kind == "answer"
     assert reply.tool_call.inputs["cedolare_secca"] is True
-    assert reply.calculation.result["tax_due"] == 0.00
+    assert reply.calculation.result["tax_due"] == "0.00"
 
 
 # ---------------------------------------------------------------------------

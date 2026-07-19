@@ -70,10 +70,10 @@ examples:
       vat_rate: 0.22
       discount_rate: 0.10
     expected_result:
-      total: 1098.00
+      total: "1098.00"
   - description: "No discount supplied — defaults to 0"
     inputs:
       net_amount: 1000
       vat_rate: 0.22
     expected_result:
-      total: 1220.00
+      total: "1220.00"

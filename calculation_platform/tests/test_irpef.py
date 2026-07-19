@@ -11,7 +11,7 @@ def test_irpef_2026_regime():
     result = engine.calculate(request)
     assert result.status == "success"
     # 28000 * 0.23 = 6440; 14000 * 0.33 = 4620; total = 11060
-    assert result.result["gross_tax"] == 11060.00
+    assert result.result["gross_tax"] == "11060.00"
 
 
 def test_irpef_2024_regime():
@@ -23,7 +23,7 @@ def test_irpef_2024_regime():
     result = engine.calculate(request)
     assert result.status == "success"
     # 28000 * 0.23 = 6440; 14000 * 0.35 = 4900; total = 11340
-    assert result.result["gross_tax"] == 11340.00
+    assert result.result["gross_tax"] == "11340.00"
 
 
 def test_irpef_carries_gross_only_warnings():
@@ -46,7 +46,7 @@ def test_irpef_missing_tax_year_falls_back_to_today():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["gross_tax"] == 4600.00  # 20000 * 0.23
+    assert result.result["gross_tax"] == "4600.00"  # 20000 * 0.23
 
 
 def test_irpef_zero_income_yields_zero_tax():
@@ -57,7 +57,7 @@ def test_irpef_zero_income_yields_zero_tax():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["gross_tax"] == 0.00
+    assert result.result["gross_tax"] == "0.00"
     assert result.steps == []  # no bracket has any taxable amount in it
 
 
@@ -71,7 +71,7 @@ def test_irpef_income_exactly_at_bracket_boundary():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["gross_tax"] == 6440.00  # 28000 * 0.23
+    assert result.result["gross_tax"] == "6440.00"  # 28000 * 0.23
     assert len(result.steps) == 1
 
 

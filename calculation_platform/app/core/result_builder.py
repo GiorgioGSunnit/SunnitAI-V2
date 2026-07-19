@@ -1,3 +1,4 @@
+from datetime import date, datetime
 from decimal import (
     ROUND_CEILING,
     ROUND_DOWN,
@@ -45,9 +46,17 @@ def round_output(value: Decimal, output_spec: Dict[str, Any]) -> Decimal:
 
 
 def to_jsonable(value: Any) -> Any:
-    """Convert Decimal-bearing structures to plain JSON-safe types for the API response."""
+    """Convert Decimal-bearing structures to plain JSON-safe types for the API response.
+
+    Decimals become strings (e.g. "616.44"), never floats: the engine's
+    precision guarantee must survive serialization, and a float would
+    reintroduce binary rounding noise at the exact boundary where results
+    leave the module. Dates/datetimes become ISO-8601 strings.
+    """
     if isinstance(value, Decimal):
-        return float(value)
+        return str(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
     if isinstance(value, dict):
         return {k: to_jsonable(v) for k, v in value.items()}
     if isinstance(value, (list, tuple)):

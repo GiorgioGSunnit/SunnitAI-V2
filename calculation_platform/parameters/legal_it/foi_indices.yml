@@ -1,0 +1,88 @@
+_note: >
+  Serie mensile dell'indice ISTAT FOI (indice dei prezzi al consumo per le
+  famiglie di operai e impiegati, SENZA tabacchi) — la serie usata per la
+  rivalutazione monetaria dei crediti (art. 429 c.p.c., debiti di valore).
+
+  FONTE AUTORITATIVA: ISTAT, "Indice FOI senza tabacchi". I coefficienti
+  calcolati con questa serie sono verificabili con il calcolatore ufficiale
+  ISTAT su https://rivaluta.istat.it .
+
+  CONVENZIONE (final-month convention): la rivalutazione tra una data A e una
+  data B usa l'indice FOI del MESE di A e l'indice FOI del MESE di B —
+  coefficiente = FOI(mese di B) / FOI(mese di A). Nessuna interpolazione
+  infra-mese; un mese assente nella serie produce un errore strutturato,
+  mai un valore interpolato o di ripiego.
+
+  ATTENZIONE — VALORI SEGNAPOSTO: le voci qui sotto sono SOLO esempi di
+  schema con numeri sintetici (placeholder: true, verified: false). NON sono
+  dati ISTAT reali e NON devono essere usati per calcoli operativi. Prima
+  dell'uso reale caricare in blocco la serie storica ufficiale dal sito ISTAT
+  (serie "FOI(nt) — indici nazionali", base di riferimento corrente) e
+  impostare verified: true / placeholder: false con last_verified_at.
+  Vedi docs/TO_VERIFY.md.
+
+values:
+  - parameter_id: legal_it.foi_index
+    year: 2024
+    month: 11
+    value: "100.0"
+    unit: index
+    source_ref: "PLACEHOLDER — sostituire con ISTAT FOI(nt) novembre 2024"
+    official: false
+    verified: false
+    placeholder: true
+    citations:
+      - reference: "ISTAT — Indice dei prezzi al consumo per le famiglie di operai e impiegati (FOI) senza tabacchi, serie mensile novembre 2024 (VALORE SEGNAPOSTO da sostituire con il dato ufficiale)"
+        source_name: "ISTAT — Rivaluta, coefficienti per la rivalutazione monetaria"
+        publisher: "Istituto Nazionale di Statistica"
+        publication_date: "2024-12-16"
+        url: "https://rivaluta.istat.it"
+        official: true
+  - parameter_id: legal_it.foi_index
+    year: 2024
+    month: 12
+    value: "100.5"
+    unit: index
+    source_ref: "PLACEHOLDER — sostituire con ISTAT FOI(nt) dicembre 2024"
+    official: false
+    verified: false
+    placeholder: true
+    citations:
+      - reference: "ISTAT — Indice dei prezzi al consumo per le famiglie di operai e impiegati (FOI) senza tabacchi, serie mensile dicembre 2024 (VALORE SEGNAPOSTO da sostituire con il dato ufficiale)"
+        source_name: "ISTAT — Rivaluta, coefficienti per la rivalutazione monetaria"
+        publisher: "Istituto Nazionale di Statistica"
+        publication_date: "2025-01-16"
+        url: "https://rivaluta.istat.it"
+        official: true
+  - parameter_id: legal_it.foi_index
+    year: 2025
+    month: 12
+    value: "102.0"
+    unit: index
+    source_ref: "PLACEHOLDER — sostituire con ISTAT FOI(nt) dicembre 2025"
+    official: false
+    verified: false
+    placeholder: true
+    citations:
+      - reference: "ISTAT — Indice dei prezzi al consumo per le famiglie di operai e impiegati (FOI) senza tabacchi, serie mensile dicembre 2025 (VALORE SEGNAPOSTO da sostituire con il dato ufficiale)"
+        source_name: "ISTAT — Rivaluta, coefficienti per la rivalutazione monetaria"
+        publisher: "Istituto Nazionale di Statistica"
+        publication_date: "2026-01-16"
+        url: "https://rivaluta.istat.it"
+        official: true
+  - parameter_id: legal_it.foi_index
+    year: 2026
+    month: 2
+    value: "102.5"
+    unit: index
+    source_ref: "PLACEHOLDER — sostituire con ISTAT FOI(nt) febbraio 2026"
+    official: false
+    verified: false
+    placeholder: true
+    citations:
+      - reference: "ISTAT — Indice dei prezzi al consumo per le famiglie di operai e impiegati (FOI) senza tabacchi, serie mensile febbraio 2026 (VALORE SEGNAPOSTO da sostituire con il dato ufficiale)"
+        source_name: "ISTAT — Rivaluta, coefficienti per la rivalutazione monetaria"
+        publisher: "Istituto Nazionale di Statistica"
+        publication_date: "2026-03-16"
+        url: "https://rivaluta.istat.it"
+        official: true

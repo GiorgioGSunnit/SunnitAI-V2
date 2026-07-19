@@ -18,6 +18,10 @@ class ParameterValue(BaseModel):
     citations: List[Citation] = Field(default_factory=list)
     official: bool = False
     last_verified_at: Optional[str] = None
+    # Data-quality marks for values shipped as schema examples awaiting a
+    # human check against the official source (see docs/TO_VERIFY.md).
+    verified: Optional[bool] = None
+    placeholder: bool = False
 
     @field_validator("last_verified_at", mode="before")
     @classmethod

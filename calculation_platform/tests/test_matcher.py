@@ -33,6 +33,18 @@ def test_gibberish_returns_no_match():
     assert response.candidates == []
 
 
+def test_all_generic_sentence_returns_no_match():
+    response = match_query("quanto costa", _definitions())
+    assert response.status == "no_match"
+    assert response.candidates == []
+
+
+def test_generic_sentence_with_unrelated_domain_returns_no_match():
+    response = match_query("quanto dista la luna dalla terra", _definitions())
+    assert response.status == "no_match"
+    assert response.candidates == []
+
+
 def test_matched_terms_are_reported_for_explainability():
     response = match_query("calcolo irpef", _definitions())
     top = response.candidates[0]
@@ -62,3 +74,36 @@ def test_phrase_hit_outscores_single_token_overlap():
     assert response.candidates[0].calculator_id == "business.loan_payment"
     if len(response.candidates) > 1:
         assert response.candidates[0].score > response.candidates[1].score
+
+
+def test_penal_adjacent_offences_are_not_routed_to_simple_drafts():
+    checks = {
+        "furto in abitazione": "legal_it.furto_pena_draft",
+        "omicidio colposo": "legal_it.omicidio_pena_draft",
+        "omicidio stradale": "legal_it.omicidio_pena_draft",
+    }
+    for sentence, blocked_id in checks.items():
+        response = match_query(sentence, _definitions())
+        assert response.status in ("no_match", "matched", "ambiguous")
+        assert all(c.calculator_id != blocked_id for c in response.candidates)
+
+
+def test_lawyer_compensation_does_not_rank_court_tax_first():
+    response = match_query(
+        "compenso avvocato per una causa civile da 30000 euro", _definitions()
+    )
+    assert response.candidates[0].calculator_id == "legal_it.compensi_dm55"
+
+
+def test_furto_home_negative_examples_cover_past_tense():
+    for sentence in (
+        "furto in abitazione",
+        "furto in casa",
+        "rubare in casa",
+        "ha rubato in casa",
+    ):
+        response = match_query(sentence, _definitions())
+        assert all(
+            candidate.calculator_id != "legal_it.furto_pena_draft"
+            for candidate in response.candidates
+        )

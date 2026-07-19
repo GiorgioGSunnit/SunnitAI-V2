@@ -27,7 +27,8 @@ tags:
 intent_examples:
   - pena per rapina
   - che pena rischia un rapinatore
-  - rapina a mano armata pena
+negative_examples:
+  - rapina a mano armata
 required_context:
   - numero di circostanze aggravanti e attenuanti comuni confermate dall'avvocato
 ambiguity_notes: >

@@ -60,6 +60,8 @@ class CalculatorDefinition(BaseModel):
     # only applies from some date (e.g. a tax introduced/repealed).
     applicable_from: Optional[date] = None
     applicable_to: Optional[date] = None
+    # Stamped at registry load time from the strategy class; formula packs must not set it.
+    requires_period: bool = False
     output_unit: Optional[str] = None  # e.g. "EUR"
     inputs: List[InputSpec] = Field(default_factory=list)
     parameters: List[ParameterRef] = Field(default_factory=list)

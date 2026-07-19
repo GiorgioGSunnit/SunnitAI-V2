@@ -30,6 +30,9 @@ EXPECTED_CALCULATOR_IDS = {
     "legal_it.contributo_unificato_civile",
     "legal_it.termini_processuali_civili",
     "legal_it.ravvedimento_operoso",
+    "legal_it.rivalutazione_istat",
+    "legal_it.rivalutazione_interessi_1712",
+    "legal_it.compensi_dm55",
 }
 
 
@@ -55,8 +58,14 @@ def test_registry_list_all_includes_keywords_for_matching(registry):
 def test_registry_get_returns_full_definition(registry):
     definition = registry.get("legal_it.irpef")
     assert definition.strategy == "progressive_brackets"
+    assert definition.requires_period is False
     assert definition.jurisdiction == "IT"
     assert len(definition.examples) >= 1
+
+
+def test_registry_stamps_requires_period_from_strategy(registry):
+    assert registry.get("legal_it.legal_interest").requires_period is True
+    assert registry.get("business.invoice_total").requires_period is False
 
 
 def test_registry_get_raises_structured_error_for_unknown_id(registry):

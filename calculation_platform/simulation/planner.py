@@ -99,7 +99,7 @@ def plan_sentence(sentence: str, definitions: Iterable[CalculatorDefinition]) ->
         spec.name for spec in definition.inputs
         if spec.required and spec.name not in inputs
     ]
-    if definition.strategy == "date_split_interest" and values["period"] is None:
+    if definition.requires_period and values["period"] is None:
         missing.append("period")
 
     common = {

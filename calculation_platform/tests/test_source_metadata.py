@@ -36,7 +36,11 @@ def test_every_legal_parameter_value_carries_sourced_citations():
             continue
         for pv in entries:
             assert pv.source, f"{parameter_id} entry from {pv.effective_from} has no source"
-            assert pv.official, f"{parameter_id} entry from {pv.effective_from} not marked official"
+            # Placeholder schema values (verified: false / placeholder: true)
+            # must NOT claim official status — that's the whole point of the
+            # mark — but they still have to cite the authoritative series.
+            if not pv.placeholder:
+                assert pv.official, f"{parameter_id} entry from {pv.effective_from} not marked official"
             assert pv.citations, f"{parameter_id} entry from {pv.effective_from} has no citations"
             for citation in pv.citations:
                 has_pointer = bool(citation.url) or (

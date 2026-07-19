@@ -39,6 +39,10 @@ _STOPWORDS = frozenset({
     "una", "uno", "con", "per", "del", "della", "dei", "delle", "degli",
     "sul", "sulla", "sugli", "alla", "alle", "che", "non", "come", "gli",
     "nel", "nella", "the", "and", "for", "with", "how", "much",
+    "quanto", "quanta", "quanti", "quante", "cosa", "dove", "quando",
+    "chi", "perche", "pago", "paga", "calcolo", "calcola", "costa",
+    "costo", "devo", "deve", "vorrei", "sapere", "pena", "pene",
+    "rischia", "rischio", "rischiano", "reato",
 })
 
 
@@ -128,7 +132,7 @@ def match_query(query: str, definitions: Iterable[CalculatorDefinition]) -> Matc
             ambiguity_notes=definition.ambiguity_notes,
             required_inputs=[_input_summary(s) for s in definition.inputs if s.required],
             optional_inputs=[_input_summary(s) for s in definition.inputs if not s.required],
-            requires_period=definition.strategy == "date_split_interest",
+            requires_period=definition.requires_period,
             supports_tax_year=bool(definition.regime_selector),
         ))
 

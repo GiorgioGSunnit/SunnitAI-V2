@@ -31,6 +31,10 @@ intent_examples:
   - pena per omicidio volontario
   - cornice edittale per omicidio
   - quanti anni si rischiano per un omicidio
+negative_examples:
+  - omicidio colposo
+  - omicidio stradale
+  - omicidio preterintenzionale
 required_context:
   - numero di circostanze aggravanti e attenuanti comuni confermate dall'avvocato
   - scenario di bilanciamento ex art. 69 quando coesistono aggravanti e attenuanti

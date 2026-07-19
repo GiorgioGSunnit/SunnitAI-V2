@@ -12,6 +12,7 @@ import yaml
 from pydantic import ValidationError as PydanticValidationError
 
 from ..schemas.calculator_definition import CalculatorDefinition
+from ..strategies import STRATEGIES
 from .definition_validator import validate_definition
 from .errors import CalculatorNotFoundError, DefinitionValidationError
 
@@ -32,6 +33,7 @@ class CalculatorRegistry:
                     details={"file": str(yml_path)},
                 ) from e
             validate_definition(definition, source_file=str(yml_path))
+            definition.requires_period = STRATEGIES[definition.strategy].requires_period
             self._definitions[definition.id] = definition
 
     def get(self, calculator_id: str) -> CalculatorDefinition:

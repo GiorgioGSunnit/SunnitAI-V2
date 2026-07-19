@@ -115,14 +115,14 @@ examples:
       years: 4
       first_registration: true
     expected_result:
-      tax_due: 768.00
+      tax_due: "768.00"
   - description: "Small lease where the calculated tax is below the legal minimum"
     inputs:
       annual_rent: 500
       years: 1
       first_registration: true
     expected_result:
-      tax_due: 67.00
+      tax_due: "67.00"
   - description: "Cedolare secca elected — registration tax not due"
     inputs:
       annual_rent: 9600
@@ -130,4 +130,4 @@ examples:
       first_registration: true
       cedolare_secca: true
     expected_result:
-      tax_due: 0.00
+      tax_due: "0.00"

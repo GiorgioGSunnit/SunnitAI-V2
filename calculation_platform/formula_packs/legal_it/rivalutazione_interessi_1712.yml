@@ -1,0 +1,113 @@
+id: legal_it.rivalutazione_interessi_1712
+name: Rivalutazione + interessi su debiti di valore (Cass. SS.UU. 1712/1995)
+category: legal_it
+strategy: foi_revaluation_interest
+version: "1"
+description: >
+  Calcolo combinato di rivalutazione monetaria e interessi legali su un
+  debito di valore secondo il criterio di Cass. SS.UU. 26/02/1995 n. 1712:
+  il capitale e rivalutato anno per anno sull'indice ISTAT FOI (senza
+  tabacchi) e gli interessi legali di ciascun anno sono calcolati sulla
+  MEDIA tra il capitale a inizio anno e il capitale rivalutato a fine anno
+  (criterio della media), per i giorni effettivi dell'anno (divisore
+  365/366). Gli interessi si accumulano separatamente e non entrano mai
+  nella base di calcolo (niente anatocismo). Anni parziali iniziale e
+  finale sono trattati pro rata sui giorni effettivi.
+  Convenzione FOI del mese finale: la catena degli indici usa il mese di
+  data_iniziale, dicembre di ogni anno intermedio e il mese di data_finale
+  (telescopica: complessivamente FOI(finale)/FOI(iniziale)).
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - rivalutazione e interessi
+  - debiti di valore
+  - cassazione 1712 1995
+  - sezioni unite 1712
+  - interessi sulla somma rivalutata
+  - criterio della media
+  - risarcimento danno rivalutazione interessi
+aliases:
+  - rivalutazione con interessi legali
+  - interessi e rivalutazione su un risarcimento
+  - calcolo 1712 del 1995
+tags:
+  - rivalutazione
+  - interessi
+  - risarcimento
+intent_examples:
+  - rivalutazione e interessi su un risarcimento danni
+  - interessi e rivalutazione su un debito di valore
+  - calcolo secondo cassazione 1712 del 1995
+required_context:
+  - data iniziale e data finale del calcolo
+ambiguity_notes: >
+  Per la sola rivalutazione senza interessi usare
+  legal_it.rivalutazione_istat; per i soli interessi legali su un debito
+  di valuta usare legal_it.legal_interest.
+inputs:
+  - name: importo
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Valore del credito alla data iniziale (in moneta di quella data)
+  - name: data_iniziale
+    type: date
+    required: true
+    description: Data di decorrenza (es. data dell'illecito) (YYYY-MM-DD)
+  - name: data_finale
+    type: date
+    required: true
+    description: Data finale del calcolo (es. data della liquidazione) (YYYY-MM-DD)
+parameters: []
+formula:
+  amount_input: importo
+  start_date_input: data_iniziale
+  end_date_input: data_finale
+  index_parameter_id: legal_it.foi_index
+  rate_parameter_id: legal_it.legal_interest_rate
+output:
+  name: totale
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Cass. civ., Sezioni Unite, 26/02/1995 n. 1712 — sui debiti di valore gli interessi si calcolano sul capitale via via rivalutato, nella pratica applicativa sulla media tra valore originario e valore rivalutato di ciascun anno"
+    source_name: "Corte di Cassazione, Sezioni Unite Civili, sentenza n. 1712 del 26 febbraio 1995 (in Gazzetta Ufficiale non pubblicata; massima ufficiale CED Cassazione)"
+    publisher: "Corte Suprema di Cassazione"
+    publication_date: "1995-02-26"
+    official: true
+  - reference: "Art. 1284 Codice Civile — Saggio degli interessi"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+warnings:
+  - "Esistono varianti giurisprudenziali del criterio 1712/1995: alcune corti applicano gli interessi al capitale progressivamente rivalutato senza operare la media annuale. Questo calcolatore applica il criterio della media."
+assumptions:
+  - "Criterio della media: gli interessi di ciascun anno sono calcolati sulla media aritmetica tra capitale a inizio anno e capitale rivalutato a fine anno."
+  - "Gli interessi non sono mai capitalizzati (nessun anatocismo, art. 1283 c.c.)."
+  - "Divisore giorni effettivi dell'anno: 365, o 366 negli anni bisestili."
+  - "Catena FOI: mese di data_iniziale -> dicembre di ogni anno intermedio -> mese di data_finale (convenzione del mese finale)."
+exclusions:
+  - "Non applica il cumulo di rivalutazione e interessi ai debiti di valuta (per quelli usare legal_it.legal_interest)."
+examples:
+  - description: >
+      Golden case con i mesi FOI SEGNAPOSTO (foi_indices.yml) su tre anni
+      con anno bisestile, cambio saggio e anni parziali: 1000 EUR dal
+      2024-11-15 al 2026-02-10. Slice 2024 (47 gg, divisore 366, saggio
+      2,5%): capitale 1000 -> 1005 (FOI 100.0 -> 100.5), media 1002.5,
+      interessi 3.2184...; slice 2025 (365 gg, saggio 2%): 1005 -> 1020
+      (FOI 100.5 -> 102.0), media 1012.5, interessi 20.25; slice 2026
+      (41 gg, divisore 365, saggio 1,6%): 1020 -> 1025 (FOI 102.0 ->
+      102.5), media 1022.5, interessi 1.8377. Totale interessi 25.31,
+      capitale rivalutato 1025.00, totale 1050.31.
+      verified_against: TODO (official calculator/source check pending)
+    inputs:
+      importo: 1000
+      data_iniziale: "2024-11-15"
+      data_finale: "2026-02-10"
+    expected_result:
+      capitale_rivalutato: "1025.00"
+      interessi_totali: "25.31"
+      totale: "1050.31"

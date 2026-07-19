@@ -137,5 +137,5 @@ def test_rapina_routes_and_computes_abbreviato():
 def test_the_three_offences_do_not_steal_each_others_sentences():
     definitions = engine.registry.definitions()
     assert plan_sentence("pena per omicidio volontario", definitions).calculator_id == CALC_ID
-    assert plan_sentence("furto in abitazione pena", definitions).calculator_id == "legal_it.furto_pena_draft"
-    assert plan_sentence("rapina a mano armata pena", definitions).calculator_id == "legal_it.rapina_pena_draft"
+    assert plan_sentence("pena per furto", definitions).calculator_id == "legal_it.furto_pena_draft"
+    assert plan_sentence("che pena rischia un rapinatore", definitions).calculator_id == "legal_it.rapina_pena_draft"

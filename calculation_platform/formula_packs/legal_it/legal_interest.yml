@@ -71,7 +71,7 @@ examples:
       start_date: "2025-06-01"
       end_date: "2025-09-30"
     expected_result:
-      interest: 66.85
+      interest: "66.85"
   - description: "Period crossing the 2025->2026 rate change (split into two segments)"
     inputs:
       capital: 10000
@@ -79,4 +79,4 @@ examples:
       start_date: "2025-10-01"
       end_date: "2026-03-31"
     expected_result:
-      interest: 89.86
+      interest: "89.86"

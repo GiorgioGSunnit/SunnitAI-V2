@@ -24,6 +24,10 @@ class CalculatorNotFoundError(PlatformError):
     code = "calculator_not_found"
 
 
+class CalculatorNotApplicableError(PlatformError):
+    code = "calculator_not_applicable"
+
+
 class DefinitionValidationError(PlatformError):
     """Raised at registry load time when a formula-pack YAML file is
     structurally invalid — e.g. references an unknown variable in an

@@ -165,7 +165,7 @@ class RavvedimentoStrategy(CalculationStrategy):
             )
             key = f"legal_interest_rate_from_{seg_start.isoformat()}"
             parameters_used[key] = ResolvedParameter(
-                name=key, value=float(seg_rate), origin="parameter_store",
+                name=key, value=seg_rate, origin="parameter_store",
                 parameter_id=interest_parameter_id, source=pv.source,
                 effective_from=pv.effective_from.isoformat(),
                 effective_to=pv.effective_to.isoformat() if pv.effective_to else None,

@@ -72,11 +72,11 @@ examples:
       annual_rate: 0.06
       months: 12
     expected_result:
-      monthly_payment: 860.66
+      monthly_payment: "860.66"
   - description: "Zero-interest loan falls back to principal / months"
     inputs:
       principal: 12000
       annual_rate: 0
       months: 12
     expected_result:
-      monthly_payment: 1000.00
+      monthly_payment: "1000.00"

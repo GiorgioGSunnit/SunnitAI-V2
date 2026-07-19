@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Dict, List
+from typing import Any, ClassVar, Dict, List
 
 
 @dataclass
@@ -21,6 +21,8 @@ class CalculationStrategy(ABC):
     declaring it in YAML; a genuinely new *shape* of calculation gets a new
     strategy class registered in strategies/__init__.py — existing
     calculators and the engine never need to change."""
+
+    requires_period: ClassVar[bool] = False
 
     def __init__(self, parameter_store):
         self.parameter_store = parameter_store

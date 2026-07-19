@@ -109,7 +109,7 @@ class SimulatedConversation:
         tool_call = self._pending.tool_call
         definition = self.engine.registry.get(tool_call.calculator_id)
 
-        needs_period = definition.strategy == "date_split_interest" and tool_call.period is None
+        needs_period = definition.requires_period and tool_call.period is None
         if needs_period:
             return Reply(
                 kind="question",

@@ -34,6 +34,10 @@ intent_examples:
 negative_examples:
   - spese legali dell'avvocato
   - compenso dell'avvocato per la causa
+  - compenso avvocato
+  - parcella avvocato
+  - quanto costa l'avvocato
+  - tfr
 ambiguity_notes: >
   Da non confondere con i compensi forensi (parcella dell'avvocato) o con
   le altre spese di giustizia (anticipazioni forfettarie, diritti di copia).
@@ -121,27 +125,27 @@ examples:
     inputs:
       valore_causa: 15000
     expected_result:
-      contributo_dovuto: 237.00
+      contributo_dovuto: "237.00"
   - description: "Stessa causa in appello -> aumento della metà"
     inputs:
       valore_causa: 15000
       grado: appello
     expected_result:
-      contributo_dovuto: 355.50
+      contributo_dovuto: "355.50"
   - description: "Causa di valore indeterminabile -> scaglione 26.000-52.000"
     inputs:
       valore_indeterminabile: true
     expected_result:
-      contributo_dovuto: 518.00
+      contributo_dovuto: "518.00"
   - description: "Causa da 600.000 euro in cassazione -> ultimo scaglione raddoppiato"
     inputs:
       valore_causa: 600000
       grado: cassazione
     expected_result:
-      contributo_dovuto: 3372.00
+      contributo_dovuto: "3372.00"
   - description: "Procedimento esente"
     inputs:
       valore_causa: 15000
       esente: true
     expected_result:
-      contributo_dovuto: 0.00
+      contributo_dovuto: "0.00"

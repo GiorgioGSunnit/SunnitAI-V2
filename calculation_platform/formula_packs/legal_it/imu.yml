@@ -28,6 +28,12 @@ intent_examples:
   - calcolo dell'imu sulla seconda casa
   - imu sulla rendita catastale
   - quanto pago di imu quest'anno
+negative_examples:
+  # A theft narrative mentioning a house is a penal question, not a
+  # property-tax one — "casa" alone must not pull it here.
+  - furto in casa
+  - rubato in casa
+  - rubare in casa
 required_context:
   - aliquota IMU deliberata dal comune per l'anno di riferimento
   - moltiplicatore catastale della categoria dell'immobile (es. 160 per gruppo A escluso A/10)
@@ -86,4 +92,4 @@ examples:
       moltiplicatore: 160
       aliquota: 0.0086
     expected_result:
-      imposta_dovuta: 722.40
+      imposta_dovuta: "722.40"

@@ -19,6 +19,9 @@ from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
+from .api.routes import calculate_and_persist
+from .schemas.calculation_request import CalculationRequest
+
 ui_router = APIRouter()
 _engine = None
 _conversation = None
@@ -75,11 +78,20 @@ def plan(payload: PlanRequest) -> Dict[str, Any]:
 @ui_router.post("/simulate/chat")
 def simulate_chat(payload: ChatMessage) -> Dict[str, Any]:
     reply = _get_conversation().send(payload.message)
+    calculation = reply.calculation
+    if reply.calculation and reply.tool_call:
+        request = CalculationRequest(
+            calculator_id=reply.tool_call.calculator_id,
+            inputs={k: v for k, v in reply.tool_call.inputs.items()},
+            tax_year=reply.tool_call.tax_year,
+            period=reply.tool_call.period,
+        )
+        calculation = calculate_and_persist(request)
     return {
         "kind": reply.kind,
         "text": reply.text,
         "tool_call": asdict(reply.tool_call) if reply.tool_call else None,
-        "calculation": reply.calculation.model_dump() if reply.calculation else None,
+        "calculation": calculation.model_dump() if calculation else None,
         "plan": reply.plan.model_dump() if reply.plan else None,
     }
 
@@ -172,6 +184,10 @@ _PAGE = """
   .error { color: var(--no_match); }
   .warning { color: var(--question); }
   .citation { color: #1a4d8f; }
+  .report-link { display: inline-block; margin-top: 8px; font-size: 12.5px; color: var(--accent); }
+  .history-actions { display: flex; gap: 8px; align-items: center; }
+  .history-actions a { color: var(--accent); font-size: 12.5px; }
+  .history-actions button { padding: 4px 8px; border-radius: 8px; font-size: 12px; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
   td, th { border: 1px solid var(--border); padding: 4px 8px; font-size: 13px; text-align: left; }
 </style>
@@ -246,12 +262,34 @@ _PAGE = """
   </div>
 </details>
 
+<details class="section" id="history_section">
+  <summary>&#128196; Storico calcoli</summary>
+  <div class="inner">
+    <p class="hint">Ultimi calcoli salvati, con report stampabile e replay deterministico.</p>
+    <button onclick="loadHistory()">Aggiorna</button>
+    <div id="history_results"></div>
+    <div id="history_replay"></div>
+  </div>
+</details>
+
 <script>
 let definitions = {};
 
 const KIND_LABELS = {
   answer: 'risposta', question: 'domanda', ambiguous: 'ambiguo', no_match: 'nessun calcolo'
 };
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  }[ch]));
+}
+
+function reportLink(requestId) {
+  if (!requestId) return '';
+  const encoded = encodeURIComponent(requestId);
+  return `<a class="report-link" href="/calculations/${encoded}/report" target="_blank" rel="noopener">Apri report</a>`;
+}
 
 async function loadCalculators() {
   const res = await fetch('/calculators');
@@ -283,7 +321,7 @@ async function loadDefinition() {
 
   document.getElementById('description').textContent = def.description || '';
   document.getElementById('period-fieldset').style.display =
-    def.strategy === 'date_split_interest' ? 'block' : 'none';
+    def.requires_period ? 'block' : 'none';
 
   const container = document.getElementById('inputs');
   container.innerHTML = def.inputs.map(inp => {
@@ -315,6 +353,7 @@ function appendChat(who, text, payload, kind) {
              <pre>${JSON.stringify(payload.tool_call, null, 2)}</pre></details>`;
   }
   if (payload && payload.calculation) {
+    html += reportLink(payload.calculation.request_id);
     html += `<details><summary>[2] Payload piattaforma &rarr; LLM</summary>
              <pre>${JSON.stringify(payload.calculation, null, 2)}</pre></details>`;
   }
@@ -406,10 +445,12 @@ function renderResult(body, ok) {
   const el = document.getElementById('output');
   if (!ok || body.status === 'error') {
     el.innerHTML = `<p class="error">Errore: ${(body.errors || [body.detail || 'errore sconosciuto']).map(e => e.message || e).join('; ')}</p>
+                     ${reportLink(body.request_id)}
                      <pre class="out">${JSON.stringify(body, null, 2)}</pre>`;
     return;
   }
-  let html = '<table>' + Object.entries(body.result).map(
+  let html = reportLink(body.request_id);
+  html += '<table>' + Object.entries(body.result).map(
     ([k, v]) => `<tr><th>${k}</th><td>${typeof v === 'object' ? JSON.stringify(v) : v}</td></tr>`
   ).join('') + '</table>';
   if (body.steps && body.steps.length) {
@@ -472,11 +513,57 @@ async function runCalculation() {
   renderResult(body, res.ok);
 }
 
+async function loadHistory() {
+  const container = document.getElementById('history_results');
+  container.innerHTML = '<p class="hint">Caricamento...</p>';
+  try {
+    const res = await fetch('/calculations?limit=50');
+    const rows = await res.json();
+    if (!rows.length) {
+      container.innerHTML = '<p class="hint">Nessun calcolo salvato.</p>';
+      return;
+    }
+    container.innerHTML = '<table><thead><tr>' +
+      '<th>created_at</th><th>calculator_id</th><th>status</th><th>request_id</th><th>azioni</th>' +
+      '</tr></thead><tbody>' + rows.map(row => {
+        const encoded = encodeURIComponent(row.request_id);
+        return `<tr>
+          <td>${escapeHtml(row.created_at)}</td>
+          <td>${escapeHtml(row.calculator_id)}</td>
+          <td>${escapeHtml(row.status)}</td>
+          <td>${escapeHtml(row.request_id)}</td>
+          <td><span class="history-actions">
+            <a href="/calculations/${encoded}/report" target="_blank" rel="noopener">report</a>
+            <button onclick="replayHistory('${encoded}')">replay</button>
+          </span></td>
+        </tr>`;
+      }).join('') + '</tbody></table>';
+  } catch (e) {
+    container.innerHTML = `<p class="error">Errore caricando lo storico: ${escapeHtml(e)}</p>`;
+  }
+}
+
+async function replayHistory(encodedRequestId) {
+  const output = document.getElementById('history_replay');
+  output.innerHTML = '<p class="hint">Replay in corso...</p>';
+  try {
+    const res = await fetch(`/calculations/${encodedRequestId}/replay`, { method: 'POST' });
+    const body = await res.json();
+    output.innerHTML = `<h4>Replay: matches = ${escapeHtml(body.matches)}</h4>` +
+      `<pre class="out">${escapeHtml(JSON.stringify(body.replayed_result || body, null, 2))}</pre>`;
+  } catch (e) {
+    output.innerHTML = `<p class="error">Errore durante il replay: ${escapeHtml(e)}</p>`;
+  }
+}
+
 document.getElementById('match_query').addEventListener('keydown', e => {
   if (e.key === 'Enter') runMatch();
 });
 document.getElementById('chat_input').addEventListener('keydown', e => {
   if (e.key === 'Enter') sendChat();
+});
+document.getElementById('history_section').addEventListener('toggle', e => {
+  if (e.target.open) loadHistory();
 });
 loadCalculators();
 showWelcome();

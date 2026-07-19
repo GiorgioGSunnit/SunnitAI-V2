@@ -11,6 +11,7 @@ structured CalculationError — callers never see a raw Python exception.
 
 from datetime import date
 
+from ..resolvers.date_parameter_resolver import describe_as_of_resolution
 from ..resolvers.parameter_store import ParameterStore
 from ..schemas.calculation_request import CalculationRequest
 from ..schemas.calculation_result import CalculationResult
@@ -18,7 +19,7 @@ from ..schemas.citation import Citation
 from ..schemas.error import CalculationError
 from ..schemas.warning import Warning as CalcWarning
 from ..strategies import STRATEGIES
-from .errors import PlatformError
+from .errors import CalculatorNotApplicableError, InputValidationError, PlatformError
 from .registry import CalculatorRegistry
 from .result_builder import to_jsonable
 from .validators import validate_inputs
@@ -52,9 +53,19 @@ class CalculationEngine:
             return _error(e, raw_inputs=request.inputs)
 
         try:
+            self._ensure_applicable(definition, request)
+        except PlatformError as e:
+            return _error(e, raw_inputs=request.inputs)
+
+        try:
             validated = validate_inputs(definition, request.inputs)
         except PlatformError as e:
             return _error(e, raw_inputs=request.inputs)
+
+        try:
+            self._ensure_period_present(definition, request)
+        except PlatformError as e:
+            return _error(e, raw_inputs=request.inputs, inputs_used=validated.values)
 
         # definition_validator already guarantees definition.strategy is a
         # known key at registry-load time, so a lookup miss here would be
@@ -92,6 +103,55 @@ class CalculationEngine:
             warnings=warnings,
             assumptions=assumptions,
         )
+
+    def _ensure_applicable(self, definition, request: CalculationRequest) -> None:
+        as_of_info = describe_as_of_resolution(request)
+        as_of = date.fromisoformat(as_of_info["as_of_date"])
+        if definition.applicable_from and as_of < definition.applicable_from:
+            raise self._not_applicable_error(definition, as_of_info)
+        if definition.applicable_to and as_of > definition.applicable_to:
+            raise self._not_applicable_error(definition, as_of_info)
+
+    def _not_applicable_error(self, definition, as_of_info) -> CalculatorNotApplicableError:
+        as_of_date = as_of_info["as_of_date"]
+        source = as_of_info["source"]
+        source_labels = {
+            "explicit_as_of_date": "dalla as_of_date esplicita della richiesta",
+            "derived_from_tax_year": "dal tax_year della richiesta",
+            "defaulted_to_today": "dalla data odierna perche la richiesta non indica as_of_date o tax_year",
+        }
+        source_label = source_labels.get(source, f"dalla sorgente {source}")
+        return CalculatorNotApplicableError(
+            (
+                f"Il calcolatore {definition.id!r} non e applicabile alla data {as_of_date}; "
+                f"la data e stata determinata {source_label}."
+            ),
+            details={
+                "applicable_from": definition.applicable_from.isoformat() if definition.applicable_from else None,
+                "applicable_to": definition.applicable_to.isoformat() if definition.applicable_to else None,
+                "as_of_date": as_of_date,
+                "as_of_source": source,
+            },
+        )
+
+    def _ensure_period_present(self, definition, request: CalculationRequest) -> None:
+        if definition.requires_period and request.period is None:
+            raise InputValidationError(
+                f"Per calcolare {definition.name!r} serve il periodo di riferimento.",
+                details={
+                    "missing_inputs": ["period"],
+                    "missing": [{
+                        "name": "period",
+                        "type": "period",
+                        "required": True,
+                        "description": "Periodo di riferimento del calcolo (request.period)",
+                        "fields": [
+                            {"name": "start_date", "type": "date", "required": True},
+                            {"name": "end_date", "type": "date", "required": True},
+                        ],
+                    }],
+                },
+            )
 
     def _parameter_verification_warnings(self, parameters_used):
         warnings = []

@@ -74,4 +74,4 @@ examples:
       retribuzione_mensile_globale: 1800
       mesi_preavviso: 1.5
     expected_result:
-      importo_indennita: 2700.00
+      importo_indennita: "2700.00"

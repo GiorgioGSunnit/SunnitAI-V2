@@ -130,24 +130,24 @@ examples:
       scadenza_originaria: "2026-06-30"
       data_pagamento: "2026-07-10"
     expected_result:
-      totale_da_versare: 10087.71
-      sanzione_ridotta: 83.33
-      interessi: 4.38
+      totale_da_versare: "10087.71"
+      sanzione_ridotta: "83.33"
+      interessi: "4.38"
   - description: "Ravvedimento intermedio: 5.000 euro con 60 giorni di ritardo"
     inputs:
       tributo_non_versato: 5000
       scadenza_originaria: "2026-01-31"
       data_pagamento: "2026-04-01"
     expected_result:
-      totale_da_versare: 5082.59
-      sanzione_ridotta: 69.44
-      interessi: 13.15
+      totale_da_versare: "5082.59"
+      sanzione_ridotta: "69.44"
+      interessi: "13.15"
   - description: "Ritardo a cavallo d'anno: interessi divisi tra saggio 2025 (2%) e 2026 (1,6%)"
     inputs:
       tributo_non_versato: 8000
       scadenza_originaria: "2025-11-30"
       data_pagamento: "2026-02-28"
     expected_result:
-      totale_da_versare: 8145.39
-      sanzione_ridotta: 111.11
-      interessi: 34.28
+      totale_da_versare: "8145.39"
+      sanzione_ridotta: "111.11"
+      interessi: "34.28"

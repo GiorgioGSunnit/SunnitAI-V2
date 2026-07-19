@@ -86,10 +86,10 @@ examples:
       taxable_income: 42000
     tax_year: 2026
     expected_result:
-      gross_tax: 11060.00
+      gross_tax: "11060.00"
   - description: "Same income under the 2024 brackets (23/35/43) for comparison"
     inputs:
       taxable_income: 42000
     tax_year: 2024
     expected_result:
-      gross_tax: 11340.00
+      gross_tax: "11340.00"

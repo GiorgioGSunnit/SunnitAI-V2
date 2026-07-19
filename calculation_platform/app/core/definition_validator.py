@@ -18,13 +18,16 @@ from .errors import DefinitionValidationError
 from .result_builder import ROUNDING_MODES
 from .safe_evaluator import UnsafeExpressionError, extract_variable_names
 
-_KNOWN_INPUT_TYPES = {"decimal", "integer", "boolean", "string", "date"}
+_KNOWN_INPUT_TYPES = {"decimal", "integer", "boolean", "string", "date", "string_list"}
 
 _REQUIRED_FORMULA_KEYS = {
     "expression": ["expression"],
     "progressive_brackets": ["base_input", "brackets_parameter"],
     "percentage_of_base": ["base", "rate_parameter"],
     "date_split_interest": ["rate_parameter_id"],
+    "foi_revaluation": ["index_parameter_id"],
+    "foi_revaluation_interest": ["index_parameter_id", "rate_parameter_id"],
+    "dm55_fees": ["table_parameter_id", "amount_input", "phases_input"],
     "decision_table": ["rules"],
     "penal_range_draft": ["base_min_years", "base_max_years"],
     "table_lookup": ["table_parameter", "amount_input"],

@@ -83,4 +83,4 @@ examples:
       aliquota_lavoratore: 0.0919
       aliquota_datore_lavoro: 0.2381
     expected_result:
-      contributo_totale: 660.00
+      contributo_totale: "660.00"

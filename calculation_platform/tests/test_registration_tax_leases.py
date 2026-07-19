@@ -9,7 +9,7 @@ def test_ordinary_lease_applies_two_percent():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["tax_due"] == 768.00
+    assert result.result["tax_due"] == "768.00"
 
 
 def test_first_registration_applies_minimum_of_67():
@@ -19,7 +19,7 @@ def test_first_registration_applies_minimum_of_67():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["tax_due"] == 67.00
+    assert result.result["tax_due"] == "67.00"
 
 
 def test_non_first_registration_below_minimum_warns_instead_of_flooring():
@@ -29,7 +29,7 @@ def test_non_first_registration_below_minimum_warns_instead_of_flooring():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["tax_due"] == 10.00
+    assert result.result["tax_due"] == "10.00"
     messages = [w.message for w in result.warnings]
     assert any("subsequent-year" in m for m in messages)
 
@@ -41,7 +41,7 @@ def test_cedolare_secca_returns_zero_with_warning():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["tax_due"] == 0.00
+    assert result.result["tax_due"] == "0.00"
     messages = [w.message for w in result.warnings]
     assert any("cedolare secca" in m for m in messages)
 
@@ -55,7 +55,7 @@ def test_tax_exactly_at_minimum_boundary_is_not_flagged_as_clamped():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["tax_due"] == 67.00
+    assert result.result["tax_due"] == "67.00"
     assert not any(s.get("type") == "minimum_applied" for s in result.steps)
 
 
@@ -66,7 +66,7 @@ def test_zero_rent_with_first_registration_still_floors_to_minimum():
     )
     result = engine.calculate(request)
     assert result.status == "success"
-    assert result.result["tax_due"] == 67.00
+    assert result.result["tax_due"] == "67.00"
 
 
 def test_parameters_used_includes_source_citation():

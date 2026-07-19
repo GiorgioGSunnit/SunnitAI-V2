@@ -18,6 +18,8 @@ keywords:
   - liquidazione
   - quota tfr
   - rivalutazione tfr
+  - tfr per retribuzione
+  - retribuzione annua tfr
 aliases:
   - quanto tfr ho maturato
   - calcolo del tfr
@@ -28,6 +30,8 @@ tags:
   - lavoro
 intent_examples:
   - calcolo del tfr maturato
+  - calcolo tfr per retribuzione
+  - tfr per una retribuzione annua
   - rivalutazione del fondo tfr
   - quanto tfr matura in un anno
 required_context:
@@ -79,11 +83,11 @@ examples:
     inputs:
       retribuzione_lorda_annua: 30000
     expected_result:
-      fondo_totale: 2222.22
+      fondo_totale: "2222.22"
   - description: "30.000€ con fondo pregresso di 5.000€ e inflazione ISTAT al 3%"
     inputs:
       retribuzione_lorda_annua: 30000
       fondo_precedente: 5000
       tasso_inflazione_istat: 0.03
     expected_result:
-      fondo_totale: 7409.72
+      fondo_totale: "7409.72"

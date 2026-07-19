@@ -19,9 +19,9 @@ def test_complete_irpef_sentence_is_ready_to_calculate():
     plan = _plan("calcolo irpef su 42000 euro nel 2026")
     assert plan.status == "ready_to_calculate"
     assert plan.calculator_id == "legal_it.irpef"
-    assert plan.inputs == {"taxable_income": 42000.0}
-    assert plan.normalized_inputs == {"taxable_income": 42000.0}
-    assert plan.extracted_values["numbers"] == [42000.0]
+    assert plan.inputs == {"taxable_income": "42000"}
+    assert plan.normalized_inputs == {"taxable_income": "42000"}
+    assert plan.extracted_values["numbers"] == ["42000"]
     assert plan.tax_year == 2026
     assert plan.missing_inputs == []
     assert plan.confidence in ("high", "medium")
@@ -50,7 +50,7 @@ def test_ravvedimento_one_shot_is_ready_to_calculate():
     plan = _plan("ravvedimento operoso per 1000 euro di iva scadenza 2026-06-16 pagamento 2026-07-01")
     assert plan.status == "ready_to_calculate"
     assert plan.calculator_id == "legal_it.ravvedimento_operoso"
-    assert plan.inputs["tributo_non_versato"] == 1000.0
+    assert plan.inputs["tributo_non_versato"] == "1000"
     assert plan.inputs["scadenza_originaria"] == "2026-06-16"
     assert plan.inputs["data_pagamento"] == "2026-07-01"
     assert plan.missing_inputs == []
@@ -86,7 +86,7 @@ def test_optional_date_inputs_are_not_auto_filled():
 
 
 def test_vague_sentence_is_ambiguous_not_guessed():
-    plan = _plan("quanto costa?")
+    plan = _plan("quanto pago di interessi")
     assert plan.status == "ambiguous"
     assert plan.calculator_id is None
     assert 2 <= len(plan.candidates) <= 3
@@ -95,6 +95,8 @@ def test_vague_sentence_is_ambiguous_not_guessed():
 def test_unrelated_requests_are_no_match():
     assert _plan("che tempo farà domani a Milano?").status == "no_match"
     assert _plan("scrivimi una lettera di disdetta").status == "no_match"
+    assert _plan("quanto costa?").status == "no_match"
+    assert _plan("quanto dista la luna dalla terra?").status == "no_match"
 
 
 def test_negative_example_blocks_cedolare_secca_misrouting():
@@ -117,6 +119,87 @@ def test_genuine_registration_tax_query_survives_the_negative_example():
     assert plan.calculator_id == "legal_it.registration_tax_leases"
 
 
+def test_penal_adjacent_offences_do_not_route_to_simple_drafts():
+    for sentence in (
+        "furto in abitazione",
+        "furto in abitazione pena",
+        "pena per furto in abitazione",
+        "omicidio colposo",
+        "omicidio colposo pena",
+        "omicidio stradale",
+        "rapina a mano armata pena",
+    ):
+        plan = _plan(sentence)
+        assert plan.status == "no_match"
+        assert plan.calculator_id is None
+        assert plan.candidates == []
+
+
+def test_penal_simple_offences_still_route_to_their_drafts():
+    furto = _plan("pena per furto")
+    assert furto.status == "needs_clarification"
+    assert furto.calculator_id == "legal_it.furto_pena_draft"
+
+    omicidio = _plan("che pena rischia per omicidio")
+    assert omicidio.status == "needs_clarification"
+    assert omicidio.calculator_id == "legal_it.omicidio_pena_draft"
+
+
+def test_furto_narrative_past_tense_routes_to_simple_draft():
+    plan = _plan("il mio assistito ha rubato un portafoglio al mercato, che pena rischia?")
+    assert plan.status == "needs_clarification"
+    assert plan.calculator_id == "legal_it.furto_pena_draft"
+    assert plan.missing_inputs == ["aggravanti_comuni", "attenuanti_comuni"]
+
+
+def test_furto_home_variants_remain_blocked():
+    for sentence in (
+        "furto in casa",
+        "rubare in casa",
+        "ha rubato in casa",
+    ):
+        plan = _plan(sentence)
+        assert plan.calculator_id != "legal_it.furto_pena_draft"
+        assert all(
+            candidate.calculator_id != "legal_it.furto_pena_draft"
+            for candidate in plan.candidates
+        )
+
+
+def test_lawyer_fee_queries_route_to_dm55():
+    precise = _plan("compenso avvocato per una causa civile da 30000 euro")
+    assert precise.status == "needs_clarification"
+    assert precise.calculator_id == "legal_it.compensi_dm55"
+    assert precise.missing_inputs == ["fasi"]
+
+    vague = _plan("quanto costa l'avvocato per una causa da 30000 euro")
+    assert vague.status in ("needs_clarification", "ambiguous")
+    if vague.status == "needs_clarification":
+        assert vague.calculator_id == "legal_it.compensi_dm55"
+    else:
+        assert vague.candidates[0].calculator_id == "legal_it.compensi_dm55"
+
+
+def test_tfr_retribution_queries_route_to_tfr():
+    for sentence in (
+        "calcolo tfr per retribuzione di 30000 euro e 10 anni",
+        "tfr per una retribuzione annua di 30000 euro",
+    ):
+        plan = _plan(sentence)
+        assert plan.status == "ready_to_calculate"
+        assert plan.calculator_id == "legal_it.tfr"
+
+
+def test_contributo_unificato_queries_remain_on_court_tax():
+    for sentence in (
+        "contributo unificato per una causa da 30000 euro",
+        "devo iscrivere a ruolo una causa da 80000 euro in tribunale, quanto pago?",
+    ):
+        plan = _plan(sentence)
+        assert plan.status == "ready_to_calculate"
+        assert plan.calculator_id == "legal_it.contributo_unificato_civile"
+
+
 def test_intent_example_routes_tasse_sul_reddito_to_irpef():
     plan = _plan("tasse sul reddito")
     assert plan.status == "needs_clarification"  # no amount given
@@ -137,11 +220,11 @@ def test_planner_normalizes_monthly_lease_amount_to_annual_rent():
     plan = _plan("imposta di registro per affitto da 800 euro al mese per 4 anni, prima registrazione")
     assert plan.status == "ready_to_calculate"
     assert plan.calculator_id == "legal_it.registration_tax_leases"
-    assert plan.extracted_values["numbers"] == [800.0, 4.0]
+    assert plan.extracted_values["numbers"] == ["800", "4"]
     assert plan.extracted_values["amount_frequency"] == "monthly"
-    assert plan.inputs["annual_rent"] == 9600.0
-    assert plan.normalized_inputs["annual_rent"] == 9600.0
-    assert plan.inputs["years"] == 4.0
+    assert plan.inputs["annual_rent"] == "9600"
+    assert plan.normalized_inputs["annual_rent"] == "9600"
+    assert plan.inputs["years"] == "4"
     assert plan.inputs["first_registration"] is True
 
 
@@ -149,15 +232,15 @@ def test_planner_normalizes_percent_values_for_rate_inputs():
     plan = _plan("totale fattura 1000 euro con iva 22")
     assert plan.status == "ready_to_calculate"
     assert plan.calculator_id == "business.invoice_total"
-    assert plan.inputs["net_amount"] == 1000.0
-    assert plan.inputs["vat_rate"] == 0.22
+    assert plan.inputs["net_amount"] == "1000"
+    assert plan.inputs["vat_rate"] == "0.22"
 
 
 def test_planner_keeps_decimal_rate_values_when_already_canonical():
     plan = _plan("totale fattura 1000 euro con iva 0,22")
     assert plan.status == "ready_to_calculate"
     assert plan.calculator_id == "business.invoice_total"
-    assert plan.inputs["vat_rate"] == 0.22
+    assert plan.inputs["vat_rate"] == "0.22"
 
 
 def test_planner_never_computes_anything():
@@ -177,7 +260,7 @@ def test_conversation_clarification_followup_completes_irpef():
     assert first.kind == "question"
     second = conversation.send("42000 euro")
     assert second.kind == "answer"
-    assert second.calculation.result["gross_tax"] == 11060.00
+    assert second.calculation.result["gross_tax"] == "11060.00"
 
 
 def test_conversation_period_followup_completes_and_splits_rates():
@@ -187,7 +270,7 @@ def test_conversation_period_followup_completes_and_splits_rates():
     assert "YYYY-MM-DD" in first.text
     second = conversation.send("dal 2025-10-01 al 2026-03-31")
     assert second.kind == "answer"
-    assert second.calculation.result["interest"] == 89.86
+    assert second.calculation.result["interest"] == "89.86"
     assert len(second.calculation.steps) == 2  # two rate segments
 
 
@@ -196,7 +279,7 @@ def test_conversation_reply_carries_the_plan():
     reply = conversation.send("calcolo irpef su 42000 euro nel 2026")
     assert reply.plan is not None
     assert reply.plan.status == "ready_to_calculate"
-    assert reply.calculation.result["gross_tax"] == 11060.00
+    assert reply.calculation.result["gross_tax"] == "11060.00"
 
 
 # ---------------------------------------------------------------------------
