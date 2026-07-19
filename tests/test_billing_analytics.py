@@ -1,5 +1,4 @@
 import asyncio
-import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -123,36 +122,24 @@ def test_build_purchase_event_ignores_zero_value_trial_invoice():
     assert build_purchase_event({"id": "in_trial", "amount_paid": 0}) is None
 
 
-def test_emit_billing_analytics_event_posts_configured_webhook(monkeypatch):
+def test_emit_billing_analytics_event_queues_for_payload_user_id(monkeypatch):
     captured = {}
 
-    class FakeResponse:
-        status = 204
+    def fake_queue_tracking_event(user_id, payload):
+        captured["user_id"] = user_id
+        captured["payload"] = payload
+        return True
 
-        def __enter__(self):
-            return self
+    monkeypatch.setattr("src.chatbot.analytics.queue_tracking_event", fake_queue_tracking_event)
 
-        def __exit__(self, *_args):
-            return False
+    payload = {"event": "free_trial", "user_id": "user_123"}
 
-    def fake_urlopen(outbound_request, timeout):
-        captured["url"] = outbound_request.full_url
-        captured["body"] = json.loads(outbound_request.data.decode("utf-8"))
-        captured["authorization"] = outbound_request.headers.get("Authorization")
-        captured["timeout"] = timeout
-        return FakeResponse()
+    assert emit_billing_analytics_event(payload) is True
+    assert captured == {"user_id": "user_123", "payload": payload}
 
-    monkeypatch.setenv("GTM_EVENT_WEBHOOK_URL", "https://gtm.example.com/events")
-    monkeypatch.setenv("GTM_EVENT_WEBHOOK_SECRET", "secret")
-    monkeypatch.setattr("src.chatbot.analytics.request.urlopen", fake_urlopen)
 
-    assert emit_billing_analytics_event({"event": "free_trial"}) is True
-    assert captured == {
-        "url": "https://gtm.example.com/events",
-        "body": {"event": "free_trial"},
-        "authorization": "Bearer secret",
-        "timeout": 2.0,
-    }
+def test_emit_billing_analytics_event_skips_payload_without_user_id():
+    assert emit_billing_analytics_event({"event": "free_trial"}) is False
 
 
 def test_stripe_webhook_emits_free_trial_from_checkout_completed(monkeypatch):

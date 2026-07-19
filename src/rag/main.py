@@ -29,10 +29,12 @@ from .graph_nodes import (
     entity_linking,
     evaluate_retrieval_quality,
     execute_cypher,
+    generate_clarifying_question,
     generate_cypher_context_only,
     generate_cypher_fallback,
     generate_cypher_intersection,
     generate_cypher_reformulation,
+    rerank_from_clarification,
     route_after_article_router,
     route_after_decompose,
     route_after_evaluation,
@@ -48,6 +50,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class AgentState(TypedDict, total=False):
+    awaiting_clarification: Optional[bool]
+    pending_sections: List[Dict[str, Any]]
     turn_count: int
     query: str
     session_language: str
@@ -152,9 +156,20 @@ def build_graph(compile_graph: bool = True):
         partial(comparison_retrieval, driver=driver, database=NEO4J_DATABASE),
     )
     graph.add_node("synthesize_answer", synthesize_answer)
+    graph.add_node("generate_clarifying_question", generate_clarifying_question)
+    graph.add_node("rerank_from_clarification", rerank_from_clarification)
 
     # Edges
-    graph.set_entry_point("decompose_query")
+    def route_entry(state):
+        return "rerank_from_clarification" if state.get("awaiting_clarification") else "decompose_query"
+
+    graph.set_conditional_entry_point(
+        route_entry,
+        {
+            "rerank_from_clarification": "rerank_from_clarification",
+            "decompose_query": "decompose_query",
+        },
+    )
     graph.add_conditional_edges(
         "decompose_query",
         route_after_decompose,
@@ -205,7 +220,17 @@ def build_graph(compile_graph: bool = True):
         route_after_comparison,
         {"synthesize": "synthesize_answer"},
     )
-    graph.add_edge("synthesize_answer", END)
+    graph.add_edge("synthesize_answer", "generate_clarifying_question")
+
+    def route_after_clarifying_question(state):
+        return "awaiting" if state.get("awaiting_clarification") else "done"
+
+    graph.add_conditional_edges(
+        "generate_clarifying_question",
+        route_after_clarifying_question,
+        {"awaiting": END, "done": END},
+    )
+    graph.add_edge("rerank_from_clarification", "synthesize_answer")
 
     return graph.compile() if compile_graph else graph
 
@@ -234,7 +259,9 @@ def run(query: str, session_language: str = "it",
         tenant_id: Optional[str] = None,
         tone: int = 2,
         standing: int = 2,
-        response_length: int = 2) -> Dict[str, Any]:
+        response_length: int = 2,
+        awaiting_clarification: bool = False,
+        pending_sections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Run a single query through the agent graph."""
     compiled = _get_compiled_graph()
     initial_state: AgentState = {
@@ -262,6 +289,8 @@ def run(query: str, session_language: str = "it",
         "tone": tone,
         "standing": standing,
         "response_length": response_length,
+        "awaiting_clarification": awaiting_clarification,
+        "pending_sections": pending_sections or [],
     }
     return compiled.invoke(initial_state)
 

@@ -61,7 +61,7 @@ from .user_store import (get_user_by_email, get_user_by_id,
     get_tenant_by_id, get_tenant_profile_full, upsert_tenant_profile,
     get_user_document_for_generation, create_studio_and_admin,
     create_user_with_invite, get_tenant_invite_code, update_user_profile,
-    get_user_settings)
+    update_user_credentials, get_user_settings)
 
 logger = logging.getLogger(__name__)
 
@@ -143,11 +143,13 @@ from .routes.totp import router as totp_router
 from .routes.users import router as users_router
 from .routes.documents import router as documents_router
 from .routes.billing import router as billing_router
+from .tracking_ws import router as tracking_router
 app.include_router(auth_router, prefix="/api")
 app.include_router(totp_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(billing_router, prefix="/api")
+app.include_router(tracking_router, prefix="/api")
 
 chatbot = ChatBot()
 
@@ -187,6 +189,7 @@ class GenerateRequest(BaseModel):
     studio_logo_path: str = Field("", description="Absolute server path to logo image file.")
     doc_type: str = Field("", description="Pre-classified document type; skips classify_document_type if provided.")
     draft: str = Field("", description="Pre-generated draft text; skips generation if provided.")
+    section_hint: str = ""
 
 
 class GenerateResponse(BaseModel):
@@ -214,6 +217,12 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Structured citation list: [{document_name, document_id, sections}].",
     )
+    awaiting_clarification: bool = Field(
+        default=False,
+        description="True when this turn's answer ends with a clarifying question and the "
+        "next user message will be used to re-rank the previously retrieved sections "
+        "instead of re-running retrieval.",
+    )
     draft: str = Field(
         default="",
         description="Pre-generated draft — used by FE when user picks system template in picker.",
@@ -233,6 +242,11 @@ class ChatResponse(BaseModel):
     generated_document_name: Optional[str] = Field(
         default=None,
         description="Original filename of the saved generated document.",
+    )
+    generation_candidates: list = Field(
+        default_factory=list,
+        description="Ranked candidate system templates ({key, label, codice, score}) when "
+        "classify_system_template finds 2+ close matches; FE should prompt the user to pick one.",
     )
 
 
@@ -274,6 +288,12 @@ class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     professional_title: Optional[str] = None
     phone: Optional[str] = None
+
+
+class CredentialsUpdateRequest(BaseModel):
+    current_password: str
+    new_password: Optional[str] = None
+    username: Optional[str] = None
 
 
 class RegisterStudioRequest(BaseModel):
@@ -391,7 +411,7 @@ def _build_clarification_message() -> str:
     )
 
 
-def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "") -> dict:
+def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "", section_hint: str = "") -> dict:
     citations = None
     if cached_sections is not None:
         sources = sorted({s["document_title"] for s in cached_sections if s.get("document_title")})
@@ -405,7 +425,7 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
             sources = []
-    gen = generate_document(message, doc_type, session_lang, citations, studio_name)
+    gen = generate_document(message, doc_type, session_lang, citations, studio_name, section_hint)
     return {"draft": gen["draft"], "case_details": gen["case_details"], "sources": sources, "doc_type": gen["doc_type"]}
 
 
@@ -572,6 +592,33 @@ async def update_me(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.put("/api/auth/me/credentials")
+async def update_credentials(
+    request: CredentialsUpdateRequest,
+    current_user: dict = Depends(require_user),
+):
+    if not request.new_password and request.username is None:
+        raise HTTPException(status_code=400, detail="Provide new_password and/or username")
+    try:
+        user = update_user_credentials(
+            user_id=current_user["sub"],
+            current_password=request.current_password,
+            new_password=request.new_password,
+            username=request.username,
+        )
+        if not user:
+            raise HTTPException(status_code=404, detail="User not found")
+        return {"ok": True}
+    except ValueError as e:
+        if "current_password_invalid" in str(e):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+        if "new_password_too_short" in str(e):
+            raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 class TenantProfileUpdateRequest(BaseModel):
     legal_name: Optional[str] = None
     display_name: Optional[str] = None
@@ -649,7 +696,11 @@ async def generate_from_user_template(
         if not elements:
             raise HTTPException(status_code=422, detail="Could not extract any text from the template")
 
-        fill_map = _fill_template_gaps(elements, request.message, carta_intestata, session_lang)
+        session_messages = [{"role": m.role, "content": m.content} for m in session.messages]
+        fill_map = _fill_template_gaps(
+            elements, request.message, carta_intestata, session_lang, session_messages,
+            docx_path=None if is_pdf else storage_path,
+        )
 
         if is_pdf:
             docx_bytes = _build_docx_from_pdf_elements(elements, fill_map)
@@ -1144,7 +1195,7 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
             }
         else:
             result = await loop.run_in_executor(
-                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, request.studio_name)
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, request.studio_name, request.section_hint)
             )
     except Exception as exc:
         logger.error("Generation error: %s", exc, exc_info=True)
@@ -1226,7 +1277,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             result = {"draft": request.draft, "doc_type": doc_type, "sources": []}
         else:
             result = await loop.run_in_executor(
-                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, "")
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached, "", request.section_hint)
             )
     except ValueError as exc:
         logger.warning("Generation catalog miss for doc_type=%r: %s", doc_type, exc)
@@ -1429,7 +1480,9 @@ def _detect_document_intent(message: str) -> list:
     return result
 
 
-def _classify_doc_intent(message: str, session_lang: str) -> str:
+def _classify_doc_intent(
+    message: str, session_lang: str, filename: str = "", default: str = "rag"
+) -> str:
     """
     Given a message that references an uploaded document, decide whether the
     user wants to:
@@ -1459,16 +1512,19 @@ def _classify_doc_intent(message: str, session_lang: str) -> str:
         "- 'rag' se la menzione del file è incidentale e la domanda riguarda altro\n"
         "Rispondi SOLO con una di queste tre parole."
     )
+    _human = message
+    if filename:
+        _human += f"\nNome file: {filename}"
     try:
         result = _call_chat(
-            [SystemMessage(content=system), HumanMessage(content=message)],
+            [SystemMessage(content=system), HumanMessage(content=_human)],
             max_tokens=5,
         ).strip().lower()
         if result in ("analyse", "generate", "rag"):
             return result
     except Exception:
         pass
-    return "rag"
+    return default
 
 
 def _classify_top_level_intent(message: str, session_lang: str) -> str:
@@ -2004,7 +2060,12 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
                 # ── ONE DOC → analyse or generate ─────────────────────────
                 _matched_doc = _matched_docs[0]
-                doc_intent = _classify_doc_intent(request.message, _session_lang)
+                doc_intent = _classify_doc_intent(
+                    request.message,
+                    _session_lang,
+                    filename=_matched_doc.original_filename,
+                    default="analyse" if getattr(_matched_doc, "document_role", "document") == "document" else "rag",
+                )
 
                 if doc_intent == "generate":
                     # Fall through to generation path — FE picker handles it
@@ -2125,7 +2186,34 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         session_lang = session.session_language
         doc_type = classify_document_type(request.message, session_lang)
         if doc_type == "unknown":
-            doc_type = classify_system_template(request.message, session_lang)
+            _template_result = classify_system_template(request.message, session_lang, top_k=5)
+            logger.info("DEBUG picker: top_k=5 result: %s", _template_result)
+            if isinstance(_template_result, str):
+                # Defensive: classify_system_template(top_k>1) is documented to always
+                # return a list, but if it ever returns a string, treat it as a single
+                # match and skip the picker logic entirely.
+                doc_type = _template_result
+            elif len(_template_result) >= 2:
+                _variant_prompt = "Quale variante preferisci?"
+                session.add_message("user", request.message)
+                if len(session.messages) == 1:
+                    session.title = _generate_session_title(request.message)
+                session.add_message("assistant", _variant_prompt)
+                chatbot._save_sessions()
+                return ChatResponse(
+                    session_id=session_id,
+                    answer=_variant_prompt,
+                    original_query=request.message,
+                    resolved_query=request.message,
+                    session_language=session_lang,
+                    status_messages=["Quale variante preferisci?"],
+                    title=session.title,
+                    generation_candidates=_template_result,
+                )
+            elif len(_template_result) == 1:
+                doc_type = _template_result[0]["key"]
+            else:
+                doc_type = "unknown"
         if doc_type == "unknown":
             clarification = _build_clarification_message()
             session.add_message("user", request.message)

@@ -9,6 +9,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import _call_chat
@@ -1734,24 +1735,279 @@ SYSTEM_TEMPLATES_BY_KEY: Dict[str, Dict[str, Any]] = {
 logger.info(f"Loaded {len(SYSTEM_TEMPLATES_CATALOG)} system templates from catalog")
 
 
-def classify_system_template(message: str, lang: str) -> str:
+_CODICE_DESCRIPTIONS = {
+    "Codice di procedura civile": "atti processuali civili: citazioni, ricorsi, memorie, opposizioni, esecuzioni, tutele cautelari",
+    "Codice di procedura penale": "atti processuali penali: difese, istanze, ricorsi, memorie penali, misure cautelari penali",
+    "Codice del processo amministrativo": "atti processuali amministrativi: ricorsi TAR, istanze sospensive, ottemperanza, accesso agli atti",
+    "Contratti e Atti Stragiudiziali": "contratti privati e atti non processuali: locazioni, polizze, lavoro, compravendite, franchising, diffide, messa in mora, verbali, contestazioni",
+    "Arbitrato e Procedure Alternative": "Arbitrato rituale e irrituale, lodi arbitrali, clausole arbitrali, ADR, mediazione arbitrale",
+}
+
+
+def _normalize_tokens(s: str) -> set:
+    """Lowercase, strip punctuation, split to tokens, drop stopwords."""
+    _STOP = {
+        "di", "del", "della", "dei", "degli", "delle", "a", "ad", "al",
+        "alla", "alle", "agli", "ai", "da", "dal", "dalla", "dai", "dagli",
+        "dalle", "in", "nel", "nella", "nei", "negli", "nelle", "su", "sul",
+        "sulla", "sui", "sugli", "sulle", "con", "per", "tra", "fra",
+        "e", "o", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
+        "che", "non", "si", "è", "uso", "ad",
+    }
+    tokens = re.sub(r"[^a-z0-9\s]", " ", s.lower()).split()
+    return {t for t in tokens if t not in _STOP and len(t) > 1}
+
+
+def _overlap_score(a: str, b: str) -> float:
+    """Jaccard-style overlap between token sets of two strings."""
+    ta, tb = _normalize_tokens(a), _normalize_tokens(b)
+    if not ta or not tb:
+        return 0.0
+    return len(ta & tb) / len(ta | tb)
+
+
+def _best_categoria_for_codice(
+    message: str, matched_codice: str, entries_in_codice: List[Dict[str, Any]]
+) -> str | None:
+    """Stage 2: classify which categoria (within one codice) the message belongs to."""
+    categorie = sorted({c for e in entries_in_codice for c in e["categorie"]})
+    categoria_system = (
+        f"Sei un classificatore di richieste di atti giuridici italiani. "
+        f"L'utente sta richiedendo un atto del {matched_codice}. Determina "
+        "a quale fase/categoria processuale appartiene la richiesta.\n\n"
+        "Categorie disponibili:\n"
+        + "\n".join(f"- {c}" for c in categorie)
+        + "\n\nREGOLE DI CLASSIFICAZIONE:\n"
+        "- Se l'utente NON specifica la fase processuale (es. non menziona "
+        "'dibattimento', 'udienza', 'appello', 'cassazione', 'indagini'), "
+        "scegli la categoria più generale, di solito '1. ATTI GENERALI DEL "
+        "DIFENSORE (TUTTE LE PARTI)' se disponibile\n"
+        "- Solo se l'utente menziona esplicitamente una fase specifica "
+        "(es. 'per il dibattimento', 'in appello', 'durante le indagini'), "
+        "scegli la categoria corrispondente a quella fase\n"
+        "- In caso di dubbio, scegli sempre la categoria più generale\n\n"
+        "Restituisci SOLO il nome esatto della categoria, nient'altro."
+    )
+    try:
+        categoria_result = _call_chat(
+            [SystemMessage(content=categoria_system), HumanMessage(content=message)],
+            max_tokens=40,
+        ).strip()
+    except Exception as e:
+        logger.warning(f"classify_system_template stage 2 failed for {matched_codice!r}: {e}")
+        return None
+    return next(
+        (c for c in categorie if c.lower() in categoria_result.lower() or categoria_result.lower() in c.lower()),
+        None,
+    )
+
+
+_STEM_SUFFIXES = ("zioni", "zione", "menti", "mento", "ali", "ale")
+
+
+def _stem_word(word: str) -> str:
+    """Strip a common Italian noun/adjective ending, only if the remaining stem is > 3 chars."""
+    for suffix in _STEM_SUFFIXES:
+        if word.endswith(suffix) and len(word) - len(suffix) > 3:
+            return word[: -len(suffix)]
+    stem = re.sub(r"[oaie]s?$", "", word)
+    if stem != word and len(stem) > 3:
+        return stem
+    return word
+
+
+def _stem_text(s: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace, then stem each word."""
+    text = re.sub(r"[^a-zà-ÿ0-9\s]", " ", s.lower())
+    words = re.sub(r"\s+", " ", text).strip().split()
+    return " ".join(_stem_word(w) for w in words)
+
+
+def _regex_match_catalog(message: str) -> List[Dict[str, Any]]:
+    """
+    Broad, no-LLM candidate matching: stems every word (> 3 chars) of the user
+    message and, separately, each catalog entry's tipo_atto and label, then
+    keeps any entry where at least one stemmed query word appears as a
+    substring of the stemmed tipo_atto or label.
+    """
+    query_stems = {w for w in _stem_text(message).split() if len(w) > 3}
+    if not query_stems:
+        return []
+
+    matches = []
+    for entry in SYSTEM_TEMPLATES_CATALOG:
+        tipo_stemmed = _stem_text(entry.get("tipo_atto", ""))
+        label_stemmed = _stem_text(entry.get("label", ""))
+        if any(qs in tipo_stemmed or qs in label_stemmed for qs in query_stems):
+            matches.append({
+                "filename": entry["filename"],
+                "tipo_atto": entry.get("tipo_atto", ""),
+                "label": entry.get("label", ""),
+                "codice": entry.get("codice", ""),
+                "description": entry.get("description", ""),
+            })
+    return matches
+
+
+def _llm_rank_candidates(message: str, candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Single LLM call to rank/filter the regex-matched candidates by relevance
+    to the user's message. On call failure or unparseable output, falls back
+    to all candidates sorted alphabetically by label.
+    """
+    options_text = "\n".join(
+        f"{i}. {c['tipo_atto']}: {c.get('description', '')}"
+        for i, c in enumerate(candidates, start=1)
+    )
+    system = (
+        "Sei un assistente legale italiano. L'utente vuole generare un "
+        "documento legale. Dato il messaggio dell'utente e la lista di tipi "
+        "di documento disponibili, restituisci SOLO un array JSON con i "
+        "numeri (1-based) di TUTTI i documenti in ordine di "
+        "rilevanza, dal più al meno pertinente. Includi tutti i documenti "
+        "nell'array, anche quelli meno pertinenti. Esempio: [2, 5, 1, 3, 4]\n\n"
+        "Documenti disponibili:\n" + options_text
+    )
+    try:
+        raw = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=message)],
+            max_tokens=200,
+        ).strip()
+        json_match = re.search(r"\[.*\]", raw, re.DOTALL)
+        indices = json.loads(json_match.group(0) if json_match else raw)
+        if not isinstance(indices, list):
+            raise ValueError(f"LLM ranking response is not a JSON array: {raw!r}")
+    except Exception as e:
+        logger.warning(f"classify_system_template LLM ranking failed: {e}")
+        return sorted(candidates, key=lambda c: c.get("label", ""))
+
+    return [
+        candidates[idx - 1]
+        for idx in indices
+        if isinstance(idx, int) and 1 <= idx <= len(candidates)
+    ]
+
+
+def _slugify(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", s.lower()).strip("-")
+
+
+# Applied (in order) to a title-cased sublabel to restore legal-citation
+# punctuation that title-casing a hyphenated slug strips out. Word-boundary
+# matched so "Cpp"/"Cpc"/"Cp" (distinct whole tokens) never collide.
+_SUBLABEL_ABBREVIATIONS = [
+    (re.compile(r"\bCpp\b"), "c.p.p."),
+    (re.compile(r"\bCpc\b"), "c.p.c."),
+    (re.compile(r"\bCp\b"), "c.p."),
+    (re.compile(r"\bArt\b"), "Art."),
+]
+
+# Tried longest-first against the START of remainder only, so "atto-di-" is
+# stripped whole rather than leaving a dangling "di-" behind.
+_SUBLABEL_PREFIX_STRIP = (
+    "atto-di-", "atto-", "per-", "di-", "del-", "della-", "delle-", "degli-",
+)
+
+# Italian prepositions/articles that .title() wrongly capitalises when they
+# appear mid-sublabel; left capitalised only as the first word.
+_SUBLABEL_LOWERCASE_WORDS = {
+    "di", "del", "della", "dei", "degli", "delle", "per", "con", "su", "sul",
+    "sulla", "in", "nel", "nella", "e", "o", "a", "al", "alla",
+}
+
+
+def _derive_sublabel(key: str, label: str) -> str:
+    """
+    Derive a sublabel from a catalog key by stripping the codice prefix (the part
+    before "__") and then the base label slug from the start of what remains.
+    E.g. key "penale__memoria-difensiva-ex-art-415-bis-cpp" with label "Memoria
+    difensiva" -> sublabel "Ex Art. 415 Bis c.p.p.". "Generale" if nothing
+    remains (the entry IS the base template).
+    """
+    remainder = key.split("__", 1)[1] if "__" in key else key
+    for prefix in _SUBLABEL_PREFIX_STRIP:
+        if remainder.startswith(prefix):
+            remainder = remainder[len(prefix):]
+            break
+    label_slug = _slugify(label)
+    if label_slug and remainder.startswith(label_slug):
+        remainder = remainder[len(label_slug):].lstrip("-")
+    if not remainder:
+        return "Generale"
+
+    words = remainder.replace("-", " ").title().split(" ")
+    sublabel = " ".join(
+        w.lower() if i > 0 and w.lower() in _SUBLABEL_LOWERCASE_WORDS else w
+        for i, w in enumerate(words)
+    )
+    for pattern, replacement in _SUBLABEL_ABBREVIATIONS:
+        sublabel = pattern.sub(replacement, sublabel)
+    # Letter-by-letter slugs (e.g. "c-p-p") survive the loop above as "C P P"
+    # since each letter is its own token -- collapse those too. Longest first
+    # so " C P P"/" C P C" don't get partially matched by " C P".
+    for old, new in ((" C P P", " c.p.p."), (" C P C", " c.p.c."), (" C P", " c.p.")):
+        sublabel = sublabel.replace(old, new)
+    return sublabel
+
+
+def classify_system_template(
+    message: str, lang: str, top_k: int = 1
+) -> str | List[Dict[str, Any]]:
     """
     3-stage LLM classification against the 383-template system catalog
     (codice -> categoria -> tipo di atto). Used as a fallback when
     classify_document_type() returns "unknown" for the legacy 20-type
     registry. Returns the matched template's key (catalog filename
     without .docx extension) or "unknown".
+
+    When top_k > 1, runs a different pipeline: a no-LLM regex/stemming pass
+    (_regex_match_catalog) finds every catalog entry that shares a stemmed
+    word with the message. 0 matches -> empty list. Exactly 1 match ->
+    returned directly as a single-item list (score 1.0). 2+ matches -> one
+    LLM call (_llm_rank_candidates) ranks/filters them by relevance; results
+    are returned in that order as {"key", "label", "codice", "sublabel",
+    "score"} dicts, with score 1.0 for the first result and -0.1 per
+    subsequent rank (floored at 0.0). top_k == 1 (the default) is completely
+    unchanged.
     """
     if not SYSTEM_TEMPLATES_CATALOG:
-        return "unknown"
+        return [] if top_k > 1 else "unknown"
 
     codici = sorted({e["codice"] for e in SYSTEM_TEMPLATES_CATALOG})
-    _CODICE_DESCRIPTIONS = {
-        "Codice di procedura civile": "atti processuali civili: citazioni, ricorsi, memorie, opposizioni, esecuzioni, tutele cautelari",
-        "Codice di procedura penale": "atti processuali penali: difese, istanze, ricorsi, memorie penali, misure cautelari penali",
-        "Codice del processo amministrativo": "atti processuali amministrativi: ricorsi TAR, istanze sospensive, ottemperanza, accesso agli atti",
-        "Contratti e Atti Stragiudiziali": "contratti privati e atti non processuali: locazioni, polizze, lavoro, compravendite, franchising, diffide, messa in mora, verbali, contestazioni",
-    }
+
+    if top_k > 1:
+        matches = _regex_match_catalog(message)
+        logger.info("DEBUG stage1 regex matches: %s", [m["tipo_atto"] for m in matches])
+        if not matches:
+            return []
+        if len(matches) == 1:
+            only = matches[0]
+            fname = only["filename"]
+            key = fname[:-5] if fname.endswith(".docx") else fname
+            label = only.get("label", "")
+            return [{
+                "key": key,
+                "label": label,
+                "codice": only["codice"],
+                "sublabel": _derive_sublabel(key, label),
+                "score": 1.0,
+            }]
+
+        ranked = _llm_rank_candidates(message, sorted(matches, key=lambda m: m.get("label", ""))[:30])
+        results = []
+        for i, entry in enumerate(ranked):
+            fname = entry["filename"]
+            key = fname[:-5] if fname.endswith(".docx") else fname
+            label = entry.get("label", "")
+            results.append({
+                "key": key,
+                "label": label,
+                "codice": entry["codice"],
+                "sublabel": _derive_sublabel(key, label),
+                "score": max(1.0 - 0.1 * i, 0.0),
+            })
+        return results
+
     codici_lines = "\n".join(
         f"- {c}: {_CODICE_DESCRIPTIONS.get(c, '')}" for c in codici
     )
@@ -1780,37 +2036,7 @@ def classify_system_template(message: str, lang: str) -> str:
         return "unknown"
 
     entries_in_codice = [e for e in SYSTEM_TEMPLATES_CATALOG if e["codice"] == matched_codice]
-    categorie = sorted({c for e in entries_in_codice for c in e["categorie"]})
-    categoria_system = (
-        f"Sei un classificatore di richieste di atti giuridici italiani. "
-        f"L'utente sta richiedendo un atto del {matched_codice}. Determina "
-        "a quale fase/categoria processuale appartiene la richiesta.\n\n"
-        "Categorie disponibili:\n"
-        + "\n".join(f"- {c}" for c in categorie)
-        + "\n\nREGOLE DI CLASSIFICAZIONE:\n"
-        "- Se l'utente NON specifica la fase processuale (es. non menziona "
-        "'dibattimento', 'udienza', 'appello', 'cassazione', 'indagini'), "
-        "scegli la categoria più generale, di solito '1. ATTI GENERALI DEL "
-        "DIFENSORE (TUTTE LE PARTI)' se disponibile\n"
-        "- Solo se l'utente menziona esplicitamente una fase specifica "
-        "(es. 'per il dibattimento', 'in appello', 'durante le indagini'), "
-        "scegli la categoria corrispondente a quella fase\n"
-        "- In caso di dubbio, scegli sempre la categoria più generale\n\n"
-        "Restituisci SOLO il nome esatto della categoria, nient'altro."
-    )
-    try:
-        categoria_result = _call_chat(
-            [SystemMessage(content=categoria_system), HumanMessage(content=message)],
-            max_tokens=40,
-        ).strip()
-    except Exception as e:
-        logger.warning(f"classify_system_template stage 2 failed: {e}")
-        return "unknown"
-
-    matched_categoria = next(
-        (c for c in categorie if c.lower() in categoria_result.lower() or categoria_result.lower() in c.lower()),
-        None,
-    )
+    matched_categoria = _best_categoria_for_codice(message, matched_codice, entries_in_codice)
     if not matched_categoria:
         return "unknown"
 
@@ -1846,27 +2072,6 @@ def classify_system_template(message: str, lang: str) -> str:
     except Exception as e:
         logger.warning(f"classify_system_template stage 3 failed: {e}")
         return "unknown"
-
-    def _normalize(s: str) -> set:
-        """Lowercase, strip punctuation, split to tokens, drop stopwords."""
-        import re as _re
-        _STOP = {
-            "di", "del", "della", "dei", "degli", "delle", "a", "ad", "al",
-            "alla", "alle", "agli", "ai", "da", "dal", "dalla", "dai", "dagli",
-            "dalle", "in", "nel", "nella", "nei", "negli", "nelle", "su", "sul",
-            "sulla", "sui", "sugli", "sulle", "con", "per", "tra", "fra",
-            "e", "o", "il", "lo", "la", "i", "gli", "le", "un", "uno", "una",
-            "che", "non", "si", "è", "uso", "ad",
-        }
-        tokens = _re.sub(r"[^a-z0-9\s]", " ", s.lower()).split()
-        return {t for t in tokens if t not in _STOP and len(t) > 1}
-
-    def _overlap_score(a: str, b: str) -> float:
-        """Jaccard-style overlap between token sets of two strings."""
-        ta, tb = _normalize(a), _normalize(b)
-        if not ta or not tb:
-            return 0.0
-        return len(ta & tb) / len(ta | tb)
 
     # Fast path: exact substring match (handles perfect LLM output)
     matched_entry = next(
@@ -1933,14 +2138,6 @@ def _build_system_template_prompt(entry: Dict[str, Any], lang: str) -> str:
     else:
         lang_instruction = ""
 
-    # Extract section headings only — don't pass skeleton content verbatim
-    # to avoid the LLM treating it as a fill-in-the-blanks form
-    section_headings_text = "\n".join(
-        f"- {s['heading']}"
-        for s in sections
-        if s.get("heading") and s["heading"] != "Campi strutturati"
-    )
-
     return (
         f"Sei un avvocato esperto di diritto processuale italiano con almeno 20 anni di esperienza. "
         f"Devi redigere un atto giuridico italiano completo e professionale del tipo '{label}' "
@@ -1985,9 +2182,16 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Campos requeridos: {json.dumps(fields, ensure_ascii=False)}\n"
             "Reglas:\n"
             "- Si un valor está explícitamente mencionado en el mensaje, úsalo exactamente\n"
-            "- Si un valor NO está explícitamente mencionado en el mensaje, usa cadena vacía \"\"\n"
-            "- NO deduzcas, NO asumas, NO inventes valores — solo lo que está escrito literalmente\n"
-            "- Datos como fechas, importes, códigos fiscales, direcciones: solo si están explícitamente presentes\n"
+            "- Deduce valores clara e inequívocamente deducibles del contexto "
+            "(ej: si el usuario escribe \"Mario Rossi como arrendatario\", asigna "
+            "\"Mario Rossi\" a cualquier campo cuyo nombre contenga \"arrendatario\"; "
+            "si tras el nombre de una persona se indica una fecha de nacimiento, "
+            "asígnala al campo de fecha de nacimiento de esa persona)\n"
+            "- Si el mensaje contiene varios sujetos con roles distintos (ej. arrendador "
+            "y arrendatario), asigna los datos de cada sujeto a los campos "
+            "correspondientes a su rol — no mezcles datos entre sujetos distintos\n"
+            "- Para los campos de fecha, normaliza al formato DD/MM/AAAA si es posible\n"
+            "- Si un valor no está presente ni es deducible, usa cadena vacía \"\"\n"
             f"Responde SOLO con el JSON, ejemplo: {{\"campo1\": \"valor1\", \"campo2\": \"\"}}"
         )
     elif lang == "en":
@@ -1997,9 +2201,15 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Required fields: {json.dumps(fields, ensure_ascii=False)}\n"
             "Rules:\n"
             "- If a value is explicitly mentioned in the message, use it exactly\n"
-            "- If a value is NOT explicitly mentioned in the message, use empty string \"\"\n"
-            "- Do NOT infer, assume, or invent values — only what is literally written\n"
-            "- Data such as dates, amounts, tax codes, addresses: only if explicitly present\n"
+            "- Infer values that are clearly and unambiguously deducible from context "
+            "(e.g. if the user writes \"Mario Rossi as tenant\", map \"Mario Rossi\" to "
+            "any field whose name contains \"tenant\"; if a birth date is given right "
+            "after a person's name, assign it to that person's birth date field)\n"
+            "- If the message contains multiple subjects with distinct roles (e.g. "
+            "landlord and tenant), assign each subject's data to the fields matching "
+            "their role — do not mix data between different subjects\n"
+            "- For date fields, normalize to DD/MM/YYYY format where possible\n"
+            "- If a value is neither present nor inferable, use empty string \"\"\n"
             f"Reply ONLY with the JSON, example: {{\"field1\": \"value1\", \"field2\": \"\"}}"
         )
     else:
@@ -2009,16 +2219,23 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             f"Campi richiesti: {json.dumps(fields, ensure_ascii=False)}\n"
             "Regole:\n"
             "- Se un valore è esplicitamente menzionato nel messaggio, usalo esattamente\n"
-            "- Se un valore NON è esplicitamente menzionato nel messaggio, usa stringa vuota \"\"\n"
-            "- NON dedurre, NON assumere, NON inventare valori — solo ciò che è scritto letteralmente\n"
-            "- Dati come date, importi, codici fiscali, indirizzi: solo se esplicitamente presenti\n"
+            "- Deduci valori chiaramente e inequivocabilmente ricavabili dal contesto "
+            "(es. se l'utente scrive \"Mario Rossi come conduttore\", assegna \"Mario Rossi\" "
+            "a qualsiasi campo il cui nome contiene \"conduttore\"; se dopo il nome di una "
+            "persona è indicata una data di nascita, assegnala al campo data di nascita "
+            "di quella persona)\n"
+            "- Se il messaggio contiene più soggetti con ruoli distinti (es. locatore e "
+            "conduttore), assegna i dati di ciascun soggetto ai campi corrispondenti al "
+            "suo ruolo — non mescolare i dati tra soggetti diversi\n"
+            "- Per i campi data, normalizza nel formato GG/MM/AAAA se possibile\n"
+            "- Se un valore non è presente né deducibile, usa stringa vuota \"\"\n"
             f"Rispondi SOLO con il JSON, esempio: {{\"campo1\": \"valore1\", \"campo2\": \"\"}}"
         )
 
     human = f"Messaggio dell'utente:\n{user_message}"
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content=human)],
-        max_tokens=400,
+        max_tokens=800,
     )
 
     text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
@@ -2082,11 +2299,132 @@ def _extract_pdf_elements(path: str) -> List[Dict]:
     return elements
 
 
+def _is_heading_paragraph(para) -> bool:
+    """A paragraph counts as a section heading if it's short and either
+    styled as a heading, written in ALL CAPS, or fully bold."""
+    text = para.text.strip()
+    if not text or len(text) >= 100:
+        return False
+    style_name = (para.style.name or "") if para.style else ""
+    if style_name.lower().startswith("heading") or style_name.lower() == "title":
+        return True
+    if text.isupper() and any(c.isalpha() for c in text):
+        return True
+    runs_with_text = [r for r in para.runs if r.text.strip()]
+    if runs_with_text and all(r.bold for r in runs_with_text):
+        return True
+    return False
+
+
+def _select_relevant_section(docx_path: str, user_message: str, lang: str) -> str | None:
+    """Identify the DOCX section heading most relevant to the user's request
+    via a single LLM call. Returns None if the document has fewer than 2
+    identifiable headings (use the whole document), or on failure."""
+    from docx import Document as _D
+    try:
+        doc = _D(docx_path)
+    except Exception as e:
+        logger.warning("_select_relevant_section: could not open %r: %s", docx_path, e)
+        return None
+
+    headings: List[str] = []
+    for para in doc.paragraphs:
+        if _is_heading_paragraph(para):
+            text = para.text.strip()
+            if text not in headings:
+                headings.append(text)
+
+    if len(headings) < 2:
+        return None
+
+    system = (
+        "Sei un assistente legale. Il documento contiene più sezioni. "
+        "Basandoti sulla richiesta dell'utente, restituisci SOLO il testo "
+        "esatto dell'intestazione della sezione più pertinente, senza nessun altro testo."
+    )
+    headings_list = "\n".join(f"{i}. {h}" for i, h in enumerate(headings, 1))
+    human = f"Richiesta utente: {user_message}\n\nIntestazioni disponibili:\n{headings_list}"
+
+    try:
+        result = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=human)],
+            max_tokens=100,
+        ).strip()
+    except Exception as e:
+        logger.warning("_select_relevant_section: LLM call failed: %s", e)
+        return None
+
+    for h in headings:
+        if h.lower() == result.lower():
+            return h
+    for h in headings:
+        if h.lower() in result.lower() or result.lower() in h.lower():
+            return h
+    return None
+
+
+def _normalize_for_hint_match(s: str) -> str:
+    """Lowercase and strip common punctuation for loose substring matching."""
+    return re.sub(r"[^\w\s]", "", s, flags=re.UNICODE).lower().strip()
+
+
+def _find_heading_by_hint(docx_path: str, section_hint: str) -> str | None:
+    """Find a DOCX paragraph whose text contains section_hint, case-insensitive
+    and ignoring common punctuation. Returns the paragraph's exact text, or None."""
+    from docx import Document as _D
+    try:
+        doc = _D(docx_path)
+    except Exception as e:
+        logger.warning("_find_heading_by_hint: could not open %r: %s", docx_path, e)
+        return None
+
+    normalized_hint = _normalize_for_hint_match(section_hint)
+    if not normalized_hint:
+        return None
+
+    for para in doc.paragraphs:
+        text = para.text.strip()
+        if text and normalized_hint in _normalize_for_hint_match(text):
+            return text
+    return None
+
+
+def _extract_section_content(docx_path: str, heading: str) -> str | None:
+    """Extract the text of one section — the matching heading paragraph
+    through the paragraph before the next heading — from a DOCX template."""
+    from docx import Document as _D
+    try:
+        doc = _D(docx_path)
+    except Exception as e:
+        logger.warning("_extract_section_content: could not open %r: %s", docx_path, e)
+        return None
+
+    paragraphs = doc.paragraphs
+    start_idx = next(
+        (i for i, p in enumerate(paragraphs) if p.text.strip().lower() == heading.strip().lower()),
+        None,
+    )
+    if start_idx is None:
+        return None
+
+    section_lines = [paragraphs[start_idx].text.strip()]
+    for para in paragraphs[start_idx + 1:]:
+        if _is_heading_paragraph(para):
+            break
+        text = para.text.strip()
+        if text:
+            section_lines.append(text)
+
+    return "\n".join(section_lines)
+
+
 def _fill_template_gaps(
     elements: List[Dict],
     user_message: str,
     carta_intestata: Optional[Dict],
     lang: str,
+    session_messages: List[Dict],
+    docx_path: Optional[str] = None,
 ) -> Dict[int, str]:
     """Ask the LLM to identify blanks in the template elements and fill them.
     Returns {element_index: replacement_text} — sparse, only changed elements."""
@@ -2107,13 +2445,16 @@ def _fill_template_gaps(
                 carta_parts.append(f"{label}: {val}")
     carta_text = "\n".join(carta_parts)
 
+    # Capped to stay within the max_tokens budget of the _call_chat below —
+    # each element line adds to the prompt, and the model also has to echo
+    # indices back in its JSON response.
     elements_text = "\n".join(
-        f"{e['index']}. {e['text']}" for e in elements[:300]
+        f"{e['index']}. {e['text']}" for e in elements[:600]
     )
 
     lang_note = {
-        "es": "Rellena los huecos también en italiano (no cambies el idioma del documento).",
-        "en": "Fill the blanks in Italian (do not change the document language).",
+        "es": "Rellena los espacios en español (no cambies el idioma del documento).",
+        "en": "Fill the blanks in English (do not change the document language).",
     }.get(lang, "")
 
     system = (
@@ -2126,6 +2467,9 @@ def _fill_template_gaps(
         "Regole:\n"
         "1. Identifica gli elementi con spazi vuoti.\n"
         "2. Compila usando le informazioni del messaggio utente e i dati dello studio.\n"
+        "2b. Per identificare il dato corretto, ragiona sul significato dell'etichetta "
+        "contestuale (es. 'Locatore:' indica il proprietario, 'Conduttore:' indica "
+        "l'inquilino, 'Data:' indica una data rilevante dal contesto).\n"
         f"3. Usa '{ph}' per qualsiasi dato non disponibile.\n"
         "4. Non includere elementi che non necessitano di modifica.\n"
         "5. Non inventare dati non forniti esplicitamente.\n"
@@ -2136,16 +2480,41 @@ def _fill_template_gaps(
         "è il testo completo della riga compilata (non solo il valore inserito)."
     )
 
-    human_parts = [f"Messaggio dell'utente:\n{user_message}"]
+    history = [m for m in (session_messages or []) if m.get("role") != "system"]
+    if history and history[-1].get("content") == user_message:
+        history = history[:-1]
+    history = history[-10:]
+    context_text = "\n".join(f"{m.get('role', '')}: {m.get('content', '')}" for m in history)
+
+    relevant_section_text = None
+    if docx_path:
+        selected_heading = _select_relevant_section(docx_path, user_message, lang)
+        if selected_heading:
+            relevant_section_text = _extract_section_content(docx_path, selected_heading)
+            if relevant_section_text:
+                relevant_section_text = f"{selected_heading}\n\n{relevant_section_text}"
+
+    human_parts = [
+        f"Contesto conversazione precedente:\n{context_text}\n\nMessaggio attuale:\n{user_message}"
+    ]
     if carta_text:
         human_parts.append(
             f"Dati dello studio (per campi relativi al firmatario/studio):\n{carta_text}"
         )
     human_parts.append(f"Elementi del documento:\n{elements_text}")
+    if relevant_section_text:
+        human_parts.insert(
+            0,
+            f"Testo esatto da usare come base:\n{relevant_section_text}\n\n"
+            "COPIA questo testo ESATTAMENTE come appare. Sostituisci SOLO i segnaposto "
+            "(__________, [DA COMPILARE], spazi vuoti dopo etichette) con i dati forniti "
+            "dall'utente. NON riscrivere, NON riformulare, NON aggiungere contenuto. "
+            "Se un dato non è disponibile, lascia il segnaposto invariato.",
+        )
 
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],
-        max_tokens=2000,
+        max_tokens=4000,
     )
     text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
     try:
@@ -2153,7 +2522,10 @@ def _fill_template_gaps(
         return {int(k): str(v) for k, v in parsed.items()}
     except (json.JSONDecodeError, ValueError):
         logger.warning("_fill_template_gaps: JSON parse failed, raw=%r", raw[:200])
-        return {}
+        raise HTTPException(
+            status_code=422,
+            detail="Il modello non ha restituito un JSON valido — riprovare.",
+        )
 
 
 def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
@@ -2221,6 +2593,7 @@ def generate_document(
     lang: str,
     citations: list = None,
     studio_name: str = "",
+    section_hint: str = "",
 ) -> Dict[str, Any]:
     """Generic document generator dispatching on doc_type via DOCUMENT_TYPE_REGISTRY.
 
@@ -2231,11 +2604,25 @@ def generate_document(
 
     system_fn = _SYSTEM_FN.get(doc_type)
     system_template_entry = None if system_fn else SYSTEM_TEMPLATES_BY_KEY.get(doc_type)
+    relevant_section_text = None
 
     if system_fn is not None:
         system_text = system_fn(lang)
         fields_dict = extract_document_fields(user_message, doc_type, lang)
     elif system_template_entry is not None:
+        filename = system_template_entry.get("filename", "")
+        if filename:
+            docx_path = os.path.join(
+                os.path.dirname(_SYSTEM_TEMPLATES_CATALOG_PATH), filename
+            )
+            if section_hint:
+                selected_heading = _find_heading_by_hint(docx_path, section_hint)
+            else:
+                selected_heading = _select_relevant_section(docx_path, user_message, lang)
+            if selected_heading:
+                relevant_section_text = _extract_section_content(docx_path, selected_heading)
+                if relevant_section_text:
+                    relevant_section_text = f"{selected_heading}\n\n{relevant_section_text}"
         system_text = _build_system_template_prompt(system_template_entry, lang)
         fields_dict = extract_system_template_fields(user_message, system_template_entry, lang)
     else:
@@ -2292,10 +2679,18 @@ def generate_document(
         f"Usa {ph} SOLO per dati non presenti né nel messaggio né nei campi strutturati. "
         f"Non aggiungere note, spiegazioni o avvertenze fuori dall'atto."
     )
+    if relevant_section_text:
+        human_content = (
+            f"Testo esatto da usare come base:\n{relevant_section_text}\n\n"
+            "COPIA questo testo ESATTAMENTE come appare. Sostituisci SOLO i segnaposto "
+            "(__________, [DA COMPILARE], spazi vuoti dopo etichette) con i dati forniti "
+            "dall'utente. NON riscrivere, NON riformulare, NON aggiungere contenuto. "
+            "Se un dato non è disponibile, lascia il segnaposto invariato.\n\n"
+        ) + human_content
 
     raw_output = _call_chat(
         [SystemMessage(content=system_content), HumanMessage(content=human_content)],
-        max_tokens=2000,
+        max_tokens=4000,
     )
 
     raw_output = re.sub(r'\[[^\]]*\]', '[DA COMPILARE]', raw_output)

@@ -52,7 +52,8 @@ class Message:
         d = {"role": self.role, "content": self.content, "timestamp": self.timestamp}
         if self.metadata:
             for key in ("citations", "document_id", "document_name", "documents",
-                        "generated_document_id", "generated_document_name"):
+                        "generated_document_id", "generated_document_name",
+                        "awaiting_clarification", "pending_sections"):
                 if key in self.metadata:
                     d[key] = self.metadata[key]
         return d
@@ -124,7 +125,8 @@ class ChatSession:
                 metadata={
                     k: m[k]
                     for k in ("citations", "document_id", "document_name", "documents",
-                              "generated_document_id", "generated_document_name")
+                              "generated_document_id", "generated_document_name",
+                              "awaiting_clarification", "pending_sections")
                     if k in m
                 } or None,
             )
@@ -431,6 +433,18 @@ class ChatBot:
         else:
             settings = get_user_settings_by_email(_FALLBACK_USER_EMAIL)
 
+        # If the previous assistant turn asked a clarifying question, this message is
+        # the user's answer — seed the graph so it re-ranks the stashed sections
+        # instead of re-running retrieval from scratch.
+        last_assistant_msg = next((m for m in reversed(session.messages) if m.role == "assistant"), None)
+        awaiting_clarification_in = bool(
+            (last_assistant_msg.metadata or {}).get("awaiting_clarification")
+        ) if last_assistant_msg else False
+        pending_sections_in = (
+            (last_assistant_msg.metadata or {}).get("pending_sections") or []
+            if awaiting_clarification_in else []
+        )
+
         # Run through the RAG pipeline
         try:
             result = rag_run(
@@ -441,11 +455,15 @@ class ChatBot:
                 tone=settings["tone"],
                 standing=settings["standing"],
                 response_length=settings["response_length"],
+                awaiting_clarification=awaiting_clarification_in,
+                pending_sections=pending_sections_in,
             )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = _strip_embeddings(result.get("references", []))
             status_messages = result.get("status_messages") or []
             citations = result.get("citations") or []
+            awaiting_clarification_out = bool(result.get("awaiting_clarification"))
+            pending_sections_out = result.get("pending_sections") or []
         except Exception as e:
             _e_str = str(e)
             if "maximum context length" in _e_str or "input_tokens" in _e_str:
@@ -464,6 +482,8 @@ class ChatBot:
             references = []
             status_messages = []
             citations = []
+            awaiting_clarification_out = False
+            pending_sections_out = []
 
         # Detect topic drift and append a note when the user switches topics mid-session
         _DRIFT_NOTES = {
@@ -519,7 +539,12 @@ class ChatBot:
                 answer += _drift_note
 
         # Record the assistant response
-        session.add_message("assistant", answer, metadata={"references": references, "citations": citations})
+        session.add_message("assistant", answer, metadata={
+            "references": references,
+            "citations": citations,
+            "awaiting_clarification": awaiting_clarification_out,
+            **({"pending_sections": pending_sections_out} if awaiting_clarification_out else {}),
+        })
         self._save_sessions()
 
         return {
@@ -531,5 +556,6 @@ class ChatBot:
             "title": session.title,
             "status_messages": status_messages,
             "citations": citations,
+            "awaiting_clarification": awaiting_clarification_out,
             "is_comparison": bool(result.get("is_comparison")),
         }

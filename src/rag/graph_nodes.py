@@ -1024,7 +1024,11 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             article_refs = kw_refs
             used_keyword_fallback = True
 
-    law_hint = _dynamic_law_hint(query, driver, database)
+    # Prefer the document already identified by _classify_query_intent
+    # (set in decompose_query). Only fall back to _dynamic_law_hint when
+    # the classifier didn't identify a document — avoids wrong-codice matches
+    # e.g. "articolo 90 del codice penale" matching "Codice di procedura penale"
+    law_hint = state.get("law_hint_doc_id") or _dynamic_law_hint(query, driver, database)
 
     # Dedicated, single-purpose article lookup — deterministic fallback when
     # neither the raw query nor the shared keyword-extraction step surfaced
@@ -1192,6 +1196,7 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     _article_law_hint = _row["id"]
         try:
             with driver.session(database=database) as session:
+                # Primary search: exact match or standard sub-node prefix
                 records = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
                     "WHERE (s.name = $article_number OR s.name STARTS WITH $article_number + '.')\n"
@@ -1204,7 +1209,40 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     user_id=user_id,
                     tenant_id=tenant_id,
                 )
-                data = [record.data() for record in records]
+                primary_data = [record.data() for record in records]
+
+                # Fallback: prefixed names (e.g. "raccolte_usi.9.0.0") —
+                # only used when primary search returns nothing, to avoid
+                # false matches on sub-nodes of other articles (e.g. "87.9")
+                if not primary_data:
+                    # Match prefixed section names like "raccolte_usi.9.0.0".
+                    # Starts with lowercase letter (rules out "87.9.0").
+                    # After the article number: either end of string or a dot
+                    # followed by anything — prevents matching "foo.91.0" when
+                    # searching for article 9. Verified in Neo4j regex engine.
+                    _prefixed_pattern = f"^[a-z][a-z0-9_]*[.]{article_number}([.].*)?$"
+                    records_fallback = session.run(
+                        "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
+                        "WHERE s.name =~ $pattern\n"
+                        "AND ($law_hint = '' OR d.id = $law_hint)\n"
+                        f"AND {_visibility_filter()}\n"
+                        "RETURN d, s LIMIT 15",
+                        pattern=_prefixed_pattern,
+                        article_ref=article_ref,
+                        article_number=article_number,
+                        law_hint=_article_law_hint,
+                        user_id=user_id,
+                        tenant_id=tenant_id,
+                    )
+                    records = records_fallback
+                else:
+                    # Wrap primary_data back into an iterable the downstream
+                    # code can call .data() on — store result directly
+                    pass
+                if primary_data:
+                    data = primary_data
+                else:
+                    data = [record.data() for record in records]
                 data = [{k: _node_to_dict(v) for k, v in row.items()} for row in data]
                 for row in data:
                     row["_source"] = "bm25"
@@ -3926,6 +3964,128 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         "references": data,
         "citations": citations,
         "status_messages": state.get("status_messages") or [],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Node: Clarification flow
+# ---------------------------------------------------------------------------
+
+
+def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
+    """When the answer draws on 2+ distinct source documents, ask the user
+    one contextual clarifying question to narrow down which context applies,
+    and stash the candidate sections so the next turn can re-rank instead of
+    re-retrieving from scratch."""
+    citations = state.get("citations") or []
+    unique_doc_names = {c.get("document_name") for c in citations if c.get("document_name")}
+    if len(unique_doc_names) < 2:
+        return {}
+
+    system = (
+        "Sei un assistente legale italiano. Hai appena risposto a una domanda legale citando più fonti diverse. "
+        "Genera UNA SOLA domanda di chiarimento in italiano, breve e specifica, che aiuti a capire quale contesto "
+        "si applica alla situazione dell'utente. La domanda deve essere contestuale alla risposta data, non generica."
+    )
+    human = (
+        f"Domanda originale: {state['query']}\n\n"
+        f"Risposta data: {state['answer']}\n\n"
+        f"Fonti citate: {[c['document_name'] for c in citations]}"
+    )
+
+    try:
+        clarifying_question = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=human)],
+            max_tokens=150,
+        ).strip()
+    except Exception as e:
+        logger.warning("generate_clarifying_question: LLM call failed: %s", e)
+        return {}
+
+    pending_sections: List[Dict[str, Any]] = [
+        {
+            "document_name": c.get("document_name"),
+            "name": s.get("name"),
+            "title": s.get("title"),
+            "plain_text": s.get("plain_text"),
+            "score": s.get("score"),
+        }
+        for c in citations
+        for s in (c.get("sections") or [])
+    ]
+
+    return {
+        "answer": state.get("answer", "") + "\n" + clarifying_question,
+        "awaiting_clarification": True,
+        "pending_sections": pending_sections,
+    }
+
+
+def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-score the sections retrieved last turn against the user's
+    clarification message, instead of re-running retrieval from scratch."""
+    pending_sections = state.get("pending_sections") or []
+    query = state.get("query", "")
+
+    if not pending_sections:
+        return {
+            "raw_result": [],
+            "context_nodes": [],
+            "awaiting_clarification": False,
+        }
+
+    system = (
+        "Sei un assistente legale italiano. L'utente ha chiarito il contesto della sua domanda. "
+        "Devi selezionare quali delle seguenti sezioni di testi legali sono rilevanti per il contesto chiarito. "
+        "Restituisci SOLO un array JSON con gli indici (0-based) delle sezioni rilevanti, in ordine di rilevanza. "
+        "Esempio: [2, 0, 4]"
+    )
+    sections_list = "\n".join(
+        f"{i}. {s.get('document_name', '')} — {s.get('title') or s.get('name') or ''}: "
+        f"{(s.get('plain_text') or '')[:200]}"
+        for i, s in enumerate(pending_sections)
+    )
+    human = f"Chiarimento utente: {query}\n\nSezioni disponibili:\n{sections_list}"
+
+    try:
+        raw = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=human)],
+            max_tokens=200,
+        )
+        text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+        indices = json.loads(text)
+        if not isinstance(indices, list):
+            raise ValueError("LLM did not return a JSON array")
+    except Exception as e:
+        logger.warning("rerank_from_clarification: LLM call/parse failed: %s", e)
+        indices = list(range(len(pending_sections)))
+
+    selected = [
+        pending_sections[i] for i in indices
+        if isinstance(i, int) and 0 <= i < len(pending_sections)
+    ]
+
+    new_raw_result = [
+        {
+            "d": {
+                "id": f"LEGAL_DOC::{s.get('document_name', '')}",
+                "name": s.get("document_name"),
+            },
+            "s": {
+                "id": f"DOCUMENT_SECTION::{s.get('document_name', '')}::{s.get('name', '')}",
+                "name": s.get("name"),
+                "title": s.get("title"),
+                "plain_text": s.get("plain_text"),
+            },
+            "_reranker_score": s.get("score"),
+        }
+        for s in selected
+    ]
+
+    return {
+        "raw_result": new_raw_result,
+        "context_nodes": new_raw_result,
+        "awaiting_clarification": False,
     }
 
 
