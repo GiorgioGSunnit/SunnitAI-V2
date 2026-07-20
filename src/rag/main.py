@@ -52,6 +52,7 @@ logger = logging.getLogger(__name__)
 class AgentState(TypedDict, total=False):
     awaiting_clarification: Optional[bool]
     pending_sections: List[Dict[str, Any]]
+    is_clarification_rerank: bool
     turn_count: int
     query: str
     session_language: str
