@@ -2781,7 +2781,6 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
     # Skip LLM evaluation when all rows come from a direct article lookup —
     # article_router matched by article number, result is already exact, no judgement needed.
     if data and all(r.get("_source") == "bm25" for r in data) and state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup"):
-        logger.info("DEBUG evaluate: skipping LLM evaluation — all rows from direct article lookup")
         return {
             **state,
             "retrieval_quality_ok": True,
@@ -2874,7 +2873,6 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
             detail={"bm25_rows_in_result": bm25_rows_in_result, "llm_verdict": head, "feedback": feedback},
         )
         bm25_doc_ids = list({r.get("d", {}).get("id", "") for r in bm25_only if r.get("d", {}).get("id")})
-        logger.info("DEBUG evaluate: bm25_override firing (article lookup), bm25_doc_ids=%r", bm25_doc_ids)
         return {
             "retrieval_quality_ok": True,
             "raw_result": bm25_only,
@@ -3417,6 +3415,8 @@ def rerank_results(query: str, rows: list, top_k: int = 12) -> list:
     """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
     if not _RERANKER_ENABLED or not rows:
         return rows
+    if all(r.get("_source") == "clarification" for r in rows):
+        return rows  # skip reranker for clarification rerank — scores already set
     import time as _time
     import requests
     t0 = _time.time()
@@ -3602,6 +3602,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     lang = _session_lang(state)
     error = state.get("execution_error") or state.get("cypher_generation_error")
     data = rerank_results(state.get("query", ""), state.get("raw_result") or [])
+    logger.info("synthesize_answer: data=%d, raw_result=%d, bm25_doc_ids=%s", len(data), len(state.get('raw_result') or []), state.get('bm25_doc_ids'))
 
     qfb = state.get("quality_feedback")
     log_cypher_event(
@@ -3902,8 +3903,6 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     filtered_citations = citations
     citations = filtered_citations
 
-    logger.info("DEBUG synthesize_answer: bm25_doc_ids=%r, citations_before_gap=%d",
-                state.get("bm25_doc_ids"), len(citations))
     # Hard stop enforcement: if the answer acknowledges a gap, clear all citations.
     # Comparison answers legitimately say "document X doesn't cover this" — skip gap detection.
     if state.get("is_comparison"):
@@ -3911,7 +3910,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     else:
         is_gap = _is_primary_gap_response(answer)
     if is_gap and citations:
-        if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")):
+        if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")) and not state.get("is_clarification_rerank"):
             citations = []
             logger.debug("Hard stop detected: citations cleared")
 
@@ -3933,7 +3932,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                             cut_pos = i + 1
                             break
                 answer = answer[:cut_pos].strip()
-                if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")):
+                if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")) and not state.get("is_clarification_rerank"):
                     citations = []
                 logger.debug("Hard stop: answer truncated after 3-sentence polite response")
                 break
@@ -3950,7 +3949,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
     # Final citation clear for primary gap responses
     if is_gap:
-        if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")):
+        if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")) and not state.get("is_clarification_rerank"):
             citations = []
 
     if citations:
@@ -3977,6 +3976,8 @@ def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
     one contextual clarifying question to narrow down which context applies,
     and stash the candidate sections so the next turn can re-rank instead of
     re-retrieving from scratch."""
+    if state.get("pending_sections"):
+        return {}
     citations = state.get("citations") or []
     unique_doc_names = {c.get("document_name") for c in citations if c.get("document_name")}
     if len(unique_doc_names) < 2:
@@ -4005,6 +4006,7 @@ def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
     pending_sections: List[Dict[str, Any]] = [
         {
             "document_name": c.get("document_name"),
+            "document_id": c.get("document_id"),
             "name": s.get("name"),
             "title": s.get("title"),
             "plain_text": s.get("plain_text"),
@@ -4036,8 +4038,8 @@ def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
 
     system = (
         "Sei un assistente legale italiano. L'utente ha chiarito il contesto della sua domanda. "
-        "Devi selezionare quali delle seguenti sezioni di testi legali sono rilevanti per il contesto chiarito. "
-        "Restituisci SOLO un array JSON con gli indici (0-based) delle sezioni rilevanti, in ordine di rilevanza. "
+        "Devi classificare le seguenti sezioni di testi legali in base alla loro rilevanza per il contesto chiarito dall'utente. "
+        "Restituisci SOLO un array JSON con TUTTI gli indici (0-based) in ordine di rilevanza, dal più al meno pertinente. Includi tutti gli indici nell'array. "
         "Esempio: [2, 0, 4]"
     )
     sections_list = "\n".join(
@@ -4068,24 +4070,33 @@ def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
     new_raw_result = [
         {
             "d": {
-                "id": f"LEGAL_DOC::{s.get('document_name', '')}",
+                "id": s.get("document_id", f"LEGAL_DOC::{s.get('document_name', '')}"),
                 "name": s.get("document_name"),
             },
             "s": {
-                "id": f"DOCUMENT_SECTION::{s.get('document_name', '')}::{s.get('name', '')}",
+                "id": f"DOCUMENT_SECTION::{s.get('document_id', '').replace('LEGAL_DOC::', '')}{'::'}{s.get('name', '')}",
                 "name": s.get("name"),
                 "title": s.get("title"),
                 "plain_text": s.get("plain_text"),
+                "score": s.get("score"),
             },
-            "_reranker_score": s.get("score"),
+            "_reranker_score": 0.9,  # treat clarification-selected sections as high-confidence
+            "_source": "clarification",
         }
         for s in selected
     ]
 
+    clarification_doc_ids = list({row["d"]["id"] for row in new_raw_result if row.get("d", {}).get("id")})
+
+    logger.info("rerank_from_clarification: returning %d rows, bm25_doc_ids=%s", len(new_raw_result), clarification_doc_ids)
+
     return {
         "raw_result": new_raw_result,
         "context_nodes": new_raw_result,
+        "bm25_doc_ids": clarification_doc_ids,
         "awaiting_clarification": False,
+        "is_clarification_rerank": True,
+        "retrieval_quality_ok": True,
     }
 
 
