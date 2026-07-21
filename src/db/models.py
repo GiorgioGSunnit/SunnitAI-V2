@@ -241,5 +241,7 @@ class TenantSubscription(Base):
     current_period_end = Column(DateTime(timezone=True), nullable=True)
     cancel_at_period_end = Column(Boolean, nullable=False, default=False)
     last_payment_status = Column(String(50), nullable=True)
+    admin_access_override = Column(String(20), nullable=True)  # allowed | blocked | null (Stripe)
+    admin_access_until = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

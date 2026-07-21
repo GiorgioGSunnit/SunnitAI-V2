@@ -3,6 +3,7 @@
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
+from typing import Literal
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +27,13 @@ class TrialExtensionRequest(BaseModel):
 
 class TrialExtensionResponse(BaseModel):
     account: dict
+
+
+class AdminAccountUpdateRequest(BaseModel):
+    user_is_active: bool
+    tenant_is_active: bool
+    access_override: Literal["inherit", "allowed", "blocked"]
+    access_through: date | None = None
 
 
 def inclusive_access_date_to_trial_end(
@@ -89,6 +97,12 @@ def _serialize_admin_account(user, tenant, profile, subscription) -> dict:
             if subscription and subscription.updated_at
             else None
         ),
+        "admin_access_override": getattr(subscription, "admin_access_override", None),
+        "admin_access_until": (
+            subscription.admin_access_until.isoformat()
+            if subscription and getattr(subscription, "admin_access_until", None)
+            else None
+        ),
     }
 
 
@@ -119,12 +133,73 @@ def _admin_account_for_tenant(db: Session, tenant_id: uuid.UUID) -> dict:
     return _serialize_admin_account(*row)
 
 
+def _admin_account_for_user(db: Session, user_id: uuid.UUID) -> dict:
+    row = (
+        db.query(User, Tenant, TenantProfile, TenantSubscription)
+        .join(Tenant, Tenant.id == User.tenant_id)
+        .outerjoin(TenantProfile, TenantProfile.tenant_id == Tenant.id)
+        .outerjoin(TenantSubscription, TenantSubscription.tenant_id == Tenant.id)
+        .filter(User.id == user_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    return _serialize_admin_account(*row)
+
+
+def _set_access_override(
+    db: Session,
+    tenant_id: uuid.UUID,
+    mode: str,
+    access_until: datetime | None,
+) -> TenantSubscription:
+    subscription = crud.get_tenant_subscription(db, tenant_id)
+    if not subscription:
+        subscription = crud.upsert_tenant_subscription(
+            db,
+            tenant_id,
+            status="inactive",
+            seats=1,
+        )
+    subscription.admin_access_override = None if mode == "inherit" else mode
+    subscription.admin_access_until = access_until if mode == "allowed" else None
+    db.commit()
+    db.refresh(subscription)
+    return subscription
+
+
 @router.get("/accounts")
 def list_platform_accounts(
     _current_user: User = Depends(get_superadmin_user),
     db: Session = Depends(get_db),
 ):
     return {"accounts": _platform_accounts(db)}
+
+
+@router.patch("/accounts/{user_id}")
+def update_platform_account(
+    user_id: uuid.UUID,
+    request: AdminAccountUpdateRequest,
+    _current_user: User = Depends(get_superadmin_user),
+    db: Session = Depends(get_db),
+):
+    user = crud.get_user_by_id(db, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Utente non trovato")
+    tenant = db.query(Tenant).filter(Tenant.id == user.tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Studio non trovato")
+
+    access_until = None
+    if request.access_override == "allowed":
+        if request.access_through is None:
+            raise HTTPException(status_code=422, detail="Indica la data di fine accesso")
+        access_until = inclusive_access_date_to_trial_end(request.access_through)
+
+    user.is_active = request.user_is_active
+    tenant.is_active = request.tenant_is_active
+    _set_access_override(db, tenant.id, request.access_override, access_until)
+    return {"account": _admin_account_for_user(db, user.id)}
 
 
 @router.post(
@@ -137,43 +212,27 @@ def extend_tenant_trial(
     _current_user: User = Depends(get_superadmin_user),
     db: Session = Depends(get_db),
 ):
-    subscription = crud.get_tenant_subscription(db, tenant_id)
-    if not subscription or not subscription.stripe_subscription_id:
-        raise HTTPException(
-            status_code=409,
-            detail="L'account non ha una subscription Stripe da prorogare",
-        )
-
-    if subscription.cancel_at_period_end:
-        raise HTTPException(
-            status_code=409,
-            detail="La subscription ha una disdetta programmata: annullala esplicitamente prima di prorogare la trial",
-        )
-
     trial_end = inclusive_access_date_to_trial_end(request.access_through)
-    existing_access_end = max(
-        (
-            value.astimezone(timezone.utc)
-            for value in (subscription.trial_ends_at, subscription.current_period_end)
-            if value is not None
-        ),
-        default=None,
+    subscription = crud.get_tenant_subscription(db, tenant_id)
+    stripe_can_be_updated = bool(
+        subscription
+        and subscription.stripe_subscription_id
+        and subscription.status in {"active", "trialing"}
+        and not subscription.cancel_at_period_end
     )
-    if existing_access_end and trial_end <= existing_access_end:
-        raise HTTPException(
-            status_code=422,
-            detail="La nuova data deve essere successiva al periodo di accesso già concesso",
-        )
-    try:
-        stripe_subscription = get_stripe_client().Subscription.modify(
-            subscription.stripe_subscription_id,
-            trial_end=int(trial_end.timestamp()),
-            proration_behavior="none",
-        )
-        _sync_from_stripe_subscription(db, stripe_subscription)
-    except BillingConfigError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=_stripe_error_detail(exc)) from exc
+    if stripe_can_be_updated:
+        try:
+            stripe_subscription = get_stripe_client().Subscription.modify(
+                subscription.stripe_subscription_id,
+                trial_end=int(trial_end.timestamp()),
+                proration_behavior="none",
+            )
+            _sync_from_stripe_subscription(db, stripe_subscription)
+        except BillingConfigError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except stripe.error.StripeError as exc:
+            raise HTTPException(status_code=502, detail=_stripe_error_detail(exc)) from exc
+
+    _set_access_override(db, tenant_id, "allowed", trial_end)
 
     return {"account": _admin_account_for_tenant(db, tenant_id)}

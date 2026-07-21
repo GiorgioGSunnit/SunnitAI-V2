@@ -23,6 +23,8 @@ def _subscription(**overrides):
         "current_period_end": now + timedelta(days=5),
         "cancel_at_period_end": False,
         "last_payment_status": None,
+        "admin_access_override": None,
+        "admin_access_until": None,
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -52,6 +54,28 @@ def test_subscription_access_reason_blocks_canceled_and_unpaid_states():
 
 def test_subscription_access_reason_blocks_when_subscription_is_missing():
     assert "Nessun piano attivo" in billing.subscription_access_block_reason(None)
+
+
+def test_admin_override_can_allow_or_block_access_independently_from_stripe():
+    allowed = _subscription(
+        status="inactive",
+        admin_access_override="allowed",
+        admin_access_until=datetime.now(timezone.utc) + timedelta(days=5),
+    )
+    blocked = _subscription(status="active", admin_access_override="blocked")
+
+    assert billing.subscription_access_block_reason(allowed) is None
+    assert "sospeso manualmente" in billing.subscription_access_block_reason(blocked)
+
+
+def test_expired_admin_override_falls_back_to_stripe_status():
+    expired = _subscription(
+        status="inactive",
+        admin_access_override="allowed",
+        admin_access_until=datetime.now(timezone.utc) - timedelta(seconds=1),
+    )
+
+    assert "Abbonamento non attivo" in billing.subscription_access_block_reason(expired)
 
 
 def test_subscription_access_reason_blocks_abandoned_checkout_pending():

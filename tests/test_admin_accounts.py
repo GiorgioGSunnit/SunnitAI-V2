@@ -2,9 +2,6 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 
-import pytest
-from fastapi import HTTPException
-
 from src.chatbot.routes import admin as admin_routes
 
 
@@ -25,6 +22,7 @@ def test_extend_trial_updates_stripe_and_persists_returned_state(monkeypatch):
         trial_ends_at=None,
         current_period_end=None,
         cancel_at_period_end=False,
+        status="trialing",
     )
     stripe_subscription = SimpleNamespace(id="sub_123")
     captured = {}
@@ -58,6 +56,13 @@ def test_extend_trial_updates_stripe_and_persists_returned_state(monkeypatch):
         "_admin_account_for_tenant",
         lambda _db, _tenant_id: {"tenant_id": str(tenant_id), "stripe_status": "trialing"},
     )
+    monkeypatch.setattr(
+        admin_routes,
+        "_set_access_override",
+        lambda _db, _tenant_id, mode, access_until: captured.update(
+            {"override": mode, "access_until": access_until}
+        ),
+    )
 
     access_through = date.today() + timedelta(days=45)
     expected_trial_end = admin_routes.inclusive_access_date_to_trial_end(access_through)
@@ -69,76 +74,42 @@ def test_extend_trial_updates_stripe_and_persists_returned_state(monkeypatch):
         db=SimpleNamespace(),
     )
 
-    assert captured == {
-        "subscription_id": "sub_123",
-        "trial_end": int(expected_trial_end.timestamp()),
-        "proration_behavior": "none",
-    }
+    assert captured["subscription_id"] == "sub_123"
+    assert captured["trial_end"] == int(expected_trial_end.timestamp())
+    assert captured["proration_behavior"] == "none"
+    assert captured["override"] == "allowed"
+    assert captured["access_until"] == expected_trial_end
     assert response["account"]["stripe_status"] == "trialing"
 
 
-def test_extend_trial_requires_an_existing_stripe_subscription(monkeypatch):
+def test_extend_trial_grants_local_access_without_a_stripe_subscription(monkeypatch):
+    tenant_id = uuid.uuid4()
+    captured = {}
     monkeypatch.setattr(admin_routes.crud, "get_tenant_subscription", lambda *_args: None)
-
-    with pytest.raises(HTTPException) as exc:
-        admin_routes.extend_tenant_trial(
-            tenant_id=uuid.uuid4(),
-            request=admin_routes.TrialExtensionRequest(
-                access_through=date.today() + timedelta(days=45)
-            ),
-            _current_user=SimpleNamespace(role="superadmin"),
-            db=SimpleNamespace(),
-        )
-
-    assert exc.value.status_code == 409
-    assert "Stripe" in exc.value.detail
-
-
-def test_extend_trial_cannot_shorten_existing_access(monkeypatch):
-    now = datetime.now(timezone.utc)
-    subscription = SimpleNamespace(
-        stripe_subscription_id="sub_123",
-        trial_ends_at=now + timedelta(days=60),
-        current_period_end=now + timedelta(days=60),
-        cancel_at_period_end=False,
+    monkeypatch.setattr(
+        admin_routes,
+        "_set_access_override",
+        lambda _db, _tenant_id, mode, access_until: captured.update(
+            {"mode": mode, "access_until": access_until}
+        ),
     )
-    monkeypatch.setattr(admin_routes.crud, "get_tenant_subscription", lambda *_args: subscription)
-
-    with pytest.raises(HTTPException) as exc:
-        admin_routes.extend_tenant_trial(
-            tenant_id=uuid.uuid4(),
-            request=admin_routes.TrialExtensionRequest(
-                access_through=date.today() + timedelta(days=30)
-            ),
-            _current_user=SimpleNamespace(role="superadmin"),
-            db=SimpleNamespace(),
-        )
-
-    assert exc.value.status_code == 422
-    assert "successiva" in exc.value.detail
-
-
-def test_extend_trial_does_not_reactivate_a_scheduled_cancellation(monkeypatch):
-    subscription = SimpleNamespace(
-        stripe_subscription_id="sub_123",
-        trial_ends_at=None,
-        current_period_end=None,
-        cancel_at_period_end=True,
+    monkeypatch.setattr(
+        admin_routes,
+        "_admin_account_for_tenant",
+        lambda _db, _tenant_id: {"tenant_id": str(tenant_id), "has_access": True},
     )
-    monkeypatch.setattr(admin_routes.crud, "get_tenant_subscription", lambda *_args: subscription)
 
-    with pytest.raises(HTTPException) as exc:
-        admin_routes.extend_tenant_trial(
-            tenant_id=uuid.uuid4(),
-            request=admin_routes.TrialExtensionRequest(
-                access_through=date.today() + timedelta(days=30)
-            ),
-            _current_user=SimpleNamespace(role="superadmin"),
-            db=SimpleNamespace(),
-        )
+    response = admin_routes.extend_tenant_trial(
+        tenant_id=tenant_id,
+        request=admin_routes.TrialExtensionRequest(
+            access_through=date.today() + timedelta(days=30)
+        ),
+        _current_user=SimpleNamespace(role="superadmin"),
+        db=SimpleNamespace(),
+    )
 
-    assert exc.value.status_code == 409
-    assert "disdetta" in exc.value.detail
+    assert captured["mode"] == "allowed"
+    assert response["account"]["has_access"] is True
 
 
 def test_admin_account_marks_an_inactive_user_as_blocked():

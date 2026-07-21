@@ -167,11 +167,18 @@ def tenant_seat_usage(db: Session, tenant_id, subscription: Optional[TenantSubsc
 def subscription_access_block_reason(subscription: Optional[TenantSubscription]) -> Optional[str]:
     if not subscription:
         return "Nessun piano attivo. Apri Piani per continuare a usare Astrea."
+    now = datetime.now(timezone.utc)
+    admin_override = getattr(subscription, "admin_access_override", None)
+    admin_access_until = getattr(subscription, "admin_access_until", None)
+    if admin_override == "blocked":
+        return "Accesso sospeso manualmente da un amministratore."
+    if admin_override == "allowed":
+        if admin_access_until is None or now < admin_access_until:
+            return None
     if subscription.status == "checkout_pending":
         return "Checkout non completato. Apri Piani per attivare la prova gratuita."
     if subscription.status in NON_BLOCKING_PENDING_STATUSES:
         return None
-    now = datetime.now(timezone.utc)
     if subscription.status == "trialing":
         trial_end = subscription.trial_ends_at or subscription.current_period_end
         if trial_end and now >= trial_end:
@@ -225,7 +232,13 @@ def serialize_subscription(
         "current_period_end": current_period_end.isoformat() if current_period_end else None,
         "cancel_at_period_end": subscription.cancel_at_period_end if subscription else False,
         "last_payment_status": subscription.last_payment_status if subscription else None,
-        "is_active": subscription_allows_access(status, access_block_reason),
+        "is_active": (
+            getattr(subscription, "admin_access_override", None) == "allowed"
+            and (
+                getattr(subscription, "admin_access_until", None) is None
+                or datetime.now(timezone.utc) < subscription.admin_access_until
+            )
+        ) or subscription_allows_access(status, access_block_reason),
         "access_block_reason": access_block_reason,
         "trial_days": get_trial_days(),
     }
