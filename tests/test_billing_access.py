@@ -109,6 +109,9 @@ def test_sync_from_stripe_subscription_preserves_trial_cancellation_until_expiry
         trial_end=int((now + timedelta(days=2)).timestamp()),
         current_period_end=int((now + timedelta(days=2)).timestamp()),
         cancel_at_period_end=True,
+        cancel_at=int((now + timedelta(days=2)).timestamp()),
+        canceled_at=int((now - timedelta(minutes=10)).timestamp()),
+        ended_at=None,
         items=SimpleNamespace(data=[SimpleNamespace(quantity=1)]),
         metadata={
             "tenant_id": str(tenant_id),
@@ -130,6 +133,9 @@ def test_sync_from_stripe_subscription_preserves_trial_cancellation_until_expiry
 
     assert result.status == "trialing"
     assert result.cancel_at_period_end is True
+    assert result.cancel_at == billing.utc_from_unix(stripe_subscription.cancel_at)
+    assert result.canceled_at == billing.utc_from_unix(stripe_subscription.canceled_at)
+    assert result.ended_at is None
     assert result.trial_ends_at is not None
     assert billing.subscription_access_block_reason(result) is None
 

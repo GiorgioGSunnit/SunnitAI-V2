@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 config = context.config
 load_dotenv()
 
-database_url = os.getenv("DATABASE_URL")
+database_url = os.getenv("MIGRATION_DATABASE_URL") or os.getenv("DATABASE_URL")
 if database_url:
     config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 

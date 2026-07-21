@@ -231,6 +231,21 @@ def serialize_subscription(
         "trial_ends_at": subscription.trial_ends_at.isoformat() if subscription and subscription.trial_ends_at else None,
         "current_period_end": current_period_end.isoformat() if current_period_end else None,
         "cancel_at_period_end": subscription.cancel_at_period_end if subscription else False,
+        "cancel_at": (
+            subscription.cancel_at.isoformat()
+            if subscription and getattr(subscription, "cancel_at", None)
+            else None
+        ),
+        "canceled_at": (
+            subscription.canceled_at.isoformat()
+            if subscription and getattr(subscription, "canceled_at", None)
+            else None
+        ),
+        "ended_at": (
+            subscription.ended_at.isoformat()
+            if subscription and getattr(subscription, "ended_at", None)
+            else None
+        ),
         "last_payment_status": subscription.last_payment_status if subscription else None,
         "is_active": (
             getattr(subscription, "admin_access_override", None) == "allowed"

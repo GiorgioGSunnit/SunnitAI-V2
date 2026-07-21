@@ -72,6 +72,9 @@ class SubscriptionResponse(BaseModel):
     trial_ends_at: Optional[str] = None
     current_period_end: Optional[str] = None
     cancel_at_period_end: bool = False
+    cancel_at: Optional[str] = None
+    canceled_at: Optional[str] = None
+    ended_at: Optional[str] = None
     last_payment_status: Optional[str] = None
     is_active: bool = False
     access_block_reason: Optional[str] = None
@@ -277,6 +280,9 @@ def _sync_from_stripe_subscription(
         trial_ends_at=utc_from_unix(getattr(stripe_subscription, "trial_end", None)),
         current_period_end=utc_from_unix(getattr(stripe_subscription, "current_period_end", None)),
         cancel_at_period_end=bool(getattr(stripe_subscription, "cancel_at_period_end", False)),
+        cancel_at=utc_from_unix(getattr(stripe_subscription, "cancel_at", None)),
+        canceled_at=utc_from_unix(getattr(stripe_subscription, "canceled_at", None)),
+        ended_at=utc_from_unix(getattr(stripe_subscription, "ended_at", None)),
         last_payment_status=last_payment_status,
     )
 

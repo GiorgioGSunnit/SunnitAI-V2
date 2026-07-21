@@ -9,6 +9,7 @@
 #   SSH_KEY_PASSPHRASE    se la chiave privata è protetta da passphrase
 #   APP_DIR               default /opt/chatbot
 #   DEPLOY_RESTART_CMD    es. sudo systemctl restart chatbot (se vuoto: riavvio automatico se esiste chatbot.service)
+#   MIGRATION_DATABASE_URL default postgresql:///astrea, eseguito come utente postgres
 #
 # Diagnostica:
 # - "ssh.ParsePrivateKey: ssh: no key found" → SSH_PRIVATE_KEY non è PEM valida (o .ppk senza conversione).
@@ -74,6 +75,8 @@ jobs:
       # -----------------------------------------------------------------
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          MIGRATION_DATABASE_URL: ${{ secrets.MIGRATION_DATABASE_URL }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
@@ -85,6 +88,7 @@ jobs:
           timeout: 2m
           command_timeout: 45m
           script_stop: true
+          envs: MIGRATION_DATABASE_URL
           script: |
             set -eo pipefail
 
@@ -168,6 +172,13 @@ jobs:
                 echo "::warning::Nessun .env sul server e nessun template: crea $APP_DIR/.env a mano."
               fi
             fi
+
+            echo "Applicazione migrazioni database..."
+            MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-postgresql:///astrea}"
+            sudo -u postgres env MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+              "$VENV_DIR/bin/python" scripts/reconcile_alembic_version.py
+            sudo -u postgres env MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+              "$VENV_DIR/bin/alembic" upgrade head
 
             RESTART_CMD="${{ secrets.DEPLOY_RESTART_CMD }}"
             if [ -n "${RESTART_CMD}" ]; then

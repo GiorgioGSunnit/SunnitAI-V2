@@ -4,13 +4,15 @@ from typing import Optional
 from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
 
+from ..chatbot.auth import hash_password
 from .models import (
     Tenant, TenantProfile, TenantSubscription,
     User, UserProfile,
     UserSettings, UserPreferences,
     Conversation, UserDocument
 )
-from ..chatbot.auth import hash_password
+
+_UNSET = object()
 
 
 # ---------------------------------------------------------------------------
@@ -620,6 +622,9 @@ def upsert_tenant_subscription(
     trial_ends_at=None,
     current_period_end=None,
     cancel_at_period_end: Optional[bool] = None,
+    cancel_at=_UNSET,
+    canceled_at=_UNSET,
+    ended_at=_UNSET,
     last_payment_status: Optional[str] = None,
 ) -> TenantSubscription:
     subscription = get_tenant_subscription(db, tenant_id)
@@ -650,6 +655,12 @@ def upsert_tenant_subscription(
         subscription.current_period_end = current_period_end
     if cancel_at_period_end is not None:
         subscription.cancel_at_period_end = cancel_at_period_end
+    if cancel_at is not _UNSET:
+        subscription.cancel_at = cancel_at
+    if canceled_at is not _UNSET:
+        subscription.canceled_at = canceled_at
+    if ended_at is not _UNSET:
+        subscription.ended_at = ended_at
     if last_payment_status is not None:
         subscription.last_payment_status = last_payment_status
 
