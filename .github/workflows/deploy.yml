@@ -175,6 +175,10 @@ jobs:
 
             echo "Applicazione migrazioni database..."
             MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-postgresql:///astrea}"
+            # Consenti all'utente postgres di caricare env.py e le revisioni Alembic.
+            # Alcuni checkout server possono lasciare migrations/ con mode 0700.
+            chmod -R a+rX "$APP_DIR/src/db/migrations"
+            chmod a+r "$APP_DIR/scripts/reconcile_alembic_version.py"
             sudo -u postgres env MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" \
               "$VENV_DIR/bin/python" scripts/reconcile_alembic_version.py
             sudo -u postgres env MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" \
