@@ -35,6 +35,8 @@ intent_examples:
 negative_examples:
   - sanzioni per omessa dichiarazione
   - avviso bonario ricevuto dall'agenzia delle entrate
+  - come funziona il ravvedimento operoso
+  - cosa prevede il ravvedimento operoso
 ambiguity_notes: >
   Copre il solo omesso/tardivo VERSAMENTO. Le violazioni dichiarative
   (omessa/infedele dichiarazione) hanno sanzioni base diverse e non sono

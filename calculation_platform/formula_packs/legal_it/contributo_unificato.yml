@@ -38,6 +38,8 @@ negative_examples:
   - parcella avvocato
   - quanto costa l'avvocato
   - tfr
+  - chi e tenuto al pagamento del contributo unificato
+  - come funziona il contributo unificato
 ambiguity_notes: >
   Da non confondere con i compensi forensi (parcella dell'avvocato) o con
   le altre spese di giustizia (anticipazioni forfettarie, diritti di copia).

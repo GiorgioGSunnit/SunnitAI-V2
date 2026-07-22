@@ -28,6 +28,11 @@ intent_examples:
   - interessi legali su una somma
   - interessi maturati su un debito
   - calcolo degli interessi legali su un capitale
+negative_examples:
+  - cosa dice l'art 1284 c.c. sugli interessi legali
+  - cosa prevede il codice civile sugli interessi legali
+  - come funziona il saggio di interesse legale
+  - differenza tra interessi legali e interessi moratori
 required_context:
   - periodo di riferimento (start_date e end_date)
 inputs:

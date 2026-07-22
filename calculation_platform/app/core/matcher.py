@@ -35,6 +35,13 @@ _MIN_TOKEN_LENGTH = 3
 # Function words that carry no routing signal — without this filter, an
 # intent example like "totale di una fattura" would make "una" vocabulary
 # and let completely unrelated sentences score token hits.
+#
+# Includes bare measurement/currency units (anni, giorni, mesi, euro): these
+# appear in nearly every calculator's intent examples ("F24 in ritardo di
+# 20 giorni", "mutuo ... 25 anni") purely as units attached to a number, with
+# no calculator-discriminating meaning on their own. Left unfiltered, a
+# 25-year loan query picks up a stray token hit against any calculator whose
+# examples happen to mention "anni" (e.g. a penalty range "21-24 anni").
 _STOPWORDS = frozenset({
     "una", "uno", "con", "per", "del", "della", "dei", "delle", "degli",
     "sul", "sulla", "sugli", "alla", "alle", "che", "non", "come", "gli",
@@ -43,12 +50,24 @@ _STOPWORDS = frozenset({
     "chi", "perche", "pago", "paga", "calcolo", "calcola", "costa",
     "costo", "devo", "deve", "vorrei", "sapere", "pena", "pene",
     "rischia", "rischio", "rischiano", "reato",
+    "anni", "anno", "giorni", "giorno", "mesi", "mese", "euro",
 })
+
+# Common Italian elisions (dell', nell', sull', dall', all', quest', ...):
+# stripped as a whole unit before punctuation removal so "dell'irpef" yields
+# the clean token "irpef" instead of leaking the meaningless fragment "dell"
+# into the calculator's vocabulary (previously shared across every
+# calculator that happens to use an elided article in its examples).
+_ELISION_PATTERN = re.compile(
+    r"\b(dell|nell|sull|dall|coll|negl|agl|quest|un|l)['’]",
+    re.IGNORECASE,
+)
 
 
 def _normalize(text: str) -> str:
     text = unicodedata.normalize("NFKD", text.lower())
     text = "".join(c for c in text if not unicodedata.combining(c))
+    text = _ELISION_PATTERN.sub(" ", text)
     text = re.sub(r"[^a-z0-9\s]", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 

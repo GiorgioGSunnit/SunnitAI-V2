@@ -28,6 +28,10 @@ intent_examples:
   - contributi inps sulla retribuzione
   - calcolo dei contributi previdenziali
   - quota inps a carico del lavoratore
+negative_examples:
+  - i contributi inps sono deducibili
+  - come funzionano i contributi inps
+  - quando si versano i contributi previdenziali
 required_context:
   - aliquote contributive del settore/qualifica, dalla circolare INPS dell'anno
 inputs:
