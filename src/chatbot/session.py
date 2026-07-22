@@ -53,7 +53,8 @@ class Message:
         if self.metadata:
             for key in ("citations", "document_id", "document_name", "documents",
                         "generated_document_id", "generated_document_name",
-                        "awaiting_clarification", "pending_sections"):
+                        "awaiting_clarification", "pending_sections",
+                        "pending_calculation"):
                 if key in self.metadata:
                     d[key] = self.metadata[key]
         return d
@@ -126,7 +127,8 @@ class ChatSession:
                     k: m[k]
                     for k in ("citations", "document_id", "document_name", "documents",
                               "generated_document_id", "generated_document_name",
-                              "awaiting_clarification", "pending_sections")
+                              "awaiting_clarification", "pending_sections",
+                              "pending_calculation")
                     if k in m
                 } or None,
             )
@@ -444,11 +446,16 @@ class ChatBot:
             (last_assistant_msg.metadata or {}).get("pending_sections") or []
             if awaiting_clarification_in else []
         )
+        pending_calculation_in = (
+            (last_assistant_msg.metadata or {}).get("pending_calculation")
+            if last_assistant_msg else None
+        )
 
         # Run through the RAG pipeline
         try:
             result = rag_run(
                 resolved_query,
+                raw_query=user_message,
                 session_language=session.session_language,
                 user_id=session.user_id,
                 tenant_id=session.tenant_id,
@@ -457,6 +464,7 @@ class ChatBot:
                 response_length=settings["response_length"],
                 awaiting_clarification=awaiting_clarification_in,
                 pending_sections=pending_sections_in,
+                pending_calculation=pending_calculation_in,
             )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = _strip_embeddings(result.get("references", []))
@@ -464,6 +472,7 @@ class ChatBot:
             citations = result.get("citations") or []
             awaiting_clarification_out = bool(result.get("awaiting_clarification"))
             pending_sections_out = result.get("pending_sections") or []
+            pending_calculation_out = result.get("pending_calculation")
         except Exception as e:
             _e_str = str(e)
             if "maximum context length" in _e_str or "input_tokens" in _e_str:
@@ -484,6 +493,7 @@ class ChatBot:
             citations = []
             awaiting_clarification_out = False
             pending_sections_out = []
+            pending_calculation_out = None
 
         # Detect topic drift and append a note when the user switches topics mid-session
         _DRIFT_NOTES = {
@@ -544,6 +554,7 @@ class ChatBot:
             "citations": citations,
             "awaiting_clarification": awaiting_clarification_out,
             **({"pending_sections": pending_sections_out} if awaiting_clarification_out else {}),
+            **({"pending_calculation": pending_calculation_out} if pending_calculation_out else {}),
         })
         self._save_sessions()
 

@@ -21,6 +21,12 @@ from dotenv import load_dotenv
 from langgraph.graph import END, StateGraph
 from neo4j import Driver, GraphDatabase
 
+from .calculation import (
+    calculation_gate,
+    calculation_node,
+    route_after_calculation,
+    route_after_gate,
+)
 from .graph_nodes import (
     article_router,
     comparison_retrieval,
@@ -52,9 +58,14 @@ logger = logging.getLogger(__name__)
 class AgentState(TypedDict, total=False):
     awaiting_clarification: Optional[bool]
     pending_sections: List[Dict[str, Any]]
+    pending_calculation: Optional[Dict[str, Any]]
+    calculation_match: Optional[Dict[str, Any]]
+    calc_route: Optional[str]
+    calculation_result: Optional[Dict[str, Any]]
     is_clarification_rerank: bool
     turn_count: int
     query: str
+    raw_query: Optional[str]
     session_language: str
     generalized_query: str
     retrieval_keywords: List[str]
@@ -159,17 +170,37 @@ def build_graph(compile_graph: bool = True):
     graph.add_node("synthesize_answer", synthesize_answer)
     graph.add_node("generate_clarifying_question", generate_clarifying_question)
     graph.add_node("rerank_from_clarification", rerank_from_clarification)
+    graph.add_node("calculation_gate", calculation_gate)
+    graph.add_node("calculation_node", calculation_node)
 
     # Edges
     def route_entry(state):
-        return "rerank_from_clarification" if state.get("awaiting_clarification") else "decompose_query"
+        try:
+            if state.get("pending_calculation"):
+                return "calculation_node"
+            if state.get("awaiting_clarification"):
+                return "rerank_from_clarification"
+        except Exception:
+            logger.exception("Graph entry router failed; using the fail-safe gate")
+        return "calculation_gate"
 
     graph.set_conditional_entry_point(
         route_entry,
         {
+            "calculation_node": "calculation_node",
             "rerank_from_clarification": "rerank_from_clarification",
-            "decompose_query": "decompose_query",
+            "calculation_gate": "calculation_gate",
         },
+    )
+    graph.add_conditional_edges(
+        "calculation_gate",
+        route_after_gate,
+        {"calculate": "calculation_node", "normal": "decompose_query"},
+    )
+    graph.add_conditional_edges(
+        "calculation_node",
+        route_after_calculation,
+        {"fallback": "decompose_query", "end": END},
     )
     graph.add_conditional_edges(
         "decompose_query",
@@ -262,11 +293,14 @@ def run(query: str, session_language: str = "it",
         standing: int = 2,
         response_length: int = 2,
         awaiting_clarification: bool = False,
-        pending_sections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        pending_sections: Optional[List[Dict[str, Any]]] = None,
+        pending_calculation: Optional[Dict[str, Any]] = None,
+        raw_query: Optional[str] = None) -> Dict[str, Any]:
     """Run a single query through the agent graph."""
     compiled = _get_compiled_graph()
     initial_state: AgentState = {
         "query": query,
+        "raw_query": raw_query,
         "session_language": session_language or "it",
         "quality_reformulation_round": 0,
         "status_messages": [],
@@ -292,6 +326,7 @@ def run(query: str, session_language: str = "it",
         "response_length": response_length,
         "awaiting_clarification": awaiting_clarification,
         "pending_sections": pending_sections or [],
+        "pending_calculation": pending_calculation,
     }
     return compiled.invoke(initial_state)
 
