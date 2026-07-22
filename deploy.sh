@@ -89,7 +89,15 @@ fi
 # -------------------------------------------------------
 echo "[6/8] Running database migrations..."
 cd "$APP_DIR"
-"$VENV_DIR/bin/alembic" upgrade head
+MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-postgresql:///astrea}"
+# Git checkouts may preserve an overly restrictive migrations directory mode.
+# The postgres OS user needs read/execute access to load Alembic's Python files.
+chmod -R a+rX "$APP_DIR/src/db/migrations"
+chmod a+r "$APP_DIR/scripts/reconcile_alembic_version.py"
+sudo -u postgres env MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+    "$VENV_DIR/bin/python" scripts/reconcile_alembic_version.py
+sudo -u postgres env MIGRATION_DATABASE_URL="$MIGRATION_DATABASE_URL" \
+    "$VENV_DIR/bin/alembic" upgrade head
 echo "  Database migrations applied"
 
 # -------------------------------------------------------

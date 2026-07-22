@@ -143,12 +143,14 @@ from .routes.totp import router as totp_router
 from .routes.users import router as users_router
 from .routes.documents import router as documents_router
 from .routes.billing import router as billing_router
+from .routes.admin import router as admin_router
 from .tracking_ws import router as tracking_router
 app.include_router(auth_router, prefix="/api")
 app.include_router(totp_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(documents_router, prefix="/api")
 app.include_router(billing_router, prefix="/api")
+app.include_router(admin_router, prefix="/api")
 app.include_router(tracking_router, prefix="/api")
 
 chatbot = ChatBot()
