@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import os
 import re
+import threading
+import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional
@@ -21,6 +24,11 @@ _PLATFORM_UNAVAILABLE = {
     "candidates": [],
     "platform_unavailable": True,
 }
+
+# Cache successful calculator tool schemas for five minutes per process.
+_TOOL_SCHEMA_CACHE: Dict[tuple[str, str], tuple[Dict[str, Any], float]] = {}
+_TOOL_SCHEMA_CACHE_LOCK = threading.Lock()
+_TOOL_SCHEMA_CACHE_TTL = 300
 
 
 class PlatformClient:
@@ -38,6 +46,31 @@ class PlatformClient:
     def calculate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         return self._post("/calculate", payload)
 
+    def tool_schema(self, calculator_id: str) -> Dict[str, Any]:
+        cache_key = (self.base_url, calculator_id)
+        with _TOOL_SCHEMA_CACHE_LOCK:
+            cached = _TOOL_SCHEMA_CACHE.get(cache_key)
+            if cached and (time.time() - cached[1]) < _TOOL_SCHEMA_CACHE_TTL:
+                return cached[0]
+
+        schema = self._get(f"/calculators/{calculator_id}/tool-schema")
+        if not schema.get("platform_unavailable"):
+            with _TOOL_SCHEMA_CACHE_LOCK:
+                _TOOL_SCHEMA_CACHE[cache_key] = (schema, time.time())
+        return schema
+
+    def _get(self, path: str) -> Dict[str, Any]:
+        try:
+            response = requests.get(f"{self.base_url}{path}", timeout=self.timeout)
+            response.raise_for_status()
+            body = response.json()
+            if not isinstance(body, dict):
+                raise ValueError("calculation platform returned a non-object response")
+            return body
+        except Exception as exc:
+            logger.warning("Calculation platform request failed for %s: %s", path, exc)
+            return dict(_PLATFORM_UNAVAILABLE)
+
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             response = requests.post(
@@ -48,9 +81,57 @@ class PlatformClient:
             if not isinstance(body, dict):
                 raise ValueError("calculation platform returned a non-object response")
             return body
+        except requests.HTTPError as exc:
+            response = exc.response
+            if response is not None and 400 <= response.status_code < 500:
+                message = _short_response_body(response)
+                logger.warning(
+                    "Calculation platform rejected request for %s: %s", path, message
+                )
+                return {
+                    "status": "error",
+                    "errors": [{"code": "request_invalid", "message": message}],
+                }
+            logger.warning("Calculation platform request failed for %s: %s", path, exc)
+            return dict(_PLATFORM_UNAVAILABLE)
         except Exception as exc:
             logger.warning("Calculation platform request failed for %s: %s", path, exc)
             return dict(_PLATFORM_UNAVAILABLE)
+
+
+def _short_response_body(response: requests.Response, limit: int = 500) -> str:
+    """Return a compact, bounded error message from an HTTP response body."""
+    text = ""
+    try:
+        body = response.json()
+    except (TypeError, ValueError):
+        body = None
+
+    if isinstance(body, dict):
+        detail = next(
+            (body.get(key) for key in ("detail", "message", "error") if body.get(key)),
+            body,
+        )
+        text = (
+            detail
+            if isinstance(detail, str)
+            else json.dumps(detail, ensure_ascii=False, sort_keys=True)
+        )
+    elif body is not None:
+        text = (
+            body
+            if isinstance(body, str)
+            else json.dumps(body, ensure_ascii=False, sort_keys=True)
+        )
+    else:
+        text = str(getattr(response, "text", ""))
+
+    text = " ".join(text.split())
+    if not text:
+        text = f"HTTP {getattr(response, 'status_code', 'request error')}"
+    if len(text) > limit:
+        return f"{text[: limit - 3]}..."
+    return text
 
 
 def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -88,7 +169,7 @@ def route_after_calculation(state: Dict[str, Any]) -> str:
         return "end"
 
 
-# SLICE-1 STAND-IN: replaced by real LLM tool-calling in Slice 2
+# Offline/failure fallback tier when LLM argument extraction is unavailable.
 _DATE_RE = re.compile(r"\b(?:\d{4}-\d{2}-\d{2}|\d{1,2}[-/]\d{1,2}[-/]\d{4})\b")
 _NUMBER_RE = re.compile(
     r"(?<![\w])[-+]?(?:\d{1,3}(?:\.\d{3})+(?:,\d+)?|\d+(?:[.,]\d+)?)\s*%?"
@@ -168,6 +249,198 @@ def _extract_values(
         except (InvalidOperation, ValueError):
             logger.debug("Ignored invalid extracted number %r", raw)
     return values
+
+
+def _extraction_messages(
+    query: str,
+    input_schema: Dict[str, Any],
+    *,
+    missing_specs: Optional[Iterable[Dict[str, Any]]] = None,
+    prior_inputs: Optional[Dict[str, Any]] = None,
+):
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    today = datetime.now().date().isoformat()
+    system_prompt = (
+        "Extract calculator arguments from the user's message. Extract ONLY values "
+        "the user explicitly stated; never invent or guess a value, and omit unknown "
+        "arguments entirely. Normalize Italian numbers (for example 1.200,50 becomes "
+        "1200.50), and normalize percentages for rate-like fields as the property's "
+        "schema description implies. Return dates as YYYY-MM-DD. Today's date is "
+        f"{today}; use it only to resolve explicit relative references such as "
+        "'quest'anno'. If the message contains no extractable values, use an empty "
+        "arguments object. Your arguments must conform to this JSON schema:\n"
+        f"{json.dumps(input_schema, ensure_ascii=False, sort_keys=True)}"
+    )
+    context = []
+    if prior_inputs is not None:
+        context.append(
+            "Already collected: "
+            + json.dumps(prior_inputs, ensure_ascii=False, sort_keys=True)
+        )
+    if missing_specs is not None:
+        context.append(
+            "Still missing: "
+            + json.dumps(list(missing_specs), ensure_ascii=False, sort_keys=True)
+        )
+    human_prompt = query
+    if context:
+        human_prompt = f"{'\n'.join(context)}\n\nUser message: {query}"
+    return [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+
+
+def _relaxed_extraction_schema(input_schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy the platform schema while allowing partial LLM extraction output."""
+    extraction_schema = copy.deepcopy(input_schema)
+    extraction_schema.pop("required", None)
+    properties = extraction_schema.get("properties")
+    if isinstance(properties, dict):
+        period_schema = properties.get("period")
+        if isinstance(period_schema, dict):
+            period_schema.pop("required", None)
+    return extraction_schema
+
+
+_DROP_EXTRACTED_VALUE = object()
+
+
+def _clean_extracted_value(value: Any, schema: Dict[str, Any]) -> Any:
+    if hasattr(value, "model_dump"):
+        value = value.model_dump()
+    if value is None:
+        return _DROP_EXTRACTED_VALUE
+
+    schema_type = schema.get("type")
+    is_object = schema_type == "object" or (
+        isinstance(schema_type, list) and "object" in schema_type
+    )
+    if not is_object or not isinstance(value, dict):
+        return value
+
+    nested_properties = schema.get("properties")
+    if not isinstance(nested_properties, dict):
+        return value
+
+    cleaned = {}
+    for name, nested_value in value.items():
+        nested_schema = nested_properties.get(name)
+        if not isinstance(nested_schema, dict):
+            continue
+        nested_cleaned = _clean_extracted_value(nested_value, nested_schema)
+        if nested_cleaned is not _DROP_EXTRACTED_VALUE:
+            cleaned[name] = nested_cleaned
+
+    required = schema.get("required") or []
+    if any(name not in cleaned for name in required):
+        return _DROP_EXTRACTED_VALUE
+    return cleaned
+
+
+def _clean_extracted_values(
+    arguments: Any, properties: Dict[str, Any]
+) -> Optional[Dict[str, Any]]:
+    if hasattr(arguments, "model_dump"):
+        arguments = arguments.model_dump()
+    if not isinstance(arguments, dict):
+        return None
+    cleaned = {}
+    for name, value in arguments.items():
+        property_schema = properties.get(name)
+        if not isinstance(property_schema, dict):
+            continue
+        cleaned_value = _clean_extracted_value(value, property_schema)
+        if cleaned_value is not _DROP_EXTRACTED_VALUE:
+            cleaned[name] = cleaned_value
+    return cleaned
+
+
+def _extract_values_llm(
+    query: str,
+    calculator_id: str,
+    missing_specs: Optional[Iterable[Dict[str, Any]]] = None,
+    prior_inputs: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Extract explicit calculator arguments through tools, then JSON mode."""
+    try:
+        tool_schema = PlatformClient().tool_schema(calculator_id)
+        input_schema = tool_schema.get("input_schema")
+        properties = input_schema.get("properties") if isinstance(input_schema, dict) else None
+        tool_name = tool_schema.get("name")
+        if not isinstance(properties, dict) or not isinstance(tool_name, str):
+            logger.warning("No usable tool schema for calculator %s", calculator_id)
+            return None
+        extraction_schema = _relaxed_extraction_schema(input_schema)
+
+        tool = {
+            "name": tool_name,
+            "description": str(tool_schema.get("description") or "Extract calculator inputs"),
+            "parameters": extraction_schema,
+        }
+        messages = _extraction_messages(
+            query,
+            extraction_schema,
+            missing_specs=missing_specs,
+            prior_inputs=prior_inputs,
+        )
+    except Exception as exc:
+        logger.warning("Could not prepare LLM extraction for %s: %s", calculator_id, exc)
+        return None
+
+    try:
+        from .ai_chat import _call_chat_with_tools
+
+        response = _call_chat_with_tools(
+            messages,
+            [tool],
+            tool_choice=tool_name,
+            max_tokens=1000,
+        )
+        tool_calls = getattr(response, "tool_calls", None) or []
+        if not tool_calls:
+            raise ValueError("LLM returned no tool calls")
+        matching_calls = [
+            call
+            for call in tool_calls
+            if isinstance(call, dict) and call.get("name") == tool_name
+        ]
+        if not matching_calls:
+            raise ValueError(f"LLM returned no {tool_name!r} tool call")
+        arguments = {}
+        for call in matching_calls:
+            call_arguments = call.get("args")
+            if isinstance(call_arguments, str):
+                call_arguments = json.loads(call_arguments)
+            if hasattr(call_arguments, "model_dump"):
+                call_arguments = call_arguments.model_dump()
+            if not isinstance(call_arguments, dict):
+                raise ValueError("LLM returned non-object tool arguments")
+            arguments.update(call_arguments)
+        cleaned = _clean_extracted_values(arguments, properties)
+        if cleaned is None:
+            raise ValueError("LLM returned non-object tool arguments")
+        return cleaned
+    except Exception as exc:
+        logger.warning(
+            "Tool-call extraction failed for %s; retrying with JSON mode: %s",
+            calculator_id,
+            exc,
+        )
+
+    try:
+        from .ai_chat import chat_model
+
+        structured_model = chat_model.bind(max_tokens=1000).with_structured_output(
+            extraction_schema,
+            method="json_mode",
+        )
+        arguments = structured_model.invoke(messages)
+        cleaned = _clean_extracted_values(arguments, properties)
+        if cleaned is None:
+            raise ValueError("LLM returned non-object JSON arguments")
+        return cleaned
+    except Exception as exc:
+        logger.warning("JSON-mode extraction failed for %s: %s", calculator_id, exc)
+        return None
 
 
 _COPY = {
@@ -390,7 +663,14 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         platform_message=_platform_error_message(probe),
                     )
 
-            extracted = _extract_values(raw_query, specs)
+            extracted = _extract_values_llm(
+                raw_query,
+                calculator_id,
+                missing_specs=specs,
+                prior_inputs=inputs_so_far,
+            )
+            if extracted is None:
+                extracted = _extract_values(raw_query, specs)
             if not extracted:
                 return {
                     "calc_route": "normal",
@@ -430,11 +710,13 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
             spec.get("type") == "period" for spec in specs if isinstance(spec, dict)
         ):
             specs.append({"name": "period", "type": "period", "required": True})
-        inputs_so_far = _extract_values(
-            raw_query,
-            specs,
-            supports_tax_year=bool(match.get("supports_tax_year")),
-        )
+        inputs_so_far = _extract_values_llm(raw_query, calculator_id)
+        if inputs_so_far is None:
+            inputs_so_far = _extract_values(
+                raw_query,
+                specs,
+                supports_tax_year=bool(match.get("supports_tax_year")),
+            )
         response = client.calculate(_calculation_payload(calculator_id, inputs_so_far))
         if response.get("platform_unavailable"):
             return {
