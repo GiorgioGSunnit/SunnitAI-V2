@@ -11,7 +11,7 @@ import threading
 import time
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
@@ -36,7 +36,7 @@ class PlatformClient:
 
     def __init__(self, base_url: Optional[str] = None, timeout: float = 2.0):
         self.base_url = (
-            base_url or os.getenv("CALC_PLATFORM_URL", "http://localhost:8000")
+            base_url or os.getenv("CALC_PLATFORM_URL", "http://localhost:8802")
         ).rstrip("/")
         self.timeout = timeout
 
@@ -134,19 +134,57 @@ def _short_response_body(response: requests.Response, limit: int = 500) -> str:
     return text
 
 
+def _tied_top_candidates(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Candidates sharing the top score of an ambiguous match."""
+    candidates = [c for c in response.get("candidates") or [] if isinstance(c, dict)]
+    if len(candidates) < 2:
+        return []
+    top_score = candidates[0].get("score", 0)
+    return [c for c in candidates if c.get("score") == top_score]
+
+
 def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Route only a clear, high-scoring platform match to calculation."""
+    """Route a clear, high-scoring platform match to calculation.
+
+    An ambiguous match is escalated to the user ONLY when every tied
+    candidate would have auto-routed on its own. That is the case where
+    silence is the worse failure: the request is unmistakably a
+    calculation, the platform simply cannot tell which one, and dropping
+    back to document retrieval answers a question nobody asked. A weak tie
+    (two calculators scraping one incidental token each) stays on the
+    normal route — prompting there would turn every passing mention of a
+    legal topic into a menu.
+    """
     try:
         response = PlatformClient().match(state.get("query", ""))
         candidates = response.get("candidates") or []
         top = candidates[0] if candidates and isinstance(candidates[0], dict) else None
         score = top.get("score", 0) if top else 0
-        if (
-            response.get("status") == "matched"
-            and isinstance(score, (int, float))
-            and score >= MATCH_AUTO_ROUTE_MIN_SCORE
-        ):
+        strong = isinstance(score, (int, float)) and score >= MATCH_AUTO_ROUTE_MIN_SCORE
+        if response.get("status") == "matched" and strong:
+            logger.info(
+                "calc_gate: route=calculate calculator=%s score=%s status=%s",
+                top.get("calculator_id"), score, response.get("status"),
+            )
             return {"calc_route": "calculate", "calculation_match": top}
+        if response.get("status") == "ambiguous" and strong:
+            tied = _tied_top_candidates(response)
+            if len(tied) > 1:
+                logger.info(
+                    "calc_gate: route=choose candidates=%s score=%s",
+                    [c.get("calculator_id") for c in tied], score,
+                )
+                return {
+                    "calc_route": "calculate",
+                    "calculation_match": None,
+                    "calculation_choices": tied,
+                }
+        logger.info(
+            "calc_gate: route=normal top=%s score=%s status=%s",
+            top.get("calculator_id") if top else None,
+            score,
+            response.get("status"),
+        )
     except Exception:
         logger.exception("Calculation gate failed; continuing through the normal RAG route")
     return {"calc_route": "normal"}
@@ -289,15 +327,30 @@ def _extraction_messages(
     return [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
 
 
-def _relaxed_extraction_schema(input_schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Copy the platform schema while allowing partial LLM extraction output."""
-    extraction_schema = copy.deepcopy(input_schema)
-    extraction_schema.pop("required", None)
-    properties = extraction_schema.get("properties")
+def _relax_schema_node(node: Any) -> None:
+    """Drop `required` in place, at every depth of a JSON schema."""
+    if not isinstance(node, dict):
+        return
+    node.pop("required", None)
+    properties = node.get("properties")
     if isinstance(properties, dict):
-        period_schema = properties.get("period")
-        if isinstance(period_schema, dict):
-            period_schema.pop("required", None)
+        for child_schema in properties.values():
+            _relax_schema_node(child_schema)
+    _relax_schema_node(node.get("items"))
+
+
+def _relaxed_extraction_schema(input_schema: Dict[str, Any]) -> Dict[str, Any]:
+    """Copy the platform schema while allowing partial LLM extraction output.
+
+    `required` is dropped at every depth, not only at the top level and on
+    `period`: an object_list (comparator candidates) carries its own required
+    list inside `items`, and leaving that in place forces the model to invent
+    fields for an offer the user described only partially — the opposite of
+    the "extract ONLY explicit values" instruction it is given. The unrelaxed
+    schema still drives cleaning, so half-filled objects are pruned there.
+    """
+    extraction_schema = copy.deepcopy(input_schema)
+    _relax_schema_node(extraction_schema)
     return extraction_schema
 
 
@@ -311,6 +364,12 @@ def _clean_extracted_value(value: Any, schema: Dict[str, Any]) -> Any:
         return _DROP_EXTRACTED_VALUE
 
     schema_type = schema.get("type")
+    is_array = schema_type == "array" or (
+        isinstance(schema_type, list) and "array" in schema_type
+    )
+    if is_array and isinstance(value, list):
+        return _clean_extracted_list(value, schema)
+
     is_object = schema_type == "object" or (
         isinstance(schema_type, list) and "object" in schema_type
     )
@@ -336,6 +395,39 @@ def _clean_extracted_value(value: Any, schema: Dict[str, Any]) -> Any:
     return cleaned
 
 
+def _clean_extracted_list(value: List[Any], schema: Dict[str, Any]) -> Any:
+    """Prune candidate objects the model could not fill completely.
+
+    Each item of an object_list (comparator candidates) is validated against
+    the platform's own item schema, whose `required` list is intact because
+    cleaning runs on the unrelaxed schema. Dropping a half-extracted offer
+    here turns what would be a confusing per-field rejection from /calculate
+    into the ordinary missing-input clarification for the list itself. Arrays
+    of non-objects (string_list) are left exactly as the model returned them.
+    """
+    items_schema = schema.get("items")
+    if not isinstance(items_schema, dict):
+        return value
+    item_type = items_schema.get("type")
+    is_object_item = item_type == "object" or (
+        isinstance(item_type, list) and "object" in item_type
+    )
+    if not is_object_item:
+        return value
+
+    cleaned_items = []
+    for item in value:
+        cleaned_item = _clean_extracted_value(item, items_schema)
+        # A non-dict survivor means the model put a bare scalar where an
+        # offer object belongs — unusable to the comparator, so drop it too.
+        if cleaned_item is _DROP_EXTRACTED_VALUE or not isinstance(cleaned_item, dict):
+            continue
+        cleaned_items.append(cleaned_item)
+    if not cleaned_items:
+        return _DROP_EXTRACTED_VALUE
+    return cleaned_items
+
+
 def _clean_extracted_values(
     arguments: Any, properties: Dict[str, Any]
 ) -> Optional[Dict[str, Any]]:
@@ -359,8 +451,18 @@ def _extract_values_llm(
     calculator_id: str,
     missing_specs: Optional[Iterable[Dict[str, Any]]] = None,
     prior_inputs: Optional[Dict[str, Any]] = None,
+    keep_partial_items: bool = False,
 ) -> Optional[Dict[str, Any]]:
-    """Extract explicit calculator arguments through tools, then JSON mode."""
+    """Extract explicit calculator arguments through tools, then JSON mode.
+
+    `keep_partial_items` turns off the pruning of half-filled object_list
+    entries. Pruning is right for a one-shot call, where an incomplete
+    offer would only produce a confusing per-field rejection from
+    /calculate — but wrong during incremental candidate collection, where
+    a partially described offer is exactly what the next question is
+    about, and throwing it away would make the user repeat what they just
+    said.
+    """
     try:
         tool_schema = PlatformClient().tool_schema(calculator_id)
         input_schema = tool_schema.get("input_schema")
@@ -370,6 +472,8 @@ def _extract_values_llm(
             logger.warning("No usable tool schema for calculator %s", calculator_id)
             return None
         extraction_schema = _relaxed_extraction_schema(input_schema)
+        if keep_partial_items:
+            properties = extraction_schema.get("properties") or properties
 
         tool = {
             "name": tool_name,
@@ -451,6 +555,11 @@ _COPY = {
         "clarify": "Per completare il calcolo, puoi indicarmi {items}?",
         "failure": "Non riesco a completare il calcolo in questo momento. Riprova tra poco.",
         "round_limit": "Mi dispiace, non sono riuscito a raccogliere tutti i dati necessari per il calcolo.",
+        "warnings": "Avvisi",
+        "assumptions": "Assunzioni",
+        "exclusions": "Non incluso",
+        "defaults": "Valori assunti per default",
+        "disclaimer": "Stima indicativa: non sostituisce la verifica di un professionista.",
     },
     "es": {
         "result": "Resultado",
@@ -459,6 +568,11 @@ _COPY = {
         "clarify": "Para completar el cálculo, ¿puedes indicarme {items}?",
         "failure": "No puedo completar el cálculo en este momento. Inténtalo de nuevo más tarde.",
         "round_limit": "Lo siento, no he podido recopilar todos los datos necesarios para el cálculo.",
+        "warnings": "Avisos",
+        "assumptions": "Supuestos",
+        "exclusions": "No incluido",
+        "defaults": "Valores asumidos por defecto",
+        "disclaimer": "Estimación indicativa: no sustituye la verificación de un profesional.",
     },
     "en": {
         "result": "Result",
@@ -467,8 +581,137 @@ _COPY = {
         "clarify": "To complete the calculation, could you provide {items}?",
         "failure": "I cannot complete the calculation right now. Please try again shortly.",
         "round_limit": "Sorry, I could not collect all the information needed for the calculation.",
+        "warnings": "Warnings",
+        "assumptions": "Assumptions",
+        "exclusions": "Not included",
+        "defaults": "Values assumed by default",
+        "disclaimer": "Indicative estimate: it does not replace a professional's review.",
     },
 }
+
+# Copy for the comparison flow: candidate collection, the review/confirm
+# steps, and the verdict itself. Kept aligned across the three languages
+# production supports — a user collecting offers in Spanish must not drop
+# into Italian at the one point where the answer says whether there is a
+# winner at all.
+_COMPARISON_COPY = {
+    "it": {
+        "choose": "La richiesta può corrispondere a più calcoli. Quale intendi?",
+        "choose_hint": "Rispondi col numero, oppure col nome del calcolo.",
+        "choose_unclear": "Non ho capito quale calcolo intendi. Rispondi col numero dell'opzione.",
+        "ask_first": "Confronto '{name}'. Descrivimi la prima offerta in un solo messaggio, indicando almeno: {fields}.",
+        "ask_next": "Registrate {count} offerte. Descrivimi la prossima, oppure scrivi 'confronta' per procedere.",
+        "ask_next_min": "Registrate {count} offerte su almeno {min_items}. Descrivimi la prossima offerta.",
+        "recorded": "Registrata l'offerta {label}: {summary}.",
+        "updated": "Aggiornata l'offerta {label}: {summary}.",
+        "removed": "Rimossa l'offerta {label}. Offerte rimaste: {count}.",
+        "not_found": "Non trovo un'offerta chiamata '{label}'. Offerte registrate: {labels}.",
+        "incomplete": "Per registrare questa offerta manca ancora: {fields}. Puoi indicarlo?",
+        "pending_draft": "Resta in sospeso l'offerta incompleta {label}: manca ancora {fields}.",
+        "need_more": "Per un confronto servono almeno {min_items} offerte, finora ne ho {count}. Descrivimi la prossima.",
+        "too_many": "Posso confrontare al massimo {max_items} offerte per volta; ne hai già indicate {count}. Scrivi 'confronta' per procedere, oppure rimuovine una ('rimuovi <nome>').",
+        "structured_form": "Non riesco a interpretare l'offerta da testo libero in questo momento. Indicala nel formato 'campo: valore', separando i campi con una virgola. Campi disponibili: {fields}.",
+        "review_header": "Ecco i dati che userò per il confronto. Confermi?",
+        "review_shared": "Dati comuni",
+        "review_candidates": "Offerte",
+        "review_prompt": "Scrivi 'confermo' per calcolare, oppure correggi un'offerta ripetendola col suo nome ('rimuovi <nome>' per eliminarla).",
+        "confirm_defaults": "Alcuni dati che incidono sul punteggio non li hai indicati e sono stati assunti per default:",
+        "confirm_prompt": "Scrivi 'confermo' per accettare queste assunzioni e vedere il risultato, oppure indicami i valori corretti.",
+        "clear_winner": "Vincitore chiaro secondo il modello di punteggio configurato: {winner} (distacco {gap} punti su 100).",
+        "effective_tie": "Sostanziale parità tra {winners}: nessuna differenza materiale con il modello di punteggio attuale (distacco {gap} punti, entro la tolleranza di {tolerance}). Non indico un'offerta come migliore.",
+        "provisional": "Risultato PROVVISORIO, non definitivo: {count} campi che incidono sul punteggio sono stati assunti per default (completezza dei dati {completeness}).",
+        "ranking": "Classifica",
+        "cost": "costo stimato",
+        "score": "punteggio",
+        "components": "componenti",
+        "relative_note": "Il punteggio 0-100 è relativo alle sole offerte confrontate e ai pesi configurati in questo calcolatore: non è una misura oggettiva del mercato.",
+    },
+    "es": {
+        "choose": "La consulta puede corresponder a varios cálculos. ¿Cuál quieres?",
+        "choose_hint": "Responde con el número o con el nombre del cálculo.",
+        "choose_unclear": "No he entendido qué cálculo quieres. Responde con el número de la opción.",
+        "ask_first": "Comparación '{name}'. Descríbeme la primera oferta en un solo mensaje, indicando al menos: {fields}.",
+        "ask_next": "He registrado {count} ofertas. Descríbeme la siguiente, o escribe 'comparar' para continuar.",
+        "ask_next_min": "He registrado {count} ofertas de al menos {min_items}. Descríbeme la siguiente.",
+        "recorded": "Registrada la oferta {label}: {summary}.",
+        "updated": "Actualizada la oferta {label}: {summary}.",
+        "removed": "Eliminada la oferta {label}. Ofertas restantes: {count}.",
+        "not_found": "No encuentro una oferta llamada '{label}'. Ofertas registradas: {labels}.",
+        "incomplete": "Para registrar esta oferta todavía falta: {fields}. ¿Puedes indicarlo?",
+        "pending_draft": "Queda pendiente la oferta incompleta {label}: todavía falta {fields}.",
+        "need_more": "Para comparar hacen falta al menos {min_items} ofertas y por ahora tengo {count}. Descríbeme la siguiente.",
+        "too_many": "Puedo comparar como máximo {max_items} ofertas a la vez y ya has indicado {count}. Escribe 'comparar' para continuar, o elimina una ('eliminar <nombre>').",
+        "structured_form": "Ahora mismo no puedo interpretar la oferta en texto libre. Indícala con el formato 'campo: valor', separando los campos con una coma. Campos disponibles: {fields}.",
+        "review_header": "Estos son los datos que usaré para la comparación. ¿Los confirmas?",
+        "review_shared": "Datos comunes",
+        "review_candidates": "Ofertas",
+        "review_prompt": "Escribe 'confirmo' para calcular, o corrige una oferta repitiéndola con su nombre ('eliminar <nombre>' para quitarla).",
+        "confirm_defaults": "Algunos datos que influyen en la puntuación no los has indicado y se han asumido por defecto:",
+        "confirm_prompt": "Escribe 'confirmo' para aceptar estos supuestos y ver el resultado, o indícame los valores correctos.",
+        "clear_winner": "Ganador claro según el modelo de puntuación configurado: {winner} (diferencia de {gap} puntos sobre 100).",
+        "effective_tie": "Empate sustancial entre {winners}: no hay diferencia material con el modelo de puntuación actual (diferencia de {gap} puntos, dentro de la tolerancia de {tolerance}). No señalo ninguna oferta como la mejor.",
+        "provisional": "Resultado PROVISIONAL, no definitivo: {count} campos que influyen en la puntuación se han asumido por defecto (integridad de los datos {completeness}).",
+        "ranking": "Clasificación",
+        "cost": "coste estimado",
+        "score": "puntuación",
+        "components": "componentes",
+        "relative_note": "La puntuación 0-100 es relativa solo a las ofertas comparadas y a los pesos configurados en esta calculadora: no es una medida objetiva del mercado.",
+    },
+    "en": {
+        "choose": "This request could match more than one calculation. Which one do you mean?",
+        "choose_hint": "Reply with the number, or with the name of the calculation.",
+        "choose_unclear": "I could not tell which calculation you meant. Reply with the option number.",
+        "ask_first": "Comparison '{name}'. Describe the first offer in a single message, stating at least: {fields}.",
+        "ask_next": "{count} offers recorded. Describe the next one, or write 'compare' to proceed.",
+        "ask_next_min": "{count} of at least {min_items} offers recorded. Describe the next one.",
+        "recorded": "Recorded offer {label}: {summary}.",
+        "updated": "Updated offer {label}: {summary}.",
+        "removed": "Removed offer {label}. Offers left: {count}.",
+        "not_found": "I cannot find an offer named '{label}'. Recorded offers: {labels}.",
+        "incomplete": "This offer is still missing: {fields}. Could you provide it?",
+        "pending_draft": "The incomplete offer {label} is still pending: it is missing {fields}.",
+        "need_more": "A comparison needs at least {min_items} offers and I have {count} so far. Describe the next one.",
+        "too_many": "I can compare at most {max_items} offers at a time and you have already given {count}. Write 'compare' to proceed, or remove one ('remove <name>').",
+        "structured_form": "I cannot read a free-text offer right now. Please state it as 'field: value', separating fields with a comma. Available fields: {fields}.",
+        "review_header": "Here is the data I will use for the comparison. Shall I go ahead?",
+        "review_shared": "Shared data",
+        "review_candidates": "Offers",
+        "review_prompt": "Write 'confirm' to calculate, or correct an offer by restating it with its name ('remove <name>' to drop it).",
+        "confirm_defaults": "Some fields that affect the score were not provided and have been assumed by default:",
+        "confirm_prompt": "Write 'confirm' to accept these assumptions and see the result, or give me the correct values.",
+        "clear_winner": "Clear winner under the configured scoring model: {winner} ({gap} points ahead out of 100).",
+        "effective_tie": "Effective tie between {winners}: no material difference under the current scoring model ({gap} points apart, within the {tolerance} tolerance). I am not calling any offer the best one.",
+        "provisional": "PROVISIONAL result, not final: {count} fields that affect the score were assumed by default (data completeness {completeness}).",
+        "ranking": "Ranking",
+        "cost": "estimated cost",
+        "score": "score",
+        "components": "components",
+        "relative_note": "The 0-100 score is relative to the compared offers and to the weights configured in this calculator only: it is not an objective measure of the market.",
+    },
+}
+
+# Control words that steer candidate collection, in every language the
+# chatbot supports. Matched on the whole normalized message so an offer
+# whose name happens to contain "fine" is not mistaken for a command.
+_FINISH_WORDS = frozenset({
+    "confronta", "confronto", "compara", "calcola", "procedi",
+    "basta", "fine", "finito", "vai",
+    "compare", "calculate", "finish", "done", "go ahead", "that's all",
+    "comparar", "calcular", "terminar", "listo", "ya esta", "adelante",
+})
+_CONFIRM_WORDS = frozenset({
+    "si", "sì", "ok", "okay", "va bene", "conferma", "confermo", "confermato",
+    "yes", "confirm", "confirmed", "correct", "go", "proceed",
+    "sí", "confirmo", "confirmado", "de acuerdo", "vale", "correcto",
+})
+_REMOVE_PREFIXES = (
+    "rimuovi", "togli", "elimina", "cancella", "scarta",
+    "remove", "delete", "drop", "discard",
+    "eliminar", "quitar", "borrar",
+)
+# Above this a "comparison" stops being a comparison and starts being a
+# denial-of-service on the collection loop (and on the LLM context).
+_MAX_CANDIDATES = 20
 
 
 def _session_lang(state: Dict[str, Any]) -> str:
@@ -518,11 +761,79 @@ def _display_value(value: Any) -> str:
     return str(value)
 
 
+def _notice_lines(items: Any) -> List[str]:
+    """Extract message strings from a list of {code, message} notices."""
+    lines: List[str] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        message = item.get("message")
+        if message:
+            lines.append(str(message))
+    return lines
+
+
+def _comparison_lines(lang: str, result: Dict[str, Any]) -> List[str]:
+    """Render a comparison result as prose a reader can act on.
+
+    Verdict first, and only ever the verdict the platform actually reached:
+    `clear_winner` names a leader "under the configured model", an
+    effective tie names nobody. Then the money, then the synthetic score —
+    a 0-100 number printed first would be read as a grade rather than as
+    the weighted opinion it is.
+    """
+    copy = _COMPARISON_COPY[lang]
+    comparison = result.get("comparison") or {}
+    ranking = [entry for entry in result.get("ranking") or [] if isinstance(entry, dict)]
+    lines: List[str] = []
+
+    winners = comparison.get("best_candidates") or ([result["best"]] if result.get("best") else [])
+    if comparison.get("decision_status") == "effective_tie":
+        lines.append(copy["effective_tie"].format(
+            winners=", ".join(winners),
+            gap=comparison.get("score_gap"),
+            tolerance=comparison.get("tie_tolerance"),
+        ))
+    elif winners:
+        lines.append(copy["clear_winner"].format(
+            winner=winners[0], gap=comparison.get("score_gap"),
+        ))
+
+    if comparison.get("provisional"):
+        lines.append(copy["provisional"].format(
+            count=len(comparison.get("scoring_defaults_applied") or []),
+            completeness=comparison.get("scoring_completeness"),
+        ))
+
+    cost_variable = (comparison.get("cost_basis") or {}).get("variable")
+    if ranking:
+        lines.append("")
+        lines.append(f"{copy['ranking']}:")
+        for entry in ranking:
+            derived = entry.get("derived") or {}
+            parts = []
+            if cost_variable and derived.get(cost_variable) is not None:
+                parts.append(f"{copy['cost']} {derived[cost_variable]}")
+            parts.append(f"{copy['score']} {entry.get('total_score')}/100")
+            lines.append(f"{entry.get('rank')}. {entry.get('label')} — {'; '.join(parts)}")
+            scores = entry.get("scores") or {}
+            if scores:
+                detail = ", ".join(f"{name} {value}" for name, value in scores.items())
+                lines.append(f"   {copy['components']}: {detail}")
+
+    lines.append("")
+    lines.append(copy["relative_note"])
+    return lines
+
+
 def _success_answer(lang: str, response: Dict[str, Any]) -> str:
     result = response.get("result") or {}
-    rendered = "; ".join(
-        f"{name}: {_display_value(value)}" for name, value in sorted(result.items())
-    )
+    if isinstance(result.get("comparison"), dict):
+        rendered = "\n" + "\n".join(_comparison_lines(lang, result))
+    else:
+        rendered = "; ".join(
+            f"{name}: {_display_value(value)}" for name, value in sorted(result.items())
+        )
     citations = []
     for citation in response.get("citations") or []:
         if not isinstance(citation, dict):
@@ -537,7 +848,44 @@ def _success_answer(lang: str, response: Dict[str, Any]) -> str:
             reference = f"{reference} — {citation['url']}"
         citations.append(reference)
     sources = "; ".join(citations) or _COPY[lang]["no_sources"]
-    return f"{_COPY[lang]['result']}: {rendered}\n\n{_COPY[lang]['sources']}: {sources}"
+
+    sections = [f"{_COPY[lang]['result']}: {rendered}"]
+    # Surface the platform's assumptions and warnings — never drop them: a
+    # staleness or "gross only" warning changes how the number must be read.
+    assumptions = _notice_lines(response.get("assumptions"))
+    if assumptions:
+        sections.append(
+            f"{_COPY[lang]['assumptions']}:\n"
+            + "\n".join(f"- {line}" for line in assumptions)
+        )
+    defaults = response.get("defaults_applied") or []
+    if defaults:
+        sections.append(
+            f"{_COPY[lang]['defaults']}:\n"
+            + "\n".join(
+                f"- {entry.get('path')} = {_display_value(entry.get('value'))}"
+                for entry in defaults
+                if isinstance(entry, dict)
+            )
+        )
+    warnings = _notice_lines(response.get("warnings"))
+    if warnings:
+        sections.append(
+            f"{_COPY[lang]['warnings']}:\n"
+            + "\n".join(f"- {line}" for line in warnings)
+        )
+    # Its own labelled section, never flattened into the warnings: what the
+    # calculator does not cover is a boundary on the answer, and a reader
+    # who skims warnings as boilerplate must still meet it.
+    exclusions = [str(item) for item in response.get("exclusions") or [] if item]
+    if exclusions:
+        sections.append(
+            f"{_COPY[lang]['exclusions']}:\n"
+            + "\n".join(f"- {line}" for line in exclusions)
+        )
+    sections.append(f"{_COPY[lang]['sources']}: {sources}")
+    sections.append(_COPY[lang]["disclaimer"])
+    return "\n\n".join(sections)
 
 
 def _answered_update(answer: str, **updates: Any) -> Dict[str, Any]:
@@ -550,10 +898,21 @@ def _answered_update(answer: str, **updates: Any) -> Dict[str, Any]:
     }
 
 
-def _platform_error_message(response: Dict[str, Any]) -> Optional[str]:
-    """Return a genuine platform failure message, excluding input validation."""
+def _platform_error_message(
+    response: Dict[str, Any], *, include_validation: bool = False
+) -> Optional[str]:
+    """Return a genuine platform failure message.
+
+    Input-validation errors are excluded by default because the missing-input
+    clarification path states them better. They are included only where that
+    path has nothing to ask for — an object_list holding fewer candidates than
+    the pack's minimum reports no missing field, so suppressing its message
+    would leave the user with a failure that explains nothing.
+    """
     for error in response.get("errors") or []:
-        if not isinstance(error, dict) or error.get("code") == "input_invalid":
+        if not isinstance(error, dict):
+            continue
+        if error.get("code") == "input_invalid" and not include_validation:
             continue
         message = error.get("message")
         if message:
@@ -589,6 +948,7 @@ def _handle_response(
     expected_specs: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if response.get("status") == "success":
+        logger.info("calc_node: outcome=success calculator=%s", calculator_id)
         return _answered_update(
             _success_answer(lang, response),
             calculation_result=response.get("result") or {},
@@ -598,6 +958,10 @@ def _handle_response(
 
     missing = _missing_specs(response)
     if missing:
+        logger.info(
+            "calc_node: outcome=clarify calculator=%s missing=%s",
+            calculator_id, [spec.get("name") for spec in missing],
+        )
         missing_names = {spec.get("name") for spec in missing}
         for spec in expected_specs or []:
             if (
@@ -621,9 +985,758 @@ def _handle_response(
             },
             retrieval_quality_ok=True,
         )
+    # No field to ask for, so a validation message is all the user can act on.
     return _failure_update(
         lang,
-        platform_message=_platform_error_message(response),
+        platform_message=_platform_error_message(response, include_validation=True),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Incremental candidate collection for object_list (comparator) calculators
+#
+# A comparator takes a whole array of offers. Asking an LLM to rebuild that
+# array from scratch on every turn is how offers silently disappear: the
+# model only sees the newest message, so anything the user said three turns
+# ago has to be re-derived, and any field it fails to re-derive is simply
+# gone from the request. Instead the array is state, owned here: each turn
+# contributes at most one candidate, everything already collected is kept
+# verbatim, and the model is only ever asked to read the sentence in front
+# of it. The phases below are the whole protocol; every one of them is
+# JSON-safe so the session store round-trips them unchanged.
+# ---------------------------------------------------------------------------
+
+_PHASE_SHARED = "collect_shared_inputs"
+_PHASE_CANDIDATES = "collect_candidates"
+_PHASE_REVIEW = "review"
+_PHASE_CONFIRM = "confirm"
+_PHASE_CHOOSE = "choose_calculator"
+
+_FIELD_HEAD = re.compile(r"([A-Za-z_]\w*)\s*[:=]\s*")
+_TRUE_FORM_VALUES = {"true", "1", "si", "sì", "sí", "yes", "y", "x"}
+_FALSE_FORM_VALUES = {"false", "0", "no", "n"}
+
+
+def _field_assignments(text: str, names: Iterable[str]):
+    """Yield (field, value) for every `field: value` in a structured message.
+
+    A value runs to the next DECLARED field name, not to the next comma:
+    Italian writes decimals with a comma, so `prezzo: 0,25, gas: 1,10` has
+    to yield "0,25" and "1,10". Cutting at the first comma turned 0,25 into
+    0 — and since zero is a valid price, that silently invented a free
+    offer and could hand it the comparison. Only declared names open a new
+    field, so a colon inside a value ("nome: Alfa: Plus") does not split it.
+    """
+    declared = set(names)
+    body = str(text or "")
+    heads = [m for m in _FIELD_HEAD.finditer(body) if m.group(1) in declared]
+    for index, head in enumerate(heads):
+        end = heads[index + 1].start() if index + 1 < len(heads) else len(body)
+        value = body[head.end():end].strip().rstrip(";,").strip()
+        yield head.group(1), value
+
+
+def _normalize_command(message: str) -> str:
+    return " ".join(str(message or "").strip().lower().rstrip("!.?").split())
+
+
+def _candidate_descriptor(spec: Any) -> Optional[Dict[str, Any]]:
+    """Describe an object_list input well enough to collect it one item at a
+    time, or None when the spec does not carry its item fields.
+
+    Without item fields there is nothing to validate a candidate against and
+    no label to correct one by, so the caller must fall back to the ordinary
+    single-shot clarification rather than improvise a collection loop.
+    """
+    if not isinstance(spec, dict) or spec.get("type") != "object_list":
+        return None
+    fields = [f for f in spec.get("item_fields") or [] if isinstance(f, dict) and f.get("name")]
+    if not fields:
+        return None
+    label_field = next(
+        (f["name"] for f in fields if f.get("type") == "string" and f.get("required")),
+        next((f["name"] for f in fields if f.get("type") == "string"), None),
+    )
+    return {
+        "name": spec["name"],
+        "item_fields": fields,
+        "required_fields": [f["name"] for f in fields if f.get("required")],
+        "min_items": int(spec.get("min_items") or 2),
+        "label_field": label_field,
+    }
+
+
+def _descriptor_from_specs(specs: Iterable[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    for spec in specs or []:
+        descriptor = _candidate_descriptor(spec)
+        if descriptor is not None:
+            return descriptor
+    return None
+
+
+def _shared_specs(specs: Iterable[Dict[str, Any]], candidate_field: str) -> List[Dict[str, Any]]:
+    return [
+        spec
+        for spec in specs or []
+        if isinstance(spec, dict) and spec.get("name") and spec.get("name") != candidate_field
+    ]
+
+
+def _candidate_label(candidate: Dict[str, Any], descriptor: Dict[str, Any], index: int) -> str:
+    label_field = descriptor.get("label_field")
+    if label_field and candidate.get(label_field):
+        return str(candidate[label_field])
+    return f"#{index + 1}"
+
+
+def _candidate_labels(candidates: List[Dict[str, Any]], descriptor: Dict[str, Any]) -> List[str]:
+    return [_candidate_label(c, descriptor, i) for i, c in enumerate(candidates)]
+
+
+def _find_candidate_exact(
+    candidates: List[Dict[str, Any]], descriptor: Dict[str, Any], text: str
+) -> Optional[int]:
+    """Locate a collected candidate whose label is exactly `text`.
+
+    Used when deciding whether an extracted offer CORRECTS an existing one.
+    Substring matching is wrong here: "Alfa Plus" contains "Alfa", so a
+    genuinely new product was silently swallowed into the base one and the
+    comparison lost a candidate without saying so. A real correction restates
+    the same name.
+    """
+    needle = _normalize_command(text)
+    if not needle:
+        return None
+    labels = [_normalize_command(label) for label in _candidate_labels(candidates, descriptor)]
+    return labels.index(needle) if needle in labels else None
+
+
+def _find_candidate(
+    candidates: List[Dict[str, Any]], descriptor: Dict[str, Any], text: str
+) -> Optional[int]:
+    """Locate a candidate the user named in an explicit command.
+
+    Exact match first, then a containment match, and only when exactly one
+    candidate matches — an ambiguous reference must not silently drop the
+    wrong offer. Looser than _find_candidate_exact on purpose: here the user
+    typed the name themselves, so "rimuovi alfa" should find "Alfa Plus"
+    when that is the only candidate it can mean.
+    """
+    exact = _find_candidate_exact(candidates, descriptor, text)
+    if exact is not None:
+        return exact
+    needle = _normalize_command(text)
+    if not needle:
+        return None
+    labels = [_normalize_command(label) for label in _candidate_labels(candidates, descriptor)]
+    partial = [i for i, label in enumerate(labels) if needle in label or label in needle]
+    return partial[0] if len(partial) == 1 else None
+
+
+_REMOVE_RE = re.compile(
+    r"^\s*(?:" + "|".join(_REMOVE_PREFIXES) + r")\s+(.+?)\s*[.!?]*$", re.IGNORECASE
+)
+
+
+def _removal_target(message: str) -> Optional[str]:
+    """The offer name in a "remove X" command, in the user's own casing —
+    echoing back a lowercased name in a "no such offer" message reads like
+    the system mangled it."""
+    match = _REMOVE_RE.match(str(message or ""))
+    return match.group(1).strip() if match else None
+
+
+def _missing_candidate_fields(candidate: Dict[str, Any], descriptor: Dict[str, Any]) -> List[str]:
+    return [name for name in descriptor["required_fields"] if candidate.get(name) in (None, "")]
+
+
+def _field_label(spec: Dict[str, Any]) -> str:
+    description = spec.get("description")
+    return f"{spec['name']} ({description})" if description else str(spec["name"])
+
+
+def _required_field_labels(descriptor: Dict[str, Any]) -> str:
+    required = set(descriptor["required_fields"])
+    return "; ".join(
+        _field_label(spec) for spec in descriptor["item_fields"] if spec["name"] in required
+    )
+
+
+def _candidate_summary(candidate: Dict[str, Any]) -> str:
+    return ", ".join(f"{k}={_display_value(v)}" for k, v in candidate.items())
+
+
+def _parse_structured_candidate(
+    message: str, descriptor: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Deterministic 'field: value' fallback used when LLM extraction is
+    unavailable.
+
+    Deliberately literal: only assignments naming a declared field are read,
+    so a sentence full of bare numbers yields nothing at all rather than an
+    offer assembled from whatever digits happened to be in it. Guessing here
+    would put an invented premium in front of a user as if they had said it.
+    """
+    specs = {spec["name"]: spec for spec in descriptor["item_fields"]}
+    return _parse_structured_fields(message, specs)
+
+
+def _parse_structured_scalars(
+    message: str, specs: Iterable[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """The same literal `field: value` reading for shared scalar inputs.
+
+    Shared inputs used to fall back to the positional number extractor when
+    the LLM was unavailable. That binds by ORDER, not by name, so "cosa dice
+    l'articolo 40 del codice?" was read as a 40-year-old driver: a question
+    silently became an answer. Nothing is inferred here either.
+    """
+    return _parse_structured_fields(message, {spec["name"]: spec for spec in specs})
+
+
+def _parse_structured_fields(
+    message: str, specs: Dict[str, Dict[str, Any]]
+) -> Dict[str, Any]:
+    parsed: Dict[str, Any] = {}
+    for name, raw in _field_assignments(message, specs):
+        value = _coerce_form_value(raw, specs[name])
+        if value is not None:
+            parsed[name] = value
+    return parsed
+
+
+def _coerce_form_value(raw: str, spec: Dict[str, Any]) -> Any:
+    if not raw:
+        return None
+    kind = spec.get("type")
+    if kind == "boolean":
+        lowered = raw.lower()
+        if lowered in _TRUE_FORM_VALUES:
+            return True
+        if lowered in _FALSE_FORM_VALUES:
+            return False
+        return None
+    if kind in {"decimal", "integer"}:
+        try:
+            return _normalize_number(raw, spec)
+        except (InvalidOperation, ValueError):
+            return None
+    return raw
+
+
+def _pending_comparison(
+    calculator_id: str,
+    descriptor: Dict[str, Any],
+    *,
+    phase: str,
+    inputs_so_far: Dict[str, Any],
+    candidates: List[Dict[str, Any]],
+    candidate_draft: Optional[Dict[str, Any]] = None,
+    missing_inputs: Optional[List[Dict[str, Any]]] = None,
+    shared_specs: Optional[List[Dict[str, Any]]] = None,
+    rounds: int = 0,
+) -> Dict[str, Any]:
+    return {
+        "calculator_id": calculator_id,
+        "phase": phase,
+        "inputs_so_far": inputs_so_far,
+        "candidate_field": descriptor["name"],
+        "candidate_descriptor": descriptor,
+        "candidates": candidates,
+        "candidate_draft": candidate_draft or {},
+        "missing_inputs": missing_inputs or [],
+        "shared_specs": shared_specs or [],
+        # Candidate-collection turns never touch this. The three-round limit
+        # exists to stop a calculator badgering a user who cannot supply a
+        # missing figure; describing a fifth offer is the feature working,
+        # not a failed clarification.
+        "round": rounds,
+    }
+
+
+def _comparison_reply(text: str, pending: Dict[str, Any]) -> Dict[str, Any]:
+    return _answered_update(text, pending_calculation=pending, retrieval_quality_ok=True)
+
+
+def _missing_shared(
+    shared_specs: List[Dict[str, Any]], inputs_so_far: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    return [
+        spec
+        for spec in shared_specs
+        if spec.get("required") and spec.get("name") not in inputs_so_far
+    ]
+
+
+def _ask_next(lang: str, pending: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
+    """Ask for the next thing the comparison needs, given its phase."""
+    copy = _COMPARISON_COPY[lang]
+    descriptor = pending["candidate_descriptor"]
+    # A complete offer held back because the list was full gets its slot as
+    # soon as one frees up, instead of the user having to restate it.
+    draft = pending.get("candidate_draft") or {}
+    if (
+        draft
+        and not _missing_candidate_fields(draft, descriptor)
+        and len(pending["candidates"]) < _MAX_CANDIDATES
+    ):
+        pending["candidates"].append(draft)
+        pending["candidate_draft"] = {}
+    # An offer that is still half-described must not sit in silent limbo:
+    # say it is pending, so the user knows it has not been counted.
+    leftover = pending.get("candidate_draft") or {}
+    if leftover:
+        specs = {spec["name"]: spec for spec in descriptor["item_fields"]}
+        prefix += copy["pending_draft"].format(
+            label=_candidate_label(leftover, descriptor, len(pending["candidates"])),
+            fields="; ".join(
+                _field_label(specs[name])
+                for name in _missing_candidate_fields(leftover, descriptor)
+            ),
+        ) + "\n"
+    missing = _missing_shared(pending["shared_specs"], pending["inputs_so_far"])
+    if missing:
+        pending["phase"] = _PHASE_SHARED
+        pending["missing_inputs"] = missing
+        question = _clarification_question(lang, missing)
+        return _comparison_reply(f"{prefix}{question}".strip(), pending)
+
+    pending["phase"] = _PHASE_CANDIDATES
+    pending["missing_inputs"] = []
+    count = len(pending["candidates"])
+    if count == 0:
+        text = copy["ask_first"].format(
+            name=pending.get("calculator_name") or pending["calculator_id"],
+            fields=_required_field_labels(descriptor),
+        )
+    elif count < descriptor["min_items"]:
+        text = copy["ask_next_min"].format(count=count, min_items=descriptor["min_items"])
+    else:
+        text = copy["ask_next"].format(count=count)
+    return _comparison_reply(f"{prefix}{text}".strip(), pending)
+
+
+def _review_text(lang: str, pending: Dict[str, Any]) -> str:
+    copy = _COMPARISON_COPY[lang]
+    descriptor = pending["candidate_descriptor"]
+    lines = [copy["review_header"], ""]
+    if pending["inputs_so_far"]:
+        lines.append(f"{copy['review_shared']}:")
+        lines += [
+            f"- {name}: {_display_value(value)}"
+            for name, value in sorted(pending["inputs_so_far"].items())
+        ]
+        lines.append("")
+    lines.append(f"{copy['review_candidates']}:")
+    for index, candidate in enumerate(pending["candidates"]):
+        label = _candidate_label(candidate, descriptor, index)
+        lines.append(f"{index + 1}. {label} — {_candidate_summary(candidate)}")
+    lines.append("")
+    lines.append(copy["review_prompt"])
+    return "\n".join(lines)
+
+
+def _start_comparison(
+    lang: str,
+    calculator_id: str,
+    descriptor: Dict[str, Any],
+    specs: List[Dict[str, Any]],
+    raw_query: str,
+    calculator_name: str = "",
+) -> Dict[str, Any]:
+    """Open a comparison, seeding it with whatever the opening sentence
+    already contains (a one-shot "compare A at 420 and B at 510" must not be
+    thrown away just because collection is incremental)."""
+    pending = _pending_comparison(
+        calculator_id,
+        descriptor,
+        phase=_PHASE_SHARED,
+        inputs_so_far={},
+        candidates=[],
+        shared_specs=_shared_specs(specs, descriptor["name"]),
+    )
+    pending["calculator_name"] = calculator_name or calculator_id
+
+    extracted = _extract_values_llm(raw_query, calculator_id, keep_partial_items=True)
+    if extracted:
+        _absorb_shared(pending, extracted)
+        for item in extracted.get(descriptor["name"]) or []:
+            if isinstance(item, dict):
+                _absorb_candidate(pending, item)
+    return _ask_next(lang, pending)
+
+
+def _resume_comparison(
+    client: "PlatformClient", lang: str, pending: Dict[str, Any], raw_query: str
+) -> Dict[str, Any]:
+    """Continue a comparison on a deep copy of the persisted state.
+
+    The pending payload is the session's own stored dict; mutating it in
+    place would rewrite the previous turn's record of what had been
+    collected, so an abandoned turn could not be reconstructed.
+    """
+    return _collect_comparison(client, lang, copy.deepcopy(pending), raw_query)
+
+
+def _absorb_shared(pending: Dict[str, Any], extracted: Dict[str, Any]) -> int:
+    """Copy any declared shared scalar out of an extraction result.
+
+    The request-level fields go through too: _calculation_payload lifts them
+    out of `inputs` again, and dropping them here would silently discard the
+    tax year of a comparator whose parameters are date-versioned.
+    """
+    names = {spec["name"] for spec in pending["shared_specs"]}
+    names |= {"tax_year", "as_of_date", "period"}
+    absorbed = 0
+    for name, value in extracted.items():
+        if name in names and value is not None:
+            pending["inputs_so_far"][name] = value
+            absorbed += 1
+    return absorbed
+
+
+def _absorb_candidate(
+    pending: Dict[str, Any], item: Dict[str, Any]
+) -> Tuple[Optional[str], Optional[int]]:
+    """Merge one extracted candidate into the collected set.
+
+    Returns (outcome, index) where outcome is "added", "updated",
+    "drafted", "full" or None (nothing usable). An item whose label matches
+    a candidate already collected is treated as a correction of that offer,
+    not as a new one — restating an offer is how a user fixes it.
+    """
+    descriptor = pending["candidate_descriptor"]
+    item = {k: v for k, v in item.items() if v is not None}
+    if not item:
+        return None, None
+
+    label_field = descriptor.get("label_field")
+    item_label = str(item[label_field]) if label_field and item.get(label_field) else None
+    if item_label is not None:
+        existing = _find_candidate_exact(pending["candidates"], descriptor, item_label)
+        if existing is not None:
+            pending["candidates"][existing].update(item)
+            # The draft belongs to a DIFFERENT, still-unfinished offer;
+            # correcting an already-recorded one says nothing about it.
+            return "updated", existing
+
+    draft = dict(pending.get("candidate_draft") or {})
+    draft_label = str(draft[label_field]) if label_field and draft.get(label_field) else None
+    # Merge into the draft only when the two can be the same offer. A
+    # complete "Beta" arriving while "Delta" is half-described used to
+    # overwrite Delta field by field, so Delta vanished without a word.
+    same_offer = (
+        not draft
+        or draft_label is None
+        or item_label is None
+        or _normalize_command(draft_label) == _normalize_command(item_label)
+    )
+    merged = {**draft, **item} if same_offer else dict(item)
+
+    if _missing_candidate_fields(merged, descriptor):
+        pending["candidate_draft"] = merged
+        return "drafted", None
+    if len(pending["candidates"]) >= _MAX_CANDIDATES:
+        # Keep the draft rather than discard a complete offer the user
+        # just described: removing one of the 20 frees a slot and
+        # _ask_next flushes it then.
+        pending["candidate_draft"] = merged
+        return "full", None
+    pending["candidates"].append(merged)
+    if same_offer:
+        pending["candidate_draft"] = {}
+    return "added", len(pending["candidates"]) - 1
+
+
+def _collect_comparison(
+    client: "PlatformClient", lang: str, pending: Dict[str, Any], raw_query: str
+) -> Dict[str, Any]:
+    """One turn of an in-progress comparison."""
+    copy = _COMPARISON_COPY[lang]
+    descriptor = pending.get("candidate_descriptor")
+    if not isinstance(descriptor, dict) or not descriptor.get("item_fields"):
+        return _failure_update(lang)
+    pending.setdefault("candidates", [])
+    pending.setdefault("candidate_draft", {})
+    pending.setdefault("inputs_so_far", {})
+    pending.setdefault("shared_specs", [])
+
+    command = _normalize_command(raw_query)
+    phase = pending.get("phase")
+
+    # --- explicit removal, valid in every collecting phase ----------------
+    target = _removal_target(raw_query)
+    if target and phase in (_PHASE_CANDIDATES, _PHASE_REVIEW, _PHASE_CONFIRM):
+        index = _find_candidate(pending["candidates"], descriptor, target)
+        if index is None:
+            labels = ", ".join(_candidate_labels(pending["candidates"], descriptor)) or "-"
+            return _comparison_reply(
+                copy["not_found"].format(label=target, labels=labels), pending
+            )
+        removed = _candidate_label(pending["candidates"].pop(index), descriptor, index)
+        notice = copy["removed"].format(label=removed, count=len(pending["candidates"]))
+        return _ask_next(lang, pending, prefix=f"{notice}\n")
+
+    # --- review / confirm gates -------------------------------------------
+    # A finish word past the review is a confirmation, not a request to see
+    # the review again: someone who has just read the summary and types
+    # "calcola" means go, and re-printing the same block would loop.
+    go_ahead = command in _CONFIRM_WORDS or command in _FINISH_WORDS
+    if phase == _PHASE_REVIEW and go_ahead:
+        return _run_comparison(client, lang, pending, confirm=False)
+    if phase == _PHASE_CONFIRM and go_ahead:
+        return _run_comparison(client, lang, pending, confirm=True)
+
+    # --- finish word ------------------------------------------------------
+    if command in _FINISH_WORDS and phase in (_PHASE_SHARED, _PHASE_CANDIDATES):
+        # Shared facts first: "confronta" while the applicant's age is still
+        # missing is a request to proceed, not a change of subject, so it
+        # must ask for the age rather than escape to ordinary retrieval.
+        if _missing_shared(pending["shared_specs"], pending["inputs_so_far"]):
+            return _ask_next(lang, pending)
+        if len(pending["candidates"]) < descriptor["min_items"]:
+            return _comparison_reply(
+                copy["need_more"].format(
+                    min_items=descriptor["min_items"], count=len(pending["candidates"])
+                ),
+                pending,
+            )
+        pending["phase"] = _PHASE_REVIEW
+        return _comparison_reply(_review_text(lang, pending), pending)
+
+    # --- ordinary content turn -------------------------------------------
+    extracted = _extract_values_llm(
+        raw_query,
+        pending["calculator_id"],
+        missing_specs=pending.get("missing_inputs") or None,
+        prior_inputs={"collected_offers": pending["candidates"]},
+        keep_partial_items=True,
+    )
+    if extracted is None:
+        # No LLM. Read ONLY explicit `field: value` assignments, for shared
+        # scalars as well as offers. The positional number extractor used to
+        # cover shared scalars, but it binds by position, not by name: while
+        # waiting for the driver's age it read "cosa dice l'articolo 40 del
+        # codice?" as a 40-year-old driver, turning a question into an
+        # answer. Nothing here is inferred from loose numbers.
+        form = _parse_structured_candidate(raw_query, descriptor)
+        shared = _parse_structured_scalars(raw_query, pending["shared_specs"])
+        extracted = dict(shared)
+        if form:
+            extracted[descriptor["name"]] = [form]
+        elif not shared:
+            hints = int(pending.get("form_hints") or 0)
+            mentions_a_field = any(
+                spec["name"] in (raw_query or "")
+                for spec in list(descriptor["item_fields"]) + list(pending["shared_specs"])
+            )
+            # Explain the form once — twice if they are clearly trying to
+            # give an offer — then stop. Repeating it forever would trap a
+            # user who has simply moved on to another question.
+            if mentions_a_field or hints < 1:
+                pending["form_hints"] = hints + 1
+                return _comparison_reply(
+                    copy["structured_form"].format(
+                        fields=", ".join(spec["name"] for spec in descriptor["item_fields"])
+                    ),
+                    pending,
+                )
+
+    absorbed = _absorb_shared(pending, extracted)
+    outcome, touched = None, None
+    for item in extracted.get(descriptor["name"]) or []:
+        if isinstance(item, dict):
+            item_outcome, item_index = _absorb_candidate(pending, item)
+            if item_outcome is not None:
+                outcome, touched = item_outcome, item_index
+
+    if not absorbed and outcome is None:
+        # Nothing in this message belongs to the comparison: the user has
+        # moved on. Escape to ordinary RAG rather than keep asking about
+        # offers they are no longer talking about.
+        return {
+            "calc_route": "normal",
+            "pending_calculation": None,
+            "awaiting_clarification": False,
+            "pending_sections": [],
+        }
+
+    if outcome == "full":
+        return _comparison_reply(
+            copy["too_many"].format(
+                max_items=_MAX_CANDIDATES, count=len(pending["candidates"])
+            ),
+            pending,
+        )
+    if outcome == "drafted":
+        missing = _missing_candidate_fields(pending["candidate_draft"], descriptor)
+        specs = {spec["name"]: spec for spec in descriptor["item_fields"]}
+        return _comparison_reply(
+            copy["incomplete"].format(
+                fields="; ".join(_field_label(specs[name]) for name in missing)
+            ),
+            pending,
+        )
+
+    prefix = ""
+    if outcome in ("added", "updated") and touched is not None:
+        candidate = pending["candidates"][touched]
+        label = _candidate_label(candidate, descriptor, touched)
+        key = "recorded" if outcome == "added" else "updated"
+        prefix = copy[key].format(label=label, summary=_candidate_summary(candidate)) + "\n"
+    return _ask_next(lang, pending, prefix=prefix)
+
+
+def _run_comparison(
+    client: "PlatformClient", lang: str, pending: Dict[str, Any], *, confirm: bool
+) -> Dict[str, Any]:
+    """Send the collected comparison to the platform.
+
+    Runs twice at most: once to see whether scoring defaults were applied,
+    and — only after the user acknowledges them — once more carrying
+    `confirm_assumptions`. Confirmation never removes an assumption from the
+    payload; it records that the user saw it.
+    """
+    values = dict(pending["inputs_so_far"])
+    values[pending["candidate_field"]] = pending["candidates"]
+    payload = _calculation_payload(pending["calculator_id"], values)
+    if confirm:
+        payload["confirm_assumptions"] = True
+
+    response = client.calculate(payload)
+    if response.get("platform_unavailable"):
+        return _failure_update(lang, pending_calculation=pending)
+
+    if response.get("status") != "success":
+        missing = _missing_specs(response)
+        if missing:
+            pending["phase"] = _PHASE_CANDIDATES
+            return _comparison_reply(_clarification_question(lang, missing), pending)
+        return _failure_update(
+            lang, platform_message=_platform_error_message(response, include_validation=True)
+        )
+
+    comparison = (response.get("result") or {}).get("comparison") or {}
+    if not confirm and comparison.get("provisional"):
+        pending["phase"] = _PHASE_CONFIRM
+        return _comparison_reply(_confirmation_text(lang, response), pending)
+
+    logger.info(
+        "calc_node: outcome=comparison calculator=%s status=%s candidates=%s",
+        pending["calculator_id"],
+        comparison.get("decision_status"),
+        len(pending["candidates"]),
+    )
+    return _answered_update(
+        _success_answer(lang, response),
+        calculation_result=response.get("result") or {},
+        pending_calculation=None,
+        retrieval_quality_ok=True,
+    )
+
+
+def _confirmation_text(lang: str, response: Dict[str, Any]) -> str:
+    copy = _COMPARISON_COPY[lang]
+    comparison = (response.get("result") or {}).get("comparison") or {}
+    lines = [copy["confirm_defaults"]]
+    for entry in comparison.get("scoring_defaults_applied") or []:
+        lines.append(f"- {entry.get('path')} = {_display_value(entry.get('value'))}")
+    lines.append("")
+    lines.append(copy["confirm_prompt"])
+    return "\n".join(lines)
+
+
+def _choice_text(lang: str, choices: List[Dict[str, Any]]) -> str:
+    copy = _COMPARISON_COPY[lang]
+    lines = [copy["choose"]]
+    for index, choice in enumerate(choices, start=1):
+        name = choice.get("name") or choice.get("calculator_id")
+        lines.append(f"{index}) {name}")
+    lines.append(copy["choose_hint"])
+    return "\n".join(lines)
+
+
+def _resolve_choice(choices: List[Dict[str, Any]], message: str) -> Optional[Dict[str, Any]]:
+    """Accept a disambiguation answer by position, calculator id, or name."""
+    normalized = _normalize_command(message)
+    if not normalized:
+        return None
+    # The number has to BE the answer, not merely start it: "1Password" and
+    # "1. no, tell me about something else" are not selections of option 1.
+    digits = re.fullmatch(r"(\d+)\s*[.)\]]?", normalized)
+    if digits:
+        index = int(digits.group(1)) - 1
+        if 0 <= index < len(choices):
+            return choices[index]
+    for choice in choices:
+        if _normalize_command(choice.get("calculator_id", "")) == normalized:
+            return choice
+    named = [
+        choice
+        for choice in choices
+        if _normalize_command(choice.get("name", "")) == normalized
+        or (normalized and normalized in _normalize_command(choice.get("name", "")))
+    ]
+    return named[0] if len(named) == 1 else None
+
+
+def _match_specs(match: Dict[str, Any]) -> List[Dict[str, Any]]:
+    specs = [
+        *[
+            {**spec, "required": True}
+            for spec in match.get("required_inputs") or []
+            if isinstance(spec, dict)
+        ],
+        *[
+            {**spec, "required": False}
+            for spec in match.get("optional_inputs") or []
+            if isinstance(spec, dict)
+        ],
+    ]
+    if match.get("requires_period") and not any(
+        spec.get("type") == "period" for spec in specs if isinstance(spec, dict)
+    ):
+        specs.append({"name": "period", "type": "period", "required": True})
+    return specs
+
+
+def _start_calculation(
+    client: "PlatformClient", lang: str, match: Dict[str, Any], raw_query: str
+) -> Dict[str, Any]:
+    """Begin a fresh calculation from a resolved calculator match."""
+    calculator_id = match.get("calculator_id")
+    if not calculator_id:
+        return _failure_update(lang)
+    specs = _match_specs(match)
+
+    descriptor = _descriptor_from_specs(specs)
+    if descriptor is not None:
+        return _start_comparison(
+            lang, calculator_id, descriptor, specs, raw_query,
+            calculator_name=match.get("name") or "",
+        )
+
+    inputs_so_far = _extract_values_llm(raw_query, calculator_id)
+    if inputs_so_far is None:
+        inputs_so_far = _extract_values(
+            raw_query,
+            specs,
+            supports_tax_year=bool(match.get("supports_tax_year")),
+        )
+    response = client.calculate(_calculation_payload(calculator_id, inputs_so_far))
+    if response.get("platform_unavailable"):
+        return {
+            "calc_route": "normal",
+            "calculation_match": None,
+            "pending_calculation": None,
+        }
+    return _handle_response(
+        response,
+        lang=lang,
+        calculator_id=calculator_id,
+        inputs_so_far=inputs_so_far,
+        current_round=0,
+        expected_specs=specs,
     )
 
 
@@ -635,6 +1748,24 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
         client = PlatformClient()
         pending = state.get("pending_calculation")
         raw_query = state.get("raw_query") or state.get("query", "")
+        if pending and pending.get("phase") == _PHASE_CHOOSE:
+            choices = [c for c in pending.get("choices") or [] if isinstance(c, dict)]
+            chosen = _resolve_choice(choices, raw_query)
+            if chosen is None:
+                # Do not strand the user on the menu: an answer that names
+                # no option is a change of subject, so hand the turn back to
+                # ordinary retrieval rather than re-asking forever.
+                return {
+                    "calc_route": "normal",
+                    "pending_calculation": None,
+                    "awaiting_clarification": False,
+                    "pending_sections": [],
+                }
+            return _start_calculation(client, lang, chosen, pending.get("raw_query") or raw_query)
+
+        if pending and pending.get("phase"):
+            return _resume_comparison(client, lang, pending, raw_query)
+
         if pending:
             calculator_id = pending.get("calculator_id")
             if not calculator_id:
@@ -660,7 +1791,9 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 if not specs:
                     return _failure_update(
                         lang,
-                        platform_message=_platform_error_message(probe),
+                        platform_message=_platform_error_message(
+                            probe, include_validation=True
+                        ),
                     )
 
             extracted = _extract_values_llm(
@@ -671,6 +1804,23 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
             )
             if extracted is None:
                 extracted = _extract_values(raw_query, specs)
+            # Only accept values that fill a currently-missing field. A follow-up
+            # that yields nothing relevant — e.g. an unrelated question that
+            # merely contains a stray number — is a topic change, not a slot
+            # answer: escape to normal RAG instead of mis-binding the number.
+            # Restricting to missing fields also prevents silently overwriting a
+            # value confirmed in an earlier turn.
+            missing_names = {
+                spec.get("name")
+                for spec in specs
+                if isinstance(spec, dict) and spec.get("name")
+            }
+            if missing_names:
+                extracted = {
+                    name: value
+                    for name, value in (extracted or {}).items()
+                    if name in missing_names
+                }
             if not extracted:
                 return {
                     "calc_route": "normal",
@@ -690,48 +1840,21 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 current_round=current_round,
             )
 
-        match = state.get("calculation_match") or {}
-        calculator_id = match.get("calculator_id")
-        if not calculator_id:
-            return _failure_update(lang)
-        specs = [
-            *[
-                {**spec, "required": True}
-                for spec in match.get("required_inputs") or []
-                if isinstance(spec, dict)
-            ],
-            *[
-                {**spec, "required": False}
-                for spec in match.get("optional_inputs") or []
-                if isinstance(spec, dict)
-            ],
-        ]
-        if match.get("requires_period") and not any(
-            spec.get("type") == "period" for spec in specs if isinstance(spec, dict)
-        ):
-            specs.append({"name": "period", "type": "period", "required": True})
-        inputs_so_far = _extract_values_llm(raw_query, calculator_id)
-        if inputs_so_far is None:
-            inputs_so_far = _extract_values(
-                raw_query,
-                specs,
-                supports_tax_year=bool(match.get("supports_tax_year")),
+        choices = [c for c in state.get("calculation_choices") or [] if isinstance(c, dict)]
+        if choices:
+            return _answered_update(
+                _choice_text(lang, choices),
+                pending_calculation={
+                    "phase": _PHASE_CHOOSE,
+                    "calculator_id": None,
+                    "choices": choices,
+                    "raw_query": raw_query,
+                    "round": 0,
+                },
+                retrieval_quality_ok=True,
             )
-        response = client.calculate(_calculation_payload(calculator_id, inputs_so_far))
-        if response.get("platform_unavailable"):
-            return {
-                "calc_route": "normal",
-                "calculation_match": None,
-                "pending_calculation": None,
-            }
-        return _handle_response(
-            response,
-            lang=lang,
-            calculator_id=calculator_id,
-            inputs_so_far=inputs_so_far,
-            current_round=0,
-            expected_specs=specs,
-        )
+
+        return _start_calculation(client, lang, state.get("calculation_match") or {}, raw_query)
     except Exception:
         logger.exception("Unexpected calculation node failure")
         return _failure_update(lang)

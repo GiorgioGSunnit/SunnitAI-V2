@@ -185,6 +185,9 @@ request -> CalculatorRegistry.get(calculator_id)   # load YAML definition
     validated per art. 4 DM 55/2014), then the fixed chain **+15% rimborso
     spese generali (art. 2 DM 55/2014) → +4% CPA → +22% IVA**, with an
     explicit subtotal at every stage.
+  - `comparator` — ranks N candidate offers held in a single `object_list`
+    input against each other (`business.confronto_polizze`,
+    `business.confronto_gas_luce`). See **Comparisons** below.
 - **Engine** (`app/core/engine.py`) — the only file that knows the
   end-to-end flow above; it never contains formula logic itself.
 - **API** (`app/api/routes.py`, `app/main.py`) — `GET /health`,
@@ -194,6 +197,128 @@ request -> CalculatorRegistry.get(calculator_id)   # load YAML definition
   separate from `normalized_inputs`/`inputs`, so tests can verify messy
   user messages are safely converted into canonical `/calculate` requests
   without allowing the planner to compute final results.
+
+## Comparisons
+
+A comparator takes a list of candidate offers and returns a ranking with a
+0-100 score per candidate. **The arithmetic being exact says nothing about
+the scoring model being right**: the weights and point values in the two
+shipped packs are still demonstrative and pending a business decision. The
+result is therefore built to be read with that distinction visible — four
+separate questions, answered separately:
+
+| Question | Where the answer lives |
+|---|---|
+| Is the arithmetic correct? | `steps`, exact Decimal strings throughout |
+| Is the input data complete? | `defaults_applied`, per-candidate `data_quality`, `comparison.scoring_completeness` |
+| Is the scoring model sound? | `warnings`, `assumptions`, the pack's declared weights |
+| Is there actually a winner? | `comparison.decision_status` |
+
+### Relative cost normalization
+
+A cost component is declared as a `relative_expression`, scored against the
+**best** candidate rather than the worst:
+
+```yaml
+- name: punteggio_costo
+  weight: "0.60"
+  relative_expression: "costo_annuo_scontato"
+  direction: lower_is_better       # or higher_is_better
+  normalization: ratio_to_best
+```
+
+For `lower_is_better` + `ratio_to_best` the lowest strictly positive value
+scores 100 and every other positive value scores `best / value * 100`. The
+degenerate sets are resolved rather than divided by zero: if every value is
+zero all candidates score 100; if the minimum is zero while others are
+positive, the zero-cost candidates score 100 and the rest score 0. Results
+are clamped to 0-100 and computed in exact `Decimal`.
+
+This replaced `100 - value / worst * 100`, which anchored on the *worst*
+candidate. That formula gave the most expensive offer a flat 0, rarely gave
+the cheapest 100, and — the real defect — **rescored every candidate
+whenever an irrelevant, more expensive offer was added to the set**, which
+could reorder the offers the user actually cared about. Anchoring on the
+best makes an added worse candidate provably irrelevant to everyone else.
+
+Direction, normalization and the expression's variable references are all
+validated at registry-load time, as is the requirement that a component
+declare exactly one kind (`relative_expression` / `expression` / `points` /
+`rules`).
+
+### Tie semantics
+
+Two totals within `formula.tie_tolerance` (default `0.50` of the 100-point
+scale) are not a recommendation, they are noise from the configured
+weights. The result reports:
+
+```json
+"comparison": {
+  "decision_status": "clear_winner",
+  "best_candidates": ["Offerta A"],
+  "score_gap": "3.42",
+  "tie_tolerance": "0.50",
+  "provisional": false
+}
+```
+
+`decision_status` is `clear_winner` or `effective_tie`; `best_candidates`
+holds every candidate within tolerance of the top **exact** total. The tie
+decision always uses exact totals — `score_gap` is displayed at the pack's
+`round_to`, but a 0.5001 gap that prints as "0.50" is still a clear winner.
+When the status is `effective_tie` the platform emits a warning and no
+renderer may call any offer the best one. `ranking` and `best` are
+unchanged and still present for backward compatibility.
+
+### Provisional results, defaults and confirmation
+
+`CalculationResult.defaults_applied` lists every default the platform
+substituted, as machine-readable `{"path", "value"}` entries addressing the
+input the way the request spells it (`polizze[0].franchigia`). Each ranking
+entry carries a `data_quality` block separating `provided_fields` (the
+caller stated it), `assumed_fields` (the platform defaulted it) and
+`unknown_fields` (nobody knows) — an explicit `false` and a defaulted
+`false` are different claims and are never flattened together.
+
+A comparison is **provisional** when a default was applied to a field that
+actually feeds a component. Fields declared but scored by nothing (the
+insurance `massimale`) do not count against `scoring_completeness`.
+
+`CalculationRequest.confirm_assumptions` lets a caller record that it has
+seen those assumptions. It changes no number and removes no assumption:
+`comparison.provisional_status` moves from `provisional_unconfirmed` to
+`confirmed_with_assumptions`, and that is all it does.
+
+### Incremental candidate collection
+
+In production (`src/rag/calculation.py`) an `object_list` comparator is
+filled one candidate per turn through explicit phases —
+`collect_shared_inputs` → `collect_candidates` → `review` → `confirm` —
+persisted in `pending_calculation` through `src/chatbot/session.py`. The
+array is state owned by the route, not something the LLM rebuilds each
+turn: prior candidates are kept verbatim, an offer restated by its label
+corrects that offer instead of duplicating it, `remove <name>` drops one,
+and at most 20 candidates are accepted. Ordinary candidate turns do not
+count against the three-round clarification limit. When LLM extraction is
+unavailable the route asks for a deterministic `field: value` form rather
+than assembling an offer out of stray numbers.
+
+### Known omissions in the shipped packs
+
+These are declared in each pack's `exclusions` and surfaced in
+`/calculate`, stored calculations, replays, HTML reports and both chat
+renderers:
+
+- **Insurance** — `massimale` is collected but not scored (no verified
+  scale exists to convert it to points). The applicant's age and claims
+  history are collected, validated and audited but deliberately not scored:
+  identical across every quote, they can only shift all totals equally.
+- **Energy** — the yearly cost is the commercial energy quota plus the
+  declared fixed fee only. No VAT, no excise duties, no ARERA system
+  charges, no transport/distribution/metering, no F1/F2/F3 time bands, and
+  no price changes after the first year. None of these were added because
+  the platform has no verified parameters for them, and inventing them
+  would produce a confident number that is wrong.
 
 ## How to add a new calculator
 

@@ -10,7 +10,12 @@ from ..schemas.parameter_value import ParameterValue
 from ..schemas.resolved_parameter import ResolvedParameter
 from .base import CalculationStrategy, StrategyOutcome
 from .date_split_interest import covered_rate_segments
-from .foi_revaluation import foi_resolved_parameter, placeholder_warnings, resolve_foi_index
+from .foi_revaluation import (
+    foi_resolved_parameter,
+    placeholder_warnings,
+    relinked_end_value,
+    resolve_foi_index,
+)
 
 TWO = Decimal("2")
 
@@ -64,21 +69,29 @@ class FoiRevaluationInterestStrategy(CalculationStrategy):
         parameters_used: Dict[str, Any] = {}
         foi_values: List[ParameterValue] = []
 
-        def foi_at(as_of: date) -> Decimal:
+        def foi_at(as_of: date) -> ParameterValue:
             pv = resolve_foi_index(self.parameter_store, index_parameter_id, as_of)
             key = f"foi_index_{as_of.year}_{as_of.month:02d}"
             if key not in parameters_used:
                 parameters_used[key] = foi_resolved_parameter(key, pv).model_dump()
                 foi_values.append(pv)
-            return Decimal(str(pv.value))
+            return pv
 
         capital = amount  # running revalued capital, full precision
         total_interest = Decimal("0")
-        index_start = foi_at(start)
+        pv_start = foi_at(start)
+        index_start = Decimal(str(pv_start.value))
 
         for slice_start, slice_end in year_slices(start, end):
-            index_end = foi_at(slice_end)
-            revalued = capital * index_end / index_start
+            pv_end = foi_at(slice_end)
+            index_end = Decimal(str(pv_end.value))
+            # Relink the end index into the start's base (a no-op when bases
+            # match), then keep the original multiply-then-divide order so a
+            # base change never perturbs the last rounding digit.
+            index_end_relinked = relinked_end_value(
+                self.parameter_store, index_parameter_id, pv_start, pv_end
+            )
+            revalued = capital * index_end_relinked / index_start
             mean_base = (capital + revalued) / TWO
             divisor = _year_divisor(slice_start.year)
 
@@ -121,6 +134,7 @@ class FoiRevaluationInterestStrategy(CalculationStrategy):
             # Only the revalued capital rolls forward — interest never
             # enters the base (no anatocismo).
             capital = revalued
+            pv_start = pv_end
             index_start = index_end
 
         revalued_rounded = round_output(capital, definition.output)

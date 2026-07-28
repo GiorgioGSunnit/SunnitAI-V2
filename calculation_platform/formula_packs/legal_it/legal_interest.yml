@@ -33,6 +33,12 @@ negative_examples:
   - cosa prevede il codice civile sugli interessi legali
   - come funziona il saggio di interesse legale
   - differenza tra interessi legali e interessi moratori
+  # Combined "rivalutazione + interessi" belongs to the dedicated
+  # legal_it.rivalutazione_interessi_1712 (Cass. SS.UU. 1712/1995), not to
+  # interest-only: penalize this calculator when both intents co-occur.
+  - rivaluta e interessi
+  - rivalutazione e interessi
+  - rivalutare gli interessi
 required_context:
   - periodo di riferimento (start_date e end_date)
 inputs:

@@ -8,7 +8,7 @@ once the real ISTAT series is loaded.
 
 from decimal import Decimal
 
-from app.main import engine
+from support import engine
 from app.schemas.calculation_request import CalculationRequest
 
 CALC_ID = "legal_it.rivalutazione_istat"
@@ -87,3 +87,44 @@ def test_same_month_coefficient_is_one():
     assert result.status == "success"
     assert result.result["importo_rivalutato"] == "1000.00"
     assert Decimal(result.derived_values["coefficiente_rivalutazione"]) == Decimal("1")
+
+
+def test_cross_base_uses_the_base_link_coefficient():
+    """FOI(2021-03) = 103.3 in base 2015, FOI(2026-06) = 102.8 in base 2025.
+    The bases differ, so the end index is relinked into base 2015 with the
+    store's coefficient 1.214 before dividing:
+
+        coefficiente = (102.8 x 1.214) / 103.3 = 124.7992 / 103.3 = 1.208123...
+        importo 1000 x 1.208123... = 1208.12 (full-precision coefficient policy)
+
+    The official ISTAT calculator, which rounds the coefficient to 3 decimals
+    (1.208), returns 1208.00 — the cents difference is the documented policy.
+    """
+    result = _calculate(data_iniziale="2021-03-15", data_finale="2026-06-15")
+    assert result.status == "success"
+    assert result.result["importo_rivalutato"] == "1208.12"
+    coefficient = Decimal(result.derived_values["coefficiente_rivalutazione"])
+    assert coefficient == (Decimal("102.8") * Decimal("1.214")) / Decimal("103.3")
+    step = next(s for s in result.steps if s["type"] == "revaluation_coefficient")
+    assert step["index_initial_base"] == 2015
+    assert step["index_final_base"] == 2025
+
+
+def test_cross_base_without_a_link_is_a_structured_error():
+    """If two months carry different bases and no base-link coefficient is
+    registered, the division is refused rather than silently mixing bases."""
+    from support import build_engine
+
+    foi = """
+values:
+  - {parameter_id: legal_it.foi_index, year: 2021, month: 3, value: "103.3", base_year: 2015, unit: index, placeholder: true, source_ref: fixture}
+  - {parameter_id: legal_it.foi_index, year: 2026, month: 6, value: "102.8", base_year: 2025, unit: index, placeholder: true, source_ref: fixture}
+"""
+    unlinked_engine, _ = build_engine(foi)
+    result = unlinked_engine.calculate(CalculationRequest(
+        calculator_id=CALC_ID,
+        inputs={"importo": 1000, "data_iniziale": "2021-03-15", "data_finale": "2026-06-15"},
+    ))
+    assert result.status == "error"
+    assert result.errors[0].code == "parameter_unresolved"
+    assert "base" in result.errors[0].message.lower()

@@ -77,6 +77,11 @@ def plan(payload: PlanRequest) -> Dict[str, Any]:
 
 @ui_router.post("/simulate/chat")
 def simulate_chat(payload: ChatMessage) -> Dict[str, Any]:
+    """DEVELOPMENT ONLY — a single in-memory conversation driven by the
+    scripted planner, not by an LLM, with no sessions and no auth. It exists
+    to demo and debug the routing/collection loop; production conversations
+    go through src/rag. The `dev_only` flag is returned so no client can
+    mistake this for the real chat endpoint."""
     reply = _get_conversation().send(payload.message)
     calculation = reply.calculation
     if reply.calculation and reply.tool_call:
@@ -88,6 +93,7 @@ def simulate_chat(payload: ChatMessage) -> Dict[str, Any]:
         )
         calculation = calculate_and_persist(request)
     return {
+        "dev_only": True,
         "kind": reply.kind,
         "text": reply.text,
         "tool_call": asdict(reply.tool_call) if reply.tool_call else None,
@@ -190,6 +196,21 @@ _PAGE = """
   .history-actions button { padding: 4px 8px; border-radius: 8px; font-size: 12px; }
   table { border-collapse: collapse; width: 100%; margin-top: 8px; }
   td, th { border: 1px solid var(--border); padding: 4px 8px; font-size: 13px; text-align: left; }
+  /* object_list (comparator candidates) */
+  .list-input { border: 1px dashed var(--border); border-radius: 10px; padding: 10px 12px; margin-top: 12px; }
+  .list-input > header { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .list-input > header strong { font-size: 13.5px; }
+  .item-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; margin-top: 10px;
+               background: #fbfcfd; }
+  .item-card > header { display: flex; justify-content: space-between; align-items: center; }
+  .item-card > header span { font-weight: 600; font-size: 13px; }
+  .item-card label { margin-top: 8px; font-weight: 500; }
+  .req { color: var(--no_match); font-weight: 700; }
+  .verdict { border-radius: 10px; padding: 10px 14px; margin: 8px 0; font-size: 13.5px; }
+  .verdict.clear_winner { background: var(--answer-bg); color: var(--answer); }
+  .verdict.effective_tie { background: var(--ambiguous-bg); color: var(--ambiguous); }
+  .verdict.provisional { background: var(--question-bg); color: var(--question); }
+  .excluded { background: #f4f6f8; border-left: 3px solid var(--muted); padding: 8px 12px; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -199,6 +220,9 @@ _PAGE = """
 
 <div class="card">
   <h3 style="margin:0 0 4px">&#128172; Conversazione — scrivi QUI la tua frase</h3>
+  <p class="hint" style="margin-top:0"><strong>Solo per sviluppo</strong> (<code>POST /simulate/chat</code>):
+     router simulato, nessun LLM reale, una sola conversazione in memoria, nessuna sessione.
+     Non è il percorso di produzione.</p>
   <p class="hint" style="margin-top:0">Questo è l'unico punto dove incollare frasi in linguaggio naturale.
      Le sezioni sotto sono strumenti tecnici (diagnostica del routing e inserimento manuale dei valori).</p>
   <div id="chips"></div>
@@ -313,6 +337,103 @@ function useChip(el) {
   sendChat();
 }
 
+// --- scalar + object_list form rendering -----------------------------------
+// An object_list holds N candidate objects, so it needs a repeatable
+// sub-form: one card per candidate with its own item_fields, add/remove
+// controls, and a real JSON array on submit. Rendering it as a single text
+// box (the previous behaviour) made the comparator impossible to exercise
+// by hand without writing JSON.
+
+function controlFor(spec, elementId) {
+  const placeholder = spec.default !== null && spec.default !== undefined ? spec.default : '';
+  if (spec.type === 'boolean') {
+    if (spec.required) {
+      return `<input type="checkbox" id="${elementId}" data-kind="boolean" style="width:auto">`;
+    }
+    // Three states, not two. An unchecked checkbox would be sent as an
+    // explicit `false`, which the platform records as "the caller stated
+    // no" — indistinguishable from a coverage the user simply never
+    // mentioned, and the exact conflation the data-quality metadata exists
+    // to prevent. Leaving it unspecified lets the pack's default apply and
+    // shows up as an assumed field.
+    return `<select id="${elementId}" data-kind="boolean">
+              <option value="">non specificato${placeholder !== '' ? ` (default: ${escapeHtml(placeholder)})` : ''}</option>
+              <option value="true">sì</option>
+              <option value="false">no</option>
+            </select>`;
+  }
+  if (spec.type === 'date') {
+    return `<input type="date" id="${elementId}" data-kind="date">`;
+  }
+  if (spec.type === 'string' || spec.type === 'string_list') {
+    return `<input type="text" id="${elementId}" data-kind="${spec.type}" placeholder="${escapeHtml(placeholder)}">`;
+  }
+  const step = spec.type === 'integer' ? '1' : 'any';
+  const bounds =
+    (spec.min_value !== null && spec.min_value !== undefined ? ` min="${spec.min_value}"` : '') +
+    (spec.max_value !== null && spec.max_value !== undefined ? ` max="${spec.max_value}"` : '');
+  return `<input type="number" id="${elementId}" data-kind="${spec.type}" step="${step}"${bounds} placeholder="${escapeHtml(placeholder)}">`;
+}
+
+function fieldMarkup(spec, elementId) {
+  const mark = spec.required ? '<span class="req" title="obbligatorio">*</span>' : ' <span class="hint">(opzionale)</span>';
+  const unit = spec.unit ? ` <span class="hint">[${escapeHtml(spec.unit)}]</span>` : '';
+  const hint = spec.description ? `<span class="hint"> — ${escapeHtml(spec.description)}</span>` : '';
+  if (spec.type === 'boolean' && spec.required) {
+    return `<label>${controlFor(spec, elementId)} ${escapeHtml(spec.name)}${mark}${hint}</label>`;
+  }
+  return `<label>${escapeHtml(spec.name)}${mark}${unit}${hint}</label>${controlFor(spec, elementId)}`;
+}
+
+let listItemCounters = {};
+
+function addListItem(listName) {
+  const def = definitions[document.getElementById('calculator').value];
+  const spec = def.inputs.find(i => i.name === listName);
+  const container = document.getElementById(`list_${listName}_items`);
+  const index = listItemCounters[listName]++;
+  const card = document.createElement('div');
+  card.className = 'item-card';
+  card.dataset.index = index;
+  card.innerHTML =
+    `<header><span>#<span class="item-number"></span></span>` +
+    `<button type="button" onclick="removeListItem('${listName}', ${index})">Rimuovi</button></header>` +
+    (spec.item_fields || []).map(f => fieldMarkup(f, `input_${listName}_${index}_${f.name}`)).join('');
+  container.appendChild(card);
+  renumberListItems(listName);
+}
+
+function removeListItem(listName, index) {
+  const container = document.getElementById(`list_${listName}_items`);
+  const card = container.querySelector(`.item-card[data-index="${index}"]`);
+  if (card) card.remove();
+  renumberListItems(listName);
+}
+
+function renumberListItems(listName) {
+  const container = document.getElementById(`list_${listName}_items`);
+  const cards = [...container.querySelectorAll('.item-card')];
+  cards.forEach((card, position) => {
+    card.querySelector('.item-number').textContent = position + 1;
+  });
+  const counter = document.getElementById(`list_${listName}_count`);
+  if (counter) counter.textContent = cards.length;
+}
+
+function listInputMarkup(spec) {
+  const minItems = spec.min_items || 1;
+  listItemCounters[spec.name] = 0;
+  return `<div class="list-input" id="list_${spec.name}">
+    <header>
+      <strong>${escapeHtml(spec.name)}${spec.required ? '<span class="req">*</span>' : ''}</strong>
+      <button type="button" onclick="addListItem('${spec.name}')">+ Aggiungi offerta</button>
+    </header>
+    <p class="hint">${escapeHtml(spec.description || '')}
+       Minimo ${minItems}; inserite: <span id="list_${spec.name}_count">0</span>.</p>
+    <div id="list_${spec.name}_items"></div>
+  </div>`;
+}
+
 async function loadDefinition() {
   const id = document.getElementById('calculator').value;
   const res = await fetch(`/calculators/${id}`);
@@ -324,17 +445,48 @@ async function loadDefinition() {
     def.requires_period ? 'block' : 'none';
 
   const container = document.getElementById('inputs');
-  container.innerHTML = def.inputs.map(inp => {
-    const req = inp.required ? '' : ' (opzionale)';
-    const hint = inp.description ? `<span class="hint"> — ${inp.description}</span>` : '';
-    if (inp.type === 'boolean') {
-      return `<label><input type="checkbox" id="input_${inp.name}" style="width:auto"> ${inp.name}${req}${hint}</label>`;
+  listItemCounters = {};
+  container.innerHTML = def.inputs.map(inp =>
+    inp.type === 'object_list' ? listInputMarkup(inp) : fieldMarkup(inp, `input_${inp.name}`)
+  ).join('');
+
+  // Pre-open the pack's minimum so a comparator is usable immediately.
+  for (const inp of def.inputs) {
+    if (inp.type !== 'object_list') continue;
+    for (let n = 0; n < (inp.min_items || 1); n++) addListItem(inp.name);
+  }
+}
+
+function readControl(spec, elementId) {
+  const el = document.getElementById(elementId);
+  if (!el) return undefined;
+  if (spec.type === 'boolean') {
+    if (spec.required) return el.checked;
+    return el.value === '' ? undefined : el.value === 'true';
+  }
+  const raw = el.value.trim();
+  if (raw === '') return undefined;
+  if (spec.type === 'decimal') return raw;           // exact decimal string, never a float
+  if (spec.type === 'integer') return Number(raw);
+  if (spec.type === 'string_list') return raw.split(',').map(s => s.trim()).filter(Boolean);
+  return raw;
+}
+
+function readListInput(spec) {
+  const container = document.getElementById(`list_${spec.name}_items`);
+  const items = [];
+  for (const card of container.querySelectorAll('.item-card')) {
+    const index = card.dataset.index;
+    const item = {};
+    for (const field of spec.item_fields || []) {
+      const value = readControl(field, `input_${spec.name}_${index}_${field.name}`);
+      if (value !== undefined) item[field.name] = value;
     }
-    const htmlType = inp.type === 'date' ? 'date' : (inp.type === 'string' ? 'text' : 'number');
-    const placeholder = inp.default !== null && inp.default !== undefined ? inp.default : '';
-    return `<label>${inp.name}${req}${hint}</label>
-            <input type="${htmlType}" id="input_${inp.name}" placeholder="${placeholder}" step="any">`;
-  }).join('');
+    // A card the user opened and never filled is not an offer; sending it
+    // would fail validation on a field they never saw as required.
+    if (Object.keys(item).length) items.push(item);
+  }
+  return items;
 }
 
 function appendChat(who, text, payload, kind) {
@@ -441,6 +593,47 @@ async function useCandidate(id) {
   select.scrollIntoView({ behavior: 'smooth' });
 }
 
+function renderComparison(result) {
+  const c = result.comparison || {};
+  const winners = (c.best_candidates || []).join(', ');
+  let html = '';
+  if (c.decision_status === 'effective_tie') {
+    html += `<div class="verdict effective_tie">Parità sostanziale tra ${escapeHtml(winners)}:
+             nessuna differenza materiale con il modello configurato (distacco ${escapeHtml(c.score_gap)}
+             punti, tolleranza ${escapeHtml(c.tie_tolerance)}). Nessuna offerta è indicata come migliore.</div>`;
+  } else {
+    html += `<div class="verdict clear_winner">Vincitore chiaro secondo il modello configurato:
+             ${escapeHtml(winners)} (distacco ${escapeHtml(c.score_gap)} punti su 100).</div>`;
+  }
+  if (c.provisional) {
+    html += `<div class="verdict provisional">Risultato PROVVISORIO (${escapeHtml(c.provisional_status)}):
+             ${(c.scoring_defaults_applied || []).length} campi che incidono sul punteggio sono stati
+             assunti per default; completezza ${escapeHtml(c.scoring_completeness)}.
+             <ul>${(c.scoring_defaults_applied || []).map(
+               d => `<li>${escapeHtml(d.path)} = ${escapeHtml(String(d.value))}</li>`).join('')}</ul></div>`;
+  }
+  const costVar = (c.cost_basis || {}).variable;
+  html += '<table><thead><tr><th>#</th><th>Offerta</th>' +
+          (costVar ? `<th>${escapeHtml(costVar)}</th>` : '') +
+          '<th>Punteggio</th><th>Componenti</th><th>Dati</th></tr></thead><tbody>';
+  for (const entry of result.ranking || []) {
+    const derived = entry.derived || {};
+    const q = entry.data_quality || {};
+    const components = Object.entries(entry.scores || {})
+      .map(([k, v]) => `${escapeHtml(k)} ${escapeHtml(v)}`).join('<br>');
+    const quality = `${(q.provided_fields || []).length} forniti; ` +
+      `${(q.assumed_fields || []).length} default; ${(q.unknown_fields || []).length} non dichiarati<br>` +
+      `<span class="hint">completezza ${escapeHtml(q.scoring_completeness)}</span>`;
+    html += `<tr><td>${escapeHtml(entry.rank)}</td><td>${escapeHtml(entry.label)}</td>` +
+            (costVar ? `<td>${escapeHtml(derived[costVar])}</td>` : '') +
+            `<td>${escapeHtml(entry.total_score)}/100</td><td>${components}</td><td>${quality}</td></tr>`;
+  }
+  html += '</tbody></table>';
+  html += '<p class="hint">Il punteggio 0-100 è relativo alle sole offerte confrontate e ai pesi ' +
+          'configurati in questo calcolatore: non è una misura oggettiva di mercato.</p>';
+  return html;
+}
+
 function renderResult(body, ok) {
   const el = document.getElementById('output');
   if (!ok || body.status === 'error') {
@@ -450,9 +643,23 @@ function renderResult(body, ok) {
     return;
   }
   let html = reportLink(body.request_id);
-  html += '<table>' + Object.entries(body.result).map(
-    ([k, v]) => `<tr><th>${k}</th><td>${typeof v === 'object' ? JSON.stringify(v) : v}</td></tr>`
-  ).join('') + '</table>';
+  if (body.result && body.result.comparison) {
+    html += renderComparison(body.result);
+  } else {
+    html += '<table>' + Object.entries(body.result).map(
+      ([k, v]) => `<tr><th>${k}</th><td>${typeof v === 'object' ? JSON.stringify(v) : v}</td></tr>`
+    ).join('') + '</table>';
+  }
+  if (body.defaults_applied && body.defaults_applied.length) {
+    html += '<h4>Valori assunti per default</h4><ul>' + body.defaults_applied.map(
+      d => `<li>${escapeHtml(d.path)} = ${escapeHtml(String(d.value))}</li>`
+    ).join('') + '</ul>';
+  }
+  if (body.exclusions && body.exclusions.length) {
+    html += '<h4>Non incluso</h4><div class="excluded"><ul>' + body.exclusions.map(
+      e => `<li>${escapeHtml(e)}</li>`
+    ).join('') + '</ul></div>';
+  }
   if (body.steps && body.steps.length) {
     html += '<h4>Passaggi</h4><pre class="out">' + JSON.stringify(body.steps, null, 2) + '</pre>';
   }
@@ -476,12 +683,19 @@ async function runCalculation() {
 
   const inputs = {};
   for (const inp of def.inputs) {
-    const el = document.getElementById(`input_${inp.name}`);
-    if (inp.type === 'boolean') {
-      inputs[inp.name] = el.checked;
-    } else if (el.value !== '') {
-      inputs[inp.name] = (inp.type === 'decimal' || inp.type === 'integer') ? Number(el.value) : el.value;
+    if (inp.type === 'object_list') {
+      const items = readListInput(inp);
+      const minItems = inp.min_items || 1;
+      if (inp.required && items.length < minItems) {
+        document.getElementById('output').innerHTML =
+          `<p class="error">${escapeHtml(inp.name)}: servono almeno ${minItems} elementi, ne hai compilati ${items.length}.</p>`;
+        return;
+      }
+      if (items.length) inputs[inp.name] = items;
+      continue;
     }
+    const value = readControl(inp, `input_${inp.name}`);
+    if (value !== undefined) inputs[inp.name] = value;
   }
   const request = { calculator_id: id, inputs };
 

@@ -48,8 +48,18 @@ def _coerce_string_list(v: Any) -> List[str]:
     return items
 
 
+def _coerce_decimal(v: Any) -> Decimal:
+    # NaN/Infinity parse as valid Decimals but poison every later
+    # comparison and arithmetic step with raw InvalidOperation errors —
+    # reject them at the boundary like any other invalid value.
+    value = Decimal(str(v))
+    if not value.is_finite():
+        raise ValueError(f"not a finite number: {v!r}")
+    return value
+
+
 _TYPE_COERCERS = {
-    "decimal": lambda v: Decimal(str(v)),
+    "decimal": _coerce_decimal,
     "integer": lambda v: int(v),
     "boolean": _coerce_boolean,
     "string": lambda v: str(v),
@@ -64,6 +74,138 @@ class ValidatedInputs:
     # Human-readable notes about defaults silently applied — surfaced on
     # CalculationResult.assumptions so a caller can see what was assumed.
     assumptions: List[str] = field(default_factory=list)
+    # The same information machine-readable: {"path", "value"} per applied
+    # default, where `path` addresses the input exactly as the request
+    # spells it ("storico_sinistri", "polizze[0].franchigia") and `value`
+    # is the exact decimal/boolean/string the platform substituted. Prose
+    # cannot be branched on; a comparator has to know *which* field was
+    # assumed to decide whether its scoring is provisional.
+    defaults_applied: List[Dict[str, Any]] = field(default_factory=list)
+
+    def record_default(self, path: str, value: Any) -> None:
+        self.assumptions.append(f"{path} not provided; assumed default {value!r}")
+        self.defaults_applied.append({"path": path, "value": _default_repr(value)})
+
+
+def _default_repr(value: Any) -> Any:
+    """JSON-safe rendering of a defaulted value.
+
+    Booleans stay booleans — collapsing `false` into the string "false"
+    would make an explicitly-declared false default indistinguishable from
+    a string field defaulted to the word. Everything else (numbers,
+    dates, lists) becomes its exact string form, matching the platform's
+    Decimal-as-string serialization contract.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_default_repr(item) for item in value]
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    return str(value)
+
+
+def _coerce_scalar(spec, raw_value: Any, label: str) -> Any:
+    """Coerce one scalar value to spec.type and enforce declared bounds.
+    `label` names the input in error messages (may carry an item index for
+    object_list fields, e.g. "candidates[1].premio_annuo")."""
+    coercer = _TYPE_COERCERS.get(spec.type)
+    if coercer is None:
+        raise InputValidationError(
+            f"Unknown input type {spec.type!r} for {label!r}",
+            details={"input": label, "type": spec.type},
+        )
+    try:
+        coerced = coercer(raw_value)
+    except (InvalidOperation, ValueError, TypeError) as e:
+        raise InputValidationError(
+            f"Invalid value for {label!r}: {raw_value!r} ({e})",
+            details={"input": label, "value": raw_value, "expected": missing_input_spec(spec)},
+        ) from e
+
+    if spec.min_value is not None and coerced < coercer(spec.min_value):
+        raise InputValidationError(
+            f"{label} must be >= {spec.min_value}, got {coerced}",
+            details={"input": label, "value": str(coerced), "min_value": spec.min_value},
+        )
+    if spec.max_value is not None and coerced > coercer(spec.max_value):
+        raise InputValidationError(
+            f"{label} must be <= {spec.max_value}, got {coerced}",
+            details={"input": label, "value": str(coerced), "max_value": spec.max_value},
+        )
+    return coerced
+
+
+def _coerce_object_list(spec, raw_value: Any, result: "ValidatedInputs") -> List[Dict[str, Any]]:
+    """Validate a list-of-objects input: each item is a dict validated
+    against spec.item_fields with the same required/default/bounds
+    semantics as top-level inputs."""
+    if not isinstance(raw_value, (list, tuple)):
+        raise InputValidationError(
+            f"{spec.name} must be a list of objects, got {type(raw_value).__name__}",
+            details={"input": spec.name, "value": raw_value},
+        )
+    items = list(raw_value)
+    min_items = spec.min_items if spec.min_items is not None else 1
+    if len(items) < min_items:
+        raise InputValidationError(
+            f"{spec.name} needs at least {min_items} item(s), got {len(items)}",
+            details={"input": spec.name, "min_items": min_items, "items_given": len(items)},
+        )
+
+    declared = {field_spec.name for field_spec in spec.item_fields or []}
+    validated_items: List[Dict[str, Any]] = []
+    for index, raw_item in enumerate(items):
+        if not isinstance(raw_item, dict):
+            raise InputValidationError(
+                f"{spec.name}[{index}] must be an object, got {type(raw_item).__name__}",
+                details={"input": f"{spec.name}[{index}]", "value": raw_item},
+            )
+        # An undeclared key is more likely a typo of a declared field than
+        # noise (the generated tool schemas declare additionalProperties:
+        # false) — silently dropping it would silently change the score.
+        unknown = sorted(set(raw_item) - declared)
+        if unknown:
+            raise InputValidationError(
+                f"{spec.name}[{index}] has undeclared field(s): {', '.join(unknown)}; "
+                f"valid fields: {', '.join(sorted(declared))}",
+                details={"input": spec.name, "item_index": index, "unknown_fields": unknown},
+            )
+        item_values: Dict[str, Any] = {}
+        item_missing = []
+        for field_spec in spec.item_fields or []:
+            label = f"{spec.name}[{index}].{field_spec.name}"
+            used_default = False
+            if field_spec.name in raw_item:
+                raw_field = raw_item[field_spec.name]
+            elif field_spec.default is not None:
+                raw_field = field_spec.default
+                used_default = True
+            elif field_spec.required:
+                item_missing.append(field_spec.name)
+                continue
+            else:
+                continue
+            item_values[field_spec.name] = _coerce_scalar(field_spec, raw_field, label)
+            if used_default:
+                result.record_default(label, raw_field)
+        if item_missing:
+            missing_set = set(item_missing)
+            raise InputValidationError(
+                f"{spec.name}[{index}]: missing required field(s): {', '.join(item_missing)}",
+                details={
+                    "input": spec.name,
+                    "item_index": index,
+                    "missing_inputs": [f"{spec.name}[{index}].{name}" for name in item_missing],
+                    "missing": [
+                        missing_input_spec(field_spec)
+                        for field_spec in (spec.item_fields or [])
+                        if field_spec.name in missing_set
+                    ],
+                },
+            )
+        validated_items.append(item_values)
+    return validated_items
 
 
 def validate_inputs(definition: CalculatorDefinition, raw_inputs: Dict[str, Any]) -> ValidatedInputs:
@@ -85,34 +227,16 @@ def validate_inputs(definition: CalculatorDefinition, raw_inputs: Dict[str, Any]
         else:
             continue
 
-        coercer = _TYPE_COERCERS.get(spec.type)
-        if coercer is None:
-            raise InputValidationError(
-                f"Unknown input type {spec.type!r} for {spec.name!r}",
-                details={"input": spec.name, "type": spec.type},
-            )
-        try:
-            coerced = coercer(raw_value)
-        except (InvalidOperation, ValueError, TypeError) as e:
-            raise InputValidationError(
-                f"Invalid value for {spec.name!r}: {raw_value!r} ({e})",
-                details={"input": spec.name, "value": raw_value, "expected": missing_input_spec(spec)},
-            ) from e
+        if spec.type == "object_list":
+            result.values[spec.name] = _coerce_object_list(spec, raw_value, result)
+            if used_default:
+                result.record_default(spec.name, raw_value)
+            continue
 
-        if spec.min_value is not None and coerced < coercer(spec.min_value):
-            raise InputValidationError(
-                f"{spec.name} must be >= {spec.min_value}, got {coerced}",
-                details={"input": spec.name, "value": str(coerced), "min_value": spec.min_value},
-            )
-        if spec.max_value is not None and coerced > coercer(spec.max_value):
-            raise InputValidationError(
-                f"{spec.name} must be <= {spec.max_value}, got {coerced}",
-                details={"input": spec.name, "value": str(coerced), "max_value": spec.max_value},
-            )
-        result.values[spec.name] = coerced
+        result.values[spec.name] = _coerce_scalar(spec, raw_value, spec.name)
 
         if used_default:
-            result.assumptions.append(f"{spec.name} not provided; assumed default {raw_value!r}")
+            result.record_default(spec.name, raw_value)
 
     if missing:
         missing_set = set(missing)
@@ -146,4 +270,8 @@ def missing_input_spec(spec) -> Dict[str, Any]:
         entry["min_value"] = spec.min_value
     if spec.max_value is not None:
         entry["max_value"] = spec.max_value
+    if getattr(spec, "item_fields", None):
+        entry["item_fields"] = [missing_input_spec(f) for f in spec.item_fields]
+    if getattr(spec, "min_items", None) is not None:
+        entry["min_items"] = spec.min_items
     return entry

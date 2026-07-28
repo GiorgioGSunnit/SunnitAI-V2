@@ -60,6 +60,10 @@ class AgentState(TypedDict, total=False):
     pending_sections: List[Dict[str, Any]]
     pending_calculation: Optional[Dict[str, Any]]
     calculation_match: Optional[Dict[str, Any]]
+    # Tied top calculators the gate could not choose between, when each of
+    # them was strong enough to auto-route on its own. Set only on that
+    # turn; calculation_node turns it into a question for the user.
+    calculation_choices: Optional[List[Dict[str, Any]]]
     calc_route: Optional[str]
     calculation_result: Optional[Dict[str, Any]]
     is_clarification_rerank: bool

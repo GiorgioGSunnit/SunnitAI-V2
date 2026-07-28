@@ -67,6 +67,8 @@ parameters: []
 formula:
   base_min_years: "1/2"
   base_max_years: 3
+  multa_min_eur: 154
+  multa_max_eur: 516
 output:
   name: pena
 citations:
@@ -77,9 +79,8 @@ citations:
     url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1930-10-19;1398"
     official: true
 warnings:
-  - "BOZZA NON VALIDATA LEGALMENTE: dimostrazione della meccanica di calcolo, non uno strumento professionale."
   - "Calcolo di cornice edittale sotto ipotesi dichiarate: NON è una previsione della sentenza."
-  - "La multa congiunta (154-516 euro) non è calcolata da questa bozza."
+  - "La multa congiunta prevista dall'art. 624 c.p. (154-516 euro) è riportata solo nella sua cornice edittale base."
 assumptions:
   - "Le circostanze sono già state qualificate e confermate da un legale: il sistema riceve solo il loro numero."
   - "Ogni circostanza comune ha effetto discrezionale da 0 a 1/3 (inviluppo massimo di legge)."

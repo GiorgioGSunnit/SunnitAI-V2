@@ -80,13 +80,15 @@ exclusions:
   - "Non calcola interessi (ne semplici ne ex Cass. SS.UU. 1712/1995): per il calcolo combinato usare legal_it.rivalutazione_interessi_1712."
 examples:
   - description: >
-      Rivalutazione con i mesi SEGNAPOSTO della tabella foi_indices.yml:
-      1000 EUR da novembre 2024 (FOI 100.0) a febbraio 2026 (FOI 102.5):
-      coefficiente 102.5/100.0 = 1.025, importo 1000 x 1.025 = 1025.00.
-      verified_against: TODO (official calculator/source check pending)
+      Rivalutazione cross-base sui mesi ISTAT caricati: 1000 EUR da marzo
+      2021 (FOI 103.3, base 2015) a giugno 2026 (FOI 102.8, base 2025). Il
+      mese finale e riportato alla base iniziale col coefficiente di raccordo
+      1,214: coefficiente = (102.8 x 1.214) / 103.3 = 1.208123..., importo
+      1000 x 1.208123... = 1208.12 (coefficiente a precisione piena; il
+      calcolatore ISTAT, che arrotonda a 3 decimali, restituisce 1208.00).
     inputs:
       importo: 1000
-      data_iniziale: "2024-11-15"
-      data_finale: "2026-02-10"
+      data_iniziale: "2021-03-15"
+      data_finale: "2026-06-15"
     expected_result:
-      importo_rivalutato: "1025.00"
+      importo_rivalutato: "1208.12"

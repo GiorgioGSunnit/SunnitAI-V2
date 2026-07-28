@@ -7,7 +7,7 @@ synthetic, verified: false. Legal rates: 2024 2.5%, 2025 2%, 2026 1.6%.
 
 from decimal import Decimal
 
-from app.main import engine
+from support import engine
 from app.schemas.calculation_request import CalculationRequest
 from app.strategies.foi_revaluation_interest import year_slices
 

@@ -51,6 +51,18 @@ _STOPWORDS = frozenset({
     "costo", "devo", "deve", "vorrei", "sapere", "pena", "pene",
     "rischia", "rischio", "rischiano", "reato",
     "anni", "anno", "giorni", "giorno", "mesi", "mese", "euro",
+    # Generic connectives/verbs that leak unrelated sentences into a
+    # calculator's vocabulary (a succession "…divide tra i figli" or a
+    # personal-injury "risarcimento del danno…" must not score a token hit
+    # against revaluation/interest calculators — they have no such calculator).
+    "tra", "fra", "spetta", "spettano", "danno", "danni", "risarcimento",
+    # Generic legal-actor nouns: a lawyer naming their client ("il mio
+    # assistito", "il cliente", "l'imputato") carries no calculator-
+    # discriminating signal, but leaks from an intent example like "il mio
+    # assistito ha rubato…" into that calculator's vocabulary, letting an
+    # unrelated crime query ("...per una rapina") score token hits against it.
+    "mio", "mia", "assistito", "assistita", "cliente", "imputato",
+    "imputata", "indagato", "indagata", "soggetto", "persona", "tizio",
 })
 
 # Common Italian elisions (dell', nell', sull', dall', all', quest', ...):
@@ -80,12 +92,25 @@ def _tokens(text: str) -> Set[str]:
 
 
 def _input_summary(spec) -> dict:
-    return {
+    summary = {
         "name": spec.name,
         "type": spec.type,
         "unit": spec.unit,
         "description": spec.description,
+        "required": spec.required,
     }
+    if spec.default is not None:
+        summary["default"] = spec.default
+    # An object_list is a list of candidate objects, and a router that only
+    # learns its name cannot collect one candidate at a time — it has no way
+    # to know which per-item fields are required. Mirrors the shape
+    # validators.missing_input_spec already publishes on a validation error.
+    if getattr(spec, "item_fields", None):
+        summary["item_fields"] = [_input_summary(f) for f in spec.item_fields]
+        summary["required_item_fields"] = [f.name for f in spec.item_fields if f.required]
+    if getattr(spec, "min_items", None) is not None:
+        summary["min_items"] = spec.min_items
+    return summary
 
 
 def _routing_terms(definition: CalculatorDefinition) -> List[str]:

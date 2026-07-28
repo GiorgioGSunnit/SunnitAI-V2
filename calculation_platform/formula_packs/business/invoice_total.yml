@@ -33,18 +33,18 @@ inputs:
     type: decimal
     required: true
     min_value: 0
-    description: Net amount before discount and VAT
+    description: Importo netto della fattura prima di sconto e IVA (net amount)
   - name: vat_rate
     type: decimal
     required: true
     unit: rate
-    description: VAT rate as a fraction (e.g. 0.22 for 22%)
+    description: Aliquota IVA come frazione (es. 0,22 per 22%) (VAT rate)
   - name: discount_rate
     type: decimal
     required: false
     default: 0
     unit: rate
-    description: Discount rate applied to net_amount before VAT, as a fraction
+    description: Aliquota di sconto applicata al netto prima dell'IVA, come frazione (discount rate)
 parameters: []
 derived_variables:
   discount_amount: "net_amount * discount_rate"

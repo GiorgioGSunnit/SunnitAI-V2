@@ -246,6 +246,30 @@ def test_storage_failure_returns_calculation_with_warning(isolated_calculation_s
     assert any(w["code"] == "persistence_failed" for w in body["warnings"])
 
 
+def test_calculate_dm55_exposes_cpa_iva_flags_via_api():
+    response = client.post(
+        "/calculate",
+        json={
+            "calculator_id": "legal_it.compensi_dm55",
+            "inputs": {
+                "valore_causa": 30000,
+                "fasi": ["studio", "introduttiva", "decisionale"],
+                "applica_iva": False,
+            },
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    # New, additive response fields make the accessory charges explicit.
+    assert body["result"]["cpa_applicata"] is True
+    assert body["result"]["iva_applicata"] is False
+    assert body["result"]["iva"] == "0.00"
+    assert body["result"]["totale"] == "6948.76"
+    # Omitting applica_cpa is recorded as an assumption, not a hidden default.
+    assert any("applica_cpa" in a["message"] for a in body["assumptions"])
+
+
 def test_match_endpoint_returns_ranked_candidates():
     response = client.post("/match", json={"query": "quanto pago di tasse sul reddito"})
     assert response.status_code == 200
@@ -307,3 +331,43 @@ def test_simulate_reset_clears_pending_state():
     assert reply["kind"] == "answer"
     assert reply["calculation"]["result"]["gross_tax"] == "11340.00"
     client.post("/simulate/reset")
+
+
+def test_comparator_round_trips_match_then_tool_schema_then_calculate():
+    """The three endpoints a chat client chains for one comparison must agree
+    on the candidates field name — nothing else pins that contract, so a rename
+    in the pack would surface only at runtime, mid-conversation."""
+    matched = client.post(
+        "/match",
+        json={"query": "Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro."},
+    )
+    assert matched.status_code == 200
+    assert matched.json()["status"] == "matched"
+    calculator_id = matched.json()["candidates"][0]["calculator_id"]
+    assert calculator_id == "business.confronto_polizze"
+
+    schema = client.get(f"/calculators/{calculator_id}/tool-schema")
+    assert schema.status_code == 200
+    properties = schema.json()["input_schema"]["properties"]
+    arrays = [n for n, s in properties.items() if s.get("type") == "array"]
+    assert arrays == ["polizze"], "expected exactly one candidates array"
+    candidates_field = arrays[0]
+
+    calculated = client.post(
+        "/calculate",
+        json={
+            "calculator_id": calculator_id,
+            "inputs": {
+                "eta_conducente": 40,
+                candidates_field: [
+                    {"nome": "Alfa", "premio_annuo": 420},
+                    {"nome": "Beta", "premio_annuo": 510, "copertura_kasko": True},
+                ],
+            },
+        },
+    )
+    assert calculated.status_code == 200
+    body = calculated.json()
+    assert body["status"] == "success", body.get("errors")
+    assert body["result"]["best"] in ("Alfa", "Beta")
+    assert [entry["rank"] for entry in body["result"]["ranking"]] == [1, 2]

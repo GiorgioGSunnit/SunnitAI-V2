@@ -45,6 +45,7 @@ def render_report_html(
             _section("Parametri applicati", _render_parameters(result.get("parameters_used", {}))),
             _section("Svolgimento", _render_steps(result.get("steps", []))),
             _section("Avvertenze / Assunzioni", _render_notices(result)),
+            _section("Non incluso", _render_exclusions(result, definition)),
             _section("Fonti", _render_citations(result.get("citations", []))),
             "<footer>",
             "<p>Documento generato da un calcolatore deterministico secondo i dati, i parametri e le assunzioni indicati; non costituisce parere legale.</p>",
@@ -194,6 +195,28 @@ def _render_notices(result: Dict[str, Any]) -> str:
     if not notices:
         return "<p>Nessuna avvertenza o assunzione registrata.</p>"
     return "<ul>" + "".join(notices) + "</ul>"
+
+
+def _render_exclusions(
+    result: Dict[str, Any], definition: Optional[CalculatorDefinition]
+) -> str:
+    """What the calculation explicitly leaves out, as its own section.
+
+    Read from the stored result first so an archived report keeps showing
+    the exclusions that were in force when it ran; the live definition is
+    only a fallback for calculations stored before results carried them.
+    Never folded into the generic warnings list: "does not include VAT" is
+    a scope boundary, not a caveat about the number's reliability.
+    """
+    # `is None` and not falsiness: a stored empty list is a real statement
+    # ("this calculator excluded nothing when it ran") and must not be
+    # overwritten with whatever the definition happens to declare today.
+    exclusions = result.get("exclusions")
+    if exclusions is None and definition is not None:
+        exclusions = definition.exclusions
+    if not exclusions:
+        return "<p>Nessuna esclusione dichiarata da questo calcolatore.</p>"
+    return "<ul>" + "".join(f"<li>{_e(item)}</li>" for item in exclusions) + "</ul>"
 
 
 def _render_citations(citations: List[Dict[str, Any]]) -> str:

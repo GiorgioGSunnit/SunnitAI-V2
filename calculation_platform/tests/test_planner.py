@@ -119,20 +119,33 @@ def test_genuine_registration_tax_query_survives_the_negative_example():
     assert plan.calculator_id == "legal_it.registration_tax_leases"
 
 
-def test_penal_adjacent_offences_do_not_route_to_simple_drafts():
+def test_uncovered_penal_offences_still_no_match():
+    # Offences with no calculator at all must never be forced onto an
+    # adjacent draft — the router stays silent rather than guessing.
     for sentence in (
-        "furto in abitazione",
-        "furto in abitazione pena",
-        "pena per furto in abitazione",
         "omicidio colposo",
         "omicidio colposo pena",
         "omicidio stradale",
-        "rapina a mano armata pena",
     ):
         plan = _plan(sentence)
         assert plan.status == "no_match"
         assert plan.calculator_id is None
         assert plan.candidates == []
+
+
+def test_aggravated_offences_route_to_the_aggravated_draft_not_the_simple_one():
+    # Aggravated phrasings now have their own draft calculators; they must
+    # route there and NEVER fall through to the simple-offence draft (whose
+    # statutory frame would understate the penalty).
+    for sentence, expected in (
+        ("furto in abitazione", "legal_it.furto_aggravato_draft"),
+        ("pena per furto in abitazione", "legal_it.furto_aggravato_draft"),
+        ("furto in casa", "legal_it.furto_aggravato_draft"),
+        ("rapina a mano armata pena", "legal_it.rapina_aggravata_draft"),
+    ):
+        plan = _plan(sentence)
+        assert plan.status == "needs_clarification"
+        assert plan.calculator_id == expected
 
 
 def test_penal_simple_offences_still_route_to_their_drafts():

@@ -30,7 +30,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from .session import ChatBot, ChatSession, _generate_session_title
+from .session import (
+    ChatBot,
+    ChatSession,
+    _generate_session_title,
+    last_pending_calculation,
+)
 from ..db.base import get_db
 from ..db import crud
 from ..db.models import Tenant
@@ -2186,6 +2191,14 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
             chatbot._sessions[session_id] = session
         session_lang = session.session_language
+        # A generation turn must not silently drop a calculation that is still
+        # collecting inputs: this branch returns without ever reaching the RAG
+        # graph, and session.py looks for pending_calculation only on the last
+        # assistant message. Carrying it across is safe — calculation_node
+        # escapes to normal RAG when the next message turns out not to answer
+        # the open slot.
+        _pending_calc = last_pending_calculation(session)
+        _carry_calc = {"pending_calculation": _pending_calc} if _pending_calc else {}
         doc_type = classify_document_type(request.message, session_lang)
         if doc_type == "unknown":
             _template_result = classify_system_template(request.message, session_lang, top_k=5)
@@ -2200,7 +2213,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 session.add_message("user", request.message)
                 if len(session.messages) == 1:
                     session.title = _generate_session_title(request.message)
-                session.add_message("assistant", _variant_prompt)
+                session.add_message("assistant", _variant_prompt, metadata=_carry_calc or None)
                 chatbot._save_sessions()
                 return ChatResponse(
                     session_id=session_id,
@@ -2221,7 +2234,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             session.add_message("user", request.message)
             if len(session.messages) == 1:
                 session.title = _generate_session_title(request.message)
-            session.add_message("assistant", clarification)
+            session.add_message("assistant", clarification, metadata=_carry_calc or None)
             chatbot._save_sessions()
             return ChatResponse(
                 session_id=session_id,
@@ -2262,6 +2275,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             _confirmation,
             metadata={
                 "sources": gen_result["sources"],
+                **_carry_calc,
                 **({"generated_document_id": _gen_doc_id, "generated_document_name": _gen_doc_name} if _gen_doc_id else {}),
             },
         )

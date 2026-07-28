@@ -44,7 +44,7 @@ inputs:
     required: true
     unit: EUR
     min_value: 0
-    description: Canone di locazione annuo pattuito
+    description: Canone di locazione (affitto) annuo pattuito
   - name: years
     type: decimal
     required: true

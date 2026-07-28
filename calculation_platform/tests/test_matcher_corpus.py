@@ -82,6 +82,14 @@ EXPLICIT_REQUESTS = [
      "legal_it.compensi_dm55"),
     ("Imposta di registro per annualita successiva di locazione commerciale.",
      "legal_it.registration_tax_leases"),
+    ("Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro.",
+     "business.confronto_polizze"),
+    ("Confronta queste due offerte gas e luce.", "business.confronto_gas_luce"),
+    ("Qual e la polizza migliore tra queste offerte assicurative?",
+     "business.confronto_polizze"),
+    ("Mi confronti queste offerte di luce e gas?", "business.confronto_gas_luce"),
+    ("Confronto tra le polizze rc auto che ho ricevuto.",
+     "business.confronto_polizze"),
 ]
 
 
@@ -94,6 +102,147 @@ def test_explicit_requests_are_at_least_offered(query, expected, definitions):
     assert response.candidates[0].calculator_id == expected, (
         f"{query!r} routed to {response.candidates[0].calculator_id}, "
         f"expected {expected}"
+    )
+
+
+# --- Genuine comparison requests -------------------------------------------
+# Phrasings a user actually types when they hold two concrete offers and want
+# them ranked. These must AUTO-route (a comparison the platform can run and
+# then declines to offer is a silent feature outage) AND must land on the
+# right domain pack. This is a hand-written behavioural corpus, not a sample:
+# it says nothing about production accuracy rates.
+COMPARISON_REQUESTS = [
+    # insurance
+    ("Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro.",
+     "business.confronto_polizze"),
+    ("Qual e la polizza migliore tra queste offerte assicurative?",
+     "business.confronto_polizze"),
+    ("Confronto tra le polizze rc auto che ho ricevuto.",
+     "business.confronto_polizze"),
+    ("Ho due preventivi di assicurazione auto, quale mi conviene?",
+     "business.confronto_polizze"),
+    ("Confronta queste assicurazioni casa e dimmi quale scegliere.",
+     "business.confronto_polizze"),
+    ("Mi aiuti a confrontare due polizze assicurative?",
+     "business.confronto_polizze"),
+    ("Classifica queste offerte assicurative per convenienza.",
+     "business.confronto_polizze"),
+    ("Quale assicurazione auto conviene tra queste due?",
+     "business.confronto_polizze"),
+    ("Comparatore polizze: valuta queste proposte.",
+     "business.confronto_polizze"),
+    ("Insurance comparison between these two policies.",
+     "business.confronto_polizze"),
+    # energy
+    ("Confronta queste due offerte gas e luce.", "business.confronto_gas_luce"),
+    ("Mi confronti queste offerte di luce e gas?", "business.confronto_gas_luce"),
+    ("Quale fornitore di luce e gas conviene tra questi?",
+     "business.confronto_gas_luce"),
+    ("Confronto fornitori energia: chi costa meno?", "business.confronto_gas_luce"),
+    ("Confronta queste offerte energia e calcola il costo annuo bolletta.",
+     "business.confronto_gas_luce"),
+    ("Comparatore bollette: due offerte a confronto.", "business.confronto_gas_luce"),
+    ("Qual e l'offerta gas e luce migliore tra queste?",
+     "business.confronto_gas_luce"),
+    ("Energy offer comparison for these two suppliers.",
+     "business.confronto_gas_luce"),
+    ("Ho due offerte per la fornitura di luce e gas, quale scelgo?",
+     "business.confronto_gas_luce"),
+]
+
+
+@pytest.mark.parametrize("query,expected", COMPARISON_REQUESTS)
+def test_genuine_comparison_requests_auto_route_to_the_right_pack(query, expected, definitions):
+    response = match_query(query, definitions)
+    assert _band(response) == "AUTO", (
+        f"Genuine comparison request did not auto-route: {query!r} "
+        f"(status={response.status}, "
+        f"top={response.candidates[0].calculator_id if response.candidates else None})"
+    )
+    assert response.candidates[0].calculator_id == expected, (
+        f"{query!r} routed to {response.candidates[0].calculator_id}, expected {expected}"
+    )
+
+
+# --- Comparison lookalikes: the word is there, the request is not ----------
+# "confronto"/"differenza" carry no comparison intent in these sentences. The
+# comparator packs are the newest routing vocabulary and the easiest to
+# over-trigger, so they get the same never-AUTO guarantee as doctrine.
+COMPARISON_LOOKALIKES = [
+    "Resto disponibile ad ogni confronto tra le parti.",
+    "Qual e la differenza tra polizza vita e polizza infortuni?",
+    "Come funziona il confronto tra offerte nel mercato tutelato?",
+    "Quanto costa in media un'assicurazione auto?",
+    "Quanto costa in media la bolletta della luce?",
+    "Cosa copre una polizza kasko?",
+    "Come si disdice un contratto di fornitura di energia elettrica?",
+    "Quali sono gli obblighi informativi precontrattuali dell'assicuratore?",
+    "Il confronto tra le due sentenze mostra un orientamento diverso.",
+    "Che differenza c'e tra mercato libero e maggior tutela?",
+    "Come funziona il diritto di recesso in una polizza assicurativa?",
+    # Document comparison is a different feature; a calculator claiming it
+    # would answer a question about two uploaded files with a price ranking.
+    "Confronta questi due documenti che ti ho caricato.",
+    "Confronta questi contratti di locazione che ti ho mandato.",
+]
+
+
+@pytest.mark.parametrize("query", COMPARISON_LOOKALIKES)
+def test_comparison_lookalikes_never_auto_route(query, definitions):
+    assert _band(match_query(query, definitions)) != "AUTO", (
+        f"Sentence merely containing comparison vocabulary auto-routed: {query!r}"
+    )
+
+
+def test_the_two_comparator_packs_do_not_shadow_each_other(definitions):
+    """They share most of their routing vocabulary (confronta, offerte,
+    migliore); only the domain nouns separate them, so a win by the wrong
+    pack would be invisible in the band alone."""
+    polizze = match_query(
+        "Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro.", definitions
+    )
+    gas_luce = match_query("Confronta queste due offerte gas e luce.", definitions)
+
+    assert polizze.candidates[0].calculator_id == "business.confronto_polizze"
+    assert gas_luce.candidates[0].calculator_id == "business.confronto_gas_luce"
+    assert polizze.candidates[0].score > next(
+        (c.score for c in polizze.candidates
+         if c.calculator_id == "business.confronto_gas_luce"), 0
+    )
+
+
+# --- Cross-domain: neither comparator may answer for the other -------------
+CROSS_DOMAIN = [
+    ("Classifica queste offerte assicurative per convenienza.",
+     "business.confronto_polizze", "business.confronto_gas_luce"),
+    ("Classifica questi fornitori di energia per costo annuo.",
+     "business.confronto_gas_luce", "business.confronto_polizze"),
+    ("Confronta queste assicurazioni casa.",
+     "business.confronto_polizze", "business.confronto_gas_luce"),
+    ("Confronta queste offerte energia.",
+     "business.confronto_gas_luce", "business.confronto_polizze"),
+    ("Quale polizza assicurativa mi conviene tra queste offerte?",
+     "business.confronto_polizze", "business.confronto_gas_luce"),
+    ("Quale fornitore di luce e gas conviene tra queste offerte?",
+     "business.confronto_gas_luce", "business.confronto_polizze"),
+]
+
+
+@pytest.mark.parametrize("query,expected,shadowed", CROSS_DOMAIN)
+def test_comparator_packs_never_shadow_each_other(query, expected, shadowed, definitions):
+    """Both packs answer to confronta/offerte/migliore, so only the domain
+    nouns keep them apart. A tie here would not fail the band check — it
+    would just hand the request to whichever id sorts first."""
+    response = match_query(query, definitions)
+    assert response.candidates, f"no candidate at all for {query!r}"
+    top = response.candidates[0]
+    assert top.calculator_id == expected, (
+        f"{query!r} routed to {top.calculator_id}, expected {expected}"
+    )
+    other = next((c.score for c in response.candidates if c.calculator_id == shadowed), 0)
+    assert top.score > other, (
+        f"{query!r}: {expected} ties with {shadowed} at {top.score}; "
+        "the winner would be decided by alphabetical order, not by meaning"
     )
 
 

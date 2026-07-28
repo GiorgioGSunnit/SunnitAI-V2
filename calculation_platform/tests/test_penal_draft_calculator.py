@@ -139,3 +139,81 @@ def test_the_three_offences_do_not_steal_each_others_sentences():
     assert plan_sentence("pena per omicidio volontario", definitions).calculator_id == CALC_ID
     assert plan_sentence("pena per furto", definitions).calculator_id == "legal_it.furto_pena_draft"
     assert plan_sentence("che pena rischia un rapinatore", definitions).calculator_id == "legal_it.rapina_pena_draft"
+
+
+# ---------------------------------------------------------------------------
+# Multa (fine) — reported as its base statutory frame, never adjusted
+# ---------------------------------------------------------------------------
+
+def test_furto_reports_base_multa_frame():
+    result = engine.calculate(CalculationRequest(
+        calculator_id="legal_it.furto_pena_draft",
+        inputs={"aggravanti_comuni": 0, "attenuanti_comuni": 0},
+    ))
+    assert result.result["multa_specie"] == "multa"
+    assert result.result["multa_base_minima_eur"] == "154.00"
+    assert result.result["multa_base_massima_eur"] == "516.00"
+    assert any(s["type"] == "multa_edittale_base" for s in result.steps)
+
+
+def test_multa_is_not_adjusted_by_circumstances():
+    # Aggravanti move the reclusione range but must leave the fine at its
+    # base frame — this draft does not model the fine-specific rules.
+    result = engine.calculate(CalculationRequest(
+        calculator_id="legal_it.furto_pena_draft",
+        inputs={"aggravanti_comuni": 2, "attenuanti_comuni": 0},
+    ))
+    assert result.result["pena_massima"] != "3 anni"  # reclusione did move
+    assert result.result["multa_base_massima_eur"] == "516.00"  # fine did not
+    assert any("art. 66 n. 3" in w.message for w in result.warnings)
+
+
+def test_omicidio_has_no_multa():
+    result = _calculate(aggravanti_comuni=0, attenuanti_comuni=0)
+    assert "multa_specie" not in result.result
+
+
+# ---------------------------------------------------------------------------
+# Aggravated-offence drafts — routing and statutory frames
+# ---------------------------------------------------------------------------
+
+def test_furto_aggravato_routes_and_returns_its_frame():
+    definitions = engine.registry.definitions()
+    assert plan_sentence("furto in casa", definitions).calculator_id == "legal_it.furto_aggravato_draft"
+    assert plan_sentence("furto in abitazione", definitions).calculator_id == "legal_it.furto_aggravato_draft"
+    result = engine.calculate(CalculationRequest(
+        calculator_id="legal_it.furto_aggravato_draft",
+        inputs={"aggravanti_comuni": 0, "attenuanti_comuni": 0},
+    ))
+    assert result.result["pena_minima"] == "2 anni"
+    assert result.result["pena_massima"] == "6 anni"
+    assert result.result["multa_base_massima_eur"] == "1500.00"
+
+
+def test_rapina_aggravata_routes_and_returns_its_frame():
+    definitions = engine.registry.definitions()
+    assert plan_sentence("rapina a mano armata", definitions).calculator_id == "legal_it.rapina_aggravata_draft"
+    result = engine.calculate(CalculationRequest(
+        calculator_id="legal_it.rapina_aggravata_draft",
+        inputs={"aggravanti_comuni": 0, "attenuanti_comuni": 0},
+    ))
+    assert result.result["pena_minima"] == "7 anni"
+    assert result.result["pena_massima"] == "20 anni"
+
+
+def test_aggravated_forms_never_fall_through_to_the_simple_draft():
+    definitions = engine.registry.definitions()
+    assert plan_sentence("furto in casa", definitions).calculator_id != "legal_it.furto_pena_draft"
+    assert plan_sentence("rapina a mano armata pena", definitions).calculator_id != "legal_it.rapina_pena_draft"
+
+
+# ---------------------------------------------------------------------------
+# Draft caveat is emitted by code, keyed off the "-draft" version
+# ---------------------------------------------------------------------------
+
+def test_draft_calculators_carry_a_machine_readable_caveat():
+    result = _calculate(aggravanti_comuni=0, attenuanti_comuni=0)
+    codes = [w.code for w in result.warnings]
+    assert "draft_not_validated" in codes
+    # It leads the warning list so a renderer can surface it first.
+    assert result.warnings[0].code == "draft_not_validated"

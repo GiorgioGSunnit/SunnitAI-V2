@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class InputSpec(BaseModel):
     name: str
-    type: str  # decimal | integer | boolean | date | string
+    type: str  # decimal | integer | boolean | date | string | string_list | object_list
     required: bool = True
     default: Optional[Any] = None
     unit: Optional[str] = None
@@ -17,6 +17,13 @@ class InputSpec(BaseModel):
     min_value: Optional[Any] = None
     max_value: Optional[Any] = None
     description: Optional[str] = None
+    # For type "object_list" only: the field specs each list item must
+    # satisfy (same validation/defaulting semantics as top-level inputs;
+    # nesting another object_list inside item_fields is not allowed).
+    item_fields: Optional[List["InputSpec"]] = None
+    # For type "object_list" only: minimum number of items (e.g. a
+    # comparator needs at least 2 candidates to compare).
+    min_items: Optional[int] = None
 
 
 class ParameterRef(BaseModel):

@@ -1,0 +1,327 @@
+id: business.confronto_gas_luce
+name: Confronto offerte gas e luce (costo annuo + punteggio 0-100)
+category: business
+strategy: comparator
+version: "2"
+description: >
+  Confronta due o piu offerte gas+luce: per ciascuna calcola il costo annuo
+  stimato del PRIMO ANNO (lordo e scontato) dai consumi dell'utente e dai
+  prezzi dell'offerta, poi assegna un punteggio 0-100 composto da quattro
+  componenti normalizzate (costo, condizioni contrattuali, servizi,
+  recensioni) con pesi che sommano a 1. Il punteggio di costo e relativo
+  alla MIGLIORE offerta del gruppo: il costo annuo piu basso vale 100 e le
+  altre valgono la frazione costo_migliore/costo_offerta, quindi aggiungere
+  un'offerta piu cara non cambia i punteggi gia calcolati. I consumi annui
+  sono dell'utente e valgono per tutte le offerte confrontate; l'energia
+  elettrica si misura in kWh e il gas in Smc.
+jurisdiction: IT
+output_unit: null
+keywords:
+  - confronto offerte luce e gas
+  - comparatore bollette
+  - confronto fornitori energia
+  - energy offer comparison
+  - costo annuo bolletta
+aliases:
+  - quale fornitore di luce e gas conviene
+  - confronta queste offerte energia
+  - qual e l'offerta gas e luce migliore
+tags:
+  - energia
+  - gas
+  - luce
+  - bolletta
+  - confronto
+  - comparatore
+intent_examples:
+  - confronta due offerte gas e luce e dimmi quale conviene
+  - classifica questi fornitori di energia per costo annuo
+negative_examples:
+  - quanto costa in media la bolletta della luce
+  - confronta due polizze auto e dimmi quale conviene
+  - quale polizza assicurativa mi conviene
+  # Shares "classifica ... offerte" with this pack's own intent example, so
+  # without this penalty an insurance ranking ties with it on token hits and
+  # the alphabetically-first pack wins a comparison it cannot run.
+  - classifica queste offerte assicurative
+  - confronta queste assicurazioni
+  # Document comparison is a different feature entirely; without these a
+  # request to compare two uploaded files scores on "confronta questi ..."
+  # alone and is hijacked into a calculator that has no offers to compare.
+  - confronta questi documenti
+  - confronta questi allegati
+  - confronta questi contratti
+ambiguity_notes: >
+  Richiede prezzi concreti di almeno due offerte e i consumi annui
+  dell'utente: non stima i consumi ne conosce i listini di mercato.
+inputs:
+  - name: consumo_annuo_kwh
+    type: decimal
+    required: true
+    min_value: 0
+    unit: kWh
+    description: Consumo annuo di energia elettrica dell'utente in kWh
+  - name: consumo_annuo_smc
+    type: decimal
+    required: true
+    min_value: 0
+    unit: Smc
+    description: Consumo annuo di gas dell'utente in Smc
+  - name: offerte
+    type: object_list
+    required: true
+    min_items: 2
+    description: Le offerte gas+luce da confrontare
+    item_fields:
+      - name: fornitore
+        type: string
+        required: true
+        description: Nome del fornitore/offerta
+      - name: prezzo_kwh_luce
+        type: decimal
+        required: true
+        min_value: 0
+        unit: EUR/kWh
+        description: Prezzo dell'energia elettrica in euro per kWh
+      - name: prezzo_smc_gas
+        type: decimal
+        required: true
+        min_value: 0
+        unit: EUR/Smc
+        description: Prezzo del gas in euro per Smc
+      - name: costo_fisso_mensile
+        type: decimal
+        required: false
+        default: 0
+        min_value: 0
+        unit: EUR
+        description: Costo fisso di commercializzazione al mese
+      - name: sconto_primo_anno
+        type: decimal
+        required: false
+        default: 0
+        min_value: 0
+        max_value: 1
+        unit: rate
+        description: Sconto primo anno, come frazione (0,10 per 10%)
+      - name: sconto_pagamento_rid
+        type: decimal
+        required: false
+        default: 0
+        min_value: 0
+        max_value: 1
+        unit: rate
+        description: Sconto per domiciliazione bancaria, come frazione
+      - name: durata_vincolo
+        type: integer
+        required: false
+        default: 0
+        min_value: 0
+        unit: mesi
+        description: Durata del vincolo contrattuale in mesi
+      - name: penale_recesso
+        type: decimal
+        required: false
+        default: 0
+        min_value: 0
+        unit: EUR
+        description: Penale di recesso anticipato in euro
+      - name: energia_verde
+        type: boolean
+        required: false
+        default: false
+        description: Energia da fonti rinnovabili certificate
+      - name: app_monitoraggio
+        type: boolean
+        required: false
+        default: false
+        description: App di monitoraggio dei consumi disponibile
+      - name: voto_medio_utenti
+        type: decimal
+        required: false
+        default: 3
+        min_value: 1
+        max_value: 5
+        description: Voto medio degli utenti (scala 1-5)
+parameters: []
+derived_variables: {}
+formula:
+  candidates_input: offerte
+  label_field: fornitore
+  tie_tolerance: "0.50"
+  candidate_derived:
+    costo_annuo_lordo: "prezzo_kwh_luce * consumo_annuo_kwh + prezzo_smc_gas * consumo_annuo_smc + costo_fisso_mensile * 12"
+    # max(..., 0): two stacked discounts can sum past 100% — a negative
+    # yearly cost would hand that offer a perfect score for free money.
+    costo_annuo_scontato: "costo_annuo_lordo * max(1 - (sconto_primo_anno + sconto_pagamento_rid), 0)"
+  components:
+    - name: punteggio_costo
+      weight: "0.60"
+      relative_expression: "costo_annuo_scontato"
+      direction: lower_is_better
+      normalization: ratio_to_best
+    - name: punteggio_condizioni
+      weight: "0.20"
+      base: 100
+      rules:
+        - when: {field: durata_vincolo, greater_than: 12}
+          points: -20
+        - when: {field: penale_recesso, greater_than: 0}
+          points_per_unit: -0.5
+      clamp: {min: 0, max: 100}
+    - name: punteggio_servizi
+      weight: "0.10"
+      points:
+        - {field: energia_verde, points: 15}
+        - {field: app_monitoraggio, points: 10}
+      scale_max: 25
+    - name: punteggio_recensioni
+      weight: "0.10"
+      expression: "voto_medio_utenti * 20"
+      clamp: {min: 0, max: 100}
+output:
+  name: ranking
+  round_to: 2
+citations: []
+warnings:
+  - >-
+    Pesi e punteggi delle componenti sono valori dimostrativi da concordare
+    con il business prima dell'uso operativo: l'aritmetica e esatta, la
+    validita del modello di punteggio no.
+  - >-
+    Il costo annuo calcolato NON e l'importo della bolletta: comprende solo
+    la quota energia e il costo fisso di commercializzazione dichiarati
+    dall'offerta. Oneri di sistema, accise, IVA e trasporto non sono
+    inclusi perche la piattaforma non ha parametri verificati per essi.
+assumptions:
+  - "I consumi annui indicati valgono identici per tutte le offerte confrontate."
+  - "Gli sconti si applicano all'intero costo annuo lordo del primo anno, e il costo scontato ha minimo 0."
+  - "Il punteggio di costo e relativo alla MIGLIORE offerta del gruppo: il costo annuo piu basso vale 100, gli altri valgono costo_migliore/costo_offerta * 100."
+  - "Aggiungere un'offerta piu cara non modifica i punteggi di costo gia calcolati ne il loro ordine."
+  - "Il confronto e sul solo primo anno di fornitura."
+  - "Se due offerte restano entro 0,50 punti totali il confronto dichiara una sostanziale parita e non indica un vincitore."
+exclusions:
+  - "Non include IVA: il costo annuo e al netto d'imposta."
+  - "Non include accise ne oneri di sistema (ARERA): non ci sono parametri verificati in piattaforma per calcolarli."
+  - "Non include i corrispettivi di trasporto, distribuzione e misura."
+  - "Non modella le fasce orarie F1/F2/F3 ne i profili di prelievo: applica un prezzo unico ai consumi annui indicati."
+  - "Non considera le variazioni di prezzo dopo il primo anno, ne l'indicizzazione (PUN/PSV) delle offerte a prezzo variabile."
+  - "Non verifica la veridicita dei prezzi indicati ne li confronta con i listini di mercato o col servizio di maggior tutela."
+examples:
+  - description: "Due offerte: la X e piu cara di listino ma sconti, condizioni e servizi la portano davanti"
+    inputs:
+      consumo_annuo_kwh: 2700
+      consumo_annuo_smc: 1200
+      offerte:
+        - fornitore: "Fornitore X"
+          prezzo_kwh_luce: 0.25
+          prezzo_smc_gas: 1.10
+          costo_fisso_mensile: 10
+          sconto_primo_anno: 0.10
+          sconto_pagamento_rid: 0.05
+          durata_vincolo: 12
+          energia_verde: true
+          app_monitoraggio: true
+          voto_medio_utenti: 4.5
+        - fornitore: "Fornitore Y"
+          prezzo_kwh_luce: 0.22
+          prezzo_smc_gas: 1.05
+          costo_fisso_mensile: 12
+          durata_vincolo: 24
+          penale_recesso: 50
+          voto_medio_utenti: 3.9
+    expected_result:
+      best: Fornitore X
+      comparison:
+        decision_status: clear_winner
+        best_candidates:
+        - Fornitore X
+        cost_basis:
+          component: punteggio_costo
+          variable: costo_annuo_scontato
+        score_gap: '26.21'
+        tie_tolerance: '0.50'
+        provisional: true
+        provisional_status: provisional_unconfirmed
+        assumptions_confirmed: false
+        scoring_completeness: '0.7727'
+        scoring_defaults_applied:
+        - path: offerte[0].penale_recesso
+          value: '0'
+        - path: offerte[1].sconto_primo_anno
+          value: '0'
+        - path: offerte[1].sconto_pagamento_rid
+          value: '0'
+        - path: offerte[1].energia_verde
+          value: false
+        - path: offerte[1].app_monitoraggio
+          value: false
+        scored_fields:
+        - app_monitoraggio
+        - consumo_annuo_kwh
+        - consumo_annuo_smc
+        - costo_fisso_mensile
+        - durata_vincolo
+        - energia_verde
+        - penale_recesso
+        - prezzo_kwh_luce
+        - prezzo_smc_gas
+        - sconto_pagamento_rid
+        - sconto_primo_anno
+        - voto_medio_utenti
+        candidates_compared: 2
+      ranking:
+      - rank: 1
+        label: Fornitore X
+        total_score: '99.00'
+        scores:
+          punteggio_costo: '100.00'
+          punteggio_condizioni: '100.00'
+          punteggio_servizi: '100.00'
+          punteggio_recensioni: '90.00'
+        derived:
+          costo_annuo_lordo: '2115.00'
+          costo_annuo_scontato: '1797.75'
+        data_quality:
+          provided_fields:
+          - app_monitoraggio
+          - costo_fisso_mensile
+          - durata_vincolo
+          - energia_verde
+          - fornitore
+          - prezzo_kwh_luce
+          - prezzo_smc_gas
+          - sconto_pagamento_rid
+          - sconto_primo_anno
+          - voto_medio_utenti
+          assumed_fields:
+          - penale_recesso
+          unknown_fields: []
+          scoring_completeness: '0.9000'
+      - rank: 2
+        label: Fornitore Y
+        total_score: '72.79'
+        scores:
+          punteggio_costo: '89.98'
+          punteggio_condizioni: '55.00'
+          punteggio_servizi: '0.00'
+          punteggio_recensioni: '78.00'
+        derived:
+          costo_annuo_lordo: '1998.00'
+          costo_annuo_scontato: '1998.00'
+        data_quality:
+          provided_fields:
+          - costo_fisso_mensile
+          - durata_vincolo
+          - fornitore
+          - penale_recesso
+          - prezzo_kwh_luce
+          - prezzo_smc_gas
+          - voto_medio_utenti
+          assumed_fields:
+          - app_monitoraggio
+          - energia_verde
+          - sconto_pagamento_rid
+          - sconto_primo_anno
+          unknown_fields: []
+          scoring_completeness: '0.6000'

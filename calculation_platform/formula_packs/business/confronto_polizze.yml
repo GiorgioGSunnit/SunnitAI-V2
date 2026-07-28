@@ -1,0 +1,439 @@
+id: business.confronto_polizze
+name: Confronto polizze assicurative (punteggio 0-100)
+category: business
+strategy: comparator
+version: "2"
+description: >
+  Confronta due o piu polizze assicurative (auto/casa) assegnando a ciascuna
+  un punteggio 0-100 composto da cinque componenti normalizzate (costo,
+  coperture, condizioni, servizi, recensioni) con pesi dichiarati che
+  sommano a 1. Il punteggio di costo e relativo alla MIGLIORE offerta del
+  gruppo: la polizza col premio netto piu basso vale 100 e le altre valgono
+  la frazione premio_migliore/premio_offerta, quindi aggiungere un'offerta
+  piu cara non cambia i punteggi gia calcolati. Il costo confrontato e il
+  premio NETTO (listino meno gli sconti dichiarati), cosi gli sconti pesano
+  una volta sola.
+jurisdiction: null
+output_unit: null
+keywords:
+  - confronto polizze
+  - comparatore assicurazioni
+  - insurance comparison
+  - confronto assicurazione auto
+  - confronto assicurazione casa
+  - punteggio polizza
+aliases:
+  - quale polizza mi conviene
+  - confronta queste assicurazioni
+  - qual e l'assicurazione migliore tra queste
+tags:
+  - assicurazione
+  - polizza
+  - confronto
+  - comparatore
+intent_examples:
+  - confronta due polizze auto e dimmi quale conviene
+  - classifica queste offerte assicurative
+negative_examples:
+  - quanto costa in media un'assicurazione auto
+  - confronta due offerte gas e luce e dimmi quale conviene
+  - quale fornitore di luce e gas conviene
+  # Mirror of the energy pack's own negatives: both packs answer to
+  # confronta/queste/offerte, so without a penalty an energy request ties
+  # with this one on generic tokens and wins on alphabetical order.
+  - confronta queste offerte energia
+  - classifica questi fornitori di energia
+  # Document comparison is a different feature entirely; without these a
+  # request to compare two uploaded files scores on "confronta questi ..."
+  # alone and is hijacked into a calculator that has no offers to compare.
+  - confronta questi documenti
+  - confronta questi allegati
+  - confronta questi contratti
+ambiguity_notes: >
+  Richiede i dati di almeno due polizze concrete: non e un preventivatore
+  e non stima premi di mercato.
+inputs:
+  # Applicant facts are shared: the same driver is requesting every quote.
+  # They are collected, validated, echoed in inputs_used and recorded in the
+  # audit trail as a `shared_inputs` step — but they are deliberately NOT
+  # scored. Being identical across every candidate they can only shift all
+  # totals by the same amount, which changes no ranking while making the
+  # score look better informed than it is. Only candidate-specific
+  # conditions (franchigia, guida esclusiva) separate the offers.
+  - name: eta_conducente
+    type: integer
+    required: true
+    min_value: 18
+    max_value: 110
+    description: Eta del conducente principale (uguale per tutte le polizze; registrata, non usata nel punteggio)
+  - name: storico_sinistri
+    type: integer
+    required: false
+    default: 0
+    min_value: 0
+    description: Numero di sinistri del conducente negli ultimi anni (registrato, non usato nel punteggio)
+  - name: polizze
+    type: object_list
+    required: true
+    min_items: 2
+    description: Le polizze da confrontare, con i dati di ciascuna offerta
+    item_fields:
+      - name: nome
+        type: string
+        required: true
+        description: Nome identificativo della polizza/compagnia
+      - name: premio_annuo
+        type: decimal
+        required: true
+        min_value: 0.01
+        unit: EUR
+        description: Premio annuo di listino della polizza, prima degli sconti dichiarati
+      - name: franchigia
+        type: decimal
+        required: false
+        default: 0
+        min_value: 0
+        unit: EUR
+        description: Franchigia a carico dell'assicurato
+      - name: massimale
+        type: decimal
+        required: false
+        min_value: 0
+        unit: EUR
+        description: Massimale di copertura (raccolto ma non ancora usato nel punteggio)
+      - name: copertura_kasko
+        type: boolean
+        required: false
+        default: false
+        description: Copertura kasko inclusa
+      - name: copertura_cristalli
+        type: boolean
+        required: false
+        default: false
+        description: Copertura cristalli inclusa
+      - name: copertura_infortuni
+        type: boolean
+        required: false
+        default: false
+        description: Copertura infortuni del conducente inclusa
+      - name: assistenza_stradale
+        type: boolean
+        required: false
+        default: false
+        description: Assistenza stradale inclusa
+      - name: guida_esclusiva
+        type: boolean
+        required: false
+        default: false
+        description: Formula di guida esclusiva
+      - name: sconto_no_sinistri
+        type: decimal
+        required: false
+        default: 0
+        min_value: 0
+        max_value: 1
+        unit: rate
+        description: Sconto per assenza di sinistri, come frazione (0,10 per 10%)
+      - name: sconto_fedelta
+        type: decimal
+        required: false
+        default: 0
+        min_value: 0
+        max_value: 1
+        unit: rate
+        description: Sconto fedelta, come frazione (0,05 per 5%)
+      - name: telemedicina
+        type: boolean
+        required: false
+        default: false
+        description: Servizio di telemedicina incluso
+      - name: app_gestione
+        type: boolean
+        required: false
+        default: false
+        description: App di gestione della polizza disponibile
+      - name: voto_medio_utenti
+        type: decimal
+        required: false
+        default: 3
+        min_value: 1
+        max_value: 5
+        description: Voto medio degli utenti (scala 1-5)
+parameters: []
+derived_variables: {}
+formula:
+  candidates_input: polizze
+  label_field: nome
+  tie_tolerance: "0.50"
+  candidate_derived:
+    # The actual price of the policy: list premium net of the discounts the
+    # offer itself declares. This is the ONLY place discounts enter the
+    # score. The previous version scored them twice — once implicitly (a
+    # discount lowered nothing, because the cost component compared list
+    # premiums) and once explicitly through a punteggio_sconti component,
+    # which rewarded a headline discount rate regardless of what it was a
+    # discount off. max(..., 0): two stacked discounts can sum past 100%,
+    # and a negative premium would hand that offer a perfect score.
+    premio_netto: "max(premio_annuo * (1 - (sconto_no_sinistri + sconto_fedelta)), 0)"
+  components:
+    # 0.50 = the old 0.40 cost weight plus the 0.10 freed by removing the
+    # separate discount component, whose signal now reaches the score
+    # through premio_netto instead.
+    - name: punteggio_costo
+      weight: "0.50"
+      relative_expression: "premio_netto"
+      direction: lower_is_better
+      normalization: ratio_to_best
+    - name: punteggio_coperture
+      weight: "0.25"
+      points:
+        - {field: copertura_kasko, points: 20}
+        - {field: copertura_infortuni, points: 15}
+        - {field: copertura_cristalli, points: 10}
+        - {field: assistenza_stradale, points: 10}
+      scale_max: 55
+    # Candidate-specific contractual conditions only. The applicant's age
+    # and claims history used to sit here: identical for every offer by
+    # definition, they subtracted the same points from everyone and
+    # differentiated nothing.
+    - name: punteggio_condizioni
+      weight: "0.15"
+      base: 100
+      rules:
+        - when: {field: guida_esclusiva, equals: false}
+          points: -10
+        - when: {field: franchigia, greater_than: 300}
+          points: -10
+      clamp: {min: 0, max: 100}
+    - name: punteggio_servizi
+      weight: "0.05"
+      points:
+        - {field: telemedicina, points: 5}
+        - {field: app_gestione, points: 5}
+      scale_max: 10
+    - name: punteggio_recensioni
+      weight: "0.05"
+      expression: "voto_medio_utenti * 20"
+      clamp: {min: 0, max: 100}
+output:
+  name: ranking
+  round_to: 2
+citations: []
+warnings:
+  - >-
+    Pesi e punteggi delle componenti sono valori dimostrativi da concordare
+    con il business prima dell'uso operativo: l'aritmetica e esatta, la
+    validita del modello di punteggio no.
+  - >-
+    Il punteggio 0-100 e una sintesi relativa alle sole offerte confrontate e
+    ai pesi qui dichiarati, non una misura oggettiva di qualita di mercato.
+assumptions:
+  - "Il punteggio di costo e relativo alla MIGLIORE offerta del gruppo: il premio netto piu basso vale 100, gli altri valgono premio_migliore/premio_offerta * 100."
+  - "Aggiungere un'offerta piu cara non modifica i punteggi di costo gia calcolati ne il loro ordine."
+  - "Il costo confrontato e il premio netto = premio di listino * (1 - sconto_no_sinistri - sconto_fedelta), con minimo 0: gli sconti incidono una volta sola, tramite il costo."
+  - "Gli sconti sono espressi come frazioni (0,10 = 10%)."
+  - "Eta del conducente e storico sinistri sono del richiedente, identici per tutte le polizze: sono registrati negli input e nel percorso di calcolo ma non entrano nel punteggio, perche non possono distinguere un'offerta dall'altra."
+  - "Sono valutate come condizioni solo le clausole specifiche dell'offerta: franchigia e formula di guida esclusiva."
+  - "Se due offerte restano entro 0,50 punti totali il confronto dichiara una sostanziale parita e non indica un vincitore."
+exclusions:
+  - "Il massimale e raccolto ma non entra nel punteggio: manca una scala condivisa e verificata per convertirlo in punti, e inventarne una falserebbe il confronto."
+  - "Eta del conducente e storico sinistri non incidono sul punteggio: sono uguali per tutte le offerte confrontate."
+  - "Non e un preventivatore: non stima ne verifica i premi di mercato, confronta solo i dati forniti."
+  - "Non verifica la veridicita dei dati delle offerte ne le condizioni contrattuali non dichiarate (massimali per garanzia, esclusioni di polizza, rivalse)."
+examples:
+  - description: "Stesso conducente (22 anni), due polizze auto: la A costa meno e copre di piu, e vince"
+    inputs:
+      eta_conducente: 22
+      polizze:
+        - nome: "Polizza A"
+          premio_annuo: 450
+          franchigia: 150
+          copertura_kasko: true
+          copertura_cristalli: true
+          guida_esclusiva: true
+          sconto_no_sinistri: 0.10
+          sconto_fedelta: 0.05
+          app_gestione: true
+          voto_medio_utenti: 4.2
+        - nome: "Polizza B"
+          premio_annuo: 500
+          franchigia: 400
+          copertura_kasko: true
+          sconto_no_sinistri: 0.10
+          voto_medio_utenti: 3.8
+    expected_result:
+      best: Polizza A
+      comparison:
+        decision_status: clear_winner
+        best_candidates:
+        - Polizza A
+        cost_basis:
+          component: punteggio_costo
+          variable: premio_netto
+        score_gap: '17.95'
+        tie_tolerance: '0.50'
+        provisional: true
+        provisional_status: provisional_unconfirmed
+        assumptions_confirmed: false
+        scoring_completeness: '0.5833'
+        scoring_defaults_applied:
+        - path: polizze[0].copertura_infortuni
+          value: false
+        - path: polizze[0].assistenza_stradale
+          value: false
+        - path: polizze[0].telemedicina
+          value: false
+        - path: polizze[1].copertura_cristalli
+          value: false
+        - path: polizze[1].copertura_infortuni
+          value: false
+        - path: polizze[1].assistenza_stradale
+          value: false
+        - path: polizze[1].guida_esclusiva
+          value: false
+        - path: polizze[1].sconto_fedelta
+          value: '0'
+        - path: polizze[1].telemedicina
+          value: false
+        - path: polizze[1].app_gestione
+          value: false
+        scored_fields:
+        - app_gestione
+        - assistenza_stradale
+        - copertura_cristalli
+        - copertura_infortuni
+        - copertura_kasko
+        - franchigia
+        - guida_esclusiva
+        - premio_annuo
+        - sconto_fedelta
+        - sconto_no_sinistri
+        - telemedicina
+        - voto_medio_utenti
+        candidates_compared: 2
+      ranking:
+      - rank: 1
+        label: Polizza A
+        total_score: '85.34'
+        scores:
+          punteggio_costo: '100.00'
+          punteggio_coperture: '54.55'
+          punteggio_condizioni: '100.00'
+          punteggio_servizi: '50.00'
+          punteggio_recensioni: '84.00'
+        derived:
+          premio_netto: '382.50'
+        data_quality:
+          provided_fields:
+          - app_gestione
+          - copertura_cristalli
+          - copertura_kasko
+          - franchigia
+          - guida_esclusiva
+          - nome
+          - premio_annuo
+          - sconto_fedelta
+          - sconto_no_sinistri
+          - voto_medio_utenti
+          assumed_fields:
+          - assistenza_stradale
+          - copertura_infortuni
+          - telemedicina
+          unknown_fields:
+          - massimale
+          scoring_completeness: '0.7500'
+      - rank: 2
+        label: Polizza B
+        total_score: '67.39'
+        scores:
+          punteggio_costo: '85.00'
+          punteggio_coperture: '36.36'
+          punteggio_condizioni: '80.00'
+          punteggio_servizi: '0.00'
+          punteggio_recensioni: '76.00'
+        derived:
+          premio_netto: '450.00'
+        data_quality:
+          provided_fields:
+          - copertura_kasko
+          - franchigia
+          - nome
+          - premio_annuo
+          - sconto_no_sinistri
+          - voto_medio_utenti
+          assumed_fields:
+          - app_gestione
+          - assistenza_stradale
+          - copertura_cristalli
+          - copertura_infortuni
+          - guida_esclusiva
+          - sconto_fedelta
+          - telemedicina
+          unknown_fields:
+          - massimale
+          scoring_completeness: '0.4167'
+  - description: >-
+      Due offerte identiche sotto ogni aspetto valutato, con tutti i campi che
+      incidono sul punteggio dichiarati: parita sostanziale, nessun vincitore,
+      risultato non provvisorio.
+    inputs:
+      eta_conducente: 45
+      storico_sinistri: 1
+      polizze:
+        - nome: "Compagnia Nord"
+          premio_annuo: 520
+          franchigia: 250
+          copertura_kasko: true
+          copertura_cristalli: true
+          copertura_infortuni: false
+          assistenza_stradale: true
+          guida_esclusiva: true
+          sconto_no_sinistri: 0
+          sconto_fedelta: 0.05
+          telemedicina: false
+          app_gestione: true
+          voto_medio_utenti: 4
+        - nome: "Compagnia Sud"
+          premio_annuo: 520
+          franchigia: 250
+          copertura_kasko: true
+          copertura_cristalli: true
+          copertura_infortuni: false
+          assistenza_stradale: true
+          guida_esclusiva: true
+          sconto_no_sinistri: 0
+          sconto_fedelta: 0.05
+          telemedicina: false
+          app_gestione: true
+          voto_medio_utenti: 4
+    expected_result:
+      best: Compagnia Nord
+      comparison:
+        decision_status: effective_tie
+        best_candidates:
+        - Compagnia Nord
+        - Compagnia Sud
+        cost_basis:
+          component: punteggio_costo
+          variable: premio_netto
+        score_gap: '0.00'
+        tie_tolerance: '0.50'
+        provisional: false
+        provisional_status: none
+        assumptions_confirmed: false
+        scoring_completeness: '1.0000'
+        scoring_defaults_applied: []
+        scored_fields:
+        - app_gestione
+        - assistenza_stradale
+        - copertura_cristalli
+        - copertura_infortuni
+        - copertura_kasko
+        - franchigia
+        - guida_esclusiva
+        - premio_annuo
+        - sconto_fedelta
+        - sconto_no_sinistri
+        - telemedicina
+        - voto_medio_utenti
+        candidates_compared: 2

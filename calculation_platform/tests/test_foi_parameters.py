@@ -6,7 +6,7 @@ from decimal import Decimal
 
 import pytest
 
-from app.main import parameter_store
+from support import parameter_store
 
 PARAM = "legal_it.foi_index"
 

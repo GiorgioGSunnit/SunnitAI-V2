@@ -12,6 +12,10 @@ class ParameterValue(BaseModel):
     parameter_id: str
     value: Any
     unit: Optional[str] = None
+    # For index series (e.g. ISTAT FOI): the reference base year of `value`
+    # (e.g. 2015 or 2025). Dividing two index values from different bases is
+    # invalid; strategies must relink via a base-link coefficient first.
+    base_year: Optional[int] = None
     effective_from: date
     effective_to: Optional[date] = None
     source: Optional[str] = None

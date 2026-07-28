@@ -13,8 +13,9 @@ Pipeline: base range -> discretionary envelopes per circumstance
 -> art. 66 caps -> art. 442 abbreviato reduction -> formatted ranges.
 """
 
+from decimal import Decimal
 from fractions import Fraction
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from ..core.audit import AuditTrail
 from ..core.errors import StrategyExecutionError
@@ -108,4 +109,37 @@ class PenalRangeDraftStrategy(CalculationStrategy):
                 agg, mit = n_aggravating, n_mitigating
             result = compute(agg, mit, scenario or "unico")
 
-        return StrategyOutcome(result=result, steps=trail.steps)
+        warnings: List[str] = []
+        self._attach_multa(definition, result, trail, warnings)
+
+        return StrategyOutcome(result=result, steps=trail.steps, warnings=warnings)
+
+    @staticmethod
+    def _attach_multa(definition, result: Dict[str, Any], trail: AuditTrail, warnings: List[str]) -> None:
+        """The pecuniary penalty (multa) that most patrimonial delitti carry
+        alongside reclusione. Reported as its DECLARED statutory frame only:
+        this draft does not adjust the fine for circumstances, the art. 66
+        n. 3 ceilings, or the rito reduction — those fine-specific rules are
+        not modeled, so surfacing a computed fine would be a guess. A pack
+        omits the two keys for an offence with no fine (e.g. omicidio)."""
+        formula = definition.formula or {}
+        if "multa_min_eur" not in formula and "multa_max_eur" not in formula:
+            return
+        multa_min = Decimal(str(formula["multa_min_eur"]))
+        multa_max = Decimal(str(formula["multa_max_eur"]))
+        if multa_min > multa_max:
+            raise StrategyExecutionError(
+                "multa_min_eur cannot exceed multa_max_eur",
+                details={"multa_min_eur": str(multa_min), "multa_max_eur": str(multa_max)},
+            )
+        result["multa_specie"] = "multa"
+        result["multa_base_minima_eur"] = f"{multa_min:.2f}"
+        result["multa_base_massima_eur"] = f"{multa_max:.2f}"
+        trail.record("multa_edittale_base",
+                     min=f"{multa_min:.2f}", max=f"{multa_max:.2f}",
+                     norm="cornice edittale della multa (art. 24 c.p.)")
+        warnings.append(
+            "La multa e riportata nella sua cornice edittale base (art. 24 c.p.): "
+            "questa bozza NON la adegua per circostanze, tetti (art. 66 n. 3) o "
+            "riduzione per rito abbreviato."
+        )

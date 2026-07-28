@@ -84,7 +84,6 @@ citations:
     url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1930-10-19;1398"
     official: true
 warnings:
-  - "BOZZA NON VALIDATA LEGALMENTE: dimostrazione della meccanica di calcolo, non uno strumento professionale."
   - "Calcolo di cornice edittale sotto ipotesi dichiarate: NON è una previsione della sentenza."
   - "Il quantum di ogni circostanza ('fino a 1/3') è discrezionale: il risultato è una forbice, non un valore."
 assumptions:

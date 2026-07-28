@@ -24,6 +24,9 @@ class ParameterStore:
         # that is absent here is absent, full stop — resolution fails loudly,
         # it never interpolates or falls back to a neighboring month.
         self._monthly: Dict[Tuple[str, int, int], ParameterValue] = {}
+        # Base-link coefficients for index series: (parameter_id, from_base,
+        # to_base) -> coefficient c, meaning value_in_to_base = value_in_from_base * c.
+        self._base_links: Dict[Tuple[str, int, int], Decimal] = {}
         self._load(parameters_dir)
 
     def _load(self, parameters_dir: Path) -> None:
@@ -35,8 +38,36 @@ class ParameterStore:
                 else:
                     pv = ParameterValue(**entry)
                 self._values.setdefault(pv.parameter_id, []).append(pv)
+            for link in data.get("base_links", []):
+                self._load_base_link(link, yml_path)
         for entries in self._values.values():
             entries.sort(key=lambda pv: pv.effective_from)
+
+    def _load_base_link(self, link: dict, yml_path: Path) -> None:
+        """A base-link entry {parameter_id, from_base, to_base, coefficient}
+        registers both the forward coefficient and its inverse so a series can
+        be relinked in either direction."""
+        pid = link["parameter_id"]
+        from_base = int(link["from_base"])
+        to_base = int(link["to_base"])
+        coefficient = Decimal(str(link["coefficient"]))
+        self._base_links[(pid, from_base, to_base)] = coefficient
+        self._base_links.setdefault((pid, to_base, from_base), Decimal(1) / coefficient)
+
+    def base_link_coefficient(self, parameter_id: str, from_base: int, to_base: int) -> Decimal:
+        """Coefficient c such that value_in_to_base = value_in_from_base * c.
+        Raises KeyError when the two bases are not linked — callers convert
+        that into the platform's structured error rather than dividing across
+        incompatible bases."""
+        if from_base == to_base:
+            return Decimal(1)
+        try:
+            return self._base_links[(parameter_id, from_base, to_base)]
+        except KeyError as e:
+            raise KeyError(
+                f"No base-link coefficient for {parameter_id!r} from base {from_base} "
+                f"to base {to_base}"
+            ) from e
 
     def _load_monthly_entry(self, entry: dict, yml_path: Path) -> ParameterValue:
         """A monthly-series entry is keyed (year, month) with `value` and

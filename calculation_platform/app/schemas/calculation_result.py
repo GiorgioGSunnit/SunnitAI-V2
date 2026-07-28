@@ -33,4 +33,15 @@ class CalculationResult(BaseModel):
     # applied for omitted optional inputs, plus any calculator-level
     # declared assumptions (e.g. "assumes a single national employer").
     assumptions: List[CalcWarning] = Field(default_factory=list)
+    # The same defaults, machine-readable: one {"path", "value"} entry per
+    # input (or nested object_list item field) that the caller omitted and
+    # the platform filled in. `assumptions` keeps the prose form for
+    # backward compatibility; this is what a caller should branch on.
+    # Paths use the request's own addressing: "storico_sinistri",
+    # "polizze[0].franchigia".
+    defaults_applied: List[Dict[str, Any]] = Field(default_factory=list)
+    # What this calculator explicitly does NOT account for, copied from the
+    # definition so every consumer (API, storage, replay, report, chatbot)
+    # sees the same structured list instead of re-reading the YAML.
+    exclusions: List[str] = Field(default_factory=list)
     errors: List[CalculationError] = Field(default_factory=list)

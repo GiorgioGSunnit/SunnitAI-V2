@@ -23,6 +23,22 @@ def _input_schema(spec: InputSpec) -> Dict[str, Any]:
             "minItems": 1,
         },
     }
+    if spec.type == "object_list":
+        item_fields = spec.item_fields or []
+        schema: Dict[str, Any] = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {f.name: _input_schema(f) for f in item_fields},
+                "required": [f.name for f in item_fields if f.required],
+                "additionalProperties": False,
+            },
+            "minItems": spec.min_items if spec.min_items is not None else 1,
+        }
+        if spec.description:
+            schema["description"] = _clean(spec.description)
+        return schema
+
     try:
         schema = dict(type_schemas[spec.type])
     except KeyError as exc:

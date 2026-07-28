@@ -1,3 +1,4 @@
+from .comparator import ComparatorStrategy
 from .decision_table import DecisionTableStrategy
 from .dm55_fees import Dm55FeesStrategy
 from .date_split_interest import DateSplitInterestStrategy
@@ -18,6 +19,7 @@ STRATEGIES = {
     "date_split_interest": DateSplitInterestStrategy,
     "foi_revaluation": FoiRevaluationStrategy,
     "foi_revaluation_interest": FoiRevaluationInterestStrategy,
+    "comparator": ComparatorStrategy,
     "decision_table": DecisionTableStrategy,
     "dm55_fees": Dm55FeesStrategy,
     "penal_range_draft": PenalRangeDraftStrategy,

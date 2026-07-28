@@ -93,21 +93,17 @@ exclusions:
   - "Non applica il cumulo di rivalutazione e interessi ai debiti di valuta (per quelli usare legal_it.legal_interest)."
 examples:
   - description: >
-      Golden case con i mesi FOI SEGNAPOSTO (foi_indices.yml) su tre anni
-      con anno bisestile, cambio saggio e anni parziali: 1000 EUR dal
-      2024-11-15 al 2026-02-10. Slice 2024 (47 gg, divisore 366, saggio
-      2,5%): capitale 1000 -> 1005 (FOI 100.0 -> 100.5), media 1002.5,
-      interessi 3.2184...; slice 2025 (365 gg, saggio 2%): 1005 -> 1020
-      (FOI 100.5 -> 102.0), media 1012.5, interessi 20.25; slice 2026
-      (41 gg, divisore 365, saggio 1,6%): 1020 -> 1025 (FOI 102.0 ->
-      102.5), media 1022.5, interessi 1.8377. Totale interessi 25.31,
-      capitale rivalutato 1025.00, totale 1050.31.
-      verified_against: TODO (official calculator/source check pending)
+      Slice unico 2021 sui mesi FOI ISTAT caricati: 1000 EUR dal 2021-03-15
+      al 2021-06-15. Capitale rivalutato: FOI 103.3 -> 103.8, coefficiente
+      103.8/103.3, 1000 -> 1004.84. Interessi legali 2021 (saggio 0,01%)
+      sulla media tra 1000 e 1004.84 per 93 giorni su 365: circa 0,03.
+      Totale 1004.87. (Un caso pluriennale a cavallo del cambio base
+      richiede i mesi di dicembre intermedi, non ancora ingeriti.)
     inputs:
       importo: 1000
-      data_iniziale: "2024-11-15"
-      data_finale: "2026-02-10"
+      data_iniziale: "2021-03-15"
+      data_finale: "2021-06-15"
     expected_result:
-      capitale_rivalutato: "1025.00"
-      interessi_totali: "25.31"
-      totale: "1050.31"
+      capitale_rivalutato: "1004.84"
+      interessi_totali: "0.03"
+      totale: "1004.87"

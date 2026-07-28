@@ -137,6 +137,22 @@ class ChatSession:
         return session
 
 
+def last_pending_calculation(session: "ChatSession") -> Optional[Dict[str, Any]]:
+    """Calculation still collecting inputs, as carried on the last assistant turn.
+
+    Shared with the document-generation branch in api.py, which returns before
+    the RAG graph runs: without carrying this forward, a generation reply lands
+    as the newest assistant message with no pending state and the in-progress
+    calculation is orphaned rather than resumed.
+    """
+    last_assistant = next(
+        (m for m in reversed(session.messages) if m.role == "assistant"), None
+    )
+    if not last_assistant:
+        return None
+    return (last_assistant.metadata or {}).get("pending_calculation")
+
+
 def _generate_session_title(first_message: str) -> str:
     try:
         raw = _call_chat(
@@ -446,10 +462,7 @@ class ChatBot:
             (last_assistant_msg.metadata or {}).get("pending_sections") or []
             if awaiting_clarification_in else []
         )
-        pending_calculation_in = (
-            (last_assistant_msg.metadata or {}).get("pending_calculation")
-            if last_assistant_msg else None
-        )
+        pending_calculation_in = last_pending_calculation(session)
 
         # Run through the RAG pipeline
         try:

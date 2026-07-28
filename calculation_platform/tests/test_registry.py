@@ -16,6 +16,8 @@ def registry():
 EXPECTED_CALCULATOR_IDS = {
     "business.invoice_total",
     "business.loan_payment",
+    "business.confronto_polizze",
+    "business.confronto_gas_luce",
     "legal_it.irpef",
     "legal_it.legal_interest",
     "legal_it.registration_tax_leases",
@@ -26,7 +28,9 @@ EXPECTED_CALCULATOR_IDS = {
     "legal_it.notice_indemnity",
     "legal_it.omicidio_pena_draft",
     "legal_it.furto_pena_draft",
+    "legal_it.furto_aggravato_draft",
     "legal_it.rapina_pena_draft",
+    "legal_it.rapina_aggravata_draft",
     "legal_it.contributo_unificato_civile",
     "legal_it.termini_processuali_civili",
     "legal_it.ravvedimento_operoso",
