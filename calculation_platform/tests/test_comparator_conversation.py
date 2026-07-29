@@ -54,6 +54,31 @@ def test_full_policy_comparison_conversation_matches_pack_example():
     assert "Non incluso:" in reply.text
 
 
+def test_complete_identical_policy_offers_produce_effective_tie():
+    chat = _conversation()
+    opening = chat.send(
+        "Confronta due polizze auto per un conducente di 40 anni senza sinistri."
+    )
+    assert opening.kind == "question"
+
+    offer = (
+        "premio 500 euro, franchigia 200, massimale 5.000.000, kasko sì, "
+        "cristalli sì, infortuni sì, assistenza stradale sì, guida esclusiva sì, "
+        "sconto no sinistri 10%, sconto fedeltà 5%, telemedicina sì, app sì, voto 4,5."
+    )
+    assert chat.send(f"Alfa: {offer}").kind == "question"
+    assert chat.send(f"Beta: {offer}").kind == "question"
+
+    reply = chat.send("confronta")
+    assert reply.kind == "answer"
+    comparison = reply.calculation.result["comparison"]
+    assert comparison["decision_status"] == "effective_tie"
+    assert comparison["best_candidates"] == ["Alfa", "Beta"]
+    assert comparison["score_gap"] == "0.00"
+    assert comparison["scoring_completeness"] == "1.0000"
+    assert comparison["scoring_defaults_applied"] == []
+
+
 def test_comparison_asks_for_missing_shared_facts_first():
     chat = _conversation()
     reply = chat.send("quale polizza assicurativa mi conviene tra queste")

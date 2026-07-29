@@ -44,6 +44,17 @@ _GENERIC_CUE_TOKENS = frozenset({
     "lorda", "lordo", "netto", "netta", "termine", "termini", "data", "date",
 })
 
+# Natural-language aliases for fields whose schema names/descriptions are
+# English, or whose most useful Italian label is otherwise (correctly)
+# excluded from the generic description-derived cue set.
+_FIELD_CUE_ALIASES = {
+    "net_amount": ("netto", "imponibile"),
+    "principal": ("prestito", "capitale"),
+    "annual_rate": ("tasso", "interesse", "interessi"),
+    "months": ("mesi", "mese", "durata"),
+    "retribuzione_lorda": ("retribuzione", "lordi", "lordo", "lorda"),
+}
+
 # Function words dropped from description-derived cues so a field's cue set is
 # the meaningful nouns of its label, not connectives.
 _CUE_FUNCTION_WORDS = frozenset({
@@ -76,9 +87,29 @@ _CUE_WINDOW = 12
 # art. 155, n. 289, L. 742). Blanked (length-preserving) before number scan.
 _NON_VALUE_RE = re.compile(
     r"\b[A-F]/\d{1,2}\b"
-    r"|\b(?:d\.?\s?m\.?|d\.?\s?lgs\.?|d\.?\s?p\.?r\.?|dpr|artt?\.?|n\.|l\.|reg\.?)\s*\d+(?:/\d+)?",
+    r"|\b(?:d\.?\s?m\.?|d\.?\s?lgs\.?|d\.?\s?p\.?r\.?|dpr|artt?\.?|n\.|l\.|reg\.?)\s*\d+(?:/\d+)?"
+    r"|\b(?:cass(?:azione)?\.?\s*(?:ss\.?\s*uu\.?\s*)?|ss\.?\s*uu\.?\s*)\d+(?:/\d+)?",
     re.IGNORECASE,
 )
+
+_ITALIAN_UNIT_NUMBER_RE = re.compile(
+    r"\b(due|tre|quattro|cinque|sei|sette|otto|nove|dieci|undici|dodici)"
+    r"\b(?=\s+(?:mesi?|anni?|giorni?))",
+    re.IGNORECASE,
+)
+_ITALIAN_UNIT_NUMBERS = {
+    "due": Decimal("2"),
+    "tre": Decimal("3"),
+    "quattro": Decimal("4"),
+    "cinque": Decimal("5"),
+    "sei": Decimal("6"),
+    "sette": Decimal("7"),
+    "otto": Decimal("8"),
+    "nove": Decimal("9"),
+    "dieci": Decimal("10"),
+    "undici": Decimal("11"),
+    "dodici": Decimal("12"),
+}
 
 
 def _blank(match) -> str:
@@ -139,8 +170,10 @@ def extract_values(text: str) -> Dict[str, Any]:
     numbers: List[Decimal] = []
     tax_year: Optional[int] = None
     for token in _NUMBER_RE.finditer(remainder):
-        value = parse_number(token.group(0))
-        if value == value.to_integral_value() and 2000 <= int(value) <= 2099:
+        raw_token = token.group(0)
+        value = parse_number(raw_token)
+        year_token = raw_token.rstrip(".")
+        if re.fullmatch(r"\d{4}", year_token) and 2000 <= int(value) <= 2099:
             # A bare four-digit year that is not attached to a field cue reads
             # as a tax-year candidate (the binder can still claim it as a
             # number if a cue is adjacent).
@@ -148,7 +181,11 @@ def extract_values(text: str) -> Dict[str, Any]:
                 tax_year = int(value)
             continue
         number_spans.append((value, token.start(), token.end()))
-        numbers.append(value)
+    for token in _ITALIAN_UNIT_NUMBER_RE.finditer(remainder):
+        value = _ITALIAN_UNIT_NUMBERS[token.group(1).lower()]
+        number_spans.append((value, token.start(), token.end()))
+    number_spans.sort(key=lambda item: item[1])
+    numbers = [value for value, _start, _end in number_spans]
 
     words = set(re.findall(r"[a-zà-ù]+", lowered))
     boolean: Optional[bool] = None
@@ -172,7 +209,11 @@ def extract_values(text: str) -> Dict[str, Any]:
     if "prima registrazione" in lowered or "registrazione iniziale" in lowered:
         boolean_hints["first_registration"] = True
     if "cedolare secca" in lowered:
-        boolean_hints["cedolare_secca"] = True
+        cedolare_start = lowered.index("cedolare secca")
+        before_cedolare = lowered[max(0, cedolare_start - 24):cedolare_start]
+        boolean_hints["cedolare_secca"] = not bool(
+            re.search(r"\b(?:non|senza|no)\b", before_cedolare)
+        )
 
     return {
         "text": text,
@@ -215,6 +256,8 @@ def _cue_tokens(spec) -> List[str]:
             if len(t) >= 3 and t not in _GENERIC_CUE_TOKENS and t not in _CUE_FUNCTION_WORDS:
                 cues.append(t)
 
+    cues.extend(_FIELD_CUE_ALIASES.get(spec.name, ()))
+
     seen: set = set()
     return [t for t in cues if not (t in seen or seen.add(t))]
 
@@ -254,10 +297,41 @@ def _apply_unit(spec, value: Decimal, lowered: str, nstart: int, nend: int, amou
     return value
 
 
-def _find_string_list(text: str) -> List[str]:
+def _declared_string_choices(spec) -> List[str]:
+    """Read enum-like values declared in a string field description.
+
+    Current packs express them after a colon and separate them with commas,
+    ``o`` or pipes (for example ``primo_grado, appello o cassazione``).
+    """
+    if not spec.description or ":" not in spec.description:
+        return []
+    body = _strip_accents(spec.description.split(":", 1)[1].lower())
+    body = body.split(".", 1)[0].split("(", 1)[0]
+    parts = re.split(r"[,|;]|\bo\b", body)
+    choices: List[str] = []
+    for part in parts:
+        token = re.sub(r"[^a-z0-9_]+", "_", part.strip()).strip("_")
+        if token and re.fullmatch(r"[a-z][a-z0-9_]*", token):
+            choices.append(token)
+    return choices
+
+
+def _find_string_list(text: str, spec) -> List[str]:
     """Comma/'e'-separated alphabetic items ('studio, introduttiva, e
     decisionale' -> [...]). Unknown items are filtered downstream by the
     calculator's own validation."""
+    choices = _declared_string_choices(spec)
+    if choices:
+        lowered_ascii = _strip_accents(text.lower())
+        return [
+            choice
+            for choice in choices
+            if re.search(
+                r"\b" + re.escape(choice).replace("_", r"[\s_]") + r"\b",
+                lowered_ascii,
+            )
+        ]
+
     body = text.split(":", 1)[1] if ":" in text else text
     parts = re.split(r"[,;]|\be\b", body)
     items = []
@@ -267,6 +341,15 @@ def _find_string_list(text: str) -> List[str]:
         if len(token) >= 4 and " " not in token:
             items.append(token)
     return items
+
+
+def _find_string(text: str, spec) -> Optional[str]:
+    lowered_ascii = _strip_accents(text.lower())
+    for choice in _declared_string_choices(spec):
+        pattern = r"\b" + re.escape(choice).replace("_", r"[\s_]") + r"\b"
+        if re.search(pattern, lowered_ascii):
+            return choice
+    return None
 
 
 def _find_boolean(cues: List[str], lowered_ascii: str) -> Optional[bool]:
@@ -309,6 +392,13 @@ def _bind_specs(
             for idx, (value, nstart, nend) in enumerate(spans):
                 if idx in consumed:
                     continue
+                trailing = lowered_ascii[nend:nend + 14]
+                if spec.unit not in ("rate", "percent") and (
+                    "%" in trailing[:3]
+                    or "‰" in trailing[:3]
+                    or trailing.lstrip().startswith(("per cento", "per mille", "permille"))
+                ):
+                    continue
                 gap = _nearest_cue_gap(cue_spans, nstart, nend)
                 if gap is None or gap > _CUE_WINDOW:
                     continue
@@ -337,9 +427,14 @@ def _bind_specs(
                 inputs[spec.name] = resolved
 
         elif spec.type == "string_list":
-            items = _find_string_list(text)
+            items = _find_string_list(text, spec)
             if items:
                 inputs[spec.name] = items
+
+        elif spec.type == "string":
+            value = _find_string(text, spec)
+            if value is not None:
+                inputs[spec.name] = value
 
     # Unambiguous fallback: if, after label-anchored binding, exactly ONE
     # required numeric field is still missing AND exactly ONE number is still
@@ -365,8 +460,18 @@ def bind_values(definition: CalculatorDefinition, inputs: Dict[str, Any], values
     question. Booleans and string lists bind from their own cues/format.
     object_list inputs are never bound here — the conversation collects those
     one offer at a time via bind_offer."""
+    specs = [s for s in definition.inputs if s.type != "object_list"]
+    lowered_ascii = _strip_accents(values.get("text", "").lower())
+    if any(spec.name == "annual_rate" for spec in specs) and re.search(
+        r"\b(?:senza\s+interessi|tasso\s+(?:zero|0)|interessi\s+(?:zero|0))\b",
+        lowered_ascii,
+    ):
+        inputs.setdefault("annual_rate", Decimal("0"))
     _bind_specs(
-        [s for s in definition.inputs if s.type != "object_list"], inputs, values
+        specs,
+        inputs,
+        values,
+        boolean_cues=_distinctive_boolean_cues(specs),
     )
 
 
@@ -385,6 +490,8 @@ def _distinctive_boolean_cues(item_specs) -> Dict[str, List[str]]:
         tokens = [
             t for t in re.split(r"[^a-z0-9]+", _strip_accents(spec.name.lower()))
             if len(t) >= 3
+            and t not in _GENERIC_CUE_TOKENS
+            and t not in _CUE_FUNCTION_WORDS
         ]
         tokenized[spec.name] = tokens
         for token in set(tokens):

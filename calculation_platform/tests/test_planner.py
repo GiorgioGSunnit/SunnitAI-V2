@@ -2,6 +2,8 @@
 and the conversation flows built on it — the required minimum cases from
 the routing-metadata development spec."""
 
+import pytest
+
 from app.core.registry import CalculatorRegistry
 from app.main import FORMULA_PACKS_DIR, engine
 from simulation.conversation import SimulatedConversation
@@ -10,9 +12,6 @@ from simulation.planner import plan_sentence
 
 def _plan(sentence: str):
     return plan_sentence(sentence, engine.registry.definitions())
-
-
-_DRAFT_DEFINITIONS = CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=True).definitions()
 
 
 def _plan_with_drafts(sentence: str):
@@ -27,9 +26,126 @@ def _plan_with_drafts(sentence: str):
     return plan_sentence(sentence, _DRAFT_DEFINITIONS)
 
 
+_DRAFT_DEFINITIONS = CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=True).definitions()
+
+
 # ---------------------------------------------------------------------------
 # Planner-level routing decisions
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("sentence", "calculator_id", "expected_inputs"),
+    [
+        (
+            "Calcola il totale di una fattura con netto 1.000 euro, IVA 22% e sconto 10%.",
+            "business.invoice_total",
+            {"net_amount": "1000", "vat_rate": "0.22", "discount_rate": "0.1"},
+        ),
+        (
+            "Qual è la rata mensile per un prestito di 10.000 euro al 6% annuo per 12 mesi?",
+            "business.loan_payment",
+            {"principal": "10000", "annual_rate": "0.06", "months": 12},
+        ),
+        (
+            "Prestito senza interessi: 12.000 euro da rimborsare in 12 mesi. Calcola la rata.",
+            "business.loan_payment",
+            {"principal": "12000", "annual_rate": "0", "months": 12},
+        ),
+        (
+            "Calcola i compensi DM 55 per una causa da 30.000 euro, fasi studio, "
+            "introduttiva e decisionale, con CPA e IVA.",
+            "legal_it.compensi_dm55",
+            {
+                "valore_causa": "30000",
+                "fasi": ["studio", "introduttiva", "decisionale"],
+                "applica_cpa": True,
+                "applica_iva": True,
+            },
+        ),
+        (
+            "Stesso calcolo DM 55: causa da 30.000 euro, fasi studio, introduttiva "
+            "e decisionale, ma applica un aumento del 20%, con CPA e IVA.",
+            "legal_it.compensi_dm55",
+            {
+                "valore_causa": "30000",
+                "fasi": ["studio", "introduttiva", "decisionale"],
+                "aumento_pct": "20",
+                "applica_cpa": True,
+                "applica_iva": True,
+            },
+        ),
+        (
+            "Calcola il contributo unificato civile per una causa da 15.000 euro in primo grado.",
+            "legal_it.contributo_unificato_civile",
+            {"valore_causa": "15000", "grado": "primo_grado"},
+        ),
+        (
+            "Per una causa da 15.000 euro, calcola il contributo unificato in appello.",
+            "legal_it.contributo_unificato_civile",
+            {"valore_causa": "15000", "grado": "appello"},
+        ),
+        (
+            "Calcola i contributi INPS su 2.000 euro lordi: aliquota lavoratore 9,19% "
+            "e aliquota datore 23,81%.",
+            "legal_it.inps_contributions",
+            {
+                "retribuzione_lorda": "2000",
+                "aliquota_lavoratore": "0.0919",
+                "aliquota_datore_lavoro": "0.2381",
+            },
+        ),
+        (
+            "Stesse aliquote INPS, ma su 3.000 euro lordi: 9,19% lavoratore e 23,81% datore.",
+            "legal_it.inps_contributions",
+            {
+                "retribuzione_lorda": "3000",
+                "aliquota_lavoratore": "0.0919",
+                "aliquota_datore_lavoro": "0.2381",
+            },
+        ),
+        (
+            "Retribuzione mensile globale 2.500 euro e due mesi di preavviso non "
+            "lavorati: calcola l'indennità.",
+            "legal_it.notice_indemnity",
+            {"retribuzione_mensile_globale": "2500", "mesi_preavviso": "2"},
+        ),
+        (
+            "Calcola l'imposta di registro per un affitto annuo di 9.600 euro, durata "
+            "4 anni, prima registrazione, senza cedolare secca.",
+            "legal_it.registration_tax_leases",
+            {
+                "annual_rent": "9600",
+                "years": "4",
+                "first_registration": True,
+                "cedolare_secca": False,
+            },
+        ),
+        (
+            "Rivalutazione e interessi criterio Cassazione 1712: 1.000 euro dal "
+            "15 marzo 2021 al 15 giugno 2021.",
+            "legal_it.rivalutazione_interessi_1712",
+            {
+                "importo": "1000",
+                "data_iniziale": "2021-03-15",
+                "data_finale": "2021-06-15",
+            },
+        ),
+    ],
+)
+def test_pm_live_prompts_bind_their_named_inputs(sentence, calculator_id, expected_inputs):
+    plan = _plan(sentence)
+    assert plan.status == "ready_to_calculate"
+    assert plan.calculator_id == calculator_id
+    assert plan.inputs == expected_inputs
+
+
+def test_pm_live_irpef_prompt_keeps_the_requested_tax_year():
+    plan = _plan("Calcola l'IRPEF lorda su 42.000 euro, ma per l'anno d'imposta 2024.")
+    assert plan.status == "ready_to_calculate"
+    assert plan.calculator_id == "legal_it.irpef"
+    assert plan.inputs == {"taxable_income": "42000"}
+    assert plan.tax_year == 2024
+
 
 def test_complete_irpef_sentence_is_ready_to_calculate():
     plan = _plan("calcolo irpef su 42000 euro nel 2026")
