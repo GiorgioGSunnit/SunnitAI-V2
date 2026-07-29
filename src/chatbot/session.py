@@ -54,7 +54,7 @@ class Message:
             for key in ("citations", "document_id", "document_name", "documents",
                         "generated_document_id", "generated_document_name",
                         "awaiting_clarification", "pending_sections",
-                        "pending_calculation"):
+                        "pending_calculation", "calculation_conversions"):
                 if key in self.metadata:
                     d[key] = self.metadata[key]
         return d
@@ -128,7 +128,7 @@ class ChatSession:
                     for k in ("citations", "document_id", "document_name", "documents",
                               "generated_document_id", "generated_document_name",
                               "awaiting_clarification", "pending_sections",
-                              "pending_calculation")
+                              "pending_calculation", "calculation_conversions")
                     if k in m
                 } or None,
             )
@@ -486,6 +486,7 @@ class ChatBot:
             awaiting_clarification_out = bool(result.get("awaiting_clarification"))
             pending_sections_out = result.get("pending_sections") or []
             pending_calculation_out = result.get("pending_calculation")
+            conversions_out = result.get("calculation_conversions") or []
         except Exception as e:
             _e_str = str(e)
             if "maximum context length" in _e_str or "input_tokens" in _e_str:
@@ -507,6 +508,7 @@ class ChatBot:
             awaiting_clarification_out = False
             pending_sections_out = []
             pending_calculation_out = None
+            conversions_out = []
 
         # Detect topic drift and append a note when the user switches topics mid-session
         _DRIFT_NOTES = {
@@ -568,6 +570,11 @@ class ChatBot:
             "awaiting_clarification": awaiting_clarification_out,
             **({"pending_sections": pending_sections_out} if awaiting_clarification_out else {}),
             **({"pending_calculation": pending_calculation_out} if pending_calculation_out else {}),
+            # The audit trail for any deterministic input conversion (e.g. a
+            # monthly rent annualized). Persisted because the number in the
+            # answer cannot be checked without it; omitted entirely when
+            # nothing was converted, which is the ordinary case.
+            **({"calculation_conversions": conversions_out} if conversions_out else {}),
         })
         self._save_sessions()
 

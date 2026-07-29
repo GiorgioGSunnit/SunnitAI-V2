@@ -591,6 +591,15 @@ _COPY = {
             "l'importo di {amount} che hai indicato per {field} e in {stated}. "
             "Puoi indicarmi il canone in euro?"
         ),
+        "ask_currency_ambiguous": (
+            "Non ho capito in quale valuta e espresso il {field}: questo calcolo "
+            "e in euro e non applico conversioni di valuta. "
+            "Puoi indicarmi il {field} in euro?"
+        ),
+        "ask_normalization_failed": (
+            "Non riesco a interpretare con certezza l'importo del {field}. "
+            "Puoi indicarmi il {field} annuo in euro?"
+        ),
         "month": "mese",
         "year": "anno",
     },
@@ -617,6 +626,15 @@ _COPY = {
             "el importe de {amount} que has indicado para {field} está en {stated}. "
             "¿Puedes indicarme el importe en euros?"
         ),
+        "ask_currency_ambiguous": (
+            "No he entendido en qué divisa está expresado el {field}: este cálculo "
+            "es en euros y no aplico conversiones de divisa. "
+            "¿Puedes indicarme el {field} en euros?"
+        ),
+        "ask_normalization_failed": (
+            "No consigo interpretar con certeza el importe del {field}. "
+            "¿Puedes indicarme el {field} anual en euros?"
+        ),
         "month": "mes",
         "year": "año",
     },
@@ -642,6 +660,15 @@ _COPY = {
             "This calculation is in euro and I do not apply currency conversion: "
             "the {amount} you gave for {field} is in {stated}. "
             "Could you give me the amount in euro?"
+        ),
+        "ask_currency_ambiguous": (
+            "I could not tell which currency the {field} is in: this calculation "
+            "is in euro and I do not apply currency conversion. "
+            "Could you give me the {field} in euro?"
+        ),
+        "ask_normalization_failed": (
+            "I cannot reliably interpret the {field} amount. "
+            "Could you give me the annual {field} in euro?"
         ),
         "month": "month",
         "year": "year",
@@ -819,16 +846,19 @@ def _normalize_frequency_inputs(
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Resolve declared frequency-sensitive inputs, never raising.
 
-    A failure here must not cost the user their calculation, but it must also
-    not let an unconverted value through: on error the field is left exactly as
-    extracted and no conversion is claimed, which is the pre-Phase-2A
-    behaviour rather than a new wrong number.
+    Fails CLOSED. Returning the extracted values on error would hand
+    /calculate the very number this layer exists to intercept — an
+    unconverted monthly rent, which for the lease calculator lands on the legal
+    minimum and so reads as a plausible tax. A crash must cost the user a
+    question, never a wrong figure. Inputs outside this layer's scope are
+    passed through untouched: they were never in doubt.
     """
     try:
         return normalization.normalize_inputs(calculator_id, values, text)
     except Exception:
         logger.exception("Frequency normalization failed for %s", calculator_id)
-        return values, [], []
+        safe, unresolved = normalization.failure_unresolved(calculator_id, values)
+        return safe, [], unresolved
 
 
 def _frequency_question(lang: str, unresolved: List[Dict[str, Any]]) -> str:
@@ -836,15 +866,20 @@ def _frequency_question(lang: str, unresolved: List[Dict[str, Any]]) -> str:
     questions = []
     for entry in unresolved:
         amount = normalization.format_amount(entry.get("raw_value"), lang)
-        if entry.get("reason") == normalization.REASON_CURRENCY_UNSUPPORTED:
+        # The reader gets the field's own word for itself, never `annual_rent`.
+        field = normalization.field_label(entry, lang)
+        reason = entry.get("reason")
+        if reason == normalization.REASON_CURRENCY_UNSUPPORTED:
             questions.append(copy["ask_currency"].format(
-                amount=amount,
-                field=entry.get("field"),
-                stated=entry.get("stated_currency"),
+                amount=amount, field=field, stated=entry.get("stated_currency"),
             ))
+        elif reason == normalization.REASON_CURRENCY_AMBIGUOUS:
+            questions.append(copy["ask_currency_ambiguous"].format(field=field))
+        elif reason == normalization.REASON_NORMALIZATION_FAILED:
+            questions.append(copy["ask_normalization_failed"].format(field=field))
         else:
             questions.append(copy["ask_frequency"].format(
-                amount=amount, field=entry.get("field"),
+                amount=amount, field=field,
             ))
     return " ".join(questions)
 
@@ -866,6 +901,13 @@ def _unresolved_frequency_update(
     continuation path. `pending_frequency` additionally holds the amount the
     user already gave, so a bare "mensile" is enough on its own.
     """
+    # Bounded like every other clarification: a user who cannot pin the amount
+    # down must not be asked forever, and an extractor stuck on an ambiguous
+    # message must not be able to mint pending rounds without end.
+    next_round = current_round + 1
+    if next_round > _MAX_CLARIFICATION_ROUNDS:
+        return _failure_update(lang, round_limit=True)
+
     names = {entry["field"] for entry in unresolved}
     missing = [
         spec for spec in specs or []
@@ -875,7 +917,7 @@ def _unresolved_frequency_update(
     pending: Dict[str, Any] = {
         "calculator_id": calculator_id,
         "inputs_so_far": inputs_so_far,
-        "round": current_round + 1,
+        "round": next_round,
         "missing_inputs": missing,
         "pending_frequency": normalization.pending_frequency_state(unresolved),
     }
@@ -1982,9 +2024,25 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
             # read the turn as a change of subject.
             held = pending.get("pending_frequency") or {}
             if held:
-                resolved, new_conversions = normalization.resolve_pending_frequency(
-                    raw_query, held
-                )
+                (
+                    resolved,
+                    new_conversions,
+                    held_unresolved,
+                ) = normalization.resolve_pending_frequency(raw_query, held)
+                # A frequency arrived but the amount still cannot be used —
+                # its currency is wrong or ambiguous. Ask again rather than
+                # annualize a figure denominated in something this calculator
+                # does not accept.
+                if held_unresolved:
+                    return _unresolved_frequency_update(
+                        lang,
+                        calculator_id=calculator_id,
+                        inputs_so_far=inputs_so_far,
+                        unresolved=held_unresolved,
+                        conversions=conversions,
+                        specs=specs,
+                        current_round=current_round,
+                    )
                 if resolved:
                     inputs_so_far.update(resolved)
                     conversions += new_conversions
