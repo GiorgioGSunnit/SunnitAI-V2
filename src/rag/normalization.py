@@ -136,40 +136,62 @@ def _decimal(value: Any) -> Optional[Decimal]:
 _NUMBER_TOKEN = re.compile(r"(?<![\d.,])\d+(?:[.,]\d+)*(?![\d.,]*\d)")
 
 
-def _token_values(token: str) -> set:
-    """Every plausible reading of one localized numeric token, as Decimals.
+# Which separator means what, per language. The session language is resolved
+# well before normalization runs, so the convention is known rather than
+# guessed — and when it is known, the token's punctuation must never be used to
+# pick a different one.
+_LOCALE_SEPARATORS = {
+    "it": (".", ","),
+    "es": (".", ","),
+    "en": (",", "."),
+}
+_ALL_CONVENTIONS = frozenset(_LOCALE_SEPARATORS.values())
 
-    `1.200` is 1200 to an Italian writer and 1.2 to an English one, and nothing
-    in the token says which. Corroboration only asks "could the user have
-    written this number", so both readings are produced and any exact match
-    counts. What this must NOT do is treat readings as interchangeable by
-    integer part: `400,50` yields {400.50} alone, so it can never vouch for an
-    extracted 400 or 400.99.
+
+def _convention_value(token: str, group: str, decimal_sep: str) -> Optional[Decimal]:
+    """Read `token` strictly under one convention, or None if malformed for it.
+
+    Strict on purpose: `1,200.50` is not a well-formed Italian number, so in an
+    Italian session it reads as nothing at all rather than being quietly
+    reinterpreted under whichever convention its punctuation happens to suit.
     """
-    values = set()
-    has_dot, has_comma = "." in token, "," in token
-
-    if has_dot and has_comma:
-        # Both present: the rightmost separator is the decimal one.
-        split_at = max(token.rfind("."), token.rfind(","))
-        whole = re.sub(r"[.,]", "", token[:split_at])
-        values.add(_decimal(f"{whole}.{token[split_at + 1:]}"))
-    elif has_dot or has_comma:
-        parts = token.split("." if has_dot else ",")
-        # Reading A: thousands grouping — every group after the first is a
-        # strict triple, and the first is at most a triple.
-        if len(parts[0]) <= 3 and all(len(part) == 3 for part in parts[1:]):
-            values.add(_decimal("".join(parts)))
-        # Reading B: a single separator as the decimal point.
-        if len(parts) == 2:
-            values.add(_decimal(f"{parts[0]}.{parts[1]}"))
-    else:
-        values.add(_decimal(token))
-
-    return {value for value in values if value is not None}
+    group_re, decimal_re = re.escape(group), re.escape(decimal_sep)
+    grouped = re.fullmatch(
+        rf"\d{{1,3}}(?:{group_re}\d{{3}})+(?:{decimal_re}\d+)?", token
+    )
+    plain = re.fullmatch(rf"\d+(?:{decimal_re}\d+)?", token)
+    if not (grouped or plain):
+        return None
+    return _decimal(token.replace(group, "").replace(decimal_sep, "."))
 
 
-def _cue_windows(text: str, raw_value: Any) -> List[str]:
+def _token_values(token: str, lang: Optional[str] = None) -> set:
+    """How `token` reads, as Decimals, under the session's language.
+
+    A known language gives exactly one reading (or none, if the token is
+    malformed for it). With no language, only tokens that every convention
+    reads identically are accepted: `400,50` is 400.50 either way (",50" is too
+    short to be a thousands group), but `1.200` is 1200 or 1.2 depending on who
+    wrote it, and accepting both would let an extracted 1.2 be vouched for by
+    text that plainly said 1200.
+
+    What this must never do is treat readings as interchangeable by integer
+    part: `400,50` yields {400.50} alone, so it cannot vouch for 400 or 400.99.
+    """
+    conventions = _LOCALE_SEPARATORS.get(str(lang or "").strip().lower()[:2])
+    if conventions is not None:
+        value = _convention_value(token, *conventions)
+        return {value} if value is not None else set()
+
+    readings = {
+        _convention_value(token, group, decimal_sep)
+        for group, decimal_sep in _ALL_CONVENTIONS
+    }
+    readings.discard(None)
+    return readings if len(readings) == 1 else set()
+
+
+def _cue_windows(text: str, raw_value: Any, lang: Optional[str] = None) -> List[str]:
     """Every stretch of `text` immediately surrounding the given amount.
 
     Returning [] means the amount is not in the text at all — the signal that
@@ -182,7 +204,7 @@ def _cue_windows(text: str, raw_value: Any) -> List[str]:
     return [
         text[max(0, match.start() - _WINDOW_BEFORE):match.end() + _WINDOW_AFTER]
         for match in _NUMBER_TOKEN.finditer(text or "")
-        if amount in _token_values(match.group(0))
+        if amount in _token_values(match.group(0), lang)
     ]
 
 
@@ -230,9 +252,11 @@ def _window_currency(windows: List[str]) -> Optional[str]:
     return found.pop()
 
 
-def read_frequency(text: str, raw_value: Any) -> Tuple[str, Optional[str]]:
+def read_frequency(
+    text: str, raw_value: Any, lang: Optional[str] = None
+) -> Tuple[str, Optional[str]]:
     """The frequency and currency stated next to `raw_value` in `text`."""
-    windows = _cue_windows(text or "", raw_value)
+    windows = _cue_windows(text or "", raw_value, lang)
     if not windows:
         return FREQUENCY_UNKNOWN, None
     frequency = _sole_signal(windows, _detect_frequency) or FREQUENCY_UNKNOWN
@@ -268,13 +292,17 @@ def _plain(value: Decimal) -> str:
 
 
 def normalize_inputs(
-    calculator_id: Optional[str], values: Dict[str, Any], text: str
+    calculator_id: Optional[str],
+    values: Dict[str, Any],
+    text: str,
+    lang: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Resolve declared frequency-sensitive inputs in `values`.
 
-    Returns (values, conversions, unresolved). An unresolved field is REMOVED
-    from the returned values: leaving it in is precisely the silent-400 bug, so
-    the caller must ask about it instead of calculating with it.
+    `lang` is the resolved session language; it decides how a grouped number in
+    `text` reads. Returns (values, conversions, unresolved). An unresolved field
+    is REMOVED from the returned values: leaving it in is precisely the
+    silent-400 bug, so the caller must ask about it instead of calculating.
     """
     fields = frequency_sensitive_fields(calculator_id)
     if not fields or not isinstance(values, dict):
@@ -291,7 +319,7 @@ def normalize_inputs(
         if amount is None:
             continue
 
-        frequency, currency = read_frequency(text, resolved[field])
+        frequency, currency = read_frequency(text, resolved[field], lang)
         expected_currency = spec.get("currency", "EUR")
         labels = spec.get("labels") or {}
 

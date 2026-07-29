@@ -230,22 +230,24 @@ def test_grouped_decimal_amount_converts_exactly(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "text,value,corroborated",
+    "lang,text,value,corroborated",
     [
-        ("canone di 400,50 euro al mese", "400.50", True),
-        ("canone di 400,50 euro al mese", "400.99", False),
+        ("it", "canone di 400,50 euro al mese", "400.50", True),
+        ("it", "canone di 400,50 euro al mese", "400.99", False),
         # An integer prefix of a decimal the user wrote is a DIFFERENT number.
-        ("canone di 400,50 euro al mese", "400", False),
-        ("canone di 1.200,50 euro al mese", "1200.50", True),
-        ("canone di 1.200,50 euro al mese", "1200", False),
-        ("canone di 1.200 euro al mese", "1200", True),
-        ("rent of 1,200.50 per month", "1200.50", True),
-        ("canone di 400 euro al mese", "400", True),
-        ("canone di 4.800 euro all'anno", "4800", True),
+        ("it", "canone di 400,50 euro al mese", "400", False),
+        ("it", "canone di 1.200,50 euro al mese", "1200.50", True),
+        ("it", "canone di 1.200,50 euro al mese", "1200", False),
+        # Grouped thousands read as thousands in an Italian session; see
+        # test_frequency_locale.py for what these do without a language.
+        ("it", "canone di 1.200 euro al mese", "1200", True),
+        ("it", "canone di 4.800 euro all'anno", "4800", True),
+        ("en", "rent of 1,200.50 per month", "1200.50", True),
+        ("it", "canone di 400 euro al mese", "400", True),
     ],
 )
-def test_exact_amount_corroboration(text, value, corroborated):
-    frequency, _ = normalization.read_frequency(text, value)
+def test_exact_amount_corroboration(lang, text, value, corroborated):
+    frequency, _ = normalization.read_frequency(text, value, lang)
     assert (frequency != normalization.FREQUENCY_UNKNOWN) is corroborated
 
 

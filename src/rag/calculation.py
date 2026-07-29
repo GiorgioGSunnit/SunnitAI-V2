@@ -842,7 +842,7 @@ def _clarification_question(lang: str, specs: List[Dict[str, Any]]) -> str:
 
 
 def _normalize_frequency_inputs(
-    calculator_id: str, values: Dict[str, Any], text: str
+    calculator_id: str, values: Dict[str, Any], text: str, lang: str
 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Resolve declared frequency-sensitive inputs, never raising.
 
@@ -854,7 +854,7 @@ def _normalize_frequency_inputs(
     passed through untouched: they were never in doubt.
     """
     try:
-        return normalization.normalize_inputs(calculator_id, values, text)
+        return normalization.normalize_inputs(calculator_id, values, text, lang)
     except Exception:
         logger.exception("Frequency normalization failed for %s", calculator_id)
         safe, unresolved = normalization.failure_unresolved(calculator_id, values)
@@ -1950,7 +1950,7 @@ def _start_calculation(
     # this turns it into what the calculator means. Runs on the regex tier too,
     # where an unconverted monthly rent would otherwise be the likeliest input.
     inputs_so_far, conversions, unresolved = _normalize_frequency_inputs(
-        calculator_id, inputs_so_far, raw_query
+        calculator_id, inputs_so_far, raw_query, lang
     )
     if unresolved:
         return _unresolved_frequency_update(
@@ -2118,7 +2118,7 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
             # rent restated as "400 euro al mese" three turns in must convert
             # exactly as it would have on turn one.
             extracted, new_conversions, unresolved = _normalize_frequency_inputs(
-                calculator_id, extracted, raw_query
+                calculator_id, extracted, raw_query, lang
             )
             if unresolved:
                 return _unresolved_frequency_update(
