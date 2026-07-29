@@ -33,7 +33,7 @@ DRAFT_ID = "legal_it.omicidio_pena_draft"
 RELEASED_ID = "business.invoice_total"
 
 
-def _engine(drafts_enabled: bool) -> CalculationEngine:
+def _engine(drafts_enabled: bool | None) -> CalculationEngine:
     return CalculationEngine(
         CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=drafts_enabled),
         ParameterStore(PARAMETERS_DIR),
@@ -100,13 +100,16 @@ def test_report_refuses_withheld_record(seeded_client):
 
 
 def test_replay_does_not_return_the_stored_withheld_result(seeded_client):
-    body = seeded_client.post("/calculations/draft-req/replay").json()
+    response = seeded_client.post("/calculations/draft-req/replay")
+    assert response.status_code == 404
+    body = response.json()
     assert "pena_minima" not in str(body), f"replay disclosed stored draft result: {body}"
 
 
 def test_override_restores_access_to_stored_records(tmp_path, monkeypatch):
     store = SqliteCalculationStore(tmp_path / "calculations.db")
-    engine = _engine(drafts_enabled=True)
+    monkeypatch.setenv("SUNNIT_ENABLE_DRAFT_PACKS", "1")
+    engine = _engine(drafts_enabled=None)
     result = engine.calculate(CalculationRequest(
         request_id="draft-req", calculator_id=DRAFT_ID,
         inputs={"aggravanti_comuni": 0, "attenuanti_comuni": 0},
@@ -122,6 +125,9 @@ def test_override_restores_access_to_stored_records(tmp_path, monkeypatch):
     assert DRAFT_ID in {e["calculator_id"] for e in client.get("/calculations").json()}
     assert client.get("/calculations/draft-req").status_code == 200
     assert client.get("/calculations/draft-req/report").status_code == 200
+    replay = client.post("/calculations/draft-req/replay")
+    assert replay.status_code == 200
+    assert replay.json()["stored_result"]["result"]["pena_minima"]
 
 
 # ---------------------------------------------------------------------------

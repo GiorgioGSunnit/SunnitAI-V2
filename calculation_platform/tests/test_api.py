@@ -189,7 +189,13 @@ def test_report_endpoint_404_for_unknown_calculation():
     assert response.status_code == 404
 
 
-def test_report_endpoint_renders_when_calculator_definition_is_missing(isolated_calculation_store):
+def test_report_endpoint_renders_when_released_calculator_definition_is_missing(
+    isolated_calculation_store, monkeypatch
+):
+    from app.api import routes
+
+    released_ids = routes._engine.registry._released_ids | {"legacy.missing"}
+    monkeypatch.setattr(routes._engine.registry, "_released_ids", released_ids)
     request = CalculationRequest(
         request_id="missing-definition-report",
         calculator_id="legacy.missing",

@@ -14,6 +14,9 @@ class SingleDefinitionRegistry:
     def get(self, calculator_id):
         return self.definition
 
+    def is_released(self, calculator_id):
+        return True
+
 
 def _write_parameter_file(tmp_path, last_verified_at=None):
     verified_line = f"    last_verified_at: {last_verified_at}\n" if last_verified_at else ""

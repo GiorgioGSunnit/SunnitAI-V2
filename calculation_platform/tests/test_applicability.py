@@ -49,7 +49,7 @@ def _write_pack(tmp_path: Path, *, applicable_from=None, applicable_to=None) -> 
 
 def _engine(pack_dir: Path) -> CalculationEngine:
     return CalculationEngine(
-        CalculatorRegistry(pack_dir),
+        CalculatorRegistry(pack_dir, released_ids=frozenset({"test.applicability"})),
         ParameterStore(pack_dir / "parameters"),
     )
 

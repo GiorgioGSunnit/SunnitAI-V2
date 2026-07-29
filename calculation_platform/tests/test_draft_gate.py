@@ -1,9 +1,9 @@
-"""Draft packs must be unreachable unless SUNNIT_ENABLE_DRAFT_PACKS is set.
+"""Unreleased packs must be unreachable unless SUNNIT_ENABLE_DRAFT_PACKS is set.
 
-A "-draft" version means the calculator is a demonstrative mechanism that
-has not been legally validated. The post-computation `draft_not_validated`
-warning documents that; it does not prevent a user from being handed a
-criminal-sentencing range. These tests pin the gate itself, at every entry
+The release manifest, not a version spelling, declares which calculators
+have been legally validated. The post-computation `draft_not_validated`
+warning documents an override; it does not prevent a user from being handed
+a criminal-sentencing range. These tests pin the gate itself, at every entry
 point a user can reach: natural-language matching, the planner, discovery
 listings, and a direct /calculate by calculator_id.
 """
@@ -61,7 +61,8 @@ def test_natural_language_does_not_route_to_a_draft():
 def test_direct_lookup_by_id_is_refused(calculator_id):
     with pytest.raises(CalculatorNotFoundError) as excinfo:
         _registry(drafts_enabled=False).get(calculator_id)
-    assert excinfo.value.details.get("draft") is True
+    assert excinfo.value.details.get("released") is False
+    assert excinfo.value.details.get("enable_with") == "SUNNIT_ENABLE_DRAFT_PACKS"
 
 
 def test_calculate_returns_a_structured_error_not_a_result():
