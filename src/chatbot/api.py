@@ -452,8 +452,20 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
 
 
 def _run_comparison_sync(message: str, session_lang: str, cached_sections=None) -> dict:
-    """Run a comparison query through the RAG graph and return answer + citations."""
-    rag_state = rag_run(message, session_language=session_lang)
+    """Run a document comparison through the RAG graph, returning answer + citations.
+
+    Retrieval-only, like the generation lookup above, and for a sharper reason:
+    two calculators ARE comparators ("confronto polizze", "confronto gas e
+    luce") and share this flow's opening verb, so the gate auto-routes a
+    request to compare two uploaded files into one of them. Because the
+    comparison's answer is returned as the draft, the caller would hand the
+    user that calculator's candidate-collection prompt instead of a comparison,
+    with no citations. Comparing two offers numerically is a calculation;
+    comparing two documents' text is not, and the verb cannot tell them apart.
+    """
+    rag_state = rag_run(
+        message, session_language=session_lang, skip_calculation=True
+    )
     return {
         "answer": rag_state.get("answer", ""),
         "citations": rag_state.get("citations", []),

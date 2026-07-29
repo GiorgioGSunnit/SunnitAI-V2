@@ -5,8 +5,8 @@ almost all of their vocabulary: "contratto di locazione ... 400 euro al mese"
 is a lease to be WRITTEN, "imposta di registro ... 400 euro al mese" is a tax
 to be COMPUTED. The lexical calculator matcher scores topic overlap only, so it
 cannot tell them apart (see the tripwire in
-calculation_platform/tests/test_matcher_corpus.py). Two separate mechanisms
-keep that blindness away from the user:
+calculation_platform/tests/test_matcher_corpus.py). Three mechanisms keep that
+blindness away from the user:
 
   1. /api/chat classifies generation intent BEFORE the RAG graph runs, so a
      drafting request never reaches the calculation gate on the chat path.
@@ -14,13 +14,20 @@ keep that blindness away from the user:
      draft will cite. That internal call runs with `skip_calculation=True`,
      because the gate would otherwise intercept it and the draft would come
      back with no sources and no citations.
+  3. Document comparison (/api/generate) calls the graph the same way, and for
+     a sharper reason: two calculators are themselves comparators and share the
+     flow's opening verb.
 
-These tests pin both, using the real routing functions rather than re-deriving
-their logic.
+Layers, from outermost in:
+
+  section 0  the real FastAPI /api/chat route, with only external services
+             stubbed — the one place the whole request is exercised;
+  sections 1-2  the routing PREDICATE alone, in isolation from the endpoint;
+  sections 3-3b  the two internal graph calls;
+  section 4  the graph's entry router.
 """
 
 import os
-import sys
 from types import SimpleNamespace
 
 import pytest
@@ -90,7 +97,161 @@ def _enters_generation_branch(api, message: str) -> bool:
     return top_intent == "generate" or api.is_generation_request(message)
 
 
+def _retrieval_rows():
+    """Neo4j rows as the graph really returns them.
+
+    Three shapes in one result set, because the two consumers read different
+    ones: `_raw_result_to_sections` (sources) wants a node with `properties`,
+    and `_extract_citations` wants the `d`/`s` document and section rows.
+    """
+    return [
+        {
+            "n": {
+                "labels": ["DocumentSection"],
+                "properties": {
+                    "heading": "Art. 1571 c.c.",
+                    "text_it": "Nozione della locazione.",
+                    "document_title": "Codice Civile",
+                },
+            }
+        },
+        {"d": {"id": "LEGAL_DOC::codice-civile", "name": "Codice Civile"}},
+        {
+            "s": {
+                "id": "DOCUMENT_SECTION::codice-civile::art-1571",
+                "name": "art-1571",
+                "title": "Art. 1571",
+                "text": "La locazione e il contratto col quale una parte si obbliga.",
+            }
+        },
+    ]
+
+
+# --- 0. Through the real /api/chat endpoint --------------------------------
+# The tests in section 1 evaluate the routing PREDICATE in isolation; they say
+# nothing about the endpoint around it. This one drives the actual FastAPI
+# route: real request validation, real branch, real response model. Only the
+# genuinely external services are replaced (Neo4j + the LLM behind rag_run,
+# the LLM behind document generation, the session file, the SQL session).
+
+
+@pytest.fixture
+def chat_client(chat_api, monkeypatch, tmp_path):
+    """A TestClient over the real app, with external services stubbed out.
+
+    Anonymous on purpose: `current_user` being None skips the document-aware
+    branch, which is the part that needs a populated database. The generation
+    branch under test sits after it and does not.
+    """
+    from fastapi.testclient import TestClient
+    from src.db.base import get_db
+
+    # Sessions must not touch the real /opt/chatbot data file.
+    monkeypatch.setattr(chat_api.chatbot, "_sessions", {})
+    monkeypatch.setattr(
+        chat_api.chatbot, "_sessions_file", str(tmp_path / "sessions.json")
+    )
+
+    chat_api.app.dependency_overrides[get_db] = lambda: None
+    try:
+        yield TestClient(chat_api.app)
+    finally:
+        chat_api.app.dependency_overrides.pop(get_db, None)
+
+
+def test_chat_endpoint_routes_a_calculator_flavoured_draft_to_generation(
+    chat_api, chat_client, monkeypatch
+):
+    """POST /api/chat with a drafting request full of calculator vocabulary.
+
+    "contratto di locazione" + "400 euro al mese" scores 3 against
+    legal_it.registration_tax_leases — auto-route strength. The reply must be
+    the generated document, and no calculator may be consulted anywhere in the
+    request.
+    """
+    captured = {}
+
+    def fake_rag_run(query, **kwargs):
+        captured["rag_kwargs"] = kwargs
+        return {"raw_result": _retrieval_rows()}
+
+    monkeypatch.setattr(chat_api, "rag_run", fake_rag_run)
+    monkeypatch.setattr(
+        chat_api,
+        "generate_document",
+        lambda *args, **kwargs: {
+            "draft": "CONTRATTO DI LOCAZIONE\n\nTra le parti...",
+            "case_details": {"canone": "400 euro al mese"},
+            "doc_type": "rental_standard",
+        },
+    )
+    # The empty local template catalog would otherwise resolve to "unknown" and
+    # short-circuit into the clarification reply, never reaching generation.
+    monkeypatch.setattr(
+        chat_api, "classify_system_template", lambda *args, **kwargs: "rental_standard"
+    )
+    # Nothing in a generation turn may reach the calculation platform.
+    monkeypatch.setattr(
+        calculation.requests,
+        "post",
+        lambda url, **kwargs: pytest.fail(f"generation turn called the platform: {url}"),
+    )
+
+    response = chat_client.post("/api/chat", json={"message": IT_LEASE_DRAFT})
+
+    assert response.status_code == 200
+    body = response.json()
+    # Chose generation...
+    assert body["status_messages"] == ["generation_mode"]
+    assert body["draft"].startswith("CONTRATTO DI LOCAZIONE")
+    # ...and returned a document, not a computed figure.
+    assert "imposta di registro" not in body["answer"].lower()
+    assert "768" not in body["answer"]
+    assert "calculation_result" not in body
+    # The supporting retrieval inside that branch ran in retrieval-only mode.
+    assert captured["rag_kwargs"]["skip_calculation"] is True
+
+
+def test_chat_endpoint_keeps_an_ordinary_question_out_of_the_generation_branch(
+    chat_api, chat_client, monkeypatch
+):
+    """The counterpart: a non-drafting message must reach the normal chat path.
+
+    Guards against a fix that routes everything to generation and passes the
+    test above for the wrong reason.
+    """
+    monkeypatch.setattr(
+        chat_api,
+        "generate_document",
+        lambda *args, **kwargs: pytest.fail("a question must not be drafted"),
+    )
+    monkeypatch.setattr(
+        chat_api.chatbot,
+        "chat",
+        lambda session_id, message, **kwargs: {
+            "session_id": session_id,
+            "answer": "L'imposta di registro sulle locazioni e il 2%.",
+            "original_query": message,
+            "resolved_query": message,
+            "session_language": "it",
+            "status_messages": [],
+        },
+    )
+
+    response = chat_client.post(
+        "/api/chat", json={"message": "Come funziona l'imposta di registro?"}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status_messages"] == []
+    assert body["draft"] == ""
+    assert body["answer"].startswith("L'imposta di registro")
+
+
 # --- 1. Document requests reach the generation branch ----------------------
+# Predicate-level: these exercise the routing decision itself, not the endpoint
+# around it. The endpoint is covered in section 0.
 
 @pytest.mark.parametrize("message", DOCUMENT_REQUESTS)
 def test_document_requests_enter_the_generation_branch(chat_api, message):
@@ -154,36 +315,6 @@ def test_retrieval_only_gate_never_consults_the_platform(monkeypatch):
     assert calculation.calculation_gate(
         {"query": IT_LEASE_DRAFT, "skip_calculation": True}
     ) == {"calc_route": "normal"}
-
-
-def _retrieval_rows():
-    """Neo4j rows as the graph really returns them.
-
-    Three shapes in one result set, because the two consumers read different
-    ones: `_raw_result_to_sections` (sources) wants a node with `properties`,
-    and `_extract_citations` wants the `d`/`s` document and section rows.
-    """
-    return [
-        {
-            "n": {
-                "labels": ["DocumentSection"],
-                "properties": {
-                    "heading": "Art. 1571 c.c.",
-                    "text_it": "Nozione della locazione.",
-                    "document_title": "Codice Civile",
-                },
-            }
-        },
-        {"d": {"id": "LEGAL_DOC::codice-civile", "name": "Codice Civile"}},
-        {
-            "s": {
-                "id": "DOCUMENT_SECTION::codice-civile::art-1571",
-                "name": "art-1571",
-                "title": "Art. 1571",
-                "text": "La locazione e il contratto col quale una parte si obbliga.",
-            }
-        },
-    ]
 
 
 @pytest.mark.parametrize("message", DOCUMENT_REQUESTS)
@@ -304,6 +435,88 @@ def test_cached_sections_skip_retrieval_entirely(chat_api, monkeypatch):
     )
 
     assert result["sources"] == ["Codice Civile"]
+
+
+# --- 3b. Document comparison is not a calculator comparison ----------------
+# /api/generate routes a message containing a comparison verb to
+# _run_comparison_sync, which asks the RAG graph to compare two UPLOADED
+# DOCUMENTS and returns its answer as the draft, with its citations as the
+# sources. Two of the platform's calculators are themselves comparators
+# ("confronto polizze", "confronto gas e luce") and their vocabulary starts
+# with the same verb, so a document comparison can auto-route into a
+# calculator: "Confronta 'offerta-gas-enel.pdf' e 'offerta-gas-eni.pdf'"
+# scores 3 against business.confronto_gas_luce. That calculator takes an
+# object_list, so the intercepted turn returns its candidate-collection prompt
+# ("Descrivimi la prima offerta...") as the comparison draft, with no
+# citations at all.
+#
+# Comparing two offers numerically IS a calculation; comparing two documents'
+# text is not. The verb cannot separate them, so the endpoint's own routing
+# decides, and this call has to hold it.
+DOCUMENT_COMPARISON = "Confronta 'offerta-gas-enel.pdf' e 'offerta-gas-eni.pdf'"
+
+
+def test_document_comparison_runs_in_retrieval_only_mode(chat_api, monkeypatch):
+    captured = {}
+
+    def fake_rag_run(query, **kwargs):
+        captured["query"] = query
+        captured.update(kwargs)
+        return {
+            "answer": "Le due offerte differiscono nel corrispettivo energia.",
+            "citations": [{"document_name": "offerta-gas-enel.pdf", "sections": []}],
+            "is_comparison": True,
+        }
+
+    monkeypatch.setattr(chat_api, "rag_run", fake_rag_run)
+
+    result = chat_api._run_comparison_sync(DOCUMENT_COMPARISON, "it")
+
+    assert captured["skip_calculation"] is True
+    # The comparison flow still runs and still produces its own answer and
+    # citations — the bypass must not cost the feature anything.
+    assert result["answer"].startswith("Le due offerte differiscono")
+    assert result["citations"] == [
+        {"document_name": "offerta-gas-enel.pdf", "sections": []}
+    ]
+    assert result["is_comparison"] is True
+
+
+def test_document_comparison_gate_never_consults_the_platform(monkeypatch):
+    def fake_post(url, **kwargs):  # pragma: no cover - must never run
+        pytest.fail(f"retrieval-only comparison called the platform: {url}")
+
+    monkeypatch.setattr(calculation.requests, "post", fake_post)
+
+    assert calculation.calculation_gate(
+        {"query": DOCUMENT_COMPARISON, "skip_calculation": True}
+    ) == {"calc_route": "normal"}
+
+
+def test_unguarded_comparison_would_be_intercepted(monkeypatch):
+    """Why the flag is needed, not just that it is set.
+
+    With the real /match reply this message reaches the gate's auto-route
+    threshold, so an unguarded comparison turn is handed to a comparator
+    calculator and never reaches comparison_retrieval.
+    """
+    candidate = {
+        "calculator_id": "business.confronto_gas_luce",
+        "score": 3,
+        "required_inputs": [{"name": "offerte", "type": "object_list"}],
+    }
+    monkeypatch.setattr(
+        calculation.requests,
+        "post",
+        lambda url, **kwargs: _Response(
+            {"status": "matched", "candidates": [candidate]}
+        ),
+    )
+
+    assert calculation.calculation_gate({"query": DOCUMENT_COMPARISON}) == {
+        "calc_route": "calculate",
+        "calculation_match": candidate,
+    }
 
 
 # --- 4. Entry routing: skip_calculation is narrow -------------------------
