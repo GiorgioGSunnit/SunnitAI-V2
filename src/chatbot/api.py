@@ -424,11 +424,26 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
         sources = sorted({s["document_title"] for s in cached_sections if s.get("document_title")})
     else:
         try:
-            rag_state = rag_run(message, session_language=session_lang)
+            # Retrieval only: this call exists to collect the sources the draft
+            # will cite, and the intent was already settled upstream. Left
+            # unguarded, the calculation gate matches a drafting request on its
+            # domain vocabulary alone ("contratto di locazione", "fattura ...
+            # IVA") and answers with a tax figure instead of retrieving, so the
+            # document would be generated with no sources and no citations.
+            rag_state = rag_run(
+                message, session_language=session_lang, skip_calculation=True
+            )
             raw_result = rag_state.get("raw_result") or []
             retrieved_sections = _raw_result_to_sections(raw_result)
             sources = sorted({s["document_title"] for s in retrieved_sections if s.get("document_title")})
-            citations = _extract_citations(rag_state)
+            # _extract_citations takes the Neo4j result ROWS, not the graph
+            # state. Handing it the state made it iterate the state's keys and
+            # raise on the first one, so this whole block threw on every
+            # generation that actually retrieved something: `sources` was
+            # computed and then discarded by the handler below, and the draft
+            # was written with citations=None. Sources were never lost to the
+            # calculation gate alone — they were lost every time.
+            citations = _extract_citations(raw_result)
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
             sources = []

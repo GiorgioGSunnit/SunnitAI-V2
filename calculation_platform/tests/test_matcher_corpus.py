@@ -263,3 +263,46 @@ def test_elided_article_does_not_become_vocabulary(definitions):
     )
     for candidate in response.candidates:
         assert "dell" not in candidate.matched_terms
+
+
+# --- Document-drafting requests: a limitation, not an invariant -------------
+# A drafting request and a calculation request about the same subject share
+# their whole vocabulary. "Redigi un contratto di locazione con un canone di
+# 400 euro al mese" is a lease to be WRITTEN; the matcher sees the phrase
+# "contratto di locazione" (+3) and reports the registration-tax calculator at
+# AUTO strength, exactly as it does for "calcola l'imposta di registro ...".
+# The verb carries the entire distinction and the matcher cannot see it: it
+# scores topic overlap, and no threshold on topic overlap can separate the two.
+#
+# So these are NOT in the never-AUTO invariant above — they would fail. This
+# records the blind spot and names the compensating controls, both outside the
+# matcher:
+#   * /api/chat classifies generation intent before the RAG graph runs, so a
+#     drafting request never reaches the calculation gate on the chat path;
+#   * the sources lookup inside the generation branch runs with
+#     skip_calculation=True (tests/test_document_intent_routing.py).
+#
+# When a real intent classifier lands, move these into DOCTRINE_QUESTIONS and
+# delete this test. Until then, a change here is a signal, not a pass/fail:
+# if one of these stops matching, the matcher got better and the expectation
+# below is what needs updating.
+DOCUMENT_REQUESTS = [
+    ("Redigi un contratto di locazione con un canone di 400 euro al mese.",
+     "legal_it.registration_tax_leases"),
+    ("Preparami una fattura con importo netto di 1000 euro e IVA al 22%.",
+     "business.invoice_total"),
+]
+
+
+@pytest.mark.parametrize("query,shadowing_calculator", DOCUMENT_REQUESTS)
+def test_document_requests_are_still_lexically_indistinguishable(
+    query, shadowing_calculator, definitions
+):
+    response = match_query(query, definitions)
+    assert _band(response) == "AUTO" and (
+        response.candidates[0].calculator_id == shadowing_calculator
+    ), (
+        f"{query!r} no longer shadows {shadowing_calculator}. If the matcher "
+        "now distinguishes drafting from calculating, move this case into "
+        "DOCTRINE_QUESTIONS and drop this test."
+    )

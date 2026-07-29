@@ -66,6 +66,13 @@ class AgentState(TypedDict, total=False):
     calculation_choices: Optional[List[Dict[str, Any]]]
     calc_route: Optional[str]
     calculation_result: Optional[Dict[str, Any]]
+    # Retrieval-only mode. Set by callers that invoke this graph for its
+    # SOURCES rather than for an answer — document generation asks RAG for the
+    # material to cite. Those callers have already decided what the user
+    # wants, so a calculator seizing the turn would replace the retrieval they
+    # came for with a number nobody asked for, and the draft would lose its
+    # citations. Never set from a user-facing chat turn.
+    skip_calculation: Optional[bool]
     is_clarification_rerank: bool
     turn_count: int
     query: str
@@ -131,6 +138,34 @@ atexit.register(driver.close)
 
 
 # ---------------------------------------------------------------------------
+# Entry router
+# ---------------------------------------------------------------------------
+
+def route_entry(state: Dict[str, Any]) -> str:
+    """Pick the graph's first node for this turn.
+
+    `skip_calculation` suppresses exactly the two calculation entry points —
+    resuming a pending calculation and consulting the gate — and nothing else.
+    It is deliberately narrow: a retrieval-only caller still wants the ordinary
+    clarification rerank, so that branch is left alone. Suppressing the pending
+    resume matters as much as suppressing the gate: a generation message fed to
+    an open calculation would be read as the answer to whichever input that
+    calculation was still waiting for.
+    """
+    try:
+        skip_calculation = bool(state.get("skip_calculation"))
+        if state.get("pending_calculation") and not skip_calculation:
+            return "calculation_node"
+        if state.get("awaiting_clarification"):
+            return "rerank_from_clarification"
+        if skip_calculation:
+            return "decompose_query"
+    except Exception:
+        logger.exception("Graph entry router failed; using the fail-safe gate")
+    return "calculation_gate"
+
+
+# ---------------------------------------------------------------------------
 # Graph builder
 # ---------------------------------------------------------------------------
 
@@ -178,22 +213,13 @@ def build_graph(compile_graph: bool = True):
     graph.add_node("calculation_node", calculation_node)
 
     # Edges
-    def route_entry(state):
-        try:
-            if state.get("pending_calculation"):
-                return "calculation_node"
-            if state.get("awaiting_clarification"):
-                return "rerank_from_clarification"
-        except Exception:
-            logger.exception("Graph entry router failed; using the fail-safe gate")
-        return "calculation_gate"
-
     graph.set_conditional_entry_point(
         route_entry,
         {
             "calculation_node": "calculation_node",
             "rerank_from_clarification": "rerank_from_clarification",
             "calculation_gate": "calculation_gate",
+            "decompose_query": "decompose_query",
         },
     )
     graph.add_conditional_edges(
@@ -299,8 +325,14 @@ def run(query: str, session_language: str = "it",
         awaiting_clarification: bool = False,
         pending_sections: Optional[List[Dict[str, Any]]] = None,
         pending_calculation: Optional[Dict[str, Any]] = None,
-        raw_query: Optional[str] = None) -> Dict[str, Any]:
-    """Run a single query through the agent graph."""
+        raw_query: Optional[str] = None,
+        skip_calculation: bool = False) -> Dict[str, Any]:
+    """Run a single query through the agent graph.
+
+    Set `skip_calculation` when calling this graph for retrieval only — for
+    supporting sources behind a document draft, say — so the calculation gate
+    cannot intercept the turn and return a number in place of the sources.
+    """
     compiled = _get_compiled_graph()
     initial_state: AgentState = {
         "query": query,
@@ -331,6 +363,7 @@ def run(query: str, session_language: str = "it",
         "awaiting_clarification": awaiting_clarification,
         "pending_sections": pending_sections or [],
         "pending_calculation": pending_calculation,
+        "skip_calculation": skip_calculation,
     }
     return compiled.invoke(initial_state)
 

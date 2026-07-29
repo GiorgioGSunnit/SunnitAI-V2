@@ -154,8 +154,17 @@ def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
     (two calculators scraping one incidental token each) stays on the
     normal route — prompting there would turn every passing mention of a
     legal topic into a menu.
+
+    A retrieval-only turn (`skip_calculation`) never reaches the platform at
+    all. The entry router already bypasses this node, so this check is the
+    second line of that defence: it keeps the guarantee inside the node that
+    would otherwise do the intercepting, rather than resting on the wiring
+    alone.
     """
     try:
+        if state.get("skip_calculation"):
+            logger.info("calc_gate: route=normal reason=skip_calculation")
+            return {"calc_route": "normal"}
         response = PlatformClient().match(state.get("query", ""))
         candidates = response.get("candidates") or []
         top = candidates[0] if candidates and isinstance(candidates[0], dict) else None
