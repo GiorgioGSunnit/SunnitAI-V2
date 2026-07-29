@@ -1,14 +1,30 @@
 """End-to-end tests for the DRAFT penal-range calculator: the tested
-arithmetic core exposed through the real engine, planner and simulated
+arithmetic core exposed through the engine, planner and simulated
 conversation — mechanics only, counts instead of the legally-gated
-circumstance catalog."""
+circumstance catalog.
 
-from app.main import engine
+These drafts are NOT reachable by users: the registry withholds them
+unless SUNNIT_ENABLE_DRAFT_PACKS is set, and test_draft_gate.py owns that
+gate. Everything here therefore runs against an explicitly drafts-enabled
+engine, which is what "developable and testable without a path to a user"
+means in practice. Tests that previously asserted these calculators were
+reachable from the DEFAULT engine have been inverted — see the gate module.
+"""
+
+from app.core.engine import CalculationEngine
+from app.core.registry import CalculatorRegistry
+from app.main import FORMULA_PACKS_DIR, PARAMETERS_DIR
+from app.resolvers.parameter_store import ParameterStore
 from app.schemas.calculation_request import CalculationRequest
 from simulation.conversation import SimulatedConversation
 from simulation.planner import plan_sentence
 
 CALC_ID = "legal_it.omicidio_pena_draft"
+
+engine = CalculationEngine(
+    CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=True),
+    ParameterStore(PARAMETERS_DIR),
+)
 
 
 def _calculate(**inputs):
@@ -79,7 +95,9 @@ def test_steps_carry_norm_references():
 
 
 # ---------------------------------------------------------------------------
-# Planner / conversation level (sentence -> result, as in the UI)
+# Planner / conversation level — with drafts explicitly enabled. In the
+# default configuration none of these sentences reaches a draft at all;
+# test_draft_gate.py asserts that.
 # ---------------------------------------------------------------------------
 
 def test_sentence_with_counts_is_ready_to_calculate():

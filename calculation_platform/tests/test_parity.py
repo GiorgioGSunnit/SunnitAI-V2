@@ -15,8 +15,11 @@ from simulation.conversation import SimulatedConversation
 from simulation.planner import plan_sentence
 
 # Two penal-draft calculators tie on single-token evidence -> deterministic
-# ambiguous routing (no phrase match, equal score).
-AMBIGUOUS_QUERY = "furto e rapina"
+# ambiguous routing (no phrase match, equal score). Two live calculators,
+# not the withheld penal drafts: the ambiguity mechanism is
+# calculator-agnostic and must stay under test in the default,
+# drafts-disabled configuration.
+AMBIGUOUS_QUERY = "imu e irpef"
 
 
 def test_matcher_and_planner_report_ambiguous():

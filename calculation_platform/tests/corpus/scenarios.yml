@@ -51,9 +51,12 @@ scenarios:
       missing: [taxable_income]
 
   # --- Ambiguous calculator match (routing) --------------------------------
-  - id: routing_ambiguous_furto_rapina
+  # Two live calculators: the former furto/rapina pair are legally
+  # unvalidated drafts, withheld from every caller by default, so they can
+  # no longer stand in for a routing tie a user could actually hit.
+  - id: routing_ambiguous_imu_irpef
     evidence: engine_verified
-    route: "furto e rapina"
+    route: "imu e irpef"
     expect:
       routing_status: ambiguous
 

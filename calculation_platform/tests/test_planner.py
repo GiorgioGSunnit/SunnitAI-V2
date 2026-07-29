@@ -2,13 +2,29 @@
 and the conversation flows built on it — the required minimum cases from
 the routing-metadata development spec."""
 
-from app.main import engine
+from app.core.registry import CalculatorRegistry
+from app.main import FORMULA_PACKS_DIR, engine
 from simulation.conversation import SimulatedConversation
 from simulation.planner import plan_sentence
 
 
 def _plan(sentence: str):
     return plan_sentence(sentence, engine.registry.definitions())
+
+
+_DRAFT_DEFINITIONS = CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=True).definitions()
+
+
+def _plan_with_drafts(sentence: str):
+    """Route against a drafts-enabled catalogue.
+
+    The penal drafts are withheld from the default registry (see
+    test_draft_gate.py), but the disambiguation they exercise — an
+    aggravated phrasing must never fall through to the simple-offence
+    frame — is matcher behaviour worth keeping under test for the day
+    they are validated.
+    """
+    return plan_sentence(sentence, _DRAFT_DEFINITIONS)
 
 
 # ---------------------------------------------------------------------------
@@ -143,23 +159,25 @@ def test_aggravated_offences_route_to_the_aggravated_draft_not_the_simple_one():
         ("furto in casa", "legal_it.furto_aggravato_draft"),
         ("rapina a mano armata pena", "legal_it.rapina_aggravata_draft"),
     ):
-        plan = _plan(sentence)
+        plan = _plan_with_drafts(sentence)
         assert plan.status == "needs_clarification"
         assert plan.calculator_id == expected
 
 
 def test_penal_simple_offences_still_route_to_their_drafts():
-    furto = _plan("pena per furto")
+    furto = _plan_with_drafts("pena per furto")
     assert furto.status == "needs_clarification"
     assert furto.calculator_id == "legal_it.furto_pena_draft"
 
-    omicidio = _plan("che pena rischia per omicidio")
+    omicidio = _plan_with_drafts("che pena rischia per omicidio")
     assert omicidio.status == "needs_clarification"
     assert omicidio.calculator_id == "legal_it.omicidio_pena_draft"
 
 
 def test_furto_narrative_past_tense_routes_to_simple_draft():
-    plan = _plan("il mio assistito ha rubato un portafoglio al mercato, che pena rischia?")
+    plan = _plan_with_drafts(
+        "il mio assistito ha rubato un portafoglio al mercato, che pena rischia?"
+    )
     assert plan.status == "needs_clarification"
     assert plan.calculator_id == "legal_it.furto_pena_draft"
     assert plan.missing_inputs == ["aggravanti_comuni", "attenuanti_comuni"]

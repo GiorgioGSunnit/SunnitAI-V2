@@ -26,11 +26,6 @@ EXPECTED_CALCULATOR_IDS = {
     "legal_it.inps_contributions",
     "legal_it.late_payment_interest",
     "legal_it.notice_indemnity",
-    "legal_it.omicidio_pena_draft",
-    "legal_it.furto_pena_draft",
-    "legal_it.furto_aggravato_draft",
-    "legal_it.rapina_pena_draft",
-    "legal_it.rapina_aggravata_draft",
     "legal_it.contributo_unificato_civile",
     "legal_it.termini_processuali_civili",
     "legal_it.ravvedimento_operoso",
@@ -39,10 +34,25 @@ EXPECTED_CALCULATOR_IDS = {
     "legal_it.compensi_dm55",
 }
 
+# Legally unvalidated drafts: loaded and validated, but withheld from every
+# caller unless SUNNIT_ENABLE_DRAFT_PACKS is set. See test_draft_gate.py.
+EXPECTED_DRAFT_IDS = {
+    "legal_it.omicidio_pena_draft",
+    "legal_it.furto_pena_draft",
+    "legal_it.furto_aggravato_draft",
+    "legal_it.rapina_pena_draft",
+    "legal_it.rapina_aggravata_draft",
+}
 
-def test_registry_loads_all_formula_packs(registry):
+
+def test_registry_loads_all_non_draft_formula_packs(registry):
     ids = {c["id"] for c in registry.list_all()}
     assert ids == EXPECTED_CALCULATOR_IDS
+
+
+def test_registry_loads_drafts_only_when_enabled():
+    enabled = CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=True)
+    assert {c["id"] for c in enabled.list_all()} == EXPECTED_CALCULATOR_IDS | EXPECTED_DRAFT_IDS
 
 
 def test_registry_list_all_shape(registry):
