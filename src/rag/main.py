@@ -66,6 +66,10 @@ class AgentState(TypedDict, total=False):
     calculation_choices: Optional[List[Dict[str, Any]]]
     calc_route: Optional[str]
     calculation_result: Optional[Dict[str, Any]]
+    # Audit trail for any deterministic input conversion this turn applied
+    # (e.g. a monthly rent multiplied to an annual one). Also rendered in the
+    # answer — a conversion the user cannot see is a number they cannot check.
+    calculation_conversions: Optional[List[Dict[str, Any]]]
     # Retrieval-only mode. Set by callers that invoke this graph for its
     # SOURCES rather than for an answer — document generation asks RAG for the
     # material to cite. Those callers have already decided what the user

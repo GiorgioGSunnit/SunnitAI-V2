@@ -15,6 +15,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
+from . import normalization
+
 logger = logging.getLogger(__name__)
 
 MATCH_AUTO_ROUTE_MIN_SCORE = 3
@@ -304,6 +306,7 @@ def _extraction_messages(
     *,
     missing_specs: Optional[Iterable[Dict[str, Any]]] = None,
     prior_inputs: Optional[Dict[str, Any]] = None,
+    frequency_note: str = "",
 ):
     from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -319,6 +322,8 @@ def _extraction_messages(
         "arguments object. Your arguments must conform to this JSON schema:\n"
         f"{json.dumps(input_schema, ensure_ascii=False, sort_keys=True)}"
     )
+    if frequency_note:
+        system_prompt = f"{system_prompt}\n\n{frequency_note}"
     context = []
     if prior_inputs is not None:
         context.append(
@@ -489,11 +494,17 @@ def _extract_values_llm(
             "description": str(tool_schema.get("description") or "Extract calculator inputs"),
             "parameters": extraction_schema,
         }
+        frequency_fields = normalization.frequency_sensitive_fields(calculator_id)
         messages = _extraction_messages(
             query,
             extraction_schema,
             missing_specs=missing_specs,
             prior_inputs=prior_inputs,
+            frequency_note=(
+                normalization.extraction_prompt_note(frequency_fields)
+                if frequency_fields
+                else ""
+            ),
         )
     except Exception as exc:
         logger.warning("Could not prepare LLM extraction for %s: %s", calculator_id, exc)
@@ -570,6 +581,18 @@ _COPY = {
         "defaults": "Valori assunti per default",
         "methodology": "Come e stato calcolato",
         "disclaimer": "Stima indicativa: non sostituisce la verifica di un professionista.",
+        "conversions": "Conversioni applicate",
+        "ask_frequency": (
+            "L'importo di {amount} che hai indicato per {field} e mensile o annuo? "
+            "Puoi rispondere 'mensile' oppure 'annuo'."
+        ),
+        "ask_currency": (
+            "Questo calcolo e in euro e non applico conversioni di valuta: "
+            "l'importo di {amount} che hai indicato per {field} e in {stated}. "
+            "Puoi indicarmi il canone in euro?"
+        ),
+        "month": "mese",
+        "year": "anno",
     },
     "es": {
         "result": "Resultado",
@@ -584,6 +607,18 @@ _COPY = {
         "defaults": "Valores asumidos por defecto",
         "methodology": "Como se ha calculado",
         "disclaimer": "Estimación indicativa: no sustituye la verificación de un profesional.",
+        "conversions": "Conversiones aplicadas",
+        "ask_frequency": (
+            "El importe de {amount} que has indicado para {field} es mensual o anual? "
+            "Puedes responder 'mensual' o 'anual'."
+        ),
+        "ask_currency": (
+            "Este cálculo es en euros y no aplico conversiones de divisa: "
+            "el importe de {amount} que has indicado para {field} está en {stated}. "
+            "¿Puedes indicarme el importe en euros?"
+        ),
+        "month": "mes",
+        "year": "año",
     },
     "en": {
         "result": "Result",
@@ -598,6 +633,18 @@ _COPY = {
         "defaults": "Values assumed by default",
         "methodology": "How it was computed",
         "disclaimer": "Indicative estimate: it does not replace a professional's review.",
+        "conversions": "Conversions applied",
+        "ask_frequency": (
+            "Is the {amount} you gave for {field} monthly or annual? "
+            "You can reply 'monthly' or 'annual'."
+        ),
+        "ask_currency": (
+            "This calculation is in euro and I do not apply currency conversion: "
+            "the {amount} you gave for {field} is in {stated}. "
+            "Could you give me the amount in euro?"
+        ),
+        "month": "month",
+        "year": "year",
     },
 }
 
@@ -767,6 +814,80 @@ def _clarification_question(lang: str, specs: List[Dict[str, Any]]) -> str:
     return _COPY[lang]["clarify"].format(items="; ".join(labels))
 
 
+def _normalize_frequency_inputs(
+    calculator_id: str, values: Dict[str, Any], text: str
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Resolve declared frequency-sensitive inputs, never raising.
+
+    A failure here must not cost the user their calculation, but it must also
+    not let an unconverted value through: on error the field is left exactly as
+    extracted and no conversion is claimed, which is the pre-Phase-2A
+    behaviour rather than a new wrong number.
+    """
+    try:
+        return normalization.normalize_inputs(calculator_id, values, text)
+    except Exception:
+        logger.exception("Frequency normalization failed for %s", calculator_id)
+        return values, [], []
+
+
+def _frequency_question(lang: str, unresolved: List[Dict[str, Any]]) -> str:
+    copy = _COPY[lang]
+    questions = []
+    for entry in unresolved:
+        amount = normalization.format_amount(entry.get("raw_value"), lang)
+        if entry.get("reason") == normalization.REASON_CURRENCY_UNSUPPORTED:
+            questions.append(copy["ask_currency"].format(
+                amount=amount,
+                field=entry.get("field"),
+                stated=entry.get("stated_currency"),
+            ))
+        else:
+            questions.append(copy["ask_frequency"].format(
+                amount=amount, field=entry.get("field"),
+            ))
+    return " ".join(questions)
+
+
+def _unresolved_frequency_update(
+    lang: str,
+    *,
+    calculator_id: str,
+    inputs_so_far: Dict[str, Any],
+    unresolved: List[Dict[str, Any]],
+    conversions: List[Dict[str, Any]],
+    specs: Iterable[Dict[str, Any]],
+    current_round: int,
+) -> Dict[str, Any]:
+    """Ask what an amount means, instead of calculating with a guess.
+
+    The unresolved field stays OUT of `inputs_so_far` and is listed as missing,
+    so a full restatement ("500 euro al mese") flows through the ordinary
+    continuation path. `pending_frequency` additionally holds the amount the
+    user already gave, so a bare "mensile" is enough on its own.
+    """
+    names = {entry["field"] for entry in unresolved}
+    missing = [
+        spec for spec in specs or []
+        if isinstance(spec, dict) and spec.get("name") in names
+    ] or [{"name": name, "type": "decimal", "required": True} for name in sorted(names)]
+
+    pending: Dict[str, Any] = {
+        "calculator_id": calculator_id,
+        "inputs_so_far": inputs_so_far,
+        "round": current_round + 1,
+        "missing_inputs": missing,
+        "pending_frequency": normalization.pending_frequency_state(unresolved),
+    }
+    if conversions:
+        pending["conversions"] = list(conversions)
+    return _answered_update(
+        _frequency_question(lang, unresolved),
+        pending_calculation=pending,
+        retrieval_quality_ok=True,
+    )
+
+
 def _display_value(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
@@ -838,7 +959,20 @@ def _comparison_lines(lang: str, result: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def _success_answer(lang: str, response: Dict[str, Any]) -> str:
+def _conversion_lines(lang: str, conversions: List[Dict[str, Any]]) -> List[str]:
+    words = {"month": _COPY[lang]["month"], "year": _COPY[lang]["year"]}
+    return [
+        normalization.format_conversion(record, lang, words)
+        for record in conversions or []
+        if isinstance(record, dict)
+    ]
+
+
+def _success_answer(
+    lang: str,
+    response: Dict[str, Any],
+    conversions: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     result = response.get("result") or {}
     if isinstance(result.get("comparison"), dict):
         rendered = "\n" + "\n".join(_comparison_lines(lang, result))
@@ -862,6 +996,15 @@ def _success_answer(lang: str, response: Dict[str, Any]) -> str:
     sources = "; ".join(citations) or _COPY[lang]["no_sources"]
 
     sections = [f"{_COPY[lang]['result']}: {rendered}"]
+    # Immediately after the figure, never further down: the result IS the
+    # conversion's output, so a reader who stops after the number must already
+    # have seen the arithmetic that produced its input.
+    conversion_lines = _conversion_lines(lang, conversions)
+    if conversion_lines:
+        sections.append(
+            f"{_COPY[lang]['conversions']}:\n"
+            + "\n".join(f"- {line}" for line in conversion_lines)
+        )
     # Surface the platform's assumptions and warnings — never drop them: a
     # staleness or "gross only" warning changes how the number must be read.
     assumptions = _notice_lines(response.get("assumptions"))
@@ -970,12 +1113,18 @@ def _handle_response(
     inputs_so_far: Dict[str, Any],
     current_round: int,
     expected_specs: Optional[Iterable[Dict[str, Any]]] = None,
+    conversions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if response.get("status") == "success":
-        logger.info("calc_node: outcome=success calculator=%s", calculator_id)
+        logger.info(
+            "calc_node: outcome=success calculator=%s conversions=%s",
+            calculator_id,
+            [record.get("rule_id") for record in conversions or []],
+        )
         return _answered_update(
-            _success_answer(lang, response),
+            _success_answer(lang, response, conversions),
             calculation_result=response.get("result") or {},
+            calculation_conversions=list(conversions or []),
             pending_calculation=None,
             retrieval_quality_ok=True,
         )
@@ -999,14 +1148,22 @@ def _handle_response(
         next_round = current_round + 1
         if next_round > _MAX_CLARIFICATION_ROUNDS:
             return _failure_update(lang, round_limit=True)
+        pending: Dict[str, Any] = {
+            "calculator_id": calculator_id,
+            "inputs_so_far": inputs_so_far,
+            "round": next_round,
+            "missing_inputs": missing,
+        }
+        # Carried only when there is something to carry: a conversion already
+        # performed has to reach the turn that finally shows the number, or the
+        # arithmetic behind an input collected two turns ago goes unseen. When
+        # nothing was converted the key stays absent rather than shipping an
+        # empty list into every session record.
+        if conversions:
+            pending["conversions"] = list(conversions)
         return _answered_update(
             _clarification_question(lang, missing),
-            pending_calculation={
-                "calculator_id": calculator_id,
-                "inputs_so_far": inputs_so_far,
-                "round": next_round,
-                "missing_inputs": missing,
-            },
+            pending_calculation=pending,
             retrieval_quality_ok=True,
         )
     # No field to ask for, so a validation message is all the user can act on.
@@ -1747,6 +1904,22 @@ def _start_calculation(
             specs,
             supports_tax_year=bool(match.get("supports_tax_year")),
         )
+    # Between extraction and arithmetic: the LLM reported what the user wrote,
+    # this turns it into what the calculator means. Runs on the regex tier too,
+    # where an unconverted monthly rent would otherwise be the likeliest input.
+    inputs_so_far, conversions, unresolved = _normalize_frequency_inputs(
+        calculator_id, inputs_so_far, raw_query
+    )
+    if unresolved:
+        return _unresolved_frequency_update(
+            lang,
+            calculator_id=calculator_id,
+            inputs_so_far=inputs_so_far,
+            unresolved=unresolved,
+            conversions=conversions,
+            specs=specs,
+            current_round=0,
+        )
     response = client.calculate(_calculation_payload(calculator_id, inputs_so_far))
     if response.get("platform_unavailable"):
         return {
@@ -1761,6 +1934,7 @@ def _start_calculation(
         inputs_so_far=inputs_so_far,
         current_round=0,
         expected_specs=specs,
+        conversions=conversions,
     )
 
 
@@ -1797,6 +1971,36 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
             inputs_so_far = dict(pending.get("inputs_so_far") or {})
             current_round = int(pending.get("round") or 0)
             specs = pending.get("missing_inputs") or []
+            conversions = [
+                record for record in pending.get("conversions") or []
+                if isinstance(record, dict)
+            ]
+
+            # A bare "mensile" answering the frequency question: the amount is
+            # already held, so resolve it here rather than sending a message
+            # with no number through extraction, which would find nothing and
+            # read the turn as a change of subject.
+            held = pending.get("pending_frequency") or {}
+            if held:
+                resolved, new_conversions = normalization.resolve_pending_frequency(
+                    raw_query, held
+                )
+                if resolved:
+                    inputs_so_far.update(resolved)
+                    conversions += new_conversions
+                    response = client.calculate(
+                        _calculation_payload(calculator_id, inputs_so_far)
+                    )
+                    if response.get("platform_unavailable"):
+                        return _failure_update(lang, pending_calculation=pending)
+                    return _handle_response(
+                        response,
+                        lang=lang,
+                        calculator_id=calculator_id,
+                        inputs_so_far=inputs_so_far,
+                        current_round=current_round,
+                        conversions=conversions,
+                    )
 
             # Backward-compatible recovery for a pending payload without specs.
             if not specs:
@@ -1852,6 +2056,23 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "awaiting_clarification": False,
                     "pending_sections": [],
                 }
+            # The follow-up gets the same treatment as the opening message: a
+            # rent restated as "400 euro al mese" three turns in must convert
+            # exactly as it would have on turn one.
+            extracted, new_conversions, unresolved = _normalize_frequency_inputs(
+                calculator_id, extracted, raw_query
+            )
+            if unresolved:
+                return _unresolved_frequency_update(
+                    lang,
+                    calculator_id=calculator_id,
+                    inputs_so_far=inputs_so_far,
+                    unresolved=unresolved,
+                    conversions=conversions,
+                    specs=specs,
+                    current_round=current_round,
+                )
+            conversions += new_conversions
             inputs_so_far.update(extracted)
             response = client.calculate(_calculation_payload(calculator_id, inputs_so_far))
             if response.get("platform_unavailable"):
@@ -1862,6 +2083,7 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 calculator_id=calculator_id,
                 inputs_so_far=inputs_so_far,
                 current_round=current_round,
+                conversions=conversions,
             )
 
         choices = [c for c in state.get("calculation_choices") or [] if isinstance(c, dict)]
