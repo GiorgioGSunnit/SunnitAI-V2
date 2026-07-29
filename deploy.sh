@@ -15,6 +15,11 @@ APP_DIR="/opt/chatbot"
 VENV_DIR="$APP_DIR/venv"
 SERVICE_NAME="chatbot"
 PORT=8000
+# Calculation platform: separate service on its own port (must differ from PORT,
+# or the chatbot would POST /match to itself and every calculation silently
+# falls back to RAG).
+CALC_SERVICE_NAME="calc-platform"
+CALC_PORT=8802
 
 echo "=== SunnitAI ChatBot — Server Deployment ==="
 echo ""
@@ -103,10 +108,14 @@ echo "  Database migrations applied"
 # -------------------------------------------------------
 # 7. Create systemd service
 # -------------------------------------------------------
-echo "[7/8] Creating systemd service..."
-cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
+echo "[7/8] Creating systemd services..."
+
+# Calculation platform service (deterministic calculator engine). The chatbot
+# reaches it over HTTP at CALC_PLATFORM_URL; it must be running and on its own
+# port or calculator matching fails silently and requests fall back to RAG.
+cat > /etc/systemd/system/${CALC_SERVICE_NAME}.service << EOF
 [Unit]
-Description=SunnitAI ChatBot API
+Description=SunnitAI Calculation Platform
 After=network.target
 
 [Service]
@@ -114,6 +123,28 @@ Type=simple
 User=root
 WorkingDirectory=$APP_DIR
 Environment="PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
+ExecStart=$VENV_DIR/bin/python -m uvicorn calculation_platform.app.main:app --host 127.0.0.1 --port $CALC_PORT
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
+[Unit]
+Description=SunnitAI ChatBot API
+After=network.target ${CALC_SERVICE_NAME}.service
+Wants=${CALC_SERVICE_NAME}.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$APP_DIR
+Environment="PATH=$VENV_DIR/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="CALC_PLATFORM_URL=http://localhost:$CALC_PORT"
 ExecStart=$VENV_DIR/bin/python -m uvicorn src.chatbot.api:app --host 0.0.0.0 --port $PORT
 Restart=always
 RestartSec=5
@@ -125,12 +156,24 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
+systemctl enable ${CALC_SERVICE_NAME} > /dev/null 2>&1
 systemctl enable ${SERVICE_NAME} > /dev/null 2>&1
 
 # -------------------------------------------------------
 # 8. Start the service and verify
 # -------------------------------------------------------
-echo "[8/8] Starting the chatbot service..."
+echo "[8/8] Starting the calculation platform and chatbot services..."
+systemctl restart ${CALC_SERVICE_NAME}
+sleep 2
+if systemctl is-active --quiet ${CALC_SERVICE_NAME} \
+   && curl -sf http://localhost:${CALC_PORT}/health > /dev/null 2>&1; then
+    echo "  Calculation platform healthy on port ${CALC_PORT}."
+else
+    echo "  WARNING: calculation platform did not come up on port ${CALC_PORT}."
+    echo "  The calculator feature will be unavailable (requests fall back to RAG)."
+    echo "  Check logs: journalctl -u ${CALC_SERVICE_NAME} --no-pager -n 30"
+fi
+
 systemctl restart ${SERVICE_NAME}
 
 # Wait for startup
