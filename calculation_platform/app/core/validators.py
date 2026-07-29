@@ -58,9 +58,38 @@ def _coerce_decimal(v: Any) -> Decimal:
     return value
 
 
+def _coerce_integer(v: Any) -> int:
+    """Accept only values that ARE whole numbers; never truncate one.
+
+    `int(1.9)` is 1, and an integer input is how this platform spells a
+    count of days, months or circumstances: a procedural deadline quietly
+    becoming one day shorter is a wrong legal answer delivered with no
+    warning at all. A caller who means 2 can say 2, 2.0 or "2"; one who
+    writes 1.9 has made an error that only they can resolve.
+
+    Routed through _coerce_decimal so the check is exact (float 0.1
+    arithmetic never enters it) and so non-finite values are rejected
+    there rather than escaping as OverflowError from int(float("inf")),
+    which _coerce_scalar does not catch.
+    """
+    # bool is an int subclass; True silently becoming 1 is the same class
+    # of type confusion the boolean coercer exists to prevent.
+    if isinstance(v, bool):
+        raise ValueError(f"not a whole number: {v!r} (use a number, not a boolean)")
+    if isinstance(v, int):
+        return v
+    value = _coerce_decimal(v)
+    if value != value.to_integral_value():
+        raise ValueError(
+            f"not a whole number: {v!r} (a fractional value would be truncated; "
+            "use a whole number)"
+        )
+    return int(value)
+
+
 _TYPE_COERCERS = {
     "decimal": _coerce_decimal,
-    "integer": lambda v: int(v),
+    "integer": _coerce_integer,
     "boolean": _coerce_boolean,
     "string": lambda v: str(v),
     "date": lambda v: v if isinstance(v, date_cls) else date_cls.fromisoformat(str(v)),
