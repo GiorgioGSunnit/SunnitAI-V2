@@ -14,7 +14,25 @@ def test_valid_whitelisted_functions():
     assert safe_eval("min(a, b, 10)", variables) == Decimal("5")
     assert safe_eval("max(a, b)", variables) == Decimal("7")
     assert safe_eval("abs(a - b)", variables) == Decimal("2")
-    assert safe_eval("round(a / b, 2)", variables) == round(Decimal("5") / Decimal("7"), 2)
+    assert safe_eval("round(a / b, 2)", variables) == Decimal("0.71")
+
+
+def test_round_ties_use_half_up_not_banker_rounding():
+    # 0.125 and 2.5 are exact ties: half-even (Decimal.__round__) would give
+    # 0.12 and 2, the platform's declared half_up must give 0.13 and 3.
+    assert safe_eval("round(a, 2)", {"a": Decimal("0.125")}) == Decimal("0.13")
+    assert safe_eval("round(a, 0)", {"a": Decimal("2.5")}) == Decimal("3")
+
+
+def test_one_arg_round_returns_decimal_and_rounds_half_up():
+    result = safe_eval("round(a)", {"a": Decimal("2.5")})
+    assert isinstance(result, Decimal)
+    assert result == Decimal("3")
+
+
+def test_round_rejects_negative_precision():
+    with pytest.raises(UnsafeExpressionError):
+        safe_eval("round(a, -2)", {"a": Decimal("1234.5")})
 
 
 def test_valid_pow_with_negative_integer_exponent():

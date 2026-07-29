@@ -13,6 +13,8 @@ import ast
 from decimal import Decimal
 from typing import Any, Callable, Dict
 
+from .result_builder import round_decimal
+
 _ALLOWED_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.FloorDiv, ast.Pow)
 _ALLOWED_UNARYOPS = (ast.UAdd, ast.USub)
 
@@ -96,9 +98,18 @@ class _SafeEvaluator(ast.NodeVisitor):
                 raise UnsafeExpressionError("pow() requires exactly 2 arguments")
             return args[0] ** int(args[1])
         if name == "round":
-            if len(args) == 2:
-                return round(args[0], int(args[1]))
-            return round(args[0])
+            # Through round_decimal, not the builtin: Decimal.__round__ is
+            # half-even and its one-argument form returns an int, both of
+            # which break the platform's half_up/Decimal contract.
+            if len(args) not in (1, 2):
+                raise UnsafeExpressionError("round() requires 1 or 2 arguments")
+            places = int(args[1]) if len(args) == 2 else 0
+            if places < 0:
+                raise UnsafeExpressionError(
+                    "round() with negative precision is not supported; "
+                    "use round(x, 0) for whole units"
+                )
+            return round_decimal(args[0], places)
         if name == "min":
             return min(args)
         if name == "max":

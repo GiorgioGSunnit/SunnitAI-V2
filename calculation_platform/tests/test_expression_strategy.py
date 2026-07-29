@@ -49,6 +49,20 @@ def test_output_within_bounds_is_unaffected():
     assert not any(s["type"].startswith("clamped") for s in outcome.steps)
 
 
+def test_round_in_formula_flows_through_strategy():
+    # One-arg round() used to return an int (Decimal.__round__ contract),
+    # which crashed round_decimal's quantize with AttributeError; the tie at
+    # 2.5 also discriminates half_up (3) from half-even (2).
+    definition = CalculatorDefinition(
+        id="test.round_expr", name="round", category="test", strategy="expression",
+        inputs=[InputSpec(name="a", type="decimal", required=True)],
+        formula={"expression": "round(a)"},
+        output={"name": "result", "round_to": 2},
+    )
+    outcome = _strategy().run(definition, {"a": Decimal("2.5")}, CalculationRequest(calculator_id="test.round_expr"))
+    assert outcome.result["result"] == Decimal("3.00")
+
+
 def test_chained_derived_variables_evaluate_in_order():
     definition = CalculatorDefinition(
         id="test.chain", name="chain", category="test", strategy="expression",
