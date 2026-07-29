@@ -35,6 +35,12 @@ def test_round_rejects_negative_precision():
         safe_eval("round(a, -2)", {"a": Decimal("1234.5")})
 
 
+@pytest.mark.parametrize("precision", ["-0.5", "1.9"])
+def test_round_rejects_fractional_precision(precision):
+    with pytest.raises(UnsafeExpressionError):
+        safe_eval(f"round(a, {precision})", {"a": Decimal("1234.5")})
+
+
 def test_valid_pow_with_negative_integer_exponent():
     result = safe_eval("pow(1 + rate, -months)", {"rate": Decimal("0.005"), "months": Decimal("12")})
     assert result > 0

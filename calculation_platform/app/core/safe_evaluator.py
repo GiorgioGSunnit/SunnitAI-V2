@@ -103,7 +103,18 @@ class _SafeEvaluator(ast.NodeVisitor):
             # which break the platform's half_up/Decimal contract.
             if len(args) not in (1, 2):
                 raise UnsafeExpressionError("round() requires 1 or 2 arguments")
-            places = int(args[1]) if len(args) == 2 else 0
+            if len(args) == 2:
+                precision = args[1]
+                if (
+                    not precision.is_finite()
+                    or precision != precision.to_integral_value()
+                ):
+                    raise UnsafeExpressionError(
+                        "round() precision must be a whole number"
+                    )
+                places = int(precision)
+            else:
+                places = 0
             if places < 0:
                 raise UnsafeExpressionError(
                     "round() with negative precision is not supported; "
