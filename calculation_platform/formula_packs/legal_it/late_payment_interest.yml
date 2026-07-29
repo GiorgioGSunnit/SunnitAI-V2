@@ -52,6 +52,7 @@ inputs:
     required: true
     unit: days
     min_value: 0
+    max_value: 36525
     description: Giorni di ritardo nel pagamento
   - name: maggiorazione
     type: decimal

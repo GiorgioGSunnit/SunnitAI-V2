@@ -44,6 +44,7 @@ inputs:
     required: true
     unit: months
     min_value: 1
+    max_value: 1200
     description: Loan term in months
 parameters: []
 derived_variables:

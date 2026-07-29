@@ -17,6 +17,7 @@ ValidationError = InputValidationError
 # Italian-language planner ("sì"/"no").
 _TRUE_STRINGS = {"true", "1", "yes", "si", "sì"}
 _FALSE_STRINGS = {"false", "0", "no"}
+_MAX_EXACT_FLOAT_INTEGER = 2**53
 
 
 def _coerce_boolean(v: Any) -> bool:
@@ -78,6 +79,17 @@ def _coerce_integer(v: Any) -> int:
         raise ValueError(f"not a whole number: {v!r} (use a number, not a boolean)")
     if isinstance(v, int):
         return v
+    if isinstance(v, float):
+        if not v.is_integer():
+            raise ValueError(
+                f"not a whole number: {v!r} (a fractional value would be truncated; "
+                "use a whole number)"
+            )
+        if abs(v) >= _MAX_EXACT_FLOAT_INTEGER:
+            raise ValueError(
+                f"integer-valued float {v!r} is outside the exactly representable range; "
+                "send it as an integer or numeric string"
+            )
     value = _coerce_decimal(v)
     if value != value.to_integral_value():
         raise ValueError(

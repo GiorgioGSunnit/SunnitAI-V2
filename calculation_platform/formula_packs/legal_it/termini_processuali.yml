@@ -53,6 +53,7 @@ inputs:
     type: integer
     required: true
     min_value: 1
+    max_value: 36525
     description: Durata del termine in giorni
   - name: giorni_liberi
     type: boolean

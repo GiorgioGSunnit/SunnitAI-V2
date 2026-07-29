@@ -72,6 +72,7 @@ inputs:
     required: false
     default: 0
     min_value: 0
+    max_value: 100
     description: Numero di sinistri del conducente negli ultimi anni (registrato, non usato nel punteggio)
   - name: polizze
     type: object_list

@@ -118,6 +118,7 @@ inputs:
         required: false
         default: 0
         min_value: 0
+        max_value: 1200
         unit: mesi
         description: Durata del vincolo contrattuale in mesi
       - name: penale_recesso

@@ -46,11 +46,13 @@ inputs:
     type: integer
     required: true
     min_value: 0
+    max_value: 100
     description: Numero di circostanze aggravanti comuni confermate (0 se nessuna)
   - name: attenuanti_comuni
     type: integer
     required: true
     min_value: 0
+    max_value: 100
     description: Numero di circostanze attenuanti comuni confermate (0 se nessuna)
   - name: scenario_art_69
     type: string
