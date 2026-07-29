@@ -15,7 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
-from . import normalization
+from . import label_anchoring, normalization
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +258,16 @@ def _extract_values(
     *,
     supports_tax_year: bool = False,
 ) -> Dict[str, Any]:
-    """Extract positional typed values for the supplied platform input specs."""
+    """Extract typed values for the supplied platform input specs, by LABEL.
+
+    Numbers are bound only where the sentence identifies the field they belong
+    to (see label_anchoring). They used to be paired with fields by ORDER, which
+    turned "ho lavorato 11 anni e 7 mesi" into an indemnity of 11 x 7 and an
+    article number into a driver's age: a question answered with a figure nobody
+    supplied. Dates, periods and the tax year keep their existing handling and
+    are consumed before the numeric scan, so none of them is available to be
+    read a second time as an ordinary input.
+    """
     specs = [spec for spec in specs if isinstance(spec, dict) and spec.get("name")]
     values: Dict[str, Any] = {}
     masked = list(query)
@@ -280,21 +289,50 @@ def _extract_values(
     for spec, value in zip(date_specs, dates):
         values[spec["name"]] = value
 
-    number_tokens = [match.group(0) for match in _NUMBER_RE.finditer("".join(masked))]
-    if supports_tax_year:
-        for index, raw in enumerate(number_tokens):
-            year_text = raw.strip().rstrip("%").strip()
-            if re.fullmatch(r"(?:19|20)\d{2}", year_text):
-                values["tax_year"] = int(year_text)
-                number_tokens.pop(index)
-                break
-
     number_specs = [
         spec for spec in specs if spec.get("type") in {"decimal", "integer"}
     ]
-    for spec, raw in zip(number_specs, number_tokens):
+
+    # An explicit `field: value` is the strongest anchor there is, so it is read
+    # first and its numbers are never offered to proximity matching.
+    by_name = {spec["name"]: spec for spec in number_specs}
+    assigned = label_anchoring.explicit_assignments(query, by_name)
+    masked_text = "".join(masked)
+    for name, raw in assigned.items():
+        number = _NUMBER_RE.search(raw)
+        if not number:
+            continue
         try:
-            values[spec["name"]] = _normalize_number(raw, spec)
+            values[name] = _normalize_number(number.group(0), by_name[name])
+        except (InvalidOperation, ValueError):
+            logger.debug("Ignored invalid assigned number %r", raw)
+            continue
+        # Blank the assignment (length-preserving) so proximity matching cannot
+        # claim the same figure for a second field.
+        start = query.find(raw)
+        if start != -1:
+            masked_text = (
+                masked_text[:start] + " " * len(raw) + masked_text[start + len(raw):]
+            )
+
+    number_spans = [
+        (match.group(0), match.start(), match.end())
+        for match in _NUMBER_RE.finditer(masked_text)
+    ]
+    if supports_tax_year:
+        for index, (raw, _start, _end) in enumerate(number_spans):
+            year_text = raw.strip().rstrip("%").strip()
+            if re.fullmatch(r"(?:19|20)\d{2}", year_text):
+                values["tax_year"] = int(year_text)
+                number_spans.pop(index)
+                break
+
+    bound = label_anchoring.bind_numbers(
+        masked_text, number_specs, number_spans, already_bound=values.keys()
+    )
+    for name, raw in bound.items():
+        try:
+            values[name] = _normalize_number(raw, by_name[name])
         except (InvalidOperation, ValueError):
             logger.debug("Ignored invalid extracted number %r", raw)
     return values
