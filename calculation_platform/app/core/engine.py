@@ -108,12 +108,14 @@ class CalculationEngine:
             )
 
         citations = [Citation(**c) for c in definition.citations]
-        # A draft calculator (version "*-draft") carries a machine-readable,
-        # code-emitted caveat regardless of what its pack author wrote, so a
-        # downstream renderer can gate on the CODE and never silently drop the
-        # "not legally validated" banner. It leads the warning list on purpose.
+        # A calculator that is not on the release manifest carries a
+        # machine-readable, code-emitted caveat regardless of what its pack
+        # author wrote, so a downstream renderer can gate on the CODE and never
+        # silently drop the "not legally validated" banner. Reachable only under
+        # the override — but that is exactly when the banner matters. It leads
+        # the warning list on purpose.
         warnings = []
-        if definition.version.endswith("-draft"):
+        if not self.registry.is_released(definition.id):
             warnings.append(CalcWarning(
                 code="draft_not_validated",
                 message=(

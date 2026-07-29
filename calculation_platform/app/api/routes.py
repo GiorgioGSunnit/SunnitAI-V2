@@ -87,24 +87,44 @@ def calculate(request: CalculationRequest) -> CalculationResult:
     return calculate_and_persist(request)
 
 
-@router.get("/calculations", response_model=List[StoredCalculationSummary])
-def list_calculations(limit: int = 50) -> List[StoredCalculationSummary]:
-    return _store.list_recent(limit=min(limit, 200))
+def _readable_or_404(request_id: str) -> StoredCalculation:
+    """Fetch a stored calculation, refusing anything whose calculator is not
+    released.
 
+    Gating computation while leaving stored results readable protects
+    nobody — the disclosure is the harm. Enforced at READ time rather than
+    by migrating or deleting records: no stored data is lost, and turning
+    the override on makes the history visible again.
 
-@router.get("/calculations/{request_id}", response_model=StoredCalculation)
-def get_calculation(request_id: str) -> StoredCalculation:
+    A withheld record is refused exactly like an absent one, deliberately:
+    distinguishing them would confirm to a caller that a criminal-sentencing
+    calculation exists for a given request_id.
+    """
     stored = _store.get(request_id)
-    if stored is None:
+    if stored is None or not _engine.registry.is_disclosable(stored.calculator_id):
         raise HTTPException(status_code=404, detail="Calculation not found")
     return stored
 
 
+@router.get("/calculations", response_model=List[StoredCalculationSummary])
+def list_calculations(limit: int = 50) -> List[StoredCalculationSummary]:
+    # Filtered after the fetch, so `limit` caps what is read, not what is
+    # returned: a page may come back shorter when it spans withheld records.
+    return [
+        summary
+        for summary in _store.list_recent(limit=min(limit, 200))
+        if _engine.registry.is_disclosable(summary.calculator_id)
+    ]
+
+
+@router.get("/calculations/{request_id}", response_model=StoredCalculation)
+def get_calculation(request_id: str) -> StoredCalculation:
+    return _readable_or_404(request_id)
+
+
 @router.get("/calculations/{request_id}/report", response_class=HTMLResponse)
 def get_calculation_report(request_id: str) -> HTMLResponse:
-    stored = _store.get(request_id)
-    if stored is None:
-        raise HTTPException(status_code=404, detail="Calculation not found")
+    stored = _readable_or_404(request_id)
 
     definition = None
     try:
@@ -116,9 +136,7 @@ def get_calculation_report(request_id: str) -> HTMLResponse:
 
 @router.post("/calculations/{request_id}/replay")
 def replay_calculation(request_id: str) -> Dict[str, Any]:
-    stored = _store.get(request_id)
-    if stored is None:
-        raise HTTPException(status_code=404, detail="Calculation not found")
+    stored = _readable_or_404(request_id)
 
     request = CalculationRequest.model_validate(stored.request)
     replayed = _engine.calculate(request)

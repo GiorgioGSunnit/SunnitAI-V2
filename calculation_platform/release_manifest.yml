@@ -1,0 +1,59 @@
+# Calculators cleared for release.
+#
+# READ THIS AS: "these calculators have passed human verification."
+#
+# Default-deny. A calculator is reachable and disclosable ONLY if its id
+# appears below. A pack that is new, half-finished, experimental, or simply
+# forgotten is withheld — from matching, discovery, /calculate, tool schemas,
+# the planner, AND from every route that reads a stored result. Withholding
+# is not deletion: withheld packs are still parsed and validated at load, so
+# a broken one still breaks the build.
+#
+# This list lives OUTSIDE formula_packs/ on purpose. Release is a decision
+# ABOUT a pack, not a property OF one: if it were a field in the pack YAML,
+# an author could publish a legally unvalidated calculator by editing the
+# same file they wrote the formula in. Adding an id here is a separate,
+# reviewable act.
+#
+# Set SUNNIT_ENABLE_DRAFT_PACKS=1 to release everything. That is for
+# development and tests only — never production. Reaching a withheld
+# calculator under the override still attaches the draft_not_validated
+# warning to its result.
+#
+# Entries are either a bare id or a mapping with `id` plus free-form
+# annotation keys (verified_on, verified_by, notes) for the manifest record.
+
+released:
+  # --- business -----------------------------------------------------------
+  - id: business.invoice_total
+  - id: business.loan_payment
+  - id: business.confronto_gas_luce
+  - id: business.confronto_polizze
+
+  # --- legal_it: monetary / fiscal ----------------------------------------
+  - id: legal_it.irpef
+  - id: legal_it.imu
+  - id: legal_it.inps_contributions
+  - id: legal_it.tfr
+  - id: legal_it.notice_indemnity
+  - id: legal_it.registration_tax_leases
+  - id: legal_it.ravvedimento_operoso
+  - id: legal_it.contributo_unificato_civile
+  - id: legal_it.compensi_dm55
+
+  # --- legal_it: interest / revaluation ------------------------------------
+  - id: legal_it.legal_interest
+  - id: legal_it.late_payment_interest
+  - id: legal_it.rivalutazione_istat
+  - id: legal_it.rivalutazione_interessi_1712
+
+  # --- legal_it: procedural -------------------------------------------------
+  - id: legal_it.termini_processuali_civili
+
+# Deliberately NOT released — legally unvalidated criminal-sentencing
+# demonstrations. Reachable only under SUNNIT_ENABLE_DRAFT_PACKS:
+#   legal_it.omicidio_pena_draft
+#   legal_it.furto_pena_draft
+#   legal_it.furto_aggravato_draft
+#   legal_it.rapina_pena_draft
+#   legal_it.rapina_aggravata_draft
