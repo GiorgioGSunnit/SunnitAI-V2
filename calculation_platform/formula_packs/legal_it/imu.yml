@@ -2,6 +2,7 @@ id: legal_it.imu
 name: IMU — imposta municipale sugli immobili
 category: legal_it
 strategy: expression
+methodology: "Rivaluta la rendita catastale del 5%, la moltiplica per il moltiplicatore catastale fornito e applica alla base l'aliquota comunale fornita."
 version: "1"
 description: >
   Calcola l'IMU dovuta su un immobile: base imponibile = rendita

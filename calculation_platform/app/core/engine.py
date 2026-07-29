@@ -27,6 +27,7 @@ from .errors import (
 )
 from .registry import CalculatorRegistry
 from .result_builder import to_jsonable
+from .step_narration import narrate
 from .validators import validate_inputs
 
 
@@ -137,12 +138,14 @@ class CalculationEngine:
             result=to_jsonable(outcome.result),
             formula_used=definition.id,
             formula_version=definition.version,
+            methodology=definition.methodology,
             raw_inputs=to_jsonable(request.inputs),
             inputs_used=to_jsonable(validated.values),
             parameters_used=to_jsonable(outcome.parameters_used),
             date_resolution=outcome.date_resolution,
             derived_values=to_jsonable(outcome.derived_values),
             steps=outcome.steps,
+            explanation=narrate(outcome.steps, definition.strategy),
             citations=citations,
             warnings=warnings,
             assumptions=assumptions,

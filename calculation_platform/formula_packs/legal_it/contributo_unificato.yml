@@ -2,6 +2,7 @@ id: legal_it.contributo_unificato_civile
 name: Contributo unificato (processo civile ordinario)
 category: legal_it
 strategy: table_lookup
+methodology: "Seleziona l'importo dello scaglione di valore della causa e applica il moltiplicatore previsto per il grado di giudizio, salvo esenzione dichiarata."
 version: "1"
 description: >
   Determina il contributo unificato dovuto per l'iscrizione a ruolo di un

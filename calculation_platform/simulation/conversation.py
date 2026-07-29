@@ -428,5 +428,10 @@ class SimulatedConversation:
         if result.exclusions:
             lines.append("Non incluso:")
             lines += [f"  - {item}" for item in result.exclusions]
+        if result.methodology:
+            lines.append(f"Metodo: {result.methodology}")
+        if result.explanation and not isinstance(result.result.get("comparison"), dict):
+            lines.append("Derivazione:")
+            lines += [f"  - {item}" for item in result.explanation]
         lines.append(f"(Calcolo verificabile: {len(result.steps)} passaggi registrati.)")
         return "\n".join(lines)

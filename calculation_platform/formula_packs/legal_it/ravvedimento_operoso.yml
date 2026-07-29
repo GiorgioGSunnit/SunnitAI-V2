@@ -2,6 +2,7 @@ id: legal_it.ravvedimento_operoso
 name: Ravvedimento operoso (omesso o tardivo versamento)
 category: legal_it
 strategy: ravvedimento
+methodology: "Somma al tributo la sanzione ridotta dello scaglione di ritardo e gli interessi legali maturati giorno per giorno."
 version: "1"
 description: >
   Calcola quanto versare per regolarizzare un omesso o tardivo versamento

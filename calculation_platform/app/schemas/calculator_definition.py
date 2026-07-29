@@ -60,6 +60,9 @@ class CalculatorDefinition(BaseModel):
     strategy: str
     version: str = "1"  # formula/definition version — bump when the formula's logic itself changes
     description: Optional[str] = None
+    # One-sentence declarative statement of the method used, authored in
+    # the formula pack's language.
+    methodology: Optional[str] = None
     jurisdiction: Optional[str] = None  # e.g. "IT"
     # The calculator's own validity window — distinct from a parameter's
     # effective_from/effective_to, which versions a single value. This is

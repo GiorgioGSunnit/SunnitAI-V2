@@ -2,6 +2,7 @@ id: legal_it.inps_contributions
 name: Contributi previdenziali INPS (quota lavoratore e datore)
 category: legal_it
 strategy: expression
+methodology: "Applica alla retribuzione lorda le aliquote fornite per lavoratore e datore di lavoro e somma le due quote contributive."
 version: "1"
 description: >
   Calcola i contributi previdenziali INPS su una retribuzione lorda,

@@ -559,6 +559,7 @@ _COPY = {
         "assumptions": "Assunzioni",
         "exclusions": "Non incluso",
         "defaults": "Valori assunti per default",
+        "methodology": "Come e stato calcolato",
         "disclaimer": "Stima indicativa: non sostituisce la verifica di un professionista.",
     },
     "es": {
@@ -572,6 +573,7 @@ _COPY = {
         "assumptions": "Supuestos",
         "exclusions": "No incluido",
         "defaults": "Valores asumidos por defecto",
+        "methodology": "Como se ha calculado",
         "disclaimer": "Estimación indicativa: no sustituye la verificación de un profesional.",
     },
     "en": {
@@ -585,6 +587,7 @@ _COPY = {
         "assumptions": "Assumptions",
         "exclusions": "Not included",
         "defaults": "Values assumed by default",
+        "methodology": "How it was computed",
         "disclaimer": "Indicative estimate: it does not replace a professional's review.",
     },
 }
@@ -882,6 +885,18 @@ def _success_answer(lang: str, response: Dict[str, Any]) -> str:
         sections.append(
             f"{_COPY[lang]['exclusions']}:\n"
             + "\n".join(f"- {line}" for line in exclusions)
+        )
+    methodology = response.get("methodology")
+    explanation = []
+    if not isinstance(result.get("comparison"), dict):
+        explanation = [str(line) for line in response.get("explanation") or [] if line]
+    how_lines = []
+    if methodology:
+        how_lines.append(str(methodology))
+    how_lines += [f"- {line}" for line in explanation]
+    if how_lines:
+        sections.append(
+            f"{_COPY[lang]['methodology']}:\n" + "\n".join(how_lines)
         )
     sections.append(f"{_COPY[lang]['sources']}: {sources}")
     sections.append(_COPY[lang]["disclaimer"])

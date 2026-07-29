@@ -2,6 +2,7 @@ id: legal_it.rapina_aggravata_draft
 name: "[BOZZA] Cornice edittale — rapina aggravata (art. 628, co. 3 c.p.)"
 category: legal_it
 strategy: penal_range_draft
+methodology: "Modifica la cornice edittale base con le aggravanti, le attenuanti, il bilanciamento e l'eventuale rito abbreviato dichiarati."
 version: "0.1-draft"
 description: >
   BOZZA DIMOSTRATIVA, NON VALIDATA LEGALMENTE. Calcola la cornice

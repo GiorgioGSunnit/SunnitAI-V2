@@ -30,8 +30,10 @@ def test_render_report_html_contains_audit_sections_and_escapes_user_input():
 
     assert definition.name in html
     assert "11060" in html
+    assert "28.000 al 23% = 6.440,00" in html
     assert "bracket_up_to" in html
     assert "Art. 11 D.P.R." in html
     assert "non costituisce parere legale" in html
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
     assert "<script>alert(1)</script>" not in html
+    assert html.index("28.000 al 23% = 6.440,00") < html.index("bracket_up_to")

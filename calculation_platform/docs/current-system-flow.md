@@ -1,7 +1,7 @@
 # Current System Flow — Calculation Platform
 
 Snapshot of `calculation_platform/` on branch `feature/calculate-module`,
-2026-07-14. Everything documented here is **implemented and verified live**
+2026-07-28. Everything documented here is **implemented and verified live**
 unless explicitly marked *proposed*.
 
 ## Components and responsibilities
@@ -9,7 +9,7 @@ unless explicitly marked *proposed*.
 | Component | Files | Responsibility |
 |---|---|---|
 | FastAPI app | `app/main.py` | Builds the singletons (registry, parameter store, engine) at import time, wires them into the API and UI routers via `set_engine()` |
-| API router | `app/api/routes.py` | `GET /health`, `GET /calculators`, `GET /calculators/{id}`, `POST /calculate`, `POST /match` |
+| API router | `app/api/routes.py` | `GET /health`, `GET /calculators`, `GET /tool-schemas`, `GET /calculators/{calculator_id}/tool-schema`, `GET /calculators/{id}`, `POST /calculate`, `GET /calculations`, `GET /calculations/{request_id}`, `GET /calculations/{request_id}/report`, `POST /calculations/{request_id}/replay`, `POST /match` |
 | Dev UI + dev routes | `app/ui.py` | Serves the single-page UI at `GET /`; dev-only `POST /plan`, `POST /simulate/chat`, `POST /simulate/reset` |
 | Registry | `app/core/registry.py` | Loads all `formula_packs/**/*.yml` into `CalculatorDefinition`s at startup; structural validation via `app/core/definition_validator.py` fails fast on malformed packs |
 | Input validation | `app/core/validators.py` | Type coercion (Decimal, int, strict boolean, ISO date, string), defaults recorded as assumptions, min/max bounds, `input_invalid` errors listing every missing required input |

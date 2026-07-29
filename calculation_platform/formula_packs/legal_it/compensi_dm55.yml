@@ -2,6 +2,7 @@ id: legal_it.compensi_dm55
 name: Compensi forensi (DM 55/2014, giudizi ordinari di cognizione)
 category: legal_it
 strategy: dm55_fees
+methodology: "Somma i valori medi delle fasi richieste per lo scaglione del valore della causa, applica l'eventuale adeguamento, poi +15% spese generali, +4% CPA e +22% IVA secondo i flag indicati."
 version: "1"
 description: >
   Liquidazione dei compensi dell'avvocato per i giudizi ordinari di

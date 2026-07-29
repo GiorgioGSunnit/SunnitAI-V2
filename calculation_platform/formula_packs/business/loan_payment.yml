@@ -2,6 +2,7 @@ id: business.loan_payment
 name: Loan monthly payment (amortized)
 category: business
 strategy: expression
+methodology: "Calcola la rata mensile costante con la formula dell'ammortamento a rate costanti, oppure divide il capitale per i mesi quando il tasso è zero."
 version: "1"
 description: >
   Computes the fixed monthly payment for a fully amortizing loan given

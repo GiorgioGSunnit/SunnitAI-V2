@@ -2,6 +2,7 @@ id: legal_it.termini_processuali_civili
 name: Termini processuali civili (computo a giorni)
 category: legal_it
 strategy: procedural_deadline
+methodology: "Conta i giorni escludendo il giorno iniziale, applica termini liberi e sospensione feriale dichiarati, poi sposta la scadenza secondo festivi e direzione del termine."
 version: "1"
 description: >
   Calcola la scadenza di un termine processuale civile a giorni: dies a quo

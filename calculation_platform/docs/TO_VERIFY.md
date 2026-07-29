@@ -11,6 +11,14 @@ Nota: verifica della FONTE (il valore corrisponde all'artefatto ufficiale) e
 verifica dell'IMPLEMENTAZIONE (i test passano) sono distinte. Un test verde
 NON implica che un valore sia verificato contro la fonte.
 
+## Lingua di metodologia e derivazione — LIMITAZIONE ACCETTATA
+
+- [~] La metodologia e la derivazione sono prodotte nella lingua del formula
+      pack (italiano per tutti i pack attuali). La chat localizza soltanto
+      l'intestazione: sotto un'intestazione spagnola o inglese il corpo resta
+      quindi in italiano, come già accade per descrizione, avvertenze,
+      assunzioni ed esclusioni. Non sono previste versioni del corpo per lingua.
+
 ## parameters/legal_it/legal_interest_rates.yml — VERIFICATO
 
 - [x] Serie completa 2021-2026, ciascun anno con decreto MEF e URL diretto G.U.:

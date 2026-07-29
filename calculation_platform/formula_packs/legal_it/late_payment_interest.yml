@@ -2,6 +2,7 @@ id: legal_it.late_payment_interest
 name: Interessi di mora nelle transazioni commerciali (D.Lgs. 231/2002)
 category: legal_it
 strategy: expression
+methodology: "Calcola l'interesse semplice sul capitale per i giorni di ritardo al tasso di riferimento BCE fornito maggiorato di 8 punti percentuali."
 version: "1"
 description: >
   Calcola gli interessi di mora dovuti per il ritardato pagamento nelle

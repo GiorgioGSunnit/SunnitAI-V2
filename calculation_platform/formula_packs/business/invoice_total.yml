@@ -2,6 +2,7 @@ id: business.invoice_total
 name: Invoice total (net + VAT - discount)
 category: business
 strategy: expression
+methodology: "Applica lo sconto al netto, calcola l'IVA sull'imponibile scontato e somma imponibile e IVA."
 version: "1"
 description: >
   Computes the total amount due on an invoice given a net amount, a VAT

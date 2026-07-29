@@ -2,6 +2,7 @@ id: legal_it.rivalutazione_interessi_1712
 name: Rivalutazione + interessi su debiti di valore (Cass. SS.UU. 1712/1995)
 category: legal_it
 strategy: foi_revaluation_interest
+methodology: "Rivaluta il capitale anno per anno con gli indici FOI e calcola per ciascun anno l'interesse legale sulla media tra capitale iniziale e finale, senza anatocismo."
 version: "1"
 description: >
   Calcolo combinato di rivalutazione monetaria e interessi legali su un

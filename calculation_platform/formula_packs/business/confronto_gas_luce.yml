@@ -2,6 +2,7 @@ id: business.confronto_gas_luce
 name: Confronto offerte gas e luce (costo annuo + punteggio 0-100)
 category: business
 strategy: comparator
+methodology: "Punteggio 0-100 relativo alle offerte confrontate, con costo annuo scontato normalizzato rispetto alla migliore offerta e componenti pesate che sommano a 1."
 version: "2"
 description: >
   Confronta due o piu offerte gas+luce: per ciascuna calcola il costo annuo

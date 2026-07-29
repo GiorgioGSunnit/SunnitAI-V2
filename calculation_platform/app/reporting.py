@@ -43,9 +43,10 @@ def render_report_html(
             _section("Esito", _render_outcome(result)),
             _section("Dati inseriti", _render_inputs(result)),
             _section("Parametri applicati", _render_parameters(result.get("parameters_used", {}))),
-            _section("Svolgimento", _render_steps(result.get("steps", []))),
             _section("Avvertenze / Assunzioni", _render_notices(result)),
             _section("Non incluso", _render_exclusions(result, definition)),
+            _section("Metodo", _render_methodology(result)),
+            _section("Svolgimento", _render_steps(result.get("steps", []))),
             _section("Fonti", _render_citations(result.get("citations", []))),
             "<footer>",
             "<p>Documento generato da un calcolatore deterministico secondo i dati, i parametri e le assunzioni indicati; non costituisce parere legale.</p>",
@@ -217,6 +218,17 @@ def _render_exclusions(
     if not exclusions:
         return "<p>Nessuna esclusione dichiarata da questo calcolatore.</p>"
     return "<ul>" + "".join(f"<li>{_e(item)}</li>" for item in exclusions) + "</ul>"
+
+
+def _render_methodology(result: Dict[str, Any]) -> str:
+    methodology = result.get("methodology")
+    explanation = [str(line) for line in result.get("explanation") or [] if line]
+    if not methodology and not explanation:
+        return "<p>Nessun metodo dichiarato.</p>"
+    body = f"<p>{_e(methodology)}</p>" if methodology else ""
+    if explanation:
+        body += "<ol>" + "".join(f"<li>{_e(line)}</li>" for line in explanation) + "</ol>"
+    return body
 
 
 def _render_citations(citations: List[Dict[str, Any]]) -> str:

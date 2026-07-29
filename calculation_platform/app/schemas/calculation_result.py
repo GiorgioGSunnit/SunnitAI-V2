@@ -14,6 +14,7 @@ class CalculationResult(BaseModel):
     result: Dict[str, Any] = Field(default_factory=dict)
     formula_used: Optional[str] = None
     formula_version: Optional[str] = None
+    methodology: Optional[str] = None
     # Exactly what the caller sent, before type coercion/defaults —
     # preserved for audit even when validation fails.
     raw_inputs: Dict[str, Any] = Field(default_factory=dict)
@@ -27,6 +28,7 @@ class CalculationResult(BaseModel):
     date_resolution: Optional[Dict[str, Any]] = None
     derived_values: Dict[str, Any] = Field(default_factory=dict)
     steps: List[Dict[str, Any]] = Field(default_factory=list)
+    explanation: List[str] = Field(default_factory=list)
     citations: List[Citation] = Field(default_factory=list)
     warnings: List[CalcWarning] = Field(default_factory=list)
     # Things silently assumed while producing this result — defaults

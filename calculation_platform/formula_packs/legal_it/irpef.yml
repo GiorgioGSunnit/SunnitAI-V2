@@ -2,6 +2,7 @@ id: legal_it.irpef
 name: IRPEF lorda (imposta sul reddito delle persone fisiche)
 category: legal_it
 strategy: progressive_brackets
+methodology: "Scaglioni progressivi: ogni fascia di reddito è tassata alla propria aliquota."
 version: "1"
 description: >
   Gross national IRPEF computed via progressive brackets, selected by

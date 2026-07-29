@@ -2,6 +2,7 @@ id: legal_it.tfr
 name: TFR — quota annua maturata e rivalutazione del fondo
 category: legal_it
 strategy: expression
+methodology: "Somma al fondo precedente la quota annua pari alla retribuzione utile divisa per 13,5 e la rivalutazione pari all'1,5% più il 75% della variazione FOI."
 version: "1"
 description: >
   Calcola la quota annua di TFR maturata (retribuzione utile / 13,5) e la

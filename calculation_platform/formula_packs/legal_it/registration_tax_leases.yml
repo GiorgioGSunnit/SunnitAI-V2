@@ -2,6 +2,7 @@ id: legal_it.registration_tax_leases
 name: Imposta di registro sui contratti di locazione
 category: legal_it
 strategy: percentage_of_base
+methodology: "Applica l'aliquota al canone annuo moltiplicato per gli anni, con il minimo alla prima registrazione e imposta zero se è dichiarata la cedolare secca."
 version: "1"
 description: >
   Computes registration tax due on a residential lease under the ordinary

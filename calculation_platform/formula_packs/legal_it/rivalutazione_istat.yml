@@ -2,6 +2,7 @@ id: legal_it.rivalutazione_istat
 name: Rivalutazione monetaria (indice ISTAT FOI)
 category: legal_it
 strategy: foi_revaluation
+methodology: "Moltiplica l'importo per il rapporto esatto tra l'indice FOI del mese finale e quello del mese iniziale."
 version: "1"
 description: >
   Rivaluta una somma di denaro tra due date secondo l'indice ISTAT FOI

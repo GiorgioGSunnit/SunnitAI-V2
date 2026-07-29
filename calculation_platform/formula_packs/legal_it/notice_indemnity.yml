@@ -2,6 +2,7 @@ id: legal_it.notice_indemnity
 name: Indennità sostitutiva del mancato preavviso
 category: legal_it
 strategy: expression
+methodology: "Moltiplica la retribuzione mensile globale fornita per i mesi di preavviso non lavorati."
 version: "1"
 description: >
   Calcola l'indennità sostitutiva dovuta quando il rapporto di lavoro

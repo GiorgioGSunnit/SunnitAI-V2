@@ -624,6 +624,67 @@ def test_calculation_node_success_narrates_result_and_sources(monkeypatch):
     }
 
 
+@pytest.mark.parametrize(
+    "lang,heading",
+    [
+        ("it", "Come e stato calcolato"),
+        ("es", "Como se ha calculado"),
+        ("en", "How it was computed"),
+    ],
+)
+def test_success_answer_renders_methodology_after_caveats(lang, heading):
+    methodology = "Scaglioni progressivi: ogni fascia è tassata alla propria aliquota."
+    answer = calculation._success_answer(
+        lang,
+        {
+            "status": "success",
+            "result": {"gross_tax": "11060.00"},
+            "warnings": [{"code": "definition", "message": "Avvertenza del pack."}],
+            "exclusions": ["Addizionali non incluse."],
+            "methodology": methodology,
+            "citations": [{"reference": "Art. 11 TUIR"}],
+        },
+    )
+
+    assert f"{heading}:\n{methodology}" in answer
+    assert answer.index(calculation._COPY[lang]["warnings"]) < answer.index(heading)
+    assert answer.index(calculation._COPY[lang]["exclusions"]) < answer.index(heading)
+    assert answer.index(heading) < answer.index(calculation._COPY[lang]["sources"])
+
+
+def test_success_answer_renders_scalar_explanation_under_methodology_heading():
+    answer = calculation._success_answer(
+        "it",
+        {
+            "status": "success",
+            "result": {"gross_tax": "11060.00"},
+            "methodology": "Scaglioni progressivi.",
+            "explanation": [
+                "28.000 al 23% = 6.440,00",
+                "14.000 al 33% = 4.620,00",
+            ],
+        },
+    )
+
+    assert (
+        "Come e stato calcolato:\n"
+        "Scaglioni progressivi.\n"
+        "- 28.000 al 23% = 6.440,00\n"
+        "- 14.000 al 33% = 4.620,00"
+    ) in answer
+
+
+def test_success_answer_suppresses_comparator_step_explanation():
+    response = _comparison_result(provisional=False)
+    response["methodology"] = "Punteggio relativo alle offerte confrontate."
+    response["explanation"] = ["candidate: Alfa; exact total: 85.00"]
+
+    answer = calculation._success_answer("it", response)
+
+    assert response["methodology"] in answer
+    assert response["explanation"][0] not in answer
+
+
 def test_calculation_node_missing_inputs_sets_one_clarification_and_pending_state(
     monkeypatch,
 ):

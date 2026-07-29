@@ -2,6 +2,7 @@ id: legal_it.legal_interest
 name: Interessi legali (simple interest at the legal rate)
 category: legal_it
 strategy: date_split_interest
+methodology: "Calcola l'interesse semplice giorno per giorno, dividendo il periodo quando cambia il tasso legale e sommando gli interessi dei segmenti."
 version: "1"
 description: >
   Computes simple legal interest on a capital over a period, automatically
