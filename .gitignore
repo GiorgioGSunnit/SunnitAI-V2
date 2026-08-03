@@ -22,7 +22,10 @@ Thumbs.db
 build/
 dist/
 *.egg-info/
-pyproject.toml
+# Root-anchored on purpose. A bare `pyproject.toml` matches at every depth and
+# silently withheld this sub-project's own manifest, so a fresh clone could not
+# run the documented `pip install -e "policy_comparator[dev]"`.
+/pyproject.toml
 
 # Logs and runtime data
 *.log

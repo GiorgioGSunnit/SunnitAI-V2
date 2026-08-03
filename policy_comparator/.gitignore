@@ -1,0 +1,7 @@
+var/
+*.db
+*.db-wal
+*.db-shm
+.env
+.pytest_cache/
+__pycache__/

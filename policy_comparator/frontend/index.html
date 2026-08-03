@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Policy Comparator — Preventivi auto</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Policy&nbsp;Comparator</span>
+      </div>
+      <div class="topbar-right">
+        <span id="demo-badge" class="badge badge-demo" hidden>Dati dimostrativi</span>
+        <span id="user-email" class="user-email"></span>
+        <button id="logout" class="btn btn-ghost btn-sm" type="button">Esci</button>
+      </div>
+    </header>
+
+    <nav class="steps" aria-label="Fasi della richiesta">
+      <ol id="stepper">
+        <li data-step="new"><span class="step-index" aria-hidden="true">1</span> Nuova richiesta</li>
+        <li data-step="missing"><span class="step-index" aria-hidden="true">2</span> Dati mancanti</li>
+        <li data-step="progress"><span class="step-index" aria-hidden="true">3</span> Avanzamento</li>
+        <li data-step="results"><span class="step-index" aria-hidden="true">4</span> Risultati</li>
+      </ol>
+    </nav>
+
+    <main id="main">
+      <!-- ============================ NEW REQUEST ======================= -->
+      <section id="view-new" class="view">
+        <div class="view-head">
+          <h1>Nuova richiesta di preventivo</h1>
+          <p class="lede">
+            Bastano quattro dati per iniziare. Le altre informazioni verranno chieste
+            solo se una compagnia le richiede.
+          </p>
+        </div>
+
+        <form id="form-new" class="card" novalidate>
+          <div class="grid grid-2">
+            <label class="field">
+              <span class="field-label">Targa del veicolo</span>
+              <input name="vehicle_plate" required autocomplete="off"
+                     placeholder="AB123CD" maxlength="12" class="upper">
+              <span class="field-error" data-error="vehicle_plate"></span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Data di nascita del proprietario</span>
+              <input name="owner_date_of_birth" type="date" required>
+              <span class="field-error" data-error="owner_date_of_birth"></span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Email del cliente</span>
+              <input name="customer_email" type="email" required
+                     autocomplete="off" placeholder="cliente@esempio.it">
+              <span class="field-error" data-error="customer_email"></span>
+            </label>
+
+            <label class="field">
+              <span class="field-label">Decorrenza della polizza</span>
+              <input name="policy_start_date" type="date" required>
+              <span class="field-error" data-error="policy_start_date"></span>
+            </label>
+          </div>
+
+          <fieldset class="fieldset">
+            <legend>Compagnie da interpellare</legend>
+            <div id="provider-picker" class="provider-grid"></div>
+            <span class="field-error" data-error="selected_provider_ids"></span>
+          </fieldset>
+
+          <fieldset class="fieldset consent">
+            <legend>Consensi</legend>
+            <label class="check">
+              <input type="checkbox" name="privacy_accepted" required>
+              <span>
+                <strong>Trattamento dei dati (obbligatorio)</strong>
+                <small>Il cliente acconsente al trattamento dei dati per la richiesta di preventivo.</small>
+              </span>
+            </label>
+            <label class="check">
+              <input type="checkbox" name="provider_data_transfer_accepted" required>
+              <span>
+                <strong>Trasmissione alle compagnie selezionate (obbligatorio)</strong>
+                <small>I dati vengono inviati solo alle compagnie spuntate qui sopra.</small>
+              </span>
+            </label>
+            <label class="check">
+              <input type="checkbox" name="marketing_accepted">
+              <span>
+                <strong>Comunicazioni commerciali (facoltativo)</strong>
+                <small>Del tutto separato dal consenso obbligatorio: rifiutarlo non blocca il preventivo.</small>
+              </span>
+            </label>
+          </fieldset>
+
+          <div class="actions">
+            <button class="btn btn-primary" type="submit">Crea e invia la richiesta</button>
+            <button class="btn btn-ghost" type="button" id="btn-open-saved">Richieste salvate</button>
+          </div>
+        </form>
+
+        <div id="saved-requests" class="card" hidden>
+          <h2>Richieste salvate</h2>
+          <div id="saved-list" class="saved-list"></div>
+        </div>
+      </section>
+
+      <!-- ========================= MISSING FIELDS ======================= -->
+      <section id="view-missing" class="view" hidden>
+        <div class="view-head">
+          <h1>Servono altri dati</h1>
+          <p class="lede" id="missing-lede"></p>
+        </div>
+        <form id="form-missing" class="card">
+          <div id="missing-groups"></div>
+          <div class="actions">
+            <button class="btn btn-primary" type="submit">Invia e riprendi</button>
+            <button class="btn btn-ghost" type="button" data-goto="progress">
+              Vedi l'avanzamento
+            </button>
+          </div>
+        </form>
+      </section>
+
+      <!-- ============================ PROGRESS ========================== -->
+      <section id="view-progress" class="view" hidden>
+        <div class="view-head">
+          <h1>Avanzamento</h1>
+          <p class="lede">
+            Ogni compagnia procede in modo indipendente: un errore su una non
+            interrompe le altre.
+          </p>
+        </div>
+        <div id="progress-list" class="stack"></div>
+        <div class="actions">
+          <button class="btn btn-primary" type="button" data-goto="results">Vai ai risultati</button>
+          <button class="btn btn-ghost" type="button" id="btn-cancel">Annulla i lavori in corso</button>
+        </div>
+      </section>
+
+      <!-- ============================ RESULTS =========================== -->
+      <section id="view-results" class="view" hidden aria-labelledby="results-heading">
+        <div class="view-head">
+          <h1 id="results-heading">Risultati</h1>
+          <p class="lede" id="results-lede"></p>
+        </div>
+        <div id="demo-banner-slot"></div>
+        <div id="recommendation"></div>
+        <section id="requirements-editor" class="card" aria-labelledby="requirements-heading"></section>
+        <h2 class="section-title">Confronto dei preventivi</h2>
+        <div id="comparison" class="comparison-scroll"></div>
+        <h2 class="section-title">Preventivi esclusi</h2>
+        <div id="ineligible" class="stack"></div>
+        <h2 class="section-title">Compagnie senza preventivo</h2>
+        <div id="unavailable" class="stack"></div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </div>
+
+  <!-- ============================== LOGIN ============================== -->
+  <div id="login" class="login" hidden>
+    <form id="form-login" class="card login-card">
+      <div class="brand brand-lg">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">Policy&nbsp;Comparator</span>
+      </div>
+      <p class="lede">Strumento interno. Accesso riservato al personale.</p>
+      <label class="field">
+        <span class="field-label">Email</span>
+        <input name="email" type="email" required autocomplete="username">
+      </label>
+      <label class="field">
+        <span class="field-label">Password</span>
+        <input name="password" type="password" required autocomplete="current-password">
+      </label>
+      <button class="btn btn-primary btn-block" type="submit">Accedi</button>
+      <p id="login-error" class="field-error" role="alert"></p>
+    </form>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>
