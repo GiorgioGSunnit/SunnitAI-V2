@@ -1,0 +1,22 @@
+[project]
+name = "calculation-platform"
+version = "0.1.0"
+description = "Deterministic, LLM-controlled calculation engine — generic strategies, YAML-driven formula packs, versioned parameters."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.109.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "httpx>=0.26.0",
+    "uvicorn[standard]>=0.27.0",
+]
+
+# This sub-project currently runs inside the parent repo's shared virtual
+# environment (all of the above were already present there). If this ever
+# needs to run standalone, `pip install -e .[dev]` from this directory is
+# enough — there is no dependency on the parent repo's src/ package.
