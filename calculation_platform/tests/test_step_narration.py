@@ -108,7 +108,7 @@ def test_explanation_reaches_calculate_json_and_replay_still_matches(client):
     assert replay.json()["replayed_result"]["explanation"] == calculated["explanation"]
 
 
-def test_comparator_answer_shows_methodology_without_raw_step_narration():
+def test_comparator_answer_omits_methodology_and_raw_step_narration():
     raw_line = "candidate: Alfa; exact total: 85.00"
     answer = _success_answer(
         "it",
@@ -129,5 +129,5 @@ def test_comparator_answer_shows_methodology_without_raw_step_narration():
         },
     )
 
-    assert "Punteggio relativo alle offerte confrontate." in answer
+    assert "Punteggio relativo alle offerte confrontate." not in answer
     assert raw_line not in answer

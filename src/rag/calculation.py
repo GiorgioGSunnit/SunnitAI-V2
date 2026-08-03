@@ -748,7 +748,7 @@ _COMPARISON_COPY = {
         "cost": "costo stimato",
         "score": "punteggio",
         "components": "componenti",
-        "relative_note": "Il punteggio 0-100 è relativo alle sole offerte confrontate e ai pesi configurati in questo calcolatore: non è una misura oggettiva del mercato.",
+        "relative_note": "Il punteggio 0-100 dipende dai dati e dai pesi configurati in questo calcolatore: non è una misura oggettiva del mercato.",
     },
     "es": {
         "choose": "La consulta puede corresponder a varios cálculos. ¿Cuál quieres?",
@@ -779,7 +779,7 @@ _COMPARISON_COPY = {
         "cost": "coste estimado",
         "score": "puntuación",
         "components": "componentes",
-        "relative_note": "La puntuación 0-100 es relativa solo a las ofertas comparadas y a los pesos configurados en esta calculadora: no es una medida objetiva del mercado.",
+        "relative_note": "La puntuación 0-100 depende de los datos y los pesos configurados en esta calculadora: no es una medida objetiva del mercado.",
     },
     "en": {
         "choose": "This request could match more than one calculation. Which one do you mean?",
@@ -810,7 +810,7 @@ _COMPARISON_COPY = {
         "cost": "estimated cost",
         "score": "score",
         "components": "components",
-        "relative_note": "The 0-100 score is relative to the compared offers and to the weights configured in this calculator only: it is not an objective measure of the market.",
+        "relative_note": "The 0-100 score depends on the data and weights configured in this calculator: it is not an objective measure of the market.",
     },
 }
 
@@ -1018,7 +1018,10 @@ def _comparison_lines(lang: str, result: Dict[str, Any]) -> List[str]:
             completeness=comparison.get("scoring_completeness"),
         ))
 
-    cost_variable = (comparison.get("cost_basis") or {}).get("variable")
+    cost_basis = comparison.get("cost_basis") or {}
+    cost_variable = cost_basis.get("variable")
+    cost_label = cost_basis.get("label") or copy["cost"]
+    cost_unit = cost_basis.get("unit")
     if ranking:
         lines.append("")
         lines.append(f"{copy['ranking']}:")
@@ -1026,7 +1029,10 @@ def _comparison_lines(lang: str, result: Dict[str, Any]) -> List[str]:
             derived = entry.get("derived") or {}
             parts = []
             if cost_variable and derived.get(cost_variable) is not None:
-                parts.append(f"{copy['cost']} {derived[cost_variable]}")
+                rendered_cost = f"{cost_label} {derived[cost_variable]}"
+                if cost_unit:
+                    rendered_cost += f" {cost_unit}"
+                parts.append(rendered_cost)
             parts.append(f"{copy['score']} {entry.get('total_score')}/100")
             lines.append(f"{entry.get('rank')}. {entry.get('label')} — {'; '.join(parts)}")
             scores = entry.get("scores") or {}
@@ -1075,6 +1081,7 @@ def _success_answer(
         citations.append(reference)
     sources = "; ".join(citations) or _COPY[lang]["no_sources"]
 
+    is_comparison = isinstance(result.get("comparison"), dict)
     sections = [f"{_COPY[lang]['result']}: {rendered}"]
     # Immediately after the figure, never further down: the result IS the
     # conversion's output, so a reader who stops after the number must already
@@ -1109,6 +1116,12 @@ def _success_answer(
             f"{_COPY[lang]['warnings']}:\n"
             + "\n".join(f"- {line}" for line in warnings)
         )
+    # Keep the comparison chat answer compact: the ranking already exposes
+    # its configured-model caveat and data quality, while the platform payload
+    # and reports retain exclusions, methodology, sources and audit details.
+    # Scalar calculations continue through the full rendering path below.
+    if is_comparison:
+        return "\n\n".join(sections)
     # Its own labelled section, never flattened into the warnings: what the
     # calculator does not cover is a boundary on the answer, and a reader
     # who skims warnings as boilerplate must still meet it.
@@ -1120,7 +1133,7 @@ def _success_answer(
         )
     methodology = response.get("methodology")
     explanation = []
-    if not isinstance(result.get("comparison"), dict):
+    if not is_comparison:
         explanation = [str(line) for line in response.get("explanation") or [] if line]
     how_lines = []
     if methodology:

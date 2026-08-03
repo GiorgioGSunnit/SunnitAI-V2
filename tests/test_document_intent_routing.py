@@ -441,9 +441,9 @@ def test_cached_sections_skip_retrieval_entirely(chat_api, monkeypatch):
 # /api/generate routes a message containing a comparison verb to
 # _run_comparison_sync, which asks the RAG graph to compare two UPLOADED
 # DOCUMENTS and returns its answer as the draft, with its citations as the
-# sources. Two of the platform's calculators are themselves comparators
-# ("confronto polizze", "confronto gas e luce") and their vocabulary starts
-# with the same verb, so a document comparison can auto-route into a
+# sources. One of the platform's calculators is itself a comparator
+# ("confronto gas e luce") and its vocabulary starts with the same verb,
+# so a document comparison can auto-route into a
 # calculator: "Confronta 'offerta-gas-enel.pdf' e 'offerta-gas-eni.pdf'"
 # scores 3 against business.confronto_gas_luce. That calculator takes an
 # object_list, so the intercepted turn returns its candidate-collection prompt

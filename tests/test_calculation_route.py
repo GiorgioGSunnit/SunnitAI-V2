@@ -674,15 +674,37 @@ def test_success_answer_renders_scalar_explanation_under_methodology_heading():
     ) in answer
 
 
-def test_success_answer_suppresses_comparator_step_explanation():
+def test_success_answer_stops_after_comparator_notices():
     response = _comparison_result(provisional=False)
     response["methodology"] = "Punteggio relativo alle offerte confrontate."
     response["explanation"] = ["candidate: Alfa; exact total: 85.00"]
 
     answer = calculation._success_answer("it", response)
 
-    assert response["methodology"] in answer
+    assert response["methodology"] not in answer
     assert response["explanation"][0] not in answer
+    assert "Non incluso:" not in answer
+    assert "Fonti:" not in answer
+    assert calculation._COPY["it"]["disclaimer"] not in answer
+    assert "Avvertenze:" not in answer  # this fixture has none
+    assert "Assunzioni:" in answer
+
+
+def test_success_answer_labels_score_derived_annual_premium():
+    response = _comparison_result(provisional=False)
+    response["result"]["comparison"]["cost_basis"] = {
+        "variable": "premio_annuo_calcolato",
+        "label": "premio annuo calcolato",
+        "unit": "EUR/anno",
+    }
+    response["result"]["ranking"][0]["derived"] = {
+        "premio_annuo_calcolato": "370.00",
+    }
+
+    answer = calculation._success_answer("it", response)
+
+    assert "premio annuo calcolato 370.00 EUR/anno" in answer
+    assert answer.index("premio annuo calcolato") < answer.index("punteggio 85.00/100")
 
 
 def test_calculation_node_missing_inputs_sets_one_clarification_and_pending_state(
@@ -1919,7 +1941,7 @@ def test_full_mocked_production_comparison_conversation(monkeypatch):
     # Money before the synthetic score, and the score's relativity stated.
     assert answer.index("costo stimato 400.00") < answer.index("punteggio 85.00/100")
     assert "non è una misura oggettiva del mercato" in answer
-    assert "Non incluso" in answer
+    assert "Non incluso" not in answer
     assert len(calls) == 2
 
 
@@ -1946,8 +1968,8 @@ def test_effective_tie_answer_never_names_a_best_offer(monkeypatch):
 def test_comparison_answer_is_aligned_across_languages(lang, marker):
     answer = calculation._success_answer(lang, _comparison_result(provisional=True))
     assert marker in answer
-    assert calculation._COPY[lang]["exclusions"] in answer
-    assert "Il massimale non entra nel punteggio." in answer
+    assert calculation._COPY[lang]["exclusions"] not in answer
+    assert "Il massimale non entra nel punteggio." not in answer
     assert calculation._COMPARISON_COPY[lang]["relative_note"] in answer
     # A provisional comparison says so in every language.
     assert calculation._COMPARISON_COPY[lang]["provisional"].split("{")[0].strip() in answer
