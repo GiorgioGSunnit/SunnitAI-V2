@@ -345,18 +345,18 @@ def test_comparator_round_trips_match_then_tool_schema_then_calculate():
     in the pack would surface only at runtime, mid-conversation."""
     matched = client.post(
         "/match",
-        json={"query": "Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro."},
+        json={"query": "Confronta queste due offerte gas e luce."},
     )
     assert matched.status_code == 200
     assert matched.json()["status"] == "matched"
     calculator_id = matched.json()["candidates"][0]["calculator_id"]
-    assert calculator_id == "business.confronto_polizze"
+    assert calculator_id == "business.confronto_gas_luce"
 
     schema = client.get(f"/calculators/{calculator_id}/tool-schema")
     assert schema.status_code == 200
     properties = schema.json()["input_schema"]["properties"]
     arrays = [n for n, s in properties.items() if s.get("type") == "array"]
-    assert arrays == ["polizze"], "expected exactly one candidates array"
+    assert arrays == ["offerte"], "expected exactly one candidates array"
     candidates_field = arrays[0]
 
     calculated = client.post(
@@ -364,10 +364,19 @@ def test_comparator_round_trips_match_then_tool_schema_then_calculate():
         json={
             "calculator_id": calculator_id,
             "inputs": {
-                "eta_conducente": 40,
+                "consumo_annuo_kwh": 2700,
+                "consumo_annuo_smc": 1200,
                 candidates_field: [
-                    {"nome": "Alfa", "premio_annuo": 420},
-                    {"nome": "Beta", "premio_annuo": 510, "copertura_kasko": True},
+                    {
+                        "fornitore": "Alfa",
+                        "prezzo_kwh_luce": "0.25",
+                        "prezzo_smc_gas": "1.10",
+                    },
+                    {
+                        "fornitore": "Beta",
+                        "prezzo_kwh_luce": "0.22",
+                        "prezzo_smc_gas": "1.05",
+                    },
                 ],
             },
         },

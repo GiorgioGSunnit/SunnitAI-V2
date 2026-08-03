@@ -506,13 +506,35 @@ def bind_offer(item_specs, text: str) -> Dict[str, Any]:
     """Parse ONE candidate offer from one message, label-anchored like every
     other binding ('premio 450' binds, a bare number does not). A leading
     'Polizza A:' / 'Fornitore X:' segment becomes the offer's name (bound to
-    the first free string field); everything else follows the shared rules."""
+    the first free string field). The same applies to the natural
+    'Generali, premio 500 ...' form when the comma is immediately followed by
+    a declared field cue. Everything else follows the shared rules."""
     inputs: Dict[str, Any] = {}
 
     label: Optional[str] = None
     binding_text = text
+    separator: Optional[str] = None
+    prefix = ""
     if ":" in text:
         prefix = text.split(":", 1)[0]
+        separator = ":"
+    elif "," in text:
+        candidate_prefix, remainder = text.split(",", 1)
+        remainder_ascii = _strip_accents(remainder.lower()).lstrip()
+        field_cues = {
+            cue
+            for spec in item_specs
+            if spec.type != "string"
+            for cue in _cue_tokens(spec)
+        }
+        if any(
+            re.match(r"\b" + re.escape(cue) + r"\b", remainder_ascii)
+            for cue in field_cues
+        ):
+            prefix = candidate_prefix
+            separator = ","
+
+    if separator is not None:
         stripped = prefix.strip()
         if 0 < len(stripped) <= 40 and not any(ch.isdigit() for ch in stripped):
             label = stripped

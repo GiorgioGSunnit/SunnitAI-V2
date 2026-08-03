@@ -28,7 +28,6 @@ released:
   - id: business.invoice_total
   - id: business.loan_payment
   - id: business.confronto_gas_luce
-  - id: business.confronto_polizze
 
   # --- legal_it: monetary / fiscal ----------------------------------------
   - id: legal_it.irpef

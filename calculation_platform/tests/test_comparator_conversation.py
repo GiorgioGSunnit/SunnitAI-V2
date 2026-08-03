@@ -7,8 +7,16 @@ per message, closed by a finish word ('confronta'). These tests script the
 exact demo conversations, including the never-guess refusals.
 """
 
-from app.main import engine
+from app.core.engine import CalculationEngine
+from app.core.registry import CalculatorRegistry
+from app.main import FORMULA_PACKS_DIR, PARAMETERS_DIR
+from app.resolvers.parameter_store import ParameterStore
 from simulation.conversation import SimulatedConversation
+
+engine = CalculationEngine(
+    CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=True),
+    ParameterStore(PARAMETERS_DIR),
+)
 
 
 def _conversation():
@@ -41,17 +49,25 @@ def test_full_policy_comparison_conversation_matches_pack_example():
     assert reply.calculation.status == "success"
     assert reply.calculation.result["best"] == "Polizza A"
     totals = [e["total_score"] for e in reply.calculation.result["ranking"]]
-    assert totals == ["85.34", "67.39"]  # the pack's own worked example
+    assert totals == ["70.67", "49.78"]  # the pack's own worked example
     # A clear winner may be named, and only "under the configured model".
     assert reply.calculation.result["comparison"]["decision_status"] == "clear_winner"
     assert "Polizza A e in testa in modo netto secondo il modello configurato" in reply.text
-    # Money leads the synthetic score, and the score's relativity is stated.
-    assert reply.text.index("costo stimato 382.50") < reply.text.index("punteggio totale 85.34")
-    assert "non una misura oggettiva di mercato" in reply.text
+    # The calculated annual premium leads the synthetic score, and the
+    # score's relativity is stated.
+    assert reply.text.index("premio annuo calcolato 1326.45 EUR/anno") < reply.text.index(
+        "punteggio totale 70.67"
+    )
+    assert "non e una misura oggettiva di mercato" in reply.text
     assert "pesi" in reply.text.lower()  # the demo-weights warning is surfaced
     # Defaults were applied to scored fields, so nothing may read as final.
     assert "PROVVISORIO" in reply.text
-    assert "Non incluso:" in reply.text
+    assert "Non incluso:" not in reply.text
+    assert "Metodo:" not in reply.text
+    assert "Calcolo verificabile" not in reply.text
+    # The presentation is shortened, not the structured audit payload.
+    assert reply.calculation.exclusions
+    assert reply.calculation.methodology
 
 
 def test_complete_identical_policy_offers_produce_effective_tie():
@@ -99,14 +115,44 @@ def test_comparison_refuses_fewer_than_two_offers():
     assert "almeno 2" in reply.text
 
 
-def test_offer_with_unlabeled_numbers_is_not_guessed():
+def test_offer_with_unlabeled_optional_numbers_is_not_guessed():
     chat = _conversation()
     chat.send("confronta due polizze auto, conducente di 30 anni")
-    # premium AND franchise as bare numbers -> ambiguous -> must ask, not map
+    # Premium and franchise are optional. Bare numbers must still not be
+    # guessed into either field; only the explicit leading name is recorded.
     reply = chat.send("Polizza X: 450 e 150")
     assert reply.kind == "question"
-    assert "manca ancora" in reply.text
-    assert "premio_annuo" in reply.text
+    assert "Registrata offerta 1: nome=Polizza X" in reply.text
+    assert "premio_annuo=" not in reply.text
+    assert "franchigia=" not in reply.text
+
+
+def test_offer_name_accepts_comma_before_first_labeled_field():
+    chat = _conversation()
+    chat.send("confronta due polizze auto, conducente di 35 anni")
+
+    reply = chat.send(
+        "Generali GroupAma, premio annuo 500 euro, franchigia 300 euro, "
+        "senza kasko, senza cristalli, senza infortuni, senza assistenza stradale, "
+        "guida esclusiva sì, sconto no sinistri 0%, sconto fedeltà 0%, "
+        "senza telemedicina, senza app e voto utenti 3."
+    )
+
+    assert reply.kind == "question"
+    assert "Registrata offerta 1" in reply.text
+    assert "nome=Generali GroupAma" in reply.text
+    assert "premio_annuo=500" in reply.text
+    assert "franchigia=300" in reply.text
+
+
+def test_unlabeled_field_list_is_not_mistaken_for_comma_separated_name():
+    chat = _conversation()
+    chat.send("confronta due polizze auto, conducente di 35 anni")
+
+    reply = chat.send("premio 500 euro, franchigia 300 euro")
+
+    assert reply.kind == "question"
+    assert "manca ancora: nome" in reply.text
 
 
 def test_gas_luce_conversation_collects_consumption_then_offers():

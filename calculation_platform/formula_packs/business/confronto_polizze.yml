@@ -2,18 +2,16 @@ id: business.confronto_polizze
 name: Confronto polizze assicurative (punteggio 0-100)
 category: business
 strategy: comparator
-methodology: "Punteggio 0-100 relativo alle offerte confrontate, con costo normalizzato rispetto alla migliore offerta e componenti pesate che sommano a 1."
-version: "2"
+methodology: "Punteggio 0-100 basato su coperture, condizioni, servizi e recensioni; premio annuo indicativo = 300 EUR + (100 - punteggio) * 35 EUR."
+version: "3"
 description: >
   Confronta due o piu polizze assicurative (auto/casa) assegnando a ciascuna
-  un punteggio 0-100 composto da cinque componenti normalizzate (costo,
-  coperture, condizioni, servizi, recensioni) con pesi dichiarati che
-  sommano a 1. Il punteggio di costo e relativo alla MIGLIORE offerta del
-  gruppo: la polizza col premio netto piu basso vale 100 e le altre valgono
-  la frazione premio_migliore/premio_offerta, quindi aggiungere un'offerta
-  piu cara non cambia i punteggi gia calcolati. Il costo confrontato e il
-  premio NETTO (listino meno gli sconti dichiarati), cosi gli sconti pesano
-  una volta sola.
+  un punteggio 0-100 composto da quattro componenti (coperture, condizioni,
+  servizi, recensioni) con pesi dichiarati che sommano a 1. Dopo il
+  punteggio calcola un premio annuo indicativo: 300 EUR a 100/100, piu
+  35 EUR per ogni punto sotto 100. Il premio eventualmente dichiarato
+  dall'utente viene raccolto per compatibilita ma non influenza ne il
+  punteggio ne il premio calcolato.
 jurisdiction: null
 output_unit: null
 keywords:
@@ -51,8 +49,9 @@ negative_examples:
   - confronta questi allegati
   - confronta questi contratti
 ambiguity_notes: >
-  Richiede i dati di almeno due polizze concrete: non e un preventivatore
-  e non stima premi di mercato.
+  Richiede i dati di almeno due polizze concrete. Il premio prodotto e
+  esclusivamente il risultato della regola tariffaria dimostrativa
+  dichiarata, non un preventivo di mercato.
 inputs:
   # Applicant facts are shared: the same driver is requesting every quote.
   # They are collected, validated, echoed in inputs_used and recorded in the
@@ -86,10 +85,10 @@ inputs:
         description: Nome identificativo della polizza/compagnia
       - name: premio_annuo
         type: decimal
-        required: true
+        required: false
         min_value: 0.01
         unit: EUR
-        description: Premio annuo di listino della polizza, prima degli sconti dichiarati
+        description: Premio annuo eventualmente dichiarato (raccolto per compatibilita, non usato nel punteggio o nel premio calcolato)
       - name: franchigia
         type: decimal
         required: false
@@ -167,27 +166,15 @@ formula:
   candidates_input: polizze
   label_field: nome
   tie_tolerance: "0.50"
-  candidate_derived:
-    # The actual price of the policy: list premium net of the discounts the
-    # offer itself declares. This is the ONLY place discounts enter the
-    # score. The previous version scored them twice — once implicitly (a
-    # discount lowered nothing, because the cost component compared list
-    # premiums) and once explicitly through a punteggio_sconti component,
-    # which rewarded a headline discount rate regardless of what it was a
-    # discount off. max(..., 0): two stacked discounts can sum past 100%,
-    # and a negative premium would hand that offer a perfect score.
-    premio_netto: "max(premio_annuo * (1 - (sconto_no_sinistri + sconto_fedelta)), 0)"
+  post_score_derived:
+    premio_annuo_calcolato: "300 + (100 - total_score) * 35"
+  output_cost:
+    variable: premio_annuo_calcolato
+    label: premio annuo calcolato
+    unit: EUR/anno
   components:
-    # 0.50 = the old 0.40 cost weight plus the 0.10 freed by removing the
-    # separate discount component, whose signal now reaches the score
-    # through premio_netto instead.
-    - name: punteggio_costo
-      weight: "0.50"
-      relative_expression: "premio_netto"
-      direction: lower_is_better
-      normalization: ratio_to_best
     - name: punteggio_coperture
-      weight: "0.25"
+      weight: "0.50"
       points:
         - {field: copertura_kasko, points: 20}
         - {field: copertura_infortuni, points: 15}
@@ -199,7 +186,7 @@ formula:
     # definition, they subtracted the same points from everyone and
     # differentiated nothing.
     - name: punteggio_condizioni
-      weight: "0.15"
+      weight: "0.30"
       base: 100
       rules:
         - when: {field: guida_esclusiva, equals: false}
@@ -208,13 +195,13 @@ formula:
           points: -10
       clamp: {min: 0, max: 100}
     - name: punteggio_servizi
-      weight: "0.05"
+      weight: "0.10"
       points:
         - {field: telemedicina, points: 5}
         - {field: app_gestione, points: 5}
       scale_max: 10
     - name: punteggio_recensioni
-      weight: "0.05"
+      weight: "0.10"
       expression: "voto_medio_utenti * 20"
       clamp: {min: 0, max: 100}
 output:
@@ -227,23 +214,22 @@ warnings:
     con il business prima dell'uso operativo: l'aritmetica e esatta, la
     validita del modello di punteggio no.
   - >-
-    Il punteggio 0-100 e una sintesi relativa alle sole offerte confrontate e
-    ai pesi qui dichiarati, non una misura oggettiva di qualita di mercato.
+    Il punteggio 0-100 e una sintesi basata sui dati forniti e sui pesi qui
+    dichiarati, non una misura oggettiva di qualita di mercato.
 assumptions:
-  - "Il punteggio di costo e relativo alla MIGLIORE offerta del gruppo: il premio netto piu basso vale 100, gli altri valgono premio_migliore/premio_offerta * 100."
-  - "Aggiungere un'offerta piu cara non modifica i punteggi di costo gia calcolati ne il loro ordine."
-  - "Il costo confrontato e il premio netto = premio di listino * (1 - sconto_no_sinistri - sconto_fedelta), con minimo 0: gli sconti incidono una volta sola, tramite il costo."
-  - "Gli sconti sono espressi come frazioni (0,10 = 10%)."
+  - "Il premio annuo calcolato segue esclusivamente la formula 300 EUR + (100 - punteggio totale) * 35 EUR."
+  - "Un punteggio di 100/100 produce 300 EUR annui; ogni punto in meno aggiunge 35 EUR annui."
+  - "Il premio di listino e gli sconti eventualmente dichiarati sono raccolti per compatibilita ma non incidono sul punteggio o sul premio calcolato."
   - "Eta del conducente e storico sinistri sono del richiedente, identici per tutte le polizze: sono registrati negli input e nel percorso di calcolo ma non entrano nel punteggio, perche non possono distinguere un'offerta dall'altra."
   - "Sono valutate come condizioni solo le clausole specifiche dell'offerta: franchigia e formula di guida esclusiva."
   - "Se due offerte restano entro 0,50 punti totali il confronto dichiara una sostanziale parita e non indica un vincitore."
 exclusions:
-  - "Il massimale e raccolto ma non entra nel punteggio: manca una scala condivisa e verificata per convertirlo in punti, e inventarne una falserebbe il confronto."
+  - "Il massimale, il premio dichiarato e gli sconti sono raccolti ma non entrano nel punteggio."
   - "Eta del conducente e storico sinistri non incidono sul punteggio: sono uguali per tutte le offerte confrontate."
-  - "Non e un preventivatore: non stima ne verifica i premi di mercato, confronta solo i dati forniti."
+  - "Il premio annuo calcolato applica una regola tariffaria dimostrativa e non stima ne verifica i premi di mercato."
   - "Non verifica la veridicita dei dati delle offerte ne le condizioni contrattuali non dichiarate (massimali per garanzia, esclusioni di polizza, rivalse)."
 examples:
-  - description: "Stesso conducente (22 anni), due polizze auto: la A costa meno e copre di piu, e vince"
+  - description: "Stesso conducente (22 anni), due polizze auto: la A copre di piu, ottiene il punteggio migliore e il premio calcolato minore"
     inputs:
       eta_conducente: 22
       polizze:
@@ -270,14 +256,15 @@ examples:
         best_candidates:
         - Polizza A
         cost_basis:
-          component: punteggio_costo
-          variable: premio_netto
-        score_gap: '17.95'
+          variable: premio_annuo_calcolato
+          label: premio annuo calcolato
+          unit: EUR/anno
+        score_gap: '20.89'
         tie_tolerance: '0.50'
         provisional: true
         provisional_status: provisional_unconfirmed
         assumptions_confirmed: false
-        scoring_completeness: '0.5833'
+        scoring_completeness: '0.5000'
         scoring_defaults_applied:
         - path: polizze[0].copertura_infortuni
           value: false
@@ -293,8 +280,6 @@ examples:
           value: false
         - path: polizze[1].guida_esclusiva
           value: false
-        - path: polizze[1].sconto_fedelta
-          value: '0'
         - path: polizze[1].telemedicina
           value: false
         - path: polizze[1].app_gestione
@@ -307,24 +292,20 @@ examples:
         - copertura_kasko
         - franchigia
         - guida_esclusiva
-        - premio_annuo
-        - sconto_fedelta
-        - sconto_no_sinistri
         - telemedicina
         - voto_medio_utenti
         candidates_compared: 2
       ranking:
       - rank: 1
         label: Polizza A
-        total_score: '85.34'
+        total_score: '70.67'
         scores:
-          punteggio_costo: '100.00'
           punteggio_coperture: '54.55'
           punteggio_condizioni: '100.00'
           punteggio_servizi: '50.00'
           punteggio_recensioni: '84.00'
         derived:
-          premio_netto: '382.50'
+          premio_annuo_calcolato: '1326.45'
         data_quality:
           provided_fields:
           - app_gestione
@@ -343,18 +324,17 @@ examples:
           - telemedicina
           unknown_fields:
           - massimale
-          scoring_completeness: '0.7500'
+          scoring_completeness: '0.6667'
       - rank: 2
         label: Polizza B
-        total_score: '67.39'
+        total_score: '49.78'
         scores:
-          punteggio_costo: '85.00'
           punteggio_coperture: '36.36'
           punteggio_condizioni: '80.00'
           punteggio_servizi: '0.00'
           punteggio_recensioni: '76.00'
         derived:
-          premio_netto: '450.00'
+          premio_annuo_calcolato: '2057.64'
         data_quality:
           provided_fields:
           - copertura_kasko
@@ -373,7 +353,7 @@ examples:
           - telemedicina
           unknown_fields:
           - massimale
-          scoring_completeness: '0.4167'
+          scoring_completeness: '0.3333'
   - description: >-
       Due offerte identiche sotto ogni aspetto valutato, con tutti i campi che
       incidono sul punteggio dichiarati: parita sostanziale, nessun vincitore,
@@ -416,8 +396,9 @@ examples:
         - Compagnia Nord
         - Compagnia Sud
         cost_basis:
-          component: punteggio_costo
-          variable: premio_netto
+          variable: premio_annuo_calcolato
+          label: premio annuo calcolato
+          unit: EUR/anno
         score_gap: '0.00'
         tie_tolerance: '0.50'
         provisional: false
@@ -433,9 +414,6 @@ examples:
         - copertura_kasko
         - franchigia
         - guida_esclusiva
-        - premio_annuo
-        - sconto_fedelta
-        - sconto_no_sinistri
         - telemedicina
         - voto_medio_utenti
         candidates_compared: 2

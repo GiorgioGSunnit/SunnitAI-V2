@@ -186,8 +186,8 @@ request -> CalculatorRegistry.get(calculator_id)   # load YAML definition
     spese generali (art. 2 DM 55/2014) → +4% CPA → +22% IVA**, with an
     explicit subtotal at every stage.
   - `comparator` — ranks N candidate offers held in a single `object_list`
-    input against each other (`business.confronto_polizze`,
-    `business.confronto_gas_luce`). See **Comparisons** below.
+    input against each other (`business.confronto_gas_luce`). See
+    **Comparisons** below.
 - **Engine** (`app/core/engine.py`) — the only file that knows the
   end-to-end flow above; it never contains formula logic itself.
 - **API** (`app/api/routes.py`, `app/main.py`) — `GET /health`,
@@ -281,8 +281,8 @@ caller stated it), `assumed_fields` (the platform defaulted it) and
 `false` are different claims and are never flattened together.
 
 A comparison is **provisional** when a default was applied to a field that
-actually feeds a component. Fields declared but scored by nothing (the
-insurance `massimale`) do not count against `scoring_completeness`.
+actually feeds a component. Fields declared but scored by nothing do not
+count against `scoring_completeness`.
 
 `CalculationRequest.confirm_assumptions` lets a caller record that it has
 seen those assumptions. It changes no number and removes no assumption:
@@ -309,10 +309,6 @@ These are declared in each pack's `exclusions` and surfaced in
 `/calculate`, stored calculations, replays, HTML reports and both chat
 renderers:
 
-- **Insurance** — `massimale` is collected but not scored (no verified
-  scale exists to convert it to points). The applicant's age and claims
-  history are collected, validated and audited but deliberately not scored:
-  identical across every quote, they can only shift all totals equally.
 - **Energy** — the yearly cost is the commercial energy quota plus the
   declared fixed fee only. No VAT, no excise duties, no ARERA system
   charges, no transport/distribution/metering, no F1/F2/F3 time bands, and

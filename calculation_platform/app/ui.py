@@ -612,9 +612,12 @@ function renderComparison(result) {
              <ul>${(c.scoring_defaults_applied || []).map(
                d => `<li>${escapeHtml(d.path)} = ${escapeHtml(String(d.value))}</li>`).join('')}</ul></div>`;
   }
-  const costVar = (c.cost_basis || {}).variable;
+  const costBasis = c.cost_basis || {};
+  const costVar = costBasis.variable;
+  const costLabel = costBasis.label || costVar;
+  const costUnit = costBasis.unit || '';
   html += '<table><thead><tr><th>#</th><th>Offerta</th>' +
-          (costVar ? `<th>${escapeHtml(costVar)}</th>` : '') +
+          (costVar ? `<th>${escapeHtml(costLabel)}</th>` : '') +
           '<th>Punteggio</th><th>Componenti</th><th>Dati</th></tr></thead><tbody>';
   for (const entry of result.ranking || []) {
     const derived = entry.derived || {};
@@ -625,7 +628,7 @@ function renderComparison(result) {
       `${(q.assumed_fields || []).length} default; ${(q.unknown_fields || []).length} non dichiarati<br>` +
       `<span class="hint">completezza ${escapeHtml(q.scoring_completeness)}</span>`;
     html += `<tr><td>${escapeHtml(entry.rank)}</td><td>${escapeHtml(entry.label)}</td>` +
-            (costVar ? `<td>${escapeHtml(derived[costVar])}</td>` : '') +
+            (costVar ? `<td>${escapeHtml(derived[costVar])}${costUnit ? ` ${escapeHtml(costUnit)}` : ''}</td>` : '') +
             `<td>${escapeHtml(entry.total_score)}/100</td><td>${components}</td><td>${quality}</td></tr>`;
   }
   html += '</tbody></table>';

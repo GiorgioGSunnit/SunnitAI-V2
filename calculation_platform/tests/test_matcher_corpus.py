@@ -82,14 +82,8 @@ EXPLICIT_REQUESTS = [
      "legal_it.compensi_dm55"),
     ("Imposta di registro per annualita successiva di locazione commerciale.",
      "legal_it.registration_tax_leases"),
-    ("Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro.",
-     "business.confronto_polizze"),
     ("Confronta queste due offerte gas e luce.", "business.confronto_gas_luce"),
-    ("Qual e la polizza migliore tra queste offerte assicurative?",
-     "business.confronto_polizze"),
     ("Mi confronti queste offerte di luce e gas?", "business.confronto_gas_luce"),
-    ("Confronto tra le polizze rc auto che ho ricevuto.",
-     "business.confronto_polizze"),
 ]
 
 
@@ -112,28 +106,6 @@ def test_explicit_requests_are_at_least_offered(query, expected, definitions):
 # right domain pack. This is a hand-written behavioural corpus, not a sample:
 # it says nothing about production accuracy rates.
 COMPARISON_REQUESTS = [
-    # insurance
-    ("Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro.",
-     "business.confronto_polizze"),
-    ("Qual e la polizza migliore tra queste offerte assicurative?",
-     "business.confronto_polizze"),
-    ("Confronto tra le polizze rc auto che ho ricevuto.",
-     "business.confronto_polizze"),
-    ("Ho due preventivi di assicurazione auto, quale mi conviene?",
-     "business.confronto_polizze"),
-    ("Confronta queste assicurazioni casa e dimmi quale scegliere.",
-     "business.confronto_polizze"),
-    ("Mi aiuti a confrontare due polizze assicurative?",
-     "business.confronto_polizze"),
-    ("Classifica queste offerte assicurative per convenienza.",
-     "business.confronto_polizze"),
-    ("Quale assicurazione auto conviene tra queste due?",
-     "business.confronto_polizze"),
-    ("Comparatore polizze: valuta queste proposte.",
-     "business.confronto_polizze"),
-    ("Insurance comparison between these two policies.",
-     "business.confronto_polizze"),
-    # energy
     ("Confronta queste due offerte gas e luce.", "business.confronto_gas_luce"),
     ("Mi confronti queste offerte di luce e gas?", "business.confronto_gas_luce"),
     ("Quale fornitore di luce e gas conviene tra questi?",
@@ -194,56 +166,20 @@ def test_comparison_lookalikes_never_auto_route(query, definitions):
     )
 
 
-def test_the_two_comparator_packs_do_not_shadow_each_other(definitions):
-    """They share most of their routing vocabulary (confronta, offerte,
-    migliore); only the domain nouns separate them, so a win by the wrong
-    pack would be invisible in the band alone."""
-    polizze = match_query(
-        "Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro.", definitions
-    )
-    gas_luce = match_query("Confronta queste due offerte gas e luce.", definitions)
-
-    assert polizze.candidates[0].calculator_id == "business.confronto_polizze"
-    assert gas_luce.candidates[0].calculator_id == "business.confronto_gas_luce"
-    assert polizze.candidates[0].score > next(
-        (c.score for c in polizze.candidates
-         if c.calculator_id == "business.confronto_gas_luce"), 0
-    )
-
-
-# --- Cross-domain: neither comparator may answer for the other -------------
-CROSS_DOMAIN = [
-    ("Classifica queste offerte assicurative per convenienza.",
-     "business.confronto_polizze", "business.confronto_gas_luce"),
-    ("Classifica questi fornitori di energia per costo annuo.",
-     "business.confronto_gas_luce", "business.confronto_polizze"),
-    ("Confronta queste assicurazioni casa.",
-     "business.confronto_polizze", "business.confronto_gas_luce"),
-    ("Confronta queste offerte energia.",
-     "business.confronto_gas_luce", "business.confronto_polizze"),
-    ("Quale polizza assicurativa mi conviene tra queste offerte?",
-     "business.confronto_polizze", "business.confronto_gas_luce"),
-    ("Quale fornitore di luce e gas conviene tra queste offerte?",
-     "business.confronto_gas_luce", "business.confronto_polizze"),
+INSURANCE_COMPARISON_REQUESTS = [
+    "Confronta queste polizze auto: Alfa 420 euro, Beta 510 euro.",
+    "Qual e la polizza migliore tra queste offerte assicurative?",
+    "Confronto tra le polizze rc auto che ho ricevuto.",
+    "Insurance comparison between these two policies.",
 ]
 
 
-@pytest.mark.parametrize("query,expected,shadowed", CROSS_DOMAIN)
-def test_comparator_packs_never_shadow_each_other(query, expected, shadowed, definitions):
-    """Both packs answer to confronta/offerte/migliore, so only the domain
-    nouns keep them apart. A tie here would not fail the band check — it
-    would just hand the request to whichever id sorts first."""
+@pytest.mark.parametrize("query", INSURANCE_COMPARISON_REQUESTS)
+def test_insurance_comparison_is_not_exposed_by_the_calculator(query, definitions):
     response = match_query(query, definitions)
-    assert response.candidates, f"no candidate at all for {query!r}"
-    top = response.candidates[0]
-    assert top.calculator_id == expected, (
-        f"{query!r} routed to {top.calculator_id}, expected {expected}"
-    )
-    other = next((c.score for c in response.candidates if c.calculator_id == shadowed), 0)
-    assert top.score > other, (
-        f"{query!r}: {expected} ties with {shadowed} at {top.score}; "
-        "the winner would be decided by alphabetical order, not by meaning"
-    )
+    assert "business.confronto_polizze" not in {
+        candidate.calculator_id for candidate in response.candidates
+    }
 
 
 # --- Regression guards for the specific vocabulary-leak bugs fixed ----------

@@ -348,13 +348,19 @@ class SimulatedConversation:
                 f"{comparison.get('scoring_completeness')}."
             )
 
-        cost_variable = (comparison.get("cost_basis") or {}).get("variable")
+        cost_basis = comparison.get("cost_basis") or {}
+        cost_variable = cost_basis.get("variable")
+        cost_label = cost_basis.get("label") or "costo stimato"
+        cost_unit = cost_basis.get("unit")
         for entry in ranking:
             derived = entry.get("derived") or {}
             cost = derived.get(cost_variable) if cost_variable else None
             head = f"  {entry['rank']}. {entry['label']} — "
             if cost is not None:
-                head += f"costo stimato {cost} ({cost_variable}); "
+                head += f"{cost_label} {cost}"
+                if cost_unit:
+                    head += f" {cost_unit}"
+                head += "; "
             head += f"punteggio totale {entry['total_score']}/100"
             lines.append(head)
             components = ", ".join(f"{name} {value}" for name, value in entry.get("scores", {}).items())
@@ -365,8 +371,8 @@ class SimulatedConversation:
             lines += SimulatedConversation._render_data_quality(entry.get("data_quality") or {})
 
         lines.append(
-            "  Nota: il punteggio 0-100 e relativo alle sole offerte confrontate e ai pesi "
-            "configurati in questo calcolatore, non una misura oggettiva di mercato."
+            "  Nota: il punteggio 0-100 dipende dai dati e dai pesi configurati "
+            "in questo calcolatore, non e una misura oggettiva di mercato."
         )
         return lines
 
@@ -393,10 +399,11 @@ class SimulatedConversation:
         lines = [f"Risultato — {definition.name}:"]
         unit = f" {definition.output_unit}" if definition.output_unit else ""
         ranking = result.result.get("ranking")
-        if (
+        is_comparison = (
             isinstance(ranking, list) and ranking
             and isinstance(ranking[0], dict) and "total_score" in ranking[0]
-        ):
+        )
+        if is_comparison:
             lines += SimulatedConversation._render_ranking(
                 ranking, result.result.get("best"), result.result.get("comparison")
             )
@@ -422,6 +429,12 @@ class SimulatedConversation:
                     for entry in result.defaults_applied
                 )
             )
+        # The comparison chat response intentionally ends here. Exclusions,
+        # methodology and the full audit trail remain in CalculationResult
+        # (and therefore in API payloads/reports), but are not repeated after
+        # the comparison's warnings, assumptions and disclosed defaults.
+        if is_comparison:
+            return "\n".join(lines)
         # Its own section, never merged into the warnings: what a calculator
         # deliberately leaves out is a scope statement the reader has to see
         # before acting, not a caveat about precision.

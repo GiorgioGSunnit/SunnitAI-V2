@@ -228,7 +228,6 @@ La colonna “Periodo” indica se è richiesto il campo di primo livello `perio
 | `business.invoice_total` | Invoice total (net + VAT - discount) | `net_amount` (`decimal`); `vat_rate` (`decimal`, rate) | no | Nessuna tabella usata: l'aliquota IVA è fornita dal chiamante. La tabella `business/vat_rates.yml` è riservata a uso futuro. |
 | `business.loan_payment` | Loan monthly payment (amortized) | `principal` (`decimal`); `annual_rate` (`decimal`, rate); `months` (`integer`, mesi) | no | Nessun parametro versionato. |
 | `business.confronto_gas_luce` | Confronto offerte gas e luce (costo annuo + punteggio 0-100) | `consumo_annuo_kwh` (`decimal`, kWh); `consumo_annuo_smc` (`decimal`, Smc); `offerte` (`object_list`, minimo 2, con `fornitore`, `prezzo_kwh_luce`, `prezzo_smc_gas` obbligatori per ciascuna offerta) | no | Nessun parametro versionato: prezzi e consumi sono forniti dal chiamante. Pesi dimostrativi. |
-| `business.confronto_polizze` | Confronto polizze assicurative (punteggio 0-100) | `eta_conducente` (`integer`); `polizze` (`object_list`, minimo 2, con `nome` e `premio_annuo` obbligatori per ciascuna polizza) | no | Nessun parametro versionato: i dati delle offerte sono forniti dal chiamante. Pesi dimostrativi. |
 | `legal_it.compensi_dm55` | Compensi forensi (DM 55/2014, giudizi ordinari di cognizione) | `valore_causa` (`decimal`, EUR); `fasi` (`string_list`) | no | Tabella efficace dal 23/10/2022, ma solo lo scaglione 26.000,01–52.000 contiene valori sintetici; gli altri sono stub nulli. |
 | `legal_it.contributo_unificato_civile` | Contributo unificato (processo civile ordinario) | Nessuno nello schema; operativamente serve `valore_causa` oppure `valore_indeterminabile: true`, salvo esenzione | no | Scaglioni efficaci dal 01/01/2013, senza data finale dichiarata. |
 | `legal_it.furto_pena_draft` | [BOZZA] Cornice edittale — furto (art. 624 c.p.) | `aggravanti_comuni` (`integer`); `attenuanti_comuni` (`integer`) | no | Nessuna tabella; formula pack `0.1-draft`, non validato legalmente. Riporta anche la multa base (154-516 euro), non adeguata. |
@@ -251,8 +250,8 @@ La colonna “Periodo” indica se è richiesto il campo di primo livello `perio
 
 ## 6. Confronti tra offerte (calcolatori comparatori)
 
-`business.confronto_polizze` e `business.confronto_gas_luce` non producono un
-importo ma una **classifica**: a ciascuna offerta viene assegnato un punteggio
+`business.confronto_gas_luce` produce una **classifica**: a ciascuna offerta
+viene assegnato un punteggio
 0-100 composto da componenti pesate che sommano esattamente a 1.
 
 L'aritmetica e esatta e verificabile passo per passo; il **modello di
@@ -304,8 +303,8 @@ blocco `data_quality` che distingue tre stati diversi:
 - `unknown_fields` — nessuno ha fornito il dato e non esiste un default.
 
 Un `false` esplicito e un `false` assunto non sono la stessa affermazione e non
-vengono mai confusi. I campi dichiarati ma non usati da alcuna componente (il
-`massimale` delle polizze) non riducono `scoring_completeness`.
+vengono mai confusi. I campi dichiarati ma non usati da alcuna componente non
+riducono `scoring_completeness`.
 
 `confirm_assumptions: true` nella richiesta registra soltanto che il chiamante
 ha preso atto delle assunzioni: il risultato resta `provisional`, le assunzioni
@@ -325,11 +324,6 @@ Ogni comparatore dichiara le proprie esclusioni in `exclusions`, restituito da
 `/calculate`, dai calcoli salvati, dal replay, dal report HTML e dalle risposte
 del chatbot.
 
-- Polizze: il `massimale` e raccolto ma non entra nel punteggio (manca una
-  scala condivisa e verificata). Eta del conducente e storico sinistri sono
-  registrati e verificabili nel percorso di calcolo ma non incidono sul
-  punteggio, perche identici per tutte le offerte confrontate. Non e un
-  preventivatore e non verifica la veridicita dei dati.
 - Gas e luce: il costo annuo NON e l'importo della bolletta. Sono esclusi IVA,
   accise, oneri di sistema, trasporto/distribuzione/misura, fasce orarie
   F1/F2/F3 e le variazioni di prezzo dopo il primo anno. Non sono stati

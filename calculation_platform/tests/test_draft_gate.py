@@ -1,11 +1,11 @@
-"""Unreleased packs must be unreachable unless SUNNIT_ENABLE_DRAFT_PACKS is set.
+"""Unreleased or retired packs must be unreachable in the live platform.
 
 The release manifest, not a version spelling, declares which calculators
-have been legally validated. The post-computation `draft_not_validated`
-warning documents an override; it does not prevent a user from being handed
-a criminal-sentencing range. These tests pin the gate itself, at every entry
-point a user can reach: natural-language matching, the planner, discovery
-listings, and a direct /calculate by calculator_id.
+are exposed. The post-computation `draft_not_validated` warning documents an
+override; it does not prevent a user from being handed a retired or
+unvalidated result. These tests pin the gate itself at every entry point a
+user can reach: natural-language matching, the planner, discovery listings,
+and a direct /calculate by calculator_id.
 """
 
 import pytest
@@ -19,6 +19,7 @@ from app.schemas.calculation_request import CalculationRequest
 from simulation.planner import plan_sentence
 
 DRAFT_IDS = {
+    "business.confronto_polizze",
     "legal_it.omicidio_pena_draft",
     "legal_it.furto_pena_draft",
     "legal_it.rapina_pena_draft",

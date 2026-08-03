@@ -79,6 +79,8 @@ def test_comparison_rendering_covers_verdict_provisional_and_quality():
     assert "scoring_defaults_applied" in comparison_source
     assert "unknown_fields" in comparison_source
     assert "scoring_completeness" in comparison_source
+    assert "costLabel" in comparison_source
+    assert "costUnit" in comparison_source
     # The cost is a column of its own, ahead of the synthetic score.
     assert comparison_source.index("cost_basis") < comparison_source.index("total_score")
 
@@ -107,11 +109,11 @@ def test_simulate_chat_is_labelled_development_only():
 
 def test_the_definition_endpoint_gives_the_page_what_the_list_form_needs():
     """loadDefinition renders candidate cards straight from this payload."""
-    definition = client.get("/calculators/business.confronto_polizze").json()
+    definition = client.get("/calculators/business.confronto_gas_luce").json()
     list_input = next(i for i in definition["inputs"] if i["type"] == "object_list")
     assert list_input["min_items"] == 2
     names = {f["name"] for f in list_input["item_fields"]}
-    assert {"nome", "premio_annuo", "franchigia", "copertura_kasko"} <= names
+    assert {"fornitore", "prezzo_kwh_luce", "prezzo_smc_gas"} <= names
     assert all(f["type"] in {"string", "decimal", "integer", "boolean", "date", "string_list"}
                for f in list_input["item_fields"])
 
@@ -119,12 +121,21 @@ def test_the_definition_endpoint_gives_the_page_what_the_list_form_needs():
 def test_a_calculation_from_the_form_shape_returns_what_the_page_renders():
     """The exact JSON readListInput produces, and every key renderResult reads."""
     response = client.post("/calculate", json={
-        "calculator_id": "business.confronto_polizze",
+        "calculator_id": "business.confronto_gas_luce",
         "inputs": {
-            "eta_conducente": 40,
-            "polizze": [
-                {"nome": "Alfa", "premio_annuo": "400"},
-                {"nome": "Beta", "premio_annuo": "500", "copertura_kasko": True},
+            "consumo_annuo_kwh": 2700,
+            "consumo_annuo_smc": 1200,
+            "offerte": [
+                {
+                    "fornitore": "Alfa",
+                    "prezzo_kwh_luce": "0.25",
+                    "prezzo_smc_gas": "1.10",
+                },
+                {
+                    "fornitore": "Beta",
+                    "prezzo_kwh_luce": "0.22",
+                    "prezzo_smc_gas": "1.05",
+                },
             ],
         },
     })

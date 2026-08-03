@@ -10,8 +10,10 @@ from decimal import Decimal
 import pytest
 
 from app.core.definition_validator import validate_definition
+from app.core.engine import CalculationEngine
 from app.core.errors import DefinitionValidationError
-from app.main import engine
+from app.core.registry import CalculatorRegistry
+from app.main import FORMULA_PACKS_DIR, PARAMETERS_DIR
 from app.resolvers.parameter_store import ParameterStore
 from app.schemas.calculation_request import CalculationRequest
 from app.schemas.calculator_definition import CalculatorDefinition, InputSpec
@@ -20,6 +22,10 @@ from app.strategies.comparator import ComparatorStrategy
 from pathlib import Path
 
 PARAMETERS_DIR = Path(__file__).resolve().parent.parent / "parameters"
+engine = CalculationEngine(
+    CalculatorRegistry(FORMULA_PACKS_DIR, enable_drafts=True),
+    ParameterStore(PARAMETERS_DIR),
+)
 
 
 def _strategy():
@@ -94,17 +100,23 @@ def test_single_candidate_is_rejected():
     assert "at least 2" in result.errors[0].message
 
 
-def test_missing_item_field_error_names_the_item():
+def test_policy_premium_is_optional_and_calculated_from_the_score():
     result = engine.calculate(CalculationRequest(
         calculator_id="business.confronto_polizze",
         inputs={"eta_conducente": 40, "polizze": [
-            {"nome": "Ok", "premio_annuo": 300},
+            {"nome": "Completa", "copertura_kasko": True,
+             "copertura_infortuni": True, "copertura_cristalli": True,
+             "assistenza_stradale": True, "guida_esclusiva": True,
+             "telemedicina": True, "app_gestione": True,
+             "voto_medio_utenti": 5},
             {"nome": "Senza premio"},
         ]},
     ))
-    assert result.status == "error"
-    assert "polizze[1]" in result.errors[0].message
-    assert "premio_annuo" in result.errors[0].message
+    assert result.status == "success", result.errors
+    by_label = {entry["label"]: entry for entry in result.result["ranking"]}
+    assert by_label["Completa"]["total_score"] == "100.00"
+    assert by_label["Completa"]["derived"]["premio_annuo_calcolato"] == "300.00"
+    assert by_label["Senza premio"]["derived"]["premio_annuo_calcolato"]
 
 
 def test_unknown_candidate_field_is_rejected_not_silently_dropped():
@@ -492,6 +504,45 @@ def test_valid_definition_passes():
     validate_definition(_definition(), "inline-test")
 
 
+def test_post_score_derived_uses_exact_total_and_exposes_output_cost():
+    definition = _definition(formula={
+        "candidates_input": "items",
+        "label_field": "nome",
+        "components": [
+            {"name": "qualita", "weight": "1", "expression": "prezzo"},
+        ],
+        "post_score_derived": {
+            "premio_annuo_calcolato": "300 + (100 - total_score) * 35",
+        },
+        "output_cost": {
+            "variable": "premio_annuo_calcolato",
+            "label": "premio annuo calcolato",
+            "unit": "EUR/anno",
+        },
+    })
+    validate_definition(definition, "inline-test")
+    outcome = _run(definition, [
+        {"nome": "Piena", "prezzo": Decimal("100")},
+        {"nome": "Quasi", "prezzo": Decimal("98")},
+    ])
+    by_label = {entry["label"]: entry for entry in outcome.result["ranking"]}
+    assert by_label["Piena"]["derived"]["premio_annuo_calcolato"] == Decimal("300.00")
+    assert by_label["Quasi"]["derived"]["premio_annuo_calcolato"] == Decimal("370.00")
+    assert outcome.result["comparison"]["cost_basis"] == {
+        "variable": "premio_annuo_calcolato",
+        "label": "premio annuo calcolato",
+        "unit": "EUR/anno",
+    }
+
+
+def test_post_score_derived_rejects_unknown_variables():
+    definition = _definition()
+    definition.formula["post_score_derived"] = {
+        "premio": "300 + missing_score",
+    }
+    _expect_invalid(definition, "undeclared variable")
+
+
 # ------------------------------------------------------- weight-agnostic props
 
 def _dominance_offers():
@@ -556,7 +607,7 @@ def test_ranking_is_a_permutation_of_the_offers_given():
     assert sorted(entry["label"] for entry in ranking) == ["Alfa", "Beta", "Omega"]
 
 
-# ------------------------------------------------ relative cost normalization
+# ----------------------------------------------- policy score-based premium
 
 
 def _polizze(offers, **shared):
@@ -568,8 +619,14 @@ def _polizze(offers, **shared):
     return result
 
 
-def _cost_scores(result):
-    return {e["label"]: e["scores"]["punteggio_costo"] for e in result.result["ranking"]}
+def _score_and_premium(result):
+    return {
+        entry["label"]: (
+            entry["total_score"],
+            entry["derived"]["premio_annuo_calcolato"],
+        )
+        for entry in result.result["ranking"]
+    }
 
 
 _PAIR = [
@@ -578,27 +635,22 @@ _PAIR = [
 ]
 
 
-def test_cheapest_offer_takes_the_full_cost_score():
-    # The whole point of ratio_to_best: under the old `100 - cost/worst*100`
-    # the cheapest offer scored 20 here and the dearest a flat 0.
-    scores = _cost_scores(_polizze(_PAIR))
-    assert scores["Alfa"] == "100.00"
-    assert scores["Beta"] == "80.00"  # 400/500
+def test_declared_premium_does_not_feed_score_or_calculated_premium():
+    """The input premium remains accepted for backward compatibility but
+    cannot create the old input-price -> score -> output-price feedback."""
+    values = _score_and_premium(_polizze(_PAIR))
+    assert values["Alfa"] == values["Beta"]
+    assert values["Alfa"] == ("33.00", "2645.00")
 
 
-def test_adding_a_dominated_expensive_offer_leaves_existing_scores_untouched():
-    """The regression the normalization exists to prevent.
-
-    With the reference point at the WORST candidate, quoting a third
-    ludicrous offer silently rescored the two the user actually cared about
-    — and could reorder them. Anchoring on the best makes the added offer
-    irrelevant to everyone else by construction.
-    """
+def test_adding_an_offer_never_rescores_existing_policy_premiums():
+    """Policy scores are absolute component totals now, so another candidate
+    cannot change an existing candidate's score or derived annual premium."""
     before = _polizze(_PAIR)
     after = _polizze(_PAIR + [{"nome": "Carissima", "premio_annuo": 5000}])
 
     for label in ("Alfa", "Beta"):
-        assert _cost_scores(after)[label] == _cost_scores(before)[label]
+        assert _score_and_premium(after)[label] == _score_and_premium(before)[label]
     order_before = [e["label"] for e in before.result["ranking"]]
     order_after = [e["label"] for e in after.result["ranking"] if e["label"] != "Carissima"]
     assert order_after == order_before
@@ -692,31 +744,32 @@ def test_higher_is_better_scores_against_the_maximum():
 # ------------------------------------------------------- insurance modelling
 
 
-def test_net_premium_drives_the_cost_score_and_discounts_count_once():
-    """A 20%-discounted 500 EUR policy and an undiscounted 400 EUR policy
-    cost the same. They must score the same on cost — and there must be no
-    second component paying the first one again for having a discount."""
+def test_declared_discount_does_not_feed_score_or_calculated_premium():
     result = _polizze([
         {"nome": "Scontata", "premio_annuo": 500, "sconto_no_sinistri": "0.20"},
         {"nome": "Netta", "premio_annuo": 400},
     ])
     by_label = {e["label"]: e for e in result.result["ranking"]}
-    assert by_label["Scontata"]["derived"]["premio_netto"] == "400.00"
-    assert by_label["Scontata"]["scores"]["punteggio_costo"] == "100.00"
-    assert by_label["Netta"]["scores"]["punteggio_costo"] == "100.00"
-    # The discount reaches the score exactly once, through the cost.
-    assert "punteggio_sconti" not in by_label["Scontata"]["scores"]
     assert by_label["Scontata"]["total_score"] == by_label["Netta"]["total_score"]
+    assert (
+        by_label["Scontata"]["derived"]["premio_annuo_calcolato"]
+        == by_label["Netta"]["derived"]["premio_annuo_calcolato"]
+    )
+    assert "punteggio_costo" not in by_label["Scontata"]["scores"]
 
 
-def test_full_discount_floors_the_net_premium_at_zero():
+def test_even_a_full_declared_discount_cannot_override_score_based_premium():
     result = _polizze([
         {"nome": "Regalata", "premio_annuo": 500,
          "sconto_no_sinistri": "0.60", "sconto_fedelta": "0.60"},
         {"nome": "Normale", "premio_annuo": 400},
     ])
     by_label = {e["label"]: e for e in result.result["ranking"]}
-    assert by_label["Regalata"]["derived"]["premio_netto"] == "0.00"
+    assert (
+        by_label["Regalata"]["derived"]["premio_annuo_calcolato"]
+        == by_label["Normale"]["derived"]["premio_annuo_calcolato"]
+    )
+    assert by_label["Regalata"]["derived"]["premio_annuo_calcolato"] != "0.00"
 
 
 def test_shared_applicant_facts_never_reorder_otherwise_identical_offers():

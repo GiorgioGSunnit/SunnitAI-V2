@@ -3,11 +3,15 @@
 Shape: a single `object_list` input holds the candidates (each an object
 validated against the pack's declared item_fields); the pack declares
 per-candidate derived variables, set-level aggregates (e.g. the maximum
-premium across all candidates), and a list of weighted scoring
-components. Every component is clamped to the 0-100 range at runtime and
-the weights are validated to be in [0, 1] and sum to exactly 1, so the
-weighted total is 0-100 by construction — the invariant is enforced here,
-not merely assumed of pack authors.
+premium across all candidates), a list of weighted scoring components,
+and optional post-score derived variables. Post-score variables are
+evaluated only after the exact 0-100 total is known and may reference it
+as `total_score`; this supports declarative outputs such as an indicative
+premium without feeding that premium back into its own score. Every
+component is clamped to the 0-100 range at runtime and the weights are
+validated to be in [0, 1] and sum to exactly 1, so the weighted total is
+0-100 by construction — the invariant is enforced here, not merely
+assumed of pack authors.
 
 Component kinds (exactly one per component):
 - `relative_expression`: a numeric quantity (typically a cost) scored
@@ -332,16 +336,44 @@ class ComparatorStrategy(CalculationStrategy):
                     weighted_contribution=str(contribution),
                 )
             trail.record("total_scored", candidate=label, exact_total=str(total_exact))
+
+            # Values that depend on the completed score belong in their own
+            # pass. Keeping them out of `candidate_derived` prevents a pack
+            # from accidentally making an output (for example, an indicative
+            # premium) an input to the very score used to calculate it.
+            post_env = dict(env)
+            post_env["total_score"] = total_exact
+            post_derived: Dict[str, Decimal] = {}
+            for name, expr in (cfg.get("post_score_derived") or {}).items():
+                value = self._eval(
+                    expr, post_env, f"post_score_derived.{name}", label
+                )
+                post_env[name] = value
+                post_derived[name] = value
+                trail.record(
+                    "post_score_derived",
+                    candidate=label,
+                    variable=name,
+                    expression=expr,
+                    value=str(value),
+                    exact_total_score=str(total_exact),
+                )
+
+            published_derived = {
+                name: round_output(Decimal(str(env[name])), definition.output)
+                for name in (cfg.get("candidate_derived") or {})
+            }
+            published_derived.update({
+                name: round_output(value, definition.output)
+                for name, value in post_derived.items()
+            })
             entries.append({
                 "label": label,
                 "index": index,
                 "total_exact": total_exact,
                 "total_score": round_output(total_exact, definition.output),
                 "scores": scores,
-                "derived": {
-                    name: round_output(Decimal(str(env[name])), definition.output)
-                    for name in (cfg.get("candidate_derived") or {})
-                } or None,
+                "derived": published_derived or None,
             })
 
         quality = self._data_quality(definition, cfg, candidates, scalars)
@@ -709,10 +741,15 @@ def _cost_basis(formula: Dict[str, Any]) -> Optional[Dict[str, Any]]:
 
     Renderers must be able to lead with the money ("482,50 EUR/anno")
     before the synthetic 0-100 score, and they should not have to guess
-    which of a pack's derived variables is the price. Reported only when
-    the relative expression is a bare variable name, i.e. exactly when the
-    value is already published per candidate under `derived`.
+    which of a pack's derived variables is the price. A pack may explicitly
+    declare `output_cost` when the displayed cost is calculated after the
+    score. Older cost-comparison packs keep the inferred behavior: a bare
+    derived variable used by a lower-is-better relative component.
     """
+    explicit = formula.get("output_cost")
+    if isinstance(explicit, dict) and explicit.get("variable"):
+        return dict(explicit)
+
     for component in formula.get("components") or []:
         if not isinstance(component, dict):
             continue

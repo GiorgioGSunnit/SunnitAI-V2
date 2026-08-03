@@ -108,22 +108,17 @@ giuridico no. Ogni calcolatore emette il warning `draft_not_validated`.
       `::test_weak_ambiguity_still_falls_back_to_normal_rag_without_prompting`.
       Se il prodotto vuole chiedere anche lì, serve una decisione sulla UX.
 
-## Comparatori (confronto polizze / gas e luce) — DECISIONI DI BUSINESS APERTE
+## Comparatore gas e luce — DECISIONI DI BUSINESS APERTE
 
-L'aritmetica dei comparatori è esatta e verificata dai test; la **validità del
+L'aritmetica del comparatore è esatta e verificata dai test; la **validità del
 modello di punteggio** no. Restano da decidere con il business:
 
-- [ ] Pesi delle componenti. Attuali (dimostrativi): polizze 0,50 costo / 0,25
-      coperture / 0,15 condizioni / 0,05 servizi / 0,05 recensioni; gas e luce
-      0,60 costo / 0,20 condizioni / 0,10 servizi / 0,10 recensioni. La somma
-      esatta a 1 è imposta dal validatore, i valori no.
-- [ ] Punti delle componenti `points`/`rules` (es. kasko 20, infortuni 15,
-      franchigia oltre 300 euro -10, penale di recesso -0,5 punti per euro):
-      scelti per la demo, mai concordati.
-- [ ] `massimale` delle polizze: raccolto ma NON usato nel punteggio. Serve una
-      scala verificata (per fascia di massimale? rapporto col premio?) prima di
-      convertirlo in punti; inventarne una falserebbe il confronto.
-- [ ] Tolleranza di parità: attuale `0.50` punti su 100 in entrambi i pack,
+- [ ] Pesi delle componenti. Attuali (dimostrativi): gas e luce 0,60 costo /
+      0,20 condizioni / 0,10 servizi / 0,10 recensioni. La somma esatta a 1 è
+      imposta dal validatore, i valori no.
+- [ ] Punti delle componenti `points`/`rules` (es. penale di recesso -0,5
+      punti per euro): scelti per la demo, mai concordati.
+- [ ] Tolleranza di parità: attuale `0.50` punti su 100,
       configurabile per pack (`formula.tie_tolerance`). Da confermare che sia
       la soglia oltre la quale il business considera una differenza reale.
 - [ ] Gas e luce: il costo annuo esclude IVA, accise, oneri di sistema,
@@ -131,10 +126,49 @@ modello di punteggio** no. Restano da decidere con il business:
       primo anno. Includerli richiede parametri ARERA verificati e versionati
       per data, che la piattaforma non ha: finché non ci sono, l'esclusione
       resta dichiarata in `exclusions` e nei warning.
-- [ ] Eta del conducente e storico sinistri sono raccolti, validati e tracciati
-      ma non incidono sul punteggio (identici per tutte le offerte). Se il
-      business vuole usarli servirà un modello di rischio vero, non un malus
-      applicato in egual misura a tutti i candidati.
+
+## Comparatore polizze (`business.confronto_polizze`) — RITIRATO DAL RILASCIO
+
+Il pack è passato a `version: "3"` e ha cambiato natura: non confronta più i
+premi dichiarati dall'utente, ma assegna un punteggio 0-100 su coperture,
+condizioni, servizi e recensioni e da quel punteggio **deriva** un premio
+annuo indicativo con una regola tariffaria dimostrativa:
+
+    premio_annuo_calcolato = 300 + (100 - punteggio) * 35
+
+`premio_annuo` resta raccolto come input facoltativo per compatibilità ma non
+influenza né il punteggio né il premio calcolato.
+
+Di conseguenza il suo id è stato **rimosso da `release_manifest.yml`**. Per
+default-deny questo lo rende irraggiungibile in produzione: niente matching,
+niente `/calculate`, niente tool schema, niente planner, nessuna rotta che
+legga un risultato memorizzato. Il pack continua a essere caricato e validato,
+quindi un errore al suo interno rompe comunque la build.
+
+Cosa manca prima di poterlo ri-rilasciare:
+
+- [ ] **La regola tariffaria non ha alcuna base attuariale.** I due numeri
+      (300 EUR di base, 35 EUR per punto sotto 100) sono stati scelti per la
+      demo. Un premio prodotto da questa regola non è un preventivo e non deve
+      essere mostrato a un cliente finale. Serve una decisione di business:
+      o una tariffa verificata e versionata per data, o il ritorno al confronto
+      dei premi realmente dichiarati.
+- [ ] **Decidere quale delle due cose deve essere il calcolatore.** "Confronta
+      i premi che ti do" e "stima un premio da un profilo di copertura" sono
+      due prodotti diversi; la v3 ha sostituito il primo con il secondo senza
+      che la scelta sia stata ratificata.
+- [ ] Pesi e punti delle quattro componenti superstiti: dimostrativi, mai
+      concordati, come per il comparatore gas e luce.
+- [ ] Se si torna al confronto dei premi dichiarati, ripristinare
+      `premio_annuo` come `required: true` e rimettere `premio_netto` (premio
+      di listino al netto degli sconti dichiarati) come base di costo.
+
+Nota per chi legge il diff: la meccanica introdotta per questo pack
+(`formula.post_score_derived` e `formula.output_cost`) è generica e resta
+valida a prescindere dalla sorte del pack. `post_score_derived` valuta
+espressioni **dopo** che il punteggio esatto è noto e può leggerlo come
+`total_score`, il che impedisce per costruzione che un output rientri come
+input del punteggio che lo ha generato.
 
 ## Test locali — deterministici, senza rete/LLM, DB temporaneo
 

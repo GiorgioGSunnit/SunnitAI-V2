@@ -493,3 +493,48 @@ def _validate_comparator(definition: CalculatorDefinition, source_file: str) -> 
             f"component weights must sum to 1 so the total stays on the 0-100 scale; they sum to {weight_total}",
             definition, source_file, weight_total=str(weight_total),
         )
+
+    # Outputs derived from the completed score are deliberately separate
+    # from candidate_derived/component expressions. They may read the exact
+    # `total_score` but cannot feed anything back into the score itself.
+    post_score_derived = formula.get("post_score_derived") or {}
+    if not isinstance(post_score_derived, dict):
+        _fail(
+            "formula.post_score_derived must be a mapping of variable names to expressions",
+            definition, source_file,
+        )
+    post_known = set(known)
+    if post_score_derived and "total_score" in post_known:
+        _fail(
+            "total_score is reserved when formula.post_score_derived is used",
+            definition, source_file, variable="total_score",
+        )
+    post_known.add("total_score")
+    post_names = []
+    for name, expr in post_score_derived.items():
+        _require_fresh(name, "post_score_derived variable", post_known)
+        _check_expression(
+            expr, post_known, definition, source_file,
+            where=f"formula.post_score_derived.{name}",
+        )
+        post_known.add(name)
+        post_names.append(name)
+
+    output_cost = formula.get("output_cost")
+    if output_cost is not None:
+        if not isinstance(output_cost, dict):
+            _fail("formula.output_cost must be a mapping", definition, source_file)
+        variable = output_cost.get("variable")
+        published = set(derived_names) | set(post_names)
+        if variable not in published:
+            _fail(
+                f"formula.output_cost.variable {variable!r} is not a published derived variable",
+                definition, source_file, variable=variable,
+            )
+        for field in ("label", "unit"):
+            value = output_cost.get(field)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                _fail(
+                    f"formula.output_cost.{field} must be a non-empty string",
+                    definition, source_file, field=field,
+                )

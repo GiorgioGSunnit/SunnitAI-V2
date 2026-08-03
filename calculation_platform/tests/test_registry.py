@@ -16,7 +16,6 @@ def registry():
 EXPECTED_CALCULATOR_IDS = {
     "business.invoice_total",
     "business.loan_payment",
-    "business.confronto_polizze",
     "business.confronto_gas_luce",
     "legal_it.irpef",
     "legal_it.legal_interest",
@@ -34,9 +33,11 @@ EXPECTED_CALCULATOR_IDS = {
     "legal_it.compensi_dm55",
 }
 
-# Legally unvalidated drafts: loaded and validated, but withheld from every
-# caller unless SUNNIT_ENABLE_DRAFT_PACKS is set. See test_draft_gate.py.
+# Definitions not exposed by the live calculator: the retired insurance
+# comparison plus legally unvalidated drafts. They remain load-tested so
+# disabling one feature cannot damage the shared engine.
 EXPECTED_DRAFT_IDS = {
+    "business.confronto_polizze",
     "legal_it.omicidio_pena_draft",
     "legal_it.furto_pena_draft",
     "legal_it.furto_aggravato_draft",

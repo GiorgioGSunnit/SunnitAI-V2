@@ -114,7 +114,7 @@ def test_report_falls_back_to_the_definition_for_pre_exclusions_records():
     assert html_lib.escape(_declared_exclusions()[0], quote=True) in html
 
 
-def test_development_conversation_renders_exclusions():
+def test_development_comparison_hides_exclusions_but_keeps_them_in_payload():
     from simulation.conversation import SimulatedConversation
 
     chat = SimulatedConversation(engine)
@@ -131,9 +131,11 @@ def test_development_conversation_renders_exclusions():
     reply = chat.send("confronta")
 
     assert reply.kind == "answer", reply.text
-    assert "Non incluso:" in reply.text
+    assert "Non incluso:" not in reply.text
+    assert "Metodo:" not in reply.text
     for exclusion in _declared_exclusions():
-        assert exclusion in reply.text
+        assert exclusion not in reply.text
+        assert exclusion in reply.calculation.exclusions
 
 
 def test_a_failed_calculation_still_reports_what_the_calculator_excludes():
