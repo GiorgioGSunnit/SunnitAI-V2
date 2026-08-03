@@ -37,5 +37,22 @@ postgres = [
 # package; `pip install -e .[dev]` from this directory is enough to run it,
 # and it also works inside the parent repo's shared virtual environment.
 
+# This pyproject sits INSIDE the package it builds, so setuptools' automatic
+# flat-layout discovery sees api/, models/, worker/ and the rest as competing
+# top-level packages and refuses to build at all. Map the distribution's root
+# package onto this directory and name the subpackages explicitly; the code
+# imports `policy_comparator.*`, so that prefix has to survive installation.
+[tool.setuptools]
+package-dir = { "policy_comparator" = "." }
+packages = [
+    "policy_comparator",
+    "policy_comparator.api",
+    "policy_comparator.models",
+    "policy_comparator.providers",
+    "policy_comparator.schemas",
+    "policy_comparator.services",
+    "policy_comparator.worker",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
