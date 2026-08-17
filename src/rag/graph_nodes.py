@@ -9,7 +9,7 @@ import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional, Set
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from neo4j.exceptions import Neo4jError
 from neo4j.graph import Node as Neo4jNode
 
@@ -3632,19 +3632,30 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     standing = int(state.get("standing") or 2)
     response_length = int(state.get("response_length") or 2)
 
+    def _with_history(system_content: str, human_content: str):
+        """Build a message list with full conversation history injected."""
+        msgs = [SystemMessage(content=system_content)]
+        for msg in (state.get("chat_history") or []):
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "user":
+                msgs.append(HumanMessage(content=content))
+            elif role == "assistant":
+                msgs.append(AIMessage(content=content))
+        msgs.append(HumanMessage(content=human_content))
+        return msgs
+
     if error:
         answer = _call_chat(
-            [
-                SystemMessage(content=synthesis_error_system(lang, tone=tone, standing=standing, length=response_length)),
-                HumanMessage(
-                    content=(
-                        "Original question: {question}\n"
-                        "Internal retrieval note (do not quote literally or discuss IT systems): {error}\n\n"
-                        "Provide the legal consultation as instructed."
-                    ).format(question=state["query"], error=error)
-                    + synthesis_human_footer(lang)
-                ),
-            ]
+            _with_history(
+                synthesis_error_system(lang, tone=tone, standing=standing, length=response_length),
+                (
+                    "Original question: {question}\n"
+                    "Internal retrieval note (do not quote literally or discuss IT systems): {error}\n\n"
+                    "Provide the legal consultation as instructed."
+                ).format(question=state["query"], error=error)
+                + synthesis_human_footer(lang),
+            )
         )
         answer = _strip_vague_closing(answer)
         return {
@@ -3655,17 +3666,15 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if not data:
         answer = _call_chat(
-            [
-                SystemMessage(content=synthesis_empty_system(lang, tone=tone, standing=standing, length=response_length)),
-                HumanMessage(
-                    content=(
-                        "Original question: {question}\n"
-                        "The knowledge graph query returned no rows.\n\n"
-                        "Provide the legal consultation as instructed."
-                    ).format(question=state["query"])
-                    + synthesis_human_footer(lang)
-                ),
-            ]
+            _with_history(
+                synthesis_empty_system(lang, tone=tone, standing=standing, length=response_length),
+                (
+                    "Original question: {question}\n"
+                    "The knowledge graph query returned no rows.\n\n"
+                    "Provide the legal consultation as instructed."
+                ).format(question=state["query"])
+                + synthesis_human_footer(lang),
+            )
         )
         answer = _strip_vague_closing(answer)
         return {
@@ -3764,10 +3773,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             length=response_length,
         )
     answer = _call_chat(
-        [
-            SystemMessage(content=system_prompt),
-            HumanMessage(content="".join(human_parts) + synthesis_human_footer(lang)),
-        ],
+        _with_history(system_prompt, "".join(human_parts) + synthesis_human_footer(lang)),
         max_tokens=600,
     )
     vlog("synthesis_llm", {"citations_count": len(all_citations), "answer_length": len(answer)}, (_time.time() - _t1) * 1000)

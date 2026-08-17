@@ -446,6 +446,9 @@ class ChatBot:
         )
 
         # Run through the RAG pipeline
+        # Pass full conversation history (excluding current user message) so the
+        # synthesis LLM knows what was already said and can stay coherent across turns.
+        prior_messages = [m.to_dict() for m in session.messages[:-1]]
         try:
             result = rag_run(
                 resolved_query,
@@ -457,6 +460,7 @@ class ChatBot:
                 response_length=settings["response_length"],
                 awaiting_clarification=awaiting_clarification_in,
                 pending_sections=pending_sections_in,
+                chat_history=prior_messages,
             )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = _strip_embeddings(result.get("references", []))

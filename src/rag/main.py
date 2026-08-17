@@ -55,6 +55,7 @@ class AgentState(TypedDict, total=False):
     is_clarification_rerank: bool
     turn_count: int
     query: str
+    chat_history: List[Dict[str, Any]]
     session_language: str
     generalized_query: str
     retrieval_keywords: List[str]
@@ -262,7 +263,8 @@ def run(query: str, session_language: str = "it",
         standing: int = 2,
         response_length: int = 2,
         awaiting_clarification: bool = False,
-        pending_sections: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        pending_sections: Optional[List[Dict[str, Any]]] = None,
+        chat_history: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Run a single query through the agent graph."""
     compiled = _get_compiled_graph()
     initial_state: AgentState = {
@@ -292,6 +294,7 @@ def run(query: str, session_language: str = "it",
         "response_length": response_length,
         "awaiting_clarification": awaiting_clarification,
         "pending_sections": pending_sections or [],
+        "chat_history": chat_history or [],
     }
     return compiled.invoke(initial_state)
 
