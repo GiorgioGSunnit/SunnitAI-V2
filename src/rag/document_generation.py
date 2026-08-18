@@ -2264,6 +2264,9 @@ _PLACEHOLDER_RUN_PATTERN = re.compile(
     r'_{3,}|\[.+?\]|\(.+?\)|OMISSIS|\b_+\b', re.IGNORECASE
 )
 
+# Matches a checkbox line: starts with 'o' or 'X' followed by a space
+_CHECKBOX_LINE_RE = re.compile(r'^([oX])\s')
+
 
 def _extract_docx_elements(path: str) -> List[Dict]:
     """Extract non-empty text elements from a DOCX with sequential indices.
@@ -2471,10 +2474,17 @@ def _fill_template_gaps(
         "contestuale (es. 'Locatore:' indica il proprietario, 'Conduttore:' indica "
         "l'inquilino, 'Data:' indica una data rilevante dal contesto).\n"
         f"3. Usa '{ph}' per qualsiasi dato non disponibile.\n"
-        "4. Non includere elementi che non necessitano di modifica.\n"
+        "4. Non includere elementi che non necessitano di modifica — "
+        "ECCEZIONE: per i gruppi checkbox includi sempre tutte le righe del gruppo (vedi regola 6).\n"
         "5. Non inventare dati non forniti esplicitamente.\n"
         + (f"6. {lang_note}\n" if lang_note else "")
-        + "\nRestituisci SOLO un oggetto JSON valido:\n"
+        + "6. CASELLE DI SELEZIONE (CHECKBOX): le righe che iniziano con la lettera 'o' "
+        "(non selezionato) o 'X' (selezionato) seguite da uno spazio sono checkbox. "
+        "Quando la richiesta indica una scelta specifica: imposta 'X' per l'opzione "
+        "selezionata e 'o' per tutte le altre dello stesso gruppo. "
+        "Includi SEMPRE tutte le righe del gruppo checkbox nella risposta, anche quelle invariate. "
+        "Il testo sostitutivo deve essere identico all'originale cambiando SOLO il carattere 'o'/'X' iniziale.\n"
+        "\nRestituisci SOLO un oggetto JSON valido:\n"
         "{\"indice\": \"testo_completo_sostituito\", ...}\n"
         "Dove 'indice' è il numero dell'elemento e 'testo_completo_sostituito' "
         "è il testo completo della riga compilata (non solo il valore inserito)."
@@ -2550,6 +2560,26 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
         if idx >= len(all_paras):
             continue
         para = all_paras[idx]
+
+        # Checkbox replacement: only swap the o/X marker, preserve all other run formatting.
+        cb_match = _CHECKBOX_LINE_RE.match(replacement.strip())
+        if cb_match:
+            new_marker = cb_match.group(1)
+            for run in para.runs:
+                rt = run.text
+                if rt.strip() in ('o', 'X'):
+                    run.text = new_marker
+                    break
+                if rt and rt[0] in ('o', 'X') and (len(rt) == 1 or rt[1] == ' '):
+                    run.text = new_marker + rt[1:]
+                    break
+            else:
+                # Fallback: patch the first character of the first run only
+                if para.runs and para.runs[0].text:
+                    para.runs[0].text = new_marker + para.runs[0].text[1:]
+            continue
+
+        # Standard replacement for regular blank fields
         replaced = False
         for run in para.runs:
             if _PLACEHOLDER_RUN_PATTERN.search(run.text) or not run.text.strip():

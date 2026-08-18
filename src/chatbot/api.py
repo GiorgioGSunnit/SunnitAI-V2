@@ -2111,6 +2111,19 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "Se l'informazione richiesta non è nel documento, dillo chiaramente. "
                                 "Rispondi in modo conversazionale e naturale — non usare JSON, "
                                 "non aggiungere intestazioni non necessarie. "
+                                "STRUTTURA MODULI ITALIANI: nei moduli italiani alcune frasi fisse "
+                                "sono etichette di campo — il valore segue immediatamente sulla stessa riga "
+                                "(e può essere anch'esso in maiuscolo). "
+                                "Etichette comuni: 'COGNOME E NOME', 'COGNOME', 'NOME', "
+                                "'DATA E LUOGO DI NASCITA', 'DATA DI NASCITA', 'LUOGO DI NASCITA', "
+                                "'RESIDENZA', 'DOMICILIO', 'CODICE FISCALE', 'FIRMA', 'DATA', "
+                                "'IL SOTTOSCRITTO', 'LA SOTTOSCRITTA', 'INDIRIZZO', 'COMUNE', 'PROVINCIA'. "
+                                "Anche un testo seguito da ':' è sempre un'etichetta. "
+                                "Esempi: 'COGNOME E NOME CICCIO ELLE' → nome: CICCIO ELLE; "
+                                "'DATA E LUOGO DI NASCITA 14 LUGLIO 1990 - FOGGIA' → nato il 14/07/1990 a Foggia; "
+                                "'RESIDENZA VIA ROMA 1' → residente in Via Roma 1; "
+                                "'NOME: MARIO ROSSI' → nome: MARIO ROSSI (MARIO ROSSI è il valore, non l'etichetta). "
+                                "Non includere mai l'etichetta del campo come parte del valore quando rispondi. "
                                 + _lang_note
                                 + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
                             )
