@@ -26,6 +26,7 @@ from .graph_nodes import (
     comparison_retrieval,
     context_retrieval,
     decompose_query,
+    dottrina_search,
     entity_linking,
     evaluate_retrieval_quality,
     execute_cypher,
@@ -72,6 +73,7 @@ class AgentState(TypedDict, total=False):
     extracted_relationships: List[Dict[str, Any]]
     node_id_map: Dict[str, str]
     context_nodes: List[Dict[str, Any]]
+    special_dottrina_rows: List[Dict[str, Any]]
     retrieval_quality_ok: Optional[bool]
     quality_reformulation_round: int
     quality_feedback: Optional[str]
@@ -152,6 +154,10 @@ def build_graph(compile_graph: bool = True):
         "evaluate_retrieval_quality",
         partial(evaluate_retrieval_quality, driver=driver, database=NEO4J_DATABASE),
     )
+    graph.add_node(
+        "dottrina_search",
+        partial(dottrina_search, driver=driver, database=NEO4J_DATABASE),
+    )
     graph.add_node("generate_cypher_reformulation", generate_cypher_reformulation)
     graph.add_node(
         "comparison_retrieval",
@@ -180,8 +186,9 @@ def build_graph(compile_graph: bool = True):
     graph.add_conditional_edges(
         "article_router",
         route_after_article_router,
-        {"fired": "evaluate_retrieval_quality", "pass": "entity_linking"},
+        {"fired": "dottrina_search", "pass": "entity_linking"},
     )
+    graph.add_edge("dottrina_search", "evaluate_retrieval_quality")
     graph.add_edge("entity_linking", "context_retrieval")
     graph.add_edge("context_retrieval", "generate_cypher_intersection")
     graph.add_conditional_edges(
@@ -275,6 +282,7 @@ def run(query: str, session_language: str = "it",
         "turn_count": 0,
         "bm25_doc_ids": [],
         "raw_result": [],
+        "special_dottrina_rows": [],
         "is_comparison": False,
         "comparison_doc_ids": [],
         "off_topic": False,

@@ -64,7 +64,8 @@ def _visibility_filter(alias: str = "d") -> str:
     return (
         f"(coalesce({alias}.visibility, 'public') = 'public' "
         f"OR {alias}.owner_id = $user_id "
-        f"OR {alias}.tenant_id = $tenant_id)"
+        f"OR {alias}.tenant_id = $tenant_id) "
+        f"AND coalesce({alias}.archived, false) = false"
     )
 
 
@@ -139,10 +140,16 @@ def _collect_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
 # ---------------------------------------------------------------------------
 
 _ARTICLE_PATTERNS = [
-    re.compile(r'\bart\.?\s*(\d+)\s*(?:bis|ter|quater|quinquies)?\b', re.IGNORECASE),
-    re.compile(r'\barticolo\s+(\d+)\s*(?:bis|ter|quater|quinquies)?\b', re.IGNORECASE),
+    re.compile(r'\bartt?\.?\s*(\d+)\s*(?:bis|ter|quater|quinquies)?\b', re.IGNORECASE),
+    re.compile(r'\barticol[oi]\s+(\d+)\s*(?:bis|ter|quater|quinquies)?\b', re.IGNORECASE),
     re.compile(r'\bartículo\s+(\d+)\b', re.IGNORECASE),
     re.compile(r'\b§\s*(\d+)\b'),
+    # Bare number shorthand lawyers use without "art." — e.g. "612 bis cp"
+    re.compile(r'\b(\d{3})\s*(?:bis|ter|quater|quinquies)?\s*(?:c\.?p\.?|cod\.?\s*pen\.?)\b', re.IGNORECASE),
+    # Second (and later) numbers in a comma-separated "artt." list — e.g. "artt. 582, 583"
+    re.compile(r'\bartt\.?\s*\d+\s*,\s*(\d+)\b', re.IGNORECASE),
+    # Bare number preceded by "ex" — Italian legal shorthand: "ex 576", "ex 612 bis"
+    re.compile(r'\bex\s+(\d{3})\s*(?:bis|ter|quater|quinquies)?\b', re.IGNORECASE),
 ]
 _LAW_PATTERNS = [
     re.compile(r'codice\s+civile', re.IGNORECASE),
@@ -433,12 +440,18 @@ def _extract_article_references(query: str) -> List[tuple]:
     """Return list of (article_number_str, full_match_str) for each unique article found."""
     results = []
     seen: Set[str] = set()
+    _suffix_re = re.compile(r'\b(bis|ter|quater|quinquies)\b', re.IGNORECASE)
     for pat in _ARTICLE_PATTERNS:
         for m in pat.finditer(query):
             number = m.group(1)
+            full_match = m.group(0).strip()
+            # Check if bis/ter/quater/quinquies follows the number in the full match
+            suffix_match = _suffix_re.search(full_match[len(number):])
+            if suffix_match:
+                number = f"{number}-{suffix_match.group(1).lower()}"
             if number not in seen:
                 seen.add(number)
-                results.append((number, m.group(0).strip()))
+                results.append((number, full_match))
     return results
 
 
@@ -1862,6 +1875,85 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
         raw_result.extend(_art_rows)
         vlog("article_number_lookup", {"article_number": art_num, "doc_hint": doc_hint, "results_found": len(_art_rows)})
 
+    # Special-document sections are excluded from the main retrieval — they're
+    # only surfaced via the dedicated special_dottrina search below.
+    raw_result = [
+        row for row in raw_result
+        if row.get("d", {}).get("document_type") != "special"
+    ]
+
+    # Parallel special-source (dottrina) search: surfaces sections from
+    # document_type='special' documents alongside the primary/secondary
+    # retrieval, so synthesize_answer can build a doctrinal addendum.
+    # Comparison mode has its own retrieval shape — skip there.
+    special_dottrina_rows: List[Dict[str, Any]] = []
+    if not state.get("is_comparison"):
+        special_query = search_texts[0] if search_texts else generalized
+        special_keywords = state.get("retrieval_keywords") or []
+        with driver.session(database=database) as _special_session:
+            existing_ids = {(r.get("s") or {}).get("id") for r in raw_result}
+
+            # 1. BM25 keyword search on section_fulltext — scoped to special books
+            bm25_rows: List[Dict[str, Any]] = []
+            if special_keywords:
+                bm25_query = " ".join(special_keywords[:6])
+                try:
+                    bm25_results = _special_session.run(
+                        "CALL db.index.fulltext.queryNodes('section_fulltext', $q) "
+                        "YIELD node, score "
+                        "MATCH (d:Document)-[:CONTAINS]->(node) "
+                        "WHERE d.document_type = 'special' "
+                        "RETURN d, node AS s, score "
+                        "ORDER BY score DESC LIMIT 4",
+                        q=bm25_query,
+                    ).data()
+                    for row in bm25_results:
+                        row["_source"] = "special_dottrina_bm25"
+                        row["_reranker_score"] = None
+                        bm25_rows.append(row)
+                except Exception as e:
+                    logger.warning("dottrina BM25 search failed: %s", e)
+
+            # 2. Vector search as fallback/supplement
+            vector_rows: List[Dict[str, Any]] = []
+            commentato_matches = vector_lookup(
+                _special_session, special_query,
+                indexes=["commentato_section_embeddings"], k=3,
+                source_prefix="special_dottrina",
+            )
+            fiscalita_matches = vector_lookup(
+                _special_session, special_query,
+                indexes=["fiscalita_section_embeddings"], k=3,
+                source_prefix="special_dottrina",
+            )
+            special_matches = commentato_matches + fiscalita_matches
+            special_eids = [m["element_id"] for m in special_matches]
+            if special_eids:
+                vector_results = _special_session.run(
+                    "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                    "WHERE elementId(s) IN $eids "
+                    "RETURN d, s",
+                    eids=special_eids,
+                ).data()
+                for row in vector_results:
+                    row["_source"] = "special_dottrina"
+                    row["_reranker_score"] = None
+                    vector_rows.append(row)
+
+            # 3. Merge — BM25 first, then vector, dedup by section id (and against raw_result)
+            seen_ids: set = set()
+            for row in bm25_rows + vector_rows:
+                s_id = (row.get("s") or {}).get("id", "")
+                if not s_id or s_id in existing_ids or s_id in seen_ids:
+                    continue
+                seen_ids.add(s_id)
+                special_dottrina_rows.append(row)
+                if len(special_dottrina_rows) >= 5:
+                    break
+        vlog("special_dottrina_search", {"results_found": len(special_dottrina_rows),
+                                          "bm25_count": len(bm25_rows),
+                                          "vector_count": len(vector_rows)})
+
     aggregated: Dict[str, Dict[str, Any]] = {}
     for match in matches:
         element_id = match["element_id"]
@@ -1912,8 +2004,87 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     return {
         "context_nodes": context_nodes,
         "raw_result": raw_result,
+        "special_dottrina_rows": special_dottrina_rows,
         "law_hint_doc_id": vector_doc_hint or "",
     }
+
+
+def dottrina_search(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
+    """Dedicated dottrina search node — runs on all paths to synthesize_answer.
+    Searches commentato and fiscalita indexes and populates special_dottrina_rows
+    without touching raw_result or any other state keys.
+    """
+    if state.get("is_comparison"):
+        return {}
+    if state.get("special_dottrina_rows"):
+        return {}  # already populated by context_retrieval
+
+    query = state.get("query", "") or state.get("generalized_query", "")
+    keywords = state.get("retrieval_keywords") or []
+    special_dottrina_rows: List[Dict[str, Any]] = []
+
+    with driver.session(database=database) as session:
+        # 1. BM25 keyword search on section_fulltext — scoped to special books
+        bm25_rows: List[Dict[str, Any]] = []
+        if keywords:
+            bm25_query = " ".join(keywords[:6])
+            try:
+                bm25_results = session.run(
+                    "CALL db.index.fulltext.queryNodes('section_fulltext', $q) "
+                    "YIELD node, score "
+                    "MATCH (d:Document)-[:CONTAINS]->(node) "
+                    "WHERE d.document_type = 'special' "
+                    "RETURN d, node AS s, score "
+                    "ORDER BY score DESC LIMIT 4",
+                    q=bm25_query,
+                ).data()
+                for row in bm25_results:
+                    row["_source"] = "special_dottrina_bm25"
+                    row["_reranker_score"] = None
+                    bm25_rows.append(row)
+            except Exception as e:
+                logger.warning("dottrina BM25 search failed: %s", e)
+
+        # 2. Vector search as fallback/supplement
+        vector_rows: List[Dict[str, Any]] = []
+        commentato_matches = vector_lookup(
+            session, query,
+            indexes=["commentato_section_embeddings"], k=3,
+            source_prefix="special_dottrina",
+        )
+        fiscalita_matches = vector_lookup(
+            session, query,
+            indexes=["fiscalita_section_embeddings"], k=3,
+            source_prefix="special_dottrina",
+        )
+        special_matches = commentato_matches + fiscalita_matches
+        special_eids = [m["element_id"] for m in special_matches]
+        if special_eids:
+            vector_results = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE elementId(s) IN $eids "
+                "RETURN d, s",
+                eids=special_eids,
+            ).data()
+            for row in vector_results:
+                row["_source"] = "special_dottrina"
+                row["_reranker_score"] = None
+                vector_rows.append(row)
+
+        # 3. Merge — BM25 first, then vector, dedup by section id
+        seen_ids: set = set()
+        for row in bm25_rows + vector_rows:
+            s_id = (row.get("s") or {}).get("id", "")
+            if s_id and s_id not in seen_ids:
+                seen_ids.add(s_id)
+                special_dottrina_rows.append(row)
+            if len(special_dottrina_rows) >= 5:
+                break
+
+    vlog("dottrina_search", {"results_found": len(special_dottrina_rows),
+                              "bm25_count": len(bm25_rows),
+                              "vector_count": len(vector_rows)})
+    return {"special_dottrina_rows": special_dottrina_rows}
 
 
 # ---------------------------------------------------------------------------
@@ -3032,10 +3203,10 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                         "quality_feedback": feedback,
                         "status_messages": status,
                         "retrieval_evaluated": True,
-                        "retrieval_fallback": True,
+                        "retrieval_fallback": False,
                     }
         return {
-            "retrieval_quality_ok": False,
+            "retrieval_quality_ok": state.get("retrieval_quality_ok", False),
             "quality_reformulation_round": r + 1,
             "quality_feedback": feedback,
             "status_messages": status,
@@ -3278,11 +3449,13 @@ def _extract_citations(
             if is_doc:
                 doc_id = node_id or value.get("document_id") or ""
                 doc_name = value.get("name") or value.get("document_title") or doc_id
+                doc_name = re.sub(r'^\s*﻿?\[[A-Z]+\]\s*', '', doc_name or '').strip()
                 if not doc_id:
                     continue
                 if doc_id not in docs:
-                    docs[doc_id] = {"title": None, "sections": {}}
+                    docs[doc_id] = {"title": None, "sections": {}, "document_type": None}
                 docs[doc_id]["title"] = doc_name
+                docs[doc_id]["document_type"] = value.get("document_type")
 
             elif is_section:
                 section_name = value.get("name") or value.get("title") or ""
@@ -3291,23 +3464,35 @@ def _extract_citations(
                 if not doc_id:
                     continue
                 if doc_id not in docs:
-                    docs[doc_id] = {"title": None, "sections": {}}
-                section_plain_text = (value.get("plain_text") or value.get("text") or "").strip()
-                section_title = (value.get("title") or "").strip() or None
+                    docs[doc_id] = {"title": None, "sections": {}, "document_type": None}
+                # Skip embedding property — large vector, not needed here
+                value_safe = {k: v for k, v in value.items() if k not in ("embedding", "vettore")}
+                section_plain_text = (value_safe.get("plain_text") or value_safe.get("text") or "").strip()
+                section_title_raw = (value_safe.get("title") or "").strip() or None
+                section_abstract = (value_safe.get("abstract") or "").strip()
+                section_title = section_title_raw
                 if not section_title:
-                    section_abstract = (value.get("abstract") or "").strip()
-                    title_match = re.match(r"^-\s*(.+?)\s*-", section_abstract)
-                    section_title = title_match.group(1) if title_match else None
+                    try:
+                        section_title = section_abstract.strip("- ").split(" - ")[0].strip()[:100] if section_abstract else None
+                    except Exception:
+                        section_title = None
                 section_score = record.get("_reranker_score")
-                if section_name and section_name != "0" and section_plain_text:
-                    docs[doc_id]["sections"].setdefault(section_name, {
+                # Key by node_id, not section_name: name is only guaranteed unique
+                # for numbered code articles. Dottrina/special chunks derive name from
+                # a truncated prose snippet, so distinct chunks can share the same name
+                # and would otherwise be silently collapsed by setdefault().
+                section_key = node_id or section_name
+                if section_name and section_name != "0" and section_plain_text and len(section_plain_text) > 20 and not section_plain_text.strip().startswith("Torna indietro"):
+                    docs[doc_id]["sections"].setdefault(section_key, {
+                        "name": section_name,
                         "plain_text": section_plain_text,
                         "title": section_title,
                         "score": section_score,
                     })
 
     def _section_sort_key(item):
-        name, sec = item
+        _key, sec = item
+        name = sec.get("name") or ""
         score = sec.get("score")
         if score is None:
             return (1, 0, name)
@@ -3315,21 +3500,22 @@ def _extract_citations(
 
     results = [
         {
-            "document_name": info["title"] or doc_id,
+            "document_name": re.sub(r'^\s*\[[A-Z]+\]\s*', '', info["title"] or doc_id),
             "document_id": doc_id,
+            "document_type": info.get("document_type"),
             "sections": [
                 {
-                    "name": name,
+                    "name": sec["name"],
                     "title": sec["title"],
                     "plain_text": sec["plain_text"],
                     "score": sec.get("score"),
                     "url": (
                         f"/api/documents/{urllib.parse.quote(doc_id, safe='')}/"
-                        f"sections/{urllib.parse.quote(name, safe='')}"
+                        f"sections/{urllib.parse.quote(sec['name'], safe='')}"
                     ),
                 }
-                for name, sec in sorted(info["sections"].items(), key=_section_sort_key)
-                if len(name) <= 200 and len(sec["plain_text"]) > 10
+                for _key, sec in sorted(info["sections"].items(), key=_section_sort_key)
+                if len(sec["name"]) <= 200 and len(sec["plain_text"]) > 10
             ],
         }
         for doc_id, info in docs.items()
@@ -3594,7 +3780,7 @@ def _is_primary_gap_response(answer: str) -> bool:
 
     if earliest_idx == len(answer):
         return False
-    threshold = min(150, max(100, int(len(answer) * 0.15)))
+    threshold = min(80, max(50, int(len(answer) * 0.08)))
     return earliest_idx < threshold
 
 
@@ -3603,6 +3789,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     error = state.get("execution_error") or state.get("cypher_generation_error")
     data = rerank_results(state.get("query", ""), state.get("raw_result") or [])
     logger.info("synthesize_answer: data=%d, raw_result=%d, bm25_doc_ids=%s", len(data), len(state.get('raw_result') or []), state.get('bm25_doc_ids'))
+    _dottrina_only = False
 
     qfb = state.get("quality_feedback")
     log_cypher_event(
@@ -3665,46 +3852,90 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     if not data:
-        answer = _call_chat(
-            _with_history(
-                synthesis_empty_system(lang, tone=tone, standing=standing, length=response_length),
-                (
-                    "Original question: {question}\n"
-                    "The knowledge graph query returned no rows.\n\n"
-                    "Provide the legal consultation as instructed."
-                ).format(question=state["query"])
-                + synthesis_human_footer(lang),
+        # Main corpus has nothing but dottrina might — fall through to the dottrina
+        # section below by treating the special sections as the primary source.
+        _fallback_special_rows = state.get("special_dottrina_rows") or []
+        if _fallback_special_rows:
+            data = _fallback_special_rows
+            _dottrina_only = True
+        else:
+            answer = _call_chat(
+                _with_history(
+                    synthesis_empty_system(lang, tone=tone, standing=standing, length=response_length),
+                    (
+                        "Original question: {question}\n"
+                        "The knowledge graph query returned no rows.\n\n"
+                        "Provide the legal consultation as instructed."
+                    ).format(question=state["query"])
+                    + synthesis_human_footer(lang),
+                )
             )
-        )
-        answer = _strip_vague_closing(answer)
-        return {
-            "answer": answer,
-            "references": [],
-            "status_messages": state.get("status_messages") or [],
-        }
+            answer = _strip_vague_closing(answer)
+            return {
+                "answer": answer,
+                "references": [],
+                "status_messages": state.get("status_messages") or [],
+            }
 
     _is_cmp = state.get("is_comparison", False)
     summarized_data = _summarize_for_synthesis(data, is_comparison=_is_cmp)
     serialized = json.dumps(summarized_data, ensure_ascii=False)
-    char_cap = 4000 if _is_cmp else 15000
+    char_cap = 4000 if _is_cmp else 3000
     if len(serialized) > char_cap:
         serialized = json.dumps(
-            _summarize_for_synthesis(data, max_records=3,
+            _summarize_for_synthesis(data, max_records=2,
                                      is_comparison=_is_cmp),
             ensure_ascii=False,
             indent=None if _is_cmp else 2,
         )
     all_citations = _extract_citations(data)
+    primary_citations = [c for c in all_citations if c.get("document_type") in (None, "primary", "ccnl")]
+    secondary_citations = [c for c in all_citations if c.get("document_type") == "interpretation"]
+    # Special/dottrina sources are retrieved and carried separately from the main
+    # pipeline (context_retrieval's dedicated state key) — never part of `data`.
+    special_dottrina_rows = state.get("special_dottrina_rows") or []
+    open("/tmp/dottrina_trace.log", "a").write(f"special_dottrina_rows len={len(special_dottrina_rows)}\n")
+    special_citations = _extract_citations(special_dottrina_rows)
+    open("/tmp/dottrina_trace.log", "a").write(
+        f"special_citations len={len(special_citations)} "
+        f"first_sections={len(special_citations[0]['sections']) if special_citations else 'n/a'}\n"
+    )
+    # Tiered synthesis only applies to the standard (non-comparison) answer flow —
+    # comparison mode builds Data from paired document rows and has its own prompt shape.
+    is_tiered = bool(secondary_citations) and not state.get("is_comparison")
+
+    def _citation_source_blocks(cites: List[Dict[str, Any]], label: str) -> List[str]:
+        blocks = []
+        for c in cites:
+            text = "\n\n".join(
+                s["plain_text"] for s in c.get("sections", []) if s.get("plain_text")
+            )
+            if text:
+                blocks.append(f"[{label} - {c['document_name']}]\n{text}")
+        return blocks
+
+    if is_tiered:
+        main_citations = primary_citations + secondary_citations
+        data_blob = "\n\n".join(
+            _citation_source_blocks(primary_citations, "FONTE PRIMARIA")
+            + _citation_source_blocks(secondary_citations, "FONTE SECONDARIA")
+        )
+        if len(data_blob) > char_cap:
+            data_blob = data_blob[:char_cap]
+    else:
+        main_citations = all_citations
+        data_blob = serialized
+
     citation_strings = [
         f"Fonte: {c['document_name']}" if not c["sections"]
         else f"Fonte: {c['document_name']}, sezione: {c['sections'][0]['name']}" if len(c["sections"]) == 1
         else f"Fonte: {c['document_name']}, sezioni: {', '.join(s['name'] for s in c['sections'])}"
-        for c in all_citations
+        for c in main_citations
     ]
 
     human_parts = [
         f"Question: {state['query']}\n",
-        f"Data: {serialized}\n",
+        f"Data: {data_blob}\n",
     ]
     if citation_strings:
         human_parts.append("Fonti disponibili:\n" + "\n".join(citation_strings) + "\n")
@@ -3739,7 +3970,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             "If no retrieved data was used, omit the Fonti line entirely."
         )
 
-    if state.get("retrieval_fallback"):
+    if state.get("retrieval_fallback") and not data:
         _lang = state.get("session_language", "it")
         if _lang == "es":
             fallback_answer = "El tema de su consulta no está presente en los documentos disponibles en mi base de conocimiento. Le recomiendo consultar las fuentes oficiales pertinentes para obtener información precisa. Si lo desea, puedo ayudarle con temas relacionados disponibles en mi base documental."
@@ -3772,10 +4003,22 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             standing=standing,
             length=response_length,
         )
-    answer = _call_chat(
-        _with_history(system_prompt, "".join(human_parts) + synthesis_human_footer(lang)),
-        max_tokens=600,
-    )
+    if is_tiered:
+        system_prompt = system_prompt + (
+            "\nSTRUTTURA DELLA RISPOSTA (obbligatoria quando sono presenti più tipi di fonti):\n"
+            "1. FONTI PRIMARIE: inizia citando cosa stabilisce la legge, riportando il testo normativo con precisione.\n"
+            "2. FONTI SECONDARIE: aggiungi come la giurisprudenza ha interpretato la norma, con attribuzione esplicita "
+            "(es. 'La Corte di Cassazione ha stabilito che...', 'Secondo la sentenza n. X...').\n"
+            "Se una fonte non è disponibile, ometti quella sezione senza menzionarne l'assenza. "
+            "Non inventare contenuti non presenti nelle fonti."
+        )
+    if not _dottrina_only:
+        answer = _call_chat(
+            _with_history(system_prompt, "".join(human_parts) + synthesis_human_footer(lang)),
+            max_tokens=600,
+        )
+    else:
+        answer = ""
     vlog("synthesis_llm", {"citations_count": len(all_citations), "answer_length": len(answer)}, (_time.time() - _t1) * 1000)
     log_cypher_event(
         "e_synthesize_end",
@@ -3804,6 +4047,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 s for s in c['sections']
                 if s.get('plain_text', '')[:100] in reranker_texts
                 or c.get('document_id', '') in bm25_doc_ids
+                or c.get('document_type') == 'ccnl'
             ]}
             for c in citations
         ]
@@ -3876,6 +4120,9 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             # BM25 article lookup — always include
             if doc_id in bm25_doc_ids and state.get("bm25_from_article_lookup"):
                 return True
+            # Dottrina sections (special books) — always include, never filter by article ref
+            if doc_id in {c.get("document_id") for c in special_citations}:
+                return True
             score = section.get("score")
             if score is None:
                 # No reranker score — fall back to article reference check
@@ -3908,6 +4155,8 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # Gap phrase detection handles hallucination prevention instead
     filtered_citations = citations
     citations = filtered_citations
+
+    answer_before_gap = answer
 
     # Hard stop enforcement: if the answer acknowledges a gap, clear all citations.
     # Comparison answers legitimately say "document X doesn't cover this" — skip gap detection.
@@ -3958,12 +4207,76 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")) and not state.get("is_clarification_rerank"):
             citations = []
 
+    # Strip trailing question if LLM appended one despite instructions
+    import re as _re
+    answer = _re.sub(r'\n[A-Z][^\n]{0,500}\?[^\n]*$', '', answer.rstrip()).rstrip()
+
     if citations:
         fonti_line = "Fonti: " + ", ".join(
             f"{c['document_name']} sezioni: {', '.join(s['name'] for s in c['sections'])}"
             for c in citations
         )
         answer = answer.rstrip() + "\n\n" + fonti_line
+
+    if _dottrina_only and not special_citations:
+        special_citations = all_citations
+
+    if (special_citations or _dottrina_only) and not state.get("is_comparison"):
+        special_context = "\n\n".join(_citation_source_blocks(special_citations, "DOTTRINA"))
+        open("/tmp/dottrina_trace.log", "a").write(f"special_context len={len(special_context)}\n")
+        if special_context:
+            dottrina_system = (
+                "Sei un assistente legale italiano specializzato in dottrina giuridica. Ti vengono forniti estratti "
+                "da opere dottrinali e commentari giuridici, insieme alla risposta principale già redatta. "
+                "DIVIETO ASSOLUTO DI CITAZIONE VERBATIM: non riportare MAI frasi intere o brani dal testo originale, "
+                "nemmeno tra virgolette. Riformula SEMPRE con parole completamente diverse, mantenendo solo il "
+                "significato. Se senti la tentazione di copiare una frase, riscrivila da zero con struttura "
+                "sintattica diversa. Non aggiungere contenuti non presenti "
+                "negli estratti. Non omettere concetti chiave presenti negli estratti. Regole: parafrasa fedelmente "
+                "preservando l'essenza e il significato originale degli autori; attribuisci sempre la fonte con "
+                "naturalezza nel testo (es. 'Secondo il commentario...', 'La dottrina rileva che...'); includi "
+                "riferimenti bibliografici e note a piè di pagina se presenti negli estratti; non usare virgolette "
+                "o apici. Non porre domande all'utente e non chiedere chiarimenti. "
+                "Usa solo il contenuto degli estratti forniti. Se un estratto non è direttamente pertinente, "
+                "citalo brevemente in relazione alla domanda senza inventare contenuti aggiuntivi. "
+                "VIETATO ripetere o parafrasare la risposta principale già fornita sopra. "
+                "Aggiungi solo ciò che gli estratti dottrinali contengono in aggiunta. "
+                "Non porre mai domande all'utente. Non chiedere mai chiarimenti o informazioni aggiuntive. "
+                "Termina sempre con un punto fermo."
+            )
+            dottrina_human = (
+                f"Domanda originale: {state['query']}\n\n"
+                f"Risposta principale già fornita:\n{'' if _is_primary_gap_response(answer_before_gap.split('---')[0].strip()) else answer_before_gap}\n\n"
+                f"Estratti dottrinali disponibili:\n{special_context}\n\n"
+                f"IMPORTANTE: Devi sempre fornire una nota dottrinale basata sugli estratti sopra. "
+                f"Non restituire mai una stringa vuota."
+            )
+            dottrina_answer = _call_chat(
+                [SystemMessage(content=dottrina_system), HumanMessage(content=dottrina_human)],
+                max_tokens=600,
+                stop=["\n\n\n", "Nel contesto", "Puoi precisare", "Vuoi specificare", "Hai ulteriori"],
+            )
+            open("/tmp/dottrina_trace.log", "a").write(f"dottrina_answer len={len(dottrina_answer)} preview={repr(dottrina_answer[:200])}\n")
+            dottrina_answer = re.sub(r'^[\s"\'“”]+', '', dottrina_answer).strip()
+            dottrina_answer = re.sub(r'©[^\n]{0,100}', '', dottrina_answer)
+            dottrina_answer = re.sub(r'\n[^\n]{0,600}\?[^\n]*$', '', dottrina_answer.rstrip()).rstrip()
+            if dottrina_answer and dottrina_answer.strip():
+                answer = (
+                    answer.rstrip()
+                    + "\n\n---\n**Nota dottrinale:**\n"
+                    + dottrina_answer.strip()
+                )
+                existing_doc_ids = {c.get("document_id") for c in citations}
+                citations = citations + [
+                    c for c in special_citations if c.get("document_id") not in existing_doc_ids
+                ]
+
+                # If main answer is a gap response but dottrina has content, promote dottrina to main answer
+                if dottrina_answer and _is_primary_gap_response(answer_before_gap.split('---')[0].strip()):
+                    answer = dottrina_answer.strip()
+
+    answer = re.sub(r'\n[A-Z][^\n]{0,500}\?[^\n]*$', '', answer.rstrip()).rstrip()
+
     return {
         "answer": answer,
         "references": data,
@@ -3987,6 +4300,12 @@ def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
     citations = state.get("citations") or []
     unique_doc_names = {c.get("document_name") for c in citations if c.get("document_name")}
     if len(unique_doc_names) < 2:
+        return {}
+
+    def _normalize_type(t):
+        return "corpus" if t in (None, "primary", "interpretation") else t
+    unique_doc_types = {_normalize_type(c.get("document_type")) for c in citations}
+    if len(unique_doc_types) <= 1:
         return {}
 
     system = (

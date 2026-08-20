@@ -503,7 +503,7 @@ class ChatBot:
                 "en": "The question seems to fall outside the legal and professional domain. I am here to assist with legal, contractual, or regulatory matters.",
             }
             answer = _generic_fallback.get(session.session_language, _generic_fallback["it"])
-        elif not result.get("retrieval_quality_ok"):
+        elif not result.get("retrieval_quality_ok") and not answer.strip():
             # retrieval_quality_ok=False — query too broad or no quality results.
             # Extract document titles from references to show the user what topics exist.
             _references = result.get("references", [])

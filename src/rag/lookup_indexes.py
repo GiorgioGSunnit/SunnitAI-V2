@@ -63,6 +63,9 @@ CONTEXT_VECTOR_INDEXES = [
     "legalact_embeddings",
     "penalty_embeddings",
     "courtcase_embeddings",
+    "commentato_section_embeddings",
+    "fiscalita_section_embeddings",
+    "ccnl_section_embeddings",
 ]
 CONTEXT_NODE_LIMIT = 5
 VECTOR_K = 30

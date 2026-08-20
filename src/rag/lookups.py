@@ -49,6 +49,9 @@ VECTOR_INDEX_SETTINGS: Dict[str, Dict[str, Any]] = {
     "contract_embeddings": {"k": 2, "min_score": 0.28},
     "penalty_embeddings": {"k": 1, "min_score": 0.32},
     "award_embeddings": {"k": 2, "min_score": 0.28},
+    "commentato_section_embeddings": {"k": 3, "min_score": 0.25},
+    "fiscalita_section_embeddings": {"k": 3, "min_score": 0.25},
+    "ccnl_section_embeddings": {"k": 5, "min_score": 0.3},
 }
 
 LABEL_VECTOR_HINTS: Dict[str, List[str]] = {

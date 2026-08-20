@@ -104,11 +104,7 @@ embedding_model = _init_embedding_model()
 
 
 def _embed_query_with_prefix(text: str) -> list:
-    """Embed a search query, adding an instruction prefix for Qwen models."""
-    provider = os.getenv("EMBEDDING_PROVIDER", "local")
-    model = os.getenv("EMBEDDING_MODEL", "")
-    if provider == "openai" and "qwen" in model.lower():
-        text = f"Instruct: Given a legal query in Italian, retrieve the most relevant legal document sections\nQuery: {text}"
+    """Embed a search query."""
     return embedding_model.embed_query(text)
 
 # ---------------------------------------------------------------------------
@@ -120,8 +116,17 @@ structured_entities_model = chat_model.bind(max_tokens=2500).with_structured_out
 )
 
 
-def _call_chat(messages: List[Union[SystemMessage, HumanMessage]], max_tokens: Optional[int] = None) -> str:
+def _call_chat(
+    messages: List[Union[SystemMessage, HumanMessage]],
+    max_tokens: Optional[int] = None,
+    stop: Optional[List[str]] = None,
+) -> str:
     """Call the chat model and trim whitespace from the response."""
-    model = chat_model.bind(max_tokens=max_tokens) if max_tokens is not None else chat_model
+    bind_kwargs = {}
+    if max_tokens is not None:
+        bind_kwargs["max_tokens"] = max_tokens
+    if stop is not None:
+        bind_kwargs["stop"] = stop
+    model = chat_model.bind(**bind_kwargs) if bind_kwargs else chat_model
     response = model.invoke(messages)
     return response.content.strip()
