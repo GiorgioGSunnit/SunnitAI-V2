@@ -1436,6 +1436,20 @@ _GENERATE_SIGNALS = {
     "compila", "compilami", "riempi", "riempimi", "usa", "usalo", "usala",
     "usa questo", "usa questa", "genera con", "crea con", "usa come template",
     "usa come modello", "fill", "use this", "use as template",
+    # Duplication / copy-with-changes — very common for form workflows
+    "duplica", "duplicami", "copia", "copiami",
+    "fanne una copia", "fai una copia", "fammi una copia",
+    "stesso modulo", "stesso documento", "stessa richiesta",
+    "uguale ma con", "uguale con", "identico ma con",
+    # Data substitution signals
+    "modifica i dati", "cambia i dati", "aggiorna i dati", "sostituisci i dati",
+    "con i miei dati", "con i dati di", "con i dati del", "con i dati della",
+    "cambia il nome", "sostituisci il nome", "aggiorna il nome",
+    "con nome", "con cognome",
+    # English equivalents
+    "duplicate", "copy with", "same form", "same document",
+    "change the data", "update the data", "replace the data",
+    "with my details", "with the details of",
 }
 
 
@@ -1510,7 +1524,9 @@ def _classify_doc_intent(
         "Sei un classificatore di intenzioni. L'utente ha menzionato un documento caricato. "
         "Rispondi con UNA SOLA parola:\n"
         "- 'analyse' se l'utente vuole leggere, riassumere o estrarre informazioni dal documento\n"
-        "- 'generate' se l'utente vuole usare il documento come template per generarne uno nuovo\n"
+        "- 'generate' se l'utente vuole usare il documento come template per generarne uno nuovo, "
+        "compilarlo con dati diversi, duplicarlo con modifiche, creare una copia con dati aggiornati, "
+        "o produrre un nuovo documento simile con informazioni diverse\n"
         "- 'rag' se la menzione del file è incidentale e la domanda riguarda altro\n"
         "Rispondi SOLO con una di queste tre parole."
     )
