@@ -1441,13 +1441,17 @@ _GENERATE_SIGNALS = {
     "fanne una copia", "fai una copia", "fammi una copia",
     "stesso modulo", "stesso documento", "stessa richiesta",
     "uguale ma con", "uguale con", "identico ma con",
+    # Generation verbs
+    "generami", "genera", "rigenerami", "rigenera",
+    "rifai", "rifammi", "ricreami", "ricrea",
     # Data substitution signals
     "modifica i dati", "cambia i dati", "aggiorna i dati", "sostituisci i dati",
     "con i miei dati", "con i dati di", "con i dati del", "con i dati della",
-    "cambia il nome", "sostituisci il nome", "aggiorna il nome",
+    "cambia il nome", "cambia solo il nome", "sostituisci il nome", "aggiorna il nome",
+    "cambia nome", "cambia cognome", "cambia il cognome",
     "con nome", "con cognome",
     # English equivalents
-    "duplicate", "copy with", "same form", "same document",
+    "generate", "regenerate", "duplicate", "copy with", "same form", "same document",
     "change the data", "update the data", "replace the data",
     "with my details", "with the details of",
 }
@@ -1662,6 +1666,24 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         from ..db.base import get_db as _get_db
 
         _mentioned_names = _detect_document_intent(request.message)
+
+        # Fallback: anaphoric document reference ("questo file", "il documento", etc.)
+        # — resolve to the last document the user interacted with in this session.
+        _ANAPHORIC_DOC_RE = re.compile(
+            r'\b(questo file|questa file|questo documento|questa documento|'
+            r'il file|il documento|quel file|quel documento|'
+            r'questo modulo|il modulo|quel modulo|'
+            r'this file|this document|the file|the document)\b',
+            re.IGNORECASE,
+        )
+        if not _mentioned_names and _ANAPHORIC_DOC_RE.search(request.message):
+            _anaphoric_session = chatbot.get_session(session_id, user_id=_uid)
+            if _anaphoric_session:
+                for _prev_msg in reversed(_anaphoric_session.messages):
+                    _doc_name = (_prev_msg.metadata or {}).get("document_name")
+                    if _doc_name:
+                        _mentioned_names = [_doc_name]
+                        break
 
         # Fallback: if no filename detected but FE passed an explicit document_id,
         # treat it as a single-document analyse request
@@ -2086,8 +2108,134 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 )
 
                 if doc_intent == "generate":
-                    # Fall through to generation path — FE picker handles it
-                    pass
+                    # User wants to fill/duplicate their own uploaded document.
+                    # Bypass the from-scratch template picker and generate directly.
+                    if not _os.path.exists(_matched_doc.storage_path):
+                        _fill_err = (
+                            "Non riesco a trovare il file sul server. "
+                            "Prova a caricarlo di nuovo."
+                        )
+                        _session.add_message("user", request.message, metadata={
+                            "document_id": str(_matched_doc.id),
+                            "document_name": _matched_doc.original_filename,
+                        })
+                        if len(_session.messages) == 1:
+                            _session.title = _generate_session_title(request.message)
+                        _session.add_message("assistant", _fill_err)
+                        chatbot._save_sessions()
+                        return ChatResponse(
+                            session_id=session_id,
+                            answer=_fill_err,
+                            original_query=request.message,
+                            resolved_query=request.message,
+                            session_language=_session_lang,
+                            status_messages=["generation_mode"],
+                            title=_session.title,
+                        )
+                    _fill_ext = _os.path.splitext(_matched_doc.storage_path)[1].lower()
+                    _fill_is_pdf = _fill_ext == ".pdf"
+                    _fill_carta = get_tenant_profile_full(_tid) if _tid else None
+                    _fill_session_msgs = [{"role": m.role, "content": m.content} for m in _session.messages]
+                    try:
+                        _fill_elements = (
+                            _extract_pdf_elements(_matched_doc.storage_path) if _fill_is_pdf
+                            else _extract_docx_elements(_matched_doc.storage_path)
+                        )
+                        if not _fill_elements:
+                            raise ValueError("Nessun elemento estratto dal documento.")
+                        _fill_map = _fill_template_gaps(
+                            _fill_elements, request.message, _fill_carta,
+                            _session_lang, _fill_session_msgs,
+                            docx_path=None if _fill_is_pdf else _matched_doc.storage_path,
+                        )
+                        if _fill_is_pdf:
+                            _fill_bytes = _build_docx_from_pdf_elements(_fill_elements, _fill_map)
+                        else:
+                            _fill_bytes = _apply_fill_to_docx(_matched_doc.storage_path, _fill_map)
+                    except Exception as _fill_exc:
+                        logger.error("chat: user-template fill failed: %s", _fill_exc, exc_info=True)
+                        _fill_err = (
+                            "Si è verificato un errore durante la generazione del documento. "
+                            "Riprova tra qualche istante."
+                        )
+                        _session.add_message("user", request.message, metadata={
+                            "document_id": str(_matched_doc.id),
+                            "document_name": _matched_doc.original_filename,
+                        })
+                        if len(_session.messages) == 1:
+                            _session.title = _generate_session_title(request.message)
+                        _session.add_message("assistant", _fill_err)
+                        chatbot._save_sessions()
+                        return ChatResponse(
+                            session_id=session_id,
+                            answer=_fill_err,
+                            original_query=request.message,
+                            resolved_query=request.message,
+                            session_language=_session_lang,
+                            status_messages=["generation_mode"],
+                            title=_session.title,
+                        )
+                    # Persist the filled document as a new user_document record
+                    _fill_base = _os.path.splitext(_matched_doc.original_filename)[0]
+                    _fill_outname = f"{_fill_base}_compilato.docx"
+                    _fill_doc_id, _fill_doc_name = None, None
+                    if _uid and _tid:
+                        try:
+                            from ..constants import PRIVATE_DOCS_BASE as _FILL_BASE
+                            _fill_folder = _os.path.join(_FILL_BASE, _tid, _uid)
+                            _os.makedirs(_fill_folder, exist_ok=True)
+                            _fill_storage = _os.path.join(_fill_folder, f"{uuid.uuid4()}.docx")
+                            with open(_fill_storage, "wb") as _ff:
+                                _ff.write(_fill_bytes)
+                            _fill_db_gen = _get_db()
+                            _fill_db = next(_fill_db_gen)
+                            try:
+                                _fill_rec = create_user_document(
+                                    _fill_db,
+                                    user_id=uuid.UUID(_uid),
+                                    tenant_id=uuid.UUID(_tid),
+                                    original_filename=_fill_outname,
+                                    storage_path=_fill_storage,
+                                    file_size_bytes=len(_fill_bytes),
+                                    scope="personal",
+                                    document_role="generated",
+                                    expires_at=None,
+                                )
+                                _fill_doc_id = str(_fill_rec.id)
+                                _fill_doc_name = _fill_outname
+                            finally:
+                                try:
+                                    _fill_db_gen.close()
+                                except Exception:
+                                    pass
+                        except Exception as _persist_exc:
+                            logger.warning("chat: failed to persist filled doc: %s", _persist_exc)
+                    _fill_confirmation = _build_generation_confirmation(_session_lang)
+                    _session.add_message("user", request.message, metadata={
+                        "document_id": str(_matched_doc.id),
+                        "document_name": _matched_doc.original_filename,
+                    })
+                    if len(_session.messages) == 1:
+                        _session.title = _generate_session_title(request.message)
+                    _session.add_message(
+                        "assistant",
+                        _fill_confirmation,
+                        metadata={
+                            **({"generated_document_id": _fill_doc_id, "generated_document_name": _fill_doc_name} if _fill_doc_id else {}),
+                        },
+                    )
+                    chatbot._save_sessions()
+                    return ChatResponse(
+                        session_id=session_id,
+                        answer=_fill_confirmation,
+                        original_query=request.message,
+                        resolved_query=request.message,
+                        session_language=_session_lang,
+                        status_messages=["generation_mode"],
+                        title=_session.title,
+                        generated_document_id=_fill_doc_id,
+                        generated_document_name=_fill_doc_name,
+                    )
 
                 elif doc_intent == "analyse":
                     if not _os.path.exists(_matched_doc.storage_path):
