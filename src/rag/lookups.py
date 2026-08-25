@@ -555,8 +555,21 @@ def vector_lookup(
         config = (index_settings or {}).get(index, {})
         k_value = max(1, int(config.get("k", k)))
         min_score = config.get("min_score")
+        before = len(matches)
         try:
             records = session.run(query, index=index, k=k_value, embedding=embedding)
+            for record in records:
+                score = record.get("score")
+                if min_score is not None and score is not None and score < min_score:
+                    continue
+                matches.append(
+                    {
+                        "element_id": record["element_id"],
+                        "labels": record["labels"],
+                        "source": f"{source_prefix}:{index}",
+                        "score": score,
+                    }
+                )
         except Neo4jError as exc:
             logger.warning(
                 "Vector lookup failed",
@@ -566,20 +579,6 @@ def vector_lookup(
                     "k": k_value,
                     "error": str(exc),
                 },
-            )
-            continue
-        before = len(matches)
-        for record in records:
-            score = record.get("score")
-            if min_score is not None and score is not None and score < min_score:
-                continue
-            matches.append(
-                {
-                    "element_id": record["element_id"],
-                    "labels": record["labels"],
-                    "source": f"{source_prefix}:{index}",
-                    "score": score,
-                }
             )
         vlog("vector_search", {"index_name": index, "k": k_value, "result_count": len(matches) - before})
     return matches
