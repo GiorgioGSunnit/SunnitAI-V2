@@ -2476,6 +2476,23 @@ def _fill_template_gaps(
         f"3. Usa '{ph}' per qualsiasi dato non disponibile.\n"
         "4. Non includere elementi che non necessitano di modifica — "
         "ECCEZIONE: per i gruppi checkbox includi sempre tutte le righe del gruppo (vedi regola 6).\n"
+        "4b. NON modificare le seguenti tipologie di elementi fissi del modulo:\n"
+        "   - Frasi introduttive come 'Il Sottoscritto' o 'La Sottoscritta' quando compaiono "
+        "SOLE su una riga senza alcun dato personale dopo di esse (es. la riga contiene solo "
+        "quelle parole e nient'altro).\n"
+        "   - Intestazioni di sezione strutturali (es. 'CHIEDE', 'FIRMA', "
+        "'DELEGA PER IL RITIRO DEL CERTIFICATO DA PARTE DI TERZI', 'ISTRUZIONI', 'AVVERTENZE').\n"
+        "   - Testi legali o istituzionali fissi (es. 'Visto il D.P.R. 313/02', "
+        "'presso il Tribunale Ordinario di...', nomi di enti/uffici).\n"
+        "4c. Quando stai generando il documento per una persona DIVERSA dall'originale "
+        "(cioè stai cambiando nome/cognome), azzera i campi di dati personali che appartengono "
+        "alla persona originale e che l'utente non ha fornito esplicitamente. "
+        "Usa '[DA COMPILARE]' per: RESIDENZA, DOMICILIO, CODICE FISCALE, CAP, PROVINCIA, "
+        "numero civico, data di firma, e qualsiasi altro dato anagrafico specifico della persona "
+        "che non sia stato fornito nel messaggio dell'utente. "
+        "NON azzerare MAI: le opzioni delle caselle di selezione/checkbox (righe che iniziano "
+        "con 'o' o 'X') — queste sono opzioni fisse del modulo, non dati personali; "
+        "i testi fissi delle sezioni; i riferimenti normativi.\n"
         "5. Non inventare dati non forniti esplicitamente.\n"
         + (f"6. {lang_note}\n" if lang_note else "")
         + "6. CASELLE DI SELEZIONE (CHECKBOX): le righe che iniziano con la lettera 'o' "
@@ -2524,18 +2541,39 @@ def _fill_template_gaps(
 
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],
-        max_tokens=4000,
+        max_tokens=8000,
     )
     text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+
+    # Attempt 1: clean parse
     try:
         parsed = json.loads(text)
         return {int(k): str(v) for k, v in parsed.items()}
     except (json.JSONDecodeError, ValueError):
-        logger.warning("_fill_template_gaps: JSON parse failed, raw=%r", raw[:200])
-        raise HTTPException(
-            status_code=422,
-            detail="Il modello non ha restituito un JSON valido — riprovare.",
+        pass
+
+    # Attempt 2: extract the outermost {...} block (handles extra prose around JSON)
+    m = re.search(r'\{[\s\S]*\}', text)
+    if m:
+        try:
+            parsed = json.loads(m.group(0))
+            return {int(k): str(v) for k, v in parsed.items()}
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Attempt 3: recover individual "key": "value" pairs from a truncated response
+    pairs = re.findall(r'"(\d+)"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
+    if pairs:
+        logger.warning(
+            "_fill_template_gaps: recovered %d pairs from partial/truncated JSON", len(pairs)
         )
+        return {int(k): v for k, v in pairs}
+
+    logger.warning("_fill_template_gaps: JSON parse failed, raw=%r", raw[:200])
+    raise HTTPException(
+        status_code=422,
+        detail="Il modello non ha restituito un JSON valido — riprovare.",
+    )
 
 
 def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
@@ -2555,6 +2593,30 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
                 for para in cell.paragraphs:
                     if para.text.strip():
                         all_paras.append(para)
+
+    # Save original paragraph texts so we can detect name changes for post-processing.
+    _orig_texts = [p.text for p in all_paras]
+
+    # Build name-substitution map: for each fill_map entry that changes a labeled name
+    # field (e.g. "COGNOME E NOME CICCIO ELLE" → "COGNOME E NOME Giorgio Giovanni"),
+    # record old_value → new_value so we can replace the old name in untouched paragraphs.
+    _NAME_LABEL_RE = re.compile(
+        r'^(?:COGNOME\s+E\s+NOME|COGNOME|NOME|IL\s+SOTTOSCRITTO|LA\s+SOTTOSCRITTA)\s+(.+)$',
+        re.IGNORECASE,
+    )
+    _name_subs: Dict[str, str] = {}
+    for _idx, _new in fill_map.items():
+        if _idx >= len(_orig_texts):
+            continue
+        _old_full = _orig_texts[_idx].strip()
+        _new_full = _new.strip()
+        _m_old = _NAME_LABEL_RE.match(_old_full)
+        _m_new = _NAME_LABEL_RE.match(_new_full)
+        if _m_old and _m_new:
+            _old_val = _m_old.group(1).strip()
+            _new_val = _m_new.group(1).strip()
+            if _old_val and _new_val and _old_val != _new_val:
+                _name_subs[_old_val] = _new_val
 
     for idx, replacement in fill_map.items():
         if idx >= len(all_paras):
@@ -2579,17 +2641,39 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
                     para.runs[0].text = new_marker + para.runs[0].text[1:]
             continue
 
-        # Standard replacement for regular blank fields
-        replaced = False
-        for run in para.runs:
-            if _PLACEHOLDER_RUN_PATTERN.search(run.text) or not run.text.strip():
-                run.text = replacement
-                replaced = True
-                break
-        if not replaced and para.runs:
+        # Standard replacement: LLM returns the full paragraph text, so overwrite
+        # the entire paragraph (run 0 gets the new text, all others are cleared).
+        # This prevents duplication when the original has label text in earlier runs.
+        if para.runs:
+            # If the original paragraph is a checkbox line but the LLM omitted the
+            # marker, restore it so the visual layout is preserved.
+            orig_stripped = para.text.strip()
+            if (orig_stripped and orig_stripped[0] in ('o', 'X')
+                    and len(orig_stripped) > 1 and orig_stripped[1] in (' ', '\t')):
+                repl_stripped = replacement.strip()
+                if not (repl_stripped and repl_stripped[0] in ('o', 'X')
+                        and len(repl_stripped) > 1 and repl_stripped[1] in (' ', '\t')):
+                    replacement = orig_stripped[:2] + replacement.lstrip()
             para.runs[0].text = replacement
             for run in para.runs[1:]:
                 run.text = ""
+
+    # Post-processing: replace old subject names in paragraphs not touched by fill_map.
+    # This handles delegation sections, pre-filled free text, etc. without relying on
+    # the LLM to get the right paragraph index.
+    if _name_subs:
+        _filled_indices = set(fill_map.keys())
+        for _i, _para in enumerate(all_paras):
+            if _i in _filled_indices:
+                continue
+            _cur = _para.text
+            _updated = _cur
+            for _old, _new in _name_subs.items():
+                _updated = _updated.replace(_old, _new)
+            if _updated != _cur and _para.runs:
+                _para.runs[0].text = _updated
+                for _r in _para.runs[1:]:
+                    _r.text = ""
 
     buf = io.BytesIO()
     doc.save(buf)
