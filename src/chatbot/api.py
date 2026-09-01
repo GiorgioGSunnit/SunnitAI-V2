@@ -46,6 +46,7 @@ from ..rag.document_generation import (
     _fill_template_gaps,
     _apply_fill_to_docx,
     _build_docx_from_pdf_elements,
+    _summarise_da_compilare,
     classify_document_type,
     classify_system_template,
     generate_document,
@@ -697,7 +698,6 @@ async def generate_from_user_template(
         elements = _extract_pdf_elements(storage_path) if is_pdf else _extract_docx_elements(storage_path)
         if not elements:
             raise HTTPException(status_code=422, detail="Could not extract any text from the template")
-
         session_messages = [{"role": m.role, "content": m.content} for m in session.messages]
         fill_map = _fill_template_gaps(
             elements, request.message, carta_intestata, session_lang, session_messages,
@@ -718,7 +718,8 @@ async def generate_from_user_template(
     base_name = os.path.splitext(original_filename)[0]
     output_filename = f"{base_name}_compilato.docx"
 
-    confirmation = _build_generation_confirmation(session_lang)
+    _missing = _summarise_da_compilare(fill_map, elements, session_lang)
+    confirmation = _build_generation_confirmation(session_lang, _missing or None)
     if is_pdf:
         conversion_note = {
             "it": " (il tuo PDF è stato convertito in DOCX)",
@@ -1120,12 +1121,19 @@ def _persist_generated_docx(
         return None, None
 
 
-def _build_generation_confirmation(lang: str) -> str:
+def _build_generation_confirmation(lang: str, missing_fields: Optional[List[str]] = None) -> str:
     if lang == "es":
-        return "He generado el documento solicitado."
-    if lang == "en":
-        return "I have generated the requested document."
-    return "Ho generato il documento richiesto."
+        base = "He generado el documento solicitado."
+        suffix_tpl = " Los siguientes campos deben completarse manualmente: {fields}."
+    elif lang == "en":
+        base = "I have generated the requested document."
+        suffix_tpl = " The following fields need to be filled in manually: {fields}."
+    else:
+        base = "Ho generato il documento richiesto."
+        suffix_tpl = " I seguenti campi devono essere compilati manualmente: {fields}."
+    if not missing_fields:
+        return base
+    return base + suffix_tpl.format(fields=", ".join(missing_fields))
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
@@ -2210,7 +2218,8 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                     pass
                         except Exception as _persist_exc:
                             logger.warning("chat: failed to persist filled doc: %s", _persist_exc)
-                    _fill_confirmation = _build_generation_confirmation(_session_lang)
+                    _fill_missing = _summarise_da_compilare(_fill_map, _fill_elements, _session_lang)
+                    _fill_confirmation = _build_generation_confirmation(_session_lang, _fill_missing or None)
                     _session.add_message("user", request.message, metadata={
                         "document_id": str(_matched_doc.id),
                         "document_name": _matched_doc.original_filename,

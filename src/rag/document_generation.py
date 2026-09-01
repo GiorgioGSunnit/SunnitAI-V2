@@ -2264,8 +2264,31 @@ _PLACEHOLDER_RUN_PATTERN = re.compile(
     r'_{3,}|\[.+?\]|\(.+?\)|OMISSIS|\b_+\b', re.IGNORECASE
 )
 
-# Matches a checkbox line: starts with 'o' or 'X' followed by a space
-_CHECKBOX_LINE_RE = re.compile(r'^([oX])\s')
+# Checkbox marker sets — covers text-style (o/X) and Unicode ballot boxes (☐/☑/✓/✗)
+_CB_UNCHECKED: frozenset = frozenset({'o', '☐'})
+_CB_CHECKED:   frozenset = frozenset({'X', '☑', '✓', '✗'})
+_CB_MARKERS:   frozenset = _CB_UNCHECKED | _CB_CHECKED
+# Map checked → unchecked counterpart for toggling
+_CB_TO_UNCHECKED = {'X': 'o', '☑': '☐', '✓': '☐', '✗': '☐'}
+
+# Matches a checkbox line: starts with a known marker followed by a space
+_CHECKBOX_LINE_RE = re.compile(r'^([oX☐☑✓✗])\s')
+
+
+def _summarise_da_compilare(fill_map: Dict[int, str], elements: List[Dict], lang: str) -> List[str]:
+    """Return a list of field labels whose replacement value contains the [DA COMPILARE] placeholder."""
+    placeholder = _placeholder(lang)
+    labels: List[str] = []
+    for idx, text in fill_map.items():
+        if placeholder not in text:
+            continue
+        before = text.split(placeholder)[0].strip().rstrip(':').strip()
+        if not before:
+            orig = next((e["text"] for e in elements if e["index"] == idx), "")
+            before = orig.split(placeholder)[0].strip().rstrip(':').strip() if placeholder in orig else orig.strip()
+        if before:
+            labels.append(before[:60])
+    return labels
 
 
 def _extract_docx_elements(path: str) -> List[Dict]:
@@ -2597,6 +2620,24 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
     # Save original paragraph texts so we can detect name changes for post-processing.
     _orig_texts = [p.text for p in all_paras]
 
+    # Detect checkbox groups: consecutive paragraphs whose text starts with 'o'/'X'
+    # followed by a space/tab form a mutually-exclusive group.
+    _cb_group_of: Dict[int, int] = {}          # para_index → group_id
+    _cb_group_members: Dict[int, List[int]] = {}  # group_id → [para_indices]
+    _cgid = 0
+    _in_cb = False
+    for _ci, _cp in enumerate(all_paras):
+        _ct = _cp.text.strip()
+        _is_cb = bool(_ct and _ct[0] in _CB_MARKERS and len(_ct) > 1 and _ct[1] in (' ', '\t'))
+        if _is_cb:
+            if not _in_cb:
+                _cgid += 1
+                _in_cb = True
+            _cb_group_of[_ci] = _cgid
+            _cb_group_members.setdefault(_cgid, []).append(_ci)
+        else:
+            _in_cb = False
+
     # Build name-substitution map: for each fill_map entry that changes a labeled name
     # field (e.g. "COGNOME E NOME CICCIO ELLE" → "COGNOME E NOME Giorgio Giovanni"),
     # record old_value → new_value so we can replace the old name in untouched paragraphs.
@@ -2629,10 +2670,10 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
             new_marker = cb_match.group(1)
             for run in para.runs:
                 rt = run.text
-                if rt.strip() in ('o', 'X'):
+                if rt.strip() in _CB_MARKERS:
                     run.text = new_marker
                     break
-                if rt and rt[0] in ('o', 'X') and (len(rt) == 1 or rt[1] == ' '):
+                if rt and rt[0] in _CB_MARKERS and (len(rt) == 1 or rt[1] == ' '):
                     run.text = new_marker + rt[1:]
                     break
             else:
@@ -2648,15 +2689,47 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
             # If the original paragraph is a checkbox line but the LLM omitted the
             # marker, restore it so the visual layout is preserved.
             orig_stripped = para.text.strip()
-            if (orig_stripped and orig_stripped[0] in ('o', 'X')
+            if (orig_stripped and orig_stripped[0] in _CB_MARKERS
                     and len(orig_stripped) > 1 and orig_stripped[1] in (' ', '\t')):
                 repl_stripped = replacement.strip()
-                if not (repl_stripped and repl_stripped[0] in ('o', 'X')
+                if not (repl_stripped and repl_stripped[0] in _CB_MARKERS
                         and len(repl_stripped) > 1 and repl_stripped[1] in (' ', '\t')):
                     replacement = orig_stripped[:2] + replacement.lstrip()
             para.runs[0].text = replacement
             for run in para.runs[1:]:
                 run.text = ""
+
+    # Post-processing: checkbox mutual exclusivity.
+    # If fill_map explicitly set a group member to X, reset every other member in that
+    # group that is still X to o — regardless of whether the LLM included them or not.
+    _filled_set = set(fill_map.keys())
+    for _cgid, _members in _cb_group_members.items():
+        _new_x_idx = None
+        for _midx in _members:
+            if _midx in _filled_set and _midx < len(all_paras):
+                if all_paras[_midx].text.strip()[:1] in _CB_CHECKED:
+                    _new_x_idx = _midx
+                    break
+        if _new_x_idx is None:
+            continue
+        for _midx in _members:
+            if _midx == _new_x_idx or _midx >= len(all_paras):
+                continue
+            _mpara = all_paras[_midx]
+            if _mpara.text.strip()[:1] not in _CB_CHECKED:
+                continue
+            for _run in _mpara.runs:
+                _rt = _run.text
+                if _rt.strip() in _CB_CHECKED:
+                    _run.text = _CB_TO_UNCHECKED.get(_rt.strip(), 'o')
+                    break
+                if _rt and _rt[0] in _CB_CHECKED and (len(_rt) == 1 or _rt[1] in (' ', '\t')):
+                    _run.text = _CB_TO_UNCHECKED.get(_rt[0], 'o') + _rt[1:]
+                    break
+            else:
+                if _mpara.runs and _mpara.runs[0].text and _mpara.runs[0].text[0] in _CB_CHECKED:
+                    _c0 = _mpara.runs[0].text[0]
+                    _mpara.runs[0].text = _CB_TO_UNCHECKED.get(_c0, 'o') + _mpara.runs[0].text[1:]
 
     # Post-processing: replace old subject names in paragraphs not touched by fill_map.
     # This handles delegation sections, pre-filled free text, etc. without relying on
