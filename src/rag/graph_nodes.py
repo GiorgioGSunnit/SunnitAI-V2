@@ -4254,7 +4254,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             dottrina_answer = _call_chat(
                 [SystemMessage(content=dottrina_system), HumanMessage(content=dottrina_human)],
                 max_tokens=600,
-                stop=["\n\n\n", "Nel contesto", "Puoi precisare", "Vuoi specificare", "Hai ulteriori"],
+                stop=["Nel contesto", "Puoi precisare", "Vuoi specificare", "Hai ulteriori"],
             )
             open("/tmp/dottrina_trace.log", "a").write(f"dottrina_answer len={len(dottrina_answer)} preview={repr(dottrina_answer[:200])}\n")
             dottrina_answer = re.sub(r'^[\s"\'“”]+', '', dottrina_answer).strip()
