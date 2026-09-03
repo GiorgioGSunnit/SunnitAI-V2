@@ -1,0 +1,65 @@
+_note: >
+  Parametri forensi DM 10 marzo 2014 n. 55, come modificato dal DM 13 agosto
+  2022 n. 147 (in vigore dal 23 ottobre 2022) — valori MEDI di liquidazione
+  per i giudizi ordinari di cognizione innanzi al Tribunale (Tabella 2), per
+  scaglione di valore della causa e per fase (studio / introduttiva /
+  istruttoria / decisionale).
+
+  FONTE AUTORITATIVA: Allegato (Tabella 2 — giudizi ordinari di cognizione
+  innanzi al Tribunale) al DM 55/2014 aggiornato dal DM 147/2022,
+  G.U. Serie Generale n. 236 dell'08/10/2022 (codice redazionale 22G00157).
+
+  Valori dei sei scaglioni fino a 520.000 EUR verificati contro l'allegato
+  ufficiale (Tabella 2, DM 147/2022) — `verified: true`. Le cause di valore
+  SUPERIORE a 520.000 EUR non hanno una settima riga tabellare: l'art. 6
+  DM 55/2014 prevede un aumento progressivo fino al 30% e la strategia
+  restituisce un risultato di "fascia non supportata" anziché inventare un
+  valore.
+
+values:
+  - parameter_id: legal_it.dm55_compensi_cognizione
+    unit: fee_table
+    effective_from: 2022-10-23
+    source: "DM 10 marzo 2014 n. 55, Tabella 2, come sostituita dal DM 13 agosto 2022 n. 147 (G.U. Serie Generale n. 236 del 08/10/2022)"
+    official: true
+    verified: true
+    placeholder: false
+    last_verified_at: "2026-07-24"
+    citations:
+      - reference: "DM 13 agosto 2022, n. 147 — Regolamento recante modifiche al DM 55/2014 sui parametri per la liquidazione dei compensi per la professione forense (Tabella 2, giudizi ordinari di cognizione)"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 236 del 08/10/2022"
+        publisher: "Gazzetta Ufficiale della Repubblica Italiana"
+        publication_date: "2022-10-08"
+        url: "https://www.gazzettaufficiale.it/eli/id/2022/10/08/22G00157/sg"
+        official: true
+    value:
+      # Scaglione fino a 1.100 EUR
+      - {scaglione_min: 0,         scaglione_max: 1100,   fase: studio,       valore_medio: "131"}
+      - {scaglione_min: 0,         scaglione_max: 1100,   fase: introduttiva, valore_medio: "131"}
+      - {scaglione_min: 0,         scaglione_max: 1100,   fase: istruttoria,  valore_medio: "200"}
+      - {scaglione_min: 0,         scaglione_max: 1100,   fase: decisionale,  valore_medio: "200"}
+      # Scaglione 1.100,01 - 5.200 EUR
+      - {scaglione_min: 1100.01,   scaglione_max: 5200,   fase: studio,       valore_medio: "425"}
+      - {scaglione_min: 1100.01,   scaglione_max: 5200,   fase: introduttiva, valore_medio: "425"}
+      - {scaglione_min: 1100.01,   scaglione_max: 5200,   fase: istruttoria,  valore_medio: "851"}
+      - {scaglione_min: 1100.01,   scaglione_max: 5200,   fase: decisionale,  valore_medio: "851"}
+      # Scaglione 5.200,01 - 26.000 EUR
+      - {scaglione_min: 5200.01,   scaglione_max: 26000,  fase: studio,       valore_medio: "919"}
+      - {scaglione_min: 5200.01,   scaglione_max: 26000,  fase: introduttiva, valore_medio: "777"}
+      - {scaglione_min: 5200.01,   scaglione_max: 26000,  fase: istruttoria,  valore_medio: "1680"}
+      - {scaglione_min: 5200.01,   scaglione_max: 26000,  fase: decisionale,  valore_medio: "1701"}
+      # Scaglione 26.000,01 - 52.000 EUR
+      - {scaglione_min: 26000.01,  scaglione_max: 52000,  fase: studio,       valore_medio: "1701"}
+      - {scaglione_min: 26000.01,  scaglione_max: 52000,  fase: introduttiva, valore_medio: "1204"}
+      - {scaglione_min: 26000.01,  scaglione_max: 52000,  fase: istruttoria,  valore_medio: "1806"}
+      - {scaglione_min: 26000.01,  scaglione_max: 52000,  fase: decisionale,  valore_medio: "2905"}
+      # Scaglione 52.000,01 - 260.000 EUR
+      - {scaglione_min: 52000.01,  scaglione_max: 260000, fase: studio,       valore_medio: "2552"}
+      - {scaglione_min: 52000.01,  scaglione_max: 260000, fase: introduttiva, valore_medio: "1628"}
+      - {scaglione_min: 52000.01,  scaglione_max: 260000, fase: istruttoria,  valore_medio: "5670"}
+      - {scaglione_min: 52000.01,  scaglione_max: 260000, fase: decisionale,  valore_medio: "4253"}
+      # Scaglione 260.000,01 - 520.000 EUR
+      - {scaglione_min: 260000.01, scaglione_max: 520000, fase: studio,       valore_medio: "3544"}
+      - {scaglione_min: 260000.01, scaglione_max: 520000, fase: introduttiva, valore_medio: "2338"}
+      - {scaglione_min: 260000.01, scaglione_max: 520000, fase: istruttoria,  valore_medio: "10411"}
+      - {scaglione_min: 260000.01, scaglione_max: 520000, fase: decisionale,  valore_medio: "6164"}

@@ -1,0 +1,78 @@
+id: legal_it.notice_indemnity
+name: Indennità sostitutiva del mancato preavviso
+category: legal_it
+strategy: expression
+methodology: "Moltiplica la retribuzione mensile globale fornita per i mesi di preavviso non lavorati."
+version: "1"
+description: >
+  Calcola l'indennità sostitutiva dovuta quando il rapporto di lavoro
+  cessa senza il preavviso previsto: retribuzione mensile globale di
+  fatto × mesi di preavviso non lavorati. La durata del preavviso dipende
+  dal CCNL applicabile (anzianità e inquadramento) e va fornita dal
+  chiamante.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - indennità di mancato preavviso
+  - indennità sostitutiva del preavviso
+  - preavviso
+aliases:
+  - quanto vale il preavviso non lavorato
+  - indennità per licenziamento senza preavviso
+tags:
+  - preavviso
+  - licenziamento
+  - dimissioni
+  - indennita
+intent_examples:
+  - indennità di mancato preavviso
+  - indennità sostitutiva del preavviso
+  - preavviso non lavorato quanto spetta
+required_context:
+  - mesi di preavviso previsti dal CCNL per inquadramento e anzianità
+inputs:
+  - name: retribuzione_mensile_globale
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Retribuzione mensile globale di fatto (inclusi elementi continuativi ex art. 2121 c.c.)
+  - name: mesi_preavviso
+    type: decimal
+    required: true
+    unit: months
+    min_value: 0
+    description: Mesi di preavviso non lavorati secondo il CCNL applicabile
+parameters: []
+derived_variables: {}
+formula:
+  expression: "retribuzione_mensile_globale * mesi_preavviso"
+output:
+  name: importo_indennita
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 2118 Codice Civile — recesso dal contratto a tempo indeterminato e indennità sostitutiva"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+  - reference: "Art. 2121 Codice Civile — computo dell'indennità di mancato preavviso (provvigioni, premi ed elementi continuativi)"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+assumptions:
+  - "La retribuzione mensile fornita è già la 'retribuzione globale di fatto' comprensiva degli elementi continuativi (art. 2121 c.c.)."
+exclusions:
+  - "Non calcola i mesi di preavviso spettanti (dipendono dal CCNL): riceve la durata come input."
+  - "Non gestisce il caso di media triennale per retribuzioni variabili (provvigioni) previsto dall'art. 2121 c.c."
+examples:
+  - description: "Retribuzione globale 1.800€, un mese e mezzo di preavviso non lavorato"
+    inputs:
+      retribuzione_mensile_globale: 1800
+      mesi_preavviso: 1.5
+    expected_result:
+      importo_indennita: "2700.00"

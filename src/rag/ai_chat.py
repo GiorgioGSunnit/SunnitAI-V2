@@ -12,7 +12,7 @@ import os
 from typing import List, Optional, Union
 
 from dotenv import load_dotenv
-from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from .models import DocumentEntities
 
@@ -130,3 +130,25 @@ def _call_chat(
     model = chat_model.bind(**bind_kwargs) if bind_kwargs else chat_model
     response = model.invoke(messages)
     return response.content.strip()
+
+
+def _call_chat_with_tools(
+    messages: List[Union[SystemMessage, HumanMessage]],
+    tools: List[dict],
+    tool_choice=None,
+    max_tokens: Optional[int] = None,
+) -> AIMessage:
+    """Call the chat model with tools and return the full AI message."""
+    try:
+        model = chat_model.bind_tools(
+            tools,
+            tool_choice=tool_choice,
+            parallel_tool_calls=False,
+        )
+    except TypeError:
+        # Compatibility with older langchain-openai versions that do not expose
+        # the parallel_tool_calls keyword on bind_tools.
+        model = chat_model.bind_tools(tools, tool_choice=tool_choice)
+    if max_tokens is not None:
+        model = model.bind(max_tokens=max_tokens)
+    return model.invoke(messages)

@@ -1,0 +1,109 @@
+id: legal_it.furto_pena_draft
+name: "[BOZZA] Cornice edittale — furto (art. 624 c.p.)"
+category: legal_it
+strategy: penal_range_draft
+methodology: "Modifica la cornice edittale base con le aggravanti, le attenuanti, il bilanciamento e l'eventuale rito abbreviato dichiarati."
+version: "0.1-draft"
+description: >
+  BOZZA DIMOSTRATIVA, NON VALIDATA LEGALMENTE. Calcola la cornice
+  edittale per il furto semplice (reclusione da 6 mesi a 3 anni,
+  art. 624 c.p.) applicando la stessa meccanica dimostrativa del
+  modulo penale: circostanze come conteggi generici, scenari art. 69,
+  tetti art. 66, riduzione per rito abbreviato. Non calcola la multa
+  congiunta e non qualifica giuridicamente le circostanze.
+jurisdiction: IT
+output_unit: null
+keywords:
+  - furto
+  - pena furto
+  - furto semplice
+  - ha rubato
+  - rubato
+aliases:
+  - che pena per un furto
+  - che pena rischia chi ruba
+tags:
+  - penale
+  - furto
+  - patrimonio
+intent_examples:
+  - pena per furto
+  - che pena rischia chi ruba
+  - il mio assistito ha rubato un portafoglio che pena rischia
+negative_examples:
+  - furto in abitazione
+  - furto in casa
+  - rubare in casa
+  - ha rubato in casa
+required_context:
+  - numero di circostanze aggravanti e attenuanti comuni confermate dall'avvocato
+ambiguity_notes: >
+  Il furto aggravato ex art. 625 c.p. ha cornici proprie non coperte
+  da questa bozza; richieste su "rubare in casa" possono riferirsi a
+  fattispecie aggravate.
+inputs:
+  - name: aggravanti_comuni
+    type: integer
+    required: true
+    min_value: 0
+    max_value: 100
+    description: Numero di circostanze aggravanti comuni confermate (0 se nessuna)
+  - name: attenuanti_comuni
+    type: integer
+    required: true
+    min_value: 0
+    max_value: 100
+    description: Numero di circostanze attenuanti comuni confermate (0 se nessuna)
+  - name: scenario_art_69
+    type: string
+    required: false
+    description: >
+      Scenario di bilanciamento: aggravanti_prevalenti |
+      attenuanti_prevalenti | equivalenza. Se omesso con entrambe le
+      tipologie presenti, restituisce la matrice degli scenari.
+  - name: rito_abbreviato
+    type: boolean
+    required: false
+    default: false
+    description: Applica la riduzione di 1/3 per giudizio abbreviato (art. 442 c.p.p.)
+parameters: []
+formula:
+  base_min_years: "1/2"
+  base_max_years: 3
+  multa_min_eur: 154
+  multa_max_eur: 516
+output:
+  name: pena
+citations:
+  - reference: "Art. 624 Codice Penale — Furto (reclusione da sei mesi a tre anni e multa)"
+    source_name: "Codice Penale (R.D. 19 ottobre 1930, n. 1398)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1930-10-19"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1930-10-19;1398"
+    official: true
+warnings:
+  - "Calcolo di cornice edittale sotto ipotesi dichiarate: NON è una previsione della sentenza."
+  - "La multa congiunta prevista dall'art. 624 c.p. (154-516 euro) è riportata solo nella sua cornice edittale base."
+assumptions:
+  - "Le circostanze sono già state qualificate e confermate da un legale: il sistema riceve solo il loro numero."
+  - "Ogni circostanza comune ha effetto discrezionale da 0 a 1/3 (inviluppo massimo di legge)."
+exclusions:
+  - "Aggravanti specifiche del furto ex art. 625 c.p. (cornici autonome 2-6 anni)."
+  - "Multa congiunta; procedibilità a querela; recidiva e continuazione."
+examples:
+  - description: "Furto semplice, nessuna circostanza"
+    inputs:
+      aggravanti_comuni: 0
+      attenuanti_comuni: 0
+    expected_result:
+      specie: reclusione
+      pena_minima: "6 mesi"
+      pena_massima: "3 anni"
+  - description: "Due aggravanti comuni: aumenti sequenziali (il tetto art. 66 — triplo del massimo, 9 anni — non è raggiunto)"
+    inputs:
+      aggravanti_comuni: 2
+      attenuanti_comuni: 0
+    expected_result:
+      specie: reclusione
+      pena_minima: "6 mesi"
+      pena_massima: "5 anni e 4 mesi"

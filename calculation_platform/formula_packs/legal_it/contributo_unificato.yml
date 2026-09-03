@@ -1,0 +1,154 @@
+id: legal_it.contributo_unificato_civile
+name: Contributo unificato (processo civile ordinario)
+category: legal_it
+strategy: table_lookup
+methodology: "Seleziona l'importo dello scaglione di valore della causa e applica il moltiplicatore previsto per il grado di giudizio, salvo esenzione dichiarata."
+version: "1"
+description: >
+  Determina il contributo unificato dovuto per l'iscrizione a ruolo di un
+  processo civile ordinario di cognizione, in base allo scaglione di valore
+  della causa (art. 13 D.P.R. 115/2002), con maggiorazione della metà in
+  appello e raddoppio in cassazione (art. 13 co. 1-bis).
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - contributo unificato
+  - spese di giustizia
+  - iscrizione a ruolo
+  - court filing fee
+  - CU
+  - DPR 115/2002
+  - testo unico spese di giustizia
+aliases:
+  - costo di iscrizione a ruolo di una causa
+  - contributo unificato dovuto
+  - filing fee for a lawsuit
+tags:
+  - contributo
+  - giustizia
+  - processo
+  - spese
+intent_examples:
+  - contributo unificato dovuto per una causa civile
+  - contributo unificato per una causa di valore 30000 euro
+  - contributo unificato in appello
+negative_examples:
+  - spese legali dell'avvocato
+  - compenso dell'avvocato per la causa
+  - compenso avvocato
+  - parcella avvocato
+  - quanto costa l'avvocato
+  - tfr
+  - chi e tenuto al pagamento del contributo unificato
+  - come funziona il contributo unificato
+ambiguity_notes: >
+  Da non confondere con i compensi forensi (parcella dell'avvocato) o con
+  le altre spese di giustizia (anticipazioni forfettarie, diritti di copia).
+required_context:
+  - valore della causa (o la sua indeterminabilità)
+  - grado di giudizio
+inputs:
+  - name: valore_causa
+    type: decimal
+    required: false
+    unit: EUR
+    min_value: 0
+    description: Valore della causa dichiarato ai fini del contributo unificato
+  - name: valore_indeterminabile
+    type: boolean
+    required: false
+    default: false
+    description: La causa è di valore indeterminabile (art. 13 co. 6)
+  - name: grado
+    type: string
+    required: false
+    default: primo_grado
+    description: "Grado di giudizio: primo_grado, appello o cassazione"
+  - name: esente
+    type: boolean
+    required: false
+    default: false
+    description: Il procedimento è esente dal contributo unificato (art. 10 D.P.R. 115/2002)
+parameters:
+  - name: tabella_scaglioni
+    parameter_id: legal_it.contributo_unificato_civile_scaglioni
+    resolver: date
+    description: Scaglioni di valore e importi del contributo unificato, versionati per data
+formula:
+  table_parameter: tabella_scaglioni
+  amount_input: valore_causa
+  indeterminable_input: valore_indeterminabile
+  multiplier:
+    input: grado
+    values:
+      primo_grado: 1
+      appello: 1.5
+      cassazione: 2
+  zero_if:
+    input: esente
+    warning: >
+      Procedimento dichiarato esente: verificare che ricorra effettivamente
+      una delle esenzioni dell'art. 10 D.P.R. 115/2002 (o di leggi speciali).
+output:
+  name: contributo_dovuto
+  round_to: 2
+  rounding: half_up
+citations:
+  - reference: "Art. 13 D.P.R. 30 maggio 2002, n. 115 — importi del contributo unificato"
+    source_name: "Normattiva — D.P.R. 115/2002 (Testo Unico spese di giustizia)"
+    publisher: "Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:presidente.repubblica:decreto:2002-05-30;115"
+    official: true
+  - reference: "Art. 13 co. 1-bis D.P.R. 115/2002 — aumento della metà per l'appello e raddoppio per la cassazione"
+    source_name: "Normattiva — D.P.R. 115/2002 (Testo Unico spese di giustizia)"
+    publisher: "Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:presidente.repubblica:decreto:2002-05-30;115"
+    official: true
+  - reference: "Art. 14 D.P.R. 115/2002 — obbligo di dichiarazione del valore della causa"
+    source_name: "Normattiva — D.P.R. 115/2002 (Testo Unico spese di giustizia)"
+    publisher: "Istituto Poligrafico e Zecca dello Stato"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:presidente.repubblica:decreto:2002-05-30;115"
+    official: true
+warnings:
+  - >
+    Calcola il contributo per il processo civile ordinario di cognizione.
+    Riti speciali hanno importi propri o ridotti (es. decreto ingiuntivo:
+    metà; processo esecutivo mobiliare: metà; volontaria giurisdizione e
+    separazione/divorzio: importi fissi) e NON sono coperti da questo calcolo.
+assumptions:
+  - "Il valore della causa è quello dichiarato ai sensi dell'art. 14 D.P.R. 115/2002."
+exclusions:
+  - "Riti speciali e importi ridotti (decreto ingiuntivo, esecuzioni, volontaria giurisdizione, separazioni)."
+  - "Processo del lavoro e previdenziale (esenzioni ed eccezioni proprie, art. 9 co. 1-bis)."
+  - "Processo amministrativo e tributario (tabelle diverse)."
+  - "Anticipazioni forfettarie (marca da 27 euro, art. 30 D.P.R. 115/2002) e diritti di copia."
+  - "Aumento del 50% in caso di omessa dichiarazione di valore (art. 13 co. 6, ultimo periodo)."
+examples:
+  - description: "Causa da 15.000 euro in primo grado -> scaglione 5.200-26.000"
+    inputs:
+      valore_causa: 15000
+    expected_result:
+      contributo_dovuto: "237.00"
+  - description: "Stessa causa in appello -> aumento della metà"
+    inputs:
+      valore_causa: 15000
+      grado: appello
+    expected_result:
+      contributo_dovuto: "355.50"
+  - description: "Causa di valore indeterminabile -> scaglione 26.000-52.000"
+    inputs:
+      valore_indeterminabile: true
+    expected_result:
+      contributo_dovuto: "518.00"
+  - description: "Causa da 600.000 euro in cassazione -> ultimo scaglione raddoppiato"
+    inputs:
+      valore_causa: 600000
+      grado: cassazione
+    expected_result:
+      contributo_dovuto: "3372.00"
+  - description: "Procedimento esente"
+    inputs:
+      valore_causa: 15000
+      esente: true
+    expected_result:
+      contributo_dovuto: "0.00"

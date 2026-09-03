@@ -1,0 +1,94 @@
+id: legal_it.tfr
+name: TFR — quota annua maturata e rivalutazione del fondo
+category: legal_it
+strategy: expression
+methodology: "Somma al fondo precedente la quota annua pari alla retribuzione utile divisa per 13,5 e la rivalutazione pari all'1,5% più il 75% della variazione FOI."
+version: "1"
+description: >
+  Calcola la quota annua di TFR maturata (retribuzione utile / 13,5) e la
+  rivalutazione del fondo già accantonato (1,5% fisso + 75% della
+  variazione dell'indice ISTAT FOI), restituendo il fondo totale a fine
+  anno. I coefficienti 13,5, 1,5% e 75% sono fissati dall'art. 2120 c.c.
+  e non cambiano di anno in anno; l'unico dato variabile è l'inflazione
+  ISTAT, fornita dal chiamante.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - tfr
+  - trattamento di fine rapporto
+  - liquidazione
+  - quota tfr
+  - rivalutazione tfr
+  - tfr per retribuzione
+  - retribuzione annua tfr
+aliases:
+  - quanto tfr ho maturato
+  - calcolo del tfr
+  - quanto mi spetta di liquidazione
+tags:
+  - tfr
+  - liquidazione
+  - lavoro
+intent_examples:
+  - calcolo del tfr maturato
+  - calcolo tfr per retribuzione
+  - tfr per una retribuzione annua
+  - rivalutazione del fondo tfr
+  - quanto tfr matura in un anno
+required_context:
+  - variazione dell'indice ISTAT FOI dell'anno, per rivalutare il fondo pregresso
+inputs:
+  - name: retribuzione_lorda_annua
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Retribuzione lorda annua utile al calcolo del TFR
+  - name: fondo_precedente
+    type: decimal
+    required: false
+    default: 0
+    unit: EUR
+    min_value: 0
+    description: Fondo TFR già accantonato al 31 dicembre precedente
+  - name: tasso_inflazione_istat
+    type: decimal
+    required: false
+    default: 0
+    unit: rate
+    description: Variazione dell'indice ISTAT FOI dell'anno di riferimento (es. 0.02 per 2%)
+parameters: []
+derived_variables:
+  quota_annua: "retribuzione_lorda_annua / 13.5"
+  rivalutazione: "fondo_precedente * (0.015 + 0.75 * tasso_inflazione_istat)"
+formula:
+  expression: "fondo_precedente + quota_annua + rivalutazione"
+output:
+  name: fondo_totale
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 2120 Codice Civile — Disciplina del trattamento di fine rapporto"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+assumptions:
+  - "La rivalutazione (1,5% + 75% ISTAT FOI) si applica solo al fondo accantonato al 31/12 precedente, non alla quota maturata nell'anno."
+exclusions:
+  - "Non calcola l'imposta sostitutiva del 17% sulla rivalutazione, trattenuta in busta paga."
+  - "Non gestisce anticipi di TFR, acconti o quote destinate a previdenza complementare."
+examples:
+  - description: "Primo anno: 30.000€ di retribuzione, nessun fondo pregresso"
+    inputs:
+      retribuzione_lorda_annua: 30000
+    expected_result:
+      fondo_totale: "2222.22"
+  - description: "30.000€ con fondo pregresso di 5.000€ e inflazione ISTAT al 3%"
+    inputs:
+      retribuzione_lorda_annua: 30000
+      fondo_precedente: 5000
+      tasso_inflazione_istat: 0.03
+    expected_result:
+      fondo_totale: "7409.72"

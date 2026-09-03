@@ -1,0 +1,49 @@
+# Reserved for future use: business.invoice_total currently takes vat_rate
+# directly as a caller input. This table exists so a future version could
+# instead resolve vat_rate by category (ordinaria/ridotta/minima) rather
+# than requiring the caller to already know the correct rate.
+values:
+  - parameter_id: business.vat_rate.ordinaria
+    value: 0.22
+    unit: rate
+    effective_from: 2013-10-01
+    effective_to: null
+    source: "Art. 16 D.P.R. 633/1972, come modificato da D.L. 76/2013"
+    official: true
+    citations:
+      - reference: "Art. 16 D.P.R. 26 ottobre 1972, n. 633 — aliquota IVA ordinaria al 22% dal 1° ottobre 2013 (D.L. 76/2013)"
+        source_name: "Decreto istitutivo dell'IVA"
+        publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+        publication_date: "1972-10-26"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.del.presidente.della.repubblica:1972-10-26;633"
+        official: true
+
+  - parameter_id: business.vat_rate.ridotta
+    value: 0.10
+    unit: rate
+    effective_from: 1972-10-26
+    effective_to: null
+    source: "Art. 16 D.P.R. 633/1972, Tabella A Parte III"
+    official: true
+    citations:
+      - reference: "Tabella A, Parte III, D.P.R. 26 ottobre 1972, n. 633 — beni e servizi soggetti ad aliquota ridotta del 10%"
+        source_name: "Decreto istitutivo dell'IVA"
+        publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+        publication_date: "1972-10-26"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.del.presidente.della.repubblica:1972-10-26;633"
+        official: true
+
+  - parameter_id: business.vat_rate.minima
+    value: 0.04
+    unit: rate
+    effective_from: 1972-10-26
+    effective_to: null
+    source: "Art. 16 D.P.R. 633/1972, Tabella A Parte II"
+    official: true
+    citations:
+      - reference: "Tabella A, Parte II, D.P.R. 26 ottobre 1972, n. 633 — beni soggetti ad aliquota minima del 4%"
+        source_name: "Decreto istitutivo dell'IVA"
+        publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+        publication_date: "1972-10-26"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.del.presidente.della.repubblica:1972-10-26;633"
+        official: true

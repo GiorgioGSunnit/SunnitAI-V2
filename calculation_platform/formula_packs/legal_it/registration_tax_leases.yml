@@ -1,0 +1,134 @@
+id: legal_it.registration_tax_leases
+name: Imposta di registro sui contratti di locazione
+category: legal_it
+strategy: percentage_of_base
+methodology: "Applica l'aliquota al canone annuo moltiplicato per gli anni, con il minimo alla prima registrazione e imposta zero se è dichiarata la cedolare secca."
+version: "1"
+description: >
+  Computes registration tax due on a residential lease under the ordinary
+  regime. Not applicable if cedolare secca was elected — see warnings.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - imposta di registro
+  - registro locazione
+  - registration tax
+  - lease registration
+  - tassa affitto
+  - contratto di locazione
+  - cedolare secca
+aliases:
+  - quanto costa registrare il contratto di affitto
+  - tassa sul contratto di locazione
+  - registration tax on a rental contract
+tags:
+  - registro
+  - locazione
+  - affitto
+  - contratto
+intent_examples:
+  - imposta di registro per un affitto
+  - registrazione del contratto di locazione
+  - quanto costa registrare un contratto di locazione
+negative_examples:
+  - cedolare secca quanto pago
+  - quanto pago di cedolare secca
+  - calcolo della cedolare secca
+  - conviene la cedolare secca
+ambiguity_notes: >
+  Se la domanda riguarda la cedolare secca in sé (quanto si paga optando
+  per la cedolare), non è un calcolo di imposta di registro: con la
+  cedolare secca l'imposta di registro non è dovuta.
+inputs:
+  - name: annual_rent
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Canone di locazione (affitto) annuo pattuito
+  - name: years
+    type: decimal
+    required: true
+    unit: years
+    min_value: 0
+    description: Durata del contratto in anni
+  - name: first_registration
+    type: boolean
+    required: true
+    description: Whether this is the first registration of the contract (vs. a subsequent-year payment)
+  - name: cedolare_secca
+    type: boolean
+    required: false
+    default: false
+    description: Whether the landlord has elected the cedolare secca flat-tax regime
+parameters:
+  - name: rate
+    parameter_id: legal_it.registration_tax_rate
+    resolver: date
+    description: Aliquota di registro applicabile
+  - name: minimum
+    parameter_id: legal_it.registration_tax_minimum
+    resolver: date
+    description: Importo minimo dell'imposta di registro
+formula:
+  base: "annual_rent * years"
+  rate_parameter: rate
+  minimum_parameter: minimum
+  apply_minimum_if: first_registration
+  zero_if:
+    input: cedolare_secca
+    equals: true
+  zero_if_warning: "Registration tax is not due under cedolare secca in this simplified model."
+  no_minimum_warning: "Minimum threshold not applied for subsequent-year payments; separate rules may apply."
+output:
+  name: tax_due
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 5, Tariffa Parte Prima, allegata al D.P.R. 26 aprile 1986, n. 131 — locazioni e affitti di beni immobili"
+    source_name: "Testo Unico dell'Imposta di Registro"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1986-04-26"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.del.presidente.della.repubblica:1986-04-26;131"
+    official: true
+  - reference: "Art. 3, D.Lgs. 14 marzo 2011, n. 23 — cedolare secca sugli affitti (regime sostitutivo che esclude l'imposta di registro)"
+    source_name: "Disposizioni in materia di federalismo fiscale municipale"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "2011-03-14"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.legislativo:2011-03-14;23"
+    official: true
+  - reference: "Agenzia delle Entrate — Registrazione di un nuovo contratto di locazione: quanto si paga (regime ordinario)"
+    source_name: "Scheda informativa ufficiale"
+    publisher: "Agenzia delle Entrate"
+    url: "https://www.agenziaentrate.gov.it/portale/schede/fabbricatiterreni/registrazione-di-un-nuovo-contratto/quanto-si-paga-regime-ordinario"
+    official: true
+warnings: []
+assumptions:
+  - "Assumes a residential lease under the ordinary registration-tax regime unless cedolare_secca is set."
+exclusions:
+  - "Does not compute the cedolare secca flat tax itself (21%/10%) — only recognizes that registration tax doesn't apply when that regime is elected."
+  - "Does not handle commercial/non-residential lease rate variations."
+  - "Does not handle contract renegotiation, early termination, or resoluzione — only the base registration calculation."
+examples:
+  - description: "Ordinary lease, first registration"
+    inputs:
+      annual_rent: 9600
+      years: 4
+      first_registration: true
+    expected_result:
+      tax_due: "768.00"
+  - description: "Small lease where the calculated tax is below the legal minimum"
+    inputs:
+      annual_rent: 500
+      years: 1
+      first_registration: true
+    expected_result:
+      tax_due: "67.00"
+  - description: "Cedolare secca elected — registration tax not due"
+    inputs:
+      annual_rent: 9600
+      years: 4
+      first_registration: true
+      cedolare_secca: true
+    expected_result:
+      tax_due: "0.00"

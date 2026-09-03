@@ -1,0 +1,80 @@
+id: business.invoice_total
+name: Invoice total (net + VAT - discount)
+category: business
+strategy: expression
+methodology: "Applica lo sconto al netto, calcola l'IVA sull'imponibile scontato e somma imponibile e IVA."
+version: "1"
+description: >
+  Computes the total amount due on an invoice given a net amount, a VAT
+  rate, and an optional discount rate applied before VAT.
+jurisdiction: null
+output_unit: null  # currency-agnostic — caller's net_amount defines the unit
+keywords:
+  - invoice total
+  - totale fattura
+  - VAT calculation
+  - calcolo IVA
+  - discount and VAT
+  - importo fattura
+aliases:
+  - how much is the invoice with VAT
+  - quanto costa in totale con IVA e sconto
+tags:
+  - fattura
+  - iva
+  - sconto
+intent_examples:
+  - totale di una fattura con iva
+  - calcolo fattura con sconto
+ambiguity_notes: >
+  Domande generiche su "quanto costa" possono riferirsi anche
+  all'imposta di registro o alla rata di un mutuo.
+inputs:
+  - name: net_amount
+    type: decimal
+    required: true
+    min_value: 0
+    description: Importo netto della fattura prima di sconto e IVA (net amount)
+  - name: vat_rate
+    type: decimal
+    required: true
+    unit: rate
+    description: Aliquota IVA come frazione (es. 0,22 per 22%) (VAT rate)
+  - name: discount_rate
+    type: decimal
+    required: false
+    default: 0
+    unit: rate
+    description: Aliquota di sconto applicata al netto prima dell'IVA, come frazione (discount rate)
+parameters: []
+derived_variables:
+  discount_amount: "net_amount * discount_rate"
+  taxable_amount: "net_amount - discount_amount"
+  vat_amount: "taxable_amount * vat_rate"
+formula:
+  expression: "taxable_amount + vat_amount"
+output:
+  name: total
+  round_to: 2
+  min: 0
+citations: []
+warnings: []
+assumptions:
+  - "Discount is applied to the net amount before VAT, not after."
+exclusions:
+  - "Does not handle per-line-item VAT rates — assumes a single VAT rate for the whole invoice."
+  - "Does not handle rounding rules specific to any particular jurisdiction's invoicing regulations."
+examples:
+  - description: "Standard invoice with a 10% discount and 22% VAT"
+    inputs:
+      net_amount: 1000
+      vat_rate: 0.22
+      discount_rate: 0.10
+    expected_result:
+      total: "1098.00"
+  - description: "No discount supplied — defaults to 0"
+    inputs:
+      net_amount: 1000
+      vat_rate: 0.22
+    expected_result:
+      total: "1220.00"

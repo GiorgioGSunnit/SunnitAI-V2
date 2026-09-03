@@ -1,0 +1,115 @@
+id: legal_it.omicidio_pena_draft
+name: "[BOZZA] Cornice edittale — omicidio volontario (art. 575 c.p.)"
+category: legal_it
+strategy: penal_range_draft
+methodology: "Modifica la cornice edittale base con le aggravanti, le attenuanti, il bilanciamento e l'eventuale rito abbreviato dichiarati."
+version: "0.1-draft"
+description: >
+  BOZZA DIMOSTRATIVA, NON VALIDATA LEGALMENTE. Calcola la cornice
+  edittale per omicidio volontario (base 21-24 anni, artt. 575 e 23
+  c.p.) applicando la meccanica delle circostanze come CONTEGGI
+  generici (n aggravanti comuni, n attenuanti comuni, ciascuna con
+  effetto discrezionale fino a 1/3), gli scenari di bilanciamento ex
+  art. 69, i tetti ex art. 66 e la riduzione per rito abbreviato.
+  Dimostra la pipeline di calcolo; NON qualifica giuridicamente le
+  circostanze (il catalogo delle circostanze specifiche è in attesa
+  di validazione da parte di un penalista).
+jurisdiction: IT
+output_unit: null  # il risultato è una forbice/matrice, non un importo
+keywords:
+  - omicidio
+  - pena omicidio
+  - cornice edittale
+  - omicidio volontario
+aliases:
+  - che pena rischia per omicidio
+  - quanti anni per omicidio
+tags:
+  - penale
+  - omicidio
+  - pena
+intent_examples:
+  - pena per omicidio volontario
+  - cornice edittale per omicidio
+  - quanti anni si rischiano per un omicidio
+negative_examples:
+  - omicidio colposo
+  - omicidio stradale
+  - omicidio preterintenzionale
+required_context:
+  - numero di circostanze aggravanti e attenuanti comuni confermate dall'avvocato
+  - scenario di bilanciamento ex art. 69 quando coesistono aggravanti e attenuanti
+ambiguity_notes: >
+  Richiede la conferma preventiva delle circostanze da parte di un
+  legale: il sistema non stabilisce quali circostanze siano integrate.
+inputs:
+  - name: aggravanti_comuni
+    type: integer
+    required: true
+    min_value: 0
+    max_value: 100
+    description: Numero di circostanze aggravanti comuni confermate (0 se nessuna)
+  - name: attenuanti_comuni
+    type: integer
+    required: true
+    min_value: 0
+    max_value: 100
+    description: Numero di circostanze attenuanti comuni confermate (0 se nessuna)
+  - name: scenario_art_69
+    type: string
+    required: false
+    description: >
+      Scenario di bilanciamento se coesistono aggravanti e attenuanti:
+      aggravanti_prevalenti | attenuanti_prevalenti | equivalenza.
+      Se omesso, il sistema restituisce la matrice di tutti gli scenari.
+  - name: rito_abbreviato
+    type: boolean
+    required: false
+    default: false
+    description: Applica la riduzione di 1/3 per giudizio abbreviato (art. 442 c.p.p.)
+parameters: []
+formula:
+  base_min_years: 21
+  base_max_years: 24
+output:
+  name: pena
+citations:
+  - reference: "Art. 575 Codice Penale — Omicidio (reclusione non inferiore ad anni 21)"
+    source_name: "Codice Penale (R.D. 19 ottobre 1930, n. 1398)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1930-10-19"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1930-10-19;1398"
+    official: true
+  - reference: "Artt. 23, 63, 64, 65, 66, 69 Codice Penale — durata della reclusione, applicazione sequenziale, limiti, bilanciamento"
+    source_name: "Codice Penale (R.D. 19 ottobre 1930, n. 1398)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1930-10-19"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1930-10-19;1398"
+    official: true
+warnings:
+  - "Calcolo di cornice edittale sotto ipotesi dichiarate: NON è una previsione della sentenza."
+  - "Il quantum di ogni circostanza ('fino a 1/3') è discrezionale: il risultato è una forbice, non un valore."
+assumptions:
+  - "Le circostanze sono già state qualificate e confermate da un legale: il sistema riceve solo il loro numero."
+  - "Ogni circostanza comune ha effetto discrezionale da 0 a 1/3 (inviluppo massimo di legge)."
+exclusions:
+  - "Aggravanti speciali ex artt. 576-577 c.p. (ergastolo) — richiedono il catalogo validato."
+  - "Recidiva (art. 99), continuazione/concorso (art. 81), attenuanti ad effetto speciale."
+  - "Verifica di ammissibilità del rito abbreviato per i casi puniti con ergastolo (art. 438 c.p.p.)."
+examples:
+  - description: "Omicidio semplice, nessuna circostanza"
+    inputs:
+      aggravanti_comuni: 0
+      attenuanti_comuni: 0
+    expected_result:
+      specie: reclusione
+      pena_minima: "21 anni"
+      pena_massima: "24 anni"
+  - description: "Due aggravanti comuni: aumenti sequenziali ex art. 63, poi tetto di 30 anni ex art. 66"
+    inputs:
+      aggravanti_comuni: 2
+      attenuanti_comuni: 0
+    expected_result:
+      specie: reclusione
+      pena_minima: "21 anni"
+      pena_massima: "30 anni"

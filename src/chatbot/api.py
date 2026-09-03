@@ -30,7 +30,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from .session import ChatBot, ChatSession, _generate_session_title
+from .session import (
+    ChatBot,
+    ChatSession,
+    _generate_session_title,
+    last_pending_calculation,
+)
 from ..db.base import get_db
 from ..db import crud
 from ..db.models import Tenant
@@ -420,11 +425,26 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
         sources = sorted({s["document_title"] for s in cached_sections if s.get("document_title")})
     else:
         try:
-            rag_state = rag_run(message, session_language=session_lang)
+            # Retrieval only: this call exists to collect the sources the draft
+            # will cite, and the intent was already settled upstream. Left
+            # unguarded, the calculation gate matches a drafting request on its
+            # domain vocabulary alone ("contratto di locazione", "fattura ...
+            # IVA") and answers with a tax figure instead of retrieving, so the
+            # document would be generated with no sources and no citations.
+            rag_state = rag_run(
+                message, session_language=session_lang, skip_calculation=True
+            )
             raw_result = rag_state.get("raw_result") or []
             retrieved_sections = _raw_result_to_sections(raw_result)
             sources = sorted({s["document_title"] for s in retrieved_sections if s.get("document_title")})
-            citations = _extract_citations(rag_state)
+            # _extract_citations takes the Neo4j result ROWS, not the graph
+            # state. Handing it the state made it iterate the state's keys and
+            # raise on the first one, so this whole block threw on every
+            # generation that actually retrieved something: `sources` was
+            # computed and then discarded by the handler below, and the draft
+            # was written with citations=None. Sources were never lost to the
+            # calculation gate alone — they were lost every time.
+            citations = _extract_citations(raw_result)
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
             sources = []
@@ -433,8 +453,20 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
 
 
 def _run_comparison_sync(message: str, session_lang: str, cached_sections=None) -> dict:
-    """Run a comparison query through the RAG graph and return answer + citations."""
-    rag_state = rag_run(message, session_language=session_lang)
+    """Run a document comparison through the RAG graph, returning answer + citations.
+
+    Retrieval-only, like the generation lookup above, and for a sharper reason:
+    a calculator is itself a comparator ("confronto gas e luce") and shares
+    this flow's opening verb, so the gate can auto-route a request to compare
+    two uploaded files into it. Because the
+    comparison's answer is returned as the draft, the caller would hand the
+    user that calculator's candidate-collection prompt instead of a comparison,
+    with no citations. Comparing two offers numerically is a calculation;
+    comparing two documents' text is not, and the verb cannot tell them apart.
+    """
+    rag_state = rag_run(
+        message, session_language=session_lang, skip_calculation=True
+    )
     return {
         "answer": rag_state.get("answer", ""),
         "citations": rag_state.get("citations", []),
@@ -2372,6 +2404,14 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
             chatbot._sessions[session_id] = session
         session_lang = session.session_language
+        # A generation turn must not silently drop a calculation that is still
+        # collecting inputs: this branch returns without ever reaching the RAG
+        # graph, and session.py looks for pending_calculation only on the last
+        # assistant message. Carrying it across is safe — calculation_node
+        # escapes to normal RAG when the next message turns out not to answer
+        # the open slot.
+        _pending_calc = last_pending_calculation(session)
+        _carry_calc = {"pending_calculation": _pending_calc} if _pending_calc else {}
         doc_type = classify_document_type(request.message, session_lang)
         if doc_type == "unknown":
             _template_result = classify_system_template(request.message, session_lang, top_k=5)
@@ -2386,7 +2426,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 session.add_message("user", request.message)
                 if len(session.messages) == 1:
                     session.title = _generate_session_title(request.message)
-                session.add_message("assistant", _variant_prompt)
+                session.add_message("assistant", _variant_prompt, metadata=_carry_calc or None)
                 chatbot._save_sessions()
                 return ChatResponse(
                     session_id=session_id,
@@ -2407,7 +2447,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             session.add_message("user", request.message)
             if len(session.messages) == 1:
                 session.title = _generate_session_title(request.message)
-            session.add_message("assistant", clarification)
+            session.add_message("assistant", clarification, metadata=_carry_calc or None)
             chatbot._save_sessions()
             return ChatResponse(
                 session_id=session_id,
@@ -2448,6 +2488,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             _confirmation,
             metadata={
                 "sources": gen_result["sources"],
+                **_carry_calc,
                 **({"generated_document_id": _gen_doc_id, "generated_document_name": _gen_doc_name} if _gen_doc_id else {}),
             },
         )
