@@ -15,6 +15,9 @@ import asyncio
 import io
 import logging
 logging.getLogger("src.rag").setLevel(logging.INFO)
+# Without this, src.chatbot.* inherits root (WARNING) and every logger.info in
+# this module — generation/persist/correction diagnostics — is silently dropped.
+logging.getLogger("src.chatbot").setLevel(logging.INFO)
 import os
 import re
 import time
@@ -719,7 +722,9 @@ async def generate_from_user_template(
     output_filename = f"{base_name}_compilato.docx"
 
     _missing = _summarise_da_compilare(fill_map, elements, session_lang)
-    confirmation = _build_generation_confirmation(session_lang, _missing or None)
+    confirmation = _build_generation_confirmation(
+        session_lang, _missing or None, getattr(fill_map, "inferred", None) or None
+    )
     if is_pdf:
         conversion_note = {
             "it": " (il tuo PDF è stato convertito in DOCX)",
@@ -1121,19 +1126,29 @@ def _persist_generated_docx(
         return None, None
 
 
-def _build_generation_confirmation(lang: str, missing_fields: Optional[List[str]] = None) -> str:
+def _build_generation_confirmation(
+    lang: str,
+    missing_fields: Optional[List[str]] = None,
+    inferred_fields: Optional[List[str]] = None,
+) -> str:
     if lang == "es":
         base = "He generado el documento solicitado."
         suffix_tpl = " Los siguientes campos deben completarse manualmente: {fields}."
+        inferred_tpl = " He deducido estos campos del contexto — verifícalos: {fields}."
     elif lang == "en":
         base = "I have generated the requested document."
         suffix_tpl = " The following fields need to be filled in manually: {fields}."
+        inferred_tpl = " I inferred these fields from context — please verify them: {fields}."
     else:
         base = "Ho generato il documento richiesto."
         suffix_tpl = " I seguenti campi devono essere compilati manualmente: {fields}."
-    if not missing_fields:
-        return base
-    return base + suffix_tpl.format(fields=", ".join(missing_fields))
+        inferred_tpl = " Ho dedotto dal contesto questi campi — verificali: {fields}."
+    out = base
+    if missing_fields:
+        out += suffix_tpl.format(fields=", ".join(missing_fields))
+    if inferred_fields:
+        out += inferred_tpl.format(fields=", ".join(inferred_fields))
+    return out
 
 
 @app.post("/api/generate", response_model=GenerateResponse)
@@ -1392,6 +1407,53 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
+
+    # Persist the generated document. Without this the file only ever existed as
+    # an in-memory blob on the client: it vanished on page refresh, never showed
+    # up in the user's documents folder, and the correction flow had no
+    # generated_document_id to target. Any failure here is logged and swallowed —
+    # it must never block the download the user is waiting on.
+    #
+    # The FE only calls this endpoint when /api/chat returned no
+    # generated_document_id (its fallback path), so this does not double-persist.
+    # The guard below covers the case anyway.
+    _dl_prev = (session.messages[-1].metadata or {}) if session.messages else {}
+    if _uid and _tid and not _dl_prev.get("generated_document_id"):
+        try:
+            from ..constants import PRIVATE_DOCS_BASE as _DL_BASE
+            _dl_bytes = buf.getvalue()          # does not move the stream position
+            _dl_folder = os.path.join(_DL_BASE, _tid, _uid)
+            os.makedirs(_dl_folder, exist_ok=True)
+            _dl_storage = os.path.join(_dl_folder, f"{uuid.uuid4()}.docx")
+            with open(_dl_storage, "wb") as _df:
+                _df.write(_dl_bytes)
+            _dl_rec = create_user_document(
+                db,
+                user_id=uuid.UUID(_uid),
+                tenant_id=uuid.UUID(_tid),
+                original_filename=filename,
+                storage_path=_dl_storage,
+                file_size_bytes=len(_dl_bytes),
+                scope="personal",
+                document_role="generated",
+                expires_at=None,
+            )
+            session.add_message(
+                "assistant",
+                _build_generation_confirmation(session_lang),
+                metadata={
+                    "generated_document_id": str(_dl_rec.id),
+                    "generated_document_name": filename,
+                },
+            )
+            chatbot._save_sessions()
+            logger.info(
+                "generate_download: persisted doc_id=%s name=%r size=%d",
+                _dl_rec.id, filename, len(_dl_bytes),
+            )
+        except Exception as _dl_exc:
+            logger.warning("generate_download: failed to persist document: %s", _dl_exc)
+
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1463,6 +1525,58 @@ _GENERATE_SIGNALS = {
     "change the data", "update the data", "replace the data",
     "with my details", "with the details of",
 }
+
+
+# Words that signal "fix the document you just made for me" rather than
+# "make me a new one". Deliberately excludes creation verbs (genera, crea,
+# duplica) so a genuine new-document request still falls through.
+_CORRECTION_SIGNALS = {
+    "correggi", "correggimi", "correzione",
+    "cambia", "cambiami", "modifica", "modificami",
+    "aggiorna", "aggiornami", "sostituisci", "rimpiazza",
+    "rifallo", "rifammelo", "ho sbagliato", "è sbagliato", "e sbagliato",
+    "non è corretto", "non e corretto",
+    "correct", "fix", "change", "update", "replace", "redo",
+}
+
+
+def _is_correction_request(message: str) -> bool:
+    """True if the message reads as a correction to an existing document.
+
+    Requires an explicit change verb — continuation words alone ("anche",
+    "invece") are too common to be safe. An analyse intent wins, so
+    "spiegami anche ..." is never treated as a correction.
+    """
+    lower = message.lower()
+    if any(s in lower for s in _ANALYSE_SIGNALS):
+        return False
+    return any(s in lower for s in _CORRECTION_SIGNALS)
+
+
+def _find_last_generated_doc(session, max_lookback: int = 12):
+    """Return (doc_id, doc_name) for the most recent generated document in the
+    session, or (None, None).
+
+    Only the last `max_lookback` messages are scanned so a generation from much
+    earlier in a long conversation is not mistaken for the correction target.
+    """
+    if session is None:
+        return None, None
+    for msg in reversed(session.messages[-max_lookback:]):
+        meta = msg.metadata or {}
+        doc_id = meta.get("generated_document_id")
+        if doc_id:
+            return doc_id, meta.get("generated_document_name")
+    return None, None
+
+
+def _next_version_filename(name: str) -> str:
+    """'X_compilato.docx' → 'X_compilato_v2.docx' → 'X_compilato_v3.docx'."""
+    base, ext = os.path.splitext(name)
+    m = re.match(r'^(.*)_v(\d+)$', base)
+    if m:
+        return f"{m.group(1)}_v{int(m.group(2)) + 1}{ext}"
+    return f"{base}_v2{ext}"
 
 
 def _detect_document_intent(message: str) -> list:
@@ -1674,6 +1788,151 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         from ..db.base import get_db as _get_db
 
         _mentioned_names = _detect_document_intent(request.message)
+
+        # ── Correction branch ─────────────────────────────────────────────
+        # "correggi il nome", "cambia anche l'indirizzo" — the user is iterating
+        # on a document we just generated. Fill from that generated file so the
+        # earlier changes survive; re-filling the original template would discard
+        # them. Must run before the anaphoric fallback below, which resolves
+        # "questo documento" to the ORIGINAL upload, not the generated copy.
+        # Falls through untouched when any gate fails.
+        if not _mentioned_names and _is_correction_request(request.message):
+            _corr_session = chatbot.get_session(session_id, user_id=_uid)
+            _corr_prev_id, _corr_prev_name = _find_last_generated_doc(_corr_session)
+            if _corr_prev_id and _uid and _tid:
+                _corr_db_gen = _get_db()
+                _corr_db = next(_corr_db_gen)
+                try:
+                    _corr_doc = get_user_document(
+                        _corr_db, uuid.UUID(_corr_prev_id),
+                        uuid.UUID(_uid), uuid.UUID(_tid),
+                    )
+                finally:
+                    try:
+                        _corr_db_gen.close()
+                    except Exception:
+                        pass
+
+                if _corr_doc and _os.path.exists(_corr_doc.storage_path):
+                    _corr_lang = _corr_session.session_language
+                    _corr_carta = get_tenant_profile_full(_tid)
+                    _corr_msgs = [
+                        {"role": m.role, "content": m.content}
+                        for m in _corr_session.messages
+                    ]
+                    _corr_failed = None
+                    try:
+                        # Generated documents are always DOCX — no PDF path here.
+                        _corr_elements = _extract_docx_elements(_corr_doc.storage_path)
+                        if not _corr_elements:
+                            raise ValueError("Nessun elemento estratto dal documento generato.")
+                        _corr_map = _fill_template_gaps(
+                            _corr_elements, request.message, _corr_carta,
+                            _corr_lang, _corr_msgs,
+                            docx_path=_corr_doc.storage_path,
+                            correction_mode=True,
+                        )
+                        logger.info(
+                            "chat: correction fill src_doc=%s elements=%d changed=%d map=%r",
+                            _corr_prev_id, len(_corr_elements), len(_corr_map),
+                            {k: (v[:80] + "…" if len(v) > 80 else v)
+                             for k, v in sorted(_corr_map.items())[:25]},
+                        )
+                        _corr_bytes = _apply_fill_to_docx(_corr_doc.storage_path, _corr_map)
+                    except Exception as _corr_exc:
+                        logger.error(
+                            "chat: correction fill failed for doc %s: %s",
+                            _corr_prev_id, _corr_exc, exc_info=True,
+                        )
+                        _corr_failed = (
+                            "Si è verificato un errore durante la correzione del documento. "
+                            "Riprova tra qualche istante."
+                        )
+
+                    if _corr_failed:
+                        _corr_session.add_message("user", request.message)
+                        _corr_session.add_message("assistant", _corr_failed)
+                        chatbot._save_sessions()
+                        return ChatResponse(
+                            session_id=session_id,
+                            answer=_corr_failed,
+                            original_query=request.message,
+                            resolved_query=request.message,
+                            session_language=_corr_lang,
+                            status_messages=["generation_mode"],
+                            title=_corr_session.title,
+                        )
+
+                    _corr_outname = _next_version_filename(
+                        _corr_prev_name or _corr_doc.original_filename
+                    )
+                    _corr_new_id, _corr_new_name = None, None
+                    try:
+                        from ..constants import PRIVATE_DOCS_BASE as _CORR_BASE
+                        _corr_folder = _os.path.join(_CORR_BASE, _tid, _uid)
+                        _os.makedirs(_corr_folder, exist_ok=True)
+                        _corr_storage = _os.path.join(_corr_folder, f"{uuid.uuid4()}.docx")
+                        with open(_corr_storage, "wb") as _cf:
+                            _cf.write(_corr_bytes)
+                        _corr_db_gen2 = _get_db()
+                        _corr_db2 = next(_corr_db_gen2)
+                        try:
+                            _corr_rec = create_user_document(
+                                _corr_db2,
+                                user_id=uuid.UUID(_uid),
+                                tenant_id=uuid.UUID(_tid),
+                                original_filename=_corr_outname,
+                                storage_path=_corr_storage,
+                                file_size_bytes=len(_corr_bytes),
+                                scope="personal",
+                                document_role="generated",
+                                expires_at=None,
+                            )
+                            _corr_new_id = str(_corr_rec.id)
+                            _corr_new_name = _corr_outname
+                        finally:
+                            try:
+                                _corr_db_gen2.close()
+                            except Exception:
+                                pass
+                    except Exception as _corr_persist_exc:
+                        logger.warning(
+                            "chat: failed to persist corrected doc: %s", _corr_persist_exc
+                        )
+
+                    _corr_missing = _summarise_da_compilare(
+                        _corr_map, _corr_elements, _corr_lang
+                    )
+                    _corr_answer = _build_generation_confirmation(
+                        _corr_lang, _corr_missing or None,
+                        getattr(_corr_map, "inferred", None) or None,
+                    )
+                    _corr_session.add_message("user", request.message)
+                    if len(_corr_session.messages) == 1:
+                        _corr_session.title = _generate_session_title(request.message)
+                    _corr_session.add_message(
+                        "assistant",
+                        _corr_answer,
+                        metadata=(
+                            {
+                                "generated_document_id": _corr_new_id,
+                                "generated_document_name": _corr_new_name,
+                            }
+                            if _corr_new_id else {}
+                        ),
+                    )
+                    chatbot._save_sessions()
+                    return ChatResponse(
+                        session_id=session_id,
+                        answer=_corr_answer,
+                        original_query=request.message,
+                        resolved_query=request.message,
+                        session_language=_corr_lang,
+                        status_messages=["generation_mode"],
+                        title=_corr_session.title,
+                        generated_document_id=_corr_new_id,
+                        generated_document_name=_corr_new_name,
+                    )
 
         # Fallback: anaphoric document reference ("questo file", "il documento", etc.)
         # — resolve to the last document the user interacted with in this session.
@@ -2219,7 +2478,10 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         except Exception as _persist_exc:
                             logger.warning("chat: failed to persist filled doc: %s", _persist_exc)
                     _fill_missing = _summarise_da_compilare(_fill_map, _fill_elements, _session_lang)
-                    _fill_confirmation = _build_generation_confirmation(_session_lang, _fill_missing or None)
+                    _fill_confirmation = _build_generation_confirmation(
+                        _session_lang, _fill_missing or None,
+                        getattr(_fill_map, "inferred", None) or None,
+                    )
                     _session.add_message("user", request.message, metadata={
                         "document_id": str(_matched_doc.id),
                         "document_name": _matched_doc.original_filename,

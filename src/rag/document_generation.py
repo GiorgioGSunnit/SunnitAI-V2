@@ -2274,6 +2274,35 @@ _CB_TO_UNCHECKED = {'X': 'o', '☑': '☐', '✓': '☐', '✗': '☐'}
 # Matches a checkbox line: starts with a known marker followed by a space
 _CHECKBOX_LINE_RE = re.compile(r'^([oX☐☑✓✗])\s')
 
+# Uppercase bracketed placeholders, e.g. "[DA COMPILARE]". The capturing group
+# makes re.split keep them as their own segments so they can be written into
+# dedicated runs and highlighted. Mirrors _PH_PATTERN in chatbot/api.py, which
+# is what applies the yellow highlight when a document is first generated.
+_HIGHLIGHT_PH_RE = re.compile(
+    r"(\[[A-ZÀÁÂÄÉÈÊËÍÌÎÏÓÒÔÖÚÙÛÜ\s]+\](?:\s*\([^)]*\))?)"
+)
+
+# An "informative" placeholder is an uppercase label that names the missing field,
+# e.g. [INDIRIZZO IMMOBILE]. Same charset as _HIGHLIGHT_PH_RE above and _PH_PATTERN
+# in chatbot/api.py, so anything preserved here still gets highlighted downstream.
+_INFORMATIVE_PH_RE = re.compile(r"\[[A-ZÀÁÂÄÉÈÊËÍÌÎÏÓÒÔÖÚÙÛÜ\s]+\]")
+
+# Sibling key in the fill JSON listing fields the model deduced rather than read
+# from the user's message. Non-numeric on purpose, so index parsing ignores it.
+_INFERRED_KEY = "_inferred"
+
+
+class FillMap(dict):
+    """{element_index: replacement_text}, plus the labels of inferred fields.
+
+    A plain dict subclass so every existing caller keeps working unchanged; only
+    code that cares about confidence needs to look at .inferred.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.inferred: List[str] = []
+
 
 def _summarise_da_compilare(fill_map: Dict[int, str], elements: List[Dict], lang: str) -> List[str]:
     """Return a list of field labels whose replacement value contains the [DA COMPILARE] placeholder."""
@@ -2451,9 +2480,16 @@ def _fill_template_gaps(
     lang: str,
     session_messages: List[Dict],
     docx_path: Optional[str] = None,
+    correction_mode: bool = False,
 ) -> Dict[int, str]:
     """Ask the LLM to identify blanks in the template elements and fill them.
-    Returns {element_index: replacement_text} — sparse, only changed elements."""
+    Returns {element_index: replacement_text} — sparse, only changed elements.
+
+    correction_mode=True is for amending an already-filled document: only the
+    fields the user explicitly names are touched, and values already present are
+    left alone. Without it the reset rule below would blank out personal data the
+    user did not re-supply, which is right for a new person but wrong for a fix.
+    """
     ph = _placeholder(lang)
 
     carta_parts: List[str] = []
@@ -2483,6 +2519,31 @@ def _fill_template_gaps(
         "en": "Fill the blanks in English (do not change the document language).",
     }.get(lang, "")
 
+    if correction_mode:
+        rule_4c = (
+            "4c. MODALITÀ CORREZIONE — stai correggendo un documento GIÀ COMPILATO, "
+            "non generandone uno nuovo. "
+            "Modifica ESCLUSIVAMENTE i campi che l'utente chiede esplicitamente di cambiare "
+            "nel suo ultimo messaggio. "
+            "Ogni altro valore già presente nel documento va lasciato ESATTAMENTE com'è: "
+            "non azzerarlo, non sostituirlo con un segnaposto, non riformularlo. "
+            "In particolare, se cambi il nome della persona, aggiorna il nome ovunque compaia "
+            "ma NON toccare data di nascita, luogo di nascita, residenza, codice fiscale, "
+            "o qualsiasi altro dato già compilato che l'utente non ha menzionato.\n"
+        )
+    else:
+        rule_4c = (
+            "4c. Quando stai generando il documento per una persona DIVERSA dall'originale "
+            "(cioè stai cambiando nome/cognome), azzera i campi di dati personali che appartengono "
+            "alla persona originale e che l'utente non ha fornito esplicitamente. "
+            f"Usa '{ph}' per: RESIDENZA, DOMICILIO, CODICE FISCALE, CAP, PROVINCIA, "
+            "numero civico, data di firma, e qualsiasi altro dato anagrafico specifico della persona "
+            "che non sia stato fornito nel messaggio dell'utente. "
+            "NON azzerare MAI: le opzioni delle caselle di selezione/checkbox (righe che iniziano "
+            "con 'o' o 'X') — queste sono opzioni fisse del modulo, non dati personali; "
+            "i testi fissi delle sezioni; i riferimenti normativi.\n"
+        )
+
     system = (
         "Sei un assistente che compila documenti legali italiani. "
         "Ti viene fornito un elenco numerato di elementi testuali di un documento. "
@@ -2507,16 +2568,8 @@ def _fill_template_gaps(
         "'DELEGA PER IL RITIRO DEL CERTIFICATO DA PARTE DI TERZI', 'ISTRUZIONI', 'AVVERTENZE').\n"
         "   - Testi legali o istituzionali fissi (es. 'Visto il D.P.R. 313/02', "
         "'presso il Tribunale Ordinario di...', nomi di enti/uffici).\n"
-        "4c. Quando stai generando il documento per una persona DIVERSA dall'originale "
-        "(cioè stai cambiando nome/cognome), azzera i campi di dati personali che appartengono "
-        "alla persona originale e che l'utente non ha fornito esplicitamente. "
-        "Usa '[DA COMPILARE]' per: RESIDENZA, DOMICILIO, CODICE FISCALE, CAP, PROVINCIA, "
-        "numero civico, data di firma, e qualsiasi altro dato anagrafico specifico della persona "
-        "che non sia stato fornito nel messaggio dell'utente. "
-        "NON azzerare MAI: le opzioni delle caselle di selezione/checkbox (righe che iniziano "
-        "con 'o' o 'X') — queste sono opzioni fisse del modulo, non dati personali; "
-        "i testi fissi delle sezioni; i riferimenti normativi.\n"
-        "5. Non inventare dati non forniti esplicitamente.\n"
+        + rule_4c
+        + "5. Non inventare dati non forniti esplicitamente.\n"
         + (f"6. {lang_note}\n" if lang_note else "")
         + "6. CASELLE DI SELEZIONE (CHECKBOX): le righe che iniziano con la lettera 'o' "
         "(non selezionato) o 'X' (selezionato) seguite da uno spazio sono checkbox. "
@@ -2524,8 +2577,15 @@ def _fill_template_gaps(
         "selezionata e 'o' per tutte le altre dello stesso gruppo. "
         "Includi SEMPRE tutte le righe del gruppo checkbox nella risposta, anche quelle invariate. "
         "Il testo sostitutivo deve essere identico all'originale cambiando SOLO il carattere 'o'/'X' iniziale.\n"
+        "7. TRACCIABILITÀ: distingui i dati che l'utente ha fornito ESPLICITAMENTE "
+        "da quelli che hai DEDOTTO dal contesto (ruolo, posizione nel modulo, "
+        "convenzioni). Elenca i nomi dei campi dedotti nella chiave '_inferred'. "
+        "Un campo copiato letteralmente dal messaggio dell'utente NON è dedotto. "
+        f"Un campo lasciato a '{ph}' NON è dedotto. "
+        "Se non hai dedotto nulla, usa una stringa vuota.\n"
         "\nRestituisci SOLO un oggetto JSON valido:\n"
-        "{\"indice\": \"testo_completo_sostituito\", ...}\n"
+        "{\"indice\": \"testo_completo_sostituito\", ..., "
+        "\"_inferred\": \"NOME CAMPO, ALTRO CAMPO\"}\n"
         "Dove 'indice' è il numero dell'elemento e 'testo_completo_sostituito' "
         "è il testo completo della riga compilata (non solo il valore inserito)."
     )
@@ -2568,29 +2628,44 @@ def _fill_template_gaps(
     )
     text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
 
+    def _build(parsed: Dict) -> "FillMap":
+        """Split the model's object into the fill map and the _inferred list.
+
+        _inferred is a sibling key, not a nested structure, so the truncation
+        recovery below keeps working on the numeric pairs regardless.
+        """
+        raw_inferred = parsed.pop(_INFERRED_KEY, "")
+        result = FillMap({int(k): str(v) for k, v in parsed.items()})
+        if isinstance(raw_inferred, list):
+            labels = [str(x).strip() for x in raw_inferred]
+        else:
+            labels = [p.strip() for p in str(raw_inferred).split(",")]
+        result.inferred = [lbl for lbl in labels if lbl]
+        return result
+
     # Attempt 1: clean parse
     try:
-        parsed = json.loads(text)
-        return {int(k): str(v) for k, v in parsed.items()}
-    except (json.JSONDecodeError, ValueError):
+        return _build(json.loads(text))
+    except (json.JSONDecodeError, ValueError, AttributeError):
         pass
 
     # Attempt 2: extract the outermost {...} block (handles extra prose around JSON)
     m = re.search(r'\{[\s\S]*\}', text)
     if m:
         try:
-            parsed = json.loads(m.group(0))
-            return {int(k): str(v) for k, v in parsed.items()}
-        except (json.JSONDecodeError, ValueError):
+            return _build(json.loads(m.group(0)))
+        except (json.JSONDecodeError, ValueError, AttributeError):
             pass
 
-    # Attempt 3: recover individual "key": "value" pairs from a truncated response
+    # Attempt 3: recover individual "key": "value" pairs from a truncated response.
+    # The _inferred key is not numeric so it is skipped here — the fills matter more
+    # than the advisory list when the response was cut short.
     pairs = re.findall(r'"(\d+)"\s*:\s*"((?:[^"\\]|\\.)*)"', text)
     if pairs:
         logger.warning(
             "_fill_template_gaps: recovered %d pairs from partial/truncated JSON", len(pairs)
         )
-        return {int(k): v for k, v in pairs}
+        return FillMap({int(k): v for k, v in pairs})
 
     logger.warning("_fill_template_gaps: JSON parse failed, raw=%r", raw[:200])
     raise HTTPException(
@@ -2604,6 +2679,7 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
     Preserves formatting: tries run-level replacement first, falls
     back to rewriting the first run only if no placeholder run is found."""
     from docx import Document as _D
+    from docx.enum.text import WD_COLOR_INDEX as _WD_COLOR
     doc = _D(source_path)
 
     all_paras: List = []
@@ -2695,9 +2771,34 @@ def _apply_fill_to_docx(source_path: str, fill_map: Dict[int, str]) -> bytes:
                 if not (repl_stripped and repl_stripped[0] in _CB_MARKERS
                         and len(repl_stripped) > 1 and repl_stripped[1] in (' ', '\t')):
                     replacement = orig_stripped[:2] + replacement.lstrip()
-            para.runs[0].text = replacement
+            # Blank the trailing runs BEFORE appending: add_run() extends
+            # para.runs, and only the pre-existing ones should be cleared.
+            # Drop any highlight too — an emptied run that keeps it would make
+            # text later typed at that position come out highlighted.
             for run in para.runs[1:]:
                 run.text = ""
+                run.font.highlight_color = None
+
+            base = para.runs[0]
+            segments = _HIGHLIGHT_PH_RE.split(replacement)
+            if len(segments) > 1:
+                # Give each placeholder its own run so it keeps the yellow
+                # highlight that marks "still needs filling in". Writing the
+                # whole paragraph into a single run would drop that highlight.
+                base.text = segments[0]
+                for seg in segments[1:]:
+                    if not seg:
+                        continue
+                    new_run = para.add_run(seg)
+                    new_run.bold = base.bold
+                    new_run.italic = base.italic
+                    new_run.underline = base.underline
+                    new_run.font.size = base.font.size
+                    new_run.font.name = base.font.name
+                    if _HIGHLIGHT_PH_RE.fullmatch(seg):
+                        new_run.font.highlight_color = _WD_COLOR.YELLOW
+            else:
+                base.text = replacement
 
     # Post-processing: checkbox mutual exclusivity.
     # If fill_map explicitly set a group member to X, reset every other member in that
@@ -2880,7 +2981,16 @@ def generate_document(
         max_tokens=4000,
     )
 
-    raw_output = re.sub(r'\[[^\]]*\]', '[DA COMPILARE]', raw_output)
+    # Normalise stray placeholder syntax ([inserire nome], [___]) to the canonical
+    # marker, but KEEP informative uppercase labels — the system prompt above asks
+    # the model for [INDIRIZZO IMMOBILE], [CANONE MENSILE] and friends. Rewriting
+    # every bracket to the same string turned a form into a column of identical
+    # [DA COMPILARE], leaving the reader no way to tell one blank from another.
+    raw_output = re.sub(
+        r'\[[^\]]*\]',
+        lambda m: m.group(0) if _INFORMATIVE_PH_RE.fullmatch(m.group(0)) else '[DA COMPILARE]',
+        raw_output,
+    )
 
     # Remove the "Campi strutturati" section and everything after it —
     # it's a skeleton artifact (field names list) not part of the legal document.
