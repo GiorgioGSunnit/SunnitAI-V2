@@ -1830,15 +1830,27 @@ def _regex_match_catalog(message: str) -> List[Dict[str, Any]]:
     keeps any entry where at least one stemmed query word appears as a
     substring of the stemmed tipo_atto or label.
     """
-    query_stems = {w for w in _stem_text(message).split() if len(w) > 3}
-    if not query_stems:
+    # Short words are dropped as noise, EXCEPT anything containing a digit.
+    # Article numbers are the most discriminating part of a legal request and the
+    # bare length rule deleted every one of them: "Scrivi Ricorso ex 700 cpc"
+    # reduced to {scriv, ricors}, which matches all 50 ricorsi equally and can
+    # never reach "Istanza ex art. 700 c.p.c." — the template actually wanted,
+    # missed only because it is named Istanza rather than Ricorso.
+    _all_stems = _stem_text(message).split()
+    word_stems = {w for w in _all_stems if len(w) > 3 and not any(c.isdigit() for c in w)}
+    num_stems = {w for w in _all_stems if any(c.isdigit() for c in w)}
+    if not word_stems and not num_stems:
         return []
 
     matches = []
     for entry in SYSTEM_TEMPLATES_CATALOG:
         tipo_stemmed = _stem_text(entry.get("tipo_atto", ""))
         label_stemmed = _stem_text(entry.get("label", ""))
-        if any(qs in tipo_stemmed or qs in label_stemmed for qs in query_stems):
+        # Numbers match as whole tokens — substring matching would let "700" hit
+        # "2700". Words keep substring matching so stemmed prefixes still work.
+        entry_tokens = set(tipo_stemmed.split()) | set(label_stemmed.split())
+        if (any(qs in tipo_stemmed or qs in label_stemmed for qs in word_stems)
+                or any(qs in entry_tokens for qs in num_stems)):
             matches.append({
                 "filename": entry["filename"],
                 "tipo_atto": entry.get("tipo_atto", ""),
