@@ -1,0 +1,140 @@
+id: legal_it.compensi_dm55
+name: Compensi forensi (DM 55/2014, giudizi ordinari di cognizione)
+category: legal_it
+strategy: dm55_fees
+methodology: "Somma i valori medi delle fasi richieste per lo scaglione del valore della causa, applica l'eventuale adeguamento, poi +15% spese generali, +4% CPA e +22% IVA secondo i flag indicati."
+version: "1"
+description: >
+  Liquidazione dei compensi dell'avvocato per i giudizi ordinari di
+  cognizione secondo i parametri del DM 10 marzo 2014 n. 55 (come
+  modificato dal DM 13 agosto 2022 n. 147): somma dei valori MEDI delle
+  fasi richieste (studio, introduttiva, istruttoria, decisionale) per lo
+  scaglione di valore della causa, eventuale aumento o riduzione (max 50%
+  ciascuno, art. 4 come modificato dal DM 147/2022), quindi gli accessori
+  in ordine esplicito: +15% rimborso spese generali (art. 2 DM 55/2014,
+  sempre), +4% CPA se applica_cpa, +22% IVA se applica_iva — con il
+  subtotale esplicitato a ogni passaggio.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - compensi avvocato
+  - compenso avvocato
+  - parcella avvocato
+  - parametri forensi
+  - dm 55 2014
+  - liquidazione compenso
+  - tariffe forensi
+  - fasi di giudizio
+  - spese generali cpa iva
+aliases:
+  - quanto costa l'avvocato per una causa
+  - calcolo parcella avvocato
+  - compenso liquidato dal giudice
+tags:
+  - compensi
+  - avvocato
+  - parcella
+intent_examples:
+  - compenso avvocato per una causa civile
+  - quanto costa l'avvocato per una causa
+  - liquidazione dei compensi secondo il dm 55
+  - calcolo parcella con spese generali cpa e iva
+required_context:
+  - valore della causa e fasi svolte
+ambiguity_notes: >
+  Il contributo unificato e un tributo di iscrizione a ruolo, non un
+  compenso professionale: per quello usare
+  legal_it.contributo_unificato_civile.
+inputs:
+  - name: valore_causa
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Valore della causa (determina lo scaglione DM 55)
+  - name: fasi
+    type: string_list
+    required: true
+    description: >
+      Fasi svolte, sottoinsieme di: studio, introduttiva, istruttoria,
+      decisionale (lista o stringa separata da virgole)
+  - name: aumento_pct
+    type: decimal
+    required: false
+    unit: percent
+    description: Aumento percentuale sul compenso tabellare (0-50, art. 4 DM 55/2014 come modificato dal DM 147/2022)
+  - name: riduzione_pct
+    type: decimal
+    required: false
+    unit: percent
+    description: Riduzione percentuale sul compenso tabellare (0-50, art. 4 DM 55/2014 come modificato dal DM 147/2022)
+  - name: applica_cpa
+    type: boolean
+    required: false
+    default: true
+    description: >
+      Se applicare il 4% CPA (Cassa Previdenza Avvocati) sul subtotale con
+      spese generali. Default true (caso ordinario); se omesso viene
+      registrato come assunzione.
+  - name: applica_iva
+    type: boolean
+    required: false
+    default: true
+    description: >
+      Se applicare il 22% IVA sul subtotale con CPA. Default true (caso
+      ordinario); se omesso viene registrato come assunzione. Va disattivato
+      solo per operazioni non soggette a IVA.
+parameters:
+  - name: dm55_compensi
+    parameter_id: legal_it.dm55_compensi_cognizione
+    resolver: date
+    description: Tabella 2 DM 55/2014 (valori medi per scaglione e fase), versionata per data
+formula:
+  table_parameter_id: legal_it.dm55_compensi_cognizione
+  amount_input: valore_causa
+  phases_input: fasi
+output:
+  name: totale
+  round_to: 2
+  min: 0
+citations:
+  - reference: "DM 10 marzo 2014, n. 55 — Regolamento recante la determinazione dei parametri per la liquidazione dei compensi per la professione forense (art. 2: rimborso forfettario spese generali 15%; art. 4: aumenti e riduzioni)"
+    source_name: "Gazzetta Ufficiale Serie Generale n. 77 del 02/04/2014"
+    publisher: "Gazzetta Ufficiale della Repubblica Italiana"
+    publication_date: "2014-04-02"
+    url: "https://www.gazzettaufficiale.it/eli/id/2014/04/02/14G00067/sg"
+    official: true
+  - reference: "DM 13 agosto 2022, n. 147 — modifiche al DM 55/2014 (tabelle dei valori medi vigenti dal 23/10/2022)"
+    source_name: "Gazzetta Ufficiale Serie Generale n. 236 del 08/10/2022"
+    publisher: "Gazzetta Ufficiale della Repubblica Italiana"
+    publication_date: "2022-10-08"
+    url: "https://www.gazzettaufficiale.it/eli/id/2022/10/08/22G00157/sg"
+    official: true
+warnings:
+  - "Cause di valore superiore a 520.000 EUR non sono supportate: l'art. 6 DM 55/2014 prevede un aumento progressivo fino al 30% e non una settima riga tabellare; la strategia restituisce un errore di fascia non supportata."
+assumptions:
+  - "Usa i valori MEDI di liquidazione della Tabella 2 (giudizi ordinari di cognizione innanzi al Tribunale)."
+  - "Aumento e riduzione massimi 50% ciascuno (art. 4 DM 55/2014 come modificato dal DM 147/2022)."
+  - "Ordine accessori: compenso ± adeguamento, +15% spese generali (sempre), +4% CPA se applica_cpa, +22% IVA se applica_iva. CPA e IVA sono flag espliciti (default true); l'assunzione del default e registrata quando omessi."
+exclusions:
+  - "Non calcola il contributo unificato ne le spese vive di giudizio."
+  - "Non applica i valori minimi/massimi di tabella (solo i medi) ne gli aumenti per pluralita di parti."
+examples:
+  - description: >
+      Scaglione 26.000,01-52.000 (Tabella 2 DM 147/2022): studio 1701,
+      introduttiva 1204, decisionale 2905. Causa da 30.000 EUR, tre fasi
+      senza adeguamenti. Compenso 5810; +15% spese generali 871,50 ->
+      6681,50; +4% CPA 267,26 -> 6948,76; +22% IVA 1528,73 -> totale 8477,49.
+      verified_against: DM 55/2014 Tabella 2 come da DM 147/2022 (valori
+      verificati contro l'allegato ufficiale in G.U. il 2026-07-24)
+    inputs:
+      valore_causa: 30000
+      fasi: ["studio", "introduttiva", "decisionale"]
+    expected_result:
+      compenso_tabellare: "5810.00"
+      spese_generali: "871.50"
+      subtotale_con_spese: "6681.50"
+      cpa: "267.26"
+      subtotale_con_cpa: "6948.76"
+      iva: "1528.73"
+      totale: "8477.49"

@@ -1,0 +1,162 @@
+_note: >
+  Deterministic local verification corpus for the calculation platform.
+  Each scenario is executed by tests/test_corpus.py against a locally
+  reproducible layer — the deterministic engine, the in-process local API
+  (FastAPI TestClient, temp DB), or the deterministic simulation — with NO
+  network calls and NO real LLM. Monetary expectations are exact decimal
+  strings, never binary floats.
+
+  Dispatch is by the keys a scenario declares:
+    route:        -> matcher (POST /match equivalent)     expect.routing_status/calculator_id
+    calculator_id + inputs (no `api`) -> engine.calculate  expect.status/result/error_code/...
+    calculator_id + inputs + api:true -> local API /calculate (temp DB)
+    chat: [messages]                  -> simulation conversation
+
+  evidence levels:
+    engine_verified       deterministic engine result
+    local_api_verified    in-process local API contract
+    integration_simulated deterministic simulation stand-in for the LLM
+    production_unverified  requires the real production RAG/LLM (not run here)
+
+scenarios:
+  # --- Successful complete request (engine) ---------------------------------
+  - id: dm55_full_chain_success
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [studio, introduttiva, decisionale]}
+    expect:
+      status: success
+      result:
+        compenso_tabellare: "5810.00"
+        totale: "8477.49"
+      assumptions_contains: ["applica_cpa", "applica_iva"]
+
+  # --- Successful complete request (local API contract) --------------------
+  - id: invoice_total_via_local_api
+    evidence: local_api_verified
+    calculator_id: business.invoice_total
+    api: true
+    inputs: {net_amount: 1000, vat_rate: 0.22, discount_rate: 0.10}
+    expect:
+      status: success
+      result: {total: "1098.00"}
+
+  # --- Missing required input (simulation) ---------------------------------
+  - id: irpef_missing_income_asks
+    evidence: integration_simulated
+    chat: ["quanto pago di irpef nel 2026?"]
+    expect:
+      kind: question
+      calculator_id: legal_it.irpef
+      missing: [taxable_income]
+
+  # --- Ambiguous calculator match (routing) --------------------------------
+  # Two live calculators: the former furto/rapina pair are legally
+  # unvalidated drafts, withheld from every caller by default, so they can
+  # no longer stand in for a routing tie a user could actually hit.
+  - id: routing_ambiguous_imu_irpef
+    evidence: engine_verified
+    route: "imu e irpef"
+    expect:
+      routing_status: ambiguous
+
+  # --- No match (routing) --------------------------------------------------
+  - id: routing_no_match_succession
+    evidence: engine_verified
+    route: "come si divide l'eredità tra i figli"
+    expect:
+      routing_status: no_match
+
+  # --- Invalid value (engine) ----------------------------------------------
+  - id: notice_indemnity_negative_value_rejected
+    evidence: engine_verified
+    calculator_id: legal_it.notice_indemnity
+    inputs: {retribuzione_mensile_globale: -100, mesi_preavviso: 2}
+    expect:
+      status: error
+      error_code: input_invalid
+
+  # --- Exact bracket boundaries (engine) -----------------------------------
+  - id: dm55_boundary_5200_at
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: "5200.00", fasi: [studio]}
+    expect: {status: success, result: {compenso_tabellare: "425.00"}}
+  - id: dm55_boundary_5200_above
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: "5200.01", fasi: [studio]}
+    expect: {status: success, result: {compenso_tabellare: "919.00"}}
+
+  # --- Unsupported amount above 520.000 (engine) ---------------------------
+  - id: dm55_above_520000_unsupported
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 600000, fasi: [studio]}
+    expect:
+      status: error
+      error_code: parameter_unresolved
+      error_details: {unsupported_range: true}
+
+  # --- DM55 adjustment limits (engine) -------------------------------------
+  - id: dm55_aumento_50_accepted
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [studio, introduttiva, decisionale], aumento_pct: 50}
+    expect: {status: success, result: {compenso_adeguato: "8715.00"}}
+  - id: dm55_aumento_above_50_rejected
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [studio, introduttiva, decisionale], aumento_pct: "50.01"}
+    expect: {status: error, error_code: input_invalid}
+  - id: dm55_former_70_istruttoria_rejected
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [istruttoria], riduzione_pct: 70}
+    expect: {status: error, error_code: input_invalid}
+
+  # --- CPA / IVA combinations (engine) -------------------------------------
+  - id: dm55_cpa_on_iva_on
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [studio, introduttiva, decisionale], applica_cpa: true, applica_iva: true}
+    expect: {status: success, result: {cpa_applicata: true, iva_applicata: true, totale: "8477.49"}}
+  - id: dm55_cpa_on_iva_off
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [studio, introduttiva, decisionale], applica_iva: false}
+    expect: {status: success, result: {cpa_applicata: true, iva_applicata: false, iva: "0.00", totale: "6948.76"}}
+  - id: dm55_cpa_off_iva_on
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [studio, introduttiva, decisionale], applica_cpa: false}
+    expect: {status: success, result: {cpa_applicata: false, iva_applicata: true, cpa: "0.00", iva: "1469.93", totale: "8151.43"}}
+  - id: dm55_cpa_off_iva_off
+    evidence: engine_verified
+    calculator_id: legal_it.compensi_dm55
+    inputs: {valore_causa: 30000, fasi: [studio, introduttiva, decisionale], applica_cpa: false, applica_iva: false}
+    expect: {status: success, result: {cpa_applicata: false, iva_applicata: false, cpa: "0.00", iva: "0.00", totale: "6681.50"}}
+
+  # --- FOI same-base calculation (engine) ----------------------------------
+  - id: foi_same_base_2021
+    evidence: engine_verified
+    calculator_id: legal_it.rivalutazione_istat
+    inputs: {importo: 1000, data_iniziale: "2021-03-15", data_finale: "2021-06-15"}
+    expect: {status: success, result: {importo_rivalutato: "1004.84"}}
+
+  # --- FOI cross-base calculation (engine) ---------------------------------
+  - id: foi_cross_base_2021_to_2026
+    evidence: engine_verified
+    calculator_id: legal_it.rivalutazione_istat
+    inputs: {importo: 1000, data_iniziale: "2021-03-15", data_finale: "2026-06-15"}
+    expect: {status: success, result: {importo_rivalutato: "1208.12"}}
+
+  # --- Missing FOI data (engine) -------------------------------------------
+  - id: foi_missing_month
+    evidence: engine_verified
+    calculator_id: legal_it.rivalutazione_istat
+    inputs: {importo: 1000, data_iniziale: "2021-03-15", data_finale: "2021-09-15"}
+    expect:
+      status: error
+      error_code: parameter_unresolved
+      error_message_contains: "2021-09"

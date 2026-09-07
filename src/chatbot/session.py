@@ -53,7 +53,8 @@ class Message:
         if self.metadata:
             for key in ("citations", "document_id", "document_name", "documents",
                         "generated_document_id", "generated_document_name",
-                        "awaiting_clarification", "pending_sections"):
+                        "awaiting_clarification", "pending_sections",
+                        "pending_calculation", "calculation_conversions"):
                 if key in self.metadata:
                     d[key] = self.metadata[key]
         return d
@@ -126,13 +127,30 @@ class ChatSession:
                     k: m[k]
                     for k in ("citations", "document_id", "document_name", "documents",
                               "generated_document_id", "generated_document_name",
-                              "awaiting_clarification", "pending_sections")
+                              "awaiting_clarification", "pending_sections",
+                              "pending_calculation", "calculation_conversions")
                     if k in m
                 } or None,
             )
             for m in data.get("messages", [])
         ]
         return session
+
+
+def last_pending_calculation(session: "ChatSession") -> Optional[Dict[str, Any]]:
+    """Calculation still collecting inputs, as carried on the last assistant turn.
+
+    Shared with the document-generation branch in api.py, which returns before
+    the RAG graph runs: without carrying this forward, a generation reply lands
+    as the newest assistant message with no pending state and the in-progress
+    calculation is orphaned rather than resumed.
+    """
+    last_assistant = next(
+        (m for m in reversed(session.messages) if m.role == "assistant"), None
+    )
+    if not last_assistant:
+        return None
+    return (last_assistant.metadata or {}).get("pending_calculation")
 
 
 def _generate_session_title(first_message: str) -> str:
@@ -444,6 +462,7 @@ class ChatBot:
             (last_assistant_msg.metadata or {}).get("pending_sections") or []
             if awaiting_clarification_in else []
         )
+        pending_calculation_in = last_pending_calculation(session)
 
         # Run through the RAG pipeline
         # Pass full conversation history (excluding current user message) so the
@@ -452,6 +471,7 @@ class ChatBot:
         try:
             result = rag_run(
                 resolved_query,
+                raw_query=user_message,
                 session_language=session.session_language,
                 user_id=session.user_id,
                 tenant_id=session.tenant_id,
@@ -461,6 +481,7 @@ class ChatBot:
                 awaiting_clarification=awaiting_clarification_in,
                 pending_sections=pending_sections_in,
                 chat_history=prior_messages,
+                pending_calculation=pending_calculation_in,
             )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = _strip_embeddings(result.get("references", []))
@@ -468,6 +489,8 @@ class ChatBot:
             citations = result.get("citations") or []
             awaiting_clarification_out = bool(result.get("awaiting_clarification"))
             pending_sections_out = result.get("pending_sections") or []
+            pending_calculation_out = result.get("pending_calculation")
+            conversions_out = result.get("calculation_conversions") or []
         except Exception as e:
             _e_str = str(e)
             if "maximum context length" in _e_str or "input_tokens" in _e_str:
@@ -488,6 +511,8 @@ class ChatBot:
             citations = []
             awaiting_clarification_out = False
             pending_sections_out = []
+            pending_calculation_out = None
+            conversions_out = []
 
         # Detect topic drift and append a note when the user switches topics mid-session
         _DRIFT_NOTES = {
@@ -548,6 +573,12 @@ class ChatBot:
             "citations": citations,
             "awaiting_clarification": awaiting_clarification_out,
             **({"pending_sections": pending_sections_out} if awaiting_clarification_out else {}),
+            **({"pending_calculation": pending_calculation_out} if pending_calculation_out else {}),
+            # The audit trail for any deterministic input conversion (e.g. a
+            # monthly rent annualized). Persisted because the number in the
+            # answer cannot be checked without it; omitted entirely when
+            # nothing was converted, which is the ordinary case.
+            **({"calculation_conversions": conversions_out} if conversions_out else {}),
         })
         self._save_sessions()
 

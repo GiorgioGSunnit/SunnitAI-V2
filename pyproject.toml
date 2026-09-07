@@ -20,8 +20,12 @@ dependencies = [
     "sentence-transformers>=2.6.0",
     "langgraph>=0.0.26",
     "openai>=1.12.0",
-    # Data validation
-    "pydantic>=2.5.0",
+    # Data validation. The [email] extra pulls in email-validator, which
+    # pydantic.EmailStr requires at class-definition time: src/chatbot/routes/
+    # auth.py annotates fields with it and api.py imports that router
+    # unconditionally, so without the extra the app raises on import rather
+    # than failing later on a bad address.
+    "pydantic[email]>=2.5.0",
     # Config
     "python-dotenv>=1.0.0",
     # Async

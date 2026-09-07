@@ -1,0 +1,30 @@
+values:
+  - parameter_id: legal_it.registration_tax_rate
+    value: 0.02
+    unit: rate
+    effective_from: 1986-04-26
+    effective_to: null
+    source: "Art. 5, Tariffa Parte Prima, allegata al D.P.R. 26 aprile 1986, n. 131"
+    official: true
+    citations:
+      - reference: "Art. 5, Tariffa Parte Prima, D.P.R. 26 aprile 1986, n. 131 — aliquota del 2% per locazioni e affitti di beni immobili"
+        source_name: "Testo Unico dell'Imposta di Registro"
+        publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+        publication_date: "1986-04-26"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.del.presidente.della.repubblica:1986-04-26;131"
+        official: true
+
+  - parameter_id: legal_it.registration_tax_minimum
+    value: 67.00
+    unit: eur
+    effective_from: 1986-04-26
+    effective_to: null
+    source: "Art. 41, comma 2, D.P.R. 26 aprile 1986, n. 131"
+    official: true
+    citations:
+      - reference: "Art. 41, comma 2, D.P.R. 26 aprile 1986, n. 131 — importo minimo dell'imposta di registro (67 euro)"
+        source_name: "Testo Unico dell'Imposta di Registro"
+        publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+        publication_date: "1986-04-26"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.del.presidente.della.repubblica:1986-04-26;131"
+        official: true

@@ -1,0 +1,29 @@
+values:
+  - parameter_id: legal_it.contributo_unificato_civile_scaglioni
+    value:
+      bands:
+        - {up_to: 1100, amount: 43}
+        - {up_to: 5200, amount: 98}
+        - {up_to: 26000, amount: 237}
+        - {up_to: 52000, amount: 518}
+        - {up_to: 260000, amount: 759}
+        - {up_to: 520000, amount: 1214}
+        - {up_to: null, amount: 1686}
+      # Art. 13 co. 6 D.P.R. 115/2002: processi di valore indeterminabile
+      # pagano lo scaglione 26.000-52.000 euro.
+      indeterminable_amount: 518
+    unit: EUR
+    effective_from: 2013-01-01
+    source: "D.P.R. 30 maggio 2002, n. 115, art. 13 co. 1 e 6 — importi vigenti come aggiornati dalla L. 24 dicembre 2012, n. 228 (Legge di stabilità 2013)"
+    official: true
+    citations:
+      - reference: "Art. 13 D.P.R. 30 maggio 2002, n. 115 (Testo Unico spese di giustizia) — importi del contributo unificato per scaglioni di valore"
+        source_name: "Normattiva — D.P.R. 115/2002 (testo vigente)"
+        publisher: "Istituto Poligrafico e Zecca dello Stato"
+        url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:presidente.repubblica:decreto:2002-05-30;115"
+        official: true
+      - reference: "Art. 1 co. 25 L. 24 dicembre 2012, n. 228 — rideterminazione degli importi del contributo unificato"
+        source_name: "Gazzetta Ufficiale Serie Generale n. 302 del 29/12/2012"
+        publisher: "Istituto Poligrafico e Zecca dello Stato"
+        publication_date: "2012-12-29"
+        official: true

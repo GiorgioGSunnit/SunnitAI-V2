@@ -1,0 +1,69 @@
+_note: >
+  Serie mensile dell'indice ISTAT FOI (indice dei prezzi al consumo per le
+  famiglie di operai e impiegati, SENZA tabacchi) — la serie usata per la
+  rivalutazione monetaria dei crediti (art. 429 c.p.c., debiti di valore).
+
+  FONTE AUTORITATIVA: ISTAT, "Indice FOI senza tabacchi". I coefficienti
+  calcolati con questa serie sono verificabili con il calcolatore ufficiale
+  ISTAT su https://rivaluta.istat.it .
+
+  CONVENZIONE (final-month convention): la rivalutazione tra una data A e una
+  data B usa l'indice FOI del MESE di A e l'indice FOI del MESE di B —
+  coefficiente = FOI(mese di B) / FOI(mese di A). Nessuna interpolazione
+  infra-mese; un mese assente nella serie produce un errore strutturato,
+  mai un valore interpolato o di ripiego.
+
+  BASE DELL'INDICE: da gennaio 2026 la base di riferimento e 2025=100
+  (prima 2015=100). Ogni voce dichiara `base_year`; indici di basi diverse
+  NON si dividono direttamente — la strategia applica il coefficiente di
+  raccordo dichiarato in `base_links` (ISTAT: moltiplicando un indice base
+  2025 per 1,214 si ottiene il corrispondente valore in base 2015).
+
+  COPERTURA PARZIALE: sono caricati solo i mesi finora verificati (2021
+  gen-giu in base 2015 e giu 2026 in base 2025). La serie storica completa
+  va ancora ingerita in blocco dal sito ISTAT; i mesi assenti falliscono in
+  modo strutturato. Giugno 2026 e l'ultimo mese pubblicato al 2026-07-24
+  (luglio 2026 non ancora pubblicato). Vedi docs/TO_VERIFY.md.
+
+# Coefficienti di raccordo tra basi (value_in_to_base = value_in_from_base * coefficient)
+base_links:
+  - parameter_id: legal_it.foi_index
+    from_base: 2025
+    to_base: 2015
+    coefficient: 1.214
+    source: "ISTAT — coefficiente di raccordo base 2025=100 con la precedente base 2015=100"
+
+_foi_2021_citation: &foi_2021_citation
+  source_name: "ISTAT — Indice dei prezzi al consumo per le rivalutazioni monetarie (serie FOI senza tabacchi, base 2015=100)"
+  publisher: "Istituto Nazionale di Statistica"
+  url: "https://www.istat.it/notizia/indice-dei-prezzi-per-le-rivalutazioni-monetarie/"
+  official: true
+
+values:
+  # --- 2021, base 2015=100 (valori coerenti con la serie ISTAT; spunta finale
+  #     contro l'artefatto primario ISTAT pendente, verified: false) ---
+  - {parameter_id: legal_it.foi_index, year: 2021, month: 1, value: "102.9", base_year: 2015, unit: index, official: true, verified: false, placeholder: false, last_verified_at: "2026-07-24", source: "ISTAT FOI senza tabacchi gennaio 2021 (base 2015=100)", citations: [{reference: "ISTAT — FOI senza tabacchi, gennaio 2021 (base 2015=100)", <<: *foi_2021_citation}]}
+  - {parameter_id: legal_it.foi_index, year: 2021, month: 2, value: "103.0", base_year: 2015, unit: index, official: true, verified: false, placeholder: false, last_verified_at: "2026-07-24", source: "ISTAT FOI senza tabacchi febbraio 2021 (base 2015=100)", citations: [{reference: "ISTAT — FOI senza tabacchi, febbraio 2021 (base 2015=100)", <<: *foi_2021_citation}]}
+  - {parameter_id: legal_it.foi_index, year: 2021, month: 3, value: "103.3", base_year: 2015, unit: index, official: true, verified: false, placeholder: false, last_verified_at: "2026-07-24", source: "ISTAT FOI senza tabacchi marzo 2021 (base 2015=100)", citations: [{reference: "ISTAT — FOI senza tabacchi, marzo 2021 (base 2015=100)", <<: *foi_2021_citation}]}
+  - {parameter_id: legal_it.foi_index, year: 2021, month: 4, value: "103.7", base_year: 2015, unit: index, official: true, verified: false, placeholder: false, last_verified_at: "2026-07-24", source: "ISTAT FOI senza tabacchi aprile 2021 (base 2015=100)", citations: [{reference: "ISTAT — FOI senza tabacchi, aprile 2021 (base 2015=100)", <<: *foi_2021_citation}]}
+  - {parameter_id: legal_it.foi_index, year: 2021, month: 5, value: "103.6", base_year: 2015, unit: index, official: true, verified: false, placeholder: false, last_verified_at: "2026-07-24", source: "ISTAT FOI senza tabacchi maggio 2021 (base 2015=100)", citations: [{reference: "ISTAT — FOI senza tabacchi, maggio 2021 (base 2015=100)", <<: *foi_2021_citation}]}
+  - {parameter_id: legal_it.foi_index, year: 2021, month: 6, value: "103.8", base_year: 2015, unit: index, official: true, verified: false, placeholder: false, last_verified_at: "2026-07-24", source: "ISTAT FOI senza tabacchi giugno 2021 (base 2015=100)", citations: [{reference: "ISTAT — FOI senza tabacchi, giugno 2021 (base 2015=100)", <<: *foi_2021_citation}]}
+  # --- 2026, base 2025=100 (fonte primaria ISTAT) ---
+  - parameter_id: legal_it.foi_index
+    year: 2026
+    month: 6
+    value: "102.8"
+    base_year: 2025
+    unit: index
+    official: true
+    verified: true
+    placeholder: false
+    last_verified_at: "2026-07-24"
+    source_ref: "ISTAT — FOI senza tabacchi giugno 2026 (base 2025=100), ultimo mese pubblicato"
+    citations:
+      - reference: "ISTAT — Indice FOI senza tabacchi, giugno 2026 (base 2025=100)"
+        source_name: "ISTAT — Indice dei prezzi al consumo per le rivalutazioni monetarie"
+        publisher: "Istituto Nazionale di Statistica"
+        publication_date: "2026-07-16"
+        url: "https://www.istat.it/notizia/indice-dei-prezzi-per-le-rivalutazioni-monetarie/"
+        official: true

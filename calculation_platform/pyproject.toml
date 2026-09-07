@@ -1,0 +1,45 @@
+[project]
+name = "calculation-platform"
+version = "0.1.0"
+description = "Deterministic, LLM-controlled calculation engine — generic strategies, YAML-driven formula packs, versioned parameters."
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.109.0",
+    "pydantic>=2.5.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "httpx>=0.26.0",
+    "uvicorn[standard]>=0.27.0",
+]
+
+# This sub-project currently runs inside the parent repo's shared virtual
+# environment (all of the above were already present there). If this ever
+# needs to run standalone, `pip install -e .[dev]` from this directory is
+# enough — there is no dependency on the parent repo's src/ package.
+
+# This pyproject sits INSIDE the tree it builds, so setuptools' automatic
+# flat-layout discovery sees app/, simulation/, formula_packs/ and the rest as
+# competing top-level packages and refuses to build at all. Declare the layout
+# explicitly: the code is imported as `calculation_platform.*`, so that prefix
+# has to survive installation. formula_packs/ and parameters/ are data, not
+# code — the app resolves them from __file__, which an editable install keeps
+# pointing at the real source tree.
+[tool.setuptools]
+package-dir = { "calculation_platform" = "." }
+packages = [
+    "calculation_platform",
+    "calculation_platform.app",
+    "calculation_platform.app.api",
+    "calculation_platform.app.core",
+    "calculation_platform.app.penal",
+    "calculation_platform.app.resolvers",
+    "calculation_platform.app.schemas",
+    "calculation_platform.app.storage",
+    "calculation_platform.app.strategies",
+    "calculation_platform.scripts",
+    "calculation_platform.simulation",
+]

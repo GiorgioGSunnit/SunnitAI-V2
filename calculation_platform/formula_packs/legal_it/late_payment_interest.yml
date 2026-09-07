@@ -1,0 +1,92 @@
+id: legal_it.late_payment_interest
+name: Interessi di mora nelle transazioni commerciali (D.Lgs. 231/2002)
+category: legal_it
+strategy: expression
+methodology: "Calcola l'interesse semplice sul capitale per i giorni di ritardo al tasso di riferimento BCE fornito maggiorato di 8 punti percentuali."
+version: "1"
+description: >
+  Calcola gli interessi di mora dovuti per il ritardato pagamento nelle
+  transazioni commerciali: tasso di mora = tasso di riferimento BCE
+  (aggiornato semestralmente e comunicato dal MEF in Gazzetta Ufficiale)
+  + maggiorazione di 8 punti percentuali. Il tasso BCE del semestre va
+  fornito dal chiamante.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - interessi di mora
+  - ritardo di pagamento
+  - transazioni commerciali
+  - tasso di mora
+aliases:
+  - mora per pagamento in ritardo
+  - interessi su fattura scaduta
+tags:
+  - mora
+  - ritardo
+  - pagamento
+intent_examples:
+  - interessi di mora per ritardato pagamento
+  - mora su una fattura scaduta
+  - interessi per ritardo nei pagamenti commerciali
+required_context:
+  - tasso di riferimento BCE del semestre di ritardo (comunicato MEF in G.U.)
+ambiguity_notes: >
+  Da non confondere con gli interessi legali ex art. 1284 c.c.: la mora
+  commerciale si applica solo tra imprese/professionisti (o verso la PA)
+  e ha un tasso molto più alto.
+inputs:
+  - name: capitale
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Importo non pagato su cui calcolare la mora
+  - name: tasso_riferimento_bce
+    type: decimal
+    required: true
+    unit: rate
+    min_value: 0
+    description: Tasso di riferimento BCE del semestre (es. 0.0215 per 2,15%)
+  - name: giorni
+    type: integer
+    required: true
+    unit: days
+    min_value: 0
+    max_value: 36525
+    description: Giorni di ritardo nel pagamento
+  - name: maggiorazione
+    type: decimal
+    required: false
+    default: 0.08
+    unit: rate
+    description: Maggiorazione fissa prevista dalla legge (8 punti percentuali)
+parameters: []
+derived_variables:
+  tasso_mora: "tasso_riferimento_bce + maggiorazione"
+formula:
+  expression: "capitale * tasso_mora * giorni / 365"
+output:
+  name: interessi
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 5, D.Lgs. 9 ottobre 2002, n. 231 — saggio degli interessi di mora nelle transazioni commerciali"
+    source_name: "Attuazione della direttiva 2000/35/CE sui ritardi di pagamento"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "2002-10-09"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.legislativo:2002-10-09;231"
+    official: true
+assumptions:
+  - "Usa l'anno civile convenzionale di 365 giorni e interesse semplice sull'intero periodo di ritardo."
+  - "Assume che il tasso BCE fornito copra l'intero periodo; se il ritardo attraversa un cambio semestrale, calcolare i semestri separatamente."
+exclusions:
+  - "Non include l'importo forfettario di 40€ per i costi di recupero crediti (art. 6, D.Lgs. 231/2002)."
+  - "Non verifica l'applicabilità del regime (serve una transazione commerciale tra imprese/professionisti o verso la PA)."
+examples:
+  - description: "1.000€ pagati con 30 giorni di ritardo, BCE 2,15% (1° semestre 2026): tasso mora 10,15%"
+    inputs:
+      capitale: 1000
+      tasso_riferimento_bce: 0.0215
+      giorni: 30
+    expected_result:
+      interessi: "8.34"

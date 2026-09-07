@@ -1,0 +1,91 @@
+id: legal_it.inps_contributions
+name: Contributi previdenziali INPS (quota lavoratore e datore)
+category: legal_it
+strategy: expression
+methodology: "Applica alla retribuzione lorda le aliquote fornite per lavoratore e datore di lavoro e somma le due quote contributive."
+version: "1"
+description: >
+  Calcola i contributi previdenziali INPS su una retribuzione lorda,
+  separando la quota a carico del lavoratore da quella a carico del
+  datore di lavoro. Le aliquote variano per settore, qualifica e
+  dimensione aziendale e sono determinate dalle circolari INPS annuali:
+  vanno fornite dal chiamante.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - contributi inps
+  - contributi previdenziali
+  - aliquota contributiva
+  - inps
+aliases:
+  - quanto verso all'inps
+  - contributi sulla busta paga
+tags:
+  - inps
+  - contributi
+  - previdenza
+  - retribuzione
+intent_examples:
+  - contributi inps sulla retribuzione
+  - calcolo dei contributi previdenziali
+  - quota inps a carico del lavoratore
+negative_examples:
+  - i contributi inps sono deducibili
+  - come funzionano i contributi inps
+  - quando si versano i contributi previdenziali
+required_context:
+  - aliquote contributive del settore/qualifica, dalla circolare INPS dell'anno
+inputs:
+  - name: retribuzione_lorda
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Retribuzione lorda su cui calcolare i contributi
+  - name: aliquota_lavoratore
+    type: decimal
+    required: true
+    unit: rate
+    min_value: 0
+    description: Aliquota a carico del lavoratore (es. 0.0919 per 9,19%)
+  - name: aliquota_datore_lavoro
+    type: decimal
+    required: true
+    unit: rate
+    min_value: 0
+    description: Aliquota a carico del datore di lavoro (es. 0.2381 per 23,81%)
+parameters: []
+derived_variables:
+  contributo_lavoratore: "retribuzione_lorda * aliquota_lavoratore"
+  contributo_datore_lavoro: "retribuzione_lorda * aliquota_datore_lavoro"
+formula:
+  expression: "contributo_lavoratore + contributo_datore_lavoro"
+output:
+  name: contributo_totale
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 2115 Codice Civile — obbligo contributivo ripartito tra datore di lavoro e lavoratore"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+  - reference: "INPS — Aliquote contributive (valori aggiornati dalle circolari annuali)"
+    source_name: "Portale istituzionale INPS"
+    publisher: "INPS"
+    url: "https://www.inps.it/it/it/inps-comunica/diritti-e-obblighi-in-materia-di-sicurezza-sociale-nell-unione-e/per-le-imprese/aliquote-contributive.html"
+    official: true
+assumptions:
+  - "Le aliquote fornite si applicano all'intera retribuzione indicata, senza fasce o massimali."
+exclusions:
+  - "Non applica il massimale contributivo per gli iscritti post-1996 né gli sgravi/decontribuzioni."
+  - "Non distingue le singole gestioni (IVS, NASpI, CIG...): usa le aliquote aggregate fornite."
+examples:
+  - description: "Retribuzione 2.000€, 9,19% lavoratore + 23,81% datore (aliquote IVS standard)"
+    inputs:
+      retribuzione_lorda: 2000
+      aliquota_lavoratore: 0.0919
+      aliquota_datore_lavoro: 0.2381
+    expected_result:
+      contributo_totale: "660.00"
