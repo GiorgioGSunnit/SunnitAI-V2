@@ -1993,7 +1993,23 @@ def classify_system_template(
                 "score": 1.0,
             }]
 
-        ranked = _llm_rank_candidates(message, sorted(matches, key=lambda m: m.get("label", ""))[:30])
+        candidates = sorted(matches, key=lambda m: m.get("label", ""))[:30]
+        ranked = _llm_rank_candidates(message, candidates)
+
+        # The ranking model is asked to return every candidate but routinely
+        # returns only a handful — and the caller picks auto-select vs. picker
+        # from the LENGTH of this list. Left alone, identical input can
+        # auto-select on one run and show the picker on the next, purely from
+        # how many indices the model felt like emitting.
+        #
+        # Backfill from the candidate order so the count is decided by how many
+        # templates actually matched, then honour top_k (which was previously
+        # accepted and ignored). The model's ordering is preserved for the
+        # entries it did rank; the rest follow in label order.
+        _ranked_files = {e["filename"] for e in ranked}
+        ranked.extend(e for e in candidates if e["filename"] not in _ranked_files)
+        ranked = ranked[:top_k]
+
         results = []
         for i, entry in enumerate(ranked):
             fname = entry["filename"]
