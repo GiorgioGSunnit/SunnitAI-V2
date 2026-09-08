@@ -1823,6 +1823,31 @@ def _stem_text(s: str) -> str:
     return " ".join(_stem_word(w) for w in words)
 
 
+# Procedural codes a request can name, mapped to the matching catalog `codice`.
+# Only these three are real procedural codes; the catalog's other `codice` values
+# ('Diritto del Lavoro', 'Contratti e Atti Stragiudiziali', ...) are subject
+# headings and must never be filtered on.
+_CODICE_MARKERS: List[Any] = [
+    (re.compile(r'(?<![a-z])c\.?\s*p\.?\s*c(?![a-z])|codice di procedura civile|procedura civile', re.I),
+     'Codice di procedura civile'),
+    (re.compile(r'(?<![a-z])c\.?\s*p\.?\s*p(?![a-z])|codice di procedura penale|procedura penale', re.I),
+     'Codice di procedura penale'),
+    (re.compile(r'(?<![a-z])c\.?\s*p\.?\s*a(?![a-z])|processo amministrativo', re.I),
+     'Codice del processo amministrativo'),
+]
+
+
+def _detect_procedural_code(message: str) -> Optional[str]:
+    """Return the procedural code named in the request, or None.
+
+    None when no code is named and also when several are — an act citing two
+    codes ('ex art. 81 C.P. e art. 671 C.P.P.') gives no basis for excluding
+    either, so no filtering should happen.
+    """
+    found = {codice for pattern, codice in _CODICE_MARKERS if pattern.search(message)}
+    return next(iter(found)) if len(found) == 1 else None
+
+
 def _regex_match_catalog(message: str) -> List[Dict[str, Any]]:
     """
     Broad, no-LLM candidate matching: stems every word (> 3 chars) of the user
@@ -1992,6 +2017,27 @@ def classify_system_template(
         logger.info("DEBUG stage1 regex matches: %s", [m["tipo_atto"] for m in matches])
         if not matches:
             return []
+
+        # Exclusion-only narrowing. When the request names a procedural code, drop
+        # entries belonging to the OTHER procedural codes — a c.p.c. request has no
+        # use for a Codice di procedura penale template.
+        #
+        # Deliberately NOT keep-only: several genuine c.p.c. templates are
+        # catalogued under subject headings ('Ricorso al Giudice del Lavoro ex Art.
+        # 414 C.P.C.' sits under 'Diritto del Lavoro'), so keeping only entries
+        # whose codice equals the named code would discard correct answers.
+        # Skipped entirely if it would empty the list — a wrong candidate beats none.
+        _req_codice = _detect_procedural_code(message)
+        if _req_codice:
+            _incompatible = {c for _, c in _CODICE_MARKERS} - {_req_codice}
+            _narrowed = [m for m in matches if m.get("codice") not in _incompatible]
+            if _narrowed:
+                logger.info(
+                    "codice filter: request names %r — %d candidates -> %d",
+                    _req_codice, len(matches), len(_narrowed),
+                )
+                matches = _narrowed
+
         if len(matches) == 1:
             only = matches[0]
             fname = only["filename"]
