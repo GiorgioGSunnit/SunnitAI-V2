@@ -1611,6 +1611,16 @@ def _next_version_filename(name: str) -> str:
     return f"{base}_v2{ext}"
 
 
+# Comparison verbs, mirroring the fast path in _classify_top_level_intent. Decides
+# whether several attached documents mean "compare these" or merely "several files
+# are attached and my question is about one of them".
+_COMPARISON_VERB_RE = re.compile(
+    r'\b(confronta|paragona|compara|compare|versus|vs\.?)\b'
+    r'|confronto\s+(tra|fra|dei|di|delle|degli)\b'
+    r'|differenze?\s+(tra|fra|dei|di)\b',
+    re.IGNORECASE,
+)
+
 def _detect_document_intent(message: str) -> list:
     """
     Return all filenames mentioned in the message as a list.
@@ -1968,14 +1978,37 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
         # Fallback: anaphoric document reference ("questo file", "il documento", etc.)
         # — resolve to the last document the user interacted with in this session.
+        # Meta-words for the artifact itself. Safe with any determiner, since
+        # nobody asks a general legal question about "the file".
         _ANAPHORIC_DOC_RE = re.compile(
-            r'\b(questo file|questa file|questo documento|questa documento|'
-            r'il file|il documento|quel file|quel documento|'
-            r'questo modulo|il modulo|quel modulo|'
-            r'this file|this document|the file|the document)\b',
+            r"(?:(?:quest[oa]|quell[oa]|quel|il|lo|la)\s+|l['’]\s*)"
+            r"(?:file|document[oi]|modul[oi]|allegat[oi]|pdf)\b"
+            r"|\b(?:this|that|the)\s+(?:file|document|attachment)\b",
             re.IGNORECASE,
         )
-        if not _mentioned_names and _ANAPHORIC_DOC_RE.search(request.message):
+        # These nouns also name real legal concepts, so a bare article is not
+        # enough: "il contratto di locazione richiede la forma scritta?" is a
+        # corpus question, not a reference to an upload. Require a demonstrative.
+        _ANAPHORIC_CONTENT_RE = re.compile(
+            r"\b(?:quest[oa]|quell[oa]|quel)\s+"
+            r"(?:contratt[oi]|att[oi]|ricors[oi]|verbal[ei]|sentenz[ae]|fattur[ae]|"
+            r"istanz[ae]|memori[ae]|certificat[oi]|test[oi])\b",
+            re.IGNORECASE,
+        )
+        # "che ho appena caricato" is a near-certain reference to an upload
+        # whatever noun follows it. Both messages in the reported bug carried
+        # this phrase and matched none of the patterns above.
+        _UPLOAD_REF_RE = re.compile(
+            r"\b(?:ti\s+)?ho\s+(?:appena\s+)?(?:caricato|allegato|inviato|mandato)\b"
+            r"|\bappena\s+(?:caricat|allegat|inviat)[oa]\b"
+            r"|\b(?:just\s+)?(?:uploaded|attached)\b",
+            re.IGNORECASE,
+        )
+        if not _mentioned_names and (
+            _ANAPHORIC_DOC_RE.search(request.message)
+            or _ANAPHORIC_CONTENT_RE.search(request.message)
+            or _UPLOAD_REF_RE.search(request.message)
+        ):
             _anaphoric_session = chatbot.get_session(session_id, user_id=_uid)
             if _anaphoric_session:
                 for _prev_msg in reversed(_anaphoric_session.messages):
@@ -2116,6 +2149,30 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 }.get(_session_lang, "Rispondi in italiano.")
 
                 _MAX_CHARS_PER_DOC = 50_000  # full doc — windowing handles truncation
+
+                # Several attached documents only mean "compare them" when the user
+                # asked to. The panel now sends every attached file on every message,
+                # so without this a question about one document ("riassumi il
+                # contratto") would be answered with a comparison of all of them.
+                # Narrow to the best single candidate instead.
+                if len(_matched_docs) >= 2 and not _COMPARISON_VERB_RE.search(request.message):
+                    _typed_names = _detect_document_intent(request.message)
+                    _named_docs = [
+                        d for d in _matched_docs
+                        if any(t.lower() in d.original_filename.lower() for t in _typed_names)
+                    ]
+                    if len(_named_docs) == 1:
+                        _chosen_doc = _named_docs[0]        # user named one explicitly
+                    else:
+                        _chosen_doc = max(                  # otherwise the newest upload
+                            _matched_docs,
+                            key=lambda d: (d.uploaded_at is not None, d.uploaded_at or 0),
+                        )
+                    logger.info(
+                        "chat: %d documents attached, no comparison intent - using %r",
+                        len(_matched_docs), _chosen_doc.original_filename,
+                    )
+                    _matched_docs = [_chosen_doc]
 
                 # ── TWO OR MORE DOCS → comparison path ────────────────────
                 if len(_matched_docs) >= 2:
