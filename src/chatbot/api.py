@@ -42,7 +42,7 @@ from .session import (
 from ..db.base import get_db
 from ..db import crud
 from ..db.models import Tenant
-from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name, create_user_document
+from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name, create_user_document, link_documents_to_conversation
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
 from ..rag.verbose_logger import vlog
 from ..rag.document_generation import (
@@ -1976,13 +1976,15 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         generated_document_name=_corr_new_name,
                     )
 
-        # Fallback: anaphoric document reference ("questo file", "il documento", etc.)
-        # — resolve to the last document the user interacted with in this session.
         # Meta-words for the artifact itself. Safe with any determiner, since
-        # nobody asks a general legal question about "the file".
+        # nobody asks a general legal question about "the file". Determiners
+        # include preposizioni articolate ("dal documento", "nel file") — those
+        # are how users actually phrase it and the bare-article list missed them.
+        _DET = (r"(?:quest[oa]|quell[oa]|quel|il|lo|la"
+                r"|d[ae]l|nel|sul|al|d[ae]llo|nello|sullo|allo"
+                r"|d[ae]lla|nella|sulla|alla)\s+|l['’]\s*")
         _ANAPHORIC_DOC_RE = re.compile(
-            r"(?:(?:quest[oa]|quell[oa]|quel|il|lo|la)\s+|l['’]\s*)"
-            r"(?:file|document[oi]|modul[oi]|allegat[oi]|pdf)\b"
+            r"(?:" + _DET + r")(?:file|document[oi]|modul[oi]|allegat[oi]|pdf)\b"
             r"|\b(?:this|that|the)\s+(?:file|document|attachment)\b",
             re.IGNORECASE,
         )
@@ -1995,12 +1997,15 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             r"istanz[ae]|memori[ae]|certificat[oi]|test[oi])\b",
             re.IGNORECASE,
         )
-        # "che ho appena caricato" is a near-certain reference to an upload
-        # whatever noun follows it. Both messages in the reported bug carried
-        # this phrase and matched none of the patterns above.
+        # Upload references, in the two shapes users actually write: the verb
+        # form ("che ho appena caricato") and the participle attached to the noun
+        # ("dal documento caricato"). Near-certain references either way.
         _UPLOAD_REF_RE = re.compile(
             r"\b(?:ti\s+)?ho\s+(?:appena\s+)?(?:caricato|allegato|inviato|mandato)\b"
             r"|\bappena\s+(?:caricat|allegat|inviat)[oa]\b"
+            r"|\b(?:documento|file|contratto|atto|modulo|pdf|allegato"
+            r"|fattura|sentenza|istanza|memoria|relazione|perizia)\s+"
+            r"(?:che\s+ho\s+)?(?:appena\s+)?(?:caricat|allegat|inviat)[oiae]\b"
             r"|\b(?:just\s+)?(?:uploaded|attached)\b",
             re.IGNORECASE,
         )
@@ -2149,6 +2154,39 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 }.get(_session_lang, "Rispondi in italiano.")
 
                 _MAX_CHARS_PER_DOC = 50_000  # full doc — windowing handles truncation
+                # Record which documents this conversation uses, so "the files of
+                # this case" becomes a query rather than a replay of the message
+                # history. Runs before the comparison gate below, which narrows
+                # _matched_docs to one — every attached document should be linked,
+                # not just the one this particular question is about.
+                # Best-effort: bookkeeping must never break the answer.
+                if _uid and _tid:
+                    try:
+                        _link_gen = _get_db()
+                        _link_db = next(_link_gen)
+                        try:
+                            _n_linked = link_documents_to_conversation(
+                                _link_db,
+                                uuid.UUID(session_id),
+                                [d.id for d in _matched_docs],
+                                uuid.UUID(_uid),
+                                uuid.UUID(_tid),
+                            )
+                            if _n_linked:
+                                logger.info(
+                                    "chat: linked %d document(s) to conversation %s",
+                                    _n_linked, session_id,
+                                )
+                        finally:
+                            try:
+                                _link_gen.close()
+                            except Exception:
+                                pass
+                    except Exception as _link_exc:
+                        logger.warning(
+                            "chat: could not link documents to conversation: %s", _link_exc
+                        )
+
 
                 # Several attached documents only mean "compare them" when the user
                 # asked to. The panel now sends every attached file on every message,

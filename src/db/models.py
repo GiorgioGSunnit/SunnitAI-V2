@@ -221,6 +221,34 @@ class UserDocument(Base):
 
 
 # ---------------------------------------------------------------------------
+# Conversation Documents — which documents belong to which conversation (case)
+# ---------------------------------------------------------------------------
+
+class ConversationDocument(Base):
+    """Join table linking a conversation to the documents used in it.
+
+    conversation_id is the session id. The conversations row is created by the
+    session sync, which runs after the first link is written, so
+    link_documents_to_conversation inserts a placeholder to satisfy this key.
+    """
+
+    __tablename__ = "conversation_documents"
+
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("user_documents.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    linked_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+# ---------------------------------------------------------------------------
 # Tenant Subscriptions — Stripe-backed billing state per tenant
 # ---------------------------------------------------------------------------
 

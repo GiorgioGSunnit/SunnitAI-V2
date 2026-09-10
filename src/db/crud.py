@@ -9,7 +9,7 @@ from .models import (
     Tenant, TenantProfile, TenantSubscription,
     User, UserProfile,
     UserSettings, UserPreferences,
-    Conversation, UserDocument
+    Conversation, UserDocument, ConversationDocument
 )
 
 _UNSET = object()
@@ -681,3 +681,91 @@ def upsert_tenant_subscription(
     db.commit()
     db.refresh(subscription)
     return subscription
+
+
+# ---------------------------------------------------------------------------
+# Conversation <-> document links
+# ---------------------------------------------------------------------------
+
+def link_documents_to_conversation(
+    db: Session,
+    conversation_id: uuid.UUID,
+    document_ids: list,
+    user_id: Optional[uuid.UUID] = None,
+    tenant_id: Optional[uuid.UUID] = None,
+) -> int:
+    """Record that these documents belong to this conversation.
+
+    Idempotent: re-linking an existing pair is a no-op, so this can be called on
+    every message without accumulating duplicates. Returns the number of new
+    links created.
+    """
+    if not document_ids:
+        return 0
+
+    # The conversations row is written when the session is persisted, which
+    # happens *after* this call on a conversation's first message. Insert a
+    # placeholder so the foreign key holds; upsert_conversation_from_session
+    # fills in the title and messages moments later.
+    if user_id is not None and tenant_id is not None:
+        if not db.query(Conversation.id).filter(
+            Conversation.id == conversation_id
+        ).first():
+            db.add(
+                Conversation(
+                    id=conversation_id, user_id=user_id, tenant_id=tenant_id
+                )
+            )
+            db.commit()
+
+    existing = {
+        row.document_id
+        for row in db.query(ConversationDocument.document_id).filter(
+            ConversationDocument.conversation_id == conversation_id,
+            ConversationDocument.document_id.in_(document_ids),
+        )
+    }
+    created = 0
+    for doc_id in document_ids:
+        if doc_id in existing:
+            continue
+        db.add(
+            ConversationDocument(conversation_id=conversation_id, document_id=doc_id)
+        )
+        created += 1
+    if created:
+        db.commit()
+    return created
+
+
+def get_conversation_documents(
+    db: Session, conversation_id: uuid.UUID, user_id: uuid.UUID, tenant_id: uuid.UUID
+) -> list:
+    """Documents belonging to a conversation, newest link first.
+
+    Scoped by user/tenant so a conversation id alone can never surface another
+    account's files, and expired documents are excluded.
+    """
+    now = datetime.now(timezone.utc)
+    return (
+        db.query(UserDocument)
+        .join(ConversationDocument, ConversationDocument.document_id == UserDocument.id)
+        .filter(
+            ConversationDocument.conversation_id == conversation_id,
+            UserDocument.user_id == user_id,
+            UserDocument.tenant_id == tenant_id,
+            or_(UserDocument.expires_at.is_(None), UserDocument.expires_at > now),
+        )
+        .order_by(ConversationDocument.linked_at.desc())
+        .all()
+    )
+
+
+def get_document_conversations(db: Session, document_id: uuid.UUID) -> list:
+    """Conversation ids this document is linked to."""
+    return [
+        row.conversation_id
+        for row in db.query(ConversationDocument.conversation_id).filter(
+            ConversationDocument.document_id == document_id
+        )
+    ]

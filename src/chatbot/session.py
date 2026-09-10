@@ -73,9 +73,13 @@ class ChatSession:
     _last_active: float = field(default_factory=time.monotonic)
     user_id: Optional[str] = None
     tenant_id: Optional[str] = None
+    # Set whenever the session changes, cleared once it has been written to
+    # Postgres. Without it every save re-upserted every session in memory.
+    _dirty: bool = field(default=True)
 
     def add_message(self, role: str, content: str, metadata: Optional[Dict[str, Any]] = None) -> Message:
         self._last_active = time.monotonic()
+        self._dirty = True
         msg = Message(role=role, content=content, metadata=metadata)
         self.messages.append(msg)
         # Trim old messages to prevent unbounded growth
@@ -134,6 +138,9 @@ class ChatSession:
             )
             for m in data.get("messages", [])
         ]
+        # Loaded from disk, so already persisted.
+        session._dirty = False
+
         return session
 
 
@@ -288,9 +295,12 @@ class ChatBot:
     def _save_sessions(self) -> None:
         with self._lock:
             snapshot = [s.to_dict() for s in self._sessions.values()]
+            # Only sessions that actually changed. This used to be every session
+            # in memory, so one chat message issued hundreds of SELECT + UPDATE +
+            # COMMIT cycles, rewriting every conversation's full message history.
             db_sessions = [
                 s for s in self._sessions.values()
-                if s.user_id and s.tenant_id
+                if s.user_id and s.tenant_id and s._dirty
             ]
 
         # Write to JSON file
@@ -318,15 +328,33 @@ class ChatBot:
                 from ..db.crud import upsert_conversation_from_session
                 db = SessionLocal()
                 try:
+                    failed = 0
                     for s in db_sessions:
-                        upsert_conversation_from_session(
-                            db,
-                            session_id=s.session_id,
-                            user_id=s.user_id,
-                            tenant_id=s.tenant_id,
-                            title=s.title,
-                            messages=[m.to_dict() for m in s.messages],
-                            session_language=s.session_language,
+                        # Isolated per session: this loop used to share a single
+                        # try/except, so one malformed id aborted the whole sync
+                        # and every session after it never reached Postgres.
+                        try:
+                            upsert_conversation_from_session(
+                                db,
+                                session_id=s.session_id,
+                                user_id=s.user_id,
+                                tenant_id=s.tenant_id,
+                                title=s.title,
+                                messages=[m.to_dict() for m in s.messages],
+                                session_language=s.session_language,
+                            )
+                            s._dirty = False
+                        except Exception as exc:
+                            db.rollback()
+                            failed += 1
+                            logger.debug(
+                                "Skipping session %s during Postgres sync: %s",
+                                s.session_id, exc,
+                            )
+                    if failed:
+                        logger.warning(
+                            "Postgres sync: %d of %d session(s) could not be persisted",
+                            failed, len(db_sessions),
                         )
                 finally:
                     db.close()
