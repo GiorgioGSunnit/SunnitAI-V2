@@ -121,10 +121,10 @@ async def _lifespan(app: FastAPI):
 
     log_path = ensure_cypher_log_ready()
     logger.info("Cypher query log file: %s", log_path)
-    task = asyncio.create_task(_background_embedding_job())
+    # task = asyncio.create_task(_background_embedding_job())  # disabled — AuraDB read-only recovery
     expiry_task = asyncio.create_task(_background_doc_expiry_job())
     yield
-    task.cancel()
+    # task.cancel()
     expiry_task.cancel()
 
 

@@ -32,6 +32,34 @@ _TOOL_SCHEMA_CACHE: Dict[tuple[str, str], tuple[Dict[str, Any], float]] = {}
 _TOOL_SCHEMA_CACHE_LOCK = threading.Lock()
 _TOOL_SCHEMA_CACHE_TTL = 300
 
+# A missing input is CCNL-sourceable when its formula-pack description says
+# so (see _is_ccnl_sourceable): a pack author opts in by writing "CCNL" into
+# the field's description, no change to this file required. Human-readable
+# labels here are only cosmetic — they steer the fulltext search and the
+# extraction prompt towards natural CCNL wording instead of the bare
+# snake_case field name.
+_CCNL_FIELD_LABELS: Dict[str, str] = {
+    "giorni_ferie_annui": "giorni di ferie annui",
+    "mesi_preavviso": "mesi di preavviso",
+    "maggiorazione_straordinario": "maggiorazione straordinario percentuale",
+}
+# Italian stopwords excluded when pre-filtering the sector list down to
+# query-relevant candidates before it goes to the LLM (see
+# _classify_sector_llm) — short, high-frequency function words that would
+# spuriously "overlap" with almost any sector name.
+_SECTOR_FILTER_STOPWORDS = {
+    "di", "e", "il", "la", "le", "lo", "gli", "dei", "del", "della",
+    "delle", "degli", "da", "in", "a", "per", "con", "su", "tra", "fra",
+    "un", "una", "uno", "che", "non", "nel", "al", "dal",
+}
+# Distinct CCNL sectors present in the graph, cached briefly: this list
+# changes only when a document is ingested, so refetching it every turn
+# would just be latency for no benefit.
+_CCNL_SECTOR_CACHE: Dict[str, Any] = {"sectors": None, "ts": 0.0}
+_CCNL_SECTOR_CACHE_LOCK = threading.Lock()
+_CCNL_SECTOR_CACHE_TTL = 300
+_CCNL_SEARCH_LIMIT = 3
+
 
 class PlatformClient:
     """Small fail-safe HTTP client for the separate calculation service."""
@@ -145,6 +173,54 @@ def _tied_top_candidates(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [c for c in candidates if c.get("score") == top_score]
 
 
+def _llm_disambiguate(query: str, candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Single focused LLM call to pick a calculator when the platform's own
+    match was too weak or tied to auto-route on score alone.
+
+    Returns the chosen candidate dict — the same shape a strong /match hit
+    returns, so the caller can route it identically — or None when the LLM
+    says "none", names something outside the candidate list, or the call
+    itself fails. Every failure mode falls through to ordinary RAG; this
+    must never invent a calculator that was not offered to it.
+    """
+    by_id = {
+        c.get("calculator_id"): c
+        for c in candidates
+        if isinstance(c, dict) and c.get("calculator_id")
+    }
+    if not by_id:
+        return None
+    listing = "\n\n".join(
+        f"calculator_id: {cid}\n"
+        f"name: {c.get('name') or cid}\n"
+        f"description: {c.get('description') or ''}"
+        for cid, c in by_id.items()
+    )
+    system_prompt = (
+        "You are choosing which calculator, if any, best answers the user's REQUEST. "
+        "Focus on what the user WANTS TO COMPUTE, not just the numbers they mention. "
+        "Available calculators:\n"
+        f"{listing}\n\n"
+        "Reply with ONLY the calculator_id of the single best match, exactly as "
+        'written above, or the single word "none" if none of them actually '
+        "answers the request. No explanation, no punctuation, nothing else."
+    )
+    try:
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        from .ai_chat import _call_chat
+
+        raw = _call_chat(
+            [SystemMessage(content=system_prompt), HumanMessage(content=str(query or ""))],
+            max_tokens=30,
+        )
+    except Exception as exc:
+        logger.warning("LLM calculator disambiguation failed: %s", exc)
+        return None
+    choice = raw.strip().strip('"').strip("'").rstrip(".")
+    return by_id.get(choice)
+
+
 def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
     """Route a clear, high-scoring platform match to calculation.
 
@@ -190,6 +266,20 @@ def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
                     "calculation_match": None,
                     "calculation_choices": tied,
                 }
+
+        # Neither auto-route fired: the match is either ambiguous or too
+        # weak on score alone. Give the LLM one focused look at the same
+        # candidates before giving up on it being a calculation at all —
+        # but never for "no_match", which is already unambiguous.
+        if response.get("status") in ("matched", "ambiguous") and candidates:
+            llm_match = _llm_disambiguate(state.get("query", ""), candidates)
+            if llm_match is not None:
+                logger.info(
+                    "calc_gate: route=calculate calculator=%s score=%s status=%s reason=llm_fallback",
+                    llm_match.get("calculator_id"), score, response.get("status"),
+                )
+                return {"calc_route": "calculate", "calculation_match": llm_match}
+
         logger.info(
             "calc_gate: route=normal top=%s score=%s status=%s",
             top.get("calculator_id") if top else None,
@@ -640,6 +730,10 @@ _COPY = {
         ),
         "month": "mese",
         "year": "anno",
+        "ccnl_sector_question": "in quale settore/CCNL lavora il dipendente",
+        "ccnl_confirm_line": "Ho trovato nel CCNL {source} (valido fino al {valid_until}) che {field} è {value}.",
+        "ccnl_confirm_line_no_expiry": "Ho trovato nel CCNL {source} (nessuna scadenza indicata) che {field} è {value}.",
+        "ccnl_confirm_prompt": "Confermi questo valore? Scrivi 'confermo' per procedere, oppure indicami il valore corretto.",
     },
     "es": {
         "result": "Resultado",
@@ -675,6 +769,10 @@ _COPY = {
         ),
         "month": "mes",
         "year": "año",
+        "ccnl_sector_question": "en qué sector/convenio colectivo (CCNL) trabaja el empleado",
+        "ccnl_confirm_line": "He encontrado en el CCNL {source} (válido hasta el {valid_until}) que {field} es {value}.",
+        "ccnl_confirm_line_no_expiry": "He encontrado en el CCNL {source} (sin fecha de caducidad indicada) que {field} es {value}.",
+        "ccnl_confirm_prompt": "¿Confirmas este valor? Escribe 'confirmo' para continuar, o indícame el valor correcto.",
     },
     "en": {
         "result": "Result",
@@ -710,6 +808,10 @@ _COPY = {
         ),
         "month": "month",
         "year": "year",
+        "ccnl_sector_question": "which sector/CCNL the employee works under",
+        "ccnl_confirm_line": "I found in the {source} CCNL (valid until {valid_until}) that {field} is {value}.",
+        "ccnl_confirm_line_no_expiry": "I found in the {source} CCNL (no expiry indicated) that {field} is {value}.",
+        "ccnl_confirm_prompt": "Do you confirm this value? Write 'confirm' to proceed, or give me the correct value.",
     },
 }
 
@@ -873,10 +975,397 @@ def _missing_specs(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _clarification_question(lang: str, specs: List[Dict[str, Any]]) -> str:
     labels = []
     for spec in specs:
+        if spec.get("_ccnl_unresolved"):
+            # A CCNL lookup was attempted and found nothing at all — asking
+            # for the raw field name would be asking the user to already
+            # know what the CCNL says. Asking for the sector instead gives
+            # the next turn something a fulltext search can act on.
+            labels.append(_COPY[lang]["ccnl_sector_question"])
+            continue
         name = str(spec.get("name", "dato richiesto"))
         description = spec.get("description")
         labels.append(f"{name} ({description})" if description else name)
     return _COPY[lang]["clarify"].format(items="; ".join(labels))
+
+
+def _is_ccnl_sourceable(spec: Dict[str, Any]) -> bool:
+    """A pack author opts a field into CCNL lookup just by writing "CCNL"
+    into its formula-pack description — no allowlist to maintain here."""
+    return "ccnl" in str(spec.get("description") or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# CCNL lookup — sourcing a missing calculator input from an ingested CCNL
+# instead of asking the user to already know it.
+#
+# Every function here degrades to None/empty on any failure (Neo4j down,
+# LLM error, no match): a CCNL outage must fall back to the ordinary
+# clarification question, never break the calculation turn.
+# ---------------------------------------------------------------------------
+
+def _ccnl_known_sectors(driver, database: str) -> List[str]:
+    """Distinct sectors among ingested CCNL documents, cached briefly."""
+    now = time.time()
+    with _CCNL_SECTOR_CACHE_LOCK:
+        cached = _CCNL_SECTOR_CACHE["sectors"]
+        if cached is not None and now - _CCNL_SECTOR_CACHE["ts"] < _CCNL_SECTOR_CACHE_TTL:
+            return cached
+    try:
+        with driver.session(database=database) as session:
+            result = session.run(
+                "MATCH (d:LEGAL_DOC {document_type: 'ccnl'}) "
+                "WHERE d.sector IS NOT NULL AND d.sector <> '' "
+                "RETURN DISTINCT d.sector AS sector"
+            )
+            sectors = [record["sector"] for record in result if record.get("sector")]
+    except Exception as exc:
+        logger.warning("Could not list CCNL sectors: %s", exc)
+        return cached or []
+    with _CCNL_SECTOR_CACHE_LOCK:
+        _CCNL_SECTOR_CACHE["sectors"] = sectors
+        _CCNL_SECTOR_CACHE["ts"] = now
+    return sectors
+
+
+def _match_known_sector(query: str, sectors: List[str]) -> Optional[str]:
+    """Cheap keyword match against sectors actually present in the graph —
+    tried before the LLM so an exact mention never pays for a call. A
+    sector matches if all its significant words appear in the query."""
+    normalized_query = str(query or "").lower()
+    # First try exact containment
+    for sector in sectors:
+        if sector and sector.lower() in normalized_query:
+            return sector
+    # Then try keyword match — all significant words must appear
+    _STOP = {"di", "e", "il", "la", "le", "lo", "gli", "dei", "del", "della",
+             "delle", "degli", "da", "in", "a", "per", "con", "su", "tra", "fra"}
+    for sector in sectors:
+        if not sector:
+            continue
+        words = [w for w in re.sub(r'[^\w\s]', ' ', sector.lower()).split()
+                 if w not in _STOP and len(w) > 2]
+        if words and all(w in normalized_query for w in words):
+            return sector
+    return None
+
+
+def _classify_sector_llm(query: str, sectors: List[str]) -> Optional[str]:
+    """Constrained LLM pick from the known-sector list. Constrained to that
+    list, not free generation, so it can name a sector the platform has
+    never heard of only by returning null, never by inventing one."""
+    if not sectors:
+        return None
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    normalized_query = query.lower()
+    query_words = {
+        w for w in re.sub(r"[^\w\s]", " ", normalized_query).split()
+        if w not in _SECTOR_FILTER_STOPWORDS and len(w) > 3
+    }
+    candidates = [s for s in sectors if any(w in s.lower() for w in query_words)]
+    if not candidates:
+        # No significant word overlap — fall back to the full list rather
+        # than silently reporting no sector at all.
+        candidates = sectors[:50]
+    candidates = candidates[:30]
+
+    system_prompt = (
+        "Identify which employment sector the user's message concerns, "
+        "choosing ONLY from this exact list — reply null if none clearly "
+        "applies, never invent a sector not on the list:\n"
+        + json.dumps(candidates, ensure_ascii=False)
+        + '\nReply with strict JSON: {"sector": <one of the list, or null>}.'
+    )
+    try:
+        from .ai_chat import _call_chat
+
+        raw = _call_chat(
+            [SystemMessage(content=system_prompt), HumanMessage(content=str(query or ""))],
+            max_tokens=100,
+        )
+        data = json.loads(raw)
+        sector = data.get("sector") if isinstance(data, dict) else None
+        return sector if sector in candidates else None
+    except Exception as exc:
+        logger.warning("CCNL sector classification failed: %s", exc)
+        return None
+
+
+def _resolve_ccnl_sector(query: str, driver, database: str) -> Tuple[Optional[str], bool]:
+    """Returns (sector, matched_by_keyword). The keyword flag feeds
+    confidence: a sector read off an exact graph value is trustworthy
+    enough to filter on, an LLM guess is not."""
+    sectors = _ccnl_known_sectors(driver, database)
+    if not sectors:
+        return None, False
+    keyword_hit = _match_known_sector(query, sectors)
+    if keyword_hit:
+        return keyword_hit, True
+    return _classify_sector_llm(query, sectors), False
+
+
+def _ccnl_search_sections(
+    field_label: str,
+    sector: Optional[str],
+    driver,
+    database: str,
+    limit: int = _CCNL_SEARCH_LIMIT,
+    *,
+    require_currency: bool = False,
+) -> List[Dict[str, Any]]:
+    """Fulltext search on section_fulltext, joined back to the parent
+    LEGAL_DOC — validity lives on the document, not the section, so the
+    join is required to filter or even just report it.
+
+    `require_currency` restricts results to sections that mention € or
+    "euro" — for a monetary lookup (a salary table), a hit with no
+    currency in it at all is unlikely to be the table. Left off by
+    default: a ferie/preavviso lookup's sections are counted in days or
+    months and would never contain a currency symbol to begin with.
+    """
+    from .lookups import _sanitize_fulltext_query
+
+    search_text = _sanitize_fulltext_query(f"{field_label} {sector or ''}".strip())
+    if not search_text:
+        return []
+    today = datetime.now().date().isoformat()
+    currency_clause = (
+        "  AND (s.plain_text CONTAINS '€' OR s.plain_text CONTAINS 'euro') "
+        if require_currency else ""
+    )
+    try:
+        with driver.session(database=database) as session:
+            result = session.run(
+                "CALL db.index.fulltext.queryNodes('section_fulltext', $search_text, "
+                "{limit: $limit}) YIELD node AS s, score "
+                "MATCH (d:LEGAL_DOC)-[:CONTAINS]->(s) "
+                "WHERE d.document_type = 'ccnl' "
+                "  AND ($sector IS NULL OR d.sector = $sector) "
+                f"{currency_clause}"
+                "RETURN s.plain_text AS text, d.name AS source_name, "
+                "       d.valid_until AS valid_until, d.sector AS sector, score "
+                "ORDER BY "
+                "  CASE WHEN d.valid_until IS NULL OR d.valid_until > $today THEN 0 ELSE 1 END, "
+                "  score DESC "
+                "LIMIT $limit",
+                search_text=search_text,
+                sector=sector,
+                today=today,
+                limit=limit,
+            )
+            return [dict(record) for record in result]
+    except Exception as exc:
+        logger.warning("CCNL section search failed for %r: %s", field_label, exc)
+        return []
+
+
+def _extract_ccnl_value(
+    field_label: str,
+    sections: List[Dict[str, Any]],
+    *,
+    field_name: Optional[str] = None,
+    level: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Ask the LLM for the numeric value of `field_label`, grounded strictly
+    in the retrieved CCNL section text. None if the text does not state it —
+    this must never hallucinate a number into a legal calculation.
+
+    `level` narrows extraction to one row of a leveled table (e.g. a
+    minimo tabellare paid by inquadramento/livello, such as "3" or
+    "Quadro") — a table listing several levels must not silently hand
+    back a different row's value.
+    """
+    if not sections:
+        return None
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    excerpt = "\n\n---\n\n".join((section.get("text") or "")[:1500] for section in sections)
+    level_instruction = ""
+    if level:
+        level_instruction = (
+            f' for level "{level}" specifically. If the table lists several '
+            f'levels, return ONLY the value for "{level}" — never another '
+            f'level\'s value. If "{level}" is not present in the excerpt, '
+            "return null instead of guessing the closest level"
+        )
+    system_prompt = (
+        f'You are extracting the value of "{field_label}"{level_instruction} '
+        "from an Italian CCNL (collective labor agreement) excerpt. Reply with "
+        'strict JSON: {"value": <number or null>, "confidence": "high" or "low"}. '
+        'Use "value": null if the excerpt does not explicitly state this value — '
+        "never invent or estimate one. "
+        'Use "confidence": "high" only when the value is stated unambiguously and '
+        'directly applies; use "low" if it is implied, conditional on something not '
+        "shown here, or you are inferring across multiple clauses. "
+        "When a table has multiple columns (e.g. old value, increment, new value), "
+        "always return the LAST/MOST RECENT column value (retribuzione tabellare a "
+        "regime / valore attuale)."
+    )
+    try:
+        from .ai_chat import _call_chat
+
+        raw = _call_chat(
+            [SystemMessage(content=system_prompt), HumanMessage(content=excerpt)],
+            max_tokens=200,
+        )
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        value = data.get("value")
+        if value is None:
+            return None
+        confidence = "high" if data.get("confidence") == "high" else "low"
+        return {"value": value, "confidence": confidence}
+    except Exception as exc:
+        logger.warning(
+            "CCNL value extraction failed for %r (level=%r): %s",
+            field_name or field_label, level, exc,
+        )
+        return None
+
+
+def _ccnl_lookup(
+    field_name: str,
+    query: str,
+    driver,
+    database: str,
+) -> Optional[Dict[str, Any]]:
+    """Attempt to source a missing calculator input from an ingested CCNL.
+
+    Returns {"value": X, "source": "CCNL name", "valid_until": "YYYY-MM-DD"
+    or None, "confidence": "high"|"low"} or None if no CCNL section speaks
+    to this field. Never raises.
+
+    Confidence is downgraded to "low" whenever the source CCNL has expired
+    or the sector could only be guessed (not read off an exact graph
+    value) — those cases must always be confirmed by the user, never
+    applied silently, however confident the value extraction itself was.
+    """
+    if driver is None:
+        return None
+    field_label = _CCNL_FIELD_LABELS.get(field_name, str(field_name).replace("_", " "))
+    try:
+        sector, sector_is_certain = _resolve_ccnl_sector(query, driver, database)
+        sections = _ccnl_search_sections(field_label, sector, driver, database)
+        if not sections and sector:
+            # The sector filter may have been too narrow (e.g. the CCNL is
+            # filed under a slightly different sector label) — retry
+            # unscoped once rather than reporting no match at all.
+            sections = _ccnl_search_sections(field_label, None, driver, database)
+        if not sections:
+            return None
+        extracted = _extract_ccnl_value(field_label, sections)
+        if extracted is None:
+            return None
+        top = sections[0]
+        valid_until = top.get("valid_until")
+        valid_until = str(valid_until) if valid_until else None
+        is_expired = False
+        if valid_until:
+            try:
+                is_expired = datetime.strptime(valid_until[:10], "%Y-%m-%d").date() < datetime.now().date()
+            except ValueError:
+                is_expired = False
+        confidence = extracted["confidence"]
+        if is_expired or not sector_is_certain:
+            confidence = "low"
+        return {
+            "value": extracted["value"],
+            "source": top.get("source_name") or "CCNL",
+            "valid_until": valid_until,
+            "confidence": confidence,
+        }
+    except Exception as exc:
+        logger.warning("CCNL lookup failed for %r: %s", field_name, exc)
+        return None
+
+
+def _ccnl_lookup_with_level(
+    field_name: str,
+    query: str,
+    driver,
+    database: str,
+    level: str,
+) -> Optional[Dict[str, Any]]:
+    """Like _ccnl_lookup, but for a leveled table (e.g. minimi_tabellari,
+    paid by inquadramento/livello) where the value differs per row.
+
+    Not a thin call to _ccnl_lookup: the level has to steer the fulltext
+    search itself, not just the extraction prompt, or the retrieved
+    section may never contain the row this field actually needs. This
+    mirrors _ccnl_lookup's structure — same sector resolution, same
+    confidence/expiry rules — with that one difference threaded through.
+    """
+    if driver is None or not level:
+        return None
+    field_label = _CCNL_FIELD_LABELS.get(field_name, str(field_name).replace("_", " "))
+    search_label = "retribuzione tabellare minimo mensile"
+    try:
+        sector, sector_is_certain = _resolve_ccnl_sector(query, driver, database)
+        sections = _ccnl_search_sections(
+            search_label, sector, driver, database,
+            limit=8, require_currency=True,
+        )
+        if not sections and sector:
+            sections = _ccnl_search_sections(
+                search_label, None, driver, database, limit=8, require_currency=True,
+            )
+        if not sections:
+            return None
+        # limit=8 above widens the search net, but the extraction prompt
+        # only needs the best few candidates — passing all 8 excerpts
+        # through would just dilute the LLM's attention with weaker hits.
+        extraction_sections = sections[:3]
+        extracted = _extract_ccnl_value(
+            field_label, extraction_sections, field_name=field_name, level=level
+        )
+        if extracted is None:
+            return None
+        top = sections[0]
+        valid_until = top.get("valid_until")
+        valid_until = str(valid_until) if valid_until else None
+        is_expired = False
+        if valid_until:
+            try:
+                is_expired = datetime.strptime(valid_until[:10], "%Y-%m-%d").date() < datetime.now().date()
+            except ValueError:
+                is_expired = False
+        confidence = extracted["confidence"]
+        if is_expired or not sector_is_certain:
+            confidence = "low"
+        return {
+            "value": extracted["value"],
+            "source": top.get("source_name") or "CCNL",
+            "valid_until": valid_until,
+            "confidence": confidence,
+        }
+    except Exception as exc:
+        logger.warning(
+            "CCNL level lookup failed for %r (level=%r): %s", field_name, level, exc,
+        )
+        return None
+
+
+def _ccnl_confirmation_question(lang: str, confirmations: List[Dict[str, Any]]) -> str:
+    """Render the low-confidence CCNL hits found this turn as a single
+    question the user can accept as-is or override with a corrected value."""
+    copy = _COPY[lang]
+    lines = []
+    for item in confirmations:
+        spec = item.get("spec") or {}
+        field_label = _CCNL_FIELD_LABELS.get(spec.get("name"), str(spec.get("name") or ""))
+        valid_until = item.get("valid_until")
+        template = copy["ccnl_confirm_line"] if valid_until else copy["ccnl_confirm_line_no_expiry"]
+        lines.append(
+            template.format(
+                source=item.get("source") or "CCNL",
+                valid_until=valid_until,
+                field=field_label,
+                value=_display_value(item.get("value")),
+            )
+        )
+    lines.append(copy["ccnl_confirm_prompt"])
+    return " ".join(lines)
 
 
 def _normalize_frequency_inputs(
@@ -1207,6 +1696,11 @@ def _handle_response(
     current_round: int,
     expected_specs: Optional[Iterable[Dict[str, Any]]] = None,
     conversions: Optional[List[Dict[str, Any]]] = None,
+    client: Optional["PlatformClient"] = None,
+    driver=None,
+    database: Optional[str] = None,
+    query: str = "",
+    ccnl_lookup_done: bool = False,
 ) -> Dict[str, Any]:
     if response.get("status") == "success":
         logger.info(
@@ -1238,6 +1732,113 @@ def _handle_response(
             ):
                 missing.append(spec)
                 missing_names.add(spec.get("name"))
+
+        # CCNL top-up: try to source any CCNL-sourceable missing field from
+        # an ingested CCNL before asking the user for it. Runs at most once
+        # per turn (ccnl_lookup_done guards the retry below) so a value the
+        # platform keeps rejecting cannot loop forever.
+        if not ccnl_lookup_done and driver is not None:
+            still_missing: List[Dict[str, Any]] = []
+            silent_values: Dict[str, Any] = {}
+            confirmations: List[Dict[str, Any]] = []
+            for spec in missing:
+                name = spec.get("name")
+                if name == "livello":
+                    # The level is context only the caller can supply — it
+                    # is never itself a number to extract from CCNL text,
+                    # so it never goes through _ccnl_lookup. Falling
+                    # through here (with its real description) is what
+                    # actually asks the user for it, instead of the
+                    # generic sector question a failed lookup would give.
+                    still_missing.append(spec)
+                    continue
+                if not _is_ccnl_sourceable(spec):
+                    still_missing.append(spec)
+                    continue
+                if name == "minimo_mensile":
+                    if not inputs_so_far.get("livello"):
+                        # Need the level before a lookup means anything.
+                        # livello is required on this calculator too, so
+                        # the platform already reported it missing this
+                        # same turn (see the "livello" branch above) —
+                        # only fall back to asking for it here if that
+                        # somehow was not the case.
+                        if "livello" not in missing_names:
+                            still_missing.append({
+                                "name": "livello",
+                                "type": "string",
+                                "required": True,
+                                "description": (
+                                    'Livello di inquadramento (es. "1", "2", "Quadro")'
+                                ),
+                            })
+                        continue
+                    hit = _ccnl_lookup_with_level(
+                        name, query, driver, database,
+                        level=inputs_so_far.get("livello"),
+                    )
+                else:
+                    hit = _ccnl_lookup(name, query, driver, database)
+                if hit is None:
+                    still_missing.append({**spec, "_ccnl_unresolved": True})
+                elif hit["confidence"] == "high":
+                    silent_values[name] = hit["value"]
+                else:
+                    confirmations.append({"spec": spec, **hit})
+
+            if confirmations:
+                logger.info(
+                    "calc_node: outcome=ccnl_confirm calculator=%s fields=%s",
+                    calculator_id,
+                    [c["spec"].get("name") for c in confirmations],
+                )
+                next_round = current_round + 1
+                if next_round > _MAX_CLARIFICATION_ROUNDS:
+                    return _failure_update(lang, round_limit=True)
+                pending: Dict[str, Any] = {
+                    "calculator_id": calculator_id,
+                    "phase": _PHASE_CONFIRM_CCNL,
+                    "inputs_so_far": {**inputs_so_far, **silent_values},
+                    "round": next_round,
+                    "missing_inputs": still_missing,
+                    "ccnl_confirmations": confirmations,
+                }
+                if conversions:
+                    pending["conversions"] = list(conversions)
+                return _answered_update(
+                    _ccnl_confirmation_question(lang, confirmations),
+                    pending_calculation=pending,
+                    retrieval_quality_ok=True,
+                )
+
+            if silent_values:
+                logger.info(
+                    "calc_node: outcome=ccnl_silent calculator=%s fields=%s",
+                    calculator_id, list(silent_values),
+                )
+                inputs_so_far = {**inputs_so_far, **silent_values}
+                retry_response = (
+                    client.calculate(_calculation_payload(calculator_id, inputs_so_far))
+                    if client is not None
+                    else None
+                )
+                if retry_response is not None and not retry_response.get("platform_unavailable"):
+                    return _handle_response(
+                        retry_response,
+                        lang=lang,
+                        calculator_id=calculator_id,
+                        inputs_so_far=inputs_so_far,
+                        current_round=current_round,
+                        expected_specs=expected_specs,
+                        conversions=conversions,
+                        client=client,
+                        driver=driver,
+                        database=database,
+                        query=query,
+                        ccnl_lookup_done=True,
+                    )
+            missing = still_missing
+
         next_round = current_round + 1
         if next_round > _MAX_CLARIFICATION_ROUNDS:
             return _failure_update(lang, round_limit=True)
@@ -1266,6 +1867,84 @@ def _handle_response(
     )
 
 
+def _resume_ccnl_confirmation(
+    client: "PlatformClient",
+    lang: str,
+    pending: Dict[str, Any],
+    raw_query: str,
+    *,
+    driver,
+    database: Optional[str],
+) -> Dict[str, Any]:
+    """Handle the reply to a low-confidence CCNL confirmation question.
+
+    A bare confirm word accepts every pending CCNL value as-is. Anything
+    else is tried as a correction — the same extraction the ordinary
+    clarification path uses, scoped to just the fields under confirmation
+    — so a user who answers with the real number instead of "confermo"
+    still gets it applied instead of stalling on the same question.
+    """
+    calculator_id = pending.get("calculator_id")
+    if not calculator_id:
+        return _failure_update(lang)
+    inputs_so_far = dict(pending.get("inputs_so_far") or {})
+    current_round = int(pending.get("round") or 0)
+    confirmations = [c for c in pending.get("ccnl_confirmations") or [] if isinstance(c, dict)]
+    missing_specs = pending.get("missing_inputs") or []
+    conversions = [r for r in pending.get("conversions") or [] if isinstance(r, dict)]
+
+    command = _normalize_command(raw_query)
+    if command in _CONFIRM_WORDS:
+        for item in confirmations:
+            name = (item.get("spec") or {}).get("name")
+            if name:
+                inputs_so_far[name] = item.get("value")
+    else:
+        confirm_specs = [item.get("spec") for item in confirmations if item.get("spec")]
+        extracted = _extract_values_llm(
+            raw_query, calculator_id, missing_specs=confirm_specs, prior_inputs=inputs_so_far,
+        )
+        if extracted is None:
+            extracted = _extract_values(raw_query, confirm_specs)
+        confirm_names = {spec.get("name") for spec in confirm_specs}
+        extracted = {name: value for name, value in (extracted or {}).items() if name in confirm_names}
+        if not extracted:
+            # Neither a confirmation nor a usable correction: do not strand
+            # the user on the same question forever — read it as a change
+            # of subject, same as an unrecognized reply anywhere else in
+            # this module.
+            return {
+                "calc_route": "normal",
+                "pending_calculation": None,
+                "awaiting_clarification": False,
+                "pending_sections": [],
+            }
+        inputs_so_far.update(extracted)
+        # A confirmed-but-uncorrected field still gets its CCNL value.
+        for item in confirmations:
+            name = (item.get("spec") or {}).get("name")
+            if name and name not in extracted:
+                inputs_so_far[name] = item.get("value")
+
+    response = client.calculate(_calculation_payload(calculator_id, inputs_so_far))
+    if response.get("platform_unavailable"):
+        return _failure_update(lang, pending_calculation=pending)
+    return _handle_response(
+        response,
+        lang=lang,
+        calculator_id=calculator_id,
+        inputs_so_far=inputs_so_far,
+        current_round=current_round,
+        expected_specs=missing_specs,
+        conversions=conversions,
+        client=client,
+        driver=driver,
+        database=database,
+        query=raw_query,
+        ccnl_lookup_done=True,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Incremental candidate collection for object_list (comparator) calculators
 #
@@ -1285,6 +1964,7 @@ _PHASE_CANDIDATES = "collect_candidates"
 _PHASE_REVIEW = "review"
 _PHASE_CONFIRM = "confirm"
 _PHASE_CHOOSE = "choose_calculator"
+_PHASE_CONFIRM_CCNL = "confirm_ccnl"
 
 _FIELD_HEAD = re.compile(r"([A-Za-z_]\w*)\s*[:=]\s*")
 _TRUE_FORM_VALUES = {"true", "1", "si", "sì", "sí", "yes", "y", "x"}
@@ -1975,7 +2655,13 @@ def _match_specs(match: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _start_calculation(
-    client: "PlatformClient", lang: str, match: Dict[str, Any], raw_query: str
+    client: "PlatformClient",
+    lang: str,
+    match: Dict[str, Any],
+    raw_query: str,
+    *,
+    driver=None,
+    database: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Begin a fresh calculation from a resolved calculator match."""
     calculator_id = match.get("calculator_id")
@@ -2028,10 +2714,14 @@ def _start_calculation(
         current_round=0,
         expected_specs=specs,
         conversions=conversions,
+        client=client,
+        driver=driver,
+        database=database,
+        query=raw_query,
     )
 
 
-def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
+def calculation_node(state: Dict[str, Any], driver=None, database: str = "neo4j") -> Dict[str, Any]:
     """Run a fresh or continued deterministic calculation, never raising."""
     lang = "it"
     try:
@@ -2052,7 +2742,15 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                     "awaiting_clarification": False,
                     "pending_sections": [],
                 }
-            return _start_calculation(client, lang, chosen, pending.get("raw_query") or raw_query)
+            return _start_calculation(
+                client, lang, chosen, pending.get("raw_query") or raw_query,
+                driver=driver, database=database,
+            )
+
+        if pending and pending.get("phase") == _PHASE_CONFIRM_CCNL:
+            return _resume_ccnl_confirmation(
+                client, lang, pending, raw_query, driver=driver, database=database,
+            )
 
         if pending and pending.get("phase"):
             return _resume_comparison(client, lang, pending, raw_query)
@@ -2109,6 +2807,10 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         inputs_so_far=inputs_so_far,
                         current_round=current_round,
                         conversions=conversions,
+                        client=client,
+                        driver=driver,
+                        database=database,
+                        query=raw_query,
                     )
 
             # Backward-compatible recovery for a pending payload without specs.
@@ -2123,6 +2825,10 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                         calculator_id=calculator_id,
                         inputs_so_far=inputs_so_far,
                         current_round=current_round,
+                        client=client,
+                        driver=driver,
+                        database=database,
+                        query=raw_query,
                     )
                 specs = _missing_specs(probe)
                 if not specs:
@@ -2193,6 +2899,10 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 inputs_so_far=inputs_so_far,
                 current_round=current_round,
                 conversions=conversions,
+                client=client,
+                driver=driver,
+                database=database,
+                query=raw_query,
             )
 
         choices = [c for c in state.get("calculation_choices") or [] if isinstance(c, dict)]
@@ -2209,7 +2919,10 @@ def calculation_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 retrieval_quality_ok=True,
             )
 
-        return _start_calculation(client, lang, state.get("calculation_match") or {}, raw_query)
+        return _start_calculation(
+            client, lang, state.get("calculation_match") or {}, raw_query,
+            driver=driver, database=database,
+        )
     except Exception:
         logger.exception("Unexpected calculation node failure")
         return _failure_update(lang)

@@ -1,0 +1,87 @@
+id: legal_it.ferie_maturate
+name: Ferie maturate (calcolo pro-rata)
+category: legal_it
+strategy: expression
+methodology: "Calcola le ferie maturate in proporzione ai mesi lavorati nell'anno."
+version: "1"
+description: >
+  Calcola i giorni di ferie maturati in base ai mesi di servizio prestati,
+  applicando il criterio dei dodicesimi. Il numero di giorni annui spettanti
+  dipende dal CCNL applicabile e va fornito come input.
+jurisdiction: IT
+output_unit: days
+keywords:
+  - ferie maturate
+  - ferie pro rata
+  - giorni ferie spettanti
+  - calcolo ferie
+  - ferie dodicesimi
+  - rateo ferie
+aliases:
+  - quante ferie ho maturato
+  - calcola le ferie maturate
+  - ferie spettanti pro rata
+  - quanti giorni di ferie mi spettano
+tags:
+  - ferie
+  - congedo
+  - riposo
+  - ccnl
+inputs:
+  - name: giorni_ferie_annui
+    type: decimal
+    required: true
+    unit: days
+    min_value: 20
+    description: Giorni di ferie annui previsti dal CCNL applicabile per il settore del dipendente
+  - name: mesi_lavorati
+    type: decimal
+    required: true
+    unit: months
+    min_value: 0
+    max_value: 12
+    description: Mesi interi di servizio prestati nell'anno (0-12)
+  - name: ferie_gia_godute
+    type: decimal
+    required: false
+    default: 0
+    unit: days
+    min_value: 0
+    description: Giorni di ferie già goduti nell'anno
+parameters: []
+derived_variables:
+  rateo_mensile: "giorni_ferie_annui / 12"
+  ferie_maturate_lorde: "rateo_mensile * mesi_lavorati"
+formula:
+  expression: "round(ferie_maturate_lorde - ferie_gia_godute, 1)"
+output:
+  name: ferie_residue
+  round_to: 1
+  min: 0
+citations:
+  - reference: "Art. 2109 Codice Civile — periodo di riposo annuale (ferie)"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+  - reference: "D.Lgs. 8 aprile 2003, n. 66 — art. 10 (ferie annuali, minimo 4 settimane)"
+    source_name: "Decreto Legislativo 8 aprile 2003, n. 66"
+    publisher: "Normattiva"
+    publication_date: "2003-04-08"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:decreto.legislativo:2003-04-08;66"
+    official: true
+assumptions:
+  - "Il mese si considera intero se il lavoratore ha prestato servizio per almeno 15 giorni (criterio più comune nei CCNL)."
+  - "I giorni di ferie annui sono quelli previsti dal CCNL applicabile, che può essere superiore al minimo legale di 20 giorni (4 settimane)."
+exclusions:
+  - "Non calcola i giorni di ferie annui spettanti — dipendono dal CCNL: riceve il valore come input."
+  - "Non gestisce ferie maturate su più anni o residui da anni precedenti."
+examples:
+  - description: "Dipendente con 26 giorni annui, 8 mesi lavorati, 10 giorni già goduti"
+    inputs:
+      giorni_ferie_annui: 26
+      mesi_lavorati: 8
+      ferie_gia_godute: 10
+    expected_result:
+      ferie_residue: "7.3"

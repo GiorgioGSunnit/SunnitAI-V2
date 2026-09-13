@@ -1,0 +1,78 @@
+id: legal_it.straordinario
+name: Compenso lavoro straordinario
+category: legal_it
+strategy: expression
+methodology: "Moltiplica la retribuzione oraria per le ore di straordinario, poi applica la maggiorazione percentuale prevista dal CCNL."
+version: "1"
+description: >
+  Calcola il compenso aggiuntivo per le ore di lavoro straordinario.
+  La maggiorazione percentuale dipende dal CCNL applicabile e dal tipo
+  di straordinario (diurno, notturno, festivo) e può essere recuperata
+  automaticamente dal CCNL di settore.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - lavoro straordinario
+  - compenso straordinario
+  - maggiorazione straordinario
+  - ore straordinarie
+  - straordinario diurno
+  - straordinario notturno
+aliases:
+  - quanto vale il mio straordinario
+  - calcola il compenso per le ore straordinarie
+  - maggiorazione per lavoro straordinario
+tags:
+  - straordinario
+  - retribuzione
+  - ccnl
+inputs:
+  - name: retribuzione_oraria
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Retribuzione oraria ordinaria lorda del lavoratore
+  - name: ore_straordinario
+    type: decimal
+    required: true
+    unit: hours
+    min_value: 0
+    description: Numero di ore di lavoro straordinario da retribuire
+  - name: maggiorazione_straordinario
+    type: decimal
+    required: true
+    unit: rate
+    min_value: 0
+    max_value: 2
+    description: Maggiorazione percentuale prevista dal CCNL per il tipo di straordinario (es. 0.30 per 30% diurno, 0.60 per 60% notturno)
+parameters: []
+derived_variables:
+  compenso_base: "retribuzione_oraria * ore_straordinario"
+formula:
+  expression: "compenso_base * (1 + maggiorazione_straordinario)"
+output:
+  name: compenso_straordinario
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 2108 Codice Civile — lavoro straordinario e notturno"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+assumptions:
+  - "La maggiorazione si applica all'intera retribuzione oraria (non solo alla quota base)."
+  - "La maggiorazione dipende dal tipo di straordinario e dal CCNL: diurno tipicamente 25-30%, notturno 50-60%, festivo 50-75%."
+exclusions:
+  - "Non calcola il limite massimo di ore straordinarie consentite dal CCNL."
+  - "Non gestisce la maggiorazione per straordinario festivo separatamente."
+examples:
+  - description: "Straordinario diurno: 5 ore, retribuzione oraria €12, maggiorazione 30%"
+    inputs:
+      retribuzione_oraria: 12.00
+      ore_straordinario: 5
+      maggiorazione_straordinario: 0.30
+    expected_result:
+      compenso_straordinario: "78.00"

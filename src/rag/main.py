@@ -221,7 +221,10 @@ def build_graph(compile_graph: bool = True):
     graph.add_node("generate_clarifying_question", generate_clarifying_question)
     graph.add_node("rerank_from_clarification", rerank_from_clarification)
     graph.add_node("calculation_gate", calculation_gate)
-    graph.add_node("calculation_node", calculation_node)
+    graph.add_node(
+        "calculation_node",
+        partial(calculation_node, driver=driver, database=NEO4J_DATABASE),
+    )
 
     # Edges
     graph.set_conditional_entry_point(

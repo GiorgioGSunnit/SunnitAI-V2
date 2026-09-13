@@ -1,0 +1,69 @@
+id: legal_it.minimi_tabellari
+name: Minimo tabellare mensile (da CCNL)
+category: legal_it
+strategy: expression
+methodology: "Restituisce il minimo tabellare mensile previsto dal CCNL per il livello di inquadramento indicato."
+version: "1"
+description: >
+  Recupera il minimo tabellare mensile lordo previsto dal CCNL applicabile
+  per il livello di inquadramento del lavoratore. Il valore dipende dal
+  CCNL di settore e dal livello contrattuale (es. 1°, 2°, Quadro) e va
+  fornito o recuperato dal contratto collettivo applicabile.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - minimo tabellare
+  - retribuzione minima
+  - stipendio minimo contrattuale
+  - minimo contrattuale
+  - paga base
+  - minimi retributivi
+aliases:
+  - qual è il minimo tabellare
+  - quanto guadagna un dipendente di livello X
+  - stipendio minimo livello
+  - retribuzione minima contrattuale
+  - minimo CCNL per livello
+tags:
+  - ccnl
+  - retribuzione
+  - livello
+  - inquadramento
+inputs:
+  - name: minimo_mensile
+    type: decimal
+    required: true
+    unit: EUR
+    default: null
+    description: Minimo tabellare mensile lordo previsto dal CCNL per il livello di inquadramento del lavoratore
+  - name: livello
+    type: string
+    required: true
+    description: Livello di inquadramento contrattuale (es. "1", "2", "Quadro", "A") previsto dal CCNL
+parameters: []
+derived_variables: {}
+formula:
+  expression: "minimo_mensile"
+output:
+  name: minimo_tabellare
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 2099 Codice Civile — retribuzione del prestatore di lavoro"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva — Istituto Poligrafico e Zecca dello Stato"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+assumptions:
+  - "Il minimo tabellare si riferisce alla retribuzione mensile lorda base, esclusi eventuali superminimi, premi o indennità."
+exclusions:
+  - "Non include superminimi individuali o aziendali."
+  - "Non calcola la retribuzione annua lorda (RAL) — moltiplicare per 13 o 14 secondo il CCNL."
+examples:
+  - description: "Minimo tabellare livello 3 settore boschi artigianato"
+    inputs:
+      minimo_mensile: 1755.94
+      livello: "3"
+    expected_result:
+      minimo_tabellare: "1755.94"

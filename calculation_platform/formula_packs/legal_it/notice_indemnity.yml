@@ -7,9 +7,11 @@ version: "1"
 description: >
   Calcola l'indennità sostitutiva dovuta quando il rapporto di lavoro
   cessa senza il preavviso previsto: retribuzione mensile globale di
-  fatto × mesi di preavviso non lavorati. La durata del preavviso dipende
-  dal CCNL applicabile (anzianità e inquadramento) e va fornita dal
-  chiamante.
+  fatto × mesi di preavviso non lavorati. La durata del preavviso
+  dipende dal CCNL applicabile (anzianità e inquadramento) e può essere
+  recuperata automaticamente dal CCNL di settore oppure fornita
+  direttamente. Utile anche per sapere quanti mesi di preavviso spettano
+  secondo il CCNL applicabile.
 jurisdiction: IT
 output_unit: EUR
 keywords:

@@ -35,6 +35,10 @@ released:
   - id: legal_it.inps_contributions
   - id: legal_it.tfr
   - id: legal_it.notice_indemnity
+  - id: legal_it.ferie_maturate
+  - id: legal_it.minimi_tabellari
+  - id: legal_it.scatti_anzianita
+  - id: legal_it.straordinario
   - id: legal_it.registration_tax_leases
   - id: legal_it.ravvedimento_operoso
   - id: legal_it.contributo_unificato_civile

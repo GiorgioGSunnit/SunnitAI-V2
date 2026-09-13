@@ -1,0 +1,84 @@
+id: legal_it.scatti_anzianita
+name: Scatti di anzianità (valore totale maturato)
+category: legal_it
+strategy: expression
+methodology: "Moltiplica l'importo di ogni scatto per il numero di scatti maturati, calcolato dagli anni di anzianità e dalla cadenza di maturazione, entro il tetto massimo previsto dal CCNL."
+version: "1"
+description: >
+  Calcola il valore mensile totale degli scatti di anzianità maturati
+  dal lavoratore. L'importo per scatto dipende dal livello di
+  inquadramento previsto dal CCNL applicabile e può essere recuperato
+  automaticamente. Gli scatti maturano tipicamente ogni 2 anni e si
+  cumulano tra loro.
+jurisdiction: IT
+output_unit: EUR
+keywords:
+  - scatti di anzianità
+  - scatto di anzianità
+  - valore scatti anzianità
+  - aumenti periodici di anzianità
+  - biennali di anzianità
+aliases:
+  - quanto valgono i miei scatti di anzianità
+  - calcola gli scatti di anzianità maturati
+  - importo totale scatti anzianità maturati
+tags:
+  - anzianità
+  - scatti
+  - retribuzione
+  - ccnl
+inputs:
+  - name: importo_scatto
+    type: decimal
+    required: true
+    unit: EUR
+    min_value: 0
+    description: Importo mensile di ogni singolo scatto di anzianità per il livello del lavoratore (verificare nel contratto applicato)
+  - name: anni_anzianita
+    type: decimal
+    required: true
+    unit: years
+    min_value: 0
+    description: Anni di anzianità presso il datore di lavoro
+  - name: anni_per_scatto
+    type: decimal
+    required: false
+    default: 2
+    unit: years
+    min_value: 1
+    description: Ogni quanti anni matura uno scatto (default 2, verificare nel CCNL)
+  - name: max_scatti
+    type: integer
+    required: false
+    default: 8
+    description: Numero massimo di scatti previsti dal CCNL (default 8)
+parameters: []
+derived_variables:
+  scatti_maturati: "min(anni_anzianita // anni_per_scatto, max_scatti)"
+formula:
+  expression: "importo_scatto * scatti_maturati"
+output:
+  name: totale_scatti_mensile
+  round_to: 2
+  min: 0
+citations:
+  - reference: "Art. 2121 Codice Civile — computo dell'indennità"
+    source_name: "Codice Civile (R.D. 16 marzo 1942, n. 262)"
+    publisher: "Normattiva"
+    publication_date: "1942-03-16"
+    url: "https://www.normattiva.it/uri-res/N2Ls?urn:nir:stato:regio.decreto:1942-03-16;262"
+    official: true
+assumptions:
+  - "Gli scatti si cumulano: il totale è importo_scatto × numero_scatti_maturati."
+  - "La frequenza di maturazione (default 2 anni) e il massimo (default 8) possono variare per CCNL."
+exclusions:
+  - "Non calcola l'importo del singolo scatto — dipende dal CCNL e dal livello: va fornito o recuperato automaticamente."
+examples:
+  - description: "Liv. III commercio, 7 anni anzianità, scatto ogni 2 anni, importo €13.00"
+    inputs:
+      importo_scatto: 13.00
+      anni_anzianita: 7
+      anni_per_scatto: 2
+      max_scatti: 8
+    expected_result:
+      totale_scatti_mensile: "39.00"

@@ -4129,7 +4129,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 name = (section.get('name') or '').lower().replace(' ', '')
                 base_name = name.split('.')[0]
                 return name in answer_article_refs or base_name in answer_article_refs
-            if score >= 0.5:
+            if score >= 0.65:
                 return True
             if score >= 0.3:
                 # Medium confidence — only include if article number in answer
@@ -4332,6 +4332,7 @@ def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
         {
             "document_name": c.get("document_name"),
             "document_id": c.get("document_id"),
+            "document_type": c.get("document_type"),
             "name": s.get("name"),
             "title": s.get("title"),
             "plain_text": s.get("plain_text"),
@@ -4397,6 +4398,7 @@ def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
             "d": {
                 "id": s.get("document_id", f"LEGAL_DOC::{s.get('document_name', '')}"),
                 "name": s.get("document_name"),
+                "document_type": s.get("document_type"),
             },
             "s": {
                 "id": f"DOCUMENT_SECTION::{s.get('document_id', '').replace('LEGAL_DOC::', '')}{'::'}{s.get('name', '')}",
@@ -4405,7 +4407,7 @@ def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
                 "plain_text": s.get("plain_text"),
                 "score": s.get("score"),
             },
-            "_reranker_score": 0.9,  # treat clarification-selected sections as high-confidence
+            "_reranker_score": s.get("score") or 0.9,  # carry the original score forward; fall back to high-confidence only if it was never set
             "_source": "clarification",
         }
         for s in selected
