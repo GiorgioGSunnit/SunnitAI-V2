@@ -41,7 +41,7 @@ _TOOL_SCHEMA_CACHE_TTL = 300
 _CCNL_FIELD_LABELS: Dict[str, str] = {
     "giorni_ferie_annui": "giorni di ferie annui",
     "mesi_preavviso": "mesi di preavviso",
-    "maggiorazione_straordinario": "maggiorazione straordinario percentuale",
+    "maggiorazione_straordinario": "maggiorazione straordinario percentuale (restituire come decimale: 30% = 0.30, 60% = 0.60)",
 }
 # Italian stopwords excluded when pre-filtering the sector list down to
 # query-relevant candidates before it goes to the LLM (see
@@ -58,7 +58,7 @@ _SECTOR_FILTER_STOPWORDS = {
 _CCNL_SECTOR_CACHE: Dict[str, Any] = {"sectors": None, "ts": 0.0}
 _CCNL_SECTOR_CACHE_LOCK = threading.Lock()
 _CCNL_SECTOR_CACHE_TTL = 300
-_CCNL_SEARCH_LIMIT = 3
+_CCNL_SEARCH_LIMIT = 6
 
 
 class PlatformClient:
@@ -733,7 +733,10 @@ _COPY = {
         "ccnl_sector_question": "in quale settore/CCNL lavora il dipendente",
         "ccnl_confirm_line": "Ho trovato nel CCNL {source} (valido fino al {valid_until}) che {field} è {value}.",
         "ccnl_confirm_line_no_expiry": "Ho trovato nel CCNL {source} (nessuna scadenza indicata) che {field} è {value}.",
-        "ccnl_confirm_prompt": "Confermi questo valore? Scrivi 'confermo' per procedere, oppure indicami il valore corretto.",
+        "ccnl_confirm_prompt": "Vuoi procedere con questo valore, o preferisci indicarmi quello corretto?",
+        "ccnl_source_line": "Fonte CCNL: {source} (valido fino al {valid_until})",
+        "ccnl_expired_warning": "⚠️ CCNL scaduto il {valid_until} — verificare rinnovi",
+        "ccnl_near_expiry_warning": "⚠️ CCNL in scadenza il {valid_until}",
     },
     "es": {
         "result": "Resultado",
@@ -772,7 +775,10 @@ _COPY = {
         "ccnl_sector_question": "en qué sector/convenio colectivo (CCNL) trabaja el empleado",
         "ccnl_confirm_line": "He encontrado en el CCNL {source} (válido hasta el {valid_until}) que {field} es {value}.",
         "ccnl_confirm_line_no_expiry": "He encontrado en el CCNL {source} (sin fecha de caducidad indicada) que {field} es {value}.",
-        "ccnl_confirm_prompt": "¿Confirmas este valor? Escribe 'confirmo' para continuar, o indícame el valor correcto.",
+        "ccnl_confirm_prompt": "¿Quieres continuar con este valor, o prefieres indicarme el correcto?",
+        "ccnl_source_line": "Fuente CCNL: {source} (válido hasta el {valid_until})",
+        "ccnl_expired_warning": "⚠️ CCNL caducado el {valid_until} — verificar renovaciones",
+        "ccnl_near_expiry_warning": "⚠️ CCNL próximo a caducar el {valid_until}",
     },
     "en": {
         "result": "Result",
@@ -811,7 +817,10 @@ _COPY = {
         "ccnl_sector_question": "which sector/CCNL the employee works under",
         "ccnl_confirm_line": "I found in the {source} CCNL (valid until {valid_until}) that {field} is {value}.",
         "ccnl_confirm_line_no_expiry": "I found in the {source} CCNL (no expiry indicated) that {field} is {value}.",
-        "ccnl_confirm_prompt": "Do you confirm this value? Write 'confirm' to proceed, or give me the correct value.",
+        "ccnl_confirm_prompt": "Would you like to proceed with this value, or would you rather give me the correct one?",
+        "ccnl_source_line": "CCNL source: {source} (valid until {valid_until})",
+        "ccnl_expired_warning": "⚠️ CCNL expired on {valid_until} — check for renewals",
+        "ccnl_near_expiry_warning": "⚠️ CCNL expiring on {valid_until}",
     },
 }
 
@@ -927,6 +936,7 @@ _FINISH_WORDS = frozenset({
 })
 _CONFIRM_WORDS = frozenset({
     "si", "sì", "ok", "okay", "va bene", "conferma", "confermo", "confermato",
+    "esatto", "corretto", "giusto", "procedi",
     "yes", "confirm", "confirmed", "correct", "go", "proceed",
     "sí", "confirmo", "confirmado", "de acuerdo", "vale", "correcto",
 })
@@ -1062,7 +1072,17 @@ def _classify_sector_llm(query: str, sectors: List[str]) -> Optional[str]:
         w for w in re.sub(r"[^\w\s]", " ", normalized_query).split()
         if w not in _SECTOR_FILTER_STOPWORDS and len(w) > 3
     }
-    candidates = [s for s in sectors if any(w in s.lower() for w in query_words)]
+    def _sector_words(sector: str) -> set:
+        return {
+            w for w in re.sub(r"[^\w\s]", " ", sector.lower()).split()
+            if w not in _SECTOR_FILTER_STOPWORDS and len(w) > 3
+        }
+
+    candidates = [
+        s for s in sectors
+        if any(w in s.lower() for w in query_words)              # query word in sector
+        or any(w in normalized_query for w in _sector_words(s))  # sector word in query
+    ]
     if not candidates:
         # No significant word overlap — fall back to the full list rather
         # than silently reporting no sector at all.
@@ -1133,30 +1153,39 @@ def _ccnl_search_sections(
         "  AND (s.plain_text CONTAINS '€' OR s.plain_text CONTAINS 'euro') "
         if require_currency else ""
     )
+    # Fetch more candidates (limit * 3) and then sort in Python prioritizing
+    # valid docs. The fulltext index's own {limit: ...} caps candidates by
+    # raw lucene score before the validity-aware ORDER BY ever runs, so a
+    # valid but lower-scored doc could be cut off before Neo4j gets a
+    # chance to prioritize it. Over-fetching and sorting here instead
+    # ensures valid docs aren't cut off by the LIMIT before ordering.
+    fetch_limit = limit * 5
     try:
         with driver.session(database=database) as session:
             result = session.run(
                 "CALL db.index.fulltext.queryNodes('section_fulltext', $search_text, "
-                "{limit: $limit}) YIELD node AS s, score "
+                "{limit: $fetch_limit}) YIELD node AS s, score "
                 "MATCH (d:LEGAL_DOC)-[:CONTAINS]->(s) "
                 "WHERE d.document_type = 'ccnl' "
                 "  AND ($sector IS NULL OR d.sector = $sector) "
                 f"{currency_clause}"
                 "RETURN s.plain_text AS text, d.name AS source_name, "
-                "       d.valid_until AS valid_until, d.sector AS sector, score "
-                "ORDER BY "
-                "  CASE WHEN d.valid_until IS NULL OR d.valid_until > $today THEN 0 ELSE 1 END, "
-                "  score DESC "
-                "LIMIT $limit",
+                "       d.valid_until AS valid_until, d.sector AS sector, score",
                 search_text=search_text,
                 sector=sector,
-                today=today,
-                limit=limit,
+                fetch_limit=fetch_limit,
             )
-            return [dict(record) for record in result]
+            rows = [dict(record) for record in result]
     except Exception as exc:
         logger.warning("CCNL section search failed for %r: %s", field_label, exc)
         return []
+
+    def _is_valid(row: Dict[str, Any]) -> bool:
+        valid_until = row.get("valid_until")
+        return valid_until is None or str(valid_until) > today
+
+    rows.sort(key=lambda row: (0 if _is_valid(row) else 1, -row.get("score", 0)))
+    return rows[:limit]
 
 
 def _extract_ccnl_value(
@@ -1237,9 +1266,12 @@ def _ccnl_lookup(
     to this field. Never raises.
 
     Confidence is downgraded to "low" whenever the source CCNL has expired
-    or the sector could only be guessed (not read off an exact graph
-    value) — those cases must always be confirmed by the user, never
-    applied silently, however confident the value extraction itself was.
+    — that case must always be confirmed by the user, never applied
+    silently, however confident the value extraction itself was. A
+    guessed (not exact) sector no longer forces a downgrade on its own: a
+    valid CCNL found under an uncertain sector is still applied silently,
+    with its source surfaced via attribution rather than a confirmation
+    question.
     """
     if driver is None:
         return None
@@ -1267,7 +1299,7 @@ def _ccnl_lookup(
             except ValueError:
                 is_expired = False
         confidence = extracted["confidence"]
-        if is_expired or not sector_is_certain:
+        if is_expired:
             confidence = "low"
         return {
             "value": extracted["value"],
@@ -1331,7 +1363,7 @@ def _ccnl_lookup_with_level(
             except ValueError:
                 is_expired = False
         confidence = extracted["confidence"]
-        if is_expired or not sector_is_certain:
+        if is_expired:
             confidence = "low"
         return {
             "value": extracted["value"],
@@ -1543,10 +1575,41 @@ def _conversion_lines(lang: str, conversions: List[Dict[str, Any]]) -> List[str]
     ]
 
 
+def _ccnl_source_lines(lang: str, ccnl_sources: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """Render attribution/expiry lines for CCNL values that were silently
+    filled in (never surfaced to the user for confirmation) — a reader must
+    still be able to tell where a number came from and whether it is stale."""
+    copy = _COPY[lang]
+    lines = []
+    for item in ccnl_sources or []:
+        source = item.get("source") or "CCNL"
+        valid_until = item.get("valid_until")
+        is_expired = False
+        is_near_expiry = False
+        if valid_until:
+            try:
+                until_date = datetime.strptime(str(valid_until)[:10], "%Y-%m-%d").date()
+                days_left = (until_date - datetime.now().date()).days
+                is_expired = days_left < 0
+                is_near_expiry = 0 <= days_left <= 90
+            except ValueError:
+                pass
+        if is_expired:
+            lines.append(copy["ccnl_expired_warning"].format(valid_until=valid_until))
+        elif valid_until:
+            lines.append(copy["ccnl_source_line"].format(source=source, valid_until=valid_until))
+            if is_near_expiry:
+                lines.append(copy["ccnl_near_expiry_warning"].format(valid_until=valid_until))
+        else:
+            lines.append(copy["ccnl_source_line"].format(source=source, valid_until="n/d"))
+    return lines
+
+
 def _success_answer(
     lang: str,
     response: Dict[str, Any],
     conversions: Optional[List[Dict[str, Any]]] = None,
+    ccnl_sources: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     result = response.get("result") or {}
     if isinstance(result.get("comparison"), dict):
@@ -1633,6 +1696,9 @@ def _success_answer(
             f"{_COPY[lang]['methodology']}:\n" + "\n".join(how_lines)
         )
     sections.append(f"{_COPY[lang]['sources']}: {sources}")
+    ccnl_lines = _ccnl_source_lines(lang, ccnl_sources)
+    if ccnl_lines:
+        sections.append("\n".join(ccnl_lines))
     sections.append(_COPY[lang]["disclaimer"])
     return "\n\n".join(sections)
 
@@ -1701,6 +1767,7 @@ def _handle_response(
     database: Optional[str] = None,
     query: str = "",
     ccnl_lookup_done: bool = False,
+    ccnl_sources: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     if response.get("status") == "success":
         logger.info(
@@ -1709,7 +1776,7 @@ def _handle_response(
             [record.get("rule_id") for record in conversions or []],
         )
         return _answered_update(
-            _success_answer(lang, response, conversions),
+            _success_answer(lang, response, conversions, ccnl_sources=ccnl_sources),
             calculation_result=response.get("result") or {},
             calculation_conversions=list(conversions or []),
             pending_calculation=None,
@@ -1740,6 +1807,7 @@ def _handle_response(
         if not ccnl_lookup_done and driver is not None:
             still_missing: List[Dict[str, Any]] = []
             silent_values: Dict[str, Any] = {}
+            ccnl_silent_hits: List[Dict[str, Any]] = []
             confirmations: List[Dict[str, Any]] = []
             for spec in missing:
                 name = spec.get("name")
@@ -1783,6 +1851,11 @@ def _handle_response(
                     still_missing.append({**spec, "_ccnl_unresolved": True})
                 elif hit["confidence"] == "high":
                     silent_values[name] = hit["value"]
+                    ccnl_silent_hits.append({
+                        "field": name,
+                        "source": hit.get("source"),
+                        "valid_until": hit.get("valid_until"),
+                    })
                 else:
                     confirmations.append({"spec": spec, **hit})
 
@@ -1836,6 +1909,7 @@ def _handle_response(
                         database=database,
                         query=query,
                         ccnl_lookup_done=True,
+                        ccnl_sources=ccnl_silent_hits,
                     )
             missing = still_missing
 
