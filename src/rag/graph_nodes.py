@@ -4104,10 +4104,19 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # explicitly mentioned in the answer, or whose plain_text has substantial
     # overlap with the answer content. This ensures cited sections were actually used.
     answer_lower = answer.lower()
-    cited_section_pattern = re.compile(r'\b(?:articolo|art\.?|sezione|sez\.?)\s*(\d+(?:[.\-]\d+)*(?:[\s\-]*(?:bis|ter|quater))?)', re.IGNORECASE)
+    # Accepts "articolo 5", "art. 5", "sezione 5" and - the form the model
+    # actually writes - "sezioni: 371-ter.0.0, 371-ter_3": plural, colon, list.
+    cited_section_pattern = re.compile(
+        r'\b(?:articol[oi]|art\.?|sezion[ei]|sez\.?)\s*:?\s*'
+        r'(\d+(?:[.\-_]\w+)*(?:[\s\-]*(?:bis|ter|quater))?)',
+        re.IGNORECASE,
+    )
     answer_article_refs = {m.group(1).strip().lower().replace(' ', '') for m in cited_section_pattern.finditer(answer)}
     # Also add base article numbers (e.g. "124" from "124.0.0")
     answer_article_refs |= {ref.split('.')[0] for ref in answer_article_refs}
+    # Whitespace-stripped answer, so a section name can be matched verbatim
+    # regardless of how the model punctuated the citation around it.
+    answer_normalised = answer.lower().replace(" ", "")
 
     # Reranker-score-based citation filter.
     # Trust the reranker's semantic relevance score rather than keyword matching.
@@ -4128,14 +4137,24 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 # No reranker score — fall back to article reference check
                 name = (section.get('name') or '').lower().replace(' ', '')
                 base_name = name.split('.')[0]
-                return name in answer_article_refs or base_name in answer_article_refs
+                # Full name matched verbatim too: the extraction pattern cannot
+                # anticipate every citation style. Full name only, never base_name,
+                # or a bare "40" would match any stray number in the prose.
+                return (name in answer_article_refs
+                        or base_name in answer_article_refs
+                        or (len(name) > 3 and name in answer_normalised))
             if score >= 0.65:
                 return True
             if score >= 0.3:
                 # Medium confidence — only include if article number in answer
                 name = (section.get('name') or '').lower().replace(' ', '')
                 base_name = name.split('.')[0]
-                return name in answer_article_refs or base_name in answer_article_refs
+                # Full name matched verbatim too: the extraction pattern cannot
+                # anticipate every citation style. Full name only, never base_name,
+                # or a bare "40" would match any stray number in the prose.
+                return (name in answer_article_refs
+                        or base_name in answer_article_refs
+                        or (len(name) > 3 and name in answer_normalised))
             return False
 
         filtered = [
@@ -4211,12 +4230,10 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     import re as _re
     answer = _re.sub(r'\n[A-Z][^\n]{0,500}\?[^\n]*$', '', answer.rstrip()).rstrip()
 
-    if citations:
-        fonti_line = "Fonti: " + ", ".join(
-            f"{c['document_name']} sezioni: {', '.join(s['name'] for s in c['sections'])}"
-            for c in citations
-        )
-        answer = answer.rstrip() + "\n\n" + fonti_line
+    # Built at the end of this function instead: the dottrina block below adds
+    # its own sources to `citations`. Building it here listed only the main
+    # citations while the frontend received the merged list, so dottrina sources
+    # showed in the side panel but never in the answer.
 
     if _dottrina_only and not special_citations:
         special_citations = all_citations
@@ -4276,6 +4293,22 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                     answer = dottrina_answer.strip()
 
     answer = re.sub(r'\n[A-Z][^\n]{0,500}\?[^\n]*$', '', answer.rstrip()).rstrip()
+
+    # Dottrina sources are merged into `citations` above, so build the Fonti
+    # line from the complete list. Kept above the dottrina note so the layout is
+    # unchanged; if that note became the whole answer there is no marker and it
+    # simply goes at the end.
+    if citations:
+        fonti_line = "Fonti: " + ", ".join(
+            f"{c['document_name']} sezioni: {', '.join(s['name'] for s in c['sections'])}"
+            for c in citations
+        )
+        _marker = "\n\n---\n**Nota dottrinale:**"
+        if _marker in answer:
+            _head, _sep, _tail = answer.partition(_marker)
+            answer = _head.rstrip() + "\n\n" + fonti_line + _sep + _tail
+        else:
+            answer = answer.rstrip() + "\n\n" + fonti_line
 
     return {
         "answer": answer,
