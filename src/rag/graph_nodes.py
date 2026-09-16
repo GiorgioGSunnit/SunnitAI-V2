@@ -267,6 +267,25 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
         r'\bart\.?\s*\d+|articolo\s+\d+|comma\s+\d+|art\s+\d+',
         query, re.IGNORECASE
     ))
+
+    # Pre-check: standard Italian legal code abbreviations
+    if _has_article_ref:
+        _CODE_ABBR = {
+            r'\bc\.?p\.?\b': 'Codice Penale',
+            r'\bc\.?c\.?\b': 'Codice Civile',
+            r'\bc\.?p\.?p\.?\b': 'Codice di procedura penale',
+            r'\bc\.?p\.?a\.?\b': 'Codice del processo amministrativo',
+        }
+        for pattern, name_fragment in _CODE_ABBR.items():
+            if re.search(pattern, query, re.IGNORECASE):
+                for doc in _fetch_doc_names(driver, database):
+                    if name_fragment.lower() in doc.get('name', '').lower():
+                        logger.info(
+                            '_dynamic_law_hint: abbr match — %r for query %r',
+                            doc['name'], query[:60]
+                        )
+                        return doc['id']
+
     # With article reference: score >= 2 is enough to scope BM25 to that document
     if _has_article_ref and best_score >= 2:
         logger.info(
