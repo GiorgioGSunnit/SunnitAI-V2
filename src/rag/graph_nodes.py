@@ -196,8 +196,9 @@ def _fetch_doc_names(driver, database: str, user_id: str = "", tenant_id: str = 
             with driver.session(database=database) as session:
                 result = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(:Section) "
-                    "WHERE coalesce(d.visibility, 'public') = 'public' "
-                    "OR d.owner_id = $user_id OR d.tenant_id = $tenant_id "
+                    "WHERE d.document_type IN ['primary', 'special', 'ccnl'] "
+                    "AND (coalesce(d.visibility, 'public') = 'public' "
+                    "OR d.owner_id = $user_id OR d.tenant_id = $tenant_id) "
                     "RETURN DISTINCT d.id AS id, d.name AS name, "
                     "coalesce(d.aliases, []) AS aliases",
                     user_id=user_id,
@@ -271,20 +272,28 @@ def _dynamic_law_hint(query: str, driver, database: str) -> str:
     # Pre-check: standard Italian legal code abbreviations
     if _has_article_ref:
         _CODE_ABBR = {
-            r'\bc\.?p\.?\b': 'Codice Penale',
+            r'\bc\.?p\.?p\.?\b': 'Codice di procedura penale',  # cpp first
+            r'\bc\.?p\.?a\.?\b': 'Codice del processo amministrativo',  # cpa first
+            r'\bc\.?p\.?\b': 'Codice Penale',  # cp last
             r'\bc\.?c\.?\b': 'Codice Civile',
-            r'\bc\.?p\.?p\.?\b': 'Codice di procedura penale',
-            r'\bc\.?p\.?a\.?\b': 'Codice del processo amministrativo',
         }
         for pattern, name_fragment in _CODE_ABBR.items():
             if re.search(pattern, query, re.IGNORECASE):
-                for doc in _fetch_doc_names(driver, database):
-                    if name_fragment.lower() in doc.get('name', '').lower():
-                        logger.info(
-                            '_dynamic_law_hint: abbr match — %r for query %r',
-                            doc['name'], query[:60]
-                        )
-                        return doc['id']
+                matches = [
+                    doc for doc in _fetch_doc_names(driver, database)
+                    if name_fragment.lower() in doc.get('name', '').lower()
+                ]
+                if matches:
+                    # Prefer documents whose name starts with the fragment (exact code, not commentary)
+                    primary_match = next(
+                        (d for d in matches if d.get('name', '').lower().startswith(name_fragment.lower())),
+                        matches[0]
+                    )
+                    logger.info(
+                        '_dynamic_law_hint: abbr match — %r for query %r',
+                        primary_match['name'], query[:60]
+                    )
+                    return primary_match['id']
 
     # With article reference: score >= 2 is enough to scope BM25 to that document
     if _has_article_ref and best_score >= 2:
