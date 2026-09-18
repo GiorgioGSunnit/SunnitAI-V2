@@ -257,6 +257,13 @@ def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
         if response.get("status") == "ambiguous" and strong:
             tied = _tied_top_candidates(response)
             if len(tied) > 1:
+                llm_match = _llm_disambiguate(state.get("query", ""), tied)
+                if llm_match:
+                    logger.info(
+                        "calc_gate: route=calculate calculator=%s reason=llm_tiebreak",
+                        llm_match.get("calculator_id"),
+                    )
+                    return {"calc_route": "calculate", "calculation_match": llm_match}
                 logger.info(
                     "calc_gate: route=choose candidates=%s score=%s",
                     [c.get("calculator_id") for c in tied], score,

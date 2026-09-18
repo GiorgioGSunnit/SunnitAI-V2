@@ -5,11 +5,9 @@ strategy: expression
 methodology: "Moltiplica l'importo di ogni scatto per il numero di scatti maturati, calcolato dagli anni di anzianità e dalla cadenza di maturazione, entro il tetto massimo previsto dal CCNL."
 version: "1"
 description: >
-  Calcola il valore mensile totale degli scatti di anzianità maturati
-  dal lavoratore. L'importo per scatto dipende dal livello di
-  inquadramento previsto dal CCNL applicabile e può essere recuperato
-  automaticamente. Gli scatti maturano tipicamente ogni 2 anni e si
-  cumulano tra loro.
+  Calcola il valore mensile totale degli scatti di anzianità maturati.
+  Usare SOLO per: scatti di anzianità, aumenti periodici per anzianità
+  di servizio. NON usare per indennità di preavviso, TFR o stipendio base.
 jurisdiction: IT
 output_unit: EUR
 keywords:

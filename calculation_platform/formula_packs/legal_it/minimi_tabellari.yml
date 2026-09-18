@@ -5,10 +5,11 @@ strategy: expression
 methodology: "Restituisce il minimo tabellare mensile previsto dal CCNL per il livello di inquadramento indicato."
 version: "1"
 description: >
-  Recupera il minimo tabellare mensile lordo previsto dal CCNL applicabile
-  per il livello di inquadramento del lavoratore. Il valore dipende dal
-  CCNL di settore e dal livello contrattuale (es. 1°, 2°, Quadro) e va
-  fornito o recuperato dal contratto collettivo applicabile.
+  Recupera il minimo tabellare mensile lordo previsto dal CCNL per il
+  livello di inquadramento del lavoratore. Usare SOLO per: qual è il
+  minimo contrattuale, quanto guadagna un dipendente di livello X,
+  stipendio minimo previsto dal contratto. NON usare per calcoli di
+  indennità, preavviso, TFR o straordinario.
 jurisdiction: IT
 output_unit: EUR
 keywords:
