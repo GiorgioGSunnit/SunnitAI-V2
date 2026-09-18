@@ -3562,25 +3562,27 @@ def _extract_citations(
     return results
 
 
-def _citation_is_relevant(answer: str, section_text: str, threshold: float = 0.80) -> bool:
-    if not section_text or not answer:
-        return False
-    try:
-        if len(section_text) <= 800:
-            effective_threshold = threshold - 0.08   # 0.72 for short sections
-        elif len(section_text) <= 3000:
-            effective_threshold = threshold           # 0.80 for medium sections
-        else:
-            effective_threshold = threshold - 0.12   # 0.68 for very long sections
-        answer_emb = _embed_query_with_prefix(answer[:500])
-        section_emb = _embed_query_with_prefix(section_text[:500])
-        dot = sum(a * b for a, b in zip(answer_emb, section_emb))
-        norm_a = sum(a * a for a in answer_emb) ** 0.5
-        norm_b = sum(b * b for b in section_emb) ** 0.5
-        similarity = dot / (norm_a * norm_b + 1e-9)
-        return similarity >= effective_threshold
-    except Exception:
-        return True  # keep citation on error
+# _citation_is_relevant removed — citation quality handled by reranker threshold (0.65)
+# Kept here for reference in case embedding-based citation filtering is needed in future
+# def _citation_is_relevant(answer: str, section_text: str, threshold: float = 0.80) -> bool:
+#     if not section_text or not answer:
+#         return False
+#     try:
+#         if len(section_text) <= 800:
+#             effective_threshold = threshold - 0.08   # 0.72 for short sections
+#         elif len(section_text) <= 3000:
+#             effective_threshold = threshold           # 0.80 for medium sections
+#         else:
+#             effective_threshold = threshold - 0.12   # 0.68 for very long sections
+#         answer_emb = _embed_query_with_prefix(answer[:500])
+#         section_emb = _embed_query_with_prefix(section_text[:500])
+#         dot = sum(a * b for a, b in zip(answer_emb, section_emb))
+#         norm_a = sum(a * a for a in answer_emb) ** 0.5
+#         norm_b = sum(b * b for b in section_emb) ** 0.5
+#         similarity = dot / (norm_a * norm_b + 1e-9)
+#         return similarity >= effective_threshold
+#     except Exception:
+#         return True  # keep citation on error
 
 
 _RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
