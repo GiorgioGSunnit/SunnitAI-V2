@@ -1,4 +1,4 @@
-"""Document generation: Italian civil procedure opposition act (atto di opposizione a decreto ingiuntivo)."""
+"""Document generation: Italian civile procedure opposition act (atto di opposizione a decreto ingiuntivo)."""
 
 from __future__ import annotations
 
