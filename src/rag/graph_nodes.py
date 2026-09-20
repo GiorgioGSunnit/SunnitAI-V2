@@ -18,7 +18,7 @@ from ..preprocessing.schema.schema import relations as schema_relations
 from .ai_chat import _call_chat, structured_entities_model, embedding_model, _embed_query_with_prefix
 from .verbose_logger import vlog, Timer
 from .cypher_logger import log_cypher_event, log_cypher_multiline
-from .language import SessionLang, language_display_name, normalize_lang
+from .language import language_display_name
 from .prompts import (
     legal_consultant_system_prefix,
     synthesis_empty_system,
@@ -51,6 +51,16 @@ from .utils import (
     _strict_filter_relations,
     canonical_name,
 )
+from .formatting import (
+    _collect_labels,
+    _enrich_with_source_metadata,
+    _format_context_lines,
+    _format_entry_lines,
+    _node_to_dict,
+    _session_lang,
+    _summarize_for_synthesis,
+)
+from .reranker import rerank_results
 
 logger = logging.getLogger(__name__)
 
@@ -81,17 +91,9 @@ def _fetch_allowed_doc_ids(session, user_id: str, tenant_id: str) -> set:
     return {r["id"] for r in result}
 
 
-def _node_to_dict(v: Any) -> Any:
-    return dict(v) if hasattr(v, "items") and not isinstance(v, dict) else v
-
-
 # Max nodes to pass into Cypher generation prompts (keeps tokens under control)
 _MAX_ENTRY_NODES_FOR_PROMPT = 8
 _MAX_CONTEXT_NODES_FOR_PROMPT = 6
-
-
-def _session_lang(state: Dict[str, Any]) -> SessionLang:
-    return normalize_lang(state.get("session_language"))
 
 
 # ---------------------------------------------------------------------------
@@ -124,15 +126,6 @@ def _extract_document_references(query: str) -> List[str]:
                 seen.add(m)
                 refs.append(m)
     return refs
-
-
-def _collect_labels(nodes: List[Dict[str, Any]]) -> Set[str]:
-    """Extract all unique labels from a list of node dicts."""
-    labels: Set[str] = set()
-    for n in nodes:
-        for lbl in n.get("labels", []):
-            labels.add(lbl)
-    return labels
 
 
 # ---------------------------------------------------------------------------
@@ -2119,26 +2112,6 @@ def dottrina_search(state: Dict[str, Any], driver, database: str) -> Dict[str, A
 # Node D1: Intersection Cypher generation
 # ---------------------------------------------------------------------------
 
-def _format_entry_lines(nodes: List[Dict[str, Any]]) -> str:
-    if not nodes:
-        return "(none)"
-    return "\n".join(
-        f'- elementId: "{item["element_id"]}", labels: {", ".join(item.get("labels", [])) or "Unknown"}, '
-        f"entities: {', '.join(item.get('entities', [])) or 'Unknown'}"
-        for item in nodes
-    )
-
-
-def _format_context_lines(nodes: List[Dict[str, Any]]) -> str:
-    if not nodes:
-        return "(none)"
-    return "\n".join(
-        f'- elementId: "{item["element_id"]}", labels: {", ".join(item.get("labels", [])) or "Unknown"}, '
-        f"sources: {', '.join(item.get('sources', [])) or 'Unknown'}, score: {item.get('score') or 0:.4f}"
-        for item in nodes
-    )
-
-
 def generate_cypher_intersection(state: Dict[str, Any], driver=None, database: str = "neo4j") -> Dict[str, Any]:
     lang = _session_lang(state)
     entry_nodes = state.get("entry_nodes") or []
@@ -2812,42 +2785,6 @@ def generate_cypher_reformulation(state: Dict[str, Any]) -> Dict[str, Any]:
 # Node E: Cypher execution
 # ---------------------------------------------------------------------------
 
-def _enrich_with_source_metadata(data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    enriched_references = []
-    for record in data:
-        reference = {"data": record, "sources": []}
-        for key, value in record.items():
-            if isinstance(value, dict):
-                if "properties" in value and "labels" in value:
-                    labels = value.get("labels", [])
-                    props = value.get("properties", {})
-                    source_info = {
-                        "type": labels[0] if labels else "Unknown",
-                        "id": value.get("elementId"),
-                    }
-                    if "Document" in labels:
-                        source_info["document_id"] = props.get("document_id")
-                        source_info["document_title"] = props.get("document_title")
-                        source_info["document_date"] = props.get("document_date")
-                    elif "LegalAct" in labels:
-                        source_info["act_type"] = props.get("act_type")
-                        source_info["act_number"] = props.get("act_number")
-                        source_info["act_year"] = props.get("act_year")
-                    elif "Article" in labels:
-                        source_info["parent_act_key"] = props.get("parent_act_key")
-                        source_info["index"] = props.get("index")
-                        source_info["heading"] = props.get("heading")
-                    elif "Section" in labels:
-                        source_info["document_id"] = props.get("document_id")
-                        source_info["chunk_id"] = props.get("chunk_id")
-                        source_info["title"] = props.get("title")
-                    if props.get("text_en"):
-                        source_info["text_preview"] = props.get("text_en")[:200] + "..."
-                    reference["sources"].append(source_info)
-        enriched_references.append(reference)
-    return enriched_references
-
-
 def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     cypher = state.get("cypher_query")
     attempt = state.get("cypher_attempt", "unknown")
@@ -3257,161 +3194,6 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
 # Node F: Answer synthesis
 # ---------------------------------------------------------------------------
 
-def _summarize_for_synthesis(
-    data: List[Dict[str, Any]], max_records: int = 5, is_comparison: bool = False
-) -> List[Dict[str, Any]]:
-    summarized = []
-    total_chars = 0
-    MAX_TOTAL_CHARS = 4000 if is_comparison else 6000
-
-    for record in data[:max_records]:
-        if is_comparison and record.get("_source") == "comparison":
-            if total_chars > MAX_TOTAL_CHARS:
-                break
-            comparison_count = sum(1 for r in summarized if r.get("_source") == "comparison")
-            if comparison_count >= 5:
-                continue
-            rec = {k: v for k, v in record.items() if k not in ("embedding", "vettore")}
-            for node_key in ("s", "s2"):
-                if isinstance(rec.get(node_key), dict):
-                    rec[node_key] = {
-                        k: v for k, v in rec[node_key].items()
-                        if k not in ("embedding", "vettore", "embedding_dim")
-                    }
-                    if rec[node_key].get("plain_text"):
-                        rec[node_key]["plain_text"] = rec[node_key]["plain_text"][:500]
-                    if rec[node_key].get("abstract"):
-                        rec[node_key]["abstract"] = rec[node_key]["abstract"][:200]
-            rec_json = json.dumps(rec, ensure_ascii=False)
-            total_chars += len(rec_json)
-            summarized.append(rec)
-            continue
-        summary_record = {}
-        for key, value in record.items():
-            if isinstance(value, dict) and "properties" in value:
-                props = value["properties"]
-                labels = value.get("labels", [])
-                summary_props = {"labels": labels}
-
-                if "LegalAct" in labels:
-                    summary_props.update({
-                        "act_type": props.get("act_type"),
-                        "act_number": props.get("act_number"),
-                        "act_year": props.get("act_year"),
-                        "title": (props.get("title") or "")[:100],
-                    })
-                elif "Person" in labels:
-                    summary_props.update({"name": props.get("name"), "role": props.get("role")})
-                elif "Company" in labels or "Institution" in labels:
-                    summary_props.update({
-                        "name": props.get("name"),
-                        "normalized_name": props.get("normalized_name"),
-                    })
-                elif "Article" in labels:
-                    snippet = ""
-                    for key in ("text_en", "text_it", "text_es", "text_ar"):
-                        v = props.get(key)
-                        if isinstance(v, str) and v.strip():
-                            snippet = v[:150]
-                            break
-                    summary_props.update({
-                        "index": props.get("index"),
-                        "heading": (props.get("heading") or "")[:100],
-                        "text_snippet": snippet,
-                    })
-                elif "Document" in labels:
-                    summary_props.update({
-                        "document_id": props.get("document_id"),
-                        "document_title": (props.get("document_title") or "")[:100],
-                        "document_date": props.get("document_date"),
-                    })
-                else:
-                    summary_props.update({
-                        "title": (props.get("title") or "")[:80],
-                        "name": props.get("name"),
-                        "text_en": (props.get("text_en") or "")[:80],
-                    })
-                    abstract = (props.get("abstract") or props.get("description") or "")[:200]
-                    if abstract:
-                        summary_props["abstract"] = abstract
-                    plain_text = (props.get("plain_text") or props.get("text") or "")[:150]
-                    if plain_text:
-                        summary_props["plain_text"] = plain_text
-
-                summary_record[key] = {k: v for k, v in summary_props.items() if v is not None}
-            elif isinstance(value, dict):
-                # Flat property dict (no "properties" wrapper) — infer labels from key name
-                node_id = value.get("id") or ""
-                labels = (
-                    ["Document"] if (key == "d" or node_id.startswith("LEGAL_DOC::"))
-                    else ["Section"] if key == "s"
-                    else []
-                )
-                is_doc = "Document" in labels
-                flat_props: Dict[str, Any] = {"labels": labels} if labels else {}
-                if is_doc:
-                    if value.get("name"):
-                        flat_props["name"] = value["name"]
-                    description = (value.get("description") or "")[:200]
-                    if description:
-                        flat_props["description"] = description
-                    if node_id:
-                        flat_props["id"] = node_id
-                elif key == "s":
-                    # Section node — article number, full text, abstract, parent doc name
-                    if value.get("name"):
-                        flat_props["name"] = value["name"]
-                    abstract = (value.get("abstract") or "")[:200]
-                    if abstract:
-                        flat_props["abstract"] = abstract
-                    plain_text = (value.get("plain_text") or value.get("text") or "")[:500]
-                    if plain_text:
-                        flat_props["plain_text"] = plain_text
-                    d_node = record.get("d") or {}
-                    doc_name = (
-                        d_node.get("name") or d_node.get("nomedocumento")
-                        or d_node.get("document_title") or ""
-                    )
-                    if doc_name:
-                        flat_props["document_name"] = doc_name
-                else:
-                    # Generic flat node
-                    title = (value.get("title") or "")[:80]
-                    if title:
-                        flat_props["title"] = title
-                    if value.get("name"):
-                        flat_props["name"] = value["name"]
-                    text_en = (value.get("text_en") or "")[:80]
-                    if text_en:
-                        flat_props["text_en"] = text_en
-                    abstract = (value.get("abstract") or value.get("description") or "")[:200]
-                    if abstract:
-                        flat_props["abstract"] = abstract
-                    plain_text = (value.get("plain_text") or value.get("text") or "")[:150]
-                    if plain_text:
-                        flat_props["plain_text"] = plain_text
-                if flat_props:
-                    summary_record[key] = flat_props
-            elif value is None:
-                continue
-            else:
-                if isinstance(value, str) and len(value) > 100:
-                    summary_record[key] = value[:100] + "..."
-                else:
-                    summary_record[key] = value
-
-        record_json = json.dumps(summary_record, ensure_ascii=False)
-        total_chars += len(record_json)
-        if total_chars > MAX_TOTAL_CHARS:
-            break
-        summarized.append(summary_record)
-
-    if len(summarized) > 10:
-        summarized = summarized[:10]
-        summarized.append({"note": "results truncated to 10 items"})
-    return summarized
-
-
 _VAGUE_CLOSING_PATTERNS = re.compile(
     r"potrebbe esaminare|potrebbe essere utile|un approfondimento|potrebbe approfondire"
     r"|potremmo esaminare|possiamo esaminare"
@@ -3583,135 +3365,6 @@ def _extract_citations(
 #         return similarity >= effective_threshold
 #     except Exception:
 #         return True  # keep citation on error
-
-
-_RERANKER_ENABLED = os.getenv("RERANKER_ENABLED", "false").lower() == "true"
-_RERANKER_URL = os.getenv("RERANKER_URL", "http://217.160.8.129:8002/v1/rerank")
-
-
-def _format_for_reranker(row: dict) -> str:
-    """Build structured reranker input that emphasises title and
-    document context over raw text length. Works for any document
-    regardless of name, version, or section length."""
-    s = row.get("s") or {}
-    d = row.get("d") or {}
-
-    name = s.get("name", "")
-    abstract = (s.get("abstract") or "").strip()
-    plain_text = (s.get("plain_text") or "").strip()
-    doc_name = d.get("name", "")
-
-    parts = []
-
-    # Document context — skip raw filenames
-    if doc_name and not doc_name.lower().endswith(
-            ('.pdf', '.docx', '.xlsx', '.txt')):
-        parts.append(f"Fonte: {doc_name}")
-
-    # Section identifier
-    if name:
-        parts.append(f"Articolo: {name}")
-
-    # Content — combine abstract and plain_text for maximum signal
-    # Abstract already has title prepended (e.g. "Omicidio - ...")
-    # Plain text has the actual legal provision
-    content = abstract or plain_text
-    if plain_text and plain_text not in (abstract or ""):
-        content = f"{content} {plain_text}"[:500]
-    else:
-        content = content[:500]
-
-    if content:
-        parts.append(content)
-
-    return " | ".join(parts)
-
-
-def rerank_results(query: str, rows: list, top_k: int = 12) -> list:
-    """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
-    if not _RERANKER_ENABLED or not rows:
-        return rows
-    if all(r.get("_source") == "clarification" for r in rows):
-        return rows  # skip reranker for clarification rerank — scores already set
-    import time as _time
-    import requests
-    t0 = _time.time()
-    try:
-        reranker_query = (
-            f"Instruct: Given a legal query in Italian, retrieve the most relevant legal document sections\n"
-            f"Query: {query}"
-        )
-        payload = {
-            "model": os.getenv("RERANKER_MODEL", "reranker"),
-            "query": reranker_query,
-            "documents": [
-                _format_for_reranker(row) for row in rows
-            ],
-        }
-        api_key = os.getenv("LLM_API_KEY", "")
-        resp = requests.post(
-            _RERANKER_URL,
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        scored = resp.json().get("results", [])
-        if not scored:
-            return rows
-        for result in scored:
-            original_idx = result["index"]
-            score = result["relevance_score"]
-            if original_idx < len(rows):
-                rows[original_idx]["_reranker_score"] = score
-        reranker_top = sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)[:top_k - 2]
-
-        bm25_rows = [r for r in rows if r.get("_source") == "bm25"]
-        reranker_ids = {
-            (r.get("s") or {}).get("id") for r in reranker_top
-            if (r.get("s") or {}).get("id")
-        }
-        BM25_INJECTION_MIN_RERANKER_SCORE = 0.3
-        bm25_candidates = [
-            r for r in bm25_rows
-            if (r.get("s") or {}).get("id") not in reranker_ids
-            and r.get("_reranker_score", 0) >= BM25_INJECTION_MIN_RERANKER_SCORE
-        ]
-        bm25_top = sorted(
-            bm25_candidates, key=lambda r: r.get("_reranker_score", 0), reverse=True
-        )[:2]
-
-        merged_ids = reranker_ids | {
-            (r.get("s") or {}).get("id") for r in bm25_top
-            if (r.get("s") or {}).get("id")
-        }
-        slots_remaining = top_k - len(reranker_top) - len(bm25_top)
-        overflow = [
-            r for r in sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)
-            if (r.get("s") or {}).get("id") not in merged_ids
-        ][:slots_remaining]
-
-        reranked = reranker_top + bm25_top + overflow
-        logger.info(
-            "Reranker merge: reranker_top=%d bm25_injected=%d overflow=%d total=%d",
-            len(reranker_top), len(bm25_top), len(overflow), len(reranked),
-        )
-
-        score_debug = []
-        for r in reranked:
-            s = r.get("s") or {}
-            if hasattr(s, "get"):
-                name = s.get("name") or s.get("title") or "?"
-            else:
-                name = str(s)[:20]
-            score_debug.append((name, round(r.get("_reranker_score", 0), 3)))
-        logger.info("Reranker scores (top %d): %r", len(score_debug), score_debug)
-        vlog("reranker", {"input_count": len(rows), "output_count": len(reranked)}, (_time.time() - t0) * 1000)
-        return reranked
-    except Exception as exc:
-        logger.warning("Reranker failed (fail-open): %s", exc)
-        vlog("reranker", {"input_count": len(rows), "output_count": len(rows), "error": str(exc)[:120]}, (_time.time() - t0) * 1000)
-        return rows
 
 
 _GAP_PHRASES = [
@@ -4516,18 +4169,6 @@ def _resolve_by_name(name: str, session, user_id: str = "", tenant_id: str = "")
 # ---------------------------------------------------------------------------
 # Node: Cross-document comparison retrieval
 # ---------------------------------------------------------------------------
-
-def _node_to_dict(node) -> dict:
-    """Convert a Neo4j node or plain dict to a plain dict."""
-    if node is None:
-        return {}
-    if isinstance(node, dict):
-        return node
-    try:
-        return dict(node)
-    except Exception:
-        return {}
-
 
 def comparison_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     """Fetch section pairs from two documents for side-by-side comparison synthesis."""
