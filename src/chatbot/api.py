@@ -61,7 +61,7 @@ from ..rag.document_generation import (
     is_generation_request,
     _call_chat,
 )
-from ..rag.graph_nodes import _extract_citations
+from ..rag.answer_processing import _extract_citations
 from ..rag.prompts import legal_consultant_system_prefix, _LENGTH
 from langchain_core.messages import SystemMessage, HumanMessage
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
