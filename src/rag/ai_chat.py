@@ -8,6 +8,7 @@ Configuration via environment variables (see .env.example).
 """
 
 import logging
+import re
 import os
 from typing import List, Optional, Union
 
@@ -116,19 +117,51 @@ structured_entities_model = chat_model.bind(max_tokens=2500).with_structured_out
 )
 
 
+_CONTEXT_LIMIT_RE = re.compile(
+    r"maximum context length is (\d+) tokens.*?prompt contains at least (\d+) input tokens",
+    re.IGNORECASE | re.DOTALL,
+)
+_MIN_ANSWER_TOKENS = 400
+
+
 def _call_chat(
     messages: List[Union[SystemMessage, HumanMessage]],
     max_tokens: Optional[int] = None,
     stop: Optional[List[str]] = None,
 ) -> str:
-    """Call the chat model and trim whitespace from the response."""
+    """Call the chat model and trim whitespace from the response.
+
+    A long prompt plus a fixed answer budget can exceed the serving context: a
+    25k-character template asked for 4000 output tokens against a 10000-token
+    limit failed by a single token, and the user got a 500. Rather than fail,
+    ask for a shorter answer that fits.
+    """
     bind_kwargs = {}
     if max_tokens is not None:
         bind_kwargs["max_tokens"] = max_tokens
     if stop is not None:
         bind_kwargs["stop"] = stop
     model = chat_model.bind(**bind_kwargs) if bind_kwargs else chat_model
-    response = model.invoke(messages)
+    try:
+        response = model.invoke(messages)
+    except Exception as exc:
+        m = _CONTEXT_LIMIT_RE.search(str(exc))
+        if not m:
+            raise
+        limit, prompt_tokens = int(m.group(1)), int(m.group(2))
+        room = limit - prompt_tokens - 16
+        if room < _MIN_ANSWER_TOKENS:
+            logger.error(
+                "prompt of %d tokens leaves only %d of the %d-token context for the "
+                "answer: too little to retry", prompt_tokens, room, limit,
+            )
+            raise
+        logger.warning(
+            "prompt of %d tokens against a %d-token context: retrying with "
+            "max_tokens=%d instead of %s", prompt_tokens, limit, room, max_tokens,
+        )
+        bind_kwargs["max_tokens"] = room
+        response = chat_model.bind(**bind_kwargs).invoke(messages)
     return response.content.strip()
 
 
