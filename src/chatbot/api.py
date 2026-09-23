@@ -25,7 +25,7 @@ import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -145,6 +145,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # custom response headers are invisible to the browser unless listed here
+    expose_headers=["Content-Disposition", "X-Generation-Message"],
 )
 
 from .routes.auth import router as auth_router
@@ -1478,6 +1480,13 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     # The FE only calls this endpoint when /api/chat returned no
     # generated_document_id (its fallback path), so this does not double-persist.
     # The guard below covers the case anyway.
+    # The message is also returned as a header: this endpoint answers with the
+    # file itself, so the frontend had nothing to show and fell back to its own
+    # hardcoded line, which cannot mention the fields still to fill in.
+    _dl_message = _build_generation_confirmation(
+        session_lang, _missing_generated_fields(result, session_lang)
+    )
+
     _dl_prev = (session.messages[-1].metadata or {}) if session.messages else {}
     if _uid and _tid and not _dl_prev.get("generated_document_id"):
         try:
@@ -1501,9 +1510,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             )
             session.add_message(
                 "assistant",
-                _build_generation_confirmation(
-                    session_lang, _missing_generated_fields(result, session_lang)
-                ),
+                _dl_message,
                 metadata={
                     "generated_document_id": str(_dl_rec.id),
                     "generated_document_name": filename,
@@ -1520,7 +1527,11 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # percent-encoded: headers are ASCII only, the message is Italian
+            "X-Generation-Message": urllib.parse.quote(_dl_message),
+        },
     )
 
 
