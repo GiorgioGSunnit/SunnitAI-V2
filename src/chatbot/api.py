@@ -1158,6 +1158,33 @@ def _persist_generated_docx(
         return None, None
 
 
+def _missing_generated_fields(result: Optional[Dict[str, Any]], lang: str) -> Optional[List[str]]:
+    """Which fields the generated document still needs, for the chat message.
+
+    Filling a user's own template produces a fill_map whose blanks
+    _summarise_da_compilare reads back. Generation writes free text, so there is
+    no map to inspect - but the catalog entry's own `fields` carry the same
+    information: extract_system_template_fields returns each one with the value
+    found in the request, or empty when the user never gave it, and those are
+    exactly the ones the model had to leave as a placeholder.
+    """
+    if not isinstance(result, dict):
+        return None
+    details = result.get("case_details")
+    if not isinstance(details, dict) or not details:
+        return None
+    # No placeholder left in the document means nothing to report, whatever the
+    # extraction thought was missing.
+    if _placeholder(lang) not in (result.get("draft") or ""):
+        return None
+    missing = [
+        str(name).replace("_", " ").strip()
+        for name, value in details.items()
+        if not str(value or "").strip()
+    ]
+    return missing[:12] or None
+
+
 def _build_generation_confirmation(
     lang: str,
     missing_fields: Optional[List[str]] = None,
@@ -1260,7 +1287,9 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
 
     session.add_message(
         "assistant",
-        _build_generation_confirmation(session_lang),
+        _build_generation_confirmation(
+            session_lang, _missing_generated_fields(result, session_lang)
+        ),
         metadata={"sources": result.get("sources", [])},
     )
     return GenerateResponse(session_id=session_id, **result)
@@ -1472,7 +1501,9 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             )
             session.add_message(
                 "assistant",
-                _build_generation_confirmation(session_lang),
+                _build_generation_confirmation(
+                    session_lang, _missing_generated_fields(result, session_lang)
+                ),
                 metadata={
                     "generated_document_id": str(_dl_rec.id),
                     "generated_document_name": filename,
@@ -2839,7 +2870,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             logger.info("chat: persist result doc_id=%r name=%r", _gen_doc_id, _gen_doc_name)
         else:
             logger.warning("chat: skipping persist — uid=%r tid=%r", _uid, _tid)
-        _confirmation = _build_generation_confirmation(session_lang)
+        _confirmation = _build_generation_confirmation(
+            session_lang, _missing_generated_fields(gen_result, session_lang)
+        )
         session.add_message(
             "assistant",
             _confirmation,
