@@ -29,18 +29,21 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from .session import (
     ChatBot,
-    ChatSession,
+    SessionExpiredError,
+    SessionNotFoundError,
     _generate_session_title,
     last_pending_calculation,
+    mark_document_session,
 )
 from ..db.base import get_db
 from ..db import crud
+from ..db.crud import delete_expired_sessions
 from ..db.models import Tenant
 from ..db.crud import find_user_document_by_name, get_user_document, find_expired_user_document_by_name, create_user_document, link_documents_to_conversation
 from ..rag.main import run as rag_run, driver as neo4j_driver, NEO4J_DATABASE
@@ -115,6 +118,27 @@ async def _background_doc_expiry_job():
             logger.warning("Doc expiry job failed: %s", e)
 
 
+async def _background_session_expiry_job():
+    """Delete expired conversations (document sessions past their TTL) once per hour.
+
+    conversation_documents rows cascade-delete with the conversation (FK
+    ON DELETE CASCADE, migration 0007), so no separate cleanup is needed there.
+    """
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            from ..db.base import SessionLocal
+            db = SessionLocal()
+            try:
+                count = delete_expired_sessions(db)
+                if count:
+                    logger.info("Session expiry job: removed %d expired conversation(s)", count)
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning("Session expiry job failed: %s", e)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     from ..rag.cypher_logger import ensure_cypher_log_ready
@@ -123,9 +147,11 @@ async def _lifespan(app: FastAPI):
     logger.info("Cypher query log file: %s", log_path)
     # task = asyncio.create_task(_background_embedding_job())  # disabled — AuraDB read-only recovery
     expiry_task = asyncio.create_task(_background_doc_expiry_job())
+    session_expiry_task = asyncio.create_task(_background_session_expiry_job())
     yield
     # task.cancel()
     expiry_task.cancel()
+    session_expiry_task.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +172,19 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(SessionExpiredError)
+async def _session_expired_handler(request, exc: SessionExpiredError):
+    """Central 404 for any session load past its TTL.
+
+    Covers every chatbot.get_session(...) call site uniformly, since most of
+    them just check `if session is None` with no local try/except — this
+    lets the expiry raised deeper in session.py reach the client without
+    touching each call site individually.
+    """
+    return JSONResponse(status_code=404, content={"detail": "Session expired"})
+
 
 from .routes.auth import router as auth_router
 from .routes.totp import router as totp_router
@@ -717,10 +756,9 @@ async def generate_from_user_template(
     if not session_id:
         session = chatbot.create_session(user_id=_uid, tenant_id=_tid)
         session_id = session.session_id
-    session = chatbot.get_session(session_id, user_id=_uid)
-    if not session:
-        session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
-        chatbot._sessions[session_id] = session
+    session = chatbot.get_session(session_id, user_id=_uid, db=db)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
     session_lang = session.session_language
     session.add_message("user", request.message)
 
@@ -1000,13 +1038,13 @@ def create_session(current_user: dict = Depends(require_user), db: Session = Dep
 @app.get("/api/sessions")
 def list_sessions(current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
     enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
-    return chatbot.list_sessions(user_id=current_user["sub"])
+    return chatbot.list_sessions(user_id=current_user["sub"], db=db)
 
 
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str, current_user: dict = Depends(require_user), db: Session = Depends(get_db)):
     enforce_tenant_product_access(db, uuid.UUID(str(current_user["tenant_id"])))
-    session = chatbot.get_session(session_id, user_id=current_user["sub"])
+    session = chatbot.get_session(session_id, user_id=current_user["sub"], db=db)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
     return session.to_dict()
@@ -1208,10 +1246,9 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
         session = chatbot.create_session(user_id=_uid, tenant_id=_tid)
         session_id = session.session_id
 
-    session = chatbot.get_session(session_id, user_id=_uid)
-    if not session:
-        session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
-        chatbot._sessions[session_id] = session
+    session = chatbot.get_session(session_id, user_id=_uid, db=db)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
 
     session_lang = session.session_language
 
@@ -1296,10 +1333,9 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     if not session_id:
         session = chatbot.create_session(user_id=_uid, tenant_id=_tid)
         session_id = session.session_id
-    session = chatbot.get_session(session_id, user_id=_uid)
-    if not session:
-        session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
-        chatbot._sessions[session_id] = session
+    session = chatbot.get_session(session_id, user_id=_uid, db=db)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
     session_lang = session.session_language
 
     if current_user and not request.studio_name:
@@ -1839,7 +1875,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         # "questo documento" to the ORIGINAL upload, not the generated copy.
         # Falls through untouched when any gate fails.
         if not _mentioned_names and _is_correction_request(request.message):
-            _corr_session = chatbot.get_session(session_id, user_id=_uid)
+            _corr_session = chatbot.get_session(session_id, user_id=_uid, db=db)
             _corr_prev_id, _corr_prev_name = _find_last_generated_doc(_corr_session)
             if _corr_prev_id and _uid and _tid:
                 _corr_db_gen = _get_db()
@@ -2014,7 +2050,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             or _ANAPHORIC_CONTENT_RE.search(request.message)
             or _UPLOAD_REF_RE.search(request.message)
         ):
-            _anaphoric_session = chatbot.get_session(session_id, user_id=_uid)
+            _anaphoric_session = chatbot.get_session(session_id, user_id=_uid, db=db)
             if _anaphoric_session:
                 for _prev_msg in reversed(_anaphoric_session.messages):
                     _doc_name = (_prev_msg.metadata or {}).get("document_name")
@@ -2120,12 +2156,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         pass
 
                 if _expired_msgs:
-                    _session = chatbot.get_session(session_id, user_id=_uid)
-                    if not _session:
-                        _session = ChatSession(
-                            session_id=session_id, user_id=_uid, tenant_id=_tid
-                        )
-                        chatbot._sessions[session_id] = _session
+                    _session = chatbot.get_session(session_id, user_id=_uid, db=db)
+                    if _session is None:
+                        raise HTTPException(status_code=404, detail="Session not found")
                     _exp_answer = "\n\n".join(_expired_msgs)
                     _session.add_message("user", request.message)
                     _session.add_message("assistant", _exp_answer)
@@ -2139,12 +2172,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     )
 
             if _matched_docs:
-                _session = chatbot.get_session(session_id, user_id=_uid)
-                if not _session:
-                    _session = ChatSession(
-                        session_id=session_id, user_id=_uid, tenant_id=_tid
-                    )
-                    chatbot._sessions[session_id] = _session
+                _session = chatbot.get_session(session_id, user_id=_uid, db=db)
+                if _session is None:
+                    raise HTTPException(status_code=404, detail="Session not found")
                 _session_lang = _session.session_language
                 _doc_settings = get_user_settings(_uid) if _uid else {"tone": 2, "standing": 2, "response_length": 2}
 
@@ -2477,7 +2507,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
                     _session.add_message("user", request.message, metadata={
                         "documents": [{"document_id": str(d.id), "document_name": d.original_filename} for d in _matched_docs],
+                        "document_role": _matched_docs[0].document_role,
                     })
+                    mark_document_session(_session)
                     if len(_session.messages) == 1:
                         _session.title = _generate_session_title(request.message)
                     _session.add_message("assistant", answer)
@@ -2512,7 +2544,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         _session.add_message("user", request.message, metadata={
                             "document_id": str(_matched_doc.id),
                             "document_name": _matched_doc.original_filename,
+                            "document_role": _matched_doc.document_role,
                         })
+                        mark_document_session(_session)
                         if len(_session.messages) == 1:
                             _session.title = _generate_session_title(request.message)
                         _session.add_message("assistant", _fill_err)
@@ -2555,7 +2589,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         _session.add_message("user", request.message, metadata={
                             "document_id": str(_matched_doc.id),
                             "document_name": _matched_doc.original_filename,
+                            "document_role": _matched_doc.document_role,
                         })
+                        mark_document_session(_session)
                         if len(_session.messages) == 1:
                             _session.title = _generate_session_title(request.message)
                         _session.add_message("assistant", _fill_err)
@@ -2612,7 +2648,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     _session.add_message("user", request.message, metadata={
                         "document_id": str(_matched_doc.id),
                         "document_name": _matched_doc.original_filename,
+                        "document_role": _matched_doc.document_role,
                     })
+                    mark_document_session(_session)
                     if len(_session.messages) == 1:
                         _session.title = _generate_session_title(request.message)
                     _session.add_message(
@@ -2729,7 +2767,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     _session.add_message("user", request.message, metadata={
                         "document_id": str(_matched_doc.id),
                         "document_name": _matched_doc.original_filename,
+                        "document_role": _matched_doc.document_role,
                     })
+                    mark_document_session(_session)
                     if len(_session.messages) == 1:
                         _session.title = _generate_session_title(request.message)
                     _session.add_message("assistant", answer)
@@ -2756,10 +2796,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
     _top_intent = _classify_top_level_intent(request.message, "it")
     if _top_intent == "generate" or is_generation_request(request.message):
-        session = chatbot.get_session(session_id, user_id=_uid)
-        if not session:
-            session = ChatSession(session_id=session_id, user_id=_uid, tenant_id=_tid)
-            chatbot._sessions[session_id] = session
+        session = chatbot.get_session(session_id, user_id=_uid, db=db)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
         session_lang = session.session_language
         # A generation turn must not silently drop a calculation that is still
         # collecting inputs: this branch returns without ever reaching the RAG
@@ -2870,6 +2909,10 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                           user_id=current_user.get("sub") if current_user else None,
                           tenant_id=current_user.get("tenant_id") if current_user else None)
         )
+    except SessionExpiredError:
+        raise HTTPException(status_code=404, detail="Session expired")
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
     except PermissionError:
         raise HTTPException(status_code=403, detail="This session does not belong to your account")
     except Exception as e:

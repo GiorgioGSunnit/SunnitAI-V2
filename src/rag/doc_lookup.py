@@ -485,8 +485,21 @@ def _select_schema_for_query(
         return list(_ALL_SCHEMA_LABELS), list({r["type"] for r in all_rels})
 
 
+# Whitelist: meta-queries about the conversation itself
+_CONVERSATION_META_PATTERNS = re.compile(
+    r'\b(riassumi|riassumere|abbiamo discusso|hai detto|ho chiesto|'
+    r'cosa abbiamo|di cosa (si tratta|abbiamo)|recap|riepilog\w*|'
+    r'precedente|prima hai|hai menzionato|torna (su|a)|'
+    r'summarize|summary|what did we|we discussed)\b',
+    re.IGNORECASE
+)
+
+
 def _is_legal_query(query: str, lang: str) -> bool:
     """Return True if the query is legal/professional; False if off-topic. Fails safe (True)."""
+    # Always allow meta-queries about the conversation
+    if _CONVERSATION_META_PATTERNS.search(query):
+        return True
     try:
         response = _call_chat(
             [

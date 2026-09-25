@@ -191,6 +191,16 @@ class Conversation(Base):
     title = Column(String(255), nullable=True, default="Nuova conversazione")
     messages = Column(JSONB, default=list)
     session_language = Column(String(10), default="it")
+    session_type = Column(String(20), nullable=False, server_default="rag")
+    expires_at = Column(DateTime(timezone=True), nullable=True)
+    # Deduplicated references (documents cited, article refs, law hints, CCNL
+    # sector, calculator types) accumulated across turns — see
+    # ChatSession.update_anchors(). Survives summarization of older messages.
+    anchors = Column(JSONB, default=dict)
+    # Rolling recap of the oldest messages once the session grows past the
+    # summarization threshold — see ChatSession._summarize_if_needed().
+    summary = Column(Text, nullable=True)
+    summary_covers_turns = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), default=utcnow)
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 

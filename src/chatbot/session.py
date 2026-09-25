@@ -14,8 +14,8 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from ..rag.main import run as rag_run
 from ..rag.ai_chat import _call_chat
@@ -34,12 +34,38 @@ _FALLBACK_USER_EMAIL = os.environ.get("FALLBACK_USER_EMAIL", "admin@studiorossi.
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+if TYPE_CHECKING:
+    from sqlalchemy.orm import Session
+
 logger = logging.getLogger(__name__)
+
+
+class SessionNotFoundError(LookupError):
+    """The session does not exist, or does not belong to the caller.
+
+    One error for both cases on purpose, so a caller cannot probe which
+    session ids exist.
+    """
+
+
+class SessionExpiredError(LookupError):
+    """The session exists and belongs to the caller, but its TTL has passed.
+
+    Raised instead of silently returning None so the API layer can tell an
+    expired document session apart from a session that was never there and
+    answer with a clearer detail message. Distinct from SessionNotFoundError
+    because the caller is entitled to know this one *did* exist.
+    """
+
 
 SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "/opt/chatbot/data/sessions.json")
 
 MAX_HISTORY_TURNS = 20  # Max conversation turns to keep in memory
 MAX_CONTEXT_TURNS = 6   # Max recent turns to feed into query rewriting
+
+# ~22k tokens at ~4 chars/token. No tokenizer exists in this codebase (see
+# ai_chat.py's reactive context-overflow handling), so char count approximates it.
+SUMMARIZATION_CHAR_THRESHOLD = 88000
 
 @dataclass
 class Message:
@@ -52,9 +78,11 @@ class Message:
         d = {"role": self.role, "content": self.content, "timestamp": self.timestamp}
         if self.metadata:
             for key in ("citations", "document_id", "document_name", "documents",
+                        "document_role",
                         "generated_document_id", "generated_document_name",
                         "awaiting_clarification", "pending_sections",
-                        "pending_calculation", "calculation_conversions"):
+                        "pending_calculation", "calculation_conversions",
+                        "type"):
                 if key in self.metadata:
                     d[key] = self.metadata[key]
         return d
@@ -73,6 +101,23 @@ class ChatSession:
     _last_active: float = field(default_factory=time.monotonic)
     user_id: Optional[str] = None
     tenant_id: Optional[str] = None
+    # rag / calculation / document. Sticky once upgraded past "rag" — see
+    # mark_document_session() and the calc_route check in ChatBot.chat().
+    session_type: str = field(default="rag")
+    # TTL for document sessions (refreshed on every document turn). NULL for
+    # rag/calculation sessions, which are never swept.
+    expires_at: Optional[datetime] = field(default=None)
+    # Deduplicated references accumulated across turns (documents cited,
+    # articles, law hints, CCNL sector, calculator types) — see
+    # update_anchors(). Additive and never cleared, so a follow-up question
+    # can still be grounded after older turns are summarized away.
+    anchors: dict = field(default_factory=dict)
+    # Rolling recap of the oldest messages, produced once the session passes
+    # SUMMARIZATION_CHAR_THRESHOLD — see _summarize_if_needed().
+    summary: str = ""
+    # How many original messages `summary` has absorbed so far. Grows each
+    # time _summarize_if_needed() runs; used only for observability today.
+    summary_covers_turns: int = 0
     # Set whenever the session changes, cleared once it has been written to
     # Postgres. Without it every save re-upserted every session in memory.
     _dirty: bool = field(default=True)
@@ -90,6 +135,134 @@ class ChatSession:
     def get_recent_context(self, n_turns: int = MAX_CONTEXT_TURNS) -> List[Message]:
         return self.messages[-(n_turns * 2):]
 
+    def update_anchors(self, result: Dict[str, Any]) -> None:
+        """Merge anchor-worthy references from a RAG turn's result into self.anchors.
+
+        Deduplicated and additive — never cleared — so a follow-up question
+        late in a long session can still be grounded against a document or
+        article mentioned many turns ago, even after those turns are
+        summarized away by _summarize_if_needed().
+        """
+        anchors = self.anchors or {}
+
+        for citation in result.get("citations") or []:
+            doc_id = citation.get("document_id") if isinstance(citation, dict) else None
+            if doc_id:
+                anchors.setdefault("documents", [])
+                if doc_id not in anchors["documents"]:
+                    anchors["documents"].append(doc_id)
+
+        for art in result.get("article_refs_found") or []:
+            anchors.setdefault("articles", [])
+            if art not in anchors["articles"]:
+                anchors["articles"].append(art)
+
+        law_hint = result.get("law_hint_doc_id")
+        if law_hint:
+            anchors.setdefault("law_hints", [])
+            if law_hint not in anchors["law_hints"]:
+                anchors["law_hints"].append(law_hint)
+
+        # Not yet exposed by the RAG graph: calculation.py resolves a CCNL
+        # sector internally but never surfaces it on the result dict. Kept
+        # for forward compatibility — this bucket stays empty until that's
+        # wired through AgentState.
+        if result.get("ccnl_sector"):
+            anchors["ccnl_sector"] = result["ccnl_sector"]
+
+        calc_match = result.get("calculation_match")
+        if calc_match:
+            calc_id = calc_match.get("calculator_id")
+            if calc_id:
+                anchors.setdefault("calc_types", [])
+                if calc_id not in anchors["calc_types"]:
+                    anchors["calc_types"].append(calc_id)
+
+        self.anchors = anchors
+        self._dirty = True
+
+    def _summarize_if_needed(self) -> bool:
+        """Summarize the oldest half of this session's messages once accumulated
+        content passes SUMMARIZATION_CHAR_THRESHOLD. Returns True if it ran.
+
+        No tokenizer exists anywhere in this codebase (ai_chat.py's context-
+        overflow handling is reactive, parsing the provider's error message
+        after the fact — see build_history_messages' docstring), so character
+        count stands in as the token estimate here, consistent with that.
+
+        Compounds into any prior summary rather than overwriting it: without
+        that, a second compression pass would only summarize the newly-
+        exceeded messages and silently discard whatever the first pass had
+        already captured, which loses the very context this exists to keep.
+        """
+        live_msgs = [
+            m for m in self.messages
+            if (m.metadata or {}).get("type") != "system_compression"
+        ]
+        total_chars = sum(len(m.content) for m in live_msgs)
+        if total_chars <= SUMMARIZATION_CHAR_THRESHOLD:
+            return False
+
+        half = len(live_msgs) // 2
+        if half == 0:
+            return False
+        to_summarize = live_msgs[:half]
+        keep = live_msgs[half:]
+
+        history_text = "\n".join(
+            f"{'User' if m.role == 'user' else 'Assistant'}: {m.content[:500]}"
+            for m in to_summarize
+        )
+
+        if self.summary:
+            system_prompt = (
+                "Sei un assistente legale. Ti viene fornito un riepilogo già "
+                "esistente di una conversazione, seguito dai messaggi successivi. "
+                "Produci un UNICO nuovo riepilogo conciso (max 300 parole) che "
+                "incorpori entrambi, preservando: articoli di legge citati, "
+                "argomenti legali discussi, calcoli effettuati, decisioni prese. "
+                "Scrivi in italiano."
+            )
+            human_content = (
+                f"Riepilogo esistente:\n{self.summary}\n\n"
+                f"Nuovi messaggi da incorporare:\n{history_text}"
+            )
+        else:
+            system_prompt = (
+                "Sei un assistente legale. Riassumi in modo conciso (max 300 parole) "
+                "la seguente conversazione, preservando: articoli di legge citati, "
+                "argomenti legali discussi, calcoli effettuati, decisioni prese. "
+                "Scrivi in italiano."
+            )
+            human_content = history_text
+
+        try:
+            summary = _call_chat(
+                [SystemMessage(content=system_prompt), HumanMessage(content=human_content)],
+                max_tokens=400,
+            )
+        except Exception:
+            logger.exception(
+                "Session summarization failed for session %s; skipping compression",
+                self.session_id,
+            )
+            return False
+
+        self.summary = summary.strip()
+        self.summary_covers_turns += half
+
+        compression_msg = Message(
+            role="assistant",
+            content=(
+                "📝 La conversazione è stata compressa per ottimizzare la memoria. "
+                "Il contesto essenziale è stato preservato."
+            ),
+            metadata={"type": "system_compression"},
+        )
+        self.messages = [compression_msg] + keep
+        self._dirty = True
+        return True
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "session_id": self.session_id,
@@ -102,6 +275,11 @@ class ChatSession:
             "messages": [m.to_dict() for m in self.messages],
             "user_id": self.user_id,
             "tenant_id": self.tenant_id,
+            "session_type": self.session_type,
+            "expires_at": self.expires_at.isoformat() if self.expires_at else None,
+            "anchors": self.anchors,
+            "summary": self.summary,
+            "summary_covers_turns": self.summary_covers_turns,
         }
 
     @classmethod
@@ -121,6 +299,14 @@ class ChatSession:
             _last_active=last_active,
             user_id=data.get("user_id"),
             tenant_id=data.get("tenant_id"),
+            session_type=data.get("session_type", "rag"),
+            expires_at=(
+                datetime.fromisoformat(data["expires_at"])
+                if data.get("expires_at") else None
+            ),
+            anchors=data.get("anchors") or {},
+            summary=data.get("summary") or "",
+            summary_covers_turns=data.get("summary_covers_turns") or 0,
         )
         session.messages = [
             Message(
@@ -130,9 +316,11 @@ class ChatSession:
                 metadata={
                     k: m[k]
                     for k in ("citations", "document_id", "document_name", "documents",
+                              "document_role",
                               "generated_document_id", "generated_document_name",
                               "awaiting_clarification", "pending_sections",
-                              "pending_calculation", "calculation_conversions")
+                              "pending_calculation", "calculation_conversions",
+                              "type")
                     if k in m
                 } or None,
             )
@@ -265,6 +453,86 @@ def detect_topic_drift(current_query: str, history: List[Message], lang: str) ->
         return False
 
 
+DOCUMENT_SESSION_HISTORY_LIMIT = 5
+
+
+def _format_anchors(anchors: Dict[str, Any]) -> str:
+    """Render accumulated session anchors as one line of grounding context."""
+    if not anchors:
+        return ""
+    parts = []
+    if anchors.get("articles"):
+        parts.append(f"Articoli: {', '.join(anchors['articles'])}")
+    if anchors.get("law_hints"):
+        parts.append(f"Codici: {', '.join(anchors['law_hints'])}")
+    if anchors.get("ccnl_sector"):
+        parts.append(f"CCNL: {anchors['ccnl_sector']}")
+    if anchors.get("calc_types"):
+        parts.append(f"Calcoli: {', '.join(anchors['calc_types'])}")
+    return " | ".join(parts)
+
+
+def build_history_messages(session: "ChatSession") -> List[Dict[str, Any]]:
+    """Slice this turn's stored history down to what the LLM call should see.
+
+    Excludes the message just added for the current turn. rag/calculation
+    sessions get the full remaining history; document sessions are capped to
+    the last few messages, since a document-scoped turn only needs the recent
+    exchange about that file, not the whole conversation. The compression
+    stub _summarize_if_needed() leaves behind is excluded — it's a
+    human-facing notice, not conversation content the LLM should read as a
+    turn. When a rolling summary exists it (plus accumulated anchors) is
+    prepended as system-role entries, so context from already-summarized
+    turns still reaches the model instead of just vanishing — see
+    synthesis.py's _with_history, the only consumer of this list, for how
+    the system-role entries are threaded in. This only affects what goes to
+    the LLM — Postgres and session.messages always keep the full history (up
+    to the MAX_HISTORY_TURNS cap and whatever _summarize_if_needed folds into
+    summary).
+    """
+    history = session.messages[:-1]
+    if session.session_type == "document":
+        history = history[-DOCUMENT_SESSION_HISTORY_LIMIT:]
+    history = [
+        m for m in history
+        if (m.metadata or {}).get("type") != "system_compression"
+    ]
+
+    prefix: List[Dict[str, Any]] = []
+    if session.summary:
+        prefix.append({
+            "role": "system",
+            "content": f"Riepilogo conversazione precedente:\n{session.summary}",
+        })
+        anchor_text = _format_anchors(session.anchors)
+        if anchor_text:
+            prefix.append({
+                "role": "system",
+                "content": f"Argomenti discussi in questa sessione: {anchor_text}",
+            })
+
+    return prefix + [{"role": m.role, "content": m.content} for m in history]
+
+
+def mark_document_session(session: "ChatSession") -> None:
+    """Promote a session to "document" and refresh its TTL when the most
+    recent user turn was answered from an uploaded file.
+
+    Checked off the last user message's metadata (stamped with document_role
+    by the document-aware branch in api.py) rather than scanning the whole
+    history — the signal only ever needs to reflect this turn. session_type
+    is sticky once past "rag": a document turn never un-marks a session that
+    is already "calculation", and once "document" it stays "document".
+    """
+    last_user = next((m for m in reversed(session.messages) if m.role == "user"), None)
+    if not last_user or not (last_user.metadata or {}).get("document_role"):
+        return
+    if session.session_type == "rag":
+        session.session_type = "document"
+    session.expires_at = datetime.now(timezone.utc) + timedelta(hours=24)
+    session._dirty = True
+
+
 class ChatBot:
     """Stateful chatbot that wraps the RAG pipeline with conversation memory."""
 
@@ -275,22 +543,13 @@ class ChatBot:
         self._load_sessions()
 
     def _load_sessions(self) -> None:
-        try:
-            with open(self._sessions_file, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            loaded = 0
-            for session_data in data.get("sessions", []):
-                try:
-                    session = ChatSession.from_dict(session_data)
-                    self._sessions[session.session_id] = session
-                    loaded += 1
-                except Exception as e:
-                    logger.warning("Skipping corrupt session entry: %s", e)
-            logger.info("Loaded %d session(s) from %s", loaded, self._sessions_file)
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning("Could not load sessions from %s: %s", self._sessions_file, e)
+        """Start with an empty cache.
+
+        Postgres is the primary read store: get_session() loads a conversation
+        on demand the first time it is asked for. sessions.json is still
+        written by _save_sessions() but is never read back.
+        """
+        self._sessions = {}
 
     def _save_sessions(self) -> None:
         with self._lock:
@@ -342,6 +601,11 @@ class ChatBot:
                                 title=s.title,
                                 messages=[m.to_dict() for m in s.messages],
                                 session_language=s.session_language,
+                                session_type=s.session_type,
+                                expires_at=s.expires_at,
+                                anchors=s.anchors,
+                                summary=s.summary,
+                                summary_covers_turns=s.summary_covers_turns,
                             )
                             s._dirty = False
                         except Exception as exc:
@@ -369,25 +633,100 @@ class ChatBot:
         self._save_sessions()
         return session
 
-    def get_session(self, session_id: str, user_id: Optional[str] = None) -> Optional[ChatSession]:
+    def get_session(
+        self,
+        session_id: str,
+        user_id: Optional[str] = None,
+        db: Optional["Session"] = None,
+    ) -> Optional[ChatSession]:
         with self._lock:
             session = self._sessions.get(session_id)
-        if session is None:
+        if session is not None:
+            if user_id is not None and session.user_id != user_id:
+                return None
+            return session
+
+        # Cache miss — Postgres is the primary store. Anonymous callers
+        # (user_id=None) never read it: anonymous sessions live in memory only.
+        if db is None or user_id is None:
             return None
-        if user_id is not None and session.user_id != user_id:
+        return self._load_session_from_postgres(session_id, user_id, db)
+
+    def _load_session_from_postgres(
+        self, session_id: str, user_id: str, db: "Session"
+    ) -> Optional[ChatSession]:
+        try:
+            conv_id = uuid.UUID(session_id)
+            owner_id = uuid.UUID(user_id)
+        except (ValueError, TypeError, AttributeError):
+            return None  # not a UUID, so it cannot be a stored conversation
+
+        from ..db.crud import get_conversation_by_id
+        row = get_conversation_by_id(db, conv_id, owner_id)
+        if row is None:
+            return None
+
+        # Ownership is already enforced by get_conversation_by_id's WHERE
+        # clause, so this can't be used to probe another user's session ids.
+        if row.expires_at is not None and row.expires_at < datetime.now(timezone.utc):
+            raise SessionExpiredError(f"Session {session_id} has expired")
+
+        messages = row.messages if isinstance(row.messages, list) else []
+        loaded = ChatSession.from_dict({
+            "session_id": str(row.id),
+            "user_id": str(row.user_id),
+            "tenant_id": str(row.tenant_id),
+            "title": row.title or "Nuova conversazione",
+            "messages": messages,
+            "session_language": row.session_language or DEFAULT_LANGUAGE,
+            "session_type": row.session_type or "rag",
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "anchors": row.anchors or {},
+            "summary": row.summary or "",
+            "summary_covers_turns": row.summary_covers_turns or 0,
+            "created_at": (
+                row.created_at.isoformat()
+                if row.created_at else datetime.now(timezone.utc).isoformat()
+            ),
+            # Not stored in Postgres. A conversation that already has messages
+            # has had its first turn; without this the language would be
+            # re-detected on the next message.
+            "_language_fixed_from_first_turn": bool(messages),
+        })
+        # Two requests can miss the cache for the same id at once: keep the first
+        # object so both end up mutating the same session.
+        with self._lock:
+            session = self._sessions.setdefault(loaded.session_id, loaded)
+        if session.user_id != user_id:
             return None
         return session
 
+    def _find_session(
+        self, session_id: str, user_id: Optional[str]
+    ) -> Optional[ChatSession]:
+        """get_session() with a Postgres fallback on a private connection.
+
+        For callers that run outside a request's own database session — chat()
+        runs in a worker thread, and delete_session() opens its own connection.
+        """
+        session = self.get_session(session_id, user_id=user_id)
+        if session is not None or user_id is None:
+            return session
+        from ..db.base import SessionLocal
+        db = SessionLocal()
+        try:
+            return self.get_session(session_id, user_id=user_id, db=db)
+        finally:
+            db.close()
+
     def delete_session(self, session_id: str, user_id: Optional[str] = None) -> bool:
+        # Not cached (after a restart, say)? Load it from Postgres first so the
+        # ownership check covers it and the row can actually be deleted.
+        session = self._find_session(session_id, user_id)
+        if session is None:
+            return False
         with self._lock:
-            session = self._sessions.get(session_id)
-            if session is None:
-                return False
-            if user_id is not None and session.user_id != user_id:
-                return False
-            deleted = session_id in self._sessions
-            if deleted:
-                del self._sessions[session_id]
+            deleted = self._sessions.pop(session.session_id, None) is not None
         if deleted:
             self._save_sessions()
             try:
@@ -402,7 +741,27 @@ class ChatBot:
                 logger.warning("Failed to delete session from PostgreSQL: %s", e)
         return deleted
 
-    def list_sessions(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_sessions(
+        self, user_id: Optional[str] = None, db: Optional["Session"] = None
+    ) -> List[Dict[str, Any]]:
+        if db is not None and user_id is not None:
+            try:
+                owner_id = uuid.UUID(user_id)
+            except (ValueError, TypeError, AttributeError):
+                return []
+            from ..db.crud import list_user_conversations
+            return [
+                {
+                    "session_id": c["id"],
+                    "created_at": c["created_at"],
+                    "title": c["title"] or "Nuova conversazione",
+                    "message_count": c["message_count"],
+                }
+                for c in list_user_conversations(db, owner_id)
+            ]
+
+        # No database, or no user: all there is to list is what is cached in
+        # memory (anonymous sessions never reach Postgres).
         with self._lock:
             sessions = sorted(self._sessions.values(), key=lambda s: s.created_at, reverse=True)
             if user_id is not None:
@@ -430,11 +789,11 @@ class ChatBot:
                 "resolved_query": str,
             }
         """
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if not session:
-                session = ChatSession(session_id=session_id)
-                self._sessions[session_id] = session
+        # An unknown id is an error, not a new session: creating one here would
+        # let a caller overwrite another user's conversation.
+        session = self._find_session(session_id, user_id)
+        if session is None:
+            raise SessionNotFoundError(f"Session {session_id} not found")
 
         if session.user_id is not None and session.user_id != user_id:
             raise PermissionError(f"Session {session_id} does not belong to this user")
@@ -493,9 +852,9 @@ class ChatBot:
         pending_calculation_in = last_pending_calculation(session)
 
         # Run through the RAG pipeline
-        # Pass full conversation history (excluding current user message) so the
-        # synthesis LLM knows what was already said and can stay coherent across turns.
-        prior_messages = [m.to_dict() for m in session.messages[:-1]]
+        # History sent to the synthesis LLM (excludes the current user message),
+        # sized per session_type — see build_history_messages().
+        prior_messages = build_history_messages(session)
         try:
             result = rag_run(
                 resolved_query,
@@ -519,6 +878,10 @@ class ChatBot:
             pending_sections_out = result.get("pending_sections") or []
             pending_calculation_out = result.get("pending_calculation")
             conversions_out = result.get("calculation_conversions") or []
+            # session_type is sticky once past "rag" — never reassigned here
+            # if it's already "calculation" or "document".
+            if session.session_type == "rag" and result.get("calc_route") == "calculate":
+                session.session_type = "calculation"
         except Exception as e:
             _e_str = str(e)
             if "maximum context length" in _e_str or "input_tokens" in _e_str:
@@ -608,6 +971,13 @@ class ChatBot:
             # nothing was converted, which is the ordinary case.
             **({"calculation_conversions": conversions_out} if conversions_out else {}),
         })
+
+        # Accumulate anchor references from this turn's RAG result, then
+        # compress the oldest messages if the session has grown past the
+        # summarization threshold — both before the session is persisted.
+        session.update_anchors(result)
+        session._summarize_if_needed()
+
         self._save_sessions()
 
         return {

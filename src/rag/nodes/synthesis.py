@@ -78,6 +78,8 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 msgs.append(HumanMessage(content=content))
             elif role == "assistant":
                 msgs.append(AIMessage(content=content))
+            elif role == "system":
+                msgs.append(SystemMessage(content=content))
         msgs.append(HumanMessage(content=human_content))
         return msgs
 

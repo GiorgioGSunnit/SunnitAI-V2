@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from sqlalchemy import or_, and_
+from sqlalchemy import or_, and_, case, func
 from sqlalchemy.orm import Session
 
 from ..chatbot.auth import hash_password
@@ -216,6 +216,40 @@ def get_user_conversations(db: Session, user_id: uuid.UUID) -> list:
     ).order_by(Conversation.updated_at.desc()).all()
 
 
+def list_user_conversations(db: Session, user_id: uuid.UUID) -> list[dict]:
+    """Lightweight listing — no messages JSONB, just metadata."""
+    # Counted in SQL so the array itself never leaves the database. Anything
+    # that is not a JSON array (a NULL column or a JSON null) counts as empty.
+    message_count = case(
+        (
+            func.jsonb_typeof(Conversation.messages) == "array",
+            func.jsonb_array_length(Conversation.messages),
+        ),
+        else_=0,
+    ).label("message_count")
+    rows = db.query(
+        Conversation.id,
+        Conversation.title,
+        Conversation.created_at,
+        Conversation.updated_at,
+        Conversation.session_language,
+        message_count,
+    ).filter(
+        Conversation.user_id == user_id
+    ).order_by(Conversation.updated_at.desc()).all()
+    return [
+        {
+            "id": str(r.id),
+            "title": r.title,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "updated_at": r.updated_at.isoformat() if r.updated_at else None,
+            "session_language": r.session_language,
+            "message_count": r.message_count,
+        }
+        for r in rows
+    ]
+
+
 def get_conversation_by_id(
     db: Session,
     conversation_id: uuid.UUID,
@@ -265,6 +299,11 @@ def upsert_conversation_from_session(
     title: str,
     messages: list,
     session_language: str = "it",
+    session_type: str = "rag",
+    expires_at=None,
+    anchors: Optional[dict] = None,
+    summary: Optional[str] = None,
+    summary_covers_turns: int = 0,
 ) -> None:
     """Insert or update a conversation row using session_id as the primary key."""
     conv_id = uuid.UUID(session_id)
@@ -273,6 +312,11 @@ def upsert_conversation_from_session(
         conv.messages = messages
         conv.title = title
         conv.session_language = session_language
+        conv.session_type = session_type
+        conv.expires_at = expires_at
+        conv.anchors = anchors or {}
+        conv.summary = summary
+        conv.summary_covers_turns = summary_covers_turns
     else:
         conv = Conversation(
             id=conv_id,
@@ -281,6 +325,11 @@ def upsert_conversation_from_session(
             title=title,
             messages=messages,
             session_language=session_language,
+            session_type=session_type,
+            expires_at=expires_at,
+            anchors=anchors or {},
+            summary=summary,
+            summary_covers_turns=summary_covers_turns,
         )
         db.add(conv)
     db.commit()
@@ -292,6 +341,25 @@ def delete_conversation_by_session_id(db: Session, session_id: str) -> None:
         Conversation.id == uuid.UUID(session_id)
     ).delete()
     db.commit()
+
+
+def delete_expired_sessions(db: Session) -> int:
+    """Delete conversations whose TTL has passed. Returns the number deleted.
+
+    conversation_documents.conversation_id has ON DELETE CASCADE (migration
+    0007), so Postgres drops the matching join rows automatically — no
+    explicit cleanup of those needed here. Rows with expires_at IS NULL
+    (rag/calculation sessions) never match and are never swept.
+    """
+    now = datetime.now(timezone.utc)
+    count = (
+        db.query(Conversation)
+        .filter(Conversation.expires_at.isnot(None), Conversation.expires_at < now)
+        .delete(synchronize_session=False)
+    )
+    if count:
+        db.commit()
+    return count
 
 
 # ---------------------------------------------------------------------------
