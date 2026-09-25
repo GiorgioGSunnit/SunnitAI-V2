@@ -25,7 +25,7 @@ import urllib.parse
 import uuid
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -171,6 +171,8 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # custom response headers are invisible to the browser unless listed here
+    expose_headers=["Content-Disposition", "X-Generation-Message"],
 )
 
 
@@ -1196,6 +1198,33 @@ def _persist_generated_docx(
         return None, None
 
 
+def _missing_generated_fields(result: Optional[Dict[str, Any]], lang: str) -> Optional[List[str]]:
+    """Which fields the generated document still needs, for the chat message.
+
+    Filling a user's own template produces a fill_map whose blanks
+    _summarise_da_compilare reads back. Generation writes free text, so there is
+    no map to inspect - but the catalog entry's own `fields` carry the same
+    information: extract_system_template_fields returns each one with the value
+    found in the request, or empty when the user never gave it, and those are
+    exactly the ones the model had to leave as a placeholder.
+    """
+    if not isinstance(result, dict):
+        return None
+    details = result.get("case_details")
+    if not isinstance(details, dict) or not details:
+        return None
+    # No placeholder left in the document means nothing to report, whatever the
+    # extraction thought was missing.
+    if _placeholder(lang) not in (result.get("draft") or ""):
+        return None
+    missing = [
+        str(name).replace("_", " ").strip()
+        for name, value in details.items()
+        if not str(value or "").strip()
+    ]
+    return missing[:12] or None
+
+
 def _build_generation_confirmation(
     lang: str,
     missing_fields: Optional[List[str]] = None,
@@ -1297,7 +1326,9 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
 
     session.add_message(
         "assistant",
-        _build_generation_confirmation(session_lang),
+        _build_generation_confirmation(
+            session_lang, _missing_generated_fields(result, session_lang)
+        ),
         metadata={"sources": result.get("sources", [])},
     )
     return GenerateResponse(session_id=session_id, **result)
@@ -1485,6 +1516,13 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     # The FE only calls this endpoint when /api/chat returned no
     # generated_document_id (its fallback path), so this does not double-persist.
     # The guard below covers the case anyway.
+    # The message is also returned as a header: this endpoint answers with the
+    # file itself, so the frontend had nothing to show and fell back to its own
+    # hardcoded line, which cannot mention the fields still to fill in.
+    _dl_message = _build_generation_confirmation(
+        session_lang, _missing_generated_fields(result, session_lang)
+    )
+
     _dl_prev = (session.messages[-1].metadata or {}) if session.messages else {}
     if _uid and _tid and not _dl_prev.get("generated_document_id"):
         try:
@@ -1508,7 +1546,7 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
             )
             session.add_message(
                 "assistant",
-                _build_generation_confirmation(session_lang),
+                _dl_message,
                 metadata={
                     "generated_document_id": str(_dl_rec.id),
                     "generated_document_name": filename,
@@ -1525,7 +1563,11 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            # percent-encoded: headers are ASCII only, the message is Italian
+            "X-Generation-Message": urllib.parse.quote(_dl_message),
+        },
     )
 
 
@@ -2878,7 +2920,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
             logger.info("chat: persist result doc_id=%r name=%r", _gen_doc_id, _gen_doc_name)
         else:
             logger.warning("chat: skipping persist — uid=%r tid=%r", _uid, _tid)
-        _confirmation = _build_generation_confirmation(session_lang)
+        _confirmation = _build_generation_confirmation(
+            session_lang, _missing_generated_fields(gen_result, session_lang)
+        )
         session.add_message(
             "assistant",
             _confirmation,
