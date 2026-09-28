@@ -275,6 +275,12 @@ class ChatResponse(BaseModel):
         "next user message will be used to re-rank the previously retrieved sections "
         "instead of re-running retrieval.",
     )
+    awaiting_summary_confirmation: bool = Field(
+        default=False,
+        description="True when this turn's answer ends with a request to confirm a proposed "
+        "conversation summary, and the next user message will confirm/correct it instead "
+        "of being treated as a new question.",
+    )
     draft: str = Field(
         default="",
         description="Pre-generated draft — used by FE when user picks system template in picker.",

@@ -667,6 +667,62 @@ def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+_SUMMARY_CONFIRMATION_ACK = {
+    "it": "Ho aggiornato il riepilogo della conversazione in base alla tua risposta.",
+    "es": "He actualizado el resumen de la conversación según tu respuesta.",
+    "en": "I've updated the conversation summary based on your reply.",
+}
+
+
+def apply_summary_confirmation(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Validate/correct the candidate summary against the user's confirmation
+    reply, then hand the confirmed text back for session.py to compress.
+
+    Ends the turn here (edge goes straight to END) rather than flowing into
+    synthesize_answer: no retrieval ran for this turn, so there is no
+    raw_result to synthesize from. Routing through synthesis with empty data
+    would treat the confirmation reply itself (e.g. "sì, corretto") as an
+    unanswerable legal question and return a "nothing found" answer instead
+    of acknowledging the summary.
+    """
+    pending = state.get("pending_summary") or {}
+    summary_text = pending.get("text", "")
+    covers_turns = pending.get("covers_turns", 0)
+    user_reply = state.get("query", "")
+    lang = _session_lang(state)
+
+    try:
+        corrected_summary = _call_chat(
+            [
+                SystemMessage(content=(
+                    "Hai proposto un riepilogo di una conversazione legale all'utente. "
+                    "L'utente ha risposto. Se l'utente conferma (es. 'sì', 'corretto', 'ok'), "
+                    "restituisci il riepilogo invariato. "
+                    "Se l'utente corregge o aggiunge informazioni, aggiorna il riepilogo di "
+                    "conseguenza. Restituisci SOLO il testo del riepilogo aggiornato, niente altro."
+                )),
+                HumanMessage(
+                    content=f"Riepilogo proposto:\n{summary_text}\n\nRisposta utente: {user_reply}"
+                ),
+            ],
+            max_tokens=400,
+        ).strip()
+    except Exception as e:
+        logger.warning("apply_summary_confirmation: LLM call failed: %s", e)
+        corrected_summary = summary_text
+
+    return {
+        "answer": _SUMMARY_CONFIRMATION_ACK.get(lang, _SUMMARY_CONFIRMATION_ACK["it"]),
+        "references": [],
+        "citations": [],
+        "status_messages": state.get("status_messages") or [],
+        "awaiting_summary_confirmation": False,
+        "pending_summary": None,
+        "confirmed_summary": corrected_summary,
+        "confirmed_summary_covers_turns": covers_turns,
+    }
+
+
 def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
     """Re-score the sections retrieved last turn against the user's
     clarification message, instead of re-running retrieval from scratch."""

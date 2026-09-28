@@ -29,6 +29,7 @@ from .nodes.routing import (
     route_after_intersection,
 )
 from .nodes.synthesis import (
+    apply_summary_confirmation,
     generate_clarifying_question,
     rerank_from_clarification,
     synthesize_answer,
@@ -36,6 +37,7 @@ from .nodes.synthesis import (
 
 __all__ = [
     "_resolve_by_name",
+    "apply_summary_confirmation",
     "article_router",
     "comparison_retrieval",
     "context_retrieval",
