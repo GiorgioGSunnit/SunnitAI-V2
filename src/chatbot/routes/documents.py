@@ -19,7 +19,7 @@ from ...db.crud import (
     get_user_document,
     get_user_documents,
 )
-from ...utils.document import extract_text_from_file
+from ...utils.document import document_char_limit, extract_text_from_file
 from .auth import get_current_user
 from ..billing import enforce_tenant_product_access
 
@@ -240,7 +240,7 @@ async def analyse_document(
             detail="Il documento non contiene testo estraibile.",
         )
 
-    _MAX_CHARS = 12_000
+    _MAX_CHARS = document_char_limit()
     truncated = text[:_MAX_CHARS]
     was_truncated = len(text) > _MAX_CHARS
 

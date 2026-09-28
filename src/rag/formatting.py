@@ -76,11 +76,19 @@ def _enrich_with_source_metadata(data: List[Dict[str, Any]]) -> List[Dict[str, A
 
 
 def _summarize_for_synthesis(
-    data: List[Dict[str, Any]], max_records: int = 5, is_comparison: bool = False
+    data: List[Dict[str, Any]], max_records: int = 5, is_comparison: bool = False,
+    section_chars: int = 500, max_total_chars: int = 0,
 ) -> List[Dict[str, Any]]:
+    """Compact retrieved rows for a prompt.
+
+    `section_chars` is how much of each section's text survives and
+    `max_total_chars` (0 = the defaults below) where rows stop being added.
+    The answering step asks for more of both; the retrieval check in cypher.py
+    keeps the defaults, since it packs 25 rows into 4,000 characters.
+    """
     summarized = []
     total_chars = 0
-    MAX_TOTAL_CHARS = 4000 if is_comparison else 6000
+    MAX_TOTAL_CHARS = max_total_chars or (4000 if is_comparison else 6000)
 
     for record in data[:max_records]:
         if is_comparison and record.get("_source") == "comparison":
@@ -182,7 +190,7 @@ def _summarize_for_synthesis(
                     abstract = (value.get("abstract") or "")[:200]
                     if abstract:
                         flat_props["abstract"] = abstract
-                    plain_text = (value.get("plain_text") or value.get("text") or "")[:500]
+                    plain_text = (value.get("plain_text") or value.get("text") or "")[:section_chars]
                     if plain_text:
                         flat_props["plain_text"] = plain_text
                     d_node = record.get("d") or {}

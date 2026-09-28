@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 from typing import Any, Dict, List
 
@@ -27,6 +28,27 @@ from ..reranker import rerank_results
 from ..verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
+
+# Answer ceiling per response-length setting (1 concise ... 4 comprehensive),
+# sized to what each level asks for in prompts._LENGTH. A flat 600 cut the
+# 2-3 paragraphs of level 3 and the 4-6 of level 4 mid-sentence. It is a
+# ceiling, not a target: the model stops when done, so only answers that would
+# have been cut spend more.
+_ANSWER_TOKENS = {1: 600, 2: 800, 3: 1400, 4: 2400}
+
+# Text kept from each retrieved section. The shared default of 500 is about a
+# third of a page: too little to quote an article from.
+_SECTION_CHARS = 1500
+
+
+def _synthesis_data_chars() -> int:
+    """Characters of retrieved law the answer is written from (~2.6k tokens).
+
+    Was 3,000, and five sections rarely fit, so the answer fell back to two
+    500-character excerpts. Read per call: .env is loaded after this module is
+    imported, so SYNTHESIS_DATA_CHARS set there would be missed at import time.
+    """
+    return int(os.environ.get("SYNTHESIS_DATA_CHARS", "9000"))
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +89,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     tone = int(state.get("tone") or 2)
     standing = int(state.get("standing") or 2)
     response_length = int(state.get("response_length") or 2)
+    answer_tokens = _ANSWER_TOKENS.get(response_length, _ANSWER_TOKENS[2])
 
     def _with_history(system_content: str, human_content: str):
         """Build a message list with full conversation history injected."""
@@ -129,16 +152,27 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             }
 
     _is_cmp = state.get("is_comparison", False)
-    summarized_data = _summarize_for_synthesis(data, is_comparison=_is_cmp)
-    serialized = json.dumps(summarized_data, ensure_ascii=False)
-    char_cap = 4000 if _is_cmp else 3000
-    if len(serialized) > char_cap:
+    if _is_cmp:
+        char_cap = 4000
         serialized = json.dumps(
-            _summarize_for_synthesis(data, max_records=2,
-                                     is_comparison=_is_cmp),
-            ensure_ascii=False,
-            indent=None if _is_cmp else 2,
+            _summarize_for_synthesis(data, is_comparison=True), ensure_ascii=False,
         )
+        if len(serialized) > char_cap:
+            serialized = json.dumps(
+                _summarize_for_synthesis(data, max_records=2, is_comparison=True),
+                ensure_ascii=False,
+            )
+    else:
+        char_cap = _synthesis_data_chars()
+        rows = _summarize_for_synthesis(
+            data, section_chars=_SECTION_CHARS, max_total_chars=char_cap,
+        )
+        serialized = json.dumps(rows, ensure_ascii=False)
+        # Rows arrive reranked, so drop from the least relevant end until the
+        # rest fit, rather than falling back to the top two.
+        while len(serialized) > char_cap and len(rows) > 1:
+            rows = rows[:-1]
+            serialized = json.dumps(rows, ensure_ascii=False)
     all_citations = _extract_citations(data)
     primary_citations = [c for c in all_citations if c.get("document_type") in (None, "primary", "ccnl")]
     secondary_citations = [c for c in all_citations if c.get("document_type") == "interpretation"]
@@ -266,7 +300,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     if not _dottrina_only:
         answer = _call_chat(
             _with_history(system_prompt, "".join(human_parts) + synthesis_human_footer(lang)),
-            max_tokens=600,
+            max_tokens=answer_tokens,
         )
     else:
         answer = ""
@@ -521,7 +555,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             )
             dottrina_answer = _call_chat(
                 [SystemMessage(content=dottrina_system), HumanMessage(content=dottrina_human)],
-                max_tokens=600,
+                max_tokens=answer_tokens,
                 stop=["Nel contesto", "Puoi precisare", "Vuoi specificare", "Hai ulteriori"],
             )
             open("/tmp/dottrina_trace.log", "a").write(f"dottrina_answer len={len(dottrina_answer)} preview={repr(dottrina_answer[:200])}\n")

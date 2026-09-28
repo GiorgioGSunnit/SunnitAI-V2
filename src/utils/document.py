@@ -5,6 +5,17 @@ import os
 from ..constants import SUPPORTED_EXTENSIONS
 
 
+def document_char_limit() -> int:
+    """Characters of an uploaded document sent to the model in one call.
+
+    40,000 is ~26 pages at the 1,520 chars/page measured on legal PDFs and
+    ~11-13k tokens, which fits the 20k-token serving context beside the prompt
+    and a 2,500-token answer (document questions carry no chat history). Read
+    per call so DOCUMENT_TEXT_CHARS in .env applies when the context changes.
+    """
+    return int(os.environ.get("DOCUMENT_TEXT_CHARS", "40000"))
+
+
 def extract_text_from_file(path: str) -> str:
     ext = os.path.splitext(path)[1].lower()
     if ext == ".pdf":

@@ -455,6 +455,17 @@ def detect_topic_drift(current_query: str, history: List[Message], lang: str) ->
 
 DOCUMENT_SESSION_HISTORY_LIMIT = 5
 
+# Characters of history one answer may carry: ~7k tokens at the 3.5 chars/token
+# measured for Italian. Sized for the 20k-token serving context, where the
+# answering step's system prompt (~3k), retrieved data (~2k) and a level-4
+# answer (2.4k) already take ~7.5k. Without it, stored history reaches
+# SUMMARIZATION_CHAR_THRESHOLD (~25k tokens) before anything shrinks it, so long
+# conversations overflowed first. Set HISTORY_CHAR_BUDGET when the context changes.
+HISTORY_CHAR_BUDGET = int(os.environ.get("HISTORY_CHAR_BUDGET", "24000"))
+# When older turns are dropped, the opening message is kept (it usually states
+# the case), capped so it cannot crowd out the recent exchange.
+OPENING_MESSAGE_CHARS = 1500
+
 
 def _format_anchors(anchors: Dict[str, Any]) -> str:
     """Render accumulated session anchors as one line of grounding context."""
@@ -472,29 +483,56 @@ def _format_anchors(anchors: Dict[str, Any]) -> str:
     return " | ".join(parts)
 
 
+def _fit_history(turns: List[Dict[str, Any]], budget: int) -> List[Dict[str, Any]]:
+    """The newest turns whose content fits in `budget` characters.
+
+    Drops from the oldest end. The newest turn is always kept, cut to the
+    budget if it alone exceeds it, so a follow-up never loses the answer it
+    refers to. When turns were dropped, the kept run does not open on an
+    assistant reply whose question is gone.
+    """
+    kept: List[Dict[str, Any]] = []
+    used = 0
+    for turn in reversed(turns):
+        if used + len(turn["content"]) > budget:
+            if not kept:
+                kept.append({**turn, "content": turn["content"][:budget] + " […]"})
+            break
+        kept.append(turn)
+        used += len(turn["content"])
+    kept.reverse()
+    if 1 < len(kept) < len(turns) and kept[0]["role"] == "assistant":
+        kept = kept[1:]
+    return kept
+
+
 def build_history_messages(session: "ChatSession") -> List[Dict[str, Any]]:
     """Slice this turn's stored history down to what the LLM call should see.
 
-    Excludes the message just added for the current turn. rag/calculation
-    sessions get the full remaining history; document sessions are capped to
-    the last few messages, since a document-scoped turn only needs the recent
-    exchange about that file, not the whole conversation. The compression
-    stub _summarize_if_needed() leaves behind is excluded — it's a
-    human-facing notice, not conversation content the LLM should read as a
-    turn. When a rolling summary exists it (plus accumulated anchors) is
-    prepended as system-role entries, so context from already-summarized
-    turns still reaches the model instead of just vanishing — see
-    synthesis.py's _with_history, the only consumer of this list, for how
-    the system-role entries are threaded in. This only affects what goes to
-    the LLM — Postgres and session.messages always keep the full history (up
-    to the MAX_HISTORY_TURNS cap and whatever _summarize_if_needed folds into
+    Excludes the message just added for the current turn. Document sessions
+    are first capped to the last few messages, since a document-scoped turn
+    only needs the recent exchange about that file. Every session is then held
+    to HISTORY_CHAR_BUDGET, newest turns first: a conversation under the budget
+    goes through whole, exactly as before. The compression stub
+    _summarize_if_needed() leaves behind is excluded — it's a human-facing
+    notice, not conversation content the LLM should read as a turn.
+
+    Context from turns the model no longer sees arrives as system-role entries
+    ahead of the history (synthesis.py's _with_history, the only consumer of
+    this list, threads them in): the rolling summary when one exists, the
+    accumulated anchors whenever older turns are missing (summarized or over
+    the budget), and the conversation's opening message when turns were
+    dropped that no summary covers yet. This only affects what goes to the
+    LLM — Postgres and session.messages always keep the full history (up to
+    the MAX_HISTORY_TURNS cap and whatever _summarize_if_needed folds into
     summary).
     """
     history = session.messages[:-1]
     if session.session_type == "document":
         history = history[-DOCUMENT_SESSION_HISTORY_LIMIT:]
-    history = [
-        m for m in history
+    turns = [
+        {"role": m.role, "content": m.content}
+        for m in history
         if (m.metadata or {}).get("type") != "system_compression"
     ]
 
@@ -504,14 +542,37 @@ def build_history_messages(session: "ChatSession") -> List[Dict[str, Any]]:
             "role": "system",
             "content": f"Riepilogo conversazione precedente:\n{session.summary}",
         })
+    over_budget = (
+        sum(len(t["content"]) for t in turns + prefix) > HISTORY_CHAR_BUDGET
+    )
+    if session.summary or over_budget:
         anchor_text = _format_anchors(session.anchors)
         if anchor_text:
             prefix.append({
                 "role": "system",
                 "content": f"Argomenti discussi in questa sessione: {anchor_text}",
             })
+    opening = None
+    if over_budget and not session.summary:
+        opening = next((t for t in turns if t["role"] == "user"), None)
+    if opening:
+        text = opening["content"]
+        if len(text) > OPENING_MESSAGE_CHARS:
+            text = text[:OPENING_MESSAGE_CHARS] + " […]"
+        prefix.append({
+            "role": "system",
+            "content": f"Primo messaggio dell'utente in questa conversazione:\n{text}",
+        })
 
-    return prefix + [{"role": m.role, "content": m.content} for m in history]
+    budget = max(
+        HISTORY_CHAR_BUDGET - sum(len(p["content"]) for p in prefix),
+        HISTORY_CHAR_BUDGET // 2,
+    )
+    kept = _fit_history(turns, budget)
+    if opening and any(t is opening for t in kept):
+        prefix.pop()  # the opening message survived the budget on its own
+
+    return prefix + kept
 
 
 def mark_document_session(session: "ChatSession") -> None:

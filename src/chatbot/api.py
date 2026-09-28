@@ -1225,6 +1225,35 @@ def _missing_generated_fields(result: Optional[Dict[str, Any]], lang: str) -> Op
     return missing[:12] or None
 
 
+def _document_cut_note(lang: str, read_chars: int, total_chars: int) -> str:
+    """Tell the user an answer was written from only the start of their document.
+
+    The model is told the text was cut; without this the user never was, and
+    took an answer about the first pages as an answer about the whole file.
+    """
+    pct = max(1, min(99, round(100 * read_chars / total_chars)))
+    if lang == "en":
+        return (
+            f"\n\n---\n**Note:** this document is longer than I can read at once. "
+            f"I read roughly the first {pct}% of the text, so this answer does not "
+            "take the rest into account. If your question concerns that part, paste "
+            "the passage here or upload that section as a separate file."
+        )
+    if lang == "es":
+        return (
+            f"\n\n---\n**Nota:** el documento es más largo de lo que puedo leer de una vez. "
+            f"He leído aproximadamente el primer {pct}% del texto, así que esta respuesta "
+            "no tiene en cuenta el resto. Si su pregunta se refiere a esa parte, pegue aquí "
+            "el fragmento o cargue esa sección como archivo separado."
+        )
+    return (
+        f"\n\n---\n**Nota:** il documento è più lungo di quanto posso leggere in una volta. "
+        f"Ho letto circa il primo {pct}% del testo, quindi questa risposta non tiene conto "
+        "della parte restante. Se la domanda riguarda quella parte, incolla qui il passaggio "
+        "o carica quella sezione come file separato."
+    )
+
+
 def _build_generation_confirmation(
     lang: str,
     missing_fields: Optional[List[str]] = None,
@@ -1905,6 +1934,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
     if current_user:
         import os as _os
         from ..utils.document import extract_text_from_file as _extract
+        from ..utils.document import document_char_limit as _doc_char_limit
         from ..db.base import get_db as _get_db
 
         _mentioned_names = _detect_document_intent(request.message)
@@ -2737,8 +2767,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "non contiene testo estraibile."
                             )
                         else:
-                            _truncated = _text[:12_000]
-                            _was_cut = len(_text) > 12_000
+                            _read_chars = _doc_char_limit()
+                            _truncated = _text[:_read_chars]
+                            _was_cut = len(_text) > _read_chars
                             _system = (
                                 legal_consultant_system_prefix(
                                     _session_lang,
@@ -2804,6 +2835,11 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                     answer = (
                                         "Si è verificato un errore durante l'analisi del documento. "
                                         "Riprova tra qualche istante."
+                                    )
+                            else:
+                                if _was_cut:
+                                    answer += _document_cut_note(
+                                        _session_lang, _read_chars, len(_text),
                                     )
 
                     _session.add_message("user", request.message, metadata={
