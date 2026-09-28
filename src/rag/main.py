@@ -28,6 +28,7 @@ from .calculation import (
     route_after_gate,
 )
 from .graph_nodes import (
+    apply_summary_confirmation,
     article_router,
     comparison_retrieval,
     context_retrieval,
@@ -60,6 +61,17 @@ class AgentState(TypedDict, total=False):
     awaiting_clarification: Optional[bool]
     pending_sections: List[Dict[str, Any]]
     pending_calculation: Optional[Dict[str, Any]]
+    # Set when the previous assistant turn asked the user to confirm/correct a
+    # draft session summary (see session.py's _summarize_if_needed()). Routes
+    # entry to apply_summary_confirmation instead of retrieval — see
+    # route_entry() and that node's docstring.
+    awaiting_summary_confirmation: Optional[bool]
+    pending_summary: Optional[Dict[str, Any]]
+    # Set only by apply_summary_confirmation once the user's reply has been
+    # validated against the draft — session.py reads these back to actually
+    # compress the conversation.
+    confirmed_summary: Optional[str]
+    confirmed_summary_covers_turns: Optional[int]
     calculation_match: Optional[Dict[str, Any]]
     # Tied top calculators the gate could not choose between, when each of
     # them was strong enough to auto-route on its own. Set only on that
@@ -163,6 +175,8 @@ def route_entry(state: Dict[str, Any]) -> str:
         skip_calculation = bool(state.get("skip_calculation"))
         if state.get("pending_calculation") and not skip_calculation:
             return "calculation_node"
+        if state.get("awaiting_summary_confirmation"):
+            return "apply_summary_confirmation"
         if state.get("awaiting_clarification"):
             return "rerank_from_clarification"
         if skip_calculation:
@@ -220,6 +234,7 @@ def build_graph(compile_graph: bool = True):
     graph.add_node("synthesize_answer", synthesize_answer)
     graph.add_node("generate_clarifying_question", generate_clarifying_question)
     graph.add_node("rerank_from_clarification", rerank_from_clarification)
+    graph.add_node("apply_summary_confirmation", apply_summary_confirmation)
     graph.add_node("calculation_gate", calculation_gate)
     graph.add_node(
         "calculation_node",
@@ -231,6 +246,7 @@ def build_graph(compile_graph: bool = True):
         route_entry,
         {
             "calculation_node": "calculation_node",
+            "apply_summary_confirmation": "apply_summary_confirmation",
             "rerank_from_clarification": "rerank_from_clarification",
             "calculation_gate": "calculation_gate",
             "decompose_query": "decompose_query",
@@ -308,6 +324,10 @@ def build_graph(compile_graph: bool = True):
         {"awaiting": END, "done": END},
     )
     graph.add_edge("rerank_from_clarification", "synthesize_answer")
+    # Ends the turn directly rather than flowing into synthesize_answer: no
+    # retrieval ran this turn, so there's no raw_result to synthesize from —
+    # see apply_summary_confirmation's docstring.
+    graph.add_edge("apply_summary_confirmation", END)
 
     return graph.compile() if compile_graph else graph
 
@@ -341,6 +361,8 @@ def run(query: str, session_language: str = "it",
         pending_sections: Optional[List[Dict[str, Any]]] = None,
         chat_history: Optional[List[Dict[str, Any]]] = None,
         pending_calculation: Optional[Dict[str, Any]] = None,
+        awaiting_summary_confirmation: bool = False,
+        pending_summary: Optional[Dict[str, Any]] = None,
         raw_query: Optional[str] = None,
         skip_calculation: bool = False) -> Dict[str, Any]:
     """Run a single query through the agent graph.
@@ -381,6 +403,10 @@ def run(query: str, session_language: str = "it",
         "pending_sections": pending_sections or [],
         "chat_history": chat_history or [],
         "pending_calculation": pending_calculation,
+        "awaiting_summary_confirmation": awaiting_summary_confirmation,
+        "pending_summary": pending_summary,
+        "confirmed_summary": None,
+        "confirmed_summary_covers_turns": None,
         "skip_calculation": skip_calculation,
     }
     return compiled.invoke(initial_state)
