@@ -2555,6 +2555,7 @@ def _fill_template_gaps(
     session_messages: List[Dict],
     docx_path: Optional[str] = None,
     correction_mode: bool = False,
+    citations: list = None,
 ) -> Dict[int, str]:
     """Ask the LLM to identify blanks in the template elements and fill them.
     Returns {element_index: replacement_text} — sparse, only changed elements.
@@ -2695,6 +2696,13 @@ def _fill_template_gaps(
             "dall'utente. NON riscrivere, NON riformulare, NON aggiungere contenuto. "
             "Se un dato non è disponibile, lascia il segnaposto invariato.",
         )
+
+    if citations:
+        _cit_text = "\n".join(
+            f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:300]}"
+            for c in citations[:5] for s in (c.get('sections') or [])[:2]
+        )
+        system += "\n\nNormativa di riferimento:\n" + _cit_text
 
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],

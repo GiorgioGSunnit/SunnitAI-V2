@@ -438,6 +438,20 @@ def _raw_result_to_sections(raw_result: list) -> list:
     return sections
 
 
+def _merge_citations(a: list, b: list) -> list:
+    """Merge two citation lists, deduplicating by document_id."""
+    seen = set()
+    merged = []
+    for cit in a + b:
+        did = cit.get("document_id")
+        if did and did not in seen:
+            seen.add(did)
+            merged.append(cit)
+        elif not did:
+            merged.append(cit)
+    return merged[:5]  # cap at 5 documents total
+
+
 def _get_cached_sections(session) -> Optional[list]:
     """Return converted sections from the most recent RAG-backed assistant message (last 2 turns).
 
@@ -2322,6 +2336,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
                 # ── TWO OR MORE DOCS → comparison path ────────────────────
                 if len(_matched_docs) >= 2:
+                    _compare_citations: list = []
                     _doc_texts = []
                     _missing = []
                     for _doc in _matched_docs:
@@ -2499,6 +2514,27 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 request.message[:60], _keywords,
                             )
 
+                            # ── RAG lookup: ground the comparison in the legal corpus ──
+                            # Best-effort: a failure here must never block the comparison.
+                            _compare_citations: list = []
+                            try:
+                                _compare_query = request.message
+                                _all_doc_text = " ".join(t for _, t in _doc_texts)[:3000]
+                                from ..rag.doc_lookup import _extract_article_references
+                                _compare_refs = _extract_article_references(_all_doc_text)
+                                if _compare_refs:
+                                    _compare_query += " articoli " + ", ".join(r for r, _ in _compare_refs[:5])
+                                _rag_compare = await loop.run_in_executor(None, partial(
+                                    rag_run, _compare_query,
+                                    session_language=_session_lang, skip_calculation=True
+                                ))
+                                _compare_citations = _extract_citations(_rag_compare.get("raw_result", []))
+                            except Exception as _rag_compare_exc:
+                                logger.warning(
+                                    "chat: RAG lookup for document comparison failed: %s",
+                                    _rag_compare_exc,
+                                )
+
                             # ── Keyword search (no LLM) ───────────────────────────────
                             _doc_extracts = []
                             for fname, text in _doc_texts:
@@ -2531,6 +2567,14 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 + _lang_note
                                 + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
                             )
+                            if _compare_citations:
+                                _citations_text = "\n".join(
+                                    f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:300]}"
+                                    for c in _compare_citations[:5] for s in (c.get('sections') or [])[:2]
+                                )
+                                _compare_system += (
+                                    "\n\nNormativa di riferimento dal corpus legale:\n" + _citations_text
+                                )
                             _compare_human = (
                                 "\n\n".join(
                                     f"DOCUMENTO {i+1} — {fname}:\n{extract}"
@@ -2590,7 +2634,10 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     mark_document_session(_session)
                     if len(_session.messages) == 1:
                         _session.title = _generate_session_title(request.message)
-                    _session.add_message("assistant", answer)
+                    _session.add_message(
+                        "assistant", answer,
+                        metadata={"citations": _compare_citations} if _compare_citations else {},
+                    )
                     chatbot._save_sessions()
                     return ChatResponse(
                         session_id=session_id,
@@ -2642,6 +2689,23 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     _fill_is_pdf = _fill_ext == ".pdf"
                     _fill_carta = get_tenant_profile_full(_tid) if _tid else None
                     _fill_session_msgs = [{"role": m.role, "content": m.content} for m in _session.messages]
+
+                    # ── RAG lookup: ground the fill in the legal corpus ──────
+                    # Best-effort: a failure here must never block generation.
+                    loop = asyncio.get_event_loop()
+                    _tmpl_citations: list = []
+                    try:
+                        _tmpl_rag = await loop.run_in_executor(None, partial(
+                            rag_run, request.message,
+                            session_language=_session_lang, skip_calculation=True
+                        ))
+                        _tmpl_citations = _extract_citations(_tmpl_rag.get("raw_result", []))
+                    except Exception as _tmpl_rag_exc:
+                        logger.warning(
+                            "chat: RAG lookup for user-template fill failed: %s",
+                            _tmpl_rag_exc,
+                        )
+
                     try:
                         _fill_elements = (
                             _extract_pdf_elements(_matched_doc.storage_path) if _fill_is_pdf
@@ -2653,6 +2717,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                             _fill_elements, request.message, _fill_carta,
                             _session_lang, _fill_session_msgs,
                             docx_path=None if _fill_is_pdf else _matched_doc.storage_path,
+                            citations=_tmpl_citations,
                         )
                         if _fill_is_pdf:
                             _fill_bytes = _build_docx_from_pdf_elements(_fill_elements, _fill_map)
@@ -2736,6 +2801,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         _fill_confirmation,
                         metadata={
                             **({"generated_document_id": _fill_doc_id, "generated_document_name": _fill_doc_name} if _fill_doc_id else {}),
+                            **({"citations": _tmpl_citations} if _tmpl_citations else {}),
                         },
                     )
                     chatbot._save_sessions()
@@ -2752,6 +2818,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     )
 
                 elif doc_intent == "analyse":
+                    _doc_citations: list = []
                     if not _os.path.exists(_matched_doc.storage_path):
                         answer = (
                             "Non riesco a trovare il file sul server. "
@@ -2776,6 +2843,43 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                             _read_chars = _doc_char_limit()
                             _truncated = _text[:_read_chars]
                             _was_cut = len(_text) > _read_chars
+
+                            # ── RAG lookups: ground the analysis in the legal corpus ──
+                            # Two sequential calls (not parallel) to avoid overloading
+                            # the inference server. Best-effort: a failure here must
+                            # never block the document answer.
+                            loop = asyncio.get_event_loop()
+                            _doc_citations: list = []
+                            try:
+                                _rag1 = await loop.run_in_executor(None, partial(
+                                    rag_run, request.message,
+                                    session_language=_session_lang, skip_calculation=True
+                                ))
+                                _doc_citations = _extract_citations(_rag1.get("raw_result", []))
+                            except Exception as _rag1_exc:
+                                logger.warning(
+                                    "chat: RAG lookup (question) for document analyse failed: %s",
+                                    _rag1_exc,
+                                )
+
+                            from ..rag.doc_lookup import _extract_article_references
+                            _doc_article_refs = _extract_article_references(_truncated[:3000])
+                            if _doc_article_refs:
+                                _doc_query = "articoli " + ", ".join(r for r, _ in _doc_article_refs[:5])
+                                try:
+                                    _rag2 = await loop.run_in_executor(None, partial(
+                                        rag_run, _doc_query,
+                                        session_language=_session_lang, skip_calculation=True
+                                    ))
+                                    _doc_citations = _merge_citations(
+                                        _doc_citations, _extract_citations(_rag2.get("raw_result", []))
+                                    )
+                                except Exception as _rag2_exc:
+                                    logger.warning(
+                                        "chat: RAG lookup (article refs) for document analyse failed: %s",
+                                        _rag2_exc,
+                                    )
+
                             _system = (
                                 legal_consultant_system_prefix(
                                     _session_lang,
@@ -2784,7 +2888,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 ) + " "
                                 "L'utente ti ha fornito il testo di un documento privato "
                                 f"('{_matched_doc.original_filename}'). "
-                                "Rispondi alla domanda dell'utente basandoti ESCLUSIVAMENTE "
+                                "Rispondi alla domanda dell'utente basandoti principalmente "
                                 "sul contenuto del documento. "
                                 "Non inventare fatti non presenti nel testo. "
                                 "Se l'informazione richiesta non è nel documento, dillo chiaramente. "
@@ -2806,6 +2910,16 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 + _lang_note
                                 + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
                             )
+                            if _doc_citations:
+                                _citations_text = "\n".join(
+                                    f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:300]}"
+                                    for c in _doc_citations[:5] for s in (c.get('sections') or [])[:2]
+                                )
+                                _system += (
+                                    "\n\nNormativa di riferimento trovata nel corpus legale "
+                                    "(usa queste fonti per contestualizzare la risposta e cita gli articoli pertinenti):\n"
+                                    + _citations_text
+                                )
                             _human = (
                                 f"Documento:\n\n{_truncated}"
                                 + ("\n\n[Il documento è stato troncato per limiti di lunghezza.]"
@@ -2856,11 +2970,15 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     mark_document_session(_session)
                     if len(_session.messages) == 1:
                         _session.title = _generate_session_title(request.message)
-                    _session.add_message("assistant", answer)
+                    _session.add_message(
+                        "assistant", answer,
+                        metadata={"citations": _doc_citations} if _doc_citations else {},
+                    )
                     chatbot._save_sessions()
                     return ChatResponse(
                         session_id=session_id,
                         answer=answer,
+                        citations=_doc_citations,
                         original_query=request.message,
                         resolved_query=request.message,
                         session_language=_session_lang,
