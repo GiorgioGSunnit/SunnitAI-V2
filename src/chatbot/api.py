@@ -1699,6 +1699,22 @@ _CORRECTION_SIGNALS = {
 }
 
 
+# Words that signal the user wants a defensive draft built against an
+# uploaded judicial document (comparsa di risposta, memoria difensiva,
+# opposizione, ...), rather than a plain read/summary of it.
+# "contesto" (the noun "context") is deliberately excluded — as a bare
+# substring it would hit far more often on ordinary analyse/RAG questions
+# ("in questo contesto...") than on the verb "(io) contesto" (I dispute).
+_DEFENSIVE_TRIGGERS = [
+    "controcausa", "comparsa di risposta", "memoria difensiva",
+    "atto di difesa", "prepara la difesa", "scrivi la difesa",
+    "redigi la difesa", "difendimi", "difendi il caso",
+    "risposta alla citazione", "opposizione al decreto",
+    "atto di opposizione", "ricorso contro", "impugno",
+    "mi difendo", "difesa del caso",
+]
+
+
 def _is_correction_request(message: str) -> bool:
     """True if the message reads as a correction to an existing document.
 
@@ -1805,6 +1821,9 @@ def _classify_doc_intent(
     only when signals are ambiguous.
     """
     lower = message.lower()
+
+    if any(s in lower for s in _DEFENSIVE_TRIGGERS):
+        return "defensive_draft"
 
     analyse_hit = any(s in lower for s in _ANALYSE_SIGNALS)
     generate_hit = any(s in lower for s in _GENERATE_SIGNALS)
@@ -2984,6 +3003,102 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                         session_language=_session_lang,
                         status_messages=["document_analyse_mode"],
                         title=_session.title,
+                    )
+
+                elif doc_intent == "defensive_draft":
+                    # User wants a defensive document drafted against an
+                    # uploaded judicial document (comparsa di risposta,
+                    # opposizione, memoria difensiva, ...). Full pipeline:
+                    # classify proceeding -> RAG for counter-articles -> draft.
+                    from ..rag.defensive_generation import run_defensive_pipeline
+
+                    _doc_citations: list = []
+                    _def_doc_id, _def_doc_name = None, None
+
+                    if not _os.path.exists(_matched_doc.storage_path):
+                        answer = (
+                            "Non riesco a trovare il file sul server. "
+                            "Prova a caricarlo di nuovo."
+                        )
+                    else:
+                        try:
+                            _text = _extract(_matched_doc.storage_path)
+                        except Exception as _exc:
+                            _text = None
+                            logger.warning(
+                                "chat: defensive_draft extract failed for %s: %s",
+                                _matched_doc.storage_path, _exc,
+                            )
+
+                        if not _text or not _text.strip():
+                            answer = (
+                                f"Il documento '{_matched_doc.original_filename}' "
+                                "non contiene testo estraibile."
+                            )
+                        else:
+                            loop = asyncio.get_event_loop()
+                            try:
+                                _def_result = await loop.run_in_executor(
+                                    None,
+                                    partial(
+                                        run_defensive_pipeline,
+                                        _text, request.message, _session_lang,
+                                    ),
+                                )
+                            except Exception as _exc:
+                                logger.error(
+                                    "chat: defensive_draft pipeline failed: %s",
+                                    _exc, exc_info=True,
+                                )
+                                answer = (
+                                    "Si è verificato un errore nella generazione del "
+                                    "documento difensivo. Riprova tra qualche istante."
+                                )
+                            else:
+                                _doc_citations = _def_result["citations"]
+                                _def_proceeding = _def_result["proceeding"]
+
+                                _def_doc_id, _def_doc_name = _persist_generated_docx(
+                                    draft=_def_result["draft"],
+                                    doc_type=f"defensive_{_def_proceeding.get('proceeding_subtype', 'draft')}",
+                                    user_id=_uid,
+                                    tenant_id=_tid,
+                                    case_details=_def_proceeding,
+                                )
+
+                                answer = (
+                                    "⚖️ **BOZZA DOCUMENTO DIFENSIVO** "
+                                    "*(richiede revisione da parte dell'avvocato)*\n\n"
+                                    + _def_result["draft"]
+                                )
+
+                    _session.add_message("user", request.message, metadata={
+                        "document_id": str(_matched_doc.id),
+                        "document_name": _matched_doc.original_filename,
+                        "document_role": _matched_doc.document_role,
+                    })
+                    mark_document_session(_session)
+                    if len(_session.messages) == 1:
+                        _session.title = _generate_session_title(request.message)
+                    _session.add_message(
+                        "assistant", answer,
+                        metadata={
+                            **({"citations": _doc_citations} if _doc_citations else {}),
+                            **({"generated_document_id": _def_doc_id, "generated_document_name": _def_doc_name} if _def_doc_id else {}),
+                        },
+                    )
+                    chatbot._save_sessions()
+                    return ChatResponse(
+                        session_id=session_id,
+                        answer=answer,
+                        citations=_doc_citations,
+                        original_query=request.message,
+                        resolved_query=request.message,
+                        session_language=_session_lang,
+                        status_messages=["defensive_draft_mode"],
+                        title=_session.title,
+                        generated_document_id=_def_doc_id,
+                        generated_document_name=_def_doc_name,
                     )
                 # ── RAG intent: fall through to normal pipeline ────────────
 
