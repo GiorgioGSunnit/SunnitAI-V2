@@ -2245,6 +2245,12 @@ def _build_system_template_prompt(entry: Dict[str, Any], lang: str) -> str:
     )
 
 
+# Answer ceiling for reading a catalog template's fields out of the user's
+# message: a JSON object of up to 30 fields, some with long values (addresses,
+# descriptions of facts). Also used by the stricter retry, which used to have 400.
+_FIELD_EXTRACTION_TOKENS = 1500
+
+
 def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lang: str) -> Dict[str, str]:
     fields = entry.get("fields", [])
     label = entry.get("label") or entry.get("tipo_atto", "")
@@ -2307,9 +2313,12 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
         )
 
     human = f"Messaggio dell'utente:\n{user_message}"
+    # Catalog templates now list up to 30 fields. At 800 tokens a message that
+    # fills many of them cut the JSON off, both attempts failed to parse and
+    # every field came back empty. A ceiling, not a target.
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content=human)],
-        max_tokens=800,
+        max_tokens=_FIELD_EXTRACTION_TOKENS,
     )
 
     text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
@@ -2322,7 +2331,7 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
                 SystemMessage(content="Rispondi SOLO con JSON valido, nessun testo aggiuntivo."),
                 HumanMessage(content=f"Estrai questi campi: {fields}\nDal testo: {user_message}\nJSON:"),
             ],
-            max_tokens=400,
+            max_tokens=_FIELD_EXTRACTION_TOKENS,
         )
         clean_retry = re.sub(r"```(?:json)?\s*", "", retry_response).strip().rstrip("`").strip()
         try:
