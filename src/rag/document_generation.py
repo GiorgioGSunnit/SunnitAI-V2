@@ -13,6 +13,7 @@ from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import _call_chat
+from .template_selection import select_templates
 
 try:
     from pypdf import PdfReader as _PdfReader
@@ -1997,7 +1998,10 @@ def classify_system_template(
     registry. Returns the matched template's key (catalog filename
     without .docx extension) or "unknown".
 
-    When top_k > 1, runs a different pipeline: a no-LLM regex/stemming pass
+    When top_k > 1, selection by meaning (template_selection.py) answers first:
+    [] when the catalog has nothing close enough, one template to auto-select,
+    or 2-5 for the picker, with the similarity as score. Only when it cannot
+    run does the older pipeline below apply: a no-LLM regex/stemming pass
     (_regex_match_catalog) finds every catalog entry that shares a stemmed
     word with the message. 0 matches -> empty list. Exactly 1 match ->
     returned directly as a single-item list (score 1.0). 2+ matches -> one
@@ -2013,6 +2017,30 @@ def classify_system_template(
     codici = sorted({e["codice"] for e in SYSTEM_TEMPLATES_CATALOG})
 
     if top_k > 1:
+        # Selection by meaning (template_selection.py) decides first. It
+        # returns None when it cannot run - vectors missing or stale, embedding
+        # server down - and only then does the keyword method below take over.
+        # [] is a real answer: the catalog has nothing close enough.
+        _named = _detect_procedural_code(message)
+        _excluded = ({c for _, c in _CODICE_MARKERS} - {_named}) if _named else None
+        _picked = select_templates(message, SYSTEM_TEMPLATES_CATALOG, _excluded)
+        if _picked is not None:
+            results = []
+            for i, score in _picked[:top_k]:
+                entry = SYSTEM_TEMPLATES_CATALOG[i]
+                fname = entry["filename"]
+                key = fname[:-5] if fname.endswith(".docx") else fname
+                label = entry.get("label", "")
+                results.append({
+                    "key": key,
+                    "label": label,
+                    "codice": entry["codice"],
+                    "sublabel": _derive_sublabel(key, label),
+                    "score": round(score, 3),
+                })
+            logger.info("template selection by meaning: %s", [(r["key"], r["score"]) for r in results])
+            return results
+
         matches = _regex_match_catalog(message)
         logger.info("DEBUG stage1 regex matches: %s", [m["tipo_atto"] for m in matches])
         if not matches:

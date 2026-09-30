@@ -483,6 +483,26 @@ def _build_clarification_message() -> str:
     )
 
 
+def _no_template_message(lang: str) -> str:
+    """The catalog has no template close enough to the request.
+
+    Selection by meaning can tell this apart from not understanding the
+    request, so it says so instead of listing the 20 legacy document types,
+    and offers the two ways forward that exist.
+    """
+    if lang == "en":
+        return ("I don't have a template for this document in the catalog. Try describing it in "
+                "other words (the type of act and, if any, the procedure or code), or upload your "
+                "own template and I will fill it in with the details you give me.")
+    if lang == "es":
+        return ("No tengo una plantilla para este documento en el catálogo. Intente describirlo con "
+                "otras palabras (el tipo de acto y, si lo hay, el procedimiento o el código), o suba "
+                "su propia plantilla y la completaré con los datos que me indique.")
+    return ("Nel catalogo non ho un modello per questo documento. Prova a descriverlo con altre "
+            "parole (il tipo di atto e, se c'è, la procedura o il codice), oppure carica un tuo "
+            "modello: lo compilo io con i dati che mi indichi.")
+
+
 def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "", section_hint: str = "") -> dict:
     citations = None
     if cached_sections is not None:
@@ -3126,6 +3146,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         _pending_calc = last_pending_calculation(session)
         _carry_calc = {"pending_calculation": _pending_calc} if _pending_calc else {}
         doc_type = classify_document_type(request.message, session_lang)
+        _no_template = False   # the catalog was searched and has nothing close enough
         if doc_type == "unknown":
             _template_result = classify_system_template(request.message, session_lang, top_k=5)
             logger.info("DEBUG picker: top_k=5 result: %s", _template_result)
@@ -3155,8 +3176,10 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 doc_type = _template_result[0]["key"]
             else:
                 doc_type = "unknown"
+                _no_template = True
         if doc_type == "unknown":
-            clarification = _build_clarification_message()
+            clarification = (_no_template_message(session_lang) if _no_template
+                             else _build_clarification_message())
             session.add_message("user", request.message)
             if len(session.messages) == 1:
                 session.title = _generate_session_title(request.message)
