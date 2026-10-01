@@ -339,6 +339,48 @@ def test_english_draft_relies_on_the_generation_request_predicate(chat_api):
     assert chat_api.is_generation_request(EN_LEASE_DRAFT) is True
 
 
+# --- 1b. Naming an act is not asking for it --------------------------------
+# 1 Oct 2026: a lawyer's case story ending in a request for a defence strategy
+# was drafted as a document, because "querela contro" anywhere in a message
+# counted as a request. Questions and case stories name acts all the time.
+CASE_STORIES_AND_QUESTIONS = [
+    pytest.param(
+        "Tizio, pilota professionista, durante una gara, taglia l'ultima curva prima del "
+        "traguardo per superare Caio. Con tale manovra causa un incidente a Caio che si "
+        "ribalta riportando lesioni con prognosi di 30 giorni. Caio sporge formale querela "
+        "contro Tizio. Tizio riceve l'avviso ex art. 415bis cpp. Si reca quindi da voi per "
+        "sapere quale sia la miglior strategia da adottare.",
+        id="lawyer-strategy-415bis",
+    ),
+    pytest.param("Mi hanno licenziato, cosa posso fare?", id="dismissed-what-now"),
+    pytest.param(
+        "Ho ricevuto un atto di citazione: entro quando devo costituirmi?", id="citazione-deadline"
+    ),
+    pytest.param("Come funziona l'istanza di fallimento?", id="istanza-how"),
+    pytest.param(
+        "Vorrei un parere sul contratto di locazione che ho firmato.", id="opinion-not-contract"
+    ),
+    pytest.param("Fammi capire quale strategia adottare dopo la querela.", id="fammi-capire"),
+]
+# The other side: a document asked for by its name alone must still be drafted.
+DOCUMENTS_REQUESTED_BY_NAME = [
+    pytest.param("Querela contro Mario Rossi per diffamazione a mezzo stampa.", id="querela"),
+    pytest.param("Nomina del difensore di fiducia per il procedimento n. 123/2026.", id="nomina"),
+    pytest.param("Mi serve un ricorso per decreto ingiuntivo.", id="mi-serve"),
+    pytest.param("Puoi prepararmi un ricorso per decreto ingiuntivo?", id="asked-as-a-question"),
+]
+
+
+@pytest.mark.parametrize("message", CASE_STORIES_AND_QUESTIONS)
+def test_questions_and_case_stories_stay_out_of_generation(chat_api, message):
+    assert _enters_generation_branch(chat_api, message) is False
+
+
+@pytest.mark.parametrize("message", DOCUMENTS_REQUESTED_BY_NAME)
+def test_documents_requested_by_name_still_enter_generation(chat_api, message):
+    assert _enters_generation_branch(chat_api, message) is True
+
+
 # --- 2. A genuine calculation is NOT diverted into generation --------------
 
 def test_genuine_calculation_does_not_enter_the_generation_branch(chat_api):

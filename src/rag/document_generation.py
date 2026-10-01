@@ -46,19 +46,58 @@ _GENERATION_COMBOS = [
 ]
 
 
+# A question or a request for advice, not for a document. These block the two
+# inferred ways of spotting a request in is_generation_request - a document
+# named without a drafting verb, and a verb like "vorrei" next to a legal word -
+# because questions and case stories name acts all the time: "Caio sporge
+# querela contro Tizio ... quale strategia?" (1 Oct 2026, a lawyer got a
+# generated document), "Ho ricevuto un atto di citazione: entro quando devo
+# costituirmi?". An explicit drafting verb ("scrivimi", "redigi un") still wins.
+_ADVICE_CUES = (
+    "?", "strategi", "consigl", "conviene", "parere", "consulenza",
+    "cosa posso", "cosa devo", "cosa fare", "cosa succede", "cosa rischi",
+    "come posso", "come devo", "come funziona", "come si ", "come oppor", "come difender",
+    "quali sono", "quale sia", "qual è", "entro quando", "è possibile", "si può",
+    "differenza", "sapere", "capire", "spiegami", "riassunto", "riassumi",
+)
+
+# Asking for a named document outright, without one of the drafting verbs.
+_REQUEST_CUES = (
+    "mi serve", "mi servirebbe", "ho bisogno di un", "ho bisogno di una",
+    "vorrei un", "vorrei una", "voglio un", "voglio una",
+    "bozza", "fac-simile", "facsimile",
+)
+
+# Documents a lawyer may request by name alone ("Querela contro Mario Rossi per
+# diffamazione", "Nomina del difensore di fiducia per ..."). Named that way the
+# message starts with the document; anywhere else it is usually a mention.
+_DOCUMENT_NAMES = (
+    "nomina del difensore", "nomina difensore", "procura alle liti",
+    "atto di citazione", "atto di appello", "ricorso per", "istanza di",
+    "memoria difensiva", "memorie difensive",
+    "contratto di locazione", "contratto di compravendita", "contratto di lavoro",
+    "lettera di licenziamento", "diffida ad adempiere", "messa in mora",
+    "verbale di assemblea", "dichiarazione sostitutiva", "atto di opposizione",
+    "querela contro", "denuncia contro", "rinuncia al mandato", "revoca della procura",
+)
+
+_ACTION_VERBS_RE = re.compile(
+    r"\b(genera|generami|scrivi|scrivimi|redigi|redigimi|crea|creami|prepara|preparami|"
+    r"stendi|stendimi|elabora|elaborami|formula|formulami|produce|producimi|fammi|"
+    r"draft|write|create|redacta|voglio|vorrei|ho bisogno di|necesito|quiero)\b"
+)
+
+
 def is_generation_request(message: str) -> bool:
     msg = message.lower()
-    action_verbs = [
-        "genera", "generami", "scrivi", "scrivimi", "redigi", "redigimi",
-        "crea", "creami", "prepara", "preparami", "stendi", "stendimi",
-        "elabora", "elaborami", "formula", "formulami", "produce", "producimi",
-        "fammi", "draft", "write", "create", "redacta",
-        "voglio", "vorrei", "ho bisogno di", "necesito", "quiero",
-    ]
     strong_triggers = [
-        # Italian with mi
-        "redigimi", "generami", "scrivimi", "preparami", "creami", "fammi",
+        # Italian with mi. "fammi" only with an article: "fammi capire / sapere"
+        # is a question.
+        "redigimi", "generami", "scrivimi", "preparami", "creami",
+        "fammi un", "fammi una", "fammi il ", "fammi la ", "fammi l'",
         "elaborami", "stendimi", "formulami", "producimi", "drafta",
+        "puoi prepar", "puoi scriv", "puoi redig",
+        "potresti prepar", "potresti scriv", "potresti redig",
         # Italian without mi — "un/una" makes them unambiguous
         "scrivi un", "scrivi una", "redigi un", "redigi una",
         "genera un", "genera una", "crea un", "crea una",
@@ -86,36 +125,23 @@ def is_generation_request(message: str) -> bool:
         "draft a", "draft an", "write a", "write an",
         "create a", "create an", "generate a", "generate an",
         "i need a contract", "i need a letter",
-        # Unambiguous Italian situation phrases
-        "mi hanno licenziato",
-        # Noun-form document requests — user names the document type directly
-        # without an action verb (e.g. "Nomina del difensore di fiducia per...")
-        "nomina del difensore",
-        "nomina difensore",
-        "procura alle liti",
-        "atto di citazione",
-        "atto di appello",
-        "ricorso per",
-        "istanza di",
-        "memoria difensiva",
-        "memorie difensive",
-        "contratto di locazione",
-        "contratto di compravendita",
-        "contratto di lavoro",
-        "lettera di licenziamento",
-        "diffida ad adempiere",
-        "messa in mora",
-        "verbale di assemblea",
-        "dichiarazione sostitutiva",
-        "atto di opposizione",
-        "querela contro",
-        "denuncia contro",
-        "rinuncia al mandato",
-        "revoca della procura",
     ]
     if any(t in msg for t in strong_triggers):
         return True
-    # Weak path: action verb + any significant word from the catalog
+    # Everything below infers the request rather than reading it, so a
+    # question or a request for advice rules it out.
+    if any(c in msg for c in _ADVICE_CUES):
+        return False
+    # A document named without a drafting verb: the message starts with it, or
+    # asks for it ("mi serve un ricorso per ..."). "Mi hanno licenziato" used to
+    # count here too; it describes a situation, not a document.
+    opening = msg.lstrip(" \t\r\n\"'«*-•")
+    if any(opening.startswith(d) for d in _DOCUMENT_NAMES):
+        return True
+    if any(r in msg for r in _REQUEST_CUES) and any(d in msg for d in _DOCUMENT_NAMES):
+        return True
+    # Weak path: action verb (whole word - "crea" must not match "creato") +
+    # any significant word from the catalog
     # (DOCUMENT_TYPE_REGISTRY is now empty — use catalog labels instead)
     _catalog_words = frozenset(
         word
@@ -124,7 +150,7 @@ def is_generation_request(message: str) -> bool:
         for word in phrase.lower().split()
         if len(word) > 5
     )
-    has_verb = any(v in msg for v in action_verbs)
+    has_verb = bool(_ACTION_VERBS_RE.search(msg))
     has_keyword = any(k in msg for k in _catalog_words)
     return has_verb and has_keyword
 

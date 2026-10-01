@@ -1929,7 +1929,9 @@ def _classify_top_level_intent(message: str, session_lang: str) -> str:
 
     # ── Fast path: strong generation triggers ─────────────────────────────
     _GEN_STRONG = [
-        "redigimi", "generami", "scrivimi", "preparami", "creami", "fammi",
+        "redigimi", "generami", "scrivimi", "preparami", "creami",
+        # "fammi" only with an article: "fammi capire / sapere" is a question
+        "fammi un", "fammi una", "fammi il ", "fammi la ", "fammi l'",
         "elaborami", "stendimi", "formulami", "producimi",
         "scrivi un", "scrivi una", "redigi un", "redigi una",
         "genera un", "genera una", "crea un", "crea una",
