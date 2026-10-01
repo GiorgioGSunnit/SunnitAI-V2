@@ -503,6 +503,35 @@ def _no_template_message(lang: str) -> str:
             "modello: lo compilo io con i dati che mi indichi.")
 
 
+def _no_template_response(lang: str) -> JSONResponse:
+    """400 for a file request the catalog has no template for.
+
+    `code` lets the frontend show `detail` to the user in place of its generic
+    error toast; other 400s ("Not a generation request") carry no code and
+    stay technical.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={"detail": _no_template_message(lang), "code": "no_template"},
+    )
+
+
+def _pick_catalog_template(message: str, lang: str) -> str:
+    """Catalog key for a generation request that arrives without a chosen
+    template, or "unknown" when the catalog has nothing close enough.
+
+    Same selection as /api/chat (by meaning, keyword method as fallback), so
+    the file endpoints can no longer pick a template the chat refused. When it
+    offers several, the best one is used: the frontend requests a file without
+    a choice only after the chat settled on a single template - a picker in
+    the chat is answered with an explicit doc_type.
+    """
+    result = classify_system_template(message, lang, top_k=5)
+    if isinstance(result, str):
+        return result
+    return result[0]["key"] if result else "unknown"
+
+
 def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "", section_hint: str = "") -> dict:
     citations = None
     if cached_sections is not None:
@@ -1360,9 +1389,9 @@ async def generate(request: GenerateRequest, current_user: Optional[dict] = Depe
     else:
         doc_type = classify_document_type(request.message, session_lang)
         if doc_type == "unknown":
-            doc_type = classify_system_template(request.message, session_lang)
+            doc_type = _pick_catalog_template(request.message, session_lang)
         if doc_type == "unknown":
-            clarification = _build_clarification_message()
+            clarification = _no_template_message(session_lang)
             session.add_message("user", request.message)
             session.add_message("assistant", clarification)
             return GenerateResponse(
@@ -1453,9 +1482,13 @@ async def generate_download(request: GenerateRequest, current_user: Optional[dic
     else:
         doc_type = classify_document_type(request.message, session_lang)
         if doc_type == "unknown":
-            doc_type = classify_system_template(request.message, session_lang)
+            doc_type = _pick_catalog_template(request.message, session_lang)
         if doc_type == "unknown":
-            raise HTTPException(status_code=400, detail=_build_clarification_message())
+            # The chat answers this case itself (status "generation_no_template")
+            # and the frontend does not ask for a file then, so reaching here
+            # means a caller skipped the chat's answer.
+            logger.warning("generate_download: no catalog template for the request; refused")
+            return _no_template_response(session_lang)
     cached = _get_cached_sections(session)
 
     loop = asyncio.get_event_loop()
@@ -3185,13 +3218,18 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                 session.title = _generate_session_title(request.message)
             session.add_message("assistant", clarification, metadata=_carry_calc or None)
             chatbot._save_sessions()
+            # Not "generation_mode": on that tag the frontend hides this reply
+            # and requests the file itself (/api/generate/download), which would
+            # draft a document the catalog has no template for. Any other tag
+            # is shown as an ordinary answer.
             return ChatResponse(
                 session_id=session_id,
                 answer=clarification,
                 original_query=request.message,
                 resolved_query=request.message,
                 session_language=session_lang,
-                status_messages=["generation_mode"],
+                status_messages=["generation_no_template" if _no_template
+                                 else "generation_clarification"],
                 title=session.title,
             )
         cached = _get_cached_sections(session)

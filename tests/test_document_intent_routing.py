@@ -249,6 +249,74 @@ def test_chat_endpoint_keeps_an_ordinary_question_out_of_the_generation_branch(
     assert body["answer"].startswith("L'imposta di registro")
 
 
+# --- 0b. The catalog has no template ---------------------------------------
+# The frontend reacts to "generation_mode" by hiding the reply and requesting
+# the file from /api/generate/download. A "no template" reply carrying that tag
+# was therefore never shown, and the file endpoint drafted a document anyway
+# with its own (older) template choice. 1 Oct 2026: a lawyer's question got a
+# "Deposito delle investigazioni difensive" this way.
+NO_TEMPLATE_REQUEST = "Scrivimi un testamento olografo."
+
+
+def test_chat_no_template_reply_is_shown_not_turned_into_a_file(
+    chat_api, chat_client, monkeypatch
+):
+    monkeypatch.setattr(chat_api, "classify_system_template", lambda *a, **k: [])
+    monkeypatch.setattr(
+        chat_api,
+        "generate_document",
+        lambda *a, **k: pytest.fail("nothing may be drafted without a template"),
+    )
+
+    response = chat_client.post("/api/chat", json={"message": NO_TEMPLATE_REQUEST})
+
+    assert response.status_code == 200
+    body = response.json()
+    # Any tag but "generation_mode" renders as an ordinary answer, and a
+    # non-empty generation_candidates would open the variant picker.
+    assert body["status_messages"] == ["generation_no_template"]
+    assert body["generation_candidates"] == []
+    assert body["answer"] == chat_api._no_template_message("it")
+
+
+def test_download_refuses_when_the_catalog_has_no_template(
+    chat_api, chat_client, monkeypatch
+):
+    monkeypatch.setattr(chat_api, "classify_system_template", lambda *a, **k: [])
+    monkeypatch.setattr(
+        chat_api,
+        "generate_document",
+        lambda *a, **k: pytest.fail("nothing may be drafted without a template"),
+    )
+
+    response = chat_client.post(
+        "/api/generate/download", json={"message": NO_TEMPLATE_REQUEST}
+    )
+
+    assert response.status_code == 400
+    # `code` is what lets the frontend show this text instead of a toast.
+    assert response.json() == {
+        "detail": chat_api._no_template_message("it"),
+        "code": "no_template",
+    }
+
+
+def test_file_endpoints_use_the_chats_template_selection(chat_api, monkeypatch):
+    """Same selection as the chat (top_k > 1), never the older single-pick path."""
+    calls = []
+
+    def fake_classify(message, lang, top_k=1):
+        calls.append(top_k)
+        return [{"key": "best"}, {"key": "second"}]
+
+    monkeypatch.setattr(chat_api, "classify_system_template", fake_classify)
+    assert chat_api._pick_catalog_template(NO_TEMPLATE_REQUEST, "it") == "best"
+    assert calls == [5]
+
+    monkeypatch.setattr(chat_api, "classify_system_template", lambda *a, **k: [])
+    assert chat_api._pick_catalog_template(NO_TEMPLATE_REQUEST, "it") == "unknown"
+
+
 # --- 1. Document requests reach the generation branch ----------------------
 # Predicate-level: these exercise the routing decision itself, not the endpoint
 # around it. The endpoint is covered in section 0.
