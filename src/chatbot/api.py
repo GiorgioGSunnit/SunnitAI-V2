@@ -38,6 +38,7 @@ from .session import (
     SessionExpiredError,
     SessionNotFoundError,
     _generate_session_title,
+    build_history_messages,
     last_pending_calculation,
     mark_document_session,
 )
@@ -2021,6 +2022,63 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
 
     _req_start = time.time()
     vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
+
+    # ── Deepdive: user clicked a deepdive link from a defensive draft ──────
+    # Checked on the raw request.message, ahead of every other branch
+    # (including the document-aware one below) and before any query
+    # rewriting happens elsewhere in the pipeline — a deepdive request
+    # doesn't need a document attached, just the prior draft in chat history.
+    _msg_lower = request.message.strip().lower()
+    if _msg_lower.startswith("deepdive:") or _msg_lower.startswith("approfondisci:"):
+        _topic = request.message.split(":", 1)[1].strip().replace("-", " ")
+        _session = chatbot.get_session(session_id, user_id=_uid, db=db)
+        if _session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        _session_lang = _session.session_language
+
+        from ..rag.defensive_generation import generate_deepdive_analysis
+
+        _prior_for_deepdive = build_history_messages(_session)
+
+        try:
+            loop = asyncio.get_event_loop()
+            _deepdive_answer = await loop.run_in_executor(
+                None,
+                partial(generate_deepdive_analysis, _topic, _prior_for_deepdive, _session_lang),
+            )
+        except Exception as _exc:
+            logger.error("chat: deepdive analysis failed: %s", _exc, exc_info=True)
+            _deepdive_answer = "Si è verificato un errore nell'approfondimento. Riprova."
+
+        _session.add_message("user", request.message)
+        if len(_session.messages) == 1:
+            _session.title = _generate_session_title(request.message)
+        _session.add_message("assistant", _deepdive_answer)
+
+        # Honour the summarization contract — same as the normal flow
+        _confirmation_q = _session._summarize_if_needed()
+        if _confirmation_q:
+            _session.add_message("assistant", _confirmation_q, metadata={
+                "awaiting_summary_confirmation": True,
+                "pending_summary": {
+                    "text": _session._pending_summary,
+                    "covers_turns": _session._pending_summary_covers,
+                },
+                "type": "summary_confirmation",
+            })
+
+        chatbot._save_sessions()
+        return ChatResponse(
+            session_id=session_id,
+            answer=_deepdive_answer,
+            citations=[],
+            original_query=request.message,
+            resolved_query=_topic,
+            session_language=_session_lang,
+            status_messages=["defensive_deepdive_mode"],
+            awaiting_summary_confirmation=bool(_confirmation_q),
+            title=_session.title,
+        )
 
     # ── Document-aware branch ─────────────────────────────────────────────
     # Detects filename(s) in the message and routes to analyse, compare,

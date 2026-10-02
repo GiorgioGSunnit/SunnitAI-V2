@@ -180,6 +180,46 @@ NON inventare fatti o rapporti non presenti nel documento.
 }
 
 
+def _extract_deepdive_topics(draft: str, proceeding: dict) -> list:
+    """Extract 2-3 main argument topics from the draft for deepdive suggestions.
+
+    Best-effort: a failure here must never block the draft itself — the
+    caller just skips the suggestion when this returns [].
+    """
+    try:
+        raw = _call_chat([
+            SystemMessage(content=(
+                "Sei un assistente legale. Dal seguente documento difensivo, "
+                "estrai i 2-3 argomenti principali di difesa come etichette brevi "
+                "(max 5 parole ciascuna, in italiano, minuscolo). "
+                "Restituisci SOLO una lista JSON di stringhe, niente altro. "
+                "Esempio: [\"eccezione di inadempimento\", \"contestazione delle prove\"]"
+            )),
+            HumanMessage(content=draft[:3000]),
+        ], max_tokens=100)
+        cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
+        topics = json.loads(cleaned)
+        if isinstance(topics, list):
+            return [t for t in topics if isinstance(t, str)][:3]
+    except Exception as exc:
+        logger.warning("_extract_deepdive_topics failed: %s", exc)
+    return []
+
+
+def _format_deepdive_suggestion(topics: list) -> str:
+    """Format topics as a natural suggestion with markdown deepdive links."""
+    if not topics:
+        return ""
+    links = [f"[{t}](deepdive:{t.lower().replace(' ', '-')})" for t in topics]
+    if len(links) == 1:
+        parts = links[0]
+    elif len(links) == 2:
+        parts = f"{links[0]} o {links[1]}"
+    else:
+        parts = f"{', '.join(links[:-1])} o {links[-1]}"
+    return f"Vuoi approfondire in particolare {parts}?"
+
+
 def _legal_defenses_prompt(proceeding_type: str, subtype: str) -> str:
     """Subtype-specific list of typical legal grounds, or "" when none apply.
 
@@ -269,6 +309,10 @@ def generate_defensive_draft(
         max_tokens=4000,
     )
 
+    topics = _extract_deepdive_topics(draft, proceeding)
+    if topics:
+        draft += "\n\n" + _format_deepdive_suggestion(topics)
+
     if citations:
         draft += (
             "\n\n⚠️ Le sentenze citate provengono dal corpus documentale e devono "
@@ -333,3 +377,54 @@ def run_defensive_pipeline(
     )
 
     return {"draft": draft, "proceeding": proceeding, "citations": citations}
+
+
+def generate_deepdive_analysis(topic: str, chat_history: list, session_lang: str = "it") -> str:
+    """Generate a focused legal analysis of one defensive argument topic.
+
+    chat_history is the session's build_history_messages() output — already
+    containing the original draft as an assistant turn, which this scans for
+    to ground the analysis in the specific case rather than the topic alone.
+    """
+    from .main import run as rag_run
+    from .answer_processing import _extract_citations
+
+    citations: list = []
+    try:
+        r = rag_run(topic, session_language=session_lang, skip_calculation=True)
+        citations = _extract_citations(r.get("raw_result", []))
+    except Exception as exc:
+        logger.warning("generate_deepdive_analysis: RAG failed: %s", exc)
+
+    citations_text = ""
+    if citations:
+        citations_text = "\n".join(
+            f"- {c['document_name']}, {s['name']}: {s.get('plain_text', '')[:400]}"
+            for c in citations[:5] for s in (c.get("sections") or [])[:2]
+        )
+
+    original_draft = ""
+    for msg in reversed(chat_history):
+        if msg.get("role") == "assistant" and "BOZZA DOCUMENTO DIFENSIVO" in msg.get("content", ""):
+            original_draft = msg["content"][:3000]
+            break
+
+    system = (
+        "Sei un avvocato esperto di diritto italiano. "
+        f"L'utente vuole approfondire il seguente argomento difensivo: '{topic}'. "
+        "Fornisci un'analisi giuridica dettagliata e approfondita di questo specifico argomento, includendo:\n"
+        "- Fondamento normativo (articoli di legge applicabili)\n"
+        "- Orientamento giurisprudenziale prevalente\n"
+        "- Strategia difensiva consigliata\n"
+        "- Prove e documenti utili a supporto\n"
+        "- Possibili obiezioni della controparte e come controbatterle\n"
+        "Usa un linguaggio giuridico formale italiano. "
+        "NON citare articoli di legge a memoria — usa SOLO le fonti fornite o scrivi [DA VERIFICARE]."
+        + (f"\n\nFonti dal corpus legale:\n{citations_text}" if citations_text else "")
+        + (f"\n\nBozza difensiva di riferimento:\n{original_draft}" if original_draft else "")
+    )
+
+    return _call_chat(
+        [SystemMessage(content=system), HumanMessage(content=f"Approfondisci: {topic}")],
+        max_tokens=2000,
+    )
