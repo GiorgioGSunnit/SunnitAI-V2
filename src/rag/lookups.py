@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constants & patterns
 # ---------------------------------------------------------------------------
-#test comment
+
 DEFAULT_FULLTEXT_LIMIT = 3
 GENERIC_REFERENCE_PATTERN = re.compile(r"\bno\.?\b", re.IGNORECASE)
 _AL_PREFIX_PATTERN = re.compile(r"^al[\s\-]+", re.IGNORECASE)
