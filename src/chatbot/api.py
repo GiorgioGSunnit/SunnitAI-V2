@@ -1766,6 +1766,9 @@ _DEFENSIVE_TRIGGERS = [
     "risposta alla citazione", "opposizione al decreto",
     "atto di opposizione", "ricorso contro", "impugno",
     "mi difendo", "difesa del caso",
+    "strategia difensiva", "definisci la strategia", "strategia legale",
+    "analisi del caso", "analizza il caso", "valuta il caso",
+    "generami una strategia", "prepara una strategia",
 ]
 
 
