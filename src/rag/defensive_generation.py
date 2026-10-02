@@ -34,6 +34,7 @@ def _safe_defaults() -> Dict[str, Any]:
         "opposing_party": "",
         "opposing_claims": "",
         "cited_articles": [],
+        "cited_codes": [],
         "key_facts": "",
     }
 
@@ -55,6 +56,8 @@ def classify_proceeding(text: str, lang: str = "it") -> dict:
         "- opposing_party: nome della parte avversa (stringa vuota se non trovato)\n"
         "- opposing_claims: riassunto delle pretese della controparte (max 300 caratteri)\n"
         "- cited_articles: lista degli articoli di legge citati dalla controparte\n"
+        "- cited_codes: lista delle abbreviazioni dei codici citati dalla controparte "
+        "(es. [\"c.c.\", \"c.p.c.\", \"c.p.\", \"c.p.p.\"])\n"
         "- key_facts: fatti chiave allegati dalla controparte (max 300 caratteri)\n"
         "Restituisci SOLO il JSON, niente altro."
     )
@@ -95,89 +98,45 @@ def classify_proceeding(text: str, lang: str = "it") -> dict:
     if isinstance(cited_articles, list):
         result["cited_articles"] = [a for a in cited_articles if isinstance(a, str)]
 
+    cited_codes = parsed.get("cited_codes")
+    if isinstance(cited_codes, list):
+        result["cited_codes"] = [c for c in cited_codes if isinstance(c, str)]
+
     return result
 
 
-_STRUCTURES = {
-    ("civile", "atto_citazione"): """
-Redigi una COMPARSA DI RISPOSTA con questa struttura:
-1. INTESTAZIONE — Tribunale, parti, numero di ruolo
-2. IN FATTO — Ricostruzione dei fatti dal punto di vista del convenuto
-3. IN DIRITTO — Argomentazioni giuridiche e articoli a difesa
-4. CONCLUSIONI — Richiesta di rigetto delle domande attoree con condanna alle spese. Nota: eventuali domande riconvenzionali devono essere formulate espressamente e depositate almeno 70 giorni prima dell'udienza.
-5. FIRMA E DATA
-""",
-    ("civile", "decreto_ingiuntivo"): """
-Redigi un ATTO DI OPPOSIZIONE A DECRETO INGIUNTIVO con questa struttura:
-1. INTESTAZIONE — Tribunale, parti, estremi del decreto ingiuntivo opposto
-2. PREMESSE IN FATTO — Ricostruzione sintetica dei fatti
-3. MOTIVI DI OPPOSIZIONE — Argomentazioni giuridiche e fattuali
-4. CONCLUSIONI — Petitum preciso (revoca/sospensione del decreto)
-5. FIRMA E DATA
-""",
-    ("civile", "ricorso"): """
-Redigi una MEMORIA DIFENSIVA con questa struttura:
-1. INTESTAZIONE — Tribunale, parti, numero di ruolo
-2. PREMESSE — Contesto procedurale
-3. IN FATTO — Fatti rilevanti per la difesa
-4. IN DIRITTO — Argomentazioni giuridiche
-5. CONCLUSIONI — Richieste al giudice
-6. FIRMA E DATA
-""",
-    ("penale", "*"): """
-Redigi una MEMORIA DIFENSIVA PENALE con questa struttura:
-1. INTESTAZIONE — Tribunale/GIP, imputato, reato contestato
-2. IN FATTO — Ricostruzione dei fatti dalla prospettiva della difesa
-3. IN DIRITTO — Inquadramento giuridico, cause di giustificazione, attenuanti
-4. CONCLUSIONI — Richiesta di assoluzione/archiviazione/attenuanti
-5. FIRMA E DATA
-""",
-    ("amministrativo", "*"): """
-Redigi un RICORSO AMMINISTRATIVO con questa struttura:
-1. INTESTAZIONE — TAR/Consiglio di Stato, ricorrente, atto impugnato
-2. IN FATTO — Fatti rilevanti
-3. MOTIVI DI RICORSO — Illegittimità per violazione di legge, eccesso di potere, incompetenza
-4. CONCLUSIONI — Annullamento/sospensione dell'atto impugnato
-5. FIRMA E DATA
-""",
-}
+_STRATEGY_STRUCTURE = """
+Redigi una STRATEGIA DIFENSIVA LEGALE strutturata nelle seguenti 8 sezioni obbligatorie.
+Usa esattamente questi titoli in grassetto. Non omettere nessuna sezione.
 
+**1. Premessa e Inquadramento della Questione**
+Riassumi lo scenario dichiarato raccogliendo tutti gli elementi dalla conversazione e dai documenti allegati. Identifica le parti, il contesto, e la natura della controversia.
 
-def _defensive_structure_prompt(proceeding_type: str, subtype: str) -> str:
-    key = (proceeding_type, subtype)
-    if key in _STRUCTURES:
-        return _STRUCTURES[key]
-    for (pt, ps), struct in _STRUCTURES.items():
-        if pt == proceeding_type and ps == "*":
-            return struct
-    return _STRUCTURES[("civile", "atto_citazione")]
+**2. Inquadramento Normativo**
+Elenca e cita tutte le normative applicabili alla situazione descritta (articoli di legge, decreti, regolamenti). Per ciascuna norma fornisci un breve sommario del contenuto rilevante. Usa SOLO i testi forniti nella sezione 'TESTO DEGLI ARTICOLI' — per qualsiasi articolo non presente scrivi [TESTO DA VERIFICARE].
+IMPORTANTE: cita SOLO norme del ramo giuridico pertinente al tipo di causa (cause civili → Codice Civile e c.p.c.; cause penali → Codice Penale e c.p.p.; cause amministrative → leggi amministrative). NON citare norme penali in cause civili e viceversa.
 
+**3. Punti di Forza**
+Elenca tutti i punti di forza della strategia difensiva, suddivisi in:
+- **Principali**: argomenti più favorevoli, facilmente dimostrabili o già documentati
+- **Subordinati**: argomenti di supporto, meno diretti ma comunque rilevanti
+Per ciascun punto indica la norma o il fatto a sostegno.
 
-_LEGAL_DEFENSES = {
-    ("civile", "decreto_ingiuntivo"): """
-I MOTIVI DI OPPOSIZIONE tipici per un decreto ingiuntivo sono:
-- Contestazione del credito (importo errato, pagamenti già effettuati non contabilizzati)
-- Eccezione di inadempimento ex art. 1460 c.c. (il creditore non ha adempiuto le proprie obbligazioni)
-- Contestazione delle prove documentali (fatture, contratti)
-- Vizi formali del procedimento monitorio
-- Prescrizione del credito
-- Compensazione con crediti propri del debitore
-USA SOLO questi motivi se applicabili ai fatti del documento.
-NON inventare motivi non pertinenti al caso concreto.
-NON usare terminologia di altri rami del diritto (diritto penale, diritto tributario, etc.).
-""",
-    ("civile", "atto_citazione"): """
-Le ECCEZIONI tipiche per una comparsa di risposta sono:
-- Contestazione dei fatti allegati dall'attore
-- Eccezione di prescrizione
-- Eccezione di difetto di legittimazione attiva/passiva
-- Contestazione del nesso causale
-- Concorso di colpa della controparte ex art. 1227 c.c.
-- Difetto di prova del danno
-USA SOLO questi motivi se applicabili ai fatti del documento.
-NON inventare fatti o rapporti non presenti nel documento.
-""",
-}
+**4. Punti di Debolezza**
+Elenca le possibili contestazioni che potrebbero essere sollevate dalla controparte durante il contraddittorio o il dibattimento. Per ciascuna indica il grado di rischio (alto/medio/basso) e gli elementi poco dimostrabili o dubbi.
+
+**5. Richieste Subordinate**
+Elenca le richieste da avanzare in caso di mancata accettazione degli argomenti principali (es. attenuanti generiche, riduzione della pena, compensazione parziale). Ordina dalla più alla meno favorevole.
+
+**6. Conclusioni**
+Chiarisci gli obiettivi della strategia, i punti di forza a sostegno, i punti di debolezza che potrebbero comprometterla. Elenca tutti i documenti da produrre per seguire la strategia (es. memorie, perizie, testimonianze, prove documentali).
+
+**7. Pareri e Giurisprudenza**
+Elenca i precedenti giurisprudenziali e la dottrina rilevante sia per i punti di forza che per quelli di debolezza. Usa SOLO le sentenze e i pareri forniti nel corpus legale — non citare giurisprudenza a memoria.
+
+**8. Temi da Approfondire**
+Elenca 3-5 temi specifici che meritano ulteriore analisi, formulati come domande o aree di ricerca. Questi verranno presentati come link cliccabili all'utente.
+"""
 
 
 def _extract_deepdive_topics(draft: str, proceeding: dict) -> list:
@@ -189,11 +148,12 @@ def _extract_deepdive_topics(draft: str, proceeding: dict) -> list:
     try:
         raw = _call_chat([
             SystemMessage(content=(
-                "Sei un assistente legale. Dal seguente documento difensivo, "
-                "estrai i 2-3 argomenti principali di difesa come etichette brevi "
+                "Sei un assistente legale. Dal seguente documento difensivo, estrai i temi elencati "
+                "nella sezione '8. Temi da Approfondire' come etichette brevi "
                 "(max 5 parole ciascuna, in italiano, minuscolo). "
+                "Se la sezione 8 non è presente, estrai i 2-3 argomenti principali dalla strategia. "
                 "Restituisci SOLO una lista JSON di stringhe, niente altro. "
-                "Esempio: [\"eccezione di inadempimento\", \"contestazione delle prove\"]"
+                "Esempio: [\"eccezione di inadempimento\", \"contestazione delle prove\", \"prescrizione del credito\"]"
             )),
             HumanMessage(content=draft[:3000]),
         ], max_tokens=100)
@@ -220,17 +180,6 @@ def _format_deepdive_suggestion(topics: list) -> str:
     return f"Vuoi approfondire in particolare {parts}?"
 
 
-def _legal_defenses_prompt(proceeding_type: str, subtype: str) -> str:
-    """Subtype-specific list of typical legal grounds, or "" when none apply.
-
-    Unlike _defensive_structure_prompt, there is no wildcard/ultimate fallback
-    here — the catalog only covers the subtypes it's actually been reviewed
-    for, and injecting an unrelated proceeding's grounds would be worse than
-    injecting nothing.
-    """
-    return _LEGAL_DEFENSES.get((proceeding_type, subtype), "")
-
-
 def generate_defensive_draft(
     proceeding: dict,
     document_text: str,
@@ -239,15 +188,6 @@ def generate_defensive_draft(
     extra_instructions: str = "",
     article_texts: list = None,
 ) -> str:
-    structure = _defensive_structure_prompt(
-        proceeding.get("proceeding_type", "civile"),
-        proceeding.get("proceeding_subtype", "altro"),
-    )
-    legal_defenses = _legal_defenses_prompt(
-        proceeding.get("proceeding_type", "civile"),
-        proceeding.get("proceeding_subtype", "altro"),
-    )
-
     citations_text = ""
     if citations:
         citations_text = "\n".join(
@@ -257,24 +197,19 @@ def generate_defensive_draft(
 
     system = (
         "Sei un avvocato esperto di diritto italiano. "
-        "Redigi una bozza di documento difensivo professionale basandoti sul documento giudiziario fornito. "
-        + (f"\n\n{legal_defenses}" if legal_defenses else "")
-        + f"\n\n{structure}"
-        "\n\nIMPORTANTE:"
-        "\n- Usa un linguaggio giuridico formale italiano"
-        "\n- Cita esplicitamente gli articoli di legge pertinenti"
-        "\n- Usa [DA COMPILARE] per i campi che richiedono dati specifici non disponibili"
-        "\n- Questa è una BOZZA — indica chiaramente che richiede revisione da parte dell'avvocato"
-        "\n- Attieniti ESCLUSIVAMENTE ai fatti contenuti nel documento. Non inventare rapporti "
-        "contrattuali, contesti o circostanze non esplicitamente menzionati."
+        "Analizza il documento giudiziario fornito e redigi una strategia difensiva professionale "
+        "seguendo ESATTAMENTE la struttura in 8 sezioni indicata di seguito.\n\n"
+        + _STRATEGY_STRUCTURE
+        + "\n\nREGOLE FONDAMENTALI:"
+        "\n- Attieniti ESCLUSIVAMENTE ai fatti contenuti nel documento e nella conversazione. "
+        "Non inventare rapporti contrattuali, contesti o circostanze non esplicitamente menzionati."
         "\n- NON citare mai il testo di articoli di legge a memoria — usa SOLO i testi forniti "
-        "nella sezione 'TESTO DEGLI ARTICOLI' qui sopra"
-        "\n- Se il testo di un articolo non è nella sezione sopra, scrivi [TESTO DA VERIFICARE] "
-        "invece del testo"
-        "\n- NON usare le sentenze del corpus come fonte di argomentazioni giuridiche se non "
-        "pertinenti al tipo di causa. Le sentenze servono SOLO come precedenti giurisprudenziali "
-        "per supportare argomenti già fondati sui fatti del documento."
-        + (f"\n\nNormativa di riferimento dal corpus legale:\n{citations_text}" if citations_text else "")
+        "nella sezione 'TESTO DEGLI ARTICOLI' o scrivi [TESTO DA VERIFICARE]"
+        "\n- NON usare le sentenze del corpus come fonte di argomentazioni se non pertinenti. "
+        "Le sentenze servono SOLO come precedenti a supporto di argomenti già fondati sui fatti."
+        "\n- Usa [DA COMPILARE] per i campi che richiedono dati specifici non disponibili"
+        "\n- Questa è una BOZZA che richiede revisione da parte dell'avvocato"
+        + (f"\n\nNormativa di riferimento dal corpus legale (sezione 2 e 7):\n{citations_text}" if citations_text else "")
         + (f"\n\nIstruzioni aggiuntive: {extra_instructions}" if extra_instructions else "")
     )
 
@@ -286,13 +221,12 @@ def generate_defensive_draft(
         )
         if article_text_block:
             system += (
-                "\n\nTESTO DEGLI ARTICOLI CITATI DALLA CONTROPARTE (fonte ufficiale — usa "
-                "ESCLUSIVAMENTE questi testi, non citare mai a memoria):\n"
+                "\n\nTESTO DEGLI ARTICOLI CITATI DALLA CONTROPARTE (fonte ufficiale):\n"
                 + article_text_block
             )
 
     human = (
-        f"DOCUMENTO GIUDIZIARIO DA CONTRASTARE:\n\n{document_text[:8000]}\n\n"
+        f"DOCUMENTO GIUDIZIARIO:\n\n{document_text[:8000]}\n\n"
         f"ANALISI DEL PROCEDIMENTO:\n"
         f"- Tipo: {proceeding.get('proceeding_type', 'N/A')}\n"
         f"- Sottotipo: {proceeding.get('proceeding_subtype', 'N/A')}\n"
@@ -301,7 +235,7 @@ def generate_defensive_draft(
         f"- Pretese avversarie: {proceeding.get('opposing_claims', 'N/A')}\n"
         f"- Articoli citati dalla controparte: {', '.join(proceeding.get('cited_articles', []))}\n"
         f"- Fatti chiave: {proceeding.get('key_facts', 'N/A')}\n\n"
-        "Redigi ora il documento difensivo:"
+        "Redigi ora la strategia difensiva completa in tutte e 8 le sezioni:"
     )
 
     draft = _call_chat(
@@ -344,7 +278,8 @@ def run_defensive_pipeline(
     citations: list = []
 
     if proceeding.get("cited_articles"):
-        query1 = "articoli " + ", ".join(proceeding["cited_articles"][:5])
+        codes = " ".join(proceeding.get("cited_codes", []))
+        query1 = f"articoli {', '.join(proceeding['cited_articles'][:5])} {codes}".strip()
         try:
             r1 = rag_run(query1, session_language=session_lang, skip_calculation=True)
             citations = _extract_citations(r1.get("raw_result", []))
@@ -355,8 +290,10 @@ def run_defensive_pipeline(
     article_citations = []
     if proceeding.get("cited_articles"):
         for article_ref in proceeding["cited_articles"][:5]:
+            codes = " ".join(proceeding.get("cited_codes", []))
+            scoped_ref = f"{article_ref} {codes}".strip()
             try:
-                r3 = rag_run(article_ref, session_language=session_lang, skip_calculation=True)
+                r3 = rag_run(scoped_ref, session_language=session_lang, skip_calculation=True)
                 article_citations = _merge_citations(
                     article_citations,
                     _extract_citations(r3.get("raw_result", [])),
