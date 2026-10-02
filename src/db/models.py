@@ -146,9 +146,9 @@ class UserSettings(Base):
                      nullable=False, unique=True)
     tenant_id = Column(UUID(as_uuid=True), ForeignKey("tenants.id"),
                        nullable=False)
-    tone = Column(Integer, default=2)               # 1-4
-    standing = Column(Integer, default=2)           # 1-4
-    response_length = Column(Integer, default=2)    # 1-4
+    tone = Column(Integer, default=2)               # 1-3 (1-4 until Oct 2026)
+    standing = Column(Integer, default=2)           # 1-3
+    response_length = Column(Integer, default=2)    # 1-3
     updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     # Relationships

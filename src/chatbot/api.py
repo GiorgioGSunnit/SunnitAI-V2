@@ -66,7 +66,7 @@ from ..rag.document_generation import (
     _call_chat,
 )
 from ..rag.answer_processing import _extract_citations
-from ..rag.prompts import legal_consultant_system_prefix, _LENGTH
+from ..rag.prompts import legal_consultant_system_prefix, length_instruction
 from langchain_core.messages import SystemMessage, HumanMessage
 from .auth import get_current_user, require_user, create_access_token, verify_password, hash_password
 from .billing import enforce_tenant_product_access, serialize_subscription
@@ -2697,7 +2697,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "domanda dell'utente. "
                                 "Non ripetere il contenuto degli estratti — solo le differenze chiave. "
                                 + _lang_note
-                                + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
+                                + "\n\n" + length_instruction(_doc_settings["response_length"])
                             )
                             if _compare_citations:
                                 _citations_text = "\n".join(
@@ -3040,7 +3040,7 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                                 "'NOME: MARIO ROSSI' → nome: MARIO ROSSI (MARIO ROSSI è il valore, non l'etichetta). "
                                 "Non includere mai l'etichetta del campo come parte del valore quando rispondi. "
                                 + _lang_note
-                                + "\n\n" + _LENGTH.get(_doc_settings["response_length"], _LENGTH[2])
+                                + "\n\n" + length_instruction(_doc_settings["response_length"])
                             )
                             if _doc_citations:
                                 _citations_text = "\n".join(

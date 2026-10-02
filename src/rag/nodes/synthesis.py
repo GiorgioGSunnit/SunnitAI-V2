@@ -19,6 +19,7 @@ from ..answer_processing import (
 from ..cypher_logger import log_cypher_event
 from ..formatting import _session_lang, _summarize_for_synthesis
 from ..prompts import (
+    setting_level,
     synthesis_empty_system,
     synthesis_error_system,
     synthesis_human_footer,
@@ -29,12 +30,12 @@ from ..verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
 
-# Answer ceiling per response-length setting (1 concise ... 4 comprehensive),
+# Answer ceiling per response-length setting (1 brief, 2 standard, 3 in-depth),
 # sized to what each level asks for in prompts._LENGTH. A flat 600 cut the
-# 2-3 paragraphs of level 3 and the 4-6 of level 4 mid-sentence. It is a
-# ceiling, not a target: the model stops when done, so only answers that would
-# have been cut spend more.
-_ANSWER_TOKENS = {1: 600, 2: 800, 3: 1400, 4: 2400}
+# 4-6 paragraphs of the longest level mid-sentence. It is a ceiling, not a
+# target: the model stops when done, so only answers that would have been cut
+# spend more.
+_ANSWER_TOKENS = {1: 600, 2: 900, 3: 2400}
 
 # Text kept from each retrieved section. The shared default of 500 is about a
 # third of a page: too little to quote an article from.
@@ -86,10 +87,10 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         },
     )
 
-    tone = int(state.get("tone") or 2)
-    standing = int(state.get("standing") or 2)
-    response_length = int(state.get("response_length") or 2)
-    answer_tokens = _ANSWER_TOKENS.get(response_length, _ANSWER_TOKENS[2])
+    tone = setting_level(state.get("tone"))
+    standing = setting_level(state.get("standing"))
+    response_length = setting_level(state.get("response_length"))
+    answer_tokens = _ANSWER_TOKENS[response_length]
 
     def _with_history(system_content: str, human_content: str):
         """Build a message list with full conversation history injected."""

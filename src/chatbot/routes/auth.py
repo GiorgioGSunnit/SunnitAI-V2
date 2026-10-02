@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from ...db.base import get_db
 from ...db.models import User
 from ...db import crud
+from ...rag.prompts import SETTING_LEVELS, setting_level
 from ..auth import (
     verify_password,
     create_access_token,
@@ -268,9 +269,9 @@ def get_me(
         professional_title=profile.professional_title if profile else None,
         studio_name=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
         avatar_url=profile.profile_image_path if profile else None,
-        tone=settings.tone if settings else 2,
-        standing=settings.standing if settings else 2,
-        response_length=settings.response_length if settings else 2,
+        tone=setting_level(settings.tone) if settings else 2,
+        standing=setting_level(settings.standing) if settings else 2,
+        response_length=setting_level(settings.response_length) if settings else 2,
         dark_mode=pref_data.get("dark_mode", False),
         primary_color=pref_data.get("primary_color"),
         totp_enabled=current_user.totp_enabled or False,
@@ -320,9 +321,9 @@ def update_profile(
         professional_title=profile.professional_title if profile else None,
         studio_name=(tenant_profile.legal_name or tenant_profile.display_name) if tenant_profile else None,
         avatar_url=profile.profile_image_path if profile else None,
-        tone=settings.tone if settings else 2,
-        standing=settings.standing if settings else 2,
-        response_length=settings.response_length if settings else 2,
+        tone=setting_level(settings.tone) if settings else 2,
+        standing=setting_level(settings.standing) if settings else 2,
+        response_length=setting_level(settings.response_length) if settings else 2,
         dark_mode=pref_data.get("dark_mode", False),
         primary_color=pref_data.get("primary_color"),
         totp_enabled=current_user.totp_enabled or False,
@@ -341,7 +342,8 @@ def update_settings(
     db: Session = Depends(get_db)
 ):
     """Update AI conversation settings."""
-    # Validate slider values
+    # Validate slider values. The sliders have 3 levels since Oct 2026; a 4
+    # from a frontend that still shows 4 is accepted and stored as 3.
     for val, name in [
         (request.tone, "tone"),
         (request.standing, "standing"),
@@ -350,15 +352,15 @@ def update_settings(
         if not 1 <= val <= 4:
             raise HTTPException(
                 status_code=400,
-                detail=f"{name} must be between 1 and 4"
+                detail=f"{name} must be between 1 and {SETTING_LEVELS}"
             )
 
     settings = crud.update_user_settings(
         db=db,
         user_id=current_user.id,
-        tone=request.tone,
-        standing=request.standing,
-        response_length=request.response_length
+        tone=setting_level(request.tone),
+        standing=setting_level(request.standing),
+        response_length=setting_level(request.response_length)
     )
 
     pref_data = {}
