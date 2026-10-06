@@ -106,36 +106,88 @@ def classify_proceeding(text: str, lang: str = "it") -> dict:
 
 
 _STRATEGY_STRUCTURE = """
-Redigi una STRATEGIA DIFENSIVA LEGALE strutturata nelle seguenti 8 sezioni obbligatorie.
-Usa esattamente questi titoli in grassetto. Non omettere nessuna sezione.
+Redigi un'ANALISI LEGALE COMPLETA strutturata nelle seguenti 5 sezioni obbligatorie.
+Usa esattamente questi titoli in grassetto. Non omettere nessuna sezione né sottosezione.
 
 **1. Premessa e Inquadramento della Questione**
-Riassumi lo scenario dichiarato raccogliendo tutti gli elementi dalla conversazione e dai documenti allegati. Identifica le parti, il contesto, e la natura della controversia.
 
-**2. Inquadramento Normativo**
-Elenca e cita tutte le normative applicabili alla situazione descritta (articoli di legge, decreti, regolamenti). Per ciascuna norma fornisci un breve sommario del contenuto rilevante. Usa SOLO i testi forniti nella sezione 'TESTO DEGLI ARTICOLI' — per qualsiasi articolo non presente scrivi [TESTO DA VERIFICARE].
-IMPORTANTE: cita SOLO norme del ramo giuridico pertinente al tipo di causa (cause civili → Codice Civile e c.p.c.; cause penali → Codice Penale e c.p.p.; cause amministrative → leggi amministrative). NON citare norme penali in cause civili e viceversa.
+**1a. Descrizione dei Fatti**
+- Identifica chi è il cliente e qual è il suo obiettivo reale (non solo ciò che chiede formalmente, ma ciò che vuole ottenere: risarcimento economico, tutela della reputazione, risoluzione rapida, etc.)
+- Ricostruzione cronologica dei fatti: chi, cosa, quando, dove, come — senza interpretazioni
+- ATTENZIONE: distingui chiaramente ciò che il cliente sa con certezza da ciò che crede o ricorda
+- Controparti e soggetti terzi coinvolti (testimoni, assicurazioni, enti, periti)
+- Cosa è già stato fatto: diffide, trattative, atti, procedimenti pendenti, scadenze già decorse
+- ATTENZIONE: non inventare MAI cifre, date o fatti non presenti nel documento.
+  Usa [DA VERIFICARE] per qualsiasi dato non confermato dai documenti.
 
-**3. Punti di Forza**
-Elenca tutti i punti di forza della strategia difensiva, suddivisi in:
-- **Principali**: argomenti più favorevoli, facilmente dimostrabili o già documentati
-- **Subordinati**: argomenti di supporto, meno diretti ma comunque rilevanti
-Per ciascun punto indica la norma o il fatto a sostegno.
+**1b. Acquisizione e Vaglio dei Documenti**
+- Elenca i documenti disponibili (contratti, corrispondenza, PEC, email, messaggi, atti notificati, provvedimenti)
+- Verifica autenticità, completezza e data certa di ciascun documento
+- Se applicabile: individua i documenti mancanti e chi potrebbe averli
 
-**4. Punti di Debolezza**
-Elenca le possibili contestazioni che potrebbero essere sollevate dalla controparte durante il contraddittorio o il dibattimento. Per ciascuna indica il grado di rischio (alto/medio/basso) e gli elementi poco dimostrabili o dubbi.
+**1c. Termini e Urgenze**
+- Prescrizione e decadenza applicabili
+- Termini processuali in corso (impugnazioni, opposizioni, costituzione in giudizio)
+- Necessità di misure urgenti: cautelari, sequestri, diffide, interruzione della prescrizione
+- Conflitti di interessi e profili deontologici da verificare prima di accettare l'incarico
 
-**5. Richieste Subordinate**
-Elenca le richieste da avanzare in caso di mancata accettazione degli argomenti principali (es. attenuanti generiche, riduzione della pena, compensazione parziale). Ordina dalla più alla meno favorevole.
+---
 
-**6. Conclusioni**
-Chiarisci gli obiettivi della strategia, i punti di forza a sostegno, i punti di debolezza che potrebbero comprometterla. Elenca tutti i documenti da produrre per seguire la strategia (es. memorie, perizie, testimonianze, prove documentali).
+**2. Qualificazione Giuridica**
 
-**7. Pareri e Giurisprudenza**
-Elenca i precedenti giurisprudenziali e la dottrina rilevante sia per i punti di forza che per quelli di debolezza. Usa SOLO le sentenze e i pareri forniti nel corpus legale — non citare giurisprudenza a memoria.
+**2a. Identificazione**
+- Traduci i fatti in questioni di diritto: qual è il rapporto giuridico in gioco
+- Individua le norme applicabili (sostanziali e processuali) e le possibili fattispecie alternative
+- Verifica diritto intertemporale e fonti sovranazionali se rilevanti
+- IMPORTANTE: cita SOLO norme del ramo giuridico pertinente (cause civili → c.c. e c.p.c.; cause penali → c.p. e c.p.p.; cause amministrative → leggi amministrative). NON citare norme penali in cause civili e viceversa.
 
-**8. Temi da Approfondire**
-Elenca 3-5 temi specifici che meritano ulteriore analisi, formulati come domande o aree di ricerca. Questi verranno presentati come link cliccabili all'utente.
+**2b. Ricerca: Norme, Dottrina, Giurisprudenza**
+- Testo vigente delle norme e relative modifiche recenti
+- Orientamenti giurisprudenziali prevalenti, in particolare Cassazione e Sezioni Unite; segnala eventuali contrasti tra orientamenti
+- Dottrina per i punti controversi
+- Usa SOLO i testi forniti nella sezione 'TESTO DEGLI ARTICOLI' — per qualsiasi articolo non presente scrivi [TESTO DA VERIFICARE]
+- Usa SOLO le sentenze fornite nel corpus legale — non citare giurisprudenza a memoria
+
+**2c. Profili Processuali**
+- Rito applicabile ed eventuali condizioni di procedibilità (mediazione, negoziazione assistita, querela, etc.)
+- Alternative al giudizio: transazione, arbitrato, soluzioni stragiudiziali
+- Giurisdizione e competenza (materia, valore, territorio)
+- Legittimazione e interesse ad agire
+
+---
+
+**3. Prova**
+- Per ogni fatto rilevante: chi deve provarlo (onere della prova) e con quali mezzi
+- Punti di forza probatori e lacune; cosa si può ancora acquisire
+- Prova della controparte: cosa potrebbe produrre contro il cliente
+- Valutazione complessiva della solidità probatoria della posizione del cliente
+
+---
+
+**4. Analisi di Forza e Rischio**
+- Tesi principale e tesi subordinate, in ordine dal più al meno favorevole
+- Possibili eccezioni e difese della controparte, con la replica consigliata per ciascuna
+- Stima della probabilità di successo (alta/media/bassa) con motivazione
+- Stima dei tempi processuali e dei costi (compresa la soccombenza)
+- Recuperabilità del credito o effettiva utilità del risultato atteso
+
+---
+
+**5. Strategia e Opzioni per il Cliente**
+
+**5a. Quadro delle Opzioni**
+- Elenca tutte le strade percorribili con pro e contro di ciascuna
+- Raccomandazione motivata, lasciando al cliente la decisione informata
+
+**5b. Piano Operativo**
+- Prossimi atti da compiere e relative scadenze
+- Documenti da raccogliere o produrre
+
+**5c. Gestione dell'Incarico**
+- Preventivo e modalità di compenso: [DA COMPILARE]
+- Mandato, informativa privacy, eventuale copertura assicurativa: [DA COMPILARE]
+- Aspettative: tempi stimati, esiti possibili, frequenza di aggiornamento al cliente
+- Apertura del fascicolo e scadenzario: [DA COMPILARE]
 """
 
 
@@ -148,12 +200,12 @@ def _extract_deepdive_topics(draft: str, proceeding: dict) -> list:
     try:
         raw = _call_chat([
             SystemMessage(content=(
-                "Sei un assistente legale. Dal seguente documento difensivo, estrai i temi elencati "
-                "nella sezione '8. Temi da Approfondire' come etichette brevi "
+                "Sei un assistente legale. Dal seguente documento difensivo, estrai i 3-5 temi "
+                "più importanti da approfondire, preferibilmente dalla sezione '4. Analisi di Forza e Rischio' "
+                "o '5. Strategia e Opzioni'. Restituiscili come etichette brevi "
                 "(max 5 parole ciascuna, in italiano, minuscolo). "
-                "Se la sezione 8 non è presente, estrai i 2-3 argomenti principali dalla strategia. "
                 "Restituisci SOLO una lista JSON di stringhe, niente altro. "
-                "Esempio: [\"eccezione di inadempimento\", \"contestazione delle prove\", \"prescrizione del credito\"]"
+                "Esempio: [\"prescrizione del credito\", \"onere della prova\", \"mediazione obbligatoria\"]"
             )),
             HumanMessage(content=draft[:3000]),
         ], max_tokens=100)
@@ -198,7 +250,7 @@ def generate_defensive_draft(
     system = (
         "Sei un avvocato esperto di diritto italiano. "
         "Analizza il documento giudiziario fornito e redigi una strategia difensiva professionale "
-        "seguendo ESATTAMENTE la struttura in 8 sezioni indicata di seguito.\n\n"
+        "seguendo ESATTAMENTE la struttura in 5 sezioni indicata di seguito.\n\n"
         + _STRATEGY_STRUCTURE
         + "\n\nREGOLE FONDAMENTALI:"
         "\n- Attieniti ESCLUSIVAMENTE ai fatti contenuti nel documento e nella conversazione. "
@@ -209,7 +261,13 @@ def generate_defensive_draft(
         "Le sentenze servono SOLO come precedenti a supporto di argomenti già fondati sui fatti."
         "\n- Usa [DA COMPILARE] per i campi che richiedono dati specifici non disponibili"
         "\n- Questa è una BOZZA che richiede revisione da parte dell'avvocato"
-        + (f"\n\nNormativa di riferimento dal corpus legale (sezione 2 e 7):\n{citations_text}" if citations_text else "")
+        "\n- NON inventare MAI cifre, importi, date, nomi o fatti specifici non esplicitamente "
+        "presenti nel documento fornito. Se un dato non è nel documento scrivi [DA VERIFICARE] "
+        "al suo posto. È preferibile un campo vuoto a un dato inventato."
+        "\n- Per i fatti incerti o non documentati usa formule come 'secondo quanto dichiarato', "
+        "'da verificare', 'non risulta dai documenti disponibili' — mai affermare come certo "
+        "ciò che non lo è."
+        + (f"\n\nNormativa di riferimento dal corpus legale (sezione 2):\n{citations_text}" if citations_text else "")
         + (f"\n\nIstruzioni aggiuntive: {extra_instructions}" if extra_instructions else "")
     )
 
@@ -235,7 +293,7 @@ def generate_defensive_draft(
         f"- Pretese avversarie: {proceeding.get('opposing_claims', 'N/A')}\n"
         f"- Articoli citati dalla controparte: {', '.join(proceeding.get('cited_articles', []))}\n"
         f"- Fatti chiave: {proceeding.get('key_facts', 'N/A')}\n\n"
-        "Redigi ora la strategia difensiva completa in tutte e 8 le sezioni:"
+        "Redigi ora la strategia difensiva completa in tutte e 5 le sezioni:"
     )
 
     draft = _call_chat(
