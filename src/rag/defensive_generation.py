@@ -232,6 +232,65 @@ def _format_deepdive_suggestion(topics: list) -> str:
     return f"Vuoi approfondire in particolare {parts}?"
 
 
+def _generate_legal_reasoning(
+    proceeding: dict,
+    document_text: str,
+    draft_sections_1_3: str,
+    citations: list,
+    lang: str = "it",
+) -> str:
+    """Second focused LLM call for sections 4 and 5 — deep legal reasoning."""
+
+    citations_text = ""
+    if citations:
+        citations_text = "\n".join(
+            f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:400]}"
+            for c in citations[:6] for s in (c.get('sections') or [])[:2]
+        )
+
+    system = (
+        "Sei un avvocato esperto di diritto italiano con 20 anni di esperienza in contenzioso. "
+        "Hai già prodotto le sezioni 1-3 dell'analisi legale (premessa, qualificazione, prova). "
+        "Ora devi produrre SOLO le sezioni 4 e 5, con ragionamento giuridico concreto e approfondito.\n\n"
+        "**4. Analisi di Forza e Rischio**\n"
+        "- Sviluppa la tesi principale con argomentazione specifica ai fatti: non dire genericamente "
+        "'il gesto era intenzionale' ma spiega PERCHÉ sulla base dei fatti concreti (modalità, "
+        "contesto, sequenza temporale, violazione delle regole di gioco)\n"
+        "- Per ogni tesi subordinata, indica l'articolo specifico e perché si applica a questo caso\n"
+        "- Per le eccezioni della controparte: anticipale e confutale con argomenti specifici\n"
+        "- Stima probabilità di successo con motivazione concreta basata sui fatti, non generica\n"
+        "- Indica tempi realistici e costi stimati\n\n"
+        "**5. Strategia e Opzioni per il Cliente**\n"
+        "- Per ogni opzione indica il fondamento normativo specifico (es. 'appello della parte "
+        "civile ai soli effetti civili ex art. 576 c.p.p.')\n"
+        "- Il piano operativo deve indicare l'atto concreto da compiere CON il termine specifico "
+        "(es. '15 giorni dalla notifica della sentenza motivata') e i documenti esatti da produrre\n"
+        "- La raccomandazione deve spiegare PERCHÉ quella strada è preferibile rispetto alle altre "
+        "in questo caso specifico\n\n"
+        "REGOLE:\n"
+        "- Ragiona sui fatti specifici di questo caso, non in astratto\n"
+        "- Cita le norme con il numero esatto dell'articolo\n"
+        "- Se citi giurisprudenza usa SOLO quella fornita nel corpus o scrivi [DA VERIFICARE]\n"
+        "- NON inventare cifre, date o fatti non presenti nel documento\n"
+        "- Usa [DA COMPILARE] solo per dati che il cliente deve fornire\n"
+        + (f"\n\nFonti dal corpus legale:\n{citations_text}" if citations_text else "")
+    )
+
+    human = (
+        f"ANALISI DEL CASO (sezioni 1-3 già prodotte):\n{draft_sections_1_3[:3000]}\n\n"
+        f"FATTI ORIGINALI:\n{document_text[:4000]}\n\n"
+        f"Tipo procedimento: {proceeding.get('proceeding_type', 'N/A')} — "
+        f"{proceeding.get('proceeding_subtype', 'N/A')}\n"
+        f"Articoli contestati: {', '.join(proceeding.get('cited_articles', []))}\n\n"
+        "Produci ora le sezioni 4 e 5 con ragionamento giuridico concreto:"
+    )
+
+    return _call_chat(
+        [SystemMessage(content=system), HumanMessage(content=human)],
+        max_tokens=3000,
+    )
+
+
 def generate_defensive_draft(
     proceeding: dict,
     document_text: str,
@@ -248,9 +307,13 @@ def generate_defensive_draft(
         )
 
     system = (
-        "Sei un avvocato esperto di diritto italiano. "
-        "Analizza il documento giudiziario fornito e redigi una strategia difensiva professionale "
-        "seguendo ESATTAMENTE la struttura in 5 sezioni indicata di seguito.\n\n"
+        "Sei un avvocato esperto di diritto italiano con 20 anni di esperienza in contenzioso civile e penale. "
+        "Analizza il caso descritto e produci un'analisi legale concreta e approfondita — "
+        "non una descrizione generica di cosa si potrebbe fare, ma il ragionamento giuridico effettivo: "
+        "quali norme si applicano e perché, quali argomenti reggono e quali no, "
+        "quale teoria del caso è più solida, quali sono i punti deboli specifici di questo caso. "
+        "Ragiona come se stessi preparando il fascicolo per un'udienza la prossima settimana. "
+        "Segui la struttura in 5 sezioni ma riempi ogni sezione con analisi concreta, non con placeholder.\n\n"
         + _STRATEGY_STRUCTURE
         + "\n\nREGOLE FONDAMENTALI:"
         "\n- Attieniti ESCLUSIVAMENTE ai fatti contenuti nel documento e nella conversazione. "
@@ -267,6 +330,14 @@ def generate_defensive_draft(
         "\n- Per i fatti incerti o non documentati usa formule come 'secondo quanto dichiarato', "
         "'da verificare', 'non risulta dai documenti disponibili' — mai affermare come certo "
         "ciò che non lo è."
+        "\n- Ogni argomento deve essere specifico al caso concreto — NON usare formule generiche "
+        "come 'contestare la fatturazione' o 'verificare i documenti'. Spiega PERCHÉ quella "
+        "specifica contestazione regge in questo caso, citando i fatti e le norme."
+        "\n- Per la sezione 4, stima la probabilità di successo con una motivazione concreta "
+        "basata sui fatti del caso, non una generica valutazione 'media/alta/bassa'."
+        "\n- Per la sezione 5, indica il prossimo atto concreto da compiere (es. 'depositare "
+        "atto di appello entro X giorni dalla notifica della sentenza motivata') non "
+        "descrizioni generiche."
         + (f"\n\nNormativa di riferimento dal corpus legale (sezione 2):\n{citations_text}" if citations_text else "")
         + (f"\n\nIstruzioni aggiuntive: {extra_instructions}" if extra_instructions else "")
     )
@@ -300,6 +371,23 @@ def generate_defensive_draft(
         [SystemMessage(content=system), HumanMessage(content=human)],
         max_tokens=4000,
     )
+
+    # Second focused call — replace sections 4 and 5 with deeper legal reasoning
+    try:
+        _split_marker = "**4."
+        if _split_marker in draft:
+            _sections_1_3 = draft[:draft.index(_split_marker)].strip()
+        else:
+            _sections_1_3 = draft[:3000]
+
+        _sections_4_5 = _generate_legal_reasoning(
+            proceeding, document_text, _sections_1_3, citations, lang
+        )
+
+        if _split_marker in draft:
+            draft = _sections_1_3 + "\n\n" + _sections_4_5
+    except Exception as _exc:
+        logger.warning("generate_defensive_draft: second LLM call failed, using first draft: %s", _exc)
 
     topics = _extract_deepdive_topics(draft, proceeding)
     if topics:

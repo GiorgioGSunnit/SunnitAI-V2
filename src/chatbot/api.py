@@ -1753,23 +1753,24 @@ _CORRECTION_SIGNALS = {
 }
 
 
-# Words that signal the user wants a defensive draft built against an
+# Words that used to signal the user wants a defensive draft built against an
 # uploaded judicial document (comparsa di risposta, memoria difensiva,
 # opposizione, ...), rather than a plain read/summary of it.
-# "contesto" (the noun "context") is deliberately excluded — as a bare
+# "contesto" (the noun "context") was deliberately excluded — as a bare
 # substring it would hit far more often on ordinary analyse/RAG questions
 # ("in questo contesto...") than on the verb "(io) contesto" (I dispute).
-_DEFENSIVE_TRIGGERS = [
-    "controcausa", "comparsa di risposta", "memoria difensiva",
-    "atto di difesa", "prepara la difesa", "scrivi la difesa",
-    "redigi la difesa", "difendimi", "difendi il caso",
-    "risposta alla citazione", "opposizione al decreto",
-    "atto di opposizione", "ricorso contro", "impugno",
-    "mi difendo", "difesa del caso",
-    "strategia difensiva", "definisci la strategia", "strategia legale",
-    "analisi del caso", "analizza il caso", "valuta il caso",
-    "generami una strategia", "prepara una strategia",
-]
+# Superseded by _classify_legal_intent (LLM-based); kept here for reference.
+# _DEFENSIVE_TRIGGERS = [
+#     "controcausa", "comparsa di risposta", "memoria difensiva",
+#     "atto di difesa", "prepara la difesa", "scrivi la difesa",
+#     "redigi la difesa", "difendimi", "difendi il caso",
+#     "risposta alla citazione", "opposizione al decreto",
+#     "atto di opposizione", "ricorso contro", "impugno",
+#     "mi difendo", "difesa del caso",
+#     "strategia difensiva", "definisci la strategia", "strategia legale",
+#     "analisi del caso", "analizza il caso", "valuta il caso",
+#     "generami una strategia", "prepara una strategia",
+# ]
 
 
 def _is_correction_request(message: str) -> bool:
@@ -1879,8 +1880,12 @@ def _classify_doc_intent(
     """
     lower = message.lower()
 
-    if any(s in lower for s in _DEFENSIVE_TRIGGERS):
-        return "defensive_draft"
+    try:
+        _intent = _classify_legal_intent(message, session_lang)
+        if _intent == "defensive_draft":
+            return "defensive_draft"
+    except Exception:
+        pass
 
     analyse_hit = any(s in lower for s in _ANALYSE_SIGNALS)
     generate_hit = any(s in lower for s in _GENERATE_SIGNALS)
@@ -1999,6 +2004,47 @@ def _classify_top_level_intent(message: str, session_lang: str) -> str:
             max_tokens=5,
         ).strip().lower()
         if result in ("generate", "compare", "rag"):
+            return result
+    except Exception:
+        pass
+    return "rag"
+
+
+def _classify_legal_intent(message: str, session_lang: str) -> str:
+    """
+    LLM-based classification of a message with NO document attached, deciding
+    whether the user wants:
+      - 'defensive_draft' → a legal/defensive strategy analysis built from the
+        facts described in the message itself, no uploaded document needed
+      - 'generate'        → a new legal document drafted from scratch
+      - 'rag'             → a question, or anything else
+
+    Single LLM call, no keyword fast path. Always returns a valid value —
+    any failure (LLM error, unparseable reply) is caught here and defaults
+    to 'rag', so callers never need to guard this call themselves.
+    """
+    system = (
+        "Sei un classificatore di intenzioni per un assistente legale italiano. "
+        "L'utente NON ha allegato nessun documento. Classifica il messaggio in UNA "
+        "di queste categorie:\n\n"
+        "- 'defensive_draft': l'utente descrive una situazione o controversia e "
+        "chiede una strategia difensiva, un'analisi del caso, o una valutazione "
+        "legale basata sui fatti che racconta (es. 'ho subito un incidente, cosa "
+        "posso fare', 'il mio inquilino non paga, come mi difendo')\n"
+        "- 'generate': l'utente vuole creare un documento legale da zero "
+        "(contratto, memoria, atto, ricorso, istanza, nomina, ecc.) senza "
+        "chiedere un'analisi del caso\n"
+        "- 'rag': domanda generica su temi legali, spiegazione, o qualsiasi "
+        "altro caso\n\n"
+        "In caso di dubbio usa 'rag'.\n"
+        "Rispondi SOLO con una parola: defensive_draft, generate, o rag."
+    )
+    try:
+        result = _call_chat(
+            [SystemMessage(content=system), HumanMessage(content=message[:600])],
+            max_tokens=5,
+        ).strip().lower()
+        if result in ("defensive_draft", "generate", "rag"):
             return result
     except Exception:
         pass
@@ -3226,6 +3272,59 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
                     "— falling through to RAG",
                     _not_found,
                 )
+
+    # ── LLM-based legal intent detection (no document attached) ──────────
+    _session = chatbot.get_session(session_id, user_id=_uid, db=db)
+    if _session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    _session_lang = _session.session_language
+    _legal_intent = _classify_legal_intent(request.message, _session_lang)
+    if _legal_intent == "defensive_draft":
+        # Use message text as source — no document required
+        from ..rag.defensive_generation import run_defensive_pipeline
+        try:
+            loop = asyncio.get_event_loop()
+            _def_result = await loop.run_in_executor(
+                None,
+                partial(run_defensive_pipeline, request.message, request.message, _session_lang)
+            )
+            answer = (
+                "⚖️ **BOZZA STRATEGIA DIFENSIVA** *(richiede revisione da parte dell'avvocato)*\n\n"
+                + _def_result["draft"]
+            )
+            _doc_citations = _def_result["citations"]
+            _def_doc_id, _def_doc_name = None, None  # no DOCX for text-only flow
+        except Exception as _exc:
+            logger.error("chat: defensive_draft (no-doc) failed: %s", _exc, exc_info=True)
+            answer = "Si è verificato un errore nella generazione della strategia. Riprova."
+            _doc_citations = []
+
+        _session.add_message("user", request.message)
+        if len(_session.messages) == 1:
+            _session.title = _generate_session_title(request.message)
+        _session.add_message("assistant", answer, metadata={"citations": _doc_citations} if _doc_citations else {})
+        _confirmation_q = _session._summarize_if_needed()
+        if _confirmation_q:
+            _session.add_message("assistant", _confirmation_q, metadata={
+                "awaiting_summary_confirmation": True,
+                "pending_summary": {"text": _session._pending_summary, "covers_turns": _session._pending_summary_covers},
+                "type": "summary_confirmation",
+            })
+        chatbot._save_sessions()
+        return ChatResponse(
+            session_id=session_id,
+            answer=answer,
+            citations=_doc_citations,
+            original_query=request.message,
+            resolved_query=request.message,
+            session_language=_session_lang,
+            status_messages=["defensive_draft_mode"],
+            awaiting_summary_confirmation=bool(_confirmation_q),
+            title=_session.title,
+        )
+    elif _legal_intent == "generate":
+        pass  # fall through to existing _classify_top_level_intent
+    # else: "rag" → fall through to existing flow unchanged
 
     _top_intent = _classify_top_level_intent(request.message, "it")
     if _top_intent == "generate" or is_generation_request(request.message):
