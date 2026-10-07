@@ -488,26 +488,42 @@ def generate_deepdive_analysis(topic: str, chat_history: list, session_lang: str
 
     original_draft = ""
     for msg in reversed(chat_history):
-        if msg.get("role") == "assistant" and "BOZZA DOCUMENTO DIFENSIVO" in msg.get("content", ""):
+        _content = msg.get("content", "")
+        if msg.get("role") == "assistant" and (
+            "BOZZA DOCUMENTO DIFENSIVO" in _content or "BOZZA STRATEGIA DIFENSIVA" in _content
+        ):
             original_draft = msg["content"][:3000]
             break
 
     system = (
         "Sei un avvocato esperto di diritto italiano. "
-        f"L'utente vuole approfondire il seguente argomento difensivo: '{topic}'. "
-        "Fornisci un'analisi giuridica dettagliata e approfondita di questo specifico argomento, includendo:\n"
-        "- Fondamento normativo (articoli di legge applicabili)\n"
-        "- Orientamento giurisprudenziale prevalente\n"
-        "- Strategia difensiva consigliata\n"
-        "- Prove e documenti utili a supporto\n"
-        "- Possibili obiezioni della controparte e come controbatterle\n"
-        "Usa un linguaggio giuridico formale italiano. "
-        "NON citare articoli di legge a memoria — usa SOLO le fonti fornite o scrivi [DA VERIFICARE]."
+        f"Nel caso descritto nella bozza difensiva di riferimento, l'utente vuole approfondire "
+        f"specificamente: '{topic}'.\n\n"
+        "Fornisci un'analisi giuridica concreta e approfondita di questo argomento "
+        "APPLICATA AL CASO SPECIFICO — non una trattazione generale dell'istituto. "
+        "Rispondi come se stessi preparando questa sezione per l'udienza:\n"
+        "- Come si applica questo argomento ai fatti specifici di questo caso\n"
+        "- Quale norma esatta regola questa situazione e perché\n"
+        "- Quale orientamento giurisprudenziale è più favorevole al cliente in questo caso\n"
+        "- Quali prove specifiche di questo caso supportano o indeboliscono questo argomento\n"
+        "- Quali obiezioni farà la controparte su questo punto specifico e come replicare\n"
+        "NON fare una trattazione generale — ogni punto deve riferirsi ai fatti del caso. "
+        "NON citare articoli o sentenze a memoria — usa SOLO le fonti fornite o scrivi [DA VERIFICARE]. "
+        "NON inventare cifre o fatti non presenti nella bozza di riferimento."
         + (f"\n\nFonti dal corpus legale:\n{citations_text}" if citations_text else "")
-        + (f"\n\nBozza difensiva di riferimento:\n{original_draft}" if original_draft else "")
+        + (f"\n\nBOZZA DIFENSIVA DEL CASO (usa questi fatti come riferimento):\n{original_draft}" if original_draft else "")
+        + "\n\nATTENZIONE CRITICA: "
+        "\n- L'art. 2697 c.c. è la norma generale sull'onere della prova — NON inventare altri articoli"
+        "\n- NON citare MAI numeri di sentenza specifici (es. n. 12345) a meno che non siano "
+        "esplicitamente presenti nelle fonti del corpus fornite sopra"
+        "\n- Se non hai una sentenza specifica dal corpus, scrivi 'orientamento consolidato della "
+        "Cassazione [DA VERIFICARE]' senza inventare numeri"
     )
 
     return _call_chat(
-        [SystemMessage(content=system), HumanMessage(content=f"Approfondisci: {topic}")],
+        [
+            SystemMessage(content=system),
+            HumanMessage(content=f"Approfondisci '{topic}' in relazione al caso descritto nella bozza."),
+        ],
         max_tokens=2000,
     )
