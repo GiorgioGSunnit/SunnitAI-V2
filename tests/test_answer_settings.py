@@ -36,8 +36,48 @@ def test_old_level_four_and_odd_values_map_onto_three_levels():
 def test_a_stored_four_keeps_what_level_four_did():
     """Directive tone, Latin maxims, the longest answers."""
     assert "imperative" in P._TONE[P.setting_level(4)]
-    assert "Latin maxims" in P._STANDING[P.setting_level(4)]
+    assert "Latin legal maxim" in P._STANDING[P.setting_level(4)]
     assert "4 to 6" in P.length_instruction(4)
+
+
+# --- Tone and register must reach the model --------------------------------
+# Oct 2026 trial: placed at the start of ~2,700 tokens of grounding rules, with
+# "quote the law precisely" as the last instruction, tone 1 vs 3 and register
+# 1 vs 3 gave near-identical answers and register 3 never used Latin.
+
+
+def test_style_is_the_last_thing_before_the_length_block():
+    rules = P.synthesis_system_message("it", tone=3, standing=3, length=2, tiered=True)
+    style = rules.index("STYLE —")
+    assert style > rules.index("Rule 7")
+    assert style > rules.index("STRUTTURA DELLA RISPOSTA")
+    assert style < rules.index("RESPONSE LENGTH —")  # the block, not the earlier mentions
+    assert rules.count("STYLE —") == 1
+    assert P._TONE[3] in rules and P._STANDING[3] in rules
+
+
+def test_other_callers_still_get_tone_and_register_from_the_prefix():
+    prefix = P.legal_consultant_system_prefix("it", tone=1, standing=1)
+    assert P._TONE[1] in prefix and P._STANDING[1] in prefix
+
+
+def test_latin_at_the_elevated_register_is_allowed_as_style():
+    assert "only exception to the grounding rules" in P._STANDING[3]
+
+
+def test_style_never_licenses_new_legal_content():
+    """A/B test, Oct 2026: plainer or more formal wording made the model paraphrase
+    and invent conditions; every style block must say content stays the sources'."""
+    for tone in (1, 2, 3):
+        for standing in (1, 2, 3):
+            assert "NEVER WHAT YOU STATE" in P.style_instruction(tone, standing)
+    assert "legal content and terms stay" in P.synthesis_human_footer("it", 1, 1, 1)
+
+
+def test_the_question_ends_with_a_reminder_of_the_settings():
+    footer = P.synthesis_human_footer("it", 3, 1, 4)
+    assert "directive" in footer and "accessible" in footer and "in-depth" in footer
+    assert "Apply the STYLE" not in P.synthesis_human_footer("it")
 
 
 @pytest.mark.parametrize("level", [1, 2, 3])

@@ -28,43 +28,89 @@ def setting_level(value) -> int:
         return DEFAULT_LEVEL
 
 
+# Tone and register are written as concrete, checkable instructions, and are
+# placed at the END of the answer instructions (see style_instruction). Tested
+# Oct 2026: as abstract adjectives at the start of ~2,700 tokens of grounding
+# rules they changed almost nothing - tone 1 and 3, register 1 and 3 produced
+# near-identical answers and register 3 never used Latin.
 _TONE = {
     1: (
-        "Adopt a warm, consultative tone. Present the realistic options with their advantages and "
-        "drawbacks rather than a single directive, with phrases like 'potrebbe valutare', "
-        "'una possibilità è', 'le suggerisco di considerare'. "
-        "Acknowledge uncertainty openly where the sources leave a point open."
+        "CONSULTATIVE. Present the realistic options or readings the sources allow, each with its "
+        "advantages and limits, in the conditional: 'potrebbe valutare', 'una possibile strada è', "
+        "'in alternativa', 'le suggerisco di considerare'. Never give orders in the imperative. "
+        "Where the sources leave a point open, say so."
     ),
     2: (
-        "Use a balanced, professional tone — consultative, but direct about conclusions. "
-        "Lead with the answer, then give the supporting reasoning."
+        "BALANCED. Professional and neutral: give the answer first, then the reasoning. "
+        "Neither instructions in the imperative nor hedging."
     ),
     3: (
-        "Use an assertive, directive tone. Lead with the conclusion. "
-        "Use imperative constructions: 'verifichi', 'presenti', 'contesti', 'richieda'. "
-        "Tell the user exactly what to do, what to avoid, and what their next concrete step should be. "
-        "Do not offer multiple options — give the single best course of action."
+        "DIRECTIVE. Open with the conclusion in one sentence. Then tell the user what to do, in the "
+        "formal imperative (Lei): 'verifichi', 'presenti', 'contesti', 'richieda', 'conservi'. Give the "
+        "single best course of action, not a list of options. No hedging words such as 'potrebbe', "
+        "'eventualmente', 'si potrebbe valutare'. Even when the question is theoretical, include one "
+        "concrete indication of what to check or do, derived only from the rules in the retrieved documents."
     ),
 }
 
 _STANDING = {
     1: (
-        "Use plain, accessible language. Avoid technical jargon where a simpler word conveys the same meaning. "
-        "Explain legal concepts as you would to an informed non-specialist."
+        "ACCESSIBLE. Write for an intelligent reader who is not a lawyer: short sentences and everyday "
+        "words. When a technical term is unavoidable, explain it in a few words the first time it appears "
+        "(e.g. 'la caparra confirmatoria, cioè la somma versata alla firma a garanzia dell'adempimento'). "
+        "No Latin."
     ),
     2: (
-        "Use standard professional legal language with precise terminology. "
-        "Assume the reader is a qualified legal professional."
+        "PROFESSIONAL. Standard professional legal language with precise terminology, for a qualified "
+        "legal professional."
     ),
     3: (
-        "Use highly elevated formal legal language with precise technical terminology throughout. "
-        "Refer to doctrinal sources and jurisprudential positions with appropriate formality. "
-        "Incorporate Latin maxims where appropriate and natural "
-        "(e.g. 'nemo auditur propriam turpitudinem allegans', 'in dubio pro reo', 'pacta sunt servanda', "
-        "'lex specialis derogat legi generali'). "
-        "Write as a senior judge or academic jurist would."
+        "ELEVATED. Formal legal prose as in a senior jurist's opinion: technical vocabulary, longer "
+        "periodic sentences, impersonal constructions such as 'si osserva che', 'giova rilevare che', "
+        "'ne discende che'. Use at least one Latin legal maxim or Latin technical expression that fits "
+        "the point (e.g. 'pacta sunt servanda', 'inadimplenti non est adimplendum', 'ex tunc', "
+        "'ope legis', 'in dubio pro reo'). Latin is style, not content: it is allowed although it does "
+        "not appear in the retrieved documents - the only exception to the grounding rules - but never "
+        "present it as coming from a document and never use it to add a rule the documents do not contain."
     ),
 }
+
+# One-line reminders repeated at the very end of the user message, the last
+# thing the model reads before writing.
+_TONE_REMINDER = {
+    1: "consultative - options in the conditional, no imperatives",
+    2: "balanced - answer first, then reasoning",
+    3: "directive - conclusion first, formal imperatives (verifichi, presenti), one course of action",
+}
+_STANDING_REMINDER = {
+    1: "accessible - short sentences, technical terms explained, no Latin",
+    2: "professional",
+    3: "elevated - formal periodic prose and at least one fitting Latin expression",
+}
+_LENGTH_REMINDER = {1: "brief", 2: "standard", 3: "in-depth"}
+
+
+# Without this line the A/B test showed the style instructions pulling the
+# model away from its sources: asked for plainer or more formal wording, it
+# paraphrased and filled gaps from memory (an invented "avviso preventivo"
+# condition for risoluzione, "rescissione" for risoluzione).
+_STYLE_KEEPS_CONTENT = (
+    "STYLE CHANGES HOW YOU WRITE, NEVER WHAT YOU STATE: every legal rule, condition, term, deadline "
+    "and step must still come from the retrieved documents, named with the legal terms they use "
+    "(e.g. 'risoluzione', never 'rescissione' for it). When you simplify, simplify the wording, not "
+    "the rule; keep the legal term and explain it. When you write formally or directively, do not add "
+    "content the documents do not contain."
+)
+
+
+def style_instruction(tone, standing) -> str:
+    """The STYLE block (tone + register) for stored settings."""
+    return (
+        "STYLE — follow exactly; this overrides any other style guidance above.\n"
+        f"TONE: {_TONE[setting_level(tone)]}\n"
+        f"REGISTER: {_STANDING[setting_level(standing)]}\n"
+        f"{_STYLE_KEEPS_CONTENT}"
+    )
 
 # Each level also sets how many sections to cite, so that no other rule caps
 # citations below what a level asks for.
@@ -114,12 +160,16 @@ def legal_consultant_system_prefix(
     tone: int = 2,
     standing: int = 2,
 ) -> str:
+    return f"{_persona(session_lang)}\n\n{style_instruction(tone, standing)}"
+
+
+def _persona(session_lang: SessionLang) -> str:
+    """Who the assistant is and the rules every answer keeps; no tone or register,
+    which callers place where the model will follow them (style_instruction)."""
     lang = language_display_name(session_lang)
-    tone_instruction = _TONE[setting_level(tone)]
-    standing_instruction = _STANDING[setting_level(standing)]
     return (
         f"You are an expert legal consultant assisting qualified legal professionals (lawyers, in-house counsel). "
-        f"Use precise legal terminology appropriate to the matter; do not oversimplify legal language from the sources. "
+        f"Use precise legal terminology; how technical the wording is follows the REGISTER setting. "
         f"Respond in {lang} for all explanations, reasoning, and synthesis. "
         f"{_anti_meta_instructions(session_lang)} "
         f"When quoting source text that appears in another language, keep the quote verbatim; keep your analysis in {lang}. "
@@ -127,9 +177,7 @@ def legal_consultant_system_prefix(
         f"Use flowing prose - do not use numbered sections, headers, or bullet points. "
         f"CLOSING RULE (mandatory): End with a strong conclusive sentence starting with 'In definitiva,' or 'In sintesi,' that states a clear legal principle. NEVER end with phrases like 'un approfondimento potrebbe...', 'potrebbe essere utile esaminare...', or any open-ended suggestion. The closing must be a statement, not an invitation. "
         f"The only exception is a reply saying the topic is not in the knowledge base, which ends as its own rule prescribes. "
-        f"CRITICAL: Never cite specific article numbers, law numbers, or decree numbers unless they appear verbatim in the retrieved documents. If no retrieved document contains the specific article number, describe the legal principle in general terms only - never invent or assume article numbers even if you believe them to be correct. Violations of this rule are more harmful than a vague answer. "
-        f"TONE: {tone_instruction} "
-        f"LANGUAGE REGISTER: {standing_instruction}"
+        f"CRITICAL: Never cite specific article numbers, law numbers, or decree numbers unless they appear verbatim in the retrieved documents. If no retrieved document contains the specific article number, describe the legal principle in general terms only - never invent or assume article numbers even if you believe them to be correct. Violations of this rule are more harmful than a vague answer."
     )
 
 
@@ -150,8 +198,12 @@ def synthesis_system_message(
     tone: int = 2,
     standing: int = 2,
     length: int = 2,
+    tiered: bool = False,
 ) -> str:
-    base = legal_consultant_system_prefix(session_lang, tone=tone, standing=standing)
+    """The answer instructions. Style and length come last, after every rule,
+    so they are what the model reads just before writing. `tiered`: the data
+    mixes primary sources (law) and secondary ones (case law)."""
+    base = _persona(session_lang)
     lang = language_display_name(session_lang)
     retrieval_failure_block = (
         "RETRIEVAL FAILURE OVERRIDE: The database search found NO documents relevant to this query. "
@@ -230,7 +282,7 @@ def synthesis_system_message(
         f"If asked about a specific article number and nothing topically related exists, say in the user's language: (1) a polite acknowledgment that the specific article requested is not in the knowledge base; (2) a suggestion to consult the official source (such as the official gazette or the relevant code) to find the full text; (3) a closing invitation to explore related topics — use exactly: Italian: 'Se desidera, posso aiutarla con domande correlate presenti nella mia base documentale.' English: 'If you wish, I can help you with related topics available in my knowledge base.' Spanish: 'Si lo desea, puedo ayudarle con temas relacionados disponibles en mi base de conocimiento.' Limit to 3 sentences. Do NOT add any sentence beginning with 'tuttavia', 'however', 'in generale', 'secondo la dottrina', 'generalmente', or similar. Do NOT describe what the article 'generally' says. Do NOT provide any legal content beyond this structure. If topically related content IS present, apply Rule 2 first, then note the specific article gap at the end. Include no citations. The response is complete after these 3 sentences. "
         f"Rule 7 - Response style: "
         f"Write as a knowledgeable legal professional speaking with a colleague, not a database returning results: natural and professional, never terse or robotic. "
-        f"Length follows RESPONSE LENGTH, tone follows TONE, and the ending follows the CLOSING RULE. "
+        f"Tone and register follow STYLE, length follows RESPONSE LENGTH, and the ending follows the CLOSING RULE. "
         f"Avoid bullet-point style answers unless listing specific legal requirements. Prefer flowing prose. "
         f"ABSOLUTE PROHIBITION: Never follow a statement of 'this information is not in my documents' with any legal content, doctrine, general knowledge, or invented information. If you have acknowledged a gap, the response on that topic is complete. The phrases 'tuttavia', 'however', 'in generale', 'secondo la dottrina', 'generalmente', 'di norma' must NEVER appear after a gap acknowledgment. "
         f"CRITICAL TOPICALITY TEST: Before using any retrieved section, ask: 'Is this section primarily about the topic asked?' "
@@ -245,8 +297,23 @@ def synthesis_system_message(
         f"Never cite more sections than RESPONSE LENGTH allows. "
         f"Non porre domande all'utente e non chiedere chiarimenti."
         f"{comparison_block}"
+        f"{_TIERED_STRUCTURE if tiered else ''}"
+        f"\n\n{style_instruction(tone, standing)}"
         f"\n\n{length_instruction(length)}"
     )
+
+
+# Used when the data mixes law and case law. It came after the length block,
+# so "quote the law precisely" was the last thing the model read and tone and
+# register were lost; it now comes before them.
+_TIERED_STRUCTURE = (
+    "\nSTRUTTURA DELLA RISPOSTA (obbligatoria quando sono presenti più tipi di fonti):\n"
+    "1. FONTI PRIMARIE: inizia citando cosa stabilisce la legge, riportando il testo normativo con precisione.\n"
+    "2. FONTI SECONDARIE: aggiungi come la giurisprudenza ha interpretato la norma, con attribuzione esplicita "
+    "(es. 'La Corte di Cassazione ha stabilito che...', 'Secondo la sentenza n. X...').\n"
+    "Se una fonte non è disponibile, ometti quella sezione senza menzionarne l'assenza. "
+    "Non inventare contenuti non presenti nelle fonti."
+)
 
 
 def synthesis_error_system(
@@ -269,13 +336,23 @@ def synthesis_empty_system(
     return synthesis_without_graph_substance_system(session_lang, tone=tone, standing=standing, length=length)
 
 
-def synthesis_human_footer(session_lang: SessionLang) -> str:
-    """Appended to user messages in synthesis to reduce model drift into meta-responses."""
+def synthesis_human_footer(session_lang: SessionLang, tone=None, standing=None, length=None) -> str:
+    """Appended to user messages in synthesis to reduce model drift into meta-responses.
+    With the user's settings, it also repeats them in one line - the last thing
+    the model reads before writing."""
     lang = language_display_name(session_lang)
-    return (
+    footer = (
         f"\n\nHard constraints: write only in {lang}. "
         f"No language-of-database vs language-of-question explanations. "
         f"No suggested follow-up questions as the main answer."
+    )
+    if tone is None and standing is None and length is None:
+        return footer
+    return footer + (
+        f"\nApply the STYLE and RESPONSE LENGTH settings: tone {_TONE_REMINDER[setting_level(tone)]}; "
+        f"register {_STANDING_REMINDER[setting_level(standing)]}; "
+        f"length {_LENGTH_REMINDER[setting_level(length)]}. "
+        f"Style changes the wording only: the legal content and terms stay those of the documents."
     )
 
 

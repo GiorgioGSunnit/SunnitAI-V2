@@ -288,19 +288,13 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             tone=tone,
             standing=standing,
             length=response_length,
-        )
-    if is_tiered:
-        system_prompt = system_prompt + (
-            "\nSTRUTTURA DELLA RISPOSTA (obbligatoria quando sono presenti più tipi di fonti):\n"
-            "1. FONTI PRIMARIE: inizia citando cosa stabilisce la legge, riportando il testo normativo con precisione.\n"
-            "2. FONTI SECONDARIE: aggiungi come la giurisprudenza ha interpretato la norma, con attribuzione esplicita "
-            "(es. 'La Corte di Cassazione ha stabilito che...', 'Secondo la sentenza n. X...').\n"
-            "Se una fonte non è disponibile, ometti quella sezione senza menzionarne l'assenza. "
-            "Non inventare contenuti non presenti nelle fonti."
+            tiered=is_tiered,
         )
     if not _dottrina_only:
+        footer = (synthesis_human_footer(lang) if state.get("is_comparison")
+                  else synthesis_human_footer(lang, tone, standing, response_length))
         answer = _call_chat(
-            _with_history(system_prompt, "".join(human_parts) + synthesis_human_footer(lang)),
+            _with_history(system_prompt, "".join(human_parts) + footer),
             max_tokens=answer_tokens,
         )
     else:
