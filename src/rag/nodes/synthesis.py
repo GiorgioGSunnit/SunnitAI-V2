@@ -59,7 +59,13 @@ def _synthesis_data_chars() -> int:
 def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     lang = _session_lang(state)
     error = state.get("execution_error") or state.get("cypher_generation_error")
-    data = rerank_results(state.get("query", ""), state.get("raw_result") or [])
+    _raw_result = state.get("raw_result") or []
+    logger.debug(
+        "synthesize_answer: raw_result arriving — len=%d, first_entry_keys=%s",
+        len(_raw_result),
+        list(_raw_result[0].keys()) if _raw_result else None,
+    )
+    data = rerank_results(state.get("query", ""), _raw_result)
     logger.info("synthesize_answer: data=%d, raw_result=%d, bm25_doc_ids=%s", len(data), len(state.get('raw_result') or []), state.get('bm25_doc_ids'))
     _dottrina_only = False
 
@@ -342,12 +348,19 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         if len(k) > 3
     ]
     if keywords and not state.get("is_comparison"):
-        # Build a set of section plain_text prefixes that came directly from BM25 —
-        # only these specific sections bypass the keyword filter, not the whole document
+        # Build a set of section plain_text prefixes that came directly from BM25,
+        # or from the doc_id-scoped cosine scan in vector_lookup (tagged
+        # "scoped_vector" where raw_result rows are resolved from it in
+        # cypher.py) — these sections were already targeted at the right
+        # document by a different mechanism (keyword search, or a vector
+        # search scoped to the one document the query was resolved to), so
+        # literal keyword/token overlap with the extracted retrieval_keywords
+        # isn't a meaningful relevance signal for them the way it is for an
+        # unscoped corpus-wide match.
         bm25_section_texts = {
             r.get('s', {}).get('plain_text', '')[:100]
             for r in data
-            if r.get('_source') == 'bm25'
+            if r.get('_source') in ('bm25', 'scoped_vector')
         }
 
         # Also build individual tokens from keyword phrases for partial matching

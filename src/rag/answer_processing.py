@@ -1,10 +1,13 @@
 """Answer post-processing, citation extraction and Neo4j visibility helpers."""
 
+import logging
 import re
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
 from neo4j.graph import Node as Neo4jNode
+
+logger = logging.getLogger(__name__)
 
 
 def _visibility_filter(alias: str = "d") -> str:
@@ -84,7 +87,26 @@ def _extract_citations(
     """
     docs: Dict[str, Dict] = {}
 
+    logger.info(
+        "_extract_citations: received %d rows, first_row_keys=%s",
+        len(raw_result),
+        list(raw_result[0].keys()) if raw_result else None,
+    )
+
     for record in raw_result:
+        # When this row pairs a Document with a Section (every Cypher path in
+        # this module does `RETURN d, s`), trust that pairing for the
+        # section's doc_id instead of re-deriving it by parsing the
+        # section's own id string — Section.id isn't guaranteed to encode
+        # the parent document's id in a parseable "X::doc::Y" form, and when
+        # it doesn't, the parse falls through to document_id (often unset),
+        # silently dropping every section from a row that genuinely belongs
+        # to the right document.
+        record_doc_id = None
+        _doc_value = record.get("d")
+        if isinstance(_doc_value, (dict, Neo4jNode)):
+            record_doc_id = _doc_value.get("id") or _doc_value.get("document_id") or None
+
         for key, value in record.items():
             if not isinstance(value, (dict, Neo4jNode)):
                 continue
@@ -106,8 +128,11 @@ def _extract_citations(
 
             elif is_section:
                 section_name = value.get("name") or value.get("title") or ""
-                parts = node_id.split("::")
-                doc_id = ("LEGAL_DOC::" + parts[1]) if len(parts) >= 3 else (value.get("document_id") or "")
+                if record_doc_id:
+                    doc_id = record_doc_id
+                else:
+                    parts = node_id.split("::")
+                    doc_id = ("LEGAL_DOC::" + parts[1]) if len(parts) >= 3 else (value.get("document_id") or "")
                 if not doc_id:
                     continue
                 if doc_id not in docs:
@@ -167,6 +192,11 @@ def _extract_citations(
         }
         for doc_id, info in docs.items()
     ]
+    logger.info(
+        "_extract_citations: extracted %d docs from %d rows — %s",
+        len(results), len(raw_result),
+        [(r["document_id"], len(r["sections"])) for r in results],
+    )
     if not answer and not doc_refs:
         return results
     if doc_refs:

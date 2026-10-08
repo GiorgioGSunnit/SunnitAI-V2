@@ -1,5 +1,6 @@
 """Document-name lookup, query classification and reference extraction helpers."""
 
+import difflib
 import json
 import logging
 import os
@@ -12,6 +13,62 @@ from .ai_chat import _call_chat
 from .utils import _ALL_SCHEMA_LABELS, _parse_json_list, _strict_filter_relations
 
 logger = logging.getLogger(__name__)
+
+_DOC_NAME_PUNCT_PATTERN = re.compile(r"[^\w\s]", re.UNICODE)
+
+
+def _normalize_doc_name(name: str) -> str:
+    """Casefold and strip punctuation for lenient document-name matching."""
+    if not name:
+        return ""
+    normalized = _DOC_NAME_PUNCT_PATTERN.sub(" ", name.casefold())
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _resolve_doc_name(candidate: str, docs: List[dict]) -> str:
+    """Resolve an LLM-returned document name to its Neo4j document id.
+
+    The classifier LLM is asked to copy a name verbatim from the document
+    list, but frequently echoes a paraphrased, differently-punctuated, or
+    partial form instead. An exact-string dict lookup silently drops those
+    cases (doc scoping just never kicks in), so this tries progressively
+    looser matches: exact, normalized (casefold + punctuation-stripped), then
+    fuzzy. Logs a warning when nothing resolves so the mismatch is visible
+    instead of silently falling back to unscoped retrieval.
+    """
+    if not candidate:
+        return ""
+
+    name_to_id = {d["name"]: d["id"] for d in docs if d.get("name")}
+
+    exact = name_to_id.get(candidate, "")
+    if exact:
+        return exact
+
+    normalized_candidate = _normalize_doc_name(candidate)
+    normalized_to_id = {
+        _normalize_doc_name(name): doc_id for name, doc_id in name_to_id.items()
+    }
+    normalized_match = normalized_to_id.get(normalized_candidate, "")
+    if normalized_match:
+        return normalized_match
+
+    close = difflib.get_close_matches(
+        normalized_candidate, list(normalized_to_id.keys()), n=1, cutoff=0.6
+    )
+    if close:
+        matched_id = normalized_to_id[close[0]]
+        logger.info(
+            "_resolve_doc_name: fuzzy-matched %r -> %r (id=%r)",
+            candidate, close[0], matched_id,
+        )
+        return matched_id
+
+    logger.warning(
+        "_resolve_doc_name: could not resolve document name %r to any known document",
+        candidate,
+    )
+    return ""
 
 
 _INTENT_CLASSIFIER_TIMEOUT = 8  # seconds
@@ -332,9 +389,8 @@ def _classify_query_intent(
                 raw = raw[4:].strip()
         result = json.loads(raw)
 
-        name_to_id = {d["name"]: d["id"] for d in docs}
-        doc_a_id = name_to_id.get(result.get("doc_a", ""), "")
-        doc_b_id = name_to_id.get(result.get("doc_b", ""), "")
+        doc_a_id = _resolve_doc_name(result.get("doc_a", ""), docs)
+        doc_b_id = _resolve_doc_name(result.get("doc_b", ""), docs)
 
         intent = result.get("intent", "regular")
         # Normalize common LLM shorthand aliases before validation
