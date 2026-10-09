@@ -771,20 +771,56 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     ):
         context_nodes = state.get("context_nodes") or []
         if context_nodes:
-            logger.info(
-                "Tier 1 intersection returned 0 rows; falling back to %d context nodes from vector search",
-                len(context_nodes),
-            )
+            # context_nodes are bare {element_id, labels, sources, score} dicts —
+            # no "d"/"s" keys — so handing them to synthesis as-is silently
+            # produces zero usable citations (_extract_citations/rerank_results
+            # both require row["d"]/row["s"] Document/Section shapes). Resolve
+            # them to real Document/Section rows first, same as the equivalent
+            # fallback in evaluate_retrieval_quality.
+            element_ids = [n["element_id"] for n in context_nodes if n.get("element_id")]
+            fetched: List[Dict[str, Any]] = []
+            if element_ids:
+                fallback_user_id = state.get("user_id") or ""
+                fallback_tenant_id = state.get("tenant_id") or ""
+                try:
+                    with driver.session(database=database) as fallback_session:
+                        fallback_records = fallback_session.run(
+                            "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
+                            "WHERE elementId(s) IN $element_ids\n"
+                            f"AND {_visibility_filter()}\n"
+                            "RETURN d, s",
+                            element_ids=element_ids,
+                            user_id=fallback_user_id,
+                            tenant_id=fallback_tenant_id,
+                        )
+                        fetched = [record.data() for record in fallback_records]
+                        for _row in fetched:
+                            _row["_source"] = "scoped_vector"
+                except Neo4jError as exc:
+                    logger.warning("Tier 1 context-node fallback fetch failed: %s", exc)
             log_cypher_event(
                 "c_tier1_fallback",
-                f"Tier 1 intersection empty — using {len(context_nodes)} vector-search context nodes as raw_result",
-                detail={"context_node_count": len(context_nodes)},
+                f"Tier 1 intersection empty — resolved {len(fetched)}/{len(context_nodes)} "
+                "vector-search context nodes to Document/Section rows",
+                detail={"context_node_count": len(context_nodes), "fetched_row_count": len(fetched)},
             )
-            return {
-                "raw_result": context_nodes,
-                "execution_error": None,
-                "neo4j_executed": True,
-            }
+            if fetched:
+                logger.info(
+                    "Tier 1 intersection returned 0 rows; falling back to %d "
+                    "Document/Section rows resolved from %d context nodes",
+                    len(fetched), len(context_nodes),
+                )
+                existing_bm25 = [
+                    r for r in (state.get("raw_result") or []) if r.get("_source") == "bm25"
+                ]
+                return {
+                    "raw_result": fetched + existing_bm25,
+                    "execution_error": None,
+                    "neo4j_executed": True,
+                }
+            # No context node resolved to an actual row (e.g. all filtered out by
+            # visibility) — fall through to the normal empty-data path below
+            # rather than handing synthesis unusable bare dicts.
 
     # Apply document scoping to intersection results if a law hint is present
     doc_hint = state.get("law_hint_doc_id")
@@ -1066,6 +1102,8 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
                                 tenant_id=_tenant_id,
                             )
                             fetched = [record.data() for record in records]
+                            for _row in fetched:
+                                _row["_source"] = "scoped_vector"
                     except Exception as exc:
                         logger.warning("Vector-search fallback Neo4j fetch failed: %s", exc)
                 if fetched:

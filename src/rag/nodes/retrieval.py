@@ -993,6 +993,7 @@ def entity_linking(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 for match in vector_lookup(
                     session, search_value, indexes=vector_indexes,
                     index_settings=VECTOR_INDEX_SETTINGS, source_prefix="vector_targeted",
+                    doc_id=state.get("law_hint_doc_id") or None,
                 ):
                     merge_entry(match, entity)
 
@@ -1019,6 +1020,7 @@ def entity_linking(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     indexes=CONTEXT_VECTOR_INDEXES,
                     index_settings=VECTOR_INDEX_SETTINGS,
                     source_prefix="context_fallback",
+                    doc_id=state.get("law_hint_doc_id") or None,
                 )
 
             aggregated: Dict[str, Dict[str, Any]] = {}
@@ -1082,6 +1084,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                 vector_lookup(
                     session, text, indexes=CONTEXT_VECTOR_INDEXES,
                     index_settings=VECTOR_INDEX_SETTINGS, source_prefix=prefix,
+                    doc_id=vector_doc_hint or None,
                 )
             )
 
@@ -1120,6 +1123,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                         session_b, text, indexes=CONTEXT_VECTOR_INDEXES,
                         index_settings=VECTOR_INDEX_SETTINGS,
                         source_prefix=prefix,
+                        doc_id=law_hint_doc_id_b,
                     )
                 )
             if all_matches_b:
@@ -1341,9 +1345,17 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     # Parallel special-source (dottrina) search: surfaces sections from
     # document_type='special' documents alongside the primary/secondary
     # retrieval, so synthesize_answer can build a doctrinal addendum.
-    # Comparison mode has its own retrieval shape — skip there.
+    # Comparison mode has its own retrieval shape — skip there. Also skip
+    # whenever a document hint is resolved: the query is already scoped to
+    # one specific primary law, and with only a couple of 'special' documents
+    # in the whole corpus, dottrina search has no way to be about that same
+    # law — it just surfaces whichever of the few special docs is nearest in
+    # embedding space, unrelated to the resolved document, and pollutes the
+    # Nota dottrinale / Fonti line. (Simplest safe version: any non-empty
+    # law_hint_doc_id skips it — not yet discriminating "no hint" from
+    # "penal-law query with no hint".)
     special_dottrina_rows: List[Dict[str, Any]] = []
-    if not state.get("is_comparison"):
+    if not state.get("is_comparison") and not state.get("law_hint_doc_id"):
         special_query = search_texts[0] if search_texts else generalized
         special_keywords = state.get("retrieval_keywords") or []
         with driver.session(database=database) as _special_session:
@@ -1385,9 +1397,15 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
             special_matches = commentato_matches + fiscalita_matches
             special_eids = [m["element_id"] for m in special_matches]
             if special_eids:
+                # commentato_section_embeddings / fiscalita_section_embeddings are
+                # not guaranteed to be built exclusively from document_type='special'
+                # sections — without this filter a primary code (e.g. Codice Penale)
+                # that ranks near the query vector gets pulled in and mislabeled as
+                # dottrina. The sibling BM25 query below already filters on this;
+                # the vector fetch must match it.
                 vector_results = _special_session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                    "WHERE elementId(s) IN $eids "
+                    "WHERE elementId(s) IN $eids AND d.document_type = 'special' "
                     "RETURN d, s",
                     eids=special_eids,
                 ).data()
@@ -1472,6 +1490,15 @@ def dottrina_search(state: Dict[str, Any], driver, database: str) -> Dict[str, A
     """
     if state.get("is_comparison"):
         return {}
+    if state.get("law_hint_doc_id"):
+        # Same guard as the inline dottrina block in context_retrieval: with a
+        # document hint already resolved, the query is scoped to one specific
+        # primary law, and with only a couple of 'special' documents in the
+        # whole corpus, dottrina search can't be about that same law — it
+        # just surfaces whichever special doc is nearest (vector branch) or
+        # shares keywords (BM25 branch, unaffected by vector min_score),
+        # regardless of relevance. Skip both branches entirely.
+        return {}
     if state.get("special_dottrina_rows"):
         return {}  # already populated by context_retrieval
 
@@ -1516,9 +1543,14 @@ def dottrina_search(state: Dict[str, Any], driver, database: str) -> Dict[str, A
         special_matches = commentato_matches + fiscalita_matches
         special_eids = [m["element_id"] for m in special_matches]
         if special_eids:
+            # See the matching comment in context_retrieval's inline dottrina
+            # search: the vector fetch must filter document_type='special' too,
+            # or a primary code's section can be pulled in and mislabeled as
+            # dottrina — exactly how Codice Penale was leaking into the Nota
+            # dottrinale (and, via the citations merge, into the Fonti line).
             vector_results = session.run(
                 "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                "WHERE elementId(s) IN $eids "
+                "WHERE elementId(s) IN $eids AND d.document_type = 'special' "
                 "RETURN d, s",
                 eids=special_eids,
             ).data()

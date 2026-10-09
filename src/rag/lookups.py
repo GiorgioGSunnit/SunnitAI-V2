@@ -49,8 +49,8 @@ VECTOR_INDEX_SETTINGS: Dict[str, Dict[str, Any]] = {
     "contract_embeddings": {"k": 2, "min_score": 0.28},
     "penalty_embeddings": {"k": 1, "min_score": 0.32},
     "award_embeddings": {"k": 2, "min_score": 0.28},
-    "commentato_section_embeddings": {"k": 3, "min_score": 0.25},
-    "fiscalita_section_embeddings": {"k": 3, "min_score": 0.25},
+    "commentato_section_embeddings": {"k": 3, "min_score": 0.72},
+    "fiscalita_section_embeddings": {"k": 3, "min_score": 0.72},
     "ccnl_section_embeddings": {"k": 5, "min_score": 0.3},
 }
 
@@ -531,6 +531,7 @@ def vector_lookup(
     index_settings: Optional[Dict[str, Dict[str, Any]]] = None,
     k: int = VECTOR_K,
     source_prefix: str = "vector",
+    doc_id: Optional[str] = None,
 ) -> Iterable[Dict[str, Any]]:
     try:
         embedding = list(_cached_embed_query(value))
@@ -550,26 +551,59 @@ def vector_lookup(
         ") "
         "RETURN elementId(node) AS element_id, labels(node) AS labels, score ORDER BY score DESC"
     )
+    # When the target document is already known, skip the global ANN index
+    # (which ranks across all documents and can bury a small document's
+    # sections below the global top-k) and rank that document's own sections
+    # directly. Only applies to Section-backed indexes — the query walks
+    # Document-[:CONTAINS]->Section, so it has no meaning for indexes over
+    # other labels (Document, LegalAct, Penalty, CourtCase, ...).
+    doc_scoped_query = (
+        "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
+        "WHERE s.embedding IS NOT NULL "
+        "WITH s, vector.similarity.cosine(s.embedding, $embedding) AS score "
+        "WHERE score >= $min_score "
+        "RETURN elementId(s) AS element_id, score "
+        "ORDER BY score DESC LIMIT $k"
+    )
     matches: List[Dict[str, Any]] = []
     for index in indexes:
         config = (index_settings or {}).get(index, {})
         k_value = max(1, int(config.get("k", k)))
         min_score = config.get("min_score")
         before = len(matches)
+        use_doc_scoped = bool(doc_id) and "section" in index
         try:
-            records = session.run(query, index=index, k=k_value, embedding=embedding)
-            for record in records:
-                score = record.get("score")
-                if min_score is not None and score is not None and score < min_score:
-                    continue
-                matches.append(
-                    {
-                        "element_id": record["element_id"],
-                        "labels": record["labels"],
-                        "source": f"{source_prefix}:{index}",
-                        "score": score,
-                    }
+            if use_doc_scoped:
+                records = session.run(
+                    doc_scoped_query,
+                    doc_id=doc_id,
+                    embedding=embedding,
+                    min_score=min_score if min_score is not None else -1.0,
+                    k=k_value,
                 )
+                for record in records:
+                    matches.append(
+                        {
+                            "element_id": record["element_id"],
+                            "labels": ["Section"],
+                            "source": f"{source_prefix}:{index}:doc_scoped",
+                            "score": record.get("score"),
+                        }
+                    )
+            else:
+                records = session.run(query, index=index, k=k_value, embedding=embedding)
+                for record in records:
+                    score = record.get("score")
+                    if min_score is not None and score is not None and score < min_score:
+                        continue
+                    matches.append(
+                        {
+                            "element_id": record["element_id"],
+                            "labels": record["labels"],
+                            "source": f"{source_prefix}:{index}",
+                            "score": score,
+                        }
+                    )
         except Neo4jError as exc:
             logger.warning(
                 "Vector lookup failed",
@@ -577,8 +611,9 @@ def vector_lookup(
                     "value": value,
                     "index": index,
                     "k": k_value,
+                    "doc_scoped": use_doc_scoped,
                     "error": str(exc),
                 },
             )
-        vlog("vector_search", {"index_name": index, "k": k_value, "result_count": len(matches) - before})
+        vlog("vector_search", {"index_name": index, "k": k_value, "result_count": len(matches) - before, "doc_scoped": use_doc_scoped})
     return matches
