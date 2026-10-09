@@ -42,6 +42,79 @@ _ANSWER_TOKENS = {1: 600, 2: 900, 3: 2400}
 _SECTION_CHARS = 1500
 
 
+# The doctrine note follows the response-length setting: present at every
+# level and growing with it. Before Oct 2026 it was always as long as the main
+# answer could be, so a "brief" reply came with a 200-word note.
+_NOTE_LENGTH = {
+    1: "Lunghezza: 1 o 2 frasi (circa 40-60 parole), solo il punto dottrinale più rilevante.",
+    2: "Lunghezza: un paragrafo di 3-5 frasi (circa 80-130 parole).",
+    3: "Lunghezza: 2 o 3 paragrafi (circa 180-300 parole).",
+}
+_NOTE_TOKENS = {1: 250, 2: 450, 3: 1000}
+
+# What the note writer answers when no extract concerns the question. Notes
+# that only say so in words ("gli estratti non contengono informazioni...")
+# are caught too; both are dropped instead of shown.
+_NO_NOTE = "NESSUNA_NOTA"
+_EMPTY_NOTE_RE = re.compile(
+    r"estratti[^.]{0,60}\bnon (contengono|forniscono|riportano|trattano|offrono|riguardano)"
+    r"|non (sono|risultano|appaiono) (direttamente |strettamente )?pertinenti",
+    re.IGNORECASE,
+)
+
+# Shown when the commentary was the only material and it does not concern the
+# question either (Rule 3 of the answer instructions, same wording).
+_NOTHING_FOUND = {
+    "it": ("La documentazione specifica su questo tema non è attualmente presente nella mia base "
+           "documentale. Le suggerisco di consultare la fonte ufficiale competente. Se desidera, posso "
+           "aiutarla con domande correlate presenti nella mia base documentale."),
+    "en": ("The specific documentation on this topic is not currently in my knowledge base. I suggest "
+           "consulting the relevant official source. If you wish, I can help you with related topics "
+           "available in my knowledge base."),
+    "es": ("La documentación específica sobre este tema no está actualmente en mi base de conocimiento. "
+           "Le sugiero consultar la fuente oficial competente. Si lo desea, puedo ayudarle con temas "
+           "relacionados disponibles en mi base de conocimiento."),
+}
+
+
+def _note_is_empty(note: str) -> bool:
+    return not note.strip() or _NO_NOTE in note or bool(_EMPTY_NOTE_RE.search(note[:300]))
+
+
+def _sources_named_in(text: str, cites: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The citations whose work the text names (at least 2 of the first 3
+    significant words of the title). All of them when it names none, since the
+    note was written from these extracts."""
+    lower = text.lower()
+    named = []
+    for c in cites:
+        words = [w for w in re.findall(r"[^\W\d_]{4,}", c.get("document_name", "").lower())][:3]
+        if words and sum(w in lower for w in words) >= min(2, len(words)):
+            named.append(c)
+    return named or cites
+
+
+_ARTICLE_ID_RE = re.compile(
+    r"^(\d+(?:-(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies))?)(?:[._]\w+)*$",
+    re.IGNORECASE,
+)
+
+
+def _fonti_entry(c: Dict[str, Any]) -> str:
+    """One document for the Fonti line. Section names are internal ids or text
+    fragments ('1386.0.0', 'corte_cassazione.6', '2011) , . Difforme, Cass.');
+    for a code they are shown as article numbers, otherwise left out."""
+    name = c["document_name"]
+    if not name.lower().startswith("codice"):
+        return name
+    articles = []
+    for s in c.get("sections", []):
+        m = _ARTICLE_ID_RE.match((s.get("name") or "").strip())
+        if m and m.group(1) not in articles:
+            articles.append(m.group(1))
+    return f"{name} sezioni: {', '.join('art. ' + a for a in articles)}" if articles else name
+
+
 def _synthesis_data_chars() -> int:
     """Characters of retrieved law the answer is written from (~2.6k tokens).
 
@@ -529,43 +602,64 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 "nemmeno tra virgolette. Riformula SEMPRE con parole completamente diverse, mantenendo solo il "
                 "significato. Se senti la tentazione di copiare una frase, riscrivila da zero con struttura "
                 "sintattica diversa. Non aggiungere contenuti non presenti "
-                "negli estratti. Non omettere concetti chiave presenti negli estratti. Regole: parafrasa fedelmente "
-                "preservando l'essenza e il significato originale degli autori; attribuisci sempre la fonte con "
-                "naturalezza nel testo (es. 'Secondo il commentario...', 'La dottrina rileva che...'); includi "
+                "negli estratti. Scegli i punti degli estratti più rilevanti per la domanda. Regole: parafrasa "
+                "fedelmente preservando l'essenza e il significato originale degli autori; attribuisci sempre la "
+                "fonte nominando l'opera come compare tra parentesi quadre negli estratti (es. 'Secondo il Codice "
+                "Penale Commentato, ...'); includi "
                 "riferimenti bibliografici e note a piè di pagina se presenti negli estratti; non usare virgolette "
                 "o apici. Non porre domande all'utente e non chiedere chiarimenti. "
-                "Usa solo il contenuto degli estratti forniti. Se un estratto non è direttamente pertinente, "
-                "citalo brevemente in relazione alla domanda senza inventare contenuti aggiuntivi. "
+                "Usa solo il contenuto degli estratti forniti. Ignora gli estratti che riguardano un altro "
+                "istituto o un'altra area del diritto (ad esempio un estratto sulla truffa contrattuale per una "
+                "domanda sulla risoluzione del contratto). "
+                f"Rispondi esattamente {_NO_NOTE} e nient'altro SOLO se tutti gli estratti sono di questo tipo: "
+                "se anche un solo estratto riguarda l'istituto della domanda, scrivi la nota, anche breve. "
                 "VIETATO ripetere o parafrasare la risposta principale già fornita sopra. "
-                "Aggiungi solo ciò che gli estratti dottrinali contengono in aggiunta. "
+                "Aggiungi solo ciò che gli estratti dottrinali contengono in aggiunta; se gli estratti "
+                "confermano la risposta principale, riporta la conferma della dottrina con i suoi riferimenti "
+                "(es. le sentenze citate) invece di rinunciare alla nota. "
                 "Non porre mai domande all'utente. Non chiedere mai chiarimenti o informazioni aggiuntive. "
                 "Termina sempre con un punto fermo."
+                # When the commentary is the only material, the note is the
+                # whole answer and keeps the answer's own size.
+                + ("" if _dottrina_only else " " + _NOTE_LENGTH[response_length])
             )
             dottrina_human = (
                 f"Domanda originale: {state['query']}\n\n"
                 f"Risposta principale già fornita:\n{'' if _is_primary_gap_response(answer_before_gap.split('---')[0].strip()) else answer_before_gap}\n\n"
                 f"Estratti dottrinali disponibili:\n{special_context}\n\n"
-                f"IMPORTANTE: Devi sempre fornire una nota dottrinale basata sugli estratti sopra. "
-                f"Non restituire mai una stringa vuota."
+                f"IMPORTANTE: scrivi la nota dottrinale dagli estratti che riguardano l'istituto della domanda. "
+                f"Rispondi {_NO_NOTE} solo se nessun estratto lo riguarda."
             )
             dottrina_answer = _call_chat(
                 [SystemMessage(content=dottrina_system), HumanMessage(content=dottrina_human)],
-                max_tokens=answer_tokens,
+                max_tokens=answer_tokens if _dottrina_only else _NOTE_TOKENS[response_length],
                 stop=["Nel contesto", "Puoi precisare", "Vuoi specificare", "Hai ulteriori"],
             )
             open("/tmp/dottrina_trace.log", "a").write(f"dottrina_answer len={len(dottrina_answer)} preview={repr(dottrina_answer[:200])}\n")
             dottrina_answer = re.sub(r'^[\s"\'“”]+', '', dottrina_answer).strip()
             dottrina_answer = re.sub(r'©[^\n]{0,100}', '', dottrina_answer)
             dottrina_answer = re.sub(r'\n[^\n]{0,600}\?[^\n]*$', '', dottrina_answer.rstrip()).rstrip()
+            if _note_is_empty(dottrina_answer):
+                # Nothing in the commentary concerns the question: no note, and
+                # none of its sources in Fonti or the side panel.
+                logger.info("dottrina note dropped: no extract concerns the question")
+                dottrina_answer = ""
+                if _dottrina_only and not answer.strip():
+                    # The commentary was all there was; its rows are the
+                    # citations here, so they go too.
+                    answer = _NOTHING_FOUND.get(lang, _NOTHING_FOUND["it"])
+                    citations = []
             if dottrina_answer and dottrina_answer.strip():
                 answer = (
                     answer.rstrip()
                     + "\n\n---\n**Nota dottrinale:**\n"
                     + dottrina_answer.strip()
                 )
+                # Only the works the note draws on, not every commentary hit.
                 existing_doc_ids = {c.get("document_id") for c in citations}
                 citations = citations + [
-                    c for c in special_citations if c.get("document_id") not in existing_doc_ids
+                    c for c in _sources_named_in(dottrina_answer, special_citations)
+                    if c.get("document_id") not in existing_doc_ids
                 ]
 
                 # If main answer is a gap response but dottrina has content, promote dottrina to main answer
@@ -579,10 +673,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # unchanged; if that note became the whole answer there is no marker and it
     # simply goes at the end.
     if citations:
-        fonti_line = "Fonti: " + ", ".join(
-            f"{c['document_name']} sezioni: {', '.join(s['name'] for s in c['sections'])}"
-            for c in citations
-        )
+        fonti_line = "Fonti: " + ", ".join(_fonti_entry(c) for c in citations)
         _marker = "\n\n---\n**Nota dottrinale:**"
         if _marker in answer:
             _head, _sep, _tail = answer.partition(_marker)
