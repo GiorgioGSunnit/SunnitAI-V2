@@ -411,6 +411,16 @@ def run_defensive_pipeline(
     is best-effort: a RAG or classification failure degrades to defaults/empty
     citations rather than aborting the draft.
     """
+    # Every strategy request gets the reasoned parere (run_case_analysis_pipeline):
+    # without a document the chat passes the message as both arguments; with
+    # one, the document holds the case and the message is the request. The
+    # flow below always produced an analysis too ("ANALISI LEGALE COMPLETA"),
+    # with the problems described above run_case_analysis_pipeline; it stays
+    # for reference, no longer called.
+    request = "" if document_text.strip() == user_message.strip() else user_message
+    result = run_case_analysis_pipeline(document_text, session_lang, request=request)
+    return {"draft": result["draft"], "proceeding": _safe_defaults(), "citations": result["citations"]}
+
     # Lazy imports: defensive_generation lives in the rag package but needs
     # rag.main (fine, same package) and chatbot.api's _merge_citations (the
     # only rag -> chatbot dependency here); importing at call time avoids a
@@ -460,6 +470,640 @@ def run_defensive_pipeline(
     )
 
     return {"draft": draft, "proceeding": proceeding, "citations": citations}
+
+
+# ---------------------------------------------------------------------------
+# Case analysis from facts (no uploaded document): a reasoned parere
+# ---------------------------------------------------------------------------
+# Oct 2026: a bar-exam style case (pensioner falls in a pothole, defend the
+# Comune) went through run_defensive_pipeline with the user's text as the
+# "judicial document". No article was "cited by the opposing party", so no
+# article text was fetched and the model wrote 2043/2044 from memory (wrongly),
+# never reached art. 2051 c.c., filled the intake checklist with invented facts
+# and copied the instructions' examples. Here the legal questions are worked out
+# first, the articles are read from the database by number, case law is found
+# by full-text search (the vector index gives unrelated results for these
+# queries), and every article or decision number the answer cites is checked
+# against what was retrieved.
+
+_CODE_PREFIXES = {
+    "c.c.": "Codice Civile",
+    "c.p.c.": "Codice di procedura civile",
+    "c.p.": "Codice Penale",
+    "c.p.p.": "Codice di procedura penale",
+    "c.p.a.": "Codice del processo amministrativo",
+    "c.d.s.": "Codice della strada",
+}
+_CODE_SPELLINGS = [   # longest first, so "c.p.c." is not read as "c.p."; dots optional ("cpp")
+    (r"c\.?\s*p\.?\s*c\.?(?!\w)|cod\.\s*proc\.\s*civ\.", "c.p.c."),
+    (r"c\.?\s*p\.?\s*p\.?(?!\w)|cod\.\s*proc\.\s*pen\.", "c.p.p."),
+    (r"c\.?\s*p\.?\s*a\.?(?!\w)", "c.p.a."),
+    (r"c\.?\s*d\.?\s*s\.?(?!\w)|codice della strada", "c.d.s."),
+    (r"c\.?\s*c\.?(?!\w)|cod\.\s*civ\.|codice civile", "c.c."),
+    (r"c\.?\s*p\.?(?!\w)|cod\.\s*pen\.|codice penale", "c.p."),
+]
+# Articles a court ruling cites for the substance of a case. Procedure codes
+# are left out: every Cassazione ruling cites art. 360 and 380-bis c.p.c.
+_SUBSTANTIVE_CODES = {"c.c.", "c.p."}
+# The backbone of any civil damages claim: fault, burden of proof,
+# prescription, the injured party's contribution.
+_CIVIL_DAMAGES_NORMS = [("2043", "c.c."), ("2697", "c.c."), ("2947", "c.c."), ("1227", "c.c.")]
+_DAMAGES_RE = re.compile(r"\b(dann[io]|risarciment|risarcitori)", re.IGNORECASE)
+_ARTICLE_NUM = r"(\d+(?:-?(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies))?(?:\.\d+)?)"
+_CITED_ARTICLE_RE = re.compile(
+    r"\b(?:art(?:t)?\.?|articol[oi])\s*" + _ARTICLE_NUM
+    + r"(?:\s*,?\s*(?:co\.|comma)\s*\d+(?:\s*,\s*n\.\s*\d+)?)?\s*,?\s*(?:del\s+)?("
+    + "|".join(p for p, _ in _CODE_SPELLINGS) + r")",
+    re.IGNORECASE,
+)
+_CITED_DECISION_RE = re.compile(r"\b(\d{2,6})\s*/\s*((?:19|20)\d{2})\b")
+_LAW_BEFORE_RE = re.compile(
+    r"(d\.\s*lgs\.?|d\.\s*l\.|\bl\.|legge|d\.\s*p\.\s*r\.|\bdpr|reg\.|regolamento|dir\.|direttiva)\s*(?:n\.\s*)?$"
+)
+_UNVERIFIED = " [DA VERIFICARE]"
+
+_ARTICLE_CHARS = 1500
+_RULING_CHARS = 1200
+_MAX_RULINGS = 10
+_PARERE_TOKENS = 5000
+# The case as read by the analysis and the writer (~3,400 tokens): an uploaded
+# act can be long, and the 20k-token context also holds sources and the answer.
+_FACTS_CHARS = 12000
+
+_CASE_ANALYSIS_SYSTEM = (
+    "Sei un avvocato italiano esperto. Leggi il caso e prepara l'impostazione di un parere. "
+    "Restituisci SOLO un oggetto JSON con queste chiavi:\n"
+    '- "parte_assistita": la parte nel cui interesse va redatto il parere; se il testo non la indica, '
+    "la parte che chiede assistenza\n"
+    '- "posizione": la sua posizione processuale o sostanziale\n'
+    '- "area": il ramo del diritto che regola la pretesa o il fatto, una tra "civile", "penale", '
+    '"amministrativo", "lavoro", "tributario", "altro" (una richiesta di risarcimento verso un ente '
+    'pubblico è "civile")\n'
+    '- "richiesta": in una frase, che cosa chiede il caso\n'
+    '- "ricerca_fatti": da 4 a 8 parole concrete che descrivono i fatti materiali (cose, luoghi, '
+    "eventi, soggetti: non termini giuridici), con cui cercare sentenze su fatti simili\n"
+    '- "questioni": da 3 a 6 questioni giuridiche specifiche del caso, in ordine di importanza: prima il '
+    "fondamento della responsabilità o del reato e i suoi presupposti, poi le cause di esclusione o di "
+    "attenuazione e le difese possibili, poi la quantificazione; termini, prescrizione e procedibilità "
+    'solo se il caso li pone. Ciascuna è {"titolo": stringa, "norme": lista di articoli nel formato '
+    '"art. NUMERO SIGLA" con sigla tra c.c., c.p.c., c.p., c.p.p., c.p.a., c.d.s., "parole_chiave": '
+    "da 4 a 8 nomi tecnici di istituti giuridici e concetti con cui le sentenze trattano quella "
+    'questione, non parole generiche}\n'
+    '- "fatti": i fatti del testo uno per uno, senza accorparli, compresi i dettagli che sembrano '
+    "secondari: età e condizioni delle persone, abitudini, luoghi, orari e condizioni di visibilità, "
+    "chi era presente e chi ha visto che cosa, che cosa risulta da verbali o dichiarazioni, tempi "
+    'trascorsi. Ciascuno è {"fatto": stringa, "effetto": "favorevole", "sfavorevole", "favorevole e '
+    'sfavorevole" o "neutro" per la parte assistita, "perche": stringa breve}\n'
+    "Non inventare fatti. Rispondi SOLO con il JSON."
+)
+
+_ARTICLE_CHOICE_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati un caso e alcuni articoli di legge candidati, con il loro "
+    "testo. Scegli gli articoli che un parere su questo caso deve usare: quelli che disciplinano "
+    "direttamente la vicenda, le difese o le eccezioni, l'onere della prova, i termini rilevanti. Escludi "
+    "quelli che riguardano altro, anche se contengono parole simili. Restituisci SOLO una lista JSON di "
+    "stringhe, ciascuna identica a un identificativo tra parentesi quadre, in ordine di importanza, al "
+    "massimo 6. Escludi gli articoli che non si applicano a questi fatti, ad esempio quelli su reati, "
+    "contratti o procedimenti diversi da quelli del caso."
+)
+# Which codes the keyword search reads, by area: a civil case does not need the
+# criminal prescription articles that "prescrizione" also matches.
+# The Highway Code is left out: in every test run its matches were noise
+# ("auto" found a drink-driving rule in a used-car sale); when it matters, the
+# user's text or the rulings name its articles.
+_CODE_SEARCH_PREFIXES = {
+    "civile": ["Codice Civile", "Codice di procedura civile"],
+    "lavoro": ["Codice Civile", "Codice di procedura civile"],
+    "penale": ["Codice Penale", "Codice di procedura penale"],
+}
+_ALL_CODE_PREFIXES = ["Codice Civile", "Codice di procedura civile", "Codice Penale",
+                      "Codice di procedura penale"]
+
+
+def _case_text(facts: str, request: str = "") -> str:
+    """The case as the model reads it: the user's request (when the case is an
+    uploaded document) and the text, cut to _FACTS_CHARS with a visible mark."""
+    text = facts if len(facts) <= _FACTS_CHARS else facts[:_FACTS_CHARS] + "\n[... documento troncato ...]"
+    return (f"RICHIESTA DELL'UTENTE: {request}\n\nDOCUMENTO CARICATO:\n{text}" if request else text)
+
+
+def _analyse_case(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
+    """The legal questions, the norms and the role of each fact. Best-effort:
+    any failure returns empty lists, and the parere is written from the facts."""
+    empty = {"parte_assistita": "", "posizione": "", "area": "", "richiesta": "", "ricerca_fatti": [],
+             "questioni": [], "fatti": []}
+    try:
+        raw = _call_chat([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
+                          HumanMessage(content=_case_text(facts, request))],
+                         max_tokens=1500)
+        parsed = json.loads(re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip())
+    except Exception as exc:
+        logger.warning("case analysis failed: %s", exc)
+        return empty
+    if not isinstance(parsed, dict):
+        return empty
+    result = {**empty, **{k: v for k, v in parsed.items() if k in empty}}
+    result["questioni"] = [q for q in result["questioni"] if isinstance(q, dict)][:6] \
+        if isinstance(result["questioni"], list) else []
+    for q in result["questioni"]:
+        q["norme"] = _as_list(q.get("norme"))
+        q["parole_chiave"] = _as_list(q.get("parole_chiave"))
+    result["fatti"] = [f for f in result["fatti"] if isinstance(f, dict)][:15] \
+        if isinstance(result["fatti"], list) else []
+    result["ricerca_fatti"] = _as_list(result["ricerca_fatti"])[:8]
+    # A damages claim against a public body is a civil matter; the model keeps
+    # filing it as "amministrativo", which widens the code search to every code.
+    if result["area"] == "amministrativo" and _DAMAGES_RE.search(facts):
+        result["area"] = "civile"
+    return result
+
+
+def _as_list(value) -> List[str]:
+    """A list of strings from either a JSON list or one comma-separated string:
+    the model returns both from one run to the next, and a string iterated as a
+    list searched the database letter by letter."""
+    if isinstance(value, str):
+        return [part.strip() for part in re.split(r"[,;]", value) if part.strip()]
+    if isinstance(value, list):
+        return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return []
+
+
+def _code_of(text: str) -> Optional[str]:
+    for pattern, abbr in _CODE_SPELLINGS:
+        if re.fullmatch(pattern, text.strip(), re.IGNORECASE):
+            return abbr
+    return None
+
+
+def _article_num(raw: str) -> str:
+    """'415bis' / '415-BIS' / '2051.1' -> '415-bis' / '2051' (as the codes name them)."""
+    num = raw.lower().split(".")[0]
+    return re.sub(r"(\d)-?(bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)", r"\1-\2", num)
+
+
+def _refs_in(text: str) -> List[tuple]:
+    """(article number, code) for every article cited in a text, in order, repeats kept."""
+    refs = []
+    for m in _CITED_ARTICLE_RE.finditer(text or ""):
+        code = _code_of(m.group(2))
+        if code:
+            refs.append((_article_num(m.group(1)), code))
+    return refs
+
+
+def _norm_refs(analysis: Dict[str, Any]) -> List[tuple]:
+    """(article number, code abbreviation) for every norm the analysis names."""
+    refs = []
+    for q in analysis.get("questioni", []):
+        for norm in q.get("norme") or []:
+            if isinstance(norm, str):
+                refs.extend(r for r in _refs_in(norm) if r not in refs)
+    return refs[:12]
+
+
+def _cited_by_rulings(ruling_rows: List[Dict[str, Any]]) -> List[tuple]:
+    """Substantive articles cited by at least two different rulings, most cited first."""
+    docs_citing: Dict[tuple, set] = {}
+    for row in ruling_rows:
+        doc_id = (row.get("d") or {}).get("id")
+        for ref in _refs_in((row.get("s") or {}).get("plain_text", "")):
+            if ref[1] in _SUBSTANTIVE_CODES:
+                docs_citing.setdefault(ref, set()).add(doc_id)
+    return sorted((r for r, docs in docs_citing.items() if len(docs) >= 2), key=lambda r: -len(docs_citing[r]))
+
+
+def _articles_cited_in_rulings(session, doc_ids: List[str]) -> Dict[tuple, int]:
+    """For each substantive article, how many of these rulings cite it anywhere.
+
+    The whole ruling, not just the passage the search matched: a search on the
+    facts ("buca stradale, passeggiata, anziano") lands on the passage that tells
+    the facts, while art. 2051 c.c. is cited in the reasoning further on.
+    """
+    ids = [i for i in dict.fromkeys(doc_ids) if i]
+    if not ids:
+        return {}
+    cited_by: Dict[tuple, set] = {}
+    for row in session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id IN $ids RETURN d.id AS id, s.plain_text AS text",
+        ids=ids,
+    ).data():
+        for ref in _refs_in(row.get("text") or ""):
+            if ref[1] in _SUBSTANTIVE_CODES:
+                cited_by.setdefault(ref, set()).add(row.get("id"))
+    return {ref: len(docs) for ref, docs in cited_by.items()}
+
+
+def _candidate_articles(facts: str, analysis: Dict[str, Any], ruling_rows: List[Dict[str, Any]],
+                        code_refs: List[tuple], ruling_counts: Optional[Dict[tuple, int]] = None,
+                        similar_counts: Optional[Dict[tuple, int]] = None) -> tuple:
+    """(articles to keep whatever happens, candidates for the model to choose from).
+
+    The model knows the legal vocabulary but not reliably the numbers: for the
+    pothole case it named art. 50, 1219, 2667 c.c., where the rulings on the same
+    issue cite 2051 and 1227; for an injury in a race, art. 61 c.p. instead of
+    590. So the candidates come from the database: articles found in the codes by
+    the question's keywords, articles the rulings cite, the damages backbone for
+    a civil damages claim. The model's own numbers only join the list, and every
+    candidate is chosen with its real text in front of the model.
+    """
+    keep = [r for r in dict.fromkeys(_refs_in(facts)) if r[1] in _CODE_PREFIXES]
+    if ruling_counts:
+        agreed = sorted((r for r, n in ruling_counts.items() if n >= 2), key=lambda r: -ruling_counts[r])
+        # Kept outright when three or more rulings cite it, two of them rulings
+        # on similar facts: the model's choice dropped the decisive article from
+        # run to run. Only the case's own code (a criminal case got art. 2697
+        # c.c.), and the similar-facts condition keeps out what rulings cite in
+        # general (art. 416-bis c.p. joined a racing accident case).
+        own_code = {"penale": "c.p."}.get(analysis.get("area"), "c.c.")
+        similar_counts = similar_counts or {}
+        keep += [r for r in agreed[:3] if ruling_counts[r] >= 3 and similar_counts.get(r, 0) >= 2
+                 and r[1] == own_code and r not in keep]
+    else:
+        agreed = _cited_by_rulings(ruling_rows)
+    candidates: List[tuple] = []
+    # What the rulings agree on first: they were decided on these questions.
+    for ref in agreed[:6] + code_refs:
+        if ref not in candidates and ref not in keep:
+            candidates.append(ref)
+    if analysis.get("area") != "penale" and _DAMAGES_RE.search(facts):
+        candidates += [r for r in _CIVIL_DAMAGES_NORMS if r not in candidates and r not in keep]
+    candidates += [r for r in _norm_refs(analysis) if r not in candidates and r not in keep]
+    return keep, candidates[:24]
+
+
+def _search_code_articles(session, analysis: Dict[str, Any]) -> List[tuple]:
+    """Articles of the main codes whose text matches each question's keywords."""
+    abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
+    refs: List[tuple] = []
+    for q in analysis.get("questioni", []):
+        words = [w for w in (q.get("parole_chiave") or []) if isinstance(w, str)]
+        terms = _lucene_query(" ".join([q.get("titolo") or ""] + words))
+        if not terms:
+            continue
+        try:
+            found = session.run(
+                "CALL db.index.fulltext.queryNodes('section_fulltext', $t) YIELD node, score "
+                "MATCH (d:Document)-[:CONTAINS]->(node) "
+                "WHERE d.document_type = 'primary' AND any(p IN $prefixes WHERE d.name STARTS WITH p) "
+                "RETURN d.name AS doc, node.name AS sec, score ORDER BY score DESC LIMIT 10",
+                t=terms, prefixes=_CODE_SEARCH_PREFIXES.get(analysis.get("area"), _ALL_CODE_PREFIXES),
+            ).data()
+        except Exception as exc:
+            logger.warning("code search failed for %r: %s", terms, exc)
+            continue
+        taken = 0
+        for row in found:
+            prefix = next((p for p in sorted(abbr_of, key=len, reverse=True)
+                           if (row.get("doc") or "").startswith(p)), None)
+            m = re.match(r"^(\d+(?:-[a-z]+)?)(?:[._]|$)", (row.get("sec") or "").strip(), re.IGNORECASE)
+            if not prefix or not m:
+                continue
+            ref = (_article_num(m.group(1)), abbr_of[prefix])
+            if ref not in refs:
+                refs.append(ref)
+                taken += 1
+            if taken == 4:
+                break
+    return refs
+
+
+def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Optional[List[tuple]]:
+    """The candidates the model judges relevant, reading their text; None if the call fails."""
+    texts: Dict[tuple, List[str]] = {}
+    for row in candidate_rows:
+        texts.setdefault(row["_article"], []).append(" ".join(((row.get("s") or {}).get("plain_text") or "").split()))
+    if not texts:
+        return []
+    listing = "\n".join(f"[art. {n} {c}] {' '.join(t)[:400]}" for (n, c), t in texts.items())
+    try:
+        raw = _call_chat([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
+                          HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
+                         max_tokens=200)
+        chosen = json.loads(re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip())
+    except Exception as exc:
+        logger.warning("article choice failed: %s", exc)
+        return None
+    if not isinstance(chosen, list):
+        return None
+    refs = []
+    for item in chosen:
+        for ref in _refs_in(item if isinstance(item, str) else ""):
+            if ref in texts and ref not in refs:
+                refs.append(ref)
+    return refs[:6]
+
+
+def _lucene_terms(text: str) -> str:
+    return " ".join(re.sub(r'[+\-&|!(){}\[\]^"~*?:\\/]', " ", text).split())
+
+
+def _lucene_query(text: str) -> str:
+    """Search terms plus a word-stem form of each longer word ("vizio" -> "vizi*"):
+    the full-text index does not reduce words to their stem, so the model's
+    "vizio nascosto" never matched art. 1495 c.c., which says "denunzia i vizi"."""
+    out = []
+    for word in _lucene_terms(text).split():
+        word = word.strip(",;.")
+        if not word:
+            continue
+        out.append(word)
+        if len(word) >= 5 and word.isalpha() and word.lower() not in _STOPWORDS:
+            out.append(word[:-1].lower() + "*")
+    return " ".join(dict.fromkeys(out))
+
+
+_STOPWORDS = {"della", "delle", "dello", "degli", "nella", "nelle", "nello", "negli", "sulla", "sulle",
+              "dalla", "dalle", "alla", "alle", "quale", "quali", "come", "dopo", "prima", "senza",
+              "anche", "sono", "essere", "stato", "stata", "questo", "questa", "verso", "contro"}
+
+
+def _rows_to_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    from .answer_processing import _extract_citations
+    return _extract_citations(rows)
+
+
+def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
+    """The text of each article, read from its code by number."""
+    rows = []
+    for num, abbr in refs:
+        prefix = _CODE_PREFIXES.get(abbr)
+        if not prefix:
+            continue
+        found = session.run(
+            "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+            "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
+            "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
+            "RETURN d, s ORDER BY s.name LIMIT 6",
+            prefix=prefix, n=num,
+        ).data()
+        for row in found:
+            row["_article"] = (num, abbr)
+        rows.extend(found)
+    return rows
+
+
+def _search_case_law(session, analysis: Dict[str, Any], numbers: Optional[List[str]] = None,
+                     exclude_docs: Optional[set] = None) -> List[Dict[str, Any]]:
+    """Rulings for each legal question, by full-text search on its keywords
+    (plus `numbers`: articles already verified, never the model's guesses, since
+    a wrong number pulls in rulings on an unrelated article); at most two per
+    question, one passage per ruling."""
+    rows, seen_docs = [], set(exclude_docs or ())
+    # The commentary in the corpus is criminal law (Codice Penale Commentato):
+    # only criminal cases search it.
+    doc_types = ["interpretation", "special"] if analysis.get("area") == "penale" else ["interpretation"]
+    for q in analysis.get("questioni", []):
+        words = [w for w in (q.get("parole_chiave") or []) if isinstance(w, str)]
+        terms = _lucene_query(" ".join([q.get("titolo") or ""] + words + list(numbers or [])))
+        if not terms:
+            continue
+        try:
+            found = session.run(
+                "CALL db.index.fulltext.queryNodes('section_fulltext', $t) YIELD node, score "
+                "MATCH (d:Document)-[:CONTAINS]->(node) "
+                "WHERE d.document_type IN $types "
+                "RETURN d, node AS s, score ORDER BY score DESC LIMIT 12",
+                t=terms, types=doc_types,
+            ).data()
+        except Exception as exc:
+            logger.warning("case-law search failed for %r: %s", terms, exc)
+            continue
+        taken = 0
+        for row in found:
+            doc_id = (row.get("d") or {}).get("id")
+            if not doc_id or doc_id in seen_docs:
+                continue
+            seen_docs.add(doc_id)
+            rows.append(row)
+            taken += 1
+            if taken == 2 or len(rows) >= _MAX_RULINGS:
+                break
+        if len(rows) >= _MAX_RULINGS:
+            break
+    return rows
+
+
+def _search_similar_facts(session, analysis: Dict[str, Any], exclude_docs: set) -> List[Dict[str, Any]]:
+    """Rulings on similar facts, found by the facts' own words ("buca manto
+    stradale caduta pedone comune"), not by legal labels: the model may frame a
+    pothole claim as "responsabilità amministrativa", but rulings on falls in a
+    pothole all cite art. 2051 c.c."""
+    terms = _lucene_query(" ".join(analysis.get("ricerca_fatti") or []))
+    if not terms:
+        return []
+    doc_types = ["interpretation", "special"] if analysis.get("area") == "penale" else ["interpretation"]
+    try:
+        found = session.run(
+            "CALL db.index.fulltext.queryNodes('section_fulltext', $t) YIELD node, score "
+            "MATCH (d:Document)-[:CONTAINS]->(node) "
+            "WHERE d.document_type IN $types "
+            "RETURN d, node AS s, score ORDER BY score DESC LIMIT 12",
+            t=terms, types=doc_types,
+        ).data()
+    except Exception as exc:
+        logger.warning("similar-facts search failed for %r: %s", terms, exc)
+        return []
+    rows, seen = [], set(exclude_docs)
+    for row in found:
+        doc_id = (row.get("d") or {}).get("id")
+        if doc_id and doc_id not in seen:
+            seen.add(doc_id)
+            rows.append(row)
+        if len(rows) == 4:
+            break
+    return rows
+
+
+def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
+    """One labelled block per article (its sections joined) or per ruling,
+    each cut to `chars`."""
+    grouped: Dict[str, List[str]] = {}
+    for row in rows:
+        d, s = row.get("d") or {}, row.get("s") or {}
+        text = " ".join((s.get("plain_text") or "").split())
+        if not text:
+            continue
+        label = (f"art. {row['_article'][0]} {row['_article'][1]}" if row.get("_article")
+                 else re.sub(r"^\s*\[[A-Z]+\]\s*", "", d.get("name") or ""))
+        grouped.setdefault(label, []).append(text)
+    return "\n\n".join(f"[{label}]\n{' '.join(texts)[:chars]}" for label, texts in grouped.items())
+
+
+def _mark_unverified(text: str, articles: List[tuple], sources_text: str) -> str:
+    """Flag article and decision numbers the retrieved sources do not contain,
+    the first time each appears."""
+    known = {(n, a) for n, a in articles}
+    flagged, out, pos = set(), [], 0
+    for m in _CITED_ARTICLE_RE.finditer(text):
+        ref = (_article_num(m.group(1)), _code_of(m.group(2)))
+        if ref[1] in _CODE_PREFIXES and ref not in known and ref not in flagged:
+            flagged.add(ref)
+            out.append(text[pos:m.end()] + _UNVERIFIED)
+            pos = m.end()
+    text = "".join(out) + text[pos:]
+
+    compact = re.sub(r"\s+", " ", sources_text)
+    out, pos = [], 0
+    for m in _CITED_DECISION_RE.finditer(text):
+        # Only numbers introduced as decisions ("Cass. n.", "ord.", "sent."),
+        # not laws ("d.lgs. 28/2010", "legge n. 128/2001").
+        before = text[max(0, m.start() - 30):m.start()].lower()
+        if _LAW_BEFORE_RE.search(before) or not re.search(r"cass|sent|ord|cost|sez|n\.", before):
+            continue
+        num, year = m.group(1), m.group(2)
+        if (num, year) in flagged:
+            continue
+        if re.search(rf"\b{num}\s*(?:/|-|\s+del\s+){year}\b", compact):
+            continue
+        flagged.add((num, year))
+        out.append(text[pos:m.end()] + _UNVERIFIED)
+        pos = m.end()
+    return "".join(out) + text[pos:]
+
+
+def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
+    from .language import language_display_name
+    party = analysis.get("parte_assistita") or "la parte assistita"
+    position = f" ({analysis['posizione']})" if analysis.get("posizione") else ""
+    return (
+        "Sei un avvocato italiano con lunga esperienza di contenzioso. Redigi un PARERE MOTIVATO "
+        f"nell'interesse di {party}{position}, completo e approfondito come quello di un avvocato esperto "
+        "per il proprio cliente.\n\n"
+        "STRUTTURA (titoli numerati in grassetto):\n"
+        "**1. Inquadramento**: la qualificazione giuridica della vicenda o della pretesa (la norma "
+        "principale e quelle subordinate o alternative, e perché) e una valutazione di OGNI fatto del "
+        "caso: se è favorevole, sfavorevole o neutro per la parte assistita, e perché. Alcuni fatti sono "
+        "insieme favorevoli e sfavorevoli: dillo.\n"
+        "**2. Quadro normativo e giurisprudenziale**: per ogni norma pertinente, cosa stabilisce e come si "
+        "ripartisce l'onere della prova; gli orientamenti della giurisprudenza fornita.\n"
+        f"**3. Argomenti a favore di {party}**: in ordine di forza, ciascuno con un sottotitolo. Per "
+        "ciascuno: i fatti del caso su cui si fonda, la norma e la giurisprudenza, le prove da acquisire, "
+        "la probabile replica della controparte e come superarla.\n"
+        "**4. Punti deboli e rischio**: i fatti e gli argomenti sfavorevoli valutati con franchezza, e una "
+        "stima motivata del rischio.\n"
+        "**5. Profili processuali e operativi**: solo quelli pertinenti al caso, tra prescrizione o "
+        "decadenza, condizioni di procedibilità, competenza, attività istruttorie, terzi da coinvolgere, "
+        "possibilità di definizione stragiudiziale.\n"
+        "**6. Conclusioni**: gli argomenti in ordine di forza e la condotta consigliata.\n\n"
+        "REGOLE:\n"
+        "- Usa ogni fatto elencato in ANALISI DEI FATTI e spiega perché aiuta o danneggia la parte "
+        "assistita. Non aggiungere fatti, date, importi o atti che il caso non contiene: se un dato "
+        "manca, indica che cosa va verificato o acquisito.\n"
+        "- Norme: cita ogni articolo di NORME con il numero e il codice indicati tra parentesi quadre "
+        "prima del suo testo, mai con un altro numero. Riporta tra virgolette solo testi presenti in "
+        "NORME; per norme non presenti descrivine il contenuto senza virgolette.\n"
+        "- Giurisprudenza: cita solo le pronunce presenti in GIURISPRUDENZA, con l'identificativo "
+        "indicato tra parentesi quadre; senza fonte puoi richiamare un orientamento solo in termini "
+        "generali, senza numeri né date.\n"
+        "- Ogni affermazione giuridica va collegata a un fatto del caso: niente considerazioni astratte.\n"
+        "- Nella valutazione dei fatti considera anche le circostanze che il testo indica di passaggio "
+        "(abitudini, orari, il motivo per cui una persona si trovava sul posto, chi è arrivato dopo il "
+        "fatto e che cosa ha potuto vedere): spesso sono decisive.\n"
+        "- Usa solo le norme e le pronunce pertinenti al caso; quelle non pertinenti ignorale, senza "
+        "elencarle né commentarle.\n"
+        "- Prescrizione, decadenza e altri termini sono un argomento solo se il caso indica le date "
+        "necessarie; altrimenti indicali solo come verifica da fare.\n"
+        "- Se il caso nomina un atto o una fase processuale in corso (un avviso, una notifica, un "
+        "termine), spiega che cosa consente di fare alla parte assistita ed entro quando, in base al "
+        "testo in NORME: è spesso la prima cosa da decidere.\n"
+        "- La responsabilità civile di un ente pubblico verso un privato per un danno non è "
+        "'responsabilità amministrativa' (che riguarda i dipendenti pubblici davanti alla Corte dei conti).\n"
+        "- Prosa argomentata in paragrafi: non ripetere per ogni argomento uno schema a voci (fatti, norma, "
+        "giurisprudenza...); elenchi puntati solo per prove da acquisire e attività da compiere.\n"
+        "- Lunghezza: indicativamente 1.500-2.500 parole.\n"
+        f"- Scrivi in {language_display_name(lang)}."
+    )
+
+
+def _parere_human(facts: str, analysis: Dict[str, Any], articles: str, rulings: str, request: str = "") -> str:
+    facts_list = "\n".join(
+        f"- {f.get('fatto', '')} ({f.get('effetto', 'neutro')}: {f.get('perche', '')})"
+        for f in analysis.get("fatti", []) if f.get("fatto")
+    )
+    # Titles only: the analysis' own article numbers are unreliable, and given
+    # here the writer used them as labels for the verified texts in NORME.
+    issues = "\n".join(
+        f"{i}. {q.get('titolo', '')}" for i, q in enumerate(analysis.get("questioni", []), 1)
+    )
+    return (
+        f"CASO:\n{_case_text(facts, request)}\n\n"
+        + (f"ANALISI DEI FATTI:\n{facts_list}\n\n" if facts_list else "")
+        + (f"QUESTIONI GIURIDICHE:\n{issues}\n\n" if issues else "")
+        + f"NORME (testo dalla banca dati):\n{articles or '(nessun testo recuperato)'}\n\n"
+        + f"GIURISPRUDENZA (dalla banca dati):\n{rulings or '(nessuna pronuncia recuperata)'}\n\n"
+        + "Redigi ora il parere."
+    )
+
+
+def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: str = "") -> dict:
+    """A reasoned parere on a case: facts described in the message, or an
+    uploaded document (`facts`) with the user's message as `request`.
+
+    Returns {"draft": str, "citations": list} like run_defensive_pipeline.
+    """
+    import neo4j
+    from .main import driver, NEO4J_DATABASE
+
+    analysis = _analyse_case(facts, session_lang, request)
+    article_rows, ruling_rows, candidates, selected = [], [], [], []
+    try:
+        with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+            first_rulings = _search_case_law(session, analysis)
+            similar = _search_similar_facts(session, analysis,
+                                            {(r.get("d") or {}).get("id") for r in first_rulings})
+            counts = _articles_cited_in_rulings(
+                session, [(r.get("d") or {}).get("id") for r in (similar + first_rulings)[:10]])
+            similar_counts = _articles_cited_in_rulings(session, [(r.get("d") or {}).get("id") for r in similar])
+            case = _case_text(facts, request)
+            keep, candidates = _candidate_articles(case, analysis, similar + first_rulings,
+                                                   _search_code_articles(session, analysis), counts,
+                                                   similar_counts)
+            candidate_rows = _fetch_articles(session, keep + candidates)
+            chosen = _choose_articles(case, [r for r in candidate_rows if r["_article"] not in keep])
+            if chosen is None:   # the choice failed: what the rulings cite, and the damages backbone
+                backbone = set(_cited_by_rulings(similar + first_rulings)) | set(_CIVIL_DAMAGES_NORMS)
+                chosen = [r for r in candidates if r in backbone][:8]
+            selected = keep + [r for r in chosen if r not in keep]
+            article_rows = sorted((r for r in candidate_rows if r["_article"] in selected),
+                                  key=lambda r: selected.index(r["_article"]))
+            # Second search with the verified article numbers: rulings on the
+            # article itself, not on whatever else the keywords match.
+            second = _search_case_law(session, analysis, numbers=[n for n, _ in selected[:4]],
+                                      exclude_docs={(r.get("d") or {}).get("id") for r in similar})
+            # Rulings on similar facts first: the closest precedents.
+            ruling_rows, seen = [], set()
+            for row in similar + second + first_rulings:
+                doc_id = (row.get("d") or {}).get("id")
+                if doc_id not in seen:
+                    seen.add(doc_id)
+                    ruling_rows.append(row)
+            ruling_rows = ruling_rows[:_MAX_RULINGS]
+    except Exception as exc:
+        logger.warning("case analysis retrieval failed: %s", exc)
+
+    articles = _source_block(article_rows, _ARTICLE_CHARS)
+    rulings = _source_block(ruling_rows, _RULING_CHARS)
+    draft = _call_chat(
+        [SystemMessage(content=_parere_system(analysis, session_lang)),
+         HumanMessage(content=_parere_human(facts, analysis, articles, rulings, request))],
+        max_tokens=_PARERE_TOKENS,
+    )
+    found = sorted({row["_article"] for row in article_rows})
+    draft = _mark_unverified(draft, found, articles + "\n" + rulings)
+
+    topics = _extract_deepdive_topics(draft[draft.find("**3."):] if "**3." in draft else draft, {})
+    if topics:
+        draft += "\n\n" + _format_deepdive_suggestion(topics)
+    if ruling_rows or _UNVERIFIED in draft:
+        draft += (
+            "\n\n⚠️ Le sentenze citate provengono dal corpus documentale; i riferimenti segnati "
+            "[DA VERIFICARE] non sono stati trovati nelle fonti consultate. Verificare tutto prima dell'uso."
+        )
+    return {"draft": draft, "citations": _rows_to_sources(article_rows + ruling_rows),
+            "analysis": analysis, "articles": found,
+            "candidates": [f"art. {n} {c}" for n, c in candidates],
+            "norms_requested": [f"art. {n} {c}" for n, c in selected]}
 
 
 def generate_deepdive_analysis(topic: str, chat_history: list, session_lang: str = "it") -> str:
