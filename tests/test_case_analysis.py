@@ -194,6 +194,115 @@ def test_search_terms_are_safe_for_the_full_text_index():
     assert DG._lucene_terms('art. 2051 "c.c." (custodia) / caso: fortuito') == "art. 2051 c.c. custodia caso fortuito"
 
 
+# --- What the writer reads from the rulings ---------------------------------
+
+FACTS_PART = "Tizio conveniva in giudizio il Comune deducendo di essere caduto in una buca del manto stradale."
+COSTS_PART = "Le spese seguono la soccombenza e si liquidano come in dispositivo."
+
+
+def test_the_writer_reads_the_reasoning_not_the_passage_the_search_matched():
+    """Oct 2026: the search on the facts landed on the passage telling the facts;
+    the principles on art. 2051 c.c. are in the reasoning, further on."""
+    terms = DG._passage_terms({"ricerca_fatti": ["buca"],
+                               "questioni": [{"parole_chiave": ["custodia della strada", "caso fortuito"]}]})
+    assert terms == [("buca",), ("custodi", "strad"), ("caso", "fortuit")]
+    sections = [FACTS_PART, COSTS_PART, RULING, "Sulle strade in custodia dell'ente grava una responsabilità oggettiva."]
+    passage = DG._best_passage(sections, [("2051", "c.c.")], terms, 2500)
+    assert passage == " […] ".join([FACTS_PART, RULING, sections[3]])   # reading order, costs left out
+    # Little room: the article citation and the concepts first.
+    assert DG._best_passage(sections, [("2051", "c.c.")], terms, 400) == RULING
+    assert DG._best_passage([COSTS_PART], [("2051", "c.c.")], terms, 2500) == ""
+
+
+def test_a_long_section_is_cut_around_the_chosen_article():
+    long_text = "Premessa sul giudizio. " * 200 + "Nel merito. " + RULING + " Altro ancora." * 200
+    out = DG._window(long_text, {("2051", "c.c.")}, [], 1000)
+    assert out.startswith("… ") and "art. 2051 cod. civ." in out and len(out) <= 1002
+
+
+def test_sections_are_read_in_document_order():
+    class Session:
+        def run(self, query, **params):
+            return _Result([{"id": "r1", "name": "10_1", "text": "dieci"}, {"id": "r1", "name": "2_3", "text": "due"},
+                            {"id": "r2", "name": "1_1", "text": " "}, {"id": "r1", "name": "2_1", "text": "uno"}])
+
+    assert DG._ruling_sections(Session(), ["r1", "r2", "r1"]) == {"r1": ["uno", "due", "dieci"]}
+
+
+def test_every_legal_question_gets_a_ruling_among_the_first_read():
+    def rows(*specs):
+        return [{"d": {"id": doc}, **({"_question": q} if q is not None else {})} for doc, q in specs]
+
+    similar = rows(("s1", None), ("s2", None), ("s3", None), ("s4", None))
+    second = rows(("a", 0), ("b", 0), ("c", 1))
+    first = rows(("d", 0), ("e", 2), ("a", 0))
+    order = [r["d"]["id"] for r in DG._reading_order(similar, second, first)]
+    assert order == ["s1", "s2", "a", "c", "e", "s3", "s4", "b", "d"]
+
+
+def test_a_civil_claim_against_a_comune_is_not_called_administrative_liability():
+    """Run 10: the analysis titled the pothole claim "Responsabilità amministrativa"
+    and the parere used it as a heading."""
+    analysis = {"area": "civile", "questioni": [{"titolo": "Responsabilità amministrativa per manutenzione strade"},
+                                                {"titolo": "Danno erariale e responsabilità amministrativa"}]}
+    assert DG._issue_titles(analysis) == ("1. Responsabilità civile della P.A. per manutenzione strade\n"
+                                          "2. Danno erariale e responsabilità amministrativa")
+    assert DG._civil_title("QUESTIONE 1: responsabilità amministrativa", "civile") == \
+        "QUESTIONE 1: responsabilità civile della P.A."
+    assert DG._civil_title("Responsabilità amministrativa", "amministrativo") == "Responsabilità amministrativa"
+
+
+def test_only_rulings_of_the_cases_own_branch_are_read():
+    """Run 9: a race crash (criminal) got a civil ruling on a pothole as its authority."""
+    class Session:
+        def run(self, query, **params):
+            texts = {"civil": ["Violazione dell'art. 2051 c.c. e dell'art. 360 c.p.c.: la buca era visibile."],
+                     "penal": ["Lesioni colpose ex art. 590 c.p.; ricorso ex art. 606 c.p.p. in gara sportiva."]}
+            return _Result([{"id": d, "name": "1_1", "text": t} for d in params["ids"] for t in texts.get(d, [])])
+
+    rows = [{"d": {"id": "civil"}, "s": {"plain_text": "buca"}}, {"d": {"id": "penal"}, "s": {"plain_text": "gara"}},
+            {"d": {"id": "unread"}, "s": {"plain_text": "Massima senza articoli."}}]
+    penal = DG._ruling_passages(Session(), rows, [("590", "c.p.")], {"area": "penale", "ricerca_fatti": ["gara"]})
+    assert [r["d"]["id"] for r in penal] == ["penal", "unread"]
+    assert penal[0]["_passage"].startswith("Lesioni colpose") and "_passage" not in penal[1]
+    civil = DG._ruling_passages(Session(), rows, [("2051", "c.c.")], {"area": "civile", "ricerca_fatti": ["buca"]})
+    assert [r["d"]["id"] for r in civil] == ["civil", "unread"]
+
+
+def test_principles_are_listed_with_the_ruling_that_states_them(monkeypatch):
+    seen = {}
+
+    def fake_chat(messages, max_tokens=None, stop=None):
+        seen["human"] = messages[1].content
+        return ("**QUESTIONE 1: Responsabilità da cosa in custodia**\n"
+                "- Il caso fortuito può consistere nella condotta del danneggiato [S1]\n"
+                "- Un principio senza fonte\n"
+                "- Un principio da un passo che non esiste [S7]\n"
+                "2. Il custode risponde se il pericolo era prevedibile [S1, S2]\n"
+                "QUESTIONE 2: Vizi della cosa\n"
+                "- Il venditore risponde dei vizi nascosti della cosa venduta [S2]\n")
+
+    monkeypatch.setattr(DG, "_call_chat", fake_chat)
+    custodian = "Il  custode  risponde  dei danni quando il pericolo era prevedibile ed evitabile."
+    rows = [{"d": {"name": "[ORD] Ordinanza n. 23908/2022"}, "s": {"plain_text": "matched"}, "_passage": RULING},
+            {"d": {"name": "Ordinanza n. 2480/2018"}, "s": {"plain_text": custodian}}]
+    out = DG._extract_principles(CASE, ANALYSIS, rows)
+    # Each principle keeps only the rulings whose passage states it: run 9
+    # credited rulings with principles they do not contain.
+    assert out == ("QUESTIONE 1: Responsabilità da cosa in custodia\n"
+                   "- Il caso fortuito può consistere nella condotta del danneggiato [Ordinanza n. 23908/2022]\n"
+                   "- Il custode risponde se il pericolo era prevedibile [Ordinanza n. 2480/2018]")
+    assert "[S1] Ordinanza n. 23908/2022\n" + RULING in seen["human"]      # the chosen passage
+    assert "[S2] Ordinanza n. 2480/2018\n" + " ".join(custodian.split()) in seen["human"]
+    assert DG._extract_principles(CASE, ANALYSIS, []) == ""
+
+    def failing(*a, **k):
+        raise RuntimeError("model down")
+
+    monkeypatch.setattr(DG, "_call_chat", failing)
+    assert DG._extract_principles(CASE, ANALYSIS, rows) == ""
+
+
 # --- Routing ----------------------------------------------------------------
 
 def _capture_parere(monkeypatch):
@@ -254,6 +363,9 @@ class _Session:
 
     def run(self, query, **params):
         self.log.append((query, params))
+        if "s.name AS name" in query:                       # every section of the rulings read
+            return _Result([{"id": "LEGAL_DOC::o1", "name": "1_1", "text": COSTS_PART},
+                            {"id": "LEGAL_DOC::o1", "name": "2_3", "text": RULING}])
         if "any(p IN $prefixes" in query:                   # keyword search in the codes
             return _Result([{"doc": "Codice Civile 2026", "sec": "2051.0.0", "score": 8.0}])
         if "STARTS WITH $prefix" in query:
@@ -291,6 +403,9 @@ def pipeline(monkeypatch):
             return json.dumps(ANALYSIS)
         if "articoli di legge candidati" in system:
             return '["art. 2051 c.c."]'
+        if "principi di diritto" in system:
+            prompts.update(principles_human=human)
+            return "QUESTIONE 1: Custodia\n- Il caso fortuito può consistere nella condotta del danneggiato [S1]"
         if "PARERE MOTIVATO" in system:
             prompts.update(system=system, human=human, max_tokens=max_tokens)
             return ("**1. Inquadramento**\nLa pretesa rientra nell'art. 2051 c.c., non nell'art. 2044 c.c., "
@@ -310,6 +425,12 @@ def test_the_parere_is_written_from_the_retrieved_law(pipeline):
     import neo4j
     assert fake.modes == [neo4j.READ_ACCESS]                           # the database is only read
     assert ART_2051 in prompts["human"] and RULING in prompts["human"]
+    assert COSTS_PART not in prompts["human"]                          # the ruling's reasoning, not its costs
+    assert ("PRINCIPI DALLA GIURISPRUDENZA (per questione):\nQUESTIONE 1: Custodia\n- Il caso fortuito può "
+            "consistere nella condotta del danneggiato [Ordinanza sul ricorso iscritto al n. 23908/2022 R.G.]"
+            ) in prompts["human"]
+    assert "[S1] Ordinanza sul ricorso iscritto al n. 23908/2022 R.G.\n" + RULING in prompts["principles_human"]
+    assert out["principles"].startswith("QUESTIONE 1: Custodia")
     assert "art. 50" not in prompts["human"]                           # the analysis' guessed numbers stay out
     second_search = [p["t"] for q, p in fake.log if "section_fulltext" in q and "types" in p][-1]
     assert "2051" in second_search                                     # rulings searched with the verified article

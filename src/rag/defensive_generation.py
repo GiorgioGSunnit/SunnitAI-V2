@@ -523,8 +523,12 @@ _LAW_BEFORE_RE = re.compile(
 _UNVERIFIED = " [DA VERIFICARE]"
 
 _ARTICLE_CHARS = 1500
-_RULING_CHARS = 1200
 _MAX_RULINGS = 10
+# The rulings the writer reads, and how much of each: the passages that cite
+# the chosen articles or discuss the case's concepts (the court's reasoning),
+# not the passage the search happened to match, which is often the facts.
+_PASSAGE_RULINGS = 5
+_PASSAGE_CHARS = 2500
 _PARERE_TOKENS = 5000
 # The case as read by the analysis and the writer (~3,400 tokens): an uploaded
 # act can be long, and the 20k-token context also holds sources and the answer.
@@ -853,7 +857,7 @@ def _search_case_law(session, analysis: Dict[str, Any], numbers: Optional[List[s
     # The commentary in the corpus is criminal law (Codice Penale Commentato):
     # only criminal cases search it.
     doc_types = ["interpretation", "special"] if analysis.get("area") == "penale" else ["interpretation"]
-    for q in analysis.get("questioni", []):
+    for index, q in enumerate(analysis.get("questioni", [])):
         words = [w for w in (q.get("parole_chiave") or []) if isinstance(w, str)]
         terms = _lucene_query(" ".join([q.get("titolo") or ""] + words + list(numbers or [])))
         if not terms:
@@ -875,6 +879,7 @@ def _search_case_law(session, analysis: Dict[str, Any], numbers: Optional[List[s
             if not doc_id or doc_id in seen_docs:
                 continue
             seen_docs.add(doc_id)
+            row["_question"] = index
             rows.append(row)
             taken += 1
             if taken == 2 or len(rows) >= _MAX_RULINGS:
@@ -915,19 +920,239 @@ def _search_similar_facts(session, analysis: Dict[str, Any], exclude_docs: set) 
     return rows
 
 
+def _ruling_label(row: Dict[str, Any]) -> str:
+    return re.sub(r"^\s*\[[A-Z]+\]\s*", "", (row.get("d") or {}).get("name") or "")
+
+
 def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
-    """One labelled block per article (its sections joined) or per ruling,
-    each cut to `chars`."""
+    """One labelled block per article (its sections joined) or per ruling (its
+    chosen passage, else the matched section), each cut to `chars`."""
     grouped: Dict[str, List[str]] = {}
     for row in rows:
-        d, s = row.get("d") or {}, row.get("s") or {}
-        text = " ".join((s.get("plain_text") or "").split())
+        text = row.get("_passage") or " ".join(((row.get("s") or {}).get("plain_text") or "").split())
         if not text:
             continue
         label = (f"art. {row['_article'][0]} {row['_article'][1]}" if row.get("_article")
-                 else re.sub(r"^\s*\[[A-Z]+\]\s*", "", d.get("name") or ""))
+                 else _ruling_label(row))
         grouped.setdefault(label, []).append(text)
     return "\n\n".join(f"[{label}]\n{' '.join(texts)[:chars]}" for label, texts in grouped.items())
+
+
+def _reading_order(similar: List[Dict[str, Any]], second: List[Dict[str, Any]],
+                   first: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The rulings in the order the writer reads them, without repeats: two on
+    similar facts, then one for each legal question, then the rest. In search
+    order the five read in depth would be the four similar-facts rulings and one
+    on the first question, none on the defences."""
+    per_question, questions = [], set()
+    for row in second + first:
+        if row.get("_question") not in questions:
+            questions.add(row.get("_question"))
+            per_question.append(row)
+    ordered, seen = [], set()
+    for row in similar[:2] + per_question + similar[2:] + second + first:
+        doc_id = (row.get("d") or {}).get("id")
+        if doc_id not in seen:
+            seen.add(doc_id)
+            ordered.append(row)
+    return ordered[:_MAX_RULINGS]
+
+
+def _ruling_sections(session, doc_ids: List[str]) -> Dict[str, List[str]]:
+    """Every section of each ruling, in reading order ("2_3" before "10_1")."""
+    ids = [i for i in dict.fromkeys(doc_ids) if i]
+    if not ids:
+        return {}
+    parts: Dict[str, List[tuple]] = {}
+    rows = session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id IN $ids "
+        "RETURN d.id AS id, s.name AS name, s.plain_text AS text",
+        ids=ids,
+    ).data()
+    for i, row in enumerate(rows):
+        text = " ".join((row.get("text") or "").split())
+        if text:
+            order = tuple(int(n) for n in re.findall(r"\d+", row.get("name") or ""))
+            parts.setdefault(row.get("id"), []).append((order, i, text))
+    return {doc: [text for _, _, text in sorted(found)] for doc, found in parts.items()}
+
+
+def _passage_terms(analysis: Dict[str, Any]) -> List[tuple]:
+    """The case's concepts and fact words, each as the stems of its longer words
+    ("custodia della strada" -> ("custodi", "strad")): a section discusses a
+    concept when it contains all of them, in any order and form ("strade in
+    custodia"). Four-letter words stay whole: "caso" cut to "cas" matches "Cassazione"."""
+    phrases = list(analysis.get("ricerca_fatti") or [])
+    for q in analysis.get("questioni", []):
+        phrases += q.get("parole_chiave") or []
+    terms = []
+    for phrase in phrases:
+        words = [w for w in re.findall(r"\w+", phrase.lower()) if len(w) >= 4 and w not in _STOPWORDS]
+        term = tuple(w[:-1] if len(w) >= 5 else w for w in words)
+        if term and term not in terms:
+            terms.append(term)
+    return terms
+
+
+def _has_term(low: str, term: tuple) -> bool:
+    return all(stem in low for stem in term)
+
+
+def _best_passage(sections: List[str], selected: List[tuple], terms: List[tuple], chars: int) -> str:
+    """The sections of one ruling that cite the chosen articles (worth three
+    concepts each) or discuss the case's concepts, best first up to `chars`,
+    then put back in reading order. Empty when no section scores."""
+    wanted = set(selected)
+
+    def score(text: str) -> int:
+        low = text.lower()
+        return 3 * len(set(_refs_in(text)) & wanted) + sum(1 for t in terms if _has_term(low, t))
+
+    ranked = sorted(((score(t), i) for i, t in enumerate(sections)), key=lambda x: (-x[0], x[1]))
+    picked, used = [], 0
+    for points, i in ranked:
+        room = chars - used
+        if not points or room < 300:
+            break
+        text = sections[i] if len(sections[i]) <= room else _window(sections[i], wanted, terms, room)
+        picked.append((i, text))
+        used += len(text) + 5
+    return " […] ".join(text for _, text in sorted(picked))
+
+
+def _window(text: str, wanted: set, terms: List[tuple], chars: int) -> str:
+    """`chars` of a long section, from the sentence before its first mention
+    of a chosen article or a concept."""
+    low = text.lower()
+    hits = [m.start() for m in _CITED_ARTICLE_RE.finditer(text)
+            if (_article_num(m.group(1)), _code_of(m.group(2))) in wanted]
+    hits += [low.find(t[0]) for t in terms if _has_term(low, t)]
+    start = max(0, min(hits, default=0) - chars // 5)
+    if start:
+        dot = text.rfind(". ", 0, start)
+        start = dot + 2 if dot >= 0 and start - dot < 300 else start
+    return ("… " if start else "") + text[start:start + chars].strip()
+
+
+_PENAL_CODES = {"c.p.", "c.p.p."}
+_CIVIL_CODES = {"c.c.", "c.p.c."}
+
+
+def _other_branch(texts: List[str], area: str) -> bool:
+    """A civil ruling for a criminal case, or the reverse, judged by the codes it
+    cites most. Run 9, Oct 2026: the search for a race crash found a civil
+    ruling on a pothole, and the parere cited it four times on criminal fault."""
+    codes = [code for text in texts for _, code in _refs_in(text)]
+    penal = sum(code in _PENAL_CODES for code in codes)
+    civil = sum(code in _CIVIL_CODES for code in codes)
+    return civil > penal if area == "penale" else penal > civil
+
+
+def _ruling_passages(session, ruling_rows: List[Dict[str, Any]], selected: List[tuple],
+                     analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The first _PASSAGE_RULINGS rulings of the case's own branch (civil or
+    criminal), each with its best passage as `_passage` (the matched section
+    when no section scores)."""
+    try:
+        sections = _ruling_sections(session, [(r.get("d") or {}).get("id") for r in ruling_rows])
+    except Exception as exc:
+        logger.warning("reading the rulings failed: %s", exc)
+        sections = {}
+    terms = _passage_terms(analysis)
+    out = []
+    for row in ruling_rows:
+        texts = sections.get((row.get("d") or {}).get("id")) or [(row.get("s") or {}).get("plain_text") or ""]
+        if _other_branch(texts, analysis.get("area") or ""):
+            continue
+        passage = _best_passage(sections.get((row.get("d") or {}).get("id")) or [], selected, terms,
+                                _PASSAGE_CHARS)
+        out.append({**row, "_passage": passage} if passage else row)
+        if len(out) == _PASSAGE_RULINGS:
+            break
+    return out
+
+
+_PRINCIPLES_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati un caso, le sue questioni giuridiche e alcuni passi di "
+    "pronunce, ciascuno con un identificativo tra parentesi quadre ([S1], [S2]...). Per ogni questione "
+    "elenca i principi di diritto che le pronunce affermano e che servono a decidere il caso: che cosa "
+    "deve provare ciascuna parte, quando la responsabilità è esclusa o ridotta, quali circostanze contano "
+    "e come il giudice le valuta. Una riga per principio, nella forma \"- principio [Sn]\", con "
+    "l'identificativo del passo da cui lo ricavi, formulato con le parole del passo. Riporta solo ciò che "
+    "il giudice afferma, non le tesi delle parti né i fatti di quel giudizio, e nulla che i passi non "
+    "contengano. Usa solo i passi che trattano lo stesso istituto giuridico delle questioni del caso; "
+    "ignora gli altri anche se usano parole simili. Salta le questioni che nessun passo tratta. Formato:\n"
+    "QUESTIONE 1: titolo\n- principio [Sn]\n"
+    "Rispondi solo con l'elenco."
+)
+
+
+_ADMINISTRATIVE_LIABILITY_RE = re.compile(r"responsabilit\S*\s+amministrativ\w*", re.IGNORECASE)
+
+
+def _civil_title(text: str, area: str) -> str:
+    """In a civil case "responsabilità amministrativa" (public employees before
+    the Corte dei conti) becomes "responsabilità civile della P.A.": the analysis
+    keeps using it for damages claims against a Comune, and run 10 copied it
+    into the parere as a heading."""
+    if area != "civile" or re.search(r"erarial|corte dei conti|dipendent", text, re.IGNORECASE):
+        return text
+    return _ADMINISTRATIVE_LIABILITY_RE.sub(
+        lambda m: ("R" if m.group(0)[0].isupper() else "r") + "esponsabilità civile della P.A.", text)
+
+
+def _issue_titles(analysis: Dict[str, Any]) -> str:
+    """The legal questions, numbered, as the principles step and the writer read them."""
+    return "\n".join(f"{i}. {_civil_title(q.get('titolo') or '', analysis.get('area') or '')}"
+                     for i, q in enumerate(analysis.get("questioni", []), 1))
+
+
+def _found_in(principle: str, passage: str) -> bool:
+    """Most of the principle's longer words (cut to a 7-letter stem, so
+    "prevedibilità" matches "prevedibile") appear in the passage it cites. Run 9
+    attributed principles to rulings that do not state them; those are dropped."""
+    stems = {w[:min(len(w) - 1, 7)] for w in re.findall(r"\w+", principle.lower()) if len(w) >= 6}
+    low = passage.lower()
+    return not stems or sum(stem in low for stem in stems) >= 0.6 * len(stems)
+
+
+def _extract_principles(facts: str, analysis: Dict[str, Any], ruling_rows: List[Dict[str, Any]],
+                        request: str = "") -> str:
+    """The legal principles the rulings state, by question, each with the
+    ruling's name: the writer used the raw passages only for loose paraphrase.
+    Lines without a valid passage id are dropped; empty on any failure."""
+    rows = [r for r in ruling_rows if r.get("_passage") or (r.get("s") or {}).get("plain_text")]
+    if not rows:
+        return ""
+    labels = [_ruling_label(r) for r in rows]
+    texts = [r.get("_passage") or " ".join(r["s"]["plain_text"].split())[:_PASSAGE_CHARS] for r in rows]
+    passages = "\n\n".join(f"[S{i}] {label}\n{text}" for i, (label, text) in enumerate(zip(labels, texts), 1))
+    issues = _issue_titles(analysis)
+    try:
+        raw = _call_chat([SystemMessage(content=_PRINCIPLES_SYSTEM),
+                          HumanMessage(content=f"CASO:\n{_case_text(facts, request)[:3000]}\n\n"
+                                               f"QUESTIONI:\n{issues or '(non indicate)'}\n\n"
+                                               f"PASSI DELLE PRONUNCE:\n{passages}")],
+                         max_tokens=1200)
+    except Exception as exc:
+        logger.warning("principles extraction failed: %s", exc)
+        return ""
+    lines = []
+    for line in raw.splitlines():
+        line = line.strip().strip("*#").strip()
+        if re.match(r"questione\b", line, re.IGNORECASE):
+            lines.append(_civil_title(line.replace("**", ""), analysis.get("area") or ""))
+            continue
+        ids = [int(n) for group in re.findall(r"\[([^\]]*)\]", line) for n in re.findall(r"S(\d+)", group)]
+        ids = [n for n in dict.fromkeys(ids) if 1 <= n <= len(labels)]
+        body = re.sub(r"\s*\[[^\]]*S\d+[^\]]*\]", "", line).lstrip("-•* ").strip()
+        body = re.sub(r"^\d+[.)]\s*", "", body)
+        ids = [n for n in ids if _found_in(body, texts[n - 1])]
+        if ids and body:
+            lines.append(f"- {body} [{'; '.join(labels[n - 1] for n in ids)}]")
+    # A question heading stays only with principles under it.
+    return "\n".join(line for i, line in enumerate(lines)
+                     if line.startswith("- ") or (i + 1 < len(lines) and lines[i + 1].startswith("- ")))
 
 
 def _mark_unverified(text: str, articles: List[tuple], sources_text: str) -> str:
@@ -976,10 +1201,11 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
         "caso: se è favorevole, sfavorevole o neutro per la parte assistita, e perché. Alcuni fatti sono "
         "insieme favorevoli e sfavorevoli: dillo.\n"
         "**2. Quadro normativo e giurisprudenziale**: per ogni norma pertinente, cosa stabilisce e come si "
-        "ripartisce l'onere della prova; gli orientamenti della giurisprudenza fornita.\n"
+        "ripartisce l'onere della prova; i principi affermati dalla giurisprudenza, ciascuno con la "
+        "pronuncia che lo afferma, e che cosa comportano per questo caso.\n"
         f"**3. Argomenti a favore di {party}**: in ordine di forza, ciascuno con un sottotitolo. Per "
-        "ciascuno: i fatti del caso su cui si fonda, la norma e la giurisprudenza, le prove da acquisire, "
-        "la probabile replica della controparte e come superarla.\n"
+        "ciascuno: i fatti del caso su cui si fonda, la norma e i principi giurisprudenziali che lo "
+        "sostengono, le prove da acquisire, la probabile replica della controparte e come superarla.\n"
         "**4. Punti deboli e rischio**: i fatti e gli argomenti sfavorevoli valutati con franchezza, e una "
         "stima motivata del rischio.\n"
         "**5. Profili processuali e operativi**: solo quelli pertinenti al caso, tra prescrizione o "
@@ -995,7 +1221,9 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
         "NORME; per norme non presenti descrivine il contenuto senza virgolette.\n"
         "- Giurisprudenza: cita solo le pronunce presenti in GIURISPRUDENZA, con l'identificativo "
         "indicato tra parentesi quadre; senza fonte puoi richiamare un orientamento solo in termini "
-        "generali, senza numeri né date.\n"
+        "generali, senza numeri né date. I PRINCIPI DALLA GIURISPRUDENZA sono ricavati da quei passi: "
+        "fondaci il ragionamento e applica ciascuno ai fatti del caso. Riporta tra virgolette solo frasi "
+        "presenti nei passi di GIURISPRUDENZA.\n"
         "- Ogni affermazione giuridica va collegata a un fatto del caso: niente considerazioni astratte.\n"
         "- Nella valutazione dei fatti considera anche le circostanze che il testo indica di passaggio "
         "(abitudini, orari, il motivo per cui una persona si trovava sul posto, chi è arrivato dopo il "
@@ -1016,22 +1244,22 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
     )
 
 
-def _parere_human(facts: str, analysis: Dict[str, Any], articles: str, rulings: str, request: str = "") -> str:
+def _parere_human(facts: str, analysis: Dict[str, Any], articles: str, rulings: str, request: str = "",
+                  principles: str = "") -> str:
     facts_list = "\n".join(
         f"- {f.get('fatto', '')} ({f.get('effetto', 'neutro')}: {f.get('perche', '')})"
         for f in analysis.get("fatti", []) if f.get("fatto")
     )
     # Titles only: the analysis' own article numbers are unreliable, and given
     # here the writer used them as labels for the verified texts in NORME.
-    issues = "\n".join(
-        f"{i}. {q.get('titolo', '')}" for i, q in enumerate(analysis.get("questioni", []), 1)
-    )
+    issues = _issue_titles(analysis)
     return (
         f"CASO:\n{_case_text(facts, request)}\n\n"
         + (f"ANALISI DEI FATTI:\n{facts_list}\n\n" if facts_list else "")
         + (f"QUESTIONI GIURIDICHE:\n{issues}\n\n" if issues else "")
         + f"NORME (testo dalla banca dati):\n{articles or '(nessun testo recuperato)'}\n\n"
-        + f"GIURISPRUDENZA (dalla banca dati):\n{rulings or '(nessuna pronuncia recuperata)'}\n\n"
+        + (f"PRINCIPI DALLA GIURISPRUDENZA (per questione):\n{principles}\n\n" if principles else "")
+        + f"GIURISPRUDENZA (passi dalla banca dati):\n{rulings or '(nessuna pronuncia recuperata)'}\n\n"
         + "Redigi ora il parere."
     )
 
@@ -1071,22 +1299,17 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             # article itself, not on whatever else the keywords match.
             second = _search_case_law(session, analysis, numbers=[n for n, _ in selected[:4]],
                                       exclude_docs={(r.get("d") or {}).get("id") for r in similar})
-            # Rulings on similar facts first: the closest precedents.
-            ruling_rows, seen = [], set()
-            for row in similar + second + first_rulings:
-                doc_id = (row.get("d") or {}).get("id")
-                if doc_id not in seen:
-                    seen.add(doc_id)
-                    ruling_rows.append(row)
-            ruling_rows = ruling_rows[:_MAX_RULINGS]
+            ruling_rows = _ruling_passages(session, _reading_order(similar, second, first_rulings),
+                                           selected, analysis)
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
 
     articles = _source_block(article_rows, _ARTICLE_CHARS)
-    rulings = _source_block(ruling_rows, _RULING_CHARS)
+    rulings = _source_block(ruling_rows, _PASSAGE_CHARS + 100)
+    principles = _extract_principles(facts, analysis, ruling_rows, request)
     draft = _call_chat(
         [SystemMessage(content=_parere_system(analysis, session_lang)),
-         HumanMessage(content=_parere_human(facts, analysis, articles, rulings, request))],
+         HumanMessage(content=_parere_human(facts, analysis, articles, rulings, request, principles))],
         max_tokens=_PARERE_TOKENS,
     )
     found = sorted({row["_article"] for row in article_rows})
@@ -1101,7 +1324,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             "[DA VERIFICARE] non sono stati trovati nelle fonti consultate. Verificare tutto prima dell'uso."
         )
     return {"draft": draft, "citations": _rows_to_sources(article_rows + ruling_rows),
-            "analysis": analysis, "articles": found,
+            "analysis": analysis, "articles": found, "principles": principles,
             "candidates": [f"art. {n} {c}" for n, c in candidates],
             "norms_requested": [f"art. {n} {c}" for n, c in selected]}
 
