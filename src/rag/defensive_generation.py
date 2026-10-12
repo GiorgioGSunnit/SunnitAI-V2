@@ -515,8 +515,9 @@ _DAMAGES_RE = re.compile(r"\b(dann[io]|risarciment|risarcitori)", re.IGNORECASE)
 # payment, foreseeable damage): they do not apply to a claim in tort, whose
 # damages follow art. 2056 c.c. (1223, 1226, 1227). Runs 9-10 used 1218, 1219
 # and 1225 for the pothole claim, arguing "damage limited to what was foreseeable".
+# Art. 2056 itself is not added: the choice takes at most 6 articles, and in
+# run 11 it pushed out art. 2947 c.c. (prescription).
 _CONTRACT_ONLY_NORMS = {("1218", "c.c."), ("1219", "c.c."), ("1224", "c.c."), ("1225", "c.c.")}
-_TORT_DAMAGES_NORM = ("2056", "c.c.")
 # Any sign of a contract between the parties (or of a relationship treated as
 # one: hospital care, employment) keeps the contract rules among the candidates.
 _CONTRACT_RE = re.compile(
@@ -746,12 +747,10 @@ def _candidate_articles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
     for ref in agreed[:6] + code_refs:
         if ref not in candidates and ref not in keep:
             candidates.append(ref)
-    tort = not _CONTRACT_RE.search(facts)
     if analysis.get("area") != "penale" and _DAMAGES_RE.search(facts):
-        backbone = _CIVIL_DAMAGES_NORMS + ([_TORT_DAMAGES_NORM] if tort else [])
-        candidates += [r for r in backbone if r not in candidates and r not in keep]
+        candidates += [r for r in _CIVIL_DAMAGES_NORMS if r not in candidates and r not in keep]
     candidates += [r for r in _norm_refs(analysis) if r not in candidates and r not in keep]
-    if tort:   # articles the user's text names stay in `keep` whatever they are
+    if not _CONTRACT_RE.search(facts):   # a tort; articles the user's text names stay in `keep`
         candidates = [r for r in candidates if r not in _CONTRACT_ONLY_NORMS]
     return keep, candidates[:24]
 

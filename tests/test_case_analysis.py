@@ -109,13 +109,12 @@ def test_a_claim_in_tort_gets_no_contract_damages_rules():
     code_refs = [("1218", "c.c."), ("1225", "c.c."), ("1223", "c.c."), ("1219", "c.c.")]
     tort = "Tizio inciampa in una buca e chiede i danni al Comune di Milano."
     keep, candidates = DG._candidate_articles(tort, {"area": "civile"}, [], code_refs)
-    assert ("1223", "c.c.") in candidates and ("2056", "c.c.") in candidates   # tort damages rules
+    assert ("1223", "c.c.") in candidates and ("2947", "c.c.") in candidates   # tort damages rules stay
     assert not {("1218", "c.c."), ("1219", "c.c."), ("1225", "c.c.")} & set(candidates)
 
     sale = "Mevio acquista da Sempronio un'auto usata e chiede i danni per il guasto."
     keep, candidates = DG._candidate_articles(sale, {"area": "civile"}, [], code_refs)
     assert ("1218", "c.c.") in candidates and ("1225", "c.c.") in candidates
-    assert ("2056", "c.c.") not in candidates
 
     keep, _ = DG._candidate_articles(tort + " Si invoca l'art. 1218 c.c.", {"area": "civile"}, [], code_refs)
     assert keep == [("1218", "c.c.")]                                  # named by the user: always used
