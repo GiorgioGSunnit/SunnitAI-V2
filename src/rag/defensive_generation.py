@@ -196,23 +196,25 @@ def _extract_deepdive_topics(draft: str, proceeding: dict) -> list:
 
     Best-effort: a failure here must never block the draft itself — the
     caller just skips the suggestion when this returns [].
+
+    Oct 2026: the prompt's example topics ("prescrizione del credito, onere della
+    prova, mediazione obbligatoria") came back word for word under a pothole
+    parere. No examples now, and a topic the draft does not discuss is dropped.
     """
     try:
         raw = _call_chat([
             SystemMessage(content=(
-                "Sei un assistente legale. Dal seguente documento difensivo, estrai i 3-5 temi "
-                "più importanti da approfondire, preferibilmente dalla sezione '4. Analisi di Forza e Rischio' "
-                "o '5. Strategia e Opzioni'. Restituiscili come etichette brevi "
-                "(max 5 parole ciascuna, in italiano, minuscolo). "
-                "Restituisci SOLO una lista JSON di stringhe, niente altro. "
-                "Esempio: [\"prescrizione del credito\", \"onere della prova\", \"mediazione obbligatoria\"]"
+                "Sei un assistente legale. Dal seguente testo difensivo, estrai i 3 argomenti più "
+                "importanti da approfondire, con le parole usate nel testo. Restituiscili come etichette "
+                "brevi (max 5 parole ciascuna, in italiano, minuscolo). "
+                "Restituisci SOLO una lista JSON di stringhe, niente altro."
             )),
             HumanMessage(content=draft[:3000]),
         ], max_tokens=100)
         cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
         topics = json.loads(cleaned)
         if isinstance(topics, list):
-            return [t for t in topics if isinstance(t, str)][:3]
+            return [t for t in topics if isinstance(t, str) and _found_in(t, draft)][:3]
     except Exception as exc:
         logger.warning("_extract_deepdive_topics failed: %s", exc)
     return []
@@ -509,6 +511,20 @@ _SUBSTANTIVE_CODES = {"c.c.", "c.p."}
 # prescription, the injured party's contribution.
 _CIVIL_DAMAGES_NORMS = [("2043", "c.c."), ("2697", "c.c."), ("2947", "c.c."), ("1227", "c.c.")]
 _DAMAGES_RE = re.compile(r"\b(dann[io]|risarciment|risarcitori)", re.IGNORECASE)
+# Contract-only damages rules (debtor's liability, default, interest on late
+# payment, foreseeable damage): they do not apply to a claim in tort, whose
+# damages follow art. 2056 c.c. (1223, 1226, 1227). Runs 9-10 used 1218, 1219
+# and 1225 for the pothole claim, arguing "damage limited to what was foreseeable".
+_CONTRACT_ONLY_NORMS = {("1218", "c.c."), ("1219", "c.c."), ("1224", "c.c."), ("1225", "c.c.")}
+_TORT_DAMAGES_NORM = ("2056", "c.c.")
+# Any sign of a contract between the parties (or of a relationship treated as
+# one: hospital care, employment) keeps the contract rules among the candidates.
+_CONTRACT_RE = re.compile(
+    r"\b(contratt|acquist|vend|compravendit|appalt|locazion|locat|affitt|mutu[oi]\b|fornitur|incaric|"
+    r"mandat|abbonament|obbligazion|debitor|creditor|fattur|ospedal|struttura sanitaria|clinic|"
+    r"datore di lavoro|lavorator|dipendent)",
+    re.IGNORECASE,
+)
 _ARTICLE_NUM = r"(\d+(?:-?(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies))?(?:\.\d+)?)"
 _CITED_ARTICLE_RE = re.compile(
     r"\b(?:art(?:t)?\.?|articol[oi])\s*" + _ARTICLE_NUM
@@ -730,9 +746,13 @@ def _candidate_articles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
     for ref in agreed[:6] + code_refs:
         if ref not in candidates and ref not in keep:
             candidates.append(ref)
+    tort = not _CONTRACT_RE.search(facts)
     if analysis.get("area") != "penale" and _DAMAGES_RE.search(facts):
-        candidates += [r for r in _CIVIL_DAMAGES_NORMS if r not in candidates and r not in keep]
+        backbone = _CIVIL_DAMAGES_NORMS + ([_TORT_DAMAGES_NORM] if tort else [])
+        candidates += [r for r in backbone if r not in candidates and r not in keep]
     candidates += [r for r in _norm_refs(analysis) if r not in candidates and r not in keep]
+    if tort:   # articles the user's text names stay in `keep` whatever they are
+        candidates = [r for r in candidates if r not in _CONTRACT_ONLY_NORMS]
     return keep, candidates[:24]
 
 

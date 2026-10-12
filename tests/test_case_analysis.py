@@ -103,6 +103,39 @@ def test_whole_rulings_are_read_and_strong_agreement_is_kept():
     assert ("2697", "c.c.") in candidates and ("416-bis", "c.p.") in candidates
 
 
+def test_a_claim_in_tort_gets_no_contract_damages_rules():
+    """Runs 9-10 and the PM's test: the pothole parere used art. 1218, 1219 and
+    1225 c.c. ("damage limited to what was foreseeable"), rules for contracts."""
+    code_refs = [("1218", "c.c."), ("1225", "c.c."), ("1223", "c.c."), ("1219", "c.c.")]
+    tort = "Tizio inciampa in una buca e chiede i danni al Comune di Milano."
+    keep, candidates = DG._candidate_articles(tort, {"area": "civile"}, [], code_refs)
+    assert ("1223", "c.c.") in candidates and ("2056", "c.c.") in candidates   # tort damages rules
+    assert not {("1218", "c.c."), ("1219", "c.c."), ("1225", "c.c.")} & set(candidates)
+
+    sale = "Mevio acquista da Sempronio un'auto usata e chiede i danni per il guasto."
+    keep, candidates = DG._candidate_articles(sale, {"area": "civile"}, [], code_refs)
+    assert ("1218", "c.c.") in candidates and ("1225", "c.c.") in candidates
+    assert ("2056", "c.c.") not in candidates
+
+    keep, _ = DG._candidate_articles(tort + " Si invoca l'art. 1218 c.c.", {"area": "civile"}, [], code_refs)
+    assert keep == [("1218", "c.c.")]                                  # named by the user: always used
+
+
+def test_suggested_deepdives_come_from_the_draft_not_from_the_prompt(monkeypatch):
+    """The PM's test, Oct 2026: a pothole parere ended with "prescrizione del
+    credito, onere della prova o mediazione obbligatoria", the prompt's example."""
+    seen = {}
+
+    def fake_chat(messages, max_tokens=None, stop=None):
+        seen["system"] = messages[0].content
+        return '["caso fortuito", "mediazione obbligatoria"]'
+
+    monkeypatch.setattr(DG, "_call_chat", fake_chat)
+    draft = "**3. Argomenti**\nLa buca era visibile: il caso fortuito esclude la responsabilità del Comune."
+    assert DG._extract_deepdive_topics(draft, {}) == ["caso fortuito"]
+    assert "mediazione" not in seen["system"] and "prescrizione del credito" not in seen["system"]
+
+
 def test_a_damages_claim_against_a_public_body_counts_as_civil(monkeypatch):
     monkeypatch.setattr(DG, "_call_chat", lambda *a, **k: json.dumps({"area": "amministrativo"}))
     assert DG._analyse_case("Tizio chiede i danni al Comune di Milano.", "it")["area"] == "civile"
