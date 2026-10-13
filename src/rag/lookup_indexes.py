@@ -43,7 +43,7 @@ ENTITY_VECTOR_INDEXES = [
     "legalact_embeddings",
     "article_embeddings",
     "clause_embeddings",
-    "section_embeddings_v2",
+    "section_embeddings",
     "institution_embeddings",
     "person_embeddings",
     "company_embeddings",
@@ -59,7 +59,7 @@ ENTITY_VECTOR_INDEXES = [
 ]
 CONTEXT_VECTOR_INDEXES = [
     "document_embeddings",
-    "section_embeddings_v2",
+    "section_embeddings",
     "legalact_embeddings",
     "penalty_embeddings",
     "courtcase_embeddings",

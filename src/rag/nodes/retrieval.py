@@ -1382,7 +1382,9 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                 except Exception as e:
                     logger.warning("dottrina BM25 search failed: %s", e)
 
-            # 2. Vector search as fallback/supplement
+            # 2. Vector search as fallback/supplement. No threshold in token_ids
+            # mode (as before); in text mode vector_lookup applies the text-mode
+            # min_score to these indexes (EMBEDDING_MIN_SCORE_COMMENTATO/_FISCALITA).
             vector_rows: List[Dict[str, Any]] = []
             commentato_matches = vector_lookup(
                 _special_session, special_query,
@@ -1528,7 +1530,9 @@ def dottrina_search(state: Dict[str, Any], driver, database: str) -> Dict[str, A
             except Exception as e:
                 logger.warning("dottrina BM25 search failed: %s", e)
 
-        # 2. Vector search as fallback/supplement
+        # 2. Vector search as fallback/supplement. No threshold in token_ids
+        # mode (as before); in text mode vector_lookup applies the text-mode
+        # min_score to these indexes (EMBEDDING_MIN_SCORE_COMMENTATO/_FISCALITA).
         vector_rows: List[Dict[str, Any]] = []
         commentato_matches = vector_lookup(
             session, query,

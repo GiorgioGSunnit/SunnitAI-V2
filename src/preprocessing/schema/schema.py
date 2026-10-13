@@ -20,7 +20,8 @@ load_dotenv()
 #   - OpenAI text-embedding-3-small: 1536
 #   - BAAI/bge-large-en-v1.5: 1024
 #   - all-MiniLM-L6-v2: 384
-VECTOR_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+#   - qwen3-embedding-8b (production): 4096
+VECTOR_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "4096"))
 
 
 class Node(BaseModel):

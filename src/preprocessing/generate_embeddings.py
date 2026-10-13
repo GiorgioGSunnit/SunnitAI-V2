@@ -13,15 +13,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+try:  # reads the env, so after load_dotenv
+    from ..rag import embedding_config  # noqa: E402
+except ImportError:  # run as a file rather than as src.preprocessing.generate_embeddings
+    from src.rag import embedding_config  # noqa: E402
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
 BATCH_SIZE = 64
-VECTOR_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "1024"))
+# Every vector index in production is 4096 (qwen3-embedding-8b).
+VECTOR_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "4096"))
 
 
 def _add_doc_prefix(text: str) -> str:
-    """Add instruction prefix for qwen embedding models."""
+    """Add instruction prefix for qwen embedding models (token_ids mode only:
+    in text mode documents get no instruction, as Qwen recommends)."""
+    if embedding_config.text_mode():
+        return text
     provider = os.getenv("EMBEDDING_PROVIDER", "local")
     model = os.getenv("EMBEDDING_MODEL", "")
     if provider == "openai" and "qwen" in model.lower():
@@ -225,6 +234,7 @@ def _init_embedding_model():
         kwargs: Dict = {
             "model": os.getenv("EMBEDDING_MODEL", os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")),
             "api_key": api_key,
+            **embedding_config.openai_embedding_kwargs(),
         }
         if base_url:
             kwargs["base_url"] = base_url

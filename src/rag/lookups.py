@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional, Pattern, Set, Tuple
 
 from neo4j.exceptions import Neo4jError
 
+from . import embedding_config
 from .ai_chat import embedding_model, _embed_query_with_prefix
 from .lookup_indexes import (
     BTREE_LOOKUPS,
@@ -38,13 +39,16 @@ LEGAL_ACT_TYPE_ALIASES: Dict[str, str] = {
     "regulation": "Regulation",
 }
 
+# Thresholds for token-ID question vectors (EMBEDDING_QUERY_MODE=token_ids). In
+# text mode the migrated indexes use embedding_config.TEXT_MODE_INDEX_SETTINGS
+# instead (see _index_config); keys are always the base index names.
 VECTOR_INDEX_SETTINGS: Dict[str, Dict[str, Any]] = {
     "company_embeddings": {"k": 1, "min_score": 0.35},
     "legalparty_embeddings": {"k": 1, "min_score": 0.35},
     "institution_embeddings": {"k": 1, "min_score": 0.3},
     "legalact_embeddings": {"k": 2, "min_score": 0.3},
     "document_embeddings": {"min_score": 0.25},
-    "section_embeddings_v2": {"k": 30, "min_score": 0.25},
+    "section_embeddings": {"k": 30, "min_score": 0.25},
     "tender_embeddings": {"k": 2, "min_score": 0.28},
     "contract_embeddings": {"k": 2, "min_score": 0.28},
     "penalty_embeddings": {"k": 1, "min_score": 0.32},
@@ -71,7 +75,7 @@ LABEL_VECTOR_HINTS: Dict[str, List[str]] = {
     "Penalty": ["penalty_embeddings"],
     "Meeting": ["document_embeddings"],
     "Article": ["article_embeddings"],
-    "Section": ["section_embeddings_v2"],
+    "Section": ["section_embeddings"],
     "Clause": ["clause_embeddings"],
     "Document": ["document_embeddings"],
     "Complaint": ["complaint_embeddings"],
@@ -523,6 +527,16 @@ def bm25_lookup(query: str, driver, database: str, k: int = 15) -> List[tuple]:
     return hits
 
 
+def _index_config(index: str, index_settings: Optional[Dict[str, Dict[str, Any]]]) -> Dict[str, Any]:
+    """k and min_score for a base index name. In text mode the migrated indexes
+    always use the text-mode thresholds, whatever the caller passes: the
+    token-ID ones (0.25, 0.72) mean nothing for plain-text vectors, and the
+    dottrina searches pass no settings at all."""
+    if embedding_config.text_mode() and index in embedding_config.TEXT_MODE_INDEX_SETTINGS:
+        return embedding_config.TEXT_MODE_INDEX_SETTINGS[index]
+    return (index_settings or {}).get(index, {})
+
+
 def vector_lookup(
     session,
     value: str,
@@ -533,11 +547,14 @@ def vector_lookup(
     source_prefix: str = "vector",
     doc_id: Optional[str] = None,
 ) -> Iterable[Dict[str, Any]]:
+    """Vector search on each index, given by its base name: the index actually
+    queried, the vector property and the thresholds come from embedding_config."""
     try:
         embedding = list(_cached_embed_query(value))
     except Exception as exc:
         logger.warning(
-            "Embedding generation failed",
+            "Embedding generation failed: %s",
+            exc,
             extra={"value": value, "error": str(exc)},
         )
         return []
@@ -557,19 +574,25 @@ def vector_lookup(
     # directly. Only applies to Section-backed indexes — the query walks
     # Document-[:CONTAINS]->Section, so it has no meaning for indexes over
     # other labels (Document, LegalAct, Penalty, CourtCase, ...).
+    # A property name can't be a Cypher parameter; VECTOR_PROPERTY is checked to
+    # be a plain identifier when the config is read.
+    prop = embedding_config.VECTOR_PROPERTY
     doc_scoped_query = (
         "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
-        "WHERE s.embedding IS NOT NULL "
-        "WITH s, vector.similarity.cosine(s.embedding, $embedding) AS score "
+        f"WHERE s.{prop} IS NOT NULL "
+        f"WITH s, vector.similarity.cosine(s.{prop}, $embedding) AS score "
         "WHERE score >= $min_score "
         "RETURN elementId(s) AS element_id, score "
         "ORDER BY score DESC LIMIT $k"
     )
     matches: List[Dict[str, Any]] = []
     for index in indexes:
-        config = (index_settings or {}).get(index, {})
+        if not embedding_config.searched(index):   # token-ID vectors, in text mode
+            continue
+        config = _index_config(index, index_settings)
         k_value = max(1, int(config.get("k", k)))
         min_score = config.get("min_score")
+        index_name = embedding_config.vector_index_name(index)
         before = len(matches)
         use_doc_scoped = bool(doc_id) and "section" in index
         try:
@@ -591,7 +614,7 @@ def vector_lookup(
                         }
                     )
             else:
-                records = session.run(query, index=index, k=k_value, embedding=embedding)
+                records = session.run(query, index=index_name, k=k_value, embedding=embedding)
                 for record in records:
                     score = record.get("score")
                     if min_score is not None and score is not None and score < min_score:
@@ -605,15 +628,17 @@ def vector_lookup(
                         }
                     )
         except Neo4jError as exc:
+            # The text goes in the message: the log format doesn't print `extra`.
             logger.warning(
-                "Vector lookup failed",
+                "Vector lookup failed on %s (doc_scoped=%s): %s",
+                index_name, use_doc_scoped, exc,
                 extra={
                     "value": value,
-                    "index": index,
+                    "index": index_name,
                     "k": k_value,
                     "doc_scoped": use_doc_scoped,
                     "error": str(exc),
                 },
             )
-        vlog("vector_search", {"index_name": index, "k": k_value, "result_count": len(matches) - before, "doc_scoped": use_doc_scoped})
+        vlog("vector_search", {"index_name": index_name, "k": k_value, "result_count": len(matches) - before, "doc_scoped": use_doc_scoped})
     return matches

@@ -18,6 +18,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from .models import DocumentEntities
 
 load_dotenv()
+
+from . import embedding_config  # noqa: E402
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -83,10 +85,11 @@ def _init_openai_embeddings():
     kwargs = {
         "model": os.getenv("EMBEDDING_MODEL", os.getenv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small")),
         "api_key": _embed_api_key,
+        **embedding_config.openai_embedding_kwargs(),
     }
     if _embed_base_url:
         kwargs["base_url"] = _embed_base_url
-    logger.info("Using OpenAI embeddings: model=%s", kwargs["model"])
+    logger.info("Using OpenAI embeddings: model=%s, query mode=%s", kwargs["model"], embedding_config.QUERY_MODE)
     return OpenAIEmbeddings(**kwargs)
 
 
@@ -105,7 +108,9 @@ embedding_model = _init_embedding_model()
 
 
 def _embed_query_with_prefix(text: str) -> list:
-    """Embed a search query."""
+    """Embed a search query: in text mode, with Qwen's query instruction."""
+    if embedding_config.text_mode():
+        return embedding_model.embed_query(embedding_config.QUERY_INSTRUCTION + text)
     return embedding_model.embed_query(text)
 
 # ---------------------------------------------------------------------------
