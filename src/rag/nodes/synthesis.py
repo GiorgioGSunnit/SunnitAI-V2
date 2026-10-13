@@ -259,12 +259,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # Special/dottrina sources are retrieved and carried separately from the main
     # pipeline (context_retrieval's dedicated state key) — never part of `data`.
     special_dottrina_rows = state.get("special_dottrina_rows") or []
-    open("/tmp/dottrina_trace.log", "a").write(f"special_dottrina_rows len={len(special_dottrina_rows)}\n")
     special_citations = _extract_citations(special_dottrina_rows)
-    open("/tmp/dottrina_trace.log", "a").write(
-        f"special_citations len={len(special_citations)} "
-        f"first_sections={len(special_citations[0]['sections']) if special_citations else 'n/a'}\n"
-    )
     # Tiered synthesis only applies to the standard (non-comparison) answer flow —
     # comparison mode builds Data from paired document rows and has its own prompt shape.
     is_tiered = bool(secondary_citations) and not state.get("is_comparison")
@@ -388,13 +383,38 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     bm25_doc_ids = state.get("bm25_doc_ids") or []
     existing_doc_refs = state.get("document_references") or []
     merged_doc_refs = list(set(existing_doc_refs + bm25_doc_ids))
+    # Separate cross-reference rows: broaden_article_context adds them deterministically
+    # from literal article references in the matched text. They must NOT be filtered by
+    # answer-text matching — the LLM may write about percosse/lesioni without explicitly
+    # citing art. 581/582 by number, which would cause _extract_citations(answer=answer)
+    # to silently drop those sections even though all downstream quality filters pass.
+    _crossref_rows = [r for r in data if r.get('_source') == 'broaden_article_crossref']
+    _main_rows = [r for r in data if r.get('_source') != 'broaden_article_crossref']
     citations = _extract_citations(
-        data, answer=answer, doc_refs=merged_doc_refs if merged_doc_refs else None
+        _main_rows, answer=answer, doc_refs=merged_doc_refs if merged_doc_refs else None
     )
+    if _crossref_rows:
+        _crossref_cites = _extract_citations(_crossref_rows)
+        for _xc in _crossref_cites:
+            _xdoc_id = _xc.get('document_id')
+            _matching = next((c for c in citations if c.get('document_id') == _xdoc_id), None)
+            if _matching:
+                _existing_names = {s.get('name') for s in _matching['sections']}
+                for _xs in _xc.get('sections', []):
+                    if _xs.get('name') not in _existing_names:
+                        _matching['sections'].append(_xs)
+            else:
+                citations.append(_xc)
     # Limit to top 5 most-cited documents to reduce noise
     if len(citations) > 5:
         citations = sorted(citations, key=lambda c: len(c['sections']), reverse=True)[:5]
     # Filter citations to only sections that survived reranker
+    crossref_texts = {
+        r.get('s', {}).get('plain_text', '').strip()[:100]
+        for r in data
+        if r.get('_source') == 'broaden_article_crossref'
+    }
+
     if data and any(r.get('_reranker_score') is not None for r in data) and not state.get("is_comparison"):
         reranker_texts = {
             r.get('s', {}).get('plain_text', '')[:100]
@@ -405,6 +425,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
             {**c, 'sections': [
                 s for s in c['sections']
                 if s.get('plain_text', '')[:100] in reranker_texts
+                or s.get('plain_text', '').strip()[:100] in crossref_texts
                 or c.get('document_id', '') in bm25_doc_ids
                 or c.get('document_type') == 'ccnl'
             ]}
@@ -433,7 +454,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         bm25_section_texts = {
             r.get('s', {}).get('plain_text', '')[:100]
             for r in data
-            if r.get('_source') in ('bm25', 'scoped_vector')
+            if r.get('_source') in ('bm25', 'scoped_vector', 'broaden_article_crossref')
         }
 
         # Also build individual tokens from keyword phrases for partial matching
@@ -494,6 +515,9 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         def _section_passes_quality(section: dict, doc_id: str) -> bool:
             # BM25 article lookup — always include
             if doc_id in bm25_doc_ids and state.get("bm25_from_article_lookup"):
+                return True
+            # Cross-reference broadening — always include (deterministic, grounded)
+            if section.get('plain_text', '').strip()[:100] in crossref_texts:
                 return True
             # Dottrina sections (special books) — always include, never filter by article ref
             if doc_id in {c.get("document_id") for c in special_citations}:
@@ -606,7 +630,6 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if (special_citations or _dottrina_only) and not state.get("is_comparison"):
         special_context = "\n\n".join(_citation_source_blocks(special_citations, "DOTTRINA"))
-        open("/tmp/dottrina_trace.log", "a").write(f"special_context len={len(special_context)}\n")
         if special_context:
             dottrina_system = (
                 "Sei un assistente legale italiano specializzato in dottrina giuridica. Ti vengono forniti estratti "
@@ -648,7 +671,6 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 max_tokens=answer_tokens if _dottrina_only else _NOTE_TOKENS[response_length],
                 stop=["Nel contesto", "Puoi precisare", "Vuoi specificare", "Hai ulteriori"],
             )
-            open("/tmp/dottrina_trace.log", "a").write(f"dottrina_answer len={len(dottrina_answer)} preview={repr(dottrina_answer[:200])}\n")
             dottrina_answer = re.sub(r'^[\s"\'“”]+', '', dottrina_answer).strip()
             dottrina_answer = re.sub(r'©[^\n]{0,100}', '', dottrina_answer)
             dottrina_answer = re.sub(r'\n[^\n]{0,600}\?[^\n]*$', '', dottrina_answer.rstrip()).rstrip()

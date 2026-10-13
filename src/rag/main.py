@@ -30,6 +30,7 @@ from .calculation import (
 from .graph_nodes import (
     apply_summary_confirmation,
     article_router,
+    broaden_article_context,
     comparison_retrieval,
     context_retrieval,
     decompose_query,
@@ -201,6 +202,10 @@ def build_graph(compile_graph: bool = True):
         partial(article_router, driver=driver, database=NEO4J_DATABASE),
     )
     graph.add_node(
+        "broaden_article_context",
+        partial(broaden_article_context, driver=driver, database=NEO4J_DATABASE),
+    )
+    graph.add_node(
         "entity_linking",
         partial(entity_linking, driver=driver, database=NEO4J_DATABASE),
     )
@@ -270,8 +275,9 @@ def build_graph(compile_graph: bool = True):
     graph.add_conditional_edges(
         "article_router",
         route_after_article_router,
-        {"fired": "dottrina_search", "pass": "entity_linking"},
+        {"fired": "broaden_article_context", "pass": "entity_linking"},
     )
+    graph.add_edge("broaden_article_context", "dottrina_search")
     graph.add_edge("dottrina_search", "evaluate_retrieval_quality")
     graph.add_edge("entity_linking", "context_retrieval")
     graph.add_edge("context_retrieval", "generate_cypher_intersection")

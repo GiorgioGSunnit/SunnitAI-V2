@@ -15,6 +15,7 @@ from .nodes.cypher import (
 from .nodes.retrieval import (
     _resolve_by_name,
     article_router,
+    broaden_article_context,
     comparison_retrieval,
     context_retrieval,
     decompose_query,
@@ -39,6 +40,7 @@ __all__ = [
     "_resolve_by_name",
     "apply_summary_confirmation",
     "article_router",
+    "broaden_article_context",
     "comparison_retrieval",
     "context_retrieval",
     "decompose_query",

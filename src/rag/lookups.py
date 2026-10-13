@@ -49,6 +49,7 @@ VECTOR_INDEX_SETTINGS: Dict[str, Dict[str, Any]] = {
     "legalact_embeddings": {"k": 2, "min_score": 0.3},
     "document_embeddings": {"min_score": 0.25},
     "section_embeddings": {"k": 30, "min_score": 0.25},
+    "courtcase_embeddings": {"k": 5, "min_score": 0.3},
     "tender_embeddings": {"k": 2, "min_score": 0.28},
     "contract_embeddings": {"k": 2, "min_score": 0.28},
     "penalty_embeddings": {"k": 1, "min_score": 0.32},

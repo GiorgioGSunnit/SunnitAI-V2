@@ -831,6 +831,101 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 
 
 # ---------------------------------------------------------------------------
+# Node A2: Broaden article context (fired path only)
+# ---------------------------------------------------------------------------
+
+# Runs of article numbers inside a retrieved section's own text, e.g. "degli
+# articoli 581 e 582" or "artt. 581, 582 e 583" — captured as one match so all
+# numbers in the run are extracted together, not just the first.
+_CROSS_REF_RUN = re.compile(
+    r'(?:artt?\.?|articol[oi])\s*\d+(?:\s*(?:,|e|ed|&)\s*\d+)*',
+    re.IGNORECASE,
+)
+_CROSS_REF_NUM = re.compile(r'\d+')
+
+
+def broaden_article_context(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
+    """Supplements an exact article-number match with the other articles it
+    textually cross-references, on the "fired" path that otherwise goes
+    straight to dottrina_search (special docs only) and skips this entirely.
+
+    article_router only returns the Section(s) whose name matches the number
+    literally typed in the query (e.g. "art. 584 c.p."). A query that cites one
+    article but then asks for a defense strategy needs the articles that 584
+    itself cross-references in its own text (581, 582) — these have no
+    numeric mention in the user's query and no graph edge linking them to 584.
+
+    Deliberately NOT a semantic (vector) search: in this environment that
+    returned near-random matches (e.g. 648-quater, an unrelated money-
+    laundering aggravation, at cosine ~0.4) and visibly degraded answer
+    quality — the embedding space here isn't trustworthy yet (see
+    embedding_config.py's token_ids-mode note: 0/400 correct in testing).
+    This only follows article numbers that are verbatim in the already-
+    retrieved, already-grounded text, so it can't introduce that kind of
+    noise.
+    """
+    existing_raw = list(state.get("raw_result") or [])
+    existing_ids = {(row.get("s") or {}).get("id") for row in existing_raw}
+    matched_numbers = {
+        (row.get("s") or {}).get("name", "").split(".")[0]
+        for row in existing_raw
+    }
+
+    referenced_numbers: Set[str] = set()
+    for row in existing_raw:
+        section = row.get("s") or {}
+        text = f"{section.get('abstract', '')} {section.get('plain_text', '')}"
+        for run_match in _CROSS_REF_RUN.finditer(text):
+            for num in _CROSS_REF_NUM.findall(run_match.group(0)):
+                if num not in matched_numbers:
+                    referenced_numbers.add(num)
+
+    if not referenced_numbers:
+        vlog("broaden_article_context", {"existing_rows": len(existing_raw), "added_rows": 0})
+        return {}
+
+    doc_hint = state.get("law_hint_doc_id") or ""
+    doc_ids = {(row.get("d") or {}).get("id", "") for row in existing_raw if row.get("d")}
+    doc_ids.discard("")
+    if doc_hint:
+        doc_ids.add(doc_hint)
+    user_id = state.get("user_id") or ""
+    tenant_id = state.get("tenant_id") or ""
+
+    new_rows: List[Dict[str, Any]] = []
+    with driver.session(database=database) as session:
+        for number in sorted(referenced_numbers)[:6]:
+            records = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE (s.name = $num OR s.name = $num + '.0.0') "
+                "AND ($doc_ids = [] OR d.id IN $doc_ids) "
+                f"AND {_visibility_filter()} "
+                "RETURN d, s LIMIT 1",
+                num=number, doc_ids=sorted(doc_ids), user_id=user_id, tenant_id=tenant_id,
+            ).data()
+            for row in records:
+                row["_source"] = "broaden_article_crossref"
+                new_rows.append(row)
+
+    seen_ids = set(existing_ids)
+    deduped: List[Dict[str, Any]] = []
+    for row in new_rows:
+        s_id = (row.get("s") or {}).get("id", "")
+        if not s_id or s_id in seen_ids:
+            continue
+        seen_ids.add(s_id)
+        deduped.append(row)
+
+    vlog("broaden_article_context", {
+        "existing_rows": len(existing_raw),
+        "referenced_numbers": sorted(referenced_numbers),
+        "added_rows": len(deduped),
+    })
+
+    return {"raw_result": existing_raw + deduped}
+
+
+# ---------------------------------------------------------------------------
 # Node B: Entity linking
 # ---------------------------------------------------------------------------
 
