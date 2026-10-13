@@ -16,6 +16,7 @@ from ..answer_processing import (
     _strip_hallucinated_fonti,
     _strip_vague_closing,
 )
+from .cypher import CROSSREF_SOURCE
 from ..cypher_logger import log_cypher_event
 from ..formatting import _session_lang, _summarize_for_synthesis
 from ..prompts import (
@@ -388,8 +389,8 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # answer-text matching — the LLM may write about percosse/lesioni without explicitly
     # citing art. 581/582 by number, which would cause _extract_citations(answer=answer)
     # to silently drop those sections even though all downstream quality filters pass.
-    _crossref_rows = [r for r in data if r.get('_source') == 'broaden_article_crossref']
-    _main_rows = [r for r in data if r.get('_source') != 'broaden_article_crossref']
+    _crossref_rows = [r for r in data if r.get('_source') == CROSSREF_SOURCE]
+    _main_rows = [r for r in data if r.get('_source') != CROSSREF_SOURCE]
     citations = _extract_citations(
         _main_rows, answer=answer, doc_refs=merged_doc_refs if merged_doc_refs else None
     )
@@ -403,7 +404,9 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 for _xs in _xc.get('sections', []):
                     if _xs.get('name') not in _existing_names:
                         _matching['sections'].append(_xs)
+                _matching['_has_crossref_sections'] = True
             else:
+                _xc['_from_crossref'] = True
                 citations.append(_xc)
     # Limit to top 5 most-cited documents to reduce noise
     if len(citations) > 5:
@@ -412,7 +415,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     crossref_texts = {
         r.get('s', {}).get('plain_text', '').strip()[:100]
         for r in data
-        if r.get('_source') == 'broaden_article_crossref'
+        if r.get('_source') == CROSSREF_SOURCE
     }
 
     if data and any(r.get('_reranker_score') is not None for r in data) and not state.get("is_comparison"):
@@ -454,7 +457,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         bm25_section_texts = {
             r.get('s', {}).get('plain_text', '')[:100]
             for r in data
-            if r.get('_source') in ('bm25', 'scoped_vector', 'broaden_article_crossref')
+            if r.get('_source') in ('bm25', 'scoped_vector', CROSSREF_SOURCE)
         }
 
         # Also build individual tokens from keyword phrases for partial matching
@@ -575,7 +578,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         is_gap = _is_primary_gap_response(answer)
     if is_gap and citations:
         if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")) and not state.get("is_clarification_rerank"):
-            citations = []
+            citations = [c for c in citations if c.get('_from_crossref') or c.get('_has_crossref_sections')]
             logger.debug("Hard stop detected: citations cleared")
 
     # Truncate answer at gap phrase if hard stop detected
@@ -597,7 +600,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                             break
                 answer = answer[:cut_pos].strip()
                 if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")) and not state.get("is_clarification_rerank"):
-                    citations = []
+                    citations = [c for c in citations if c.get('_from_crossref') or c.get('_has_crossref_sections')]
                 logger.debug("Hard stop: answer truncated after 3-sentence polite response")
                 break
 
@@ -614,7 +617,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     # Final citation clear for primary gap responses
     if is_gap:
         if not (state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup")) and not state.get("is_clarification_rerank"):
-            citations = []
+            citations = [c for c in citations if c.get('_from_crossref') or c.get('_has_crossref_sections')]
 
     # Strip trailing question if LLM appended one despite instructions
     import re as _re

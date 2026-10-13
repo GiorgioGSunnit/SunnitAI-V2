@@ -16,6 +16,7 @@ from ...preprocessing.schema.schema import (
 )
 from ..ai_chat import _call_chat, structured_entities_model
 from ..answer_processing import _visibility_filter
+from .cypher import CROSSREF_SOURCE
 from ..cypher_logger import log_cypher_event, log_cypher_multiline
 from ..doc_lookup import (
     _ARTICLE_PATTERNS,
@@ -835,13 +836,35 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 # ---------------------------------------------------------------------------
 
 # Runs of article numbers inside a retrieved section's own text, e.g. "degli
-# articoli 581 e 582" or "artt. 581, 582 e 583" — captured as one match so all
-# numbers in the run are extracted together, not just the first.
+# articoli 581 e 582" or "artt. 589, 590 e 591-bis" — captured as one match so
+# all numbers in the run are extracted together, not just the first.
+#
+# Boundaries use (?<!\w)/(?!\w) rather than \b, applied directly next to every
+# \d+ in BOTH patterns below (not just the extraction one) — found necessary
+# by a real case: a corrupted abstract read "...articoli 589 e 59sono
+# aumentate." (a dropped space/digit merged "590" and "sono"). _CROSS_REF_RUN's
+# own \d+ is greedy and stops at the first non-digit, so its match was already
+# truncated to "...e 59" before _CROSS_REF_NUM ever saw it; checking \b against
+# that already-sliced substring is satisfied vacuously at the substring's own
+# end, since the following "sono" was never part of the string being checked.
+# (?<!\w)/(?!\w) inside _CROSS_REF_RUN itself make the run's own greedy \d+
+# fail to extend into "59sono" in the first place (the real following
+# character, not a truncated one, is checked), so the run correctly stops at
+# "589" and "59" is never offered to the extractor at all.
+_CROSS_REF_SUFFIX = r'(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)'
+_CROSS_REF_NUMBER = rf'(?<!\w)\d+(?:[\s-]*{_CROSS_REF_SUFFIX})?(?!\w)'
 _CROSS_REF_RUN = re.compile(
-    r'(?:artt?\.?|articol[oi])\s*\d+(?:\s*(?:,|e|ed|&)\s*\d+)*',
+    rf'(?:artt?\.?|articol[oi])\s*{_CROSS_REF_NUMBER}'
+    rf'(?:\s*(?:,|e|ed|&)\s*{_CROSS_REF_NUMBER})*',
     re.IGNORECASE,
 )
-_CROSS_REF_NUM = re.compile(r'\d+')
+# Each reference within a run: a whole number, with an optional bis/ter/...
+# suffix — same (?<!\w)/(?!\w) boundaries, kept here too since this regex is
+# applied to run_match.group(0) independently and must not regress on its own.
+_CROSS_REF_NUM = re.compile(
+    rf'(?<!\w)(\d+)(?:[\s-]*({_CROSS_REF_SUFFIX}))?(?!\w)',
+    re.IGNORECASE,
+)
 
 
 def broaden_article_context(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
@@ -865,60 +888,121 @@ def broaden_article_context(state: Dict[str, Any], driver, database: str) -> Dic
     noise.
     """
     existing_raw = list(state.get("raw_result") or [])
-    existing_ids = {(row.get("s") or {}).get("id") for row in existing_raw}
+
+    def _row_key(row: Dict[str, Any]) -> tuple:
+        # (doc_id, section name), not s.id: the corpus has exact duplicate
+        # Section nodes per name (same name, same text, different node/id) —
+        # deduping on id alone would let every copy through.
+        return ((row.get("d") or {}).get("id", ""), (row.get("s") or {}).get("name", ""))
+
+    existing_keys = {_row_key(row) for row in existing_raw}
     matched_numbers = {
         (row.get("s") or {}).get("name", "").split(".")[0]
         for row in existing_raw
     }
 
-    referenced_numbers: Set[str] = set()
+    doc_hint = state.get("law_hint_doc_id") or ""
+    # Numbers referenced in each row's own text, keyed by that SAME row's own
+    # document id (falling back to doc_hint only when the row carries none) —
+    # never the union of every source row's documents. Two already-matched
+    # articles from different codes (e.g. a penale + civile multi-article
+    # query) must not have their cross-references bleed into each other's
+    # document when looked up.
+    referenced_by_doc: Dict[str, Set[str]] = {}
     for row in existing_raw:
         section = row.get("s") or {}
-        text = f"{section.get('abstract', '')} {section.get('plain_text', '')}"
+        source_doc_id = (row.get("d") or {}).get("id", "") or doc_hint
+        if not source_doc_id:
+            continue
+        # plain_text only — abstract is editorial/metadata text, not the
+        # operative article text, and has been observed corrupted in the
+        # corpus (dropped spaces/characters) in a way plain_text wasn't.
+        # Abstract is a fallback only for the rare section with no plain_text.
+        _plain_text = section.get('plain_text') or ''
+        text = _plain_text if _plain_text.strip() else (section.get('abstract') or '')
         for run_match in _CROSS_REF_RUN.finditer(text):
-            for num in _CROSS_REF_NUM.findall(run_match.group(0)):
-                if num not in matched_numbers:
-                    referenced_numbers.add(num)
+            for num_match in _CROSS_REF_NUM.finditer(run_match.group(0)):
+                number, suffix = num_match.group(1), num_match.group(2)
+                full_number = f"{number}-{suffix.lower()}" if suffix else number
+                if full_number in matched_numbers:
+                    continue
+                referenced_by_doc.setdefault(source_doc_id, set()).add(full_number)
 
-    if not referenced_numbers:
+    if not referenced_by_doc:
         vlog("broaden_article_context", {"existing_rows": len(existing_raw), "added_rows": 0})
         return {}
 
-    doc_hint = state.get("law_hint_doc_id") or ""
-    doc_ids = {(row.get("d") or {}).get("id", "") for row in existing_raw if row.get("d")}
-    doc_ids.discard("")
-    if doc_hint:
-        doc_ids.add(doc_hint)
     user_id = state.get("user_id") or ""
     tenant_id = state.get("tenant_id") or ""
 
     new_rows: List[Dict[str, Any]] = []
     with driver.session(database=database) as session:
-        for number in sorted(referenced_numbers)[:6]:
-            records = session.run(
-                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                "WHERE (s.name = $num OR s.name = $num + '.0.0') "
-                "AND ($doc_ids = [] OR d.id IN $doc_ids) "
-                f"AND {_visibility_filter()} "
-                "RETURN d, s LIMIT 1",
-                num=number, doc_ids=sorted(doc_ids), user_id=user_id, tenant_id=tenant_id,
-            ).data()
-            for row in records:
-                row["_source"] = "broaden_article_crossref"
-                new_rows.append(row)
+        for source_doc_id, numbers in referenced_by_doc.items():
+            for number in sorted(numbers)[:6]:
+                # Narrow and deterministic, not "every fragment that starts
+                # with this number": a prior version matched any dot- or
+                # underscore-delimited fragment and, for article 590, pulled
+                # in six "_N" ingestion dedup-collision artifacts
+                # (590_10_1, 590_9, ...) and never the real 590/590.0.0 —
+                # one of those collision fragments held unrelated road-traffic
+                # text that the answer then quoted. "_N" suffixes are
+                # ingestion noise (a name-collision counter — see flatten.py),
+                # never a real continuation, so they are never matched here.
+                #
+                # Tier 1: only the two canonical names for this article,
+                # exact match (IN, not STARTS WITH — no partial-match surface
+                # at all). Deduped per name first (the corpus has exact
+                # duplicate nodes per name), then ".0.0" ordered before the
+                # bare name in Python, matching the convention seen elsewhere
+                # in this codebase (article_router) of preferring ".0.0" when
+                # both exist.
+                _zero_zero = f"{number}.0.0"
+                primary = session.run(
+                    "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                    "WHERE d.id = $doc_id AND s.name IN [$zero_zero, $num] "
+                    f"AND {_visibility_filter()} "
+                    "WITH d, s.name AS name, head(collect(s)) AS s "
+                    "RETURN d, s, name",
+                    num=number, zero_zero=_zero_zero, doc_id=source_doc_id,
+                    user_id=user_id, tenant_id=tenant_id,
+                ).data()
+                if primary:
+                    primary.sort(key=lambda r: 0 if r.get("name") == _zero_zero else 1)
+                    records = [{"d": r["d"], "s": r["s"]} for r in primary]
+                else:
+                    # Tier 2: neither canonical name exists — fall back to real
+                    # dot-delimited sub-fragments only (comma/sottocomma
+                    # splits, e.g. "590.1", "590.2"), never underscore ones.
+                    # STARTS WITH keeps the same partial-match safety: the
+                    # dot delimiter blocks numeric-prefix collisions ("59"
+                    # can't match "590." because the next character is "0",
+                    # not "."; "590" can't match "5901." the same way).
+                    records = session.run(
+                        "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                        "WHERE d.id = $doc_id AND s.name STARTS WITH $num + '.' "
+                        f"AND {_visibility_filter()} "
+                        "WITH d, s.name AS name, head(collect(s)) AS s "
+                        "RETURN d, s "
+                        "ORDER BY name "
+                        "LIMIT 3",
+                        num=number, doc_id=source_doc_id, user_id=user_id, tenant_id=tenant_id,
+                    ).data()
+                for row in records:
+                    row["_source"] = CROSSREF_SOURCE
+                    new_rows.append(row)
 
-    seen_ids = set(existing_ids)
+    seen_keys = set(existing_keys)
     deduped: List[Dict[str, Any]] = []
     for row in new_rows:
-        s_id = (row.get("s") or {}).get("id", "")
-        if not s_id or s_id in seen_ids:
+        key = _row_key(row)
+        if not key[1] or key in seen_keys:
             continue
-        seen_ids.add(s_id)
+        seen_keys.add(key)
         deduped.append(row)
 
     vlog("broaden_article_context", {
         "existing_rows": len(existing_raw),
-        "referenced_numbers": sorted(referenced_numbers),
+        "referenced_by_doc": {k: sorted(v) for k, v in referenced_by_doc.items()},
         "added_rows": len(deduped),
     })
 

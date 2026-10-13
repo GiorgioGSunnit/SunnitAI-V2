@@ -168,7 +168,7 @@ Usa esattamente questi titoli in grassetto. Non omettere nessuna sezione né sot
 - Tesi principale e tesi subordinate, in ordine dal più al meno favorevole
 - Possibili eccezioni e difese della controparte, con la replica consigliata per ciascuna
 - Stima della probabilità di successo (alta/media/bassa) con motivazione
-- Stima dei tempi processuali e dei costi (compresa la soccombenza)
+- Stima dei tempi processuali e dei costi (compresa la soccombenza), presentata esplicitamente come indicativa e non vincolante
 - Recuperabilità del credito o effettiva utilità del risultato atteso
 
 ---
@@ -258,13 +258,18 @@ def _generate_legal_reasoning(
         "- Sviluppa la tesi principale con argomentazione specifica ai fatti: non dire genericamente "
         "'il gesto era intenzionale' ma spiega PERCHÉ sulla base dei fatti concreti (modalità, "
         "contesto, sequenza temporale, violazione delle regole di gioco)\n"
-        "- Per ogni tesi subordinata, indica l'articolo specifico e perché si applica a questo caso\n"
+        "- Per ogni tesi subordinata, indica l'articolo specifico e perché si applica a questo caso, "
+        "solo se quell'articolo e quel contenuto risultano dalle fonti fornite\n"
         "- Per le eccezioni della controparte: anticipale e confutale con argomenti specifici\n"
         "- Stima probabilità di successo con motivazione concreta basata sui fatti, non generica\n"
-        "- Indica tempi realistici e costi stimati\n\n"
+        "- Indica tempi e costi SOLO come stima orientativa, dicendo esplicitamente che sono "
+        "indicativi e non vincolanti (es. 'tempi indicativi: ...', 'costo orientativo: ...')\n\n"
         "**5. Strategia e Opzioni per il Cliente**\n"
-        "- Per ogni opzione indica il fondamento normativo specifico (es. 'appello della parte "
-        "civile ai soli effetti civili ex art. 576 c.p.p.')\n"
+        "- Per ogni opzione indica il fondamento normativo specifico (es. 'impugnazione nel termine "
+        "di legge, se la posizione processuale del cliente lo consente'). Il rimedio concreto e "
+        "l'articolo citato devono essere quelli effettivamente disponibili al ruolo del cliente in "
+        "questo procedimento — mai un'opzione riservata alla controparte o a un'altra parte del "
+        "procedimento\n"
         "- Il piano operativo deve indicare l'atto concreto da compiere CON il termine specifico "
         "(es. '15 giorni dalla notifica della sentenza motivata') e i documenti esatti da produrre\n"
         "- La raccomandazione deve spiegare PERCHÉ quella strada è preferibile rispetto alle altre "
@@ -274,6 +279,13 @@ def _generate_legal_reasoning(
         "- Cita le norme con il numero esatto dell'articolo\n"
         "- Se citi giurisprudenza usa SOLO quella fornita nel corpus o scrivi [DA VERIFICARE]\n"
         "- NON inventare cifre, date o fatti non presenti nel documento\n"
+        "- Ogni articolo, pena o fattispecie citata deve essere supportata dal testo delle fonti "
+        "fornite: se un articolo non è tra le fonti, o le fonti non ne confermano il contenuto "
+        "indicato, scrivi (da verificare) invece di descriverlo a memoria. Non attribuire mai a un "
+        "articolo un contenuto, una pena o una fattispecie che il suo testo non contiene.\n"
+        "- Le opzioni processuali e i rimedi proposti devono corrispondere al ruolo del cliente nel "
+        "procedimento (es. indagato/imputato oppure persona offesa/parte civile): non proporre mai "
+        "un rimedio riservato a un'altra parte del procedimento.\n"
         "- Usa [DA COMPILARE] solo per dati che il cliente deve fornire\n"
         + (f"\n\nFonti dal corpus legale:\n{citations_text}" if citations_text else "")
     )
@@ -340,6 +352,15 @@ def generate_defensive_draft(
         "\n- Per la sezione 5, indica il prossimo atto concreto da compiere (es. 'depositare "
         "atto di appello entro X giorni dalla notifica della sentenza motivata') non "
         "descrizioni generiche."
+        "\n- Ogni articolo, pena o fattispecie citata deve essere supportata dal testo delle fonti "
+        "fornite: se un articolo pertinente non è tra le fonti, o le fonti non ne confermano il "
+        "contenuto indicato, scrivi (da verificare) invece di descriverlo a memoria. Non attribuire "
+        "mai a un articolo un contenuto, una pena o una fattispecie che il suo testo non contiene."
+        "\n- Le opzioni processuali e i rimedi proposti devono corrispondere al ruolo del cliente nel "
+        "procedimento (es. indagato/imputato oppure persona offesa/parte civile): non proporre mai "
+        "un rimedio riservato a un'altra parte del procedimento."
+        "\n- Indica tempi e costi SOLO come stima orientativa, segnalando esplicitamente che sono "
+        "indicativi e non vincolanti — non presentarli come cifre certe."
         + (f"\n\nNormativa di riferimento dal corpus legale (sezione 2):\n{citations_text}" if citations_text else "")
         + (f"\n\nIstruzioni aggiuntive: {extra_instructions}" if extra_instructions else "")
     )

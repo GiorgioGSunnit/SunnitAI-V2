@@ -31,6 +31,19 @@ logger = logging.getLogger(__name__)
 _MAX_ENTRY_NODES_FOR_PROMPT = 8
 _MAX_CONTEXT_NODES_FOR_PROMPT = 6
 
+# The _source tag broaden_article_context (retrieval.py) puts on rows it adds
+# deterministically from literal cross-references in an already-matched
+# article's own text. Single source of truth for this string — retrieval.py,
+# cypher.py and synthesis.py all import it rather than repeating the literal.
+CROSSREF_SOURCE = "broaden_article_crossref"
+
+# Row sources trusted enough to survive a POOR verdict override in
+# evaluate_retrieval_quality: "bm25" (article_router's exact match) and
+# CROSSREF_SOURCE (above). Both are grounded, non-semantic matches; filtering
+# to "bm25" alone (the original behaviour, predating broaden_article_context)
+# silently dropped the crossref rows whenever the LLM verdict was POOR.
+PROTECTED_SOURCES = frozenset({"bm25", CROSSREF_SOURCE})
+
 
 # ---------------------------------------------------------------------------
 # Node D1: Intersection Cypher generation
@@ -721,8 +734,9 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 "cypher_generation_error": state.get("cypher_generation_error"),
             },
         )
+        _exit_rows_a = [r for r in state.get("raw_result", []) if r.get("_source") in PROTECTED_SOURCES]
         return {
-            "raw_result": [r for r in state.get("raw_result", []) if r.get("_source") == "bm25"],
+            "raw_result": _exit_rows_a,
             "execution_error": state.get("cypher_generation_error"),
             "neo4j_executed": False,
         }
@@ -748,8 +762,9 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
             f"Neo4j driver error after submit attempt={attempt!r} database={database!r}",
             detail={"error": str(exc)},
         )
+        _exit_rows_b = [r for r in state.get("raw_result", []) if r.get("_source") in PROTECTED_SOURCES]
         return {
-            "raw_result": [r for r in state.get("raw_result", []) if r.get("_source") == "bm25"],
+            "raw_result": _exit_rows_b,
             "execution_error": str(exc),
             "neo4j_executed": True,
         }
@@ -811,7 +826,7 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     len(fetched), len(context_nodes),
                 )
                 existing_bm25 = [
-                    r for r in (state.get("raw_result") or []) if r.get("_source") == "bm25"
+                    r for r in (state.get("raw_result") or []) if r.get("_source") in PROTECTED_SOURCES
                 ]
                 return {
                     "raw_result": fetched + existing_bm25,
@@ -852,7 +867,7 @@ def execute_cypher(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     enriched_references = _enrich_with_source_metadata(data)
 
     existing_raw = state.get("raw_result", [])
-    bm25_rows = [r for r in existing_raw if r.get("_source") == "bm25"]
+    bm25_rows = [r for r in existing_raw if r.get("_source") in PROTECTED_SOURCES]
     merged = list(data) + bm25_rows
 
     return {
@@ -962,7 +977,7 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
     )
 
     if bm25_rows_in_result > 0 and poor and state.get("bm25_from_article_lookup"):
-        bm25_only = [r for r in data if r.get("_source") == "bm25"]
+        bm25_only = [r for r in data if r.get("_source") in PROTECTED_SOURCES]
         log_cypher_event(
             "d_evaluate_bm25_override",
             f"BM25 found {bm25_rows_in_result} relevant sections from article lookup — overriding POOR verdict",
@@ -989,12 +1004,13 @@ def evaluate_retrieval_quality(state: Dict[str, Any], driver=None, database: str
         ]
         if bm25_ids:
             logger.info("BM25 general override fired — bm25_rows=%d, routing to synthesis", bm25_rows_in_result)
+            _override2_rows = [r for r in data if r.get("_source") in PROTECTED_SOURCES]
             return {
                 "retrieval_quality_ok": True,
                 "bm25_doc_ids": bm25_ids,
                 "retrieval_evaluated": True,
                 "status_messages": state.get("status_messages", []),
-                "raw_result": [r for r in data if "bm25" in str(r.get("_source", ""))],
+                "raw_result": _override2_rows,
             }
 
     # Override POOR when the queried article is directly present in the retrieved data
