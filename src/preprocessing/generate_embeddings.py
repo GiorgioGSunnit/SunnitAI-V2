@@ -1,6 +1,7 @@
 """Generate and write vector embeddings for Neo4j nodes missing them.
 
-Targets the 17 PascalCase labels used by the RAG pipeline.
+Targets the PascalCase labels used by the RAG pipeline, except the section
+labels (BE_OWNED_LABELS): their vectors are written by BE.
 Run after write_kg_from_extracted has populated nodes.
 """
 
@@ -24,6 +25,15 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 64
 # Every vector index in production is 4096 (qwen3-embedding-8b).
 VECTOR_DIMENSIONS = int(os.getenv("EMBEDDING_DIMENSIONS", "4096"))
+
+# Labels whose vectors BE owns: written on upload, gaps filled by BE's backfill.
+# This script would embed a different text and overwrite `embedding`, the old
+# vectors a rollback depends on, so it never touches them.
+BE_OWNED_LABELS = ("Section", "CommentatoSection", "FiscalitaSection")
+BE_OWNED_MESSAGE = (
+    "Section, CommentatoSection and FiscalitaSection vectors are written by BE on upload "
+    "(post_process step 3); fill any gaps with BE's scripts/backfill_embeddings_v2.py, not this script."
+)
 
 
 def _add_doc_prefix(text: str) -> str:
@@ -85,16 +95,7 @@ LABEL_CONFIGS: List[Dict] = [
             + " AS text"
         ),
     },
-    {
-        "label": "Section",
-        "index_name": "section_embeddings",
-        "fetch_cypher": (
-            "MATCH (n:Section) "
-            "RETURN elementId(n) AS eid, "
-            + _text_expr("title", "text_en", "abstract", "plain_text")
-            + " AS text"
-        ),
-    },
+    # No Section entry: see BE_OWNED_LABELS.
     {
         "label": "Institution",
         "index_name": "institution_embeddings",
@@ -260,9 +261,9 @@ def _init_embedding_model():
     return _local()
 
 
-def _create_vector_indexes(driver, database: str) -> None:
+def _create_vector_indexes(driver, database: str, configs: List[Dict]) -> None:
     with driver.session(database=database) as session:
-        for cfg in LABEL_CONFIGS:
+        for cfg in configs:
             cypher = (
                 f"CREATE VECTOR INDEX {cfg['index_name']} IF NOT EXISTS "
                 f"FOR (n:{cfg['label']}) ON (n.embedding) "
@@ -306,38 +307,18 @@ def _process_label(driver, database: str, cfg: Dict, embedding_model, batch_size
     return total_written
 
 
-def embed_missing(database: str = "neo4j") -> int:
-    """Embed Section nodes where embedding IS NULL or empty. Returns count generated."""
-    from neo4j import GraphDatabase
-
-    driver = GraphDatabase.driver(
-        os.getenv("NEO4J_URI", "bolt://localhost:7687"),
-        auth=(os.getenv("NEO4J_USER", "neo4j"), os.getenv("NEO4J_PASSWORD", "")),
-    )
-    embedding_model = _init_embedding_model()
-    section_cfg = {
-        "label": "Section",
-        "fetch_cypher": (
-            "MATCH (n:Section) "
-            "WHERE n.embedding IS NULL OR size(n.embedding) = 0 "
-            "RETURN elementId(n) AS eid, "
-            + _text_expr("title", "text_en", "abstract", "plain_text")
-            + " AS text"
-        ),
-    }
-    try:
-        return _process_label(driver, database, section_cfg, embedding_model, BATCH_SIZE)
-    finally:
-        driver.close()
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate embeddings for Neo4j PascalCase nodes.")
     parser.add_argument("--database", default="neo4j", help="Neo4j database name (overrides NEO4J_DATABASE env)")
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE, help="Embedding batch size")
-    parser.add_argument("--label", help="Process only this label (default: all)")
+    parser.add_argument("--label", help="Process only this label (default: all except the section labels)")
     parser.add_argument("--create-indexes", action="store_true", help="Create vector indexes before embedding")
     args = parser.parse_args()
+
+    if args.label in BE_OWNED_LABELS:                 # refused before any connection
+        parser.error(BE_OWNED_MESSAGE)
+    if not args.label:
+        logger.info("Skipping %s. %s", ", ".join(BE_OWNED_LABELS), BE_OWNED_MESSAGE)
 
     database = args.database if args.database != "neo4j" else os.getenv("NEO4J_DATABASE", "neo4j")
 
@@ -372,7 +353,7 @@ def main() -> None:
             total_written += _process_label(driver, database, cfg, embedding_model, args.batch_size)
 
         if args.create_indexes:
-            _create_vector_indexes(driver, database)
+            _create_vector_indexes(driver, database, configs)
 
         logger.info("Done. Total embeddings written: %d", total_written)
     finally:

@@ -79,28 +79,6 @@ from .user_store import (get_user_by_email, get_user_by_id,
 logger = logging.getLogger(__name__)
 
 
-async def _background_embedding_job():
-    """Periodically generate embeddings for Section nodes missing them."""
-    _running = False
-    while True:
-        await asyncio.sleep(120)  # every 2 minutes
-        if _running:
-            logger.debug("Background embedding job: previous run still in progress, skipping")
-            continue
-        _running = True
-        try:
-            from ..preprocessing.generate_embeddings import embed_missing
-            count = await asyncio.get_event_loop().run_in_executor(
-                None, embed_missing, NEO4J_DATABASE
-            )
-            if count > 0:
-                logger.info(f"Background embedding job: generated {count} embeddings")
-        except Exception as e:
-            logger.warning(f"Background embedding job failed: {e}")
-        finally:
-            _running = False
-
-
 async def _background_doc_expiry_job():
     """Delete expired user documents once per hour."""
     while True:
@@ -146,11 +124,11 @@ async def _lifespan(app: FastAPI):
 
     log_path = ensure_cypher_log_ready()
     logger.info("Cypher query log file: %s", log_path)
-    # task = asyncio.create_task(_background_embedding_job())  # disabled — AuraDB read-only recovery
+    # Section vectors are written by BE on upload (post_process step 3); BE's
+    # scripts/backfill_embeddings_v2.py fills any gaps. V2 writes none.
     expiry_task = asyncio.create_task(_background_doc_expiry_job())
     session_expiry_task = asyncio.create_task(_background_session_expiry_job())
     yield
-    # task.cancel()
     expiry_task.cancel()
     session_expiry_task.cancel()
 
