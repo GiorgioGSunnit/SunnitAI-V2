@@ -50,8 +50,62 @@ def _format_for_reranker(row: dict) -> str:
     return " | ".join(parts)
 
 
+def _row_key(row: dict):
+    """(document id, section name), the key V2-1 and broaden_article_context
+    use; None when the row has no document id or no section name."""
+    d, s = row.get("d") or {}, row.get("s") or {}
+    doc_id = d.get("id") if hasattr(d, "get") else None
+    name = s.get("name") if hasattr(s, "get") else None
+    return (doc_id, name) if doc_id and name else None
+
+
+def dedup_rows(rows: list) -> list:
+    """Text mode: one row per section, i.e. per (document id, section name).
+
+    The corpus holds exact duplicate Section nodes (up to 7 copies). They reach
+    the reranker through keyword search, the article lookup, Cypher results and
+    cross-references; it scores each copy the same, and its own merge works on
+    s.id, which differs between copies, so three copies of one article took
+    three of the answer's 12 slots. The kept copy is the first one, unless a
+    later copy carries a protected source ("bm25", "broaden_article_crossref":
+    cypher.PROTECTED_SOURCES), which then takes its place; "sources" lists are
+    merged. Rows without a key are kept as they are; copies from different
+    documents are never merged. Token-ID mode: the list unchanged.
+    """
+    from . import embedding_config
+    if not embedding_config.text_mode() or not rows:
+        return rows
+    from .nodes.cypher import PROTECTED_SOURCES
+
+    kept: list = []
+    position: dict = {}
+    dropped = 0
+    for row in rows:
+        key = _row_key(row)
+        if key is None:
+            kept.append(row)
+            continue
+        if key not in position:
+            position[key] = len(kept)
+            kept.append(row)
+            continue
+        dropped += 1
+        current = kept[position[key]]
+        best = row if (row.get("_source") in PROTECTED_SOURCES
+                       and current.get("_source") not in PROTECTED_SOURCES) else current
+        if row.get("sources") or current.get("sources"):
+            best = {**best, "sources": sorted(set(current.get("sources") or []) | set(row.get("sources") or []))}
+        kept[position[key]] = best
+    vlog("rerank_dedup", {"input_count": len(rows), "rerank_duplicates_dropped": dropped})
+    return kept
+
+
 def rerank_results(query: str, rows: list, top_k: int = 12) -> list:
-    """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error."""
+    """Re-sort rows by reranker score. Fail-open: returns rows unchanged on any error.
+
+    In text mode duplicate copies of a section are removed first (dedup_rows),
+    also when the reranker is off or fails."""
+    rows = dedup_rows(rows)
     if not _RERANKER_ENABLED or not rows:
         return rows
     if all(r.get("_source") == "clarification" for r in rows):
