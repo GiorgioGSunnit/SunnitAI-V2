@@ -528,6 +528,68 @@ def bm25_lookup(query: str, driver, database: str, k: int = 15) -> List[tuple]:
     return hits
 
 
+# Text mode, migrated indexes: the corpus holds exact duplicate Section nodes
+# (same document, name and text; up to 7 copies). With working vectors the
+# copies score identically and fill the top k, so k x 4 candidates (at most
+# 200) are fetched, one node per (document id, section name) is kept, and the
+# list is cut back to k.
+_DEDUP_FETCH_FACTOR = 4
+_DEDUP_FETCH_CAP = 200
+
+
+def _deduplicates(index: str) -> bool:
+    return embedding_config.text_mode() and index in embedding_config.MIGRATED_INDEXES
+
+
+def _distinct_sections(records: List[Dict[str, Any]], k: int, min_score: Optional[float]) -> Tuple[list, int]:
+    """(record, key) pairs, best first: below-threshold records dropped, one
+    record per (document id, section name), at most k; and how many copies were
+    dropped. A record without a document or a name has no key and is kept."""
+    kept: List[Tuple[Dict[str, Any], Optional[tuple]]] = []
+    seen: Set[tuple] = set()
+    dropped = 0
+    for record in sorted(records, key=lambda r: -(r.get("score") or 0)):
+        score = record.get("score")
+        if min_score is not None and score is not None and score < min_score:
+            continue
+        key = (record["doc_id"], record["name"]) if record.get("doc_id") and record.get("name") else None
+        if key is not None:
+            if key in seen:
+                dropped += 1
+                continue
+            seen.add(key)
+        kept.append((record, key))
+        if len(kept) == k:
+            break
+    return kept, dropped
+
+
+def merge_vector_matches(matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The vector matches of several searches (query variants, a second
+    document) as one list: in text mode one match per section, i.e. per
+    (document id, section name), or per node when it has no such key. The
+    best-scoring copy is kept with the sources of every copy and search that
+    found it ("sources"; "source" stays the best copy's). Token-ID mode: the
+    list unchanged."""
+    if not embedding_config.text_mode():
+        return matches
+    merged: Dict[Any, Dict[str, Any]] = {}
+    for match in matches:
+        key = match.get("dedup_key") or ("element", match["element_id"])
+        sources = set(match.get("sources") or [match.get("source", "context")])
+        current = merged.get(key)
+        if current is None:
+            merged[key] = {**match, "sources": sorted(sources)}
+            continue
+        sources |= set(current["sources"])
+        score, best = match.get("score"), current.get("score")
+        if score is not None and (best is None or score > best):
+            merged[key] = {**match, "sources": sorted(sources)}
+        else:
+            current["sources"] = sorted(sources)
+    return list(merged.values())
+
+
 def _index_config(index: str, index_settings: Optional[Dict[str, Dict[str, Any]]]) -> Dict[str, Any]:
     """k and min_score for a base index name. In text mode the migrated indexes
     always use the text-mode thresholds, whatever the caller passes: the
@@ -560,14 +622,23 @@ def vector_lookup(
         )
         return []
 
-    query = (
+    index_filter = (
         "CALL db.index.vector.queryNodes($index, $k, $embedding) "
         "YIELD node, score "
         "WHERE NOT ("
         "  ('LegalAct' IN labels(node) AND (node.name IS NULL OR node.name = '' OR node.name IN ['string', 'Fonte non classificata']))"
         "  OR ('Section' IN labels(node) AND (node.plain_text IS NULL OR node.plain_text = ''))"
         ") "
-        "RETURN elementId(node) AS element_id, labels(node) AS labels, score ORDER BY score DESC"
+    )
+    query = index_filter + "RETURN elementId(node) AS element_id, labels(node) AS labels, score ORDER BY score DESC"
+    # Text mode, migrated indexes: the same search plus each node's document id
+    # and name, the key that tells duplicate copies apart (_distinct_sections).
+    keyed_query = (
+        index_filter
+        + "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) "
+        "WITH node, score, head(collect(d.id)) AS doc_id "
+        "RETURN elementId(node) AS element_id, labels(node) AS labels, score, doc_id, "
+        "node.name AS name ORDER BY score DESC"
     )
     # When the target document is already known, skip the global ANN index
     # (which ranks across all documents and can bury a small document's
@@ -586,6 +657,14 @@ def vector_lookup(
         "RETURN elementId(s) AS element_id, score "
         "ORDER BY score DESC LIMIT $k"
     )
+    keyed_doc_scoped_query = (
+        "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
+        f"WHERE s.{prop} IS NOT NULL "
+        f"WITH d, s, vector.similarity.cosine(s.{prop}, $embedding) AS score "
+        "WHERE score >= $min_score "
+        "RETURN elementId(s) AS element_id, score, d.id AS doc_id, s.name AS name "
+        "ORDER BY score DESC LIMIT $k"
+    )
     matches: List[Dict[str, Any]] = []
     for index in indexes:
         if not embedding_config.searched(index):   # token-ID vectors, in text mode
@@ -596,6 +675,40 @@ def vector_lookup(
         index_name = embedding_config.vector_index_name(index)
         before = len(matches)
         use_doc_scoped = bool(doc_id) and "section" in index
+        if _deduplicates(index):
+            fetch_k = max(k_value, min(k_value * _DEDUP_FETCH_FACTOR, _DEDUP_FETCH_CAP))
+            try:
+                if use_doc_scoped:
+                    records = list(session.run(
+                        keyed_doc_scoped_query, doc_id=doc_id, embedding=embedding,
+                        min_score=min_score if min_score is not None else -1.0, k=fetch_k,
+                    ))
+                else:
+                    records = list(session.run(keyed_query, index=index_name, k=fetch_k, embedding=embedding))
+                kept, dropped = _distinct_sections(records, k_value, min_score)
+                for record, key in kept:
+                    matches.append(
+                        {
+                            "element_id": record["element_id"],
+                            "labels": ["Section"] if use_doc_scoped else record["labels"],
+                            "source": f"{source_prefix}:{index}:doc_scoped" if use_doc_scoped
+                            else f"{source_prefix}:{index}",
+                            "score": record.get("score"),
+                            "dedup_key": key,
+                        }
+                    )
+            except Neo4jError as exc:
+                logger.warning(
+                    "Vector lookup failed on %s (doc_scoped=%s): %s",
+                    index_name, use_doc_scoped, exc,
+                    extra={"value": value, "index": index_name, "k": fetch_k,
+                           "doc_scoped": use_doc_scoped, "error": str(exc)},
+                )
+                records, dropped = [], 0
+            vlog("vector_search", {"index_name": index_name, "k": k_value, "fetched": len(records),
+                                   "duplicates_dropped": dropped, "result_count": len(matches) - before,
+                                   "doc_scoped": use_doc_scoped})
+            continue
         try:
             if use_doc_scoped:
                 records = session.run(

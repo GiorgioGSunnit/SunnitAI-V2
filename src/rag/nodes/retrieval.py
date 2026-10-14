@@ -38,8 +38,10 @@ from ..lookups import (
     btree_lookup,
     fulltext_lookup,
     legal_act_lookup,
+    merge_vector_matches,
     vector_lookup,
 )
+from .. import embedding_config
 from ..prompts import legal_consultant_system_prefix
 from ..reranker import rerank_results
 from ..utils import _build_schema_text, canonical_name
@@ -1240,6 +1242,80 @@ def entity_linking(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 # Node C: Context retrieval
 # ---------------------------------------------------------------------------
 
+def _aggregate_context_matches(matches: List[Dict[str, Any]],
+                               art_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The context nodes: the vector matches of every search text (generalized
+    query, variants, original, second document) and the article-lookup rows
+    (source "bm25", score 999), one node each, best first, at most
+    CONTEXT_NODE_LIMIT.
+
+    In text mode also one node per section, i.e. per (document id, section
+    name): the corpus holds exact duplicate Section nodes, and with working
+    vectors the copies took most of the 5 slots. The best-scoring copy is
+    kept with the sources of all of them, so "bm25" (which
+    evaluate_retrieval_quality looks for) is never lost.
+    """
+    aggregated: Dict[str, Dict[str, Any]] = {}
+    owner: Dict[tuple, str] = {}       # text mode: section key -> element id kept
+    for match in merge_vector_matches(matches):
+        element_id = match["element_id"]
+        labels = match.get("labels", []) or []
+        score = match.get("score")
+        sources = match.get("sources") or [match.get("source", "context")]
+        if match.get("dedup_key"):
+            owner[match["dedup_key"]] = element_id
+
+        existing = aggregated.get(element_id)
+        if not existing:
+            aggregated[element_id] = {
+                "element_id": element_id,
+                "labels": list(labels),
+                "sources": set(sources),
+                "score": score,
+            }
+            continue
+        existing["sources"].update(sources)
+        if labels and not existing["labels"]:
+            existing["labels"] = list(labels)
+        if score is not None and (existing.get("score") is None or score > existing["score"]):
+            existing["score"] = score
+
+    text_mode = embedding_config.text_mode()
+    for row in art_rows:
+        eid = row.get("s_eid", "")
+        if not eid or eid in aggregated:
+            continue
+        doc_id, name = (row.get("d") or {}).get("id"), (row.get("s") or {}).get("name")
+        key = (doc_id, name) if text_mode and doc_id and name else None
+        if key in owner:               # a copy of a section already there
+            kept = aggregated[owner[key]]
+            kept["sources"].add("bm25")
+            kept["score"] = max(kept.get("score") or 0, 999.0)
+            continue
+        aggregated[eid] = {
+            "element_id": eid,
+            "labels": ["Section"],
+            "sources": {"bm25"},
+            "score": 999.0,
+        }
+        if key:
+            owner[key] = eid
+
+    return sorted(
+        (
+            {
+                "element_id": data["element_id"],
+                "labels": data.get("labels", []),
+                "sources": sorted(data["sources"]),
+                "score": data.get("score"),
+            }
+            for data in aggregated.values()
+        ),
+        key=lambda item: item.get("score") or 0,
+        reverse=True,
+    )[:CONTEXT_NODE_LIMIT]
+
+
 def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     generalized = state.get("generalized_query") or state.get("query")
     if not generalized:
@@ -1609,51 +1685,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
                                           "bm25_count": len(bm25_rows),
                                           "vector_count": len(vector_rows)})
 
-    aggregated: Dict[str, Dict[str, Any]] = {}
-    for match in matches:
-        element_id = match["element_id"]
-        labels = match.get("labels", []) or []
-        score = match.get("score")
-        source = match.get("source", "context")
-
-        existing = aggregated.get(element_id)
-        if not existing:
-            aggregated[element_id] = {
-                "element_id": element_id,
-                "labels": list(labels),
-                "sources": {source},
-                "score": score,
-            }
-            continue
-        existing["sources"].add(source)
-        if labels and not existing["labels"]:
-            existing["labels"] = list(labels)
-        if score is not None and (existing.get("score") is None or score > existing["score"]):
-            existing["score"] = score
-
-    for row in _art_rows:
-        eid = row.get("s_eid", "")
-        if eid and eid not in aggregated:
-            aggregated[eid] = {
-                "element_id": eid,
-                "labels": ["Section"],
-                "sources": {"bm25"},
-                "score": 999.0,
-            }
-
-    context_nodes = sorted(
-        (
-            {
-                "element_id": data["element_id"],
-                "labels": data.get("labels", []),
-                "sources": sorted(data["sources"]),
-                "score": data.get("score"),
-            }
-            for data in aggregated.values()
-        ),
-        key=lambda item: item.get("score") or 0,
-        reverse=True,
-    )[:CONTEXT_NODE_LIMIT]
+    context_nodes = _aggregate_context_matches(matches, _art_rows)
 
     logger.info("Context retrieval produced %d nodes", len(context_nodes))
     return {
