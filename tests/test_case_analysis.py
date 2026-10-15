@@ -504,3 +504,22 @@ def test_the_applicability_check_runs_only_when_enabled(pipeline, monkeypatch):
     monkeypatch.setenv("APPLICABILITY_CHECK_ENABLED", "true")
     DG.run_case_analysis_pipeline(CASE, "it")
     assert len(calls) == 1 and [r["_article"] for r in calls[0]] == [("2051", "c.c.")]
+
+
+def test_the_draft_rules_are_added_only_when_enabled(monkeypatch):
+    """Round 3, item 4: a lawyer's review of the Sempronio draft. Off, the
+    prompt is exactly today's."""
+    analysis = {"parte_assistita": "Sempronio", "posizione": "indagato"}
+    monkeypatch.delenv("STRATEGY_DRAFT_RULES_ENABLED", raising=False)
+    today = DG._parere_system(analysis, "it")
+    assert "solo quelli pertinenti al caso, tra prescrizione" in today
+    for rule in ("(da verificare)", "sono difensivi", "riconoscimento di responsabilità", "62-bis"):
+        assert rule not in today
+    monkeypatch.setenv("STRATEGY_DRAFT_RULES_ENABLED", "true")
+    ruled = DG._parere_system(analysis, "it")
+    assert "concreti, mai segnaposto" in ruled and "costituzione di parte civile" in ruled
+    assert "Ogni articolo, pena o termine che citi deve risultare" in ruled
+    assert "sono difensivi" in ruled and "coerenti con i fatti del caso" in ruled
+    assert "non sono un riconoscimento di responsabilità" in ruled and "art. 41, comma 2, c.p." in ruled
+    # Everything else is unchanged: today's prompt minus section 5 is inside the new one.
+    assert today.split("**5.")[0] in ruled and "**6. Conclusioni**" in ruled

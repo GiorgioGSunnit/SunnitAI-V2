@@ -1236,10 +1236,56 @@ def _mark_unverified(text: str, articles: List[tuple], sources_text: str) -> str
     return "".join(out) + text[pos:]
 
 
+# Round 3, item 4 (STRATEGY_DRAFT_RULES_ENABLED, default false): a lawyer's
+# review of the Sempronio draft. Arguments restated the charge instead of
+# defending; a reply contradicted the facts (a "late rescue" when the rescue was
+# immediate) and gave the prosecutor a thesis the charge excludes; the
+# procedural section was placeholders; mental element, causation, alternative
+# qualifications, mitigating circumstances and the sentence range were missing;
+# a favourable fact was worded as an admission. And a contract-under-threat
+# draft gave art. 1449 c.c. (rescission) as the term for annulment (1442).
+# Rules, not case law; articles named here that the sources lack are marked
+# [DA VERIFICARE] by _mark_unverified like any other.
+_PROCEDURAL_SECTION = (
+    "**5. Profili processuali e operativi**: solo quelli pertinenti al caso, tra prescrizione o "
+    "decadenza, condizioni di procedibilità, competenza, attività istruttorie, terzi da coinvolgere, "
+    "possibilità di definizione stragiudiziale.\n"
+)
+_PROCEDURAL_SECTION_CONCRETE = (
+    "**5. Profili processuali e operativi**: concreti, mai segnaposto. Nei casi penali: l'autorità "
+    "giudiziaria competente; la prescrizione del reato, calcolata dalla pena dell'articolo in NORME; la "
+    "procedibilità (d'ufficio o a querela); i riti alternativi praticabili; le misure cautelari possibili; "
+    "la costituzione di parte civile. Nei casi civili: il giudice competente; la prescrizione o la "
+    "decadenza, dal testo in NORME; le condizioni di procedibilità; le prove e le consulenze da chiedere; "
+    "la possibilità di definizione stragiudiziale. Ogni punto si ricava dalle fonti fornite oppure è "
+    "seguito da \"(da verificare)\".\n"
+)
+_DRAFT_RULES = (
+    "- Ogni articolo, pena o termine che citi deve risultare dal testo in NORME o GIURISPRUDENZA; "
+    "altrimenti scrivi accanto \"(da verificare)\". Non attribuire mai a un articolo un contenuto, una "
+    "pena o un termine che il suo testo non riporta.\n"
+    "- Gli argomenti della sezione 3 sono difensivi: ciascuno esclude, riduce o riqualifica la "
+    "responsabilità o la pretesa contro la parte assistita (manca un elemento, opera una causa di "
+    "esclusione, si applica una qualificazione meno grave, ricorre un'attenuante); non riformulare "
+    "l'accusa o la pretesa avversaria e non limitarti a descrivere le circostanze.\n"
+    "- Le repliche attribuite alla controparte devono essere coerenti con i fatti del caso e con la sua "
+    "posizione: non attribuirle circostanze contrarie ai fatti né una tesi esclusa dalla norma che essa "
+    "stessa invoca.\n"
+    "- Non presentare un fatto favorevole alla parte assistita come un'ammissione: un aiuto prestato, "
+    "delle scuse o un pagamento non sono un riconoscimento di responsabilità.\n"
+    "- Nei casi penali considera, quando le fonti lo consentono: le diverse letture dell'elemento "
+    "soggettivo; il nesso causale e le cause sopravvenute (art. 41, comma 2, c.p.), con la prova tecnica "
+    "necessaria, ad esempio una consulenza medico-legale; le qualificazioni alternative, come tesi "
+    "principale o subordinata; le circostanze attenuanti (artt. 62 e 62-bis c.p.); una forbice di pena "
+    "realistica, calcolata dalle norme in NORME.\n"
+)
+
+
 def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
     from .language import language_display_name
     party = analysis.get("parte_assistita") or "la parte assistita"
     position = f" ({analysis['posizione']})" if analysis.get("posizione") else ""
+    draft_rules = feature_flags.enabled("STRATEGY_DRAFT_RULES_ENABLED")
     return (
         "Sei un avvocato italiano con lunga esperienza di contenzioso. Redigi un PARERE MOTIVATO "
         f"nell'interesse di {party}{position}, completo e approfondito come quello di un avvocato esperto "
@@ -1257,10 +1303,8 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
         "sostengono, le prove da acquisire, la probabile replica della controparte e come superarla.\n"
         "**4. Punti deboli e rischio**: i fatti e gli argomenti sfavorevoli valutati con franchezza, e una "
         "stima motivata del rischio.\n"
-        "**5. Profili processuali e operativi**: solo quelli pertinenti al caso, tra prescrizione o "
-        "decadenza, condizioni di procedibilità, competenza, attività istruttorie, terzi da coinvolgere, "
-        "possibilità di definizione stragiudiziale.\n"
-        "**6. Conclusioni**: gli argomenti in ordine di forza e la condotta consigliata.\n\n"
+        + (_PROCEDURAL_SECTION_CONCRETE if draft_rules else _PROCEDURAL_SECTION)
+        + "**6. Conclusioni**: gli argomenti in ordine di forza e la condotta consigliata.\n\n"
         "REGOLE:\n"
         "- Usa ogni fatto elencato in ANALISI DEI FATTI e spiega perché aiuta o danneggia la parte "
         "assistita. Non aggiungere fatti, date, importi o atti che il caso non contiene: se un dato "
@@ -1291,7 +1335,8 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
         "'responsabilità amministrativa' (che riguarda i dipendenti pubblici davanti alla Corte dei conti).\n"
         "- Prosa argomentata in paragrafi: non ripetere per ogni argomento uno schema a voci (fatti, norma, "
         "giurisprudenza...); elenchi puntati solo per prove da acquisire e attività da compiere.\n"
-        "- Lunghezza: indicativamente 1.500-2.500 parole.\n"
+        + (_DRAFT_RULES if draft_rules else "")
+        + "- Lunghezza: indicativamente 1.500-2.500 parole.\n"
         f"- Scrivi in {language_display_name(lang)}."
     )
 
