@@ -106,7 +106,9 @@ def main() -> None:
     print("\nVerdicts (an article is dropped only if 'incompatibile' names a requirement and a fact):")
     for label in texts:
         v = verdicts.get(dg._applicability_key(label)) or {}
-        decision = "DROP" if dg._drops_article(v) else "keep"
+        decision = "DROP" if dg._drops_article(v, texts[label]) else "keep"
+        if decision == "keep" and str(v.get("verdict", "")).lower() == "incompatibile" and dg._is_limit_rule(texts[label]):
+            decision = "keep (limit rule)"
         print(f"  {decision}  {label:12s} {v.get('verdict', 'no verdict'):13s} {v.get('reason', '')}")
         if v.get("requisito") or v.get("fatto"):
             print(f"        requirement: {v.get('requisito', '')} | fact: {v.get('fatto', '')}")

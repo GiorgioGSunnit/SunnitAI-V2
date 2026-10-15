@@ -109,6 +109,43 @@ def test_a_limit_the_facts_exclude_is_not_a_reason_to_drop(requisito):
     assert "non si può" in dg._APPLICABILITY_SYSTEM and "il limite non opera" in dg._APPLICABILITY_SYSTEM
 
 
+@pytest.mark.parametrize("text, limit", [
+    ("Il contratto non si può risolvere se l'inadempimento di una delle parti ha scarsa importanza, avuto "
+     "riguardo all'interesse dell'altra.", True),                                                   # 1455 c.c.
+    ("Non è dovuta la garanzia se al momento del contratto il compratore conosceva i vizi della cosa; "
+     "parimenti non è dovuta, se i vizi erano facilmente riconoscibili", True),                     # 1491 c.c.
+    ("Il debitore non può essere considerato in mora, se tempestivamente ha fatto offerta della "
+     "prestazione dovuta", True),                                                                   # 1220 c.c.
+    ("Non è punibile chi ha commesso il fatto per esservi stato costretto dalla necessità di salvare sé od "
+     "altri dal pericolo attuale di un danno grave alla persona, pericolo da lui non volontariamente "
+     "causato", False),                                                                             # 54 c.p.
+    ("Nei contratti indicati dall'articolo 1420 l'inadempimento di una delle parti non importa la "
+     "risoluzione del contratto rispetto alle altre, salvo che la prestazione mancata debba", False),  # 1459 c.c.
+    ("Qualora il reato commesso sia diverso da quello voluto da taluno dei concorrenti, anche questi ne "
+     "risponde, se l'evento è conseguenza della sua azione od omissione.", False),                  # 116 c.p.
+    ("Chiunque cagiona ad altri per colpa una lesione personale è punito con la reclusione", False),  # 590 c.p.
+])
+def test_limit_rules_are_recognised_by_their_text(text, limit):
+    assert dg._is_limit_rule(text) is limit
+
+
+def test_a_limit_rule_is_kept_even_when_the_model_rewords_it(model):
+    """Production, 15 Oct: the requirement came back without the negation."""
+    answer, _, logged = model
+    rows = [{"d": {"id": "cc", "name": "Codice Civile 2026"}, "_article": ("1455", "c.c."),
+             "s": {"name": "1455.0.0", "plain_text": "Il contratto non si può risolvere se l'inadempimento di una "
+                                                     "delle parti ha scarsa importanza, avuto riguardo all'interesse dell'altra."}},
+            _row("116", "Qualora il reato commesso sia diverso da quello voluto da taluno dei concorrenti...")]
+    answer([{"article": "1455 c.c.", "verdict": "incompatibile",
+             "requisito": "l'inadempimento di una delle parti ha scarsa importanza",
+             "fatto": "Il conduttore non paga il canone da tre mesi"},
+            {"article": "116 c.p.", "verdict": "incompatibile", "requisito": "presenza di concorrenti",
+             "fatto": "Sempronio agisce da solo"}])
+    kept = dg._filter_applicable_articles("Il conduttore non paga da tre mesi.", "", rows)
+    assert [r["_article"][0] for r in kept] == ["1455"]
+    assert [d["article"] for d in logged[-1][1]["dropped"]] == ["116 c.p."]
+
+
 def test_articles_the_rulings_agree_on_are_checked_not_exempt(model):
     """On production 116 reached `keep` through the rulings and skipped the check."""
     answer, seen, _ = model
