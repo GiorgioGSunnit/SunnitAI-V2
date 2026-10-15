@@ -1654,6 +1654,18 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     # law_hint_doc_id skips it — not yet discriminating "no hint" from
     # "penal-law query with no hint".)
     special_dottrina_rows: List[Dict[str, Any]] = []
+    if (not state.get("is_comparison") and state.get("law_hint_doc_id")
+            and feature_flags.enabled("SCOPED_DOTTRINA_ENABLED")):
+        # Round 3, item 5: the resolved law's own commentary, if it has one.
+        try:
+            with driver.session(database=database) as _scoped_session:
+                special_dottrina_rows = _scoped_dottrina_rows(
+                    _scoped_session, state["law_hint_doc_id"], search_texts[0] if search_texts else generalized,
+                    state.get("retrieval_keywords") or [], _known_article_numbers(state),
+                    {(r.get("s") or {}).get("id") for r in raw_result},
+                )
+        except Exception as exc:
+            logger.warning("scoped dottrina search failed: %s", exc)
     if not state.get("is_comparison") and not state.get("law_hint_doc_id"):
         special_query = search_texts[0] if search_texts else generalized
         special_keywords = state.get("retrieval_keywords") or []
@@ -1740,6 +1752,110 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     }
 
 
+# Round 3, item 5 (SCOPED_DOTTRINA_ENABLED, default false). With a law hint
+# resolved, the dottrina search was skipped: of the few commentaries in the
+# corpus, the nearest was usually about another law. Now, when the resolved
+# law has its own commentary, that commentary alone is searched.
+# (law document name, its commentary's name, the commentary's vector index)
+_COMMENTARY_FOR = [
+    (re.compile(r"^\W*codice penale(?!\s+commentat)", re.IGNORECASE),
+     re.compile(r"codice penale commentat", re.IGNORECASE), "commentato_section_embeddings"),
+    (re.compile(r"tuir|imposte sui redditi|tributar|fiscal|\biva\b|\bires\b|\birpef\b|\bias\b|\bifrs\b",
+                re.IGNORECASE),
+     re.compile(r"fiscalit", re.IGNORECASE), "fiscalita_section_embeddings"),
+]
+_SCOPED_DOTTRINA_MAX = 5
+
+
+def _commentary_article_patterns(number: str) -> tuple:
+    """(section-name regex, text regex) for one article, Java syntax: "52"
+    matches "Art. 52", "52.1", "art. 52 c.p.", never 520 or 52-bis."""
+    base, _, suffix = number.partition("-")
+    num = rf"{base}\s*-?\s*{suffix}" if suffix else rf"{base}(?![0-9])(?!\s*-?\s*(?:bis|ter|quater|quinquies))"
+    return (rf"(?is)^\s*(?:art(?:icolo|\.)?\s*)?{num}(?:[._\s].*)?$",
+            rf"(?is).*\bart(?:icolo|t?\.)?\s*{num}.*")
+
+
+def _scoped_dottrina_rows(session, law_doc_id: str, query: str, keywords: List[str],
+                          article_numbers: List[str], exclude_ids: Set[str]) -> List[Dict[str, Any]]:
+    """Passages of the resolved law's own commentary: on the known article(s)
+    first, else by keyword (BM25) and meaning (vector) within that commentary
+    only. [] when the law has no commentary. Rows with no text are skipped."""
+    found = session.run("MATCH (d:Document {id: $id}) RETURN d.name AS name", id=law_doc_id).single()
+    law_name = (found["name"] if found else "") or ""
+    match = next(((c, idx) for law, c, idx in _COMMENTARY_FOR if law.search(law_name)), None)
+    if not match:
+        vlog("scoped_dottrina", {"law": law_name, "commentary": None})
+        return []
+    commentary, index = match
+    specials = session.run("MATCH (d:Document) WHERE d.document_type = 'special' "
+                           "RETURN d.id AS id, d.name AS name").data()
+    ids = [d["id"] for d in specials if commentary.search(d.get("name") or "")]
+    if not ids:
+        return []
+    is_section = "(s:Section OR s:CommentatoSection OR s:FiscalitaSection)"
+    rows: List[Dict[str, Any]] = []
+
+    for number in article_numbers[:3]:
+        name_re, text_re = _commentary_article_patterns(number)
+        for row in session.run(
+            f"MATCH (d:Document)-[:CONTAINS]->(s) WHERE d.id IN $ids AND {is_section} "
+            "AND (coalesce(s.name, '') =~ $name_re OR coalesce(s.title, '') =~ $name_re "
+            "OR coalesce(s.abstract, '') =~ $text_re OR coalesce(s.plain_text, '') =~ $text_re) "
+            "RETURN d, s ORDER BY CASE WHEN coalesce(s.name, '') =~ $name_re "
+            "OR coalesce(s.title, '') =~ $name_re THEN 0 ELSE 1 END LIMIT 3",
+            ids=ids, name_re=name_re, text_re=text_re,
+        ).data():
+            row["_source"] = "special_dottrina_article"
+            rows.append(row)
+
+    if not rows:
+        if keywords:
+            try:
+                for row in session.run(
+                    "CALL db.index.fulltext.queryNodes('section_fulltext', $q) YIELD node, score "
+                    "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.id IN $ids "
+                    "RETURN d, node AS s, score ORDER BY score DESC LIMIT 4",
+                    q=" ".join(keywords[:6]), ids=ids,
+                ).data():
+                    row["_source"] = "special_dottrina_bm25"
+                    rows.append(row)
+            except Exception as exc:
+                logger.warning("scoped dottrina BM25 search failed: %s", exc)
+        eids = [m["element_id"] for m in vector_lookup(session, query, indexes=[index], k=3,
+                                                       source_prefix="special_dottrina")]
+        if eids:
+            for row in session.run(
+                f"MATCH (d:Document)-[:CONTAINS]->(s) WHERE elementId(s) IN $eids AND d.id IN $ids "
+                f"AND {is_section} RETURN d, s",
+                eids=eids, ids=ids,
+            ).data():
+                row["_source"] = "special_dottrina"
+                rows.append(row)
+
+    out, seen = [], set(exclude_ids)
+    for row in rows:
+        s = row.get("s") or {}
+        if not (s.get("plain_text") or s.get("abstract") or "").strip():
+            continue
+        if s.get("id") in seen:
+            continue
+        seen.add(s.get("id"))
+        row["_reranker_score"] = None
+        out.append(row)
+        if len(out) >= _SCOPED_DOTTRINA_MAX:
+            break
+    vlog("scoped_dottrina", {"law": law_name, "commentary_docs": len(ids), "articles": article_numbers[:3],
+                             "results_found": len(out), "sources": sorted({r["_source"] for r in out})})
+    return out
+
+
+def _known_article_numbers(state: Dict[str, Any]) -> List[str]:
+    """Article numbers the question names, else the keyword step's."""
+    refs = _extract_article_references(state.get("query") or "") or (state.get("keyword_article_refs") or [])
+    return list(dict.fromkeys(number for number, _ in refs))
+
+
 def dottrina_search(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     """Dedicated dottrina search node — runs on all paths to synthesize_answer.
     Searches commentato and fiscalita indexes and populates special_dottrina_rows
@@ -1747,6 +1863,20 @@ def dottrina_search(state: Dict[str, Any], driver, database: str) -> Dict[str, A
     """
     if state.get("is_comparison"):
         return {}
+    if state.get("law_hint_doc_id") and feature_flags.enabled("SCOPED_DOTTRINA_ENABLED"):
+        if state.get("special_dottrina_rows"):
+            return {}
+        try:
+            with driver.session(database=database) as session:
+                rows = _scoped_dottrina_rows(
+                    session, state["law_hint_doc_id"], state.get("query", "") or state.get("generalized_query", ""),
+                    state.get("retrieval_keywords") or [], _known_article_numbers(state),
+                    {(r.get("s") or {}).get("id") for r in state.get("raw_result") or []},
+                )
+        except Exception as exc:
+            logger.warning("scoped dottrina search failed: %s", exc)
+            return {}
+        return {"special_dottrina_rows": rows} if rows else {}
     if state.get("law_hint_doc_id"):
         # Same guard as the inline dottrina block in context_retrieval: with a
         # document hint already resolved, the query is scoped to one specific
