@@ -1,0 +1,89 @@
+{
+  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names.",
+  "cases": [
+    {
+      "id": "sempronio",
+      "question": "Sempronio a seguito di un acceso diverbio con Caio gli sferra un violento schiaffo al volto. Caio indietreggia e cade a terra battendo il capo contro un marciapiede. Sempronio presta soccorso a Caio e chiama l’ambulanza. Caio muore poco dopo in ospedale a seguito di un’emorragia cerebraleda trauma cranico.\nIl PM contesta a Sempronio l’art 584 cp.\nIl candidato assunte le vesti del legale di Sempronio, premessi brevi cenni sull’omicidio preterintenzionale, il nesso causale e l’elemento soggettivo, delinea una strategia difensiva, ipotizzando anche possibili reati alternativi configurabili nel caso di specie",
+      "expected": [
+        {"code": "cp", "article": "584"}, {"code": "cp", "article": "581"}, {"code": "cp", "article": "582"},
+        {"code": "cp", "article": "43"}, {"code": "cp", "article": "589"}
+      ],
+      "forbidden_cited": [{"code": "cp", "article": "116", "why": "concorso anomalo needs several agents; one agent here"}]
+    },
+    {
+      "id": "p1",
+      "question": "Tizio, svegliato di notte da rumori, sorprende in casa un ladro disarmato che sta fuggendo dalla finestra con alcuni gioielli. Tizio impugna la pistola regolarmente detenuta e gli spara alle spalle, uccidendolo. Il candidato, assunte le vesti del difensore di Tizio, individui le questionigiuridiche e la linea difensiva più efficace.",
+      "expected": [
+        {"code": "cp", "article": "52"}, {"code": "cp", "article": "55"},
+        {"code": "cp", "article": "575"}, {"code": "cp", "article": "589"}
+      ]
+    },
+    {
+      "id": "p2",
+      "question": "Mevio acquista un'auto usata da un privato pagandola con un assegno, sapendo che il conto non ha copertura, e assicurando falsamente al venditore di essere un noto imprenditore. Il venditore consegna l'auto. Quali reati sono configurabili e come si distinguono?",
+      "expected": [{"code": "cp", "article": "640"}, {"code": "cp", "article": "641"}]
+    },
+    {
+      "id": "p3",
+      "question": "Caio, per strada, strappa con violenza la borsa a una signora anziana, che cade a terra e si frattura il polso. Caio fugge con la borsa. Il candidato qualifichi giuridicamente il fatto, valutando le possibili alternative.",
+      "expected": [
+        {"code": "cp", "article": "624-bis"}, {"code": "cp", "article": "628"},
+        {"code": "cp", "article": "582"}, {"code": "cp", "article": "590"}
+      ]
+    },
+    {
+      "id": "c1",
+      "question": "Un paziente viene operato al ginocchio in un ospedale pubblico; dopo l'intervento sviluppa un'infezione che gli causa un'invalidità permanente. Il paziente vuole agire per il risarcimento. Contro chi può agire, a quale titolo e con quali oneri probatori?",
+      "expected": [{"code": "cc", "article": "1218"}, {"code": "cc", "article": "2043"}, {"code": "cc", "article": "2236"}],
+      "forbidden_named": [
+        {"pattern": "gelli|legge\\s*(?:n\\.\\s*)?24\\s*(?:/|del\\s+)\\s*2017|l\\.\\s*(?:n\\.\\s*)?24\\s*/\\s*2017",
+         "why": "Gelli-Bianco (L. 24/2017) is not in the corpus and must not be invented"}
+      ]
+    },
+    {
+      "id": "c2",
+      "question": "Un consumatore acquista una lavatrice in un negozio; dopo tre mesi la macchina smette di funzionare per un difetto di fabbricazione. Il venditore rifiuta di intervenire sostenendo che deve rivolgersi al produttore. Quali tutele ha il consumatore e in quali termini?",
+      "expected": [
+        {"code": "consumo", "any_of": ["128", "129", "130", "131", "132", "133", "134", "135"],
+         "label": "Codice del Consumo artt. 128-135 (any)"},
+        {"code": "cc", "article": "1490"}, {"code": "cc", "article": "1495"}
+      ]
+    },
+    {
+      "id": "c3",
+      "question": "Il conduttore di un appartamento ad uso abitativo non paga il canone da tre mesi. Il locatore vuole riottenere l'immobile e recuperare i canoni arretrati. Quali strumenti processuali e sostanziali ha a disposizione?",
+      "expected": [
+        {"code": "cpc", "article": "658"}, {"code": "cc", "article": "1453"},
+        {"code": "cc", "article": "1587"}, {"code": "l392", "article": "5"}
+      ]
+    },
+    {
+      "id": "cp_short",
+      "question": "art. 586 c.p. morte o lesioni come conseguenza di altro delitto",
+      "notes": "crossref regression guard",
+      "expected": [
+        {"code": "cp", "article": "586"}, {"code": "cp", "article": "589"},
+        {"code": "cp", "article": "590"}, {"code": "cp", "article": "83"}
+      ]
+    },
+    {
+      "id": "cc_short",
+      "extra": true,
+      "question": "art. 1418 c.c. cause di nullità del contratto",
+      "expected": [{"code": "cc", "article": "1418"}]
+    },
+    {
+      "id": "dottrina",
+      "extra": true,
+      "question": "art. 52 c.p. legittima difesa: quali sono i requisiti della proporzione secondo la dottrina?",
+      "expected": [{"code": "cp", "article": "52"}],
+      "expected_docs": [{"doc": "commentat", "label": "a citation from the penal commentary"}]
+    },
+    {
+      "id": "q_long",
+      "extra": true,
+      "question": "Quali sono gli elementi costitutivi dell’omicidio preterintenzionale ex art. 584 c.p. e come si distingue dalla lesione personale seguita da morte? Quali strategie difensive sono più efficaci per Sempronio?",
+      "expected": [{"code": "cp", "article": "584"}]
+    }
+  ]
+}
