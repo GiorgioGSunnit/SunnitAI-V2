@@ -217,8 +217,8 @@ def test_text_mode_uses_the_text_thresholds(mode, search):
     # The dottrina searches, called as retrieval.py calls them (no settings), now filter.
     for index in ("commentato_section_embeddings", "fiscalita_section_embeddings"):
         session, matches = search([index], k=3, source_prefix="special_dottrina")
-        # 12 candidates fetched (3 x 4, to allow for duplicate copies), at most 3 kept.
-        assert session.calls[0][1]["k"] == 12 and [m["score"] for m in matches] == [0.8, 0.6]
+        # 24 candidates fetched (3 x 8 since 6db1125, to allow for duplicate copies), at most 3 kept.
+        assert session.calls[0][1]["k"] == 24 and [m["score"] for m in matches] == [0.8, 0.6]
     # Indexes that are not migrated keep their token-ID thresholds.
     session, matches = search(["legalact_embeddings"], index_settings=lookups.VECTOR_INDEX_SETTINGS)
     assert session.calls[0][1]["k"] == 2 and [m["score"] for m in matches] == [0.8, 0.6, 0.3]   # k=2, min 0.3
