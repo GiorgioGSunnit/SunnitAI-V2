@@ -181,13 +181,29 @@ def _post(url, payload, token=None, timeout=60):
         return json.loads(response.read().decode("utf-8"))
 
 
+def _error_detail(exc):
+    try:
+        return json.loads(exc.read().decode("utf-8")).get("detail") or exc.reason
+    except (ValueError, AttributeError):
+        return exc.reason
+
+
 def login(base_url):
     email = os.getenv("EVAL_EMAIL") or input("Email: ")
     password = os.getenv("EVAL_PASSWORD") or getpass.getpass("Password: ")
     payload = {"email": email, "password": password}
     if os.getenv("EVAL_TOTP"):
         payload["totp_code"] = os.environ["EVAL_TOTP"]
-    return _post(f"{base_url}/api/auth/login", payload)["access_token"]
+    try:
+        return _post(f"{base_url}/api/auth/login", payload)["access_token"]
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401 and exc.headers.get("X-2FA-Required") and "totp_code" not in payload:
+            payload["totp_code"] = input("2FA code: ").strip()     # the account has two-factor login on
+            try:
+                return _post(f"{base_url}/api/auth/login", payload)["access_token"]
+            except urllib.error.HTTPError as again:
+                exc = again
+        sys.exit(f"Login failed ({exc.code}): {_error_detail(exc)}")
 
 
 def ask(base_url, token, question, timeout):

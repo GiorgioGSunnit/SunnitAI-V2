@@ -95,3 +95,44 @@ def test_runs_can_be_compared(tmp_path, capsys):
     (tmp_path / "b.json").write_text(json.dumps(run("CITED")), encoding="utf-8")
     ev.compare(tmp_path / "a.json", tmp_path / "b.json")
     assert "art. 1490 cc: MISSING -> CITED" in capsys.readouterr().out
+
+
+def _http_error(code, detail, headers=None):
+    import email.message
+    import io
+    import urllib.error
+    msg = email.message.Message()
+    for key, value in (headers or {}).items():
+        msg[key] = value
+    return urllib.error.HTTPError("http://x/api/auth/login", code, "Unauthorized", msg,
+                                  io.BytesIO(json.dumps({"detail": detail}).encode()))
+
+
+def test_login_asks_for_the_2fa_code_when_the_account_needs_it(monkeypatch):
+    sent = []
+
+    def fake_post(url, payload, token=None, timeout=60):
+        sent.append(dict(payload))
+        if "totp_code" not in payload:
+            raise _http_error(401, "2FA code required", {"X-2FA-Required": "true"})
+        return {"access_token": "jwt"}
+
+    monkeypatch.setattr(ev, "_post", fake_post)
+    monkeypatch.setenv("EVAL_EMAIL", "eval@example.com")
+    monkeypatch.setenv("EVAL_PASSWORD", "pw")
+    monkeypatch.delenv("EVAL_TOTP", raising=False)
+    monkeypatch.setattr("builtins.input", lambda prompt: " 123456 ")
+    assert ev.login("http://x") == "jwt"
+    assert sent[-1]["totp_code"] == "123456"
+
+
+def test_login_failure_shows_the_server_reason(monkeypatch):
+    def fake_post(url, payload, token=None, timeout=60):
+        raise _http_error(401, "Incorrect email or password")
+
+    monkeypatch.setattr(ev, "_post", fake_post)
+    monkeypatch.setenv("EVAL_EMAIL", "eval@example.com")
+    monkeypatch.setenv("EVAL_PASSWORD", "wrong")
+    with pytest.raises(SystemExit) as exit_info:
+        ev.login("http://x")
+    assert "Incorrect email or password" in str(exit_info.value)
