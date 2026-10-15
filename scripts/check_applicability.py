@@ -14,6 +14,7 @@ answer. It ignores APPLICABILITY_CHECK_ENABLED: it always shows the check.
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
@@ -38,6 +39,8 @@ def _read_only_session(self, **config):
 
 
 neo4j.Driver.session = _read_only_session   # every session in this process is read-only
+# "property does not exist" warnings for the visibility filter (no private documents yet): noise here.
+logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 # 6db1125's prompt, kept here only to show what it answered on production.
 _OLD_PROMPT = (

@@ -77,6 +77,8 @@ def test_116_is_dropped_589_kept_as_an_alternative(rows, model):
     assert "[584 c.p.]" not in seen["human"] and "[581 c.p.]" not in seen["human"]
     assert "[116 c.p.]" in seen["human"] and "[589 c.p.]" in seen["human"]
     assert "alternativa" in seen["system"] and "requisito" in seen["system"]
+    # On production the model kept 116 as an "alternativa": that verdict is only for offences/claims.
+    assert "solo per le norme che descrivono una fattispecie" in seen["system"]
     event, data = logged[-1]
     assert event == "case_analysis_applicability"
     assert data["dropped"] == [{"article": "116 c.p.", "requisito": "più concorrenti nel reato",

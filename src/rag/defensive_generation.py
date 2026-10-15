@@ -1442,14 +1442,22 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
 # was exempt because the rulings agreed on it. Now only the articles the user's
 # own text names are exempt, an alternative qualification counts as applicable,
 # and an article is dropped only when the model names the requirement in its
-# text and the fact of the case that contradicts it.
+# text and the fact of the case that contradicts it. On production (15 Oct) the
+# model kept 116 as an "alternativa" with an invented reason, so "alternativa" is
+# only for articles that describe an offence or a claim the same facts could
+# meet, and the model checks the text's requirements (who and how many act,
+# conduct, event, relationship) against the facts before choosing.
 _APPLICABILITY_SYSTEM = (
     "Sei un giurista. Per ogni articolo elencato leggi il suo testo reale e confrontalo con i fatti del "
-    "caso. Classifica ciascun articolo:\n"
+    "caso. Prima di classificarlo individua i requisiti che il testo pone (chi agisce e quanti soggetti "
+    "devono esserci, quale condotta, quale evento, quale rapporto tra le parti) e verifica ciascuno nei "
+    "fatti. Classifica ciascun articolo:\n"
     "- \"applicabile\": disciplina i fatti, anche solo in parte, o serve alla difesa o alla tesi della "
     "parte assistita;\n"
-    "- \"alternativa\": può applicarsi ai fatti come qualificazione alternativa o subordinata, anche se "
-    "diversa da quella contestata o richiesta;\n"
+    "- \"alternativa\": descrive un reato, un diritto o un'azione che gli stessi fatti possono integrare "
+    "al posto di quello contestato o richiesto, anche in via subordinata. Vale solo per le norme che "
+    "descrivono una fattispecie: per le altre (regole generali, concorso di persone, circostanze, "
+    "procedura) scegli tra \"applicabile\" e \"incompatibile\";\n"
     "- \"incompatibile\": un fatto preciso del caso contraddice un requisito scritto nel testo "
     "dell'articolo.\n"
     "Usa \"incompatibile\" solo se puoi indicare quel requisito e quel fatto; in ogni dubbio usa "
