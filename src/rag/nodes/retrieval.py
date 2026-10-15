@@ -867,6 +867,25 @@ _CROSS_REF_NUM = re.compile(
     rf'(?<!\w)(\d+)(?:[\s-]*({_CROSS_REF_SUFFIX}))?(?!\w)',
     re.IGNORECASE,
 )
+# A run followed by another act points outside the matched article's code:
+# "articolo 186, comma 2, del decreto legislativo n. 285/1992", "articoli 2 e 3
+# della legge n. 689/1981", "art. 444 c.p.p.". Those numbers were looked up in
+# the same code and fetched unrelated articles (art. 186, 2, 3 c.p.), which the
+# crossref rows then carried, protected, into the answer and its sources.
+# Comma/letter/number clauses may sit in between; "del presente codice",
+# "dello stesso decreto" and plain runs are kept. Used with .match(text, pos).
+_CROSS_REF_CLAUSE = (r"(?:comma|commi|co\.|lett(?:era|ere)?\.?|nn?\.|numer[oi]|primo|secondo|terzo|"
+                     r"quarto|quinto|sesto|[a-z]\)|\d+|e|ed)")
+_OTHER_ACT_AFTER = re.compile(
+    rf"(?:[\s,;]*{_CROSS_REF_CLAUSE})*[\s,;]*"
+    r"(?:(?:del|della|dello|dell'|dei|delle|di cui al(?:la|l')?|ai sensi del(?:la|l')?|"
+    r"previst[oaie] dal(?:la|l')?)\s*)?"
+    r"(?:d\.\s*lgs|decret|legg[ei]\b|l\.\s*(?:n\.|\d)|d\.\s*p\.\s*r|r\.\s*d\.|regio decreto|d\.\s*l\.|"
+    r"regolament|direttiva|costituzion|cost\.|trattato|convenzione|testo unico|t\.\s*u\.|"
+    r"disp(?:osizioni|\.)?\s*(?:di\s*)?att|codice (?:di procedura|della strada|del consumo|civile|penale)|"
+    r"c\.\s*p\.\s*p|c\.\s*p\.\s*c|c\.\s*c\.|c\.\s*p\.)",
+    re.IGNORECASE,
+)
 
 
 def broaden_article_context(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
@@ -923,6 +942,8 @@ def broaden_article_context(state: Dict[str, Any], driver, database: str) -> Dic
         _plain_text = section.get('plain_text') or ''
         text = _plain_text if _plain_text.strip() else (section.get('abstract') or '')
         for run_match in _CROSS_REF_RUN.finditer(text):
+            if _OTHER_ACT_AFTER.match(text, run_match.end(), run_match.end() + 160):
+                continue   # another act's articles, not this code's
             for num_match in _CROSS_REF_NUM.finditer(run_match.group(0)):
                 number, suffix = num_match.group(1), num_match.group(2)
                 full_number = f"{number}-{suffix.lower()}" if suffix else number
