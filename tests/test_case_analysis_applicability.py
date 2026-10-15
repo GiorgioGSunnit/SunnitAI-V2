@@ -1,9 +1,14 @@
-"""_filter_applicable_articles drops a candidate article whose own real text
-doesn't apply to the case facts (e.g. art. 116 c.p. - concorso anomalo,
-requires more than one agent - surfacing via semantic/keyword search for a
-single-defendant case), while never even asking about articles the user's
-own text cites by number (`keep`) or crossref rows (deterministic, grounded
-in the cited article's own text via broaden_article_context).
+"""_filter_applicable_articles drops a candidate article only when the model
+shows it is incompatible with the facts: it names the requirement in the
+article's own text and the fact of the case that contradicts it (e.g. art. 116
+c.p., concorso anomalo, needs several agents; Sempronio acted alone).
+
+Round 3, item 3. On production 6db1125's version kept 116 and dropped 589/590
+for Sempronio: 116 was exempt because the rulings agreed on it (it was in
+`keep`), and 589/590 were judged against the prosecutor's charge instead of
+as alternative qualifications. Now only articles the user's own text names
+(and crossref rows) are exempt, an alternative qualification is kept, and the
+check runs only with APPLICABILITY_CHECK_ENABLED.
 """
 
 import json
@@ -21,83 +26,97 @@ os.environ.setdefault("EMBEDDING_API_KEY", "test-key")
 import src.rag.defensive_generation as dg  # noqa: E402
 from src.rag.nodes.cypher import CROSSREF_SOURCE  # noqa: E402
 
+FACTS = "Sempronio, agendo da solo, schiaffeggia Caio, che cade e muore. Il PM contesta l'art. 584 c.p."
 
-def _row(sid, name, abbr, text, source=None):
-    row = {
-        "d": {"id": "LEGAL_DOC::cp", "name": "Codice Penale 2026"},
-        "s": {"id": sid, "name": name, "plain_text": text},
-        "_article": (name.split(".")[0], abbr),
-    }
+
+def _row(name, text, source=None):
+    row = {"d": {"id": "LEGAL_DOC::cp", "name": "Codice Penale 2026"},
+           "s": {"id": name, "name": f"{name}.0.0", "plain_text": text}, "_article": (name, "c.p.")}
     if source:
         row["_source"] = source
     return row
 
 
 @pytest.fixture
-def sempronio_rows():
-    keep = [("584", "c.p.")]
-    rows = [
-        _row("584", "584.0.0", "c.p.", "Chiunque partecipa a una rissa e' punito..."),
-        _row("581", "581.0.0", "c.p.", "Chiunque percuote taluno...", source=CROSSREF_SOURCE),
-        _row("582", "582.0.0", "c.p.", "Chiunque cagiona lesione personale...", source=CROSSREF_SOURCE),
-        _row("116", "116.0.0", "c.p.", "Se il reato commesso e' diverso da quello voluto da taluno dei concorrenti..."),
-        _row("43", "43.0.0", "c.p.", "Il delitto e' doloso, o secondo l'intenzione..."),
-        _row("589", "589.0.0", "c.p.", "Chiunque cagiona per colpa la morte di una persona..."),
+def rows():
+    return [
+        _row("584", "Chiunque, con atti diretti a commettere uno dei delitti preveduti dagli articoli 581 e 582..."),
+        _row("581", "Chiunque percuote taluno...", source=CROSSREF_SOURCE),
+        _row("116", "Qualora il reato commesso sia diverso da quello voluto da taluno dei concorrenti..."),
+        _row("43", "Il delitto è doloso, o secondo l'intenzione..."),
+        _row("589", "Chiunque cagiona per colpa la morte di una persona..."),
+        _row("582", "Chiunque cagiona ad alcuno una lesione personale..."),
     ]
-    return rows, keep
 
 
-def test_116_is_dropped_while_584_581_582_43_589_stay(sempronio_rows, monkeypatch):
-    rows, keep = sempronio_rows
-    calls = []
+@pytest.fixture
+def model(monkeypatch):
+    seen, logged = {}, []
 
-    def fake_call_chat(messages, max_tokens=None, **kwargs):
-        calls.append(messages[-1].content)
-        return json.dumps([
-            {"article": "116 c.p.", "applicable": False,
-             "reason": "Concorso anomalo richiede piu' agenti; un solo imputato."},
-            {"article": "43 c.p.", "applicable": True, "reason": "Rilevante per dolo/colpa."},
-            {"article": "589 c.p.", "applicable": True, "reason": "Ipotesi alternativa pertinente."},
-        ])
-
-    vlog_events = []
-    monkeypatch.setattr(dg, "_call_chat", fake_call_chat)
-    monkeypatch.setattr(dg, "vlog", lambda event, data=None, *a, **k: vlog_events.append((event, data)))
-
-    filtered = dg._filter_applicable_articles("Sempronio, agendo da solo...", "", rows, keep)
-    kept_articles = sorted({r["_article"][0] for r in filtered})
-
-    assert "116" not in kept_articles
-    assert kept_articles == ["43", "581", "582", "584", "589"]
-    # Only the 3 non-exempt articles were sent to the LLM.
-    assert "116 c.p." in calls[0] and "43 c.p." in calls[0] and "589 c.p." in calls[0]
-    assert "Chiunque partecipa a una rissa" not in calls[0]  # 584 (keep) never asked about
-    dropped = next(data["dropped"] for ev, data in vlog_events if ev == "case_analysis_applicability")
-    assert dropped == [{"article": "116 c.p.", "reason": "Concorso anomalo richiede piu' agenti; un solo imputato."}]
+    def answer(reply):
+        def fake_call_chat(messages, max_tokens=None, **kwargs):
+            seen.update(system=messages[0].content, human=messages[-1].content)
+            return reply if isinstance(reply, str) else json.dumps(reply)
+        monkeypatch.setattr(dg, "_call_chat", fake_call_chat)
+    monkeypatch.setattr(dg, "vlog", lambda event, data=None, *a, **k: logged.append((event, data)))
+    return answer, seen, logged
 
 
-def test_fails_open_on_llm_error(sempronio_rows, monkeypatch):
-    rows, keep = sempronio_rows
+def test_116_is_dropped_589_kept_as_an_alternative(rows, model):
+    answer, seen, logged = model
+    answer([
+        {"article": "116 c.p.", "verdict": "incompatibile", "requisito": "più concorrenti nel reato",
+         "fatto": "Sempronio ha agito da solo", "reason": "Il concorso anomalo richiede più agenti."},
+        {"article": "Art. 589 c.p.", "verdict": "alternativa", "reason": "Qualificazione subordinata."},
+        {"article": "43 c.p.", "verdict": "applicabile", "reason": "Elemento soggettivo."},
+        {"article": "582 c.p.", "verdict": "applicabile", "reason": "Lesioni."},
+    ])
+    kept = dg._filter_applicable_articles(FACTS, "", rows)
+    assert [r["_article"][0] for r in kept] == ["584", "581", "43", "589", "582"]   # order unchanged
+    # Exempt and never sent: 584 (named in the user's text) and 581 (cross-reference).
+    assert "[584 c.p.]" not in seen["human"] and "[581 c.p.]" not in seen["human"]
+    assert "[116 c.p.]" in seen["human"] and "[589 c.p.]" in seen["human"]
+    assert "alternativa" in seen["system"] and "requisito" in seen["system"]
+    event, data = logged[-1]
+    assert event == "case_analysis_applicability"
+    assert data["dropped"] == [{"article": "116 c.p.", "requisito": "più concorrenti nel reato",
+                                "fatto": "Sempronio ha agito da solo",
+                                "reason": "Il concorso anomalo richiede più agenti."}]
+    assert data["verdicts"]["589 c.p."] == "alternativa"
+
+
+def test_incompatible_without_a_stated_fact_is_kept(rows, model):
+    answer, _, _ = model
+    answer([{"article": "589 c.p.", "verdict": "incompatibile", "requisito": "colpa", "fatto": "",
+             "reason": "Il PM contesta il 584."},
+            {"article": "116 c.p.", "verdict": "incompatibile", "reason": "Non pertinente."}])
+    kept = [r["_article"][0] for r in dg._filter_applicable_articles(FACTS, "", rows)]
+    assert "589" in kept and "116" in kept
+
+
+def test_articles_the_rulings_agree_on_are_checked_not_exempt(model):
+    """On production 116 reached `keep` through the rulings and skipped the check."""
+    answer, seen, _ = model
+    answer([])
+    dg._filter_applicable_articles("Sempronio schiaffeggia Caio.", "", [_row("116", "Qualora il reato...")])
+    assert "[116 c.p.]" in seen["human"]
+
+
+@pytest.mark.parametrize("reply", ["not json", json.dumps({"article": "116 c.p."})])
+def test_fails_open_on_a_malformed_reply(rows, model, reply):
+    answer, _, _ = model
+    answer(reply)
+    assert dg._filter_applicable_articles(FACTS, "", rows) == rows
+
+
+def test_fails_open_on_an_error(rows, monkeypatch):
     monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("timeout")))
     monkeypatch.setattr(dg, "vlog", lambda *a, **k: None)
-    filtered = dg._filter_applicable_articles("facts", "", rows, keep)
-    assert len(filtered) == len(rows)
+    assert dg._filter_applicable_articles(FACTS, "", rows) == rows
 
 
-def test_fails_open_on_malformed_reply(sempronio_rows, monkeypatch):
-    rows, keep = sempronio_rows
-    monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: "not json")
-    monkeypatch.setattr(dg, "vlog", lambda *a, **k: None)
-    filtered = dg._filter_applicable_articles("facts", "", rows, keep)
-    assert len(filtered) == len(rows)
-
-
-def test_fails_open_per_article_when_verdict_is_missing(sempronio_rows, monkeypatch):
-    rows, keep = sempronio_rows
-    # Reply only covers 43, omitting 116 and 589 entirely.
-    monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: json.dumps(
-        [{"article": "43 c.p.", "applicable": True, "reason": "ok"}]))
-    monkeypatch.setattr(dg, "vlog", lambda *a, **k: None)
-    filtered = dg._filter_applicable_articles("facts", "", rows, keep)
-    kept = sorted({r["_article"][0] for r in filtered})
-    assert "116" in kept and "589" in kept  # no verdict for these -> kept, not dropped
+def test_fails_open_per_article_when_a_verdict_is_missing(rows, model):
+    answer, _, _ = model
+    answer([{"article": "43 c.p.", "verdict": "applicabile", "reason": "ok"}])
+    kept = [r["_article"][0] for r in dg._filter_applicable_articles(FACTS, "", rows)]
+    assert "116" in kept and "589" in kept
