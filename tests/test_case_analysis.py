@@ -471,6 +471,9 @@ def test_the_parere_is_written_from_the_retrieved_law(pipeline):
     for copied in ("regole di gioco", "576 c.p.p.", "15 giorni dalla notifica"):
         assert copied not in prompts["system"]                         # no examples to copy
     assert "fase processuale in corso" in prompts["system"]            # e.g. what a 415-bis notice allows
+    # Only remedies open to the client's own role (Flavio's 13 Oct rule, which
+    # had gone into the old, unused flow).
+    assert "posizione nel procedimento" in prompts["system"] and "riservata a un'altra parte" in prompts["system"]
     assert prompts["max_tokens"] == DG._PARERE_TOKENS
 
     draft = out["draft"]
