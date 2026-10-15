@@ -96,6 +96,19 @@ def test_incompatible_without_a_stated_fact_is_kept(rows, model):
     assert "589" in kept and "116" in kept
 
 
+@pytest.mark.parametrize("requisito", [
+    # Production, 15 Oct (eviction case): the facts exclude the limit, so the article helps the client.
+    "Il contratto non si può risolvere se l'inadempimento di una delle parti ha scarsa importanza",
+    "L'inadempimento non importa la risoluzione, salvo che la prestazione mancata sia essenziale",
+    "Né la garanzia è dovuta se i vizi erano facilmente riconoscibili",
+])
+def test_a_limit_the_facts_exclude_is_not_a_reason_to_drop(requisito):
+    verdict = {"verdict": "incompatibile", "requisito": requisito, "fatto": "Il conduttore non paga da tre mesi"}
+    assert not dg._drops_article(verdict)
+    assert dg._drops_article({**verdict, "requisito": "più concorrenti nel reato"})
+    assert "non si può" in dg._APPLICABILITY_SYSTEM and "il limite non opera" in dg._APPLICABILITY_SYSTEM
+
+
 def test_articles_the_rulings_agree_on_are_checked_not_exempt(model):
     """On production 116 reached `keep` through the rulings and skipped the check."""
     answer, seen, _ = model

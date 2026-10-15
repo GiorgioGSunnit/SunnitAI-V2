@@ -1460,6 +1460,9 @@ _APPLICABILITY_SYSTEM = (
     "procedura) scegli tra \"applicabile\" e \"incompatibile\";\n"
     "- \"incompatibile\": un fatto preciso del caso contraddice un requisito scritto nel testo "
     "dell'articolo.\n"
+    "Un articolo che pone un'esclusione, un limite o un'eccezione (\"non si può\", \"non è dovuta\", "
+    "\"salvo che\") non è incompatibile quando i fatti escludono quel limite: è \"applicabile\", perché "
+    "serve proprio a sostenere che il limite non opera.\n"
     "Usa \"incompatibile\" solo se puoi indicare quel requisito e quel fatto; in ogni dubbio usa "
     "\"applicabile\". Rispondi SOLO con un array JSON, un oggetto per articolo, nessun altro testo:\n"
     '[{"article": "<come indicato>", "verdict": "applicabile|alternativa|incompatibile", '
@@ -1522,11 +1525,21 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
             if isinstance(v, dict) and isinstance(v.get("article"), str)}
 
 
+# A requirement worded as a limit or an exception ("il contratto non si può
+# risolvere se...", "salvo che..."): facts that exclude it make the article an
+# argument for the client, not incompatible. On production (15 Oct) the model
+# dropped 1455 and 1459 c.c. that way for an eviction case.
+_LIMIT_WORDING = re.compile(r"\b(?:non|né|salvo|tranne|eccett\w*)\b", re.IGNORECASE)
+
+
 def _drops_article(verdict: Optional[Dict[str, Any]]) -> bool:
     """Only an "incompatibile" verdict that names both the requirement in the
-    article's text and the contradicting fact drops an article."""
+    article's text and the contradicting fact drops an article, and never when
+    that requirement is a limit or an exception."""
+    requisito = str((verdict or {}).get("requisito") or "").strip()
     return bool(verdict) and str(verdict.get("verdict", "")).strip().lower() == "incompatibile" \
-        and bool(str(verdict.get("requisito") or "").strip()) and bool(str(verdict.get("fatto") or "").strip())
+        and bool(requisito) and bool(str(verdict.get("fatto") or "").strip()) \
+        and not _LIMIT_WORDING.search(requisito)
 
 
 def _filter_applicable_articles(facts: str, request: str,
