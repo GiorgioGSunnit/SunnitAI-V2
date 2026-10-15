@@ -86,6 +86,16 @@ class _Session:
         ("cc", "1490.0.0"): "Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi...",
         ("cc", "1495.0.0"): "Il compratore decade dal diritto alla garanzia, se non denunzia...",
         ("cp", "116.0.0"): "Qualora il reato commesso sia diverso da quello voluto da taluno dei concorrenti...",
+        ("cp", "628.0.0"): "Chiunque, per procurare a sé o ad altri un ingiusto profitto, mediante violenza...",
+    }
+    TITLES = {   # the rubrica, as Section.title holds it on production
+        ("cp", "628.0.0"): "Rapina", ("cp", "625.0.0"): "Circostanze aggravanti",
+        ("cp", "582.0.0"): "Lesione personale", ("cp", "590.0.0"): "Lesioni personali colpose",
+        ("cp", "52.0.0"): "Difesa legittima", ("cp", "624.0.0"): "Furto",
+        ("cp", "624-bis.0.0"): "Furto in abitazione e furto con strappo",
+        ("cp", "640.0.0"): "Truffa", ("cp", "640-bis.0.0"): "Truffa aggravata per il conseguimento di erogazioni pubbliche",
+        ("cc", "1490.0.0"): "Garanzia per i vizi della cosa venduta", ("cc", "1218.0.0"): "Responsabilità del debitore",
+        ("cc", "1453.0.0"): "Risolubilità del contratto per inadempimento",
     }
 
     def __init__(self):
@@ -99,6 +109,9 @@ class _Session:
 
     def run(self, query, **params):
         self.queries.append((query, params))
+        if "toLower(coalesce(s.title" in query:     # Neo4j's CONTAINS: a substring test
+            return _Result([{"name": name, "title": title} for (doc, name), title in self.TITLES.items()
+                            if doc == params["doc_id"] and all(w in title.lower() for w in params["stems"])])
         if "s.name IN [$zero_zero, $num]" in query:
             for name in (params["zero_zero"], params["num"]):
                 text = self.ARTICLES.get((params["doc_id"], name))
@@ -138,6 +151,32 @@ def test_spotted_articles_are_fetched_checked_and_tagged(models):
     assert event == "issue_spotting"
     assert data["unresolved"] == ["art. 7 legge 24/2017"]
     assert data["dropped_by_check"] == ["art. 116 c.p."] and data["added"] == 2
+
+
+@pytest.mark.parametrize("doc_id, institution, number", [
+    ("cp", "Rapina", "628"), ("cp", "legittima difesa", "52"), ("cp", "lesioni personali", "582"),
+    ("cp", "Furto in abitazione", "624-bis"), ("cp", "Furto", "624"), ("cp", "truffa", "640"),
+    ("cc", "inadempimento contrattuale", "1453"), ("cc", "garanzia per vizi", "1490"),
+    ("cc", "Responsabilità", None),             # one word: only a title of exactly that word
+    ("cp", "Falso in atto privato", None), ("cp", "", None),
+])
+def test_articles_are_found_by_their_title(doc_id, institution, number):
+    assert isp.article_by_title(_Session(), doc_id, institution) == number
+
+
+def test_the_title_wins_over_a_wrong_number(monkeypatch):
+    """Production, 15 Oct: "Rapina: art. 625" (625 is the aggravating circumstances)."""
+    monkeypatch.setattr(isp, "_call_chat", lambda *a, **k: json.dumps(
+        [{"institution": "Rapina", "article": "625", "code": "c.p."},
+         {"institution": "concorso anomalo", "article": "116", "code": "c.p."}]))   # no title: by number
+    monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: "[]")
+    logged = []
+    monkeypatch.setattr(isp, "vlog", lambda event, data=None, *a, **k: logged.append((event, data)))
+    monkeypatch.setattr(dg, "vlog", lambda *a, **k: None)
+    rows = isp.spotted_rows(_Session(), DOCS, NARRATIVE, [])
+    assert [r["_article"] for r in rows] == [("628", "c.p."), ("116", "c.p.")]
+    assert [r["s"]["name"] for r in rows] == ["628.0.0", "116.0.0"]
+    assert logged[-1][1]["by_title"] == ["Rapina: 625 -> 628"]
 
 
 def test_the_node_is_off_by_default_and_only_for_narrative_questions(models, monkeypatch):

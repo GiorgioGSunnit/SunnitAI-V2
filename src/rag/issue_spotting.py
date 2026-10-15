@@ -5,7 +5,10 @@ question, one model call names the legal institutions at stake, each with the
 article and the code or law that governs it; each code is resolved against the
 real document names in Neo4j (not a fixed list, so "codice del consumo" or
 "legge 392/1978" work when those documents exist), and each article is fetched
-exactly by number in that document, whatever the law hint. The fetched articles
+in that document, whatever the law hint: by its title (rubrica) when one holds
+the institution's name, else by the model's number. On production (15 Oct) the
+model named the right institutions with wrong numbers (rapina -> 625, estorsione
+-> 607), so the title wins over the number. The fetched articles
 then go through the applicability check (defensive_generation, item 3), and
 the survivors are added tagged ISSUE_SPOTTING_SOURCE, protected like the
 keyword (bm25) and cross-reference rows.
@@ -57,6 +60,9 @@ _ABBREVIATIONS = [
 # Not codes or laws: commentaries and collective agreements are never the target.
 _NOT_A_LAW = re.compile(r"commentat|^\W*ccnl|fiscalit", re.IGNORECASE)
 _STOP = {"del", "della", "dello", "dei", "delle", "di", "il", "la", "lo", "le", "gli", "n", "art", "nr"}
+_TITLE_STOP = _STOP | {"per", "con", "dal", "dalla", "nel", "nella", "sul", "sulla", "nei", "una", "uno", "che",
+                       "non", "alla", "allo", "agli", "alle", "dell", "nell", "sull", "dall", "all"}
+_SECTION_ARTICLE = re.compile(rf"^\s*(?:art(?:icolo)?\.?\s*)?(\d+)(?:[\s_-]*({_SUFFIX})\b)?", re.IGNORECASE)
 
 
 def is_narrative(text: str) -> bool:
@@ -153,6 +159,44 @@ def fetch_article(session, doc_id: str, number: str, visibility: str = "", **par
     ).data()]
 
 
+def _stems(text: str) -> set:
+    """Content words cut to five letters, so "lesioni personali" meets
+    "Lesione personale" and word order doesn't matter."""
+    return {w[:5] for w in _norm(text).split() if w.isalpha() and len(w) > 2 and w not in _TITLE_STOP}
+
+
+def article_by_title(session, doc_id: str, institution: str, visibility: str = "", **params) -> Optional[str]:
+    """The number of the article whose title (rubrica) holds every content
+    word of the institution's name, with the fewest other words: "Rapina" ->
+    628, "legittima difesa" -> 52 ("Difesa legittima"), "lesioni personali" ->
+    582, not 590 ("Lesioni personali colpose"). A one-word name needs a title of
+    exactly that word, a longer one allows two other words. None otherwise."""
+    stems = _stems(institution)
+    if not stems:
+        return None
+    rows = session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+        "WHERE d.id = $doc_id AND ALL(w IN $stems WHERE toLower(coalesce(s.title, '')) CONTAINS w) "
+        + (f"AND {visibility} " if visibility else "")
+        + "RETURN DISTINCT s.name AS name, s.title AS title LIMIT 50",
+        doc_id=doc_id, stems=sorted(stems), **params,
+    ).data()
+    best = None
+    for r in rows:
+        m = _SECTION_ARTICLE.match(str(r.get("name") or ""))
+        title_stems = _stems(r.get("title") or "")
+        if not m or not stems <= title_stems:
+            continue
+        extra = len(title_stems - stems)
+        if extra > (0 if len(stems) == 1 else 2):
+            continue
+        number = f"{m.group(1)}-{m.group(2).lower()}" if m.group(2) else m.group(1)
+        key = (extra, len(r.get("title") or ""), int(m.group(1)))
+        if best is None or key < best[0]:
+            best = (key, number)
+    return best[1] if best else None
+
+
 def _article_tag(number: str, doc_name: str) -> tuple:
     """(number, code) as the strategy pipeline tags rows: "c.p." for the
     Codice Penale, the document's own name for any other law."""
@@ -172,28 +216,34 @@ def spotted_rows(session, documents: List[Dict[str, Any]], text: str, existing: 
 
     proposals = spot_issues(text)
     have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name")) for r in existing}
-    unresolved, missing, fetched = [], [], []
+    unresolved, missing, fetched, by_title = [], [], [], []
     for p in proposals:
         doc = resolve_code(p["code"], documents)
         if not doc:
             unresolved.append(f"art. {p['article']} {p['code']}")
             continue
-        rows = fetch_article(session, doc["id"], p["article"], visibility, **params)
+        number = article_by_title(session, doc["id"], p["institution"], visibility, **params)
+        rows = fetch_article(session, doc["id"], number, visibility, **params) if number else []
+        if rows:
+            by_title.append(f"{p['institution']}: {p['article']} -> {number}")
+        else:
+            number = p["article"]
+            rows = fetch_article(session, doc["id"], number, visibility, **params)
         if not rows:
-            missing.append(f"art. {p['article']} {doc['name']}")
+            missing.append(f"art. {number} {doc['name']}")
         for row in rows:
             key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
             if key in have:
                 continue
             have.add(key)
             row["_source"] = ISSUE_SPOTTING_SOURCE
-            row["_article"] = _article_tag(p["article"], doc["name"])
+            row["_article"] = _article_tag(number, doc["name"])
             row["_institution"] = p["institution"]
             fetched.append(row)
     checked = _filter_applicable_articles(text, "", fetched) if fetched else []
     vlog("issue_spotting", {
         "proposals": [f"{p['institution']}: art. {p['article']} {p['code']}" for p in proposals],
-        "unresolved": unresolved, "not_found": missing,
+        "by_title": by_title, "unresolved": unresolved, "not_found": missing,
         "fetched": [f"art. {r['_article'][0]} {r['_article'][1]}" for r in fetched],
         "dropped_by_check": [f"art. {r['_article'][0]} {r['_article'][1]}" for r in fetched if r not in checked],
         "added": len(checked),
