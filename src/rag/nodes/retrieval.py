@@ -42,6 +42,7 @@ from ..lookups import (
     vector_lookup,
 )
 from .. import embedding_config
+from .. import feature_flags
 from ..prompts import legal_consultant_system_prefix
 from ..reranker import rerank_results
 from ..utils import _build_schema_text, canonical_name
@@ -478,6 +479,28 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
 # Node A1: Article number router (runs before vector search)
 # ---------------------------------------------------------------------------
 
+# Same test _dynamic_law_hint uses for "the query names an article".
+_NAMES_AN_ARTICLE = re.compile(r'\bart\.?\s*\d+|articolo\s+\d+|comma\s+\d+|art\s+\d+', re.IGNORECASE)
+
+
+def _law_hint_fallback(query: str, driver, database: str) -> str:
+    """The legacy guessed document (_dynamic_law_hint), used when the intent
+    classifier named none (round 3, item 1).
+
+    LEGACY_LAW_HINT_FALLBACK=true (default) keeps today's behaviour. false: a
+    query that names no article gets no guessed document, so vector search and
+    BM25 search every document instead of one; on 15 Oct this lock made the
+    consumer (c2) and eviction (c3) questions miss the other code's articles.
+    A query that names an article still gets the guess, because the exact
+    article lookup needs to know which code "art. 586 c.p." is in. A document
+    the classifier found (law_hint_doc_id) is used either way.
+    """
+    if not feature_flags.enabled("LEGACY_LAW_HINT_FALLBACK", True) and not _NAMES_AN_ARTICLE.search(query or ""):
+        vlog("law_hint_fallback", {"skipped": True, "query_length": len(query or "")})
+        return ""
+    return _dynamic_law_hint(query, driver, database)
+
+
 def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, Any]:
     query = state.get("query", "")
     user_id = state.get("user_id") or ""
@@ -500,7 +523,7 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
     # (set in decompose_query). Only fall back to _dynamic_law_hint when
     # the classifier didn't identify a document — avoids wrong-codice matches
     # e.g. "articolo 90 del codice penale" matching "Codice di procedura penale"
-    law_hint = state.get("law_hint_doc_id") or _dynamic_law_hint(query, driver, database)
+    law_hint = state.get("law_hint_doc_id") or _law_hint_fallback(query, driver, database)
 
     # Dedicated, single-purpose article lookup — deterministic fallback when
     # neither the raw query nor the shared keyword-extraction step surfaced
@@ -1350,7 +1373,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
 
     # Resolve document scope for this query — shared across vector, BM25, and intersection
     vector_doc_hint = (state.get("law_hint_doc_id") or
-                       _dynamic_law_hint(original_query, driver, database))
+                       _law_hint_fallback(original_query, driver, database))
 
     with driver.session(database=database) as session:
         all_matches: List[Dict[str, Any]] = []
@@ -1423,7 +1446,7 @@ def context_retrieval(state: Dict[str, Any], driver, database: str) -> Dict[str,
     # When a law hint is active, use the generalized/keyword query so the document
     # name itself doesn't dominate the fulltext match. Fall back to original_query.
     bm25_doc_hint = (state.get("law_hint_doc_id") or
-                     _dynamic_law_hint(original_query, driver, database))
+                     _law_hint_fallback(original_query, driver, database))
     _BM25_SCORE_THRESHOLD = 5.0 if bm25_doc_hint else 8.5
     if bm25_doc_hint:
         # Use retrieval_keywords instead of full query when scoped to one document.
