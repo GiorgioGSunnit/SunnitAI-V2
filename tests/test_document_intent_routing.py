@@ -712,3 +712,30 @@ def test_run_defaults_to_calculation_enabled(monkeypatch):
     captured.clear()
     rag_main.run("Redigi un contratto", skip_calculation=True)
     assert captured["skip_calculation"] is True
+
+
+# --- Short topic questions are answered, not drafted as a strategy ------------
+
+@pytest.mark.parametrize("message", [
+    "contratto firmato sotto minaccia",
+    "cause di nullità del contratto",
+    "lasciare l'appartamento prima della fine del contratto",
+    "Quali sono le cause di nullità del contratto?",
+    "legittimo affidamento nella pubblica amministrazione",
+])
+def test_a_short_topic_is_a_question(chat_api, message):
+    """15 Oct 2026: the classifier filed "contratto firmato sotto minaccia" as a
+    case to defend, and the user got a strategy draft instead of art. 1434 c.c."""
+    assert chat_api._is_topic_question(message)
+
+
+@pytest.mark.parametrize("message", [
+    "ho firmato un contratto sotto minaccia",                       # own facts
+    "il mio inquilino non paga da tre mesi",                        # own facts
+    "contratto firmato sotto minaccia: che strategia seguire?",     # asks for a strategy
+    "contratto firmato sotto minaccia, cosa devo fare",             # asks what to do
+    "come difendersi da un contratto firmato sotto minaccia",       # asks for a defence
+    "Tizio firma un contratto di vendita dopo che Caio lo ha minacciato di rivelare un segreto",  # a case
+])
+def test_cases_and_strategy_requests_stay_with_the_classifier(chat_api, message):
+    assert not chat_api._is_topic_question(message)

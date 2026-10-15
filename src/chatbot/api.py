@@ -1988,6 +1988,26 @@ def _classify_top_level_intent(message: str, session_lang: str) -> str:
     return "rag"
 
 
+# A short message that names a legal topic, with no facts of the user's own and
+# no request for a strategy, is a question, whatever the classifier says: on 15
+# Oct 2026 "contratto firmato sotto minaccia" got a full strategy draft instead
+# of an answer on art. 1434 c.c. Ambiguous words ("sono", "ci") are not taken as
+# first person; anything longer or with own facts is left to the classifier.
+_TOPIC_MAX_WORDS = 8
+_OWN_FACTS_RE = re.compile(r"\b(io|ho|abbiamo|siamo|mi|me|mio|mia|miei|mie|nostro|nostra|nostri|nostre)\b",
+                           re.IGNORECASE)
+_STRATEGY_ASK_RE = re.compile(
+    r"strategi|difend|difes[ao]\b|parere|cosa (?:posso|possiamo|devo|dobbiamo|dovrei|dovremmo) fare",
+    re.IGNORECASE,
+)
+
+
+def _is_topic_question(message: str) -> bool:
+    return (len(message.split()) <= _TOPIC_MAX_WORDS
+            and not _OWN_FACTS_RE.search(message)
+            and not _STRATEGY_ASK_RE.search(message))
+
+
 def _classify_legal_intent(message: str, session_lang: str) -> str:
     """
     LLM-based classification of a message with NO document attached, deciding
@@ -3257,6 +3277,9 @@ async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_
         raise HTTPException(status_code=404, detail="Session not found")
     _session_lang = _session.session_language
     _legal_intent = _classify_legal_intent(request.message, _session_lang)
+    if _legal_intent == "defensive_draft" and _is_topic_question(request.message):
+        logger.info("chat: %r is a short topic question, not a case: answered, not drafted", request.message)
+        _legal_intent = "rag"
     if _legal_intent == "defensive_draft":
         # Use message text as source — no document required
         from ..rag.defensive_generation import run_defensive_pipeline
