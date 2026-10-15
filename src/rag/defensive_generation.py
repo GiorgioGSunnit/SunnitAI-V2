@@ -1371,9 +1371,24 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
             abbr = next((a for p, a in abbr_of.items() if d_name.startswith(p)), None)
             if abbr:
                 row["_article"] = (_article_num((row.get("s") or {}).get("name") or ""), abbr)
+    # Issue spotting (round 3, item 2, ISSUE_SPOTTING_ENABLED): the case
+    # analysis above names norms only as "art. N" + one of six code
+    # abbreviations, so laws outside those codes (Codice del Consumo, L.
+    # 392/1978) can never be proposed. The same step as the chat's
+    # issue_spotting node adds them, resolved against the real document names
+    # and already through the applicability check.
+    spotted = []
+    if feature_flags.enabled("ISSUE_SPOTTING_ENABLED"):
+        try:
+            from .doc_lookup import _fetch_doc_names
+            from .issue_spotting import spotted_rows
+            spotted = spotted_rows(session, _fetch_doc_names(driver, database), case, article_rows)
+        except Exception as exc:
+            logger.warning("issue spotting in the parere failed, nothing added: %s", exc)
+        article_rows = article_rows + spotted
     return {"first_rulings": first_rulings, "similar": similar, "keep": keep,
             "named": [r for r in keep if r in _refs_in(case)], "candidates": candidates,
-            "chosen": chosen, "selected": selected, "article_rows": article_rows}
+            "chosen": chosen, "selected": selected, "article_rows": article_rows, "spotted": spotted}
 
 
 # Round 3, item 3. 6db1125's check asked whether an article "applies to the

@@ -91,6 +91,8 @@ def main() -> None:
             crossref = sorted({_label(r['_article']) for r in rows
                                if r.get("_source") == "broaden_article_crossref" and r.get("_article")})
             print(f"  added by cross-reference: {', '.join(crossref) or 'none'}")
+            spotted = sorted({_label(r["_article"]) for r in picked.get("spotted") or []})
+            print(f"  added by issue spotting : {', '.join(spotted) or 'none (ISSUE_SPOTTING_ENABLED off or nothing found)'}")
 
     to_check, texts = dg._applicability_candidates(facts, args.request, rows)
     print(f"\nSent to the check: {', '.join(texts) or 'none'}")

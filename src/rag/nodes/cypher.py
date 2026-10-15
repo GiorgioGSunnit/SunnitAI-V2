@@ -42,7 +42,10 @@ CROSSREF_SOURCE = "broaden_article_crossref"
 # CROSSREF_SOURCE (above). Both are grounded, non-semantic matches; filtering
 # to "bm25" alone (the original behaviour, predating broaden_article_context)
 # silently dropped the crossref rows whenever the LLM verdict was POOR.
-PROTECTED_SOURCES = frozenset({"bm25", CROSSREF_SOURCE})
+PROTECTED_SOURCES = frozenset({"bm25", CROSSREF_SOURCE, "issue_spotting"})
+# Rows issue spotting (src/rag/issue_spotting.py) adds: articles fetched exactly
+# by number from the document their code names, after the applicability check.
+ISSUE_SPOTTING_SOURCE = "issue_spotting"
 
 
 # ---------------------------------------------------------------------------

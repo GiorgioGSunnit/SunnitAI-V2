@@ -27,6 +27,7 @@ from .calculation import (
     route_after_calculation,
     route_after_gate,
 )
+from .issue_spotting import issue_spotting
 from .graph_nodes import (
     apply_summary_confirmation,
     article_router,
@@ -213,6 +214,12 @@ def build_graph(compile_graph: bool = True):
         "context_retrieval",
         partial(context_retrieval, driver=driver, database=NEO4J_DATABASE),
     )
+    # A no-op unless ISSUE_SPOTTING_ENABLED (round 3, item 2). It comes after
+    # context_retrieval, which rebuilds raw_result from scratch.
+    graph.add_node(
+        "issue_spotting",
+        partial(issue_spotting, driver=driver, database=NEO4J_DATABASE),
+    )
     graph.add_node(
         "generate_cypher_intersection",
         partial(generate_cypher_intersection, driver=driver, database=NEO4J_DATABASE),
@@ -280,7 +287,8 @@ def build_graph(compile_graph: bool = True):
     graph.add_edge("broaden_article_context", "dottrina_search")
     graph.add_edge("dottrina_search", "evaluate_retrieval_quality")
     graph.add_edge("entity_linking", "context_retrieval")
-    graph.add_edge("context_retrieval", "generate_cypher_intersection")
+    graph.add_edge("context_retrieval", "issue_spotting")
+    graph.add_edge("issue_spotting", "generate_cypher_intersection")
     graph.add_conditional_edges(
         "generate_cypher_intersection",
         route_after_intersection,
