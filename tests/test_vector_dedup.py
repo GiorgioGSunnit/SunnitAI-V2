@@ -85,16 +85,16 @@ def test_duplicate_copies_collapse_to_the_best_one(mode, monkeypatch):
     assert matches[0]["dedup_key"] == ("cc", "2051.0.0")
     query, params = session.calls[0]
     assert "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node)" in query and "node.name AS name" in query
-    assert params["k"] == 120                                           # 30 x 4 candidates
+    assert params["k"] == 240                                           # 30 x 8 candidates
     assert logged[-1]["duplicates_dropped"] == 3 and logged[-1]["fetched"] == 6
 
 
 def test_k_different_sections_when_the_candidates_allow(mode):
-    """Commentary keeps 3: twelve candidates, four copies each of four sections."""
+    """Commentary keeps 3: twenty-four candidates, four copies each of four sections."""
     mode("text")
     rows = [_row(f"{art}{i}", 0.9 - n / 10, doc="cpc", name=art) for n, art in enumerate("WXYZ") for i in range(4)]
     session, matches = _search(rows, index="commentato_section_embeddings", k=3)
-    assert session.calls[0][1]["k"] == 12
+    assert session.calls[0][1]["k"] == 24
     assert [m["element_id"] for m in matches] == ["W0", "X0", "Y0"]
 
 
@@ -102,7 +102,7 @@ def test_over_fetch_is_capped(mode, monkeypatch):
     mode("text")
     monkeypatch.setitem(ec.TEXT_MODE_INDEX_SETTINGS, "section_embeddings", {"k": 60, "min_score": 0.55})
     session, _ = _search(ROWS)
-    assert session.calls[0][1]["k"] == 200
+    assert session.calls[0][1]["k"] == 240
 
 
 def test_nodes_without_a_key_are_kept(mode):
@@ -118,7 +118,7 @@ def test_document_scoped_search_also_keeps_one_per_section(mode):
     mode("text")
     session, matches = _search(ROWS, doc_id="cc")
     query, params = session.calls[0]
-    assert "d.id AS doc_id, s.name AS name" in query and params["k"] == 120
+    assert "d.id AS doc_id, s.name AS name" in query and params["k"] == 240
     assert params["min_score"] == 0.55
     assert [m["element_id"] for m in matches] == ["a1", "b1", "c1"]
     assert all(m["source"] == "vector:section_embeddings:doc_scoped" for m in matches)

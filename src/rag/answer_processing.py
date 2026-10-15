@@ -149,11 +149,23 @@ def _extract_citations(
                     except Exception:
                         section_title = None
                 section_score = record.get("_reranker_score")
-                # Key by node_id, not section_name: name is only guaranteed unique
-                # for numbered code articles. Dottrina/special chunks derive name from
-                # a truncated prose snippet, so distinct chunks can share the same name
-                # and would otherwise be silently collapsed by setdefault().
-                section_key = node_id or section_name
+                # Key by (section_name, normalized plain_text[:200]), not name
+                # alone (2026-10-15: name-only collided distinct Commentato/
+                # Fiscalita chunks, which derive name from a truncated prose
+                # snippet and can share one — see dottrina's own section_key
+                # history). A true duplicate (same numbered article, same text,
+                # different s.id — up to 7 copies in the corpus) still has
+                # identical name AND text, so it still collapses; two distinct
+                # chunks that merely share a name no longer do, since their
+                # text differs. NOT node_id/s.id as the primary key: that was
+                # the pre-V2-4 key and let every duplicate copy through as its
+                # own citation. Falls back to node_id only when a row has
+                # neither a name nor any text to key on.
+                _normalized_text = re.sub(r'\s+', ' ', section_plain_text).strip().lower()
+                section_key = (
+                    (section_name, _normalized_text[:200])
+                    if (section_name or _normalized_text) else node_id
+                )
                 if section_name and section_name != "0" and section_plain_text and len(section_plain_text) > 20 and not section_plain_text.strip().startswith("Torna indietro"):
                     docs[doc_id]["sections"].setdefault(section_key, {
                         "name": section_name,

@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import _call_chat
+from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
 
@@ -969,7 +970,12 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
     chosen passage, else the matched section), each cut to `chars`."""
     grouped: Dict[str, List[str]] = {}
     for row in rows:
-        text = row.get("_passage") or " ".join(((row.get("s") or {}).get("plain_text") or "").split())
+        _s = row.get("s") or {}
+        # abstract fallback: special/dottrina books (Commentato, Fiscalita) are
+        # routinely "abstract-only" — plain_text empty, content in abstract
+        # (same field the ingestion step embeds from — see BE's "abstract-only
+        # sections" commit). plain_text-only here silently dropped their text.
+        text = row.get("_passage") or " ".join((_s.get("plain_text") or _s.get("abstract") or "").split())
         if not text:
             continue
         label = (f"art. {row['_article'][0]} {row['_article'][1]}" if row.get("_article")
@@ -1006,11 +1012,13 @@ def _ruling_sections(session, doc_ids: List[str]) -> Dict[str, List[str]]:
     parts: Dict[str, List[tuple]] = {}
     rows = session.run(
         "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id IN $ids "
-        "RETURN d.id AS id, s.name AS name, s.plain_text AS text",
+        "RETURN d.id AS id, s.name AS name, s.plain_text AS text, s.abstract AS abstract",
         ids=ids,
     ).data()
     for i, row in enumerate(rows):
-        text = " ".join((row.get("text") or "").split())
+        # abstract fallback, same reason as _source_block: special/dottrina
+        # sections are often abstract-only.
+        text = " ".join((row.get("text") or row.get("abstract") or "").split())
         if text:
             order = tuple(int(n) for n in re.findall(r"\d+", row.get("name") or ""))
             parts.setdefault(row.get("id"), []).append((order, i, text))
@@ -1307,6 +1315,86 @@ def _parere_human(facts: str, analysis: Dict[str, Any], articles: str, rulings: 
     )
 
 
+def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dict[str, Any]],
+                                keep: List[tuple]) -> List[Dict[str, Any]]:
+    """Drops rows for a candidate article whose own real text doesn't apply to
+    these facts (e.g. art. 116 c.p. — concorso anomalo, requires more than one
+    agent — surfacing for a single-defendant case via semantic/keyword search).
+
+    One batched LLM call, one verdict per distinct article. Exempt from the
+    check entirely (kept unconditionally, never sent to the LLM): articles the
+    user's own text cites by number (`keep` — article_router-equivalent exact
+    matches) and crossref rows (_source == CROSSREF_SOURCE — deterministic,
+    grounded in the cited article's own text, not a semantic guess).
+
+    Fails open on any error, timeout or unparseable reply: every row is kept.
+    """
+    from .nodes.cypher import CROSSREF_SOURCE
+
+    by_article: Dict[tuple, List[Dict[str, Any]]] = {}
+    exempt_rows: List[Dict[str, Any]] = []
+    for row in article_rows:
+        article = row.get("_article")
+        if row.get("_source") == CROSSREF_SOURCE or not article or article in keep:
+            exempt_rows.append(row)
+            continue
+        by_article.setdefault(article, []).append(row)
+    if not by_article:
+        return article_rows
+
+    candidates = []
+    for article, rows in by_article.items():
+        text = " ".join(
+            " ".join(((r.get("s") or {}).get("plain_text") or (r.get("s") or {}).get("abstract") or "").split())
+            for r in rows
+        ).strip()
+        if text:
+            candidates.append({"article": f"{article[0]} {article[1]}", "text": text[:_ARTICLE_CHARS]})
+    if not candidates:
+        return article_rows
+
+    try:
+        system = (
+            "Sei un giurista. Per ogni articolo elencato, leggi il suo testo reale e giudica se si applica "
+            "davvero ai fatti del caso (non se è genericamente pertinente all'area del diritto). "
+            "Rispondi SOLO con un array JSON, un oggetto per articolo, nessun altro testo:\n"
+            '[{"article": "<come indicato>", "applicable": true|false, "reason": "<una frase>"}]'
+        )
+        human = (
+            f"Fatti del caso:\n{_case_text(facts, request)[:2000]}\n\n"
+            "Articoli candidati (testo reale dalla banca dati):\n"
+            + "\n\n".join(f"[{c['article']}]\n{c['text']}" for c in candidates)
+        )
+        raw = _call_chat([SystemMessage(content=system), HumanMessage(content=human)], max_tokens=700)
+        clean = (raw or "").strip().lstrip("```json").lstrip("```").rstrip("```").strip()
+        verdicts = json.loads(clean) if clean.startswith("[") else []
+    except Exception as exc:
+        logger.warning("applicability check failed, keeping every candidate article: %s", exc)
+        vlog("case_analysis_applicability", {"checked": len(candidates), "error": str(exc)[:160]})
+        return article_rows
+
+    verdict_by_article = {
+        v["article"].strip(): v for v in verdicts
+        if isinstance(v, dict) and isinstance(v.get("article"), str)
+    }
+    kept_rows, dropped = list(exempt_rows), []
+    for article, rows in by_article.items():
+        label = f"{article[0]} {article[1]}"
+        verdict = verdict_by_article.get(label)
+        # Missing verdict (truncated/malformed reply for this one article):
+        # fail-open per-article too, same as a full parse failure.
+        if verdict is None or verdict.get("applicable", True):
+            kept_rows.extend(rows)
+        else:
+            dropped.append({"article": label, "reason": str(verdict.get("reason", ""))[:200]})
+
+    vlog("case_analysis_applicability", {
+        "checked": sorted(f"{a[0]} {a[1]}" for a in by_article),
+        "dropped": dropped,
+    })
+    return kept_rows
+
+
 def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: str = "") -> dict:
     """A reasoned parere on a case: facts described in the message, or an
     uploaded document (`facts`) with the user's message as `request`.
@@ -1315,9 +1403,10 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     """
     import neo4j
     from .main import driver, NEO4J_DATABASE
+    from .nodes.retrieval import broaden_article_context
 
     analysis = _analyse_case(facts, session_lang, request)
-    article_rows, ruling_rows, candidates, selected = [], [], [], []
+    article_rows, ruling_rows, candidates, selected, keep = [], [], [], [], []
     try:
         with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
             first_rulings = _search_case_law(session, analysis)
@@ -1338,6 +1427,32 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             selected = keep + [r for r in chosen if r not in keep]
             article_rows = sorted((r for r in candidate_rows if r["_article"] in selected),
                                   key=lambda r: selected.index(r["_article"]))
+            # Cross-references within the selected articles' own text (e.g. 584
+            # citing 581/582) — the same deterministic, grounded expansion
+            # article_router's "fired" path gets from broaden_article_context;
+            # this pipeline never goes through that graph path (it does its own
+            # retrieval), so without this call those articles were never added.
+            # Reuses the function as-is: it keys each row's own d.id as the
+            # cross-reference scope, so an empty law_hint here is correct, not
+            # a shortcut. Tags added rows _source=CROSSREF_SOURCE, same as the
+            # graph path.
+            article_rows = broaden_article_context(
+                {"raw_result": article_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
+                driver, NEO4J_DATABASE,
+            ).get("raw_result", article_rows)
+            # broaden_article_context's added rows carry d/s but no `_article`
+            # tuple (that tag is this file's own convention, set by
+            # _fetch_articles). Without it: a bare row["_article"] below
+            # crashes the whole pipeline on the first query that adds a
+            # crossref row, and _mark_unverified would wrongly flag a cited
+            # 581/582 as "[DA VERIFICARE]" despite being DB-sourced.
+            _abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
+            for _row in article_rows:
+                if "_article" not in _row:
+                    _d_name = (_row.get("d") or {}).get("name") or ""
+                    _abbr = next((a for p, a in _abbr_of.items() if _d_name.startswith(p)), None)
+                    if _abbr:
+                        _row["_article"] = (_article_num((_row.get("s") or {}).get("name") or ""), _abbr)
             # Second search with the verified article numbers: rulings on the
             # article itself, not on whatever else the keywords match.
             second = _search_case_law(session, analysis, numbers=[n for n, _ in selected[:4]],
@@ -1347,6 +1462,13 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
 
+    # Per-article applicability: article_rows can include articles that are
+    # topically/semantically related but don't actually apply to these facts
+    # (e.g. art. 116 c.p. — concorso anomalo, more than one agent — surfacing
+    # for a single-defendant case). Runs after article_rows/ruling_rows are
+    # final, before both the citations and the draft prompt use them.
+    article_rows = _filter_applicable_articles(facts, request, article_rows, keep)
+
     articles = _source_block(article_rows, _ARTICLE_CHARS)
     rulings = _source_block(ruling_rows, _PASSAGE_CHARS + 100)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
@@ -1355,7 +1477,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
          HumanMessage(content=_parere_human(facts, analysis, articles, rulings, request, principles))],
         max_tokens=_PARERE_TOKENS,
     )
-    found = sorted({row["_article"] for row in article_rows})
+    found = sorted({row["_article"] for row in article_rows if row.get("_article")})
     draft = _mark_unverified(draft, found, articles + "\n" + rulings)
 
     topics = _extract_deepdive_topics(draft[draft.find("**3."):] if "**3." in draft else draft, {})
@@ -1366,7 +1488,12 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             "\n\n⚠️ Le sentenze citate provengono dal corpus documentale; i riferimenti segnati "
             "[DA VERIFICARE] non sono stati trovati nelle fonti consultate. Verificare tutto prima dell'uso."
         )
-    return {"draft": draft, "citations": _rows_to_sources(article_rows + ruling_rows),
+    # A row whose text lived only in `abstract` (special/dottrina books, e.g.
+    # "Codice Penale Commentato") fails _extract_citations' length gate and
+    # comes back with sections: [] — a citation naming a source with nothing
+    # in it. Drop it here rather than let it reach the user.
+    citations = [c for c in _rows_to_sources(article_rows + ruling_rows) if c.get("sections")]
+    return {"draft": draft, "citations": citations,
             "analysis": analysis, "articles": found, "principles": principles,
             "candidates": [f"art. {n} {c}" for n, c in candidates],
             "norms_requested": [f"art. {n} {c}" for n, c in selected]}

@@ -530,11 +530,15 @@ def bm25_lookup(query: str, driver, database: str, k: int = 15) -> List[tuple]:
 
 # Text mode, migrated indexes: the corpus holds exact duplicate Section nodes
 # (same document, name and text; up to 7 copies). With working vectors the
-# copies score identically and fill the top k, so k x 4 candidates (at most
-# 200) are fetched, one node per (document id, section name) is kept, and the
-# list is cut back to k.
-_DEDUP_FETCH_FACTOR = 4
-_DEDUP_FETCH_CAP = 200
+# copies score identically and fill the top k, so k x 8 candidates (at most
+# 240) are fetched, one node per (document id, section name) is kept, and the
+# list is cut back to k. 2026-10-15: raised from k x 4 (cap 200) — on
+# Codice Penale, 4x still let duplicate copies of a handful of articles fill
+# the fetched pool, leaving no room for other articles to surface at all
+# (not merely duplicated); the cap rose with it so k=30 (section_embeddings)
+# still gets its full 8x (240), not a factor shrunk back down by the cap.
+_DEDUP_FETCH_FACTOR = 8
+_DEDUP_FETCH_CAP = 240
 
 
 def _deduplicates(index: str) -> bool:

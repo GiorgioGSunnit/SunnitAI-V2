@@ -143,35 +143,39 @@ def rerank_results(query: str, rows: list, top_k: int = 12) -> list:
                 rows[original_idx]["_reranker_score"] = score
         reranker_top = sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)[:top_k - 2]
 
-        bm25_rows = [r for r in rows if r.get("_source") == "bm25"]
+        # PROTECTED_SOURCES, not just "bm25": a crossref row (broaden_article_context)
+        # that scores below the cut is as grounded as a bm25 one and gets the same
+        # injection chance, not just dedup_rows' earlier collision protection.
+        from .nodes.cypher import PROTECTED_SOURCES
+        protected_rows = [r for r in rows if r.get("_source") in PROTECTED_SOURCES]
         reranker_ids = {
             (r.get("s") or {}).get("id") for r in reranker_top
             if (r.get("s") or {}).get("id")
         }
         BM25_INJECTION_MIN_RERANKER_SCORE = 0.3
-        bm25_candidates = [
-            r for r in bm25_rows
+        protected_candidates = [
+            r for r in protected_rows
             if (r.get("s") or {}).get("id") not in reranker_ids
             and r.get("_reranker_score", 0) >= BM25_INJECTION_MIN_RERANKER_SCORE
         ]
-        bm25_top = sorted(
-            bm25_candidates, key=lambda r: r.get("_reranker_score", 0), reverse=True
+        protected_top = sorted(
+            protected_candidates, key=lambda r: r.get("_reranker_score", 0), reverse=True
         )[:2]
 
         merged_ids = reranker_ids | {
-            (r.get("s") or {}).get("id") for r in bm25_top
+            (r.get("s") or {}).get("id") for r in protected_top
             if (r.get("s") or {}).get("id")
         }
-        slots_remaining = top_k - len(reranker_top) - len(bm25_top)
+        slots_remaining = top_k - len(reranker_top) - len(protected_top)
         overflow = [
             r for r in sorted(rows, key=lambda r: r.get("_reranker_score", 0), reverse=True)
             if (r.get("s") or {}).get("id") not in merged_ids
         ][:slots_remaining]
 
-        reranked = reranker_top + bm25_top + overflow
+        reranked = reranker_top + protected_top + overflow
         logger.info(
-            "Reranker merge: reranker_top=%d bm25_injected=%d overflow=%d total=%d",
-            len(reranker_top), len(bm25_top), len(overflow), len(reranked),
+            "Reranker merge: reranker_top=%d protected_injected=%d overflow=%d total=%d",
+            len(reranker_top), len(protected_top), len(overflow), len(reranked),
         )
 
         score_debug = []
