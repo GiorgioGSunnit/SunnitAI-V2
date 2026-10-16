@@ -18,11 +18,19 @@ session per case for the account it logs in as, so use a dedicated account.
   # credentials from the environment (EVAL_EMAIL, EVAL_PASSWORD, optional EVAL_TOTP), else prompted
   python tests/eval_narrative.py --base-url http://localhost:8000
   python tests/eval_narrative.py --base-url http://localhost:8000 --token <JWT> --only sempronio,c2
+  # each case 3 times, to separate a real change from model/run variance
+  python tests/eval_narrative.py --base-url http://localhost:8000 --repeat 3 --label flag-off
   # what changed between two runs
   python tests/eval_narrative.py --compare eval_runs/<run A>/summary.json eval_runs/<run B>/summary.json
 
 Each run writes eval_runs/<timestamp>[-label]/: one <case>.json per case
-(question, answer, citations, scoring) and summary.json / summary.txt.
+(question, answer, citations, scoring) — <case>-rN.json instead when
+--repeat > 1 — and summary.json / summary.txt. --repeat > 1 also writes
+aggregate.json / aggregate.txt: per case, how many of the repeats CITED
+each expected article (e.g. "2/3"), and the average CITED count per case
+and overall — the numbers to compare flag-off vs flag-on on, since a single
+run's score moves by several articles between identical runs (model/serving
+variance, not a real change).
 """
 
 import argparse
@@ -234,6 +242,43 @@ def _summary_lines(results):
     return lines
 
 
+def _aggregate(results, repeat):
+    """Per case: {expected_label: (cited_count, repeat)}, average CITED count
+    per case, and the overall average — results is the flat list of per-
+    repeat records (each carrying "id" and "score"), grouped back by id."""
+    by_case = {}
+    for r in results:
+        by_case.setdefault(r["id"], []).append(r)
+
+    per_case = {}
+    totals = []
+    for case_id, runs in by_case.items():
+        ok_runs = [r for r in runs if not r.get("error")]
+        labels = list(dict.fromkeys(e["expected"] for r in ok_runs for e in r["score"]["expected"]))
+        counts = {label: sum(1 for r in ok_runs for e in r["score"]["expected"]
+                             if e["expected"] == label and e["status"] == "CITED")
+                  for label in labels}
+        per_case[case_id] = {"counts": counts, "n": len(ok_runs), "errors": len(runs) - len(ok_runs)}
+        if ok_runs:
+            totals.append(sum(counts.values()) / len(ok_runs))
+    overall_avg = sum(totals) / len(totals) if totals else 0.0
+    return per_case, overall_avg
+
+
+def _aggregate_lines(per_case, overall_avg, repeat):
+    lines = [f"Averages over {repeat} repeats per case (CITED rate per expected article):"]
+    for case_id, data in per_case.items():
+        n = data["n"]
+        avg = sum(data["counts"].values()) / n if n else 0.0
+        err = f"  ({data['errors']} error(s))" if data["errors"] else ""
+        lines.append(f"## {case_id}  avg CITED {avg:.2f}/{len(data['counts'])}{err}")
+        for label, c in data["counts"].items():
+            lines.append(f"   {c}/{n}  {label}")
+    lines.append(f"\nOVERALL average CITED per case: {overall_avg:.2f} (across {len(per_case)} cases, "
+                 f"{repeat} repeats each)")
+    return lines
+
+
 def compare(old_path, new_path):
     old = {r["id"]: r for r in json.loads(Path(old_path).read_text(encoding="utf-8"))["results"]}
     new = {r["id"]: r for r in json.loads(Path(new_path).read_text(encoding="utf-8"))["results"]}
@@ -262,6 +307,8 @@ def main(argv=None):
     parser.add_argument("--out", default="eval_runs", help="folder for the run outputs")
     parser.add_argument("--label", default="", help="added to the run folder name, e.g. baseline")
     parser.add_argument("--timeout", type=int, default=400, help="seconds per question")
+    parser.add_argument("--repeat", type=int, default=1,
+                        help="run every case N times; report per-article CITED rate and averages")
     parser.add_argument("--compare", nargs=2, metavar=("OLD_SUMMARY", "NEW_SUMMARY"))
     args = parser.parse_args(argv)
 
@@ -285,25 +332,41 @@ def main(argv=None):
 
     results = []
     for case in cases:
-        print(f"... {case['id']}", flush=True)
-        record = {"id": case["id"], "extra": bool(case.get("extra")), "question": case["question"]}
-        try:
-            body, seconds = ask(base_url, token, case["question"], args.timeout)
-            record.update(seconds=seconds, answer=body.get("answer", ""), citations=body.get("citations", []),
-                          status_messages=body.get("status_messages", []),
-                          score=score(case, body.get("answer", ""), body.get("citations", [])))
-        except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as exc:
-            record["error"] = f"{type(exc).__name__}: {exc}"
-        (run_dir / f"{case['id']}.json").write_text(json.dumps(record, ensure_ascii=False, indent=2),
-                                                    encoding="utf-8")
-        results.append(record)
+        for i in range(args.repeat):
+            label = f"{case['id']} (r{i + 1}/{args.repeat})" if args.repeat > 1 else case["id"]
+            print(f"... {label}", flush=True)
+            record = {"id": case["id"], "extra": bool(case.get("extra")), "question": case["question"]}
+            if args.repeat > 1:
+                record["repeat"] = i
+            try:
+                body, seconds = ask(base_url, token, case["question"], args.timeout)
+                record.update(seconds=seconds, answer=body.get("answer", ""), citations=body.get("citations", []),
+                              status_messages=body.get("status_messages", []),
+                              score=score(case, body.get("answer", ""), body.get("citations", [])))
+            except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as exc:
+                record["error"] = f"{type(exc).__name__}: {exc}"
+            file_name = f"{case['id']}-r{i + 1}.json" if args.repeat > 1 else f"{case['id']}.json"
+            (run_dir / file_name).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+            results.append(record)
 
     lines = _summary_lines(results)
     (run_dir / "summary.json").write_text(
-        json.dumps({"run": run_dir.name, "base_url": base_url, "results": results}, ensure_ascii=False, indent=2),
+        json.dumps({"run": run_dir.name, "base_url": base_url, "repeat": args.repeat, "results": results},
+                   ensure_ascii=False, indent=2),
         encoding="utf-8")
     (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     print("\n".join(lines))
+
+    if args.repeat > 1:
+        per_case, overall_avg = _aggregate(results, args.repeat)
+        agg_lines = _aggregate_lines(per_case, overall_avg, args.repeat)
+        (run_dir / "aggregate.json").write_text(
+            json.dumps({"run": run_dir.name, "repeat": args.repeat, "overall_avg": overall_avg,
+                       "per_case": per_case}, ensure_ascii=False, indent=2),
+            encoding="utf-8")
+        (run_dir / "aggregate.txt").write_text("\n".join(agg_lines) + "\n", encoding="utf-8")
+        print("\n" + "\n".join(agg_lines))
+
     print(f"\nSaved in {run_dir}")
     return 0
 

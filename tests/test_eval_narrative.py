@@ -97,6 +97,37 @@ def test_runs_can_be_compared(tmp_path, capsys):
     assert "art. 1490 cc: MISSING -> CITED" in capsys.readouterr().out
 
 
+def test_aggregate_reports_cited_rate_per_expected_article():
+    def run(repeat, status_584, status_581):
+        return {"id": "sempronio", "repeat": repeat,
+                "score": {"expected": [{"expected": "art. 584 cp", "status": status_584},
+                                       {"expected": "art. 581 cp", "status": status_581}]}}
+    results = [run(0, "CITED", "CITED"), run(1, "CITED", "MISSING"), run(2, "CITED", "CITED")]
+    per_case, overall_avg = ev._aggregate(results, 3)
+    assert per_case["sempronio"]["counts"] == {"art. 584 cp": 3, "art. 581 cp": 2}
+    assert per_case["sempronio"]["n"] == 3
+    assert overall_avg == pytest.approx((3 + 2) / 3)
+
+
+def test_aggregate_excludes_errored_runs_from_the_count():
+    results = [
+        {"id": "c2", "score": {"expected": [{"expected": "art. 1490 cc", "status": "CITED"}]}},
+        {"id": "c2", "error": "TimeoutError: ..."},
+    ]
+    per_case, _ = ev._aggregate(results, 2)
+    assert per_case["c2"]["n"] == 1
+    assert per_case["c2"]["errors"] == 1
+    assert per_case["c2"]["counts"] == {"art. 1490 cc": 1}
+
+
+def test_aggregate_lines_shows_counts_as_a_fraction():
+    per_case = {"sempronio": {"counts": {"art. 584 cp": 3, "art. 581 cp": 2}, "n": 3, "errors": 0}}
+    lines = "\n".join(ev._aggregate_lines(per_case, 2.5, 3))
+    assert "3/3  art. 584 cp" in lines
+    assert "2/3  art. 581 cp" in lines
+    assert "OVERALL average CITED per case: 2.50" in lines
+
+
 def _http_error(code, detail, headers=None):
     import email.message
     import io
