@@ -517,9 +517,11 @@ def test_the_draft_rules_are_added_only_when_enabled(monkeypatch):
         assert rule not in today
     monkeypatch.setenv("STRATEGY_DRAFT_RULES_ENABLED", "true")
     ruled = DG._parere_system(analysis, "it")
-    assert "concreti, mai segnaposto" in ruled and "costituzione di parte civile" in ruled
     assert "Ogni articolo, pena o termine che citi deve risultare" in ruled
     assert "sono difensivi" in ruled and "coerenti con i fatti del caso" in ruled
     assert "non sono un riconoscimento di responsabilità" in ruled and "art. 41, comma 2, c.p." in ruled
-    # Everything else is unchanged: today's prompt minus section 5 is inside the new one.
-    assert today.split("**5.")[0] in ruled and "**6. Conclusioni**" in ruled
+    # Previewed on production: asked for them, the model invented procedure and penalties.
+    assert "non affermare competenze, riti, misure cautelari, termini o pene" in ruled
+    assert "concreti, mai segnaposto" not in ruled and "forbice di pena" not in ruled
+    # Everything else is unchanged: the new prompt is today's plus the rules.
+    assert ruled.replace(DG._DRAFT_RULES, "") == today

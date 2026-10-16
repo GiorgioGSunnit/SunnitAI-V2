@@ -1246,19 +1246,16 @@ def _mark_unverified(text: str, articles: List[tuple], sources_text: str) -> str
 # draft gave art. 1449 c.c. (rescission) as the term for annulment (1442).
 # Rules, not case law; articles named here that the sources lack are marked
 # [DA VERIFICARE] by _mark_unverified like any other.
+# Previewed on production (16 Oct, scripts/preview_strategy.py): asked for a
+# concrete procedural section and a sentence range, the model stated them from
+# memory and wrongly ("Tribunale" for an art. 584 case, which goes to the Corte
+# d'assise; "no alternative procedures"; "libertà vigilata" as a precautionary
+# measure; homicide as art. 578, 5-12 years), so section 5 stays as today and
+# the rules forbid stating what the sources don't give.
 _PROCEDURAL_SECTION = (
     "**5. Profili processuali e operativi**: solo quelli pertinenti al caso, tra prescrizione o "
     "decadenza, condizioni di procedibilità, competenza, attività istruttorie, terzi da coinvolgere, "
     "possibilità di definizione stragiudiziale.\n"
-)
-_PROCEDURAL_SECTION_CONCRETE = (
-    "**5. Profili processuali e operativi**: concreti, mai segnaposto. Nei casi penali: l'autorità "
-    "giudiziaria competente; la prescrizione del reato, calcolata dalla pena dell'articolo in NORME; la "
-    "procedibilità (d'ufficio o a querela); i riti alternativi praticabili; le misure cautelari possibili; "
-    "la costituzione di parte civile. Nei casi civili: il giudice competente; la prescrizione o la "
-    "decadenza, dal testo in NORME; le condizioni di procedibilità; le prove e le consulenze da chiedere; "
-    "la possibilità di definizione stragiudiziale. Ogni punto si ricava dalle fonti fornite oppure è "
-    "seguito da \"(da verificare)\".\n"
 )
 _DRAFT_RULES = (
     "- Ogni articolo, pena o termine che citi deve risultare dal testo in NORME o GIURISPRUDENZA; "
@@ -1276,8 +1273,10 @@ _DRAFT_RULES = (
     "- Nei casi penali considera, quando le fonti lo consentono: le diverse letture dell'elemento "
     "soggettivo; il nesso causale e le cause sopravvenute (art. 41, comma 2, c.p.), con la prova tecnica "
     "necessaria, ad esempio una consulenza medico-legale; le qualificazioni alternative, come tesi "
-    "principale o subordinata; le circostanze attenuanti (artt. 62 e 62-bis c.p.); una forbice di pena "
-    "realistica, calcolata dalle norme in NORME.\n"
+    "principale o subordinata, ciascuna con l'articolo di NORME che la prevede oppure seguita da "
+    "\"(da verificare)\"; le circostanze attenuanti (artt. 62 e 62-bis c.p.).\n"
+    "- Nella sezione 5 indica che cosa va verificato e perché: non affermare competenze, riti, misure "
+    "cautelari, termini o pene che le fonti non riportano.\n"
 )
 
 
@@ -1303,7 +1302,7 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
         "sostengono, le prove da acquisire, la probabile replica della controparte e come superarla.\n"
         "**4. Punti deboli e rischio**: i fatti e gli argomenti sfavorevoli valutati con franchezza, e una "
         "stima motivata del rischio.\n"
-        + (_PROCEDURAL_SECTION_CONCRETE if draft_rules else _PROCEDURAL_SECTION)
+        + _PROCEDURAL_SECTION
         + "**6. Conclusioni**: gli argomenti in ordine di forza e la condotta consigliata.\n\n"
         "REGOLE:\n"
         "- Usa ogni fatto elencato in ANALISI DEI FATTI e spiega perché aiuta o danneggia la parte "
