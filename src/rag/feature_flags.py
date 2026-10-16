@@ -9,6 +9,12 @@ else falls back to the default, so a typo never switches a feature on.
   APPLICABILITY_CHECK_ENABLED  false (item 3)
   STRATEGY_DRAFT_RULES_ENABLED false (item 4)
   SCOPED_DOTTRINA_ENABLED      false (item 5)
+  CASE_ANALYSIS_ENABLED        false: structured fact model + per-issue exact
+                                fetch/search in run_case_analysis_pipeline,
+                                any document (not just the six codes) —
+                                replaces _analyse_case/_select_articles with
+                                _analyse_case_v2/_select_articles_v2 there.
+                                Not yet wired into the rag route's graph.
 """
 
 import logging
