@@ -9,7 +9,6 @@ Given an uploaded judicial document, this module:
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -17,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
-from .ai_chat import _call_chat
+from .ai_chat import _call_chat, parse_json_reply
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -72,9 +71,8 @@ def classify_proceeding(text: str, lang: str = "it") -> dict:
         logger.warning("classify_proceeding: LLM call failed: %s", exc)
         return _safe_defaults()
 
-    cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
     try:
-        parsed = json.loads(cleaned)
+        parsed = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("classify_proceeding: JSON parse failed: %s", exc)
         return _safe_defaults()
@@ -213,8 +211,7 @@ def _extract_deepdive_topics(draft: str, proceeding: dict) -> list:
             )),
             HumanMessage(content=draft[:3000]),
         ], max_tokens=100)
-        cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`")
-        topics = json.loads(cleaned)
+        topics = parse_json_reply(raw)
         if isinstance(topics, list):
             return [t for t in topics if isinstance(t, str) and _found_in(t, draft)][:3]
     except Exception as exc:
@@ -640,7 +637,7 @@ def _analyse_case(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
         raw = _call_chat([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
                           HumanMessage(content=_case_text(facts, request))],
                          max_tokens=1500)
-        parsed = json.loads(re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip())
+        parsed = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("case analysis failed: %s", exc)
         return empty
@@ -826,7 +823,7 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
         raw = _call_chat([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
                           HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
                          max_tokens=200)
-        chosen = json.loads(re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip())
+        chosen = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("article choice failed: %s", exc)
         return None
@@ -1512,8 +1509,7 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
     try:
         raw = _call_chat([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
                          max_tokens=1200)
-        clean = re.sub(r"```(?:json)?\s*", "", raw or "").strip().rstrip("`").strip()
-        verdicts = json.loads(clean)
+        verdicts = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("applicability check failed, keeping every candidate article: %s", exc)
         vlog("case_analysis_applicability", {"checked": len(texts), "error": str(exc)[:160]})

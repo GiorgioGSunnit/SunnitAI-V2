@@ -19,7 +19,6 @@ whose own case analysis only knows six codes. Everything fails open: any error
 adds nothing.
 """
 
-import json
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -27,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
-from .ai_chat import _call_chat
+from .ai_chat import _call_chat, parse_json_reply
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -84,7 +83,7 @@ def spot_issues(text: str) -> List[Dict[str, str]]:
     """[{institution, article, code}] proposed by the model; [] on any failure."""
     try:
         raw = _call_chat([SystemMessage(content=_SPOT_SYSTEM), HumanMessage(content=text[:6000])], max_tokens=600)
-        proposals = json.loads(re.sub(r"```(?:json)?\s*", "", raw or "").strip().rstrip("`").strip())
+        proposals = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("issue spotting: proposal call failed: %s", exc)
         return []

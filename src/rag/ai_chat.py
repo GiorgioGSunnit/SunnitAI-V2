@@ -170,6 +170,28 @@ def _call_chat(
     return response.content.strip()
 
 
+def parse_json_reply(raw: Optional[str]):
+    """The first JSON array or object in a model reply, ignoring code fences
+    and any text before or after it. A strict json.loads failed on production
+    (16 Oct, "Extra data"): the model wrote the list asked for and then more
+    text, and the strategy pipeline lost its article choice. Raises ValueError
+    when the reply holds no JSON."""
+    import json
+    text = re.sub(r"```(?:json)?\s*", "", raw or "").strip().rstrip("`").strip()
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    decoder = json.JSONDecoder()
+    for i, char in enumerate(text):
+        if char in "[{":
+            try:
+                return decoder.raw_decode(text, i)[0]
+            except ValueError:
+                continue
+    raise ValueError("no JSON value in the model's reply")
+
+
 def _call_chat_with_tools(
     messages: List[Union[SystemMessage, HumanMessage]],
     tools: List[dict],
