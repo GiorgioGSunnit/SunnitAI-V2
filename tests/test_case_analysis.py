@@ -519,9 +519,10 @@ def test_the_draft_rules_are_added_only_when_enabled(monkeypatch):
     ruled = DG._parere_system(analysis, "it")
     assert "Ogni articolo, pena o termine che citi deve risultare" in ruled
     assert "sono difensivi" in ruled and "coerenti con i fatti del caso" in ruled
-    assert "non sono un riconoscimento di responsabilità" in ruled and "art. 41, comma 2, c.p." in ruled
-    # Previewed on production: asked for them, the model invented procedure and penalties.
+    assert "non sono un riconoscimento di responsabilità" in ruled
+    # Previewed on production: asked for them, the model invented procedure, penalties and penal arguments.
     assert "non affermare competenze, riti, misure cautelari, termini o pene" in ruled
     assert "concreti, mai segnaposto" not in ruled and "forbice di pena" not in ruled
+    assert "Nei casi penali considera" not in ruled and "62-bis" not in ruled
     # Everything else is unchanged: the new prompt is today's plus the rules.
     assert ruled.replace(DG._DRAFT_RULES, "") == today

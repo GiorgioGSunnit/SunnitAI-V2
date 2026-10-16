@@ -1248,7 +1248,12 @@ def _mark_unverified(text: str, articles: List[tuple], sources_text: str) -> str
 # memory and wrongly ("Tribunale" for an art. 584 case, which goes to the Corte
 # d'assise; "no alternative procedures"; "libertà vigilata" as a precautionary
 # measure; homicide as art. 578, 5-12 years), so section 5 stays as today and
-# the rules forbid stating what the sources don't give.
+# the rules forbid stating what the sources don't give. A second preview showed
+# the list of penal points to "consider" (mental element, causation, alternative
+# charges, mitigating circumstances) makes the model invent material: a fact the
+# case doesn't contain ("emotional agitation"), art. 59 for a mitigating
+# circumstance, art. 582 as an alternative "colposa" charge. Only the rules
+# that restrict the draft stay.
 _PROCEDURAL_SECTION = (
     "**5. Profili processuali e operativi**: solo quelli pertinenti al caso, tra prescrizione o "
     "decadenza, condizioni di procedibilità, competenza, attività istruttorie, terzi da coinvolgere, "
@@ -1267,11 +1272,6 @@ _DRAFT_RULES = (
     "stessa invoca.\n"
     "- Non presentare un fatto favorevole alla parte assistita come un'ammissione: un aiuto prestato, "
     "delle scuse o un pagamento non sono un riconoscimento di responsabilità.\n"
-    "- Nei casi penali considera, quando le fonti lo consentono: le diverse letture dell'elemento "
-    "soggettivo; il nesso causale e le cause sopravvenute (art. 41, comma 2, c.p.), con la prova tecnica "
-    "necessaria, ad esempio una consulenza medico-legale; le qualificazioni alternative, come tesi "
-    "principale o subordinata, ciascuna con l'articolo di NORME che la prevede oppure seguita da "
-    "\"(da verificare)\"; le circostanze attenuanti (artt. 62 e 62-bis c.p.).\n"
     "- Nella sezione 5 indica che cosa va verificato e perché: non affermare competenze, riti, misure "
     "cautelari, termini o pene che le fonti non riportano.\n"
 )
