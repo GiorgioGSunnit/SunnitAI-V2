@@ -125,7 +125,7 @@ def test_suggested_deepdives_come_from_the_draft_not_from_the_prompt(monkeypatch
     credito, onere della prova o mediazione obbligatoria", the prompt's example."""
     seen = {}
 
-    def fake_chat(messages, max_tokens=None, stop=None):
+    def fake_chat(messages, max_tokens=None, stop=None, temperature=None):
         seen["system"] = messages[0].content
         return '["caso fortuito", "mediazione obbligatoria"]'
 
@@ -144,7 +144,7 @@ def test_a_damages_claim_against_a_public_body_counts_as_civil(monkeypatch):
 def test_the_model_chooses_among_candidates_with_their_text(monkeypatch):
     seen = {}
 
-    def fake_chat(messages, max_tokens=None, stop=None):
+    def fake_chat(messages, max_tokens=None, stop=None, temperature=None):
         seen["human"] = messages[1].content
         return '["art. 2051 c.c.", "art. 9999 c.c.", "art. 1227 c.c."]'
 
@@ -304,7 +304,7 @@ def test_only_rulings_of_the_cases_own_branch_are_read():
 def test_principles_are_listed_with_the_ruling_that_states_them(monkeypatch):
     seen = {}
 
-    def fake_chat(messages, max_tokens=None, stop=None):
+    def fake_chat(messages, max_tokens=None, stop=None, temperature=None):
         seen["human"] = messages[1].content
         return ("**QUESTIONE 1: Responsabilità da cosa in custodia**\n"
                 "- Il caso fortuito può consistere nella condotta del danneggiato [S1]\n"
@@ -429,7 +429,7 @@ def pipeline(monkeypatch):
     monkeypatch.setattr(main, "driver", fake)
     prompts = {}
 
-    def fake_chat(messages, max_tokens=None, stop=None):
+    def fake_chat(messages, max_tokens=None, stop=None, temperature=None):
         system, human = messages[0].content, messages[1].content
         if "impostazione di un parere" in system:
             return json.dumps(ANALYSIS)

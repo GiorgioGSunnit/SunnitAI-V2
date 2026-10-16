@@ -133,6 +133,7 @@ def _call_chat(
     messages: List[Union[SystemMessage, HumanMessage]],
     max_tokens: Optional[int] = None,
     stop: Optional[List[str]] = None,
+    temperature: Optional[float] = None,
 ) -> str:
     """Call the chat model and trim whitespace from the response.
 
@@ -140,12 +141,20 @@ def _call_chat(
     25k-character template asked for 4000 output tokens against a 10000-token
     limit failed by a single token, and the user got a 500. Rather than fail,
     ask for a shorter answer that fits.
+
+    temperature: chat_model is already constructed with temperature=0 (see
+    _chat_kwargs above), so every call is already deterministic by default
+    without passing this. Pass it explicitly only where a caller wants that
+    guaranteed regardless of chat_model's own construction ever changing —
+    not to lower it further, since 0 is already the floor.
     """
     bind_kwargs = {}
     if max_tokens is not None:
         bind_kwargs["max_tokens"] = max_tokens
     if stop is not None:
         bind_kwargs["stop"] = stop
+    if temperature is not None:
+        bind_kwargs["temperature"] = temperature
     model = chat_model.bind(**bind_kwargs) if bind_kwargs else chat_model
     try:
         response = model.invoke(messages)

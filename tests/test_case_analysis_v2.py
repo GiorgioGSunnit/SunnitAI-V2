@@ -149,6 +149,9 @@ def test_fetch_any_skips_a_law_that_does_not_resolve(monkeypatch):
 
 _CP_DOC = {"id": "cp-doc", "name": "Codice Penale 2026", "aliases": []}
 _CP_ARTICLES = {
+    "584": {"title": "Omicidio preterintenzionale",
+            "text": "Chiunque, con atti diretti a commettere uno dei delitti preveduti dagli articoli 581 e "
+                    "582, cagiona la morte di un uomo, è punito con la reclusione non inferiore a dieci anni"},
     "43": {"title": "Elemento psicologico del reato",
            "text": "Il delitto è doloso, o secondo l'intenzione, quando l'evento dannoso o pericoloso, che è "
                    "il risultato dell'azione od omissione e da cui la legge fa dipendere l'esistenza del "
@@ -162,6 +165,13 @@ _CP_ARTICLES = {
     "589": {"title": "Omicidio colposo",
             "text": "Chiunque cagiona per colpa la morte di una persona è punito con la reclusione da sei "
                     "mesi a cinque anni"},
+    "581": {"title": "Percosse",
+            "text": "Chiunque percuote alcuno, se dal fatto non deriva una malattia nel corpo o nella mente, "
+                    "è punito, a querela della persona offesa, con la reclusione fino a sei mesi o con la "
+                    "multa fino a euro 309"},
+    "582": {"title": "Lesione personale",
+            "text": "Chiunque cagiona ad alcuno una lesione personale, dalla quale deriva una malattia nel "
+                    "corpo o nella mente, è punito con la reclusione da tre mesi a tre anni"},
     # Unrelated to any institution name used below — real art. 12 c.p. (abrogato,
     # ex pena di morte), just needs a title whose stems don't overlap with
     # "elemento soggettivo del reato", to test a number hint being rejected
@@ -359,3 +369,85 @@ def test_grouped_source_block_falls_back_to_flat_when_no_row_has_a_question():
     out = dg._grouped_source_block(rows, [{"titolo": "Omicidio"}], 1500)
     assert "###" not in out
     assert out == dg._source_block(rows, 1500)
+
+
+# --- End-to-end: Sempronio and sempronio_no_hint (mocked LLM output) -------
+#
+# Demonstrates the full chain for both eval_narrative_cases.json entries:
+# _analyse_case_v2 (LLM call mocked with a plausible institutions-in-words
+# reply — never a trusted number) -> _resolve_institution per issue -> the
+# five articles step 1 is meant to reach: 43, 581, 582, 586, 589. Both cases
+# get the SAME mocked reply, on purpose: the whole point of naming
+# institutions instead of numbers is that it does not depend on whether the
+# question happens to cite an article number — "sempronio_no_hint" has none
+# at all, yet the institutions are identical, because the facts are.
+
+_SEMPRONIO_ANALYSIS_REPLY = {
+    "parte_assistita": "Sempronio", "posizione": "indagato", "area": "penale",
+    "richiesta": "strategia difensiva", "ricerca_fatti": ["schiaffo", "caduta", "marciapiede", "soccorso"],
+    "fatti_strutturati": {
+        "parti": "Sempronio (autore), Caio (vittima)", "condotta": "un violento schiaffo al volto",
+        "evento": "morte di Caio per emorragia cerebrale da trauma cranico",
+        "nesso_causale": "schiaffo -> caduta -> trauma cranico -> emorragia cerebrale -> morte",
+        "condotta_successiva": "Sempronio presta soccorso e chiama l'ambulanza",
+    },
+    "questioni": [
+        {"titolo": "Omicidio preterintenzionale", "categoria": "qualificazione",
+         "istituti": [{"nome": "omicidio preterintenzionale", "codice": "c.p.", "numero_indicativo": ""}],
+         "parole_chiave": ["preterintenzione"]},
+        {"titolo": "Percosse e lesione personale", "categoria": "qualificazione_alternativa",
+         "istituti": [{"nome": "percosse", "codice": "c.p.", "numero_indicativo": ""},
+                      {"nome": "lesione personale", "codice": "c.p.", "numero_indicativo": ""}],
+         "parole_chiave": []},
+        {"titolo": "Morte come conseguenza di altro delitto", "categoria": "qualificazione_alternativa",
+         "istituti": [{"nome": "morte o lesione come conseguenza di altro delitto",
+                      "codice": "c.p.", "numero_indicativo": ""}],
+         "parole_chiave": []},
+        {"titolo": "Omicidio colposo", "categoria": "qualificazione_alternativa",
+         "istituti": [{"nome": "omicidio colposo", "codice": "c.p.", "numero_indicativo": ""}],
+         "parole_chiave": []},
+        {"titolo": "Elemento soggettivo", "categoria": "elemento_soggettivo",
+         # "elemento soggettivo" does not title-match "Elemento psicologico del
+         # reato" — this is deliberately the same wording that got art. 12 c.p.
+         # proposed on prod; the wrong number is included here too, to prove
+         # it's never the reason 43 is found.
+         "istituti": [{"nome": "elemento soggettivo del reato", "codice": "c.p.", "numero_indicativo": "12"}],
+         "parole_chiave": ["negligenza", "imprudenza"]},
+    ],
+    "fatti": [],
+}
+
+
+def _articles_found(analysis):
+    """{article_number: match_reason} for every institution across every
+    questione, resolved the same way _select_articles_v2 does."""
+    session = _FakeCodicePenaleSession()
+    found = {}
+    for q in analysis["questioni"]:
+        for istituto in q["istituti"]:
+            rows = dg._resolve_institution(session, [_CP_DOC], istituto, q["parole_chiave"])
+            for row in rows:
+                found[row["_article"][0]] = istituto["nome"]
+    return found
+
+
+def test_sempronio_with_the_pm_hint_reaches_all_five_articles(monkeypatch):
+    monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: json.dumps(_SEMPRONIO_ANALYSIS_REPLY))
+    analysis = dg._analyse_case_v2(
+        "Sempronio ... Il PM contesta a Sempronio l'art 584 cp. ...", "it")
+    found = _articles_found(analysis)
+    assert {"43", "581", "582", "586", "589"} <= set(found)
+
+
+def test_sempronio_no_hint_reaches_the_same_five_articles(monkeypatch):
+    """No article number anywhere in the question — same mocked analysis
+    reply, since the facts (and therefore the institutions) are the same;
+    this is the property the redesign exists for."""
+    monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: json.dumps(_SEMPRONIO_ANALYSIS_REPLY))
+    analysis = dg._analyse_case_v2(
+        "Sempronio a seguito di un acceso diverbio con Caio gli sferra un violento schiaffo al volto ... "
+        "nessun articolo citato nel testo", "it")
+    found = _articles_found(analysis)
+    assert {"43", "581", "582", "586", "589"} <= set(found)
+    # Specifically: 43 via the parole_chiave fallback, not the wrong number 12.
+    assert found["43"] == "elemento soggettivo del reato"

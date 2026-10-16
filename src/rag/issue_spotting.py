@@ -164,20 +164,33 @@ def _stems(text: str) -> set:
     return {w[:5] for w in _norm(text).split() if w.isalpha() and len(w) > 2 and w not in _TITLE_STOP}
 
 
-def article_by_title(session, doc_id: str, institution: str, visibility: str = "", **params) -> Optional[str]:
+_TITLE_FIELDS = {"title", "titolo_articolo"}
+
+
+def article_by_title(session, doc_id: str, institution: str, visibility: str = "", *,
+                     field: str = "title", **params) -> Optional[str]:
     """The number of the article whose title (rubrica) holds every content
     word of the institution's name, with the fewest other words: "Rapina" ->
     628, "legittima difesa" -> 52 ("Difesa legittima"), "lesioni personali" ->
     582, not 590 ("Lesioni personali colpose"). A one-word name needs a title of
-    exactly that word, a longer one allows two other words. None otherwise."""
+    exactly that word, a longer one allows two other words. None otherwise.
+
+    field: "title" (default — today's s.title, which may be LLM-generated)
+    or "titolo_articolo" (the parser's own official rubrica, set on ingestion
+    — see BE §7.1 — and populated only on documents already re-ingested
+    under it). Restricted to these two known Section properties: field is
+    interpolated into the Cypher text below, so it must never come from
+    anything other than this fixed set."""
+    if field not in _TITLE_FIELDS:
+        raise ValueError(f"article_by_title: unsupported field {field!r}")
     stems = _stems(institution)
     if not stems:
         return None
     rows = session.run(
         "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-        "WHERE d.id = $doc_id AND ALL(w IN $stems WHERE toLower(coalesce(s.title, '')) CONTAINS w) "
+        f"WHERE d.id = $doc_id AND ALL(w IN $stems WHERE toLower(coalesce(s.{field}, '')) CONTAINS w) "
         + (f"AND {visibility} " if visibility else "")
-        + "RETURN DISTINCT s.name AS name, s.title AS title LIMIT 50",
+        + f"RETURN DISTINCT s.name AS name, s.{field} AS title LIMIT 50",
         doc_id=doc_id, stems=sorted(stems), **params,
     ).data()
     best = None

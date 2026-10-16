@@ -696,7 +696,7 @@ def _analyse_case(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
     try:
         raw = _call_chat([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
                           HumanMessage(content=_case_text(facts, request))],
-                         max_tokens=1500)
+                         max_tokens=1500, temperature=0)
         parsed = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("case analysis failed: %s", exc)
@@ -745,7 +745,7 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     try:
         raw = _call_chat([SystemMessage(content=_CASE_ANALYSIS_V2_SYSTEM),
                           HumanMessage(content=_case_text(facts, request))],
-                         max_tokens=1800)
+                         max_tokens=1800, temperature=0)
         parsed = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("case analysis (v2) failed: %s", exc)
@@ -942,7 +942,7 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
     try:
         raw = _call_chat([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
                           HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
-                         max_tokens=200)
+                         max_tokens=200, temperature=0)
         chosen = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("article choice failed: %s", exc)
@@ -1098,19 +1098,24 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     never by trusting numero_indicativo alone (see _analyse_case_v2's
     docstring for why).
 
-    Order: (1) the document named by "codice", then the article whose own
-    title holds every word of "nome" (issue_spotting.article_by_title —
-    "omicidio colposo" finds art. 589 c.p. directly, because that is
-    literally its rubrica); (2) full-text search on "nome" plus the issue's
-    own "parole_chiave", scoped to that document when one resolved — the
-    name alone often doesn't appear in the article's operative text (art.
-    43's rubrica is "Elemento psicologico del reato", but naming the
+    Order, within the document named by "codice": (1) the article whose
+    own titolo_articolo (the parser's official rubrica, set on ingestion —
+    BE §7.1 — only present on documents already re-ingested under it) holds
+    every word of "nome"; (2) the same test against s.title (today's title,
+    which may be LLM-generated and less reliable, but is all that exists for
+    a document not yet re-ingested); (3) full-text search on "nome" plus the
+    issue's own "parole_chiave", scoped to that document when one resolved
+    — the name alone often doesn't appear in the article's operative text
+    (art. 43's rubrica is "Elemento psicologico del reato", but naming the
     institution "elemento soggettivo" won't title-match it, and its text
     says "doloso"/"colposo", not "elemento" or "soggettivo"; parole_chiave is
     exactly the technical vocabulary the model is asked for to search with);
-    (3) numero_indicativo, only if the article it names is itself titled
+    (4) numero_indicativo, only if the article it names is itself titled
     consistently with "nome" (_number_matches_institution) — a wrong guess
-    with no textual support is dropped rather than fetched."""
+    with no textual support is dropped rather than fetched.
+
+    Every outcome is logged: institution -> resolved article (or none) ->
+    which of the four found it."""
     from .issue_spotting import resolve_code, article_by_title, fetch_article
 
     nome = istituto.get("nome", "")
@@ -1131,12 +1136,18 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
             row["_article"] = (number, abbr or (doc or {}).get("name", codice))
         return rows
 
+    def _found(rows: List[Dict[str, Any]], number: str, reason: str) -> List[Dict[str, Any]]:
+        vlog("case_analysis_institution", {"institution": nome, "resolved": f"{number} {abbr or codice}",
+                                           "reason": reason})
+        return rows
+
     if doc:
-        number = article_by_title(session, doc["id"], nome)
-        if number:
-            rows = fetch_article(session, doc["id"], number)
-            if rows:
-                return _tag(rows, number)
+        for field in ("titolo_articolo", "title"):
+            number = article_by_title(session, doc["id"], nome, field=field)
+            if number:
+                rows = fetch_article(session, doc["id"], number)
+                if rows:
+                    return _found(_tag(rows, number), number, field)
 
     search_refs = _issue_article_refs(session, [nome, *(parole_chiave or [])])
     if doc:
@@ -1145,13 +1156,16 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     if search_refs:
         rows = _fetch_any(session, documents, search_refs[:2])
         if rows:
-            return rows
+            numbers = ", ".join(r["_article"][0] for r in rows if r.get("_article"))
+            return _found(rows, numbers, "fulltext on plain_text")
 
     numero = _article_num(istituto.get("numero_indicativo", ""))
     if numero and doc and _number_matches_institution(session, doc["id"], numero, nome):
         rows = fetch_article(session, doc["id"], numero)
         if rows:
-            return _tag(rows, numero)
+            return _found(_tag(rows, numero), numero, "model's numero_indicativo, verified against its title")
+
+    vlog("case_analysis_institution", {"institution": nome, "resolved": None, "reason": "not found"})
     return []
 
 
@@ -1885,7 +1899,7 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
     )
     try:
         raw = _call_chat([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
-                         max_tokens=1200)
+                         max_tokens=1200, temperature=0)
         verdicts = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("applicability check failed, keeping every candidate article: %s", exc)
