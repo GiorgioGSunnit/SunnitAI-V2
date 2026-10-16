@@ -638,12 +638,18 @@ _CASE_ANALYSIS_V2_SYSTEM = (
     "qualificazioni alternative, le circostanze, poi la procedura (termini, prescrizione, procedibilità) "
     'solo se il caso la pone. Ciascuna è {"titolo": stringa, "categoria": una tra "qualificazione", '
     '"elemento_soggettivo", "nesso_causale", "qualificazione_alternativa", "circostanza", "procedura", '
-    '"norme": da 2 a 6 articoli nel formato "art. NUMERO " seguito dal nome del codice o della legge '
-    'come lo scriveresti in un atto — per i codici tradizionali usa c.c., c.p.c., c.p., c.p.p., c.p.a., '
-    'c.d.s.; per qualsiasi altra legge scrivi il suo nome per intero, per esempio "Codice del Consumo" o '
-    '"l. 392/1978" — non limitarti ai sei codici tradizionali se il caso richiede un\'altra legge, '
-    '"parole_chiave": da 4 a 8 nomi tecnici di istituti giuridici e concetti con cui le sentenze '
-    'trattano quella questione, non parole generiche}\n'
+    '"istituti": da 2 a 6 istituti giuridici che disciplinano la questione, ciascuno {"nome": il nome '
+    'dell\'istituto con le stesse parole con cui è intitolato nel codice (per esempio "omicidio '
+    'colposo", "morte o lesione come conseguenza di altro delitto", "elemento psicologico del reato" — '
+    'mai un numero da solo, il nome dell\'istituto, non la tua opinione su di esso), "codice": il nome '
+    'del codice o della legge come lo scriveresti in un atto — per i codici tradizionali usa c.c., '
+    'c.p.c., c.p., c.p.p., c.p.a., c.d.s.; per qualsiasi altra legge scrivi il nome per intero, per '
+    'esempio "Codice del Consumo" o "l. 392/1978" — non limitarti ai sei codici tradizionali se il caso '
+    'richiede un\'altra legge, "numero_indicativo": il numero dell\'articolo se lo ricordi con '
+    'certezza, altrimenti stringa vuota — non indovinare: un numero sbagliato è peggio di nessun '
+    'numero, verrà comunque verificato sul testo reale prima di essere usato}, "parole_chiave": da 4 a '
+    '8 nomi tecnici di istituti giuridici e concetti con cui le sentenze trattano quella questione, non '
+    'parole generiche}\n'
     '- "fatti": i fatti del testo uno per uno, senza accorparli, compresi i dettagli che sembrano '
     "secondari: età e condizioni delle persone, abitudini, luoghi, orari e condizioni di visibilità, "
     "chi era presente e chi ha visto che cosa, che cosa risulta da verbali o dichiarazioni, tempi "
@@ -717,7 +723,20 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     """Like _analyse_case, plus a structured fact model ("fatti_strutturati":
     parti, condotta, indizi_intenzionali, evento, nesso_causale,
     condotta_successiva, fase_procedurale) and, per legal issue, a category
-    and norms naming any code or law, not just the six _CODE_PREFIXES knows.
+    and a list of institutions ("istituti": {nome, codice, numero_indicativo})
+    naming any code or law, not just the six _CODE_PREFIXES knows.
+
+    Deliberately asks for the institution's name, not an article number:
+    checked on prod (16 Oct, check_applicability.py on Sempronio), the
+    model's own numbers were frequently wrong from memory — "elemento
+    soggettivo" -> art. 12 c.p. (should be 43), "reati alternativi" -> 597,
+    598 c.p. (should be 589, 586), 589 never proposed at all. _resolve_institution
+    resolves the name against the real rubriche (the institution's own words
+    usually match them closely — "omicidio colposo" names art. 589 exactly);
+    numero_indicativo is kept only as a last-resort hint, verified against
+    that article's own title before ever being trusted (see
+    _number_matches_institution).
+
     Used by run_case_analysis_pipeline when CASE_ANALYSIS_ENABLED. Same
     fail-open contract as _analyse_case: any failure returns the same shape
     with empty values, and the parere is written from the facts alone."""
@@ -737,7 +756,13 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     result["questioni"] = [q for q in result["questioni"] if isinstance(q, dict)][:6] \
         if isinstance(result["questioni"], list) else []
     for q in result["questioni"]:
-        q["norme"] = _as_list(q.get("norme"))
+        istituti_raw = q.get("istituti")
+        q["istituti"] = [
+            {"nome": str(i.get("nome") or "").strip(), "codice": str(i.get("codice") or "").strip(),
+             "numero_indicativo": str(i.get("numero_indicativo") or "").strip()}
+            for i in (istituti_raw if isinstance(istituti_raw, list) else [])
+            if isinstance(i, dict) and str(i.get("nome") or "").strip()
+        ][:6]
         q["parole_chiave"] = _as_list(q.get("parole_chiave"))
         categoria = str(q.get("categoria") or "").strip().lower()
         q["categoria"] = categoria if categoria in _CASE_CATEGORIES else ""
@@ -982,20 +1007,6 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
 
 
 # CASE_ANALYSIS_ENABLED: article resolution beyond the six traditional codes.
-_NORMA_RE = re.compile(r"^\s*art(?:icolo)?\.?\s*" + _ARTICLE_NUM + r"\s*(?:,|del(?:la)?\s+)?\s*(.*)$",
-                      re.IGNORECASE)
-
-
-def _parse_norma(norma: str) -> Optional[tuple]:
-    """('589', 'c.p.') from "art. 589 c.p.", ('128', 'Codice del Consumo') from
-    "art. 128 Codice del Consumo"; None if no article number is found."""
-    m = _NORMA_RE.match(norma or "")
-    if not m:
-        return None
-    rest = m.group(2).strip().rstrip(".,;")
-    return (_article_num(m.group(1)), rest) if rest else None
-
-
 def _fetch_any(session, documents: List[Dict[str, Any]], refs: List[tuple]) -> List[Dict[str, Any]]:
     """Article rows for refs naming any document: the six traditional codes
     by the existing fast path (_fetch_articles, an index-friendly prefix
@@ -1053,6 +1064,95 @@ def _issue_article_refs(session, parole_chiave: List[str]) -> List[tuple]:
         if len(refs) == 4:
             break
     return refs
+
+
+def _number_matches_institution(session, doc_id: str, number: str, nome: str) -> bool:
+    """True if the article's own title contains every stem of the
+    institution's name — the same test issue_spotting.article_by_title uses
+    to find a number from a name, run in reverse to check a number the model
+    (not the corpus) proposed. True when the institution has no usable words
+    to check, or the article has no title to check against: this is a
+    last-resort hint already filtered through title-match and full-text
+    search finding nothing, not a reason to drop it by itself."""
+    from .issue_spotting import _stems
+
+    stems = _stems(nome)
+    if not stems:
+        return True
+    rows = session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id = $doc_id "
+        "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
+        "RETURN s.title AS title LIMIT 3",
+        doc_id=doc_id, n=number,
+    ).data()
+    titled = [r for r in rows if (r.get("title") or "").strip()]
+    if not titled:
+        return True
+    return any(stems <= _stems(r["title"]) for r in titled)
+
+
+def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dict[str, str],
+                         parole_chiave: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Article rows for one institution ({nome, codice, numero_indicativo}
+    from _analyse_case_v2), found by its name against the real rubriche —
+    never by trusting numero_indicativo alone (see _analyse_case_v2's
+    docstring for why).
+
+    Order: (1) the document named by "codice", then the article whose own
+    title holds every word of "nome" (issue_spotting.article_by_title —
+    "omicidio colposo" finds art. 589 c.p. directly, because that is
+    literally its rubrica); (2) full-text search on "nome" plus the issue's
+    own "parole_chiave", scoped to that document when one resolved — the
+    name alone often doesn't appear in the article's operative text (art.
+    43's rubrica is "Elemento psicologico del reato", but naming the
+    institution "elemento soggettivo" won't title-match it, and its text
+    says "doloso"/"colposo", not "elemento" or "soggettivo"; parole_chiave is
+    exactly the technical vocabulary the model is asked for to search with);
+    (3) numero_indicativo, only if the article it names is itself titled
+    consistently with "nome" (_number_matches_institution) — a wrong guess
+    with no textual support is dropped rather than fetched."""
+    from .issue_spotting import resolve_code, article_by_title, fetch_article
+
+    nome = istituto.get("nome", "")
+    codice = istituto.get("codice", "")
+    if not nome:
+        return []
+
+    abbr = _code_of(codice) if codice else None
+    doc = None
+    if abbr:
+        prefix = _CODE_PREFIXES[abbr]
+        doc = next((d for d in documents if (d.get("name") or "").startswith(prefix)), None)
+    elif codice:
+        doc = resolve_code(codice, documents)
+
+    def _tag(rows: List[Dict[str, Any]], number: str) -> List[Dict[str, Any]]:
+        for row in rows:
+            row["_article"] = (number, abbr or (doc or {}).get("name", codice))
+        return rows
+
+    if doc:
+        number = article_by_title(session, doc["id"], nome)
+        if number:
+            rows = fetch_article(session, doc["id"], number)
+            if rows:
+                return _tag(rows, number)
+
+    search_refs = _issue_article_refs(session, [nome, *(parole_chiave or [])])
+    if doc:
+        target = abbr or doc["name"]
+        search_refs = [r for r in search_refs if r[1] == target]
+    if search_refs:
+        rows = _fetch_any(session, documents, search_refs[:2])
+        if rows:
+            return rows
+
+    numero = _article_num(istituto.get("numero_indicativo", ""))
+    if numero and doc and _number_matches_institution(session, doc["id"], numero, nome):
+        rows = fetch_article(session, doc["id"], numero)
+        if rows:
+            return _tag(rows, numero)
+    return []
 
 
 def _search_case_law(session, analysis: Dict[str, Any], numbers: Optional[List[str]] = None,
@@ -1633,11 +1733,13 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
 def _select_articles_v2(session, driver, database: str, facts: str, request: str,
                         analysis: Dict[str, Any]) -> Dict[str, Any]:
     """Like _select_articles, but each legal issue in analysis["questioni"]
-    (from _analyse_case_v2) gets its own exact fetch (its "norme", any
-    document — not just the six traditional codes) and targeted search (its
-    "parole_chiave", every primary legal act, not just the four codes
-    _CODE_SEARCH_PREFIXES knows) — instead of one pooled, 24-candidate,
-    6-chosen list for the whole case. Used when CASE_ANALYSIS_ENABLED.
+    (from _analyse_case_v2) gets its own exact fetch — each of its "istituti"
+    resolved by name against the real rubriche, any document, never by
+    trusting the model's own article number (_resolve_institution) — and
+    targeted search (its "parole_chiave", every primary legal act, not just
+    the four codes _CODE_SEARCH_PREFIXES knows) — instead of one pooled,
+    24-candidate, 6-chosen list for the whole case. Used when
+    CASE_ANALYSIS_ENABLED.
 
     Rulings search (_search_case_law / _search_similar_facts) and
     cross-reference broadening are unchanged: rulings search is already
@@ -1682,10 +1784,12 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     # — unlike the single LLM call in _analyse_case_v2, there's no latency
     # win worth that risk here.
     for index, q in enumerate(analysis.get("questioni", [])):
-        norme_refs = [r for r in (_parse_norma(n) for n in q.get("norme") or []) if r]
-        search_refs = _issue_article_refs(session, q.get("parole_chiave") or [])
-        refs = [r for r in dict.fromkeys(norme_refs + search_refs) if r not in keep]
-        _add(_fetch_any(session, documents, refs), question_index=index)
+        rows_for_issue: List[Dict[str, Any]] = []
+        for istituto in q.get("istituti") or []:
+            rows_for_issue.extend(_resolve_institution(session, documents, istituto, q.get("parole_chiave")))
+        search_refs = [r for r in _issue_article_refs(session, q.get("parole_chiave") or []) if r not in keep]
+        rows_for_issue.extend(_fetch_any(session, documents, search_refs))
+        _add(rows_for_issue, question_index=index)
 
     selected = [r["_article"] for r in article_rows]
     article_rows = broaden_article_context(
