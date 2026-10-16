@@ -11,6 +11,18 @@
       "forbidden_cited": [{"code": "cp", "article": "116", "why": "concorso anomalo needs several agents; one agent here"}]
     },
     {
+      "id": "sempronio_no_hint",
+      "extra": true,
+      "notes": "same facts as 'sempronio', minus the PM's 'art 584 cp' sentence — forces issue spotting with no article cited in the question",
+      "question": "Sempronio a seguito di un acceso diverbio con Caio gli sferra un violento schiaffo al volto. Caio indietreggia e cade a terra battendo il capo contro un marciapiede. Sempronio presta soccorso a Caio e chiama l’ambulanza. Caio muore poco dopo in ospedale a seguito di un’emorragia cerebraleda trauma cranico.\nIl candidato assunte le vesti del legale di Sempronio, premessi brevi cenni sull’omicidio preterintenzionale, il nesso causale e l’elemento soggettivo, delinea una strategia difensiva, ipotizzando anche possibili reati alternativi configurabili nel caso di specie",
+      "expected": [
+        {"code": "cp", "article": "581"}, {"code": "cp", "article": "582"}, {"code": "cp", "article": "584"},
+        {"code": "cp", "article": "586"}, {"code": "cp", "article": "589"},
+        {"code": "cp", "article": "43"}, {"code": "cp", "article": "41"}
+      ],
+      "forbidden_cited": [{"code": "cp", "article": "116", "why": "concorso anomalo needs several agents; one agent here"}]
+    },
+    {
       "id": "p1",
       "question": "Tizio, svegliato di notte da rumori, sorprende in casa un ladro disarmato che sta fuggendo dalla finestra con alcuni gioielli. Tizio impugna la pistola regolarmente detenuta e gli spara alle spalle, uccidendolo. Il candidato, assunte le vesti del difensore di Tizio, individui le questionigiuridiche e la linea difensiva più efficace.",
       "expected": [
