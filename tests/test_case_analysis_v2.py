@@ -451,3 +451,90 @@ def test_sempronio_no_hint_reaches_the_same_five_articles(monkeypatch):
     assert {"43", "581", "582", "586", "589"} <= set(found)
     # Specifically: 43 via the parole_chiave fallback, not the wrong number 12.
     assert found["43"] == "elemento soggettivo del reato"
+
+
+# --- _select_articles_v2: additive union, not a replacement ----------------
+#
+# The regression found on prod (17 Oct): v2 used to run its own from-scratch
+# selection instead of _select_articles (v1), losing whatever v1's other
+# paths (ruling agreement, crossref, the model's own candidate choice) had
+# found — net avg 1.36 vs. 1.64 flag-off, despite genuine gains elsewhere.
+# _select_articles is mocked here (not re-exercised — it has its own tests)
+# specifically to isolate and prove the UNION property.
+
+def test_select_articles_v2_adds_to_v1_instead_of_replacing_it(monkeypatch):
+    v1_row = {"d": {"id": "cp-doc", "name": "Codice Penale 2026"},
+             "s": {"name": "581.0.0", "plain_text": "testo 581 da v1 (ruling agreement)"},
+             "_article": ("581", "c.p.")}
+    base_result = {"first_rulings": [], "similar": [], "keep": [("581", "c.p.")],
+                   "named": [], "candidates": [("581", "c.p.")], "chosen": [("581", "c.p.")],
+                   "selected": [("581", "c.p.")], "article_rows": [v1_row], "spotted": []}
+    monkeypatch.setattr(dg, "_select_articles", lambda *a, **k: base_result)
+
+    import src.rag.doc_lookup as doc_lookup
+    monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [_CP_DOC])
+    import src.rag.nodes.retrieval as retrieval_module
+    monkeypatch.setattr(retrieval_module, "broaden_article_context",
+                        lambda state, driver, database: {"raw_result": state["raw_result"]})
+
+    analysis = {"questioni": [{"titolo": "Omicidio colposo", "istituti": [
+        {"nome": "omicidio colposo", "codice": "c.p.", "numero_indicativo": ""}], "parole_chiave": []}]}
+    picked = dg._select_articles_v2(_FakeCodicePenaleSession(), object(), "db", "facts", "", analysis)
+
+    numbers = {r["_article"][0] for r in picked["article_rows"]}
+    assert "581" in numbers    # v1's own row — preserved, not dropped
+    assert "589" in numbers    # institution-resolved — added
+    assert picked["institutions_resolved"] == [("589", "c.p.")]
+    assert ("581", "c.p.") in picked["selected"] and ("589", "c.p.") in picked["selected"]
+
+
+def test_select_articles_v2_does_not_duplicate_an_article_v1_already_has(monkeypatch):
+    """An institution that resolves to the same article v1 already selected
+    must not be fetched twice."""
+    v1_row = {"d": {"id": "cp-doc", "name": "Codice Penale 2026"},
+             "s": {"name": "589.0.0", "plain_text": "testo 589 da v1"},
+             "_article": ("589", "c.p.")}
+    base_result = {"first_rulings": [], "similar": [], "keep": [], "named": [],
+                   "candidates": [], "chosen": [], "selected": [("589", "c.p.")],
+                   "article_rows": [v1_row], "spotted": []}
+    monkeypatch.setattr(dg, "_select_articles", lambda *a, **k: base_result)
+    import src.rag.doc_lookup as doc_lookup
+    monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [_CP_DOC])
+
+    analysis = {"questioni": [{"titolo": "Omicidio colposo", "istituti": [
+        {"nome": "omicidio colposo", "codice": "c.p.", "numero_indicativo": ""}], "parole_chiave": []}]}
+    picked = dg._select_articles_v2(_FakeCodicePenaleSession(), object(), "db", "facts", "", analysis)
+
+    assert len(picked["article_rows"]) == 1   # not two copies of 589
+    assert picked["institutions_resolved"] == []   # nothing new was added
+
+
+# --- _prioritise_article_rows ------------------------------------------------
+
+def test_article_priority_orders_named_crossref_institution_other():
+    named = {("584", "c.p.")}
+
+    def row(article, source=None):
+        r = _row(article, "testo")
+        if source:
+            r["_source"] = source
+        return r
+
+    from src.rag.nodes.cypher import CROSSREF_SOURCE
+    rows = [row(("584", "c.p.")), row(("581", "c.p."), CROSSREF_SOURCE),
+            row(("589", "c.p."), dg.CASE_ANALYSIS_SOURCE), row(("116", "c.p."))]
+    assert [dg._article_priority(r, named) for r in rows] == [0, 1, 2, 3]
+
+
+def test_prioritise_article_rows_keeps_everything_under_the_limit():
+    rows = [_row((str(n), "c.p."), "testo") for n in range(5)]
+    assert dg._prioritise_article_rows(rows, set(), limit=10) == rows
+
+
+def test_prioritise_article_rows_trims_lowest_priority_first():
+    named = {("584", "c.p.")}
+    named_row = _row(("584", "c.p."), "testo")
+    other_rows = [_row((str(n), "c.p."), "testo") for n in range(5)]
+    result = dg._prioritise_article_rows([*other_rows, named_row], named, limit=3)
+    assert named_row in result   # never trimmed
+    assert len(result) == 3

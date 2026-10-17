@@ -987,7 +987,16 @@ def _rows_to_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
-    """The text of each article, read from its code by number."""
+    """The text of each article, read from its code by number.
+
+    Tie-broken by plain_text length, descending, not left to Neo4j's
+    unspecified order among same-named rows: the corpus has exact duplicate
+    Section nodes per name (same comment elsewhere in this file, e.g.
+    _source_block), and a thin or empty duplicate taking the LIMIT 6 slot
+    instead of the real one — observed on prod (17 Oct) as a literally
+    user-cited article (584) missing from citations on some runs, not
+    others, same facts, same query — silently drops it downstream:
+    _extract_citations requires more than 10 characters of plain_text."""
     rows = []
     for num, abbr in refs:
         prefix = _CODE_PREFIXES.get(abbr)
@@ -997,7 +1006,7 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
             "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
             "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
             "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
-            "RETURN d, s ORDER BY s.name LIMIT 6",
+            "RETURN d, s ORDER BY s.name, size(coalesce(s.plain_text, '')) DESC LIMIT 6",
             prefix=prefix, n=num,
         ).data()
         for row in found:
@@ -1744,83 +1753,110 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
             "chosen": chosen, "selected": selected, "article_rows": article_rows, "spotted": spotted}
 
 
+# Caps how many articles ever reach the draft prompt. Not known to be the
+# cause of anything today — checked (prod, 17 Oct): nothing truncates the
+# article list itself, only _ARTICLE_CHARS per article's text — but
+# _select_articles_v2's union can make article_rows larger than before, so
+# this is the safety net asked for "if so, prioritise", sized generously
+# (v1 alone could already reach "keep" (uncapped) + 6 chosen).
+_MAX_DRAFT_ARTICLES = 24
+
+
+def _article_priority(row: Dict[str, Any], named_in_case: set) -> int:
+    """Lower sorts first = kept preferentially if _MAX_DRAFT_ARTICLES is
+    ever exceeded: named by the user > cross-referenced from a selected
+    article's own text > resolved from a named institution > everything
+    else (ruling agreement, the model's own candidate choice)."""
+    from .nodes.cypher import CROSSREF_SOURCE
+
+    article = row.get("_article")
+    if article and article in named_in_case:
+        return 0
+    if row.get("_source") == CROSSREF_SOURCE:
+        return 1
+    if row.get("_source") == CASE_ANALYSIS_SOURCE:
+        return 2
+    return 3
+
+
+def _prioritise_article_rows(article_rows: List[Dict[str, Any]], named_in_case: set,
+                             limit: int = _MAX_DRAFT_ARTICLES) -> List[Dict[str, Any]]:
+    """article_rows, trimmed to `limit` by _article_priority when it would
+    otherwise exceed it — stable within each tier (original order kept)."""
+    if len(article_rows) <= limit:
+        return article_rows
+    ordered = sorted(enumerate(article_rows),
+                     key=lambda pair: (_article_priority(pair[1], named_in_case), pair[0]))
+    return [row for _, row in ordered[:limit]]
+
+
 def _select_articles_v2(session, driver, database: str, facts: str, request: str,
                         analysis: Dict[str, Any]) -> Dict[str, Any]:
-    """Like _select_articles, but each legal issue in analysis["questioni"]
-    (from _analyse_case_v2) gets its own exact fetch — each of its "istituti"
-    resolved by name against the real rubriche, any document, never by
-    trusting the model's own article number (_resolve_institution) — and
-    targeted search (its "parole_chiave", every primary legal act, not just
-    the four codes _CODE_SEARCH_PREFIXES knows) — instead of one pooled,
-    24-candidate, 6-chosen list for the whole case. Used when
-    CASE_ANALYSIS_ENABLED.
+    """v1's full selection (_select_articles — the user's own citations,
+    ruling agreement, code search, the model's own choice among candidates,
+    cross-reference broadening, issue spotting) UNION institution-resolved
+    rows from analysis["questioni"][].istituti (_resolve_institution, any
+    document, never trusting the model's own number alone).
 
-    Rulings search (_search_case_law / _search_similar_facts) and
-    cross-reference broadening are unchanged: rulings search is already
-    per-question (each row tagged "_question"), and both already work
-    across any document.
+    v2 used to REPLACE _select_articles's mechanism entirely with only the
+    institution/parole_chiave path — on prod (17 Oct) this lost articles
+    v1's other, redundant paths found that institutions alone didn't: 581,
+    41 (ruling agreement / crossref, Sempronio), 628 (p3, rapina), 1495 (c2,
+    vizi della cosa) — a net regression (1.36 avg vs. 1.64 flag-off) despite
+    genuine gains (586, 589, 658 c.p.c.). Calling _select_articles first and
+    adding to its result keeps everything v1 already finds, while still
+    reaching institutions outside the six/four codes v1 is structurally
+    limited to (Codice del Consumo, L. 392/1978, ...).
 
-    Returns the same keys as _select_articles, so run_case_analysis_pipeline
-    and scripts/check_applicability.py don't need to special-case which one
-    ran — "candidates"/"chosen"/"spotted" are always empty here, since this
-    path has no pooled-candidate or issue-spotting step to report.
+    Used when CASE_ANALYSIS_ENABLED. Returns the same keys as
+    _select_articles, plus "institutions_resolved" (the articles only this
+    path added, for diagnostics) — so run_case_analysis_pipeline and
+    scripts/check_applicability.py don't need to special-case which one ran.
     """
     from .doc_lookup import _fetch_doc_names
     from .nodes.retrieval import broaden_article_context
 
-    first_rulings = _search_case_law(session, analysis)
-    similar = _search_similar_facts(session, analysis, {(r.get("d") or {}).get("id") for r in first_rulings})
-    case = _case_text(facts, request)
+    base = _select_articles(session, driver, database, facts, request, analysis)
     documents = _fetch_doc_names(driver, database)
+    named_in_case = set(_refs_in(_case_text(facts, request)))
 
-    named_in_case = set(_refs_in(case))
-    keep = [r for r in dict.fromkeys(_refs_in(facts)) if r[1] in _CODE_PREFIXES]
-
-    article_rows: List[Dict[str, Any]] = []
-    have: set = set()
-
-    def _add(rows: List[Dict[str, Any]], question_index: Optional[int] = None) -> None:
-        for row in rows:
-            if not row.get("_article"):
-                continue
-            key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
-            if key in have:
-                continue
-            have.add(key)
-            if question_index is not None:
-                row["_question"] = question_index
-            row["_source"] = CASE_ANALYSIS_SOURCE
-            article_rows.append(row)
-
-    _add(_fetch_articles(session, keep))
+    have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name"))
+            for r in base["article_rows"]}
+    added: List[Dict[str, Any]] = []
     # Sequential, not concurrent: a neo4j Session isn't safe for concurrent
     # use from several threads, and these are DB-only round-trips (cheap)
-    # — unlike the single LLM call in _analyse_case_v2, there's no latency
-    # win worth that risk here.
+    # — the one LLM call already happened, in _analyse_case_v2.
     for index, q in enumerate(analysis.get("questioni", [])):
-        rows_for_issue: List[Dict[str, Any]] = []
         for istituto in q.get("istituti") or []:
-            rows_for_issue.extend(_resolve_institution(session, documents, istituto, q.get("parole_chiave")))
-        search_refs = [r for r in _issue_article_refs(session, q.get("parole_chiave") or []) if r not in keep]
-        rows_for_issue.extend(_fetch_any(session, documents, search_refs))
-        _add(rows_for_issue, question_index=index)
+            for row in _resolve_institution(session, documents, istituto, q.get("parole_chiave")):
+                key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
+                if key in have:
+                    continue
+                have.add(key)
+                row["_question"] = index
+                row["_source"] = CASE_ANALYSIS_SOURCE
+                added.append(row)
 
-    selected = [r["_article"] for r in article_rows]
-    article_rows = broaden_article_context(
-        {"raw_result": article_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
-        driver, database,
-    ).get("raw_result", article_rows)
-    abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
-    for row in article_rows:
-        if "_article" not in row:
-            d_name = (row.get("d") or {}).get("name") or ""
-            abbr = next((a for p, a in abbr_of.items() if d_name.startswith(p)), None)
-            if abbr:
-                row["_article"] = (_article_num((row.get("s") or {}).get("name") or ""), abbr)
+    article_rows = base["article_rows"] + added
+    if added:
+        # Re-run broadening over the fuller set: an institution-resolved
+        # article v1 never fetched can itself cross-refer to others.
+        article_rows = broaden_article_context(
+            {"raw_result": article_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
+            driver, database,
+        ).get("raw_result", article_rows)
+        abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
+        for row in article_rows:
+            if "_article" not in row:
+                d_name = (row.get("d") or {}).get("name") or ""
+                abbr = next((a for p, a in abbr_of.items() if d_name.startswith(p)), None)
+                if abbr:
+                    row["_article"] = (_article_num((row.get("s") or {}).get("name") or ""), abbr)
 
-    return {"first_rulings": first_rulings, "similar": similar, "keep": keep,
-            "named": [r for r in keep if r in named_in_case], "candidates": [],
-            "chosen": [], "selected": selected, "article_rows": article_rows, "spotted": []}
+    article_rows = _prioritise_article_rows(article_rows, named_in_case)
+    added_articles = [r["_article"] for r in added if r.get("_article")]
+    return {**base, "selected": base["selected"] + added_articles,
+            "article_rows": article_rows, "institutions_resolved": added_articles}
 
 
 # Round 3, item 3. 6db1125's check asked whether an article "applies to the
@@ -1844,7 +1880,17 @@ _APPLICABILITY_SYSTEM = (
     "- \"alternativa\": descrive un reato, un diritto o un'azione che gli stessi fatti possono integrare "
     "al posto di quello contestato o richiesto, anche in via subordinata. Vale solo per le norme che "
     "descrivono una fattispecie: per le altre (regole generali, concorso di persone, circostanze, "
-    "procedura) scegli tra \"applicabile\" e \"incompatibile\";\n"
+    "procedura) scegli tra \"applicabile\" e \"incompatibile\". Un'alternativa deve corrispondere "
+    "all'esito effettivo narrato nei fatti, non solo al tipo di condotta: se l'esito ha due forme "
+    "alternative nei fatti e nel testo dell'articolo (morte o sopravvivenza della vittima, invalidità "
+    "permanente o temporanea, danno o pericolo) e il testo presuppone quella che i fatti escludono, "
+    "l'articolo non è un'alternativa, è \"incompatibile\" — anche se descrive lo stesso tipo di condotta. "
+    "Esempio: se i fatti dicono che la vittima è morta, un articolo sulla lesione personale (che "
+    "presuppone la sopravvivenza della vittima) non è un'alternativa all'omicidio, è incompatibile con "
+    "quell'esito — scrivi il requisito in positivo (\"presuppone la sopravvivenza della vittima\"), non "
+    "come negazione (\"non deve esserne derivata la morte\"): lo stesso requisito espresso con una "
+    "negazione verrebbe trattato come il limite che un fatto esclude a favore dell'assistito, non "
+    "come un'incompatibilità.\n"
     "- \"incompatibile\": un fatto preciso del caso contraddice un requisito scritto nel testo "
     "dell'articolo.\n"
     "Un articolo che pone un'esclusione, un limite o un'eccezione (\"non si può\", \"non è dovuta\", "

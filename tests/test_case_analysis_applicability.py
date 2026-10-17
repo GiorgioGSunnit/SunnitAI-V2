@@ -172,3 +172,23 @@ def test_fails_open_per_article_when_a_verdict_is_missing(rows, model):
     answer([{"article": "43 c.p.", "verdict": "applicabile", "reason": "ok"}])
     kept = [r["_article"][0] for r in dg._filter_applicable_articles(FACTS, "", rows)]
     assert "116" in kept and "589" in kept
+
+
+def test_alternativa_must_match_the_actual_outcome(model):
+    """prod, 17 Oct (v1 diagnostic): the model proposed 590 (lesioni colpose,
+    which presupposes the victim survives) as an "alternativa" to 589 for
+    Sempronio although the victim died — a contradiction the old prompt had
+    no rule against. The prompt now asks for the requisito phrased
+    positively ("presuppone la sopravvivenza") rather than as a negation
+    ("non ne è derivata la morte") specifically so it is NOT caught by
+    _LIMIT_WORDING, which exists for a different case (a limit the facts
+    exclude in the client's favour) and would otherwise keep 590 again."""
+    answer, _, _ = model
+    row_590 = [_row("590", "Chiunque cagiona ad altri per colpa una lesione personale è punito con la "
+                           "reclusione da uno a tre anni")]
+    answer([{"article": "590 c.p.", "verdict": "incompatibile",
+             "requisito": "presuppone la sopravvivenza della vittima",
+             "fatto": "la vittima è deceduta", "reason": "L'esito è la morte, non una lesione: non è un'alternativa."}])
+    assert dg._filter_applicable_articles(FACTS, "", row_590) == []
+    assert "esito effettivo narrato nei fatti" in dg._APPLICABILITY_SYSTEM
+    assert "non come negazione" in dg._APPLICABILITY_SYSTEM
