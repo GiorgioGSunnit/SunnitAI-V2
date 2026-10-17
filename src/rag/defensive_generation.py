@@ -9,6 +9,7 @@ Given an uploaded judicial document, this module:
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 from typing import Any, Dict, List, Optional
@@ -25,6 +26,27 @@ _PROCEEDING_TYPES = {"civile", "penale", "amministrativo"}
 _PROCEEDING_SUBTYPES = {
     "atto_citazione", "decreto_ingiuntivo", "ricorso", "appello", "altro",
 }
+
+_CALL_CHAT_PARAMS = frozenset(inspect.signature(_call_chat).parameters)
+
+
+def _chat(messages, **kwargs):
+    """_call_chat, dropping any kwarg the resolved _call_chat doesn't accept.
+
+    Prod, 17 Oct: this module started passing temperature=0 before ai_chat.py's
+    matching change had deployed everywhere it runs, and every case-analysis
+    LLM call crashed with "_call_chat() got an unexpected keyword argument
+    'temperature'" -- on the flag-off path too, since _analyse_case (v1) also
+    passes it. Dropping an unsupported kwarg here is always safe: chat_model is
+    already constructed with temperature=0 in every ai_chat.py this module has
+    ever shipped with, so an older _call_chat gives the same temperature anyway.
+    """
+    accepted = {k: v for k, v in kwargs.items() if k in _CALL_CHAT_PARAMS}
+    dropped = kwargs.keys() - accepted.keys()
+    if dropped:
+        logger.warning("_chat: _call_chat does not accept %s; calling without them "
+                        "(mismatched deploy of ai_chat.py?)", sorted(dropped))
+    return _call_chat(messages, **accepted)
 
 
 def _safe_defaults() -> Dict[str, Any]:
@@ -694,9 +716,9 @@ def _analyse_case(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
     empty = {"parte_assistita": "", "posizione": "", "area": "", "richiesta": "", "ricerca_fatti": [],
              "questioni": [], "fatti": []}
     try:
-        raw = _call_chat([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
-                          HumanMessage(content=_case_text(facts, request))],
-                         max_tokens=1500, temperature=0)
+        raw = _chat([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
+                    HumanMessage(content=_case_text(facts, request))],
+                   max_tokens=1500, temperature=0)
         parsed = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("case analysis failed: %s", exc)
@@ -743,9 +765,9 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     empty = {"parte_assistita": "", "posizione": "", "area": "", "richiesta": "", "ricerca_fatti": [],
              "questioni": [], "fatti": [], "fatti_strutturati": {}}
     try:
-        raw = _call_chat([SystemMessage(content=_CASE_ANALYSIS_V2_SYSTEM),
-                          HumanMessage(content=_case_text(facts, request))],
-                         max_tokens=1800, temperature=0)
+        raw = _chat([SystemMessage(content=_CASE_ANALYSIS_V2_SYSTEM),
+                    HumanMessage(content=_case_text(facts, request))],
+                   max_tokens=1800, temperature=0)
         parsed = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("case analysis (v2) failed: %s", exc)
@@ -940,9 +962,9 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
         return []
     listing = "\n".join(f"[art. {n} {c}] {' '.join(t)[:400]}" for (n, c), t in texts.items())
     try:
-        raw = _call_chat([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
-                          HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
-                         max_tokens=200, temperature=0)
+        raw = _chat([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
+                    HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
+                   max_tokens=200, temperature=0)
         chosen = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("article choice failed: %s", exc)
@@ -1944,8 +1966,8 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
         + "\n\n".join(f"[{label}]\n{text}" for label, text in texts.items())
     )
     try:
-        raw = _call_chat([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
-                         max_tokens=1200, temperature=0)
+        raw = _chat([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
+                   max_tokens=1200, temperature=0)
         verdicts = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("applicability check failed, keeping every candidate article: %s", exc)

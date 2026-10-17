@@ -204,7 +204,8 @@ def decompose_query(state: Dict[str, Any], driver=None, database: str = "neo4j")
         variants_raw = future_variants.result()
         try:
             comparison_names_raw = future_comparison.result() if future_comparison else ""
-        except Exception:
+        except Exception as exc:
+            logger.warning("comparison-name extraction LLM call failed: %s", exc)
             comparison_names_raw = ""
 
     comparison_doc_ids: List[str] = []

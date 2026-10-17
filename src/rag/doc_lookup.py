@@ -573,5 +573,6 @@ def _is_legal_query(query: str, lang: str) -> bool:
             max_tokens=5,
         )
         return "LEGAL" in (response or "").upper()
-    except Exception:
+    except Exception as exc:
+        logger.warning("_is_legal_query: LLM call failed, treating the query as legal: %s", exc)
         return True
