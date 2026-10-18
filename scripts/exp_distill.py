@@ -30,21 +30,46 @@ code/law it belongs to, same scoring vocabulary as tests/eval_narrative.py):
                       hit-count-then-rank order.
   CURRENT            the live case-analysis v2 pipeline as it runs today
                       (_analyse_case_v2 + _select_articles_v2: institution
-                      name -> real article, never a number from memory) --
-                      for a direct comparison with the three retrieval-only
-                      methods above.
+                      name -> real article, never a number from memory).
+  RULINGS            the articles cited across the top rulings (document_
+                      type='interpretation') by vector similarity to the
+                      raw text and to the distilled bullets, ranked by how
+                      many of those rulings cite them.
+
+...and four composites, reported separately with their own candidate
+count (and, for SELECTED, noise -- non-expected articles kept):
+
+  UNION              CURRENT + BASELINE + DISTILL, deduped (first
+                      occurrence wins, in that priority order).
+  UNION_NEIGHBOURS    UNION plus each article's numeric neighbours (N-1,
+                      N+1, N-bis for a bare number) as low-priority
+                      additions -- not "same Capo" (no chapter/title
+                      property exists on a Section to group by), see the
+                      comment by _NEIGHBOUR_RE.
+  UNION_RULINGS      UNION plus RULINGS.
+  SELECTED           UNION's real article text, through the live
+                      applicability check (dg._filter_applicable_articles)
+                      -- the same check run_case_analysis_pipeline applies
+                      today, standalone and read-only here.
 
 Case set: sempronio, sempronio_no_hint, p1, p2, p3, c1, c2, c3 (from
 tests/eval_narrative_cases.json) plus four new long narrative cases (l1-l4,
 defined below). cp_short, cc_short, q_long and dottrina are deliberately
 left out of this experiment -- they stay in tests/eval_narrative.py's own
 regression run.
+
+2026-10-18 data fixes: l2's "guaribile in 40 giorni" -> "60 giorni" (583
+c.p.'s aggravation needs MORE than 40 days, so 40 itself didn't actually
+support the expected article). c3's expected dropped "art. 5 l392" -- see
+tests/eval_narrative_cases.json's _about for why (L. 392/1978 isn't in the
+corpus).
 """
 
 import argparse
 import json
 import logging
 import os
+import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -102,6 +127,9 @@ _NEW_LONG_CASES = [
         "expected": [{"code": "cp", "article": a} for a in ["640", "640-ter", "494", "61"]],
     },
     {
+        # "guaribile in 60 giorni" (originally 40): 583 c.p.'s aggravation
+        # requires a healing time of MORE than 40 days -- 40 itself doesn't
+        # trigger it, so the original wording made the expected article wrong.
         "id": "l2",
         "question": (
             "Caio, dopo una serata passata in discoteca con alcuni amici che lo hanno lasciato senza "
@@ -110,7 +138,7 @@ _NEW_LONG_CASES = [
             "zaino con gioielli e due orologi. Il proprietario, Sempronio, rientrato prima del previsto da "
             "una cena, lo sorprende nel corridoio; Caio, per guadagnare la fuga con la refurtiva, lo spinge "
             "con forza contro il mobile dell’ingresso. Sempronio riporta una frattura del polso "
-            "guaribile in 40 giorni. Caio viene fermato poco dopo da una pattuglia con lo zaino. Il "
+            "guaribile in 60 giorni. Caio viene fermato poco dopo da una pattuglia con lo zaino. Il "
             "candidato, assunte le vesti del difensore di Caio, qualifichi i fatti e indichi la linea "
             "difensiva."
         ),
@@ -146,17 +174,29 @@ _NEW_LONG_CASES = [
     },
 ]
 
-METHODS = ["baseline", "distill", "distill_questions", "current"]
+METHODS = ["baseline", "distill", "distill_questions", "current", "rulings"]
+# Reported separately from METHODS: each is a composite built from the ones
+# above, not an independent retrieval method, so it gets its own section
+# in the report instead of sharing the recall@10/@k table.
+UNION_METHODS = ["union", "union_neighbours", "union_rulings", "selected"]
 
 _DISTILL_SYSTEM = (
     "Sei un avvocato italiano. Riscrivi il caso che segue come fatti giuridici neutri, in 5-8 punti brevi, "
     "uno per ciascuna di queste categorie quando il caso la prevede (saltala se non si applica): "
     "\"soggetti e ruoli\", \"condotta\", \"elementi sull'intenzione\", \"evento/esito\", \"nesso causale\", "
-    "\"condotta successiva\", \"posizione processuale\", \"cosa si chiede\". Elimina i dettagli irrilevanti "
-    "(nomi propri non necessari, descrizioni di contesto, aggettivi, orari e luoghi non giuridicamente "
-    "rilevanti). Non usare MAI un numero di articolo né il nome di un codice o di una legge: descrivi solo "
-    "i fatti, con il vocabolario giuridico italiano. Restituisci SOLO un array JSON di oggetti "
-    "{\"categoria\": una delle etichette sopra, \"testo\": il punto, breve}."
+    "\"condotta successiva\", \"posizione processuale\", \"cosa si chiede\"; per i fatti penali aggiungi, "
+    "se pertinente, \"circostanze\" (per esempio: vittima in condizione di minorata difesa o particolarmente "
+    "vulnerabile, provocazione, danno riparato, recidiva, numero di persone coinvolte). Per ciascun punto "
+    "usa il termine giuridico tipico con cui il codice descrive quella condotta, quell'evento o quello "
+    "stato soggettivo, non una parafrasi generica: per esempio, se i fatti lo giustificano, \"artifizi o "
+    "raggiri\" (non \"inganno\"), \"induzione in errore\", \"violenza o minaccia\", \"impossessamento\", "
+    "\"sottrazione\", \"custodia\" o \"detenzione\" della cosa, \"dolo\" o \"colpa\" (con la forma specifica: "
+    "negligenza, imprudenza, imperizia), \"inadempimento\", \"mora\", \"vizio della cosa\", \"nesso di "
+    "causalità\". Elimina i dettagli irrilevanti (nomi propri non necessari, descrizioni di contesto, "
+    "aggettivi, orari e luoghi non giuridicamente rilevanti). Non usare MAI un numero di articolo né il "
+    "nome di un codice o di una legge: descrivi solo i fatti, con il vocabolario giuridico italiano. "
+    "Restituisci SOLO un array JSON di oggetti {\"categoria\": una delle etichette sopra, \"testo\": il "
+    "punto, breve}."
 )
 
 _DISTILL_QUESTIONS_SYSTEM = (
@@ -167,6 +207,19 @@ _DISTILL_QUESTIONS_SYSTEM = (
 )
 
 _ABBR_TO_EVAL_CODE = {"c.p.": "cp", "c.c.": "cc", "c.p.c.": "cpc", "c.p.p.": "cpp"}
+_EVAL_CODE_TO_SEARCH_NAME = {
+    "cp": "c.p.", "cc": "c.c.", "cpc": "c.p.c.", "cpp": "c.p.p.",
+    "consumo": "Codice del Consumo", "l392": "L. 392/1978",
+}
+# Numeric-only neighbour expansion: N-1, N+1, and N's own "-bis" variant for
+# a bare-numbered article. "Same Capo" grouping (what item 5 actually asked
+# for) isn't available -- Section nodes carry no chapter/title property in
+# this corpus, only the article number in s.name -- so this is a narrower
+# neighbourhood by design, not an oversight, and kept deliberately small (3
+# lookups per article, not every suffix on both sides) given the latency
+# budget (round 5, item 3): an already-slow pipeline doesn't need another
+# multiplier.
+_NEIGHBOUR_RE = re.compile(r"^(\d+)$")
 
 
 # --- Pure helpers (unit-tested in tests/test_exp_distill.py) ---------------
@@ -226,6 +279,44 @@ def _code_key(abbr_or_name):
     return _ABBR_TO_EVAL_CODE.get(abbr_or_name) or ev.code_of_document(abbr_or_name)
 
 
+def _dedupe_ordered(*ranked_lists):
+    """Union of refs across the given lists, first occurrence wins -- used
+    for UNION, where the lists are already each a method's own priority
+    order (CURRENT's curated selection first, then BASELINE, then DISTILL),
+    not a score to re-merge."""
+    seen, ordered = set(), []
+    for ranked in ranked_lists:
+        for ref in ranked:
+            if ref not in seen:
+                seen.add(ref)
+                ordered.append(ref)
+    return ordered
+
+
+def _neighbour_numbers(article):
+    """[N-1, N+1, "N-bis"] for a bare-numbered article, else [] -- see the
+    module-level comment by _NEIGHBOUR_RE for why this is numeric-only and
+    deliberately narrow."""
+    m = _NEIGHBOUR_RE.match(article)
+    if not m:
+        return []
+    n = int(m.group(1))
+    return [str(x) for x in (n - 1, n + 1) if x > 0] + [f"{n}-bis"]
+
+
+def _noise(ranked_refs, expected, k):
+    """How many of the top k refs are NOT one of the expected articles --
+    SELECTED's cost side: recall alone can't tell a tight, precise set from
+    one padded with irrelevant candidates the applicability check let through."""
+    expected_set = set()
+    for e in expected:
+        if "any_of" in e:
+            expected_set.update((e["code"], a) for a in e["any_of"])
+        else:
+            expected_set.add((e["code"], e["article"]))
+    return sum(1 for ref in ranked_refs[:k] if ref not in expected_set)
+
+
 def _recall(ranked_refs, expected, k):
     """(found, total) among `expected` within the top k of ranked_refs.
     An entry with "any_of" (c2's Codice del Consumo range) counts as found
@@ -280,7 +371,55 @@ def _retrieve(session, text, index, k, warned):
     return _ranked_refs(_vector_search(session, text, index, k, warned) + _fulltext_search(session, text, k))
 
 
-# --- The four methods ----------------------------------------------------
+def _rulings_search(session, text, index, k, warned):
+    """Up to k ruling (document_type='interpretation') Section rows closest
+    to `text` by vector similarity, with their own plain_text (to read which
+    articles they cite). The vector index isn't scoped to rulings alone, so
+    a plain top-k would mostly come back statute sections that happen to
+    read similarly to the facts; asking for a wider raw_k and filtering by
+    document_type afterwards is still one query, just a bigger one."""
+    try:
+        embedding = list(embedding_model.embed_query(text))
+    except Exception as exc:
+        logging.warning("embedding failed: %s", exc)
+        return []
+    raw_k = max(k * 10, 200)
+    try:
+        return session.run(
+            "CALL db.index.vector.queryNodes($index, $raw_k, $embedding) YIELD node, score "
+            "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type = 'interpretation' "
+            "RETURN node.plain_text AS plain_text, score ORDER BY score DESC LIMIT $k",
+            index=index, raw_k=raw_k, k=k, embedding=embedding,
+        ).data()
+    except Exception as exc:
+        if index not in warned:
+            warned.add(index)
+            logging.warning("vector search on index %r failed (does it exist?): %s", index, exc)
+        return []
+
+
+def _rulings_refs(session, text, bullets_joined, vector_index, k, warned):
+    """Articles cited across the top rulings for `text` and (if given)
+    `bullets_joined`, ranked by how many of those rulings cite them, then by
+    the best similarity rank among those that do."""
+    rows = _rulings_search(session, text, vector_index, k, warned)
+    if bullets_joined:
+        rows = rows + _rulings_search(session, bullets_joined, vector_index, k, warned)
+    counts, best_rank = {}, {}
+    for rank, row in enumerate(rows, start=1):
+        for number, abbr in dg._refs_in(row.get("plain_text") or ""):
+            code = _code_key(abbr)
+            if not code:
+                continue
+            ref = (code, number)
+            counts[ref] = counts.get(ref, 0) + 1
+            if ref not in best_rank or rank < best_rank[ref]:
+                best_rank[ref] = rank
+    return sorted(counts, key=lambda ref: (-counts[ref], best_rank[ref]))
+
+
+# --- The methods ----------------------------------------------------
 
 def _distill_bullets(text):
     raw = dg._chat([SystemMessage(content=_DISTILL_SYSTEM), HumanMessage(content=text[:6000])],
@@ -319,10 +458,41 @@ def _run_current(session, driver, database, text):
     return refs, analysis
 
 
+def _to_fetch_ref(ref):
+    """(eval code, article) -> (article, search name) for dg._fetch_any, or
+    None for a code this experiment has no search name for."""
+    code, article = ref
+    name = _EVAL_CODE_TO_SEARCH_NAME.get(code)
+    return (article, name) if name else None
+
+
+def _selected_refs(session, documents, text, union_refs):
+    """UNION's refs, fetched for their real text and passed through the live
+    applicability check (dg._filter_applicable_articles) -- the same check
+    run_case_analysis_pipeline applies today, read-only and standalone here.
+    Order preserved from union_refs, just with the dropped ones removed."""
+    fetch_refs = [r for r in (_to_fetch_ref(ref) for ref in union_refs) if r]
+    if not fetch_refs:
+        return []
+    rows = dg._fetch_any(session, documents, fetch_refs)
+    kept_rows = dg._filter_applicable_articles(text, "", rows)
+    kept = set()
+    for row in kept_rows:
+        article = row.get("_article")
+        if article:
+            code = _code_key(article[1])
+            if code:
+                kept.add((code, article[0]))
+    return [ref for ref in union_refs if ref in kept]
+
+
 def _run_case(driver, database, case, vector_index, k, warned):
     text = case["question"]
     detail = {}
     with driver.session(database=database) as session:
+        from src.rag.doc_lookup import _fetch_doc_names
+        documents = _fetch_doc_names(driver, database)
+
         baseline = _merge_best_rank(
             _ranked_refs(_vector_search(session, text, vector_index, k, warned)),
             _ranked_refs(_fulltext_search(session, text, k)),
@@ -357,21 +527,44 @@ def _run_case(driver, database, case, vector_index, k, warned):
             current, analysis = [], {}
         detail["current_analysis"] = analysis
 
+        try:
+            rulings = _rulings_refs(session, text, joined, vector_index, k, warned)
+        except Exception as exc:
+            logging.warning("%s: rulings search failed: %s", case["id"], exc)
+            rulings = []
+
+        union = _dedupe_ordered(current, baseline, distill)
+
+        neighbours = []
+        for code, article in union:
+            for neighbour in _neighbour_numbers(article):
+                neighbours.append((code, neighbour))
+        union_neighbours = _dedupe_ordered(union, neighbours)
+        union_rulings = _dedupe_ordered(union, rulings)
+
+        try:
+            selected = _selected_refs(session, documents, text, union)
+        except Exception as exc:
+            logging.warning("%s: applicability check on UNION failed: %s", case["id"], exc)
+            selected = union
+
     return {"baseline": baseline, "distill": distill, "distill_questions": distill_questions,
-            "current": current, "detail": detail}
+            "current": current, "rulings": rulings, "union": union,
+            "union_neighbours": union_neighbours, "union_rulings": union_rulings,
+            "selected": selected, "union_candidate_count": len(union), "detail": detail}
 
 
 # --- Reporting -------------------------------------------------------------
 
-def _table_lines(results, cases, k):
-    lines = [f"recall@10 and @{k}, found/expected, code-aware:", ""]
-    header = f"{'case':<18s}" + "".join(f"{m:<26s}" for m in METHODS)
+def _recall_table(results, cases, k, methods):
+    lines = []
+    header = f"{'case':<18s}" + "".join(f"{m:<26s}" for m in methods)
     lines.append(header)
-    totals = {m: [0, 0, 0, 0] for m in METHODS}
+    totals = {m: [0, 0, 0, 0] for m in methods}
     for case in cases:
         r = results[case["id"]]
         cells = []
-        for m in METHODS:
+        for m in methods:
             f10, t10 = _recall(r[m], case["expected"], 10)
             fk, tk = _recall(r[m], case["expected"], k)
             cells.append(f"{f10}/{t10}@10  {fk}/{tk}@{k}".ljust(26))
@@ -379,7 +572,26 @@ def _table_lines(results, cases, k):
         lines.append(f"{case['id']:<18s}" + "".join(cells))
     lines.append("")
     lines.append(f"{'TOTAL':<18s}" + "".join(
-        f"{totals[m][0]}/{totals[m][1]}@10  {totals[m][2]}/{totals[m][3]}@{k}".ljust(26) for m in METHODS))
+        f"{totals[m][0]}/{totals[m][1]}@10  {totals[m][2]}/{totals[m][3]}@{k}".ljust(26) for m in methods))
+    return lines
+
+
+def _table_lines(results, cases, k):
+    lines = [f"recall@10 and @{k}, found/expected, code-aware:", ""]
+    lines += _recall_table(results, cases, k, METHODS)
+    lines.append("")
+    lines.append("UNION (current + baseline + distill, deduped), its numeric-neighbour and rulings-added "
+                "variants, and SELECTED (UNION through the live applicability check) -- recall, plus "
+                "candidate count and SELECTED's noise (non-expected articles kept):")
+    lines.append("")
+    lines += _recall_table(results, cases, k, UNION_METHODS)
+    lines.append("")
+    header = f"{'case':<18s}{'union candidates':<20s}{'selected candidates':<22s}{'selected noise@' + str(k):<18s}"
+    lines.append(header)
+    for case in cases:
+        r = results[case["id"]]
+        noise = _noise(r["selected"], case["expected"], k)
+        lines.append(f"{case['id']:<18s}{r['union_candidate_count']:<20d}{len(r['selected']):<22d}{noise:<18d}")
     return lines
 
 
@@ -389,7 +601,7 @@ def _detail_lines(results, cases, k):
         r = results[case["id"]]
         lines.append(f"\n## {case['id']}")
         lines.append(f"   expected: {case['expected']}")
-        for m in METHODS:
+        for m in METHODS + UNION_METHODS:
             top = r[m][:10]
             lines.append(f"   {m} top 10: {[f'{a} {c}' for c, a in top]}")
         if r["detail"].get("bullets"):

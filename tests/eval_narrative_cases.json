@@ -1,5 +1,5 @@
 {
-  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names.",
+  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names. 2026-10-18: c3's expected 'art. 5 l392' removed -- L. 392/1978 is not in the corpus; the law actually governing residential leases today is L. 431/1998, and its own art. 5 covers transitional contracts, not relevant to c3's facts. c3's expected is now just 658 cpc, 1453 cc, 1587 cc.",
   "cases": [
     {
       "id": "sempronio",
@@ -66,7 +66,7 @@
       "question": "Il conduttore di un appartamento ad uso abitativo non paga il canone da tre mesi. Il locatore vuole riottenere l'immobile e recuperare i canoni arretrati. Quali strumenti processuali e sostanziali ha a disposizione?",
       "expected": [
         {"code": "cpc", "article": "658"}, {"code": "cc", "article": "1453"},
-        {"code": "cc", "article": "1587"}, {"code": "l392", "article": "5"}
+        {"code": "cc", "article": "1587"}
       ]
     },
     {

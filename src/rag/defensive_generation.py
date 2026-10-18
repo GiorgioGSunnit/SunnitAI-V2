@@ -12,6 +12,7 @@ from __future__ import annotations
 import inspect
 import logging
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -772,6 +773,7 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     with empty values, and the parere is written from the facts alone."""
     empty = {"parte_assistita": "", "posizione": "", "area": "", "richiesta": "", "ricerca_fatti": [],
              "questioni": [], "fatti": [], "fatti_strutturati": {}}
+    t0 = time.time()
     try:
         raw = _chat([SystemMessage(content=_CASE_ANALYSIS_V2_SYSTEM),
                     HumanMessage(content=_case_text(facts, request))],
@@ -780,6 +782,8 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     except Exception as exc:
         logger.warning("case analysis (v2) failed: %s", exc)
         return empty
+    finally:
+        vlog("case_analysis_v2_llm", duration_ms=(time.time() - t0) * 1000)
     if not isinstance(parsed, dict):
         return empty
     result = {**empty, **{k: v for k, v in parsed.items() if k in empty}}
@@ -969,6 +973,7 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
     if not texts:
         return []
     listing = "\n".join(f"[art. {n} {c}] {' '.join(t)[:400]}" for (n, c), t in texts.items())
+    t0 = time.time()
     try:
         raw = _chat([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
                     HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
@@ -977,6 +982,8 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
     except Exception as exc:
         logger.warning("article choice failed: %s", exc)
         return None
+    finally:
+        vlog("article_choice_llm", duration_ms=(time.time() - t0) * 1000)
     if not isinstance(chosen, list):
         return None
     refs = []
@@ -1213,6 +1220,14 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     if not nome:
         return []
 
+    # Round 5, item 3 (18 Oct): c3 ran 70s/189s/>400s(timeout) across three
+    # otherwise-identical repeats, after the per-parola_chiave title-match
+    # loop below (round 3, item 2) turned one unindexed CONTAINS scan per
+    # institution into up to 2*(1+len(parole_chiave)). This timer, logged
+    # per institution, is how to tell that cost apart from the LLM calls'
+    # when VERBOSE_LOGGING is on, instead of guessing from a single total.
+    t0 = time.time()
+
     abbr = _code_of(codice) if codice else None
     doc = None
     if abbr:
@@ -1228,7 +1243,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
 
     def _found(rows: List[Dict[str, Any]], number: str, reason: str) -> List[Dict[str, Any]]:
         vlog("case_analysis_institution", {"institution": nome, "resolved": f"{number} {abbr or codice}",
-                                           "reason": reason})
+                                           "reason": reason}, duration_ms=(time.time() - t0) * 1000)
         return rows
 
     if doc:
@@ -1259,7 +1274,8 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
         if rows:
             return _found(_tag(rows, numero), numero, "model's numero_indicativo, verified against its title")
 
-    vlog("case_analysis_institution", {"institution": nome, "resolved": None, "reason": "not found"})
+    vlog("case_analysis_institution", {"institution": nome, "resolved": None, "reason": "not found"},
+        duration_ms=(time.time() - t0) * 1000)
     return []
 
 
@@ -2038,14 +2054,17 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
         "Articoli candidati (testo reale dalla banca dati):\n"
         + "\n\n".join(f"[{label}]\n{text}" for label, text in texts.items())
     )
+    t0 = time.time()
     try:
         raw = _chat([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
                    max_tokens=1200, temperature=0)
         verdicts = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("applicability check failed, keeping every candidate article: %s", exc)
-        vlog("case_analysis_applicability", {"checked": len(texts), "error": str(exc)[:160]})
+        vlog("case_analysis_applicability", {"checked": len(texts), "error": str(exc)[:160]},
+            duration_ms=(time.time() - t0) * 1000)
         return None
+    vlog("case_analysis_applicability", {"checked": len(texts)}, duration_ms=(time.time() - t0) * 1000)
     if not isinstance(verdicts, list):
         return None
     return {_applicability_key(v["article"]): v for v in verdicts
@@ -2114,10 +2133,12 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     import neo4j
     from .main import driver, NEO4J_DATABASE
 
+    pipeline_t0 = time.time()
     case_analysis_v2 = feature_flags.enabled(CASE_ANALYSIS_FLAG)
     analysis = _analyse_case_v2(facts, session_lang, request) if case_analysis_v2 \
         else _analyse_case(facts, session_lang, request)
     article_rows, ruling_rows, candidates, selected = [], [], [], []
+    retrieval_t0 = time.time()
     try:
         with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
             picked = (_select_articles_v2 if case_analysis_v2 else _select_articles)(
@@ -2132,6 +2153,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                                            selected, analysis)
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
+    vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "articles": len(article_rows),
+                                     "rulings": len(ruling_rows)}, duration_ms=(time.time() - retrieval_t0) * 1000)
 
     # Per-article applicability (round 3, item 3): off unless
     # APPLICABILITY_CHECK_ENABLED. Runs after article_rows/ruling_rows are
@@ -2142,11 +2165,13 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     articles = _grouped_source_block(article_rows, analysis.get("questioni", []), _ARTICLE_CHARS)
     rulings = _source_block(ruling_rows, _PASSAGE_CHARS + 100)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
+    draft_t0 = time.time()
     draft = _call_chat(
         [SystemMessage(content=_parere_system(analysis, session_lang)),
          HumanMessage(content=_parere_human(facts, analysis, articles, rulings, request, principles))],
         max_tokens=_PARERE_TOKENS,
     )
+    vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
     draft = _mark_unverified(draft, found, articles + "\n" + rulings)
 
@@ -2163,6 +2188,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # comes back with sections: [] — a citation naming a source with nothing
     # in it. Drop it here rather than let it reach the user.
     citations = [c for c in _rows_to_sources(article_rows + ruling_rows) if c.get("sections")]
+    vlog("case_analysis_pipeline", {"v2": case_analysis_v2}, duration_ms=(time.time() - pipeline_t0) * 1000)
     return {"draft": draft, "citations": citations,
             "analysis": analysis, "articles": found, "principles": principles,
             "candidates": [f"art. {n} {c}" for n, c in candidates],

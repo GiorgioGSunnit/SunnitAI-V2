@@ -96,6 +96,38 @@ def test_recall_respects_the_k_cutoff():
     assert ed._recall(ranked, expected, 10) == (1, 1)
 
 
+def test_dedupe_ordered_keeps_first_occurrence_in_priority_order():
+    current = [("cp", "584")]
+    baseline = [("cp", "584"), ("cp", "589")]
+    distill = [("cp", "589"), ("cp", "43")]
+    assert ed._dedupe_ordered(current, baseline, distill) == [("cp", "584"), ("cp", "589"), ("cp", "43")]
+
+
+def test_neighbour_numbers_is_numeric_only():
+    assert ed._neighbour_numbers("584") == ["583", "585", "584-bis"]
+    assert ed._neighbour_numbers("1") == ["2", "1-bis"]   # no "0" neighbour
+    assert ed._neighbour_numbers("624-bis") == []   # suffixed numbers are out of scope, by design
+
+
+def test_noise_counts_non_expected_articles_in_the_top_k():
+    ranked = [("cp", "584"), ("cp", "999"), ("cp", "589")]
+    expected = [{"code": "cp", "article": "584"}, {"code": "cp", "article": "589"}]
+    assert ed._noise(ranked, expected, 10) == 1
+    assert ed._noise(ranked, expected, 1) == 0   # only "584" (expected) is within the top 1
+
+
+def test_noise_respects_any_of():
+    ranked = [("consumo", "130"), ("cc", "1495")]
+    expected = [{"code": "consumo", "any_of": ["128", "129", "130"], "label": "any"},
+                {"code": "cc", "article": "1495"}]
+    assert ed._noise(ranked, expected, 10) == 0
+
+
+def test_to_fetch_ref_maps_eval_code_to_a_search_name():
+    assert ed._to_fetch_ref(("cp", "584")) == ("584", "c.p.")
+    assert ed._to_fetch_ref(("consumo", "130")) == ("130", "Codice del Consumo")
+
+
 def test_new_long_cases_are_well_formed():
     for case in ed._NEW_LONG_CASES:
         assert case["question"].strip()
