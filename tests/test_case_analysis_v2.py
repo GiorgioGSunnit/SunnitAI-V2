@@ -216,7 +216,7 @@ class _FakeCodicePenaleSession:
             num = params["n"]
             return _Result([{"d": {"id": "cp-doc", "name": "Codice Penale 2026"},
                              "s": {"name": f"{num}.0.0", "title": art["title"], "plain_text": art["text"]}}])
-        if "db.index.fulltext.queryNodes" in q:                # _issue_article_refs
+        if "db.index.fulltext.queryNodes" in q:                # _issue_article_refs (scoped to doc_id)
             # len > 3: a real fulltext index's analyzer drops short, common
             # words ("di", "la", "chi") rather than treat them as hits.
             terms = {w.rstrip("*").lower() for w in params["t"].split() if len(w.rstrip("*")) > 3}
@@ -224,7 +224,8 @@ class _FakeCodicePenaleSession:
             for num, a in self.articles.items():
                 words = set(re.findall(r"\w+", a["text"].lower()))
                 if terms & words:
-                    rows.append({"doc": "Codice Penale 2026", "sec": f"{num}.0.0", "score": 1.0})
+                    rows.append({"sec": f"{num}.0.0", "titolo_articolo": "", "title": a["title"],
+                                "plain_text": a["text"], "score": 1.0})
             return _Result(rows)
         if "s.name = $n + '.0.0'" in q:                        # _number_matches_institution
             art = self.articles.get(params["n"])
@@ -349,19 +350,43 @@ def test_no_name_returns_nothing():
                                    {"nome": "", "codice": "c.p.", "numero_indicativo": "589"}) == []
 
 
-# --- _issue_article_refs: search across every primary act, not a prefix list
+# --- _issue_article_refs: scoped to the institution's own document, verified
+# against its own words (round 8, 19 Oct) -----------------------------------
+#
+# This used to search across every primary act with no scope at all -- on
+# prod, when an institution's "codice" didn't resolve to one document (a
+# generic doctrinal name like "causa effettiva"), that unscoped search
+# returned matches from unrelated codes/laws entirely (23 c.c., 46 L. sul
+# diritto internazionale privato for a criminal-law institution), trusted
+# just because a Lucene OR-of-words query ranked them. It is now always
+# scoped to one document (never searched without one) and every hit is
+# re-verified against the institution's own words.
 
-def test_issue_article_refs_finds_a_non_standard_document():
+def test_issue_article_refs_returns_nothing_without_a_doc_id():
+    """No document resolved -> no corpus-wide search any more: unresolved
+    is better than wrong."""
     class Session:
         def run(self, query, **params):
-            return _Result([
-                {"doc": "Codice del Consumo", "sec": "128.0.0", "score": 2.0},
-                {"doc": "Codice Civile 2026", "sec": "1490.0.0", "score": 1.5},
-            ])
+            raise AssertionError("must not query without a doc_id")
 
-    refs = dg._issue_article_refs(Session(), ["difetto", "vendita", "garanzia"])
-    assert ("128", "Codice del Consumo") in refs
-    assert ("1490", "c.c.") in refs
+    assert dg._issue_article_refs(Session(), None, ["qualcosa"]) == []
+
+
+def test_issue_article_refs_scoped_and_verified_finds_the_real_article():
+    numbers = dg._issue_article_refs(_FakeCodicePenaleSession(), "cp-doc", ["negligenza", "imprudenza"])
+    assert numbers == ["43"]
+
+
+def test_issue_article_refs_rejects_a_hit_sharing_none_of_the_institutions_words():
+    """A fulltext hit is dropped unless at least half the institution's own
+    stems actually appear in its title or text -- a bare Lucene score is
+    not proof of relevance, only that the query's words were ORed somewhere."""
+    class Session:
+        def run(self, query, **params):
+            return _Result([{"sec": "999.0.0", "titolo_articolo": "", "title": "Tutt'altra materia",
+                             "plain_text": "un testo che non condivide nessuna delle parole cercate"}])
+
+    assert dg._issue_article_refs(Session(), "doc", ["negligenza", "imprudenza"]) == []
 
 
 def test_issue_article_refs_empty_keywords_skips_the_query():
@@ -369,7 +394,7 @@ def test_issue_article_refs_empty_keywords_skips_the_query():
         def run(self, query, **params):
             raise AssertionError("should not query with no keywords")
 
-    assert dg._issue_article_refs(Session(), []) == []
+    assert dg._issue_article_refs(Session(), "doc", []) == []
 
 
 def test_issue_article_refs_fails_open_on_a_db_error():
@@ -377,7 +402,7 @@ def test_issue_article_refs_fails_open_on_a_db_error():
         def run(self, query, **params):
             raise RuntimeError("db down")
 
-    assert dg._issue_article_refs(Session(), ["qualcosa"]) == []
+    assert dg._issue_article_refs(Session(), "doc", ["qualcosa"]) == []
 
 
 # --- _grouped_source_block ----------------------------------------------------

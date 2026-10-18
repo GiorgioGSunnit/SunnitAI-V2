@@ -56,8 +56,12 @@ _ABBREVIATIONS = [
     (r"^c\.?\s*d\.?\s*s\.?$", "codice della strada"),
     (r"^cod\.?\s*cons\.?$|^c\.?\s*cons\.?$", "codice del consumo"),
 ]
-# Not codes or laws: commentaries and collective agreements are never the target.
-_NOT_A_LAW = re.compile(r"commentat|^\W*ccnl|fiscalit", re.IGNORECASE)
+# Not codes or laws: commentaries, collective agreements and books (round 8,
+# 19 Oct: "Manuale di diritto processuale penale" turned up in a resolved
+# institution's article pool, its own article numbering mistaken for a
+# code's) are never the target.
+_NOT_A_LAW = re.compile(r"commentat|^\W*ccnl|fiscalit|manuale|trattato|dispens|prontuario|formulario",
+                        re.IGNORECASE)
 _STOP = {"del", "della", "dello", "dei", "delle", "di", "il", "la", "lo", "le", "gli", "n", "art", "nr"}
 _TITLE_STOP = _STOP | {"per", "con", "dal", "dalla", "nel", "nella", "sul", "sulla", "nei", "una", "uno", "che",
                        "non", "alla", "allo", "agli", "alle", "dell", "nell", "sull", "dall", "all"}

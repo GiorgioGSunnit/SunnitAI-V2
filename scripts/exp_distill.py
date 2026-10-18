@@ -79,6 +79,29 @@ its _about): l2's "guaribile in 40 giorni" -> "60 giorni" (583 c.p.'s
 aggravation needs MORE than 40 days, so 40 itself didn't actually support
 the expected article). c3's expected dropped "art. 5 l392" (L. 392/1978
 isn't in the corpus).
+
+Round 8 (19 Oct): CASE_POOL_FUSION_ENABLED shipped FUSION_BASELINE's ranking
+as src.rag.defensive_generation._select_articles_fusion, but as a PORT, not
+a shared function -- the Cypher it used for BASELINE/DISTILL's own search
+did a naive concatenation instead of a true best-rank merge, and its CURRENT
+signal was institution-resolution alone rather than this script's CURRENT
+(the full _select_articles_v2 selection), neither of which this script's own
+measured numbers ever tested without. Diagnosed via check_applicability.py
+--fusion on prod (a book and three wrong-code institution matches in the
+ranked top 12, where this script had measured Sempronio at 5/5 @12). Fixed
+by sharing, not porting: _merge_best_rank/_merge_by_hits below are now
+aliases for dg._fusion_best_rank_merge/dg._fusion_merge_by_hits, and
+_distill_bullets is dg._fusion_distill_bullets -- the same three functions
+_select_articles_fusion itself calls, so the ranking algorithms and the
+bullet-distillation prompt can't silently diverge again. One difference
+remains, deliberately: _select_articles_fusion's own BASELINE/DISTILL search
+(dg._fusion_vector_search/_fusion_fulltext_search) restricts to primary
+sources and rejects book/manual names, while this script's BASELINE/DISTILL
+columns stay unscoped (they're answering a different, standalone question --
+how good is retrieval with no restriction at all). FUSION_BASELINE here is
+therefore a close preview of the live pool, not an exact one; re-run it
+against prod to re-validate the 27/47 @8 / 32/47 @12 numbers under that
+narrower pool.
 """
 
 import argparse
@@ -137,25 +160,6 @@ UNION_METHODS = ["union", "selected"]
 # see the module docstring, round 5.
 RANKING_METHODS = ["rerank_bullets", "rerank_raw", "llm_relevance", "fusion_baseline"]
 
-_DISTILL_SYSTEM = (
-    "Sei un avvocato italiano. Riscrivi il caso che segue come fatti giuridici neutri, in 5-8 punti brevi, "
-    "uno per ciascuna di queste categorie quando il caso la prevede (saltala se non si applica): "
-    "\"soggetti e ruoli\", \"condotta\", \"elementi sull'intenzione\", \"evento/esito\", \"nesso causale\", "
-    "\"condotta successiva\", \"posizione processuale\", \"cosa si chiede\"; per i fatti penali aggiungi, "
-    "se pertinente, \"circostanze\" (per esempio: vittima in condizione di minorata difesa o particolarmente "
-    "vulnerabile, provocazione, danno riparato, recidiva, numero di persone coinvolte). Per ciascun punto "
-    "usa il termine giuridico tipico con cui il codice descrive quella condotta, quell'evento o quello "
-    "stato soggettivo, non una parafrasi generica: per esempio, se i fatti lo giustificano, \"artifizi o "
-    "raggiri\" (non \"inganno\"), \"induzione in errore\", \"violenza o minaccia\", \"impossessamento\", "
-    "\"sottrazione\", \"custodia\" o \"detenzione\" della cosa, \"dolo\" o \"colpa\" (con la forma specifica: "
-    "negligenza, imprudenza, imperizia), \"inadempimento\", \"mora\", \"vizio della cosa\", \"nesso di "
-    "causalità\". Elimina i dettagli irrilevanti (nomi propri non necessari, descrizioni di contesto, "
-    "aggettivi, orari e luoghi non giuridicamente rilevanti). Non usare MAI un numero di articolo né il "
-    "nome di un codice o di una legge: descrivi solo i fatti, con il vocabolario giuridico italiano. "
-    "Restituisci SOLO un array JSON di oggetti {\"categoria\": una delle etichette sopra, \"testo\": il "
-    "punto, breve}."
-)
-
 _DISTILL_QUESTIONS_SYSTEM = (
     "Dati questi fatti giuridici, scrivi da 3 a 5 domande giuridiche neutre che i fatti pongono (per "
     "esempio: \"quale reato integra un'azione violenta non diretta a uccidere da cui deriva la morte?\"). "
@@ -209,29 +213,17 @@ def _ranked_refs(rows):
     return ordered
 
 
-def _merge_best_rank(*ranked_lists):
-    """Union of refs across the given ranked lists, ordered by the best
-    (lowest) rank any one of them gives it."""
-    best = {}
-    for ranked in ranked_lists:
-        for rank, ref in enumerate(ranked, start=1):
-            if ref not in best or rank < best[ref]:
-                best[ref] = rank
-    return sorted(best, key=lambda ref: best[ref])
-
-
-def _merge_by_hits(*ranked_lists):
-    """Union of refs, ordered by (how many of the given ranked lists
-    contain it, descending), then by the best rank among those that do --
-    a ref several bullets/questions independently retrieve outranks one
-    only a single call happened to surface, even at a better rank."""
-    hits, best_rank = {}, {}
-    for ranked in ranked_lists:
-        for rank, ref in enumerate(ranked, start=1):
-            hits[ref] = hits.get(ref, 0) + 1
-            if ref not in best_rank or rank < best_rank[ref]:
-                best_rank[ref] = rank
-    return sorted(hits, key=lambda ref: (-hits[ref], best_rank[ref]))
+# _merge_best_rank/_merge_by_hits used to be this script's own copies of
+# src/rag/defensive_generation.py's merge algorithms -- a port, not a
+# shared function. Round 8, 19 Oct: that let the two drift (dg's own
+# _fusion_text_search did a naive concatenation instead of a true best-
+# rank merge, a bug this script's FUSION_BASELINE never had and so never
+# caught). Both names are now aliases for dg's functions -- pure,
+# format-agnostic tuple merges, so aliasing them here changes nothing
+# about how this script's (eval code, article) refs are merged, it just
+# makes it impossible for the two to silently diverge again.
+_merge_best_rank = dg._fusion_best_rank_merge
+_merge_by_hits = dg._fusion_merge_by_hits
 
 
 def _code_key(abbr_or_name):
@@ -444,14 +436,13 @@ def _rank_by_llm_relevance(union_refs, texts, bullets_text, reranker_scores):
 
 # --- The methods ----------------------------------------------------
 
-def _distill_bullets(text):
-    raw = dg._chat([SystemMessage(content=_DISTILL_SYSTEM), HumanMessage(content=text[:6000])],
-                   max_tokens=700, temperature=0)
-    parsed = dg.parse_json_reply(raw)
-    if not isinstance(parsed, list):
-        return []
-    return [{"categoria": str(b.get("categoria") or ""), "testo": str(b.get("testo") or "").strip()}
-            for b in parsed if isinstance(b, dict) and str(b.get("testo") or "").strip()][:8]
+# dg._fusion_distill_bullets/_FUSION_DISTILL_SYSTEM were ported from this
+# script's own _distill_bullets/_DISTILL_SYSTEM when CASE_POOL_FUSION_
+# ENABLED shipped (round 7, 19 Oct). Calling that function here instead of
+# keeping the two prompts as separate (if identical) copies is what makes
+# DISTILL/DISTILL_QUESTIONS/FUSION_BASELINE's bullets the same ones the
+# live fusion pool would distill for the same case.
+_distill_bullets = dg._fusion_distill_bullets
 
 
 def _distill_questions(bullets):

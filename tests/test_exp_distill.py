@@ -221,3 +221,23 @@ def test_llm_relevance_scores_parses_the_label_back_to_its_ref(monkeypatch):
 
 def test_llm_relevance_scores_returns_empty_without_any_text():
     assert ed._llm_relevance_scores("bullets", [("cp", "584")], {}) == {}
+
+
+# --- Round 8 (19 Oct): parity with src.rag.defensive_generation's fusion ----
+#
+# CASE_POOL_FUSION_ENABLED's _select_articles_fusion ported this script's
+# FUSION_BASELINE ranking and bullet-distillation instead of sharing them --
+# the Cypher it used for its own BASELINE/DISTILL search did a naive
+# concatenation instead of a true best-rank merge, and nothing kept the two
+# merge algorithms (or the distill prompt) from drifting apart silently.
+# These tests assert identity, not just equal behaviour today: if a future
+# edit reintroduces a private copy in either file, it fails immediately,
+# before the two could measure different things again.
+
+def test_merge_functions_are_the_same_objects_as_defensive_generations():
+    assert ed._merge_best_rank is ed.dg._fusion_best_rank_merge
+    assert ed._merge_by_hits is ed.dg._fusion_merge_by_hits
+
+
+def test_distill_bullets_is_the_same_function_defensive_generation_uses():
+    assert ed._distill_bullets is ed.dg._fusion_distill_bullets

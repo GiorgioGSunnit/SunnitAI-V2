@@ -15,11 +15,13 @@ else falls back to the default, so a typo never switches a feature on.
                                 replaces _analyse_case/_select_articles with
                                 _analyse_case_v2/_select_articles_v2 there.
                                 Not yet wired into the rag route's graph.
-  CASE_POOL_FUSION_ENABLED     false (requires CASE_ANALYSIS_ENABLED): the
-                                article pool there becomes institution-
-                                resolved union raw-text search union
-                                distilled-bullet search, ranked by fusion
-                                and capped — see _select_articles_fusion.
+  CASE_POOL_FUSION_ENABLED     false (requires CASE_ANALYSIS_ENABLED): adds
+                                a ranked pool on top of _select_articles_v2's
+                                own selection — that selection (CURRENT)
+                                union raw-text search (BASELINE) union
+                                distilled-bullet search (DISTILL), ranked by
+                                fusion and capped — see
+                                _select_articles_fusion.
 """
 
 import logging

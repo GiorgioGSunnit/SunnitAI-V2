@@ -65,15 +65,28 @@ def _chat_json(messages, max_tokens, **chat_kwargs):
     Oct: "no JSON value in the model's reply", _choose_articles) needs a
     different answer, not more lenient parsing. Raises ValueError, same as
     parse_json_reply, if the retry also fails -- every caller already
-    catches that and fails open with a WARNING, unchanged."""
+    catches that and fails open with a WARNING, unchanged.
+
+    Round 8 (19 Oct): the applicability check failed this way on prod for
+    every one of 12 candidate articles ("check failed: every article would
+    be kept") with nothing to show WHY -- the warning logged only the
+    exception, never the reply that didn't parse. Both failures are logged
+    here, with the raw reply, so the next one is diagnosable without
+    needing to reproduce it live."""
     raw = _chat(messages, max_tokens=max_tokens, **chat_kwargs)
     try:
         return parse_json_reply(raw)
-    except ValueError:
-        pass
+    except ValueError as exc:
+        logger.info("_chat_json: first reply had no parseable JSON (%s); retrying with a stricter "
+                    "instruction. raw reply: %r", exc, raw[:300])
     retried = [SystemMessage(content=messages[0].content + _JSON_RETRY_SUFFIX), *messages[1:]]
     raw = _chat(retried, max_tokens=max_tokens, **chat_kwargs)
-    return parse_json_reply(raw)
+    try:
+        return parse_json_reply(raw)
+    except ValueError as exc:
+        logger.warning("_chat_json: retry also had no parseable JSON (%s); failing open. raw reply: %r",
+                       exc, raw[:500])
+        raise
 
 
 def _safe_defaults() -> Dict[str, Any]:
@@ -656,16 +669,21 @@ CASE_ANALYSIS_FLAG = "CASE_ANALYSIS_ENABLED"
 CASE_ANALYSIS_SOURCE = "case_analysis"
 
 # CASE_POOL_FUSION_ENABLED (default false; has no effect unless
-# CASE_ANALYSIS_ENABLED is also on). Replaces _select_articles_v2's article
-# pool (v1's own code-search + _choose_articles, union institutions) with
-# institution-resolved union raw-text search union distilled-bullet search,
-# ranked by fusion (how many of the three sources agree, then best rank)
-# and capped at _FUSION_POOL_CAP -- validated on scripts/exp_distill.py
-# (round 6, 19 Oct): that ranking (FUSION_BASELINE there) beat every
-# re-ranking method tried, at zero added latency, and the three-source pool
-# reached articles institutions alone missed (Codice del Consumo, L.
-# 392/1978, ...) that still needed v1's own fulltext/choose mechanism today.
-# See _select_articles_fusion.
+# CASE_ANALYSIS_ENABLED is also on). Adds a ranked article pool on top of
+# _select_articles_v2's own selection: CURRENT (v2's full "selected" --
+# v1's code-search + _choose_articles union institutions) union BASELINE
+# (vector+fulltext on the raw case text) union DISTILL (vector+fulltext per
+# distilled bullet), ranked by fusion (how many of the three agree, then
+# best rank) and capped at _FUSION_POOL_CAP -- the exact three sources
+# validated as FUSION_BASELINE on scripts/exp_distill.py (round 6, 19 Oct:
+# 27/47 @8, 32/47 @12). Round 8 (19 Oct): the first version of this
+# replaced CURRENT with institution-resolution alone (to skip v1's own
+# search + _choose_articles call) -- a simplification exp_distill.py's own
+# numbers never tested, and the actual cause of a prod parity bug (wrong-
+# code institution matches, a book in the ranked pool, a naive-concatenation
+# merge bug). See _select_articles_fusion, which now calls
+# _select_articles_v2 itself for CURRENT and shares its merge functions
+# with scripts/exp_distill.py, instead of reimplementing either.
 _CASE_POOL_FUSION_FLAG = "CASE_POOL_FUSION_ENABLED"
 # section_embeddings_v2: same default scripts/exp_distill.py uses; override
 # via the environment if the live index is named differently.
@@ -1176,40 +1194,67 @@ def _fetch_any(session, documents: List[Dict[str, Any]], refs: List[tuple]) -> L
     return rows
 
 
-def _issue_article_refs(session, parole_chiave: List[str]) -> List[tuple]:
-    """(number, code-or-document-name) found by full-text search on one
-    issue's keywords, across every primary legal act — the open-vocabulary
-    analogue of _search_code_articles, which only searches the four codes in
-    _CODE_SEARCH_PREFIXES."""
-    terms = _lucene_query(" ".join(w for w in parole_chiave if isinstance(w, str)))
+def _issue_article_refs(session, doc_id: Optional[str], parole_chiave: List[str]) -> List[str]:
+    """Article numbers found by full-text search on one issue's keywords,
+    scoped to the institution's own document (doc_id) -- never across the
+    whole corpus any more.
+
+    Round 8 (19 Oct): an unscoped, corpus-wide version of this search
+    returned wrong-code matches on prod for generic doctrinal names that
+    don't literally resolve to one document ("causa effettiva" -> 23 c.c.,
+    46 L. sul diritto internazionale privato; "dolo indiretto" -> 86 TUEL,
+    90 Codice dei medicinali -- both about homicide in a c.p. case). When
+    _resolve_institution's own "codice" doesn't resolve to a document,
+    there was no document to scope the search to, and nothing then
+    filtered out the wrong ones -- a global Lucene query (the terms are
+    ORed together) always finds SOME top-10 hit somewhere in the corpus,
+    whether or not it's actually about this institution. Unresolved is
+    better than wrong, so a caller with no doc_id now gets [] instead of a
+    corpus-wide guess.
+
+    Every hit is also re-verified: at least half its stems must appear in
+    the matched section's own title or text -- the same discipline
+    article_by_title and _number_matches_institution already apply. A
+    fulltext score alone is not proof a match is about this institution,
+    only that it contains one of its words somewhere."""
+    from .issue_spotting import _stems
+
+    if not doc_id:
+        return []
+    words = [w for w in parole_chiave if isinstance(w, str)]
+    terms = _lucene_query(" ".join(words))
     if not terms:
         return []
+    stems: set = set()
+    for w in words:
+        stems |= _stems(w)
     try:
         found = session.run(
             "CALL db.index.fulltext.queryNodes('section_fulltext', $t) YIELD node, score "
-            "MATCH (d:Document)-[:CONTAINS]->(node) "
-            "WHERE d.document_type = 'primary' "
-            "RETURN d.name AS doc, node.name AS sec, score ORDER BY score DESC LIMIT 10",
-            t=terms,
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.id = $doc_id "
+            "RETURN node.name AS sec, node.titolo_articolo AS titolo_articolo, node.title AS title, "
+            "node.plain_text AS plain_text, score ORDER BY score DESC LIMIT 10",
+            t=terms, doc_id=doc_id,
         ).data()
     except Exception as exc:
         logger.warning("issue search failed for %r: %s", terms, exc)
         return []
-    abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
-    refs: List[tuple] = []
+    needed = max(1, (len(stems) + 1) // 2)
+    numbers: List[str] = []
     for row in found:
-        d_name = row.get("doc") or ""
         m = re.match(r"^(\d+(?:-[a-z]+)?)(?:[._]|$)", (row.get("sec") or "").strip(), re.IGNORECASE)
         if not m:
             continue
-        abbr = next((a for p, a in sorted(abbr_of.items(), key=lambda kv: -len(kv[0]))
-                     if d_name.startswith(p)), None)
-        ref = (_article_num(m.group(1)), abbr or d_name)
-        if ref not in refs:
-            refs.append(ref)
-        if len(refs) == 4:
+        text_stems = _stems(" ".join(filter(None, [row.get("titolo_articolo"), row.get("title"),
+                                                    row.get("plain_text")])))
+        if stems and len(stems & text_stems) < needed:
+            continue
+        number = _article_num(m.group(1))
+        if number not in numbers:
+            numbers.append(number)
+        if len(numbers) == 4:
             break
-    return refs
+    return numbers
 
 
 def _number_matches_institution(session, doc_id: str, number: str, nome: str) -> bool:
@@ -1272,14 +1317,21 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     di causalità" or "Concorso di cause" even though they're the same
     institution — the model's own words for it often will, one of them,
     even when the institution's own name doesn't); (3) full-text search on
-    "nome" plus every "parole_chiave" together, scoped to that document when
-    one resolved — the name alone often doesn't appear in the article's
-    operative text (art. 43's rubrica is "Elemento psicologico del reato",
-    but naming the institution "elemento soggettivo" won't title-match it,
-    and its text says "doloso"/"colposo", not "elemento" or "soggettivo");
-    (4) numero_indicativo, only if the article it names is itself titled or
-    worded consistently with "nome" (_number_matches_institution) — a wrong
-    guess with no textual support is dropped rather than fetched.
+    "nome" plus every "parole_chiave" together (_issue_article_refs) — the
+    name alone often doesn't appear in the article's operative text (art.
+    43's rubrica is "Elemento psicologico del reato", but naming the
+    institution "elemento soggettivo" won't title-match it, and its text
+    says "doloso"/"colposo", not "elemento" or "soggettivo"). Round 8, 19
+    Oct: this step only ran, and its hits were only trusted, when "codice"
+    resolved to a document and the hit matched its name — with no document
+    resolved, it used to search the whole corpus unscoped and trust
+    whatever a Lucene OR-of-words query happened to rank highest; it is now
+    always scoped to that document (nothing is searched without one) and
+    every hit is re-verified against the institution's own words before
+    being trusted. (4) numero_indicativo, only if the article it names is
+    itself titled or worded consistently with "nome" (_number_matches_
+    institution) — a wrong guess with no textual support is dropped rather
+    than fetched.
 
     Every outcome is logged: institution -> resolved article (or none) ->
     which of the four found it."""
@@ -1328,15 +1380,15 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                         reason = field if term == nome else f"{field}, via parola chiave {term!r}"
                         return _found(_tag(rows, number), number, reason)
 
-    search_refs = _issue_article_refs(session, [nome, *(parole_chiave or [])])
-    if doc:
-        target = abbr or doc["name"]
-        search_refs = [r for r in search_refs if r[1] == target]
-    if search_refs:
-        rows = _fetch_any(session, documents, search_refs[:2])
+    numbers = _issue_article_refs(session, doc["id"] if doc else None, [nome, *(parole_chiave or [])])
+    if numbers:
+        rows = []
+        for number in numbers[:2]:
+            rows.extend(_tag(fetch_article(session, doc["id"], number), number))
         if rows:
-            numbers = ", ".join(r["_article"][0] for r in rows if r.get("_article"))
-            return _found(rows, numbers, "fulltext on plain_text")
+            label = ", ".join(numbers[:2])
+            return _found(rows, label, "fulltext, scoped to the institution's own document and "
+                                       "verified against its own words")
 
     numero = _article_num(istituto.get("numero_indicativo", ""))
     if numero and doc and _number_matches_institution(session, doc["id"], numero, nome):
@@ -1965,16 +2017,26 @@ def _prioritise_article_rows(article_rows: List[Dict[str, Any]], named_in_case: 
 
 _ARTICLE_SECTION_RE = re.compile(r"^(\d+)(-[a-z]+)?(?:\.|$)", re.IGNORECASE)
 
+# Round 8, 19 Oct: "document_type = 'primary'" alone let a book through into
+# a prod ranked pool ("176 Manuale di diritto processuale penale", its own
+# section numbering mistaken for an article) -- its document_type property
+# is apparently mislabelled on prod. Reject by name too, the same words
+# issue_spotting._NOT_A_LAW rejects for resolve_code: a code or a law's name
+# never contains them.
+_NOT_A_PRIMARY_SOURCE_RE = re.compile(r"manuale|trattato|commentari|dispens|prontuario|formulario",
+                                      re.IGNORECASE)
+
 
 def _row_to_fusion_ref(row: Dict[str, Any]) -> Optional[tuple]:
     """A Section row from fusion's own vector/fulltext search (the number
     isn't already known, unlike _fetch_articles'/_resolve_institution's
     callers) -> (number, code abbreviation or the document's own name,
     matching _fetch_any's tagging convention) -- or None for a row with no
-    parseable article number or no document."""
+    parseable article number, no document, or a document that isn't
+    actually a code or a law (_NOT_A_PRIMARY_SOURCE_RE)."""
     s, d = row.get("s") or {}, row.get("d") or {}
     name, d_name = s.get("name") or "", d.get("name") or ""
-    if not _ARTICLE_SECTION_RE.match(name) or not d_name:
+    if not _ARTICLE_SECTION_RE.match(name) or not d_name or _NOT_A_PRIMARY_SOURCE_RE.search(d_name):
         return None
     number = _article_num(name)
     abbr = next((a for a, p in _CODE_PREFIXES.items() if d_name.startswith(p)), None)
@@ -2031,17 +2093,34 @@ def _fusion_fulltext_search(session, text: str, k: int) -> List[tuple]:
     return refs
 
 
+def _fusion_best_rank_merge(*ref_lists: List[tuple]) -> List[tuple]:
+    """Union of refs across the given ranked lists, ordered by the best
+    (lowest) rank any one of them gives it.
+
+    Round 8, 19 Oct: _fusion_text_search used to simply concatenate one
+    list after the other (every vector hit, however weak, ranked ahead of
+    every fulltext-only hit, however strong) instead of a true merge -- a
+    diagnosable cause of prod's fusion pool not reproducing scripts/
+    exp_distill.py's measured FUSION_BASELINE ranking. This is the same
+    algorithm that script's own _merge_best_rank uses; exp_distill.py now
+    imports this one directly instead of keeping its own copy, so the two
+    can no longer drift apart the way they just did."""
+    best = {}
+    for ranked in ref_lists:
+        for rank, ref in enumerate(ranked, start=1):
+            if ref not in best or rank < best[ref]:
+                best[ref] = rank
+    return sorted(best, key=lambda ref: best[ref])
+
+
 def _fusion_text_search(session, text: str, index: str, k: int) -> List[tuple]:
-    """Union of vector + fulltext refs for `text`, in combined rank order
-    (vector first, then fulltext, first occurrence wins) -- the pool's
-    "raw-text search" and "distilled-bullet search" sources both use this."""
-    vector_refs = _fusion_vector_search(session, text, index, k)
-    seen, ordered = set(vector_refs), list(vector_refs)
-    for ref in _fusion_fulltext_search(session, text, k):
-        if ref not in seen:
-            seen.add(ref)
-            ordered.append(ref)
-    return ordered
+    """Best-rank merge (_fusion_best_rank_merge) of vector + fulltext refs
+    for `text` -- the pool's "raw-text search" and "distilled-bullet
+    search" sources both use this."""
+    return _fusion_best_rank_merge(
+        _fusion_vector_search(session, text, index, k),
+        _fusion_fulltext_search(session, text, k),
+    )
 
 
 def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
@@ -2049,7 +2128,9 @@ def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
     contain it, descending), then best rank among those that do --
     FUSION_BASELINE's ranking, validated on scripts/exp_distill.py (round
     6, 19 Oct): it beat every re-ranking method tried there, at zero added
-    latency."""
+    latency. Shared with that script's own _merge_by_hits (an alias to
+    this function, not a separate copy) for the same reason as
+    _fusion_best_rank_merge above."""
     hits, best_rank = {}, {}
     for refs in ref_lists:
         for rank, ref in enumerate(refs, start=1):
@@ -2070,23 +2151,43 @@ def _fusion_distill_bullets(case_text: str) -> List[Dict[str, str]]:
 
 def _select_articles_fusion(session, driver, database: str, facts: str, request: str,
                             analysis: Dict[str, Any]) -> Dict[str, Any]:
-    """Candidate pool = institution-resolved (_resolve_institution, as in
-    _select_articles_v2) union raw-text search (vector + fulltext on the
-    case text itself) union distilled-bullet search (one LLM call,
-    temperature 0, statutory vocabulary, no article numbers) -- ranked by
-    fusion (_fusion_merge_by_hits) and capped at _FUSION_POOL_CAP.
+    """Candidate pool = CURRENT (_select_articles_v2's own full "selected":
+    v1's code-search + _choose_articles union institution-resolved) union
+    BASELINE (vector + fulltext search on the case text itself) union
+    DISTILL (vector + fulltext search per distilled bullet, temperature 0,
+    statutory vocabulary, no article numbers) -- ranked by fusion
+    (_fusion_merge_by_hits) and capped at _FUSION_POOL_CAP. These are the
+    exact three sources validated as FUSION_BASELINE on scripts/
+    exp_distill.py (round 6, 19 Oct: 27/47 @8, 32/47 @12 of 47 expected
+    articles across 12 cases).
+
+    Round 8 (19 Oct): the first version of this function replaced CURRENT
+    with institution-resolution alone, to avoid v1's own search +
+    _choose_articles call -- a simplification exp_distill.py's own numbers
+    never tested, and the actual cause of a prod parity bug (check_
+    applicability.py --fusion on Sempronio ranked a textbook and three
+    wrong-code institution matches into the top 12, where exp_distill.py's
+    FUSION_BASELINE got Sempronio 5/5 @12). Calling _select_articles_v2
+    here for CURRENT, instead of reimplementing its logic, is what keeps
+    this from drifting the same way again: BASELINE and DISTILL also now
+    go through _fusion_best_rank_merge/_fusion_merge_by_hits, which
+    scripts/exp_distill.py imports directly rather than keeping its own
+    copies. The one deliberate difference from what exp_distill.py
+    measures is that BASELINE/DISTILL's own search (_fusion_vector_search/
+    _fusion_fulltext_search) is restricted to primary sources and rejects
+    book/manual names (_NOT_A_PRIMARY_SOURCE_RE) -- the same prod run's
+    other finding; re-running the experiment is how to re-validate the
+    recall numbers against that narrower pool.
 
     Articles named by the user's own text, and whatever the rulings agree
-    on (_candidate_articles' "keep"), are added on top of the cap,
-    uncapped -- see _FUSION_POOL_CAP.
-
-    Unlike _select_articles (v1) and _select_articles_v2, this path does
-    NOT call _choose_articles: with institution+text-search already
-    providing a focused, ranked pool, a separate "which of these does the
-    model want" LLM call added latency without changing the result on
-    scripts/exp_distill.py (round 6, 19 Oct) -- FUSION_BASELINE's own
-    recall (27/47 @8, 32/47 @12) beat every method that re-scored the pool
-    with another model call, at zero added latency.
+    on (_select_articles_v2's own "keep"), are added on top of the cap,
+    uncapped -- see _FUSION_POOL_CAP. Cross-reference broadening expands
+    only from those user-named and institution-resolved articles, not from
+    the whole capped pool (round 8, 19 Oct: broadening from everything
+    pulled in cross-references with no connection to what fusion
+    specifically added, e.g. 1, 3, 444, 450, 470 c.p.p. on Sempronio) --
+    the same discipline _select_articles_v2 already applies to its own
+    institution rows.
 
     Behind CASE_POOL_FUSION_ENABLED (requires CASE_ANALYSIS_ENABLED). Used
     by run_case_analysis_pipeline; returns the same keys _select_articles_v2
@@ -2095,27 +2196,14 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     from .doc_lookup import _fetch_doc_names
     from .nodes.retrieval import broaden_article_context
 
-    first_rulings = _search_case_law(session, analysis)
-    similar = _search_similar_facts(session, analysis, {(r.get("d") or {}).get("id") for r in first_rulings})
-    counts = _articles_cited_in_rulings(
-        session, [(r.get("d") or {}).get("id") for r in (similar + first_rulings)[:10]])
-    similar_counts = _articles_cited_in_rulings(session, [(r.get("d") or {}).get("id") for r in similar])
-    case = _case_text(facts, request)
-    # code_refs=[]: v1's own fulltext candidate search is what this path
-    # replaces -- only "keep" (named + ruling agreement) is wanted from here.
-    keep, _ = _candidate_articles(case, analysis, similar + first_rulings, [], counts, similar_counts)
+    v2 = _select_articles_v2(session, driver, database, facts, request, analysis)
+    keep, named = v2["keep"], v2["named"]
+    institutions_resolved = v2.get("institutions_resolved") or []
+    current_refs = list(dict.fromkeys(v2["selected"]))
 
     documents = _fetch_doc_names(driver, database)
-
-    institution_refs: List[tuple] = []
-    for q in analysis.get("questioni", []):
-        for istituto in q.get("istituti") or []:
-            for row in _resolve_institution(session, documents, istituto, q.get("parole_chiave")):
-                ref = row.get("_article")
-                if ref and ref not in institution_refs:
-                    institution_refs.append(ref)
-
-    raw_refs = _fusion_text_search(session, case, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
+    case = _case_text(facts, request)
+    baseline_refs = _fusion_text_search(session, case, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
 
     t0 = time.time()
     try:
@@ -2131,38 +2219,50 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         distill_lists.append(_fusion_text_search(session, joined, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K))
     distill_refs = _fusion_merge_by_hits(*distill_lists) if distill_lists else []
 
-    fused = _fusion_merge_by_hits(institution_refs, raw_refs, distill_refs)
+    fused = _fusion_merge_by_hits(current_refs, baseline_refs, distill_refs)
     capped = [ref for ref in fused if ref not in keep][:_FUSION_POOL_CAP]
     selected = keep + capped
 
     candidate_rows = _fetch_any(session, documents, selected)
     article_rows = sorted((r for r in candidate_rows if r.get("_article") in selected),
                           key=lambda r: selected.index(r["_article"]))
-    article_rows = broaden_article_context(
-        {"raw_result": article_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
-        driver, database,
-    ).get("raw_result", article_rows)
-    abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
-    for row in article_rows:
-        if "_article" not in row:
-            d_name = (row.get("d") or {}).get("name") or ""
-            abbr = next((a for p, a in abbr_of.items() if d_name.startswith(p)), None)
-            if abbr:
-                row["_article"] = (_article_num((row.get("s") or {}).get("name") or ""), abbr)
+    have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name")) for r in article_rows}
 
-    spotted = []
-    if feature_flags.enabled("ISSUE_SPOTTING_ENABLED"):
-        try:
-            from .issue_spotting import spotted_rows
-            spotted = spotted_rows(session, documents, case, article_rows)
-        except Exception as exc:
-            logger.warning("issue spotting in the parere failed, nothing added: %s", exc)
-        article_rows = article_rows + spotted
+    crossref_seed_refs = set(named) | set(institutions_resolved)
+    seed_rows = [r for r in article_rows if r.get("_article") in crossref_seed_refs]
+    if seed_rows:
+        broadened = broaden_article_context(
+            {"raw_result": seed_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
+            driver, database,
+        ).get("raw_result", seed_rows)
+        abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
+        for row in broadened:
+            key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
+            if key in have:
+                continue
+            have.add(key)
+            if "_article" not in row:
+                d_name = (row.get("d") or {}).get("name") or ""
+                abbr = next((a for p, a in abbr_of.items() if d_name.startswith(p)), None)
+                if abbr:
+                    row["_article"] = (_article_num((row.get("s") or {}).get("name") or ""), abbr)
+            article_rows.append(row)
 
-    return {"first_rulings": first_rulings, "similar": similar, "keep": keep,
-            "named": [r for r in keep if r in _refs_in(case)], "candidates": fused,
-            "chosen": capped, "selected": selected, "article_rows": article_rows,
-            "spotted": spotted, "institutions_resolved": institution_refs}
+    # v2's own base (_select_articles) already ran issue spotting on its
+    # own candidates; reusing its "spotted" rows here (rather than calling
+    # spotted_rows a second time on fusion's differently-built article_rows)
+    # adds those articles at no extra LLM cost.
+    spotted = v2.get("spotted") or []
+    for row in spotted:
+        key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
+        if key not in have:
+            have.add(key)
+            article_rows.append(row)
+
+    return {"first_rulings": v2["first_rulings"], "similar": v2["similar"], "keep": keep,
+            "named": named, "candidates": fused, "chosen": capped, "selected": selected,
+            "article_rows": article_rows, "spotted": spotted,
+            "institutions_resolved": institutions_resolved}
 
 
 def _select_articles_v2(session, driver, database: str, facts: str, request: str,
@@ -2328,10 +2428,16 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
         "Articoli candidati (testo reale dalla banca dati):\n"
         + "\n\n".join(f"[{label}]\n{text}" for label, text in texts.items())
     )
+    # Round 8 (19 Oct): a fixed 1200-token cap truncated the model's JSON
+    # reply for a 12-article fusion pool on prod ("check failed: every
+    # article would be kept" -- one verdict object per article, each with
+    # a requisito/fatto/reason sentence, routinely exceeds 1200 tokens past
+    # 6-7 articles). Scaled to the number actually being checked.
+    max_tokens = max(1200, 220 * len(texts))
     t0 = time.time()
     try:
         verdicts = _chat_json([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
-                              max_tokens=1200, temperature=0)
+                              max_tokens=max_tokens, temperature=0)
     except Exception as exc:
         logger.warning("applicability check failed, keeping every candidate article: %s", exc)
         vlog("case_analysis_applicability", {"checked": len(texts), "error": str(exc)[:160]},
