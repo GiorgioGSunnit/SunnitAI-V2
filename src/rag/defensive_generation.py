@@ -671,7 +671,15 @@ _CASE_ANALYSIS_V2_SYSTEM = (
     'certezza, altrimenti stringa vuota — non indovinare: un numero sbagliato è peggio di nessun '
     'numero, verrà comunque verificato sul testo reale prima di essere usato}, "parole_chiave": da 4 a '
     '8 nomi tecnici di istituti giuridici e concetti con cui le sentenze trattano quella questione, non '
-    'parole generiche}\n'
+    'parole generiche}. Per le questioni di categoria "qualificazione_alternativa": l\'istituto '
+    'alternativo deve avere lo stesso esito materiale dei fatti dell\'istituto principale — se i fatti '
+    'hanno causato la morte della vittima, l\'alternativa è un\'altra fattispecie che ha la morte come '
+    'esito (per esempio omicidio colposo, o morte o lesione come conseguenza di altro delitto), mai una '
+    'fattispecie di lesione personale che presuppone la sua sopravvivenza, e viceversa se la vittima è '
+    'sopravvissuta; proponi l\'istituto giusto per l\'esito, non il più generico. Quando la '
+    'responsabilità civile può fondarsi sia su un rapporto contrattuale sia su un fatto illecito verso '
+    'la stessa parte, prepara entrambe come questioni di categoria "qualificazione" distinte, non solo '
+    'quella extracontrattuale.\n'
     '- "fatti": i fatti del testo uno per uno, senza accorparli, compresi i dettagli che sembrano '
     "secondari: età e condizioni delle persone, abitudini, luoghi, orari e condizioni di visibilità, "
     "chi era presente e chi ha visto che cosa, che cosa risulta da verbali o dichiarazioni, tempi "
@@ -1008,17 +1016,46 @@ def _rows_to_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return _extract_citations(rows)
 
 
+def _section_quality(section: Dict[str, Any]) -> tuple:
+    """Sort key for picking one Section among exact duplicates sharing a
+    name: titolo_articolo set (the newer parser's own rubrica — BE issue
+    7.1 — only exists on a document's current, re-ingested copy) beats
+    plain_text length alone. Round 3, 18 Oct: length alone (the previous
+    tie-break) won article 628 for a stale duplicate and lost it from the
+    draft (3/3 -> 0/3 on the same code, same facts) — a longer duplicate
+    isn't necessarily the current one; a titolo_articolo'd one is."""
+    return (
+        1 if ((section or {}).get("titolo_articolo") or "").strip() else 0,
+        len((section or {}).get("plain_text") or ""),
+    )
+
+
+def _dedupe_sections(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One row per distinct (document, section name), keeping the
+    highest-_section_quality duplicate, in first-seen order. The corpus has
+    exact duplicate Section nodes per name (same comment elsewhere in this
+    file, e.g. _source_block) and Neo4j gives no ordering guarantee among
+    them beyond what's asked for."""
+    best: Dict[tuple, Dict[str, Any]] = {}
+    order: List[tuple] = []
+    for row in rows:
+        key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
+        if key not in best:
+            order.append(key)
+            best[key] = row
+        elif _section_quality(row.get("s")) > _section_quality(best[key].get("s")):
+            best[key] = row
+    return [best[key] for key in order]
+
+
 def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
     """The text of each article, read from its code by number.
 
-    Tie-broken by plain_text length, descending, not left to Neo4j's
-    unspecified order among same-named rows: the corpus has exact duplicate
-    Section nodes per name (same comment elsewhere in this file, e.g.
-    _source_block), and a thin or empty duplicate taking the LIMIT 6 slot
-    instead of the real one — observed on prod (17 Oct) as a literally
-    user-cited article (584) missing from citations on some runs, not
-    others, same facts, same query — silently drops it downstream:
-    _extract_citations requires more than 10 characters of plain_text."""
+    Duplicates sharing a Section name are resolved by _dedupe_sections, not
+    left to Neo4j's unspecified order or to plain_text length alone — see
+    _section_quality. The Cypher's own ORDER BY/LIMIT only keeps the result
+    set small before that Python-side tie-break; it does not decide which
+    duplicate wins."""
     rows = []
     for num, abbr in refs:
         prefix = _CODE_PREFIXES.get(abbr)
@@ -1028,9 +1065,10 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
             "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
             "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
             "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
-            "RETURN d, s ORDER BY s.name, size(coalesce(s.plain_text, '')) DESC LIMIT 6",
+            "RETURN d, s ORDER BY s.name LIMIT 30",
             prefix=prefix, n=num,
         ).data()
+        found = _dedupe_sections(found)[:6]
         for row in found:
             row["_article"] = (num, abbr)
         rows.extend(found)
@@ -1098,13 +1136,23 @@ def _issue_article_refs(session, parole_chiave: List[str]) -> List[tuple]:
 
 
 def _number_matches_institution(session, doc_id: str, number: str, nome: str) -> bool:
-    """True if the article's own title contains every stem of the
-    institution's name — the same test issue_spotting.article_by_title uses
-    to find a number from a name, run in reverse to check a number the model
-    (not the corpus) proposed. True when the institution has no usable words
-    to check, or the article has no title to check against: this is a
-    last-resort hint already filtered through title-match and full-text
-    search finding nothing, not a reason to drop it by itself."""
+    """True if the article's own title, or (when it has none) its own
+    operative text, contains every stem of the institution's name — the
+    same test issue_spotting.article_by_title uses to find a number from a
+    name, run in reverse to check a number the model (not the corpus)
+    proposed. True when the institution has no usable words to check, or
+    the number matches nothing in the document at all (fetch_article will
+    find nothing either, so there is nothing to wrongly trust); False when
+    the article exists but neither its title nor its text support the name.
+
+    Round 3, 18 Oct: on prod this fell back to "no title to check, don't
+    drop it" for the model's numero_indicativo on a document whose matching
+    Section genuinely had no title set, and the model's number (1950 c.c.,
+    "regresso del fideiussore") was accepted for an unrelated institution
+    ("diritto di revoca del contratto di locazione") purely because there
+    was nothing to check it against — exactly the unverified trust this
+    function exists to prevent. Checking plain_text when title is empty
+    closes that gap without needing every Section to have a title."""
     from .issue_spotting import _stems
 
     stems = _stems(nome)
@@ -1113,13 +1161,21 @@ def _number_matches_institution(session, doc_id: str, number: str, nome: str) ->
     rows = session.run(
         "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id = $doc_id "
         "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
-        "RETURN s.title AS title LIMIT 3",
+        "RETURN s.title AS title, s.plain_text AS plain_text LIMIT 3",
         doc_id=doc_id, n=number,
     ).data()
-    titled = [r for r in rows if (r.get("title") or "").strip()]
-    if not titled:
+    if not rows:
         return True
-    return any(stems <= _stems(r["title"]) for r in titled)
+    for r in rows:
+        title = (r.get("title") or "").strip()
+        if title:
+            if stems <= _stems(title):
+                return True
+        else:
+            text = (r.get("plain_text") or "").strip()
+            if text and stems <= _stems(text):
+                return True
+    return False
 
 
 def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dict[str, str],
@@ -1129,21 +1185,24 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     never by trusting numero_indicativo alone (see _analyse_case_v2's
     docstring for why).
 
-    Order, within the document named by "codice": (1) the article whose
-    own titolo_articolo (the parser's official rubrica, set on ingestion —
-    BE §7.1 — only present on documents already re-ingested under it) holds
-    every word of "nome"; (2) the same test against s.title (today's title,
-    which may be LLM-generated and less reliable, but is all that exists for
-    a document not yet re-ingested); (3) full-text search on "nome" plus the
-    issue's own "parole_chiave", scoped to that document when one resolved
-    — the name alone often doesn't appear in the article's operative text
-    (art. 43's rubrica is "Elemento psicologico del reato", but naming the
-    institution "elemento soggettivo" won't title-match it, and its text
-    says "doloso"/"colposo", not "elemento" or "soggettivo"; parole_chiave is
-    exactly the technical vocabulary the model is asked for to search with);
-    (4) numero_indicativo, only if the article it names is itself titled
-    consistently with "nome" (_number_matches_institution) — a wrong guess
-    with no textual support is dropped rather than fetched.
+    Order, within the document named by "codice": (1) titolo_articolo (the
+    parser's official rubrica, set on ingestion — BE §7.1 — only present on
+    documents already re-ingested under it), then (2) s.title (today's
+    title, which may be LLM-generated and less reliable, but is all that
+    exists for a document not yet re-ingested) — tried against "nome" AND,
+    in turn, each of the issue's "parole_chiave" (round 3, 18 Oct: "nesso
+    causale"/"causa effettiva" won't title-match a rubrica worded "Rapporto
+    di causalità" or "Concorso di cause" even though they're the same
+    institution — the model's own words for it often will, one of them,
+    even when the institution's own name doesn't); (3) full-text search on
+    "nome" plus every "parole_chiave" together, scoped to that document when
+    one resolved — the name alone often doesn't appear in the article's
+    operative text (art. 43's rubrica is "Elemento psicologico del reato",
+    but naming the institution "elemento soggettivo" won't title-match it,
+    and its text says "doloso"/"colposo", not "elemento" or "soggettivo");
+    (4) numero_indicativo, only if the article it names is itself titled or
+    worded consistently with "nome" (_number_matches_institution) — a wrong
+    guess with no textual support is dropped rather than fetched.
 
     Every outcome is logged: institution -> resolved article (or none) ->
     which of the four found it."""
@@ -1173,12 +1232,16 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
         return rows
 
     if doc:
-        for field in ("titolo_articolo", "title"):
-            number = article_by_title(session, doc["id"], nome, field=field)
-            if number:
-                rows = fetch_article(session, doc["id"], number)
-                if rows:
-                    return _found(_tag(rows, number), number, field)
+        for term in [nome, *(parole_chiave or [])]:
+            if not isinstance(term, str) or not term.strip():
+                continue
+            for field in ("titolo_articolo", "title"):
+                number = article_by_title(session, doc["id"], term, field=field)
+                if number:
+                    rows = fetch_article(session, doc["id"], number)
+                    if rows:
+                        reason = field if term == nome else f"{field}, via parola chiave {term!r}"
+                        return _found(_tag(rows, number), number, reason)
 
     search_refs = _issue_article_refs(session, [nome, *(parole_chiave or [])])
     if doc:
@@ -1861,19 +1924,29 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
 
     article_rows = base["article_rows"] + added
     if added:
-        # Re-run broadening over the fuller set: an institution-resolved
-        # article v1 never fetched can itself cross-refer to others.
-        article_rows = broaden_article_context(
-            {"raw_result": article_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
+        # Broaden only from articles the user's own text names, or that v2
+        # itself just resolved via an institution — not every v1 candidate.
+        # Round 3, item 3 (18 Oct): broadening the full merged set re-expanded
+        # articles v1 had already selected and broadened once itself (116,
+        # 118 on Sempronio), pulling in generic cross-references a second
+        # time (1, 2, 11 c.p.) as noise with no connection to what v2 added.
+        seed_rows = [r for r in base["article_rows"] if r.get("_article") in named_in_case] + added
+        broadened = broaden_article_context(
+            {"raw_result": seed_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
             driver, database,
-        ).get("raw_result", article_rows)
+        ).get("raw_result", seed_rows)
         abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
-        for row in article_rows:
+        for row in broadened:
+            key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
+            if key in have:
+                continue
+            have.add(key)
             if "_article" not in row:
                 d_name = (row.get("d") or {}).get("name") or ""
                 abbr = next((a for p, a in abbr_of.items() if d_name.startswith(p)), None)
                 if abbr:
                     row["_article"] = (_article_num((row.get("s") or {}).get("name") or ""), abbr)
+            article_rows.append(row)
 
     article_rows = _prioritise_article_rows(article_rows, named_in_case)
     added_articles = [r["_article"] for r in added if r.get("_article")]

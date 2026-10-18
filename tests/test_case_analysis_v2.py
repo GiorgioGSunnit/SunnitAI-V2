@@ -228,7 +228,7 @@ class _FakeCodicePenaleSession:
             return _Result(rows)
         if "s.name = $n + '.0.0'" in q:                        # _number_matches_institution
             art = self.articles.get(params["n"])
-            return _Result([{"title": art["title"]}] if art else [])
+            return _Result([{"title": art["title"], "plain_text": art["text"]}] if art else [])
         raise AssertionError(f"unexpected query: {q}")
 
 
@@ -265,6 +265,29 @@ def test_43_falls_back_to_fulltext_when_the_name_does_not_match_the_title():
     assert [r["_article"] for r in rows] == [("43", "c.p.")]
 
 
+def test_institution_title_match_tries_parole_chiave_too_not_only_nome():
+    """Round 3, 18 Oct (c1 diagnostic): "nesso causale"/"causa effettiva"
+    does not title-match a rubrica worded "Rapporto di causalità" or
+    "Concorso di cause" even though it is the same institution -- but one
+    of the issue's own parole_chiave, the model's other words for it, can.
+    Title-match is tried for nome first, then for each parola_chiave in
+    turn, before ever falling back to full-text."""
+    articles = {**_CP_ARTICLES,
+               "40": {"title": "Rapporto di causalità",
+                      "text": "Nessuno può essere punito se l'evento non è conseguenza della sua condotta."},
+               "41": {"title": "Concorso di cause",
+                      "text": "Più condotte indipendenti possono concorrere nel determinare lo stesso evento."}}
+    session = _FakeCodicePenaleSession(articles)
+    istituto = {"nome": "nesso causale", "codice": "c.p.", "numero_indicativo": ""}
+
+    # nome alone matches neither title nor (being generic) the full text.
+    assert dg._resolve_institution(session, [_CP_DOC], istituto) == []
+
+    rows = dg._resolve_institution(session, [_CP_DOC], istituto,
+                                   parole_chiave=["rapporto di causalità", "concorso di cause"])
+    assert [r["_article"] for r in rows] == [("40", "c.p.")]
+
+
 def test_a_wrong_number_hint_is_rejected_without_textual_support():
     """The model's number (12, wrong) is never reached as a fallback here
     because full-text already finds 43 — but even if it were the only
@@ -273,6 +296,30 @@ def test_a_wrong_number_hint_is_rejected_without_textual_support():
     session = _FakeCodicePenaleSession()
     assert dg._number_matches_institution(session, "cp-doc", "12", "elemento soggettivo del reato") is False
     assert dg._number_matches_institution(session, "cp-doc", "43", "elemento psicologico del reato") is True
+
+
+def test_number_hint_without_a_title_checks_the_articles_own_text():
+    """Round 3, 18 Oct (c3 diagnostic): art. 1950 c.c.'s matching Section had
+    no title, and the model's wrong numero_indicativo for a completely
+    unrelated institution ("diritto di revoca del contratto di locazione")
+    was accepted purely because there was nothing to check it against --
+    _number_matches_institution used to fail open whenever the title was
+    missing. Falling back to the article's own plain_text when the title
+    is empty closes that gap."""
+    articles = {**_CP_ARTICLES, "1950": {
+        "title": "", "text": "Il fideiussore che ha pagato il debito ha regresso verso il debitore "
+                             "principale, con gli interessi e le spese."}}
+    session = _FakeCodicePenaleSession(articles)
+    assert dg._number_matches_institution(
+        session, "cp-doc", "1950", "diritto di revoca del contratto di locazione") is False
+    assert dg._number_matches_institution(session, "cp-doc", "1950", "regresso del fideiussore") is True
+
+
+def test_number_hint_for_an_unknown_article_fails_open():
+    """Nothing to check at all (fetch_article will also find nothing, so
+    there is nothing to wrongly trust either)."""
+    session = _FakeCodicePenaleSession()
+    assert dg._number_matches_institution(session, "cp-doc", "9999", "qualunque cosa") is True
 
 
 def test_number_hint_accepted_when_nothing_else_resolves_and_it_matches():
@@ -507,6 +554,75 @@ def test_select_articles_v2_does_not_duplicate_an_article_v1_already_has(monkeyp
 
     assert len(picked["article_rows"]) == 1   # not two copies of 589
     assert picked["institutions_resolved"] == []   # nothing new was added
+
+
+def test_select_articles_v2_broadens_only_named_or_added_not_every_v1_candidate(monkeypatch):
+    """Round 3, item 3 (18 Oct): broadening the full merged set re-expanded
+    articles v1 had already selected and broadened once itself (116, 118 on
+    Sempronio), pulling in generic cross-references a second time (1, 2, 11
+    c.p.) with no connection to anything v2 added. The seed for
+    broaden_article_context must be only the articles the user's own text
+    names, plus whatever v2 itself resolved via an institution -- not v1's
+    whole candidate pool."""
+    v1_row = {"d": {"id": "cp-doc", "name": "Codice Penale 2026"},
+             "s": {"name": "116.0.0", "plain_text": "v1's own candidate, not named in the case"},
+             "_article": ("116", "c.p.")}
+    base_result = {"first_rulings": [], "similar": [], "keep": [("116", "c.p.")],
+                   "named": [], "candidates": [("116", "c.p.")], "chosen": [("116", "c.p.")],
+                   "selected": [("116", "c.p.")], "article_rows": [v1_row], "spotted": []}
+    monkeypatch.setattr(dg, "_select_articles", lambda *a, **k: base_result)
+    import src.rag.doc_lookup as doc_lookup
+    monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [_CP_DOC])
+
+    seeds_seen = []
+
+    def fake_broaden(state, driver, database):
+        seeds_seen.append({r.get("_article") for r in state["raw_result"]})
+        return {"raw_result": state["raw_result"]}
+
+    import src.rag.nodes.retrieval as retrieval_module
+    monkeypatch.setattr(retrieval_module, "broaden_article_context", fake_broaden)
+
+    analysis = {"questioni": [{"titolo": "Omicidio colposo", "istituti": [
+        {"nome": "omicidio colposo", "codice": "c.p.", "numero_indicativo": ""}], "parole_chiave": []}]}
+    picked = dg._select_articles_v2(_FakeCodicePenaleSession(), object(), "db", "facts", "", analysis)
+
+    assert len(seeds_seen) == 1
+    seeded = seeds_seen[0]
+    assert ("116", "c.p.") not in seeded   # v1's own candidate, not named -- not re-broadened
+    assert ("589", "c.p.") in seeded       # what v2 just added via the institution -- is
+    # v1's own row is still in the final result, broaden or not.
+    assert ("116", "c.p.") in {r["_article"] for r in picked["article_rows"]}
+
+
+# --- _fetch_articles: one row per duplicate Section, not Neo4j's order -----
+
+def test_section_quality_prefers_titolo_articolo_over_longer_text():
+    """A short duplicate with the parser's own rubrica (BE issue 7.1) beats
+    a longer duplicate without one -- length is only the final tie-break,
+    not the first one. Round 3, 18 Oct: preferring length alone picked a
+    stale duplicate for article 628 and lost it from the draft (3/3 -> 0/3,
+    same code, same facts, flag-off)."""
+    with_titolo = {"titolo_articolo": "Rapina", "plain_text": "breve"}
+    longer_without = {"titolo_articolo": "", "plain_text": "molto più lungo " * 20}
+    assert dg._section_quality(with_titolo) > dg._section_quality(longer_without)
+
+
+def test_section_quality_falls_back_to_length_when_neither_has_titolo_articolo():
+    shorter = {"titolo_articolo": "", "plain_text": "corto"}
+    longer = {"titolo_articolo": "", "plain_text": "molto più lungo di questo"}
+    assert dg._section_quality(longer) > dg._section_quality(shorter)
+
+
+def test_dedupe_sections_keeps_the_best_duplicate_in_first_seen_order():
+    rows = [
+        {"d": {"id": "cp-doc"}, "s": {"name": "628.0.0", "titolo_articolo": "", "plain_text": "stale, lungo " * 10}},
+        {"d": {"id": "cp-doc"}, "s": {"name": "628.0.0", "titolo_articolo": "Rapina", "plain_text": "attuale, corto"}},
+        {"d": {"id": "cp-doc"}, "s": {"name": "629.0.0", "titolo_articolo": "", "plain_text": "altro articolo"}},
+    ]
+    deduped = dg._dedupe_sections(rows)
+    assert [r["s"]["name"] for r in deduped] == ["628.0.0", "629.0.0"]
+    assert deduped[0]["s"]["titolo_articolo"] == "Rapina"
 
 
 # --- _prioritise_article_rows ------------------------------------------------

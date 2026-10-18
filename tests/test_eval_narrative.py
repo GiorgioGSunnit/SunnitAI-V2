@@ -128,6 +128,26 @@ def test_aggregate_lines_shows_counts_as_a_fraction():
     assert "OVERALL average CITED per case: 2.50" in lines
 
 
+def test_aggregate_reports_average_seconds_per_case():
+    def run(repeat, seconds):
+        return {"id": "sempronio", "repeat": repeat, "seconds": seconds,
+                "score": {"expected": [{"expected": "art. 584 cp", "status": "CITED"}]}}
+    results = [run(0, 10.0), run(1, 20.0), run(2, 30.0)]
+    per_case, _ = ev._aggregate(results, 3)
+    assert per_case["sempronio"]["avg_seconds"] == pytest.approx(20.0)
+
+
+def test_aggregate_lines_shows_average_seconds_and_an_overall_average():
+    per_case = {
+        "sempronio": {"counts": {"art. 584 cp": 3}, "n": 2, "errors": 0, "avg_seconds": 10.0},
+        "c2": {"counts": {"art. 1490 cc": 1}, "n": 2, "errors": 0, "avg_seconds": 30.0},
+    }
+    lines = "\n".join(ev._aggregate_lines(per_case, 2.0, 3))
+    assert "avg 10.0 s" in lines
+    assert "avg 30.0 s" in lines
+    assert "overall average 20.0 s per run" in lines
+
+
 def _http_error(code, detail, headers=None):
     import email.message
     import io

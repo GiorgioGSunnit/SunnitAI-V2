@@ -258,7 +258,9 @@ def _aggregate(results, repeat):
         counts = {label: sum(1 for r in ok_runs for e in r["score"]["expected"]
                              if e["expected"] == label and e["status"] == "CITED")
                   for label in labels}
-        per_case[case_id] = {"counts": counts, "n": len(ok_runs), "errors": len(runs) - len(ok_runs)}
+        avg_seconds = sum(r.get("seconds", 0.0) for r in ok_runs) / len(ok_runs) if ok_runs else 0.0
+        per_case[case_id] = {"counts": counts, "n": len(ok_runs), "errors": len(runs) - len(ok_runs),
+                             "avg_seconds": avg_seconds}
         if ok_runs:
             totals.append(sum(counts.values()) / len(ok_runs))
     overall_avg = sum(totals) / len(totals) if totals else 0.0
@@ -271,11 +273,15 @@ def _aggregate_lines(per_case, overall_avg, repeat):
         n = data["n"]
         avg = sum(data["counts"].values()) / n if n else 0.0
         err = f"  ({data['errors']} error(s))" if data["errors"] else ""
-        lines.append(f"## {case_id}  avg CITED {avg:.2f}/{len(data['counts'])}{err}")
+        lines.append(f"## {case_id}  avg CITED {avg:.2f}/{len(data['counts'])}  "
+                     f"avg {data.get('avg_seconds', 0.0):.1f} s{err}")
         for label, c in data["counts"].items():
             lines.append(f"   {c}/{n}  {label}")
+    total_n = sum(d["n"] for d in per_case.values())
+    overall_seconds = (sum(d.get("avg_seconds", 0.0) * d["n"] for d in per_case.values()) /
+                       total_n) if total_n else 0.0
     lines.append(f"\nOVERALL average CITED per case: {overall_avg:.2f} (across {len(per_case)} cases, "
-                 f"{repeat} repeats each)")
+                 f"{repeat} repeats each) — overall average {overall_seconds:.1f} s per run")
     return lines
 
 
