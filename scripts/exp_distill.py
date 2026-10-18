@@ -31,26 +31,42 @@ code/law it belongs to, same scoring vocabulary as tests/eval_narrative.py):
   CURRENT            the live case-analysis v2 pipeline as it runs today
                       (_analyse_case_v2 + _select_articles_v2: institution
                       name -> real article, never a number from memory).
-  RULINGS            the articles cited across the top rulings (document_
-                      type='interpretation') by vector similarity to the
-                      raw text and to the distilled bullets, ranked by how
-                      many of those rulings cite them.
 
-...and four composites, reported separately with their own candidate
-count (and, for SELECTED, noise -- non-expected articles kept):
+...and one composite:
 
   UNION              CURRENT + BASELINE + DISTILL, deduped (first
-                      occurrence wins, in that priority order).
-  UNION_NEIGHBOURS    UNION plus each article's numeric neighbours (N-1,
-                      N+1, N-bis for a bare number) as low-priority
-                      additions -- not "same Capo" (no chapter/title
-                      property exists on a Section to group by), see the
-                      comment by _NEIGHBOUR_RE.
-  UNION_RULINGS      UNION plus RULINGS.
-  SELECTED           UNION's real article text, through the live
-                      applicability check (dg._filter_applicable_articles)
-                      -- the same check run_case_analysis_pipeline applies
-                      today, standalone and read-only here.
+                      occurrence wins, in that priority order). Reported
+                      with its own candidate count, recall@10/@k.
+
+Round 5 (18 Oct) dropped RULINGS and UNION's numeric-neighbour/rulings-
+added variants: on prod, neither changed UNION's recall (33/47 either
+way) and RULINGS alone found only 9/47 -- not worth the extra calls.
+Round 5 instead found UNION keeps ~all its candidates after the
+applicability check (noise, not selection: SELECTED's recall@20 matched
+UNION's, with ~16 non-expected articles still surviving per case) and
+that recall@10 (25/47) trails recall@20 (33/47) -- the right articles are
+usually IN the pool, just not ranked near the top. Four ranking methods
+on the UNION pool answer that, reported at k=8 and k=12 (recall, noise,
+and the latency each one adds):
+
+  RERANK_BULLETS     the existing reranker (RERANKER_URL, qwen3-reranker-
+                      8b), scoring each candidate's real text (titolo_
+                      articolo + plain_text, truncated) against a query
+                      built from the distilled bullets. Called directly
+                      against the endpoint, not through reranker.
+                      rerank_results (which also dedupes/injects/truncates
+                      for the live answer -- this wants a plain score per
+                      candidate). Ties -> more of {current, baseline,
+                      distill} agreeing on it wins.
+  RERANK_RAW          the same, query = the raw case text instead.
+  LLM_RELEVANCE       one batched LLM call (temperature 0, qwen2.5-32b),
+                      scoring every candidate 0-3 for RELEVANCE to the
+                      facts (not mere compatibility), given the bullets
+                      and each candidate's real text. Ties -> RERANK_
+                      BULLETS' score.
+  FUSION_BASELINE     no extra call: rank by how many of {current,
+                      baseline, distill} found the article, then by the
+                      best rank among those that did (_merge_by_hits).
 
 Case set: sempronio, sempronio_no_hint, p1, p2, p3, c1, c2, c3 (from
 tests/eval_narrative_cases.json) plus four new long narrative cases (l1-l4,
@@ -69,8 +85,8 @@ import argparse
 import json
 import logging
 import os
-import re
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -174,11 +190,15 @@ _NEW_LONG_CASES = [
     },
 ]
 
-METHODS = ["baseline", "distill", "distill_questions", "current", "rulings"]
-# Reported separately from METHODS: each is a composite built from the ones
-# above, not an independent retrieval method, so it gets its own section
-# in the report instead of sharing the recall@10/@k table.
-UNION_METHODS = ["union", "union_neighbours", "union_rulings", "selected"]
+METHODS = ["baseline", "distill", "distill_questions", "current"]
+# Reported separately from METHODS: a composite built from the ones above,
+# not an independent retrieval method, so it gets its own section instead
+# of sharing the recall@10/@k table.
+UNION_METHODS = ["union", "selected"]
+# Ranking methods applied to the UNION pool, reported at k=8/12 (recall,
+# noise, added latency) rather than the @10/@k the retrieval methods use --
+# see the module docstring, round 5.
+RANKING_METHODS = ["rerank_bullets", "rerank_raw", "llm_relevance", "fusion_baseline"]
 
 _DISTILL_SYSTEM = (
     "Sei un avvocato italiano. Riscrivi il caso che segue come fatti giuridici neutri, in 5-8 punti brevi, "
@@ -206,22 +226,28 @@ _DISTILL_QUESTIONS_SYSTEM = (
     "JSON di stringhe."
 )
 
+_LLM_RELEVANCE_SYSTEM = (
+    "Sei un avvocato italiano. Dati i fatti di un caso (come punti) e una lista di articoli candidati con "
+    "il loro testo reale, valuta la RILEVANZA di ciascun articolo per questi fatti, su una scala da 0 a 3: "
+    "0 = non rilevante, 1 = rilevante solo per l'area del diritto, 2 = rilevante per uno degli istituti in "
+    "gioco, 3 = direttamente applicabile ai fatti specifici. Valuta la rilevanza per impostare un parere, "
+    "non la compatibilità letterale articolo per articolo. Restituisci SOLO un array JSON di oggetti "
+    "{\"articolo\": \"<identificativo esatto tra parentesi quadre>\", \"punteggio\": 0, 1, 2 o 3}."
+)
+
+# RERANKER_URL/RERANKER_MODEL: same defaults as src/rag/reranker.py. Called
+# directly here (not through reranker.rerank_results, which also dedupes,
+# injects protected sources and truncates for the live answer -- this wants
+# a plain score per UNION candidate) and regardless of RERANKER_ENABLED,
+# since this experiment is specifically testing whether reranking helps.
+_RERANKER_URL = os.getenv("RERANKER_URL", "http://217.160.8.129:8002/v1/rerank")
+_RERANKER_MODEL = os.getenv("RERANKER_MODEL", "reranker")
+
 _ABBR_TO_EVAL_CODE = {"c.p.": "cp", "c.c.": "cc", "c.p.c.": "cpc", "c.p.p.": "cpp"}
 _EVAL_CODE_TO_SEARCH_NAME = {
     "cp": "c.p.", "cc": "c.c.", "cpc": "c.p.c.", "cpp": "c.p.p.",
     "consumo": "Codice del Consumo", "l392": "L. 392/1978",
 }
-# Numeric-only neighbour expansion: N-1, N+1, and N's own "-bis" variant for
-# a bare-numbered article. "Same Capo" grouping (what item 5 actually asked
-# for) isn't available -- Section nodes carry no chapter/title property in
-# this corpus, only the article number in s.name -- so this is a narrower
-# neighbourhood by design, not an oversight, and kept deliberately small (3
-# lookups per article, not every suffix on both sides) given the latency
-# budget (round 5, item 3): an already-slow pipeline doesn't need another
-# multiplier.
-_NEIGHBOUR_RE = re.compile(r"^(\d+)$")
-
-
 # --- Pure helpers (unit-tested in tests/test_exp_distill.py) ---------------
 
 def _row_ref(row):
@@ -293,15 +319,18 @@ def _dedupe_ordered(*ranked_lists):
     return ordered
 
 
-def _neighbour_numbers(article):
-    """[N-1, N+1, "N-bis"] for a bare-numbered article, else [] -- see the
-    module-level comment by _NEIGHBOUR_RE for why this is numeric-only and
-    deliberately narrow."""
-    m = _NEIGHBOUR_RE.match(article)
-    if not m:
-        return []
-    n = int(m.group(1))
-    return [str(x) for x in (n - 1, n + 1) if x > 0] + [f"{n}-bis"]
+def _ref_label(ref):
+    """(eval code, article) -> "<article> <sigla>", the identificativo
+    shown to the reranker/LLM and parsed back from the LLM's reply."""
+    code, article = ref
+    return f"{article} {_EVAL_CODE_TO_SEARCH_NAME.get(code, code)}"
+
+
+def _signal_counts(union_refs, current, baseline, distill):
+    """How many of {current, baseline, distill} contain each UNION ref --
+    RERANK's tie-break and FUSION_BASELINE's whole ranking."""
+    sets = (set(current), set(baseline), set(distill))
+    return {ref: sum(1 for s in sets if ref in s) for ref in union_refs}
 
 
 def _noise(ranked_refs, expected, k):
@@ -371,52 +400,109 @@ def _retrieve(session, text, index, k, warned):
     return _ranked_refs(_vector_search(session, text, index, k, warned) + _fulltext_search(session, text, k))
 
 
-def _rulings_search(session, text, index, k, warned):
-    """Up to k ruling (document_type='interpretation') Section rows closest
-    to `text` by vector similarity, with their own plain_text (to read which
-    articles they cite). The vector index isn't scoped to rulings alone, so
-    a plain top-k would mostly come back statute sections that happen to
-    read similarly to the facts; asking for a wider raw_k and filtering by
-    document_type afterwards is still one query, just a bigger one."""
-    try:
-        embedding = list(embedding_model.embed_query(text))
-    except Exception as exc:
-        logging.warning("embedding failed: %s", exc)
-        return []
-    raw_k = max(k * 10, 200)
-    try:
-        return session.run(
-            "CALL db.index.vector.queryNodes($index, $raw_k, $embedding) YIELD node, score "
-            "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
-            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type = 'interpretation' "
-            "RETURN node.plain_text AS plain_text, score ORDER BY score DESC LIMIT $k",
-            index=index, raw_k=raw_k, k=k, embedding=embedding,
-        ).data()
-    except Exception as exc:
-        if index not in warned:
-            warned.add(index)
-            logging.warning("vector search on index %r failed (does it exist?): %s", index, exc)
-        return []
+# --- UNION candidates' real text, and the two new ranking methods ----------
+
+def _ref_of_row(row):
+    """A fetched article row (dg._fetch_any's shape: _article = (number,
+    abbr-or-document-name)) -> (eval code, article), or None."""
+    article = row.get("_article")
+    if not article:
+        return None
+    code = _code_key(article[1])
+    return (code, article[0]) if code else None
 
 
-def _rulings_refs(session, text, bullets_joined, vector_index, k, warned):
-    """Articles cited across the top rulings for `text` and (if given)
-    `bullets_joined`, ranked by how many of those rulings cite them, then by
-    the best similarity rank among those that do."""
-    rows = _rulings_search(session, text, vector_index, k, warned)
-    if bullets_joined:
-        rows = rows + _rulings_search(session, bullets_joined, vector_index, k, warned)
-    counts, best_rank = {}, {}
-    for rank, row in enumerate(rows, start=1):
-        for number, abbr in dg._refs_in(row.get("plain_text") or ""):
-            code = _code_key(abbr)
-            if not code:
-                continue
-            ref = (code, number)
-            counts[ref] = counts.get(ref, 0) + 1
-            if ref not in best_rank or rank < best_rank[ref]:
-                best_rank[ref] = rank
-    return sorted(counts, key=lambda ref: (-counts[ref], best_rank[ref]))
+def _union_texts(rows, chars=500):
+    """{ref: "titolo_articolo. plain_text"[:chars]} from UNION's fetched
+    rows -- a ref with several rows (fragments of one article) gets them
+    joined; a ref with none gets no entry (callers treat that as "")."""
+    by_ref = {}
+    for row in rows:
+        ref = _ref_of_row(row)
+        if not ref:
+            continue
+        s = row.get("s") or {}
+        titolo = (s.get("titolo_articolo") or "").strip()
+        plain = (s.get("plain_text") or "").strip()
+        text = f"{titolo}. {plain}" if titolo else plain
+        by_ref.setdefault(ref, []).append(text)
+    return {ref: " ".join(texts)[:chars] for ref, texts in by_ref.items()}
+
+
+def _rerank_scores(query, documents, timeout=20):
+    """relevance_score per document, in the same order as `documents`, from
+    the live reranker endpoint -- see the module docstring for why this
+    calls it directly rather than through reranker.rerank_results."""
+    if not documents:
+        return []
+    import requests
+    payload = {
+        "model": _RERANKER_MODEL,
+        "query": ("Instruct: Given a legal query in Italian, retrieve the most relevant legal document "
+                 f"sections\nQuery: {query}"),
+        "documents": documents,
+    }
+    resp = requests.post(
+        _RERANKER_URL,
+        headers={"Authorization": f"Bearer {os.getenv('LLM_API_KEY', '')}", "Content-Type": "application/json"},
+        json=payload, timeout=timeout,
+    )
+    resp.raise_for_status()
+    scores = [0.0] * len(documents)
+    for result in resp.json().get("results") or []:
+        idx = result.get("index")
+        if isinstance(idx, int) and 0 <= idx < len(scores):
+            scores[idx] = result.get("relevance_score", 0.0)
+    return scores
+
+
+def _rank_by_reranker(union_refs, texts, query, signal_counts):
+    """UNION, ranked by reranker score against `query` (descending); ties
+    broken by how many of {current, baseline, distill} found the ref."""
+    docs = [texts.get(ref, "") for ref in union_refs]
+    scores = dict(zip(union_refs, _rerank_scores(query, docs)))
+    return sorted(union_refs, key=lambda ref: (-scores.get(ref, 0.0), -signal_counts.get(ref, 0))), scores
+
+
+def _llm_relevance_scores(bullets_text, union_refs, texts):
+    """{ref: 0-3} from one batched LLM call -- empty for a ref with no text
+    (nothing to show the model) or if the whole call fails or the reply
+    doesn't parse; callers treat a missing ref as score 0."""
+    label_of = {ref: _ref_label(ref) for ref in union_refs}
+    listing = "\n\n".join(f"[{label_of[ref]}]\n{texts[ref]}" for ref in union_refs if texts.get(ref))
+    if not listing:
+        return {}
+    human = f"FATTI:\n{bullets_text or '(nessun punto distillato)'}\n\nARTICOLI CANDIDATI:\n{listing}"
+    raw = dg._chat([SystemMessage(content=_LLM_RELEVANCE_SYSTEM), HumanMessage(content=human)],
+                   max_tokens=2000, temperature=0)
+    parsed = dg.parse_json_reply(raw)
+    if not isinstance(parsed, list):
+        return {}
+    label_to_ref = {v: k for k, v in label_of.items()}
+    scores = {}
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        ref = label_to_ref.get(str(item.get("articolo") or "").strip())
+        if ref is None:
+            continue
+        try:
+            scores[ref] = int(item.get("punteggio"))
+        except (TypeError, ValueError):
+            continue
+    return scores
+
+
+def _rank_by_llm_relevance(union_refs, texts, bullets_text, reranker_scores):
+    """UNION, ranked by LLM relevance score (descending); ties broken by
+    RERANK_BULLETS' score. Fails open to an unchanged order on any error."""
+    try:
+        scores = _llm_relevance_scores(bullets_text, union_refs, texts)
+    except Exception as exc:
+        logging.warning("LLM relevance scoring failed: %s", exc)
+        scores = {}
+    ranked = sorted(union_refs, key=lambda ref: (-scores.get(ref, 0), -reranker_scores.get(ref, 0.0)))
+    return ranked, scores
 
 
 # --- The methods ----------------------------------------------------
@@ -466,23 +552,23 @@ def _to_fetch_ref(ref):
     return (article, name) if name else None
 
 
-def _selected_refs(session, documents, text, union_refs):
-    """UNION's refs, fetched for their real text and passed through the live
-    applicability check (dg._filter_applicable_articles) -- the same check
-    run_case_analysis_pipeline applies today, read-only and standalone here.
-    Order preserved from union_refs, just with the dropped ones removed."""
+def _fetch_union_rows(session, documents, union_refs):
+    """UNION's refs, fetched for their real (titolo_articolo, plain_text)
+    rows -- shared by SELECTED (the applicability check) and the two
+    reranking methods (the text they score), so each ref is fetched once."""
     fetch_refs = [r for r in (_to_fetch_ref(ref) for ref in union_refs) if r]
-    if not fetch_refs:
+    return dg._fetch_any(session, documents, fetch_refs) if fetch_refs else []
+
+
+def _selected_refs(text, rows, union_refs):
+    """union_refs, through the live applicability check
+    (dg._filter_applicable_articles) -- the same check run_case_analysis_
+    pipeline applies today, read-only and standalone here. Order preserved,
+    just with the dropped ones removed."""
+    if not rows:
         return []
-    rows = dg._fetch_any(session, documents, fetch_refs)
     kept_rows = dg._filter_applicable_articles(text, "", rows)
-    kept = set()
-    for row in kept_rows:
-        article = row.get("_article")
-        if article:
-            code = _code_key(article[1])
-            if code:
-                kept.add((code, article[0]))
+    kept = {ref for ref in (_ref_of_row(r) for r in kept_rows) if ref}
     return [ref for ref in union_refs if ref in kept]
 
 
@@ -527,31 +613,50 @@ def _run_case(driver, database, case, vector_index, k, warned):
             current, analysis = [], {}
         detail["current_analysis"] = analysis
 
-        try:
-            rulings = _rulings_refs(session, text, joined, vector_index, k, warned)
-        except Exception as exc:
-            logging.warning("%s: rulings search failed: %s", case["id"], exc)
-            rulings = []
-
         union = _dedupe_ordered(current, baseline, distill)
-
-        neighbours = []
-        for code, article in union:
-            for neighbour in _neighbour_numbers(article):
-                neighbours.append((code, neighbour))
-        union_neighbours = _dedupe_ordered(union, neighbours)
-        union_rulings = _dedupe_ordered(union, rulings)
+        union_rows = _fetch_union_rows(session, documents, union)
+        texts = _union_texts(union_rows)
 
         try:
-            selected = _selected_refs(session, documents, text, union)
+            selected = _selected_refs(text, union_rows, union)
         except Exception as exc:
             logging.warning("%s: applicability check on UNION failed: %s", case["id"], exc)
             selected = union
 
+        signal_counts = _signal_counts(union, current, baseline, distill)
+        latency = {}
+
+        t0 = time.time()
+        try:
+            rerank_bullets, rerank_bullets_scores = (_rank_by_reranker(union, texts, joined, signal_counts)
+                                                     if joined else (union, {}))
+        except Exception as exc:
+            logging.warning("%s: RERANK_BULLETS failed: %s", case["id"], exc)
+            rerank_bullets, rerank_bullets_scores = union, {}
+        latency["rerank_bullets"] = time.time() - t0
+
+        t0 = time.time()
+        try:
+            rerank_raw, _ = _rank_by_reranker(union, texts, text, signal_counts)
+        except Exception as exc:
+            logging.warning("%s: RERANK_RAW failed: %s", case["id"], exc)
+            rerank_raw = union
+        latency["rerank_raw"] = time.time() - t0
+
+        t0 = time.time()
+        llm_relevance, llm_relevance_scores = _rank_by_llm_relevance(union, texts, joined, rerank_bullets_scores)
+        latency["llm_relevance"] = time.time() - t0
+
+        t0 = time.time()
+        fusion_baseline = _merge_by_hits(current, baseline, distill)
+        latency["fusion_baseline"] = time.time() - t0
+
+    detail["llm_relevance_scores"] = {_ref_label(ref): score for ref, score in llm_relevance_scores.items()}
     return {"baseline": baseline, "distill": distill, "distill_questions": distill_questions,
-            "current": current, "rulings": rulings, "union": union,
-            "union_neighbours": union_neighbours, "union_rulings": union_rulings,
-            "selected": selected, "union_candidate_count": len(union), "detail": detail}
+            "current": current, "union": union, "selected": selected,
+            "rerank_bullets": rerank_bullets, "rerank_raw": rerank_raw,
+            "llm_relevance": llm_relevance, "fusion_baseline": fusion_baseline,
+            "union_candidate_count": len(union), "latency": latency, "detail": detail}
 
 
 # --- Reporting -------------------------------------------------------------
@@ -576,13 +681,45 @@ def _recall_table(results, cases, k, methods):
     return lines
 
 
+def _noise_latency_table(results, cases, methods, ks):
+    """recall and noise at each k in `ks`, plus added latency, for a set of
+    ranking methods applied to the UNION pool."""
+    lines = []
+    col = 18 + 6 * len(ks)
+    header = f"{'case':<10s}" + "".join(f"{m:<{col}s}" for m in methods)
+    lines.append(header)
+    totals = {m: {k: [0, 0, 0] for k in ks} for m in methods}  # found, total, noise
+    latency_totals = {m: 0.0 for m in methods}
+    for case in cases:
+        r = results[case["id"]]
+        cells = []
+        for m in methods:
+            parts = []
+            for k in ks:
+                found, total = _recall(r[m], case["expected"], k)
+                noise = _noise(r[m], case["expected"], k)
+                parts.append(f"{found}/{total}@{k} n{noise}")
+                totals[m][k][0] += found; totals[m][k][1] += total; totals[m][k][2] += noise
+            cells.append("  ".join(parts).ljust(col))
+            latency_totals[m] += r["latency"].get(m, 0.0)
+        lines.append(f"{case['id']:<10s}" + "".join(cells))
+    lines.append("")
+    lines.append(f"{'TOTAL':<10s}" + "".join(
+        ("  ".join(f"{totals[m][k][0]}/{totals[m][k][1]}@{k} n{totals[m][k][2]}" for k in ks)).ljust(col)
+        for m in methods))
+    lines.append("")
+    lines.append("total added latency across all cases (seconds): " + ", ".join(
+        f"{m}={latency_totals[m]:.1f}s" for m in methods))
+    return lines
+
+
 def _table_lines(results, cases, k):
     lines = [f"recall@10 and @{k}, found/expected, code-aware:", ""]
     lines += _recall_table(results, cases, k, METHODS)
     lines.append("")
-    lines.append("UNION (current + baseline + distill, deduped), its numeric-neighbour and rulings-added "
-                "variants, and SELECTED (UNION through the live applicability check) -- recall, plus "
-                "candidate count and SELECTED's noise (non-expected articles kept):")
+    lines.append("UNION (current + baseline + distill, deduped) and SELECTED (UNION through the live "
+                "applicability check) -- recall, plus candidate count and SELECTED's noise (non-expected "
+                "articles kept):")
     lines.append("")
     lines += _recall_table(results, cases, k, UNION_METHODS)
     lines.append("")
@@ -592,6 +729,11 @@ def _table_lines(results, cases, k):
         r = results[case["id"]]
         noise = _noise(r["selected"], case["expected"], k)
         lines.append(f"{case['id']:<18s}{r['union_candidate_count']:<20d}{len(r['selected']):<22d}{noise:<18d}")
+    lines.append("")
+    lines.append("Ranking methods on the UNION pool -- recall and noise ('n') at k=8 and k=12 (the number of "
+                "articles a draft can realistically use), plus added latency per case:")
+    lines.append("")
+    lines += _noise_latency_table(results, cases, RANKING_METHODS, (8, 12))
     return lines
 
 
@@ -601,7 +743,7 @@ def _detail_lines(results, cases, k):
         r = results[case["id"]]
         lines.append(f"\n## {case['id']}")
         lines.append(f"   expected: {case['expected']}")
-        for m in METHODS + UNION_METHODS:
+        for m in METHODS + UNION_METHODS + RANKING_METHODS:
             top = r[m][:10]
             lines.append(f"   {m} top 10: {[f'{a} {c}' for c, a in top]}")
         if r["detail"].get("bullets"):
@@ -612,6 +754,8 @@ def _detail_lines(results, cases, k):
             lines.append("   questions:")
             for q in r["detail"]["questions"]:
                 lines.append(f"     - {q}")
+        if r["detail"].get("llm_relevance_scores"):
+            lines.append("   LLM relevance scores: " + str(r["detail"]["llm_relevance_scores"]))
     return lines
 
 

@@ -103,12 +103,6 @@ def test_dedupe_ordered_keeps_first_occurrence_in_priority_order():
     assert ed._dedupe_ordered(current, baseline, distill) == [("cp", "584"), ("cp", "589"), ("cp", "43")]
 
 
-def test_neighbour_numbers_is_numeric_only():
-    assert ed._neighbour_numbers("584") == ["583", "585", "584-bis"]
-    assert ed._neighbour_numbers("1") == ["2", "1-bis"]   # no "0" neighbour
-    assert ed._neighbour_numbers("624-bis") == []   # suffixed numbers are out of scope, by design
-
-
 def test_noise_counts_non_expected_articles_in_the_top_k():
     ranked = [("cp", "584"), ("cp", "999"), ("cp", "589")]
     expected = [{"code": "cp", "article": "584"}, {"code": "cp", "article": "589"}]
@@ -134,3 +128,89 @@ def test_new_long_cases_are_well_formed():
         for item in case["expected"]:
             assert item["code"] in ed.ev.CODES
             assert "article" in item
+
+
+# --- Round 6: ranking the UNION pool (RERANK/LLM_RELEVANCE/FUSION_BASELINE) -
+
+def test_ref_label_builds_a_natural_citation():
+    assert ed._ref_label(("cp", "584")) == "584 c.p."
+    assert ed._ref_label(("consumo", "130")) == "130 Codice del Consumo"
+
+
+def test_signal_counts_how_many_of_the_three_methods_found_each_ref():
+    union = [("cp", "584"), ("cp", "589"), ("cp", "43")]
+    current = [("cp", "584")]
+    baseline = [("cp", "584"), ("cp", "589")]
+    distill = [("cp", "43")]
+    counts = ed._signal_counts(union, current, baseline, distill)
+    assert counts == {("cp", "584"): 2, ("cp", "589"): 1, ("cp", "43"): 1}
+
+
+def test_ref_of_row_reads_the_fetch_any_article_tag():
+    row = {"_article": ("584", "c.p.")}
+    assert ed._ref_of_row(row) == ("cp", "584")
+    assert ed._ref_of_row({}) is None
+    assert ed._ref_of_row({"_article": ("1", "Fonte non classificata")}) is None
+
+
+def test_union_texts_joins_titolo_articolo_and_plain_text_and_merges_fragments():
+    rows = [
+        {"_article": ("584", "c.p."), "s": {"titolo_articolo": "Omicidio preterintenzionale", "plain_text": "Chiunque..."}},
+        {"_article": ("584", "c.p."), "s": {"titolo_articolo": "", "plain_text": "...continua"}},
+        {"_article": ("589", "c.p."), "s": {"titolo_articolo": "", "plain_text": "Chiunque cagiona per colpa..."}},
+    ]
+    texts = ed._union_texts(rows)
+    assert texts[("cp", "584")] == "Omicidio preterintenzionale. Chiunque... ...continua"
+    assert texts[("cp", "589")] == "Chiunque cagiona per colpa..."
+
+
+def test_union_texts_truncates_to_chars():
+    rows = [{"_article": ("584", "c.p."), "s": {"titolo_articolo": "", "plain_text": "x" * 1000}}]
+    assert len(ed._union_texts(rows, chars=50)[("cp", "584")]) == 50
+
+
+def test_rank_by_reranker_orders_by_score_then_signal_count(monkeypatch):
+    union = [("cp", "584"), ("cp", "589"), ("cp", "43")]
+    texts = {("cp", "584"): "a", ("cp", "589"): "b", ("cp", "43"): "c"}
+    # "589" and "43" tie on score; "43" has more signals, so it must come first.
+    monkeypatch.setattr(ed, "_rerank_scores", lambda query, docs: [0.9, 0.5, 0.5])
+    signal_counts = {("cp", "584"): 1, ("cp", "589"): 1, ("cp", "43"): 3}
+    ranked, scores = ed._rank_by_reranker(union, texts, "query", signal_counts)
+    assert ranked == [("cp", "584"), ("cp", "43"), ("cp", "589")]
+    assert scores[("cp", "584")] == 0.9
+
+
+def test_rank_by_llm_relevance_orders_by_score_then_reranker_score(monkeypatch):
+    union = [("cp", "584"), ("cp", "589"), ("cp", "43")]
+    texts = {("cp", "584"): "a", ("cp", "589"): "b", ("cp", "43"): "c"}
+    monkeypatch.setattr(ed, "_llm_relevance_scores",
+                        lambda bullets, refs, texts: {("cp", "584"): 3, ("cp", "589"): 1, ("cp", "43"): 1})
+    reranker_scores = {("cp", "584"): 0.1, ("cp", "589"): 0.2, ("cp", "43"): 0.9}
+    ranked, scores = ed._rank_by_llm_relevance(union, texts, "bullets", reranker_scores)
+    # "584" wins on relevance (3); among the "589"/"43" tie (both 1), "43" wins on reranker score (0.9 > 0.2).
+    assert ranked == [("cp", "584"), ("cp", "43"), ("cp", "589")]
+
+
+def test_rank_by_llm_relevance_fails_open_on_error(monkeypatch):
+    union = [("cp", "584"), ("cp", "589")]
+
+    def boom(*a, **k):
+        raise RuntimeError("timeout")
+    monkeypatch.setattr(ed, "_llm_relevance_scores", boom)
+    ranked, scores = ed._rank_by_llm_relevance(union, {}, "bullets", {})
+    assert ranked == union
+    assert scores == {}
+
+
+def test_llm_relevance_scores_parses_the_label_back_to_its_ref(monkeypatch):
+    union_refs = [("cp", "584"), ("cp", "589")]
+    texts = {("cp", "584"): "testo 584", ("cp", "589"): "testo 589"}
+    monkeypatch.setattr(ed.dg, "_chat",
+                        lambda *a, **k: '[{"articolo": "584 c.p.", "punteggio": 3}, '
+                                       '{"articolo": "589 c.p.", "punteggio": 0}]')
+    scores = ed._llm_relevance_scores("bullets", union_refs, texts)
+    assert scores == {("cp", "584"): 3, ("cp", "589"): 0}
+
+
+def test_llm_relevance_scores_returns_empty_without_any_text():
+    assert ed._llm_relevance_scores("bullets", [("cp", "584")], {}) == {}
