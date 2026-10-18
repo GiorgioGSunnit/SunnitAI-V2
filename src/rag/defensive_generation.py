@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -18,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
-from .ai_chat import _call_chat, parse_json_reply
+from .ai_chat import _call_chat, embedding_model, parse_json_reply
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,31 @@ def _chat(messages, **kwargs):
         logger.warning("_chat: _call_chat does not accept %s; calling without them "
                         "(mismatched deploy of ai_chat.py?)", sorted(dropped))
     return _call_chat(messages, **accepted)
+
+
+_JSON_RETRY_SUFFIX = (
+    "\n\nRispondi SOLO con il JSON richiesto, senza alcuna spiegazione, nota, blocco di codice o testo "
+    "introduttivo: SOLO il JSON, a partire dal primo carattere della risposta."
+)
+
+
+def _chat_json(messages, max_tokens, **chat_kwargs):
+    """_chat() + parse_json_reply, with one retry -- the same system message
+    plus a stricter closing instruction -- if the first reply has no
+    parseable JSON at all. parse_json_reply already tolerates code fences
+    and text around the JSON; a reply with no JSON in it anywhere (prod, 18
+    Oct: "no JSON value in the model's reply", _choose_articles) needs a
+    different answer, not more lenient parsing. Raises ValueError, same as
+    parse_json_reply, if the retry also fails -- every caller already
+    catches that and fails open with a WARNING, unchanged."""
+    raw = _chat(messages, max_tokens=max_tokens, **chat_kwargs)
+    try:
+        return parse_json_reply(raw)
+    except ValueError:
+        pass
+    retried = [SystemMessage(content=messages[0].content + _JSON_RETRY_SUFFIX), *messages[1:]]
+    raw = _chat(retried, max_tokens=max_tokens, **chat_kwargs)
+    return parse_json_reply(raw)
 
 
 def _safe_defaults() -> Dict[str, Any]:
@@ -628,6 +654,30 @@ _CASE_ANALYSIS_SYSTEM = (
 # to reach it. See _analyse_case_v2 / _select_articles_v2.
 CASE_ANALYSIS_FLAG = "CASE_ANALYSIS_ENABLED"
 CASE_ANALYSIS_SOURCE = "case_analysis"
+
+# CASE_POOL_FUSION_ENABLED (default false; has no effect unless
+# CASE_ANALYSIS_ENABLED is also on). Replaces _select_articles_v2's article
+# pool (v1's own code-search + _choose_articles, union institutions) with
+# institution-resolved union raw-text search union distilled-bullet search,
+# ranked by fusion (how many of the three sources agree, then best rank)
+# and capped at _FUSION_POOL_CAP -- validated on scripts/exp_distill.py
+# (round 6, 19 Oct): that ranking (FUSION_BASELINE there) beat every
+# re-ranking method tried, at zero added latency, and the three-source pool
+# reached articles institutions alone missed (Codice del Consumo, L.
+# 392/1978, ...) that still needed v1's own fulltext/choose mechanism today.
+# See _select_articles_fusion.
+_CASE_POOL_FUSION_FLAG = "CASE_POOL_FUSION_ENABLED"
+# section_embeddings_v2: same default scripts/exp_distill.py uses; override
+# via the environment if the live index is named differently.
+_CASE_POOL_VECTOR_INDEX = os.getenv("CASE_POOL_VECTOR_INDEX", "section_embeddings_v2")
+_FUSION_SEARCH_K = 20
+# The top-N institution/raw-text/distilled-bullet candidates a draft can
+# realistically use. Articles named by the user's own text, and whatever
+# the rulings agree on (_candidate_articles' "keep"), are added on top of
+# this cap, uncapped -- they were never in doubt, and the cap exists for
+# the noisier text-search contribution, not for them.
+_FUSION_POOL_CAP = 12
+
 _CASE_CATEGORIES = {
     "qualificazione", "elemento_soggettivo", "nesso_causale",
     "qualificazione_alternativa", "circostanza", "procedura",
@@ -698,6 +748,29 @@ _ARTICLE_CHOICE_SYSTEM = (
     "massimo 6. Escludi gli articoli che non si applicano a questi fatti, ad esempio quelli su reati, "
     "contratti o procedimenti diversi da quelli del caso."
 )
+
+# CASE_POOL_FUSION_ENABLED: the case as neutral fact bullets, in statutory
+# vocabulary, to search with -- same prompt validated on scripts/exp_distill.py
+# (round 6, 19 Oct), ported here unchanged.
+_FUSION_DISTILL_SYSTEM = (
+    "Sei un avvocato italiano. Riscrivi il caso che segue come fatti giuridici neutri, in 5-8 punti brevi, "
+    "uno per ciascuna di queste categorie quando il caso la prevede (saltala se non si applica): "
+    "\"soggetti e ruoli\", \"condotta\", \"elementi sull'intenzione\", \"evento/esito\", \"nesso causale\", "
+    "\"condotta successiva\", \"posizione processuale\", \"cosa si chiede\"; per i fatti penali aggiungi, "
+    "se pertinente, \"circostanze\" (per esempio: vittima in condizione di minorata difesa o particolarmente "
+    "vulnerabile, provocazione, danno riparato, recidiva, numero di persone coinvolte). Per ciascun punto "
+    "usa il termine giuridico tipico con cui il codice descrive quella condotta, quell'evento o quello "
+    "stato soggettivo, non una parafrasi generica: per esempio, se i fatti lo giustificano, \"artifizi o "
+    "raggiri\" (non \"inganno\"), \"induzione in errore\", \"violenza o minaccia\", \"impossessamento\", "
+    "\"sottrazione\", \"custodia\" o \"detenzione\" della cosa, \"dolo\" o \"colpa\" (con la forma specifica: "
+    "negligenza, imprudenza, imperizia), \"inadempimento\", \"mora\", \"vizio della cosa\", \"nesso di "
+    "causalità\". Elimina i dettagli irrilevanti (nomi propri non necessari, descrizioni di contesto, "
+    "aggettivi, orari e luoghi non giuridicamente rilevanti). Non usare MAI un numero di articolo né il "
+    "nome di un codice o di una legge: descrivi solo i fatti, con il vocabolario giuridico italiano. "
+    "Restituisci SOLO un array JSON di oggetti {\"categoria\": una delle etichette sopra, \"testo\": il "
+    "punto, breve}."
+)
+
 # Which codes the keyword search reads, by area: a civil case does not need the
 # criminal prescription articles that "prescrizione" also matches.
 # The Highway Code is left out: in every test run its matches were noise
@@ -725,10 +798,9 @@ def _analyse_case(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
     empty = {"parte_assistita": "", "posizione": "", "area": "", "richiesta": "", "ricerca_fatti": [],
              "questioni": [], "fatti": []}
     try:
-        raw = _chat([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
-                    HumanMessage(content=_case_text(facts, request))],
-                   max_tokens=1500, temperature=0)
-        parsed = parse_json_reply(raw)
+        parsed = _chat_json([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
+                            HumanMessage(content=_case_text(facts, request))],
+                           max_tokens=1500, temperature=0)
     except Exception as exc:
         logger.warning("case analysis failed: %s", exc)
         return empty
@@ -775,10 +847,9 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
              "questioni": [], "fatti": [], "fatti_strutturati": {}}
     t0 = time.time()
     try:
-        raw = _chat([SystemMessage(content=_CASE_ANALYSIS_V2_SYSTEM),
-                    HumanMessage(content=_case_text(facts, request))],
-                   max_tokens=1800, temperature=0)
-        parsed = parse_json_reply(raw)
+        parsed = _chat_json([SystemMessage(content=_CASE_ANALYSIS_V2_SYSTEM),
+                            HumanMessage(content=_case_text(facts, request))],
+                           max_tokens=1800, temperature=0)
     except Exception as exc:
         logger.warning("case analysis (v2) failed: %s", exc)
         return empty
@@ -975,10 +1046,9 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
     listing = "\n".join(f"[art. {n} {c}] {' '.join(t)[:400]}" for (n, c), t in texts.items())
     t0 = time.time()
     try:
-        raw = _chat([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
-                    HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
-                   max_tokens=200, temperature=0)
-        chosen = parse_json_reply(raw)
+        chosen = _chat_json([SystemMessage(content=_ARTICLE_CHOICE_SYSTEM),
+                            HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
+                           max_tokens=200, temperature=0)
     except Exception as exc:
         logger.warning("article choice failed: %s", exc)
         return None
@@ -1891,6 +1961,210 @@ def _prioritise_article_rows(article_rows: List[Dict[str, Any]], named_in_case: 
     return [row for _, row in ordered[:limit]]
 
 
+# --- CASE_POOL_FUSION_ENABLED: institution + raw-text + distilled-bullet search, ranked by fusion ---
+
+_ARTICLE_SECTION_RE = re.compile(r"^(\d+)(-[a-z]+)?(?:\.|$)", re.IGNORECASE)
+
+
+def _row_to_fusion_ref(row: Dict[str, Any]) -> Optional[tuple]:
+    """A Section row from fusion's own vector/fulltext search (the number
+    isn't already known, unlike _fetch_articles'/_resolve_institution's
+    callers) -> (number, code abbreviation or the document's own name,
+    matching _fetch_any's tagging convention) -- or None for a row with no
+    parseable article number or no document."""
+    s, d = row.get("s") or {}, row.get("d") or {}
+    name, d_name = s.get("name") or "", d.get("name") or ""
+    if not _ARTICLE_SECTION_RE.match(name) or not d_name:
+        return None
+    number = _article_num(name)
+    abbr = next((a for a, p in _CODE_PREFIXES.items() if d_name.startswith(p)), None)
+    return (number, abbr or d_name)
+
+
+def _fusion_vector_search(session, text: str, index: str, k: int) -> List[tuple]:
+    try:
+        embedding = list(embedding_model.embed_query(text))
+    except Exception as exc:
+        logger.warning("fusion: embedding failed: %s", exc)
+        return []
+    try:
+        rows = session.run(
+            "CALL db.index.vector.queryNodes($index, $k, $embedding) YIELD node, score "
+            "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type = 'primary' "
+            "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC",
+            index=index, k=k, embedding=embedding,
+        ).data()
+    except Exception as exc:
+        logger.warning("fusion: vector search on index %r failed (does it exist?): %s", index, exc)
+        return []
+    seen, refs = set(), []
+    for row in rows:
+        ref = _row_to_fusion_ref({"s": {"name": row.get("name")}, "d": {"name": row.get("doc_name")}})
+        if ref and ref not in seen:
+            seen.add(ref)
+            refs.append(ref)
+    return refs
+
+
+def _fusion_fulltext_search(session, text: str, k: int) -> List[tuple]:
+    from .lookups import _sanitize_fulltext_query
+    q = _sanitize_fulltext_query(text)
+    if not q:
+        return []
+    try:
+        rows = session.run(
+            "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $k}) YIELD node, score "
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type = 'primary' "
+            "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC",
+            q=q, k=k,
+        ).data()
+    except Exception as exc:
+        logger.warning("fusion: fulltext search failed: %s", exc)
+        return []
+    seen, refs = set(), []
+    for row in rows:
+        ref = _row_to_fusion_ref({"s": {"name": row.get("name")}, "d": {"name": row.get("doc_name")}})
+        if ref and ref not in seen:
+            seen.add(ref)
+            refs.append(ref)
+    return refs
+
+
+def _fusion_text_search(session, text: str, index: str, k: int) -> List[tuple]:
+    """Union of vector + fulltext refs for `text`, in combined rank order
+    (vector first, then fulltext, first occurrence wins) -- the pool's
+    "raw-text search" and "distilled-bullet search" sources both use this."""
+    vector_refs = _fusion_vector_search(session, text, index, k)
+    seen, ordered = set(vector_refs), list(vector_refs)
+    for ref in _fusion_fulltext_search(session, text, k):
+        if ref not in seen:
+            seen.add(ref)
+            ordered.append(ref)
+    return ordered
+
+
+def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
+    """Union of refs across the given lists, ranked by (how many of them
+    contain it, descending), then best rank among those that do --
+    FUSION_BASELINE's ranking, validated on scripts/exp_distill.py (round
+    6, 19 Oct): it beat every re-ranking method tried there, at zero added
+    latency."""
+    hits, best_rank = {}, {}
+    for refs in ref_lists:
+        for rank, ref in enumerate(refs, start=1):
+            hits[ref] = hits.get(ref, 0) + 1
+            if ref not in best_rank or rank < best_rank[ref]:
+                best_rank[ref] = rank
+    return sorted(hits, key=lambda ref: (-hits[ref], best_rank[ref]))
+
+
+def _fusion_distill_bullets(case_text: str) -> List[Dict[str, str]]:
+    parsed = _chat_json([SystemMessage(content=_FUSION_DISTILL_SYSTEM), HumanMessage(content=case_text[:6000])],
+                        max_tokens=700, temperature=0)
+    if not isinstance(parsed, list):
+        return []
+    return [{"categoria": str(b.get("categoria") or ""), "testo": str(b.get("testo") or "").strip()}
+            for b in parsed if isinstance(b, dict) and str(b.get("testo") or "").strip()][:8]
+
+
+def _select_articles_fusion(session, driver, database: str, facts: str, request: str,
+                            analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """Candidate pool = institution-resolved (_resolve_institution, as in
+    _select_articles_v2) union raw-text search (vector + fulltext on the
+    case text itself) union distilled-bullet search (one LLM call,
+    temperature 0, statutory vocabulary, no article numbers) -- ranked by
+    fusion (_fusion_merge_by_hits) and capped at _FUSION_POOL_CAP.
+
+    Articles named by the user's own text, and whatever the rulings agree
+    on (_candidate_articles' "keep"), are added on top of the cap,
+    uncapped -- see _FUSION_POOL_CAP.
+
+    Unlike _select_articles (v1) and _select_articles_v2, this path does
+    NOT call _choose_articles: with institution+text-search already
+    providing a focused, ranked pool, a separate "which of these does the
+    model want" LLM call added latency without changing the result on
+    scripts/exp_distill.py (round 6, 19 Oct) -- FUSION_BASELINE's own
+    recall (27/47 @8, 32/47 @12) beat every method that re-scored the pool
+    with another model call, at zero added latency.
+
+    Behind CASE_POOL_FUSION_ENABLED (requires CASE_ANALYSIS_ENABLED). Used
+    by run_case_analysis_pipeline; returns the same keys _select_articles_v2
+    does, so run_case_analysis_pipeline and scripts/check_applicability.py
+    don't need to special-case which selection path ran."""
+    from .doc_lookup import _fetch_doc_names
+    from .nodes.retrieval import broaden_article_context
+
+    first_rulings = _search_case_law(session, analysis)
+    similar = _search_similar_facts(session, analysis, {(r.get("d") or {}).get("id") for r in first_rulings})
+    counts = _articles_cited_in_rulings(
+        session, [(r.get("d") or {}).get("id") for r in (similar + first_rulings)[:10]])
+    similar_counts = _articles_cited_in_rulings(session, [(r.get("d") or {}).get("id") for r in similar])
+    case = _case_text(facts, request)
+    # code_refs=[]: v1's own fulltext candidate search is what this path
+    # replaces -- only "keep" (named + ruling agreement) is wanted from here.
+    keep, _ = _candidate_articles(case, analysis, similar + first_rulings, [], counts, similar_counts)
+
+    documents = _fetch_doc_names(driver, database)
+
+    institution_refs: List[tuple] = []
+    for q in analysis.get("questioni", []):
+        for istituto in q.get("istituti") or []:
+            for row in _resolve_institution(session, documents, istituto, q.get("parole_chiave")):
+                ref = row.get("_article")
+                if ref and ref not in institution_refs:
+                    institution_refs.append(ref)
+
+    raw_refs = _fusion_text_search(session, case, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
+
+    t0 = time.time()
+    try:
+        bullets = _fusion_distill_bullets(case)
+    except Exception as exc:
+        logger.warning("fusion: distill bullets failed: %s", exc)
+        bullets = []
+    vlog("case_pool_fusion_distill_llm", duration_ms=(time.time() - t0) * 1000)
+    joined = " ".join(b["testo"] for b in bullets)
+    distill_lists = [_fusion_text_search(session, b["testo"], _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
+                     for b in bullets]
+    if joined:
+        distill_lists.append(_fusion_text_search(session, joined, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K))
+    distill_refs = _fusion_merge_by_hits(*distill_lists) if distill_lists else []
+
+    fused = _fusion_merge_by_hits(institution_refs, raw_refs, distill_refs)
+    capped = [ref for ref in fused if ref not in keep][:_FUSION_POOL_CAP]
+    selected = keep + capped
+
+    candidate_rows = _fetch_any(session, documents, selected)
+    article_rows = sorted((r for r in candidate_rows if r.get("_article") in selected),
+                          key=lambda r: selected.index(r["_article"]))
+    article_rows = broaden_article_context(
+        {"raw_result": article_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
+        driver, database,
+    ).get("raw_result", article_rows)
+    abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
+    for row in article_rows:
+        if "_article" not in row:
+            d_name = (row.get("d") or {}).get("name") or ""
+            abbr = next((a for p, a in abbr_of.items() if d_name.startswith(p)), None)
+            if abbr:
+                row["_article"] = (_article_num((row.get("s") or {}).get("name") or ""), abbr)
+
+    spotted = []
+    if feature_flags.enabled("ISSUE_SPOTTING_ENABLED"):
+        try:
+            from .issue_spotting import spotted_rows
+            spotted = spotted_rows(session, documents, case, article_rows)
+        except Exception as exc:
+            logger.warning("issue spotting in the parere failed, nothing added: %s", exc)
+        article_rows = article_rows + spotted
+
+    return {"first_rulings": first_rulings, "similar": similar, "keep": keep,
+            "named": [r for r in keep if r in _refs_in(case)], "candidates": fused,
+            "chosen": capped, "selected": selected, "article_rows": article_rows,
+            "spotted": spotted, "institutions_resolved": institution_refs}
+
+
 def _select_articles_v2(session, driver, database: str, facts: str, request: str,
                         analysis: Dict[str, Any]) -> Dict[str, Any]:
     """v1's full selection (_select_articles — the user's own citations,
@@ -2056,9 +2330,8 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
     )
     t0 = time.time()
     try:
-        raw = _chat([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
-                   max_tokens=1200, temperature=0)
-        verdicts = parse_json_reply(raw)
+        verdicts = _chat_json([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
+                              max_tokens=1200, temperature=0)
     except Exception as exc:
         logger.warning("applicability check failed, keeping every candidate article: %s", exc)
         vlog("case_analysis_applicability", {"checked": len(texts), "error": str(exc)[:160]},
@@ -2135,14 +2408,16 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
 
     pipeline_t0 = time.time()
     case_analysis_v2 = feature_flags.enabled(CASE_ANALYSIS_FLAG)
+    pool_fusion = case_analysis_v2 and feature_flags.enabled(_CASE_POOL_FUSION_FLAG)
     analysis = _analyse_case_v2(facts, session_lang, request) if case_analysis_v2 \
         else _analyse_case(facts, session_lang, request)
     article_rows, ruling_rows, candidates, selected = [], [], [], []
     retrieval_t0 = time.time()
     try:
         with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
-            picked = (_select_articles_v2 if case_analysis_v2 else _select_articles)(
-                session, driver, NEO4J_DATABASE, facts, request, analysis)
+            select_fn = _select_articles_fusion if pool_fusion else (
+                _select_articles_v2 if case_analysis_v2 else _select_articles)
+            picked = select_fn(session, driver, NEO4J_DATABASE, facts, request, analysis)
             first_rulings, similar = picked["first_rulings"], picked["similar"]
             candidates, selected, article_rows = picked["candidates"], picked["selected"], picked["article_rows"]
             # Second search with the verified article numbers: rulings on the
@@ -2153,8 +2428,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                                            selected, analysis)
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
-    vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "articles": len(article_rows),
-                                     "rulings": len(ruling_rows)}, duration_ms=(time.time() - retrieval_t0) * 1000)
+    vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "pool_fusion": pool_fusion,
+                                     "articles": len(article_rows), "rulings": len(ruling_rows)},
+        duration_ms=(time.time() - retrieval_t0) * 1000)
 
     # Per-article applicability (round 3, item 3): off unless
     # APPLICABILITY_CHECK_ENABLED. Runs after article_rows/ruling_rows are
@@ -2188,7 +2464,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # comes back with sections: [] — a citation naming a source with nothing
     # in it. Drop it here rather than let it reach the user.
     citations = [c for c in _rows_to_sources(article_rows + ruling_rows) if c.get("sections")]
-    vlog("case_analysis_pipeline", {"v2": case_analysis_v2}, duration_ms=(time.time() - pipeline_t0) * 1000)
+    vlog("case_analysis_pipeline", {"v2": case_analysis_v2, "pool_fusion": pool_fusion},
+        duration_ms=(time.time() - pipeline_t0) * 1000)
     return {"draft": draft, "citations": citations,
             "analysis": analysis, "articles": found, "principles": principles,
             "candidates": [f"art. {n} {c}" for n, c in candidates],

@@ -166,6 +166,41 @@ def _stems(text: str) -> set:
 
 _TITLE_FIELDS = {"title", "titolo_articolo"}
 
+# Round 6, 19 Oct: the CONTAINS scan below is an unindexed full-document
+# property scan, run per stem per field per institution (up to 2*(1+len(
+# parole_chiave)) times in _resolve_institution's title-match loop) --
+# a plausible contributor to c3's 70s/189s/>400s(timeout) latency spread.
+# "CREATE FULLTEXT INDEX section_title_fulltext IF NOT EXISTS FOR (s:Section)
+# ON EACH [s.titolo_articolo, s.title]" turns it into a term-dictionary
+# lookup instead. Used when present, falling back to the scan when not (the
+# index doesn't exist until that statement is run on prod) -- see
+# _title_fulltext_rows.
+_TITLE_FULLTEXT_INDEX = "section_title_fulltext"
+
+
+def _title_fulltext_rows(session, doc_id: str, stems: set, field: str, visibility: str, **params):
+    """Candidate rows from _TITLE_FULLTEXT_INDEX, or None if it doesn't
+    exist yet (or the call fails for any other reason) -- the caller then
+    falls back to the CONTAINS scan rather than treating "no index" as "no
+    match". A prefix wildcard per stem, field-qualified since titolo_
+    articolo and title share one index, approximates the scan's CONTAINS
+    semantics; article_by_title's own stems-subset check below re-verifies
+    every row this returns exactly, the same way it already does for the
+    scan's rows, so a looser Lucene match can only cost recall, never
+    correctness."""
+    lucene = " ".join(f"+{field}:{w}*" for w in sorted(stems))
+    try:
+        return session.run(
+            "CALL db.index.fulltext.queryNodes($index, $lucene) YIELD node "
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.id = $doc_id "
+            + (f"AND {visibility} " if visibility else "")
+            + f"RETURN DISTINCT node.name AS name, node.{field} AS title LIMIT 50",
+            index=_TITLE_FULLTEXT_INDEX, lucene=lucene, doc_id=doc_id, **params,
+        ).data()
+    except Exception as exc:
+        logger.info("title fulltext index unavailable, falling back to a CONTAINS scan: %s", exc)
+        return None
+
 
 def article_by_title(session, doc_id: str, institution: str, visibility: str = "", *,
                      field: str = "title", **params) -> Optional[str]:
@@ -186,13 +221,15 @@ def article_by_title(session, doc_id: str, institution: str, visibility: str = "
     stems = _stems(institution)
     if not stems:
         return None
-    rows = session.run(
-        "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-        f"WHERE d.id = $doc_id AND ALL(w IN $stems WHERE toLower(coalesce(s.{field}, '')) CONTAINS w) "
-        + (f"AND {visibility} " if visibility else "")
-        + f"RETURN DISTINCT s.name AS name, s.{field} AS title LIMIT 50",
-        doc_id=doc_id, stems=sorted(stems), **params,
-    ).data()
+    rows = _title_fulltext_rows(session, doc_id, stems, field, visibility, **params)
+    if rows is None:
+        rows = session.run(
+            "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+            f"WHERE d.id = $doc_id AND ALL(w IN $stems WHERE toLower(coalesce(s.{field}, '')) CONTAINS w) "
+            + (f"AND {visibility} " if visibility else "")
+            + f"RETURN DISTINCT s.name AS name, s.{field} AS title LIMIT 50",
+            doc_id=doc_id, stems=sorted(stems), **params,
+        ).data()
     best = None
     for r in rows:
         m = _SECTION_ARTICLE.match(str(r.get("name") or ""))

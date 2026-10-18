@@ -6,16 +6,17 @@ Run from the app folder so it uses the app's code and .env (be2 or production):
     ... --request "the user's message, when the case is an uploaded document"
     ... --articles "116 c.p.,589 c.p.,590 c.p."   # check these articles only, skip the selection
     ... --old-prompt                                # also ask 6db1125's original prompt, for comparison
-    ... --v1 / --v2                                 # force a path regardless of CASE_ANALYSIS_ENABLED
+    ... --v1 / --v2 / --fusion                      # force a path regardless of the flags
 
-Follows CASE_ANALYSIS_ENABLED from the environment by default, same as the
-app (it used to always show the v1 path, ignoring the flag — fixed 17 Oct,
-after a prod run with the flag set still showed "keep / candidates / model's
-choice", the v1 vocabulary, giving no way to diagnose what v2 actually did).
-Pass --v1 or --v2 to check one path regardless of what's set. With v2, also
-prints each questione's "istituti" and, for each one, the article it
-resolved to (or none) and which of titolo_articolo / title / full-text / the
-model's own number found it — see defensive_generation._resolve_institution.
+Follows CASE_ANALYSIS_ENABLED and CASE_POOL_FUSION_ENABLED from the
+environment by default, same as the app (it used to always show the v1
+path, ignoring the flags — fixed 17 Oct). Pass --v1, --v2 or --fusion to
+check one path regardless of what's set. With v2 or fusion, also prints
+each questione's "istituti" and, for each one, the article it resolved to
+(or none) and which of titolo_articolo / title / full-text / the model's
+own number found it — see defensive_generation._resolve_institution. With
+fusion, also prints the ranked candidate pool before and after the
+_FUSION_POOL_CAP cut.
 
 Neo4j sessions are read-only and nothing is written. It calls the chat model
 for the case analysis, the article choice (v1) and the verdicts, never for
@@ -77,8 +78,10 @@ def main() -> None:
     parser.add_argument("--articles", help='comma-separated, e.g. "116 c.p.,589 c.p."')
     parser.add_argument("--old-prompt", action="store_true", help="also run 6db1125's original prompt")
     path = parser.add_mutually_exclusive_group()
-    path.add_argument("--v1", action="store_true", help="force the v1 path, regardless of CASE_ANALYSIS_ENABLED")
-    path.add_argument("--v2", action="store_true", help="force the v2 path, regardless of CASE_ANALYSIS_ENABLED")
+    path.add_argument("--v1", action="store_true", help="force the v1 path, regardless of the flags")
+    path.add_argument("--v2", action="store_true",
+                      help="force the v2 path (institutions union v1), regardless of the flags")
+    path.add_argument("--fusion", action="store_true", help="force the fusion path, regardless of the flags")
     args = parser.parse_args()
 
     import src.rag.defensive_generation as dg
@@ -86,9 +89,13 @@ def main() -> None:
     from langchain_core.messages import HumanMessage, SystemMessage
     from src.rag.main import NEO4J_DATABASE, driver
 
-    use_v2 = args.v2 or (feature_flags.enabled(dg.CASE_ANALYSIS_FLAG) and not args.v1)
-    forced = " (forced)" if (args.v1 or args.v2) else " (from CASE_ANALYSIS_ENABLED)"
-    print(f"Path: {'v2' if use_v2 else 'v1'}{forced}")
+    forced_path = "fusion" if args.fusion else "v2" if args.v2 else "v1" if args.v1 else None
+    case_analysis_on = feature_flags.enabled(dg.CASE_ANALYSIS_FLAG)
+    fusion_on = case_analysis_on and feature_flags.enabled(dg._CASE_POOL_FUSION_FLAG)
+    path_name = forced_path or ("fusion" if fusion_on else "v2" if case_analysis_on else "v1")
+    use_v2, use_fusion = path_name in ("v2", "fusion"), path_name == "fusion"
+    forced = " (forced)" if forced_path else " (from CASE_ANALYSIS_ENABLED/CASE_POOL_FUSION_ENABLED)"
+    print(f"Path: {path_name}{forced}")
 
     with open(args.facts_file, encoding="utf-8") as f:
         facts = f.read().strip()
@@ -115,22 +122,36 @@ def main() -> None:
                 print(f"Checking only: {', '.join(map(_label, refs))}")
             elif use_v2:
                 analysis = dg._analyse_case_v2(facts, "it", args.request)
-                print("\nCase analysis questions (v2):")
+                print(f"\nCase analysis questions ({path_name}):")
                 for q in analysis.get("questioni", []):
                     istituti = ", ".join(_istituto_label(i) for i in q.get("istituti") or []) or "-"
                     print(f"  - {q.get('titolo')} [{q.get('categoria') or '-'}]")
                     print(f"      istituti: {istituti}")
-                picked = dg._select_articles_v2(session, driver, NEO4J_DATABASE, facts, args.request, analysis)
+                select_fn = dg._select_articles_fusion if use_fusion else dg._select_articles_v2
+                picked = select_fn(session, driver, NEO4J_DATABASE, facts, args.request, analysis)
                 keep = picked["keep"]
-                print("\nSelection (v2 = v1's own selection, union institution-resolved):")
-                print(f"  keep, named by the user   : {', '.join(map(_label, picked['named'])) or 'none'}")
-                print(f"  keep, rulings agree       : "
-                     f"{', '.join(_label(k) for k in keep if k not in picked['named']) or 'none'}")
-                print(f"  candidates (v1)           : {', '.join(map(_label, picked['candidates']))}")
-                print(f"  model's choice (v1)       : {', '.join(map(_label, picked['chosen'] or []))}")
-                print(f"  institutions resolved (v2): "
-                     f"{', '.join(map(_label, picked.get('institutions_resolved') or [])) or 'none'}")
-                print(f"  selected                  : {', '.join(map(_label, picked['selected']))}")
+                if use_fusion:
+                    print("\nSelection (fusion = institutions ∪ raw-text search ∪ distilled-bullet search, "
+                         "ranked, capped):")
+                    print(f"  keep, named by the user     : {', '.join(map(_label, picked['named'])) or 'none'}")
+                    print(f"  keep, rulings agree         : "
+                         f"{', '.join(_label(k) for k in keep if k not in picked['named']) or 'none'}")
+                    print(f"  fusion candidates (ranked)  : {', '.join(map(_label, picked['candidates'])) or 'none'}")
+                    print(f"  kept after the cap ({dg._FUSION_POOL_CAP:>2d})   : "
+                         f"{', '.join(map(_label, picked['chosen'] or [])) or 'none'}")
+                    print(f"  institutions resolved       : "
+                         f"{', '.join(map(_label, picked.get('institutions_resolved') or [])) or 'none'}")
+                    print(f"  selected                    : {', '.join(map(_label, picked['selected']))}")
+                else:
+                    print("\nSelection (v2 = v1's own selection, union institution-resolved):")
+                    print(f"  keep, named by the user   : {', '.join(map(_label, picked['named'])) or 'none'}")
+                    print(f"  keep, rulings agree       : "
+                         f"{', '.join(_label(k) for k in keep if k not in picked['named']) or 'none'}")
+                    print(f"  candidates (v1)           : {', '.join(map(_label, picked['candidates']))}")
+                    print(f"  model's choice (v1)       : {', '.join(map(_label, picked['chosen'] or []))}")
+                    print(f"  institutions resolved (v2): "
+                         f"{', '.join(map(_label, picked.get('institutions_resolved') or [])) or 'none'}")
+                    print(f"  selected                  : {', '.join(map(_label, picked['selected']))}")
                 rows = picked["article_rows"]
                 crossref = sorted({_label(r['_article']) for r in rows
                                    if r.get("_source") == "broaden_article_crossref" and r.get("_article")})

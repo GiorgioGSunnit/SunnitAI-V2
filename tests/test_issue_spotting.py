@@ -109,6 +109,12 @@ class _Session:
 
     def run(self, query, **params):
         self.queries.append((query, params))
+        if "db.index.fulltext.queryNodes($index" in query:
+            # The title fulltext index (round 6, 19 Oct) doesn't exist in this
+            # fake corpus -- real Neo4j raises for a missing index; article_by_
+            # title's own try/except then falls back to the CONTAINS scan below,
+            # which these tests exercise.
+            raise Exception("no such fulltext schema index: section_title_fulltext")
         if "toLower(coalesce(s.title" in query:     # Neo4j's CONTAINS: a substring test
             return _Result([{"name": name, "title": title} for (doc, name), title in self.TITLES.items()
                             if doc == params["doc_id"] and all(w in title.lower() for w in params["stems"])])
@@ -162,6 +168,28 @@ def test_spotted_articles_are_fetched_checked_and_tagged(models):
 ])
 def test_articles_are_found_by_their_title(doc_id, institution, number):
     assert isp.article_by_title(_Session(), doc_id, institution) == number
+
+
+class _FulltextIndexSession(_Session):
+    """Like _Session, but the title fulltext index exists and answers the
+    field-qualified wildcard query directly -- the CONTAINS scan must never
+    run (if it did, it would answer from the same TITLES fixture and the
+    test couldn't tell the two paths apart; the explicit failure here does)."""
+
+    def run(self, query, **params):
+        self.queries.append((query, params))
+        if "db.index.fulltext.queryNodes($index" in query:
+            return _Result([{"name": name, "title": title} for (doc, name), title in self.TITLES.items()
+                            if doc == params["doc_id"]])
+        if "toLower(coalesce(s.title" in query:
+            raise AssertionError("the CONTAINS scan ran despite the fulltext index answering")
+        return _Result([])
+
+
+def test_article_by_title_uses_the_fulltext_index_when_it_exists():
+    session = _FulltextIndexSession()
+    assert isp.article_by_title(session, "cp", "Rapina") == "628"
+    assert any("db.index.fulltext.queryNodes($index" in q for q, _ in session.queries)
 
 
 def test_the_title_wins_over_a_wrong_number(monkeypatch):
