@@ -68,17 +68,17 @@ and the latency each one adds):
                       baseline, distill} found the article, then by the
                       best rank among those that did (_merge_by_hits).
 
-Case set: sempronio, sempronio_no_hint, p1, p2, p3, c1, c2, c3 (from
-tests/eval_narrative_cases.json) plus four new long narrative cases (l1-l4,
-defined below). cp_short, cc_short, q_long and dottrina are deliberately
-left out of this experiment -- they stay in tests/eval_narrative.py's own
-regression run.
+Case set: sempronio, sempronio_no_hint, p1, p2, p3, c1, c2, c3, l1, l2, l3,
+l4 -- all from tests/eval_narrative_cases.json (one source of truth with
+tests/eval_narrative.py; l1-l4 were defined only here until 2026-10-19).
+cp_short, cc_short, q_long and dottrina are deliberately left out of this
+experiment -- they stay in tests/eval_narrative.py's own regression run.
 
-2026-10-18 data fixes: l2's "guaribile in 40 giorni" -> "60 giorni" (583
-c.p.'s aggravation needs MORE than 40 days, so 40 itself didn't actually
-support the expected article). c3's expected dropped "art. 5 l392" -- see
-tests/eval_narrative_cases.json's _about for why (L. 392/1978 isn't in the
-corpus).
+2026-10-18 data fixes (now in tests/eval_narrative_cases.json itself, see
+its _about): l2's "guaribile in 40 giorni" -> "60 giorni" (583 c.p.'s
+aggravation needs MORE than 40 days, so 40 itself didn't actually support
+the expected article). c3's expected dropped "art. 5 l392" (L. 392/1978
+isn't in the corpus).
 """
 
 import argparse
@@ -121,74 +121,11 @@ from src.rag.lookups import _sanitize_fulltext_query  # noqa: E402
 
 DEFAULT_CASES = Path(__file__).resolve().parent.parent / "tests" / "eval_narrative_cases.json"
 
-# --- The 8 cases carried over from eval_narrative_cases.json ---------------
-_CARRIED_OVER = ["sempronio", "sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3"]
-
-# --- Four new long narrative cases, code-aware expected articles -----------
-_NEW_LONG_CASES = [
-    {
-        "id": "l1",
-        "question": (
-            "Tizio, 34 anni, disoccupato, trascorre le giornate tra il bar sotto casa e la palestra. Un "
-            "pomeriggio di marzo telefona a Maria, 81 anni, vedova, che vive sola a Ferrara e ha una nipote "
-            "che studia a Bologna. Tizio si presenta come “il dottor Rossi dell’ufficio antifrode "
-            "della sua banca”, le spiega con tono cordiale che sul suo conto sono stati rilevati "
-            "movimenti sospetti e che, per bloccarli, deve comunicargli il codice utente e il codice che "
-            "riceverà via SMS. Maria, preoccupata, glieli detta. Con quei codici Tizio accede al suo "
-            "home banking da un internet point e dispone due bonifici per complessivi 14.500 euro verso un "
-            "conto intestato a un prestanome. La nipote se ne accorge una settimana dopo. Il candidato, "
-            "assunte le vesti del legale della persona offesa, individui i reati configurabili e le "
-            "circostanze rilevanti."
-        ),
-        "expected": [{"code": "cp", "article": a} for a in ["640", "640-ter", "494", "61"]],
-    },
-    {
-        # "guaribile in 60 giorni" (originally 40): 583 c.p.'s aggravation
-        # requires a healing time of MORE than 40 days -- 40 itself doesn't
-        # trigger it, so the original wording made the expected article wrong.
-        "id": "l2",
-        "question": (
-            "Caio, dopo una serata passata in discoteca con alcuni amici che lo hanno lasciato senza "
-            "passaggio, decide di tornare a piedi. Passando davanti a una villetta con le luci spente, "
-            "forza la porta finestra del retro con un cacciavite ed entra. In camera da letto riempie uno "
-            "zaino con gioielli e due orologi. Il proprietario, Sempronio, rientrato prima del previsto da "
-            "una cena, lo sorprende nel corridoio; Caio, per guadagnare la fuga con la refurtiva, lo spinge "
-            "con forza contro il mobile dell’ingresso. Sempronio riporta una frattura del polso "
-            "guaribile in 60 giorni. Caio viene fermato poco dopo da una pattuglia con lo zaino. Il "
-            "candidato, assunte le vesti del difensore di Caio, qualifichi i fatti e indichi la linea "
-            "difensiva."
-        ),
-        "expected": [{"code": "cp", "article": a} for a in ["628", "624-bis", "582", "583"]],
-    },
-    {
-        "id": "l3",
-        "question": (
-            "La signora Bianchi, proprietaria di un appartamento al terzo piano di un condominio del 1970 a "
-            "Torino, nota a novembre macchie di umidità sul soffitto del bagno, che peggiorano dopo ogni "
-            "pioggia. Ha appena rifatto la cucina e ha in programma di affittare l’immobile a studenti. "
-            "Un idraulico da lei incaricato accerta che l’acqua proviene dalla colonna di scarico "
-            "condominiale, deteriorata. Scrive tre volte all’amministratore, che risponde di dover "
-            "attendere l’assemblea di primavera. Nel frattempo il controsoffitto crolla in parte e "
-            "l’inquilino che doveva entrare a gennaio rinuncia. Quali azioni può intraprendere la "
-            "signora Bianchi, nei confronti di chi e per quali danni?"
-        ),
-        "expected": [{"code": "cc", "article": a} for a in ["2051", "1117", "1130", "2043"]],
-    },
-    {
-        "id": "l4",
-        "question": (
-            "Marco e Giulia sono sposati da dodici anni e hanno due figli di 7 e 10 anni; vivono nella casa "
-            "di proprietà di Giulia a Bari, ereditata dai genitori. Marco, dirigente commerciale, viaggia "
-            "spesso per lavoro. A settembre Giulia scopre, leggendo alcuni messaggi sul tablet di famiglia, "
-            "che Marco ha da un anno una relazione con una collega; dopo una lite violenta Marco lascia la "
-            "casa e si trasferisce in un residence. I figli frequentano la scuola vicino casa e il calcio il "
-            "martedì e il giovedì. Giulia vuole separarsi, ottenere che i figli restino con lei e un "
-            "contributo economico. Il candidato, assunte le vesti del legale di Giulia, illustri gli "
-            "strumenti e le domande da proporre."
-        ),
-        "expected": [{"code": "cc", "article": a} for a in ["151", "156", "337-ter", "337-sexies"]],
-    },
-]
+# --- The 12 cases, all from eval_narrative_cases.json (one source of truth,
+# since 2026-10-19: l1-l4 used to be defined here too, duplicating what's now
+# also in that file -- moved there to stop the two from drifting apart) ------
+_CARRIED_OVER = ["sempronio", "sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3",
+                "l1", "l2", "l3", "l4"]
 
 METHODS = ["baseline", "distill", "distill_questions", "current"]
 # Reported separately from METHODS: a composite built from the ones above,
@@ -772,7 +709,7 @@ def main():
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
 
     carried = {c["id"]: c for c in json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]}
-    cases = [carried[cid] for cid in _CARRIED_OVER if cid in carried] + _NEW_LONG_CASES
+    cases = [carried[cid] for cid in _CARRIED_OVER if cid in carried]
     if args.only:
         wanted = {c.strip() for c in args.only.split(",")}
         cases = [c for c in cases if c["id"] in wanted]

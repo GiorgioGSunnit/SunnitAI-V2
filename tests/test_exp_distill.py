@@ -122,8 +122,15 @@ def test_to_fetch_ref_maps_eval_code_to_a_search_name():
     assert ed._to_fetch_ref(("consumo", "130")) == ("130", "Codice del Consumo")
 
 
-def test_new_long_cases_are_well_formed():
-    for case in ed._NEW_LONG_CASES:
+def test_long_cases_are_carried_over_from_eval_narrative_cases_json():
+    """l1-l4 (round 5, 18 Oct) moved into eval_narrative_cases.json on 19
+    Oct, so exp_distill.py and eval_narrative.py share one source of truth
+    instead of two copies that can drift apart."""
+    import json
+    cases = {c["id"]: c for c in json.loads(ed.DEFAULT_CASES.read_text(encoding="utf-8"))["cases"]}
+    for case_id in ("l1", "l2", "l3", "l4"):
+        assert case_id in ed._CARRIED_OVER
+        case = cases[case_id]
         assert case["question"].strip()
         for item in case["expected"]:
             assert item["code"] in ed.ev.CODES

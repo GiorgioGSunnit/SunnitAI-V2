@@ -80,7 +80,7 @@ def test_expected_documents_are_checked():
 def test_the_cases_file_is_complete():
     cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
     ids = [c["id"] for c in cases if not c.get("extra")]
-    assert ids == ["sempronio", "p1", "p2", "p3", "c1", "c2", "c3", "cp_short"]
+    assert ids == ["sempronio", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4", "cp_short"]
     for case in cases:
         assert case["question"].strip()
         for item in case["expected"]:
