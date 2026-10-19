@@ -301,6 +301,103 @@ def test_title_match_tags_heading_match_but_fulltext_and_number_hint_do_not():
     assert number_hint_rows and all(not r.get("_heading_match") for r in number_hint_rows)
 
 
+# --- HEADING_INDEX_ENABLED (round 10, 19 Oct): semantic match on the ------
+# article's own rubrica, for an institution article_by_title's word/stem
+# matching structurally rejects (a real rubrica, wrong only because of a
+# word-count rule, not because it names the wrong article).
+
+class _FakeHeadingIndexSession(_FakeCodicePenaleSession):
+    """Extends _FakeCodicePenaleSession with a canned db.index.vector.
+    queryNodes reply -- the embedding itself is mocked in each test, so
+    this fake session doesn't need to interpret it, only return what a
+    real ANN query against the heading index would have ranked first."""
+
+    def __init__(self, articles=_CP_ARTICLES, vector_rows=()):
+        super().__init__(articles)
+        self.vector_rows = list(vector_rows)
+
+    def run(self, query, **params):
+        q = " ".join(query.split())
+        if "db.index.vector.queryNodes" in q:
+            return _Result(self.vector_rows)
+        return super().run(query, **params)
+
+
+@pytest.fixture(autouse=False)
+def fake_embedding(monkeypatch):
+    monkeypatch.setattr(dg, "embedding_model", type("M", (), {"embed_query": lambda self, text: [0.0]})())
+
+
+def test_heading_index_match_accepts_a_candidate_with_enough_stem_overlap(fake_embedding):
+    session = _FakeHeadingIndexSession(vector_rows=[
+        {"name": "56.0.0", "titolo_articolo": "Delitto tentato", "score": 0.9},
+    ])
+    # "tentativo" (stem "tenta") overlaps the single content stem of
+    # "Delitto tentato" ("tenta") -- needed = 1, found = 1.
+    assert dg._heading_index_match(session, "cp-doc", "tentativo") == "56"
+
+
+def test_heading_index_match_rejects_a_candidate_with_no_shared_words(fake_embedding):
+    session = _FakeHeadingIndexSession(vector_rows=[
+        {"name": "999.0.0", "titolo_articolo": "Tutt'altra materia", "score": 0.95},
+    ])
+    assert dg._heading_index_match(session, "cp-doc", "tentativo") is None
+
+
+def test_heading_index_match_returns_none_when_the_index_does_not_exist(monkeypatch, fake_embedding):
+    class _BrokenSession:
+        def run(self, query, **params):
+            raise Exception("no such index 'section_heading_embeddings'")
+    assert dg._heading_index_match(_BrokenSession(), "cp-doc", "tentativo") is None
+
+
+def test_heading_index_match_returns_none_without_usable_stems(fake_embedding):
+    session = _FakeHeadingIndexSession(vector_rows=[{"name": "1.0.0", "titolo_articolo": "x", "score": 1.0}])
+    assert dg._heading_index_match(session, "cp-doc", "e la") is None   # only stop-words
+
+
+def test_resolve_institution_falls_back_to_the_heading_index_when_the_flag_is_on(monkeypatch, fake_embedding):
+    """"tentativo" alone does not title-match "Delitto tentato" (article_by_
+    title's own tolerance rule: one extra title word over a single-stem
+    name) -- the heading index, enabled, resolves it anyway and still tags
+    _heading_match."""
+    articles = {**_CP_ARTICLES, "56": {"title": "Delitto tentato",
+               "text": "Chi compie atti idonei diretti in modo non equivoco a commettere un delitto..."}}
+    session = _FakeHeadingIndexSession(articles, vector_rows=[
+        {"name": "56.0.0", "titolo_articolo": "Delitto tentato", "score": 0.9},
+    ])
+    monkeypatch.setenv("HEADING_INDEX_ENABLED", "true")
+
+    rows = dg._resolve_institution(session, [_CP_DOC],
+                                   {"nome": "tentativo", "codice": "c.p.", "numero_indicativo": ""})
+    assert [r["_article"] for r in rows] == [("56", "c.p.")]
+    assert all(r.get("_heading_match") is True for r in rows)
+
+
+def test_resolve_institution_does_not_use_the_heading_index_when_the_flag_is_off(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("the heading index must not be queried when the flag is off")
+    monkeypatch.setattr(dg, "_heading_index_match", boom)
+    monkeypatch.delenv("HEADING_INDEX_ENABLED", raising=False)
+
+    rows = dg._resolve_institution(_FakeCodicePenaleSession(), [_CP_DOC],
+                                   {"nome": "tentativo", "codice": "c.p.", "numero_indicativo": ""})
+    assert rows == []   # falls through every other path too: "tentativo" matches nothing in _CP_ARTICLES
+
+
+def test_resolve_institution_tries_the_heading_index_once_for_nome_not_per_parola_chiave(monkeypatch):
+    """Bounded added latency: one embedding call per unresolved institution,
+    not up to 1+len(parole_chiave) of them."""
+    calls = []
+    monkeypatch.setattr(dg, "_heading_index_match", lambda session, doc_id, term: calls.append(term) or None)
+    monkeypatch.setenv("HEADING_INDEX_ENABLED", "true")
+
+    dg._resolve_institution(_FakeCodicePenaleSession(), [_CP_DOC],
+                            {"nome": "tentativo", "codice": "c.p.", "numero_indicativo": ""},
+                            parole_chiave=["atti idonei", "univocità", "desistenza"])
+    assert calls == ["tentativo"]
+
+
 def test_43_falls_back_to_fulltext_when_the_name_does_not_match_the_title():
     """"elemento soggettivo" does not title-match "Elemento psicologico del
     reato" (different word: soggettivo vs psicologico) — this is exactly the

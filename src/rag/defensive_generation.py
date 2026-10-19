@@ -702,6 +702,79 @@ _FUSION_SEARCH_K = 20
 # won't reach it either; re-run the funnel to see which it was).
 _FUSION_POOL_CAP = 16
 
+# HEADING_INDEX_ENABLED (default false): resolve an institution against a
+# dedicated vector index over every primary Section's titolo_articolo (its
+# official rubrica), by MEANING rather than shared words -- the gap
+# article_by_title's word/stem matching structurally can't close. "tentativo"
+# (h5) never title-matches art. 56's rubrica "Delitto tentato": article_by_
+# title's own tolerance rule allows zero extra title words for a one-word
+# institution name, and "Delitto tentato" has one extra word ("Delitto")
+# over the single stem "tentativo"/"tentato" shares -- a real rubrica for
+# the right institution, rejected only because of a word-count rule, not
+# because it's the wrong article. A semantic index can tell they're the
+# same institution without needing every word to match.
+#
+# Scripts/build_heading_index.py builds it (DB write -- not run here, see
+# that script's own docstring for the exact CREATE VECTOR INDEX statement
+# and size/time estimate). _heading_index_match falls back to None (no
+# different from the index not existing yet) on any query failure, so
+# turning this flag on before the index is built changes nothing.
+HEADING_INDEX_FLAG = "HEADING_INDEX_ENABLED"
+_HEADING_VECTOR_INDEX = os.getenv("HEADING_VECTOR_INDEX", "section_heading_embeddings")
+# Neo4j's vector index has no pre-filter: queryNodes ranks across every
+# Section with a heading embedding (every primary code and law, once built),
+# and only the institution's own document's hits are kept afterward. k=200
+# is a hedge against the institution's own article being outranked, across
+# the whole corpus, by closer-sounding headings in OTHER codes -- cheap
+# (one ANN query), not free (a corpus with many codes could still occasionally
+# push the right heading past 200; there is no way to bound this without a
+# pre-filtered vector query, which this Neo4j version may or may not support).
+_HEADING_INDEX_K = 200
+
+
+def _heading_index_match(session, doc_id: str, term: str) -> Optional[str]:
+    """The article number whose titolo_articolo is closest, by meaning, to
+    `term`, among Sections of `doc_id` -- or None if the index doesn't
+    exist yet, the query fails, or no candidate's heading shares enough of
+    `term`'s own words to trust the match.
+
+    The overlap floor ("at least half the stems", same bar _issue_
+    article_refs uses) is deliberately looser than article_by_title's own
+    "zero to two extra words" rule -- the whole point of this path is to
+    catch a DIFFERENT wording of the same institution (that is what the
+    embedding similarity is for), not to re-require a word-for-word match
+    on top of it. It is not zero, either: an embedding's top hit can still
+    be a wrong institution that merely sounds similar, and nothing else
+    here would catch that."""
+    from .issue_spotting import _stems
+
+    stems = _stems(term)
+    if not stems:
+        return None
+    try:
+        embedding = list(embedding_model.embed_query(term))
+        rows = session.run(
+            "CALL db.index.vector.queryNodes($index, $k, $embedding) YIELD node, score "
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.id = $doc_id "
+            "RETURN node.name AS name, node.titolo_articolo AS titolo_articolo, score "
+            "ORDER BY score DESC LIMIT 5",
+            index=_HEADING_VECTOR_INDEX, k=_HEADING_INDEX_K, embedding=embedding, doc_id=doc_id,
+        ).data()
+    except Exception as exc:
+        logger.info("heading index unavailable, skipping: %s", exc)
+        return None
+    needed = max(1, (len(stems) + 1) // 2)
+    for row in rows:
+        name = (row.get("name") or "").strip()
+        m = _ARTICLE_SECTION_RE.match(name)
+        if not m:
+            continue
+        title_stems = _stems(row.get("titolo_articolo") or "")
+        if title_stems and len(stems & title_stems) >= needed:
+            return _article_num(name)
+    return None
+
+
 _CASE_CATEGORIES = {
     "qualificazione", "elemento_soggettivo", "nesso_causale",
     "qualificazione_alternativa", "circostanza", "procedura",
@@ -1370,8 +1443,14 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     causale"/"causa effettiva" won't title-match a rubrica worded "Rapporto
     di causalità" or "Concorso di cause" even though they're the same
     institution — the model's own words for it often will, one of them,
-    even when the institution's own name doesn't); (3) full-text search on
-    "nome" plus every "parole_chiave" together (_issue_article_refs) — the
+    even when the institution's own name doesn't); (3, HEADING_INDEX_ENABLED
+    only) semantic match against a dedicated heading embedding index
+    (_heading_index_match, "nome" only) — catches an institution named with
+    no shared words at all with its rubrica ("tentativo" for art. 56's
+    "Delitto tentato": one extra title word over a single-stem name fails
+    article_by_title's own tolerance rule, even though it's the right
+    article); (4) full-text search on "nome" plus every "parole_chiave"
+    together (_issue_article_refs) — the
     name alone often doesn't appear in the article's operative text (art.
     43's rubrica is "Elemento psicologico del reato", but naming the
     institution "elemento soggettivo" won't title-match it, and its text
@@ -1382,7 +1461,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     whatever a Lucene OR-of-words query happened to rank highest; it is now
     always scoped to that document (nothing is searched without one) and
     every hit is re-verified against the institution's own words before
-    being trusted. (4) numero_indicativo, only if the article it names is
+    being trusted. (5) numero_indicativo, only if the article it names is
     itself titled or worded consistently with "nome" (_number_matches_
     institution) — a wrong guess with no textual support is dropped rather
     than fetched.
@@ -1443,6 +1522,18 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                     if rows:
                         reason = field if term == nome else f"{field}, via parola chiave {term!r}"
                         return _found(_tag(rows, number, heading_match=True), number, reason)
+
+    # HEADING_INDEX_ENABLED: "nome" only, not every parola_chiave -- one
+    # embedding call per unresolved institution, not up to 1+len(parole_
+    # chiave) of them (see _heading_index_match's docstring for what this
+    # catches that the word-match loop above structurally cannot).
+    if doc and feature_flags.enabled(HEADING_INDEX_FLAG):
+        number = _heading_index_match(session, doc["id"], nome)
+        if number:
+            rows = fetch_article(session, doc["id"], number)
+            if rows:
+                return _found(_tag(rows, number, heading_match=True), number,
+                             "heading index, verified against its own words")
 
     numbers = _issue_article_refs(session, doc["id"] if doc else None, [nome, *(parole_chiave or [])])
     if numbers:

@@ -22,6 +22,15 @@ else falls back to the default, so a typo never switches a feature on.
                                 distilled-bullet search (DISTILL), ranked by
                                 fusion and capped — see
                                 _select_articles_fusion.
+  HEADING_INDEX_ENABLED        false: resolves an institution against a
+                                dedicated vector index over every primary
+                                Section's titolo_articolo, by meaning
+                                rather than shared words, when the word/
+                                stem title-match fails — see
+                                _heading_index_match and scripts/
+                                build_heading_index.py (not built here;
+                                that script has the exact CREATE VECTOR
+                                INDEX statement and a size/time estimate).
   ISSUE_CHECKLISTS_ENABLED     false: appends general issue checklists, by
                                 area (penale, obbligazioni e contratti,
                                 diritti reali e possesso, successioni,
