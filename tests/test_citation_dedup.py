@@ -71,3 +71,19 @@ def test_rows_without_a_name_or_text_fall_back_to_node_id():
     citations = _extract_citations(rows)
     assert len(citations) == 1
     assert citations[0]["sections"] == []
+
+
+def test_abstract_only_sections_are_not_dropped_from_citations():
+    """Round 9, 19 Oct: special/dottrina books are routinely abstract-only
+    (plain_text and text both empty) -- this used to fail the length gate
+    silently and come back as a citation naming a source with sections: [],
+    even though the row had real content and had survived retrieval and the
+    applicability check. _source_block already falls back to abstract the
+    same way; _extract_citations now does too."""
+    rows = [{"d": {"id": "LEGAL_DOC::commentato", "name": "Codice Penale Commentato ADE"},
+            "s": {"id": "DOCUMENT_SECTION::h", "name": "52.0.0", "plain_text": "",
+                  "abstract": "La legittima difesa richiede un pericolo attuale e una reazione proporzionata."}}]
+    citations = _extract_citations(rows)
+    assert len(citations) == 1
+    assert len(citations[0]["sections"]) == 1
+    assert "proporzionata" in citations[0]["sections"][0]["plain_text"]

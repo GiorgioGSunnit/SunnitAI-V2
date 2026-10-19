@@ -57,42 +57,50 @@ def test_classify_one_not_in_pool_when_absent_from_everything():
     assert stage == "NOT_IN_POOL"
 
 
-def test_classify_one_cut_by_cap_when_ranked_past_it():
+def test_classify_one_cut_by_cap_when_found_but_never_reaches_article_rows():
+    """Ranked in the fused pool (fused_rank), but NOT in article_rows_eval
+    -- i.e. it didn't survive the cap and nothing else (keep, cross-
+    reference, issue spotting) rescued it either."""
     fused_rank = {("cp", "999"): lf.dg._FUSION_POOL_CAP + 3}
     stage, detail = lf._classify_one(("cp", "999"), set(), fused_rank, {}, set())
     assert stage == "IN_POOL_CUT_BY_CAP"
     assert f"rank {lf.dg._FUSION_POOL_CAP + 3}" in detail
 
 
-def test_classify_one_selected_not_cited_when_ranked_within_the_cap_but_not_cited():
-    fused_rank = {("cp", "584"): 3}
-    stage, detail = lf._classify_one(("cp", "584"), set(), fused_rank, {}, set())
+def test_classify_one_selected_not_cited_when_in_article_rows_but_not_cited():
+    article_rows_eval = {("cp", "584")}
+    fused_rank = {("cp", "584"): 3}   # just for the detail string
+    stage, detail = lf._classify_one(("cp", "584"), article_rows_eval, fused_rank, {}, set())
     assert stage == "SELECTED_NOT_CITED"
     assert "rank 3" in detail
 
 
-def test_classify_one_cited_when_ranked_within_the_cap_and_cited():
-    fused_rank = {("cp", "584"): 1}
-    stage, _ = lf._classify_one(("cp", "584"), set(), fused_rank, {}, {("cp", "584")})
+def test_classify_one_cited_when_in_article_rows_and_cited():
+    article_rows_eval = {("cp", "584")}
+    stage, _ = lf._classify_one(("cp", "584"), article_rows_eval, {}, {}, {("cp", "584")})
     assert stage == "CITED"
 
 
-def test_classify_one_keep_is_never_cut_by_the_cap():
-    """A "keep" ref (named by the user / ruling agreement) reaches at
-    least "selected" regardless of its rank in the fused pool."""
-    keep_eval = {("cp", "584")}
-    stage, detail = lf._classify_one(("cp", "584"), keep_eval, {}, {}, {("cp", "584")})
+def test_classify_one_reached_via_keep_or_crossref_is_never_cut_by_the_cap():
+    """A ref in article_rows_eval but absent from fused_rank entirely --
+    exactly what "keep", cross-reference broadening and issue spotting all
+    look like, since none of them ever appear in the fused ranking -- still
+    reaches CITED, not IN_POOL_CUT_BY_CAP or NOT_IN_POOL. Round 9, 19 Oct:
+    this is the fix for the funnel's own blind spot that misreported
+    crossref-added articles as NOT_IN_POOL."""
+    article_rows_eval = {("cp", "584")}
+    stage, detail = lf._classify_one(("cp", "584"), article_rows_eval, {}, {}, {("cp", "584")})
     assert stage == "CITED"
-    assert "keep" in detail
+    assert "keep" in detail or "cross-reference" in detail
 
 
 def test_classify_one_dropped_by_check_beats_cited():
     """A verdict that dropped the article takes priority even if, for some
     reason, a citation for it also exists (it shouldn't once dropped, but
     the check itself is what the stage should report)."""
-    fused_rank = {("cp", "584"): 1}
+    article_rows_eval = {("cp", "584")}
     dropped_eval = {("cp", "584"): "incompatibile: ..."}
-    stage, detail = lf._classify_one(("cp", "584"), set(), fused_rank, dropped_eval, {("cp", "584")})
+    stage, detail = lf._classify_one(("cp", "584"), article_rows_eval, {}, dropped_eval, {("cp", "584")})
     assert stage == "DROPPED_BY_CHECK"
     assert detail == "incompatibile: ..."
 
@@ -101,16 +109,16 @@ def test_classify_one_dropped_by_check_beats_cited():
 
 def test_classify_plain_item_delegates_to_classify_one():
     item = {"code": "cp", "article": "584"}
-    stage, _ = lf._classify(item, set(), {("cp", "584"): 1}, {}, {("cp", "584")})
+    stage, _ = lf._classify(item, {("cp", "584")}, {("cp", "584"): 1}, {}, {("cp", "584")})
     assert stage == "CITED"
 
 
 def test_classify_any_of_picks_the_furthest_alternative():
     item = {"code": "consumo", "any_of": ["128", "130"], "label": "any"}
-    fused_rank = {("consumo", "128"): lf.dg._FUSION_POOL_CAP + 1,   # cut by cap
-                  ("consumo", "130"): 1}                            # ranked within the cap
-    cited_eval = {("consumo", "130")}                               # cited
-    stage, _ = lf._classify(item, set(), fused_rank, {}, cited_eval)
+    article_rows_eval = {("consumo", "130")}                        # only 130 was selected
+    fused_rank = {("consumo", "128"): lf.dg._FUSION_POOL_CAP + 1}    # 128 was found but cut by cap
+    cited_eval = {("consumo", "130")}                                # 130 was cited
+    stage, _ = lf._classify(item, article_rows_eval, fused_rank, {}, cited_eval)
     assert stage == "CITED"
 
 

@@ -249,6 +249,28 @@ def test_586_found_by_title_match_full_phrase():
     assert [r["_article"] for r in rows] == [("586", "c.p.")]
 
 
+def test_title_match_tags_heading_match_but_fulltext_and_number_hint_do_not():
+    """Round 9, 19 Oct: the applicability check must not be able to drop a
+    core qualification the article's own rubrica resolved -- only rows
+    found this way (not the weaker fulltext fallback or number-hint paths)
+    carry _heading_match, the tag _applicability_candidates exempts on."""
+    title_rows = dg._resolve_institution(
+        _FakeCodicePenaleSession(), [_CP_DOC],
+        {"nome": "omicidio colposo", "codice": "c.p.", "numero_indicativo": ""})
+    assert all(r.get("_heading_match") is True for r in title_rows)
+
+    fulltext_rows = dg._resolve_institution(
+        _FakeCodicePenaleSession(), [_CP_DOC],
+        {"nome": "elemento soggettivo del reato", "codice": "c.p.", "numero_indicativo": ""},
+        parole_chiave=["negligenza", "imprudenza"])
+    assert fulltext_rows and all(not r.get("_heading_match") for r in fulltext_rows)
+
+    number_hint_rows = dg._resolve_institution(
+        _FakeCodicePenaleSession(), [_CP_DOC],
+        {"nome": "omicidio", "codice": "c.p.", "numero_indicativo": "589"})
+    assert number_hint_rows and all(not r.get("_heading_match") for r in number_hint_rows)
+
+
 def test_43_falls_back_to_fulltext_when_the_name_does_not_match_the_title():
     """"elemento soggettivo" does not title-match "Elemento psicologico del
     reato" (different word: soggettivo vs psicologico) — this is exactly the

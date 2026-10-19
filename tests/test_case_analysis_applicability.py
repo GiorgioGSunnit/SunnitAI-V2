@@ -154,6 +154,46 @@ def test_articles_the_rulings_agree_on_are_checked_not_exempt(model):
     assert "[116 c.p.]" in seen["human"]
 
 
+# --- Round 9 (19 Oct): _heading_match / _multi_signal are also exempt -------
+#
+# A prod diagnostic (sempronio_no_hint) found the model's "incompatibile"
+# judgement wrong about art. 584 c.p. itself, a core qualification the facts
+# raise, not a speculative candidate. The prompt already asks for a concrete
+# requirement+fact before dropping anything; this is the code-level backstop
+# for articles _select_articles_fusion marks strong enough that the check
+# should never get the final say -- resolved by the article's own rubrica
+# (_heading_match) or found by two or more independent signals (_multi_signal).
+
+def test_heading_match_rows_are_exempt_and_never_sent_to_the_model(rows, model):
+    rows[3]["_heading_match"] = True   # "43", normally checked (see the rows fixture)
+    answer, seen, _ = model
+    answer([
+        {"article": "116 c.p.", "verdict": "incompatibile", "requisito": "più concorrenti nel reato",
+         "fatto": "Sempronio ha agito da solo", "reason": "Il concorso anomalo richiede più agenti."},
+        {"article": "589 c.p.", "verdict": "applicabile", "reason": "alternativa"},
+        {"article": "582 c.p.", "verdict": "applicabile", "reason": "alternativa"},
+    ])
+    kept_articles = {r["_article"] for r in dg._filter_applicable_articles(FACTS, "", rows)}
+    assert ("43", "c.p.") in kept_articles          # exempt: never checked, so never dropped
+    assert ("116", "c.p.") not in kept_articles      # genuinely dropped, unaffected by the exemption
+    assert "[43 c.p.]" not in seen["human"]          # proof it was never even sent to the model
+
+
+def test_multi_signal_rows_are_exempt_and_never_sent_to_the_model(rows, model):
+    rows[3]["_multi_signal"] = True   # "43"
+    answer, seen, _ = model
+    answer([
+        {"article": "116 c.p.", "verdict": "incompatibile", "requisito": "più concorrenti nel reato",
+         "fatto": "Sempronio ha agito da solo", "reason": "Il concorso anomalo richiede più agenti."},
+        {"article": "589 c.p.", "verdict": "applicabile", "reason": "alternativa"},
+        {"article": "582 c.p.", "verdict": "applicabile", "reason": "alternativa"},
+    ])
+    kept_articles = {r["_article"] for r in dg._filter_applicable_articles(FACTS, "", rows)}
+    assert ("43", "c.p.") in kept_articles
+    assert ("116", "c.p.") not in kept_articles
+    assert "[43 c.p.]" not in seen["human"]
+
+
 @pytest.mark.parametrize("reply", ["not json", json.dumps({"article": "116 c.p."})])
 def test_fails_open_on_a_malformed_reply(rows, model, reply):
     answer, _, _ = model

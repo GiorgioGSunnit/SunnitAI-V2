@@ -139,7 +139,13 @@ def _extract_citations(
                     docs[doc_id] = {"title": None, "sections": {}, "document_type": None}
                 # Skip embedding property — large vector, not needed here
                 value_safe = {k: v for k, v in value.items() if k not in ("embedding", "vettore")}
-                section_plain_text = (value_safe.get("plain_text") or value_safe.get("text") or "").strip()
+                # abstract as a last resort (round 9, 19 Oct): special/dottrina
+                # books are routinely abstract-only (plain_text and text both
+                # empty), which silently dropped them from citations even
+                # though they'd survived retrieval and the applicability
+                # check — _source_block already falls back the same way.
+                section_plain_text = (value_safe.get("plain_text") or value_safe.get("text")
+                                      or value_safe.get("abstract") or "").strip()
                 section_title_raw = (value_safe.get("title") or "").strip() or None
                 section_abstract = (value_safe.get("abstract") or "").strip()
                 section_title = section_title_raw

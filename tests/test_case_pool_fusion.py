@@ -82,6 +82,14 @@ def test_fusion_merge_by_hits_prefers_more_agreeing_sources():
     assert dg._fusion_merge_by_hits(current, baseline, distill) == [("c.p.", "584"), ("c.p.", "589")]
 
 
+def test_fusion_hits_and_best_rank_exposes_both_separately():
+    current = [("c.p.", "584")]
+    baseline = [("c.p.", "589"), ("c.p.", "584")]
+    hits, best_rank = dg._fusion_hits_and_best_rank(current, baseline)
+    assert hits == {("c.p.", "584"): 2, ("c.p.", "589"): 1}
+    assert best_rank == {("c.p.", "584"): 1, ("c.p.", "589"): 1}
+
+
 # --- _fusion_distill_bullets --------------------------------------------------
 
 def test_fusion_distill_bullets_parses_the_reply(monkeypatch):
@@ -99,10 +107,11 @@ def test_fusion_distill_bullets_returns_empty_on_a_non_list_reply(monkeypatch):
 
 # --- _select_articles_fusion --------------------------------------------------
 
-def _v2_result(selected=(), keep=(), named=(), institutions_resolved=(), spotted=()):
+def _v2_result(selected=(), keep=(), named=(), institutions_resolved=(), spotted=(), heading_matched=()):
     return {"first_rulings": [], "similar": [], "keep": list(keep), "named": list(named),
             "candidates": [], "chosen": [], "selected": list(selected), "article_rows": [],
-            "spotted": list(spotted), "institutions_resolved": list(institutions_resolved)}
+            "spotted": list(spotted), "institutions_resolved": list(institutions_resolved),
+            "heading_matched": list(heading_matched)}
 
 
 @pytest.fixture
@@ -139,13 +148,46 @@ def test_keep_is_added_on_top_of_the_cap_not_counted_against_it(fusion_env):
     capped, even when the fusion pool alone already fills _FUSION_POOL_CAP."""
     keep = [("584", "c.p.")]
     fusion_env.setattr(dg, "_select_articles_v2", lambda *a, **k: _v2_result(keep=keep))
-    # 15 baseline candidates -- more than the cap (12).
-    many = [(str(100 + i), "c.p.") for i in range(15)]
+    # 20 single-signal (baseline-only) candidates -- more than the cap (16).
+    many = [(str(100 + i), "c.p.") for i in range(20)]
     fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: many)
     picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": []})
     assert picked["selected"][0] == ("584", "c.p.")              # keep, first
     assert len(picked["selected"]) == 1 + dg._FUSION_POOL_CAP    # keep + the cap, not keep + 15
     assert ("584", "c.p.") not in picked["selected"][1:]          # not duplicated into the capped part
+
+
+def test_multi_signal_articles_all_survive_the_cap_regardless_of_rank(fusion_env):
+    """Round 9, 19 Oct: a rank-only cap could cut a genuinely multi-signal
+    article in favour of weaker single-signal ones that merely tied or beat
+    it on best_rank. Every multi-signal article survives -- more of them
+    here than the cap itself, to prove this isn't just incidental sort
+    order (hits=2 already sorts ahead of hits=1 in `fused`, but that alone
+    wouldn't save a 17th multi-signal item from a plain [:cap] slice)."""
+    multi = [(str(200 + i), "c.p.") for i in range(dg._FUSION_POOL_CAP + 3)]   # 19 multi-signal refs
+    fusion_env.setattr(dg, "_select_articles_v2", lambda *a, **k: _v2_result(selected=multi))
+    fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: multi)   # BASELINE finds them too
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": []})
+    assert set(multi) <= set(picked["selected"])
+    assert all(r.get("_multi_signal") for r in picked["article_rows"] if r["_article"] in multi)
+
+
+def test_heading_matched_article_survives_the_cap_as_a_weak_single_signal(fusion_env):
+    """A heading-matched institution article found by CURRENT alone (not
+    independently corroborated by baseline/distill), ranked dead last among
+    21 single-signal fillers that would otherwise fill the whole cap,
+    survives anyway -- and the final row carries _heading_match again,
+    re-applied by ref since fusion re-fetches its own article_rows from
+    scratch rather than reusing _resolve_institution's row objects."""
+    weak_fillers = [(str(300 + i), "c.p.") for i in range(dg._FUSION_POOL_CAP + 5)]   # 21 fillers
+    heading_ref = ("589", "c.p.")
+    fusion_env.setattr(dg, "_select_articles_v2", lambda *a, **k: _v2_result(
+        selected=weak_fillers + [heading_ref], heading_matched=[heading_ref]))
+    fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: [])   # nothing else corroborates anything
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": []})
+    assert heading_ref in picked["selected"]
+    row = next(r for r in picked["article_rows"] if r["_article"] == heading_ref)
+    assert row.get("_heading_match") is True
 
 
 def test_fusion_merges_current_baseline_and_distill(fusion_env, monkeypatch):

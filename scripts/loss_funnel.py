@@ -127,25 +127,31 @@ def _parse_dropped_label(label):
     return (parts[0], parts[1]) if len(parts) == 2 else (label, "")
 
 
-def _classify_one(ref, keep_eval, fused_rank, dropped_eval, cited_eval):
-    """The furthest stage one (eval code, article) ref reaches -> (stage, detail)."""
-    if ref in keep_eval:
-        detail = "keep: named by the user or agreed on by rulings (uncapped)"
-    elif ref in fused_rank:
-        rank = fused_rank[ref]
-        if rank > dg._FUSION_POOL_CAP:
-            return "IN_POOL_CUT_BY_CAP", f"rank {rank} of {len(fused_rank)}"
-        detail = f"rank {rank}"
-    else:
-        return "NOT_IN_POOL", ""
-    if ref in dropped_eval:
-        return "DROPPED_BY_CHECK", dropped_eval[ref]
-    if ref in cited_eval:
-        return "CITED", detail
-    return "SELECTED_NOT_CITED", detail
+def _classify_one(ref, article_rows_eval, fused_rank, dropped_eval, cited_eval):
+    """The furthest stage one (eval code, article) ref reaches -> (stage, detail).
+
+    article_rows_eval is ground truth for "reached selection": whatever
+    _select_articles_fusion's own article_rows (pre-applicability-filter)
+    actually contains, via ANY mechanism -- keep, cap survival, multi-
+    signal exemption, cross-reference broadening, or issue spotting. Round
+    9 (19 Oct): checking keep/fused_rank alone (not article_rows itself)
+    meant a ref added only by cross-reference or issue spotting -- neither
+    of which ever appears in "keep" or the fused ranking -- was always
+    misreported as NOT_IN_POOL regardless of what the pipeline actually
+    did with it."""
+    if ref in article_rows_eval:
+        detail = f"rank {fused_rank[ref]}" if ref in fused_rank else "keep / cross-reference / issue-spotting"
+        if ref in dropped_eval:
+            return "DROPPED_BY_CHECK", dropped_eval[ref]
+        if ref in cited_eval:
+            return "CITED", detail
+        return "SELECTED_NOT_CITED", detail
+    if ref in fused_rank:
+        return "IN_POOL_CUT_BY_CAP", f"rank {fused_rank[ref]} of {len(fused_rank)}"
+    return "NOT_IN_POOL", ""
 
 
-def _classify(expected_item, keep_eval, fused_rank, dropped_eval, cited_eval):
+def _classify(expected_item, article_rows_eval, fused_rank, dropped_eval, cited_eval):
     """One expected-article entry (a plain {code, article}, or an "any_of"
     group like c2's Codice del Consumo range) -> (stage, detail) for the
     BEST (furthest) alternative, same way tests/eval_narrative.py's own
@@ -154,7 +160,7 @@ def _classify(expected_item, keep_eval, fused_rank, dropped_eval, cited_eval):
             else [(expected_item["code"], expected_item["article"])])
     best_stage, best_detail = "NOT_IN_POOL", ""
     for ref in alts:
-        stage, detail = _classify_one(ref, keep_eval, fused_rank, dropped_eval, cited_eval)
+        stage, detail = _classify_one(ref, article_rows_eval, fused_rank, dropped_eval, cited_eval)
         if _STAGE_RANK[stage] > _STAGE_RANK[best_stage]:
             best_stage, best_detail = stage, detail
     return best_stage, best_detail
@@ -163,8 +169,8 @@ def _classify(expected_item, keep_eval, fused_rank, dropped_eval, cited_eval):
 def _run_case(case, forced_path):
     """Runs the live pipeline once for this case, capturing the fusion
     pool and the applicability check's drops from that one execution.
-    Returns {"keep_eval", "fused_rank", "dropped_eval", "cited_eval",
-    "seconds", "pool_fusion"}."""
+    Returns {"article_rows_eval", "fused_rank", "dropped_eval", "cited_eval",
+    "seconds"}."""
     facts = case["question"]
     captured = {}
 
@@ -217,7 +223,11 @@ def _run_case(case, forced_path):
             f"{case['id']}: _select_articles_fusion never ran (CASE_ANALYSIS_ENABLED and/or "
             f"CASE_POOL_FUSION_ENABLED are off in this environment) -- pass --fusion to force the path")
 
-    keep_eval = set(_ordered_eval_refs(picked["keep"]))
+    # Ground truth for "reached selection": article_rows itself (pre-
+    # applicability-filter, as captured), not keep/fused_rank alone -- see
+    # _classify_one's docstring for why that distinction matters.
+    article_rows_eval = set(_ordered_eval_refs(
+        r["_article"] for r in picked.get("article_rows") or [] if r.get("_article")))
     fused_minus_keep = [r for r in picked["candidates"] if r not in picked["keep"]]
     fused_rank = {}
     for i, ref in enumerate(_ordered_eval_refs(fused_minus_keep), start=1):
@@ -232,14 +242,15 @@ def _run_case(case, forced_path):
 
     cited_eval = {(code, art) for art, code, _name in ev.cited(result.get("citations")) if code}
 
-    return {"keep_eval": keep_eval, "fused_rank": fused_rank, "dropped_eval": dropped_eval,
+    return {"article_rows_eval": article_rows_eval, "fused_rank": fused_rank, "dropped_eval": dropped_eval,
             "cited_eval": cited_eval, "seconds": seconds}
 
 
 def _case_lines(case, run):
     lines = [f"\n## {case['id']}  ({run['seconds']:.1f}s)"]
     for item in case.get("expected", []):
-        stage, detail = _classify(item, run["keep_eval"], run["fused_rank"], run["dropped_eval"], run["cited_eval"])
+        stage, detail = _classify(item, run["article_rows_eval"], run["fused_rank"],
+                                  run["dropped_eval"], run["cited_eval"])
         label = ev._label(item)
         lines.append(f"  {stage:<20s} {label:<28s} {detail}")
     return lines
@@ -253,7 +264,8 @@ def _totals_lines(cases, runs):
         if not run:
             continue
         for item in case.get("expected", []):
-            stage, _ = _classify(item, run["keep_eval"], run["fused_rank"], run["dropped_eval"], run["cited_eval"])
+            stage, _ = _classify(item, run["article_rows_eval"], run["fused_rank"],
+                                 run["dropped_eval"], run["cited_eval"])
             totals[stage] += 1
             n += 1
     lines = ["\n## TOTALS", f"  {n} expected-article slots across {len(runs)} cases"]

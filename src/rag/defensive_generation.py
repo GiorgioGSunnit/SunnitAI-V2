@@ -689,12 +689,18 @@ _CASE_POOL_FUSION_FLAG = "CASE_POOL_FUSION_ENABLED"
 # via the environment if the live index is named differently.
 _CASE_POOL_VECTOR_INDEX = os.getenv("CASE_POOL_VECTOR_INDEX", "section_embeddings_v2")
 _FUSION_SEARCH_K = 20
-# The top-N institution/raw-text/distilled-bullet candidates a draft can
-# realistically use. Articles named by the user's own text, and whatever
-# the rulings agree on (_candidate_articles' "keep"), are added on top of
-# this cap, uncapped -- they were never in doubt, and the cap exists for
-# the noisier text-search contribution, not for them.
-_FUSION_POOL_CAP = 12
+# How many SINGLE-signal (found by only one of CURRENT/BASELINE/DISTILL)
+# candidates fill out the pool. Added on top, uncapped: articles named by
+# the user's own text or agreed on by rulings (_select_articles_v2's own
+# "keep" -- never in doubt), AND (round 9, 19 Oct) any article found by two
+# or more of the three signals, regardless of its fused rank -- a rank-only
+# cap could previously cut a multi-signal article in favour of weaker
+# single-signal ones ranked ahead of it only by tie-break. Also raised from
+# 12 to 16, for the single-signal fill this now actually governs (a prod
+# diagnostic, loss_funnel.py, found l2's 582 and l4's 337-ter cut at rank
+# 31/18 -- if either is genuinely single-signal, this cap increase alone
+# won't reach it either; re-run the funnel to see which it was).
+_FUSION_POOL_CAP = 16
 
 _CASE_CATEGORIES = {
     "qualificazione", "elemento_soggettivo", "nesso_causale",
@@ -1358,9 +1364,19 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     elif codice:
         doc = resolve_code(codice, documents)
 
-    def _tag(rows: List[Dict[str, Any]], number: str) -> List[Dict[str, Any]]:
+    def _tag(rows: List[Dict[str, Any]], number: str, heading_match: bool = False) -> List[Dict[str, Any]]:
         for row in rows:
             row["_article"] = (number, abbr or (doc or {}).get("name", codice))
+            if heading_match:
+                # Round 9 (19 Oct): resolved by the article's own rubrica
+                # (titolo_articolo/title), the strongest of the four paths
+                # below -- the applicability check must not be able to drop
+                # it on its own judgement alone (see _applicability_candidates).
+                # Not reusing _source: that field already means other things
+                # elsewhere (CROSSREF_SOURCE, CASE_ANALYSIS_SOURCE for
+                # priority-trimming) and _select_articles_v2 overwrites it
+                # on every institution row it adds.
+                row["_heading_match"] = True
         return rows
 
     def _found(rows: List[Dict[str, Any]], number: str, reason: str) -> List[Dict[str, Any]]:
@@ -1378,7 +1394,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                     rows = fetch_article(session, doc["id"], number)
                     if rows:
                         reason = field if term == nome else f"{field}, via parola chiave {term!r}"
-                        return _found(_tag(rows, number), number, reason)
+                        return _found(_tag(rows, number, heading_match=True), number, reason)
 
     numbers = _issue_article_refs(session, doc["id"] if doc else None, [nome, *(parole_chiave or [])])
     if numbers:
@@ -2123,6 +2139,23 @@ def _fusion_text_search(session, text: str, index: str, k: int) -> List[tuple]:
     )
 
 
+def _fusion_hits_and_best_rank(*ref_lists: List[tuple]) -> tuple:
+    """({ref: how many of ref_lists contain it}, {ref: best (lowest) rank
+    among those that do}) -- the computation _fusion_merge_by_hits ranks
+    by, exposed separately so _select_articles_fusion can tell a ref found
+    by two or more independent signals from one only a single list
+    happened to surface (round 9, 19 Oct: those must survive the cap
+    regardless of rank, and are exempt from the applicability check --
+    see _FUSION_POOL_CAP and _applicability_candidates)."""
+    hits, best_rank = {}, {}
+    for refs in ref_lists:
+        for rank, ref in enumerate(refs, start=1):
+            hits[ref] = hits.get(ref, 0) + 1
+            if ref not in best_rank or rank < best_rank[ref]:
+                best_rank[ref] = rank
+    return hits, best_rank
+
+
 def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
     """Union of refs across the given lists, ranked by (how many of them
     contain it, descending), then best rank among those that do --
@@ -2131,12 +2164,7 @@ def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
     latency. Shared with that script's own _merge_by_hits (an alias to
     this function, not a separate copy) for the same reason as
     _fusion_best_rank_merge above."""
-    hits, best_rank = {}, {}
-    for refs in ref_lists:
-        for rank, ref in enumerate(refs, start=1):
-            hits[ref] = hits.get(ref, 0) + 1
-            if ref not in best_rank or rank < best_rank[ref]:
-                best_rank[ref] = rank
+    hits, best_rank = _fusion_hits_and_best_rank(*ref_lists)
     return sorted(hits, key=lambda ref: (-hits[ref], best_rank[ref]))
 
 
@@ -2179,15 +2207,20 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     other finding; re-running the experiment is how to re-validate the
     recall numbers against that narrower pool.
 
-    Articles named by the user's own text, and whatever the rulings agree
-    on (_select_articles_v2's own "keep"), are added on top of the cap,
-    uncapped -- see _FUSION_POOL_CAP. Cross-reference broadening expands
-    only from those user-named and institution-resolved articles, not from
-    the whole capped pool (round 8, 19 Oct: broadening from everything
-    pulled in cross-references with no connection to what fusion
-    specifically added, e.g. 1, 3, 444, 450, 470 c.p.p. on Sempronio) --
-    the same discipline _select_articles_v2 already applies to its own
-    institution rows.
+    Articles named by the user's own text, whatever the rulings agree on
+    (_select_articles_v2's own "keep"), and (round 9, 19 Oct) any article
+    two or more of CURRENT/BASELINE/DISTILL independently found, are added
+    on top of the cap, uncapped -- see _FUSION_POOL_CAP; those multi-signal
+    rows are also tagged _multi_signal and, together with rows _resolve_
+    institution found by the article's own rubrica (_heading_match), are
+    exempt from the applicability check (_applicability_candidates): it may
+    prune a single-signal text-search candidate, never a core qualification
+    reached this way. Cross-reference broadening expands only from user-
+    named and institution-resolved articles, not from the whole capped pool
+    (round 8, 19 Oct: broadening from everything pulled in cross-references
+    with no connection to what fusion specifically added, e.g. 1, 3, 444,
+    450, 470 c.p.p. on Sempronio) -- the same discipline _select_articles_v2
+    already applies to its own institution rows.
 
     Behind CASE_POOL_FUSION_ENABLED (requires CASE_ANALYSIS_ENABLED). Used
     by run_case_analysis_pipeline; returns the same keys _select_articles_v2
@@ -2199,6 +2232,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     v2 = _select_articles_v2(session, driver, database, facts, request, analysis)
     keep, named = v2["keep"], v2["named"]
     institutions_resolved = v2.get("institutions_resolved") or []
+    heading_matched = set(v2.get("heading_matched") or [])
     current_refs = list(dict.fromkeys(v2["selected"]))
 
     documents = _fetch_doc_names(driver, database)
@@ -2219,11 +2253,30 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         distill_lists.append(_fusion_text_search(session, joined, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K))
     distill_refs = _fusion_merge_by_hits(*distill_lists) if distill_lists else []
 
-    fused = _fusion_merge_by_hits(current_refs, baseline_refs, distill_refs)
-    capped = [ref for ref in fused if ref not in keep][:_FUSION_POOL_CAP]
+    hits, best_rank = _fusion_hits_and_best_rank(current_refs, baseline_refs, distill_refs)
+    fused = sorted(hits, key=lambda ref: (-hits[ref], best_rank[ref]))
+    # Exempt from the cap regardless of rank: found by two or more signals,
+    # or resolved by the article's own rubrica (heading_matched) -- a
+    # single-signal text-search hit is the only thing the cap should ever
+    # bound. The cap only bounds how many of those fill the rest.
+    not_keep = [ref for ref in fused if ref not in keep]
+    exempt_from_cap = {ref for ref in not_keep if hits[ref] >= 2} | (heading_matched & set(not_keep))
+    survives_cap = [ref for ref in not_keep if ref in exempt_from_cap]
+    fill = [ref for ref in not_keep if ref not in exempt_from_cap]
+    capped = survives_cap + fill[:_FUSION_POOL_CAP]
     selected = keep + capped
 
     candidate_rows = _fetch_any(session, documents, selected)
+    for row in candidate_rows:
+        ref = row.get("_article")
+        if hits.get(ref, 0) >= 2:
+            row["_multi_signal"] = True
+        if ref in heading_matched:
+            # The _heading_match tag _resolve_institution set is on a row
+            # object this function never sees (article_rows here are freshly
+            # re-fetched by ref, not reused from v2's own rows) -- re-applied
+            # by ref so the applicability exemption still reaches it.
+            row["_heading_match"] = True
     article_rows = sorted((r for r in candidate_rows if r.get("_article") in selected),
                           key=lambda r: selected.index(r["_article"]))
     have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name")) for r in article_rows}
@@ -2340,7 +2393,13 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
 
     article_rows = _prioritise_article_rows(article_rows, named_in_case)
     added_articles = [r["_article"] for r in added if r.get("_article")]
-    return {**base, "selected": base["selected"] + added_articles,
+    # Which of those were resolved by the article's own rubrica
+    # (_resolve_institution's _heading_match) -- _select_articles_fusion
+    # re-derives this by ref, not by row object, since it re-fetches its
+    # own article_rows from scratch (_fetch_any) rather than reusing these.
+    heading_matched = list(dict.fromkeys(r["_article"] for r in added
+                                         if r.get("_heading_match") and r.get("_article")))
+    return {**base, "selected": base["selected"] + added_articles, "heading_matched": heading_matched,
             "article_rows": article_rows, "institutions_resolved": added_articles}
 
 
@@ -2398,14 +2457,25 @@ def _applicability_key(label: str) -> str:
 def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[str, Any]]) -> tuple:
     """({article: rows} to check, {label: text}). Exempt, never sent to the
     model: rows without an article tag, cross-reference rows (grounded in a
-    chosen article's own text) and the articles the user's own text names."""
+    chosen article's own text), the articles the user's own text names, and
+    (round 9, 19 Oct) rows _resolve_institution found by the article's own
+    rubrica (_heading_match) or that the fusion pool found via two or more
+    independent signals (_multi_signal) -- the check may prune a single-
+    signal text-search candidate, never a core qualification reached this
+    way. Round 9's own prod diagnostic (sempronio_no_hint) found the model's
+    "incompatibile" judgement wrong about art. 584 c.p. itself (a genuine
+    qualification the facts raise, not a speculative candidate) -- the
+    prompt already asks for a concrete requirement+fact before dropping
+    anything, but that alone didn't stop it; this is the code-level backstop
+    for articles strong enough that the check should never get the final say."""
     from .nodes.cypher import CROSSREF_SOURCE
 
     named = set(_refs_in(_case_text(facts, request)))
     to_check: Dict[tuple, List[Dict[str, Any]]] = {}
     for row in article_rows:
         article = row.get("_article")
-        if not article or row.get("_source") == CROSSREF_SOURCE or article in named:
+        if (not article or row.get("_source") == CROSSREF_SOURCE or article in named
+                or row.get("_heading_match") or row.get("_multi_signal")):
             continue
         to_check.setdefault(article, []).append(row)
     texts = {}
