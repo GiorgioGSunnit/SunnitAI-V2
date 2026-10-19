@@ -127,6 +127,11 @@ _CONTEXT_LIMIT_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 _MIN_ANSWER_TOKENS = 400
+# The server reports the prompt as "at least N" tokens, a lower bound. Prod,
+# 19 Oct (held-out h9): the first error counted 15,018 prompt tokens, the retry
+# was sized on "at least 15,001" with a 16-token margin, asked for one token
+# more than fit, and failed again.
+_RETRY_MARGIN_TOKENS = 300
 
 
 def _call_chat(
@@ -163,7 +168,7 @@ def _call_chat(
         if not m:
             raise
         limit, prompt_tokens = int(m.group(1)), int(m.group(2))
-        room = limit - prompt_tokens - 16
+        room = limit - prompt_tokens - _RETRY_MARGIN_TOKENS
         if room < _MIN_ANSWER_TOKENS:
             logger.error(
                 "prompt of %d tokens leaves only %d of the %d-token context for the "

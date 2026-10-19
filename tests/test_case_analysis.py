@@ -506,6 +506,40 @@ def test_the_applicability_check_runs_only_when_enabled(pipeline, monkeypatch):
     assert len(calls) == 1 and [r["_article"] for r in calls[0]] == [("2051", "c.c.")]
 
 
+def test_a_context_overflow_on_the_draft_is_retried_once_not_shown_as_an_error(pipeline, monkeypatch):
+    """Held-out h9 (prod, 19 Oct): the draft call failed on the context size and
+    the user got an error. Once more with a smaller prompt instead."""
+    _, prompts = pipeline
+    real_chat, budgets = DG._call_chat, []
+    real_fit = DG._fit_parere_prompt
+
+    def fit(*args, **kwargs):
+        budgets.append(kwargs.get("budget", DG._DRAFT_INPUT_BUDGET))
+        return real_fit(*args, **kwargs)
+
+    def chat(messages, max_tokens=None, stop=None, temperature=None):
+        if "PARERE MOTIVATO" in messages[0].content and len(budgets) == 1:
+            raise RuntimeError("Error code: 400 - This model's maximum context length is 20000 tokens")
+        return real_chat(messages, max_tokens=max_tokens, stop=stop, temperature=temperature)
+
+    monkeypatch.setattr(DG, "_fit_parere_prompt", fit)
+    monkeypatch.setattr(DG, "_call_chat", chat)
+    out = DG.run_case_analysis_pipeline(CASE, "it")
+    assert budgets == [DG._DRAFT_INPUT_BUDGET, DG._DRAFT_INPUT_BUDGET * 7 // 10]
+    assert "art. 2051 c.c." in out["draft"] and prompts["max_tokens"] == DG._PARERE_TOKENS
+
+
+def test_any_other_draft_error_is_not_swallowed(pipeline, monkeypatch):
+    def chat(messages, max_tokens=None, stop=None, temperature=None):
+        if "PARERE MOTIVATO" in messages[0].content:
+            raise RuntimeError("Connection reset by peer")
+        return "[]"
+
+    monkeypatch.setattr(DG, "_call_chat", chat)
+    with pytest.raises(RuntimeError, match="Connection reset"):
+        DG.run_case_analysis_pipeline(CASE, "it")
+
+
 def test_the_draft_rules_are_added_only_when_enabled(monkeypatch):
     """Round 3, item 4: a lawyer's review of the Sempronio draft. Off, the
     prompt is exactly today's."""

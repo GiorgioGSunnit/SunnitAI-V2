@@ -632,6 +632,14 @@ _PARERE_TOKENS = 5000
 # The case as read by the analysis and the writer (~3,400 tokens): an uploaded
 # act can be long, and the 20k-token context also holds sources and the answer.
 _FACTS_CHARS = 12000
+# The draft prompt must leave room for _PARERE_TOKENS in the 20k-token context.
+# Prod, 19 Oct (held-out h9): a long case plus the fusion pool's uncapped
+# articles came to ~15,018 input tokens + 5,000 and the user got an error.
+# _fit_parere_prompt trims the sources until this estimate fits; the estimate
+# counts 3 characters per token, more than this model's tokenizer uses on
+# Italian legal text (~3.5, see _FACTS_CHARS), so it errs on the safe side.
+_DRAFT_INPUT_BUDGET = 13000
+_CHARS_PER_TOKEN = 3.0
 
 _CASE_ANALYSIS_SYSTEM = (
     "Sei un avvocato italiano esperto. Leggi il caso e prepara l'impostazione di un parere. "
@@ -2056,6 +2064,78 @@ def _parere_human(facts: str, analysis: Dict[str, Any], articles: str, rulings: 
     )
 
 
+def _estimate_tokens(text: str) -> int:
+    return int(len(text or "") / _CHARS_PER_TOKEN) + 1
+
+
+def _protected_article_row(row: Dict[str, Any], named: set) -> bool:
+    """Rows the prompt keeps whole until the last trimming step: named in the
+    case, cross-referenced from a selected article, matched by their heading,
+    or found by two or more independent signals."""
+    from .nodes.cypher import CROSSREF_SOURCE
+    return bool(row.get("_article") in named or row.get("_source") == CROSSREF_SOURCE
+                or row.get("_heading_match") or row.get("_multi_signal"))
+
+
+def _with_text_cut(row: Dict[str, Any], chars: int) -> Dict[str, Any]:
+    """A copy of the row whose text, as _source_block reads it, is cut to chars."""
+    s = row.get("s") or {}
+    text = row.get("_passage") or " ".join((s.get("plain_text") or s.get("abstract") or "").split())
+    return {**row, "_passage": text[:chars]}
+
+
+# (ruling passage chars, rulings kept or None for all, chars of other articles
+# with 0 = left out, chars of protected articles), mildest first. Step 0 is the
+# prompt as it always was.
+_PROMPT_TRIM_STEPS = (
+    (_PASSAGE_CHARS + 100, None, _ARTICLE_CHARS, _ARTICLE_CHARS),
+    (1200, None, _ARTICLE_CHARS, _ARTICLE_CHARS),
+    (600, 5, _ARTICLE_CHARS, _ARTICLE_CHARS),
+    (600, 5, 500, _ARTICLE_CHARS),
+    (600, 5, 0, _ARTICLE_CHARS),
+    (400, 3, 0, 800),
+)
+
+
+def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
+                       ruling_rows: List[Dict[str, Any]], request: str = "", principles: str = "",
+                       budget: int = _DRAFT_INPUT_BUDGET) -> tuple:
+    """(articles, rulings, human) for the draft call, trimmed step by step
+    until the estimated prompt fits `budget`: the ruling passages first, then
+    the text of the other articles, then those articles themselves, and only
+    as a last resort the text of protected ones (_protected_article_row). The
+    case text and the instructions are never cut. A prompt that already fits
+    is exactly the one built before this existed."""
+    named = set(_refs_in(_case_text(facts, request)))
+    questioni = analysis.get("questioni", [])
+    for step, (ruling_chars, max_rulings, other_chars, kept_chars) in enumerate(_PROMPT_TRIM_STEPS):
+        rows, left_out = [], []
+        for row in article_rows:
+            chars = kept_chars if _protected_article_row(row, named) else other_chars
+            if not chars:
+                left_out.append(row.get("_article"))
+            else:
+                rows.append(row if chars >= _ARTICLE_CHARS else _with_text_cut(row, chars))
+        articles = _grouped_source_block(rows, questioni, _ARTICLE_CHARS)
+        rulings = _source_block(ruling_rows if max_rulings is None else ruling_rows[:max_rulings], ruling_chars)
+        human = _parere_human(facts, analysis, articles, rulings, request, principles)
+        total = _estimate_tokens(system) + _estimate_tokens(human)
+        if total <= budget or step == len(_PROMPT_TRIM_STEPS) - 1:
+            break
+    sizes = {"total": total, "budget": budget, "step": step, "instructions": _estimate_tokens(system),
+             "case": _estimate_tokens(_case_text(facts, request)), "articles": _estimate_tokens(articles),
+             "rulings": _estimate_tokens(rulings), "principles": _estimate_tokens(principles),
+             "articles_left_out": [f"{a[0]} {a[1]}" for a in left_out if a]}
+    vlog("case_analysis_prompt_tokens", sizes)
+    if step:
+        logger.info("draft prompt trimmed to fit the context: %s", sizes)
+    return articles, rulings, human
+
+
+def _is_context_overflow(exc: Exception) -> bool:
+    return "maximum context length" in str(exc).lower()
+
+
 def _select_articles(session, driver, database: str, facts: str, request: str,
                      analysis: Dict[str, Any]) -> Dict[str, Any]:
     """The articles a parere is written from, and how they were picked:
@@ -2753,15 +2833,24 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     if feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
         article_rows = _filter_applicable_articles(facts, request, article_rows)
 
-    articles = _grouped_source_block(article_rows, analysis.get("questioni", []), _ARTICLE_CHARS)
-    rulings = _source_block(ruling_rows, _PASSAGE_CHARS + 100)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
+    system = _parere_system(analysis, session_lang)
+    articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
+                                                  request, principles)
     draft_t0 = time.time()
-    draft = _call_chat(
-        [SystemMessage(content=_parere_system(analysis, session_lang)),
-         HumanMessage(content=_parere_human(facts, analysis, articles, rulings, request, principles))],
-        max_tokens=_PARERE_TOKENS,
-    )
+    try:
+        draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
+                           max_tokens=_PARERE_TOKENS)
+    except Exception as exc:
+        # The estimate was still too low for this text: once more, smaller,
+        # rather than an error for a size problem.
+        if not _is_context_overflow(exc):
+            raise
+        logger.warning("draft prompt over the context, retrying once with a smaller one: %s", str(exc)[:200])
+        articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
+                                                      request, principles, budget=_DRAFT_INPUT_BUDGET * 7 // 10)
+        draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
+                           max_tokens=_PARERE_TOKENS)
     vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
     draft = _mark_unverified(draft, found, articles + "\n" + rulings)

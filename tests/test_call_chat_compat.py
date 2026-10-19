@@ -58,7 +58,7 @@ def test_no_call_site_passes_call_chat_a_kwarg_it_does_not_accept():
     signature accepts, so a reintroduced mismatch fails at test time, not on
     prod."""
     accepted = set(inspect.signature(ai_chat._call_chat).parameters)
-    with open(dg.__file__) as f:
+    with open(dg.__file__, encoding="utf-8") as f:
         tree = ast.parse(f.read())
     bad = []
     for node in ast.walk(tree):
