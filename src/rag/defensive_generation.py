@@ -763,6 +763,50 @@ _CASE_ANALYSIS_V2_SYSTEM = (
     "Non inventare fatti. Rispondi SOLO con il JSON."
 )
 
+# ISSUE_CHECKLISTS_ENABLED (default false): general issue checklists, by
+# area, appended to _CASE_ANALYSIS_V2_SYSTEM. Round 10 (19 Oct): the held-
+# out set found a real generalisation gap, not a retrieval bug -- h1, h4-h8
+# reached run_case_analysis_pipeline and still missed most expected
+# articles, because the model's own "questioni" never raised the issue in
+# the first place (nothing to resolve an institution for, nothing for
+# fusion to search on). These are deliberately METHODS to check for, never
+# article numbers or institution names (an "istituto" the model invents to
+# satisfy a checklist item would be worse than missing it) -- the model
+# still decides, from the facts, whether each one actually applies, and
+# "questioni" still only lists the ones that do. Developed and tuned on the
+# tuning set (eval_narrative_cases.json's non-heldout cases) only, per the
+# standing rule never to tune on the held-out set itself.
+ISSUE_CHECKLISTS_FLAG = "ISSUE_CHECKLISTS_ENABLED"
+_ISSUE_CHECKLISTS_BLOCK = (
+    "\n\nPer l'area individuata, controlla anche se i fatti pongono una di queste questioni tipiche di "
+    "quell'area. Sono un controllo, non un elenco da esaurire: aggiungi a \"questioni\" solo quelle che i "
+    "fatti pongono davvero, con il loro istituto vero (mai un numero di articolo, mai un istituto inventato "
+    "solo per coprire la voce); ignora le altre senza commentarle.\n"
+    "- penale: la forma di manifestazione del reato (tentativo, concorso di persone, concorso di reati, "
+    "reato continuato); l'elemento soggettivo e la sua forma esatta (dolo diretto, dolo eventuale, colpa "
+    "con le sue forme); il nesso causale quando condotta ed evento sono distinti; le circostanze aggravanti "
+    "o attenuanti che i fatti indicano; le cause di esclusione della responsabilità (legittima difesa, "
+    "stato di necessità, consenso dell'avente diritto, adempimento di un dovere); qualificazioni "
+    "alternative con lo stesso esito materiale dei fatti; la procedibilità (querela, condizioni).\n"
+    "- obbligazioni e contratti: la natura della responsabilità (contrattuale, extracontrattuale, o "
+    "entrambe verso la stessa parte); l'inadempimento e la ripartizione dell'onere della prova; i rimedi "
+    "disponibili (risoluzione, recesso, riduzione del prezzo, risarcimento, eccezione di inadempimento); "
+    "una clausola penale e i presupposti della sua riduzione giudiziale; vizi della cosa e garanzie; "
+    "prescrizione o decadenza quando i fatti indicano le date necessarie.\n"
+    "- diritti reali e possesso: il titolo di acquisto (usucapione, contratto, successione) quando è in "
+    "discussione; la tutela possessoria rispetto a quella petitoria; la costituzione, l'estinzione o "
+    "l'esercizio di una servitù, inclusa l'interclusione del fondo; i rapporti di comunione o condominio "
+    "(parti comuni, obblighi dell'amministratore, responsabilità per i danni).\n"
+    "- successioni: l'apertura della successione e il titolo per succedere; l'accettazione dell'eredità, "
+    "espressa o tacita (quali atti la implicano, quali restano atti conservativi che non la implicano), e "
+    "l'accettazione con beneficio d'inventario; la responsabilità per i debiti del de cuius e i suoi "
+    "limiti; la rinuncia all'eredità e i suoi effetti.\n"
+    "- diritto amministrativo: la legittimità del provvedimento e i suoi vizi tipici (incompetenza, "
+    "violazione di legge, eccesso di potere); l'autotutela amministrativa; il silenzio o l'inerzia della "
+    "pubblica amministrazione; l'esecuzione di un giudicato e il giudizio di ottemperanza quando "
+    "l'amministrazione non vi ha dato seguito."
+)
+
 _ARTICLE_CHOICE_SYSTEM = (
     "Sei un avvocato italiano. Ti vengono dati un caso e alcuni articoli di legge candidati, con il loro "
     "testo. Scegli gli articoli che un parere su questo caso deve usare: quelli che disciplinano "
@@ -869,11 +913,15 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     with empty values, and the parere is written from the facts alone."""
     empty = {"parte_assistita": "", "posizione": "", "area": "", "richiesta": "", "ricerca_fatti": [],
              "questioni": [], "fatti": [], "fatti_strutturati": {}}
+    system = _CASE_ANALYSIS_V2_SYSTEM
+    if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG):
+        system += _ISSUE_CHECKLISTS_BLOCK
     t0 = time.time()
     try:
-        parsed = _chat_json([SystemMessage(content=_CASE_ANALYSIS_V2_SYSTEM),
+        parsed = _chat_json([SystemMessage(content=system),
                             HumanMessage(content=_case_text(facts, request))],
-                           max_tokens=1800, temperature=0)
+                           max_tokens=2200 if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG) else 1800,
+                           temperature=0)
     except Exception as exc:
         logger.warning("case analysis (v2) failed: %s", exc)
         return empty

@@ -94,6 +94,36 @@ def test_analyse_case_v2_fails_open(monkeypatch):
                       "questioni": [], "fatti": [], "fatti_strutturati": {}}
 
 
+# --- ISSUE_CHECKLISTS_ENABLED (round 10, 19 Oct) ----------------------------
+
+def test_issue_checklists_are_appended_to_the_prompt_only_when_the_flag_is_on(monkeypatch):
+    seen = {}
+
+    def fake_call_chat(messages, **kwargs):
+        seen["system"] = messages[0].content
+        return "{}"
+    monkeypatch.setattr(dg, "_call_chat", fake_call_chat)
+
+    monkeypatch.delenv("ISSUE_CHECKLISTS_ENABLED", raising=False)
+    dg._analyse_case_v2("fatti", "it")
+    assert dg._ISSUE_CHECKLISTS_BLOCK not in seen["system"]
+
+    monkeypatch.setenv("ISSUE_CHECKLISTS_ENABLED", "true")
+    dg._analyse_case_v2("fatti", "it")
+    assert dg._ISSUE_CHECKLISTS_BLOCK in seen["system"]
+
+
+def test_issue_checklists_cover_the_five_areas_as_methods_not_article_numbers():
+    """These must be methods to check for ("nesso causale", "accettazione
+    tacita"...), never article numbers or a code sigle -- an institution
+    the model invents just to satisfy a checklist item would be worse than
+    missing it."""
+    for area in ("penale", "obbligazioni e contratti", "diritti reali e possesso",
+                "successioni", "diritto amministrativo"):
+        assert f"- {area}:" in dg._ISSUE_CHECKLISTS_BLOCK
+    assert not re.search(r"\bart(?:icol[oi])?\.?\s*\d", dg._ISSUE_CHECKLISTS_BLOCK, re.IGNORECASE)
+
+
 def test_analyse_case_v2_handles_a_non_dict_fatti_strutturati(monkeypatch):
     monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: json.dumps({"fatti_strutturati": "non un oggetto"}))
     result = dg._analyse_case_v2("fatti", "it")

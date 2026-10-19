@@ -22,6 +22,17 @@ else falls back to the default, so a typo never switches a feature on.
                                 distilled-bullet search (DISTILL), ranked by
                                 fusion and capped — see
                                 _select_articles_fusion.
+  ISSUE_CHECKLISTS_ENABLED     false: appends general issue checklists, by
+                                area (penale, obbligazioni e contratti,
+                                diritti reali e possesso, successioni,
+                                diritto amministrativo), to _analyse_case_v2's
+                                own prompt — methods to check for, never
+                                article numbers, and only ones the facts
+                                actually raise. Targets the generalisation
+                                gap the held-out set found: the model's own
+                                "questioni" never raising an issue at all,
+                                so there was nothing for retrieval to search
+                                on. See _ISSUE_CHECKLISTS_BLOCK.
 """
 
 import logging
