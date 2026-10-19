@@ -33,9 +33,18 @@ def test_1434_never_matches_14340():
     ("Codice di procedura penale 2026", "cpp"), ("Codice di procedura civile Edizione 2026", "cpc"),
     ("Codice Civile 2026", "cc"), ("Codice del Consumo", "consumo"),
     ("Legge 27 luglio 1978, n. 392", "l392"), ("Ordinanza sul ricorso iscritto al n. 23908/2022 R.G.", None),
+    ("Codice del processo amministrativo 2025", "cpa"),
+    ("Legge 7 agosto 1990, n. 241 - Nuove norme in materia di procedimento amministrativo", "l241"),
+    ("Legge sul Procedimento Amministrativo 2026", "l241"),
 ])
 def test_citation_documents_map_to_codes(document_name, code):
     assert ev.code_of_document(document_name) == code
+
+
+def test_cpa_is_not_mistaken_for_cp_in_the_answer_text():
+    """"c.p.a." must resolve to cpa, not cp (held-out h10/h11, 19 Oct)."""
+    answer = "L'autorità deve dare esecuzione ex art. 112 c.p.a. e art. 114 c.p.a."
+    assert ev.mentions(answer) == [("112", "cpa"), ("114", "cpa")]
 
 
 def test_articles_named_in_the_answer_keep_their_code():
@@ -79,10 +88,27 @@ def test_expected_documents_are_checked():
 
 def test_the_cases_file_is_complete():
     cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
-    ids = [c["id"] for c in cases if not c.get("extra")]
+    ids = [c["id"] for c in cases if not c.get("extra") and not c.get("heldout")]
     assert ids == ["sempronio", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4", "cp_short"]
     for case in cases:
         assert case["question"].strip()
+        for item in case["expected"]:
+            assert item["code"] in ev.CODES
+
+
+def test_the_held_out_set_is_complete_and_separate_from_the_tuning_set():
+    """h1-h11: real exam-style cases from a practising lawyer, held out from
+    the tuning set above -- provisional expected articles, never themselves
+    used to tune behaviour (see the module docstring and each case's own
+    "expected_status")."""
+    cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
+    heldout = [c for c in cases if c.get("heldout")]
+    assert [c["id"] for c in heldout] == [f"h{n}" for n in range(1, 12)]
+    for case in heldout:
+        assert not case.get("extra")   # heldout and extra are different, non-overlapping concepts
+        assert case.get("expected_status") == "draft — pending lawyer validation"
+        assert case["question"].strip()
+        assert case["expected"]
         for item in case["expected"]:
             assert item["code"] in ev.CODES
 
@@ -148,6 +174,39 @@ def test_aggregate_lines_shows_average_seconds_and_an_overall_average():
     assert "overall average 20.0 s per run" in lines
 
 
+# --- Held-out reporting (19 Oct): its own section, its own average, never
+# mixed into the tuning set's -------------------------------------------------
+
+def _result(case_id, status="CITED", heldout=False, seconds=1.0):
+    return {"id": case_id, "heldout": heldout, "seconds": seconds,
+            "score": {"expected": [{"expected": f"art. 1 {case_id}", "status": status}],
+                     "failures": [], "named_not_cited": []}}
+
+
+def test_summary_lines_separates_heldout_into_its_own_section():
+    results = [_result("sempronio"), _result("h1", heldout=True)]
+    lines = "\n".join(ev._summary_lines(results))
+    assert "## sempronio" in lines
+    assert "HELD-OUT SET" in lines
+    assert "## h1" in lines
+    # The held-out case comes after the section header, not mixed into the tuning set.
+    assert lines.index("## sempronio") < lines.index("HELD-OUT SET") < lines.index("## h1")
+
+
+def test_summary_lines_reports_its_own_average_per_group():
+    results = [_result("sempronio", status="CITED"), _result("c2", status="MISSING"),
+              _result("h1", status="CITED", heldout=True)]
+    lines = "\n".join(ev._summary_lines(results))
+    # Tuning set: (1 + 0) / 2 = 0.50; held-out: 1/1 = 1.00 -- reported separately.
+    assert "average CITED per case: 0.50 (across 2 case(s))" in lines
+    assert "average CITED per case: 1.00 (across 1 case(s))" in lines
+
+
+def test_summary_lines_has_no_heldout_section_when_there_is_none():
+    lines = "\n".join(ev._summary_lines([_result("sempronio")]))
+    assert "HELD-OUT" not in lines
+
+
 def _http_error(code, detail, headers=None):
     import email.message
     import io
@@ -187,3 +246,26 @@ def test_login_failure_shows_the_server_reason(monkeypatch):
     with pytest.raises(SystemExit) as exit_info:
         ev.login("http://x")
     assert "Incorrect email or password" in str(exit_info.value)
+
+
+def test_heldout_only_and_include_heldout_are_mutually_exclusive():
+    with pytest.raises(SystemExit):
+        ev.main(["--heldout-only", "--include-heldout", "--base-url", "http://x"])
+
+
+def test_heldout_only_selects_just_the_held_out_cases(monkeypatch, tmp_path):
+    """--heldout-only runs h1-h11 and nothing else -- doesn't need a live
+    server: every case errors immediately (fake login, no HTTP), so this
+    only checks which cases were attempted, via the printed "... <id>" lines."""
+    monkeypatch.setattr(ev, "login", lambda base_url: "jwt")
+
+    def fake_ask(base_url, token, question, timeout):
+        raise TimeoutError("no server in this test")
+    monkeypatch.setattr(ev, "ask", fake_ask)
+
+    printed = []
+    monkeypatch.setattr("builtins.print", lambda *a, **k: printed.append(" ".join(str(x) for x in a)))
+
+    ev.main(["--heldout-only", "--base-url", "http://x", "--out", str(tmp_path)])
+    attempted = {line.split()[1] for line in printed if line.startswith("... ")}
+    assert attempted == {f"h{n}" for n in range(1, 12)}

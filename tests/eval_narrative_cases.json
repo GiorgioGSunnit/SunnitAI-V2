@@ -1,14 +1,38 @@
 {
-  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names. 2026-10-18: c3's expected 'art. 5 l392' removed -- L. 392/1978 is not in the corpus; the law actually governing residential leases today is L. 431/1998, and its own art. 5 covers transitional contracts, not relevant to c3's facts. c3's expected is now just 658 cpc, 1453 cc, 1587 cc. 2026-10-19: added l1-l4, four long narrative cases written for scripts/exp_distill.py's experiment (not in Flavio's original list, but not 'extra' either -- their expected lists are curated, not just the question's own named article), moved here so exp_distill.py and eval_narrative.py share one source of truth.",
+  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names. 2026-10-18: c3's expected 'art. 5 l392' removed -- L. 392/1978 is not in the corpus; the law actually governing residential leases today is L. 431/1998, and its own art. 5 covers transitional contracts, not relevant to c3's facts. c3's expected is now just 658 cpc, 1453 cc, 1587 cc. 2026-10-19: added l1-l4, four long narrative cases written for scripts/exp_distill.py's experiment (not in Flavio's original list, but not 'extra' either -- their expected lists are curated, not just the question's own named article), moved here so exp_distill.py and eval_narrative.py share one source of truth. 2026-10-19: added h1-h11, 11 real exam-style cases from a practising lawyer (not Flavio's, not written for this project), flagged \"heldout\": true. Their \"expected\" lists are provisional (\"expected_status\": \"draft — pending lawyer validation\"); corrections will replace them. Held-out cases are a check on whatever the tuning set (everything else in this file) already converged on, never themselves used to write a prompt, pick a fixture, or decide whether a change helped -- and never added to scripts/exp_distill.py's case set either. eval_narrative.py excludes them by default; --include-heldout/--heldout-only opt in, and report them in their own section with their own average, never mixed into the tuning set's.",
   "cases": [
     {
       "id": "sempronio",
       "question": "Sempronio a seguito di un acceso diverbio con Caio gli sferra un violento schiaffo al volto. Caio indietreggia e cade a terra battendo il capo contro un marciapiede. Sempronio presta soccorso a Caio e chiama l’ambulanza. Caio muore poco dopo in ospedale a seguito di un’emorragia cerebraleda trauma cranico.\nIl PM contesta a Sempronio l’art 584 cp.\nIl candidato assunte le vesti del legale di Sempronio, premessi brevi cenni sull’omicidio preterintenzionale, il nesso causale e l’elemento soggettivo, delinea una strategia difensiva, ipotizzando anche possibili reati alternativi configurabili nel caso di specie",
       "expected": [
-        {"code": "cp", "article": "584"}, {"code": "cp", "article": "581"}, {"code": "cp", "article": "582"},
-        {"code": "cp", "article": "43"}, {"code": "cp", "article": "589"}
+        {
+          "code": "cp",
+          "article": "584"
+        },
+        {
+          "code": "cp",
+          "article": "581"
+        },
+        {
+          "code": "cp",
+          "article": "582"
+        },
+        {
+          "code": "cp",
+          "article": "43"
+        },
+        {
+          "code": "cp",
+          "article": "589"
+        }
       ],
-      "forbidden_cited": [{"code": "cp", "article": "116", "why": "concorso anomalo needs several agents; one agent here"}]
+      "forbidden_cited": [
+        {
+          "code": "cp",
+          "article": "116",
+          "why": "concorso anomalo needs several agents; one agent here"
+        }
+      ]
     },
     {
       "id": "sempronio_no_hint",
@@ -16,65 +40,191 @@
       "notes": "same facts as 'sempronio', minus the PM's 'art 584 cp' sentence — forces issue spotting with no article cited in the question",
       "question": "Sempronio a seguito di un acceso diverbio con Caio gli sferra un violento schiaffo al volto. Caio indietreggia e cade a terra battendo il capo contro un marciapiede. Sempronio presta soccorso a Caio e chiama l’ambulanza. Caio muore poco dopo in ospedale a seguito di un’emorragia cerebraleda trauma cranico.\nIl candidato assunte le vesti del legale di Sempronio, premessi brevi cenni sull’omicidio preterintenzionale, il nesso causale e l’elemento soggettivo, delinea una strategia difensiva, ipotizzando anche possibili reati alternativi configurabili nel caso di specie",
       "expected": [
-        {"code": "cp", "article": "581"}, {"code": "cp", "article": "582"}, {"code": "cp", "article": "584"},
-        {"code": "cp", "article": "586"}, {"code": "cp", "article": "589"},
-        {"code": "cp", "article": "43"}, {"code": "cp", "article": "41"}
+        {
+          "code": "cp",
+          "article": "581"
+        },
+        {
+          "code": "cp",
+          "article": "582"
+        },
+        {
+          "code": "cp",
+          "article": "584"
+        },
+        {
+          "code": "cp",
+          "article": "586"
+        },
+        {
+          "code": "cp",
+          "article": "589"
+        },
+        {
+          "code": "cp",
+          "article": "43"
+        },
+        {
+          "code": "cp",
+          "article": "41"
+        }
       ],
-      "forbidden_cited": [{"code": "cp", "article": "116", "why": "concorso anomalo needs several agents; one agent here"}]
+      "forbidden_cited": [
+        {
+          "code": "cp",
+          "article": "116",
+          "why": "concorso anomalo needs several agents; one agent here"
+        }
+      ]
     },
     {
       "id": "p1",
       "question": "Tizio, svegliato di notte da rumori, sorprende in casa un ladro disarmato che sta fuggendo dalla finestra con alcuni gioielli. Tizio impugna la pistola regolarmente detenuta e gli spara alle spalle, uccidendolo. Il candidato, assunte le vesti del difensore di Tizio, individui le questionigiuridiche e la linea difensiva più efficace.",
       "expected": [
-        {"code": "cp", "article": "52"}, {"code": "cp", "article": "55"},
-        {"code": "cp", "article": "575"}, {"code": "cp", "article": "589"}
+        {
+          "code": "cp",
+          "article": "52"
+        },
+        {
+          "code": "cp",
+          "article": "55"
+        },
+        {
+          "code": "cp",
+          "article": "575"
+        },
+        {
+          "code": "cp",
+          "article": "589"
+        }
       ]
     },
     {
       "id": "p2",
       "question": "Mevio acquista un'auto usata da un privato pagandola con un assegno, sapendo che il conto non ha copertura, e assicurando falsamente al venditore di essere un noto imprenditore. Il venditore consegna l'auto. Quali reati sono configurabili e come si distinguono?",
-      "expected": [{"code": "cp", "article": "640"}, {"code": "cp", "article": "641"}]
+      "expected": [
+        {
+          "code": "cp",
+          "article": "640"
+        },
+        {
+          "code": "cp",
+          "article": "641"
+        }
+      ]
     },
     {
       "id": "p3",
       "question": "Caio, per strada, strappa con violenza la borsa a una signora anziana, che cade a terra e si frattura il polso. Caio fugge con la borsa. Il candidato qualifichi giuridicamente il fatto, valutando le possibili alternative.",
       "expected": [
-        {"code": "cp", "article": "624-bis"}, {"code": "cp", "article": "628"},
-        {"code": "cp", "article": "582"}, {"code": "cp", "article": "590"}
+        {
+          "code": "cp",
+          "article": "624-bis"
+        },
+        {
+          "code": "cp",
+          "article": "628"
+        },
+        {
+          "code": "cp",
+          "article": "582"
+        },
+        {
+          "code": "cp",
+          "article": "590"
+        }
       ]
     },
     {
       "id": "c1",
       "question": "Un paziente viene operato al ginocchio in un ospedale pubblico; dopo l'intervento sviluppa un'infezione che gli causa un'invalidità permanente. Il paziente vuole agire per il risarcimento. Contro chi può agire, a quale titolo e con quali oneri probatori?",
-      "expected": [{"code": "cc", "article": "1218"}, {"code": "cc", "article": "2043"}, {"code": "cc", "article": "2236"}],
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1218"
+        },
+        {
+          "code": "cc",
+          "article": "2043"
+        },
+        {
+          "code": "cc",
+          "article": "2236"
+        }
+      ],
       "forbidden_named": [
-        {"pattern": "gelli|legge\\s*(?:n\\.\\s*)?24\\s*(?:/|del\\s+)\\s*2017|l\\.\\s*(?:n\\.\\s*)?24\\s*/\\s*2017",
-         "why": "Gelli-Bianco (L. 24/2017) is not in the corpus and must not be invented"}
+        {
+          "pattern": "gelli|legge\\s*(?:n\\.\\s*)?24\\s*(?:/|del\\s+)\\s*2017|l\\.\\s*(?:n\\.\\s*)?24\\s*/\\s*2017",
+          "why": "Gelli-Bianco (L. 24/2017) is not in the corpus and must not be invented"
+        }
       ]
     },
     {
       "id": "c2",
       "question": "Un consumatore acquista una lavatrice in un negozio; dopo tre mesi la macchina smette di funzionare per un difetto di fabbricazione. Il venditore rifiuta di intervenire sostenendo che deve rivolgersi al produttore. Quali tutele ha il consumatore e in quali termini?",
       "expected": [
-        {"code": "consumo", "any_of": ["128", "129", "130", "131", "132", "133", "134", "135"],
-         "label": "Codice del Consumo artt. 128-135 (any)"},
-        {"code": "cc", "article": "1490"}, {"code": "cc", "article": "1495"}
+        {
+          "code": "consumo",
+          "any_of": [
+            "128",
+            "129",
+            "130",
+            "131",
+            "132",
+            "133",
+            "134",
+            "135"
+          ],
+          "label": "Codice del Consumo artt. 128-135 (any)"
+        },
+        {
+          "code": "cc",
+          "article": "1490"
+        },
+        {
+          "code": "cc",
+          "article": "1495"
+        }
       ]
     },
     {
       "id": "c3",
       "question": "Il conduttore di un appartamento ad uso abitativo non paga il canone da tre mesi. Il locatore vuole riottenere l'immobile e recuperare i canoni arretrati. Quali strumenti processuali e sostanziali ha a disposizione?",
       "expected": [
-        {"code": "cpc", "article": "658"}, {"code": "cc", "article": "1453"},
-        {"code": "cc", "article": "1587"}
+        {
+          "code": "cpc",
+          "article": "658"
+        },
+        {
+          "code": "cc",
+          "article": "1453"
+        },
+        {
+          "code": "cc",
+          "article": "1587"
+        }
       ]
     },
     {
       "id": "l1",
       "question": "Tizio, 34 anni, disoccupato, trascorre le giornate tra il bar sotto casa e la palestra. Un pomeriggio di marzo telefona a Maria, 81 anni, vedova, che vive sola a Ferrara e ha una nipote che studia a Bologna. Tizio si presenta come “il dottor Rossi dell’ufficio antifrode della sua banca”, le spiega con tono cordiale che sul suo conto sono stati rilevati movimenti sospetti e che, per bloccarli, deve comunicargli il codice utente e il codice che riceverà via SMS. Maria, preoccupata, glieli detta. Con quei codici Tizio accede al suo home banking da un internet point e dispone due bonifici per complessivi 14.500 euro verso un conto intestato a un prestanome. La nipote se ne accorge una settimana dopo. Il candidato, assunte le vesti del legale della persona offesa, individui i reati configurabili e le circostanze rilevanti.",
       "expected": [
-        {"code": "cp", "article": "640"}, {"code": "cp", "article": "640-ter"},
-        {"code": "cp", "article": "494"}, {"code": "cp", "article": "61"}
+        {
+          "code": "cp",
+          "article": "640"
+        },
+        {
+          "code": "cp",
+          "article": "640-ter"
+        },
+        {
+          "code": "cp",
+          "article": "494"
+        },
+        {
+          "code": "cp",
+          "article": "61"
+        }
       ]
     },
     {
@@ -82,24 +232,66 @@
       "notes": "originally 'guaribile in 40 giorni' -- changed to 60: 583 c.p.'s aggravation needs MORE than 40 days, so 40 itself didn't support the expected article (round 5, 18 Oct)",
       "question": "Caio, dopo una serata passata in discoteca con alcuni amici che lo hanno lasciato senza passaggio, decide di tornare a piedi. Passando davanti a una villetta con le luci spente, forza la porta finestra del retro con un cacciavite ed entra. In camera da letto riempie uno zaino con gioielli e due orologi. Il proprietario, Sempronio, rientrato prima del previsto da una cena, lo sorprende nel corridoio; Caio, per guadagnare la fuga con la refurtiva, lo spinge con forza contro il mobile dell’ingresso. Sempronio riporta una frattura del polso guaribile in 60 giorni. Caio viene fermato poco dopo da una pattuglia con lo zaino. Il candidato, assunte le vesti del difensore di Caio, qualifichi i fatti e indichi la linea difensiva.",
       "expected": [
-        {"code": "cp", "article": "628"}, {"code": "cp", "article": "624-bis"},
-        {"code": "cp", "article": "582"}, {"code": "cp", "article": "583"}
+        {
+          "code": "cp",
+          "article": "628"
+        },
+        {
+          "code": "cp",
+          "article": "624-bis"
+        },
+        {
+          "code": "cp",
+          "article": "582"
+        },
+        {
+          "code": "cp",
+          "article": "583"
+        }
       ]
     },
     {
       "id": "l3",
       "question": "La signora Bianchi, proprietaria di un appartamento al terzo piano di un condominio del 1970 a Torino, nota a novembre macchie di umidità sul soffitto del bagno, che peggiorano dopo ogni pioggia. Ha appena rifatto la cucina e ha in programma di affittare l’immobile a studenti. Un idraulico da lei incaricato accerta che l’acqua proviene dalla colonna di scarico condominiale, deteriorata. Scrive tre volte all’amministratore, che risponde di dover attendere l’assemblea di primavera. Nel frattempo il controsoffitto crolla in parte e l’inquilino che doveva entrare a gennaio rinuncia. Quali azioni può intraprendere la signora Bianchi, nei confronti di chi e per quali danni?",
       "expected": [
-        {"code": "cc", "article": "2051"}, {"code": "cc", "article": "1117"},
-        {"code": "cc", "article": "1130"}, {"code": "cc", "article": "2043"}
+        {
+          "code": "cc",
+          "article": "2051"
+        },
+        {
+          "code": "cc",
+          "article": "1117"
+        },
+        {
+          "code": "cc",
+          "article": "1130"
+        },
+        {
+          "code": "cc",
+          "article": "2043"
+        }
       ]
     },
     {
       "id": "l4",
       "question": "Marco e Giulia sono sposati da dodici anni e hanno due figli di 7 e 10 anni; vivono nella casa di proprietà di Giulia a Bari, ereditata dai genitori. Marco, dirigente commerciale, viaggia spesso per lavoro. A settembre Giulia scopre, leggendo alcuni messaggi sul tablet di famiglia, che Marco ha da un anno una relazione con una collega; dopo una lite violenta Marco lascia la casa e si trasferisce in un residence. I figli frequentano la scuola vicino casa e il calcio il martedì e il giovedì. Giulia vuole separarsi, ottenere che i figli restino con lei e un contributo economico. Il candidato, assunte le vesti del legale di Giulia, illustri gli strumenti e le domande da proporre.",
       "expected": [
-        {"code": "cc", "article": "151"}, {"code": "cc", "article": "156"},
-        {"code": "cc", "article": "337-ter"}, {"code": "cc", "article": "337-sexies"}
+        {
+          "code": "cc",
+          "article": "151"
+        },
+        {
+          "code": "cc",
+          "article": "156"
+        },
+        {
+          "code": "cc",
+          "article": "337-ter"
+        },
+        {
+          "code": "cc",
+          "article": "337-sexies"
+        }
       ]
     },
     {
@@ -107,28 +299,311 @@
       "question": "art. 586 c.p. morte o lesioni come conseguenza di altro delitto",
       "notes": "crossref regression guard",
       "expected": [
-        {"code": "cp", "article": "586"}, {"code": "cp", "article": "589"},
-        {"code": "cp", "article": "590"}, {"code": "cp", "article": "83"}
+        {
+          "code": "cp",
+          "article": "586"
+        },
+        {
+          "code": "cp",
+          "article": "589"
+        },
+        {
+          "code": "cp",
+          "article": "590"
+        },
+        {
+          "code": "cp",
+          "article": "83"
+        }
       ]
     },
     {
       "id": "cc_short",
       "extra": true,
       "question": "art. 1418 c.c. cause di nullità del contratto",
-      "expected": [{"code": "cc", "article": "1418"}]
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1418"
+        }
+      ]
     },
     {
       "id": "dottrina",
       "extra": true,
       "question": "art. 52 c.p. legittima difesa: quali sono i requisiti della proporzione secondo la dottrina?",
-      "expected": [{"code": "cp", "article": "52"}],
-      "expected_docs": [{"doc": "commentat", "label": "a citation from the penal commentary"}]
+      "expected": [
+        {
+          "code": "cp",
+          "article": "52"
+        }
+      ],
+      "expected_docs": [
+        {
+          "doc": "commentat",
+          "label": "a citation from the penal commentary"
+        }
+      ]
     },
     {
       "id": "q_long",
       "extra": true,
       "question": "Quali sono gli elementi costitutivi dell’omicidio preterintenzionale ex art. 584 c.p. e come si distingue dalla lesione personale seguita da morte? Quali strategie difensive sono più efficaci per Sempronio?",
-      "expected": [{"code": "cp", "article": "584"}]
+      "expected": [
+        {
+          "code": "cp",
+          "article": "584"
+        }
+      ]
+    },
+    {
+      "id": "h1",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Tizio, studente in un Istituto Comprensivo Statale Elementare, durante l'ora di educazione fisica, scivolava e urtava una panchina di legno ove sedevano altri compagni. Per effetto della caduta, Tizio riportava lesioni guaribili in 30 giorni.\nL'insegnante di educazione fisica Sempronia, che aveva in precedenza istruito gli alunni sulle regole e i comportamenti da tenere e aveva assistito allo svolgimento di gioco, interveniva prontamente per le prime cure e informava i genitori di Tizio.\nIl candidato, inquadrata brevemente la fattispecie, rediga motivato parere richiesto dai genitori di Tizio.",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1218"
+        },
+        {
+          "code": "cc",
+          "article": "2048"
+        },
+        {
+          "code": "cc",
+          "article": "1176"
+        }
+      ]
+    },
+    {
+      "id": "h2",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "La società Costruzioni Veloci S.r.l. sottoscrive un contratto con il sig. Mevio avente ad oggetto la ristrutturazione integrale di un attico dove Mevio andrà a vivere con la sua compagna Sempronia.\nIl corrispettivo dei lavori viene pattuito in € 50.000,00.\nAll'interno del regolamento contrattuale viene inserita una clausola per l'ipotesi di ritardata consegna dell'opera, quantificata in € 1.000,00 per ogni giorno di ritardo rispetto al termine di fine lavori stabilito.\nA causa di criticità nell'approvvigionamento dei materiali, la società ultima i lavori con un ritardo di 6o giorni.\nIn applicazione della clausola suddetta, il sig. Mevio richiede il pagamento di una penale complessiva pari a € 60.000,00 entro gg. 15, annunciando che - in mancanza di pagamento - darà mandato ad un legale per agire in giudizio.\nAssuma il Candidato le vesti del difensore della società prospettando la linea difensiva volta a contestare la legittimità e la proporzionalità della penale richiesta, analizzando i presupposti per la riduzione giudiziale della stessa e valutando la rilevanza esterna delle cause del ritardo.",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1382"
+        },
+        {
+          "code": "cc",
+          "article": "1384"
+        },
+        {
+          "code": "cc",
+          "article": "1218"
+        },
+        {
+          "code": "cc",
+          "article": "1256"
+        }
+      ]
+    },
+    {
+      "id": "h3",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Leonardo è proprietario di alcuni terreni in comune di Manciano che non sono adiacenti alla pubblica strada e che sono raggiungibili con una strada sterrata che attraversa, nell’ordine, i terreni di Tizio, Caio e Sempronio. Dopo il fondo di Sempronio c’è un fondo di Leonardo, in consecuzione c’è un terreno di Annibale e subito dopo un altro terreno di Leonardo. Tutti i fondi sono raggiungibili attraverso il percorso sterrato. I terreni di Leonardo e si Sempronio all’inizio del 1900 appartenevano a Mevio. Sempronio nel 2003 vende il terreno con soprastante fabbricato a Domitilla, e Domitilla dopo qualche anno, nel 2016, appone un cancello chiuso a chiave per motivi di riservatezza. Fino ad allora incaricati di Leonardo sono passati per la strada sterrata per la manutenzione del fondo. Il fondo di Leonardo resta così intercluso e, passati due anni, nel 2018 Leonardo si rivolge ad un avvocato. Il candidato assuma la difesa di Leonardo.",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1051"
+        },
+        {
+          "code": "cc",
+          "article": "1062"
+        },
+        {
+          "code": "cc",
+          "article": "1158"
+        },
+        {
+          "code": "cc",
+          "article": "1079"
+        }
+      ]
+    },
+    {
+      "id": "h4",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Nel 2019 muore Caio, lasciando quale unico erede il figlio Tizio. L’eredità è composta da alcuni beni immobili, tra cui un appartamento locato a terzi, nonché da diversi debiti verso istituti di credito.\n\nTizio, temendo che i debiti possano superare l’attivo ereditario, decide di non procedere immediatamente all’accettazione formale dell’eredità, né pura e semplice né con beneficio di inventario, tuttavia presenta richiesta di registrazione del testamento del de cuius, chiede altresì la trascrizione dello stesso e riscuote i canoni di locazione, con i quali provvede al pagamento delle spese condominiali relative all’immobile ereditato.\n\nA distanza di tempo, uno dei creditori di Caio agisce nei confronti di Tizio per il pagamento dei debiti ereditari.\n\nTizio si difende sostenendo di non aver mai accettato formalmente l’eredità e che le attività svolte sarebbero riconducibili a meri atti di gestione del patrimonio ereditario.\n\nIl candidato, assunte le vesti del legale del creditore, illustri la questione giuridica sottesa al caso di specie e le possibili iniziative da assumere.",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "476"
+        },
+        {
+          "code": "cc",
+          "article": "460"
+        },
+        {
+          "code": "cc",
+          "article": "485"
+        },
+        {
+          "code": "cc",
+          "article": "481"
+        }
+      ]
+    },
+    {
+      "id": "h5",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Tizio e Caio vengono tratti in arresto perché sorpresi con due pistole, all’interno di un’automobile parcheggiata a 100 metri dall’ingresso della banca Alfa. Le pistole, pure se dotate delle relative munizioni, non sono pronte per lo sparo. Nell’automobile viene rinvenuto e sequestrato un passamontagna di lana astrattamente idoneo al nascondimento del volto. All’esito del giudizio immediato Tizio e Caio vengono condannati per tentata rapina ai danni della banca Alfa, con riconoscimento delle circostanze aggravanti dell’uso dell’arma e delle più persone riunite.\nAssunta la veste del difensore di Tizio, il candidato prospetti il mezzo di impugnazione più idoneo e la strategia difensiva da adottare",
+      "expected": [
+        {
+          "code": "cp",
+          "article": "56"
+        },
+        {
+          "code": "cp",
+          "article": "628"
+        },
+        {
+          "code": "cpp",
+          "article": "593"
+        }
+      ]
+    },
+    {
+      "id": "h6",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Tizia va dal dott. Caio chirurgo plastico per fare intervento di mastoplastica additiva. Il chirurgo la opera con protesi impiantata sottomuscolarmente, a Tizia rimane una visibile malformazione e cicatrice, a dire (di Tizia) avrebbe dovuto operare con protesi impiantata Sovramuscolarmente, di conseguenza sporge denuncia-querela contro il medico.\nQuest’ultimo va dal suo amico medico legale Sempronio per capire quanto avesse effettivamente rischiato, il quale gli dice che la protesi con impianto sovramuscolare ha un rischio maggiore del 20%.\nAnalizzate le fattispecie di nesso e colpa, Il dott. caio si presenta da voi per capire che strategia intraprendere",
+      "expected": [
+        {
+          "code": "cp",
+          "article": "590"
+        },
+        {
+          "code": "cp",
+          "article": "590-sexies"
+        },
+        {
+          "code": "cp",
+          "article": "43"
+        },
+        {
+          "code": "cp",
+          "article": "40"
+        }
+      ]
+    },
+    {
+      "id": "h7",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Il funzionario di banca Tizio, qualificabile come incaricato di pubblico servizio, intrattiene rapporti con l'imprenditore Caio, il quale richiede l'ottenimento di un finanziamento. A seguito di accordi intercorsi tra i due, Tizio si adopera per far deliberare la concessione del finanziamento in favore di Caio, nonostante la mancanza dei presupposti richiesti, ricevendo in cambio una promessa di utilità economica.\nAll'esito delle indagini entrambi vengono tratti a giudizio: a Tizio viene contestato un reato proprio contro la pubblica amministrazione, mentre a Caio, pur privo della qualifica soggettiva é chiamato a rispondere a titolo di concorso nel medesimo reato.\nAssunta la difesa di Caio il candidato esamini:\n1) la configurabilità del concorso dell'extraneus nel reato proprio\n2) la rilevanza della consapevolezza della qualifica soggettiva dell'intraneus\n3) la possibile applicazione dell'art 117 c.p.\n4) le conseguenze in punto di responsabilità e trattamento sanzionatorio e illustri le argomentazioni difensive a tutela dell'assistit",
+      "expected": [
+        {
+          "code": "cp",
+          "article": "319"
+        },
+        {
+          "code": "cp",
+          "article": "320"
+        },
+        {
+          "code": "cp",
+          "article": "321"
+        },
+        {
+          "code": "cp",
+          "article": "110"
+        },
+        {
+          "code": "cp",
+          "article": "117"
+        }
+      ]
+    },
+    {
+      "id": "h8",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Caio, soggetto ultra ottantenne, si reca dal proprio difensore di fiducia riferendogli quanto occorso alcuni giorni prima: due soggetti a lui ignoti, si erano recati presso la sua abitazione presentandosi come esattori di una società di fornitura di energia elettrica, con tesserino appuntato al bavero; Caio faceva quindi entrare i due soggetti che, una volta fatto ingresso nell’abitazione, gli avevano intimato di pagare alcune bollette insolute per un ammontare di 1500 € prospettando che in caso di omesso pagamento, si sarebbe avuta l’interruzione della fornitura di energia. L’anziano si determinava a pagare la somma richiesta. Una volta è rimasto solo si accorgeva, Non solo del fatto che le bollette apparentemente insolute erano false e erano state da lui regolarmente pagate, ma che uno dei due soggetti, approfittando dello stato di agitazione in cui versava, Aveva sottratto la somma di 1000 € e alcuni ori detenuti in un cassetto. Il candidato, assunte le vesti del legale di Caio, esponga le questioni di diritto sostanziale e processuale rilevanti e definisca una linea difensiva e illustri le possibili iniziative da intraprendere a tutela del cliente.",
+      "expected": [
+        {
+          "code": "cp",
+          "article": "640"
+        },
+        {
+          "code": "cp",
+          "article": "624-bis"
+        },
+        {
+          "code": "cp",
+          "article": "61"
+        }
+      ]
+    },
+    {
+      "id": "h9",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Tizio, appartatosi nei pressi di un ufficio postale, affronta Caia intimandole, sotto la minaccia di un coltello, di consegnargli la pensione appena riscossa. La rapina non viene consumata per l'intervento dei passanti che inducono Tizio a darsi alla fuga. Caia, affetta da patologie cardiache, a causa della forte emozione subita è colpita da infarto e muore. Tizio, all'esito del processo di primo grado, viene giudicato responsabile, oltre che del delitto di tentata rapina aggravata, anche ex art. 586 c.p. del delitto di cui all'art. 589 c.p.. A quest'ultimo riguardo, il Giudice di primo grado valorizza il fatto che la vittima della tentata rapina era una donna di 65 anni. Il Tribunale infligge, per ciascuno dei due delitti, la pena di giustizia. Pacifica essendo la responsabilità di Tizio per la tentata rapina (per la quale vi era stata confessione), nella prospettiva della redazione dell'atto d'appello, premessi i principi in tema di morte o lesioni come conseguenza di altro delitto, il candidato esponga la traccia delle possibili argomentazioni difensive e le relative conclusioni.",
+      "expected": [
+        {
+          "code": "cp",
+          "article": "586"
+        },
+        {
+          "code": "cp",
+          "article": "589"
+        },
+        {
+          "code": "cp",
+          "article": "56"
+        },
+        {
+          "code": "cp",
+          "article": "628"
+        },
+        {
+          "code": "cp",
+          "article": "43"
+        }
+      ]
+    },
+    {
+      "id": "h10",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "notes": "art. 21-septies L.241/1990's document isn't verified against the live corpus here (no DB access) -- see scripts/check_heldout_articles.py.",
+      "question": "Il Comune di C. bandisce un concorso per la copertura di un posto di dirigente del Settore Urbanistica.\nAl concorso partecipano due soli concorrenti, Tizio e Caio.\nAll'esito delle prove di concorso risulta vincitore Tizio, e Caio si colloca nella seconda posizione in graduatoria con uno scarto di 2 punti da Tizio.\nAvverso il provvedimento di approvazione della graduatoria di concorso Caio propone ricorso innanzi al TAR competente che accoglie il ricorso e annulla la graduatoria per omessa valutazione di alcuni titoli di servizio dichiarati da Caio in sede di concorso, previsti come valutabili dal bando di concorso che avrebbero consentito l'assegnazione di ulteriori tre punti a Caio.\nA seguito del passaggio in giudicato della sentenza del TAR, il Comune, al fine di dare esecuzione alla precitata pronuncia, riconvoca la Commissione di concorso che riesamina i titoli di servizio di Caio ma decide di non valutarli in quanto assunti nell'ambito di un rapporto di lavoro a tempo determinato e, quindi, conferma la graduatoria e la prima posizione in favore di Tizio.\nL'amministrazione approva le risultanze dei lavori della Commidsione e nomina vincitore del concorso nuovamente Tizio.\nIl candidato assunte le vesti del difensore di Caio, illustri la strategia difensiva più utile a tutela del cliente, descrivendo in sintesi l'istituto processuale applicabile.",
+      "expected": [
+        {
+          "code": "cpa",
+          "article": "112"
+        },
+        {
+          "code": "cpa",
+          "article": "114"
+        },
+        {
+          "code": "l241",
+          "article": "21-septies"
+        }
+      ]
+    },
+    {
+      "id": "h11",
+      "heldout": true,
+      "expected_status": "draft — pending lawyer validation",
+      "question": "Tizio otteneva dal Tribunale Civile di Alfa ordinanza ex art. 702 ter c.p.c., passata in giudicato, di riconoscimento della cittadinanza italiana; tale provvedimento conteneva ordine al Ministero dell'Interno e, per esso, all'ufficiale dello stato civile competente, di procedere alle iscrizioni, trascrizioni e annotazioni di legge, nei registri dello stato civile, della cittadinanza della persona indicata.\nA fronte dell'inerzia del Comune di Alfa, competente alle trascrizioni ed annotazioni di legge nei registri dello stato civile, Tizio si reca dal proprio legale per valutare quali azioni siano eventualmente possibili per ottenere l'attuazione dell'ordinanza del Tribunale Civile di Alfa.",
+      "expected": [
+        {
+          "code": "cpa",
+          "article": "112"
+        },
+        {
+          "code": "cpa",
+          "article": "114"
+        }
+      ]
     }
   ]
 }
