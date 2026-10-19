@@ -1978,7 +1978,7 @@ def _classify_top_level_intent(message: str, session_lang: str) -> str:
     )
     try:
         result = _call_chat(
-            [SystemMessage(content=system), HumanMessage(content=message[:600])],
+            [SystemMessage(content=system), HumanMessage(content=_classifier_view(message))],
             max_tokens=5,
         ).strip().lower()
         if result in ("generate", "compare", "rag"):
@@ -2008,6 +2008,21 @@ def _is_topic_question(message: str) -> bool:
             and not _STRATEGY_ASK_RE.search(message))
 
 
+_CLASSIFY_HEAD_CHARS = 400
+_CLASSIFY_TAIL_CHARS = 800
+
+
+def _classifier_view(message: str) -> str:
+    """What the intent classifiers read: the whole message when short, else
+    its start and its end. It used to read only the first 600 characters, and
+    a long fact pattern's actual ask ("…come posso difendermi?", "…rediga
+    parere") comes at the end."""
+    message = message or ""
+    if len(message) <= _CLASSIFY_HEAD_CHARS + _CLASSIFY_TAIL_CHARS:
+        return message
+    return f"{message[:_CLASSIFY_HEAD_CHARS]}\n[…]\n{message[-_CLASSIFY_TAIL_CHARS:]}"
+
+
 def _classify_legal_intent(message: str, session_lang: str) -> str:
     """
     Classification of a message with NO document attached, deciding
@@ -2034,10 +2049,16 @@ def _classify_legal_intent(message: str, session_lang: str) -> str:
     Still a single LLM call otherwise, same as before -- any failure (LLM
     error, unparseable reply) is caught here and defaults to 'rag', so
     callers never need to guard this call themselves.
-    """
-    from ..rag.calculation import _NARRATIVE_DEFENCE_RE
 
-    if _NARRATIVE_DEFENCE_RE.search(message or ""):
+    19 Oct, later: the shortcut uses calculation._DEFENCE_REQUEST_RE, a
+    narrower list than the calculation gate's (bare "strategia" and "il
+    candidato" sent "Qual è la strategia fiscale migliore…" to a defence
+    draft), and the LLM now reads the start and the end of a long message
+    (_classifier_view), where a fact pattern's actual ask sits.
+    """
+    from ..rag.calculation import _DEFENCE_REQUEST_RE
+
+    if _DEFENCE_REQUEST_RE.search(message or ""):
         return "defensive_draft"
     system = (
         "Sei un classificatore di intenzioni per un assistente legale italiano. "
@@ -2057,7 +2078,7 @@ def _classify_legal_intent(message: str, session_lang: str) -> str:
     )
     try:
         result = _call_chat(
-            [SystemMessage(content=system), HumanMessage(content=message[:600])],
+            [SystemMessage(content=system), HumanMessage(content=_classifier_view(message))],
             max_tokens=5,
         ).strip().lower()
         if result in ("defensive_draft", "generate", "rag"):

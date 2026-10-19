@@ -774,3 +774,55 @@ def test_non_exam_phrasing_still_goes_through_the_llm_classifier(chat_api):
     fast path did NOT fire here (it would return "defensive_draft" outright
     without needing the stub at all)."""
     assert chat_api._classify_legal_intent("Quali sono gli orari degli uffici comunali?", "it") == "rag"
+
+
+# --- The shortcut is narrow; the classifier reads the end of long messages ----
+#
+# 19 Oct, later: the shortcut's bare "strategia" and "il candidato" sent ordinary
+# questions to a defence draft. They now go to the LLM classifier, which reads
+# the start and the end of a long message. Synthetic phrasings only.
+
+@pytest.mark.parametrize("message", [
+    "Qual è la strategia fiscale migliore per ridurre l'IRES di una srl?",
+    "Il candidato sindaco può presentare due liste nello stesso comune?",
+    "Posso assumere la difesa di un mio parente in un processo penale?",
+])
+def test_common_words_no_longer_force_a_defence_draft(chat_api, message):
+    """chat_api's stub answers "rag": a "defensive_draft" here could only come
+    from the shortcut."""
+    assert chat_api._classify_legal_intent(message, "it") == "rag"
+
+
+@pytest.mark.parametrize("message", [
+    "Tizio chiede quale strategia difensiva adottare contro la contestazione.",
+    "Il candidato illustri i presupposti della legittima difesa.",
+    "Assunte le vesti del difensore di Caio, si indichino le eccezioni proponibili.",
+])
+def test_defence_phrasing_still_takes_the_shortcut(chat_api, monkeypatch, message):
+    def boom(*a, **k):
+        raise AssertionError("the LLM must not be called for this phrasing")
+    monkeypatch.setattr(chat_api, "_call_chat", boom)
+    assert chat_api._classify_legal_intent(message, "it") == "defensive_draft"
+
+
+def test_the_classifier_reads_the_end_of_a_long_message(chat_api, monkeypatch):
+    seen = []
+
+    def fake(messages, **kwargs):
+        seen.append(messages[-1].content)
+        return "defensive_draft"
+
+    monkeypatch.setattr(chat_api, "_call_chat", fake)
+    message = "Tizio e Caio stipulano un contratto di appalto. " * 60 + "Come posso difendermi dalla richiesta?"
+    assert chat_api._classify_legal_intent(message, "it") == "defensive_draft"
+    assert seen[0].endswith("Come posso difendermi dalla richiesta?")
+    assert seen[0].startswith("Tizio e Caio") and len(seen[0]) < len(message)
+    assert chat_api._classifier_view("Breve domanda.") == "Breve domanda."
+
+
+def test_the_calculation_gate_keeps_the_broad_list():
+    """Not calculating is right for any strategy question, even when the
+    shortcut no longer turns it into a defence draft."""
+    from src.rag.calculation import _DEFENCE_REQUEST_RE, _NARRATIVE_DEFENCE_RE
+    question = "Qual è la strategia fiscale migliore per ridurre l'IRES di una srl?"
+    assert _NARRATIVE_DEFENCE_RE.search(question) and not _DEFENCE_REQUEST_RE.search(question)

@@ -38,6 +38,20 @@ _NARRATIVE_DEFENCE_RE = re.compile(
     r"\bredig\w*\s+(?:motivato\s+)?parere\b|\blinea difensiva\b|\bstrategia\b",
     re.IGNORECASE,
 )
+# The narrower list _classify_legal_intent trusts outright to mean "write a
+# defence strategy" (19 Oct): the gate's list above is right for "this is not a
+# calculation", but as a classifier shortcut its bare "strategia" and "il
+# candidato" sent "Qual è la strategia fiscale migliore…" or "Il candidato
+# sindaco può…" to a defence draft. Here "strategia" must be defensive or
+# procedural, and "il candidato" must be followed by an exam instruction.
+_DEFENCE_REQUEST_RE = re.compile(
+    r"\bil candidato\b[^.?!]{0,200}?\b(?:rediga|predisponga|assuma|assunt[aeio]|illustri|esponga|individui|"
+    r"prospetti|indichi|esamini|tratti|discuta|analizzi|valuti)\b|"
+    r"\bassum(?:a|ano|endo)\s+(?:le vesti|la difesa)\b|\bassunt[aeio]\s+(?:le vesti|la difesa)\b|"
+    r"\bredig\w*\s+(?:motivato\s+)?parere\b|\blinea difensiva\b|"
+    r"\bstrategi[ae]\s+(?:difensiv[ae]|di\s+difesa|processual[ei])\b",
+    re.IGNORECASE,
+)
 _PLATFORM_UNAVAILABLE = {
     "status": "no_match",
     "candidates": [],
