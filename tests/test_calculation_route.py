@@ -578,6 +578,39 @@ def test_gate_fails_safe_when_platform_is_unreachable(monkeypatch):
     assert calculation_gate({"query": "calcolo irpef"}) == {"calc_route": "normal"}
 
 
+# --- Narrative/defence requests decline calculation outright ---------------
+#
+# Round 10 (19 Oct): a held-out exam case (a penalty-clause dispute, narrated
+# at length with several euro amounts) strong-matched a penalty calculator
+# and got auto-routed to "calculate" even though the user asked for a
+# defence strategy, not a sum. This guard runs before the platform is even
+# asked, so no score or LLM fallback downstream can override it. Synthetic
+# phrasing only, never the held-out case's own text.
+
+@pytest.mark.parametrize("query", [
+    "Il Comune applica una penale di 60.000 euro per 60 giorni di ritardo. Assuma il Candidato le vesti "
+    "del difensore della società e prospetti la linea difensiva per contestare la penale.",
+    "Tizio deve 10.000 euro di interessi. Il candidato, assunte le vesti del legale di Tizio, rediga parere.",
+    "Qual è la strategia migliore per impugnare il calcolo degli interessi di mora notificato a Caio?",
+])
+def test_gate_declines_narrative_defence_requests_without_consulting_the_platform(monkeypatch, query):
+    def boom(*a, **k):
+        raise AssertionError("the platform must not be consulted for a narrative/defence request")
+    monkeypatch.setattr("src.rag.calculation.requests.post", boom)
+
+    assert calculation_gate({"query": query}) == {"calc_route": "normal"}
+
+
+def test_gate_still_consults_the_platform_for_a_genuine_calculation(monkeypatch):
+    """The new guard must not swallow a real calculation request that
+    happens to share no exam/defence vocabulary."""
+    candidate = {"calculator_id": "legal_it.irpef", "score": 3, "required_inputs": []}
+    _mock_http(monkeypatch, {"query": "calcolo irpef", "status": "matched", "candidates": [candidate]})
+
+    assert calculation_gate({"query": "Calcola l'IRPEF su un reddito di 42000 euro"}) == {
+        "calc_route": "calculate", "calculation_match": candidate}
+
+
 def test_calculation_node_success_narrates_result_and_sources(monkeypatch):
     calls = _mock_http(
         monkeypatch,

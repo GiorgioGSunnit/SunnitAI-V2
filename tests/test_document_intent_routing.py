@@ -739,3 +739,38 @@ def test_a_short_topic_is_a_question(chat_api, message):
 ])
 def test_cases_and_strategy_requests_stay_with_the_classifier(chat_api, message):
     assert not chat_api._is_topic_question(message)
+
+
+# --- Exam/defence phrasing bypasses the LLM classifier entirely -------------
+#
+# Round 10 (19 Oct): _classify_legal_intent truncates the message to 600
+# characters before asking the LLM -- a long narrative's actual ask ("il
+# candidato... rediga parere") routinely sits past that cutoff, so the LLM
+# only ever saw the facts and defaulted to 'rag'. Two held-out exam cases
+# showed this: one fell through to plain RAG instead of a defence strategy,
+# another (penalty-clause dispute, lots of euro amounts) even reached the
+# calculation gate and strong-matched an unrelated calculator. Fixed with a
+# deterministic fast path on the FULL message, checked before the LLM call.
+# Synthetic phrasings only here, never the held-out cases' own text.
+
+@pytest.mark.parametrize("message", [
+    "Il candidato, premessi brevi cenni sull'istituto, rediga motivato parere.",
+    "Assuma il Candidato le vesti del difensore della società e prospetti la linea difensiva.",
+    "Tizio chiede: assuma la difesa di Caio e indichi la strategia più efficace.",
+    "Si prega di redigere parere su quanto segue.",
+    # A long fact pattern (>600 chars) whose actual ask comes only at the end --
+    # exactly the shape that used to get truncated away before reaching the LLM.
+    ("Tizio e Caio stipulano un contratto. " * 40 + "Il candidato esponga la linea difensiva più efficace."),
+])
+def test_exam_defence_phrasing_bypasses_the_llm_classifier(chat_api, monkeypatch, message):
+    def boom(*a, **k):
+        raise AssertionError("the LLM must not be called for this phrasing")
+    monkeypatch.setattr(chat_api, "_call_chat", boom)
+    assert chat_api._classify_legal_intent(message, "it") == "defensive_draft"
+
+
+def test_non_exam_phrasing_still_goes_through_the_llm_classifier(chat_api):
+    """chat_api's own fixture stubs _call_chat to return "rag" -- proves the
+    fast path did NOT fire here (it would return "defensive_draft" outright
+    without needing the stub at all)."""
+    assert chat_api._classify_legal_intent("Quali sono gli orari degli uffici comunali?", "it") == "rag"

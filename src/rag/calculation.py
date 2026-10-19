@@ -21,6 +21,23 @@ logger = logging.getLogger(__name__)
 
 MATCH_AUTO_ROUTE_MIN_SCORE = 3
 _MAX_CLARIFICATION_ROUNDS = 3
+
+# Round 10 (19 Oct): a held-out exam case ("Il Comune... Assuma il Candidato
+# le vesti del difensore... contestare la legittimità... della penale
+# richiesta") strong-matched a penalty-clause calculator and got auto-routed
+# to "calculate" -- the euro amounts and deadlines in a narrated dispute are
+# exactly what a calculator's own matcher keys on, even though the user is
+# asking for a defence strategy, not a sum. Calculation requires an
+# EXPLICIT calculation ask: this guard declines before the platform is even
+# consulted, so no score or LLM fallback below can override it. Shared with
+# src/chatbot/api.py's _classify_legal_intent (that fast path, not this
+# gate, is what should normally catch these -- this is the second line of
+# defence in case a narrative reaches the gate anyway).
+_NARRATIVE_DEFENCE_RE = re.compile(
+    r"\bil candidato\b|\bassum\w*\s+le vesti\b|\bassum\w*\s+la difesa\b|"
+    r"\bredig\w*\s+(?:motivato\s+)?parere\b|\blinea difensiva\b|\bstrategia\b",
+    re.IGNORECASE,
+)
 _PLATFORM_UNAVAILABLE = {
     "status": "no_match",
     "candidates": [],
@@ -242,6 +259,9 @@ def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
     try:
         if state.get("skip_calculation"):
             logger.info("calc_gate: route=normal reason=skip_calculation")
+            return {"calc_route": "normal"}
+        if _NARRATIVE_DEFENCE_RE.search(state.get("query", "") or ""):
+            logger.info("calc_gate: route=normal reason=narrative_defence_request")
             return {"calc_route": "normal"}
         response = PlatformClient().match(state.get("query", ""))
         candidates = response.get("candidates") or []

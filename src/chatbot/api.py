@@ -2010,17 +2010,35 @@ def _is_topic_question(message: str) -> bool:
 
 def _classify_legal_intent(message: str, session_lang: str) -> str:
     """
-    LLM-based classification of a message with NO document attached, deciding
+    Classification of a message with NO document attached, deciding
     whether the user wants:
       - 'defensive_draft' → a legal/defensive strategy analysis built from the
         facts described in the message itself, no uploaded document needed
       - 'generate'        → a new legal document drafted from scratch
       - 'rag'             → a question, or anything else
 
-    Single LLM call, no keyword fast path. Always returns a valid value —
-    any failure (LLM error, unparseable reply) is caught here and defaults
-    to 'rag', so callers never need to guard this call themselves.
+    Round 10 (19 Oct): a deterministic fast path now runs first
+    (_NARRATIVE_DEFENCE_RE, shared with src/rag/calculation.py's own guard)
+    for exam/defence phrasing ("il candidato", "assuma le vesti del
+    difensore", "rediga parere", "linea difensiva", "strategia", "assuma la
+    difesa"). Two held-out cases showed why a pure LLM call isn't enough on
+    its own: the call truncates the message to 600 characters before
+    asking (below), and a long fact pattern's actual ask ("il candidato...
+    rediga parere") routinely sits past that cutoff, so the LLM only ever
+    saw the facts and defaulted to 'rag' -- which then either fell through
+    to plain RAG, or (worse) reached the calculation gate, where a
+    narrated dispute's own euro amounts and deadlines could strong-match an
+    unrelated calculator. The fast path runs on the full message and, when
+    it matches, is trusted outright: these phrasings are unambiguous enough
+    that asking the LLM at all would only add a chance to get it wrong.
+    Still a single LLM call otherwise, same as before -- any failure (LLM
+    error, unparseable reply) is caught here and defaults to 'rag', so
+    callers never need to guard this call themselves.
     """
+    from ..rag.calculation import _NARRATIVE_DEFENCE_RE
+
+    if _NARRATIVE_DEFENCE_RE.search(message or ""):
+        return "defensive_draft"
     system = (
         "Sei un classificatore di intenzioni per un assistente legale italiano. "
         "L'utente NON ha allegato nessun documento. Classifica il messaggio in UNA "
