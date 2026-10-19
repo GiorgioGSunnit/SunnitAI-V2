@@ -121,7 +121,11 @@ def main() -> None:
                 rows = dg._fetch_articles(session, refs)
                 print(f"Checking only: {', '.join(map(_label, refs))}")
             elif use_v2:
-                analysis = dg._analyse_case_v2(facts, "it", args.request)
+                # The pipeline's own choice: STRUCTURED_ANALYSIS_ENABLED switches to the
+                # structured analysis (facts, then the area's grid).
+                analysis = (dg._analyse_case_structured(facts, "it", args.request)
+                            if feature_flags.enabled(dg.STRUCTURED_ANALYSIS_FLAG)
+                            else dg._analyse_case_v2(facts, "it", args.request))
                 print(f"\nCase analysis questions ({path_name}):")
                 for q in analysis.get("questioni", []):
                     istituti = ", ".join(_istituto_label(i) for i in q.get("istituti") or []) or "-"

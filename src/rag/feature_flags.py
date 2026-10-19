@@ -31,6 +31,15 @@ else falls back to the default, so a typo never switches a feature on.
                                 build_heading_index.py (not built here;
                                 that script has the exact CREATE VECTOR
                                 INDEX statement and a size/time estimate).
+  STRUCTURED_ANALYSIS_ENABLED  false (requires CASE_ANALYSIS_ENABLED): the case
+                                analysis in two short calls instead of one --
+                                the facts sentence by sentence, in neutral
+                                form, then a fixed grid for the case's area
+                                (penale / civile / amministrativo), each slot
+                                pertinent or not, with the institution in
+                                words for the pertinent ones. Same output
+                                shape as _analyse_case_v2; falls back to it on
+                                any failure. See _analyse_case_structured.
   ISSUE_CHECKLISTS_ENABLED     false: appends general issue checklists, by
                                 area (penale, obbligazioni e contratti,
                                 diritti reali e possesso, successioni,

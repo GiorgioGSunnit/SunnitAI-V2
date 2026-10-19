@@ -1037,6 +1037,248 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     return result
 
 
+# --- STRUCTURED_ANALYSIS_ENABLED (requires CASE_ANALYSIS_ENABLED) -----------
+#
+# Handover 19 Oct, 6.3: one general method that gives the same analysis however
+# the case is worded, in short focused calls rather than one long prompt. Call
+# 1 reads the case sentence by sentence and returns its facts in neutral form;
+# call 2 fills a fixed grid for the case's area, slot by slot, and names the
+# legal institution for each slot the facts actually raise, in words, never by
+# number. The result has _analyse_case_v2's shape, so institution resolution,
+# fusion, the rulings search, the check and the draft are unchanged. Any
+# failure falls back to _analyse_case_v2.
+#
+# Every slot can be "not pertinent": lists of things to consider made the model
+# invent material in the round-3 draft previews (16 Oct), so the grid asks
+# whether the facts pose each point, not to cover them all.
+STRUCTURED_ANALYSIS_FLAG = "STRUCTURED_ANALYSIS_ENABLED"
+_STRUCTURED_MAX_QUESTIONS = 7
+_STRUCTURED_MAX_FACTS = 20
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?;])\s+(?=[A-ZÀ-Ý\"«“'(])|\n+")
+
+_STRUCTURED_FACTS_SYSTEM = (
+    "Sei un avvocato italiano. Ti viene dato un caso diviso in frasi numerate. Estrai i fatti giuridicamente "
+    "rilevanti, in forma neutra. Restituisci SOLO un oggetto JSON con queste chiavi:\n"
+    '- "parte_assistita": la parte nel cui interesse va redatto il parere; se il testo non la indica, la parte '
+    "che chiede assistenza\n"
+    '- "posizione": la sua posizione processuale o sostanziale\n'
+    '- "area": il ramo del diritto che regola la vicenda, una tra "civile", "penale", "amministrativo", '
+    '"lavoro", "tributario", "altro" (una richiesta di risarcimento verso un ente pubblico è "civile")\n'
+    '- "richiesta": in una frase, che cosa chiede il caso\n'
+    '- "ricerca_fatti": da 4 a 8 parole concrete che descrivono i fatti materiali (cose, luoghi, eventi, '
+    "soggetti: non termini giuridici), con cui cercare sentenze su fatti simili\n"
+    '- "fatti": per ogni frase che contiene fatti rilevanti, uno o più oggetti {"frase": il numero della '
+    'frase, "fatto": il fatto in forma neutra e breve (chi, che cosa ha fatto, con quale mezzo, con quale '
+    'risultato), senza nomi propri non necessari e senza valutazioni, "tipo": uno tra "soggetti", "rapporto", '
+    '"condotta", "mezzo", "intenzione", "evento", "danno", "condotta_successiva", "tempi", "procedura", '
+    '"atto", "richiesta", "effetto": "favorevole", "sfavorevole", "favorevole e sfavorevole" o "neutro" per '
+    'la parte assistita, "perche": stringa breve}\n'
+    "Salta le frasi senza fatti rilevanti (contesto, cortesie, ripetizioni). Non aggiungere fatti che il testo "
+    "non contiene e non dedurre stati d'animo o intenzioni che il testo non indica. Non indicare articoli di "
+    "legge. Rispondi SOLO con il JSON."
+)
+
+_STRUCTURED_GRID_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati i fatti di un caso, già estratti in forma neutra, e una griglia "
+    "di analisi per la sua area. Per ogni voce della griglia decidi se i fatti la pongono davvero. Restituisci "
+    "SOLO un array JSON, un oggetto per voce, nell'ordine della griglia:\n"
+    '{"voce": l\'identificativo della voce, "pertinente": true o false, "valutazione": una frase che applica la '
+    'voce ai fatti (vuota se non pertinente), "istituti": da 1 a 3 istituti giuridici che la disciplinano, '
+    'ciascuno {"nome": il nome dell\'istituto con le parole con cui è intitolato nel codice o nella legge, '
+    '"codice": per i codici tradizionali c.c., c.p.c., c.p., c.p.p., c.p.a., c.d.s.; per qualsiasi altra '
+    'legge il nome per intero, per esempio "Codice del Consumo"}, "parole_chiave": da 3 a 6 termini tecnici '
+    "con cui le sentenze trattano la questione}\n"
+    "Regole: una voce è pertinente solo se un fatto elencato la pone; nel dubbio è false. Una voce non "
+    "pertinente ha istituti e parole_chiave vuoti. Mai un numero di articolo. Mai un istituto scelto solo per "
+    "riempire una voce. Le qualificazioni alternative devono avere lo stesso esito materiale dei fatti (se la "
+    "vittima è morta, fattispecie che hanno la morte come esito). Rispondi SOLO con il JSON."
+)
+
+# (slot id, label, what it asks, categoria for the v2 shape), by area.
+_STRUCTURED_GRIDS = {
+    "penale": [
+        ("qualificazione", "Qualificazione del fatto",
+         "il reato o i reati che la condotta descritta integra, e il ruolo di ciascun soggetto", "qualificazione"),
+        ("elemento_soggettivo", "Elemento soggettivo",
+         "lo stato psicologico richiesto e quello che risulta dai fatti: dolo diretto o eventuale, colpa e sua "
+         "forma, preterintenzione", "elemento_soggettivo"),
+        ("nesso_causale", "Nesso causale",
+         "il rapporto di causalità tra condotta ed evento, con le concause e le cause sopravvenute, quando "
+         "condotta ed evento sono distinti", "nesso_causale"),
+        ("forma_del_reato", "Forma del reato",
+         "tentativo o reato consumato; concorso di persone; reato proprio", "qualificazione"),
+        ("circostanze", "Circostanze",
+         "circostanze aggravanti o attenuanti indicate dai fatti, compresa la condotta successiva al fatto "
+         "(soccorso, riparazione del danno)", "circostanza"),
+        ("cause_di_giustificazione", "Cause di esclusione della punibilità",
+         "legittima difesa, stato di necessità, consenso dell'avente diritto, adempimento di un dovere, "
+         "esercizio di un diritto, eccesso colposo", "circostanza"),
+        ("qualificazioni_alternative", "Qualificazioni alternative",
+         "reati diversi che gli stessi fatti, con lo stesso esito materiale, possono integrare al posto di "
+         "quello principale", "qualificazione_alternativa"),
+        ("procedura", "Procedura",
+         "procedibilità (querela o d'ufficio), fase del procedimento e rimedi, solo se i fatti li indicano",
+         "procedura"),
+    ],
+    "civile": [
+        ("rapporto", "Rapporto tra le parti",
+         "contratto (quale tipo), fatto illecito, proprietà, possesso, condominio, successione, famiglia, "
+         "lavoro, consumo", "qualificazione"),
+        ("obbligazione_o_diritto", "Obbligazione o diritto",
+         "l'obbligazione o il diritto in gioco e chi ne è titolare", "qualificazione"),
+        ("inadempimento_o_lesione", "Inadempimento o lesione",
+         "l'inadempimento, il vizio o la lesione del diritto, e su chi grava l'onere della prova",
+         "qualificazione"),
+        ("titolo_della_responsabilita", "Titolo della responsabilità",
+         "colpa, dolo, diligenza richiesta, oppure responsabilità senza colpa (cose in custodia, attività "
+         "pericolose, fatto degli ausiliari)", "elemento_soggettivo"),
+        ("danno_e_nesso", "Danno e nesso causale",
+         "il danno lamentato e il nesso di causalità con l'inadempimento o con il fatto", "nesso_causale"),
+        ("rimedi", "Rimedi",
+         "adempimento, riparazione o sostituzione, riduzione del prezzo, risoluzione, recesso, risarcimento, "
+         "azioni a tutela della proprietà o del possesso", "qualificazione"),
+        ("difese", "Difese ed eccezioni",
+         "le difese della controparte o della parte assistita: eccezione di inadempimento, caso fortuito, "
+         "concorso del danneggiato, clausole del contratto", "qualificazione_alternativa"),
+        ("termini", "Termini",
+         "prescrizione, decadenza, termini di denuncia o di impugnazione, solo se i fatti li pongono", "procedura"),
+    ],
+    "amministrativo": [
+        ("atto", "Atto o comportamento dell'amministrazione",
+         "il provvedimento, il silenzio o il comportamento e l'autorità che lo ha adottato", "qualificazione"),
+        ("vizio", "Vizi",
+         "incompetenza, violazione di legge, eccesso di potere, difetto di motivazione o di istruttoria, "
+         "inerzia", "qualificazione"),
+        ("tutela", "Tutela",
+         "il giudizio e i rimedi (annullamento, risarcimento, azione contro il silenzio, accesso, autotutela) "
+         "e i termini per agire", "procedura"),
+        ("esecuzione", "Esecuzione",
+         "l'esecuzione di una sentenza e il giudizio di ottemperanza, solo se i fatti la pongono", "procedura"),
+    ],
+}
+_GRID_FOR_AREA = {"penale": "penale", "civile": "civile", "lavoro": "civile", "altro": "civile",
+                  "amministrativo": "amministrativo", "tributario": "amministrativo"}
+_FACT_TYPE_TO_MODEL_KEY = {"soggetti": "parti", "condotta": "condotta", "mezzo": "condotta",
+                           "intenzione": "indizi_intenzionali", "evento": "evento", "danno": "evento",
+                           "condotta_successiva": "condotta_successiva", "procedura": "fase_procedurale"}
+
+
+def _numbered_sentences(text: str) -> List[str]:
+    """The case's sentences, for call 1 to refer to by number. No split inside
+    "art. 584" or "c.p." followed by a digit or a lower-case word."""
+    parts = (" ".join(p.split()) for p in _SENTENCE_SPLIT_RE.split(text or ""))
+    return [p for p in parts if len(p) > 1]
+
+
+def _structured_facts(facts: str, request: str) -> Optional[Dict[str, Any]]:
+    """Call 1: who, what, area and request, and the facts in neutral form, one
+    or more per numbered sentence. None on any failure or without facts."""
+    sentences = _numbered_sentences(_case_text(facts, request))
+    numbered = "\n".join(f"[{i}] {s}" for i, s in enumerate(sentences, 1))
+    t0 = time.time()
+    try:
+        parsed = _chat_json([SystemMessage(content=_STRUCTURED_FACTS_SYSTEM), HumanMessage(content=numbered)],
+                            max_tokens=1800, temperature=0)
+    except Exception as exc:
+        logger.warning("structured analysis, facts: failed: %s", exc)
+        return None
+    finally:
+        vlog("structured_analysis_facts_llm", duration_ms=(time.time() - t0) * 1000)
+    if not isinstance(parsed, dict):
+        return None
+    fatti = [f for f in (parsed.get("fatti") if isinstance(parsed.get("fatti"), list) else [])
+             if isinstance(f, dict) and str(f.get("fatto") or "").strip()][:_STRUCTURED_MAX_FACTS]
+    if not fatti:
+        return None
+    return {**parsed, "fatti": fatti}
+
+
+def _structured_grid(extracted: Dict[str, Any], grid: List[tuple]) -> Optional[List[Dict[str, Any]]]:
+    """Call 2: the grid's slots, each pertinent or not, with institutions in
+    words for the pertinent ones. None on any failure."""
+    parte = str(extracted.get("parte_assistita") or "").strip()
+    posizione = str(extracted.get("posizione") or "").strip()
+    fatti = "\n".join(f"- {str(f.get('fatto')).strip()}" for f in extracted["fatti"])
+    griglia = "\n".join(f"- {slot}: {question}" for slot, _, question, _ in grid)
+    human = (f"PARTE ASSISTITA: {parte}{f' ({posizione})' if posizione else ''}\n"
+             f"RICHIESTA: {str(extracted.get('richiesta') or '').strip()}\n\nFATTI:\n{fatti}\n\nGRIGLIA:\n{griglia}")
+    t0 = time.time()
+    try:
+        parsed = _chat_json([SystemMessage(content=_STRUCTURED_GRID_SYSTEM), HumanMessage(content=human)],
+                            max_tokens=1800, temperature=0)
+    except Exception as exc:
+        logger.warning("structured analysis, grid: failed: %s", exc)
+        return None
+    finally:
+        vlog("structured_analysis_grid_llm", duration_ms=(time.time() - t0) * 1000)
+    return [item for item in parsed if isinstance(item, dict)] if isinstance(parsed, list) else None
+
+
+def _grid_questions(grid: List[tuple], items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The pertinent slots as _analyse_case_v2's "questioni", in grid order.
+    Unknown slot ids, non-pertinent slots and slots with nothing to search
+    with are left out; never a model-given article number."""
+    by_slot = {str(item.get("voce") or "").strip(): item for item in items}
+    questions = []
+    for slot, label, _, categoria in grid:
+        item = by_slot.get(slot)
+        if not item or item.get("pertinente") is not True:
+            continue
+        istituti = [{"nome": str(i.get("nome") or "").strip(), "codice": str(i.get("codice") or "").strip(),
+                     "numero_indicativo": ""}
+                    for i in (item.get("istituti") if isinstance(item.get("istituti"), list) else [])
+                    if isinstance(i, dict) and str(i.get("nome") or "").strip()][:3]
+        parole = _as_list(item.get("parole_chiave"))[:6]
+        if not istituti and not parole:
+            continue
+        valutazione = " ".join(str(item.get("valutazione") or "").split())
+        questions.append({"titolo": f"{label}: {valutazione}"[:220] if valutazione else label,
+                          "categoria": categoria, "istituti": istituti, "parole_chiave": parole, "voce": slot})
+    return questions[:_STRUCTURED_MAX_QUESTIONS]
+
+
+def _analyse_case_structured(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
+    """The case analysis in two short calls (facts, then the area's grid),
+    returned in _analyse_case_v2's shape. Falls back to _analyse_case_v2 if
+    either call fails or no grid slot is pertinent."""
+    extracted = _structured_facts(facts, request)
+    area = str((extracted or {}).get("area") or "").strip().lower()
+    if extracted and area == "amministrativo" and _DAMAGES_RE.search(facts):
+        area = "civile"
+    grid = _STRUCTURED_GRIDS[_GRID_FOR_AREA.get(area, "civile")]
+    items = _structured_grid(extracted, grid) if extracted else None
+    questions = _grid_questions(grid, items) if items else []
+    vlog("structured_analysis", {"area": area, "facts": len((extracted or {}).get("fatti") or []),
+                                 "pertinent": [q["voce"] for q in questions],
+                                 "institutions": [i["nome"] for q in questions for i in q["istituti"]],
+                                 "fallback": not questions})
+    if not questions:
+        logger.warning("structured analysis gave no pertinent issue, falling back to the v2 analysis")
+        return _analyse_case_v2(facts, lang, request)
+    fatti = [{"fatto": str(f.get("fatto")).strip(), "effetto": str(f.get("effetto") or "neutro").strip(),
+              "perche": str(f.get("perche") or "").strip()} for f in extracted["fatti"]][:15]
+    model: Dict[str, List[str]] = {}
+    for f in extracted["fatti"]:
+        key = _FACT_TYPE_TO_MODEL_KEY.get(str(f.get("tipo") or "").strip().lower())
+        if key:
+            model.setdefault(key, []).append(str(f.get("fatto")).strip())
+    return {"parte_assistita": str(extracted.get("parte_assistita") or "").strip(),
+            "posizione": str(extracted.get("posizione") or "").strip(), "area": area,
+            "richiesta": str(extracted.get("richiesta") or "").strip(),
+            "ricerca_fatti": _as_list(extracted.get("ricerca_fatti"))[:8], "questioni": questions,
+            "fatti": fatti, "fatti_strutturati": {k: "; ".join(v) for k, v in model.items()}}
+
+
+def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
+    """The analysis the strategy pipeline uses, by flag; shared with the
+    diagnostic scripts so they see what the pipeline does."""
+    if not feature_flags.enabled(CASE_ANALYSIS_FLAG):
+        return _analyse_case(facts, lang, request)
+    if feature_flags.enabled(STRUCTURED_ANALYSIS_FLAG):
+        return _analyse_case_structured(facts, lang, request)
+    return _analyse_case_v2(facts, lang, request)
+
+
 def _as_list(value) -> List[str]:
     """A list of strings from either a JSON list or one comma-separated string:
     the model returns both from one run to the next, and a string iterated as a
@@ -2820,8 +3062,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     pipeline_t0 = time.time()
     case_analysis_v2 = feature_flags.enabled(CASE_ANALYSIS_FLAG)
     pool_fusion = case_analysis_v2 and feature_flags.enabled(_CASE_POOL_FUSION_FLAG)
-    analysis = _analyse_case_v2(facts, session_lang, request) if case_analysis_v2 \
-        else _analyse_case(facts, session_lang, request)
+    analysis = _analyse_case_for_pipeline(facts, session_lang, request)
     article_rows, ruling_rows, candidates, selected = [], [], [], []
     retrieval_t0 = time.time()
     try:

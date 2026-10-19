@@ -458,7 +458,8 @@ def _distill_questions(bullets):
 
 
 def _run_current(session, driver, database, text):
-    analysis = dg._analyse_case_v2(text, "it")
+    analysis = (dg._analyse_case_structured(text, "it") if dg.feature_flags.enabled(dg.STRUCTURED_ANALYSIS_FLAG)
+                else dg._analyse_case_v2(text, "it"))
     picked = dg._select_articles_v2(session, driver, database, text, "", analysis)
     seen, refs = set(), []
     for number, abbr in picked.get("selected") or []:
