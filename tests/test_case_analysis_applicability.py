@@ -179,8 +179,11 @@ def test_heading_match_rows_are_exempt_and_never_sent_to_the_model(rows, model):
     assert "[43 c.p.]" not in seen["human"]          # proof it was never even sent to the model
 
 
-def test_multi_signal_rows_are_exempt_and_never_sent_to_the_model(rows, model):
-    rows[3]["_multi_signal"] = True   # "43"
+def test_multi_signal_rows_are_checked_like_any_other(rows, model):
+    """19 Oct, later: on Sempronio (prod) the fusion pool's multi-signal 116 and
+    593 were never checked and reached the draft. Searches agreeing is not
+    evidence an article applies."""
+    rows[2]["_multi_signal"] = True   # "116"
     answer, seen, _ = model
     answer([
         {"article": "116 c.p.", "verdict": "incompatibile", "requisito": "più concorrenti nel reato",
@@ -189,9 +192,19 @@ def test_multi_signal_rows_are_exempt_and_never_sent_to_the_model(rows, model):
         {"article": "582 c.p.", "verdict": "applicabile", "reason": "alternativa"},
     ])
     kept_articles = {r["_article"] for r in dg._filter_applicable_articles(FACTS, "", rows)}
-    assert ("43", "c.p.") in kept_articles
+    assert "[116 c.p.]" in seen["human"]
     assert ("116", "c.p.") not in kept_articles
-    assert "[43 c.p.]" not in seen["human"]
+
+
+def test_an_exemption_covers_every_row_of_the_article(rows, model):
+    """581 is cross-referenced from 584's text; a second, untagged 581 row (the
+    fusion pool's own) used to send it to the check anyway."""
+    rows.append({**rows[1], "_source": "fusion"})
+    answer, seen, _ = model
+    answer([{"article": "581 c.p.", "verdict": "incompatibile", "requisito": "nessuna malattia derivata",
+             "fatto": "Caio è morto"}])
+    kept_articles = [r["_article"] for r in dg._filter_applicable_articles(FACTS, "", rows)]
+    assert "[581 c.p.]" not in seen["human"] and kept_articles.count(("581", "c.p.")) == 2
 
 
 @pytest.mark.parametrize("reply", ["not json", json.dumps({"article": "116 c.p."})])

@@ -828,3 +828,20 @@ def test_prioritise_article_rows_trims_lowest_priority_first():
     result = dg._prioritise_article_rows([*other_rows, named_row], named, limit=3)
     assert named_row in result   # never trimmed
     assert len(result) == 3
+
+
+def test_a_match_on_the_llm_written_title_is_not_exempt_from_the_check(monkeypatch):
+    """19 Oct, later: only titolo_articolo (the official heading) tags
+    _heading_match. s.title is LLM-written on documents not yet re-ingested
+    (BE, 16 Oct: "Estorsione" on art. 612), so a match on it is checked."""
+    import src.rag.issue_spotting as isp
+    monkeypatch.setattr(isp, "article_by_title",
+                        lambda session, doc_id, term, visibility="", *, field="title", **kw:
+                        "589" if field == "title" else None)
+    monkeypatch.setattr(isp, "fetch_article",
+                        lambda session, doc_id, number, visibility="", **kw:
+                        [{"d": {"id": doc_id}, "s": {"name": f"{number}.0.0", "plain_text": "Chiunque cagiona..."}}])
+    rows = dg._resolve_institution(None, [_CP_DOC], {"nome": "omicidio colposo", "codice": "c.p.",
+                                                      "numero_indicativo": ""})
+    assert [r["_article"] for r in rows] == [("589", "c.p.")]
+    assert not any(r.get("_heading_match") for r in rows)

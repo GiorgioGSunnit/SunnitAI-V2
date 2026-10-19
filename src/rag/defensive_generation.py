@@ -1529,7 +1529,12 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                     rows = fetch_article(session, doc["id"], number)
                     if rows:
                         reason = field if term == nome else f"{field}, via parola chiave {term!r}"
-                        return _found(_tag(rows, number, heading_match=True), number, reason)
+                        # Only the official heading exempts a row from the
+                        # applicability check: s.title is LLM-written on every
+                        # document not yet re-ingested (BE, 16 Oct: "Estorsione"
+                        # on art. 612 and on sub-sections of 346, 628, 630).
+                        return _found(_tag(rows, number, heading_match=(field == "titolo_articolo")),
+                                      number, reason)
 
     # HEADING_INDEX_ENABLED: "nome" only, not every parola_chiave -- one
     # embedding call per unresolved institution, not up to 1+len(parole_
@@ -2686,15 +2691,26 @@ def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[
     qualification the facts raise, not a speculative candidate) -- the
     prompt already asks for a concrete requirement+fact before dropping
     anything, but that alone didn't stop it; this is the code-level backstop
-    for articles strong enough that the check should never get the final say."""
+    for articles strong enough that the check should never get the final say.
+
+    19 Oct, later: _multi_signal is no longer exempt. On Sempronio (prod,
+    check_applicability.py --fusion) the fusion pool's top three were 43, 593
+    and 116, all multi-signal and so never checked; 116 (several agents) and
+    593 (failing to help; Sempronio helped) are wrong for the facts, and the
+    check drops them when it sees them. Searches agreeing is not evidence
+    that an article applies; multi-signal rows still survive the cap. And an
+    exemption now covers the whole article: 581, cross-referenced from 584's
+    text, was still sent to the check through a second, untagged row."""
     from .nodes.cypher import CROSSREF_SOURCE
 
     named = set(_refs_in(_case_text(facts, request)))
+    exempt = {row.get("_article") for row in article_rows
+              if row.get("_article") and (row.get("_source") == CROSSREF_SOURCE or row.get("_article") in named
+                                          or row.get("_heading_match"))}
     to_check: Dict[tuple, List[Dict[str, Any]]] = {}
     for row in article_rows:
         article = row.get("_article")
-        if (not article or row.get("_source") == CROSSREF_SOURCE or article in named
-                or row.get("_heading_match") or row.get("_multi_signal")):
+        if not article or article in exempt:
             continue
         to_check.setdefault(article, []).append(row)
     texts = {}
