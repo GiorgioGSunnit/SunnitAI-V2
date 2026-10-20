@@ -295,3 +295,35 @@ def test_cited_ranking_orders_by_best_ruling_then_citation_count():
     # cited only by r2, however often.
     assert ed._cited_ranking(["r1", "r2"], cites) == [("cp", "584"), ("cp", "43"), ("cp", "589")]
     assert ed._cited_ranking(["missing"], cites) == []
+
+
+# --- Round 11: FUSION_CLEAN and SITUATION ------------------------------------
+
+def test_is_law_name_cuts_books_and_templates_not_codes_or_laws():
+    for name in ["Codice Penale 2026", "Codice dei contratti pubblici", "L. 241/1990", "Codice del Consumo 2026",
+                 "Legge 9 dicembre 1998, n. 431 - Disciplina delle locazioni"]:
+        assert ed._is_law_name(name), name
+    for name in ["Manuale di diritto processuale penale", "Fondamenti di diritto penale - parte generale",
+                 "LOCAZIONE ABITATIVA DI NATURA TRANSITORIA", "Formulario degli atti", "Modello di contratto", ""]:
+        assert not ed._is_law_name(name), name
+
+
+def test_clean_rows_keeps_laws_and_reports_what_it_cut():
+    excluded = set()
+    rows = [{"name": "584", "doc_name": "Codice Penale 2026"},
+            {"name": "3", "doc_name": "LOCAZIONE ABITATIVA DI NATURA TRANSITORIA"},
+            {"name": "1", "doc_name": None}]
+    assert ed._clean_rows(rows, ed._NOT_A_LAW_RE, excluded) == [rows[0]]
+    assert excluded == {"LOCAZIONE ABITATIVA DI NATURA TRANSITORIA"}
+
+
+def test_step_story_tells_the_step_without_its_terms():
+    step = {"actor": "Sempronio", "action": "colpisce", "object": "Tizio", "means": "", "result": "Tizio muore",
+            "terms": ["omicidio preterintenzionale"]}
+    assert ed._step_story(step) == "Sempronio colpisce Tizio Tizio muore"
+
+
+def test_every_comparison_method_has_a_latency_recipe_or_its_own_timing():
+    timed_directly = {"baseline", "distill", "current", "timeline"}
+    for m in ed.COMPARISON_METHODS:
+        assert m in timed_directly or m in ed._COMPOSITE_LATENCY, m

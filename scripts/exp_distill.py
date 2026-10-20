@@ -130,12 +130,40 @@ own sequence of events rather than from fixed legal slots:
 Both are compared with BASELINE, DISTILL, CURRENT, UNION and FUSION_BASELINE
 in one table: recall and noise at @10/@k, and per-case latency (composites
 = the sum of their parts, since this script runs them one after another).
+
+Round 11 (20 Oct). TIMELINE scored 19/47 @20 (TIMELINE_CURRENT 23/47,
+FUSION_BASELINE 28/47, down from 34 since the re-ingest): the model
+decomposes the facts fine, but lay facts don't share words with statutory
+text. Two additions:
+
+  SITUATION              each kept TIMELINE step, told plainly (actor,
+                          action, object, means, result), and the raw case
+                          text, searched against the situation index
+                          (scripts/build_situation_index.py: 3-5 plain-
+                          Italian situations per article, embedded, linked
+                          to the article's main Section) -> articles, merged
+                          by RRF. Queries get Qwen's query instruction and go
+                          through the plain-text embedding client, so this
+                          channel is right whatever EMBEDDING_QUERY_MODE is.
+                          Latency includes TIMELINE's LLM call (its steps).
+  SITUATION_FUSION       RRF(SITUATION, FUSION_BASELINE).
+  FUSION_CLEAN           FUSION_BASELINE with BASELINE's and DISTILL's text
+                          searches restricted to primary documents, minus
+                          templates, contract models and books by name
+                          (_NOT_A_LAW_RE, extendable with --exclude-docs) --
+                          the 20 Oct briefing's §5.1 fusion-noise finding.
+                          Same bullets as DISTILL; same merges. Every
+                          document name the filter removed is reported, so
+                          the rule can be checked against what it cut.
+  SITUATION_FUSION_CLEAN RRF(SITUATION, FUSION_CLEAN) -- the combination a
+                          cleaned-up live pool would actually use.
 """
 
 import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -193,6 +221,20 @@ _COMPOSITE_LATENCY = {
     "fusion_baseline": ("current", "baseline", "distill"),
     "timeline_current": ("timeline", "current"),
 }
+# Round 11.
+SITUATION_METHODS = ["fusion_clean", "situation", "situation_fusion", "situation_fusion_clean"]
+COMPARISON_METHODS += SITUATION_METHODS
+_COMPOSITE_LATENCY.update({
+    "fusion_clean": ("current", "baseline_clean", "distill_llm", "distill_clean_search"),
+    "situation": ("timeline_llm", "situation_search"),
+    "situation_fusion": ("timeline_llm", "situation_search", "current", "baseline", "distill"),
+    "situation_fusion_clean": ("timeline_llm", "situation_search", "current", "baseline_clean", "distill_llm",
+                               "distill_clean_search"),
+})
+_SITUATION_INSTRUCTION = (
+    "Instruct: Given an account of events in plain Italian, retrieve the descriptions of concrete situations "
+    "that match it\nQuery: "
+)
 _RRF_K = 60
 _TIMELINE_MAX_STEPS = 20
 _PRIMARY_TYPES = ["primary"]
@@ -413,6 +455,30 @@ def _cited_ranking(ruling_ids, cites_by_doc):
     return sorted(best, key=lambda ref: (best[ref], -count[ref]))
 
 
+# Not a code or a law, by name: dg._NOT_A_PRIMARY_SOURCE_RE's books, plus
+# textbooks and the templates/contract models the 20 Oct briefing found in
+# the pool (c3: "LOCAZIONE ABITATIVA DI NATURA TRANSITORIA"). Deliberately
+# not "contratt" alone: "Codice dei contratti pubblici" is a law.
+_NOT_A_LAW_RE = re.compile(
+    dg._NOT_A_PRIMARY_SOURCE_RE.pattern
+    + r"|fondamenti|lineamenti|istituzioni di|lezioni di|compendio|corso di diritto|parte generale|parte speciale"
+    r"|fac.?simile|template|\bmodell[oi] d|schema di contratto|contratto tipo|scrittura privata|natura transitoria"
+    r"|locazione abitativa",
+    re.IGNORECASE,
+)
+
+
+def _is_law_name(doc_name, exclude_re=_NOT_A_LAW_RE):
+    return bool(doc_name) and not exclude_re.search(doc_name)
+
+
+def _step_story(step):
+    """A TIMELINE step told plainly, for the situation index: who did what,
+    to whom, how, with what result -- no legal terms."""
+    return " ".join(part for part in (step["actor"], step["action"], step["object"], step["means"], step["result"])
+                    if part)
+
+
 # --- Retrieval ---------------------------------------------------------
 
 # doc_types scopes a search to those Document.document_type values; the index
@@ -425,7 +491,7 @@ def _doc_match(doc_types):
             else "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) ")
 
 
-def _vector_search(session, text, index, k, warned, doc_types=None):
+def _vector_search(session, text, index, k, warned, doc_types=None, limit=None):
     try:
         embedding = list(embedding_model.embed_query(text))
     except Exception as exc:
@@ -437,8 +503,8 @@ def _vector_search(session, text, index, k, warned, doc_types=None):
             "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
             + _doc_match(doc_types) +
             "RETURN node.name AS name, d.name AS doc_name, d.id AS doc_id, score ORDER BY score DESC LIMIT $k",
-            index=index, k=k, fetch=k * _SCOPED_OVERFETCH if doc_types else k, embedding=embedding,
-            types=doc_types or [],
+            index=index, k=limit or k, fetch=(limit or k) * _SCOPED_OVERFETCH if doc_types else k,
+            embedding=embedding, types=doc_types or [],
         ).data()
     except Exception as exc:
         if index not in warned:
@@ -447,7 +513,7 @@ def _vector_search(session, text, index, k, warned, doc_types=None):
         return []
 
 
-def _fulltext_search(session, text, k, doc_types=None):
+def _fulltext_search(session, text, k, doc_types=None, limit=None):
     q = _sanitize_fulltext_query(text)
     if not q:
         return []
@@ -455,12 +521,65 @@ def _fulltext_search(session, text, k, doc_types=None):
         "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $fetch}) YIELD node, score "
         + _doc_match(doc_types) +
         "RETURN node.name AS name, d.name AS doc_name, d.id AS doc_id, score ORDER BY score DESC LIMIT $k",
-        q=q, k=k, fetch=k * _SCOPED_OVERFETCH if doc_types else k, types=doc_types or [],
+        q=q, k=limit or k, fetch=(limit or k) * _SCOPED_OVERFETCH if doc_types else k, types=doc_types or [],
     ).data()
 
 
 def _retrieve(session, text, index, k, warned):
     return _ranked_refs(_vector_search(session, text, index, k, warned) + _fulltext_search(session, text, k))
+
+
+def _clean_rows(rows, exclude_re, excluded):
+    """rows whose document is a code or a law; the names of the others go into `excluded`."""
+    kept = []
+    for row in rows:
+        if _is_law_name(row.get("doc_name"), exclude_re):
+            kept.append(row)
+        elif row.get("doc_name"):
+            excluded.add(row["doc_name"])
+    return kept
+
+
+def _clean_searches(session, text, index, k, warned, exclude_re, excluded):
+    """FUSION_CLEAN's (vector refs, fulltext refs) for `text`: primary documents
+    only, minus non-laws by name; 3k rows fetched so k refs survive the filter."""
+    vector = _clean_rows(_vector_search(session, text, index, k, warned, _PRIMARY_TYPES, limit=3 * k),
+                         exclude_re, excluded)
+    fulltext = _clean_rows(_fulltext_search(session, text, k, _PRIMARY_TYPES, limit=3 * k), exclude_re, excluded)
+    return _ranked_refs(vector)[:k], _ranked_refs(fulltext)[:k]
+
+
+def _retrieve_clean(session, text, index, k, warned, exclude_re, excluded):
+    """_retrieve, cleaned: the same vector-then-fulltext order DISTILL's own calls use."""
+    vector, fulltext = _clean_searches(session, text, index, k, warned, exclude_re, excluded)
+    return list(dict.fromkeys(vector + fulltext))
+
+
+_situation_embedder = None   # set in main(): the plain-text client build_situation_index.py embeds with
+
+
+def _situation_search(session, text, index, k, warned):
+    """Articles whose situations match `text`, best first: 5k situations
+    fetched (3-5 per article), each mapped to its article's main Section."""
+    try:
+        embedding = list(_situation_embedder.embed_query(_SITUATION_INSTRUCTION + text))
+    except Exception as exc:
+        logging.warning("situation embedding failed: %s", exc)
+        return []
+    try:
+        rows = session.run(
+            "CALL db.index.vector.queryNodes($index, $fetch, $embedding) YIELD node, score "
+            "MATCH (s:Section)-[:HAS_SITUATION]->(node) MATCH (d:Document)-[:CONTAINS]->(s) "
+            "RETURN s.name AS name, d.name AS doc_name, score ORDER BY score DESC",
+            index=index, fetch=5 * k, embedding=embedding,
+        ).data()
+    except Exception as exc:
+        if index not in warned:
+            warned.add(index)
+            logging.warning("situation search on index %r failed (built yet? scripts/build_situation_index.py): %s",
+                            index, exc)
+        return []
+    return _ranked_refs(rows)
 
 
 # --- UNION candidates' real text, and the two new ranking methods ----------
@@ -691,7 +810,8 @@ def _run_timeline(session, text, index, k, warned):
     return _rrf(*lists), steps, per_step, llm_seconds
 
 
-def _run_case(driver, database, case, vector_index, k, warned):
+def _run_case(driver, database, case, vector_index, k, warned, situation_index="situation_embeddings_v2",
+              exclude_re=_NOT_A_LAW_RE):
     text = case["question"]
     detail = {}
     with driver.session(database=database) as session:
@@ -712,6 +832,7 @@ def _run_case(driver, database, case, vector_index, k, warned):
         except Exception as exc:
             logging.warning("%s: distill (bullets) failed: %s", case["id"], exc)
             bullets = []
+        latency["distill_llm"] = time.time() - t0
         detail["bullets"] = bullets
         joined = " ".join(b["testo"] for b in bullets)
         bullet_lists = [_retrieve(session, b["testo"], vector_index, k, warned) for b in bullets]
@@ -719,6 +840,21 @@ def _run_case(driver, database, case, vector_index, k, warned):
             bullet_lists.append(_retrieve(session, joined, vector_index, k, warned))
         distill = _merge_by_hits(*bullet_lists) if bullet_lists else []
         latency["distill"] = time.time() - t0
+
+        # FUSION_CLEAN's sources: the same searches, cleaned (round 11).
+        excluded = set()
+        t0 = time.time()
+        baseline_clean = _merge_best_rank(*_clean_searches(session, text, vector_index, k, warned, exclude_re,
+                                                           excluded))
+        latency["baseline_clean"] = time.time() - t0
+        t0 = time.time()
+        clean_lists = [_retrieve_clean(session, b["testo"], vector_index, k, warned, exclude_re, excluded)
+                       for b in bullets]
+        if joined:
+            clean_lists.append(_retrieve_clean(session, joined, vector_index, k, warned, exclude_re, excluded))
+        distill_clean = _merge_by_hits(*clean_lists) if clean_lists else []
+        latency["distill_clean_search"] = time.time() - t0
+        detail["clean_excluded_documents"] = sorted(excluded)
 
         try:
             questions = _distill_questions(bullets)
@@ -754,6 +890,14 @@ def _run_case(driver, database, case, vector_index, k, warned):
                 for key in ("primary_vector", "primary_fulltext", "ruling_citations")}}
             for s in per_step]
         timeline_current = _rrf(timeline, current)
+
+        t0 = time.time()
+        situation_lists = [_situation_search(session, _step_story(step), situation_index, k, warned)
+                           for step in _kept_steps(steps)]
+        situation_lists.append(_situation_search(session, text, situation_index, k, warned))
+        situation = _rrf(*situation_lists)
+        latency["situation_search"] = time.time() - t0
+        detail["situation_searches"] = [[_ref_label(ref) for ref in refs[:10]] for refs in situation_lists]
 
         union = _dedupe_ordered(current, baseline, distill)
         union_rows = _fetch_union_rows(session, documents, union)
@@ -791,6 +935,7 @@ def _run_case(driver, database, case, vector_index, k, warned):
         t0 = time.time()
         fusion_baseline = _merge_by_hits(current, baseline, distill)
         latency["fusion_baseline"] = time.time() - t0
+        fusion_clean = _merge_by_hits(current, baseline_clean, distill_clean)
 
     detail["llm_relevance_scores"] = {_ref_label(ref): score for ref, score in llm_relevance_scores.items()}
     return {"baseline": baseline, "distill": distill, "distill_questions": distill_questions,
@@ -798,6 +943,9 @@ def _run_case(driver, database, case, vector_index, k, warned):
             "rerank_bullets": rerank_bullets, "rerank_raw": rerank_raw,
             "llm_relevance": llm_relevance, "fusion_baseline": fusion_baseline,
             "timeline": timeline, "timeline_current": timeline_current,
+            "fusion_clean": fusion_clean, "situation": situation,
+            "situation_fusion": _rrf(situation, fusion_baseline),
+            "situation_fusion_clean": _rrf(situation, fusion_clean),
             "union_candidate_count": len(union), "latency": latency, "detail": detail}
 
 
@@ -863,7 +1011,7 @@ def _method_latency(r, method):
 def _comparison_lines(results, cases, k):
     """Retrieval methods and composites side by side: totals (recall, noise,
     mean latency per case), then found@10/found@k per case."""
-    lines = [f"{'method':<18s}{'recall@10':<12s}{'recall@' + str(k):<12s}{'noise@10':<10s}"
+    lines = [f"{'method':<24s}{'recall@10':<12s}{'recall@' + str(k):<12s}{'noise@10':<10s}"
              f"{'noise@' + str(k):<10s}{'latency/case':<14s}"]
     for m in COMPARISON_METHODS:
         f10 = fk = total = n10 = nk = 0
@@ -875,22 +1023,27 @@ def _comparison_lines(results, cases, k):
             n10 += _noise(r[m], case["expected"], 10)
             nk += _noise(r[m], case["expected"], k)
         latency = sum(_method_latency(results[c["id"]], m) for c in cases) / len(cases)
-        lines.append(f"{m:<18s}{f'{f10}/{total}':<12s}{f'{fk}/{total}':<12s}{n10:<10d}{nk:<10d}{latency:>6.1f}s")
+        lines.append(f"{m:<24s}{f'{f10}/{total}':<12s}{f'{fk}/{total}':<12s}{n10:<10d}{nk:<10d}{latency:>6.1f}s")
     lines.append("")
     lines.append("per case, found@10/found@" + str(k) + ":")
-    lines.append(f"{'case':<18s}" + "".join(f"{m:<18s}" for m in COMPARISON_METHODS))
+    lines.append(f"{'case':<18s}" + "".join(f"{m:<24s}" for m in COMPARISON_METHODS))
     for case in cases:
         r = results[case["id"]]
         cells = []
         for m in COMPARISON_METHODS:
             a, t = _recall(r[m], case["expected"], 10)
             b, _ = _recall(r[m], case["expected"], k)
-            cells.append(f"{a}/{b} of {t}".ljust(18))
+            cells.append(f"{a}/{b} of {t}".ljust(24))
         lines.append(f"{case['id']:<18s}" + "".join(cells))
     lines.append("")
     lines.append("TIMELINE's own LLM call, mean per case: "
                  f"{sum(results[c['id']]['latency'].get('timeline_llm', 0.0) for c in cases) / len(cases):.1f}s "
-                 "(the rest of TIMELINE's latency is its searches). Composite latency = sum of its parts.")
+                 "(the rest of TIMELINE's latency is its searches). Composite latency = sum of its parts; "
+                 "SITUATION's includes that LLM call (its steps).")
+    excluded = sorted({name for c in cases for name in results[c["id"]]["detail"].get("clean_excluded_documents", [])})
+    lines.append("")
+    lines.append(f"FUSION_CLEAN removed {len(excluded)} document(s) by name (check none is a code or a law):")
+    lines += [f"   - {name}" for name in excluded]
     return lines
 
 
@@ -938,7 +1091,7 @@ def _detail_lines(results, cases, k):
         r = results[case["id"]]
         lines.append(f"\n## {case['id']}")
         lines.append(f"   expected: {case['expected']}")
-        for m in METHODS + UNION_METHODS + RANKING_METHODS + TIMELINE_METHODS:
+        for m in METHODS + UNION_METHODS + RANKING_METHODS + TIMELINE_METHODS + SITUATION_METHODS:
             top = r[m][:10]
             lines.append(f"   {m} top 10: {[f'{a} {c}' for c, a in top]}")
         if r["detail"].get("bullets"):
@@ -949,6 +1102,8 @@ def _detail_lines(results, cases, k):
             lines.append("   questions:")
             for q in r["detail"]["questions"]:
                 lines.append(f"     - {q}")
+        if r["detail"].get("clean_excluded_documents"):
+            lines.append("   FUSION_CLEAN excluded: " + str(r["detail"]["clean_excluded_documents"]))
         if r["detail"].get("timeline"):
             lines += _timeline_lines(case["id"], r["detail"])
             lines.append("     (x = relevance 0, discarded)")
@@ -965,9 +1120,23 @@ def main():
     parser.add_argument("--vector-index", default="section_embeddings_v2")
     parser.add_argument("--k", type=int, default=20, help="top-k retrieved per call; also the second recall@")
     parser.add_argument("--out", default="exp_distill_runs")
+    parser.add_argument("--situation-index", default="situation_embeddings_v2")
+    parser.add_argument("--exclude-docs", help="extra regex: documents whose name matches it are cut from FUSION_CLEAN")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+
+    from src.rag import embedding_config
+    print(f"embedding query mode: {embedding_config.QUERY_MODE}")
+    if not embedding_config.text_mode() and args.vector_index.endswith("_v2"):
+        print(f"WARNING: EMBEDDING_QUERY_MODE={embedding_config.QUERY_MODE} sends token IDs, but {args.vector_index} "
+              "holds plain-text vectors -- every vector search except SITUATION's is comparing gibberish. "
+              "Run with EMBEDDING_QUERY_MODE=text.", flush=True)
+    global _situation_embedder
+    from scripts.build_situation_index import plain_text_embedder
+    _situation_embedder = plain_text_embedder()
+    exclude_re = (re.compile(_NOT_A_LAW_RE.pattern + "|" + args.exclude_docs, re.IGNORECASE) if args.exclude_docs
+                  else _NOT_A_LAW_RE)
 
     carried = {c["id"]: c for c in json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]}
     cases = [carried[cid] for cid in _CARRIED_OVER if cid in carried]
@@ -982,7 +1151,8 @@ def main():
     warned = set()
     results = {}
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_run_case, driver, NEO4J_DATABASE, case, args.vector_index, args.k, warned): case
+        futures = {pool.submit(_run_case, driver, NEO4J_DATABASE, case, args.vector_index, args.k, warned,
+                               situation_index=args.situation_index, exclude_re=exclude_re): case
                   for case in cases}
         for future in as_completed(futures):
             case = futures[future]
