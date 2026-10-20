@@ -1090,8 +1090,9 @@ _STRUCTURED_GRID_SYSTEM = (
     "con cui le sentenze trattano la questione}\n"
     "Regole: una voce è pertinente solo se un fatto elencato la pone; nel dubbio è false. Una voce non "
     "pertinente ha istituti e parole_chiave vuoti. Mai un numero di articolo. Mai un istituto scelto solo per "
-    "riempire una voce. Le qualificazioni alternative devono avere lo stesso esito materiale dei fatti (se la "
-    "vittima è morta, fattispecie che hanno la morte come esito). Rispondi SOLO con il JSON."
+    "riempire una voce. Usa il nome specifico dell'istituto, non quello della categoria a cui appartiene. Le "
+    "qualificazioni alternative devono avere lo stesso esito materiale dei fatti (se la vittima è morta, "
+    "fattispecie che hanno la morte come esito). Rispondi SOLO con il JSON."
 )
 
 # (slot id, label, what it asks, categoria for the v2 shape), by area.
@@ -1106,16 +1107,21 @@ _STRUCTURED_GRIDS = {
          "il rapporto di causalità tra condotta ed evento, con le concause e le cause sopravvenute, quando "
          "condotta ed evento sono distinti", "nesso_causale"),
         ("forma_del_reato", "Forma del reato",
-         "tentativo o reato consumato; concorso di persone; reato proprio", "qualificazione"),
+         "solo se i fatti pongono un tentativo, un concorso di più persone nel reato o un reato che solo certi "
+         "soggetti possono commettere; un reato consumato da una sola persona non pone questa voce",
+         "qualificazione"),
         ("circostanze", "Circostanze",
          "circostanze aggravanti o attenuanti indicate dai fatti, compresa la condotta successiva al fatto "
-         "(soccorso, riparazione del danno)", "circostanza"),
+         "(soccorso, riparazione del danno), ciascuna con il nome della circostanza specifica, non della "
+         "categoria", "circostanza"),
         ("cause_di_giustificazione", "Cause di esclusione della punibilità",
          "legittima difesa, stato di necessità, consenso dell'avente diritto, adempimento di un dovere, "
          "esercizio di un diritto, eccesso colposo", "circostanza"),
         ("qualificazioni_alternative", "Qualificazioni alternative",
-         "reati diversi che gli stessi fatti, con lo stesso esito materiale, possono integrare al posto di "
-         "quello principale", "qualificazione_alternativa"),
+         "reati diversi che gli stessi fatti possono integrare al posto di quello principale, con lo stesso "
+         "esito materiale: se la vittima è morta, solo fattispecie che hanno la morte come esito (per esempio "
+         "omicidio colposo, morte o lesione come conseguenza di altro delitto), mai una lesione personale",
+         "qualificazione_alternativa"),
         ("procedura", "Procedura",
          "procedibilità (querela o d'ufficio), fase del procedimento e rimedi, solo se i fatti li indicano",
          "procedura"),

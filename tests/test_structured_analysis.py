@@ -154,3 +154,15 @@ def test_the_pipeline_chooses_the_analysis_by_flag(monkeypatch):
         monkeypatch.setenv("STRUCTURED_ANALYSIS_ENABLED", structured)
         dg._analyse_case_for_pipeline(CASE, "it")
     assert seen == ["v1", "v2", "structured"]
+
+
+def test_the_penal_grid_states_the_rules_found_on_production():
+    """20 Oct, Sempronio (prod): "reato consumato" filled the form slot and pulled
+    in 158/270-ter; "Circostanze attenuanti" matched art. 114 (concorso) by its
+    exact title; the alternative was "lesioni personali aggravate" after a death,
+    so 589 was missing."""
+    grid = {slot: question for slot, _, question, _ in dg._STRUCTURED_GRIDS["penale"]}
+    assert "una sola persona non pone questa voce" in grid["forma_del_reato"]
+    assert "non della" in grid["circostanze"] and "categoria" in grid["circostanze"]
+    assert "mai una lesione personale" in grid["qualificazioni_alternative"]
+    assert "nome specifico dell'istituto" in dg._STRUCTURED_GRID_SYSTEM
