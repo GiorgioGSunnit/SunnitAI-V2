@@ -1781,12 +1781,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                         # applicability check: s.title is LLM-written on every
                         # document not yet re-ingested (BE, 16 Oct: "Estorsione"
                         # on art. 612 and on sub-sections of 346, 628, 630).
-                        # 20 Oct: and only a match on the institution's own
-                        # name, not on one of its keywords: on c3 (prod) the
-                        # keyword "contratto" matched art. 768-octies c.c.'s
-                        # official heading and it skipped the check.
-                        return _found(_tag(rows, number,
-                                           heading_match=(field == "titolo_articolo" and term == nome)),
+                        return _found(_tag(rows, number, heading_match=(field == "titolo_articolo")),
                                       number, reason)
 
     # HEADING_INDEX_ENABLED: "nome" only, not every parola_chiave -- one
@@ -3014,12 +3009,8 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
 # importanza") for an eviction case and 1491 c.c. ("Non è dovuta la garanzia se
 # ...") for a hidden defect, rewording the limit as a plain requirement, so the
 # article's own text decides: its first sentence is a negated rule with a
-# condition ("non" early, then "se").
-# 20 Oct: a second guard on the requirement's wording ("non", "salvo"...) is
-# gone. It kept every article whose stated requirement merely contained a
-# negation: 561 and 598 c.p. on a homicide, 1618 c.c. and three clauses of a
-# lease template on an eviction (prod, check_applicability.py). The article's
-# own text is the reliable signal.
+# condition ("non" early, then "se"). Requirements worded as limits count too.
+_LIMIT_WORDING = re.compile(r"\b(?:non|né|salvo|tranne|eccett\w*)\b", re.IGNORECASE)
 _LIMIT_RULE = re.compile(r"^[^.;]{0,40}\bnon\b[^.;]{0,80}\bse\b", re.IGNORECASE)
 
 
@@ -3030,11 +3021,11 @@ def _is_limit_rule(article_text: str) -> bool:
 def _drops_article(verdict: Optional[Dict[str, Any]], article_text: str = "") -> bool:
     """Only an "incompatibile" verdict that names both the requirement in the
     article's text and the contradicting fact drops an article, and never a
-    limit or an exclusion, judged on the article's own text."""
+    limit or an exclusion (by the article's text or the requirement's wording)."""
     requisito = str((verdict or {}).get("requisito") or "").strip()
     return bool(verdict) and str(verdict.get("verdict", "")).strip().lower() == "incompatibile" \
         and bool(requisito) and bool(str(verdict.get("fatto") or "").strip()) \
-        and not _is_limit_rule(article_text)
+        and not _LIMIT_WORDING.search(requisito) and not _is_limit_rule(article_text)
 
 
 def _filter_applicable_articles(facts: str, request: str,

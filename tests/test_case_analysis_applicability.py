@@ -96,24 +96,16 @@ def test_incompatible_without_a_stated_fact_is_kept(rows, model):
     assert "589" in kept and "116" in kept
 
 
-@pytest.mark.parametrize("requisito, article_text", [
-    # Prod, 20 Oct: a negation in the stated requirement used to keep the article
-    # whatever its text; these were all irrelevant and must now go.
-    ("caso di non punibilità per la moglie", "Non è punibile la moglie che commette il fatto per..."),
-    ("Il Conduttore si obbliga a non arrecare danno o molestia al vicinato",
-     "Il Conduttore si obbliga a non arrecare danno o molestia al vicinato e a rispettare il regolamento."),
+@pytest.mark.parametrize("requisito", [
+    # Production, 15 Oct (eviction case): the facts exclude the limit, so the article helps the client.
+    "Il contratto non si può risolvere se l'inadempimento di una delle parti ha scarsa importanza",
+    "L'inadempimento non importa la risoluzione, salvo che la prestazione mancata sia essenziale",
+    "Né la garanzia è dovuta se i vizi erano facilmente riconoscibili",
 ])
-def test_a_negation_in_the_requirement_no_longer_keeps_an_article(requisito, article_text):
+def test_a_limit_the_facts_exclude_is_not_a_reason_to_drop(requisito):
     verdict = {"verdict": "incompatibile", "requisito": requisito, "fatto": "Il conduttore non paga da tre mesi"}
-    assert dg._drops_article(verdict, article_text)
-
-
-def test_a_limit_rule_is_still_kept_by_its_own_text():
-    verdict = {"verdict": "incompatibile", "requisito": "l'inadempimento ha scarsa importanza",
-               "fatto": "Il conduttore non paga da tre mesi"}
-    text_1455 = ("Il contratto non si può risolvere se l'inadempimento di una delle parti ha scarsa importanza, "
-                 "avuto riguardo all'interesse dell'altra.")
-    assert not dg._drops_article(verdict, text_1455)
+    assert not dg._drops_article(verdict)
+    assert dg._drops_article({**verdict, "requisito": "più concorrenti nel reato"})
     assert "non si può" in dg._APPLICABILITY_SYSTEM and "il limite non opera" in dg._APPLICABILITY_SYSTEM
 
 
@@ -241,9 +233,9 @@ def test_alternativa_must_match_the_actual_outcome(model):
     Sempronio although the victim died — a contradiction the old prompt had
     no rule against. The prompt now asks for the requisito phrased
     positively ("presuppone la sopravvivenza") rather than as a negation
-    ("non ne è derivata la morte"), a habit worth keeping: until 20 Oct a
-    negation in the requirement kept the article (_LIMIT_WORDING, since
-    removed), and it would have kept 590 again."""
+    ("non ne è derivata la morte") specifically so it is NOT caught by
+    _LIMIT_WORDING, which exists for a different case (a limit the facts
+    exclude in the client's favour) and would otherwise keep 590 again."""
     answer, _, _ = model
     row_590 = [_row("590", "Chiunque cagiona ad altri per colpa una lesione personale è punito con la "
                            "reclusione da uno a tre anni")]
