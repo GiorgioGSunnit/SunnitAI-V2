@@ -1113,7 +1113,9 @@ _STRUCTURED_GRIDS = {
         ("circostanze", "Circostanze",
          "circostanze aggravanti o attenuanti indicate dai fatti, compresa la condotta successiva al fatto "
          "(soccorso, riparazione del danno), ciascuna con il nome della circostanza specifica, non della "
-         "categoria", "circostanza"),
+         "categoria: per le circostanze valide per ogni reato scrivi \"circostanze attenuanti comuni\", "
+         "\"circostanze attenuanti generiche\" o \"circostanze aggravanti comuni\", mai solo \"circostanze "
+         "attenuanti\"", "circostanza"),
         ("cause_di_giustificazione", "Cause di esclusione della punibilità",
          "legittima difesa, stato di necessità, consenso dell'avente diritto, adempimento di un dovere, "
          "esercizio di un diritto, eccesso colposo", "circostanza"),
