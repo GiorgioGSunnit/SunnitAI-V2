@@ -845,3 +845,20 @@ def test_a_match_on_the_llm_written_title_is_not_exempt_from_the_check(monkeypat
                                                       "numero_indicativo": ""})
     assert [r["_article"] for r in rows] == [("589", "c.p.")]
     assert not any(r.get("_heading_match") for r in rows)
+
+
+def test_a_heading_match_on_a_keyword_is_not_exempt_from_the_check(monkeypatch):
+    """20 Oct (prod, c3): the keyword "contratto" matched art. 768-octies c.c.'s
+    official heading and the article skipped the check. Only a match on the
+    institution's own name is exempt."""
+    import src.rag.issue_spotting as isp
+    monkeypatch.setattr(isp, "article_by_title",
+                        lambda session, doc_id, term, visibility="", *, field="title", **kw:
+                        "768-octies" if (field == "titolo_articolo" and term == "contratto") else None)
+    monkeypatch.setattr(isp, "fetch_article",
+                        lambda session, doc_id, number, visibility="", **kw:
+                        [{"d": {"id": doc_id}, "s": {"name": f"{number}.0.0", "plain_text": "..."}}])
+    rows = dg._resolve_institution(None, [_CP_DOC], {"nome": "cessazione della locazione", "codice": "c.p.",
+                                                      "numero_indicativo": ""}, parole_chiave=["contratto"])
+    assert [r["_article"] for r in rows] == [("768-octies", "c.p.")]
+    assert not any(r.get("_heading_match") for r in rows)
