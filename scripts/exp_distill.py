@@ -102,6 +102,34 @@ how good is retrieval with no restriction at all). FUSION_BASELINE here is
 therefore a close preview of the live pool, not an exact one; re-run it
 against prod to re-validate the 27/47 @8 / 32/47 @12 numbers under that
 narrower pool.
+
+Round 10 (20 Oct) adds TIMELINE, a retrieval method built from the story's
+own sequence of events rather than from fixed legal slots:
+
+  TIMELINE           one LLM call, temperature 0, fixed JSON schema: the
+                      narrative as an ordered list of small steps {n, actor,
+                      action, object, means, result, relevance 0-2, terms:
+                      2-4 statutory-style Italian terms, no article numbers}.
+                      Steps with relevance 0 are dropped. Each kept step is
+                      searched on "action + result + terms" through two
+                      channels: (a) primary codes/laws, vector and fulltext
+                      as two separate ranked lists; (b) rulings
+                      (document_type='interpretation'), vector + fulltext,
+                      ranked by document, then the articles those rulings
+                      cite anywhere in their text (dg._refs_in, the same
+                      citation reader as dg._articles_cited_in_rulings),
+                      ordered by the best-ranked ruling citing each one, then
+                      by how often it is cited. Every list from every step
+                      and channel is merged by reciprocal rank fusion
+                      (score = sum of 1/(60+rank)), with no cutoff before
+                      the merge.
+  TIMELINE_CURRENT   RRF of TIMELINE's ranking and CURRENT's, one list each
+                      (CURRENT added as just one more list next to ~3 per
+                      step would barely move the ranking).
+
+Both are compared with BASELINE, DISTILL, CURRENT, UNION and FUSION_BASELINE
+in one table: recall and noise at @10/@k, and per-case latency (composites
+= the sum of their parts, since this script runs them one after another).
 """
 
 import argparse
@@ -155,6 +183,20 @@ METHODS = ["baseline", "distill", "distill_questions", "current"]
 # not an independent retrieval method, so it gets its own section instead
 # of sharing the recall@10/@k table.
 UNION_METHODS = ["union", "selected"]
+# Round 10: TIMELINE and its fusion with CURRENT, compared against the other
+# retrieval methods and the UNION/FUSION composites in one table.
+TIMELINE_METHODS = ["timeline", "timeline_current"]
+COMPARISON_METHODS = ["baseline", "distill", "current", "union", "fusion_baseline"] + TIMELINE_METHODS
+# Latency of a composite = the methods it is built from (run sequentially here).
+_COMPOSITE_LATENCY = {
+    "union": ("current", "baseline", "distill"),
+    "fusion_baseline": ("current", "baseline", "distill"),
+    "timeline_current": ("timeline", "current"),
+}
+_RRF_K = 60
+_TIMELINE_MAX_STEPS = 20
+_PRIMARY_TYPES = ["primary"]
+_RULING_TYPES = ["interpretation"]
 # Ranking methods applied to the UNION pool, reported at k=8/12 (recall,
 # noise, added latency) rather than the @10/@k the retrieval methods use --
 # see the module docstring, round 5.
@@ -174,6 +216,18 @@ _LLM_RELEVANCE_SYSTEM = (
     "gioco, 3 = direttamente applicabile ai fatti specifici. Valuta la rilevanza per impostare un parere, "
     "non la compatibilità letterale articolo per articolo. Restituisci SOLO un array JSON di oggetti "
     "{\"articolo\": \"<identificativo esatto tra parentesi quadre>\", \"punteggio\": 0, 1, 2 o 3}."
+)
+
+_TIMELINE_SYSTEM = (
+    "Sei un avvocato italiano. Scomponi il racconto in una sequenza ORDINATA di piccoli passi, un fatto per "
+    "passo, nell'ordine in cui sono avvenuti. Per ogni passo restituisci un oggetto con esattamente queste "
+    "chiavi: \"n\" (numero progressivo), \"actor\" (chi agisce), \"action\" (cosa fa), \"object\" (la "
+    "cosa o la persona su cui agisce, la vittima se c'è; \"\" se assente), \"means\" (mezzo o modalità; "
+    "\"\" se assente), \"result\" (esito o conseguenza; \"\" se assente), \"relevance\" (0 = "
+    "giuridicamente irrilevante, 1 = contesto utile, 2 = giuridicamente decisivo), \"terms\" (da 2 a 4 "
+    "espressioni giuridiche italiane nello stile del linguaggio normativo che descrivono il passo, per esempio "
+    "\"impossessamento di cosa mobile altrui\", \"violenza alla persona\", \"lesione personale\"). Non "
+    "usare MAI un numero di articolo né il nome di un codice o di una legge. Restituisci SOLO un array JSON."
 )
 
 # RERANKER_URL/RERANKER_MODEL: same defaults as src/rag/reranker.py. Called
@@ -290,9 +344,88 @@ def _recall(ranked_refs, expected, k):
     return found, len(expected)
 
 
+def _rrf_scores(*ranked_lists, k0=_RRF_K):
+    """{ref: sum over the lists containing it of 1/(k0 + rank)}, rank from 1."""
+    scores = {}
+    for ranked in ranked_lists:
+        for rank, ref in enumerate(ranked, start=1):
+            scores[ref] = scores.get(ref, 0.0) + 1.0 / (k0 + rank)
+    return scores
+
+
+def _rrf(*ranked_lists, k0=_RRF_K):
+    """Reciprocal rank fusion: refs by RRF score, descending; ties keep the
+    order in which the refs were first seen across the lists."""
+    scores = _rrf_scores(*ranked_lists, k0=k0)
+    first_seen = {ref: i for i, ref in enumerate(scores)}
+    return sorted(scores, key=lambda ref: (-scores[ref], first_seen[ref]))
+
+
+def _relevance(value):
+    """A step's relevance as 0, 1 or 2; anything unreadable counts as 0."""
+    try:
+        rel = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return rel if rel in (0, 1, 2) else 0
+
+
+def _parse_timeline(parsed):
+    """The model's reply -> every step, normalised (strings stripped,
+    relevance 0-2, terms: 2-4 strings without digits -- an article number
+    slipping into a term would turn a description into a lookup)."""
+    if not isinstance(parsed, list):
+        return []
+    steps = []
+    for i, item in enumerate(parsed[:_TIMELINE_MAX_STEPS], start=1):
+        if not isinstance(item, dict):
+            continue
+        terms = item.get("terms")
+        terms = [t.strip() for t in terms if isinstance(t, str) and t.strip() and not any(c.isdigit() for c in t)] \
+            if isinstance(terms, list) else []
+        steps.append({
+            "n": item.get("n") if isinstance(item.get("n"), int) else i,
+            **{key: str(item.get(key) or "").strip() for key in ("actor", "action", "object", "means", "result")},
+            "relevance": _relevance(item.get("relevance")),
+            "terms": terms[:4],
+        })
+    return steps
+
+
+def _kept_steps(steps):
+    return [step for step in steps if step["relevance"] > 0]
+
+
+def _timeline_query(step):
+    """What a kept step is searched on: action + result + terms."""
+    return " ".join(part for part in [step["action"], step["result"], *step["terms"]] if part)
+
+
+def _cited_ranking(ruling_ids, cites_by_doc):
+    """Articles cited by these rulings (ranked best first), ordered by the
+    best rank of a ruling citing each one, then by how many times these
+    rulings cite it in total. cites_by_doc: {doc id: {ref: citation count}}."""
+    best, count = {}, {}
+    for rank, doc_id in enumerate(ruling_ids, start=1):
+        for ref, n in (cites_by_doc.get(doc_id) or {}).items():
+            best.setdefault(ref, rank)
+            count[ref] = count.get(ref, 0) + n
+    return sorted(best, key=lambda ref: (best[ref], -count[ref]))
+
+
 # --- Retrieval ---------------------------------------------------------
 
-def _vector_search(session, text, index, k, warned):
+# doc_types scopes a search to those Document.document_type values; the index
+# is then queried for k * _SCOPED_OVERFETCH nodes so the filter still leaves k.
+_SCOPED_OVERFETCH = 5
+
+
+def _doc_match(doc_types):
+    return ("MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type IN $types " if doc_types
+            else "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) ")
+
+
+def _vector_search(session, text, index, k, warned, doc_types=None):
     try:
         embedding = list(embedding_model.embed_query(text))
     except Exception as exc:
@@ -300,11 +433,12 @@ def _vector_search(session, text, index, k, warned):
         return []
     try:
         return session.run(
-            "CALL db.index.vector.queryNodes($index, $k, $embedding) YIELD node, score "
+            "CALL db.index.vector.queryNodes($index, $fetch, $embedding) YIELD node, score "
             "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
-            "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) "
-            "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC",
-            index=index, k=k, embedding=embedding,
+            + _doc_match(doc_types) +
+            "RETURN node.name AS name, d.name AS doc_name, d.id AS doc_id, score ORDER BY score DESC LIMIT $k",
+            index=index, k=k, fetch=k * _SCOPED_OVERFETCH if doc_types else k, embedding=embedding,
+            types=doc_types or [],
         ).data()
     except Exception as exc:
         if index not in warned:
@@ -313,15 +447,15 @@ def _vector_search(session, text, index, k, warned):
         return []
 
 
-def _fulltext_search(session, text, k):
+def _fulltext_search(session, text, k, doc_types=None):
     q = _sanitize_fulltext_query(text)
     if not q:
         return []
     return session.run(
-        "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $k}) YIELD node, score "
-        "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) "
-        "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC",
-        q=q, k=k,
+        "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $fetch}) YIELD node, score "
+        + _doc_match(doc_types) +
+        "RETURN node.name AS name, d.name AS doc_name, d.id AS doc_id, score ORDER BY score DESC LIMIT $k",
+        q=q, k=k, fetch=k * _SCOPED_OVERFETCH if doc_types else k, types=doc_types or [],
     ).data()
 
 
@@ -501,6 +635,62 @@ def _selected_refs(text, rows, union_refs):
     return [ref for ref in union_refs if ref in kept]
 
 
+def _timeline_steps(text):
+    parsed = dg._chat_json([SystemMessage(content=_TIMELINE_SYSTEM), HumanMessage(content=text[:6000])],
+                           max_tokens=2500, temperature=0)
+    return _parse_timeline(parsed)
+
+
+def _ruling_ids(session, query, index, k, warned):
+    """Ruling documents for a query, best rank first: vector and fulltext
+    hits on interpretation sections, by document, best-rank merged."""
+    def doc_order(rows):
+        return list(dict.fromkeys(row["doc_id"] for row in rows if row.get("doc_id")))
+    return _merge_best_rank(doc_order(_vector_search(session, query, index, k, warned, _RULING_TYPES)),
+                            doc_order(_fulltext_search(session, query, k, _RULING_TYPES)))
+
+
+def _citations_by_doc(session, doc_ids):
+    """{doc id: {(eval code, article): times cited}} over each ruling's whole
+    text -- dg._refs_in, the same reader dg._articles_cited_in_rulings uses."""
+    ids = [i for i in dict.fromkeys(doc_ids) if i]
+    if not ids:
+        return {}
+    cites = {}
+    for row in session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id IN $ids RETURN d.id AS id, s.plain_text AS text",
+        ids=ids,
+    ).data():
+        for number, abbr in dg._refs_in(row.get("text") or ""):
+            code = _code_key(abbr)
+            if code:
+                per_doc = cites.setdefault(row["id"], {})
+                per_doc[(code, number)] = per_doc.get((code, number), 0) + 1
+    return cites
+
+
+def _run_timeline(session, text, index, k, warned):
+    """TIMELINE: (ranking, every step, the ranked lists per kept step, LLM seconds)."""
+    t0 = time.time()
+    steps = _timeline_steps(text)
+    llm_seconds = time.time() - t0
+    per_step = []
+    for step in _kept_steps(steps):
+        query = _timeline_query(step)
+        per_step.append({
+            "n": step["n"], "query": query,
+            "primary_vector": _ranked_refs(_vector_search(session, query, index, k, warned, _PRIMARY_TYPES)),
+            "primary_fulltext": _ranked_refs(_fulltext_search(session, query, k, _PRIMARY_TYPES)),
+            "rulings": _ruling_ids(session, query, index, k, warned),
+        })
+    cites = _citations_by_doc(session, [doc_id for s in per_step for doc_id in s["rulings"]])
+    lists = []
+    for s in per_step:
+        s["ruling_citations"] = _cited_ranking(s["rulings"], cites)
+        lists += [s["primary_vector"], s["primary_fulltext"], s["ruling_citations"]]
+    return _rrf(*lists), steps, per_step, llm_seconds
+
+
 def _run_case(driver, database, case, vector_index, k, warned):
     text = case["question"]
     detail = {}
@@ -508,11 +698,15 @@ def _run_case(driver, database, case, vector_index, k, warned):
         from src.rag.doc_lookup import _fetch_doc_names
         documents = _fetch_doc_names(driver, database)
 
+        latency = {}
+        t0 = time.time()
         baseline = _merge_best_rank(
             _ranked_refs(_vector_search(session, text, vector_index, k, warned)),
             _ranked_refs(_fulltext_search(session, text, k)),
         )
+        latency["baseline"] = time.time() - t0
 
+        t0 = time.time()
         try:
             bullets = _distill_bullets(text)
         except Exception as exc:
@@ -524,6 +718,7 @@ def _run_case(driver, database, case, vector_index, k, warned):
         if joined:
             bullet_lists.append(_retrieve(session, joined, vector_index, k, warned))
         distill = _merge_by_hits(*bullet_lists) if bullet_lists else []
+        latency["distill"] = time.time() - t0
 
         try:
             questions = _distill_questions(bullets)
@@ -535,12 +730,30 @@ def _run_case(driver, database, case, vector_index, k, warned):
         distill_questions = _merge_by_hits(*bullet_lists, *question_lists) if (bullet_lists or question_lists) \
             else []
 
+        t0 = time.time()
         try:
             current, analysis = _run_current(session, driver, database, text)
         except Exception as exc:
             logging.warning("%s: CURRENT (case-analysis v2) failed: %s", case["id"], exc)
             current, analysis = [], {}
+        latency["current"] = time.time() - t0
         detail["current_analysis"] = analysis
+
+        t0 = time.time()
+        try:
+            timeline, steps, per_step, latency["timeline_llm"] = _run_timeline(
+                session, text, vector_index, k, warned)
+        except Exception as exc:
+            logging.warning("%s: TIMELINE failed: %s", case["id"], exc)
+            timeline, steps, per_step = [], [], []
+        latency["timeline"] = time.time() - t0
+        detail["timeline"] = steps
+        detail["timeline_searches"] = [
+            {"n": s["n"], "query": s["query"], "rulings": len(s["rulings"]),
+             **{key: [_ref_label(ref) for ref in s[key][:10]]
+                for key in ("primary_vector", "primary_fulltext", "ruling_citations")}}
+            for s in per_step]
+        timeline_current = _rrf(timeline, current)
 
         union = _dedupe_ordered(current, baseline, distill)
         union_rows = _fetch_union_rows(session, documents, union)
@@ -553,7 +766,6 @@ def _run_case(driver, database, case, vector_index, k, warned):
             selected = union
 
         signal_counts = _signal_counts(union, current, baseline, distill)
-        latency = {}
 
         t0 = time.time()
         try:
@@ -585,6 +797,7 @@ def _run_case(driver, database, case, vector_index, k, warned):
             "current": current, "union": union, "selected": selected,
             "rerank_bullets": rerank_bullets, "rerank_raw": rerank_raw,
             "llm_relevance": llm_relevance, "fusion_baseline": fusion_baseline,
+            "timeline": timeline, "timeline_current": timeline_current,
             "union_candidate_count": len(union), "latency": latency, "detail": detail}
 
 
@@ -642,8 +855,61 @@ def _noise_latency_table(results, cases, methods, ks):
     return lines
 
 
+def _method_latency(r, method):
+    parts = _COMPOSITE_LATENCY.get(method, (method,))
+    return sum(r["latency"].get(m, 0.0) for m in parts)
+
+
+def _comparison_lines(results, cases, k):
+    """Retrieval methods and composites side by side: totals (recall, noise,
+    mean latency per case), then found@10/found@k per case."""
+    lines = [f"{'method':<18s}{'recall@10':<12s}{'recall@' + str(k):<12s}{'noise@10':<10s}"
+             f"{'noise@' + str(k):<10s}{'latency/case':<14s}"]
+    for m in COMPARISON_METHODS:
+        f10 = fk = total = n10 = nk = 0
+        for case in cases:
+            r = results[case["id"]]
+            a, t = _recall(r[m], case["expected"], 10)
+            b, _ = _recall(r[m], case["expected"], k)
+            f10 += a; fk += b; total += t
+            n10 += _noise(r[m], case["expected"], 10)
+            nk += _noise(r[m], case["expected"], k)
+        latency = sum(_method_latency(results[c["id"]], m) for c in cases) / len(cases)
+        lines.append(f"{m:<18s}{f'{f10}/{total}':<12s}{f'{fk}/{total}':<12s}{n10:<10d}{nk:<10d}{latency:>6.1f}s")
+    lines.append("")
+    lines.append("per case, found@10/found@" + str(k) + ":")
+    lines.append(f"{'case':<18s}" + "".join(f"{m:<18s}" for m in COMPARISON_METHODS))
+    for case in cases:
+        r = results[case["id"]]
+        cells = []
+        for m in COMPARISON_METHODS:
+            a, t = _recall(r[m], case["expected"], 10)
+            b, _ = _recall(r[m], case["expected"], k)
+            cells.append(f"{a}/{b} of {t}".ljust(18))
+        lines.append(f"{case['id']:<18s}" + "".join(cells))
+    lines.append("")
+    lines.append("TIMELINE's own LLM call, mean per case: "
+                 f"{sum(results[c['id']]['latency'].get('timeline_llm', 0.0) for c in cases) / len(cases):.1f}s "
+                 "(the rest of TIMELINE's latency is its searches). Composite latency = sum of its parts.")
+    return lines
+
+
+def _timeline_lines(case_id, detail):
+    lines = [f"   timeline ({case_id}):"]
+    for step in detail.get("timeline") or []:
+        mark = "  " if step["relevance"] else "x "
+        lines.append(f"     {mark}{step['n']}. [rel {step['relevance']}] {step['actor']} | {step['action']} | "
+                     f"{step['object']} | {step['means']} | {step['result']} | terms: {step['terms']}")
+    return lines
+
+
 def _table_lines(results, cases, k):
-    lines = [f"recall@10 and @{k}, found/expected, code-aware:", ""]
+    lines = [f"TIMELINE vs the other methods -- recall@10/@{k} (code-aware), noise (non-expected articles in "
+             f"the top 10/{k}), latency:", ""]
+    lines += _comparison_lines(results, cases, k)
+    lines.append("")
+    lines.append(f"recall@10 and @{k}, found/expected, code-aware:")
+    lines.append("")
     lines += _recall_table(results, cases, k, METHODS)
     lines.append("")
     lines.append("UNION (current + baseline + distill, deduped) and SELECTED (UNION through the live "
@@ -672,7 +938,7 @@ def _detail_lines(results, cases, k):
         r = results[case["id"]]
         lines.append(f"\n## {case['id']}")
         lines.append(f"   expected: {case['expected']}")
-        for m in METHODS + UNION_METHODS + RANKING_METHODS:
+        for m in METHODS + UNION_METHODS + RANKING_METHODS + TIMELINE_METHODS:
             top = r[m][:10]
             lines.append(f"   {m} top 10: {[f'{a} {c}' for c, a in top]}")
         if r["detail"].get("bullets"):
@@ -683,6 +949,9 @@ def _detail_lines(results, cases, k):
             lines.append("   questions:")
             for q in r["detail"]["questions"]:
                 lines.append(f"     - {q}")
+        if r["detail"].get("timeline"):
+            lines += _timeline_lines(case["id"], r["detail"])
+            lines.append("     (x = relevance 0, discarded)")
         if r["detail"].get("llm_relevance_scores"):
             lines.append("   LLM relevance scores: " + str(r["detail"]["llm_relevance_scores"]))
     return lines
@@ -719,6 +988,7 @@ def main():
             case = futures[future]
             print(f"... {case['id']} done", flush=True)
             results[case["id"]] = future.result()
+            print("\n".join(_timeline_lines(case["id"], results[case["id"]]["detail"])), flush=True)
 
     table = _table_lines(results, cases, args.k)
     detail = _detail_lines(results, cases, args.k)
