@@ -157,6 +157,27 @@ text. Two additions:
                           the rule can be checked against what it cut.
   SITUATION_FUSION_CLEAN RRF(SITUATION, FUSION_CLEAN) -- the combination a
                           cleaned-up live pool would actually use.
+
+Round 12 (20 Oct) adds HYDE (hypothetical document embeddings), bridging
+the same wording gap from the query side, with no index to build:
+
+  HYDE                   TIMELINE's kept steps (relevance >= 1), told
+                          plainly, plus the raw case, in ONE batched LLM call
+                          per case (temperature 0): 1-2 short hypothetical
+                          norms per step, written like an Italian code article
+                          ("Chiunque...", "Il pubblico ufficiale che...", "Il
+                          debitore che..."), and one for the case as a whole;
+                          no article numbers, no code names (a norm that cites
+                          one anyway is dropped). Each norm is searched against
+                          primary codes/laws -- FUSION_CLEAN's filter: primary
+                          documents minus non-laws by name -- vector and
+                          fulltext as separate lists, all merged by RRF.
+                          Latency includes TIMELINE's LLM call (its steps).
+  HYDE_FUSION_CLEAN      RRF(HYDE, FUSION_CLEAN).
+  HYDE_SITUATION_FUSION_CLEAN  RRF(HYDE, SITUATION, FUSION_CLEAN) -- only when
+                          the situation index exists and holds situations;
+                          otherwise every SITUATION method is left out of the
+                          tables instead of reported as zeros.
 """
 
 import argparse
@@ -231,6 +252,31 @@ _COMPOSITE_LATENCY.update({
     "situation_fusion_clean": ("timeline_llm", "situation_search", "current", "baseline_clean", "distill_llm",
                                "distill_clean_search"),
 })
+# Round 12.
+HYDE_METHODS = ["hyde", "hyde_fusion_clean", "hyde_situation_fusion_clean"]
+COMPARISON_METHODS += HYDE_METHODS
+_NEEDS_SITUATION_INDEX = {"situation", "situation_fusion", "situation_fusion_clean", "hyde_situation_fusion_clean"}
+_HYDE_PARTS = ("timeline_llm", "hyde_llm", "hyde_search")
+_FUSION_CLEAN_PARTS = _COMPOSITE_LATENCY["fusion_clean"]
+_COMPOSITE_LATENCY.update({
+    "hyde": _HYDE_PARTS,
+    "hyde_fusion_clean": _HYDE_PARTS + _FUSION_CLEAN_PARTS,
+    "hyde_situation_fusion_clean": _HYDE_PARTS + ("situation_search",) + _FUSION_CLEAN_PARTS,
+})
+_HYDE_SYSTEM = (
+    "Sei un legislatore italiano. Ti do i fatti di un caso, scomposti in passi numerati, e il testo originale. "
+    "Per ciascun passo scrivi 1 o 2 brevi testi normativi ipotetici, nello stile di un articolo di un codice "
+    "italiano, che disciplinerebbero quel passo, con la loro conseguenza giuridica (pena, obbligo, "
+    "responsabilità, diritto, nullità...): per esempio \"Chiunque...\", \"Il pubblico ufficiale che...\", "
+    "\"Il debitore che...\", \"Il proprietario del fondo...\". Scrivi anche un testo normativo ipotetico per il "
+    "caso nel suo complesso. Non usare MAI numeri di articolo né nomi di codici o di leggi. Restituisci SOLO un "
+    "oggetto JSON: {\"passi\": [{\"n\": <numero del passo>, \"norme\": [\"...\"]}], \"caso\": \"...\"}."
+)
+_HYDE_MAX_NORMS_PER_STEP = 2
+# A hypothetical norm that cites a real one defeats the point (it becomes a lookup).
+_CITES_A_LAW_RE = re.compile(
+    r"\bart(?:t|icol[oi])?\.?\s*\d|\bc\.\s*[cp]\.|\bcodice\b|\bd\.\s*lgs|\blegge\s+(?:n\.\s*)?\d", re.IGNORECASE)
+
 _SITUATION_INSTRUCTION = (
     "Instruct: Given an account of events in plain Italian, retrieve the descriptions of concrete situations "
     "that match it\nQuery: "
@@ -477,6 +523,46 @@ def _step_story(step):
     to whom, how, with what result -- no legal terms."""
     return " ".join(part for part in (step["actor"], step["action"], step["object"], step["means"], step["result"])
                     if part)
+
+
+def _hyde_norm(value):
+    """One hypothetical norm, whitespace-normalised, or "" if unusable."""
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    return "" if _CITES_A_LAW_RE.search(text) else text
+
+
+def _parse_hyde(parsed, step_numbers):
+    """The model's reply -> ({step n: [1-2 norms]} for the given steps only,
+    the whole-case norm or "")."""
+    if not isinstance(parsed, dict):
+        return {}, ""
+    wanted, per_step = set(step_numbers), {}
+    for item in parsed.get("passi") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            n = int(item.get("n"))
+        except (TypeError, ValueError):
+            continue
+        if n not in wanted:
+            continue
+        raw = item.get("norme")
+        norms = [x for x in (_hyde_norm(v) for v in (raw if isinstance(raw, list) else [raw])) if x]
+        if norms:
+            per_step[n] = list(dict.fromkeys(per_step.get(n, []) + norms))[:_HYDE_MAX_NORMS_PER_STEP]
+    return per_step, _hyde_norm(parsed.get("caso"))
+
+
+def _hyde_human(text, steps):
+    listing = "\n".join(f"{step['n']}. {_step_story(step)}" for step in steps) or "(nessun passo)"
+    return f"PASSI:\n{listing}\n\nTESTO ORIGINALE:\n{text[:6000]}"
+
+
+def _available_methods(results, methods):
+    """The methods every case has a result for (SITUATION ones are absent when its index isn't built)."""
+    return [m for m in methods if all(m in r for r in results.values())]
 
 
 # --- Retrieval ---------------------------------------------------------
@@ -810,8 +896,14 @@ def _run_timeline(session, text, index, k, warned):
     return _rrf(*lists), steps, per_step, llm_seconds
 
 
+def _hyde_norms(text, steps):
+    parsed = dg._chat_json([SystemMessage(content=_HYDE_SYSTEM), HumanMessage(content=_hyde_human(text, steps))],
+                           max_tokens=3000, temperature=0)
+    return _parse_hyde(parsed, [step["n"] for step in steps])
+
+
 def _run_case(driver, database, case, vector_index, k, warned, situation_index="situation_embeddings_v2",
-              exclude_re=_NOT_A_LAW_RE):
+              exclude_re=_NOT_A_LAW_RE, situation_ready=True):
     text = case["question"]
     detail = {}
     with driver.session(database=database) as session:
@@ -891,13 +983,31 @@ def _run_case(driver, database, case, vector_index, k, warned, situation_index="
             for s in per_step]
         timeline_current = _rrf(timeline, current)
 
+        situation = None
+        if situation_ready:
+            t0 = time.time()
+            situation_lists = [_situation_search(session, _step_story(step), situation_index, k, warned)
+                               for step in _kept_steps(steps)]
+            situation_lists.append(_situation_search(session, text, situation_index, k, warned))
+            situation = _rrf(*situation_lists)
+            latency["situation_search"] = time.time() - t0
+            detail["situation_searches"] = [[_ref_label(ref) for ref in refs[:10]] for refs in situation_lists]
+
         t0 = time.time()
-        situation_lists = [_situation_search(session, _step_story(step), situation_index, k, warned)
-                           for step in _kept_steps(steps)]
-        situation_lists.append(_situation_search(session, text, situation_index, k, warned))
-        situation = _rrf(*situation_lists)
-        latency["situation_search"] = time.time() - t0
-        detail["situation_searches"] = [[_ref_label(ref) for ref in refs[:10]] for refs in situation_lists]
+        try:
+            hyde_per_step, hyde_case = _hyde_norms(text, _kept_steps(steps))
+        except Exception as exc:
+            logging.warning("%s: HYDE generation failed: %s", case["id"], exc)
+            hyde_per_step, hyde_case = {}, ""
+        latency["hyde_llm"] = time.time() - t0
+        detail["hyde"] = {"steps": {str(n): norms for n, norms in hyde_per_step.items()}, "case": hyde_case}
+        t0 = time.time()
+        hyde_excluded, hyde_lists = set(), []
+        for norm in [n for norms in hyde_per_step.values() for n in norms] + ([hyde_case] if hyde_case else []):
+            hyde_lists += _clean_searches(session, norm, vector_index, k, warned, exclude_re, hyde_excluded)
+        hyde = _rrf(*hyde_lists)
+        latency["hyde_search"] = time.time() - t0
+        detail["hyde_excluded_documents"] = sorted(hyde_excluded)
 
         union = _dedupe_ordered(current, baseline, distill)
         union_rows = _fetch_union_rows(session, documents, union)
@@ -943,9 +1053,12 @@ def _run_case(driver, database, case, vector_index, k, warned, situation_index="
             "rerank_bullets": rerank_bullets, "rerank_raw": rerank_raw,
             "llm_relevance": llm_relevance, "fusion_baseline": fusion_baseline,
             "timeline": timeline, "timeline_current": timeline_current,
-            "fusion_clean": fusion_clean, "situation": situation,
-            "situation_fusion": _rrf(situation, fusion_baseline),
-            "situation_fusion_clean": _rrf(situation, fusion_clean),
+            "fusion_clean": fusion_clean,
+            "hyde": hyde, "hyde_fusion_clean": _rrf(hyde, fusion_clean),
+            **({"situation": situation,
+                "situation_fusion": _rrf(situation, fusion_baseline),
+                "situation_fusion_clean": _rrf(situation, fusion_clean),
+                "hyde_situation_fusion_clean": _rrf(hyde, situation, fusion_clean)} if situation is not None else {}),
             "union_candidate_count": len(union), "latency": latency, "detail": detail}
 
 
@@ -1011,9 +1124,10 @@ def _method_latency(r, method):
 def _comparison_lines(results, cases, k):
     """Retrieval methods and composites side by side: totals (recall, noise,
     mean latency per case), then found@10/found@k per case."""
-    lines = [f"{'method':<24s}{'recall@10':<12s}{'recall@' + str(k):<12s}{'noise@10':<10s}"
+    methods = _available_methods(results, COMPARISON_METHODS)
+    lines = [f"{'method':<30s}{'recall@10':<12s}{'recall@' + str(k):<12s}{'noise@10':<10s}"
              f"{'noise@' + str(k):<10s}{'latency/case':<14s}"]
-    for m in COMPARISON_METHODS:
+    for m in methods:
         f10 = fk = total = n10 = nk = 0
         for case in cases:
             r = results[case["id"]]
@@ -1023,27 +1137,42 @@ def _comparison_lines(results, cases, k):
             n10 += _noise(r[m], case["expected"], 10)
             nk += _noise(r[m], case["expected"], k)
         latency = sum(_method_latency(results[c["id"]], m) for c in cases) / len(cases)
-        lines.append(f"{m:<24s}{f'{f10}/{total}':<12s}{f'{fk}/{total}':<12s}{n10:<10d}{nk:<10d}{latency:>6.1f}s")
+        lines.append(f"{m:<30s}{f'{f10}/{total}':<12s}{f'{fk}/{total}':<12s}{n10:<10d}{nk:<10d}{latency:>6.1f}s")
     lines.append("")
     lines.append("per case, found@10/found@" + str(k) + ":")
-    lines.append(f"{'case':<18s}" + "".join(f"{m:<24s}" for m in COMPARISON_METHODS))
+    lines.append(f"{'case':<18s}" + "".join(f"{m:<30s}" for m in methods))
     for case in cases:
         r = results[case["id"]]
         cells = []
-        for m in COMPARISON_METHODS:
+        for m in methods:
             a, t = _recall(r[m], case["expected"], 10)
             b, _ = _recall(r[m], case["expected"], k)
-            cells.append(f"{a}/{b} of {t}".ljust(24))
+            cells.append(f"{a}/{b} of {t}".ljust(30))
         lines.append(f"{case['id']:<18s}" + "".join(cells))
     lines.append("")
     lines.append("TIMELINE's own LLM call, mean per case: "
                  f"{sum(results[c['id']]['latency'].get('timeline_llm', 0.0) for c in cases) / len(cases):.1f}s "
                  "(the rest of TIMELINE's latency is its searches). Composite latency = sum of its parts; "
-                 "SITUATION's includes that LLM call (its steps).")
-    excluded = sorted({name for c in cases for name in results[c["id"]]["detail"].get("clean_excluded_documents", [])})
+                 "SITUATION's and HYDE's include that LLM call (their steps).")
+    if len(methods) < len(COMPARISON_METHODS):
+        lines.append("Not reported (the situation index isn't built yet): "
+                     + ", ".join(m for m in COMPARISON_METHODS if m not in methods) + ".")
+    excluded = sorted({name for c in cases for key in ("clean_excluded_documents", "hyde_excluded_documents")
+                       for name in results[c["id"]]["detail"].get(key, [])})
     lines.append("")
-    lines.append(f"FUSION_CLEAN removed {len(excluded)} document(s) by name (check none is a code or a law):")
+    lines.append(f"FUSION_CLEAN's/HYDE's filter removed {len(excluded)} document(s) by name "
+                 "(check none is a code or a law):")
     lines += [f"   - {name}" for name in excluded]
+    return lines
+
+
+def _hyde_lines(case_id, detail):
+    hyde = detail.get("hyde") or {}
+    lines = [f"   hypothetical norms ({case_id}):"]
+    for n, norms in (hyde.get("steps") or {}).items():
+        lines += [f"     step {n}: {norm}" for norm in norms]
+    if hyde.get("case"):
+        lines.append(f"     whole case: {hyde['case']}")
     return lines
 
 
@@ -1091,7 +1220,8 @@ def _detail_lines(results, cases, k):
         r = results[case["id"]]
         lines.append(f"\n## {case['id']}")
         lines.append(f"   expected: {case['expected']}")
-        for m in METHODS + UNION_METHODS + RANKING_METHODS + TIMELINE_METHODS + SITUATION_METHODS:
+        for m in _available_methods(results, METHODS + UNION_METHODS + RANKING_METHODS + TIMELINE_METHODS
+                                    + SITUATION_METHODS + HYDE_METHODS):
             top = r[m][:10]
             lines.append(f"   {m} top 10: {[f'{a} {c}' for c, a in top]}")
         if r["detail"].get("bullets"):
@@ -1107,9 +1237,23 @@ def _detail_lines(results, cases, k):
         if r["detail"].get("timeline"):
             lines += _timeline_lines(case["id"], r["detail"])
             lines.append("     (x = relevance 0, discarded)")
+        if r["detail"].get("hyde"):
+            lines += _hyde_lines(case["id"], r["detail"])
         if r["detail"].get("llm_relevance_scores"):
             lines.append("   LLM relevance scores: " + str(r["detail"]["llm_relevance_scores"]))
     return lines
+
+
+def _situation_index_ready(driver, database, index):
+    """True when the situation vector index exists and at least one Situation node is linked (read-only)."""
+    try:
+        with driver.session(database=database) as session:
+            if not session.run("SHOW VECTOR INDEXES YIELD name WHERE name = $name RETURN name", name=index).data():
+                return False
+            return bool(session.run("MATCH (:Section)-[:HAS_SITUATION]->(x:Situation) RETURN x LIMIT 1").data())
+    except Exception as exc:
+        logging.warning("could not check the situation index %r: %s", index, exc)
+        return False
 
 
 def main():
@@ -1148,17 +1292,23 @@ def main():
 
     from src.rag.main import NEO4J_DATABASE, driver
 
+    situation_ready = _situation_index_ready(driver, NEO4J_DATABASE, args.situation_index)
+    print(f"situation index {args.situation_index!r}: "
+          f"{'present, SITUATION methods included' if situation_ready else 'not built, SITUATION methods skipped'}")
+
     warned = set()
     results = {}
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {pool.submit(_run_case, driver, NEO4J_DATABASE, case, args.vector_index, args.k, warned,
-                               situation_index=args.situation_index, exclude_re=exclude_re): case
+                               situation_index=args.situation_index, exclude_re=exclude_re,
+                               situation_ready=situation_ready): case
                   for case in cases}
         for future in as_completed(futures):
             case = futures[future]
             print(f"... {case['id']} done", flush=True)
             results[case["id"]] = future.result()
             print("\n".join(_timeline_lines(case["id"], results[case["id"]]["detail"])), flush=True)
+            print("\n".join(_hyde_lines(case["id"], results[case["id"]]["detail"])), flush=True)
 
     table = _table_lines(results, cases, args.k)
     detail = _detail_lines(results, cases, args.k)

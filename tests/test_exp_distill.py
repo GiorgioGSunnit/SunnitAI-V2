@@ -327,3 +327,37 @@ def test_every_comparison_method_has_a_latency_recipe_or_its_own_timing():
     timed_directly = {"baseline", "distill", "current", "timeline"}
     for m in ed.COMPARISON_METHODS:
         assert m in timed_directly or m in ed._COMPOSITE_LATENCY, m
+
+
+# --- Round 12: HYDE ----------------------------------------------------------
+
+def test_parse_hyde_keeps_up_to_two_clean_norms_per_known_step():
+    reply = {"passi": [
+        {"n": 1, "norme": ["Chiunque cagiona ad altri una lesione personale è punito.",
+                           "Chiunque cagiona ad altri una lesione personale è punito.",   # duplicate
+                           "Ai sensi dell'art. 582 c.p. chiunque...",                     # cites a law: dropped
+                           "Il medesimo fatto commesso con armi è punito più gravemente.",
+                           "Una terza norma oltre il limite."]},
+        {"n": "2", "norme": "Il pubblico ufficiale che riceve denaro è punito."},       # string n, string norme
+        {"n": 9, "norme": ["passo che non esiste"]},
+        "garbage"],
+        "caso": "Chiunque, con violenza, cagiona la morte di una persona è punito."}
+    per_step, case = ed._parse_hyde(reply, [1, 2, 3])
+    assert per_step == {1: ["Chiunque cagiona ad altri una lesione personale è punito.",
+                            "Il medesimo fatto commesso con armi è punito più gravemente."],
+                        2: ["Il pubblico ufficiale che riceve denaro è punito."]}
+    assert case.startswith("Chiunque, con violenza")
+    assert ed._parse_hyde(["not", "a", "dict"], [1]) == ({}, "")
+    assert ed._parse_hyde({"caso": "Il codice civile prevede..."}, []) == ({}, "")
+
+
+def test_hyde_human_lists_the_steps_told_plainly():
+    steps = [{"n": 1, "actor": "Tizio", "action": "colpisce", "object": "Caio", "means": "", "result": "",
+              "terms": ["lesione"]}]
+    human = ed._hyde_human("Il racconto.", steps)
+    assert "1. Tizio colpisce Caio" in human and "lesione" not in human and "Il racconto." in human
+
+
+def test_available_methods_drops_methods_some_case_lacks():
+    results = {"a": {"hyde": [], "situation": []}, "b": {"hyde": []}}
+    assert ed._available_methods(results, ["hyde", "situation"]) == ["hyde"]
