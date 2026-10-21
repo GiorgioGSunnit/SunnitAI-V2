@@ -20,6 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
 from .ai_chat import _call_chat, embedding_model, parse_json_reply
+from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -608,7 +609,7 @@ _CONTRACT_RE = re.compile(
     r"datore di lavoro|lavorator|dipendent)",
     re.IGNORECASE,
 )
-_ARTICLE_NUM = r"(\d+(?:-?(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies))?(?:\.\d+)?)"
+_ARTICLE_NUM = r"(\d+(?:-?" + SUFFIX + r"(?![a-z]))?(?:\.\d+)?)"
 _CITED_ARTICLE_RE = re.compile(
     r"\b(?:art(?:t)?\.?|articol[oi])\s*" + _ARTICLE_NUM
     + r"(?:\s*,?\s*(?:co\.|comma)\s*\d+(?:\s*,\s*n\.\s*\d+)?)?\s*,?\s*(?:del\s+)?("
@@ -1465,9 +1466,9 @@ def _code_of(text: str) -> Optional[str]:
 
 
 def _article_num(raw: str) -> str:
-    """'415bis' / '415-BIS' / '2051.1' -> '415-bis' / '2051' (as the codes name them)."""
-    num = raw.lower().split(".")[0]
-    return re.sub(r"(\d)-?(bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)", r"\1-\2", num)
+    """'415bis' / '415-BIS' / '2051.1' / '21-novies' -> '415-bis' / '2051' / '21-nonies' (the
+    canonical spelling the BE parser writes, article_suffix.py)."""
+    return normalize_number(raw.lower().split(".")[0])
 
 
 def _refs_in(text: str) -> List[tuple]:
@@ -1700,13 +1701,19 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
         prefix = _CODE_PREFIXES.get(abbr)
         if not prefix:
             continue
-        found = session.run(
-            "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-            "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
-            "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
-            "RETURN d, s ORDER BY s.name LIMIT 30",
-            prefix=prefix, n=num,
-        ).data()
+        found = []
+        # The canonical spelling, then legacy ones ("21-novies") of Sections
+        # ingested before the BE normalised suffixes (article_suffix.py).
+        for spelling in number_variants(num):
+            found = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
+                "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
+                "RETURN d, s ORDER BY s.name LIMIT 30",
+                prefix=prefix, n=spelling,
+            ).data()
+            if found:
+                break
         found = _dedupe_sections(found)[:6]
         for row in found:
             row["_article"] = (num, abbr)

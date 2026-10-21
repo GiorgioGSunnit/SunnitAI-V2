@@ -15,12 +15,17 @@ prints them as a table (with --check, each article's heading in the corpus).
 Areas and postures are the case frame's own labels (CASE_FRAME_ENABLED:
 "areas", "posture_type"). An article is (number, code): a sigla from
 defensive_generation._CODE_PREFIXES, or a law by name as _fetch_any resolves
-it ("Codice del Consumo", "l. 241/1990").
+it ("Codice del Consumo", "Legge sul Procedimento Amministrativo 2026").
 """
 
 from typing import Dict, Iterable, List, Tuple
 
 Ref = Tuple[str, str]
+
+# L. 241/1990 by the document's own name: prod holds two copies, and "l. 241/1990"
+# resolves (by number and year) to "Legge 7 agosto 1990, n. 241 ...", which has
+# only art. 21-septies (checked 21 Oct).
+L241 = "Legge sul Procedimento Amministrativo 2026"
 
 
 def _refs(code: str, numbers: str) -> List[Ref]:
@@ -44,7 +49,7 @@ AREA_ARTICLES: Dict[str, Tuple[str, List[Ref]]] = {
     "famiglia": ("Famiglia", _refs(
         "c.c.", "143 147 151 156 177 179 316 316-bis 337-bis 337-ter 337-sexies 433 438")),
     "consumo": ("Consumo", _refs("Codice del Consumo", "3 33 34 36 49 52 128 129 130 132 133")),
-    "amministrativo": ("Diritto amministrativo", _refs("l. 241/1990", "2 3 7 10-bis 21-septies 21-octies 21-nonies")
+    "amministrativo": ("Diritto amministrativo", _refs(L241, "2 3 7 10-bis 21-septies 21-octies 21-nonies")
                        + _refs("c.p.a.", "29 30 34")),
 }
 
@@ -68,7 +73,7 @@ POSTURE_ARTICLES: Dict[str, Tuple[str, List[Ref]]] = {
         "c.p.p.", "569 585 591 606 609 610 620 623")),
     "provvedimento_amministrativo": ("Provvedimento amministrativo da impugnare", _refs("c.p.a.", "29 30 41 55")),
     "silenzio_amministrazione": ("Silenzio o inerzia dell'amministrazione",
-                                 _refs("c.p.a.", "31 117") + _refs("l. 241/1990", "2")),
+                                 _refs("c.p.a.", "31 117") + _refs(L241, "2")),
     "giudicato_amministrativo_non_eseguito": ("Giudicato amministrativo non eseguito (ottemperanza)",
                                               _refs("c.p.a.", "112 113 114 117")),
 }

@@ -27,6 +27,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
 from .ai_chat import _call_chat, parse_json_reply
+from .article_suffix import SUFFIX, canonical_suffix, number_variants
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,8 @@ ISSUE_SPOTTING_FLAG = "ISSUE_SPOTTING_ENABLED"
 NARRATIVE_MIN_WORDS = 20
 MAX_PROPOSALS = 8
 
-_SUFFIX = r"(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)"
+# Every spelling, longest first, normalised by canonical_suffix (article_suffix.py).
+_SUFFIX = SUFFIX
 _ARTICLE = re.compile(rf"^\s*(?:art(?:icolo)?\.?\s*)?(\d+)(?:[\s-]*({_SUFFIX}))?\s*$", re.IGNORECASE)
 
 _SPOT_SYSTEM = (
@@ -80,7 +82,7 @@ def _article(value) -> Optional[str]:
     m = _ARTICLE.match(str(value or ""))
     if not m:
         return None
-    return f"{m.group(1)}-{m.group(2).lower()}" if m.group(2) else m.group(1)
+    return f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m.group(2) else m.group(1)
 
 
 def spot_issues(text: str) -> List[Dict[str, str]]:
@@ -144,7 +146,17 @@ def resolve_code(code: str, documents: List[Dict[str, Any]]) -> Optional[Dict[st
 def fetch_article(session, doc_id: str, number: str, visibility: str = "", **params) -> List[Dict[str, Any]]:
     """The article's sections in that one document: its canonical name
     ("N.0.0" or "N"), else its dot-delimited fragments ("N.1", "N.2"), never
-    another article that merely starts with the same digits."""
+    another article that merely starts with the same digits. Any spelling of
+    the suffix: the canonical one first ("21-novies" finds "21-nonies.0.0"),
+    then the legacy spellings of Sections ingested before the BE normalised them."""
+    for spelling in number_variants(number):
+        rows = _fetch_article_named(session, doc_id, spelling, visibility, **params)
+        if rows:
+            return rows
+    return []
+
+
+def _fetch_article_named(session, doc_id: str, number: str, visibility: str = "", **params) -> List[Dict[str, Any]]:
     rows = session.run(
         "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
         "WHERE d.id = $doc_id AND s.name IN [$zero_zero, $num] " + (f"AND {visibility} " if visibility else "")
@@ -243,7 +255,7 @@ def article_by_title(session, doc_id: str, institution: str, visibility: str = "
         extra = len(title_stems - stems)
         if extra > (0 if len(stems) == 1 else 2):
             continue
-        number = f"{m.group(1)}-{m.group(2).lower()}" if m.group(2) else m.group(1)
+        number = f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m.group(2) else m.group(1)
         key = (extra, len(r.get("title") or ""), int(m.group(1)))
         if best is None or key < best[0]:
             best = (key, number)

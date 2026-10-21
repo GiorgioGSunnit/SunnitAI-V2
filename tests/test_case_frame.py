@@ -239,7 +239,7 @@ def test_method_candidates_need_both_flags_and_are_never_exempt(monkeypatch):
     out = dg._add_method_candidates(None, None, "db", analysis, picked)
     added = out["method_candidates"]
     assert ("112", "c.p.a.") not in added and ("113", "c.p.a.") in added and ("114", "c.p.a.") not in added
-    assert ("21-septies", "l. 241/1990") in added                        # the area's own list
+    assert ("21-septies", mc.L241) in added                        # the area's own list
     assert out["selected"][0] == ("112", "c.p.a.") and ("113", "c.p.a.") in out["selected"]
     to_check, _ = dg._applicability_candidates("fatti", "", out["article_rows"])
     assert ("113", "c.p.a.") in to_check                                  # filtered by the check

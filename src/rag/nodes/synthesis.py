@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ..ai_chat import _call_chat
+from ..article_suffix import SUFFIX, normalize_number
 from ..answer_processing import (
     _GAP_PHRASES,
     _extract_citations,
@@ -96,7 +97,7 @@ def _sources_named_in(text: str, cites: List[Dict[str, Any]]) -> List[Dict[str, 
 
 
 _ARTICLE_ID_RE = re.compile(
-    r"^(\d+(?:-(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies))?)(?:[._]\w+)*$",
+    rf"^(\d+(?:-{SUFFIX})?)(?:[._]\w+)*$",
     re.IGNORECASE,
 )
 
@@ -111,8 +112,8 @@ def _fonti_entry(c: Dict[str, Any]) -> str:
     articles = []
     for s in c.get("sections", []):
         m = _ARTICLE_ID_RE.match((s.get("name") or "").strip())
-        if m and m.group(1) not in articles:
-            articles.append(m.group(1))
+        if m and normalize_number(m.group(1)) not in articles:
+            articles.append(normalize_number(m.group(1)))
     return f"{name} sezioni: {', '.join('art. ' + a for a in articles)}" if articles else name
 
 
