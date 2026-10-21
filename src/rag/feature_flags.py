@@ -51,6 +51,22 @@ else falls back to the default, so a typo never switches a feature on.
                                 "questioni" never raising an issue at all,
                                 so there was nothing for retrieval to search
                                 on. See _ISSUE_CHECKLISTS_BLOCK.
+  FUSION_CLEAN_ENABLED         false (acts only with CASE_POOL_FUSION_ENABLED):
+                                the fusion pool's raw-text and bullet
+                                searches on primary documents only, minus
+                                books, templates and contract models by name
+                                -- scripts/exp_distill.py's FUSION_CLEAN.
+  CASE_FRAME_ENABLED           false: one call before the case analysis
+                                reads the case's frame (facts, procedural
+                                posture, areas, explicit questions, central
+                                issues); fed to the analysis, searched as
+                                its own queries by the fusion pool, the
+                                questions given to the draft. See _case_frame.
+  METHOD_CANDIDATES_ENABLED    false (acts only with APPLICABILITY_CHECK_
+                                ENABLED): the method articles of the case's
+                                areas and the procedural articles of its
+                                posture (src/rag/method_candidates.py) added
+                                as candidates, then filtered by the check.
 """
 
 import logging

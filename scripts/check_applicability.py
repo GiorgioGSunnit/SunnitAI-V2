@@ -122,10 +122,17 @@ def main() -> None:
                 print(f"Checking only: {', '.join(map(_label, refs))}")
             elif use_v2:
                 # The pipeline's own choice: STRUCTURED_ANALYSIS_ENABLED switches to the
-                # structured analysis (facts, then the area's grid).
-                analysis = (dg._analyse_case_structured(facts, "it", args.request)
-                            if feature_flags.enabled(dg.STRUCTURED_ANALYSIS_FLAG)
-                            else dg._analyse_case_v2(facts, "it", args.request))
+                # structured analysis (facts, then the area's grid), CASE_FRAME_ENABLED
+                # reads the case's frame first.
+                analysis = dg._analyse_case_for_pipeline(facts, "it", args.request)
+                frame = analysis.get("frame") or {}
+                if frame:
+                    print(f"\nCase frame: posture {frame.get('posture_type')!r} ({frame.get('procedural_posture')}), "
+                          f"areas {frame.get('areas')}")
+                    for task in frame.get("tasks") or []:
+                        print(f"  task: {task}")
+                    for issue in frame.get("central_issue_candidates") or []:
+                        print(f"  central issue: {_istituto_label(issue)}")
                 print(f"\nCase analysis questions ({path_name}):")
                 for q in analysis.get("questioni", []):
                     istituti = ", ".join(_istituto_label(i) for i in q.get("istituti") or []) or "-"
@@ -133,6 +140,7 @@ def main() -> None:
                     print(f"      istituti: {istituti}")
                 select_fn = dg._select_articles_fusion if use_fusion else dg._select_articles_v2
                 picked = select_fn(session, driver, NEO4J_DATABASE, facts, args.request, analysis)
+                picked = dg._add_method_candidates(session, driver, NEO4J_DATABASE, analysis, picked)
                 keep = picked["keep"]
                 if use_fusion:
                     print("\nSelection (fusion = institutions ∪ raw-text search ∪ distilled-bullet search, "
@@ -162,6 +170,8 @@ def main() -> None:
                 print(f"  added by cross-reference  : {', '.join(crossref) or 'none'}")
                 spotted = sorted({_label(r["_article"]) for r in picked.get("spotted") or []})
                 print(f"  added by issue spotting   : {', '.join(spotted) or 'none'}")
+                print(f"  method candidates (area/posture): "
+                      f"{', '.join(map(_label, picked.get('method_candidates') or [])) or 'none'}")
 
                 print("\nInstitution -> article resolution:")
                 for entry in institution_log:

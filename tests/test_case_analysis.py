@@ -558,5 +558,10 @@ def test_the_draft_rules_are_added_only_when_enabled(monkeypatch):
     assert "non affermare competenze, riti, misure cautelari, termini o pene" in ruled
     assert "concreti, mai segnaposto" not in ruled and "forbice di pena" not in ruled
     assert "Nei casi penali considera" not in ruled and "62-bis" not in ruled
-    # Everything else is unchanged: the new prompt is today's plus the rules.
-    assert ruled.replace(DG._DRAFT_RULES, "") == today
+    # Everything else is unchanged: the new prompt is today's plus the rules,
+    # with (r13, 21 Oct) the procedural section without its list of items and
+    # no case law without a source, not even "in general terms".
+    assert "possibilità di definizione stragiudiziale" not in ruled
+    assert "in termini generali, senza numeri né date" not in ruled
+    assert ruled.replace(DG._DRAFT_RULES, "").replace(DG._PROCEDURAL_SECTION_RULES, DG._PROCEDURAL_SECTION) \
+        .replace(DG._CASE_LAW_RULE_STRICT, DG._CASE_LAW_RULE) == today

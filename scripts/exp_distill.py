@@ -501,17 +501,9 @@ def _cited_ranking(ruling_ids, cites_by_doc):
     return sorted(best, key=lambda ref: (best[ref], -count[ref]))
 
 
-# Not a code or a law, by name: dg._NOT_A_PRIMARY_SOURCE_RE's books, plus
-# textbooks and the templates/contract models the 20 Oct briefing found in
-# the pool (c3: "LOCAZIONE ABITATIVA DI NATURA TRANSITORIA"). Deliberately
-# not "contratt" alone: "Codice dei contratti pubblici" is a law.
-_NOT_A_LAW_RE = re.compile(
-    dg._NOT_A_PRIMARY_SOURCE_RE.pattern
-    + r"|fondamenti|lineamenti|istituzioni di|lezioni di|compendio|corso di diritto|parte generale|parte speciale"
-    r"|fac.?simile|template|\bmodell[oi] d|schema di contratto|contratto tipo|scrittura privata|natura transitoria"
-    r"|locazione abitativa",
-    re.IGNORECASE,
-)
+# Not a code or a law, by name. Moved to dg (21 Oct) when FUSION_CLEAN_ENABLED
+# put this filter in the live pool: one regex, so the two cannot drift.
+_NOT_A_LAW_RE = dg._NOT_A_LAW_RE
 
 
 def _is_law_name(doc_name, exclude_re=_NOT_A_LAW_RE):
