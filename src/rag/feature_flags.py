@@ -67,6 +67,19 @@ else falls back to the default, so a typo never switches a feature on.
                                 areas and the procedural articles of its
                                 posture (src/rag/method_candidates.py) added
                                 as candidates, then filtered by the check.
+  DRAFT_CITATIONS_ONLY_ENABLED false: the sources returned with a parere are
+                                only the articles and rulings its text cites
+                                (with their code / by name or number), not
+                                every retrieved candidate. See _draft_sources.
+  CLIENT_STANCE_CHECK_ENABLED  false: one call (temperature 0) checks section
+                                3 for arguments that favour the other side;
+                                if any, section 3 is rewritten once with that
+                                list. See _check_client_stance.
+  QUALIFICATION_CHECK_ENABLED  false: every cited article outside the case's
+                                area/posture lists is checked, by its real
+                                heading, against the use the draft makes of
+                                it; a mismatch is flagged [DA VERIFICARE: l'art.
+                                N riguarda «...»]. See _check_qualifications.
 """
 
 import logging

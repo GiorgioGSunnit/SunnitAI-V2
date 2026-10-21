@@ -609,7 +609,8 @@ _CONTRACT_RE = re.compile(
     r"datore di lavoro|lavorator|dipendent)",
     re.IGNORECASE,
 )
-_ARTICLE_NUM = r"(\d+(?:-?" + SUFFIX + r"(?![a-z]))?(?:\.\d+)?)"
+# "609-bis", "609bis" and "609 bis" (r14: h7's "Art. 609 bis c.p." escaped the check).
+_ARTICLE_NUM = r"(\d+(?:\s*-?\s*" + SUFFIX + r"(?![a-z]))?(?:\.\d+)?)"
 _CITED_ARTICLE_RE = re.compile(
     r"\b(?:art(?:t)?\.?|articol[oi])\s*" + _ARTICLE_NUM
     + r"(?:\s*,?\s*(?:co\.|comma)\s*\d+(?:\s*,\s*n\.\s*\d+)?)?\s*,?\s*(?:del\s+)?("
@@ -3372,6 +3373,315 @@ def _filter_applicable_articles(facts: str, request: str,
     return [r for r in article_rows if r.get("_article") not in dropped_articles]
 
 
+# --- Draft quality (r14, 21 Oct: held-out run after the parser fix) ------------
+#
+# Three checks after the draft, each behind its own flag:
+#   DRAFT_CITATIONS_ONLY_ENABLED  the sources returned are only the articles and
+#       rulings the draft refers to (h1 listed the whole retrieval pool: TU
+#       istruzione, codice della strada, 1117 c.c., 2043-2059...).
+#   CLIENT_STANCE_CHECK_ENABLED   one call checks section 3 for arguments that
+#       favour the other side (h1, for the pupil's parents, argued the teacher's
+#       diligence); if any, section 3 is rewritten once with that list.
+#   QUALIFICATION_CHECK_ENABLED   every cited article outside the case's area
+#       and posture lists is checked, by its real heading, against the use the
+#       draft makes of it (h7: 609-bis c.p., sexual violence, cited as a
+#       mitigating circumstance in a corruption case); a mismatch is flagged.
+DRAFT_CITATIONS_ONLY_FLAG = "DRAFT_CITATIONS_ONLY_ENABLED"
+CLIENT_STANCE_CHECK_FLAG = "CLIENT_STANCE_CHECK_ENABLED"
+QUALIFICATION_CHECK_FLAG = "QUALIFICATION_CHECK_ENABLED"
+
+_REF_NUMBER = r"\d+(?:\s*-?\s*" + SUFFIX + r"(?![a-z]))?"
+# "art. 56", "artt. 112 e 114", "articoli 2043, 2048 e 2059", "Articolo 593".
+_ARTICLE_RUN_RE = re.compile(
+    r"\b(?:artt?\.?|articol[oi])\s*(" + _REF_NUMBER + r"(?:\s*(?:,|e|ed)\s*" + _REF_NUMBER + r")*)",
+    re.IGNORECASE,
+)
+_RUN_NUMBER_RE = re.compile(_REF_NUMBER, re.IGNORECASE)
+# What may sit between the number and the code: a comma, "comma 3", "co. 2, n. 1", "del", "della".
+_CODE_LEAD_RE = re.compile(
+    r"^\s*,?\s*(?:(?:co\.|comma|commi)\s*\d+(?:\s*,?\s*(?:lett\.|lettera|n\.)\s*\w+)?\s*,?\s*)?"
+    r"(?:del(?:la|lo|l['’])?\s+|d\.\s*)?",
+    re.IGNORECASE,
+)
+# Codes written out in full, longest first.
+_CODE_NAMES = [
+    (r"codice di procedura penale", "c.p.p."), (r"codice di procedura civile", "c.p.c."),
+    (r"codice del processo amministrativo", "c.p.a."), (r"codice della strada", "c.d.s."),
+    (r"codice civile", "c.c."), (r"codice penale", "c.p."),
+]
+_DECISION_NUMBER_RES = (
+    re.compile(r"\b(\d{2,6})\s*/\s*((?:19|20)\d{2})\b"),
+    re.compile(r"\bn\.?\s*(\d{2,6})\s+(?:del|anno)\s+((?:19|20)\d{2})\b", re.IGNORECASE),
+    re.compile(r"\b(\d{2,6})-((?:19|20)\d{2})\b"),
+)
+
+
+def _code_after(tail: str, documents: List[Dict[str, Any]]) -> Optional[str]:
+    """The code a citation's tail names: a sigla or a code in full, else the
+    name of one of `documents` (the retrieved non-standard laws) resolved the
+    way issue spotting resolves a code -- or None."""
+    from .issue_spotting import resolve_code
+
+    rest = tail[_CODE_LEAD_RE.match(tail).end():]
+    for pattern, abbr in _CODE_SPELLINGS:
+        if re.match(rf"(?:{pattern})", rest, re.IGNORECASE):
+            return abbr
+    low = rest.lower()
+    for name, abbr in _CODE_NAMES:
+        if low.startswith(name):
+            return abbr
+    if documents:
+        words = re.split(r"[\n;:()\[\]]", rest)[0].split()[:8]
+        for n in range(len(words), 0, -1):
+            doc = resolve_code(" ".join(words[:n]), documents)
+            if doc:
+                return doc["name"]
+    return None
+
+
+def _cited_articles(draft: str, known: set, documents: List[Dict[str, Any]]) -> List[tuple]:
+    """Every (number, code) the draft cites, in order, deduplicated. A number
+    with no code is attributed to the one known article with that number, if
+    there is exactly one."""
+    refs: List[tuple] = []
+    for m in _ARTICLE_RUN_RE.finditer(draft):
+        code = _code_after(draft[m.end():m.end() + 120], documents)
+        for n in _RUN_NUMBER_RE.findall(m.group(1)):
+            number = _article_num(n)
+            if code:
+                ref = (number, code)
+            else:
+                same = [k for k in known if k[0] == number]
+                if len(same) != 1:
+                    continue
+                ref = same[0]
+            if ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def _decision_numbers(text: str) -> set:
+    return {(m.group(1), m.group(2)) for regex in _DECISION_NUMBER_RES for m in regex.finditer(text or "")}
+
+
+def _ruling_is_cited(label: str, draft_low: str, draft_numbers: set) -> bool:
+    """A ruling (or any source without an article tag) is cited when the draft
+    names it, or gives its decision or docket number."""
+    norm = " ".join(label.lower().split())
+    if norm and norm in draft_low:
+        return True
+    return bool(_decision_numbers(label) & draft_numbers)
+
+
+def _draft_sources(draft: str, article_rows: List[Dict[str, Any]], ruling_rows: List[Dict[str, Any]],
+                   documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The rows the draft actually refers to: articles it cites with their code,
+    rulings and other sources it names or numbers. Every row of a cited article
+    is kept (its commi)."""
+    known = {r["_article"] for r in article_rows if r.get("_article")}
+    row_docs = {(r.get("d") or {}).get("name") for r in article_rows if r.get("_article")
+                and r["_article"][1] not in _CODE_PREFIXES}
+    docs = [d for d in documents if d.get("name") in row_docs]
+    cited = set(_cited_articles(draft, known, docs))
+    draft_low = " ".join(draft.lower().split())
+    draft_numbers = _decision_numbers(draft)
+    kept = []
+    for row in article_rows + ruling_rows:
+        if row.get("_article"):
+            if row["_article"] in cited:
+                kept.append(row)
+        elif _ruling_is_cited(_ruling_label(row), draft_low, draft_numbers):
+            kept.append(row)
+    vlog("case_analysis_draft_sources", {"cited": sorted(f"{n} {c}" for n, c in cited),
+                                         "rows_in": len(article_rows) + len(ruling_rows), "rows_kept": len(kept)})
+    return kept
+
+
+_SECTION3_RE = re.compile(r"(?m)^[ \t#>*]*3\.\s*\**\s*Argomenti\b.*$")
+# Section 4 by its prescribed title: arguments inside section 3 may be numbered "#### 4." too.
+_SECTION4_RE = re.compile(r"(?m)^[ \t#>*]*4\.\s*\**\s*Punti\b")
+
+_STANCE_SYSTEM = (
+    "Sei un avvocato italiano che rivede la bozza di un collega. Ti vengono dati il caso, la parte per cui "
+    "l'avvocato agisce e la sezione 3 della bozza, che dovrebbe contenere solo argomenti a favore di quella "
+    "parte. Per ciascun argomento chiediti: se il giudice lo accogliesse, a chi gioverebbe? Elenca SOLO gli "
+    "argomenti che, accolti, giovano alla controparte o indeboliscono la posizione della parte assistita (per "
+    "esempio, per il danneggiato, un argomento che prova la diligenza del danneggiante; per l'imputato, uno che "
+    "conferma un elemento dell'accusa). Un argomento difensivo o subordinato della parte assistita non va "
+    'elencato. Restituisci SOLO un oggetto JSON: {"parte_assistita": stringa, "argomenti_contrari": [{"argomento": '
+    'il titolo o la frase iniziale dell\'argomento, "perche": in una frase, a chi giova e perché}]}; lista vuota '
+    "se non ce ne sono."
+)
+
+
+def _section_3_bounds(draft: str) -> Optional[tuple]:
+    start = _SECTION3_RE.search(draft)
+    if not start:
+        return None
+    end = _SECTION4_RE.search(draft, start.end())
+    return (start.start(), end.start() if end else len(draft))
+
+
+def _stance_party(analysis: Dict[str, Any]) -> str:
+    party = str(analysis.get("parte_assistita") or "").strip() or "la parte assistita"
+    position = str(analysis.get("posizione") or "").strip()
+    return f"{party} ({position})" if position else party
+
+
+def _opposing_arguments(facts: str, request: str, analysis: Dict[str, Any], section: str) -> List[Dict[str, str]]:
+    """Section 3's arguments that favour the other side; [] on any failure."""
+    tasks = "\n".join(f"- {t}" for t in ((analysis.get("frame") or {}).get("tasks") or []))
+    human = (f"CASO:\n{_case_text(facts, request)[:4000]}\n\n"
+             + (f"QUESITI:\n{tasks}\n\n" if tasks else "")
+             + f"PARTE ASSISTITA: {_stance_party(analysis)}\n\nSEZIONE 3 DELLA BOZZA:\n{section[:6000]}")
+    t0 = time.time()
+    try:
+        parsed = _chat_json([SystemMessage(content=_STANCE_SYSTEM), HumanMessage(content=human)],
+                            max_tokens=900, temperature=0)
+    except Exception as exc:
+        logger.warning("client stance check failed: %s", exc)
+        return []
+    finally:
+        vlog("case_analysis_stance_llm", duration_ms=(time.time() - t0) * 1000)
+    items = parsed.get("argomenti_contrari") if isinstance(parsed, dict) else None
+    return [{"argomento": str(i.get("argomento") or "").strip(), "perche": str(i.get("perche") or "").strip()}
+            for i in (items if isinstance(items, list) else [])
+            if isinstance(i, dict) and str(i.get("argomento") or "").strip()]
+
+
+def _check_client_stance(draft: str, facts: str, request: str, analysis: Dict[str, Any],
+                         system: str, human: str) -> str:
+    """The draft with section 3 rewritten once when the check finds arguments
+    for the other side in it; unchanged otherwise or on any failure."""
+    bounds = _section_3_bounds(draft)
+    if not bounds:
+        vlog("case_analysis_stance", {"skipped": "no section 3"})
+        return draft
+    section = draft[bounds[0]:bounds[1]]
+    opposing = _opposing_arguments(facts, request, analysis, section)
+    vlog("case_analysis_stance", {"party": _stance_party(analysis), "opposing": opposing})
+    if not opposing:
+        return draft
+    listing = "\n".join(f"- {o['argomento']}: {o['perche']}" for o in opposing)
+    heading = draft[bounds[0]:].split("\n", 1)[0]
+    rewrite = (
+        f"{human}\n\nQuesta è la sezione 3 che hai scritto:\n{section}\n\n"
+        f"Una revisione ha trovato che questi argomenti giovano alla controparte, non a {_stance_party(analysis)}:\n"
+        f"{listing}\n\nRiscrivi SOLO la sezione 3, con la stessa intestazione ({heading.strip()}): ogni argomento "
+        "deve escludere, ridurre o contrastare la responsabilità o la pretesa contro la parte assistita, o "
+        "sostenerne la pretesa. Usa gli stessi fatti, norme e pronunce delle fonti; un fatto che favorisce la "
+        "controparte va trattato come obiezione da superare, non come argomento. Restituisci solo la sezione 3."
+    )
+    try:
+        new_section = _call_chat([SystemMessage(content=system), HumanMessage(content=rewrite)], max_tokens=2000)
+    except Exception as exc:
+        logger.warning("client stance rewrite failed, draft kept: %s", exc)
+        return draft
+    new_section = (new_section or "").strip()
+    if not _SECTION3_RE.match(new_section):
+        logger.warning("client stance rewrite did not return a section 3, draft kept")
+        return draft
+    return draft[:bounds[0]] + new_section + "\n\n" + draft[bounds[1]:]
+
+
+_QUALIFICATION_SYSTEM = (
+    "Sei un giurista. Per ciascun articolo citato in una bozza di parere ti vengono dati la sua rubrica reale "
+    "(il titolo ufficiale nel codice) e la frase della bozza che lo cita. Decidi se la rubrica è compatibile con "
+    "l'uso che la frase ne fa: un articolo sulla violenza sessuale citato come circostanza attenuante in un caso "
+    "di corruzione è incompatibile; un articolo generale (concorso di persone, circostanze, elemento psicologico) "
+    "citato per quell'istituto è compatibile. Nel dubbio è compatibile. Restituisci SOLO un array JSON di oggetti "
+    '{"articolo": l\'identificativo dato, "compatibile": true o false, "perche": una frase}.'
+)
+
+
+def _citation_context(draft: str, ref: tuple) -> str:
+    """The line of the draft where it first cites ref (any suffix spelling), cut to 400 chars."""
+    number = re.escape(ref[0]).replace(r"\-", r"\s*-?\s*")
+    m = re.search(rf"\b(?:artt?\.?|articol[oi])\s*(?:[\d\s,e-]*?)\b{number}\b", draft, re.IGNORECASE)
+    if not m:
+        return ""
+    start = draft.rfind("\n", 0, m.start()) + 1
+    end = draft.find("\n", m.end())
+    return draft[start:end if end != -1 else len(draft)].strip()[:400]
+
+
+def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
+                          session, documents: List[Dict[str, Any]]) -> str:
+    """The draft with each cited article whose real heading does not fit the use
+    the draft makes of it flagged at its first citation. Articles of the case's
+    area/posture lists are trusted; the others are checked in one call."""
+    from . import method_candidates
+
+    frame = analysis.get("frame") or {}
+    trusted = set(method_candidates.candidate_refs(
+        method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or ""),
+        frame.get("posture_type") or ""))
+    known = {r["_article"] for r in article_rows if r.get("_article")}
+    cited = [ref for ref in _cited_articles(draft, known, documents) if ref not in trusted]
+    if not cited:
+        return draft
+    headings = {}
+    rows_by_ref = {}
+    for row in article_rows:
+        if row.get("_article"):
+            rows_by_ref.setdefault(row["_article"], row)
+    missing = [ref for ref in cited if ref not in rows_by_ref]
+    if missing:
+        try:
+            for row in _fetch_any(session, documents, missing):
+                rows_by_ref.setdefault(row.get("_article"), row)
+        except Exception as exc:
+            logger.warning("qualification check: heading fetch failed: %s", exc)
+    for ref in cited:
+        s = (rows_by_ref.get(ref) or {}).get("s") or {}
+        heading = (s.get("titolo_articolo") or s.get("title") or "").strip()
+        context = _citation_context(draft, ref)
+        if heading and context:
+            headings[f"{ref[0]} {ref[1]}"] = (heading, context, ref)
+    if not headings:
+        return draft
+    human = "\n\n".join(f"[{label}]\nRubrica: {heading}\nFrase: {context}"
+                        for label, (heading, context, _) in headings.items())
+    t0 = time.time()
+    try:
+        verdicts = _chat_json([SystemMessage(content=_QUALIFICATION_SYSTEM), HumanMessage(content=human)],
+                              max_tokens=max(600, 90 * len(headings)), temperature=0)
+    except Exception as exc:
+        logger.warning("qualification check failed, draft kept: %s", exc)
+        return draft
+    finally:
+        vlog("case_analysis_qualification_llm", duration_ms=(time.time() - t0) * 1000)
+    if not isinstance(verdicts, list):
+        return draft
+    flagged = []
+    for v in verdicts:
+        if not isinstance(v, dict) or v.get("compatibile") is not False:
+            continue
+        entry = headings.get(_applicability_key(str(v.get("articolo") or "")))
+        entry = entry or next((e for label, e in headings.items()
+                               if _applicability_key(label) == _applicability_key(str(v.get("articolo") or ""))), None)
+        if entry:
+            heading, _, ref = entry
+            draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
+            flagged.append(f"{ref[0]} {ref[1]}")
+    vlog("case_analysis_qualification", {"checked": sorted(headings), "flagged": flagged})
+    return draft
+
+
+def _flag_citation(draft: str, ref: tuple, mark: str) -> str:
+    """mark after ref's first citation, replacing a plain [DA VERIFICARE] already there."""
+    for m in _CITED_ARTICLE_RE.finditer(draft):
+        if (_article_num(m.group(1)), _code_of(m.group(2))) != ref:
+            continue
+        end = m.end()
+        if draft.startswith(_UNVERIFIED, end):
+            return draft[:end] + mark + draft[end + len(_UNVERIFIED):]
+        if draft.startswith(" [DA VERIFICARE", end):
+            return draft
+        return draft[:end] + mark + draft[end:]
+    return draft
+
+
 # METHOD_CANDIDATES_ENABLED (default false; acts only with APPLICABILITY_CHECK_
 # ENABLED, which is what filters them): the method articles of the case's areas
 # and the procedural articles of its posture (src/rag/method_candidates.py,
@@ -3480,9 +3790,22 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
         draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                            max_tokens=_PARERE_TOKENS)
     vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
+    if feature_flags.enabled(CLIENT_STANCE_CHECK_FLAG):
+        draft = _check_client_stance(draft, facts, request, analysis, system, human)
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
     draft = _mark_unverified(draft, found, articles + "\n" + rulings,
                              wrong_code=feature_flags.enabled(STRATEGY_DRAFT_RULES_FLAG))
+    citations_only = feature_flags.enabled(DRAFT_CITATIONS_ONLY_FLAG)
+    documents: List[Dict[str, Any]] = []
+    if citations_only or feature_flags.enabled(QUALIFICATION_CHECK_FLAG):
+        try:
+            from .doc_lookup import _fetch_doc_names
+            documents = _fetch_doc_names(driver, NEO4J_DATABASE)
+            if feature_flags.enabled(QUALIFICATION_CHECK_FLAG):
+                with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+                    draft = _check_qualifications(draft, analysis, article_rows, session, documents)
+        except Exception as exc:
+            logger.warning("draft checks after the draft failed, draft kept: %s", exc)
 
     topics = _extract_deepdive_topics(draft[draft.find("**3."):] if "**3." in draft else draft, {})
     if topics:
@@ -3496,7 +3819,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # "Codice Penale Commentato") fails _extract_citations' length gate and
     # comes back with sections: [] — a citation naming a source with nothing
     # in it. Drop it here rather than let it reach the user.
-    citations = [c for c in _rows_to_sources(article_rows + ruling_rows) if c.get("sections")]
+    source_rows = (_draft_sources(draft, article_rows, ruling_rows, documents) if citations_only
+                   else article_rows + ruling_rows)
+    citations = [c for c in _rows_to_sources(source_rows) if c.get("sections")]
     vlog("case_analysis_pipeline", {"v2": case_analysis_v2, "pool_fusion": pool_fusion},
         duration_ms=(time.time() - pipeline_t0) * 1000)
     return {"draft": draft, "citations": citations,
