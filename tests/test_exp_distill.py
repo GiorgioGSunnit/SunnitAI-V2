@@ -241,3 +241,123 @@ def test_merge_functions_are_the_same_objects_as_defensive_generations():
 
 def test_distill_bullets_is_the_same_function_defensive_generation_uses():
     assert ed._distill_bullets is ed.dg._fusion_distill_bullets
+
+
+# --- Round 10: TIMELINE ------------------------------------------------------
+
+def test_rrf_sums_reciprocal_ranks_across_lists():
+    a = [("cp", "584"), ("cp", "581")]
+    b = [("cp", "589"), ("cp", "584")]
+    scores = ed._rrf_scores(a, b)
+    assert scores[("cp", "584")] == 1 / 61 + 1 / 62
+    assert scores[("cp", "589")] == 1 / 61
+    # found by both lists beats rank 1 in only one of them
+    assert ed._rrf(a, b) == [("cp", "584"), ("cp", "589"), ("cp", "581")]
+
+
+def test_rrf_breaks_ties_by_first_appearance():
+    assert ed._rrf([("cp", "1")], [("cc", "2")]) == [("cp", "1"), ("cc", "2")]
+
+
+def test_parse_timeline_normalises_steps_and_drops_terms_with_numbers():
+    reply = [
+        {"n": 1, "actor": " Tizio ", "action": "colpisce Caio", "object": "Caio", "means": "pugno",
+         "result": "frattura", "relevance": "2", "terms": ["lesione personale", "art. 582", "violenza", 7]},
+        {"n": 2, "actor": "Tizio", "action": "torna a casa", "relevance": 0, "terms": []},
+        "not a step",
+        {"action": "x", "relevance": 5},
+    ]
+    steps = ed._parse_timeline(reply)
+    assert steps[0] == {"n": 1, "actor": "Tizio", "action": "colpisce Caio", "object": "Caio", "means": "pugno",
+                        "result": "frattura", "relevance": 2, "terms": ["lesione personale", "violenza"]}
+    assert [s["relevance"] for s in steps] == [2, 0, 0]       # unreadable relevance counts as 0
+    assert steps[2]["n"] == 4                                 # missing n -> position in the reply
+    assert ed._parse_timeline({"steps": []}) == []
+
+
+def test_kept_steps_discard_relevance_zero_only():
+    steps = [{"relevance": 0}, {"relevance": 1}, {"relevance": 2}]
+    assert ed._kept_steps(steps) == [{"relevance": 1}, {"relevance": 2}]
+
+
+def test_timeline_query_is_action_result_and_terms():
+    step = {"action": "colpisce Caio", "result": "", "terms": ["lesione personale", "violenza"]}
+    assert ed._timeline_query(step) == "colpisce Caio lesione personale violenza"
+
+
+def test_cited_ranking_orders_by_best_ruling_then_citation_count():
+    cites = {
+        "r1": {("cp", "43"): 1, ("cp", "584"): 1},
+        "r2": {("cp", "589"): 5, ("cp", "584"): 2},
+    }
+    # Both of r1's articles come first (r1 is the best-ranked ruling); between
+    # them 584 wins on total citations (1 + 2 in r2) over 43 (1); then 589,
+    # cited only by r2, however often.
+    assert ed._cited_ranking(["r1", "r2"], cites) == [("cp", "584"), ("cp", "43"), ("cp", "589")]
+    assert ed._cited_ranking(["missing"], cites) == []
+
+
+# --- Round 11: FUSION_CLEAN and SITUATION ------------------------------------
+
+def test_is_law_name_cuts_books_and_templates_not_codes_or_laws():
+    for name in ["Codice Penale 2026", "Codice dei contratti pubblici", "L. 241/1990", "Codice del Consumo 2026",
+                 "Legge 9 dicembre 1998, n. 431 - Disciplina delle locazioni"]:
+        assert ed._is_law_name(name), name
+    for name in ["Manuale di diritto processuale penale", "Fondamenti di diritto penale - parte generale",
+                 "LOCAZIONE ABITATIVA DI NATURA TRANSITORIA", "Formulario degli atti", "Modello di contratto", ""]:
+        assert not ed._is_law_name(name), name
+
+
+def test_clean_rows_keeps_laws_and_reports_what_it_cut():
+    excluded = set()
+    rows = [{"name": "584", "doc_name": "Codice Penale 2026"},
+            {"name": "3", "doc_name": "LOCAZIONE ABITATIVA DI NATURA TRANSITORIA"},
+            {"name": "1", "doc_name": None}]
+    assert ed._clean_rows(rows, ed._NOT_A_LAW_RE, excluded) == [rows[0]]
+    assert excluded == {"LOCAZIONE ABITATIVA DI NATURA TRANSITORIA"}
+
+
+def test_step_story_tells_the_step_without_its_terms():
+    step = {"actor": "Sempronio", "action": "colpisce", "object": "Tizio", "means": "", "result": "Tizio muore",
+            "terms": ["omicidio preterintenzionale"]}
+    assert ed._step_story(step) == "Sempronio colpisce Tizio Tizio muore"
+
+
+def test_every_comparison_method_has_a_latency_recipe_or_its_own_timing():
+    timed_directly = {"baseline", "distill", "current", "timeline"}
+    for m in ed.COMPARISON_METHODS:
+        assert m in timed_directly or m in ed._COMPOSITE_LATENCY, m
+
+
+# --- Round 12: HYDE ----------------------------------------------------------
+
+def test_parse_hyde_keeps_up_to_two_clean_norms_per_known_step():
+    reply = {"passi": [
+        {"n": 1, "norme": ["Chiunque cagiona ad altri una lesione personale è punito.",
+                           "Chiunque cagiona ad altri una lesione personale è punito.",   # duplicate
+                           "Ai sensi dell'art. 582 c.p. chiunque...",                     # cites a law: dropped
+                           "Il medesimo fatto commesso con armi è punito più gravemente.",
+                           "Una terza norma oltre il limite."]},
+        {"n": "2", "norme": "Il pubblico ufficiale che riceve denaro è punito."},       # string n, string norme
+        {"n": 9, "norme": ["passo che non esiste"]},
+        "garbage"],
+        "caso": "Chiunque, con violenza, cagiona la morte di una persona è punito."}
+    per_step, case = ed._parse_hyde(reply, [1, 2, 3])
+    assert per_step == {1: ["Chiunque cagiona ad altri una lesione personale è punito.",
+                            "Il medesimo fatto commesso con armi è punito più gravemente."],
+                        2: ["Il pubblico ufficiale che riceve denaro è punito."]}
+    assert case.startswith("Chiunque, con violenza")
+    assert ed._parse_hyde(["not", "a", "dict"], [1]) == ({}, "")
+    assert ed._parse_hyde({"caso": "Il codice civile prevede..."}, []) == ({}, "")
+
+
+def test_hyde_human_lists_the_steps_told_plainly():
+    steps = [{"n": 1, "actor": "Tizio", "action": "colpisce", "object": "Caio", "means": "", "result": "",
+              "terms": ["lesione"]}]
+    human = ed._hyde_human("Il racconto.", steps)
+    assert "1. Tizio colpisce Caio" in human and "lesione" not in human and "Il racconto." in human
+
+
+def test_available_methods_drops_methods_some_case_lacks():
+    results = {"a": {"hyde": [], "situation": []}, "b": {"hyde": []}}
+    assert ed._available_methods(results, ["hyde", "situation"]) == ["hyde"]

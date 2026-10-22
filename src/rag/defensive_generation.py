@@ -20,6 +20,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
 from .ai_chat import _call_chat, embedding_model, parse_json_reply
+from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -608,7 +609,8 @@ _CONTRACT_RE = re.compile(
     r"datore di lavoro|lavorator|dipendent)",
     re.IGNORECASE,
 )
-_ARTICLE_NUM = r"(\d+(?:-?(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies))?(?:\.\d+)?)"
+# "609-bis", "609bis" and "609 bis" (r14: h7's "Art. 609 bis c.p." escaped the check).
+_ARTICLE_NUM = r"(\d+(?:\s*-?\s*" + SUFFIX + r"(?![a-z]))?(?:\.\d+)?)"
 _CITED_ARTICLE_RE = re.compile(
     r"\b(?:art(?:t)?\.?|articol[oi])\s*" + _ARTICLE_NUM
     + r"(?:\s*,?\s*(?:co\.|comma)\s*\d+(?:\s*,\s*n\.\s*\d+)?)?\s*,?\s*(?:del\s+)?("
@@ -941,14 +943,15 @@ def _case_text(facts: str, request: str = "") -> str:
     return (f"RICHIESTA DELL'UTENTE: {request}\n\nDOCUMENTO CARICATO:\n{text}" if request else text)
 
 
-def _analyse_case(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
+def _analyse_case(facts: str, lang: str, request: str = "",
+                  frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The legal questions, the norms and the role of each fact. Best-effort:
     any failure returns empty lists, and the parere is written from the facts."""
     empty = {"parte_assistita": "", "posizione": "", "area": "", "richiesta": "", "ricerca_fatti": [],
              "questioni": [], "fatti": []}
     try:
         parsed = _chat_json([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
-                            HumanMessage(content=_case_text(facts, request))],
+                            HumanMessage(content=_case_text(facts, request) + _frame_block(frame))],
                            max_tokens=1500, temperature=0)
     except Exception as exc:
         logger.warning("case analysis failed: %s", exc)
@@ -971,7 +974,8 @@ def _analyse_case(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
     return result
 
 
-def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
+def _analyse_case_v2(facts: str, lang: str, request: str = "",
+                     frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Like _analyse_case, plus a structured fact model ("fatti_strutturati":
     parti, condotta, indizi_intenzionali, evento, nesso_causale,
     condotta_successiva, fase_procedurale) and, per legal issue, a category
@@ -1000,7 +1004,7 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "") -> Dict[str, Any]
     t0 = time.time()
     try:
         parsed = _chat_json([SystemMessage(content=system),
-                            HumanMessage(content=_case_text(facts, request))],
+                            HumanMessage(content=_case_text(facts, request) + _frame_block(frame))],
                            max_tokens=2200 if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG) else 1800,
                            temperature=0)
     except Exception as exc:
@@ -1171,6 +1175,17 @@ _FACT_TYPE_TO_MODEL_KEY = {"soggetti": "parti", "condotta": "condotta", "mezzo":
                            "condotta_successiva": "condotta_successiva", "procedura": "fase_procedurale"}
 
 
+def _central_slot(frame: Optional[Dict[str, Any]]) -> List[tuple]:
+    """CASE_FRAME_ENABLED: a first grid slot for the frame's central issues,
+    still only pertinent when the facts pose one; [] without them."""
+    names = [c["nome"] for c in (frame or {}).get("central_issue_candidates") or []]
+    if not names:
+        return []
+    return [("questione_centrale", "Questione centrale",
+             "l'istituto attorno a cui è costruito il caso, tra le questioni centrali candidate del QUADRO ("
+             + "; ".join(names) + "), solo se i fatti lo pongono davvero", "qualificazione")]
+
+
 def _numbered_sentences(text: str) -> List[str]:
     """The case's sentences, for call 1 to refer to by number. No split inside
     "art. 584" or "c.p." followed by a digit or a lower-case word."""
@@ -1178,14 +1193,16 @@ def _numbered_sentences(text: str) -> List[str]:
     return [p for p in parts if len(p) > 1]
 
 
-def _structured_facts(facts: str, request: str) -> Optional[Dict[str, Any]]:
+def _structured_facts(facts: str, request: str,
+                      frame: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Call 1: who, what, area and request, and the facts in neutral form, one
     or more per numbered sentence. None on any failure or without facts."""
     sentences = _numbered_sentences(_case_text(facts, request))
     numbered = "\n".join(f"[{i}] {s}" for i, s in enumerate(sentences, 1))
     t0 = time.time()
     try:
-        parsed = _chat_json([SystemMessage(content=_STRUCTURED_FACTS_SYSTEM), HumanMessage(content=numbered)],
+        parsed = _chat_json([SystemMessage(content=_STRUCTURED_FACTS_SYSTEM),
+                             HumanMessage(content=numbered + _frame_block(frame))],
                             max_tokens=1800, temperature=0)
     except Exception as exc:
         logger.warning("structured analysis, facts: failed: %s", exc)
@@ -1201,7 +1218,8 @@ def _structured_facts(facts: str, request: str) -> Optional[Dict[str, Any]]:
     return {**parsed, "fatti": fatti}
 
 
-def _structured_grid(extracted: Dict[str, Any], grid: List[tuple]) -> Optional[List[Dict[str, Any]]]:
+def _structured_grid(extracted: Dict[str, Any], grid: List[tuple],
+                     frame: Optional[Dict[str, Any]] = None) -> Optional[List[Dict[str, Any]]]:
     """Call 2: the grid's slots, each pertinent or not, with institutions in
     words for the pertinent ones. None on any failure."""
     parte = str(extracted.get("parte_assistita") or "").strip()
@@ -1209,7 +1227,8 @@ def _structured_grid(extracted: Dict[str, Any], grid: List[tuple]) -> Optional[L
     fatti = "\n".join(f"- {str(f.get('fatto')).strip()}" for f in extracted["fatti"])
     griglia = "\n".join(f"- {slot}: {question}" for slot, _, question, _ in grid)
     human = (f"PARTE ASSISTITA: {parte}{f' ({posizione})' if posizione else ''}\n"
-             f"RICHIESTA: {str(extracted.get('richiesta') or '').strip()}\n\nFATTI:\n{fatti}\n\nGRIGLIA:\n{griglia}")
+             f"RICHIESTA: {str(extracted.get('richiesta') or '').strip()}\n\nFATTI:\n{fatti}\n\nGRIGLIA:\n{griglia}"
+             + _frame_block(frame))
     t0 = time.time()
     try:
         parsed = _chat_json([SystemMessage(content=_STRUCTURED_GRID_SYSTEM), HumanMessage(content=human)],
@@ -1245,16 +1264,17 @@ def _grid_questions(grid: List[tuple], items: List[Dict[str, Any]]) -> List[Dict
     return questions[:_STRUCTURED_MAX_QUESTIONS]
 
 
-def _analyse_case_structured(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
+def _analyse_case_structured(facts: str, lang: str, request: str = "",
+                             frame: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The case analysis in two short calls (facts, then the area's grid),
     returned in _analyse_case_v2's shape. Falls back to _analyse_case_v2 if
     either call fails or no grid slot is pertinent."""
-    extracted = _structured_facts(facts, request)
+    extracted = _structured_facts(facts, request, frame)
     area = str((extracted or {}).get("area") or "").strip().lower()
     if extracted and area == "amministrativo" and _DAMAGES_RE.search(facts):
         area = "civile"
-    grid = _STRUCTURED_GRIDS[_GRID_FOR_AREA.get(area, "civile")]
-    items = _structured_grid(extracted, grid) if extracted else None
+    grid = _central_slot(frame) + _STRUCTURED_GRIDS[_GRID_FOR_AREA.get(area, "civile")]
+    items = _structured_grid(extracted, grid, frame) if extracted else None
     questions = _grid_questions(grid, items) if items else []
     vlog("structured_analysis", {"area": area, "facts": len((extracted or {}).get("fatti") or []),
                                  "pertinent": [q["voce"] for q in questions],
@@ -1262,7 +1282,7 @@ def _analyse_case_structured(facts: str, lang: str, request: str = "") -> Dict[s
                                  "fallback": not questions})
     if not questions:
         logger.warning("structured analysis gave no pertinent issue, falling back to the v2 analysis")
-        return _analyse_case_v2(facts, lang, request)
+        return _analyse_case_v2(facts, lang, request, **({"frame": frame} if frame else {}))
     fatti = [{"fatto": str(f.get("fatto")).strip(), "effetto": str(f.get("effetto") or "neutro").strip(),
               "perche": str(f.get("perche") or "").strip()} for f in extracted["fatti"]][:15]
     model: Dict[str, List[str]] = {}
@@ -1277,14 +1297,155 @@ def _analyse_case_structured(facts: str, lang: str, request: str = "") -> Dict[s
             "fatti": fatti, "fatti_strutturati": {k: "; ".join(v) for k, v in model.items()}}
 
 
+# --- CASE_FRAME_ENABLED ---------------------------------------------------------
+#
+# r13 (21 Oct), lawyer feedback on held-out drafts: the issue a case is built
+# around was never identified (an attempt against mere preparatory acts; the
+# execution of an administrative judgment and the nullity of acts eluding it),
+# and the draft never answered the questions the case asked. One call, before
+# the analysis, temperature 0, reads the case's frame: its facts, its procedural
+# posture (in words and as one of _POSTURE_TYPES, which METHOD_CANDIDATES_ENABLED
+# reads), its areas, its explicit questions close to verbatim, and the
+# institutions the case could be built around, in words, never by number. The
+# questions, the posture and the central issues go into the analysis prompt and
+# are searched as their own queries by the fusion pool; the central issues are
+# also resolved as institutions (_with_central_questions) and the questions are
+# given to the draft (_parere_human). Fails open: no frame, nothing changes.
+CASE_FRAME_FLAG = "CASE_FRAME_ENABLED"
+_FRAME_MAX_TASKS = 6
+_FRAME_MAX_CENTRAL = 3
+_FRAME_MAX_FACTS = 20
+_POSTURE_TYPES = (
+    "precontenzioso", "giudizio_civile_primo_grado", "sentenza_civile_primo_grado", "sentenza_civile_appello",
+    "esecuzione_civile", "indagini_preliminari", "giudizio_penale_primo_grado", "condanna_primo_grado",
+    "sentenza_penale_appello", "provvedimento_amministrativo", "silenzio_amministrazione",
+    "giudicato_amministrativo_non_eseguito", "altro",
+)
+_FRAME_AREAS = ("penale", "contratti", "responsabilita_civile", "locazione", "successioni", "diritti_reali",
+                "famiglia", "consumo", "amministrativo", "lavoro", "tributario", "altro")
+
+_CASE_FRAME_SYSTEM = (
+    "Sei un avvocato italiano. Leggi il caso e restituisci SOLO un oggetto JSON con queste chiavi:\n"
+    '- "facts": i fatti del caso uno per uno, in forma neutra e breve, senza valutazioni\n'
+    '- "procedural_posture": in una frase, a che punto è la vicenda (per esempio "condanna in primo grado, '
+    'termine per l\'appello in corso", "sentenza amministrativa passata in giudicato e non eseguita", '
+    '"indagini preliminari", "controversia contrattuale prima del giudizio")\n'
+    '- "posture_type": quella stessa fase, una tra ' + ", ".join(f'"{p}"' for p in _POSTURE_TYPES) + "\n"
+    '- "areas": da 1 a 3 aree del diritto che la vicenda tocca, tra '
+    + ", ".join(f'"{a}"' for a in _FRAME_AREAS) + "\n"
+    '- "tasks": ogni domanda o richiesta esplicita che il caso rivolge a chi deve rispondere (per esempio '
+    '"quale reato è configurabile", "quali rimedi ha il cliente", "redigere l\'atto di appello"), con parole '
+    "il più possibile vicine al testo, una per voce; nessuna domanda che il testo non pone\n"
+    '- "central_issue_candidates": da 1 a 3 istituti giuridici attorno a cui il caso è costruito, cioè quelli '
+    "su cui la risposta si decide, anche se il testo non li nomina, ciascuno {\"nome\": il nome dell'istituto "
+    "con le parole con cui è intitolato nel codice o nella legge, \"codice\": c.c., c.p.c., c.p., c.p.p., "
+    "c.p.a., c.d.s., o il nome per intero di un'altra legge}\n"
+    "Mai un numero di articolo. Non inventare fatti. Rispondi SOLO con il JSON."
+)
+
+
+def _case_frame(facts: str, request: str) -> Optional[Dict[str, Any]]:
+    """The case's frame (see CASE_FRAME_ENABLED), normalised; None on any
+    failure or when it holds neither questions nor central issues."""
+    t0 = time.time()
+    try:
+        parsed = _chat_json([SystemMessage(content=_CASE_FRAME_SYSTEM),
+                             HumanMessage(content=_case_text(facts, request))],
+                            max_tokens=1500, temperature=0)
+    except Exception as exc:
+        logger.warning("case frame failed: %s", exc)
+        return None
+    finally:
+        vlog("case_frame_llm", duration_ms=(time.time() - t0) * 1000)
+    if not isinstance(parsed, dict):
+        return None
+    posture_type = str(parsed.get("posture_type") or "").strip().lower()
+    central = []
+    for item in parsed.get("central_issue_candidates") if isinstance(parsed.get("central_issue_candidates"),
+                                                                     list) else []:
+        nome = str(item.get("nome") or "").strip() if isinstance(item, dict) else str(item or "").strip()
+        codice = str(item.get("codice") or "").strip() if isinstance(item, dict) else ""
+        if nome and not _CITED_ARTICLE_RE.search(nome):
+            central.append({"nome": nome, "codice": codice})
+    frame = {
+        "facts": _as_list(parsed.get("facts") if isinstance(parsed.get("facts"), list) else [])[:_FRAME_MAX_FACTS],
+        "procedural_posture": " ".join(str(parsed.get("procedural_posture") or "").split()),
+        "posture_type": posture_type if posture_type in _POSTURE_TYPES else "altro",
+        "areas": [a for a in (x.lower() for x in _as_list(parsed.get("areas"))) if a in _FRAME_AREAS][:3],
+        "tasks": list(dict.fromkeys(" ".join(t.split()) for t in _as_list(
+            parsed.get("tasks") if isinstance(parsed.get("tasks"), list) else [])))[:_FRAME_MAX_TASKS],
+        "central_issue_candidates": central[:_FRAME_MAX_CENTRAL],
+    }
+    vlog("case_frame", {k: frame[k] for k in ("procedural_posture", "posture_type", "areas", "tasks",
+                                             "central_issue_candidates")})
+    if not frame["tasks"] and not frame["central_issue_candidates"]:
+        return None
+    return frame
+
+
+def _frame_block(frame: Optional[Dict[str, Any]]) -> str:
+    """The frame as a block appended to an analysis call's human message, or ""."""
+    if not frame:
+        return ""
+    lines = ["\n\nQUADRO DEL CASO (estratto in precedenza, da verificare sui fatti):"]
+    if frame.get("procedural_posture"):
+        lines.append(f"Fase: {frame['procedural_posture']}")
+    if frame.get("tasks"):
+        lines.append("Quesiti posti dal caso:")
+        lines += [f"- {t}" for t in frame["tasks"]]
+    if frame.get("central_issue_candidates"):
+        lines.append("Questioni centrali candidate:")
+        lines += [f"- {c['nome']} ({c['codice']})" if c.get("codice") else f"- {c['nome']}"
+                  for c in frame["central_issue_candidates"]]
+    lines.append("Le questioni devono comprendere le questioni centrali candidate che i fatti pongono davvero e "
+                 "servire a rispondere a ciascun quesito, tenendo conto della fase.")
+    return "\n".join(lines)
+
+
+def _frame_queries(frame: Dict[str, Any]) -> List[str]:
+    """The frame's own search queries: each question, the posture, each
+    central issue -- deduplicated, in that order."""
+    queries = list(frame.get("tasks") or []) + [frame.get("procedural_posture") or ""] + \
+        [c["nome"] for c in frame.get("central_issue_candidates") or []]
+    return list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))
+
+
+def _same_institution(a: str, b: str) -> bool:
+    return " ".join(a.lower().split()) == " ".join(b.lower().split())
+
+
+def _with_central_questions(analysis: Dict[str, Any], frame: Dict[str, Any]) -> Dict[str, Any]:
+    """analysis with one question per central issue the analysis does not
+    already name as an institution, first -- so _resolve_institution, the
+    rulings search and the draft's issue list all see it. Only for the v2
+    shape (questions with "istituti")."""
+    named = [i.get("nome") or "" for q in analysis.get("questioni") or [] for i in q.get("istituti") or []]
+    added = [{"titolo": f"Questione centrale: {c['nome']}", "categoria": "qualificazione",
+              "istituti": [{"nome": c["nome"], "codice": c.get("codice") or "", "numero_indicativo": ""}],
+              "parole_chiave": [], "voce": "questione_centrale"}
+             for c in frame.get("central_issue_candidates") or []
+             if not any(_same_institution(c["nome"], n) for n in named)]
+    return {**analysis, "questioni": added + list(analysis.get("questioni") or [])} if added else analysis
+
+
 def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
     """The analysis the strategy pipeline uses, by flag; shared with the
-    diagnostic scripts so they see what the pipeline does."""
+    diagnostic scripts so they see what the pipeline does. CASE_FRAME_ENABLED
+    reads the case's frame first and gives it to whichever analysis runs; the
+    result then carries it as "frame"."""
+    frame = _case_frame(facts, request) if feature_flags.enabled(CASE_FRAME_FLAG) else None
+    extra = {"frame": frame} if frame else {}
     if not feature_flags.enabled(CASE_ANALYSIS_FLAG):
-        return _analyse_case(facts, lang, request)
-    if feature_flags.enabled(STRUCTURED_ANALYSIS_FLAG):
-        return _analyse_case_structured(facts, lang, request)
-    return _analyse_case_v2(facts, lang, request)
+        analysis = _analyse_case(facts, lang, request, **extra)
+    elif feature_flags.enabled(STRUCTURED_ANALYSIS_FLAG):
+        analysis = _analyse_case_structured(facts, lang, request, **extra)
+    else:
+        analysis = _analyse_case_v2(facts, lang, request, **extra)
+    if not frame:
+        return analysis
+    if feature_flags.enabled(CASE_ANALYSIS_FLAG):
+        analysis = _with_central_questions(analysis, frame)
+    return {**analysis, "frame": frame}
 
 
 def _as_list(value) -> List[str]:
@@ -1306,9 +1467,9 @@ def _code_of(text: str) -> Optional[str]:
 
 
 def _article_num(raw: str) -> str:
-    """'415bis' / '415-BIS' / '2051.1' -> '415-bis' / '2051' (as the codes name them)."""
-    num = raw.lower().split(".")[0]
-    return re.sub(r"(\d)-?(bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)", r"\1-\2", num)
+    """'415bis' / '415-BIS' / '2051.1' / '21-novies' -> '415-bis' / '2051' / '21-nonies' (the
+    canonical spelling the BE parser writes, article_suffix.py)."""
+    return normalize_number(raw.lower().split(".")[0])
 
 
 def _refs_in(text: str) -> List[tuple]:
@@ -1541,13 +1702,19 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
         prefix = _CODE_PREFIXES.get(abbr)
         if not prefix:
             continue
-        found = session.run(
-            "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-            "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
-            "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
-            "RETURN d, s ORDER BY s.name LIMIT 30",
-            prefix=prefix, n=num,
-        ).data()
+        found = []
+        # The canonical spelling, then legacy ones ("21-novies") of Sections
+        # ingested before the BE normalised suffixes (article_suffix.py).
+        for spelling in number_variants(num):
+            found = session.run(
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
+                "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
+                "RETURN d, s ORDER BY s.name LIMIT 30",
+                prefix=prefix, n=spelling,
+            ).data()
+            if found:
+                break
         found = _dedupe_sections(found)[:6]
         for row in found:
             row["_article"] = (num, abbr)
@@ -2163,16 +2330,26 @@ def _extract_principles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
                      if line.startswith("- ") or (i + 1 < len(lines) and lines[i + 1].startswith("- ")))
 
 
-def _mark_unverified(text: str, articles: List[tuple], sources_text: str) -> str:
+def _wrong_code_mark(ref: tuple, known: set) -> str:
+    """" [DA VERIFICARE: nelle fonti è l'art. N <code>]" when the sources hold
+    this number only under other codes (the draft put it under the wrong one,
+    e.g. 585 c.p. for 585 c.p.p.), else the plain mark."""
+    others = sorted(code for number, code in known if number == ref[0] and code != ref[1])
+    return (f" [DA VERIFICARE: nelle fonti è l'art. {ref[0]} {' / '.join(others)}]" if others
+            else _UNVERIFIED)
+
+
+def _mark_unverified(text: str, articles: List[tuple], sources_text: str, wrong_code: bool = False) -> str:
     """Flag article and decision numbers the retrieved sources do not contain,
-    the first time each appears."""
+    the first time each appears. With wrong_code (STRATEGY_DRAFT_RULES_ENABLED),
+    an article whose number the sources hold only under another code says so."""
     known = {(n, a) for n, a in articles}
     flagged, out, pos = set(), [], 0
     for m in _CITED_ARTICLE_RE.finditer(text):
         ref = (_article_num(m.group(1)), _code_of(m.group(2)))
         if ref[1] in _CODE_PREFIXES and ref not in known and ref not in flagged:
             flagged.add(ref)
-            out.append(text[pos:m.end()] + _UNVERIFIED)
+            out.append(text[pos:m.end()] + (_wrong_code_mark(ref, known) if wrong_code else _UNVERIFIED))
             pos = m.end()
     text = "".join(out) + text[pos:]
 
@@ -2216,6 +2393,7 @@ def _mark_unverified(text: str, articles: List[tuple], sources_text: str) -> str
 # case doesn't contain ("emotional agitation"), art. 59 for a mitigating
 # circumstance, art. 582 as an alternative "colposa" charge. Only the rules
 # that restrict the draft stay.
+STRATEGY_DRAFT_RULES_FLAG = "STRATEGY_DRAFT_RULES_ENABLED"
 _PROCEDURAL_SECTION = (
     "**5. Profili processuali e operativi**: solo quelli pertinenti al caso, tra prescrizione o "
     "decadenza, condizioni di procedibilità, competenza, attività istruttorie, terzi da coinvolgere, "
@@ -2236,6 +2414,41 @@ _DRAFT_RULES = (
     "delle scuse o un pagamento non sono un riconoscimento di responsabilità.\n"
     "- Nella sezione 5 indica che cosa va verificato e perché: non affermare competenze, riti, misure "
     "cautelari, termini o pene che le fonti non riportano.\n"
+    # r13 (21 Oct), the lawyer's review of held-out drafts: the questions the
+    # case asked were never answered directly; articles cited under the wrong
+    # code (585 c.p. for the appeal term of 585 c.p.p.) or from another matter
+    # (339 c.p. for the aggravating circumstances of robbery, which are 628 co.
+    # 3); arguments that conceded contested elements of the charge; generic
+    # sections (witnesses, experts, settlement); case law with no source.
+    "- Se il caso pone domande o richieste esplicite (quelle in QUESITI DEL CASO, quando presenti), apri il "
+    "parere con **Risposte ai quesiti**, prima della sezione 1: una risposta diretta e motivata a ciascuna, "
+    "nell'ordine in cui è posta; le sezioni successive la sviluppano.\n"
+    "- Ogni articolo che citi porta il suo codice o la sua legge (\"art. 585 c.p.p.\", mai \"art. 585\" da "
+    "solo) e deve trovarsi in NORME o nei passi di GIURISPRUDENZA con quel codice: se lo stesso numero compare "
+    "nelle fonti solo per un altro codice, non citarlo. Una circostanza, un termine o un rimedio si cita con "
+    "l'articolo che lo disciplina per quel reato o quella pretesa, mai con un articolo di un'altra materia.\n"
+    "- Non concedere mai un elemento contestato dell'accusa o della pretesa (il fatto, la condotta, l'elemento "
+    "soggettivo, il nesso causale, la qualificazione, il danno): sostieni la tesi della parte assistita; una "
+    "posizione che presuppone di concedere un elemento va presentata solo come tesi subordinata (\"in via "
+    "subordinata, se si ritenesse provato...\").\n"
+    "- Niente sezioni o paragrafi generici: testimoni, consulenti o esperti, accordi stragiudiziali, mediazione "
+    "o altre iniziative si indicano solo se i fatti del caso o le fonti li rendono pertinenti, dicendo perché.\n"
+    "- Senza una pronuncia presente in GIURISPRUDENZA non richiamare orientamenti o principi giurisprudenziali, "
+    "nemmeno in termini generali: ometti il riferimento.\n"
+)
+# The procedural section under the draft rules: no list of items to fill in.
+_PROCEDURAL_SECTION_RULES = (
+    "**5. Profili processuali e operativi**: solo quelli che i fatti del caso o le fonti pongono (la fase in cui "
+    "si trova la vicenda, gli atti da compiere e i loro termini); nessuna voce generica.\n"
+)
+_CASE_LAW_RULE = (
+    "- Giurisprudenza: cita solo le pronunce presenti in GIURISPRUDENZA, con l'identificativo "
+    "indicato tra parentesi quadre; senza fonte puoi richiamare un orientamento solo in termini "
+    "generali, senza numeri né date. "
+)
+_CASE_LAW_RULE_STRICT = (
+    "- Giurisprudenza: cita solo le pronunce presenti in GIURISPRUDENZA, con l'identificativo "
+    "indicato tra parentesi quadre. "
 )
 
 
@@ -2243,7 +2456,7 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
     from .language import language_display_name
     party = analysis.get("parte_assistita") or "la parte assistita"
     position = f" ({analysis['posizione']})" if analysis.get("posizione") else ""
-    draft_rules = feature_flags.enabled("STRATEGY_DRAFT_RULES_ENABLED")
+    draft_rules = feature_flags.enabled(STRATEGY_DRAFT_RULES_FLAG)
     return (
         "Sei un avvocato italiano con lunga esperienza di contenzioso. Redigi un PARERE MOTIVATO "
         f"nell'interesse di {party}{position}, completo e approfondito come quello di un avvocato esperto "
@@ -2261,7 +2474,7 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
         "sostengono, le prove da acquisire, la probabile replica della controparte e come superarla.\n"
         "**4. Punti deboli e rischio**: i fatti e gli argomenti sfavorevoli valutati con franchezza, e una "
         "stima motivata del rischio.\n"
-        + _PROCEDURAL_SECTION
+        + (_PROCEDURAL_SECTION_RULES if draft_rules else _PROCEDURAL_SECTION)
         + "**6. Conclusioni**: gli argomenti in ordine di forza e la condotta consigliata.\n\n"
         "REGOLE:\n"
         "- Usa ogni fatto elencato in ANALISI DEI FATTI e spiega perché aiuta o danneggia la parte "
@@ -2270,9 +2483,8 @@ def _parere_system(analysis: Dict[str, Any], lang: str) -> str:
         "- Norme: cita ogni articolo di NORME con il numero e il codice indicati tra parentesi quadre "
         "prima del suo testo, mai con un altro numero. Riporta tra virgolette solo testi presenti in "
         "NORME; per norme non presenti descrivine il contenuto senza virgolette.\n"
-        "- Giurisprudenza: cita solo le pronunce presenti in GIURISPRUDENZA, con l'identificativo "
-        "indicato tra parentesi quadre; senza fonte puoi richiamare un orientamento solo in termini "
-        "generali, senza numeri né date. I PRINCIPI DALLA GIURISPRUDENZA sono ricavati da quei passi: "
+        + (_CASE_LAW_RULE_STRICT if draft_rules else _CASE_LAW_RULE)
+        + "I PRINCIPI DALLA GIURISPRUDENZA sono ricavati da quei passi: "
         "fondaci il ragionamento e applica ciascuno ai fatti del caso. Riporta tra virgolette solo frasi "
         "presenti nei passi di GIURISPRUDENZA.\n"
         "- Ogni affermazione giuridica va collegata a un fatto del caso: niente considerazioni astratte.\n"
@@ -2308,8 +2520,10 @@ def _parere_human(facts: str, analysis: Dict[str, Any], articles: str, rulings: 
     # Titles only: the analysis' own article numbers are unreliable, and given
     # here the writer used them as labels for the verified texts in NORME.
     issues = _issue_titles(analysis)
+    tasks = "\n".join(f"- {t}" for t in ((analysis.get("frame") or {}).get("tasks") or []))
     return (
         f"CASO:\n{_case_text(facts, request)}\n\n"
+        + (f"QUESITI DEL CASO:\n{tasks}\n\n" if tasks else "")
         + (f"ANALISI DEI FATTI:\n{facts_list}\n\n" if facts_list else "")
         + (f"QUESTIONI GIURIDICHE:\n{issues}\n\n" if issues else "")
         + f"NORME (testo dalla banca dati):\n{articles or '(nessun testo recuperato)'}\n\n"
@@ -2516,6 +2730,28 @@ _ARTICLE_SECTION_RE = re.compile(r"^(\d+)(-[a-z]+)?(?:\.|$)", re.IGNORECASE)
 _NOT_A_PRIMARY_SOURCE_RE = re.compile(r"manuale|trattato|commentari|dispens|prontuario|formulario",
                                       re.IGNORECASE)
 
+# FUSION_CLEAN_ENABLED (default false; only acts with CASE_POOL_FUSION_ENABLED):
+# scripts/exp_distill.py's FUSION_CLEAN (round 11-13, 20 Oct: 35/47 @20, the
+# best channel without HYDE's extra call) -- BASELINE's and DISTILL's text
+# searches on primary documents only, minus everything that is not a code or a
+# law by name: _NOT_A_PRIMARY_SOURCE_RE's books plus textbooks and the templates
+# / contract models the 20 Oct briefing found in the pool (c3: "LOCAZIONE
+# ABITATIVA DI NATURA TRANSITORIA"). Deliberately not "contratt" alone: "Codice
+# dei contratti pubblici" is a law. The experiment imports this regex, so the
+# two cannot drift apart.
+FUSION_CLEAN_FLAG = "FUSION_CLEAN_ENABLED"
+_NOT_A_LAW_RE = re.compile(
+    _NOT_A_PRIMARY_SOURCE_RE.pattern
+    + r"|fondamenti|lineamenti|istituzioni di|lezioni di|compendio|corso di diritto|parte generale|parte speciale"
+    r"|fac.?simile|template|\bmodell[oi] d|schema di contratto|contratto tipo|scrittura privata|natura transitoria"
+    r"|locazione abitativa",
+    re.IGNORECASE,
+)
+# The index is asked for this many times more nodes than kept, so the primary-
+# document filter still leaves enough (exp_distill.py's _SCOPED_OVERFETCH), and
+# 3k rows are read so k refs survive the name filter.
+_CLEAN_OVERFETCH = 5
+
 
 def _row_to_fusion_ref(row: Dict[str, Any]) -> Optional[tuple]:
     """A Section row from fusion's own vector/fulltext search (the number
@@ -2581,6 +2817,56 @@ def _fusion_fulltext_search(session, text: str, k: int) -> List[tuple]:
             seen.add(ref)
             refs.append(ref)
     return refs
+
+
+def _clean_refs(rows: List[Dict[str, Any]], k: int) -> List[tuple]:
+    """rows (best first) -> the first k distinct refs whose document is a code
+    or a law by name (_NOT_A_LAW_RE)."""
+    seen, refs = set(), []
+    for row in rows:
+        if _NOT_A_LAW_RE.search(row.get("doc_name") or ""):
+            continue
+        ref = _row_to_fusion_ref({"s": {"name": row.get("name")}, "d": {"name": row.get("doc_name")}})
+        if ref and ref not in seen:
+            seen.add(ref)
+            refs.append(ref)
+            if len(refs) == k:
+                break
+    return refs
+
+
+def _fusion_clean_searches(session, text: str, index: str, k: int) -> tuple:
+    """FUSION_CLEAN's (vector refs, fulltext refs) for `text`: 3k primary-
+    document rows each, over-fetched from the index so the document filter
+    still leaves them, then cut to k refs that are codes or laws by name --
+    scripts/exp_distill.py's _clean_searches, on this module's refs."""
+    from .lookups import _sanitize_fulltext_query
+
+    vector = []
+    try:
+        embedding = list(embedding_model.embed_query(text))
+        vector = session.run(
+            "CALL db.index.vector.queryNodes($index, $fetch, $embedding) YIELD node, score "
+            "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type = 'primary' "
+            "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC LIMIT $limit",
+            index=index, fetch=3 * k * _CLEAN_OVERFETCH, limit=3 * k, embedding=embedding,
+        ).data()
+    except Exception as exc:
+        logger.warning("fusion clean: vector search on index %r failed: %s", index, exc)
+    fulltext = []
+    q = _sanitize_fulltext_query(text)
+    if q:
+        try:
+            fulltext = session.run(
+                "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $fetch}) YIELD node, score "
+                "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type = 'primary' "
+                "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC LIMIT $limit",
+                q=q, fetch=3 * k * _CLEAN_OVERFETCH, limit=3 * k,
+            ).data()
+        except Exception as exc:
+            logger.warning("fusion clean: fulltext search failed: %s", exc)
+    return _clean_refs(vector, k), _clean_refs(fulltext, k)
 
 
 def _fusion_best_rank_merge(*ref_lists: List[tuple]) -> List[tuple]:
@@ -2696,6 +2982,11 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     450, 470 c.p.p. on Sempronio) -- the same discipline _select_articles_v2
     already applies to its own institution rows.
 
+    r13 (21 Oct): FUSION_CLEAN_ENABLED runs BASELINE's and DISTILL's searches
+    as exp_distill.py's FUSION_CLEAN (_fusion_clean_searches: primary
+    documents over-fetched, then non-laws by name dropped); CASE_FRAME_ENABLED
+    adds the frame's questions, posture and central issues as a fourth signal.
+
     Behind CASE_POOL_FUSION_ENABLED (requires CASE_ANALYSIS_ENABLED). Used
     by run_case_analysis_pipeline; returns the same keys _select_articles_v2
     does, so run_case_analysis_pipeline and scripts/check_applicability.py
@@ -2711,7 +3002,20 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
 
     documents = _fetch_doc_names(driver, database)
     case = _case_text(facts, request)
-    baseline_refs = _fusion_text_search(session, case, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
+    clean = feature_flags.enabled(FUSION_CLEAN_FLAG)
+    if clean:
+        # exp_distill.py's FUSION_CLEAN exactly: BASELINE merges its two clean
+        # lists by best rank, each DISTILL query keeps vector's refs then
+        # fulltext's (its _retrieve_clean).
+        def search(text):
+            return list(dict.fromkeys(sum(_fusion_clean_searches(session, text, _CASE_POOL_VECTOR_INDEX,
+                                                                 _FUSION_SEARCH_K), [])))
+        baseline_refs = _fusion_best_rank_merge(*_fusion_clean_searches(session, case, _CASE_POOL_VECTOR_INDEX,
+                                                                        _FUSION_SEARCH_K))
+    else:
+        def search(text):
+            return _fusion_text_search(session, text, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
+        baseline_refs = search(case)
 
     t0 = time.time()
     try:
@@ -2721,13 +3025,24 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         bullets = []
     vlog("case_pool_fusion_distill_llm", duration_ms=(time.time() - t0) * 1000)
     joined = " ".join(b["testo"] for b in bullets)
-    distill_lists = [_fusion_text_search(session, b["testo"], _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
-                     for b in bullets]
+    distill_lists = [search(b["testo"]) for b in bullets]
     if joined:
-        distill_lists.append(_fusion_text_search(session, joined, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K))
+        distill_lists.append(search(joined))
     distill_refs = _fusion_merge_by_hits(*distill_lists) if distill_lists else []
 
-    hits, best_rank = _fusion_hits_and_best_rank(current_refs, baseline_refs, distill_refs)
+    # CASE_FRAME_ENABLED: the case's explicit questions, its procedural posture
+    # and its central issues, each searched as its own query -- a fourth
+    # signal, so an article they find and another signal also finds survives
+    # the cap like any multi-signal one.
+    frame_queries = _frame_queries(analysis.get("frame") or {})
+    frame_lists = [search(q) for q in frame_queries]
+    frame_refs = _fusion_merge_by_hits(*frame_lists) if frame_lists else []
+    vlog("case_pool_fusion_sources", {"clean": clean, "frame_queries": len(frame_queries),
+                                      "baseline": len(baseline_refs), "distill": len(distill_refs),
+                                      "frame": len(frame_refs)})
+
+    signals = [current_refs, baseline_refs, distill_refs] + ([frame_refs] if frame_refs else [])
+    hits, best_rank = _fusion_hits_and_best_rank(*signals)
     fused = sorted(hits, key=lambda ref: (-hits[ref], best_rank[ref]))
     # Exempt from the cap regardless of rank: found by two or more signals,
     # or resolved by the article's own rubrica (heading_matched) -- a
@@ -3058,6 +3373,363 @@ def _filter_applicable_articles(facts: str, request: str,
     return [r for r in article_rows if r.get("_article") not in dropped_articles]
 
 
+# --- Draft quality (r14, 21 Oct: held-out run after the parser fix) ------------
+#
+# Three checks after the draft, each behind its own flag:
+#   DRAFT_CITATIONS_ONLY_ENABLED  the sources returned are only the articles and
+#       rulings the draft refers to (h1 listed the whole retrieval pool: TU
+#       istruzione, codice della strada, 1117 c.c., 2043-2059...).
+#   CLIENT_STANCE_CHECK_ENABLED   one call checks section 3 for arguments that
+#       favour the other side (h1, for the pupil's parents, argued the teacher's
+#       diligence); if any, section 3 is rewritten once with that list.
+#   QUALIFICATION_CHECK_ENABLED   every cited article outside the case's area
+#       and posture lists is checked, by its real heading, against the use the
+#       draft makes of it (h7: 609-bis c.p., sexual violence, cited as a
+#       mitigating circumstance in a corruption case); a mismatch is flagged.
+DRAFT_CITATIONS_ONLY_FLAG = "DRAFT_CITATIONS_ONLY_ENABLED"
+CLIENT_STANCE_CHECK_FLAG = "CLIENT_STANCE_CHECK_ENABLED"
+QUALIFICATION_CHECK_FLAG = "QUALIFICATION_CHECK_ENABLED"
+
+_REF_NUMBER = r"\d+(?:\s*-?\s*" + SUFFIX + r"(?![a-z]))?"
+# "art. 56", "artt. 112 e 114", "articoli 2043, 2048 e 2059", "Articolo 593".
+_ARTICLE_RUN_RE = re.compile(
+    r"\b(?:artt?\.?|articol[oi])\s*(" + _REF_NUMBER + r"(?:\s*(?:,|e|ed)\s*" + _REF_NUMBER + r")*)",
+    re.IGNORECASE,
+)
+_RUN_NUMBER_RE = re.compile(_REF_NUMBER, re.IGNORECASE)
+# What may sit between the number and the code: a comma, "comma 3", "co. 2, n. 1", "del", "della".
+_CODE_LEAD_RE = re.compile(
+    r"^\s*,?\s*(?:(?:co\.|comma|commi)\s*\d+(?:\s*,?\s*(?:lett\.|lettera|n\.)\s*\w+)?\s*,?\s*)?"
+    r"(?:del(?:la|lo|l['’])?\s+|d\.\s*)?",
+    re.IGNORECASE,
+)
+# Codes written out in full, longest first.
+_CODE_NAMES = [
+    (r"codice di procedura penale", "c.p.p."), (r"codice di procedura civile", "c.p.c."),
+    (r"codice del processo amministrativo", "c.p.a."), (r"codice della strada", "c.d.s."),
+    (r"codice civile", "c.c."), (r"codice penale", "c.p."),
+]
+_DECISION_NUMBER_RES = (
+    re.compile(r"\b(\d{2,6})\s*/\s*((?:19|20)\d{2})\b"),
+    re.compile(r"\bn\.?\s*(\d{2,6})\s+(?:del|anno)\s+((?:19|20)\d{2})\b", re.IGNORECASE),
+    re.compile(r"\b(\d{2,6})-((?:19|20)\d{2})\b"),
+)
+
+
+def _code_after(tail: str, documents: List[Dict[str, Any]]) -> Optional[str]:
+    """The code a citation's tail names: a sigla or a code in full, else the
+    name of one of `documents` (the retrieved non-standard laws) resolved the
+    way issue spotting resolves a code -- or None."""
+    from .issue_spotting import resolve_code
+
+    rest = tail[_CODE_LEAD_RE.match(tail).end():]
+    for pattern, abbr in _CODE_SPELLINGS:
+        if re.match(rf"(?:{pattern})", rest, re.IGNORECASE):
+            return abbr
+    low = rest.lower()
+    for name, abbr in _CODE_NAMES:
+        if low.startswith(name):
+            return abbr
+    if documents:
+        words = re.split(r"[\n;:()\[\]]", rest)[0].split()[:8]
+        for n in range(len(words), 0, -1):
+            doc = resolve_code(" ".join(words[:n]), documents)
+            if doc:
+                return doc["name"]
+    return None
+
+
+def _cited_articles(draft: str, known: set, documents: List[Dict[str, Any]]) -> List[tuple]:
+    """Every (number, code) the draft cites, in order, deduplicated. A number
+    with no code is attributed to the one known article with that number, if
+    there is exactly one."""
+    refs: List[tuple] = []
+    for m in _ARTICLE_RUN_RE.finditer(draft):
+        code = _code_after(draft[m.end():m.end() + 120], documents)
+        for n in _RUN_NUMBER_RE.findall(m.group(1)):
+            number = _article_num(n)
+            if code:
+                ref = (number, code)
+            else:
+                same = [k for k in known if k[0] == number]
+                if len(same) != 1:
+                    continue
+                ref = same[0]
+            if ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def _decision_numbers(text: str) -> set:
+    return {(m.group(1), m.group(2)) for regex in _DECISION_NUMBER_RES for m in regex.finditer(text or "")}
+
+
+def _ruling_is_cited(label: str, draft_low: str, draft_numbers: set) -> bool:
+    """A ruling (or any source without an article tag) is cited when the draft
+    names it, or gives its decision or docket number."""
+    norm = " ".join(label.lower().split())
+    if norm and norm in draft_low:
+        return True
+    return bool(_decision_numbers(label) & draft_numbers)
+
+
+def _draft_sources(draft: str, article_rows: List[Dict[str, Any]], ruling_rows: List[Dict[str, Any]],
+                   documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The rows the draft actually refers to: articles it cites with their code,
+    rulings and other sources it names or numbers. Every row of a cited article
+    is kept (its commi)."""
+    known = {r["_article"] for r in article_rows if r.get("_article")}
+    row_docs = {(r.get("d") or {}).get("name") for r in article_rows if r.get("_article")
+                and r["_article"][1] not in _CODE_PREFIXES}
+    docs = [d for d in documents if d.get("name") in row_docs]
+    cited = set(_cited_articles(draft, known, docs))
+    draft_low = " ".join(draft.lower().split())
+    draft_numbers = _decision_numbers(draft)
+    kept = []
+    for row in article_rows + ruling_rows:
+        if row.get("_article"):
+            if row["_article"] in cited:
+                kept.append(row)
+        elif _ruling_is_cited(_ruling_label(row), draft_low, draft_numbers):
+            kept.append(row)
+    vlog("case_analysis_draft_sources", {"cited": sorted(f"{n} {c}" for n, c in cited),
+                                         "rows_in": len(article_rows) + len(ruling_rows), "rows_kept": len(kept)})
+    return kept
+
+
+_SECTION3_RE = re.compile(r"(?m)^[ \t#>*]*3\.\s*\**\s*Argomenti\b.*$")
+# Section 4 by its prescribed title: arguments inside section 3 may be numbered "#### 4." too.
+_SECTION4_RE = re.compile(r"(?m)^[ \t#>*]*4\.\s*\**\s*Punti\b")
+
+_STANCE_SYSTEM = (
+    "Sei un avvocato italiano che rivede la bozza di un collega. Ti vengono dati il caso, la parte per cui "
+    "l'avvocato agisce e la sezione 3 della bozza, che dovrebbe contenere solo argomenti a favore di quella "
+    "parte. Per ciascun argomento chiediti: se il giudice lo accogliesse, a chi gioverebbe? Elenca SOLO gli "
+    "argomenti che, accolti, giovano alla controparte o indeboliscono la posizione della parte assistita (per "
+    "esempio, per il danneggiato, un argomento che prova la diligenza del danneggiante; per l'imputato, uno che "
+    "conferma un elemento dell'accusa). Un argomento difensivo o subordinato della parte assistita non va "
+    'elencato. Restituisci SOLO un oggetto JSON: {"parte_assistita": stringa, "argomenti_contrari": [{"argomento": '
+    'il titolo o la frase iniziale dell\'argomento, "perche": in una frase, a chi giova e perché}]}; lista vuota '
+    "se non ce ne sono."
+)
+
+
+def _section_3_bounds(draft: str) -> Optional[tuple]:
+    start = _SECTION3_RE.search(draft)
+    if not start:
+        return None
+    end = _SECTION4_RE.search(draft, start.end())
+    return (start.start(), end.start() if end else len(draft))
+
+
+def _stance_party(analysis: Dict[str, Any]) -> str:
+    party = str(analysis.get("parte_assistita") or "").strip() or "la parte assistita"
+    position = str(analysis.get("posizione") or "").strip()
+    return f"{party} ({position})" if position else party
+
+
+def _opposing_arguments(facts: str, request: str, analysis: Dict[str, Any], section: str) -> List[Dict[str, str]]:
+    """Section 3's arguments that favour the other side; [] on any failure."""
+    tasks = "\n".join(f"- {t}" for t in ((analysis.get("frame") or {}).get("tasks") or []))
+    human = (f"CASO:\n{_case_text(facts, request)[:4000]}\n\n"
+             + (f"QUESITI:\n{tasks}\n\n" if tasks else "")
+             + f"PARTE ASSISTITA: {_stance_party(analysis)}\n\nSEZIONE 3 DELLA BOZZA:\n{section[:6000]}")
+    t0 = time.time()
+    try:
+        parsed = _chat_json([SystemMessage(content=_STANCE_SYSTEM), HumanMessage(content=human)],
+                            max_tokens=900, temperature=0)
+    except Exception as exc:
+        logger.warning("client stance check failed: %s", exc)
+        return []
+    finally:
+        vlog("case_analysis_stance_llm", duration_ms=(time.time() - t0) * 1000)
+    items = parsed.get("argomenti_contrari") if isinstance(parsed, dict) else None
+    return [{"argomento": str(i.get("argomento") or "").strip(), "perche": str(i.get("perche") or "").strip()}
+            for i in (items if isinstance(items, list) else [])
+            if isinstance(i, dict) and str(i.get("argomento") or "").strip()]
+
+
+def _check_client_stance(draft: str, facts: str, request: str, analysis: Dict[str, Any],
+                         system: str, human: str) -> str:
+    """The draft with section 3 rewritten once when the check finds arguments
+    for the other side in it; unchanged otherwise or on any failure."""
+    bounds = _section_3_bounds(draft)
+    if not bounds:
+        vlog("case_analysis_stance", {"skipped": "no section 3"})
+        return draft
+    section = draft[bounds[0]:bounds[1]]
+    opposing = _opposing_arguments(facts, request, analysis, section)
+    vlog("case_analysis_stance", {"party": _stance_party(analysis), "opposing": opposing})
+    if not opposing:
+        return draft
+    listing = "\n".join(f"- {o['argomento']}: {o['perche']}" for o in opposing)
+    heading = draft[bounds[0]:].split("\n", 1)[0]
+    rewrite = (
+        f"{human}\n\nQuesta è la sezione 3 che hai scritto:\n{section}\n\n"
+        f"Una revisione ha trovato che questi argomenti giovano alla controparte, non a {_stance_party(analysis)}:\n"
+        f"{listing}\n\nRiscrivi SOLO la sezione 3, con la stessa intestazione ({heading.strip()}): ogni argomento "
+        "deve escludere, ridurre o contrastare la responsabilità o la pretesa contro la parte assistita, o "
+        "sostenerne la pretesa. Usa gli stessi fatti, norme e pronunce delle fonti; un fatto che favorisce la "
+        "controparte va trattato come obiezione da superare, non come argomento. Restituisci solo la sezione 3."
+    )
+    try:
+        new_section = _call_chat([SystemMessage(content=system), HumanMessage(content=rewrite)], max_tokens=2000)
+    except Exception as exc:
+        logger.warning("client stance rewrite failed, draft kept: %s", exc)
+        return draft
+    new_section = (new_section or "").strip()
+    if not _SECTION3_RE.match(new_section):
+        logger.warning("client stance rewrite did not return a section 3, draft kept")
+        return draft
+    return draft[:bounds[0]] + new_section + "\n\n" + draft[bounds[1]:]
+
+
+_QUALIFICATION_SYSTEM = (
+    "Sei un giurista. Per ciascun articolo citato in una bozza di parere ti vengono dati la sua rubrica reale "
+    "(il titolo ufficiale nel codice) e la frase della bozza che lo cita. Decidi se la rubrica è compatibile con "
+    "l'uso che la frase ne fa: un articolo sulla violenza sessuale citato come circostanza attenuante in un caso "
+    "di corruzione è incompatibile; un articolo generale (concorso di persone, circostanze, elemento psicologico) "
+    "citato per quell'istituto è compatibile. Nel dubbio è compatibile. Restituisci SOLO un array JSON di oggetti "
+    '{"articolo": l\'identificativo dato, "compatibile": true o false, "perche": una frase}.'
+)
+
+
+def _citation_context(draft: str, ref: tuple) -> str:
+    """The line of the draft where it first cites ref (any suffix spelling), cut to 400 chars."""
+    number = re.escape(ref[0]).replace(r"\-", r"\s*-?\s*")
+    m = re.search(rf"\b(?:artt?\.?|articol[oi])\s*(?:[\d\s,e-]*?)\b{number}\b", draft, re.IGNORECASE)
+    if not m:
+        return ""
+    start = draft.rfind("\n", 0, m.start()) + 1
+    end = draft.find("\n", m.end())
+    return draft[start:end if end != -1 else len(draft)].strip()[:400]
+
+
+def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
+                          session, documents: List[Dict[str, Any]]) -> str:
+    """The draft with each cited article whose real heading does not fit the use
+    the draft makes of it flagged at its first citation. Articles of the case's
+    area/posture lists are trusted; the others are checked in one call."""
+    from . import method_candidates
+
+    frame = analysis.get("frame") or {}
+    trusted = set(method_candidates.candidate_refs(
+        method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or ""),
+        frame.get("posture_type") or ""))
+    known = {r["_article"] for r in article_rows if r.get("_article")}
+    cited = [ref for ref in _cited_articles(draft, known, documents) if ref not in trusted]
+    if not cited:
+        return draft
+    headings = {}
+    rows_by_ref = {}
+    for row in article_rows:
+        if row.get("_article"):
+            rows_by_ref.setdefault(row["_article"], row)
+    missing = [ref for ref in cited if ref not in rows_by_ref]
+    if missing:
+        try:
+            for row in _fetch_any(session, documents, missing):
+                rows_by_ref.setdefault(row.get("_article"), row)
+        except Exception as exc:
+            logger.warning("qualification check: heading fetch failed: %s", exc)
+    for ref in cited:
+        s = (rows_by_ref.get(ref) or {}).get("s") or {}
+        heading = (s.get("titolo_articolo") or s.get("title") or "").strip()
+        context = _citation_context(draft, ref)
+        if heading and context:
+            headings[f"{ref[0]} {ref[1]}"] = (heading, context, ref)
+    if not headings:
+        return draft
+    human = "\n\n".join(f"[{label}]\nRubrica: {heading}\nFrase: {context}"
+                        for label, (heading, context, _) in headings.items())
+    t0 = time.time()
+    try:
+        verdicts = _chat_json([SystemMessage(content=_QUALIFICATION_SYSTEM), HumanMessage(content=human)],
+                              max_tokens=max(600, 90 * len(headings)), temperature=0)
+    except Exception as exc:
+        logger.warning("qualification check failed, draft kept: %s", exc)
+        return draft
+    finally:
+        vlog("case_analysis_qualification_llm", duration_ms=(time.time() - t0) * 1000)
+    if not isinstance(verdicts, list):
+        return draft
+    flagged = []
+    for v in verdicts:
+        if not isinstance(v, dict) or v.get("compatibile") is not False:
+            continue
+        entry = headings.get(_applicability_key(str(v.get("articolo") or "")))
+        entry = entry or next((e for label, e in headings.items()
+                               if _applicability_key(label) == _applicability_key(str(v.get("articolo") or ""))), None)
+        if entry:
+            heading, _, ref = entry
+            draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
+            flagged.append(f"{ref[0]} {ref[1]}")
+    vlog("case_analysis_qualification", {"checked": sorted(headings), "flagged": flagged})
+    return draft
+
+
+def _flag_citation(draft: str, ref: tuple, mark: str) -> str:
+    """mark after ref's first citation, replacing a plain [DA VERIFICARE] already there."""
+    for m in _CITED_ARTICLE_RE.finditer(draft):
+        if (_article_num(m.group(1)), _code_of(m.group(2))) != ref:
+            continue
+        end = m.end()
+        if draft.startswith(_UNVERIFIED, end):
+            return draft[:end] + mark + draft[end + len(_UNVERIFIED):]
+        if draft.startswith(" [DA VERIFICARE", end):
+            return draft
+        return draft[:end] + mark + draft[end:]
+    return draft
+
+
+# METHOD_CANDIDATES_ENABLED (default false; acts only with APPLICABILITY_CHECK_
+# ENABLED, which is what filters them): the method articles of the case's areas
+# and the procedural articles of its posture (src/rag/method_candidates.py,
+# a draft for the lawyer to validate) are added as candidates to whatever the
+# selection picked. They are tagged METHOD_CANDIDATES_SOURCE, never exempt from
+# the check, never protected from the prompt's trimming, and never seeds for
+# cross-reference broadening.
+METHOD_CANDIDATES_FLAG = "METHOD_CANDIDATES_ENABLED"
+METHOD_CANDIDATES_SOURCE = "method_candidates"
+
+
+def _add_method_candidates(session, driver, database: str, analysis: Dict[str, Any],
+                           picked: Dict[str, Any]) -> Dict[str, Any]:
+    """picked with the area and posture candidates that are not already among
+    its article rows appended to "article_rows" and "selected"; unchanged with
+    the flag off, without the applicability check, or on any failure."""
+    if not feature_flags.enabled(METHOD_CANDIDATES_FLAG):
+        return picked
+    if not feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
+        logger.warning("%s needs APPLICABILITY_CHECK_ENABLED to filter its candidates: nothing added",
+                       METHOD_CANDIDATES_FLAG)
+        return picked
+    from . import method_candidates
+    from .doc_lookup import _fetch_doc_names
+
+    frame = analysis.get("frame") or {}
+    areas = method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or "")
+    refs = method_candidates.candidate_refs(areas, frame.get("posture_type") or "")
+    have = {r.get("_article") for r in picked.get("article_rows") or [] if r.get("_article")}
+    wanted = [ref for ref in refs if ref not in have]
+    if not wanted:
+        return picked
+    try:
+        rows = _fetch_any(session, _fetch_doc_names(driver, database), wanted)
+    except Exception as exc:
+        logger.warning("method candidates: fetch failed, nothing added: %s", exc)
+        return picked
+    for row in rows:
+        row["_source"] = METHOD_CANDIDATES_SOURCE
+    added = list(dict.fromkeys(r["_article"] for r in rows if r.get("_article")))
+    vlog("case_analysis_method_candidates", {"areas": areas, "posture": frame.get("posture_type") or "",
+                                             "added": [f"{n} {c}" for n, c in added],
+                                             "not_found": [f"{n} {c}" for n, c in wanted if (n, c) not in added]})
+    return {**picked, "article_rows": list(picked.get("article_rows") or []) + rows,
+            "selected": list(picked.get("selected") or []) + [r for r in added if r not in picked.get("selected", [])],
+            "method_candidates": added}
+
+
 def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: str = "") -> dict:
     """A reasoned parere on a case: facts described in the message, or an
     uploaded document (`facts`) with the user's message as `request`.
@@ -3078,6 +3750,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             select_fn = _select_articles_fusion if pool_fusion else (
                 _select_articles_v2 if case_analysis_v2 else _select_articles)
             picked = select_fn(session, driver, NEO4J_DATABASE, facts, request, analysis)
+            picked = _add_method_candidates(session, driver, NEO4J_DATABASE, analysis, picked)
             first_rulings, similar = picked["first_rulings"], picked["similar"]
             candidates, selected, article_rows = picked["candidates"], picked["selected"], picked["article_rows"]
             # Second search with the verified article numbers: rulings on the
@@ -3117,13 +3790,27 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
         draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                            max_tokens=_PARERE_TOKENS)
     vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
+    if feature_flags.enabled(CLIENT_STANCE_CHECK_FLAG):
+        draft = _check_client_stance(draft, facts, request, analysis, system, human)
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
-    draft = _mark_unverified(draft, found, articles + "\n" + rulings)
+    draft = _mark_unverified(draft, found, articles + "\n" + rulings,
+                             wrong_code=feature_flags.enabled(STRATEGY_DRAFT_RULES_FLAG))
+    citations_only = feature_flags.enabled(DRAFT_CITATIONS_ONLY_FLAG)
+    documents: List[Dict[str, Any]] = []
+    if citations_only or feature_flags.enabled(QUALIFICATION_CHECK_FLAG):
+        try:
+            from .doc_lookup import _fetch_doc_names
+            documents = _fetch_doc_names(driver, NEO4J_DATABASE)
+            if feature_flags.enabled(QUALIFICATION_CHECK_FLAG):
+                with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+                    draft = _check_qualifications(draft, analysis, article_rows, session, documents)
+        except Exception as exc:
+            logger.warning("draft checks after the draft failed, draft kept: %s", exc)
 
     topics = _extract_deepdive_topics(draft[draft.find("**3."):] if "**3." in draft else draft, {})
     if topics:
         draft += "\n\n" + _format_deepdive_suggestion(topics)
-    if ruling_rows or _UNVERIFIED in draft:
+    if ruling_rows or _UNVERIFIED.rstrip("]") in draft:
         draft += (
             "\n\n⚠️ Le sentenze citate provengono dal corpus documentale; i riferimenti segnati "
             "[DA VERIFICARE] non sono stati trovati nelle fonti consultate. Verificare tutto prima dell'uso."
@@ -3132,7 +3819,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # "Codice Penale Commentato") fails _extract_citations' length gate and
     # comes back with sections: [] — a citation naming a source with nothing
     # in it. Drop it here rather than let it reach the user.
-    citations = [c for c in _rows_to_sources(article_rows + ruling_rows) if c.get("sections")]
+    source_rows = (_draft_sources(draft, article_rows, ruling_rows, documents) if citations_only
+                   else article_rows + ruling_rows)
+    citations = [c for c in _rows_to_sources(source_rows) if c.get("sections")]
     vlog("case_analysis_pipeline", {"v2": case_analysis_v2, "pool_fusion": pool_fusion},
         duration_ms=(time.time() - pipeline_t0) * 1000)
     return {"draft": draft, "citations": citations,

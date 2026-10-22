@@ -102,12 +102,89 @@ how good is retrieval with no restriction at all). FUSION_BASELINE here is
 therefore a close preview of the live pool, not an exact one; re-run it
 against prod to re-validate the 27/47 @8 / 32/47 @12 numbers under that
 narrower pool.
+
+Round 10 (20 Oct) adds TIMELINE, a retrieval method built from the story's
+own sequence of events rather than from fixed legal slots:
+
+  TIMELINE           one LLM call, temperature 0, fixed JSON schema: the
+                      narrative as an ordered list of small steps {n, actor,
+                      action, object, means, result, relevance 0-2, terms:
+                      2-4 statutory-style Italian terms, no article numbers}.
+                      Steps with relevance 0 are dropped. Each kept step is
+                      searched on "action + result + terms" through two
+                      channels: (a) primary codes/laws, vector and fulltext
+                      as two separate ranked lists; (b) rulings
+                      (document_type='interpretation'), vector + fulltext,
+                      ranked by document, then the articles those rulings
+                      cite anywhere in their text (dg._refs_in, the same
+                      citation reader as dg._articles_cited_in_rulings),
+                      ordered by the best-ranked ruling citing each one, then
+                      by how often it is cited. Every list from every step
+                      and channel is merged by reciprocal rank fusion
+                      (score = sum of 1/(60+rank)), with no cutoff before
+                      the merge.
+  TIMELINE_CURRENT   RRF of TIMELINE's ranking and CURRENT's, one list each
+                      (CURRENT added as just one more list next to ~3 per
+                      step would barely move the ranking).
+
+Both are compared with BASELINE, DISTILL, CURRENT, UNION and FUSION_BASELINE
+in one table: recall and noise at @10/@k, and per-case latency (composites
+= the sum of their parts, since this script runs them one after another).
+
+Round 11 (20 Oct). TIMELINE scored 19/47 @20 (TIMELINE_CURRENT 23/47,
+FUSION_BASELINE 28/47, down from 34 since the re-ingest): the model
+decomposes the facts fine, but lay facts don't share words with statutory
+text. Two additions:
+
+  SITUATION              each kept TIMELINE step, told plainly (actor,
+                          action, object, means, result), and the raw case
+                          text, searched against the situation index
+                          (scripts/build_situation_index.py: 3-5 plain-
+                          Italian situations per article, embedded, linked
+                          to the article's main Section) -> articles, merged
+                          by RRF. Queries get Qwen's query instruction and go
+                          through the plain-text embedding client, so this
+                          channel is right whatever EMBEDDING_QUERY_MODE is.
+                          Latency includes TIMELINE's LLM call (its steps).
+  SITUATION_FUSION       RRF(SITUATION, FUSION_BASELINE).
+  FUSION_CLEAN           FUSION_BASELINE with BASELINE's and DISTILL's text
+                          searches restricted to primary documents, minus
+                          templates, contract models and books by name
+                          (_NOT_A_LAW_RE, extendable with --exclude-docs) --
+                          the 20 Oct briefing's §5.1 fusion-noise finding.
+                          Same bullets as DISTILL; same merges. Every
+                          document name the filter removed is reported, so
+                          the rule can be checked against what it cut.
+  SITUATION_FUSION_CLEAN RRF(SITUATION, FUSION_CLEAN) -- the combination a
+                          cleaned-up live pool would actually use.
+
+Round 12 (20 Oct) adds HYDE (hypothetical document embeddings), bridging
+the same wording gap from the query side, with no index to build:
+
+  HYDE                   TIMELINE's kept steps (relevance >= 1), told
+                          plainly, plus the raw case, in ONE batched LLM call
+                          per case (temperature 0): 1-2 short hypothetical
+                          norms per step, written like an Italian code article
+                          ("Chiunque...", "Il pubblico ufficiale che...", "Il
+                          debitore che..."), and one for the case as a whole;
+                          no article numbers, no code names (a norm that cites
+                          one anyway is dropped). Each norm is searched against
+                          primary codes/laws -- FUSION_CLEAN's filter: primary
+                          documents minus non-laws by name -- vector and
+                          fulltext as separate lists, all merged by RRF.
+                          Latency includes TIMELINE's LLM call (its steps).
+  HYDE_FUSION_CLEAN      RRF(HYDE, FUSION_CLEAN).
+  HYDE_SITUATION_FUSION_CLEAN  RRF(HYDE, SITUATION, FUSION_CLEAN) -- only when
+                          the situation index exists and holds situations;
+                          otherwise every SITUATION method is left out of the
+                          tables instead of reported as zeros.
 """
 
 import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -155,6 +232,59 @@ METHODS = ["baseline", "distill", "distill_questions", "current"]
 # not an independent retrieval method, so it gets its own section instead
 # of sharing the recall@10/@k table.
 UNION_METHODS = ["union", "selected"]
+# Round 10: TIMELINE and its fusion with CURRENT, compared against the other
+# retrieval methods and the UNION/FUSION composites in one table.
+TIMELINE_METHODS = ["timeline", "timeline_current"]
+COMPARISON_METHODS = ["baseline", "distill", "current", "union", "fusion_baseline"] + TIMELINE_METHODS
+# Latency of a composite = the methods it is built from (run sequentially here).
+_COMPOSITE_LATENCY = {
+    "union": ("current", "baseline", "distill"),
+    "fusion_baseline": ("current", "baseline", "distill"),
+    "timeline_current": ("timeline", "current"),
+}
+# Round 11.
+SITUATION_METHODS = ["fusion_clean", "situation", "situation_fusion", "situation_fusion_clean"]
+COMPARISON_METHODS += SITUATION_METHODS
+_COMPOSITE_LATENCY.update({
+    "fusion_clean": ("current", "baseline_clean", "distill_llm", "distill_clean_search"),
+    "situation": ("timeline_llm", "situation_search"),
+    "situation_fusion": ("timeline_llm", "situation_search", "current", "baseline", "distill"),
+    "situation_fusion_clean": ("timeline_llm", "situation_search", "current", "baseline_clean", "distill_llm",
+                               "distill_clean_search"),
+})
+# Round 12.
+HYDE_METHODS = ["hyde", "hyde_fusion_clean", "hyde_situation_fusion_clean"]
+COMPARISON_METHODS += HYDE_METHODS
+_NEEDS_SITUATION_INDEX = {"situation", "situation_fusion", "situation_fusion_clean", "hyde_situation_fusion_clean"}
+_HYDE_PARTS = ("timeline_llm", "hyde_llm", "hyde_search")
+_FUSION_CLEAN_PARTS = _COMPOSITE_LATENCY["fusion_clean"]
+_COMPOSITE_LATENCY.update({
+    "hyde": _HYDE_PARTS,
+    "hyde_fusion_clean": _HYDE_PARTS + _FUSION_CLEAN_PARTS,
+    "hyde_situation_fusion_clean": _HYDE_PARTS + ("situation_search",) + _FUSION_CLEAN_PARTS,
+})
+_HYDE_SYSTEM = (
+    "Sei un legislatore italiano. Ti do i fatti di un caso, scomposti in passi numerati, e il testo originale. "
+    "Per ciascun passo scrivi 1 o 2 brevi testi normativi ipotetici, nello stile di un articolo di un codice "
+    "italiano, che disciplinerebbero quel passo, con la loro conseguenza giuridica (pena, obbligo, "
+    "responsabilità, diritto, nullità...): per esempio \"Chiunque...\", \"Il pubblico ufficiale che...\", "
+    "\"Il debitore che...\", \"Il proprietario del fondo...\". Scrivi anche un testo normativo ipotetico per il "
+    "caso nel suo complesso. Non usare MAI numeri di articolo né nomi di codici o di leggi. Restituisci SOLO un "
+    "oggetto JSON: {\"passi\": [{\"n\": <numero del passo>, \"norme\": [\"...\"]}], \"caso\": \"...\"}."
+)
+_HYDE_MAX_NORMS_PER_STEP = 2
+# A hypothetical norm that cites a real one defeats the point (it becomes a lookup).
+_CITES_A_LAW_RE = re.compile(
+    r"\bart(?:t|icol[oi])?\.?\s*\d|\bc\.\s*[cp]\.|\bcodice\b|\bd\.\s*lgs|\blegge\s+(?:n\.\s*)?\d", re.IGNORECASE)
+
+_SITUATION_INSTRUCTION = (
+    "Instruct: Given an account of events in plain Italian, retrieve the descriptions of concrete situations "
+    "that match it\nQuery: "
+)
+_RRF_K = 60
+_TIMELINE_MAX_STEPS = 20
+_PRIMARY_TYPES = ["primary"]
+_RULING_TYPES = ["interpretation"]
 # Ranking methods applied to the UNION pool, reported at k=8/12 (recall,
 # noise, added latency) rather than the @10/@k the retrieval methods use --
 # see the module docstring, round 5.
@@ -174,6 +304,18 @@ _LLM_RELEVANCE_SYSTEM = (
     "gioco, 3 = direttamente applicabile ai fatti specifici. Valuta la rilevanza per impostare un parere, "
     "non la compatibilità letterale articolo per articolo. Restituisci SOLO un array JSON di oggetti "
     "{\"articolo\": \"<identificativo esatto tra parentesi quadre>\", \"punteggio\": 0, 1, 2 o 3}."
+)
+
+_TIMELINE_SYSTEM = (
+    "Sei un avvocato italiano. Scomponi il racconto in una sequenza ORDINATA di piccoli passi, un fatto per "
+    "passo, nell'ordine in cui sono avvenuti. Per ogni passo restituisci un oggetto con esattamente queste "
+    "chiavi: \"n\" (numero progressivo), \"actor\" (chi agisce), \"action\" (cosa fa), \"object\" (la "
+    "cosa o la persona su cui agisce, la vittima se c'è; \"\" se assente), \"means\" (mezzo o modalità; "
+    "\"\" se assente), \"result\" (esito o conseguenza; \"\" se assente), \"relevance\" (0 = "
+    "giuridicamente irrilevante, 1 = contesto utile, 2 = giuridicamente decisivo), \"terms\" (da 2 a 4 "
+    "espressioni giuridiche italiane nello stile del linguaggio normativo che descrivono il passo, per esempio "
+    "\"impossessamento di cosa mobile altrui\", \"violenza alla persona\", \"lesione personale\"). Non "
+    "usare MAI un numero di articolo né il nome di un codice o di una legge. Restituisci SOLO un array JSON."
 )
 
 # RERANKER_URL/RERANKER_MODEL: same defaults as src/rag/reranker.py. Called
@@ -290,9 +432,144 @@ def _recall(ranked_refs, expected, k):
     return found, len(expected)
 
 
+def _rrf_scores(*ranked_lists, k0=_RRF_K):
+    """{ref: sum over the lists containing it of 1/(k0 + rank)}, rank from 1."""
+    scores = {}
+    for ranked in ranked_lists:
+        for rank, ref in enumerate(ranked, start=1):
+            scores[ref] = scores.get(ref, 0.0) + 1.0 / (k0 + rank)
+    return scores
+
+
+def _rrf(*ranked_lists, k0=_RRF_K):
+    """Reciprocal rank fusion: refs by RRF score, descending; ties keep the
+    order in which the refs were first seen across the lists."""
+    scores = _rrf_scores(*ranked_lists, k0=k0)
+    first_seen = {ref: i for i, ref in enumerate(scores)}
+    return sorted(scores, key=lambda ref: (-scores[ref], first_seen[ref]))
+
+
+def _relevance(value):
+    """A step's relevance as 0, 1 or 2; anything unreadable counts as 0."""
+    try:
+        rel = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return rel if rel in (0, 1, 2) else 0
+
+
+def _parse_timeline(parsed):
+    """The model's reply -> every step, normalised (strings stripped,
+    relevance 0-2, terms: 2-4 strings without digits -- an article number
+    slipping into a term would turn a description into a lookup)."""
+    if not isinstance(parsed, list):
+        return []
+    steps = []
+    for i, item in enumerate(parsed[:_TIMELINE_MAX_STEPS], start=1):
+        if not isinstance(item, dict):
+            continue
+        terms = item.get("terms")
+        terms = [t.strip() for t in terms if isinstance(t, str) and t.strip() and not any(c.isdigit() for c in t)] \
+            if isinstance(terms, list) else []
+        steps.append({
+            "n": item.get("n") if isinstance(item.get("n"), int) else i,
+            **{key: str(item.get(key) or "").strip() for key in ("actor", "action", "object", "means", "result")},
+            "relevance": _relevance(item.get("relevance")),
+            "terms": terms[:4],
+        })
+    return steps
+
+
+def _kept_steps(steps):
+    return [step for step in steps if step["relevance"] > 0]
+
+
+def _timeline_query(step):
+    """What a kept step is searched on: action + result + terms."""
+    return " ".join(part for part in [step["action"], step["result"], *step["terms"]] if part)
+
+
+def _cited_ranking(ruling_ids, cites_by_doc):
+    """Articles cited by these rulings (ranked best first), ordered by the
+    best rank of a ruling citing each one, then by how many times these
+    rulings cite it in total. cites_by_doc: {doc id: {ref: citation count}}."""
+    best, count = {}, {}
+    for rank, doc_id in enumerate(ruling_ids, start=1):
+        for ref, n in (cites_by_doc.get(doc_id) or {}).items():
+            best.setdefault(ref, rank)
+            count[ref] = count.get(ref, 0) + n
+    return sorted(best, key=lambda ref: (best[ref], -count[ref]))
+
+
+# Not a code or a law, by name. Moved to dg (21 Oct) when FUSION_CLEAN_ENABLED
+# put this filter in the live pool: one regex, so the two cannot drift.
+_NOT_A_LAW_RE = dg._NOT_A_LAW_RE
+
+
+def _is_law_name(doc_name, exclude_re=_NOT_A_LAW_RE):
+    return bool(doc_name) and not exclude_re.search(doc_name)
+
+
+def _step_story(step):
+    """A TIMELINE step told plainly, for the situation index: who did what,
+    to whom, how, with what result -- no legal terms."""
+    return " ".join(part for part in (step["actor"], step["action"], step["object"], step["means"], step["result"])
+                    if part)
+
+
+def _hyde_norm(value):
+    """One hypothetical norm, whitespace-normalised, or "" if unusable."""
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    return "" if _CITES_A_LAW_RE.search(text) else text
+
+
+def _parse_hyde(parsed, step_numbers):
+    """The model's reply -> ({step n: [1-2 norms]} for the given steps only,
+    the whole-case norm or "")."""
+    if not isinstance(parsed, dict):
+        return {}, ""
+    wanted, per_step = set(step_numbers), {}
+    for item in parsed.get("passi") or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            n = int(item.get("n"))
+        except (TypeError, ValueError):
+            continue
+        if n not in wanted:
+            continue
+        raw = item.get("norme")
+        norms = [x for x in (_hyde_norm(v) for v in (raw if isinstance(raw, list) else [raw])) if x]
+        if norms:
+            per_step[n] = list(dict.fromkeys(per_step.get(n, []) + norms))[:_HYDE_MAX_NORMS_PER_STEP]
+    return per_step, _hyde_norm(parsed.get("caso"))
+
+
+def _hyde_human(text, steps):
+    listing = "\n".join(f"{step['n']}. {_step_story(step)}" for step in steps) or "(nessun passo)"
+    return f"PASSI:\n{listing}\n\nTESTO ORIGINALE:\n{text[:6000]}"
+
+
+def _available_methods(results, methods):
+    """The methods every case has a result for (SITUATION ones are absent when its index isn't built)."""
+    return [m for m in methods if all(m in r for r in results.values())]
+
+
 # --- Retrieval ---------------------------------------------------------
 
-def _vector_search(session, text, index, k, warned):
+# doc_types scopes a search to those Document.document_type values; the index
+# is then queried for k * _SCOPED_OVERFETCH nodes so the filter still leaves k.
+_SCOPED_OVERFETCH = 5
+
+
+def _doc_match(doc_types):
+    return ("MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.document_type IN $types " if doc_types
+            else "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) ")
+
+
+def _vector_search(session, text, index, k, warned, doc_types=None, limit=None):
     try:
         embedding = list(embedding_model.embed_query(text))
     except Exception as exc:
@@ -300,11 +577,12 @@ def _vector_search(session, text, index, k, warned):
         return []
     try:
         return session.run(
-            "CALL db.index.vector.queryNodes($index, $k, $embedding) YIELD node, score "
+            "CALL db.index.vector.queryNodes($index, $fetch, $embedding) YIELD node, score "
             "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
-            "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) "
-            "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC",
-            index=index, k=k, embedding=embedding,
+            + _doc_match(doc_types) +
+            "RETURN node.name AS name, d.name AS doc_name, d.id AS doc_id, score ORDER BY score DESC LIMIT $k",
+            index=index, k=limit or k, fetch=(limit or k) * _SCOPED_OVERFETCH if doc_types else k,
+            embedding=embedding, types=doc_types or [],
         ).data()
     except Exception as exc:
         if index not in warned:
@@ -313,20 +591,73 @@ def _vector_search(session, text, index, k, warned):
         return []
 
 
-def _fulltext_search(session, text, k):
+def _fulltext_search(session, text, k, doc_types=None, limit=None):
     q = _sanitize_fulltext_query(text)
     if not q:
         return []
     return session.run(
-        "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $k}) YIELD node, score "
-        "OPTIONAL MATCH (d:Document)-[:CONTAINS]->(node) "
-        "RETURN node.name AS name, d.name AS doc_name, score ORDER BY score DESC",
-        q=q, k=k,
+        "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $fetch}) YIELD node, score "
+        + _doc_match(doc_types) +
+        "RETURN node.name AS name, d.name AS doc_name, d.id AS doc_id, score ORDER BY score DESC LIMIT $k",
+        q=q, k=limit or k, fetch=(limit or k) * _SCOPED_OVERFETCH if doc_types else k, types=doc_types or [],
     ).data()
 
 
 def _retrieve(session, text, index, k, warned):
     return _ranked_refs(_vector_search(session, text, index, k, warned) + _fulltext_search(session, text, k))
+
+
+def _clean_rows(rows, exclude_re, excluded):
+    """rows whose document is a code or a law; the names of the others go into `excluded`."""
+    kept = []
+    for row in rows:
+        if _is_law_name(row.get("doc_name"), exclude_re):
+            kept.append(row)
+        elif row.get("doc_name"):
+            excluded.add(row["doc_name"])
+    return kept
+
+
+def _clean_searches(session, text, index, k, warned, exclude_re, excluded):
+    """FUSION_CLEAN's (vector refs, fulltext refs) for `text`: primary documents
+    only, minus non-laws by name; 3k rows fetched so k refs survive the filter."""
+    vector = _clean_rows(_vector_search(session, text, index, k, warned, _PRIMARY_TYPES, limit=3 * k),
+                         exclude_re, excluded)
+    fulltext = _clean_rows(_fulltext_search(session, text, k, _PRIMARY_TYPES, limit=3 * k), exclude_re, excluded)
+    return _ranked_refs(vector)[:k], _ranked_refs(fulltext)[:k]
+
+
+def _retrieve_clean(session, text, index, k, warned, exclude_re, excluded):
+    """_retrieve, cleaned: the same vector-then-fulltext order DISTILL's own calls use."""
+    vector, fulltext = _clean_searches(session, text, index, k, warned, exclude_re, excluded)
+    return list(dict.fromkeys(vector + fulltext))
+
+
+_situation_embedder = None   # set in main(): the plain-text client build_situation_index.py embeds with
+
+
+def _situation_search(session, text, index, k, warned):
+    """Articles whose situations match `text`, best first: 5k situations
+    fetched (3-5 per article), each mapped to its article's main Section."""
+    try:
+        embedding = list(_situation_embedder.embed_query(_SITUATION_INSTRUCTION + text))
+    except Exception as exc:
+        logging.warning("situation embedding failed: %s", exc)
+        return []
+    try:
+        rows = session.run(
+            "CALL db.index.vector.queryNodes($index, $fetch, $embedding) YIELD node, score "
+            "MATCH (s:Section)-[:HAS_SITUATION]->(node) MATCH (d:Document)-[:CONTAINS]->(s) "
+            "RETURN s.name AS name, d.name AS doc_name, score ORDER BY score DESC",
+            index=index, fetch=5 * k, embedding=embedding,
+        ).data()
+    except Exception as exc:
+        if index not in warned:
+            warned.add(index)
+            logging.warning("situation search on index %r failed (built yet? scripts/build_situation_index.py): %s",
+                            index, exc)
+        return []
+    return _ranked_refs(rows)
 
 
 # --- UNION candidates' real text, and the two new ranking methods ----------
@@ -501,29 +832,113 @@ def _selected_refs(text, rows, union_refs):
     return [ref for ref in union_refs if ref in kept]
 
 
-def _run_case(driver, database, case, vector_index, k, warned):
+def _timeline_steps(text):
+    parsed = dg._chat_json([SystemMessage(content=_TIMELINE_SYSTEM), HumanMessage(content=text[:6000])],
+                           max_tokens=2500, temperature=0)
+    return _parse_timeline(parsed)
+
+
+def _ruling_ids(session, query, index, k, warned):
+    """Ruling documents for a query, best rank first: vector and fulltext
+    hits on interpretation sections, by document, best-rank merged."""
+    def doc_order(rows):
+        return list(dict.fromkeys(row["doc_id"] for row in rows if row.get("doc_id")))
+    return _merge_best_rank(doc_order(_vector_search(session, query, index, k, warned, _RULING_TYPES)),
+                            doc_order(_fulltext_search(session, query, k, _RULING_TYPES)))
+
+
+def _citations_by_doc(session, doc_ids):
+    """{doc id: {(eval code, article): times cited}} over each ruling's whole
+    text -- dg._refs_in, the same reader dg._articles_cited_in_rulings uses."""
+    ids = [i for i in dict.fromkeys(doc_ids) if i]
+    if not ids:
+        return {}
+    cites = {}
+    for row in session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id IN $ids RETURN d.id AS id, s.plain_text AS text",
+        ids=ids,
+    ).data():
+        for number, abbr in dg._refs_in(row.get("text") or ""):
+            code = _code_key(abbr)
+            if code:
+                per_doc = cites.setdefault(row["id"], {})
+                per_doc[(code, number)] = per_doc.get((code, number), 0) + 1
+    return cites
+
+
+def _run_timeline(session, text, index, k, warned):
+    """TIMELINE: (ranking, every step, the ranked lists per kept step, LLM seconds)."""
+    t0 = time.time()
+    steps = _timeline_steps(text)
+    llm_seconds = time.time() - t0
+    per_step = []
+    for step in _kept_steps(steps):
+        query = _timeline_query(step)
+        per_step.append({
+            "n": step["n"], "query": query,
+            "primary_vector": _ranked_refs(_vector_search(session, query, index, k, warned, _PRIMARY_TYPES)),
+            "primary_fulltext": _ranked_refs(_fulltext_search(session, query, k, _PRIMARY_TYPES)),
+            "rulings": _ruling_ids(session, query, index, k, warned),
+        })
+    cites = _citations_by_doc(session, [doc_id for s in per_step for doc_id in s["rulings"]])
+    lists = []
+    for s in per_step:
+        s["ruling_citations"] = _cited_ranking(s["rulings"], cites)
+        lists += [s["primary_vector"], s["primary_fulltext"], s["ruling_citations"]]
+    return _rrf(*lists), steps, per_step, llm_seconds
+
+
+def _hyde_norms(text, steps):
+    parsed = dg._chat_json([SystemMessage(content=_HYDE_SYSTEM), HumanMessage(content=_hyde_human(text, steps))],
+                           max_tokens=3000, temperature=0)
+    return _parse_hyde(parsed, [step["n"] for step in steps])
+
+
+def _run_case(driver, database, case, vector_index, k, warned, situation_index="situation_embeddings_v2",
+              exclude_re=_NOT_A_LAW_RE, situation_ready=True):
     text = case["question"]
     detail = {}
     with driver.session(database=database) as session:
         from src.rag.doc_lookup import _fetch_doc_names
         documents = _fetch_doc_names(driver, database)
 
+        latency = {}
+        t0 = time.time()
         baseline = _merge_best_rank(
             _ranked_refs(_vector_search(session, text, vector_index, k, warned)),
             _ranked_refs(_fulltext_search(session, text, k)),
         )
+        latency["baseline"] = time.time() - t0
 
+        t0 = time.time()
         try:
             bullets = _distill_bullets(text)
         except Exception as exc:
             logging.warning("%s: distill (bullets) failed: %s", case["id"], exc)
             bullets = []
+        latency["distill_llm"] = time.time() - t0
         detail["bullets"] = bullets
         joined = " ".join(b["testo"] for b in bullets)
         bullet_lists = [_retrieve(session, b["testo"], vector_index, k, warned) for b in bullets]
         if joined:
             bullet_lists.append(_retrieve(session, joined, vector_index, k, warned))
         distill = _merge_by_hits(*bullet_lists) if bullet_lists else []
+        latency["distill"] = time.time() - t0
+
+        # FUSION_CLEAN's sources: the same searches, cleaned (round 11).
+        excluded = set()
+        t0 = time.time()
+        baseline_clean = _merge_best_rank(*_clean_searches(session, text, vector_index, k, warned, exclude_re,
+                                                           excluded))
+        latency["baseline_clean"] = time.time() - t0
+        t0 = time.time()
+        clean_lists = [_retrieve_clean(session, b["testo"], vector_index, k, warned, exclude_re, excluded)
+                       for b in bullets]
+        if joined:
+            clean_lists.append(_retrieve_clean(session, joined, vector_index, k, warned, exclude_re, excluded))
+        distill_clean = _merge_by_hits(*clean_lists) if clean_lists else []
+        latency["distill_clean_search"] = time.time() - t0
+        detail["clean_excluded_documents"] = sorted(excluded)
 
         try:
             questions = _distill_questions(bullets)
@@ -535,12 +950,56 @@ def _run_case(driver, database, case, vector_index, k, warned):
         distill_questions = _merge_by_hits(*bullet_lists, *question_lists) if (bullet_lists or question_lists) \
             else []
 
+        t0 = time.time()
         try:
             current, analysis = _run_current(session, driver, database, text)
         except Exception as exc:
             logging.warning("%s: CURRENT (case-analysis v2) failed: %s", case["id"], exc)
             current, analysis = [], {}
+        latency["current"] = time.time() - t0
         detail["current_analysis"] = analysis
+
+        t0 = time.time()
+        try:
+            timeline, steps, per_step, latency["timeline_llm"] = _run_timeline(
+                session, text, vector_index, k, warned)
+        except Exception as exc:
+            logging.warning("%s: TIMELINE failed: %s", case["id"], exc)
+            timeline, steps, per_step = [], [], []
+        latency["timeline"] = time.time() - t0
+        detail["timeline"] = steps
+        detail["timeline_searches"] = [
+            {"n": s["n"], "query": s["query"], "rulings": len(s["rulings"]),
+             **{key: [_ref_label(ref) for ref in s[key][:10]]
+                for key in ("primary_vector", "primary_fulltext", "ruling_citations")}}
+            for s in per_step]
+        timeline_current = _rrf(timeline, current)
+
+        situation = None
+        if situation_ready:
+            t0 = time.time()
+            situation_lists = [_situation_search(session, _step_story(step), situation_index, k, warned)
+                               for step in _kept_steps(steps)]
+            situation_lists.append(_situation_search(session, text, situation_index, k, warned))
+            situation = _rrf(*situation_lists)
+            latency["situation_search"] = time.time() - t0
+            detail["situation_searches"] = [[_ref_label(ref) for ref in refs[:10]] for refs in situation_lists]
+
+        t0 = time.time()
+        try:
+            hyde_per_step, hyde_case = _hyde_norms(text, _kept_steps(steps))
+        except Exception as exc:
+            logging.warning("%s: HYDE generation failed: %s", case["id"], exc)
+            hyde_per_step, hyde_case = {}, ""
+        latency["hyde_llm"] = time.time() - t0
+        detail["hyde"] = {"steps": {str(n): norms for n, norms in hyde_per_step.items()}, "case": hyde_case}
+        t0 = time.time()
+        hyde_excluded, hyde_lists = set(), []
+        for norm in [n for norms in hyde_per_step.values() for n in norms] + ([hyde_case] if hyde_case else []):
+            hyde_lists += _clean_searches(session, norm, vector_index, k, warned, exclude_re, hyde_excluded)
+        hyde = _rrf(*hyde_lists)
+        latency["hyde_search"] = time.time() - t0
+        detail["hyde_excluded_documents"] = sorted(hyde_excluded)
 
         union = _dedupe_ordered(current, baseline, distill)
         union_rows = _fetch_union_rows(session, documents, union)
@@ -553,7 +1012,6 @@ def _run_case(driver, database, case, vector_index, k, warned):
             selected = union
 
         signal_counts = _signal_counts(union, current, baseline, distill)
-        latency = {}
 
         t0 = time.time()
         try:
@@ -579,12 +1037,20 @@ def _run_case(driver, database, case, vector_index, k, warned):
         t0 = time.time()
         fusion_baseline = _merge_by_hits(current, baseline, distill)
         latency["fusion_baseline"] = time.time() - t0
+        fusion_clean = _merge_by_hits(current, baseline_clean, distill_clean)
 
     detail["llm_relevance_scores"] = {_ref_label(ref): score for ref, score in llm_relevance_scores.items()}
     return {"baseline": baseline, "distill": distill, "distill_questions": distill_questions,
             "current": current, "union": union, "selected": selected,
             "rerank_bullets": rerank_bullets, "rerank_raw": rerank_raw,
             "llm_relevance": llm_relevance, "fusion_baseline": fusion_baseline,
+            "timeline": timeline, "timeline_current": timeline_current,
+            "fusion_clean": fusion_clean,
+            "hyde": hyde, "hyde_fusion_clean": _rrf(hyde, fusion_clean),
+            **({"situation": situation,
+                "situation_fusion": _rrf(situation, fusion_baseline),
+                "situation_fusion_clean": _rrf(situation, fusion_clean),
+                "hyde_situation_fusion_clean": _rrf(hyde, situation, fusion_clean)} if situation is not None else {}),
             "union_candidate_count": len(union), "latency": latency, "detail": detail}
 
 
@@ -642,8 +1108,82 @@ def _noise_latency_table(results, cases, methods, ks):
     return lines
 
 
+def _method_latency(r, method):
+    parts = _COMPOSITE_LATENCY.get(method, (method,))
+    return sum(r["latency"].get(m, 0.0) for m in parts)
+
+
+def _comparison_lines(results, cases, k):
+    """Retrieval methods and composites side by side: totals (recall, noise,
+    mean latency per case), then found@10/found@k per case."""
+    methods = _available_methods(results, COMPARISON_METHODS)
+    lines = [f"{'method':<30s}{'recall@10':<12s}{'recall@' + str(k):<12s}{'noise@10':<10s}"
+             f"{'noise@' + str(k):<10s}{'latency/case':<14s}"]
+    for m in methods:
+        f10 = fk = total = n10 = nk = 0
+        for case in cases:
+            r = results[case["id"]]
+            a, t = _recall(r[m], case["expected"], 10)
+            b, _ = _recall(r[m], case["expected"], k)
+            f10 += a; fk += b; total += t
+            n10 += _noise(r[m], case["expected"], 10)
+            nk += _noise(r[m], case["expected"], k)
+        latency = sum(_method_latency(results[c["id"]], m) for c in cases) / len(cases)
+        lines.append(f"{m:<30s}{f'{f10}/{total}':<12s}{f'{fk}/{total}':<12s}{n10:<10d}{nk:<10d}{latency:>6.1f}s")
+    lines.append("")
+    lines.append("per case, found@10/found@" + str(k) + ":")
+    lines.append(f"{'case':<18s}" + "".join(f"{m:<30s}" for m in methods))
+    for case in cases:
+        r = results[case["id"]]
+        cells = []
+        for m in methods:
+            a, t = _recall(r[m], case["expected"], 10)
+            b, _ = _recall(r[m], case["expected"], k)
+            cells.append(f"{a}/{b} of {t}".ljust(30))
+        lines.append(f"{case['id']:<18s}" + "".join(cells))
+    lines.append("")
+    lines.append("TIMELINE's own LLM call, mean per case: "
+                 f"{sum(results[c['id']]['latency'].get('timeline_llm', 0.0) for c in cases) / len(cases):.1f}s "
+                 "(the rest of TIMELINE's latency is its searches). Composite latency = sum of its parts; "
+                 "SITUATION's and HYDE's include that LLM call (their steps).")
+    if len(methods) < len(COMPARISON_METHODS):
+        lines.append("Not reported (the situation index isn't built yet): "
+                     + ", ".join(m for m in COMPARISON_METHODS if m not in methods) + ".")
+    excluded = sorted({name for c in cases for key in ("clean_excluded_documents", "hyde_excluded_documents")
+                       for name in results[c["id"]]["detail"].get(key, [])})
+    lines.append("")
+    lines.append(f"FUSION_CLEAN's/HYDE's filter removed {len(excluded)} document(s) by name "
+                 "(check none is a code or a law):")
+    lines += [f"   - {name}" for name in excluded]
+    return lines
+
+
+def _hyde_lines(case_id, detail):
+    hyde = detail.get("hyde") or {}
+    lines = [f"   hypothetical norms ({case_id}):"]
+    for n, norms in (hyde.get("steps") or {}).items():
+        lines += [f"     step {n}: {norm}" for norm in norms]
+    if hyde.get("case"):
+        lines.append(f"     whole case: {hyde['case']}")
+    return lines
+
+
+def _timeline_lines(case_id, detail):
+    lines = [f"   timeline ({case_id}):"]
+    for step in detail.get("timeline") or []:
+        mark = "  " if step["relevance"] else "x "
+        lines.append(f"     {mark}{step['n']}. [rel {step['relevance']}] {step['actor']} | {step['action']} | "
+                     f"{step['object']} | {step['means']} | {step['result']} | terms: {step['terms']}")
+    return lines
+
+
 def _table_lines(results, cases, k):
-    lines = [f"recall@10 and @{k}, found/expected, code-aware:", ""]
+    lines = [f"TIMELINE vs the other methods -- recall@10/@{k} (code-aware), noise (non-expected articles in "
+             f"the top 10/{k}), latency:", ""]
+    lines += _comparison_lines(results, cases, k)
+    lines.append("")
+    lines.append(f"recall@10 and @{k}, found/expected, code-aware:")
+    lines.append("")
     lines += _recall_table(results, cases, k, METHODS)
     lines.append("")
     lines.append("UNION (current + baseline + distill, deduped) and SELECTED (UNION through the live "
@@ -672,7 +1212,8 @@ def _detail_lines(results, cases, k):
         r = results[case["id"]]
         lines.append(f"\n## {case['id']}")
         lines.append(f"   expected: {case['expected']}")
-        for m in METHODS + UNION_METHODS + RANKING_METHODS:
+        for m in _available_methods(results, METHODS + UNION_METHODS + RANKING_METHODS + TIMELINE_METHODS
+                                    + SITUATION_METHODS + HYDE_METHODS):
             top = r[m][:10]
             lines.append(f"   {m} top 10: {[f'{a} {c}' for c, a in top]}")
         if r["detail"].get("bullets"):
@@ -683,9 +1224,28 @@ def _detail_lines(results, cases, k):
             lines.append("   questions:")
             for q in r["detail"]["questions"]:
                 lines.append(f"     - {q}")
+        if r["detail"].get("clean_excluded_documents"):
+            lines.append("   FUSION_CLEAN excluded: " + str(r["detail"]["clean_excluded_documents"]))
+        if r["detail"].get("timeline"):
+            lines += _timeline_lines(case["id"], r["detail"])
+            lines.append("     (x = relevance 0, discarded)")
+        if r["detail"].get("hyde"):
+            lines += _hyde_lines(case["id"], r["detail"])
         if r["detail"].get("llm_relevance_scores"):
             lines.append("   LLM relevance scores: " + str(r["detail"]["llm_relevance_scores"]))
     return lines
+
+
+def _situation_index_ready(driver, database, index):
+    """True when the situation vector index exists and at least one Situation node is linked (read-only)."""
+    try:
+        with driver.session(database=database) as session:
+            if not session.run("SHOW VECTOR INDEXES YIELD name WHERE name = $name RETURN name", name=index).data():
+                return False
+            return bool(session.run("MATCH (:Section)-[:HAS_SITUATION]->(x:Situation) RETURN x LIMIT 1").data())
+    except Exception as exc:
+        logging.warning("could not check the situation index %r: %s", index, exc)
+        return False
 
 
 def main():
@@ -696,9 +1256,23 @@ def main():
     parser.add_argument("--vector-index", default="section_embeddings_v2")
     parser.add_argument("--k", type=int, default=20, help="top-k retrieved per call; also the second recall@")
     parser.add_argument("--out", default="exp_distill_runs")
+    parser.add_argument("--situation-index", default="situation_embeddings_v2")
+    parser.add_argument("--exclude-docs", help="extra regex: documents whose name matches it are cut from FUSION_CLEAN")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
+
+    from src.rag import embedding_config
+    print(f"embedding query mode: {embedding_config.QUERY_MODE}")
+    if not embedding_config.text_mode() and args.vector_index.endswith("_v2"):
+        print(f"WARNING: EMBEDDING_QUERY_MODE={embedding_config.QUERY_MODE} sends token IDs, but {args.vector_index} "
+              "holds plain-text vectors -- every vector search except SITUATION's is comparing gibberish. "
+              "Run with EMBEDDING_QUERY_MODE=text.", flush=True)
+    global _situation_embedder
+    from scripts.build_situation_index import plain_text_embedder
+    _situation_embedder = plain_text_embedder()
+    exclude_re = (re.compile(_NOT_A_LAW_RE.pattern + "|" + args.exclude_docs, re.IGNORECASE) if args.exclude_docs
+                  else _NOT_A_LAW_RE)
 
     carried = {c["id"]: c for c in json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]}
     cases = [carried[cid] for cid in _CARRIED_OVER if cid in carried]
@@ -710,15 +1284,23 @@ def main():
 
     from src.rag.main import NEO4J_DATABASE, driver
 
+    situation_ready = _situation_index_ready(driver, NEO4J_DATABASE, args.situation_index)
+    print(f"situation index {args.situation_index!r}: "
+          f"{'present, SITUATION methods included' if situation_ready else 'not built, SITUATION methods skipped'}")
+
     warned = set()
     results = {}
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
-        futures = {pool.submit(_run_case, driver, NEO4J_DATABASE, case, args.vector_index, args.k, warned): case
+        futures = {pool.submit(_run_case, driver, NEO4J_DATABASE, case, args.vector_index, args.k, warned,
+                               situation_index=args.situation_index, exclude_re=exclude_re,
+                               situation_ready=situation_ready): case
                   for case in cases}
         for future in as_completed(futures):
             case = futures[future]
             print(f"... {case['id']} done", flush=True)
             results[case["id"]] = future.result()
+            print("\n".join(_timeline_lines(case["id"], results[case["id"]]["detail"])), flush=True)
+            print("\n".join(_hyde_lines(case["id"], results[case["id"]]["detail"])), flush=True)
 
     table = _table_lines(results, cases, args.k)
     detail = _detail_lines(results, cases, args.k)

@@ -15,6 +15,7 @@ from ...preprocessing.schema.schema import (
     relations as schema_relations,
 )
 from ..ai_chat import _call_chat, structured_entities_model
+from ..article_suffix import SUFFIX, canonical_suffix
 from ..answer_processing import _visibility_filter
 from .cypher import CROSSREF_SOURCE
 from ..cypher_logger import log_cypher_event, log_cypher_multiline
@@ -877,7 +878,7 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
 # fail to extend into "59sono" in the first place (the real following
 # character, not a truncated one, is checked), so the run correctly stops at
 # "589" and "59" is never offered to the extractor at all.
-_CROSS_REF_SUFFIX = r'(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)'
+_CROSS_REF_SUFFIX = SUFFIX   # every spelling, longest first (article_suffix.py)
 _CROSS_REF_NUMBER = rf'(?<!\w)\d+(?:[\s-]*{_CROSS_REF_SUFFIX})?(?!\w)'
 _CROSS_REF_RUN = re.compile(
     rf'(?:artt?\.?|articol[oi])\s*{_CROSS_REF_NUMBER}'
@@ -970,7 +971,7 @@ def broaden_article_context(state: Dict[str, Any], driver, database: str) -> Dic
                 continue   # another act's articles, not this code's
             for num_match in _CROSS_REF_NUM.finditer(run_match.group(0)):
                 number, suffix = num_match.group(1), num_match.group(2)
-                full_number = f"{number}-{suffix.lower()}" if suffix else number
+                full_number = f"{number}-{canonical_suffix(suffix)}" if suffix else number
                 if full_number in matched_numbers:
                     continue
                 referenced_by_doc.setdefault(source_doc_id, set()).add(full_number)
