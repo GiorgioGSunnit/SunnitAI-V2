@@ -42,6 +42,11 @@ def test_quote_in_text():
                             "sua prevedibilità in concreto", TEXT)
     assert not rc.quote_in_text("la morte deve essere prevedibile in concreto per l'agente", TEXT)
     assert not rc.quote_in_text("schiaffo", TEXT)   # too short to prove anything
+    # punctuation and spacing may differ, the words may not
+    assert rc.quote_in_text("Gli artt. 581 e 584 c. p.", TEXT)
+    assert rc.quote_in_text("è sufficiente, che l'evento morte sia conseguenza causale", TEXT)
+    assert not rc.quote_in_text("è sufficiente che la morte sia conseguenza causale", TEXT)
+    assert not rc.quote_in_text("sufficiente che l'evento morte sia conseguenza causa", TEXT)   # no half words
 
 
 def test_check_card_keeps_only_allowed_values():
@@ -60,6 +65,11 @@ def test_check_card_keeps_only_allowed_values():
     assert card["parole_chiave_fatti"][:2] == ["schiaffo", "caduta"] and len(card["parole_chiave_fatti"]) == 8
     assert card["parole_chiave_questioni"] == []
     assert card["citazione_verificata"] and card["citazione"]
+
+
+def test_check_card_drops_costs_articles():
+    card = rc.check_card({"articoli_applicati": ["616 c.p.p.", "584 c.p."]}, TEXT, ARTICLES + ["616 c.p.p."])
+    assert card["articoli_applicati"] == ["584 c.p."] and card["articoli_scartati"] == 0
 
 
 def test_check_card_drops_an_invented_quote_and_survives_garbage():

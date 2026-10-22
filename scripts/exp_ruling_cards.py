@@ -54,6 +54,9 @@ PROMPT_VERSION = "cards-v1"
 MAX_CHARS = 40000        # about 13k tokens: with the prompt and the answer, inside the model's 20k
 HEAD_CHARS = 8000        # a longer ruling is read as its opening + its last part (reasons, P.Q.M.)
 QUOTE_CHARS = 300
+# Costs and the fine on a failed criminal appeal: applied in most rulings, but they say nothing
+# about the case (the trial, despite the prompt, carded 616 c.p.p. as applied 3 times in 20).
+COST_ARTICLES = {"616 c.p.p.", "592 c.p.p.", "535 c.p.p."}
 _RICORRENTI = ("imputato", "pubblico ministero", "parte civile", "più parti", "altro")
 _ESITI = ("rigetto", "inammissibilità", "annullamento con rinvio", "annullamento senza rinvio",
           "accoglimento parziale", "condanna", "assoluzione", "altro")
@@ -102,17 +105,24 @@ def _norm(text: str) -> str:
     return " ".join(text.split())
 
 
+def _words(text: str) -> str:
+    return " " + " ".join(re.sub(r"[^\w]+", " ", _norm(text)).split()) + " "
+
+
 def quote_in_text(quote: str, text: str) -> bool:
-    """The quote is in the ruling, up to case, spacing and quote marks; a quote cut with
-    "..." counts when every piece of 20+ characters is there."""
-    q, t = _norm(quote).strip(' "'), _norm(text)
+    """The quote's words are in the ruling, in order, up to case, spacing and punctuation
+    (the 20-ruling trial found 16 quotes character for character; a copy that only moves
+    a comma or spaces "c.p." should still count, a changed word should not). A quote cut
+    with "..." counts when every piece of 20+ characters is there."""
+    q = _norm(quote).strip(' "')
     if len(q) < 20:
         return False
-    if q in t:
-        return True
-    pieces = [p.strip(' ."') for p in re.split(r"\.\.\.|…|\[\.\.\.\]", q)]
-    pieces = [p for p in pieces if p]
-    return len(pieces) > 1 and all(len(p) >= 20 and p in t for p in pieces)
+    t = _words(text)
+    pieces = [_words(p) for p in re.split(r"\.\.\.|…|\[\.\.\.\]", q)]
+    pieces = [p for p in pieces if p.strip()]
+    if len(pieces) == 1:
+        return pieces[0] in t
+    return bool(pieces) and all(len(p) >= 22 and p in t for p in pieces)
 
 
 def _choice(value, allowed, default):
@@ -141,12 +151,12 @@ def check_card(raw: dict, text: str, articles: list) -> dict:
     list, the quote only when it is in the text."""
     raw = raw if isinstance(raw, dict) else {}
     proposed = [k for k in (_article_key(a) for a in raw.get("articoli_applicati") or []) if k]
-    applied = [a for a in dict.fromkeys(proposed) if a in articles]
+    applied = [a for a in dict.fromkeys(proposed) if a in articles and a not in COST_ARTICLES]
     quote = " ".join(str(raw.get("citazione") or "").split())[:QUOTE_CHARS + 50]
     verified = quote_in_text(quote, text)
     return {
         "articoli_applicati": applied,
-        "articoli_scartati": len(set(proposed)) - len(applied),
+        "articoli_scartati": len({a for a in proposed if a not in articles}),
         "ricorrente": _choice(raw.get("ricorrente"), _RICORRENTI, "altro"),
         "esito": _choice(raw.get("esito"), _ESITI, "altro"),
         "a_favore_di": _choice(raw.get("a_favore_di"), _LATI, "non chiaro"),
