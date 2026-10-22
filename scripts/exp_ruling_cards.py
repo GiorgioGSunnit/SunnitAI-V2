@@ -1,27 +1,33 @@
-"""Pilot: one label card per criminal ruling, made by the model, checked by code.
+"""Pilot: one label card per Cassazione ruling, made by the model, checked by code.
 
-Step 2 of the ruling-cards plan (22 Oct 2026). Step 1 (exp_ruling_links.py) found the
-ruling collection 81% civil, with only about 2,100 criminal rulings. That step labelled
-the side a criminal ruling favours for only half of them, and links no ruling to the
-articles it applies. Keywords instead of a summary is the PM's idea. Each card holds:
+Step 2 of the ruling-cards plan (22 Oct 2026). Step 1 (exp_ruling_links.py) labelled the
+side a criminal ruling favours for only half of them, and links no ruling to the articles
+it applies. Keywords instead of a summary is the PM's idea. Each card holds:
 
   - articoli_applicati: the articles the court applies to decide, chosen from the ones
     the ruling cites (step 1's list; anything else is dropped);
-  - ricorrente, esito, a_favore_di (imputato / accusa / non chiaro);
-  - argomento_decisivo, parole_chiave_fatti, parole_chiave_questioni: keywords;
-  - citazione: one or two sentences copied from the ruling, kept only when the code
-    finds them in the text;
-  - riferimento: court, section, number and date. The court comes from step 1, the
-    section from the opening, and the number and date from the document's own fields.
+  - criminal (--branch penale): ricorrente, esito, a_favore_di (imputato / accusa /
+    non chiaro);
+  - civil (--branch civile): ricorrente and controricorrente as roles ("lavoratore",
+    "compagnia assicurativa"), esito, a_favore_di (ricorrente / controricorrente / non
+    chiaro) and parte_favorita, the favoured party's role;
+  - argomento_decisivo, parole_chiave_fatti, parole_chiave_questioni: short phrases;
+  - citazione: one or two sentences copied from the ruling. It is kept when the code
+    finds it in the text, or, for a near copy, replaced by the ruling's own words there;
+  - riferimento: court, section, number and date (from the Italgiure file name, the
+    document's fields, else the text).
 
-Reads step 1's labels (--links, default /tmp/ruling_links.jsonl) to pick the rulings,
-criminal by default. Rulings citing a c.p. article come first. Appends one card per
+Reads step 1's labels (--links, default /tmp/ruling_links.jsonl) to pick the rulings of
+--branch. Rulings citing a code article of that branch come first; civil rulings that
+only close a case ("estinto") are skipped unless --include-estinto. Appends one card per
 ruling to --out and skips rulings already carded, so a run can stop and resume.
---stop-at 06:30 stops taking new rulings at that server time. --workers sets the
-parallel model calls (the model is shared with the live chatbot: 1 by day, 3 at night).
+--stop-at 06:30 stops taking new rulings at that server time. --workers sets the parallel
+model calls (the model is shared with the live chatbot: 1 by day, 3 at night). Each call
+has a CALL_TIMEOUT; a timed-out ruling is retried by the next run.
 
 Run from the app folder (prod), with exp_ruling_links.py next to this script:
     cd /opt/chatbot && venv/bin/python /tmp/exp_ruling_cards.py --limit 20
+    ... --branch civile --limit 20 --out /tmp/ruling_cards_civ.jsonl
     ... --workers 3 --stop-at 06:30          (the night run)
     ... --report                              (only the report on the cards so far)
 
@@ -31,6 +37,7 @@ keywords are printed. The cards, with their quotes, stay in --out on the server.
 
 import argparse
 import datetime as dt
+import difflib
 import importlib.util
 import json
 import os
@@ -52,26 +59,53 @@ import src.rag.defensive_generation as dg  # noqa: E402
 
 # v2 (22 Oct): "più parti" only for different kinds of parties -- the trial's model used it for
 # several defendants, and "who appealed" agreed with step 1 in 9 of 14.
-PROMPT_VERSION = "cards-v2"
+# v3 (23 Oct, after the 2,476 criminal cards): keywords as short phrases ("legittima difesa", not
+# "legittima" + "difesa"), and facts as what happened -- the run's most used "facts" were pena,
+# detenzione, condanna, sentenza. civ-v1: the civil card, sides as the parties' roles.
+PROMPT_VERSIONS = {"penale": "cards-v3", "civile": "cards-civ-v1"}
+CALL_TIMEOUT = 120       # seconds per model call (the criminal run's slowest ruling took 38)
 MAX_CHARS = 40000        # about 13k tokens: with the prompt and the answer, inside the model's 20k
 HEAD_CHARS = 8000        # a longer ruling is read as its opening + its last part (reasons, P.Q.M.)
 QUOTE_CHARS = 300
 # Costs and the fine on a failed criminal appeal: applied in most rulings, but they say nothing
 # about the case (the trial, despite the prompt, carded 616 c.p.p. as applied 3 times in 20).
 COST_ARTICLES = {"616 c.p.p.", "592 c.p.p.", "535 c.p.p."}
+# Words that say nothing about what happened, dropped from the facts whatever the prompt says.
+_NOT_FACTS = {"pena", "pene", "condanna", "sentenza", "sentenze", "reato", "reati", "ricorso", "ricorrente",
+              "imputato", "giudice", "processo", "procedimento", "appello", "cassazione", "motivazione",
+              "decisione", "domanda"}
 _RICORRENTI = ("imputato", "pubblico ministero", "parte civile", "più parti", "altro")
 _ESITI = ("rigetto", "inammissibilità", "annullamento con rinvio", "annullamento senza rinvio",
           "accoglimento parziale", "condanna", "assoluzione", "altro")
 _LATI = ("imputato", "accusa", "non chiaro")
+_ESITI_CIVILE = ("rigetto", "inammissibilità", "accoglimento con rinvio", "accoglimento senza rinvio",
+                 "accoglimento parziale", "estinzione", "altro")
+_LATI_CIVILE = ("ricorrente", "controricorrente", "non chiaro")
 
+_ARTICLES_RULE = (
+    "- articoli_applicati: solo gli articoli dell'elenco che il giudice applica o interpreta per decidere "
+    "il caso, non quelli citati di passaggio (spese, forma del ricorso), scritti come nell'elenco.\n"
+)
+_KEYWORDS_AND_QUOTE = (
+    "- argomento_decisivo: da 2 a 5 espressioni brevi (da 1 a 4 parole) sulla ragione per cui il giudice "
+    "decide così.\n"
+    "- parole_chiave_fatti: da 3 a 8 espressioni brevi (da 1 a 4 parole) su ciò che è concretamente accaduto "
+    "nella vicenda (per esempio \"schiaffo\", \"caduta dalle scale\", \"auto lanciata contro la persona\"), non "
+    "sul reato, sulla domanda o sulla procedura (non \"omicidio\", \"pena\", \"condanna\", \"sentenza\", "
+    "\"ricorso\"), senza nomi di persone o di luoghi.\n"
+    "- parole_chiave_questioni: da 3 a 8 espressioni brevi (da 1 a 4 parole) sulle questioni giuridiche, "
+    "ciascuna intera (per esempio \"legittima difesa\", \"nesso causale\", \"prevedibilità dell'evento\"; mai "
+    "una parola staccata dalla sua espressione, come \"legittima\" da sola).\n"
+    "- citazione: una o due frasi copiate parola per parola dalla sentenza, in cui il giudice afferma il "
+    f"principio decisivo; al massimo {QUOTE_CHARS} caratteri; senza nomi di persone."
+)
 SYSTEM = (
     "Sei un avvocato penalista italiano. Ti vengono dati una sentenza penale e l'elenco degli articoli "
     "che cita. Compila la scheda della sentenza usando solo ciò che la sentenza dice. Rispondi solo con "
     "questo JSON:\n"
     '{"articoli_applicati": [], "ricorrente": "", "esito": "", "a_favore_di": "", '
     '"argomento_decisivo": [], "parole_chiave_fatti": [], "parole_chiave_questioni": [], "citazione": ""}\n'
-    "- articoli_applicati: solo gli articoli dell'elenco che il giudice applica o interpreta per decidere "
-    "il caso, non quelli citati di passaggio (spese, forma del ricorso), scritti come nell'elenco.\n"
+    + _ARTICLES_RULE +
     "- ricorrente: chi ha impugnato: \"imputato\" (anche quando gli imputati sono più d'uno), \"pubblico "
     "ministero\", \"parte civile\", \"più parti\" solo se hanno impugnato parti di tipo diverso (per esempio "
     "imputato e pubblico ministero), o \"altro\".\n"
@@ -79,14 +113,28 @@ SYSTEM = (
     "\"accoglimento parziale\", \"condanna\", \"assoluzione\" o \"altro\".\n"
     "- a_favore_di: \"imputato\" se la decisione gli è favorevole, \"accusa\" se gli è sfavorevole, "
     "\"non chiaro\" altrimenti.\n"
-    "- argomento_decisivo: da 2 a 5 parole chiave sulla ragione per cui il giudice decide così.\n"
-    "- parole_chiave_fatti: da 3 a 8 parole chiave sui fatti concreti (per esempio \"schiaffo\", "
-    "\"caduta\", \"trauma cranico\"), senza nomi di persone o di luoghi.\n"
-    "- parole_chiave_questioni: da 3 a 8 parole chiave sulle questioni giuridiche (per esempio \"nesso "
-    "causale\", \"prevedibilità dell'evento\").\n"
-    "- citazione: una o due frasi copiate parola per parola dalla sentenza, in cui il giudice afferma il "
-    f"principio decisivo; al massimo {QUOTE_CHARS} caratteri; senza nomi di persone."
+    + _KEYWORDS_AND_QUOTE
 )
+SYSTEM_CIVILE = (
+    "Sei un avvocato civilista italiano. Ti vengono dati un provvedimento civile della Corte di Cassazione e "
+    "l'elenco degli articoli che cita. Compila la scheda del provvedimento usando solo ciò che dice. Rispondi "
+    "solo con questo JSON:\n"
+    '{"articoli_applicati": [], "ricorrente": "", "controricorrente": "", "esito": "", "a_favore_di": "", '
+    '"argomento_decisivo": [], "parole_chiave_fatti": [], "parole_chiave_questioni": [], "citazione": ""}\n'
+    + _ARTICLES_RULE +
+    "- ricorrente: il ruolo nella vicenda di chi ha proposto il ricorso per cassazione, da 1 a 4 parole e "
+    "senza nomi (per esempio \"danneggiato\", \"compagnia assicurativa\", \"lavoratore\", \"datore di lavoro\", "
+    "\"consumatore\", \"banca\", \"conduttore\", \"locatore\", \"contribuente\", \"agenzia delle entrate\", "
+    "\"condominio\", \"comune\").\n"
+    "- controricorrente: allo stesso modo, il ruolo della parte contro cui è proposto il ricorso; \"\" se "
+    "non c'è.\n"
+    "- esito: \"rigetto\", \"inammissibilità\", \"accoglimento con rinvio\", \"accoglimento senza rinvio\", "
+    "\"accoglimento parziale\", \"estinzione\" o \"altro\".\n"
+    "- a_favore_di: \"ricorrente\" se la decisione è favorevole a chi ha proposto il ricorso, "
+    "\"controricorrente\" se è favorevole all'altra parte, \"non chiaro\" altrimenti.\n"
+    + _KEYWORDS_AND_QUOTE
+)
+SYSTEMS = {"penale": SYSTEM, "civile": SYSTEM_CIVILE}
 # Asked once more when the card's quote is not in the ruling (the trial: 16 of 20 found).
 QUOTE_SYSTEM = (
     "Copia dalla sentenza, parola per parola, una o due frasi consecutive in cui il giudice afferma il "
@@ -153,9 +201,62 @@ def quote_overlap(quote: str, text: str) -> float:
     return best / len(words) if words else 0.0
 
 
+_TOKEN_RE = re.compile(r"\w+")
+
+
+def snap_quote(quote: str, text: str, min_share: float = 0.9) -> str:
+    """The ruling's own words for a quote the model copied with small changes (a word changed,
+    a parenthesis dropped): the stretch of the ruling aligned with the quote, when at least
+    `min_share` of the quote's words are found there in order and the stretch is not much
+    longer. '' otherwise -- and when the stretch holds a capitalised word the quote does not,
+    which may be a name the model left out. Of the criminal run's 341 dropped quotes, 227 were
+    90%+ the same as the ruling."""
+    q_tokens = [m.group(0) for m in _TOKEN_RE.finditer(quote or "")]
+    q = [w.lower() for w in q_tokens]
+    if len(q) < 6:
+        return ""
+    tokens = list(_TOKEN_RE.finditer(text or ""))
+    words = [m.group(0).lower() for m in tokens]
+    best = difflib.SequenceMatcher(None, words, q, autojunk=False).find_longest_match(0, len(words), 0, len(q))
+    if best.size < 3:
+        return ""
+    lo, hi = max(0, best.a - best.b - 5), min(len(words), best.a + (len(q) - best.b) + 5)
+    blocks = [b for b in difflib.SequenceMatcher(None, words[lo:hi], q, autojunk=False).get_matching_blocks()
+              if b.size]
+    if sum(b.size for b in blocks) < min_share * len(q):
+        return ""
+    # Edges: an unmatched first or last quote word still counts, as the ruling's word there.
+    first = max(lo, lo + blocks[0].a - blocks[0].b)
+    last = min(hi - 1, lo + blocks[-1].a + blocks[-1].size - 1 + (len(q) - blocks[-1].b - blocks[-1].size))
+    if last - first + 1 > 1.2 * len(q) + 2:
+        return ""
+    span = text[tokens[first].start():tokens[last].end()]
+    quote_words = set(q)
+    if any(w[:1].isupper() and w.lower() not in quote_words and i > 0
+           for i, w in enumerate(m.group(0) for m in tokens[first:last + 1])):
+        return ""
+    return span
+
+
+def settle_quote(quote: str, text: str) -> tuple:
+    """(quote kept, rebuilt): the quote when the ruling has it, else the ruling's own words for
+    a near copy (rebuilt True), else ('', False)."""
+    if quote_in_text(quote, text):
+        return quote, False
+    snapped = snap_quote(quote, text)
+    return (snapped, True) if snapped else ("", False)
+
+
 def _choice(value, allowed, default):
     v = _norm(str(value or "")).strip(' ."')
     return v if v in allowed else default
+
+
+def _role(value) -> str:
+    """A civil party's role in 1-5 words without digits ("lavoratore", "compagnia
+    assicurativa"), '' for anything else."""
+    v = _norm(str(value or "")).strip(' ."')
+    return v if v and len(v) <= 40 and len(v.split()) <= 5 and not re.search(r"\d", v) else ""
 
 
 def _keywords(value, most: int) -> list:
@@ -174,28 +275,39 @@ def _article_key(raw: str):
     return found[0] if found else None
 
 
-def check_card(raw: dict, text: str, articles: list) -> dict:
+def check_card(raw: dict, text: str, articles: list, branch: str = "penale") -> dict:
     """The model's card, kept to the allowed values: articles only from the ruling's own
-    list, the quote only when it is in the text."""
+    list, facts without procedure words, the quote only when the ruling has it (or, for a
+    near copy, the ruling's own words)."""
     raw = raw if isinstance(raw, dict) else {}
     proposed = [k for k in (_article_key(a) for a in raw.get("articoli_applicati") or []) if k]
     applied = [a for a in dict.fromkeys(proposed) if a in articles and a not in COST_ARTICLES]
     quote = " ".join(str(raw.get("citazione") or "").split())[:QUOTE_CHARS + 50]
-    verified = quote_in_text(quote, text)
+    kept, rebuilt = settle_quote(quote, text)
+    if branch == "civile":
+        ricorrente, controricorrente = _role(raw.get("ricorrente")), _role(raw.get("controricorrente"))
+        side = _choice(raw.get("a_favore_di"), _LATI_CIVILE, "non chiaro")
+        parties = {"esito": _choice(raw.get("esito"), _ESITI_CIVILE, "altro"), "ricorrente": ricorrente,
+                   "controricorrente": controricorrente, "a_favore_di": side,
+                   "parte_favorita": {"ricorrente": ricorrente, "controricorrente": controricorrente}.get(side, "")}
+    else:
+        side = _choice(raw.get("a_favore_di"), _LATI, "non chiaro")
+        parties = {"esito": _choice(raw.get("esito"), _ESITI, "altro"),
+                   "ricorrente": _choice(raw.get("ricorrente"), _RICORRENTI, "altro"), "controricorrente": "",
+                   "a_favore_di": side, "parte_favorita": side if side != "non chiaro" else ""}
     return {
         "articoli_applicati": applied,
         "articoli_scartati": len({a for a in proposed if a not in articles}),
-        "ricorrente": _choice(raw.get("ricorrente"), _RICORRENTI, "altro"),
-        "esito": _choice(raw.get("esito"), _ESITI, "altro"),
-        "a_favore_di": _choice(raw.get("a_favore_di"), _LATI, "non chiaro"),
+        **parties,
         "argomento_decisivo": _keywords(raw.get("argomento_decisivo"), 5),
-        "parole_chiave_fatti": _keywords(raw.get("parole_chiave_fatti"), 8),
+        "parole_chiave_fatti": [k for k in _keywords(raw.get("parole_chiave_fatti"), 8) if k not in _NOT_FACTS],
         "parole_chiave_questioni": _keywords(raw.get("parole_chiave_questioni"), 8),
-        "citazione": quote if verified else "",
-        "citazione_verificata": verified,
+        "citazione": kept,
+        "citazione_verificata": bool(kept),
+        "citazione_ricostruita": rebuilt,
         # kept on the server for the report on dropped quotes; never used as a quote
-        "citazione_scartata": "" if verified else quote,
-        "citazione_somiglianza": None if verified or not quote else round(quote_overlap(quote, text), 2),
+        "citazione_scartata": "" if kept else quote,
+        "citazione_somiglianza": None if kept or not quote else round(quote_overlap(quote, text), 2),
     }
 
 
@@ -319,10 +431,17 @@ def city_of(header: str) -> str:
     return " ".join(w[:1].upper() + w[1:].lower() for w in words)
 
 
-def pick(links: list, branch: str, done: set) -> list:
-    """The rulings still to card in `branch`, those citing a c.p. article first."""
-    todo = [r for r in links if r["branch"] == branch and r["id"] not in done and r["chars"]]
-    return sorted(todo, key=lambda r: (not any(a.endswith(" c.p.") for a in r["articles"]), r["id"]))
+_FIRST_CODE = {"penale": " c.p.", "civile": " c.c."}
+
+
+def pick(links: list, branch: str, done: set, include_estinto: bool = False) -> list:
+    """The rulings still to card in `branch`, those citing the branch's substantive code first
+    (c.p. / c.c.). Civil rulings that only close a case (step 1's outcome "estinto": a
+    withdrawn appeal, about 22% of them) say nothing on the law and are skipped unless asked."""
+    code = _FIRST_CODE.get(branch, " c.p.")
+    todo = [r for r in links if r["branch"] == branch and r["id"] not in done and r["chars"]
+            and (include_estinto or branch != "civile" or r.get("outcome") != "estinto")]
+    return sorted(todo, key=lambda r: (not any(a.endswith(code) for a in r["articles"]), r["id"]))
 
 
 def _rules_side(favours: str) -> str:
@@ -332,9 +451,32 @@ def _rules_side(favours: str) -> str:
 # The card's outcome and appellant in step 1's coarser classes, so the two can be compared:
 # step 1 read them from the P.Q.M. and the opening with fixed patterns, no model.
 _OUTCOME_CLASS = {"rigetto": "rigettato", "inammissibilità": "inammissibile", "annullamento con rinvio": "accolto",
-                  "annullamento senza rinvio": "accolto", "accoglimento parziale": "accolto"}
+                  "annullamento senza rinvio": "accolto", "accoglimento parziale": "accolto",
+                  "accoglimento con rinvio": "accolto", "accoglimento senza rinvio": "accolto",
+                  "estinzione": "estinto"}
 _RULES_OUTCOME_CLASS = {"rigettato": "rigettato", "inammissibile": "inammissibile", "accolto": "accolto",
-                        "in parte accolto": "accolto"}
+                        "in parte accolto": "accolto", "estinto": "estinto"}
+_GRANTED = {"annullamento con rinvio", "annullamento senza rinvio", "accoglimento parziale",
+            "accoglimento con rinvio", "accoglimento senza rinvio"}
+_REFUSED = {"rigetto", "inammissibilità"}
+
+
+def expected_side(card: dict) -> str:
+    """The side the card's own outcome and appellant imply ('' when they do not settle it): an
+    appeal granted favours who brought it, one refused the other side. A check of the card
+    against itself -- for civil rulings step 1 reads no side to compare with."""
+    esito = card.get("esito")
+    if esito not in _GRANTED and esito not in _REFUSED:
+        return ""
+    granted = esito in _GRANTED
+    if card.get("branch") == "civile":
+        return "ricorrente" if granted else "controricorrente"
+    appellant = card.get("ricorrente")
+    if appellant == "imputato":
+        return "imputato" if granted else "accusa"
+    if appellant in ("pubblico ministero", "parte civile"):
+        return "accusa" if granted else "imputato"
+    return ""
 _RULES_APPELLANT = {"imputato": "imputato", "pm": "pubblico ministero", "parte civile": "parte civile"}
 
 
@@ -392,16 +534,25 @@ def card_report(cards: list, remaining: int = 0, workers: int = 1) -> list:
     out += [f"Seconds per ruling: median {seconds[n // 2]:.0f}, max {seconds[-1]:.0f}; read in part: "
             f"{sum(c['letta_in_parte'] for c in ok)}",
             f"Quote found word for word in the ruling: {rl._pct(sum(c['citazione_verificata'] for c in ok), n)} "
-            f"(at the second ask: {sum(c.get('citazione_ritentata', False) for c in ok)})",
+            f"(at the second ask: {sum(c.get('citazione_ritentata', False) for c in ok)}; rebuilt from the "
+            f"ruling's own words: {sum(c.get('citazione_ricostruita', False) for c in ok)})",
             f"Articles applied: median {sorted(len(c['articoli_applicati']) for c in ok)[n // 2]} per ruling; "
             f"none: {sum(not c['articoli_applicati'] for c in ok)}; proposed but not in the ruling's list: "
             f"{sum(c['articoli_scartati'] for c in ok)}",
             f"Full reference: {rl._pct(sum(c['riferimento_completo'] for c in ok), n)} "
             f"(number or date read from the ruling's text: {sum(c.get('riferimento_dal_testo', False) for c in ok)}); "
             f"the others miss: {reference_gaps(ok) or '-'}",
-            f"Who appealed: {rl._row(Counter(c['ricorrente'] for c in ok), n)}",
+            f"Who appealed: {rl._row(Counter(c['ricorrente'] or '?' for c in ok), n, top=12)}",
             f"Outcome: {rl._row(Counter(c['esito'] for c in ok), n)}",
             f"In favour of: {rl._row(Counter(c['a_favore_di'] for c in ok), n)}"]
+    if any(c.get("branch") == "civile" for c in ok):
+        out.append(f"Favoured party (civil): {rl._row(Counter(c.get('parte_favorita') or '?' for c in ok), n, top=12)}")
+    implied = [(c["a_favore_di"], expected_side(c)) for c in ok]
+    implied = [(side, exp) for side, exp in implied if exp and side != "non chiaro"]
+    if implied:
+        same = sum(side == exp for side, exp in implied)
+        out.append(f"Side consistent with the card's own outcome and appellant: {same} / {len(implied)} "
+                   f"({same / len(implied):.0%})")
     out.append("Model vs step 1's fixed patterns (no model), where both give an answer:")
     for label, field, rules_field, mapping in (
             ("in favour of", "a_favore_di", "a_favore_di_regole", None),
@@ -454,21 +605,35 @@ def _deadline(stop_at: str):
     return when if when > now else when + dt.timedelta(days=1)
 
 
+def _ask(messages, max_tokens: int) -> str:
+    """One model call at temperature 0, given up after CALL_TIMEOUT seconds (the openai client
+    takes `timeout` per request; LangChain passes bound kwargs through to it). Falls back to the
+    app's _chat, without the limit, if this client does not accept it."""
+    from src.rag.ai_chat import chat_model
+    try:
+        reply = chat_model.bind(max_tokens=max_tokens, temperature=0, timeout=CALL_TIMEOUT).invoke(messages)
+    except TypeError:
+        return dg._chat(messages, max_tokens=max_tokens, temperature=0)
+    return (reply.content or "").strip()
+
+
 def _card(link: dict, text: str) -> dict:
     t0 = time.time()
+    branch = link["branch"] if link["branch"] in SYSTEMS else "penale"
+    system = SYSTEMS[branch]
     prompt_text, in_part = ruling_text_for_prompt(text)
-    messages = [SystemMessage(content=SYSTEM), HumanMessage(content=human_message(prompt_text, link["articles"]))]
+    messages = [SystemMessage(content=system), HumanMessage(content=human_message(prompt_text, link["articles"]))]
     raw, parsed = None, None
     for attempt in (1, 2):
         try:
-            raw = dg._chat(messages, max_tokens=700, temperature=0)
+            raw = _ask(messages, max_tokens=700)
         except Exception as exc:
             return {"id": link["id"], "errore": f"chiamata: {type(exc).__name__}"}
         try:
             parsed = dg.parse_json_reply(raw)
             break
         except ValueError:
-            messages = [SystemMessage(content=SYSTEM + dg._JSON_RETRY_SUFFIX), messages[1]]
+            messages = [SystemMessage(content=system + dg._JSON_RETRY_SUFFIX), messages[1]]
     if not isinstance(parsed, dict):
         return {"id": link["id"], "errore": "json"}
     italgiure = link.get("italgiure")
@@ -485,7 +650,7 @@ def _card(link: dict, text: str) -> dict:
     date = link.get("date") or date_from_text(text)
     ref = {"court": court, "number": number, "date": date, "branch": link["branch"],
            "type": (italgiure or {}).get("type")}
-    card = {"id": link["id"], "prompt_version": PROMPT_VERSION, "riferimento": reference_of(ref, sezione, city),
+    card = {"id": link["id"], "prompt_version": PROMPT_VERSIONS[branch], "riferimento": reference_of(ref, sezione, city),
             "riferimento_completo": reference_complete(court, city, number, date),
             "riferimento_dal_testo": bool((number and not has_number) or (date and not link.get("date"))),
             "court": court, "citta": city, "sezione": sezione,
@@ -494,19 +659,19 @@ def _card(link: dict, text: str) -> dict:
             "esito_regole": _RULES_OUTCOME_CLASS.get(link.get("outcome"), ""),
             "ricorrente_regole": rules_appellant(link.get("appellant")),
             "chars": len(text), "letta_in_parte": in_part}
-    card.update(check_card(parsed, text, link["articles"]))
+    card.update(check_card(parsed, text, link["articles"], branch))
     card["citazione_ritentata"] = False
     if not card["citazione_verificata"]:
         try:
-            again = dg._chat([SystemMessage(content=QUOTE_SYSTEM), HumanMessage(content="SENTENZA:\n" + prompt_text)],
-                             max_tokens=200, temperature=0)
+            again = _ask([SystemMessage(content=QUOTE_SYSTEM), HumanMessage(content="SENTENZA:\n" + prompt_text)],
+                         max_tokens=200)
         except Exception:
             again = ""
-        quote = " ".join(str(again or "").split()).strip(' "«»“”')[:QUOTE_CHARS + 50]
-        if quote_in_text(quote, text):
+        quote, rebuilt = settle_quote(" ".join(str(again or "").split()).strip(' "«»“”')[:QUOTE_CHARS + 50], text)
+        if quote:
             card.update(citazione=quote, citazione_verificata=True, citazione_ritentata=True,
-                        citazione_scartata="", citazione_somiglianza=None)
-    keywords =card["argomento_decisivo"] + card["parole_chiave_fatti"] + card["parole_chiave_questioni"]
+                        citazione_ricostruita=rebuilt, citazione_scartata="", citazione_somiglianza=None)
+    keywords = card["argomento_decisivo"] + card["parole_chiave_fatti"] + card["parole_chiave_questioni"]
     card["parole_totali"], card["parole_nel_testo"] = len(keywords), grounded(keywords, text)
     card["secondi"] = round(time.time() - t0, 1)
     return card
@@ -516,7 +681,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--links", default="/tmp/ruling_links.jsonl", help="step 1's labels")
     parser.add_argument("--out", default="/tmp/ruling_cards.jsonl")
-    parser.add_argument("--branch", default="penale")
+    parser.add_argument("--branch", default="penale", choices=("penale", "civile"))
+    parser.add_argument("--include-estinto", action="store_true",
+                        help="civil: also card the rulings that only close a case (skipped by default)")
     parser.add_argument("--limit", type=int, help="card at most N rulings in this run")
     parser.add_argument("--workers", type=int, default=1, help="parallel model calls (1 by day, 3 at night)")
     parser.add_argument("--stop-at", help="HH:MM server time: take no new rulings after it")
@@ -526,7 +693,7 @@ def main() -> None:
     links = [json.loads(line) for line in open(args.links, encoding="utf-8")]
     cards = _latest(args.out)
     done = {c["id"] for c in cards if not c.get("errore")}
-    todo = pick(links, args.branch, done)
+    todo = pick(links, args.branch, done, args.include_estinto)
     if args.report:
         print("\n".join(card_report(cards, len(todo), args.workers)))
         return
@@ -562,7 +729,7 @@ def main() -> None:
 
     cards = _latest(args.out)
     done = {c["id"] for c in cards if not c.get("errore")}
-    print("\n".join(card_report(cards, len(pick(links, args.branch, done)), args.workers)))
+    print("\n".join(card_report(cards, len(pick(links, args.branch, done, args.include_estinto)), args.workers)))
     print(f"\nThis run: {len(new)} rulings in {time.time() - t0:.0f}s. Nothing was written to the database. "
           f"Cards: {args.out}")
 

@@ -77,10 +77,26 @@ def test_quote_across_a_pdf_line_break():
 def test_quote_overlap_tells_a_near_copy_from_an_invented_one():
     near = "è sufficiente che l'evento morte sia conseguenza causale degli atti diretti a colpire"
     assert rc.quote_overlap(near, TEXT) >= 0.9
-    assert rc.quote_overlap("la morte deve essere sempre prevedibile per chi agisce con violenza", TEXT) < 0.5
+    invented = "la morte deve essere sempre prevedibile per chi agisce con violenza"
+    assert rc.quote_overlap(invented, TEXT) < 0.5
+    card = rc.check_card({"citazione": invented}, TEXT, ARTICLES)
+    assert not card["citazione_verificata"] and card["citazione_scartata"] == invented
+    assert card["citazione_somiglianza"] < 0.5
+
+
+def test_near_copy_is_rebuilt_from_the_ruling_words():
+    near = "è sufficiente che l'evento morte sia conseguenza causale degli atti diretti a colpire"
+    assert rc.snap_quote(near, TEXT) == ("è sufficiente che l'evento morte sia conseguenza causale degli atti "
+                                         "diretti a percuotere")
     card = rc.check_card({"citazione": near}, TEXT, ARTICLES)
-    assert not card["citazione_verificata"] and card["citazione_scartata"] == near
-    assert card["citazione_somiglianza"] >= 0.9
+    assert card["citazione_verificata"] and card["citazione_ricostruita"]
+    assert card["citazione"].endswith("diretti a percuotere") and card["citazione_scartata"] == ""
+    # a word dropped mid-quote is restored too, but never a capitalised word the quote does not have
+    named = TEXT.replace("sufficiente che", "sufficiente, come affermato da ROSSI, che")
+    dropped = "è sufficiente che l'evento morte sia conseguenza causale degli atti diretti a percuotere"
+    assert rc.snap_quote(dropped, named) == ""
+    assert rc.snap_quote("la morte deve essere sempre prevedibile per chi agisce con violenza", TEXT) == ""
+    assert rc.snap_quote("troppo corta", TEXT) == ""
 
 
 def test_check_card_drops_costs_articles():
@@ -154,7 +170,7 @@ def test_card_asks_again_for_a_quote_not_in_the_ruling(monkeypatch):
                                 "a_favore_di": "accusa", "parole_chiave_fatti": ["schiaffo", "caduta"],
                                 "citazione": "la morte deve essere prevedibile in concreto per l'agente"}),
                     "«senza che rilevi la sua prevedibilità in concreto»"])
-    monkeypatch.setattr(rc.dg, "_chat", lambda messages, **kw: next(replies))
+    monkeypatch.setattr(rc, "_ask", lambda messages, **kw: next(replies))
     link = {"id": "d1", "court": "Tribunale", "number": None, "date": None, "branch": "penale",
             "articles": ARTICLES, "favours": "?", "outcome": "rigettato", "appellant": "imputato"}
     card = rc._card(link, text)
@@ -168,7 +184,7 @@ def test_card_asks_again_for_a_quote_not_in_the_ruling(monkeypatch):
 
 def test_card_reference_from_the_italgiure_file_name(monkeypatch):
     text = "Penale Sent. Sez. 1 Num. 190 Anno 2026. " + TEXT + " Così deciso in Roma, il 12 marzo 2026."
-    monkeypatch.setattr(rc.dg, "_chat", lambda messages, **kw: json.dumps(
+    monkeypatch.setattr(rc, "_ask", lambda messages, **kw: json.dumps(
         {"articoli_applicati": ["584 c.p."], "citazione": "senza che rilevi la sua prevedibilità in concreto"}))
     link = {"id": "d2", "court": "Cassazione", "number": None, "date": None, "branch": "penale",
             "articles": ARTICLES, "favours": "?", "outcome": "rigettato", "appellant": "imputato",
@@ -186,6 +202,67 @@ def test_card_reference_from_the_italgiure_file_name(monkeypatch):
 def _link(i, branch="penale", articles=("584 c.p.",), chars=1000, favours="?"):
     return {"id": f"d{i}", "branch": branch, "articles": list(articles), "chars": chars, "favours": favours,
             "court": "Cassazione", "number": i, "date": "2020"}
+
+
+def test_v3_keywords_drop_procedure_words_from_facts():
+    card = rc.check_card({"parole_chiave_fatti": ["Pena", "condanna", "auto lanciata contro la persona", "incendio"],
+                          "parole_chiave_questioni": ["legittima difesa"]}, TEXT, ARTICLES)
+    assert card["parole_chiave_fatti"] == ["auto lanciata contro la persona", "incendio"]
+    assert card["parole_chiave_questioni"] == ["legittima difesa"]
+    assert "espressioni brevi" in rc.SYSTEM and "legittima difesa" in rc.SYSTEM_CIVILE
+
+
+def test_civil_card_roles_and_side():
+    raw = {"articoli_applicati": ["2087 c.c."], "ricorrente": "Lavoratore", "controricorrente": "datore di lavoro",
+           "esito": "accoglimento con rinvio", "a_favore_di": "ricorrente",
+           "parole_chiave_fatti": ["caduta da impalcatura"], "parole_chiave_questioni": ["sicurezza sul lavoro"]}
+    card = rc.check_card(raw, TEXT, ["2087 c.c."], "civile")
+    assert card["ricorrente"] == "lavoratore" and card["controricorrente"] == "datore di lavoro"
+    assert card["esito"] == "accoglimento con rinvio" and card["a_favore_di"] == "ricorrente"
+    assert card["parte_favorita"] == "lavoratore"
+    bad = rc.check_card({"ricorrente": "Mario Rossi nato il 12/03/1970 a Roma", "esito": "condanna",
+                         "a_favore_di": "imputato"}, TEXT, [], "civile")
+    assert bad["ricorrente"] == "" and bad["esito"] == "altro" and bad["a_favore_di"] == "non chiaro"
+
+
+def test_expected_side_from_outcome_and_appellant():
+    assert rc.expected_side({"branch": "penale", "ricorrente": "imputato", "esito": "rigetto"}) == "accusa"
+    assert rc.expected_side({"branch": "penale", "ricorrente": "imputato", "esito": "annullamento con rinvio"}) == "imputato"
+    assert rc.expected_side({"branch": "penale", "ricorrente": "pubblico ministero", "esito": "rigetto"}) == "imputato"
+    assert rc.expected_side({"branch": "penale", "ricorrente": "più parti", "esito": "rigetto"}) == ""
+    assert rc.expected_side({"branch": "civile", "esito": "accoglimento parziale"}) == "ricorrente"
+    assert rc.expected_side({"branch": "civile", "esito": "inammissibilità"}) == "controricorrente"
+    assert rc.expected_side({"branch": "civile", "esito": "estinzione"}) == ""
+
+
+def test_pick_civil_skips_closures_unless_asked():
+    links = [dict(_link(1, branch="civile", articles=("360 c.p.c.",)), outcome="rigettato"),
+             dict(_link(2, branch="civile", articles=("2043 c.c.",)), outcome="accolto"),
+             dict(_link(3, branch="civile", articles=("2043 c.c.",)), outcome="estinto")]
+    assert [r["id"] for r in rc.pick(links, "civile", set())] == ["d2", "d1"]
+    assert [r["id"] for r in rc.pick(links, "civile", set(), include_estinto=True)] == ["d2", "d3", "d1"]
+
+
+def test_card_runs_the_civil_prompt(monkeypatch):
+    seen = []
+
+    def fake_ask(messages, **kw):
+        seen.append(messages[0].content)
+        return json.dumps({"articoli_applicati": ["2043 c.c."], "ricorrente": "danneggiato",
+                           "controricorrente": "comune", "esito": "rigetto", "a_favore_di": "controricorrente",
+                           "citazione": "senza che rilevi la sua prevedibilità in concreto"})
+    monkeypatch.setattr(rc, "_ask", fake_ask)
+    link = {"id": "c1", "court": "Cassazione", "number": None, "date": "05/05/2026", "branch": "civile",
+            "articles": ["2043 c.c."], "favours": "-", "outcome": "rigettato", "appellant": "-",
+            "italgiure": {"kind": "snciv", "section": "III", "year": "2026", "number": "4321", "type": "O"}}
+    card = rc._card(link, TEXT)
+    assert seen and seen[0].startswith("Sei un avvocato civilista")
+    assert card["prompt_version"] == "cards-civ-v1" and card["parte_favorita"] == "comune"
+    assert card["riferimento"] == "Cass. civ., Sez. III, ord. n. 4321/2026, 05/05/2026"
+    assert card["esito_regole"] == "rigettato" and card["ricorrente_regole"] == ""
+    lines = rc.card_report([dict(card, secondi=4.0)])
+    assert any(line.startswith("Favoured party (civil): comune") for line in lines)
+    assert any("Side consistent with the card's own outcome and appellant: 1 / 1" in line for line in lines)
 
 
 def test_pick_criminal_c_p_first_skipping_done():
