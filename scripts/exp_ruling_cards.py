@@ -111,6 +111,9 @@ def human_message(text: str, articles: list) -> str:
 
 def _norm(text: str) -> str:
     text = (text or "").lower().replace("’", "'").replace("“", '"').replace("”", '"').replace("«", '"').replace("»", '"')
+    # PDF text: a word split at the line end ("respon- sabilità"), soft hyphens. The model
+    # copies the word whole (trial 3: 16 of 20 quotes found, 1 more at the second ask).
+    text = re.sub(r"([^\W\d_])-\s+([^\W\d_])", r"\1\2", text.replace("­", ""))
     return " ".join(text.split())
 
 
@@ -132,6 +135,22 @@ def quote_in_text(quote: str, text: str) -> bool:
     if len(pieces) == 1:
         return pieces[0] in t
     return bool(pieces) and all(len(p) >= 22 and p in t for p in pieces)
+
+
+def quote_overlap(quote: str, text: str) -> float:
+    """The longest run of the quote's words found in the ruling in a row, as a share of its
+    words. Near 1: a copy with small differences (a dropped parenthesis, a PDF artefact);
+    low: the model wrote the sentence itself. Only for the report on dropped quotes."""
+    words, t = _words(quote).split(), _words(text)
+    best = 0
+    for i in range(len(words)):
+        if len(words) - i <= best:
+            break
+        j = i + 1
+        while j <= len(words) and f" {' '.join(words[i:j])} " in t:
+            j += 1
+        best = max(best, j - 1 - i)
+    return best / len(words) if words else 0.0
 
 
 def _choice(value, allowed, default):
@@ -174,6 +193,9 @@ def check_card(raw: dict, text: str, articles: list) -> dict:
         "parole_chiave_questioni": _keywords(raw.get("parole_chiave_questioni"), 8),
         "citazione": quote if verified else "",
         "citazione_verificata": verified,
+        # kept on the server for the report on dropped quotes; never used as a quote
+        "citazione_scartata": "" if verified else quote,
+        "citazione_somiglianza": None if verified or not quote else round(quote_overlap(quote, text), 2),
     }
 
 
@@ -231,13 +253,17 @@ def reference_complete(court, city, number, date) -> bool:
 # about as many as the Tribunale rulings, 892). The ruling's own text usually has both.
 _SENTENZA_N_RE = re.compile(r"\bsent(?:enza|\.)\s+n(?:\.|um\.|umero)?\s*(\d{1,6})\s*/\s*((?:19|20)?\d{2})\b",
                             re.IGNORECASE)
+# The lower courts' heading: "N. 1234/2021 SENT.", "N. 1234/21 Reg. Sent." (next to the R.G. numbers).
+_N_SENT_RE = re.compile(r"\bn(?:\.|um\.|umero)?\s*(\d{1,6})\s*/\s*((?:19|20)?\d{2})\s*(?:reg\.?\s*)?sent\b",
+                        re.IGNORECASE)
 _MONTHS = {m: i for i, m in enumerate(("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
                                        "agosto", "settembre", "ottobre", "novembre", "dicembre"), 1)}
 _DATE_RE = re.compile(r"(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*((?:19|20)\d{2})"
                       r"|(\d{1,2})\s*[°º]?\s+(" + "|".join(_MONTHS) + r")\s+((?:19|20)\d{2})", re.IGNORECASE)
 # The decision date first (how rulings are cited), then the hearing, then the filing.
 _DATE_ANCHORS = (re.compile(r"cos[iì]\s+(?:è\s+)?decis\w*|decis[oa]\s+in\b", re.IGNORECASE),
-                 re.compile(r"udienza\s+(?:pubblica\s+|camerale\s+)?del", re.IGNORECASE),
+                 re.compile(r"udienza\s+(?:pubblica\s+|camerale\s+)?del|pronunciat\w*\s+(?:in\s+data|il)\b",
+                            re.IGNORECASE),
                  re.compile(r"depositat\w*", re.IGNORECASE))
 _CITY_RE = re.compile(
     r"\b(?:tribunale(?:\s+ordinario|\s+di\s+sorveglianza|\s+del\s+riesame|\s+per\s+i\s+minorenni)?"
@@ -251,7 +277,7 @@ def number_from_text(text: str) -> str:
     """'1234/2021' from "Sentenza n. 1234/2021" in the opening or the closing ('' if none).
     Only after "sentenza": the register numbers (R.G., R.G.N.R.) are not the ruling's."""
     for part in (text[:5000], text[-3000:]):
-        m = _SENTENZA_N_RE.search(part)
+        m = _SENTENZA_N_RE.search(part) or _N_SENT_RE.search(part)
         if m:
             year = m.group(2)
             year = year if len(year) == 4 else ("20" if int(year) < 50 else "19") + year
@@ -334,6 +360,19 @@ def agreement(cards: list, field: str, rules_field: str, mapping=None) -> tuple:
     return same, compared
 
 
+def reference_gaps(cards: list) -> str:
+    """What the incomplete references lack: 'number 3, date 2, city 4' (a card may lack several)."""
+    gaps = Counter()
+    for c in cards:
+        if c.get("riferimento_completo"):
+            continue
+        gaps["court"] += not c.get("court")
+        gaps["number"] += not re.search(r"\d", str(c.get("number") or ""))
+        gaps["date"] += not c.get("date")
+        gaps["city"] += c.get("court") in _LOWER_COURTS and not c.get("citta")
+    return ", ".join(f"{k} {v}" for k, v in gaps.items() if v)
+
+
 def card_report(cards: list, remaining: int = 0, workers: int = 1) -> list:
     ok = [c for c in cards if not c.get("errore")]
     out = [f"Cards: {len(ok)}  (failed: {len(cards) - len(ok)}: "
@@ -350,7 +389,8 @@ def card_report(cards: list, remaining: int = 0, workers: int = 1) -> list:
             f"none: {sum(not c['articoli_applicati'] for c in ok)}; proposed but not in the ruling's list: "
             f"{sum(c['articoli_scartati'] for c in ok)}",
             f"Full reference: {rl._pct(sum(c['riferimento_completo'] for c in ok), n)} "
-            f"(number or date read from the ruling's text: {sum(c.get('riferimento_dal_testo', False) for c in ok)})",
+            f"(number or date read from the ruling's text: {sum(c.get('riferimento_dal_testo', False) for c in ok)}); "
+            f"the others miss: {reference_gaps(ok) or '-'}",
             f"Who appealed: {rl._row(Counter(c['ricorrente'] for c in ok), n)}",
             f"Outcome: {rl._row(Counter(c['esito'] for c in ok), n)}",
             f"In favour of: {rl._row(Counter(c['a_favore_di'] for c in ok), n)}"]
@@ -362,6 +402,13 @@ def card_report(cards: list, remaining: int = 0, workers: int = 1) -> list:
         compared = [c for c in ok if c.get(rules_field) and c[rules_field] != "non chiaro"]
         same, n_both = agreement(compared, field, rules_field, mapping)
         out.append(f"   {label}: same {same} / {n_both}" + (f" ({same / n_both:.0%})" if n_both else ""))
+    dropped = [c for c in ok if not c["citazione_verificata"]]
+    if dropped:
+        sims = [c.get("citazione_somiglianza") for c in dropped]
+        out.append(f"Dropped quotes: {len(dropped)}; their longest word-for-word run in the ruling: "
+                   f"90%+ of the quote {sum(s is not None and s >= 0.9 for s in sims)}, "
+                   f"50-90% {sum(s is not None and 0.5 <= s < 0.9 for s in sims)}, "
+                   f"under 50% {sum(s is not None and s < 0.5 for s in sims)}, no quote given {sims.count(None)}")
     words = sum(c.get("parole_totali", 0) for c in ok)
     if words:
         out.append(f"Keywords found in the ruling's text: {rl._pct(sum(c.get('parole_nel_testo', 0) for c in ok), words)}")
@@ -442,7 +489,8 @@ def _card(link: dict, text: str) -> dict:
             again = ""
         quote = " ".join(str(again or "").split()).strip(' "«»“”')[:QUOTE_CHARS + 50]
         if quote_in_text(quote, text):
-            card.update(citazione=quote, citazione_verificata=True, citazione_ritentata=True)
+            card.update(citazione=quote, citazione_verificata=True, citazione_ritentata=True,
+                        citazione_scartata="", citazione_somiglianza=None)
     keywords =card["argomento_decisivo"] + card["parole_chiave_fatti"] + card["parole_chiave_questioni"]
     card["parole_totali"], card["parole_nel_testo"] = len(keywords), grounded(keywords, text)
     card["secondi"] = round(time.time() - t0, 1)

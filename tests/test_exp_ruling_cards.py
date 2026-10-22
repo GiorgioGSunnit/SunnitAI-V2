@@ -67,6 +67,22 @@ def test_check_card_keeps_only_allowed_values():
     assert card["citazione_verificata"] and card["citazione"]
 
 
+def test_quote_across_a_pdf_line_break():
+    pdf = TEXT.replace("prevedibilità", "preve- dibilità").replace("sufficiente", "suffi­ciente")
+    assert rc.quote_in_text("è sufficiente che l'evento morte sia conseguenza causale", pdf)
+    assert rc.quote_in_text("senza che rilevi la sua prevedibilità in concreto", pdf)
+    assert rc.quote_in_text("Gli artt. 581 e 584 c.p.", pdf)      # numbers and suffixes untouched
+
+
+def test_quote_overlap_tells_a_near_copy_from_an_invented_one():
+    near = "è sufficiente che l'evento morte sia conseguenza causale degli atti diretti a colpire"
+    assert rc.quote_overlap(near, TEXT) >= 0.9
+    assert rc.quote_overlap("la morte deve essere sempre prevedibile per chi agisce con violenza", TEXT) < 0.5
+    card = rc.check_card({"citazione": near}, TEXT, ARTICLES)
+    assert not card["citazione_verificata"] and card["citazione_scartata"] == near
+    assert card["citazione_somiglianza"] >= 0.9
+
+
 def test_check_card_drops_costs_articles():
     card = rc.check_card({"articoli_applicati": ["616 c.p.p.", "584 c.p."]}, TEXT, ARTICLES + ["616 c.p.p."])
     assert card["articoli_applicati"] == ["584 c.p."] and card["articoli_scartati"] == 0
@@ -98,6 +114,16 @@ def test_number_and_date_from_text():
     assert rc.date_from_text("... Depositata il 15.4.2021") == "15/04/2021"
     assert rc.date_from_text("all'udienza pubblica del 3/2/2020 la Corte") == "03/02/2020"
     assert rc.number_from_text("R.G. n. 5555/2019") == "" and rc.date_from_text("nessuna data") == ""
+    assert rc.number_from_text("N. 5555/2019 R.G.N.R. N. 1234/2021 SENT.") == "1234/2021"
+    assert rc.number_from_text("N. 99/20 Reg. Sent.") == "99/2020"
+    assert rc.date_from_text("Sentenza pronunciata in data 05/06/2020 mediante lettura") == "05/06/2020"
+
+
+def test_reference_gaps():
+    cards = [{"riferimento_completo": True},
+             {"riferimento_completo": False, "court": "Tribunale", "citta": "", "number": "1/2020", "date": "x"},
+             {"riferimento_completo": False, "court": "Cassazione", "citta": "", "number": None, "date": ""}]
+    assert rc.reference_gaps(cards) == "number 1, date 1, city 1"
 
 
 def test_city_and_court_of_lower_courts():
