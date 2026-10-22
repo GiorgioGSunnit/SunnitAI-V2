@@ -64,7 +64,12 @@ def _read_only_session(self, **config):
     return _open_session(self, **config)
 
 
-neo4j.Driver.session = _read_only_session   # every session in this process is read-only
+def read_only() -> None:
+    """Every session this process opens from now on is read-only. Called by main(),
+    not on import: link_ruling_citations.py imports the parser and writes."""
+    neo4j.Driver.session = _read_only_session
+
+
 logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 from src.rag.defensive_generation import (  # noqa: E402
@@ -391,6 +396,7 @@ def report(records: list, focus=None, words=(), top: int = 25) -> list:
 
 
 def main() -> None:
+    read_only()
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--limit", type=int, help="read only the first N rulings (by id)")
     parser.add_argument("--batch", type=int, default=50, help="rulings per query (default 50)")
