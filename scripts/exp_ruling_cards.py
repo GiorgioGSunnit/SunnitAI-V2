@@ -382,8 +382,8 @@ _DATE_RE = re.compile(r"(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*((?:19|20)\d{2
                       r"|(\d{1,2})\s*[°º]?\s+(" + "|".join(_MONTHS) + r")\s+((?:19|20)\d{2})", re.IGNORECASE)
 # The decision date first (how rulings are cited), then the hearing, then the filing.
 _DATE_ANCHORS = (re.compile(r"cos[iì]\s+(?:è\s+)?decis\w*|decis[oa]\s+in\b", re.IGNORECASE),
-                 re.compile(r"udienza\s+(?:pubblica\s+|camerale\s+)?del|pronunciat\w*\s+(?:in\s+data|il)\b",
-                            re.IGNORECASE),
+                 re.compile(r"udienza\s+(?:pubblica\s+|camerale\s+)?del|data\s+udienza\s*:?"
+                            r"|pronunciat\w*\s+(?:in\s+data|il)\b", re.IGNORECASE),
                  re.compile(r"depositat\w*", re.IGNORECASE))
 _CITY_RE = re.compile(
     r"\b(?:tribunale(?:\s+ordinario|\s+di\s+sorveglianza|\s+del\s+riesame|\s+per\s+i\s+minorenni)?"
@@ -420,6 +420,34 @@ def date_from_text(text: str) -> str:
             if 1 <= day <= 31 and 1 <= month <= 12:
                 return f"{day:02d}/{month:02d}/{year}"
     return ""
+
+
+_DMY_RE = re.compile(r"^(\d{1,2})[/.](\d{1,2})[/.]((?:19|20)\d{2})$")
+_ISO_RE = re.compile(r"^((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})")
+
+
+def clean_date(field, text: str, today: dt.date = None) -> tuple:
+    """(date as dd/mm/yyyy, read from the text). The document's date field when it already is
+    one (or dd.mm.yyyy); else the decision date read from the ruling's text; else an ISO field
+    date if it is not in the future. The criminal search test (23 Oct) showed fields holding
+    only the year ("2026") and ISO dates after today ("2026-12-04"), probably day and month
+    swapped: those never reach a reference as they are."""
+    value = str(field or "").strip()
+    m = _DMY_RE.match(value)
+    if m and 1 <= int(m.group(1)) <= 31 and 1 <= int(m.group(2)) <= 12:
+        return f"{int(m.group(1)):02d}/{int(m.group(2)):02d}/{m.group(3)}", False
+    from_text = date_from_text(text or "")
+    if from_text:
+        return from_text, True
+    m = _ISO_RE.match(value)
+    if m:
+        try:
+            when = dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return "", False
+        if when <= (today or dt.date.today()):
+            return f"{when.day:02d}/{when.month:02d}/{when.year}", False
+    return "", False
 
 
 def city_of(header: str) -> str:
@@ -647,12 +675,12 @@ def _card(link: dict, text: str) -> dict:
         city = city_of(text[:3000]) if court in _LOWER_COURTS else ""
         has_number = re.search(r"\d", str(link.get("number") or ""))
         number = link.get("number") if has_number else number_from_text(text)
-    date = link.get("date") or date_from_text(text)
+    date, date_from_ruling = clean_date(link.get("date"), text)
     ref = {"court": court, "number": number, "date": date, "branch": link["branch"],
            "type": (italgiure or {}).get("type")}
     card = {"id": link["id"], "prompt_version": PROMPT_VERSIONS[branch], "riferimento": reference_of(ref, sezione, city),
             "riferimento_completo": reference_complete(court, city, number, date),
-            "riferimento_dal_testo": bool((number and not has_number) or (date and not link.get("date"))),
+            "riferimento_dal_testo": bool((number and not has_number) or date_from_ruling),
             "court": court, "citta": city, "sezione": sezione,
             "number": number, "date": date, "branch": link["branch"],
             "articoli_citati": link["articles"], "a_favore_di_regole": _rules_side(link.get("favours")),

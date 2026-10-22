@@ -135,6 +135,20 @@ def test_number_and_date_from_text():
     assert rc.date_from_text("Sentenza pronunciata in data 05/06/2020 mediante lettura") == "05/06/2020"
 
 
+def test_clean_date():
+    import datetime as dt
+    today = dt.date(2026, 10, 23)
+    text = "Penale Sent. Sez. 1 Num. 190 Anno 2026 Data Udienza: 12/03/2026 ... Così deciso il 12 marzo 2026."
+    assert rc.clean_date("5/3/2026", "", today) == ("05/03/2026", False)
+    assert rc.clean_date("05.03.2026", "", today) == ("05/03/2026", False)
+    assert rc.clean_date("2026", text, today) == ("12/03/2026", True)           # year only: the text's date
+    assert rc.clean_date("2026-12-04", text, today) == ("12/03/2026", True)     # future ISO: the text's date
+    assert rc.clean_date("2026-12-04", "", today) == ("", False)                # ... and never as it is
+    assert rc.clean_date("2026-02-05", "", today) == ("05/02/2026", False)      # past ISO, nothing in the text
+    assert rc.clean_date(None, "Data Udienza: 03/02/2026", today) == ("03/02/2026", True)
+    assert rc.clean_date("2026", "", today) == ("", False)
+
+
 def test_reference_gaps():
     cards = [{"riferimento_completo": True},
              {"riferimento_completo": False, "court": "Tribunale", "citta": "", "number": "1/2020", "date": "x"},
