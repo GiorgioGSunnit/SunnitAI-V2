@@ -53,17 +53,43 @@ def _card(i, articles, side="accusa", facts=(), issues=(), full=True):
             "argomento_decisivo": [], "riferimento_completo": full}
 
 
-def test_rank_cards_by_articles_keywords_and_side():
-    cards = [_card(1, ["575 c.p."]),
-             _card(2, ["575 c.p.", "52 c.p."], side="imputato"),
-             _card(3, ["575 c.p."], facts=["coltello", "lite in famiglia"], issues=["legittima difesa"]),
-             _card(4, ["640 c.p."], side="imputato", facts=["coltello"]),          # no shared article: never
-             _card(5, ["575 c.p."], full=False)]
+def test_central_weights_leave_out_the_method_candidates():
+    picked = {"chosen": [("81", "c.p."), ("575", "c.p."), ("640", "c.p.")],
+              "named": [("52", "c.p.")], "institutions_resolved": [("575", "c.p.")],
+              "method_candidates": [("81", "c.p."), ("133", "c.p.")]}
+    assert rs.central_weights(picked) == {"575 c.p.": 1.0, "640 c.p.": 0.5, "52 c.p.": 1.0}
+    assert rs.ref_key(("609 bis", "c.p.")) == "609-bis c.p." and rs.ref_key("584 c.p.") == "584 c.p."
+
+
+def test_rare_articles_and_keywords_weigh_more():
+    cards = [_card(i, ["81 c.p."], issues=["motivazione"]) for i in range(8)] + \
+            [_card(8, ["584 c.p.", "81 c.p."], issues=["motivazione"]), _card(9, ["640 c.p."])]
+    articles, keywords = rs.card_rarities(cards)
+    assert articles["584 c.p."] > articles["640 c.p."] - 1e-9 > articles["81 c.p."] > 0
+    assert 0 < keywords["motivazione"] < 0.1
+
+
+def test_rank_cards_by_central_rare_articles_keywords_and_side():
+    generic = [_card(10 + i, ["81 c.p.", "133 c.p.", "575 c.p."], facts=["pena"]) for i in range(6)]
+    cards = generic + [
+        _card(1, ["575 c.p."]),
+        _card(2, ["575 c.p.", "52 c.p."], side="imputato"),
+        _card(3, ["575 c.p."], facts=["coltello", "lite in famiglia"], issues=["legittima difesa"]),
+        _card(4, ["640 c.p."], side="imputato", facts=["coltello"]),          # not a central article: never
+        _card(5, ["52 c.p."], full=False)]
+    central = {"575 c.p.": 1.0, "52 c.p.": 1.0}
     terms = "Tizio colpisce con un coltello durante una lite in famiglia; invoca la legittima difesa"
-    ranked = rs.rank_cards(cards, {"575 c.p.", "52 c.p."}, terms, "imputato", top=4)
-    # d2: 2 articles x3 + side 2 = 8; d3: 3 + 3 keywords = 6; d1 and d5: 3 each, full reference first
-    assert ranked == ["d2", "d3", "d1", "d5"]
-    assert "d4" not in rs.rank_cards(cards, {"575 c.p."}, terms, "imputato")
+    ranked = rs.rank_cards(cards, central, terms, "imputato", top=3)
+    # 52 is rarer than 575 (on 2 cards vs 10): d2 (both + side) first, then d5 (52 only) and d3 (575 +
+    # three keywords); the generic sentencing cards share only 575 among the central articles
+    assert ranked[0] == "d2" and set(ranked[1:]) == {"d3", "d5"}
+    assert "d4" not in rs.rank_cards(cards, central, terms, "imputato", top=20)
+    assert rs.rank_cards(cards, {}, terms, "imputato") == []            # no central article: nothing
+
+
+def test_available_on_topic():
+    links = {"a": {"articles": ["584 c.p."]}, "b": {"articles": ["81 c.p."]}, "c": {"articles": ["584 c.p."]}}
+    assert rs.available_on_topic({"a": {}, "b": {}}, links, {"584 c.p."}) == 1
 
 
 def test_measure_and_reference():
@@ -88,6 +114,7 @@ def test_report_lines_totals():
               "side_known": 2, "not_a_ruling": 1}
     after = {"rulings": 5, "criminal": 5, "on_topic": 4, "full_reference": 5, "client_side": 3,
              "side_known": 5, "not_a_ruling": 0}
-    lines = rs.report_lines([("p1", "imputato", before, after)])
+    lines = rs.report_lines([("p1", "imputato", before, after, 12)])
+    assert any(line.startswith("p1") and line.endswith("(available 12)") for line in lines)
     assert any(line.startswith("BEFORE total rulings 5: criminal 3 (60%)") for line in lines)
     assert any(line.startswith("AFTER  total rulings 5: criminal 5 (100%), on topic 4 (80%)") for line in lines)

@@ -7,40 +7,50 @@ articles in c.p. / c.p.p. only; tuning cases, plus h5-h9 with --include-heldout)
           run_case_analysis_pipeline, copied here (analysis, article selection, the
           second ruling search on the selected articles, _ruling_passages). There
           are no draft calls; it uses the same flags as the app's .env.
-  AFTER   the cards (exp_ruling_cards.py) whose applied articles meet the articles
-          the same run selected. They are ranked by the fixed weights below, set
-          before any result was seen: 3 per shared article, 1 per fact or issue
-          keyword found in the case, 2 if the ruling favours the client's side. The
-          side comes from the analysis' "posizione"; the top 5 are taken, as many
-          as the writer reads (_PASSAGE_RULINGS).
+  AFTER   the cards (exp_ruling_cards.py) that apply one of the case's CENTRAL
+          articles, ranked (see rank_cards). The top 5 are taken, as many as the
+          writer reads (_PASSAGE_RULINGS).
 
-Both are scored on the same yardsticks, none of which the AFTER ranking sees:
+The case's central articles, from the same run: the ones its text names and the ones
+the analysis' legal issues resolved to ("omicidio preterintenzionale" -> 584 c.p.) weigh
+1; the model's chosen pool 0.5. The generic method candidates (81, 110, 133 c.p. ...)
+and the rest of the 46-80-article pool are not used. The first run (23 Oct) used that
+whole pool at 3 points per shared article: sentencing rulings won everywhere, the same
+one in all 10 cases. An article also weighs by how rare it is among the cards (art. 584
+outweighs art. 81, applied in 268 of 2,476), and so does a keyword (motivazione, in 506
+cards, almost nothing).
+
+Both lists are scored on the same yardsticks, none of which the AFTER ranking sees:
 
   - criminal: the ruling is a criminal one (step 1's branch). AFTER is criminal by
     construction, since only criminal rulings were carded;
-  - on topic: the ruling cites at least one of the case's EXPECTED articles (the
-    eval's answer key, from step 1's citations);
-  - full reference: court, number and date (+ city for lower courts), from the card,
-    else from step 1's fields;
-  - client's side: the card says it favours the client (unknown for rulings
-    without a card).
+  - on topic: the ruling cites at least one of the case's EXPECTED articles (the eval's
+    answer key, from step 1's citations). "available": how many carded rulings cite
+    one at all, so a ranking miss shows apart from a data gap;
+  - full reference: court, number and date, from the card, else from step 1's fields;
+  - client's side: the card says it favours the client (unknown for rulings without a
+    card).
 
-Run from the app folder (prod), with exp_ruling_links.py next to this script, after
-the cards run has finished (it calls the model for the analysis and the article
-choice, about 30-60 s per case):
-    cd /opt/chatbot && venv/bin/python /tmp/exp_ruling_search.py
-    ... --include-heldout      ... --only p1,p2
+The pipeline part takes about 75 s per case and calls the model, so its outputs are
+saved to --cache; --use-cache ranks again from them in seconds, with no model call.
+Tune on the tuning cases; run --include-heldout once, after, to confirm.
 
-Nothing is written to the database. Only counts are printed.
+Run from the app folder (prod), with exp_ruling_links.py next to this script:
+    cd /opt/chatbot && venv/bin/python /tmp/exp_ruling_search.py --show
+    ... --use-cache --show       ... --include-heldout      ... --only p1,p2
+
+Nothing is written to the database. Only references, labels and counts are printed.
 """
 
 import argparse
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -53,6 +63,7 @@ import src.rag.defensive_generation as dg  # noqa: E402
 TOP = dg._PASSAGE_RULINGS
 CODE_ABBR = {"cp": "c.p.", "cpp": "c.p.p."}
 W_ARTICLE, W_KEYWORD, W_SIDE = 3, 1, 2
+CENTRAL, CHOSEN = 1.0, 0.5
 _DEFENDANT_RE = re.compile(r"imputat|indagat|accusat|condannat|difes|arrestat|autore\s+del", re.IGNORECASE)
 _VICTIM_RE = re.compile(r"persona\s+offesa|parte\s+civile|vittim|danneggiat|denunciant|querelant|famil", re.IGNORECASE)
 
@@ -85,26 +96,83 @@ def client_side(posizione: str) -> str:
     return "imputato" if defendant and not victim else "accusa" if victim and not defendant else ""
 
 
+def ref_key(ref) -> str:
+    """('584', 'c.p.') -> '584 c.p.' (a pipeline ref), a card's key unchanged."""
+    if isinstance(ref, str):
+        return ref
+    number, code = ref[0], ref[1]
+    return f"{rl._article_num(str(number))} {code}"
+
+
+def central_weights(picked: dict) -> dict:
+    """The case's central articles and their weight, from the pipeline's own picks: named in
+    the case text or resolved from its legal issues CENTRAL, the model's chosen pool CHOSEN.
+    The method candidates (generic articles added by area and posture) are left out."""
+    method = {ref_key(r) for r in picked.get("method_candidates") or []}
+    weights = {}
+    for ref in picked.get("chosen") or []:
+        key = ref_key(ref)
+        if key not in method:
+            weights[key] = CHOSEN
+    for ref in list(picked.get("named") or []) + list(picked.get("institutions_resolved") or []):
+        weights[ref_key(ref)] = CENTRAL
+    return weights
+
+
+def rarity(counts: Counter, total: int) -> dict:
+    """item -> log(total / count): an article or keyword on every card weighs ~0."""
+    return {item: math.log(total / n) for item, n in counts.items() if n}
+
+
+def card_rarities(cards: list) -> tuple:
+    """(article rarity, keyword rarity scaled to 0..1) over the cards."""
+    n = max(len(cards), 2)
+    articles = rarity(Counter(a for c in cards for a in set(c.get("articoli_applicati") or [])), n)
+    keywords = Counter(k for c in cards for k in set(_keywords(c)))
+    scale = math.log(n)
+    return articles, {k: v / scale for k, v in rarity(keywords, n).items()}
+
+
+def _keywords(card: dict) -> list:
+    return (card.get("parole_chiave_fatti") or []) + (card.get("parole_chiave_questioni") or []) \
+        + (card.get("argomento_decisivo") or [])
+
+
 def _hit(keyword: str, low: str) -> bool:
     stems = [w[:5] for w in re.findall(r"\w{4,}", keyword.lower())]
     return bool(stems) and all(s in low for s in stems)
 
 
-def rank_cards(cards: list, selected: set, case_terms: str, side: str, top: int = TOP) -> list:
-    """The ids of the `top` cards sharing an applied article with `selected`, by the fixed
-    weights; ties: full reference first, then id (stable)."""
+def score_card(card: dict, central: dict, low_terms: str, side: str, article_rarity: dict,
+               keyword_rarity: dict) -> float:
+    """W_ARTICLE x weight x rarity per central article the card applies, W_KEYWORD x rarity
+    per keyword found in the case, W_SIDE if it favours the client. 0 without a central
+    article: the card is not about this case."""
+    shared = [a for a in set(card.get("articoli_applicati") or []) if a in central]
+    if not shared:
+        return 0.0
+    score = W_ARTICLE * sum(central[a] * article_rarity.get(a, 1.0) for a in shared)
+    score += W_KEYWORD * sum(keyword_rarity.get(k, 1.0) for k in set(_keywords(card)) if _hit(k, low_terms))
+    return score + (W_SIDE if side and card.get("a_favore_di") == side else 0)
+
+
+def rank_cards(cards: list, central: dict, case_terms: str, side: str, top: int = TOP,
+               rarities: tuple = None) -> list:
+    """The ids of the `top` best-scoring cards (score_card), ties broken by full reference
+    first, then id (stable)."""
+    article_rarity, keyword_rarity = rarities or card_rarities(cards)
     low = " ".join(case_terms.lower().split())
     scored = []
     for c in cards:
-        shared = len(set(c.get("articoli_applicati") or []) & selected)
-        if not shared:
-            continue
-        keywords = (c.get("parole_chiave_fatti") or []) + (c.get("parole_chiave_questioni") or []) \
-            + (c.get("argomento_decisivo") or [])
-        score = W_ARTICLE * shared + W_KEYWORD * sum(_hit(k, low) for k in keywords) \
-            + (W_SIDE if side and c.get("a_favore_di") == side else 0)
-        scored.append((-score, not c.get("riferimento_completo"), c["id"]))
+        s = score_card(c, central, low, side, article_rarity, keyword_rarity)
+        if s > 0:
+            scored.append((-s, not c.get("riferimento_completo"), c["id"]))
     return [doc_id for _, _, doc_id in sorted(scored)[:top]]
+
+
+def available_on_topic(cards: dict, links: dict, expected: set) -> int:
+    """How many carded rulings cite one of the expected articles: the most AFTER could find."""
+    return sum(1 for doc_id in cards if set((links.get(doc_id) or {}).get("articles") or []) & expected)
 
 
 def measure(ids: list, links: dict, cards: dict, expected: set, side: str) -> dict:
@@ -157,18 +225,19 @@ def _cell(m: dict, key: str) -> str:
 
 
 def report_lines(rows: list) -> list:
+    """rows: (case id, side, before, after, available)."""
     keys = ("criminal", "on_topic", "full_reference", "client_side")
-    out = [f"{'case':18s} {'side':9s} | {'BEFORE: criminal / on topic / full ref / client side':52s} | AFTER",
-           "-" * 120]
+    out = [f"{'case':18s} {'side':9s} | {'BEFORE: criminal / on topic / full ref / client side':52s} | "
+           f"AFTER  (available: carded rulings citing an expected article)", "-" * 130]
     totals = {"before": dict.fromkeys(keys + ("rulings",), 0), "after": dict.fromkeys(keys + ("rulings",), 0)}
-    for case_id, side, before, after in rows:
+    for case_id, side, before, after, available in rows:
         out.append(f"{case_id:18s} {side or '?':9s} | "
                    + "   ".join(f"{_cell(before, k):>5s}" for k in keys) + f"   (+{before['not_a_ruling']} commentary)"
-                   + " " * 6 + "| " + "   ".join(f"{_cell(after, k):>5s}" for k in keys))
+                   + " " * 6 + "| " + "   ".join(f"{_cell(after, k):>5s}" for k in keys) + f"   (available {available})")
         for name, m in (("before", before), ("after", after)):
             for k in keys + ("rulings",):
                 totals[name][k] += m[k]
-    out.append("-" * 120)
+    out.append("-" * 130)
     for name in ("before", "after"):
         t = totals[name]
         out.append(f"{name.upper():6s} total rulings {t['rulings']}: "
@@ -185,9 +254,10 @@ def _default_cases_path() -> Path:
     return Path("/root/eval/eval_narrative_cases.json")
 
 
-def live_ruling_ids(session, driver, database: str, question: str):
-    """The retrieval part of run_case_analysis_pipeline, copied: (analysis, selected
-    article keys, the ids of the rulings the writer reads)."""
+def live_ruling_ids(session, driver, database: str, question: str) -> dict:
+    """The retrieval part of run_case_analysis_pipeline, copied: what the ranking and the
+    report need from it (the analysis' terms and side, the selected and central articles,
+    the ids of the rulings the writer reads)."""
     analysis = dg._analyse_case_for_pipeline(question, "it", "")
     v2 = dg.feature_flags.enabled(dg.CASE_ANALYSIS_FLAG)
     fusion = v2 and dg.feature_flags.enabled(dg._CASE_POOL_FUSION_FLAG)
@@ -199,8 +269,9 @@ def live_ruling_ids(session, driver, database: str, question: str):
                                  exclude_docs={(r.get("d") or {}).get("id") for r in picked["similar"]})
     rows = dg._ruling_passages(session, dg._reading_order(picked["similar"], second, picked["first_rulings"]),
                                selected, analysis)
-    keys = {f"{rl._article_num(str(n))} {code}" for n, code in selected}
-    return analysis, keys, [(r.get("d") or {}).get("id") for r in rows]
+    return {"terms": _case_terms(question, analysis), "side": client_side(analysis.get("posizione") or ""),
+            "selected": sorted({ref_key(r) for r in selected}), "central": central_weights(picked),
+            "before_ids": [(r.get("d") or {}).get("id") for r in rows]}
 
 
 def _case_terms(question: str, analysis: dict) -> str:
@@ -215,12 +286,13 @@ def main() -> None:
     parser.add_argument("--cases", default=str(_default_cases_path()))
     parser.add_argument("--cards", default="/tmp/ruling_cards_v3.jsonl")
     parser.add_argument("--links", default="/tmp/ruling_links.jsonl")
+    parser.add_argument("--cache", default="/tmp/ruling_search_cache.json",
+                        help="the pipeline's outputs per case: written by a live run, read with --use-cache")
+    parser.add_argument("--use-cache", action="store_true", help="rank from --cache, no pipeline or model call")
     parser.add_argument("--include-heldout", action="store_true", help="add h5-h9 (measure only)")
     parser.add_argument("--only", help="comma-separated case ids")
     parser.add_argument("--show", action="store_true", help="list each case's rulings, before and after (no text)")
     args = parser.parse_args()
-
-    from src.rag.main import NEO4J_DATABASE, driver
 
     links = {r["id"]: r for r in (json.loads(line) for line in open(args.links, encoding="utf-8"))}
     cards = {}
@@ -230,30 +302,49 @@ def main() -> None:
             cards[card["id"]] = card
     cases = criminal_cases(json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"], args.include_heldout,
                            set(args.only.split(",")) if args.only else None)
-    print(f"{len(cases)} criminal cases, {len(cards)} cards, {len(links)} rulings in step 1's labels", file=sys.stderr)
+    cache = json.loads(Path(args.cache).read_text(encoding="utf-8")) if os.path.exists(args.cache) else {}
+    if args.use_cache:
+        missing = [c["id"] for c in cases if c["id"] not in cache]
+        if missing:
+            sys.exit(f"--use-cache: no cached pipeline output for {', '.join(missing)}; run once without it")
+    print(f"{len(cases)} criminal cases, {len(cards)} cards, {len(links)} rulings in step 1's labels"
+          + (f", pipeline outputs from {args.cache}" if args.use_cache else ""), file=sys.stderr)
 
+    rarities = card_rarities(list(cards.values()))
     rows, shown = [], []
-    with driver.session(database=NEO4J_DATABASE) as session:
+
+    def one_case(case, run):
+        expected = expected_keys(case)
+        after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"], rarities=rarities)
+        rows.append((case["id"], run["side"], measure(run["before_ids"], links, cards, expected, run["side"]),
+                     measure(after_ids, links, cards, expected, run["side"]),
+                     available_on_topic(cards, links, expected)))
+        if args.show:
+            central = sorted(run["central"], key=lambda k: (-run["central"][k], k))
+            shown.extend([f"## {case['id']}  (client: {run['side'] or 'unclear'}; expected: {', '.join(sorted(expected))}; "
+                          f"central: {', '.join(central[:14]) or '-'})"]
+                         + show_lines("BEFORE (today)", run["before_ids"], links, cards, expected)
+                         + show_lines("AFTER (cards)", after_ids, links, cards, expected) + [""])
+
+    if args.use_cache:
         for case in cases:
-            t0 = time.time()
-            analysis, selected, before_ids = live_ruling_ids(session, driver, NEO4J_DATABASE, case["question"])
-            side = client_side(analysis.get("posizione") or "")
-            after_ids = rank_cards(list(cards.values()), selected, _case_terms(case["question"], analysis), side)
-            expected = expected_keys(case)
-            rows.append((case["id"], side, measure(before_ids, links, cards, expected, side),
-                         measure(after_ids, links, cards, expected, side)))
-            if args.show:
-                shown += [f"## {case['id']}  (client: {side or 'unclear'}; expected: {', '.join(sorted(expected))}; "
-                          f"selected by the pipeline: {', '.join(sorted(selected)[:12])})"]
-                shown += show_lines("BEFORE (today)", before_ids, links, cards, expected)
-                shown += show_lines("AFTER (cards)", after_ids, links, cards, expected) + [""]
-            print(f"   {case['id']}: {len(before_ids)} before, {len(after_ids)} after, "
-                  f"{len(selected)} articles selected, {time.time() - t0:.0f}s", file=sys.stderr)
+            one_case(case, cache[case["id"]])
+    else:
+        from src.rag.main import NEO4J_DATABASE, driver
+        with driver.session(database=NEO4J_DATABASE) as session:
+            for case in cases:
+                t0 = time.time()
+                run = live_ruling_ids(session, driver, NEO4J_DATABASE, case["question"])
+                cache[case["id"]] = run
+                Path(args.cache).write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+                one_case(case, run)
+                print(f"   {case['id']}: {len(run['before_ids'])} before, {len(run['central'])} central of "
+                      f"{len(run['selected'])} selected articles, {time.time() - t0:.0f}s", file=sys.stderr)
 
     if shown:
         print("\n".join(shown))
     print("\n".join(report_lines(rows)))
-    print("\nDone. Nothing was written to the database.")
+    print(f"\nDone. Nothing was written to the database. Pipeline outputs: {args.cache}")
 
 
 if __name__ == "__main__":
