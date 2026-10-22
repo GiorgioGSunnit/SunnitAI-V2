@@ -99,6 +99,23 @@ def test_latest_keeps_one_card_per_ruling(tmp_path):
     assert latest["b"] == {"id": "b", "esito": "rigetto"}       # a later failure does not undo a card
 
 
+def test_grounded_keywords():
+    assert rc.grounded(["schiaffo", "prevedibilità dell'evento", "nesso causale", "pistola"], TEXT) == 2
+    assert rc.grounded(["", "di"], TEXT) == 0                   # no word of 4+ letters: not counted
+
+
+def test_agreement_with_step_one():
+    cards = [{"esito": "rigetto", "esito_regole": "rigettato"},
+             {"esito": "annullamento senza rinvio", "esito_regole": "accolto"},
+             {"esito": "inammissibilità", "esito_regole": "rigettato"},
+             {"esito": "condanna", "esito_regole": "rigettato"},     # not comparable: skipped
+             {"esito": "rigetto", "esito_regole": ""}]                # step 1 gave no answer: skipped
+    assert rc.agreement(cards, "esito", "esito_regole", rc._OUTCOME_CLASS) == (2, 3)
+    assert rc.rules_appellant("imputato+pm") == "più parti"
+    assert rc.rules_appellant("pm") == "pubblico ministero"
+    assert rc.rules_appellant("?") == ""
+
+
 def test_card_report():
     base = {"secondi": 12.0, "letta_in_parte": False, "citazione_verificata": True, "articoli_applicati": ["584 c.p."],
             "articoli_scartati": 0, "riferimento_completo": True, "ricorrente": "imputato", "esito": "rigetto",

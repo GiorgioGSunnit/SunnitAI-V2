@@ -195,6 +195,45 @@ def _rules_side(favours: str) -> str:
     return {"imputato": "imputato", "contro l'imputato": "accusa"}.get(favours, "non chiaro")
 
 
+# The card's outcome and appellant in step 1's coarser classes, so the two can be compared:
+# step 1 read them from the P.Q.M. and the opening with fixed patterns, no model.
+_OUTCOME_CLASS = {"rigetto": "rigettato", "inammissibilità": "inammissibile", "annullamento con rinvio": "accolto",
+                  "annullamento senza rinvio": "accolto", "accoglimento parziale": "accolto"}
+_RULES_OUTCOME_CLASS = {"rigettato": "rigettato", "inammissibile": "inammissibile", "accolto": "accolto",
+                        "in parte accolto": "accolto"}
+_RULES_APPELLANT = {"imputato": "imputato", "pm": "pubblico ministero", "parte civile": "parte civile"}
+
+
+def rules_appellant(appellant: str) -> str:
+    if not appellant or appellant in ("?", "-"):
+        return ""
+    return "più parti" if "+" in appellant else _RULES_APPELLANT.get(appellant, "")
+
+
+def grounded(keywords: list, text: str) -> int:
+    """How many keywords the ruling's text contains: every word of 4+ letters, by its
+    first 5 letters ("prevedibilità" -> "preve"), so a keyword the model made up shows."""
+    low = _norm(text)
+    count = 0
+    for kw in keywords:
+        stems = [w[:5] for w in re.findall(r"\w{4,}", kw)]
+        count += bool(stems) and all(s in low for s in stems)
+    return count
+
+
+def agreement(cards: list, field: str, rules_field: str, mapping=None) -> tuple:
+    """(same, compared): the card's field against step 1's, where both give an answer.
+    With `mapping`, a value it does not map ("condanna", a trial court's outcome) is skipped."""
+    same = compared = 0
+    for c in cards:
+        mine = c.get(field) if mapping is None else mapping.get(c.get(field))
+        theirs = c.get(rules_field)
+        if mine and theirs and mine not in ("altro", "non chiaro"):
+            compared += 1
+            same += mine == theirs
+    return same, compared
+
+
 def card_report(cards: list, remaining: int = 0, workers: int = 1) -> list:
     ok = [c for c in cards if not c.get("errore")]
     out = [f"Cards: {len(ok)}  (failed: {len(cards) - len(ok)}: "
@@ -213,10 +252,17 @@ def card_report(cards: list, remaining: int = 0, workers: int = 1) -> list:
             f"Who appealed: {rl._row(Counter(c['ricorrente'] for c in ok), n)}",
             f"Outcome: {rl._row(Counter(c['esito'] for c in ok), n)}",
             f"In favour of: {rl._row(Counter(c['a_favore_di'] for c in ok), n)}"]
-    both = [c for c in ok if c["a_favore_di"] != "non chiaro" and c["a_favore_di_regole"] != "non chiaro"]
-    if both:
-        same = sum(c["a_favore_di"] == c["a_favore_di_regole"] for c in both)
-        out.append(f"Side, model vs step 1's rules, where both say: same {same} / {len(both)}")
+    out.append("Model vs step 1's fixed patterns (no model), where both give an answer:")
+    for label, field, rules_field, mapping in (
+            ("in favour of", "a_favore_di", "a_favore_di_regole", None),
+            ("outcome", "esito", "esito_regole", _OUTCOME_CLASS),
+            ("who appealed", "ricorrente", "ricorrente_regole", None)):
+        compared = [c for c in ok if c.get(rules_field) and c[rules_field] != "non chiaro"]
+        same, n_both = agreement(compared, field, rules_field, mapping)
+        out.append(f"   {label}: same {same} / {n_both}" + (f" ({same / n_both:.0%})" if n_both else ""))
+    words = sum(c.get("parole_totali", 0) for c in ok)
+    if words:
+        out.append(f"Keywords found in the ruling's text: {rl._pct(sum(c.get('parole_nel_testo', 0) for c in ok), words)}")
     out += [f"Most used fact keywords: {rl._row(Counter(k for c in ok for k in c['parole_chiave_fatti']), top=15)}",
             f"Most used issue keywords: {rl._row(Counter(k for c in ok for k in c['parole_chiave_questioni']), top=15)}",
             f"Most applied articles: {rl._row(Counter(a for c in ok for a in c['articoli_applicati']), top=15)}"]
@@ -273,8 +319,12 @@ def _card(link: dict, text: str) -> dict:
             "riferimento_completo": rl.full_reference(link), "court": link.get("court"), "sezione": sezione,
             "number": link.get("number"), "date": link.get("date"), "branch": link["branch"],
             "articoli_citati": link["articles"], "a_favore_di_regole": _rules_side(link.get("favours")),
+            "esito_regole": _RULES_OUTCOME_CLASS.get(link.get("outcome"), ""),
+            "ricorrente_regole": rules_appellant(link.get("appellant")),
             "chars": len(text), "letta_in_parte": in_part}
     card.update(check_card(parsed, text, link["articles"]))
+    keywords = card["argomento_decisivo"] + card["parole_chiave_fatti"] + card["parole_chiave_questioni"]
+    card["parole_totali"], card["parole_nel_testo"] = len(keywords), grounded(keywords, text)
     card["secondi"] = round(time.time() - t0, 1)
     return card
 
