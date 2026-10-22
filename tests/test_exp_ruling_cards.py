@@ -166,6 +166,23 @@ def test_card_asks_again_for_a_quote_not_in_the_ruling(monkeypatch):
     assert card["parole_nel_testo"] == 2
 
 
+def test_card_reference_from_the_italgiure_file_name(monkeypatch):
+    text = "Penale Sent. Sez. 1 Num. 190 Anno 2026. " + TEXT + " Così deciso in Roma, il 12 marzo 2026."
+    monkeypatch.setattr(rc.dg, "_chat", lambda messages, **kw: json.dumps(
+        {"articoli_applicati": ["584 c.p."], "citazione": "senza che rilevi la sua prevedibilità in concreto"}))
+    link = {"id": "d2", "court": "Cassazione", "number": None, "date": None, "branch": "penale",
+            "articles": ARTICLES, "favours": "?", "outcome": "rigettato", "appellant": "imputato",
+            "italgiure": {"kind": "snpen", "section": "I", "year": "2026", "number": "190", "type": "S"}}
+    card = rc._card(link, text)
+    assert card["riferimento"] == "Cass. pen., Sez. I, sent. n. 190/2026, 12/03/2026"
+    assert card["riferimento_completo"] and card["riferimento_dal_testo"]     # the date came from the text
+    civil = dict(link, branch="civile", date="05/05/2026",
+                 italgiure={"kind": "snciv", "section": "L.", "year": "2026", "number": "17277", "type": "O"})
+    card = rc._card(civil, text)
+    assert card["riferimento"] == "Cass. civ., Sez. L., ord. n. 17277/2026, 05/05/2026"
+    assert not card["riferimento_dal_testo"]
+
+
 def _link(i, branch="penale", articles=("584 c.p.",), chars=1000, favours="?"):
     return {"id": f"d{i}", "branch": branch, "articles": list(articles), "chars": chars, "favours": favours,
             "court": "Cassazione", "number": i, "date": "2020"}

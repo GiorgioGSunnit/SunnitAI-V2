@@ -233,12 +233,20 @@ def sezione_of(header: str) -> str:
 _LOWER_COURTS = ("Tribunale", "Corte d'appello", "Giudice di pace", "Corte d'assise", "Corte d'assise d'appello")
 
 
+_ACT_TYPES = {"S": "sent.", "O": "ord.", "I": "ord. interl.", "D": "decr."}
+
+
 def reference_of(link: dict, sezione: str, city: str = "") -> str:
-    """'Cass. pen., Sez. IV, n. 12345, 12/03/2019' / 'Trib. Milano, n. 1234/2021, 12/03/2021':
-    what is known of it, in that order."""
+    """'Cass. pen., Sez. IV, sent. n. 1234/2026, 12/03/2026' / 'Trib. Milano, n. 1234/2021,
+    12/03/2021': what is known of it, in that order. `link` may carry "branch" (civil
+    Cassazione is "Cass. civ.") and "type" (the Italgiure act type: S, O, I, D)."""
     court = _COURT_ABBR.get(link.get("court") or "", link.get("court") or "")
-    parts = [f"{court} {city}".strip(), sezione,
-             f"n. {link['number']}" if link.get("number") not in (None, "") else "", str(link.get("date") or "")]
+    if link.get("court") == "Cassazione" and link.get("branch") == "civile":
+        court = "Cass. civ."
+    number = ""
+    if link.get("number") not in (None, ""):
+        number = f"{_ACT_TYPES.get(link.get('type') or '', '')} n. {link['number']}".strip()
+    parts = [f"{court} {city}".strip(), sezione, number, str(link.get("date") or "")]
     return ", ".join(p for p in parts if p)
 
 
@@ -463,13 +471,20 @@ def _card(link: dict, text: str) -> dict:
             messages = [SystemMessage(content=SYSTEM + dg._JSON_RETRY_SUFFIX), messages[1]]
     if not isinstance(parsed, dict):
         return {"id": link["id"], "errore": "json"}
-    sezione = sezione_of(text[:5000])
-    court = court_for_card(link.get("court"), text[:3000])
-    city = city_of(text[:3000]) if court in _LOWER_COURTS else ""
-    has_number = re.search(r"\d", str(link.get("number") or ""))
-    number = link.get("number") if has_number else number_from_text(text)
+    italgiure = link.get("italgiure")
+    if italgiure:   # an Italgiure file: Cassazione, its section, number and year in the file name
+        court, city, has_number = "Cassazione", "", True
+        sezione = "Sez. " + italgiure["section"]
+        number = f"{italgiure['number']}/{italgiure['year']}"
+    else:
+        sezione = sezione_of(text[:5000])
+        court = court_for_card(link.get("court"), text[:3000])
+        city = city_of(text[:3000]) if court in _LOWER_COURTS else ""
+        has_number = re.search(r"\d", str(link.get("number") or ""))
+        number = link.get("number") if has_number else number_from_text(text)
     date = link.get("date") or date_from_text(text)
-    ref = {"court": court, "number": number, "date": date}
+    ref = {"court": court, "number": number, "date": date, "branch": link["branch"],
+           "type": (italgiure or {}).get("type")}
     card = {"id": link["id"], "prompt_version": PROMPT_VERSION, "riferimento": reference_of(ref, sezione, city),
             "riferimento_completo": reference_complete(court, city, number, date),
             "riferimento_dal_testo": bool((number and not has_number) or (date and not link.get("date"))),
