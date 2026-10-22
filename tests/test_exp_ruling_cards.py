@@ -89,6 +89,57 @@ def test_sezione_and_reference():
     assert rc.reference_of({"court": None, "number": None, "date": "2019"}, "") == "2019"
 
 
+def test_number_and_date_from_text():
+    text = ("TRIBUNALE DI XXX. R.G.N.R. n. 5555/2019, R.G. Trib. n. 777/2020. SENTENZA N. 1234/21 ... "
+            "Così deciso in XXX, il 12 marzo 2021. Depositata in cancelleria il 15/04/2021.")
+    assert rc.number_from_text(text) == "1234/2021"           # never the register numbers
+    assert rc.date_from_text(text) == "12/03/2021"            # the decision date before the filing
+    assert rc.number_from_text("Sent. n. 77/2020 del Tribunale") == "77/2020"
+    assert rc.date_from_text("... Depositata il 15.4.2021") == "15/04/2021"
+    assert rc.date_from_text("all'udienza pubblica del 3/2/2020 la Corte") == "03/02/2020"
+    assert rc.number_from_text("R.G. n. 5555/2019") == "" and rc.date_from_text("nessuna data") == ""
+
+
+def test_city_and_court_of_lower_courts():
+    assert rc.city_of("TRIBUNALE DI MILANO SEZIONE PRIMA PENALE") == "Milano"
+    assert rc.city_of("Tribunale di Reggio Calabria") == "Reggio Calabria"
+    assert rc.city_of("Tribunale di sorveglianza di Roma") == "Roma"
+    assert rc.city_of("CORTE D'ASSISE D'APPELLO DI NAPOLI") == "Napoli"
+    assert rc.city_of("Corte di Assise di Torino") == "Torino"
+    assert rc.city_of("LA CORTE SUPREMA DI CASSAZIONE") == ""
+    assert rc.court_for_card("Corte d'appello", "CORTE D'ASSISE D'APPELLO DI NAPOLI") == "Corte d'assise d'appello"
+    assert rc.court_for_card("Tribunale", "LA CORTE DI ASSISE DI TORINO") == "Corte d'assise"
+    assert rc.court_for_card("Cassazione", "LA CORTE SUPREMA DI CASSAZIONE") == "Cassazione"
+
+
+def test_reference_complete_needs_the_city_of_a_lower_court():
+    assert not rc.reference_complete("Tribunale", "", "1234/2021", "12/03/2021")
+    assert rc.reference_complete("Tribunale", "Milano", "1234/2021", "12/03/2021")
+    assert rc.reference_complete("Cassazione", "", 12345, "12/03/2021")
+    assert not rc.reference_complete("Cassazione", "", None, "12/03/2021")
+    ref = {"court": "Tribunale", "number": "1234/2021", "date": "12/03/2021"}
+    assert rc.reference_of(ref, "", "Milano") == "Trib. Milano, n. 1234/2021, 12/03/2021"
+
+
+def test_card_asks_again_for_a_quote_not_in_the_ruling(monkeypatch):
+    text = ("TRIBUNALE DI MILANO SEZIONE PRIMA PENALE. SENTENZA N. 1234/2021. " + TEXT
+            + " Così deciso in Milano, il 12 marzo 2021.")
+    replies = iter([json.dumps({"articoli_applicati": ["584 c.p."], "ricorrente": "imputato", "esito": "rigetto",
+                                "a_favore_di": "accusa", "parole_chiave_fatti": ["schiaffo", "caduta"],
+                                "citazione": "la morte deve essere prevedibile in concreto per l'agente"}),
+                    "«senza che rilevi la sua prevedibilità in concreto»"])
+    monkeypatch.setattr(rc.dg, "_chat", lambda messages, **kw: next(replies))
+    link = {"id": "d1", "court": "Tribunale", "number": None, "date": None, "branch": "penale",
+            "articles": ARTICLES, "favours": "?", "outcome": "rigettato", "appellant": "imputato"}
+    card = rc._card(link, text)
+    assert card["citazione_verificata"] and card["citazione_ritentata"]
+    assert card["citazione"] == "senza che rilevi la sua prevedibilità in concreto"
+    assert card["riferimento"] == "Trib. Milano, Sez. I, n. 1234/2021, 12/03/2021"
+    assert card["riferimento_completo"] and card["riferimento_dal_testo"]
+    assert card["esito_regole"] == "rigettato" and card["ricorrente_regole"] == "imputato"
+    assert card["parole_nel_testo"] == 2
+
+
 def _link(i, branch="penale", articles=("584 c.p.",), chars=1000, favours="?"):
     return {"id": f"d{i}", "branch": branch, "articles": list(articles), "chars": chars, "favours": favours,
             "court": "Cassazione", "number": i, "date": "2020"}

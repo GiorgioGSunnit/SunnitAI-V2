@@ -50,7 +50,9 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 
 import src.rag.defensive_generation as dg  # noqa: E402
 
-PROMPT_VERSION = "cards-v1"
+# v2 (22 Oct): "più parti" only for different kinds of parties -- the trial's model used it for
+# several defendants, and "who appealed" agreed with step 1 in 9 of 14.
+PROMPT_VERSION = "cards-v2"
 MAX_CHARS = 40000        # about 13k tokens: with the prompt and the answer, inside the model's 20k
 HEAD_CHARS = 8000        # a longer ruling is read as its opening + its last part (reasons, P.Q.M.)
 QUOTE_CHARS = 300
@@ -70,8 +72,9 @@ SYSTEM = (
     '"argomento_decisivo": [], "parole_chiave_fatti": [], "parole_chiave_questioni": [], "citazione": ""}\n'
     "- articoli_applicati: solo gli articoli dell'elenco che il giudice applica o interpreta per decidere "
     "il caso, non quelli citati di passaggio (spese, forma del ricorso), scritti come nell'elenco.\n"
-    "- ricorrente: chi ha impugnato: \"imputato\", \"pubblico ministero\", \"parte civile\", \"più parti\" "
-    "o \"altro\".\n"
+    "- ricorrente: chi ha impugnato: \"imputato\" (anche quando gli imputati sono più d'uno), \"pubblico "
+    "ministero\", \"parte civile\", \"più parti\" solo se hanno impugnato parti di tipo diverso (per esempio "
+    "imputato e pubblico ministero), o \"altro\".\n"
     "- esito: \"rigetto\", \"inammissibilità\", \"annullamento con rinvio\", \"annullamento senza rinvio\", "
     "\"accoglimento parziale\", \"condanna\", \"assoluzione\" o \"altro\".\n"
     "- a_favore_di: \"imputato\" se la decisione gli è favorevole, \"accusa\" se gli è sfavorevole, "
@@ -83,6 +86,12 @@ SYSTEM = (
     "causale\", \"prevedibilità dell'evento\").\n"
     "- citazione: una o due frasi copiate parola per parola dalla sentenza, in cui il giudice afferma il "
     f"principio decisivo; al massimo {QUOTE_CHARS} caratteri; senza nomi di persone."
+)
+# Asked once more when the card's quote is not in the ruling (the trial: 16 of 20 found).
+QUOTE_SYSTEM = (
+    "Copia dalla sentenza, parola per parola, una o due frasi consecutive in cui il giudice afferma il "
+    "principio decisivo. Non cambiare, aggiungere o togliere nessuna parola. Al massimo "
+    f"{QUOTE_CHARS} caratteri, senza nomi di persone. Rispondi solo con le frasi copiate, senza virgolette."
 )
 
 # --- Prompt and checks (pure) --------------------------------------------------------
@@ -173,7 +182,18 @@ _SEZ_RE = re.compile(r"\bsezion[ei]\s+(unit[ei]|prima|seconda|terza|quarta|quint
 _SEZ = {"prima": "I", "seconda": "II", "terza": "III", "quarta": "IV", "quinta": "V", "sesta": "VI",
         "settima": "VII", "1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI", "7": "VII"}
 _COURT_ABBR = {"Cassazione": "Cass. pen.", "Corte d'appello": "App.", "Tribunale": "Trib.",
-               "Giudice di pace": "G.d.P.", "Corte costituzionale": "Corte cost."}
+               "Giudice di pace": "G.d.P.", "Corte costituzionale": "Corte cost.",
+               "Corte d'assise": "Ass.", "Corte d'assise d'appello": "Ass. App."}
+_ASSISE_RE = re.compile(r"corte\s+d(?:['’]\s*|i\s+)assise(\s+d(?:['’]\s*|i\s+)appello)?", re.IGNORECASE)
+
+
+def court_for_card(link_court, header: str):
+    """Step 1's court, unless the opening names a Corte d'assise (where homicide is tried),
+    which step 1 does not know: there "Corte d'assise d'appello" reads as Corte d'appello."""
+    m = _ASSISE_RE.search((header or "")[:600])
+    if m:
+        return "Corte d'assise d'appello" if m.group(1) else "Corte d'assise"
+    return link_court
 
 
 def sezione_of(header: str) -> str:
@@ -188,11 +208,81 @@ def sezione_of(header: str) -> str:
     return "Sez. " + _SEZ.get(word, word.upper())
 
 
-def reference_of(link: dict, sezione: str) -> str:
-    """'Cass. pen., Sez. IV, n. 12345, 12/03/2019': what is known of it, in that order."""
-    parts = [_COURT_ABBR.get(link.get("court") or "", link.get("court") or ""), sezione,
+_LOWER_COURTS = ("Tribunale", "Corte d'appello", "Giudice di pace", "Corte d'assise", "Corte d'assise d'appello")
+
+
+def reference_of(link: dict, sezione: str, city: str = "") -> str:
+    """'Cass. pen., Sez. IV, n. 12345, 12/03/2019' / 'Trib. Milano, n. 1234/2021, 12/03/2021':
+    what is known of it, in that order."""
+    court = _COURT_ABBR.get(link.get("court") or "", link.get("court") or "")
+    parts = [f"{court} {city}".strip(), sezione,
              f"n. {link['number']}" if link.get("number") not in (None, "") else "", str(link.get("date") or "")]
     return ", ".join(p for p in parts if p)
+
+
+def reference_complete(court, city, number, date) -> bool:
+    """Court, number and date; for a lower court also its city ("Trib. Milano")."""
+    if not (court and re.search(r"\d", str(number or "")) and date):
+        return False
+    return court not in _LOWER_COURTS or bool(city)
+
+
+# About 890 of the 2,118 criminal rulings have no document_number / date_enacted (step 1, 22 Oct;
+# about as many as the Tribunale rulings, 892). The ruling's own text usually has both.
+_SENTENZA_N_RE = re.compile(r"\bsent(?:enza|\.)\s+n(?:\.|um\.|umero)?\s*(\d{1,6})\s*/\s*((?:19|20)?\d{2})\b",
+                            re.IGNORECASE)
+_MONTHS = {m: i for i, m in enumerate(("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
+                                       "agosto", "settembre", "ottobre", "novembre", "dicembre"), 1)}
+_DATE_RE = re.compile(r"(\d{1,2})\s*[/.\-]\s*(\d{1,2})\s*[/.\-]\s*((?:19|20)\d{2})"
+                      r"|(\d{1,2})\s*[°º]?\s+(" + "|".join(_MONTHS) + r")\s+((?:19|20)\d{2})", re.IGNORECASE)
+# The decision date first (how rulings are cited), then the hearing, then the filing.
+_DATE_ANCHORS = (re.compile(r"cos[iì]\s+(?:è\s+)?decis\w*|decis[oa]\s+in\b", re.IGNORECASE),
+                 re.compile(r"udienza\s+(?:pubblica\s+|camerale\s+)?del", re.IGNORECASE),
+                 re.compile(r"depositat\w*", re.IGNORECASE))
+_CITY_RE = re.compile(
+    r"\b(?:tribunale(?:\s+ordinario|\s+di\s+sorveglianza|\s+del\s+riesame|\s+per\s+i\s+minorenni)?"
+    r"|corte\s+d['’]\s*appello|corte\s+di\s+appello|corte\s+d(?:['’]\s*|i\s+)assise(?:\s+d(?:['’]\s*|i\s+)appello)?|giudice\s+di\s+pace)"
+    r"\s+di\s+([a-zà-ù'’]+)(?:\s+([a-zà-ù'’]+))?", re.IGNORECASE)
+_TWO_WORD_CITIES = {"reggio", "busto", "torre", "nocera", "lamezia", "castellammare", "barcellona", "termini",
+                    "ascoli", "vibo", "santa", "sesto"}
+
+
+def number_from_text(text: str) -> str:
+    """'1234/2021' from "Sentenza n. 1234/2021" in the opening or the closing ('' if none).
+    Only after "sentenza": the register numbers (R.G., R.G.N.R.) are not the ruling's."""
+    for part in (text[:5000], text[-3000:]):
+        m = _SENTENZA_N_RE.search(part)
+        if m:
+            year = m.group(2)
+            year = year if len(year) == 4 else ("20" if int(year) < 50 else "19") + year
+            return f"{m.group(1)}/{year}"
+    return ""
+
+
+def date_from_text(text: str) -> str:
+    """'12/03/2021': the first date within 120 characters after "Così deciso", else after
+    "udienza del", else after "depositata" ('' if none)."""
+    for anchor in _DATE_ANCHORS:
+        for a in anchor.finditer(text):
+            m = _DATE_RE.search(text, a.end(), a.end() + 120)
+            if not m:
+                continue
+            if m.group(1):
+                day, month, year = int(m.group(1)), int(m.group(2)), m.group(3)
+            else:
+                day, month, year = int(m.group(4)), _MONTHS[m.group(5).lower()], m.group(6)
+            if 1 <= day <= 31 and 1 <= month <= 12:
+                return f"{day:02d}/{month:02d}/{year}"
+    return ""
+
+
+def city_of(header: str) -> str:
+    """'Milano' from "TRIBUNALE DI MILANO" ('Reggio Calabria' for the two-word ones), '' if none."""
+    m = _CITY_RE.search(header or "")
+    if not m:
+        return ""
+    words = [m.group(1)] + ([m.group(2)] if m.group(2) and m.group(1).lower() in _TWO_WORD_CITIES else [])
+    return " ".join(w[:1].upper() + w[1:].lower() for w in words)
 
 
 def pick(links: list, branch: str, done: set) -> list:
@@ -254,11 +344,13 @@ def card_report(cards: list, remaining: int = 0, workers: int = 1) -> list:
     seconds = sorted(c["secondi"] for c in ok)
     out += [f"Seconds per ruling: median {seconds[n // 2]:.0f}, max {seconds[-1]:.0f}; read in part: "
             f"{sum(c['letta_in_parte'] for c in ok)}",
-            f"Quote found word for word in the ruling: {rl._pct(sum(c['citazione_verificata'] for c in ok), n)}",
+            f"Quote found word for word in the ruling: {rl._pct(sum(c['citazione_verificata'] for c in ok), n)} "
+            f"(at the second ask: {sum(c.get('citazione_ritentata', False) for c in ok)})",
             f"Articles applied: median {sorted(len(c['articoli_applicati']) for c in ok)[n // 2]} per ruling; "
             f"none: {sum(not c['articoli_applicati'] for c in ok)}; proposed but not in the ruling's list: "
             f"{sum(c['articoli_scartati'] for c in ok)}",
-            f"Full reference: {rl._pct(sum(c['riferimento_completo'] for c in ok), n)}",
+            f"Full reference: {rl._pct(sum(c['riferimento_completo'] for c in ok), n)} "
+            f"(number or date read from the ruling's text: {sum(c.get('riferimento_dal_testo', False) for c in ok)})",
             f"Who appealed: {rl._row(Counter(c['ricorrente'] for c in ok), n)}",
             f"Outcome: {rl._row(Counter(c['esito'] for c in ok), n)}",
             f"In favour of: {rl._row(Counter(c['a_favore_di'] for c in ok), n)}"]
@@ -325,15 +417,33 @@ def _card(link: dict, text: str) -> dict:
     if not isinstance(parsed, dict):
         return {"id": link["id"], "errore": "json"}
     sezione = sezione_of(text[:5000])
-    card = {"id": link["id"], "prompt_version": PROMPT_VERSION, "riferimento": reference_of(link, sezione),
-            "riferimento_completo": rl.full_reference(link), "court": link.get("court"), "sezione": sezione,
-            "number": link.get("number"), "date": link.get("date"), "branch": link["branch"],
+    court = court_for_card(link.get("court"), text[:3000])
+    city = city_of(text[:3000]) if court in _LOWER_COURTS else ""
+    has_number = re.search(r"\d", str(link.get("number") or ""))
+    number = link.get("number") if has_number else number_from_text(text)
+    date = link.get("date") or date_from_text(text)
+    ref = {"court": court, "number": number, "date": date}
+    card = {"id": link["id"], "prompt_version": PROMPT_VERSION, "riferimento": reference_of(ref, sezione, city),
+            "riferimento_completo": reference_complete(court, city, number, date),
+            "riferimento_dal_testo": bool((number and not has_number) or (date and not link.get("date"))),
+            "court": court, "citta": city, "sezione": sezione,
+            "number": number, "date": date, "branch": link["branch"],
             "articoli_citati": link["articles"], "a_favore_di_regole": _rules_side(link.get("favours")),
             "esito_regole": _RULES_OUTCOME_CLASS.get(link.get("outcome"), ""),
             "ricorrente_regole": rules_appellant(link.get("appellant")),
             "chars": len(text), "letta_in_parte": in_part}
     card.update(check_card(parsed, text, link["articles"]))
-    keywords = card["argomento_decisivo"] + card["parole_chiave_fatti"] + card["parole_chiave_questioni"]
+    card["citazione_ritentata"] = False
+    if not card["citazione_verificata"]:
+        try:
+            again = dg._chat([SystemMessage(content=QUOTE_SYSTEM), HumanMessage(content="SENTENZA:\n" + prompt_text)],
+                             max_tokens=200, temperature=0)
+        except Exception:
+            again = ""
+        quote = " ".join(str(again or "").split()).strip(' "«»“”')[:QUOTE_CHARS + 50]
+        if quote_in_text(quote, text):
+            card.update(citazione=quote, citazione_verificata=True, citazione_ritentata=True)
+    keywords =card["argomento_decisivo"] + card["parole_chiave_fatti"] + card["parole_chiave_questioni"]
     card["parole_totali"], card["parole_nel_testo"] = len(keywords), grounded(keywords, text)
     card["secondi"] = round(time.time() - t0, 1)
     return card
