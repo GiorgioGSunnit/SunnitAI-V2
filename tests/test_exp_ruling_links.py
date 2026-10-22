@@ -108,6 +108,22 @@ def test_appellant_of():
     assert rl.appellant_of("ordinanza senza intestazione") == "?"
 
 
+def test_appellant_of_from_the_facts():
+    assert rl.appellant_of("Ritenuto in fatto. La Corte d'appello confermava la condanna. Avverso la sentenza ha "
+                           "proposto ricorso per cassazione l'imputato, a mezzo del difensore, deducendo") == "imputato"
+    assert rl.appellant_of("Con sentenza del 2019 il Tribunale assolveva TIZIO. Il P.G. presso la Corte "
+                           "d'appello di XXX ricorre per cassazione avverso la sentenza che ha assolto l'imputato") == "pm"
+    assert rl.appellant_of("Il fatto. Ha proposto ricorso il Procuratore della Repubblica nei confronti "
+                           "dell'imputato TIZIO nato a XXX") == "pm"
+    assert rl.appellant_of("L'imputato era stato condannato. Il Procuratore generale lo sapeva. Ricorre per "
+                           "cassazione TIZIO, nato a XXX, deducendo") == "imputato"
+
+
+def test_pqm_in_any_case():
+    assert rl.outcome_of(rl.dispositivo("Motivi. p.q.m. rigetta il ricorso. Così deciso")[0]) == "rigettato"
+    assert rl.dispositivo("Motivi. Per Questi Motivi annulla la sentenza. Così deciso")[1]
+
+
 def test_favours_of():
     assert rl.favours_of("imputato", "accolto") == "imputato"
     assert rl.favours_of("imputato", "in parte accolto") == "imputato"

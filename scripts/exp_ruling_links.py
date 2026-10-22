@@ -158,7 +158,8 @@ def branch_of(header: str, articles: list) -> str:
 
 # --- Outcome --------------------------------------------------------------------
 
-_PQM_RE = re.compile(r"\bP\.\s*Q\.\s*M\b\.?|\bPQM\b|\b[Pp]er\s+questi\s+motivi|\bPER\s+QUESTI\s+MOTIVI")
+# Any case: "P.Q.M.", "p.q.m.", "Per Questi Motivi" (a 500-ruling trial, capitals only, found 67% vs 81%).
+_PQM_RE = re.compile(r"\bp\.\s*q\.\s*m\b\.?|\bpqm\b|\bper\s+questi\s+motivi", re.IGNORECASE)
 _CLOSING_RE = re.compile(r"cos[iì]\s+(?:è\s+)?decis|decis[oa]\s+in\s+roma|depositat[ao]\s+in\s+cancelleria",
                          re.IGNORECASE)
 _GRANTED_RE = re.compile(r"\bannull|\bcassa\b(?!\s+delle\s+ammende)|\baccogli", re.IGNORECASE)
@@ -219,14 +220,35 @@ _GRANTED_OUTCOMES = ("accolto", "in parte accolto")
 _REFUSED_OUTCOMES = ("rigettato", "inammissibile")
 
 
-def appellant_of(header: str) -> str:
-    """Who brought the appeal, from the opening: 'imputato', 'pm', 'parte civile',
-    joined by '+' when several did; '?' when the opening names none."""
-    m = _APPEAL_START_RE.search(header or "")
+# Without the "sul ricorso proposto da" heading, the facts say it: "ha proposto ricorso per
+# cassazione l'imputato", "il Procuratore generale ricorre per cassazione".
+_APPEAL_VERB_RE = re.compile(r"\bpropost[oi]\s+ricors\w*|\bpropon\w*\s+ricors\w*|\bricorr\w*\s+per\s+cassazione",
+                             re.IGNORECASE)
+# A sentence end: not the dot of an abbreviation in capitals ("P.G. ha proposto").
+_SENTENCE_END_RE = re.compile(r"(?<![A-Z])[.;]\s+(?=[A-Z]|$)")
+
+
+def _appeal_span(header: str) -> str:
+    m = _APPEAL_START_RE.search(header)
+    if m:
+        end = _APPEAL_END_RE.search(header, m.end(), m.end() + 1500)
+        return header[m.start():end.start() if end else m.end() + 600]
+    m = _APPEAL_VERB_RE.search(header)
     if not m:
+        return ""
+    before = _SENTENCE_END_RE.split(header[max(0, m.start() - 120):m.start()])[-1]
+    after = header[m.end():m.end() + 150]
+    stops = [x.start() for x in (_APPEAL_END_RE.search(after), _SENTENCE_END_RE.search(after)) if x]
+    return before + m.group(0) + after[:min(stops) if stops else len(after)]
+
+
+def appellant_of(header: str) -> str:
+    """Who brought the appeal: 'imputato', 'pm', 'parte civile', joined by '+' when
+    several did; '?' when the text does not say. Read from the opening's "sul ricorso
+    proposto da ...", else from the sentence that says who appealed."""
+    span = _appeal_span(header or "")
+    if not span:
         return "?"
-    end = _APPEAL_END_RE.search(header, m.end(), m.end() + 1500)
-    span = header[m.start():end.start() if end else m.end() + 600]
     who = [name for name, rx in (("imputato", _DEFENDANT_RE), ("pm", _PROSECUTOR_RE),
                                  ("parte civile", _CIVIL_PARTY_RE)) if rx.search(span)]
     return "+".join(who) or "?"
