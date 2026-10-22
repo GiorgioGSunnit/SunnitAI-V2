@@ -9,10 +9,11 @@ model call, and reports:
   - the articles it cites, with their code ("art. 584 c.p.", "artt. 581 e 584 cod.
     pen.", "art. 41, secondo comma, c.p."). It uses the app's citation patterns,
     plus the comma forms rulings use ("secondo comma", "cpv.", "lett. e)");
-  - its branch: the section its opening names ("Sezione Quarta Penale"), else the
-    codes it cites most;
-  - the court its opening names, and whether a full reference can be built (court +
-    document_number + date_enacted);
+  - its branch and court: from the Italgiure file name when it is one (every ruling,
+    on 22 Oct: "snpen@s10@a2026@n00190@tS" = Cassazione penale, Sez. I, n. 190/2026,
+    sentenza); else the section its opening names ("Sezione Quarta Penale") or the
+    codes it cites most, and the court its opening names;
+  - whether a full reference can be built (court + number + date_enacted);
   - the outcome its P.Q.M. states: accolto (annulla / cassa / accoglie), in parte
     accolto, rigettato, inammissibile, estinto. "Senza rinvio", the acquittal
     formulas ("perché il fatto non sussiste") and prescription are counted apart;
@@ -280,19 +281,53 @@ def _plain(value):
     return None if value is None else value if isinstance(value, (int, float)) else str(value)
 
 
+# --- Italgiure file names ------------------------------------------------------------
+# Every ruling in the collection is a Cassazione decision downloaded from Italgiure (22 Oct
+# 2026: 22,612 of 22,612). The file says it all: "snpen@s10@a2026@n00190@tS.clean.pdf"
+# (criminal) or "snciv_s50_a2026_n01978_tO.clean.pdf" (civil) = archive, section, year,
+# number, type. That is surer than any pattern on the text: the first run read the lower
+# court the opening names ("avverso la sentenza della Corte d'appello") as the court for
+# 40% of the rulings, and left 365 criminal ones without a branch.
+_ITALGIURE_RE = re.compile(r"(snpen|snciv)[@_]s(\w)(\w)[@_]a(\d{4})[@_]n(\d+)[@_]t([a-z])", re.IGNORECASE)
+_ROMAN = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI", "7": "VII"}
+_SECTION_LETTERS = {"U": "U.", "F": "fer.", "L": "L.", "T": "T."}
+
+
+def _section_label(section: str, sub: str) -> str:
+    """'1','0' -> 'I'; 'U','0' -> 'U.'; 'L','0' -> 'L.'; '6','1' -> 'VI-1' (the old sub-sections)."""
+    section = section.upper()
+    label = _ROMAN.get(section) or _SECTION_LETTERS.get(section) or section + "."
+    return label + (f"-{sub.upper()}" if sub != "0" else "")
+
+
+def italgiure_of(*names) -> dict:
+    """{kind, section, year, number, type} from the first name that is an Italgiure id, else None."""
+    for name in names:
+        m = _ITALGIURE_RE.search(str(name or ""))
+        if m:
+            kind, section, sub, year, number, kind_of_act = m.groups()
+            return {"kind": kind.lower(), "section": _section_label(section, sub), "year": year,
+                    "number": str(int(number)), "type": kind_of_act.upper()}
+    return None
+
+
 def read_ruling(doc_id: str, meta: dict, text: str, words=()) -> dict:
     """The labels for one ruling (no text in the result)."""
     header = (text or "")[:5000]
     articles = cited_articles(text)
-    court = court_of(header) or court_of(meta.get("description") or "")
-    branch = "amministrativo" if court in ("Consiglio di Stato", "TAR") else branch_of(header, articles)
+    italgiure = italgiure_of(meta.get("file_name"), meta.get("name"))
+    if italgiure:
+        court, branch = "Cassazione", ("penale" if italgiure["kind"] == "snpen" else "civile")
+    else:
+        court = court_of(header) or court_of(meta.get("description") or "")
+        branch = "amministrativo" if court in ("Consiglio di Stato", "TAR") else branch_of(header, articles)
     part, anchored = dispositivo(text)
     outcome = outcome_of(part) if part else "nessun P.Q.M."
     appellant = appellant_of(header) if branch == "penale" else "-"
     low = (text or "").lower()
     return {
         "id": doc_id, "number": _plain(meta.get("number")), "date": _plain(meta.get("date")),
-        "court": court, "branch": branch, "outcome": outcome, "pqm_anchored": anchored,
+        "italgiure": italgiure, "court": court, "branch": branch, "outcome": outcome, "pqm_anchored": anchored,
         "senza_rinvio": bool(_NO_REMAND_RE.search(part)), "acquittal_formula": bool(_ACQUITTAL_RE.search(part)),
         "prescription": bool(_PRESCRIPTION_RE.search(part)),
         "appellant": appellant, "favours": favours_of(appellant, outcome) if branch == "penale" else "-",
@@ -307,7 +342,8 @@ def shape(value) -> str:
 
 
 def full_reference(r: dict) -> bool:
-    return bool(r["court"] and re.search(r"\d", str(r["number"] or "")) and r["date"])
+    number = r.get("number") or (r.get("italgiure") or {}).get("number")
+    return bool(r["court"] and re.search(r"\d", str(number or "")) and r["date"])
 
 
 def focus_report(records: list, focus: str, words=()) -> dict:
@@ -363,6 +399,8 @@ def report(records: list, focus=None, words=(), top: int = 25) -> list:
         out.append(f"Most cited, {title}: {_row(part, top=top if 'substantive' in title else 10)}")
     out += ["", f"Branch: {_row(Counter(r['branch'] for r in records), n)}",
             f"Court named in the opening: {_row(Counter(r['court'] or '?' for r in records), n)}",
+            f"Italgiure files (court, branch, section and number from the file name): "
+            f"{_pct(sum(bool(r.get('italgiure')) for r in records), n)}",
             f"Full reference possible (court + number + date): {_pct(sum(full_reference(r) for r in records), n)}",
             f"document_number format: {_row(Counter(shape(r['number']) for r in records), top=8)}",
             f"date_enacted format: {_row(Counter(shape(r['date']) for r in records), top=5)}",
@@ -427,7 +465,8 @@ def main() -> None:
                 try:
                     meta = {r["id"]: r for r in session.run(
                         "MATCH (d:Document) WHERE d.id IN $ids RETURN d.id AS id, d.document_number AS number, "
-                        "d.date_enacted AS date, d.description AS description", ids=batch).data()}
+                        "d.date_enacted AS date, d.description AS description, d.file_name AS file_name, "
+                        "d.name AS name", ids=batch).data()}
                     sections = _ruling_sections(session, batch)
                     break
                 except Exception as exc:

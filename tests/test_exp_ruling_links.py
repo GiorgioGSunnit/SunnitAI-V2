@@ -155,6 +155,27 @@ def test_read_ruling_labels_without_text():
     assert all(not isinstance(v, str) or len(v) < 40 for v in r.values())   # no text kept
 
 
+def test_italgiure_of_file_names():
+    assert rl.italgiure_of("snpen@s10@a2026@n00190@tS.clean.pdf") == {
+        "kind": "snpen", "section": "I", "year": "2026", "number": "190", "type": "S"}
+    assert rl.italgiure_of(None, "[CIVILE] snciv_sL0_a2026_n17277_tO.clean")["section"] == "L."
+    assert rl.italgiure_of("snciv_sU0_a2026_n12726_tD.clean.pdf")["section"] == "U."
+    assert rl.italgiure_of("snciv_s61_a2026_n00012_tO.clean.pdf")["section"] == "VI-1"
+    assert rl.italgiure_of("Codice Penale 2026.pdf", "") is None
+
+
+def test_read_ruling_takes_court_and_branch_from_the_file_name():
+    # The opening names the lower court first and cites only civil articles: the file name wins.
+    text = ("avverso la sentenza della Corte d'appello di XXX, art. 2043 c.c. e art. 2051 c.c. "
+            "P.Q.M. Rigetta il ricorso. Così deciso in Roma.")
+    r = rl.read_ruling("d9", {"file_name": "snpen@s40@a2026@n01234@tS.clean.pdf", "number": None,
+                              "date": "01/02/2026"}, text)
+    assert r["court"] == "Cassazione" and r["branch"] == "penale"
+    assert r["italgiure"]["number"] == "1234" and r["italgiure"]["section"] == "IV"
+    assert rl.full_reference(r)                                   # the number comes from the file name
+    assert rl.read_ruling("d0", {}, text)["court"] == "Corte d'appello"   # no file name: the old reading
+
+
 def test_read_ruling_without_pqm_or_text():
     r = rl.read_ruling("doc-2", {}, "")
     assert r["outcome"] == "nessun P.Q.M." and r["articles"] == [] and r["chars"] == 0
