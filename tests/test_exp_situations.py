@@ -54,3 +54,9 @@ def test_new_finds_are_articles_the_live_pipeline_mostly_misses():
     expected = [{"code": "cp", "article": "584"}, {"code": "cp", "article": "589"}, {"code": "cp", "article": "43"}]
     # 584: cited every run, not new; 589: cited 1/3 and ranked 2nd, new; 43: missed but not found either.
     assert es.new_finds(expected, by_best, rates) == [("art. 589 cp", 2, 1 / 3)]
+
+
+def test_fact_texts_come_from_the_structured_facts():
+    extracted = {"fatti": [{"fatto": " Tizio colpisce Caio "}, {"fatto": ""}, "not a dict", {"tipo": "evento"}]}
+    assert es.fact_texts(extracted) == ["Tizio colpisce Caio"]
+    assert es.fact_texts(None) == []

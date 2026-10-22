@@ -21,8 +21,13 @@ Run from the app folder (prod), so it uses the app's code, .env and embedding mo
     ... --reference /root/eval/eval_runs/20261020-093048-reference-20oct
     ... --only sempronio,c2      ... --k 200
 
-Nothing is written: Neo4j sessions are read-only, one embedding call per case, no
-LLM calls. The situations were written by a model and some are legally wrong, so a
+--query facts searches story against story instead: the case's facts in neutral form
+(the structured analysis' first call, one LLM call per case), each fact on its own, the
+nearest situations pooled. On prod (22 Oct) the whole question found 15/47 @20, its exam
+instructions pulling in procedure-code articles.
+
+Nothing is written: Neo4j sessions are read-only; one embedding call per case (per fact
+with --query facts), and LLM calls only with --query facts. The situations were written by a model and some are legally wrong, so a
 good recall here means "a useful candidate source", never "a reliable answer".
 """
 
@@ -148,6 +153,31 @@ def _situation_rows(session, embedding_model, text, k):
     ).data()
 
 
+def fact_texts(extracted):
+    """The neutral facts from the structured analysis' first call, as query
+    texts; [] when there are none."""
+    return [str(f.get("fatto")).strip() for f in (extracted or {}).get("fatti") or []
+            if isinstance(f, dict) and str(f.get("fatto") or "").strip()]
+
+
+def _query_rows(session, embedding_model, case, mode, k, k_per_fact):
+    """Situation rows for one case. "case": the whole question, as the app
+    has it (exam instructions included). "facts": the case's facts in neutral
+    form (one LLM call, the structured analysis' first step), each searched
+    on its own, the rows pooled; story against story. Falls back to "case"
+    when no facts come back."""
+    if mode == "facts":
+        import src.rag.defensive_generation as dg
+        texts = fact_texts(dg._structured_facts(case["question"], ""))
+        if texts:
+            rows = []
+            for text in texts:
+                rows += _situation_rows(session, embedding_model, text, k_per_fact)
+            return rows, len(texts)
+        print("   (no facts extracted: searching with the whole question)")
+    return _situation_rows(session, embedding_model, case["question"], k), 0
+
+
 def _fmt_ref(ref):
     return f"{ref[1]} {ref[0]}"
 
@@ -157,6 +187,9 @@ def main() -> None:
     parser.add_argument("--cases", default=str(_default_cases_path()))
     parser.add_argument("--only", help="comma-separated tuning case ids (default: the 12)")
     parser.add_argument("--k", type=int, default=150, help="nearest situations per case (default 150)")
+    parser.add_argument("--query", choices=("case", "facts"), default="case",
+                        help='"case": the whole question; "facts": each extracted fact on its own (1 LLM call per case)')
+    parser.add_argument("--k-per-fact", type=int, default=30, help='nearest situations per fact with --query facts')
     parser.add_argument("--reference", help="an eval run folder with aggregate.json, to mark new finds")
     args = parser.parse_args()
 
@@ -177,12 +210,15 @@ def main() -> None:
     all_new = []
     with driver.session(database=NEO4J_DATABASE) as session:
         _embedding_check(session, embedding_model)
-        print(f"Index {INDEX}, {args.k} nearest situations per case\n")
+        print(f"Index {INDEX}, query: {args.query} "
+              + (f"({args.k_per_fact} nearest situations per fact)\n" if args.query == "facts"
+                 else f"({args.k} nearest situations per case)\n"))
         for case in cases:
-            rows = _situation_rows(session, embedding_model, case["question"], args.k)
+            rows, n_facts = _query_rows(session, embedding_model, case, args.query, args.k, args.k_per_fact)
             by_best, by_hits = rank_articles(rows)
             expected = case["expected"]
-            print(f"## {case['id']}  ({len(by_best)} distinct articles among {len(rows)} situations)")
+            facts_note = f", {n_facts} facts" if n_facts else ""
+            print(f"## {case['id']}  ({len(by_best)} distinct articles among {len(rows)} situations{facts_note})")
             for item in expected:
                 rb, rh = expected_rank(by_best, item), expected_rank(by_hits, item)
                 ref = rates.get(case["id"], {}).get(ev._label(item))
