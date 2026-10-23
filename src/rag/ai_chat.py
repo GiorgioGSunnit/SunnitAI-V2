@@ -132,6 +132,37 @@ _MIN_ANSWER_TOKENS = 400
 # was sized on "at least 15,001" with a 16-token margin, asked for one token
 # more than fit, and failed again.
 _RETRY_MARGIN_TOKENS = 300
+# The same overflow in its other wordings (prod logs, 20-23 Oct): checked on characters before
+# tokenizing ("your prompt contains 65396 characters (more than 53760 characters ...)"), and an
+# answer length over the whole context ("max_completion_tokens=19580 ..."). Neither was retried.
+_CONTEXT_CHARS_RE = re.compile(r"maximum context length is (\d+) tokens.*?prompt contains (\d+) characters",
+                               re.IGNORECASE | re.DOTALL)
+_CONTEXT_SIZE_RE = re.compile(r"max_model_len\D{0,3}(\d+)|maximum context length is (\d+)", re.IGNORECASE)
+# Our own prompt estimate, used when the server gives only a lower bound: Italian legal text
+# runs about 3 characters per token, 2.5 errs towards a shorter answer that fits.
+_RETRY_CHARS_PER_TOKEN = 2.5
+
+
+def _overflow_sizes(error_text: str, messages) -> Optional[tuple]:
+    """(context limit, prompt tokens) from a context-overflow error, or None if it isn't one.
+
+    The prompt size is the larger of what the server reports and our own estimate from the
+    prompt's characters: "at least N input tokens" is only a lower bound -- the server stops
+    counting at the room left after the requested answer. Prod, 23 Oct (applicability check):
+    a 19,140-token request was told "at least 861", the retry asked for 18,839, was told "at
+    least 1,162", and failed again; the prompt was some 20,000 tokens."""
+    estimate = int(sum(len(getattr(m, "content", "") or "") for m in messages or []) / _RETRY_CHARS_PER_TOKEN)
+    m = _CONTEXT_LIMIT_RE.search(error_text)
+    if m:
+        return int(m.group(1)), max(int(m.group(2)), estimate)
+    m = _CONTEXT_CHARS_RE.search(error_text)
+    if m:
+        return int(m.group(1)), max(int(int(m.group(2)) / _RETRY_CHARS_PER_TOKEN), estimate)
+    if "max_completion_tokens" in error_text:
+        m = _CONTEXT_SIZE_RE.search(error_text)
+        if m:
+            return int(m.group(1) or m.group(2)), estimate
+    return None
 
 
 def _call_chat(
@@ -164,11 +195,13 @@ def _call_chat(
     try:
         response = model.invoke(messages)
     except Exception as exc:
-        m = _CONTEXT_LIMIT_RE.search(str(exc))
-        if not m:
+        sizes = _overflow_sizes(str(exc), messages)
+        if not sizes:
             raise
-        limit, prompt_tokens = int(m.group(1)), int(m.group(2))
+        limit, prompt_tokens = sizes
         room = limit - prompt_tokens - _RETRY_MARGIN_TOKENS
+        if max_tokens is not None:
+            room = min(room, max_tokens)     # never ask for a longer answer than the caller did
         if room < _MIN_ANSWER_TOKENS:
             logger.error(
                 "prompt of %d tokens leaves only %d of the %d-token context for the "

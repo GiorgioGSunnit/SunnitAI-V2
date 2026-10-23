@@ -2546,6 +2546,22 @@ def _protected_article_row(row: Dict[str, Any], named: set) -> bool:
                 or row.get("_heading_match") or row.get("_multi_signal"))
 
 
+def _protection_rank(row: Dict[str, Any], named: set) -> int:
+    """How strongly a row is protected, for the last-resort trim: 0 named in the case,
+    1 matched by its heading, 2 cross-referenced, 3 found by several signals, 4 none."""
+    from .nodes.cypher import CROSSREF_SOURCE
+    if row.get("_article") in named:
+        return 0
+    if row.get("_heading_match"):
+        return 1
+    if row.get("_source") == CROSSREF_SOURCE:
+        return 2
+    return 3 if row.get("_multi_signal") else 4
+
+
+_LAST_RESORT_CHARS = 500
+
+
 def _with_text_cut(row: Dict[str, Any], chars: int) -> Dict[str, Any]:
     """A copy of the row whose text, as _source_block reads it, is cut to chars."""
     s = row.get("s") or {}
@@ -2571,10 +2587,11 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
                        budget: int = _DRAFT_INPUT_BUDGET) -> tuple:
     """(articles, rulings, human) for the draft call, trimmed step by step
     until the estimated prompt fits `budget`: the ruling passages first, then
-    the text of the other articles, then those articles themselves, and only
-    as a last resort the text of protected ones (_protected_article_row). The
-    case text and the instructions are never cut. A prompt that already fits
-    is exactly the one built before this existed."""
+    the text of the other articles, then those articles themselves, then the
+    text of protected ones (_protected_article_row), and as a last resort the
+    protected articles themselves, least protected first. The case text and
+    the instructions are never cut. A prompt that already fits is exactly the
+    one built before this existed."""
     named = set(_refs_in(_case_text(facts, request)))
     questioni = analysis.get("questioni", [])
     for step, (ruling_chars, max_rulings, other_chars, kept_chars) in enumerate(_PROMPT_TRIM_STEPS):
@@ -2591,9 +2608,27 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
         total = _estimate_tokens(system) + _estimate_tokens(human)
         if total <= budget or step == len(_PROMPT_TRIM_STEPS) - 1:
             break
+    dropped_for_size = 0
+    if total > budget:
+        # Last resort, never sent over budget. Prod, 21 Oct: after the last step about 48
+        # protected articles at 800 characters each still filled 12,936 estimated tokens
+        # against a 9,100 budget, the draft call overflowed and the user got "Si è
+        # verificato un errore nella generazione della strategia" (11 times, 20-23 Oct).
+        # The protected rows are dropped one by one, least protected first (_protection_rank)
+        # and, within a rank, latest first; the rest are cut to _LAST_RESORT_CHARS.
+        step = len(_PROMPT_TRIM_STEPS)
+        ranked = sorted(rows, key=lambda r: _protection_rank(r, named))
+        while ranked and total > budget:
+            left_out.append(ranked.pop().get("_article"))
+            dropped_for_size += 1
+            articles = _grouped_source_block([_with_text_cut(r, _LAST_RESORT_CHARS) for r in ranked],
+                                             questioni, _ARTICLE_CHARS)
+            human = _parere_human(facts, analysis, articles, rulings, request, principles)
+            total = _estimate_tokens(system) + _estimate_tokens(human)
     sizes = {"total": total, "budget": budget, "step": step, "instructions": _estimate_tokens(system),
              "case": _estimate_tokens(_case_text(facts, request)), "articles": _estimate_tokens(articles),
              "rulings": _estimate_tokens(rulings), "principles": _estimate_tokens(principles),
+             "dropped_for_size": dropped_for_size,
              "articles_left_out": [f"{a[0]} {a[1]}" for a in left_out if a]}
     vlog("case_analysis_prompt_tokens", sizes)
     if step:
@@ -3230,11 +3265,24 @@ _APPLICABILITY_SYSTEM = (
     "\"salvo che\") non è incompatibile quando i fatti escludono quel limite: è \"applicabile\", perché "
     "serve proprio a sostenere che il limite non opera.\n"
     "Usa \"incompatibile\" solo se puoi indicare quel requisito e quel fatto; in ogni dubbio usa "
-    "\"applicabile\". Rispondi SOLO con un array JSON, un oggetto per articolo, nessun altro testo:\n"
-    '[{"article": "<come indicato>", "verdict": "applicabile|alternativa|incompatibile", '
-    '"requisito": "<il requisito del testo, se incompatibile>", "fatto": "<il fatto del caso, se '
-    'incompatibile>", "reason": "<una frase>"}]'
+    "\"applicabile\". Rispondi SOLO con un array JSON, un oggetto per articolo, nessun altro testo. Per un "
+    "articolo \"applicabile\" o \"alternativa\" scrivi solo article e verdict; solo per un articolo "
+    "\"incompatibile\" aggiungi requisito, fatto e reason (una frase):\n"
+    '[{"article": "<come indicato>", "verdict": "applicabile"}, '
+    '{"article": "<come indicato>", "verdict": "alternativa"}, '
+    '{"article": "<come indicato>", "verdict": "incompatibile", "requisito": "<il requisito del testo>", '
+    '"fatto": "<il fatto del caso>", "reason": "<una frase>"}]'
 )
+# 23 Oct: the check was sent every candidate in one call (87-89 on prod) and asked for 220
+# answer tokens each, 19,580 against a 20,000-token context: it failed on 72 of about 260
+# strategy answers since 20 Oct (40 "maximum context length", 32 "max_completion_tokens"),
+# each time keeping every article. Now: at most _APPLICABILITY_MAX_CHECKED candidates, in
+# the pipeline's order (the ones that can reach the draft), _APPLICABILITY_BATCH per call,
+# up to _APPLICABILITY_WORKERS calls at once, and the long verdict only for the articles
+# dropped -- the check took a median 26 s on prod, most of it writing reasons for articles kept.
+_APPLICABILITY_MAX_CHECKED = 36
+_APPLICABILITY_BATCH = 12
+_APPLICABILITY_WORKERS = 3
 
 
 def _applicability_key(label: str) -> str:
@@ -3289,34 +3337,51 @@ def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[
     return to_check, texts
 
 
-def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> Optional[Dict[str, Dict[str, Any]]]:
-    """{label key: verdict} from one model call; None if the call or the reply fails."""
-    if not texts:
-        return {}
+def _applicability_batch(case: str, texts: Dict[str, str]) -> tuple:
+    """(verdict list or None, error text) for one batch of articles."""
     human = (
-        f"Fatti del caso:\n{_case_text(facts, request)[:2000]}\n\n"
+        f"Fatti del caso:\n{case}\n\n"
         "Articoli candidati (testo reale dalla banca dati):\n"
         + "\n\n".join(f"[{label}]\n{text}" for label, text in texts.items())
     )
-    # Round 8 (19 Oct): a fixed 1200-token cap truncated the model's JSON
-    # reply for a 12-article fusion pool on prod ("check failed: every
-    # article would be kept" -- one verdict object per article, each with
-    # a requisito/fatto/reason sentence, routinely exceeds 1200 tokens past
-    # 6-7 articles). Scaled to the number actually being checked.
-    max_tokens = max(1200, 220 * len(texts))
-    t0 = time.time()
+    # Round 8 (19 Oct): a fixed 1200-token cap truncated the JSON reply past 6-7
+    # articles when every verdict carried requisito/fatto/reason. Only dropped
+    # articles carry them now; the room still allows several drops per batch.
+    max_tokens = 400 + 120 * len(texts)
     try:
         verdicts = _chat_json([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
                               max_tokens=max_tokens, temperature=0)
     except Exception as exc:
-        logger.warning("applicability check failed, keeping every candidate article: %s", exc)
-        vlog("case_analysis_applicability", {"checked": len(texts), "error": str(exc)[:160]},
-            duration_ms=(time.time() - t0) * 1000)
+        logger.warning("applicability check failed for a batch of %d articles, keeping them: %s", len(texts), exc)
+        return None, str(exc)[:160]
+    return (verdicts, "") if isinstance(verdicts, list) else (None, "reply is not a JSON list")
+
+
+def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> Optional[Dict[str, Dict[str, Any]]]:
+    """{label key: verdict} from the model, _APPLICABILITY_BATCH articles per call and up to
+    _APPLICABILITY_WORKERS calls at once; a failed batch only leaves its own articles without
+    a verdict (kept). None if every batch fails."""
+    if not texts:
+        return {}
+    case = _case_text(facts, request)[:2000]
+    labels = list(texts)
+    batches = [{label: texts[label] for label in labels[i:i + _APPLICABILITY_BATCH]}
+               for i in range(0, len(labels), _APPLICABILITY_BATCH)]
+    t0 = time.time()
+    if len(batches) == 1:
+        results = [_applicability_batch(case, batches[0])]
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=min(_APPLICABILITY_WORKERS, len(batches))) as pool:
+            results = list(pool.map(lambda batch: _applicability_batch(case, batch), batches))
+    errors = [error for verdicts, error in results if verdicts is None]
+    log = {"checked": len(texts), "batches": len(batches), "failed_batches": len(errors)}
+    if errors:
+        log["error"] = errors[0]
+    vlog("case_analysis_applicability", log, duration_ms=(time.time() - t0) * 1000)
+    if len(errors) == len(results):
         return None
-    vlog("case_analysis_applicability", {"checked": len(texts)}, duration_ms=(time.time() - t0) * 1000)
-    if not isinstance(verdicts, list):
-        return None
-    return {_applicability_key(v["article"]): v for v in verdicts
+    return {_applicability_key(v["article"]): v for verdicts, _ in results for v in verdicts or []
             if isinstance(v, dict) and isinstance(v.get("article"), str)}
 
 
@@ -3353,6 +3418,11 @@ def _filter_applicable_articles(facts: str, request: str,
     to_check, texts = _applicability_candidates(facts, request, article_rows)
     if not texts:
         return article_rows
+    # Only the first _APPLICABILITY_MAX_CHECKED, in the pipeline's order: the later ones
+    # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
+    unchecked = len(texts) - _APPLICABILITY_MAX_CHECKED
+    if unchecked > 0:
+        texts = dict(list(texts.items())[:_APPLICABILITY_MAX_CHECKED])
     verdicts = _applicability_verdicts(facts, request, texts)
     if verdicts is None:
         return article_rows
@@ -3369,6 +3439,7 @@ def _filter_applicable_articles(facts: str, request: str,
         "verdicts": {label: (verdicts.get(_applicability_key(label)) or {}).get("verdict", "missing")
                      for label in texts},
         "dropped": dropped,
+        "unchecked": max(unchecked, 0),
     })
     return [r for r in article_rows if r.get("_article") not in dropped_articles]
 
