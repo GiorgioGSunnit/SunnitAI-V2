@@ -7,9 +7,12 @@ articles in c.p. / c.p.p. only; tuning cases, plus h5-h9 with --include-heldout)
           run_case_analysis_pipeline, copied here (analysis, article selection, the
           second ruling search on the selected articles, _ruling_passages). There
           are no draft calls; it uses the same flags as the app's .env.
-  AFTER   the cards (exp_ruling_cards.py) that apply one of the case's CENTRAL
-          articles, ranked (see rank_cards). The top 5 are taken, as many as the
-          writer reads (_PASSAGE_RULINGS).
+  AFTER   the cards (exp_ruling_cards.py) found by two routes and ranked together
+          (see rank_cards): the article route (cards applying one of the case's
+          CENTRAL articles) and the issue route (cards whose phrases contain one of
+          the case's central issues by name: "tentata rapina", "colpa medica"). The
+          top 5 are taken, as many as the writer reads (_PASSAGE_RULINGS).
+          --no-issue-route ranks by articles only, to compare.
 
 The case's central articles, from the same run: the ones its text names and the ones
 the analysis' legal issues resolved to ("omicidio preterintenzionale" -> 584 c.p.) weigh
@@ -67,6 +70,15 @@ CENTRAL, CHOSEN = 1.0, 0.5
 # A central article the ruling cites (step 1) but its card does not list as applied: still a
 # sign the ruling is about it (q_long, 23 Oct: 5 rulings cite 584, one card applies it).
 CITED_ONLY = 0.3
+# The issue route: the case's central issues by NAME ("tentata rapina", "colpa medica") against
+# the cards' own phrases. The held-out check (23 Oct) found the analysis names the issues well
+# but maps them to wrong article numbers ("tentata rapina aggravata" -> 612, "concorso" -> 81),
+# so the article route alone missed rulings the database has (63-127 per case).
+W_ISSUE = 3
+ISSUE_FRAME, ISSUE_INSTITUTION, ISSUE_QUESTION = 1.0, 0.7, 0.5
+_ISSUE_STOP = {"reato", "reati", "delitto", "delitti", "penale", "penali", "civile", "civili", "articolo",
+               "codice", "della", "dello", "delle", "degli", "nella", "nelle", "sulla", "sulle", "questione",
+               "configurabilità", "responsabilità", "qualificazione", "giuridica"}
 _DEFENDANT_RE = re.compile(r"imputat|indagat|accusat|condannat|difes|arrestat|autore\s+del", re.IGNORECASE)
 _VICTIM_RE = re.compile(r"persona\s+offesa|parte\s+civile|vittim|danneggiat|denunciant|querelant|famil", re.IGNORECASE)
 
@@ -146,32 +158,72 @@ def _hit(keyword: str, low: str) -> bool:
     return bool(stems) and all(s in low for s in stems)
 
 
+def issue_stems(name: str) -> list:
+    """The 5-letter stems of an issue name's content words ("Tentata rapina aggravata" ->
+    tenta, rapin, aggra), without the generic ones (reato, penale, responsabilità ...)."""
+    words = [w for w in re.findall(r"\w{4,}", (name or "").lower()) if w not in _ISSUE_STOP]
+    return list(dict.fromkeys(w[:5] for w in words))
+
+
+def _issue_text(card: dict) -> str:
+    return " ".join(_keywords(card)).lower()
+
+
+def issues_of(run: dict) -> list:
+    """[(issue name, weight)] for a case: the cached "issues", else (older cache entries)
+    its institutions' names."""
+    if run.get("issues"):
+        return [tuple(item) for item in run["issues"]]
+    return [(i.get("nome") or "", ISSUE_INSTITUTION) for i in run.get("istituti") or [] if isinstance(i, dict)]
+
+
+def issue_scores(cards: list, issues: list) -> Counter:
+    """card id -> W_ISSUE x weight x rarity for every case issue whose stems are all in the
+    card's phrases (an issue on more than half the cards says nothing and is skipped)."""
+    n = max(len(cards), 2)
+    texts = {c["id"]: _issue_text(c) for c in cards}
+    out, seen = Counter(), set()
+    for name, weight in issues:
+        stems = issue_stems(name)
+        if not stems or tuple(stems) in seen:
+            continue
+        seen.add(tuple(stems))
+        hits = [cid for cid, text in texts.items() if all(s in text for s in stems)]
+        if not hits or len(hits) > n / 2:
+            continue
+        rarity_of_issue = math.log(n / len(hits))
+        for cid in hits:
+            out[cid] += W_ISSUE * weight * rarity_of_issue
+    return out
+
+
 def score_card(card: dict, central: dict, low_terms: str, side: str, article_rarity: dict,
-               keyword_rarity: dict) -> float:
+               keyword_rarity: dict, issue_score: float = 0.0) -> float:
     """W_ARTICLE x weight x rarity per central article the card applies (x CITED_ONLY when the
-    ruling only cites it: card["_cited"], step 1's list), W_KEYWORD x rarity per keyword
-    found in the case, W_SIDE if it favours the client. 0 without a central article: the
-    card is not about this case."""
+    ruling only cites it: card["_cited"], step 1's list), plus its issue route score, W_KEYWORD
+    x rarity per keyword found in the case, W_SIDE if it favours the client. 0 when neither
+    route finds it: the card is not about this case."""
     applied = set(card.get("articoli_applicati") or [])
     shared = [a for a in applied if a in central]
     cited_only = [a for a in set(card.get("_cited") or []) - applied if a in central]
-    if not shared and not cited_only:
+    if not shared and not cited_only and not issue_score:
         return 0.0
-    score = W_ARTICLE * sum(central[a] * article_rarity.get(a, 1.0) for a in shared)
+    score = W_ARTICLE * sum(central[a] * article_rarity.get(a, 1.0) for a in shared) + issue_score
     score += W_ARTICLE * CITED_ONLY * sum(central[a] * article_rarity.get(a, 1.0) for a in cited_only)
     score += W_KEYWORD * sum(keyword_rarity.get(k, 1.0) for k in set(_keywords(card)) if _hit(k, low_terms))
     return score + (W_SIDE if side and card.get("a_favore_di") == side else 0)
 
 
 def rank_cards(cards: list, central: dict, case_terms: str, side: str, top: int = TOP,
-               rarities: tuple = None) -> list:
-    """The ids of the `top` best-scoring cards (score_card), ties broken by full reference
-    first, then id (stable)."""
+               rarities: tuple = None, issues: list = ()) -> list:
+    """The ids of the `top` best-scoring cards (score_card, with the issue route for
+    `issues`), ties broken by full reference first, then id (stable)."""
     article_rarity, keyword_rarity = rarities or card_rarities(cards)
     low = " ".join(case_terms.lower().split())
+    by_issue = issue_scores(cards, issues) if issues else Counter()
     scored = []
     for c in cards:
-        s = score_card(c, central, low, side, article_rarity, keyword_rarity)
+        s = score_card(c, central, low, side, article_rarity, keyword_rarity, by_issue.get(c["id"], 0.0))
         if s > 0:
             scored.append((-s, not c.get("riferimento_completo"), c["id"]))
     return [doc_id for _, _, doc_id in sorted(scored)[:top]]
@@ -279,10 +331,20 @@ def live_ruling_ids(session, driver, database: str, question: str) -> dict:
     resolved = resolved_institutions(session, driver, database, analysis)
     central = central_weights({**picked, "institutions_resolved":
                                list(picked.get("institutions_resolved") or []) + resolved})
+    istituti = [i for q in analysis.get("questioni") or [] for i in (q.get("istituti") or []) if isinstance(i, dict)]
     return {"terms": _case_terms(question, analysis), "side": client_side(analysis.get("posizione") or ""),
-            "selected": sorted({ref_key(r) for r in selected}), "central": central,
-            "istituti": [i for q in analysis.get("questioni") or [] for i in (q.get("istituti") or [])],
-            "before_ids": [(r.get("d") or {}).get("id") for r in rows]}
+            "selected": sorted({ref_key(r) for r in selected}), "central": central, "istituti": istituti,
+            "issues": case_issues(analysis), "before_ids": [(r.get("d") or {}).get("id") for r in rows]}
+
+
+def case_issues(analysis: dict) -> list:
+    """[(name, weight)]: the frame's central issues, the analysis' institutions, its question titles."""
+    issues = [(c.get("nome") or "", ISSUE_FRAME)
+              for c in ((analysis.get("frame") or {}).get("central_issue_candidates") or []) if isinstance(c, dict)]
+    for q in analysis.get("questioni") or []:
+        issues += [(i.get("nome") or "", ISSUE_INSTITUTION) for i in q.get("istituti") or [] if isinstance(i, dict)]
+        issues.append((q.get("titolo") or "", ISSUE_QUESTION))
+    return [[name, weight] for name, weight in issues if name.strip()]
 
 
 def resolved_institutions(session, driver, database: str, analysis: dict) -> list:
@@ -321,6 +383,7 @@ def main() -> None:
     parser.add_argument("--include-heldout", action="store_true", help="add h5-h9 (measure only)")
     parser.add_argument("--only", help="comma-separated case ids")
     parser.add_argument("--show", action="store_true", help="list each case's rulings, before and after (no text)")
+    parser.add_argument("--no-issue-route", action="store_true", help="rank by articles only (to compare)")
     args = parser.parse_args()
 
     links = {r["id"]: r for r in (json.loads(line) for line in open(args.links, encoding="utf-8"))}
@@ -343,16 +406,24 @@ def main() -> None:
     rarities = card_rarities(list(cards.values()))
     rows, shown = [], []
 
+    no_issues = [c["id"] for c in cases if args.use_cache and not cache[c["id"]].get("issues")]
+    if no_issues and not args.no_issue_route:
+        print(f"   cached without issue names (older run): {', '.join(no_issues)} -- only their institutions' "
+              "names are used; run once without --use-cache to cache the rest", file=sys.stderr)
+
     def one_case(case, run):
         expected = expected_keys(case)
-        after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"], rarities=rarities)
+        issues = [] if args.no_issue_route else issues_of(run)
+        after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"], rarities=rarities,
+                               issues=issues)
         rows.append((case["id"], run["side"], measure(run["before_ids"], links, cards, expected, run["side"]),
                      measure(after_ids, links, cards, expected, run["side"]),
                      available_on_topic(cards, links, expected)))
         if args.show:
             central = sorted(run["central"], key=lambda k: (-run["central"][k], k))
             shown.extend([f"## {case['id']}  (client: {run['side'] or 'unclear'}; expected: {', '.join(sorted(expected))}; "
-                          f"central: {', '.join(central[:14]) or '-'})"]
+                          f"central: {', '.join(central[:14]) or '-'}; "
+                          f"issues: {'; '.join(name for name, _ in issues[:8]) or '-'})"]
                          + show_lines("BEFORE (today)", run["before_ids"], links, cards, expected)
                          + show_lines("AFTER (cards)", after_ids, links, cards, expected) + [""])
 

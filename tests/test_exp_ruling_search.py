@@ -115,6 +115,36 @@ def test_resolved_institutions_collects_every_article(monkeypatch):
     assert calls == ["Truffa", "Estorsione"]
 
 
+def test_issue_stems_drop_generic_words():
+    assert rs.issue_stems("Tentata rapina aggravata") == ["tenta", "rapin", "aggra"]
+    assert rs.issue_stems("Responsabilità penale del reato") == []
+    assert rs.issue_stems("dolo") == ["dolo"]
+
+
+def test_issue_route_finds_cards_without_a_central_article():
+    cards = [_card(1, ["339 c.p."], issues=["tentativo di rapina", "atti preparatori"]),
+             _card(2, ["628 c.p."], issues=["rapina impropria"]),
+             _card(3, ["81 c.p."], issues=["continuazione"])] + \
+            [_card(10 + i, ["81 c.p."], issues=["dolo generico"]) for i in range(6)]
+    issues = [("tentata rapina", rs.ISSUE_FRAME), ("dolo", rs.ISSUE_INSTITUTION), ("Rapina", rs.ISSUE_QUESTION)]
+    by_issue = rs.issue_scores(cards, issues)
+    # "tentata rapina" -> tenta + rapin: only d1 ("tentativo di rapina"); "rapina" -> d1 and d2;
+    # "dolo" matches 6 of 9 cards, more than half: skipped
+    assert set(by_issue) == {"d1", "d2"} and by_issue["d1"] > by_issue["d2"] > 0
+    # no central article at all: the issue route alone ranks them
+    assert rs.rank_cards(cards, {}, "", "", issues=issues) == ["d1", "d2"]
+    assert rs.rank_cards(cards, {}, "", "") == []
+
+
+def test_case_issues_and_older_cache_entries():
+    analysis = {"frame": {"central_issue_candidates": [{"nome": "tentata rapina", "codice": "c.p."}]},
+                "questioni": [{"titolo": "Il tentativo", "istituti": [{"nome": "atti preparatori"}]}]}
+    assert rs.case_issues(analysis) == [["tentata rapina", 1.0], ["atti preparatori", 0.7], ["Il tentativo", 0.5]]
+    assert rs.issues_of({"issues": [["tentata rapina", 1.0]]}) == [("tentata rapina", 1.0)]
+    assert rs.issues_of({"istituti": [{"nome": "concorso"}]}) == [("concorso", rs.ISSUE_INSTITUTION)]
+    assert rs.issues_of({}) == []
+
+
 def test_available_on_topic():
     links = {"a": {"articles": ["584 c.p."]}, "b": {"articles": ["81 c.p."]}, "c": {"articles": ["584 c.p."]}}
     assert rs.available_on_topic({"a": {}, "b": {}}, links, {"584 c.p."}) == 1
