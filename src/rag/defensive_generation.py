@@ -2059,7 +2059,44 @@ def _search_similar_facts(session, analysis: Dict[str, Any], exclude_docs: set) 
     return rows
 
 
+PLAN_THEN_WRITE_FLAG = "PLAN_THEN_WRITE_ENABLED"
+
+# The corpus' rulings are Italgiure files ("snpen@s50@a2026@n00190@tS.clean.pdf",
+# "snciv_s30_a2026_n12601_tO"): archive, section and sub-section, year, number, act type.
+_ITALGIURE_RE = re.compile(r"(snpen|snciv)[@_]s(\w)(\w)[@_]a(\d{4})[@_]n(\d+)[@_]t([a-z])", re.IGNORECASE)
+_ITALGIURE_SECTIONS = {"1": "I", "2": "II", "3": "III", "4": "IV", "5": "V", "6": "VI", "7": "VII",
+                       "F": "fer.", "L": "L.", "T": "T."}
+_ITALGIURE_ACTS = {"S": "sent.", "O": "ord.", "I": "ord. interl.", "D": "decr."}
+
+
+def _ruling_reference(row: Dict[str, Any]) -> str:
+    """'Cass. pen., sez. V, sent. n. 190/2026' from the ruling's Italgiure file name, else ''.
+    No date: the documents' date fields are often empty or odd (scripts/exp_ruling_cards.py)."""
+    d = row.get("d") or {}
+    for name in (d.get("file_name"), d.get("name")):
+        m = _ITALGIURE_RE.search(str(name or ""))
+        if not m:
+            continue
+        archive, section, sub, year, number, act = m.groups()
+        court = "Cass. pen." if archive.lower() == "snpen" else "Cass. civ."
+        if section.upper() == "U":
+            chamber = "Sez. U."
+        else:
+            chamber = "sez. " + _ITALGIURE_SECTIONS.get(section.upper(), section.upper() + ".")
+            chamber += f"-{sub.upper()}" if sub != "0" else ""
+        act_label = _ITALGIURE_ACTS.get(act.upper())
+        return f"{court}, {chamber}, " + (f"{act_label} " if act_label else "") + f"n. {int(number)}/{year}"
+    return ""
+
+
 def _ruling_label(row: Dict[str, Any]) -> str:
+    """The name a ruling goes by in the prompts and the sources; with PLAN_THEN_WRITE_ENABLED its
+    full reference when the file name gives one (rulings only with a full reference: the lawyer's
+    review, 22 Oct), so every step names and matches it the same way."""
+    if feature_flags.enabled(PLAN_THEN_WRITE_FLAG):
+        reference = _ruling_reference(row)
+        if reference:
+            return reference
     return re.sub(r"^\s*\[[A-Z]+\]\s*", "", (row.get("d") or {}).get("name") or "")
 
 
@@ -3890,22 +3927,33 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     system = _parere_system(analysis, session_lang)
     articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
                                                   request, principles)
-    draft_t0 = time.time()
-    try:
-        draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
-                           max_tokens=_PARERE_TOKENS)
-    except Exception as exc:
-        # The estimate was still too low for this text: once more, smaller,
-        # rather than an error for a size problem.
-        if not _is_context_overflow(exc):
-            raise
-        logger.warning("draft prompt over the context, retrying once with a smaller one: %s", str(exc)[:200])
-        articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
-                                                      request, principles, budget=_DRAFT_INPUT_BUDGET * 7 // 10)
-        draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
-                           max_tokens=_PARERE_TOKENS)
-    vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
-    if feature_flags.enabled(CLIENT_STANCE_CHECK_FLAG):
+    # PLAN_THEN_WRITE_ENABLED: a plan, then the sections from it (plan_then_write.py); None on
+    # any failure, and the parere is written in one call as before.
+    planned = None
+    if feature_flags.enabled(PLAN_THEN_WRITE_FLAG):
+        from . import plan_then_write
+        planned = plan_then_write.write_parere(facts, request, analysis, article_rows, ruling_rows,
+                                               articles, rulings, principles, session_lang)
+    if planned:
+        draft = planned
+    else:
+        draft_t0 = time.time()
+        try:
+            draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
+                               max_tokens=_PARERE_TOKENS)
+        except Exception as exc:
+            # The estimate was still too low for this text: once more, smaller,
+            # rather than an error for a size problem.
+            if not _is_context_overflow(exc):
+                raise
+            logger.warning("draft prompt over the context, retrying once with a smaller one: %s", str(exc)[:200])
+            articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
+                                                          request, principles, budget=_DRAFT_INPUT_BUDGET * 7 // 10)
+            draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
+                               max_tokens=_PARERE_TOKENS)
+        vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
+    # A planned parere had its arguments checked for the client's side before it was written.
+    if feature_flags.enabled(CLIENT_STANCE_CHECK_FLAG) and not planned:
         draft = _check_client_stance(draft, facts, request, analysis, system, human)
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
     draft = _mark_unverified(draft, found, articles + "\n" + rulings,
@@ -3922,7 +3970,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
         except Exception as exc:
             logger.warning("draft checks after the draft failed, draft kept: %s", exc)
 
-    topics = _extract_deepdive_topics(draft[draft.find("**3."):] if "**3." in draft else draft, {})
+    arguments_at = "**4." if planned else "**3."      # where the client's arguments start
+    topics = _extract_deepdive_topics(draft[draft.find(arguments_at):] if arguments_at in draft else draft, {})
     if topics:
         draft += "\n\n" + _format_deepdive_suggestion(topics)
     if ruling_rows or _UNVERIFIED.rstrip("]") in draft:

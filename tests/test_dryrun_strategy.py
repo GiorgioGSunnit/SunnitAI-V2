@@ -30,6 +30,17 @@ def test_report_before_and_after_the_fix():
     assert "dropped to fit 0, refilled 21" in text and "answer: 9000 characters, 3 citations" in text
 
 
+def test_report_of_a_planned_parere():
+    events = [("case_analysis_plan_llm", None, 18400.0),
+              ("case_analysis_plan", {"issues": 3, "norme": ["1218 c.c.", "1384 c.c."], "pronunce": ["Cass. civ."],
+                                      "references_available": 4, "replanned": True,
+                                      "removed": {"norme": ["2052 c.c."], "pronunce": []}}, None),
+              ("case_analysis_sections_llm", None, 31000.0)]
+    text = "\n".join(dr.summarise(events, "ok", {"draft": "x", "citations": []}, 150.0, 800))
+    assert "plan call: 18.4s" in text and "sections call: 31.0s" in text
+    assert "plan: 3 issues, 2 articles, 1 of 4 rulings, removed 1 articles and 0 rulings, replanned yes" in text
+
+
 def test_saved_run_keeps_the_answer_for_a_side_by_side():
     events = [("case_analysis_applicability", {"checked": 36, "batches": 3}, 9100.0)]
     ok = dr.saved_run("/tmp/chatbot_new/src/rag/defensive_generation.py", "Strategia?", "ok", 96.04,

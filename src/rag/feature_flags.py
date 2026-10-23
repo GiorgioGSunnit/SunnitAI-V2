@@ -80,6 +80,16 @@ else falls back to the default, so a typo never switches a feature on.
                                 JSON) so Vercel's 120-second limit on a
                                 silent server never cancels a long strategy.
                                 See src/chatbot/api.py, chat().
+  PLAN_THEN_WRITE_ENABLED      false: the parere as a plan (client, central
+                                question, per issue articles, rulings by full
+                                reference, argument, objection, rebuttal),
+                                checked for the client's side, then six
+                                sections written in parallel from it, with the
+                                practical checks of the case's posture and
+                                area; rulings named by their full reference
+                                ("Cass. pen., sez. V, sent. n. 190/2026").
+                                Falls back to the one-call parere on any
+                                failure. See src/rag/plan_then_write.py.
   QUALIFICATION_CHECK_ENABLED  false: every cited article outside the case's
                                 area/posture lists is checked, by its real
                                 heading, against the use the draft makes of

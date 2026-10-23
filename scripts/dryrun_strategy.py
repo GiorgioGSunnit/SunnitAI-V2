@@ -55,6 +55,15 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
         elif event == "case_analysis_applicability":
             out.append(f"applicability result: {len(data.get('checked') or [])} judged, "
                        f"{len(data.get('dropped') or [])} dropped, {data.get('unchecked', 0)} unchecked")
+        elif event == "case_analysis_plan":
+            removed = data.get("removed") or {}
+            out.append(f"plan: {data.get('issues')} issues, {len(data.get('norme') or [])} articles, "
+                       f"{len(data.get('pronunce') or [])} of {data.get('references_available')} rulings, "
+                       f"removed {len(removed.get('norme') or [])} articles and {len(removed.get('pronunce') or [])} "
+                       f"rulings, replanned {'yes' if data.get('replanned') else 'no'}")
+        elif event in ("case_analysis_plan_llm", "case_analysis_sections_llm", "case_analysis_draft_llm") \
+                and duration is not None:
+            out.append(f"{event[len('case_analysis_'):-len('_llm')]} call: {duration / 1000:.1f}s")
         elif event == "case_analysis_prompt_tokens":
             out.append(f"draft prompt: {data.get('total')} est. tokens, budget {data.get('budget')}, "
                        f"step {data.get('step')}, dropped to fit {data.get('dropped_for_size', '-')}, "
@@ -97,11 +106,17 @@ def main() -> None:
     parser.add_argument("--lang", default="it")
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
     parser.add_argument("--save", help="JSON file for the report and the answer's text (test cases only)")
+    parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
+                        help="a switch for this run only, over the .env (e.g. PLAN_THEN_WRITE_ENABLED=true)")
     args = parser.parse_args()
 
     sys.path.insert(0, os.getcwd())                 # the code of the folder we run from
     from dotenv import load_dotenv
     load_dotenv(args.env)
+    for item in args.set:
+        name, _, value = item.partition("=")
+        os.environ[name.strip()] = value.strip()
+        print(f"set for this run: {name.strip()}={value.strip()}", file=sys.stderr)
 
     import src.rag.defensive_generation as dg
     print(f"code: {os.path.abspath(dg.__file__)}", file=sys.stderr)
@@ -125,9 +140,10 @@ def main() -> None:
     lines = summarise(events, status, result, elapsed, len(text))
     print("\n".join(lines))
     if args.save:
+        record = saved_run(os.path.abspath(dg.__file__), args.request, status, elapsed, lines, events, result)
+        record["settings"] = args.set
         with open(args.save, "w", encoding="utf-8") as fh:
-            json.dump(saved_run(os.path.abspath(dg.__file__), args.request, status, elapsed, lines, events, result),
-                      fh, ensure_ascii=False, indent=1, default=str)
+            json.dump(record, fh, ensure_ascii=False, indent=1, default=str)
         print(f"\nSaved to {args.save}, the answer included. Nothing else was written.")
     else:
         print("\nNothing was written: no document, no session, no database row.")
