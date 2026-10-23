@@ -32,12 +32,16 @@ def test_report_before_and_after_the_fix():
 
 def test_report_of_a_planned_parere():
     events = [("case_analysis_plan_llm", None, 18400.0),
+              ("case_analysis_plan_check_llm", None, 4200.0),
               ("case_analysis_plan", {"issues": 3, "norme": ["1218 c.c.", "1384 c.c."], "pronunce": ["Cass. civ."],
                                       "references_available": 4, "replanned": True,
-                                      "removed": {"norme": ["2052 c.c."], "pronunce": []}}, None),
+                                      "removed": {"norme": ["2052 c.c."], "pronunce": []},
+                                      "checked": {"off_topic": ["657 c.p.c.", "658 c.p.c."],
+                                                  "contradicted": ["Legittimità della penale"]}}, None),
               ("case_analysis_sections_llm", None, 31000.0)]
     text = "\n".join(dr.summarise(events, "ok", {"draft": "x", "citations": []}, 150.0, 800))
-    assert "plan call: 18.4s" in text and "sections call: 31.0s" in text
+    assert "plan call: 18.4s" in text and "plan_check call: 4.2s" in text and "sections call: 31.0s" in text
+    assert "plan check: off-topic 657 c.p.c., 658 c.p.c.; contradicted Legittimità della penale" in text
     assert "plan: 3 issues, 2 articles, 1 of 4 rulings, removed 1 articles and 0 rulings, replanned yes" in text
 
 

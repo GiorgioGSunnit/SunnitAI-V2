@@ -14,8 +14,17 @@ burglary case's procedural question got "processo ordinario".
      subordinate requests and the weak points. Articles and rulings not among those given are
      removed in code. If the stance check (defensive_generation._opposing_arguments) finds an
      argument for the other side, the plan is made once more with that list.
-  2. The practical checks of the case's posture and area (practical_checklist.py).
-  3. Six sections written in parallel, each call seeing only its own material.
+  2. The practical checks of the case's posture and area (practical_checklist.py), given to
+     the plan and to the procedural section.
+  3. The plan checked before anything is written (check_plan, round 2 of the PM's cases):
+     each issue's articles against their real heading and text, one short call per issue in
+     parallel. An article that does not govern what the argument uses it for is removed
+     (380/274 c.p.p. given as "procedura abbreviata", 657/658 c.p.c. for "sanzioni" in a
+     right-of-way case); an issue whose argument contradicts its article's text is dropped
+     ("la penale richiede la prova del danno" against art. 1382 c.c.).
+  4. Six sections written in parallel, each call seeing only its own material; rulings are
+     cited only where their passages are (an answer section citing a ruling it had not read
+     quoted words the ruling does not contain).
 
 Any failure (no plan, a plan without an argued issue, a section failing twice) returns None:
 the pipeline then writes the parere in one call, as before.
@@ -41,15 +50,20 @@ _MAX_ISSUES = 5
 _PLAN_SYSTEM = (
     "Sei un avvocato italiano con lunga esperienza di contenzioso. Prima di scrivere un parere ne prepari il "
     "PIANO, nell'interesse della parte assistita. Ricevi il caso, i quesiti, l'analisi dei fatti, le questioni "
-    "giuridiche, le NORME (testi dalla banca dati, ciascuna con il suo identificativo tra parentesi quadre) e "
-    "la GIURISPRUDENZA (passi di pronunce, ciascuna con il suo riferimento tra parentesi quadre).\n\n"
+    "giuridiche, le NORME (testi dalla banca dati, ciascuna con il suo identificativo tra parentesi quadre e, "
+    "quando c'è, la sua rubrica), la GIURISPRUDENZA (passi di pronunce, ciascuna con il suo riferimento tra "
+    "parentesi quadre) e le VERIFICHE pratiche per la fase e la materia del caso.\n\n"
     "REGOLE:\n"
     "- Tutto il piano è nell'interesse della parte assistita: chi chiede il parere o la strategia, o il "
     "cliente da difendere.\n"
     "- La questione centrale è la domanda da cui dipende l'esito per la parte assistita, in una frase: va "
     "risolta per prima e mai concessa.\n"
-    "- Per ogni questione scegli le norme che la disciplinano leggendone il testo in NORME e indicale con "
-    "l'identificativo esatto (\"art. 1384 c.c.\"); mai norme che non sono in NORME, mai a memoria.\n"
+    "- Per ogni questione scegli le norme che la disciplinano leggendone la rubrica e il testo in NORME e "
+    "indicale con l'identificativo esatto (\"art. 1384 c.c.\"); una norma va solo dove disciplina proprio ciò "
+    "che l'argomento le attribuisce; mai norme che non sono in NORME, mai a memoria.\n"
+    "- L'argomento non può affermare il contrario di ciò che dice il testo della norma su cui si fonda.\n"
+    "- Se un quesito chiede quale rito, rimedio o iniziativa scegliere, rispondi confrontando le possibilità "
+    "che le VERIFICHE e le NORME indicano per la fase del caso, con i loro limiti.\n"
     "- Pronunce: solo quelle di GIURISPRUDENZA, con il riferimento esatto tra parentesi quadre, e solo se il "
     "passo riguarda davvero la questione; altrimenti lista vuota. I fatti di una pronuncia non sono fatti "
     "del caso.\n"
@@ -69,8 +83,49 @@ _PLAN_SYSTEM = (
     "Le questioni, da due a cinque, in ordine di forza per la parte assistita."
 )
 
+_PLAN_CHECK_SYSTEM = (
+    "Sei un giurista e controlli il piano di un parere prima che venga scritto. Ricevi una questione del piano "
+    "(titolo e argomento della parte assistita) e le norme che il piano vi collega, ciascuna con la sua rubrica "
+    "reale e il suo testo. Per ciascuna norma rispondi a due domande.\n"
+    "- \"pertinente\": la norma disciplina davvero ciò per cui l'argomento la usa? Una norma sull'arresto in "
+    "flagranza citata per il giudizio abbreviato, o una sulla licenza per finita locazione citata per una "
+    "servitù, non è pertinente; una norma generale citata per il suo istituto lo è.\n"
+    "- \"contraddice\": l'argomento afferma il contrario di ciò che il testo della norma dice? Se il testo dice "
+    "che la penale è dovuta indipendentemente dalla prova del danno, un argomento secondo cui la penale "
+    "richiede la prova del danno la contraddice. Un argomento che ne chiede l'applicazione, la riduzione o "
+    "un'eccezione prevista dal testo non la contraddice.\n"
+    "Nel dubbio: pertinente true, contraddice false. Restituisci SOLO un array JSON, un oggetto per norma: "
+    '[{"articolo": l\'identificativo dato, "pertinente": true o false, "contraddice": true o false, '
+    '"perche": una frase}].'
+)
+
 SECTION_TITLES = ("Risposte ai quesiti", "Inquadramento e questione centrale", "Norme e giurisprudenza",
                   "Applicazione al caso", "Profili processuali e termini", "Conclusioni")
+
+
+def _headings(article_rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
+    """{article: its real heading (rubrica)} for the rows that have one."""
+    headings: Dict[tuple, str] = {}
+    for row in article_rows:
+        s = row.get("s") or {}
+        heading = " ".join(str(s.get("titolo_articolo") or s.get("title") or "").split())
+        if row.get("_article") and heading:
+            headings.setdefault(row["_article"], heading)
+    return headings
+
+
+def _with_headings(block: str, headings: Dict[tuple, str]) -> str:
+    """An article block (_source_block's "[art. N code]" labels) with each article's heading under its label."""
+    for (number, code), heading in headings.items():
+        label = f"[art. {number} {code}]\n"
+        block = block.replace(label, f"{label}Rubrica: {heading}\n", 1)
+    return block
+
+
+def _checks(analysis: Dict[str, Any]) -> List[str]:
+    frame = analysis.get("frame") or {}
+    areas = method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or "")
+    return practical_checklist.checks_for(areas, frame.get("posture_type") or "")
 
 
 # --- 1. the plan -------------------------------------------------------------------------------
@@ -136,10 +191,86 @@ def clean_plan(raw: Any, known: set, references: Dict[str, List[Dict[str, Any]]]
 
 
 def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str,
-                principles: str) -> str:
+                principles: str, checks: List[str]) -> str:
     base = dg._parere_human(facts, analysis, articles, rulings, request, principles)
     base = base[:base.rfind("Redigi ora il parere.")].rstrip() if "Redigi ora il parere." in base else base
-    return f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\nPrepara ora il piano."
+    verifiche = "\n".join(f"- {c}" for c in checks)
+    return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
+            + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
+            + "Prepara ora il piano.")
+
+
+def _yes(value: Any) -> bool:
+    return value is True or str(value).strip().lower() == "true"
+
+
+def _no(value: Any) -> bool:
+    return value is False or str(value).strip().lower() == "false"
+
+
+def _issue_check(issue: Dict[str, Any], article_rows: List[Dict[str, Any]], headings: Dict[tuple, str]) -> Any:
+    """The model's verdicts on one issue's articles (pertinent, contradicted)."""
+    blocks = []
+    for ref in issue["norme"]:
+        text = " ".join(" ".join(str((r.get("s") or {}).get("plain_text") or r.get("_passage")
+                                     or (r.get("s") or {}).get("abstract") or "").split())
+                        for r in article_rows if r.get("_article") == ref)
+        blocks.append(f"[art. {ref[0]} {ref[1]}]\nRubrica: {headings.get(ref) or '-'}\nTesto: {text[:1200] or '-'}")
+    human = (f"QUESTIONE: {issue['titolo']}\nARGOMENTO DELLA PARTE ASSISTITA: {issue['argomento']}\n\n"
+             "NORME COLLEGATE:\n" + "\n\n".join(blocks))
+    return dg._chat_json([SystemMessage(content=_PLAN_CHECK_SYSTEM), HumanMessage(content=human)],
+                         max_tokens=150 + 120 * len(issue["norme"]), temperature=0)
+
+
+def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
+               headings: Dict[tuple, str]) -> Tuple[Optional[Dict[str, Any]], dict]:
+    """(plan, checked): each issue's articles checked in parallel against their heading and text.
+    Off-topic articles are removed; an issue whose argument contradicts its article is dropped;
+    answers and subordinate requests naming a removed article go too (the writer then answers
+    from the issues). A failed check keeps its issue as it was. None when no issue is left."""
+    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": []}
+    issues = [q for q in plan["questioni"] if q["norme"]]
+    if not issues:
+        return plan, checked
+
+    def run(issue):
+        try:
+            return _issue_check(issue, article_rows, headings)
+        except Exception as exc:
+            logger.warning("plan-then-write: plan check failed for %r, issue kept: %s", issue["titolo"], exc)
+            return None
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=len(issues)) as pool:
+        results = dict(zip((id(q) for q in issues), pool.map(run, issues)))
+    dg.vlog("case_analysis_plan_check_llm", duration_ms=(time.time() - t0) * 1000)
+    kept, removed_refs = [], set()
+    for q in plan["questioni"]:
+        verdicts = results.get(id(q))
+        by_ref = {}
+        for v in verdicts if isinstance(verdicts, list) else []:
+            refs = dg._refs_in(str(v.get("articolo") or "")) if isinstance(v, dict) else []
+            if refs:
+                by_ref[refs[0]] = v
+        if any(_yes(by_ref.get(ref, {}).get("contraddice")) for ref in q["norme"]):
+            checked["contradicted"].append(q["titolo"])
+            removed_refs.update(q["norme"])
+            continue
+        off = [ref for ref in q["norme"] if _no(by_ref.get(ref, {}).get("pertinente"))]
+        checked["off_topic"] += [f"{n} {c}" for n, c in off]
+        removed_refs.update(off)
+        kept.append({**q, "norme": [ref for ref in q["norme"] if ref not in off]})
+    if not kept:
+        return None, checked
+    still_used = {ref for q in kept for ref in q["norme"]}
+    gone = removed_refs - still_used
+
+    def names_gone(text: str) -> bool:
+        return any(ref in gone for ref in dg._refs_in(text))
+
+    answers = [] if checked["contradicted"] else [a for a in plan["risposte"] if not names_gone(a["risposta"])]
+    return {**plan, "questioni": kept, "risposte": answers,
+            "subordinate": [s for s in plan["subordinate"] if not names_gone(s)]}, checked
 
 
 def _arguments_text(plan: Dict[str, Any]) -> str:
@@ -148,9 +279,13 @@ def _arguments_text(plan: Dict[str, Any]) -> str:
 
 
 def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str, principles: str,
-              known: set, references: Dict[str, List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
-    """The cleaned plan, made once more if its arguments favour the other side; None on failure."""
-    human = _plan_human(facts, request, analysis, articles, rulings, principles)
+              article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+    """The cleaned plan, made once more if its arguments favour the other side, then checked
+    (check_plan); None on failure."""
+    known = {r["_article"] for r in article_rows if r.get("_article")}
+    headings = _headings(article_rows)
+    human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
+                        _checks(analysis))
     messages = [SystemMessage(content=_PLAN_SYSTEM), HumanMessage(content=human)]
     t0 = time.time()
     try:
@@ -172,14 +307,17 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         return None
     finally:
         dg.vlog("case_analysis_plan_llm", duration_ms=(time.time() - t0) * 1000)
+    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": []}
+    if plan:
+        plan, checked = check_plan(plan, article_rows, headings)
     dg.vlog("case_analysis_plan", {
         "issues": len(plan["questioni"]) if plan else 0, "replanned": bool(opposing),
         "opposing": [o["argomento"] for o in opposing],
         "norme": sorted({f"{n} {c}" for q in (plan or {}).get("questioni", []) for n, c in q["norme"]}),
         "pronunce": sorted({p for q in (plan or {}).get("questioni", []) for p in q["pronunce"]}),
-        "removed": removed, "references_available": len(references)})
+        "removed": removed, "checked": checked, "references_available": len(references)})
     if plan is None:
-        logger.warning("plan-then-write: the plan has no argued issue, the parere is written in one call")
+        logger.warning("plan-then-write: the plan has no usable issue, the parere is written in one call")
         return None
     if not plan["parte_assistita"]:
         plan["parte_assistita"] = str(analysis.get("parte_assistita") or "").strip()
@@ -189,8 +327,9 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
 # --- 3. the sections -------------------------------------------------------------------------
 
 def _plan_text(plan: Dict[str, Any], answers: bool = False, issues: str = "titles", subordinate: bool = False,
-               weak: bool = False) -> str:
-    """The plan as the writer reads it; `issues` is "titles", "full" or "" (none)."""
+               weak: bool = False, rulings: bool = True) -> str:
+    """The plan as the writer reads it; `issues` is "titles", "full" or "" (none); the rulings
+    only for a section that also has their passages."""
     party = plan["parte_assistita"] or "la parte assistita"
     lines = [f"Parte assistita: {party}" + (f" ({plan['posizione']})" if plan["posizione"] else "")]
     if plan["obiettivo"]:
@@ -205,7 +344,8 @@ def _plan_text(plan: Dict[str, Any], answers: bool = False, issues: str = "title
         lines.append("Questioni, in ordine di forza:")
         for i, q in enumerate(plan["questioni"], 1):
             norms = ", ".join(f"art. {n} {c}" for n, c in q["norme"]) or "-"
-            lines.append(f"{i}. {q['titolo']} (norme: {norms}; pronunce: {', '.join(q['pronunce']) or '-'})")
+            cited = f"; pronunce: {', '.join(q['pronunce']) or '-'}" if rulings else ""
+            lines.append(f"{i}. {q['titolo']} (norme: {norms}{cited})")
             if issues == "full":
                 lines += [f"   Argomento: {q['argomento']}"]
                 lines += [f"   Obiezione della controparte: {q['obiezione']}"] if q["obiezione"] else []
@@ -242,7 +382,9 @@ def _section_system(plan: Dict[str, Any], lang: str) -> str:
         f"nell'interesse di {party}{position}, seguendo il PIANO già deciso: stessa parte, stessa questione "
         "centrale, stessi argomenti, stesse norme e pronunce.\n\n"
         "REGOLE:\n"
-        "- Scrivi solo il testo della sezione, senza il suo titolo e senza anticipare le altre sezioni.\n"
+        "- Scrivi solo il testo della sezione, senza il suo titolo. Il parere ha sei sezioni (risposte ai "
+        "quesiti; inquadramento e fatti; norme e giurisprudenza; applicazione al caso; profili processuali e "
+        "termini; conclusioni): non ripetere ciò che spetta alle altre, sii essenziale.\n"
         "- Non concedere mai un elemento contestato dell'accusa o della pretesa: una posizione che lo presuppone "
         "va presentata solo in via subordinata.\n"
         "- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con il codice (\"art. 1384 c.c.\", mai "
@@ -270,14 +412,17 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     tasks = "\n".join(f"- {t}" for t in frame.get("tasks") or []) or request.strip()
     facts_list = _facts_list(analysis)
     refs = _plan_refs(plan)
+    headings = _headings(article_rows)
     # Article text per section within a fixed total, so that a plan naming many articles still
     # leaves each call well inside the context with the case text (up to ~5,000 tokens).
     def per_article(total_chars: int, most: int) -> int:
         return max(300, min(most, total_chars // max(1, len(refs))))
-    areas = method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or "")
+
+    def texts(wanted: List[tuple], chars: int) -> str:
+        return _with_headings(_article_texts(article_rows, wanted, chars), headings)
     posture = frame.get("posture_type") or ""
-    checks = practical_checklist.checks_for(areas, posture)
     procedural = [ref for ref in method_candidates.candidate_refs([], posture) if ref not in refs]
+    no_rulings = " In questa sezione non citare pronunce."
 
     def block(title: str, body: str) -> str:
         return f"{title}:\n{body}" if body.strip() else ""
@@ -288,46 +433,52 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     return [
         (SECTION_TITLES[0],
          "SEZIONE: Risposte ai quesiti. Una risposta diretta e motivata a ciascun quesito, nell'ordine in cui è "
-         "posto, a partire dalle risposte del PIANO; se la questione centrale non è tra i quesiti, rispondi prima "
-         "a essa. Ogni risposta in due-quattro frasi, con la norma su cui si fonda.",
-         material(case, block("QUESITI", tasks), _plan_text(plan, answers=True)), 800),
+         "posto, a partire dalle risposte del PIANO quando ci sono, altrimenti dalle sue questioni; se la "
+         "questione centrale non è tra i quesiti, rispondi prima a essa. Ogni risposta in due-quattro frasi, con "
+         "la norma su cui si fonda." + no_rulings,
+         material(case, block("QUESITI", tasks), _plan_text(plan, answers=True, rulings=False)), 600),
         (SECTION_TITLES[1],
          "SEZIONE: Inquadramento e questione centrale. La qualificazione giuridica della vicenda (la norma "
          "principale e quelle alternative o subordinate, e perché), la questione centrale e perché decide "
          f"l'esito; poi ogni fatto del caso valutato dal punto di vista di {party}: favorevole, sfavorevole o "
-         f"neutro per {party}, e perché. Un fatto può essere insieme favorevole e sfavorevole: dillo.",
-         material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan),
-                  block("TESTI DELLE NORME", _article_texts(article_rows, refs, per_article(8000, 700)))), 1300),
+         f"neutro per {party}, e perché, in una frase. Non illustrare le norme nel dettaglio (sezione 3) né "
+         "sviluppare gli argomenti (sezione 4)." + no_rulings,
+         material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan, rulings=False),
+                  block("TESTI DELLE NORME", texts(refs, per_article(8000, 700)))), 1000),
         (SECTION_TITLES[2],
          "SEZIONE: Norme e giurisprudenza. Per ogni norma del PIANO: che cosa stabilisce, citando il testo "
          "fornito, e come si ripartisce l'onere della prova; per ogni pronuncia del PIANO: il principio che "
-         "afferma, con il suo riferimento, e che cosa comporta per questo caso. Solo norme e pronunce del PIANO.",
+         "afferma, con il suo riferimento, e che cosa comporta per questo caso, senza svolgere gli argomenti "
+         "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti.",
          material(case, _plan_text(plan),
-                  block("TESTI DELLE NORME", _article_texts(article_rows, refs, per_article(15000, dg._ARTICLE_CHARS))),
+                  block("TESTI DELLE NORME", texts(refs, per_article(15000, dg._ARTICLE_CHARS))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 1200)),
-                  block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1500),
+                  block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1200),
         (SECTION_TITLES[3],
          "SEZIONE: Applicazione al caso. Per ogni questione del PIANO, nell'ordine, con un sottotitolo: "
          f"l'argomento di {party} applicato ai fatti del caso, con le norme e le pronunce del piano; le prove da "
          "acquisire; l'obiezione più forte della controparte e la replica. Poi le tesi subordinate del PIANO. "
-         "Prosa, senza ripetere per ogni questione lo stesso schema a voci.",
+         "Prosa, senza ripetere per ogni questione lo stesso schema a voci; tra virgolette solo frasi dei testi e "
+         "dei passi forniti.",
          material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan, issues="full", subordinate=True),
-                  block("TESTI DELLE NORME", _article_texts(article_rows, refs, per_article(9000, 600))),
-                  block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 600))), 2200),
+                  block("TESTI DELLE NORME", texts(refs, per_article(9000, 600))),
+                  block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 600))), 1800),
         (SECTION_TITLES[4],
          "SEZIONE: Profili processuali e termini. La fase in cui si trova la vicenda e che cosa consente di fare "
          f"a {party}: gli atti da compiere e i loro termini, con l'articolo che li prevede; a chi rivolgersi o chi "
          "convenire; le voci di danno o le domande da proporre, anche in via subordinata. Usa le VERIFICHE solo "
-         "se i fatti del caso le rendono pertinenti, dicendo perché; un termine che dipende da una data che il "
-         "caso non indica è una verifica da fare.",
+         "se i fatti del caso le rendono pertinenti, dicendo perché, e solo quelle che la legge consente a "
+         f"{party} nella sua posizione; un termine che dipende da una data che il caso non indica è una verifica "
+         "da fare." + no_rulings,
          material(case, block("FASE", frame.get("procedural_posture") or ""),
-                  _plan_text(plan, issues="", subordinate=True),
-                  block("VERIFICHE PER QUESTA FASE E MATERIA", "\n".join(f"- {c}" for c in checks)),
-                  block("TESTI DELLE NORME PROCESSUALI", _article_texts(article_rows, procedural, 500))), 1200),
+                  _plan_text(plan, issues="", subordinate=True, rulings=False),
+                  block("VERIFICHE PER QUESTA FASE E MATERIA", "\n".join(f"- {c}" for c in _checks(analysis))),
+                  block("TESTI DELLE NORME PROCESSUALI", texts(procedural, 500))), 900),
         (SECTION_TITLES[5],
-         "SEZIONE: Conclusioni. Gli argomenti in ordine di forza, come nel PIANO; una stima motivata del rischio, "
-         f"tenendo conto dei punti deboli; la condotta consigliata a {party}.",
-         _plan_text(plan, subordinate=True, weak=True), 800),
+         "SEZIONE: Conclusioni. In due o tre paragrafi: gli argomenti in ordine di forza, come nel PIANO; una "
+         f"stima motivata del rischio, tenendo conto dei punti deboli; la condotta consigliata a {party}."
+         + no_rulings,
+         _plan_text(plan, subordinate=True, weak=True, rulings=False), 500),
     ]
 
 
@@ -379,8 +530,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
         reference = dg._ruling_reference(row)
         if reference:
             references.setdefault(reference, []).append(row)
-    known = {r["_article"] for r in article_rows if r.get("_article")}
-    plan = make_plan(facts, request, analysis, articles, rulings, principles, known, references)
+    plan = make_plan(facts, request, analysis, articles, rulings, principles, article_rows, references)
     if plan is None:
         return None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,

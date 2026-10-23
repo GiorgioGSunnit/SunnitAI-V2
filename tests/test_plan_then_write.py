@@ -3,6 +3,7 @@ Synthetic cases only (Flavio's handover, 22 Oct: never copy the held-out texts).
 
 import json
 import os
+import re
 import threading
 
 import pytest
@@ -19,9 +20,9 @@ import src.rag.plan_then_write as ptw  # noqa: E402
 from src.rag import method_candidates, practical_checklist  # noqa: E402
 
 
-def _article(number, code, text):
+def _article(number, code, text, heading=""):
     return {"d": {"id": f"LEGAL_DOC::{code}", "name": "Codice Civile 2026"}, "_article": (number, code),
-            "s": {"name": f"{number}.0.0", "plain_text": text}}
+            "s": {"name": f"{number}.0.0", "plain_text": text, "titolo_articolo": heading}}
 
 
 def _ruling(file_name, passage, name="[CIVILE] Ordinanza sul ricorso iscritto al n. 4321/2024 R.G."):
@@ -33,8 +34,10 @@ ARTICLES = [_article("2048", "c.c.", "I precettori sono responsabili del danno c
                                      "loro allievi nel tempo in cui sono sotto la loro vigilanza."),
             _article("1218", "c.c.", "Il debitore che non esegue esattamente la prestazione dovuta è tenuto al "
                                      "risarcimento del danno, se non prova che l'inadempimento è stato determinato "
-                                     "da impossibilità della prestazione derivante da causa a lui non imputabile."),
-            _article("2051", "c.c.", "Ciascuno è responsabile del danno cagionato dalle cose che ha in custodia."),
+                                     "da impossibilità della prestazione derivante da causa a lui non imputabile.",
+                     "Responsabilità del debitore"),
+            _article("2051", "c.c.", "Ciascuno è responsabile del danno cagionato dalle cose che ha in custodia.",
+                     "Danno cagionato da cosa in custodia"),
             _article("1917", "c.c.", "TESTO-NON-NEL-PIANO sull'assicurazione della responsabilità civile.")]
 RULINGS = [_ruling("snciv_s30_a2026_n00190_tO.clean.pdf",
                    "La scuola risponde a titolo contrattuale delle lesioni che l'allievo si procura da solo."),
@@ -69,6 +72,8 @@ class FakeModel:
         self.plans = list(plans or [PLAN])
         self.opposing = list(opposing or [])
         self.failing = dict(failing or {})       # section title -> failures left
+        self.check = {}                           # "1218 c.c." -> verdict fields for the plan check
+        self.check_fails = False
         self.calls, self.lock = [], threading.Lock()
 
     def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
@@ -82,6 +87,12 @@ class FakeModel:
         if "rivede la bozza" in system:
             flagged = self.opposing.pop(0) if self.opposing else []
             return json.dumps({"parte_assistita": "i genitori di Tizio", "argomenti_contrari": flagged})
+        if "controlli il piano" in system:
+            if self.check_fails:
+                raise RuntimeError("upstream timeout")
+            labels = re.findall(r"^\[art\. ([^\]]+)\]", human, re.MULTILINE)
+            return json.dumps([{"articolo": f"art. {label}", "pertinente": True, "contraddice": False,
+                                "perche": "x", **self.check.get(label, {})} for label in labels])
         title = next(t for t in ptw.SECTION_TITLES if f"SEZIONE: {t}" in system)
         with self.lock:
             if self.failing.get(title):
@@ -169,6 +180,58 @@ def test_the_parere_is_written_from_the_plan_in_six_sections(model):
     plan_log = [data for event, data in model.logged if event == "case_analysis_plan"][-1]
     assert plan_log["issues"] == 2 and plan_log["replanned"] is False and plan_log["references_available"] == 2
     assert plan_log["removed"]["norme"] == ["2052 c.c."]
+
+
+def test_the_planner_reads_headings_and_practical_checks(model):
+    _write(articles=dg._source_block(ARTICLES, 1500))
+    human = model.calls[0]["human"]
+    assert "[art. 1218 c.c.]\nRubrica: Responsabilità del debitore\nIl debitore" in human
+    assert "VERIFICHE PER LA FASE E LA MATERIA:\n- " in human and "Prescrizione del diritto" in human
+
+
+def test_rulings_are_cited_only_where_their_passages_are(model):
+    _write()
+    for title in ("Risposte ai quesiti", "Inquadramento e questione centrale", "Profili processuali e termini",
+                  "Conclusioni"):
+        call = model.section_call(title)
+        assert "Cass." not in call["human"] and "non citare pronunce" in call["system"]
+    for title in ("Norme e giurisprudenza", "Applicazione al caso"):
+        assert "[Cass. civ., sez. III, ord. n. 190/2026]" in model.section_call(title)["human"]
+    assert "Rubrica: Responsabilità del debitore" in model.section_call("Applicazione al caso")["human"]
+
+
+def test_the_plan_check_drops_contradicted_issues_and_off_topic_articles(model):
+    model.check = {"1218 c.c.": {"contraddice": True}, "2051 c.c.": {"pertinente": False}}
+    _write()
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert "La scuola deve provare" not in applied and "La panchina era nello spazio di gioco." in applied
+    assert "Custodia della panchina (norme: -;" in applied               # 2051 removed from its issue
+    assert "Sì, a titolo contrattuale." not in model.section_call("Risposte ai quesiti")["human"]
+    plan_log = [d for e, d in model.logged if e == "case_analysis_plan"][-1]
+    assert plan_log["checked"] == {"off_topic": ["2051 c.c."], "contradicted": ["Responsabilità contrattuale della scuola"]}
+    assert len([c for c in model.calls if "controlli il piano" in c["system"]]) == 2   # one call per issue
+
+
+def test_answers_naming_a_removed_article_are_dropped(model):
+    model.check = {"2051 c.c.": {"pertinente": False}}
+    model.plans = [dict(PLAN, risposte=[{"quesito": "a", "risposta": "Sì, a titolo contrattuale."},
+                                        {"quesito": "b", "risposta": "Basta la custodia (art. 2051 c.c.)."}])]
+    _write()
+    answers = model.section_call("Risposte ai quesiti")["human"]
+    assert "Sì, a titolo contrattuale." in answers and "Basta la custodia" not in answers
+
+
+def test_a_plan_left_without_issues_means_the_one_call_parere(model):
+    model.check = {"1218 c.c.": {"contraddice": True}, "2051 c.c.": {"contraddice": True}}
+    assert _write() is None
+    assert not any("SEZIONE:" in c["system"] for c in model.calls)
+
+
+def test_a_failed_plan_check_keeps_the_plan(model):
+    model.check_fails = True
+    assert _write()
+    assert [d for e, d in model.logged if e == "case_analysis_plan"][-1]["checked"] == \
+        {"off_topic": [], "contradicted": []}
 
 
 def test_a_plan_arguing_for_the_other_side_is_made_once_more(model):

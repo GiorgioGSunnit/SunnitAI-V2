@@ -19,12 +19,13 @@ POSTURE_CHECKS: Dict[str, List[str]] = {
         "Prescrizione del diritto (ordinaria di dieci anni, art. 2946 c.c.; cinque anni per il danno "
         "extracontrattuale, art. 2947 c.c.) e atti che la interrompono (art. 2943 c.c.); eventuali decadenze "
         "proprie del contratto o della materia.",
-        "Risposta alla richiesta o diffida ricevuta, entro il termine che essa indica; messa in mora o diffida "
-        "ad adempiere (artt. 1219 e 1454 c.c.) se è la parte assistita a pretendere.",
+        "Se la parte assistita riceve una pretesa: risposta scritta entro il termine indicato, contestando ciò che "
+        "non è dovuto, con le eccezioni che ha (inadempimento della controparte, prescrizione, riduzione).",
+        "Se è la parte assistita a pretendere: messa in mora (art. 1219 c.c.) o diffida ad adempiere (art. 1454 "
+        "c.c.); decreto ingiuntivo per un credito provato per iscritto (art. 633 c.p.c.).",
         "Condizioni di procedibilità prima della causa: se la materia richiede la mediazione (art. 5 d.lgs. "
         "28/2010) o la negoziazione assistita.",
-        "Strumenti prima o al posto della causa ordinaria: consulenza tecnica preventiva (art. 696-bis c.p.c.), "
-        "decreto ingiuntivo per un credito provato per iscritto (art. 633 c.p.c.).",
+        "Consulenza tecnica preventiva per accertare i fatti e tentare la conciliazione (art. 696-bis c.p.c.).",
         "Chi è la controparte da convenire o a cui rivolgersi, ed eventuali altri obbligati o assicuratori.",
         "Domande o eccezioni in via subordinata (per esempio, la riduzione di un importo).",
     ],
@@ -54,12 +55,14 @@ POSTURE_CHECKS: Dict[str, List[str]] = {
         "c.p.c.).",
     ],
     "indagini_preliminari": [
-        "Avviso di conclusione delle indagini (art. 415-bis c.p.p.): entro venti giorni memorie, documenti, "
-        "richiesta di interrogatorio o di nuove indagini.",
-        "Richiesta di archiviazione e opposizione della persona offesa (artt. 408-410 c.p.p.).",
-        "Riti alternativi e loro limiti: giudizio abbreviato (art. 438 c.p.p.), applicazione della pena su "
-        "richiesta (art. 444 c.p.p., esclusa per alcuni reati), sospensione del procedimento con messa alla "
-        "prova (art. 464-bis c.p.p., solo entro i limiti di pena previsti).",
+        "Avviso di conclusione delle indagini (art. 415-bis c.p.p.): entro venti giorni la difesa può presentare "
+        "memorie e documenti, chiedere nuove indagini o di essere interrogata.",
+        "L'archiviazione la chiede il pubblico ministero (art. 408 c.p.p.): la difesa può solo sollecitarla con "
+        "memorie e argomenti.",
+        "Riti alternativi e loro limiti, scelti dall'indagato: giudizio abbreviato (art. 438 c.p.p., con la "
+        "riduzione della pena); applicazione della pena su richiesta (art. 444 c.p.p., con limiti ed esclusioni "
+        "per alcuni reati, tra cui la violenza sessuale, da verificare); sospensione del procedimento con messa "
+        "alla prova (art. 464-bis c.p.p., solo per i reati entro i limiti di pena previsti).",
         "Procedibilità: reato a querela o d'ufficio; termine della querela e possibilità di remissione.",
         "Misure cautelari in corso e relativi rimedi; incidente probatorio quando una prova rischia di "
         "disperdersi o la persona offesa è vulnerabile.",
@@ -70,8 +73,8 @@ POSTURE_CHECKS: Dict[str, List[str]] = {
         "Proscioglimento immediato per una causa evidente (art. 129 c.p.p.).",
         "Regola di giudizio: condanna solo se la colpevolezza è provata al di là di ogni ragionevole dubbio "
         "(art. 533 c.p.p.), altrimenti assoluzione (art. 530 c.p.p.).",
-        "Riqualificazione del fatto, circostanze attenuanti, particolare tenuità del fatto (art. 131-bis c.p.), "
-        "sospensione condizionale della pena.",
+        "Riqualificazione del fatto, circostanze attenuanti, particolare tenuità del fatto (art. 131-bis c.p., "
+        "solo entro i limiti di pena previsti), sospensione condizionale della pena.",
     ],
     "condanna_primo_grado": [
         "Termine per l'appello (art. 585 c.p.p.) e motivi specifici a pena di inammissibilità (art. 581 "
@@ -108,7 +111,7 @@ AREA_CHECKS: Dict[str, List[str]] = {
         "Concorso di persone (art. 110 c.p.): il ruolo di ciascuno e la responsabilità per il reato diverso "
         "voluto da uno solo dei concorrenti (art. 116 c.p.).",
         "Circostanze aggravanti contestate e attenuanti applicabili (artt. 61, 62, 62-bis c.p.); particolare "
-        "tenuità del fatto (art. 131-bis c.p.).",
+        "tenuità del fatto (art. 131-bis c.p.), solo entro i limiti di pena previsti.",
     ],
     "contratti": [
         "Inadempimento imputabile o no (art. 1218 c.c.): causa esterna, impossibilità sopravvenuta, prova "

@@ -61,8 +61,12 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
                        f"{len(data.get('pronunce') or [])} of {data.get('references_available')} rulings, "
                        f"removed {len(removed.get('norme') or [])} articles and {len(removed.get('pronunce') or [])} "
                        f"rulings, replanned {'yes' if data.get('replanned') else 'no'}")
-        elif event in ("case_analysis_plan_llm", "case_analysis_sections_llm", "case_analysis_draft_llm") \
-                and duration is not None:
+            checked = data.get("checked")
+            if checked is not None:
+                out.append(f"plan check: off-topic {', '.join(checked.get('off_topic') or []) or '-'}; "
+                           f"contradicted {'; '.join(checked.get('contradicted') or []) or '-'}")
+        elif event in ("case_analysis_plan_llm", "case_analysis_plan_check_llm", "case_analysis_sections_llm",
+                       "case_analysis_draft_llm") and duration is not None:
             out.append(f"{event[len('case_analysis_'):-len('_llm')]} call: {duration / 1000:.1f}s")
         elif event == "case_analysis_prompt_tokens":
             out.append(f"draft prompt: {data.get('total')} est. tokens, budget {data.get('budget')}, "
