@@ -87,6 +87,34 @@ def test_rank_cards_by_central_rare_articles_keywords_and_side():
     assert rs.rank_cards(cards, {}, terms, "imputato") == []            # no central article: nothing
 
 
+def test_cited_only_counts_less_than_applied():
+    rarities = ({"584 c.p.": 5.0}, {})
+    applied = dict(_card(1, ["584 c.p."]), _cited=["584 c.p."])
+    cited = dict(_card(2, ["43 c.p."]), _cited=["584 c.p.", "43 c.p."])
+    neither = dict(_card(3, ["43 c.p."]), _cited=["43 c.p."])
+    central = {"584 c.p.": 1.0}
+    s_applied = rs.score_card(applied, central, "", "", *rarities)
+    s_cited = rs.score_card(cited, central, "", "", *rarities)
+    assert s_applied == rs.W_ARTICLE * 5.0 and s_cited == rs.W_ARTICLE * rs.CITED_ONLY * 5.0
+    assert rs.score_card(neither, central, "", "", *rarities) == 0
+    assert rs.rank_cards([cited, neither, applied], central, "", "", rarities=rarities) == ["d1", "d2"]
+
+
+def test_resolved_institutions_collects_every_article(monkeypatch):
+    calls = []
+
+    def fake_resolve(session, documents, istituto, parole):
+        calls.append(istituto["nome"])
+        return [{"_article": ("640", "c.p.")}, {"_article": ("640", "c.p.")}, {}] if istituto["nome"] == "Truffa" \
+            else [{"_article": ("629", "c.p.")}]
+    monkeypatch.setattr(rs.dg, "_resolve_institution", fake_resolve)
+    import src.rag.doc_lookup as doc_lookup
+    monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
+    analysis = {"questioni": [{"istituti": [{"nome": "Truffa"}, {"nome": "Estorsione"}]}, {"istituti": []}]}
+    assert rs.resolved_institutions(None, None, "neo4j", analysis) == [("640", "c.p."), ("629", "c.p.")]
+    assert calls == ["Truffa", "Estorsione"]
+
+
 def test_available_on_topic():
     links = {"a": {"articles": ["584 c.p."]}, "b": {"articles": ["81 c.p."]}, "c": {"articles": ["584 c.p."]}}
     assert rs.available_on_topic({"a": {}, "b": {}}, links, {"584 c.p."}) == 1

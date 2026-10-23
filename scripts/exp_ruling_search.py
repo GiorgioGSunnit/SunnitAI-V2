@@ -64,6 +64,9 @@ TOP = dg._PASSAGE_RULINGS
 CODE_ABBR = {"cp": "c.p.", "cpp": "c.p.p."}
 W_ARTICLE, W_KEYWORD, W_SIDE = 3, 1, 2
 CENTRAL, CHOSEN = 1.0, 0.5
+# A central article the ruling cites (step 1) but its card does not list as applied: still a
+# sign the ruling is about it (q_long, 23 Oct: 5 rulings cite 584, one card applies it).
+CITED_ONLY = 0.3
 _DEFENDANT_RE = re.compile(r"imputat|indagat|accusat|condannat|difes|arrestat|autore\s+del", re.IGNORECASE)
 _VICTIM_RE = re.compile(r"persona\s+offesa|parte\s+civile|vittim|danneggiat|denunciant|querelant|famil", re.IGNORECASE)
 
@@ -145,13 +148,17 @@ def _hit(keyword: str, low: str) -> bool:
 
 def score_card(card: dict, central: dict, low_terms: str, side: str, article_rarity: dict,
                keyword_rarity: dict) -> float:
-    """W_ARTICLE x weight x rarity per central article the card applies, W_KEYWORD x rarity
-    per keyword found in the case, W_SIDE if it favours the client. 0 without a central
-    article: the card is not about this case."""
-    shared = [a for a in set(card.get("articoli_applicati") or []) if a in central]
-    if not shared:
+    """W_ARTICLE x weight x rarity per central article the card applies (x CITED_ONLY when the
+    ruling only cites it: card["_cited"], step 1's list), W_KEYWORD x rarity per keyword
+    found in the case, W_SIDE if it favours the client. 0 without a central article: the
+    card is not about this case."""
+    applied = set(card.get("articoli_applicati") or [])
+    shared = [a for a in applied if a in central]
+    cited_only = [a for a in set(card.get("_cited") or []) - applied if a in central]
+    if not shared and not cited_only:
         return 0.0
     score = W_ARTICLE * sum(central[a] * article_rarity.get(a, 1.0) for a in shared)
+    score += W_ARTICLE * CITED_ONLY * sum(central[a] * article_rarity.get(a, 1.0) for a in cited_only)
     score += W_KEYWORD * sum(keyword_rarity.get(k, 1.0) for k in set(_keywords(card)) if _hit(k, low_terms))
     return score + (W_SIDE if side and card.get("a_favore_di") == side else 0)
 
@@ -269,9 +276,31 @@ def live_ruling_ids(session, driver, database: str, question: str) -> dict:
                                  exclude_docs={(r.get("d") or {}).get("id") for r in picked["similar"]})
     rows = dg._ruling_passages(session, dg._reading_order(picked["similar"], second, picked["first_rulings"]),
                                selected, analysis)
+    resolved = resolved_institutions(session, driver, database, analysis)
+    central = central_weights({**picked, "institutions_resolved":
+                               list(picked.get("institutions_resolved") or []) + resolved})
     return {"terms": _case_terms(question, analysis), "side": client_side(analysis.get("posizione") or ""),
-            "selected": sorted({ref_key(r) for r in selected}), "central": central_weights(picked),
+            "selected": sorted({ref_key(r) for r in selected}), "central": central,
+            "istituti": [i for q in analysis.get("questioni") or [] for i in (q.get("istituti") or [])],
             "before_ids": [(r.get("d") or {}).get("id") for r in rows]}
+
+
+def resolved_institutions(session, driver, database: str, analysis: dict) -> list:
+    """Every article the analysis' institutions resolve to, the same lookup as
+    _select_articles_v2 (database only, no model call). Its own "institutions_resolved"
+    keeps only the ones no earlier step had found: on 23 Oct p2's "Truffa" -> 640 c.p. was
+    resolved but missing there, so 640 never counted as central."""
+    from src.rag.doc_lookup import _fetch_doc_names
+    documents = _fetch_doc_names(driver, database)
+    found = []
+    for q in analysis.get("questioni") or []:
+        for istituto in q.get("istituti") or []:
+            try:
+                rows = dg._resolve_institution(session, documents, istituto, q.get("parole_chiave"))
+            except Exception:
+                continue
+            found += [row["_article"] for row in rows if row.get("_article")]
+    return list(dict.fromkeys(found))
 
 
 def _case_terms(question: str, analysis: dict) -> str:
@@ -299,6 +328,7 @@ def main() -> None:
     for line in open(args.cards, encoding="utf-8"):
         card = json.loads(line)
         if not card.get("errore"):
+            card["_cited"] = (links.get(card["id"]) or {}).get("articles") or []
             cards[card["id"]] = card
     cases = criminal_cases(json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"], args.include_heldout,
                            set(args.only.split(",")) if args.only else None)
