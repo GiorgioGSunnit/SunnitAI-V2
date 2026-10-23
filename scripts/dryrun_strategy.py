@@ -56,7 +56,8 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
             out.append(f"applicability result: {len(data.get('checked') or [])} judged, "
                        f"{len(data.get('dropped') or [])} dropped, {data.get('unchecked', 0)} unchecked")
         elif event == "case_analysis_ruling_cards":
-            chosen = "; ".join(f"{c.get('riferimento')} ({c.get('score')}, {c.get('a_favore_di') or '-'})"
+            chosen = "; ".join(f"{c.get('riferimento')} ({c.get('score')}, {c.get('a_favore_di') or '-'}, "
+                               f"{c.get('role') or '-'})"
                                for c in data.get("chosen") or []) or "none"
             out.append(f"ruling cards: {data.get('cards')} loaded, {data.get('central')} central articles, "
                        f"chosen: {chosen}, missing in the database {len(data.get('missing_in_db') or [])}")

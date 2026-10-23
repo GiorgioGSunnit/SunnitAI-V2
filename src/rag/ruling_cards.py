@@ -12,9 +12,15 @@ reads: on topic 6% -> about 40%, held-out 0% -> 24%; full reference about 95%; f
 client's side 8% -> 44%): rarity-weighted central articles (named in the case or resolved from
 its legal issues 1, the model's chosen pool 0.5, the generic method candidates left out; an
 article the ruling only cites x0.3), keyword phrases found in the case, and a bonus when the
-ruling favours the client. The best _CARD_SLOTS lead the writer's reading order, and their
-passage starts with the outcome, whom it favours and the verified quote. Any failure leaves
-the rulings as the pipeline found them.
+ruling favours the client.
+
+Which cards lead the writer's reading order is chosen by side, not by score alone (round 5 of
+the PM's cases, 23 Oct: 9 of the 12 cards ranked for two defendants favoured the prosecution,
+the side bonus being small against 40-53 central articles): up to _FAVOURABLE_SLOTS cards that
+favour the client and score at least _FAVOURABLE_FLOOR of the best, then _UNFAVOURABLE_SLOTS
+of the others, the strongest adverse ruling, labelled for the writer as the other side's case
+law to rebut. Their passage starts with that label, the outcome, whom the ruling favours and
+the verified quote. Any failure leaves the rulings as the pipeline found them.
 """
 
 import json
@@ -35,7 +41,9 @@ logger = logging.getLogger(__name__)
 RULING_CARDS_FLAG = "RULING_CARDS_ENABLED"
 FILES_ENV = "RULING_CARDS_FILES"
 
-_CARD_SLOTS = 3
+# Favourable cards first, then the strongest adverse one (0 to bring only favourable rulings).
+_FAVOURABLE_SLOTS, _UNFAVOURABLE_SLOTS = 2, 1
+_FAVOURABLE_FLOOR = 0.5            # a favourable card must still be on topic: half the best score
 W_ARTICLE, W_KEYWORD, W_SIDE = 3, 1, 2
 CENTRAL, CHOSEN, CITED_ONLY = 1.0, 0.5, 0.3
 
@@ -181,8 +189,9 @@ def score_card(card: Dict[str, Any], central: Dict[str, float], low_terms: str, 
 
 
 def rank(cards: CardStore, central: Dict[str, float], case_terms: str, side: str, party: str,
-         top: int = _CARD_SLOTS) -> List[Tuple[Dict[str, Any], float]]:
-    """The `top` best-scoring cards with their score; ties broken by full reference, then id."""
+         top: Optional[int] = None) -> List[Tuple[Dict[str, Any], float]]:
+    """The scoring cards (the `top` best, else all) with their score, best first; ties broken by
+    full reference, then id."""
     low = " ".join((case_terms or "").lower().split())
     candidates = {i for article in central for i in cards.by_article.get(article, ())}
     scored = []
@@ -192,6 +201,34 @@ def rank(cards: CardStore, central: Dict[str, float], case_terms: str, side: str
         if s > 0:
             scored.append((-s, not card["completo"], card["id"], i))
     return [(cards.cards[i], -s) for s, _, _, i in sorted(scored)[:top]]
+
+
+def role_of(card: Dict[str, Any], side: str, party: str) -> str:
+    """"favorevole" to the client, "sfavorevole" (a criminal ruling for the other side), else
+    "neutro": side unclear, the client's side unknown, or a civil ruling for another party (a
+    different dispute, not necessarily against the client)."""
+    if favours_client(card, side, party):
+        return "favorevole"
+    if card["branch"] != "civile" and side and card["a_favore_di"] in ("imputato", "accusa"):
+        return "sfavorevole"
+    return "neutro"
+
+
+def choose(ranked: List[Tuple[Dict[str, Any], float]], side: str, party: str,
+           favourable: int = _FAVOURABLE_SLOTS, unfavourable: int = _UNFAVOURABLE_SLOTS) -> List[tuple]:
+    """[(card, score, role)]: up to `favourable` cards for the client scoring at least
+    _FAVOURABLE_FLOOR of the best; then up to `unfavourable` of the others, an adverse ruling
+    before an unclear one; the slots left go to unclear ones, never to more adverse rulings."""
+    if not ranked:
+        return []
+    floor = _FAVOURABLE_FLOOR * ranked[0][1]
+    roles = [(card, score, role_of(card, side, party)) for card, score in ranked]
+    picks = [r for r in roles if r[2] == "favorevole" and r[1] >= floor][:favourable]
+    others = sorted((r for r in roles if r[2] != "favorevole"), key=lambda r: (r[2] != "sfavorevole", -r[1]))
+    picks += others[:unfavourable]
+    left = favourable + unfavourable - len(picks)
+    picks += [r for r in roles if r[2] == "neutro" and r not in picks][:max(left, 0)]
+    return picks
 
 
 # --- the pipeline's side -----------------------------------------------------------------------
@@ -231,16 +268,18 @@ def card_rulings(session, driver, database: str, case: str, analysis: Dict[str, 
             return [], {}
         central = central_weights(picked, _resolved_institutions(session, driver, database, analysis))
         party = f"{analysis.get('parte_assistita') or ''} {analysis.get('posizione') or ''}"
-        best = rank(cards, central, _case_terms(case, analysis), client_side(analysis.get("posizione") or ""), party)
-        ids = [card["id"] for card, _ in best]
+        side = client_side(analysis.get("posizione") or "")
+        best = choose(rank(cards, central, _case_terms(case, analysis), side, party), side, party)
+        ids = [card["id"] for card, _, _ in best]
         found = {row["d"]["id"]: row["d"] for row in session.run(
             "MATCH (d:Document) WHERE d.id IN $ids RETURN d", ids=ids).data() if row.get("d")} if ids else {}
-        vlog("case_analysis_ruling_cards", {"cards": len(cards.cards), "central": len(central),
+        vlog("case_analysis_ruling_cards", {"cards": len(cards.cards), "central": len(central), "client_side": side,
                                             "chosen": [{"riferimento": c["riferimento"], "score": round(s, 2),
-                                                        "a_favore_di": c["a_favore_di"] or c["parte_favorita"]}
-                                                       for c, s in best],
+                                                        "a_favore_di": c["a_favore_di"] or c["parte_favorita"],
+                                                        "role": role} for c, s, role in best],
                                             "missing_in_db": [i for i in ids if i not in found]})
-        return [{"d": found[i]} for i in ids if i in found], {c["id"]: c for c, _ in best if c["id"] in found}
+        return ([{"d": found[i]} for i in ids if i in found],
+                {c["id"]: {**c, "_role": role} for c, _, role in best if c["id"] in found})
     except Exception as exc:
         logger.warning("ruling cards failed, the rulings are the search's own: %s", exc)
         return [], {}
@@ -252,15 +291,23 @@ def lead_with(card_rows: List[Dict[str, Any]], reading: List[Dict[str, Any]]) ->
     return card_rows + [r for r in reading if (r.get("d") or {}).get("id") not in ids]
 
 
+_ROLE_LABELS = {
+    "favorevole": "Orientamento favorevole alla parte assistita.",
+    "sfavorevole": "ORIENTAMENTO SFAVOREVOLE alla parte assistita: è la giurisprudenza della controparte, da "
+                   "presentare come obiezione e superare con la replica, non come argomento.",
+}
+
+
 def card_summary(card: Dict[str, Any]) -> str:
-    """The card's outcome, whom it favours and its verified quote, as the writer reads them."""
+    """The card's role for the client, outcome, whom it favours and verified quote, as the writer reads them."""
+    label = _ROLE_LABELS.get(card.get("_role") or "")
     parts = [f"Esito (dalla scheda): {card['esito'] or 'non indicato'}"]
     if card["ricorrente"] and card["ricorrente"] != "altro":
         parts.append(f"ricorso di: {card['ricorrente']}")
     favoured = card["parte_favorita"] or card["a_favore_di"]
     if favoured and favoured != "non chiaro":
         parts.append(f"favorevole a: {favoured}")
-    text = "; ".join(parts) + "."
+    text = (f"{label} " if label else "") + "; ".join(parts) + "."
     return text + (f" Principio decisivo: «{card['citazione']}»." if card["citazione"] else "")
 
 

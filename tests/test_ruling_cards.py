@@ -95,16 +95,54 @@ def test_card_rulings_lead_the_reading_with_their_summary(cards_file, monkeypatc
     monkeypatch.setattr(rc, "_resolved_institutions", lambda *a: [("584", "c.p.")])
     analysis = {"posizione": "imputato", "questioni": [{"titolo": "Omicidio preterintenzionale",
                                                          "parole_chiave": ["schiaffo al volto"]}]}
-    rows, carded = rc.card_rulings(_Session({"1", "3"}), None, "neo4j", "Uno schiaffo.", analysis, {})
-    assert [r["d"]["id"] for r in rows] == ["1", "3"] and set(carded) == {"1", "3"}
-    assert logged[-1][1]["missing_in_db"] == ["2"] and logged[-1][1]["chosen"][0]["a_favore_di"] == "imputato"
+    rows, carded = rc.card_rulings(_Session({"1", "2"}), None, "neo4j", "Uno schiaffo.", analysis, {})
+    # 1 favours the client (the defendant); 2 the prosecution: the adverse slot; 3 favours the client but
+    # only cites the article, under half the best score: not on topic enough for a favourable slot.
+    assert [r["d"]["id"] for r in rows] == ["1", "2"] and set(carded) == {"1", "2"}
+    log = logged[-1][1]
+    assert [c["role"] for c in log["chosen"]] == ["favorevole", "sfavorevole"] and log["client_side"] == "imputato"
+    assert log["missing_in_db"] == []
     reading = rc.lead_with(rows, [{"d": {"id": "9"}}, {"d": {"id": "1"}}])
-    assert [r["d"]["id"] for r in reading] == ["1", "3", "9"]
-    annotated = rc.annotate([{**rows[0], "_passage": "Il passo."}, {"d": {"id": "9"}, "_passage": "Altro."}], carded)
-    assert annotated[0]["_passage"] == ("Esito (dalla scheda): annullamento senza rinvio; ricorso di: imputato; "
-                                        "favorevole a: imputato. Principio decisivo: «la morte non era "
-                                        "prevedibile». Passo: Il passo.")
-    assert annotated[1]["_passage"] == "Altro."
+    assert [r["d"]["id"] for r in reading] == ["1", "2", "9"]
+    annotated = rc.annotate([{**rows[0], "_passage": "Il passo."}, {**rows[1], "_passage": "Altro passo."},
+                             {"d": {"id": "9"}, "_passage": "Altro."}], carded)
+    assert annotated[0]["_passage"] == ("Orientamento favorevole alla parte assistita. Esito (dalla scheda): "
+                                        "annullamento senza rinvio; ricorso di: imputato; favorevole a: imputato. "
+                                        "Principio decisivo: «la morte non era prevedibile». Passo: Il passo.")
+    assert annotated[1]["_passage"].startswith("ORIENTAMENTO SFAVOREVOLE alla parte assistita: è la "
+                                               "giurisprudenza della controparte")
+    assert annotated[2]["_passage"] == "Altro."
+
+
+def _ranked(*items):
+    """[(trimmed card, score)] from (id, side, score, branch)."""
+    return [(rc._trim(_card(cid, ["584 c.p."], side=side, branch=branch)), score) for cid, side, score, branch in items]
+
+
+def test_choose_by_side_favourable_first_then_one_adverse():
+    ranked = _ranked(("a", "imputato", 10, "penale"), ("b", "accusa", 8, "penale"), ("c", "non chiaro", 7, "penale"),
+                     ("d", "imputato", 6, "penale"), ("e", "imputato", 4, "penale"))
+    chosen = rc.choose(ranked, "imputato", "")
+    assert [(c["id"], role) for c, _, role in chosen] == [("a", "favorevole"), ("d", "favorevole"), ("b", "sfavorevole")]
+    # no favourable ruling on topic: one adverse, the rest only unclear ones, never more adverse rulings
+    ranked = _ranked(("b", "accusa", 9, "penale"), ("c", "non chiaro", 7, "penale"), ("f", "accusa", 6, "penale"),
+                     ("e", "imputato", 3, "penale"))
+    assert [(c["id"], role) for c, _, role in rc.choose(ranked, "imputato", "")] == [("b", "sfavorevole"), ("c", "neutro")]
+    # only favourable rulings when the adverse slot is 0
+    ranked = _ranked(("a", "imputato", 10, "penale"), ("b", "accusa", 9, "penale"))
+    assert [c["id"] for c, _, _ in rc.choose(ranked, "imputato", "", unfavourable=0)] == ["a"]
+    # the client's side unknown: the best three, all unclear
+    ranked = _ranked(("a", "imputato", 10, "penale"), ("b", "accusa", 9, "penale"), ("c", "accusa", 8, "penale"),
+                     ("d", "imputato", 7, "penale"))
+    assert [(c["id"], role) for c, _, role in rc.choose(ranked, "", "")] == [("a", "neutro"), ("b", "neutro"), ("c", "neutro")]
+    assert rc.choose([], "imputato", "") == []
+
+
+def test_a_civil_ruling_for_another_party_is_not_adverse():
+    card = rc._trim(_card("x", ["2051 c.c."], branch="civile", favoured="agenzia delle entrate"))
+    assert rc.role_of(card, "", "i genitori di Tizio, danneggiati") == "neutro"
+    card = rc._trim(_card("y", ["2051 c.c."], branch="civile", favoured="danneggiato"))
+    assert rc.role_of(card, "", "i genitori di Tizio, danneggiati") == "favorevole"
 
 
 def test_a_failure_leaves_the_rulings_alone(cards_file, monkeypatch):
