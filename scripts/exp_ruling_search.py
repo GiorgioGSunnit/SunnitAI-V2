@@ -12,7 +12,11 @@ articles in c.p. / c.p.p. only; tuning cases, plus h5-h9 with --include-heldout)
           CENTRAL articles) and the issue route (cards whose phrases contain one of
           the case's central issues by name: "tentata rapina", "colpa medica"). The
           top 5 are taken, as many as the writer reads (_PASSAGE_RULINGS).
-          --no-issue-route ranks by articles only, to compare.
+          The issue route is opt-in (--issue-route): on the tuning cases (23 Oct,
+          same cached pipeline outputs) it scored 18/50 on topic vs 20/50 by
+          articles alone. It depends on the same analysis, which, when it names the
+          wrong crime (fraud read as "estorsione, falso"), misleads both routes,
+          and generic issue names ("nesso causale", "dolo") pull in other crimes.
 
 The case's central articles, from the same run: the ones its text names and the ones
 the analysis' legal issues resolved to ("omicidio preterintenzionale" -> 584 c.p.) weigh
@@ -383,7 +387,8 @@ def main() -> None:
     parser.add_argument("--include-heldout", action="store_true", help="add h5-h9 (measure only)")
     parser.add_argument("--only", help="comma-separated case ids")
     parser.add_argument("--show", action="store_true", help="list each case's rulings, before and after (no text)")
-    parser.add_argument("--no-issue-route", action="store_true", help="rank by articles only (to compare)")
+    parser.add_argument("--issue-route", action="store_true",
+                        help="also rank by the case's issues by name (off by default: no gain on the tuning cases)")
     args = parser.parse_args()
 
     links = {r["id"]: r for r in (json.loads(line) for line in open(args.links, encoding="utf-8"))}
@@ -407,13 +412,13 @@ def main() -> None:
     rows, shown = [], []
 
     no_issues = [c["id"] for c in cases if args.use_cache and not cache[c["id"]].get("issues")]
-    if no_issues and not args.no_issue_route:
+    if no_issues and args.issue_route:
         print(f"   cached without issue names (older run): {', '.join(no_issues)} -- only their institutions' "
               "names are used; run once without --use-cache to cache the rest", file=sys.stderr)
 
     def one_case(case, run):
         expected = expected_keys(case)
-        issues = [] if args.no_issue_route else issues_of(run)
+        issues = issues_of(run) if args.issue_route else []
         after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"], rarities=rarities,
                                issues=issues)
         rows.append((case["id"], run["side"], measure(run["before_ids"], links, cards, expected, run["side"]),
