@@ -75,6 +75,11 @@ else falls back to the default, so a typo never switches a feature on.
                                 3 for arguments that favour the other side;
                                 if any, section 3 is rewritten once with that
                                 list. See _check_client_stance.
+  CHAT_KEEPALIVE_ENABLED       false: /api/chat replies not ready after 10 s
+                                are streamed (a space every 20 s, then the
+                                JSON) so Vercel's 120-second limit on a
+                                silent server never cancels a long strategy.
+                                See src/chatbot/api.py, chat().
   QUALIFICATION_CHECK_ENABLED  false: every cited article outside the case's
                                 area/posture lists is checked, by its real
                                 heading, against the use the draft makes of

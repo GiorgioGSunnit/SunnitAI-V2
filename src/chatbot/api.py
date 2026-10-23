@@ -13,6 +13,7 @@ Endpoints:
 
 import asyncio
 import io
+import json
 import logging
 logging.getLogger("src.rag").setLevel(logging.INFO)
 # Without this, src.chatbot.* inherits root (WARNING) and every logger.info in
@@ -28,6 +29,7 @@ from functools import partial
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -65,6 +67,7 @@ from ..rag.document_generation import (
     is_generation_request,
     _call_chat,
 )
+from ..rag import feature_flags
 from ..rag.answer_processing import _extract_citations
 from ..rag.prompts import legal_consultant_system_prefix, length_instruction
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -2088,8 +2091,65 @@ def _classify_legal_intent(message: str, session_lang: str) -> str:
     return "rag"
 
 
+# --- Keep-alive for long answers (23 Oct 2026) -----------------------------------------------
+# Production reaches this API through a Vercel rewrite, which cancels a request when the server
+# has sent nothing for 120 seconds (Vercel's fixed CDN origin timeout, the same on every plan).
+# A strategy takes about 125-145 s and only then replies: the PM's question of 23 Oct, 09:28,
+# was answered on the server after 142 s while the page had already shown "Si è verificato un
+# errore durante la richiesta". With CHAT_KEEPALIVE_ENABLED, a reply not ready after
+# _KEEPALIVE_GRACE_SECONDS is streamed: a space at once and every _KEEPALIVE_INTERVAL_SECONDS,
+# then the usual JSON (JSON allows leading whitespace, so the page parses it unchanged). Quick
+# replies and early errors (login, access, a missing session) keep their normal status codes;
+# once streaming, the status is already 200, so a late failure becomes a normal reply carrying
+# the usual error text -- as the pipelines' own errors already do.
+_KEEPALIVE_FLAG = "CHAT_KEEPALIVE_ENABLED"
+_KEEPALIVE_GRACE_SECONDS = 10.0
+_KEEPALIVE_INTERVAL_SECONDS = 20.0
+_LATE_ERROR_ANSWER = ("Si è verificato un errore durante l'elaborazione della domanda. "
+                      "Riprova tra qualche istante.")
+
+
 @app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user), db: Session = Depends(get_db)):
+async def chat(request: ChatRequest, current_user: Optional[dict] = Depends(get_current_user),
+               db: Session = Depends(get_db)):
+    """Send a message and get a response (_chat_impl), kept alive past Vercel's 120 s when
+    CHAT_KEEPALIVE_ENABLED (see above)."""
+    if not feature_flags.enabled(_KEEPALIVE_FLAG):
+        return await _chat_impl(request, current_user, db)
+    from ..db.base import SessionLocal
+
+    # Its own session: the injected one is closed when this function returns, which for a
+    # streamed reply is long before the answer is ready.
+    own_db = SessionLocal()
+    task = asyncio.ensure_future(_chat_impl(request, current_user, own_db))
+    task.add_done_callback(lambda _done: own_db.close())
+    done, _ = await asyncio.wait({task}, timeout=_KEEPALIVE_GRACE_SECONDS)
+    if done:
+        return task.result()
+    return StreamingResponse(_keepalive_body(task, request), media_type="application/json")
+
+
+async def _keepalive_body(task: "asyncio.Future", request: ChatRequest):
+    """A space now and every _KEEPALIVE_INTERVAL_SECONDS while the answer is prepared, then
+    the reply's JSON -- or, if it failed after the reply had started, a normal reply carrying
+    the usual error text."""
+    yield b" "
+    while not task.done():
+        await asyncio.wait({task}, timeout=_KEEPALIVE_INTERVAL_SECONDS)
+        if not task.done():
+            yield b" "
+    try:
+        result = task.result()
+        payload = jsonable_encoder(result if isinstance(result, ChatResponse) else ChatResponse.model_validate(result))
+    except Exception as exc:
+        logger.error("chat (kept alive): failed after the reply had started: %s", exc,
+                     exc_info=not isinstance(exc, HTTPException))
+        payload = jsonable_encoder(ChatResponse(session_id=request.session_id or "", answer=_LATE_ERROR_ANSWER,
+                                                original_query=request.message, resolved_query=request.message))
+    yield json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Session) -> ChatResponse:
     """Send a message and get a response.
 
     If session_id is provided, continues the conversation.
