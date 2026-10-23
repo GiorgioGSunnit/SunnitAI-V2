@@ -90,6 +90,13 @@ else falls back to the default, so a typo never switches a feature on.
                                 ("Cass. pen., sez. V, sent. n. 190/2026").
                                 Falls back to the one-call parere on any
                                 failure. See src/rag/plan_then_write.py.
+  RULING_CARDS_ENABLED         false: the strategy's rulings chosen first from
+                                the precomputed ruling cards in the files of
+                                RULING_CARDS_FILES (comma-separated JSONL,
+                                scripts/exp_ruling_cards.py), by the case's
+                                central articles, keywords and the client's
+                                side; each passage led by the card's outcome,
+                                side and verified quote. See ruling_cards.py.
   QUALIFICATION_CHECK_ENABLED  false: every cited article outside the case's
                                 area/posture lists is checked, by its real
                                 heading, against the use the draft makes of

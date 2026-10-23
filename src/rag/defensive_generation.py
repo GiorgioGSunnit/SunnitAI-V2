@@ -3909,8 +3909,16 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             # article itself, not on whatever else the keywords match.
             second = _search_case_law(session, analysis, numbers=[n for n, _ in selected[:4]],
                                       exclude_docs={(r.get("d") or {}).get("id") for r in similar})
-            ruling_rows = _ruling_passages(session, _reading_order(similar, second, first_rulings),
-                                           selected, analysis)
+            reading = _reading_order(similar, second, first_rulings)
+            # RULING_CARDS_ENABLED: the rulings the precomputed cards rank best for the case are
+            # read first, each passage led by the card's outcome, side and quote (ruling_cards.py).
+            from . import ruling_cards
+            carded: Dict[str, Dict[str, Any]] = {}
+            if ruling_cards.enabled():
+                card_rows, carded = ruling_cards.card_rulings(session, driver, NEO4J_DATABASE,
+                                                              _case_text(facts, request), analysis, picked)
+                reading = ruling_cards.lead_with(card_rows, reading)
+            ruling_rows = ruling_cards.annotate(_ruling_passages(session, reading, selected, analysis), carded)
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
     vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "pool_fusion": pool_fusion,
