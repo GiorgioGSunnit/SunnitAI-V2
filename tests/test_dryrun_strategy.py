@@ -28,3 +28,15 @@ def test_report_before_and_after_the_fix():
     assert "applicability call: checked 36, batches 3, failed batches 0, 9.1s" in text
     assert "applicability result: 36 judged, 4 dropped, 53 unchecked" in text
     assert "dropped to fit 21" in text and "answer: 9000 characters, 3 citations" in text
+
+
+def test_saved_run_keeps_the_answer_for_a_side_by_side():
+    events = [("case_analysis_applicability", {"checked": 36, "batches": 3}, 9100.0)]
+    ok = dr.saved_run("/tmp/chatbot_new/src/rag/defensive_generation.py", "Strategia?", "ok", 96.04,
+                      ["status: ok"], events, {"draft": "Parere ...", "citations": [{"source": "art. 1384 c.c."}],
+                                               "proceeding": {}})
+    assert ok["seconds"] == 96.0 and ok["draft"] == "Parere ..." and ok["citations"][0]["source"] == "art. 1384 c.c."
+    assert ok["events"] == [{"event": "case_analysis_applicability", "data": {"checked": 36, "batches": 3},
+                             "duration_ms": 9100.0}]
+    failed = dr.saved_run("/opt/chatbot/src/rag/defensive_generation.py", "Strategia?", "ERROR X: y", 3.0, [], [], None)
+    assert failed["draft"] is None and failed["citations"] is None
