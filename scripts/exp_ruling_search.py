@@ -63,7 +63,7 @@ from pathlib import Path
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("exp_ruling_links", os.path.join(_HERE, "exp_ruling_links.py"))
 rl = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(rl)   # also makes every Neo4j session read-only, and loads the app
+_spec.loader.exec_module(rl)   # loads the app; main() makes every Neo4j session read-only
 
 import src.rag.defensive_generation as dg  # noqa: E402
 
@@ -377,6 +377,7 @@ def _case_terms(question: str, analysis: dict) -> str:
 
 
 def main() -> None:
+    rl.read_only()     # exp_ruling_links no longer does it on import (f2a4756)
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cases", default=str(_default_cases_path()))
     parser.add_argument("--cards", default="/tmp/ruling_cards_v3.jsonl")

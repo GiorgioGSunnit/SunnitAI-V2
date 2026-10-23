@@ -51,7 +51,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _spec = importlib.util.spec_from_file_location("exp_ruling_links", os.path.join(_HERE, "exp_ruling_links.py"))
 rl = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(rl)   # also makes every Neo4j session read-only, and loads the app
+_spec.loader.exec_module(rl)   # loads the app; main() makes every Neo4j session read-only
 
 from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 
@@ -706,6 +706,7 @@ def _card(link: dict, text: str) -> dict:
 
 
 def main() -> None:
+    rl.read_only()     # exp_ruling_links no longer does it on import (f2a4756)
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--links", default="/tmp/ruling_links.jsonl", help="step 1's labels")
     parser.add_argument("--out", default="/tmp/ruling_cards.jsonl")
