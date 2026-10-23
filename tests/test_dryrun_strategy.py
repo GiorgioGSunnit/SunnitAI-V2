@@ -45,6 +45,18 @@ def test_report_of_a_planned_parere():
     assert "plan: 3 issues, 2 articles, 1 of 4 rulings, removed 1 articles and 0 rulings, replanned yes" in text
 
 
+def test_report_of_the_ruling_cards():
+    events = [("case_analysis_ruling_cards", {"cards": 2480, "central": 4, "missing_in_db": [],
+                                              "chosen": [{"riferimento": "Cass. pen., Sez. I, sent. n. 1/2026",
+                                                          "score": 9.5, "a_favore_di": "imputato"}]}, None),
+              ("case_analysis_ruling_cards_reading", {"searched": 9, "card_rows": 1, "reading": 10, "kept": 5,
+                                                      "cards_kept": 1}, None)]
+    text = "\n".join(dr.summarise(events, "ok", None, 120.0, 800))
+    assert ("ruling cards: 2480 loaded, 4 central articles, chosen: Cass. pen., Sez. I, sent. n. 1/2026 "
+            "(9.5, imputato), missing in the database 0") in text
+    assert "ruling cards in the reading: 1 card rulings + 9 searched, 5 read, 1 of them from cards" in text
+
+
 def test_saved_run_keeps_the_answer_for_a_side_by_side():
     events = [("case_analysis_applicability", {"checked": 36, "batches": 3}, 9100.0)]
     ok = dr.saved_run("/tmp/chatbot_new/src/rag/defensive_generation.py", "Strategia?", "ok", 96.04,

@@ -89,7 +89,9 @@ _PLAN_CHECK_SYSTEM = (
     "reale e il suo testo. Per ciascuna norma rispondi a due domande.\n"
     "- \"pertinente\": la norma disciplina davvero ciò per cui l'argomento la usa? Una norma sull'arresto in "
     "flagranza citata per il giudizio abbreviato, o una sulla licenza per finita locazione citata per una "
-    "servitù, non è pertinente; una norma generale citata per il suo istituto lo è.\n"
+    "servitù, non è pertinente; una norma generale citata per il suo istituto lo è; la norma che definisce il "
+    "reato o l'istituto di cui la questione tratta è pertinente anche quando l'argomento ne riguarda un aspetto "
+    "(il tentativo, le circostanze, la prova).\n"
     "- \"contraddice\": l'argomento afferma il contrario di ciò che il testo della norma dice? Se il testo dice "
     "che la penale è dovuta indipendentemente dalla prova del danno, un argomento secondo cui la penale "
     "richiede la prova del danno la contraddice. Un argomento che ne chiede l'applicazione, la riduzione o "
@@ -200,6 +202,20 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
             + "Prepara ora il piano.")
 
 
+# Words too common in headings and issue titles to tie them together.
+_HEADING_STOP = {"disposizioni", "articolo", "codice", "norme", "norma", "generali", "comuni", "particolari", "speciali",
+                 "della", "delle", "dello", "degli", "nella", "nelle", "altri", "altre", "casi", "pena", "pene",
+                 "reato", "reati", "delitto", "delitti", "questione", "responsabilità", "diritto", "diritti"}
+
+
+def _heading_shares_title(heading: str, title: str) -> bool:
+    """The article's heading and the issue's title share a content word (5-letter stems):
+    "Furto in abitazione e furto con strappo" and "Tentativo di furto in abitazione" do."""
+    def stems(text):
+        return {w[:5] for w in re.findall(r"\w{4,}", (text or "").lower()) if w not in _HEADING_STOP}
+    return bool(stems(heading) & stems(title))
+
+
 def _yes(value: Any) -> bool:
     return value is True or str(value).strip().lower() == "true"
 
@@ -228,7 +244,7 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
     Off-topic articles are removed; an issue whose argument contradicts its article is dropped;
     answers and subordinate requests naming a removed article go too (the writer then answers
     from the issues). A failed check keeps its issue as it was. None when no issue is left."""
-    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": []}
+    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": []}
     issues = [q for q in plan["questioni"] if q["norme"]]
     if not issues:
         return plan, checked
@@ -256,8 +272,14 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
             checked["contradicted"].append(q["titolo"])
             removed_refs.update(q["norme"])
             continue
-        off = [ref for ref in q["norme"] if _no(by_ref.get(ref, {}).get("pertinente"))]
+        # Round 4 of the PM's cases: the check called 624-bis c.p. off-topic for "tentativo di furto
+        # in abitazione" in all four burglary runs, and no answer named the charge. An article whose
+        # heading names what the issue is about stays.
+        judged_off = [ref for ref in q["norme"] if _no(by_ref.get(ref, {}).get("pertinente"))]
+        kept_by_heading = [ref for ref in judged_off if _heading_shares_title(headings.get(ref, ""), q["titolo"])]
+        off = [ref for ref in judged_off if ref not in kept_by_heading]
         checked["off_topic"] += [f"{n} {c}" for n, c in off]
+        checked["kept_by_heading"] += [f"{n} {c}" for n, c in kept_by_heading]
         removed_refs.update(off)
         kept.append({**q, "norme": [ref for ref in q["norme"] if ref not in off]})
     if not kept:
@@ -307,7 +329,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         return None
     finally:
         dg.vlog("case_analysis_plan_llm", duration_ms=(time.time() - t0) * 1000)
-    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": []}
+    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": []}
     if plan:
         plan, checked = check_plan(plan, article_rows, headings)
     dg.vlog("case_analysis_plan", {

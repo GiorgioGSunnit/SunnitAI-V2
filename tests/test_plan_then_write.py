@@ -200,22 +200,42 @@ def test_rulings_are_cited_only_where_their_passages_are(model):
     assert "Rubrica: Responsabilità del debitore" in model.section_call("Applicazione al caso")["human"]
 
 
+def _second_issue_titled(title):
+    return dict(PLAN, questioni=[PLAN["questioni"][0], dict(PLAN["questioni"][1], titolo=title)])
+
+
 def test_the_plan_check_drops_contradicted_issues_and_off_topic_articles(model):
     model.check = {"1218 c.c.": {"contraddice": True}, "2051 c.c.": {"pertinente": False}}
+    model.plans = [_second_issue_titled("Posizione della panchina")]
     _write()
     applied = model.section_call("Applicazione al caso")["human"]
     assert "La scuola deve provare" not in applied and "La panchina era nello spazio di gioco." in applied
-    assert "Custodia della panchina (norme: -;" in applied               # 2051 removed from its issue
+    assert "Posizione della panchina (norme: -;" in applied              # 2051 removed from its issue
     assert "Sì, a titolo contrattuale." not in model.section_call("Risposte ai quesiti")["human"]
     plan_log = [d for e, d in model.logged if e == "case_analysis_plan"][-1]
-    assert plan_log["checked"] == {"off_topic": ["2051 c.c."], "contradicted": ["Responsabilità contrattuale della scuola"]}
+    assert plan_log["checked"] == {"off_topic": ["2051 c.c."], "contradicted": ["Responsabilità contrattuale della scuola"],
+                                   "kept_by_heading": []}
     assert len([c for c in model.calls if "controlli il piano" in c["system"]]) == 2   # one call per issue
+
+
+def test_an_article_whose_heading_names_the_issue_is_never_removed(model):
+    # Round 4: 624-bis c.p. ("Furto in abitazione...") judged off-topic for "tentativo di furto in
+    # abitazione" in every burglary run. Here 2051 ("Danno cagionato da cosa in custodia") for "Custodia".
+    model.check = {"2051 c.c.": {"pertinente": False}}
+    _write()
+    assert "Custodia della panchina (norme: art. 2051 c.c.;" in model.section_call("Applicazione al caso")["human"]
+    plan_log = [d for e, d in model.logged if e == "case_analysis_plan"][-1]
+    assert plan_log["checked"]["kept_by_heading"] == ["2051 c.c."] and plan_log["checked"]["off_topic"] == []
+    assert ptw._heading_shares_title("Furto in abitazione e furto con strappo", "Tentativo di furto in abitazione")
+    assert not ptw._heading_shares_title("Intimazione di licenza e di sfratto", "Sanzioni per il cancello chiuso")
+    assert not ptw._heading_shares_title("Disposizioni generali sul reato", "Reato di stalking")
 
 
 def test_answers_naming_a_removed_article_are_dropped(model):
     model.check = {"2051 c.c.": {"pertinente": False}}
-    model.plans = [dict(PLAN, risposte=[{"quesito": "a", "risposta": "Sì, a titolo contrattuale."},
-                                        {"quesito": "b", "risposta": "Basta la custodia (art. 2051 c.c.)."}])]
+    model.plans = [dict(_second_issue_titled("Posizione della panchina"),
+                        risposte=[{"quesito": "a", "risposta": "Sì, a titolo contrattuale."},
+                                  {"quesito": "b", "risposta": "Basta la custodia (art. 2051 c.c.)."}])]
     _write()
     answers = model.section_call("Risposte ai quesiti")["human"]
     assert "Sì, a titolo contrattuale." in answers and "Basta la custodia" not in answers
@@ -231,7 +251,7 @@ def test_a_failed_plan_check_keeps_the_plan(model):
     model.check_fails = True
     assert _write()
     assert [d for e, d in model.logged if e == "case_analysis_plan"][-1]["checked"] == \
-        {"off_topic": [], "contradicted": []}
+        {"off_topic": [], "contradicted": [], "kept_by_heading": []}
 
 
 def test_a_plan_arguing_for_the_other_side_is_made_once_more(model):

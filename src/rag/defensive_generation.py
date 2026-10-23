@@ -3915,10 +3915,16 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             from . import ruling_cards
             carded: Dict[str, Dict[str, Any]] = {}
             if ruling_cards.enabled():
+                searched = len(reading)
                 card_rows, carded = ruling_cards.card_rulings(session, driver, NEO4J_DATABASE,
                                                               _case_text(facts, request), analysis, picked)
                 reading = ruling_cards.lead_with(card_rows, reading)
             ruling_rows = ruling_cards.annotate(_ruling_passages(session, reading, selected, analysis), carded)
+            if carded:
+                vlog("case_analysis_ruling_cards_reading", {
+                    "searched": searched, "card_rows": len(carded), "reading": len(reading),
+                    "kept": len(ruling_rows),
+                    "cards_kept": sum((r.get("d") or {}).get("id") in carded for r in ruling_rows)})
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
     vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "pool_fusion": pool_fusion,

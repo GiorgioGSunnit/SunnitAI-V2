@@ -55,6 +55,14 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
         elif event == "case_analysis_applicability":
             out.append(f"applicability result: {len(data.get('checked') or [])} judged, "
                        f"{len(data.get('dropped') or [])} dropped, {data.get('unchecked', 0)} unchecked")
+        elif event == "case_analysis_ruling_cards":
+            chosen = "; ".join(f"{c.get('riferimento')} ({c.get('score')}, {c.get('a_favore_di') or '-'})"
+                               for c in data.get("chosen") or []) or "none"
+            out.append(f"ruling cards: {data.get('cards')} loaded, {data.get('central')} central articles, "
+                       f"chosen: {chosen}, missing in the database {len(data.get('missing_in_db') or [])}")
+        elif event == "case_analysis_ruling_cards_reading":
+            out.append(f"ruling cards in the reading: {data.get('card_rows')} card rulings + {data.get('searched')} "
+                       f"searched, {data.get('kept')} read, {data.get('cards_kept')} of them from cards")
         elif event == "case_analysis_plan":
             removed = data.get("removed") or {}
             out.append(f"plan: {data.get('issues')} issues, {len(data.get('norme') or [])} articles, "
@@ -127,6 +135,11 @@ def main() -> None:
 
     events = []
     dg.vlog = lambda event, data=None, *a, **k: events.append((event, data, k.get("duration_ms")))
+    try:   # the ruling cards log through their own module's vlog (code from 8b76262 on)
+        import src.rag.ruling_cards as cards_module
+        cards_module.vlog = dg.vlog
+    except ImportError:
+        pass
 
     if args.file:
         from src.utils.document import extract_text_from_file
