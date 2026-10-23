@@ -41,6 +41,13 @@ logger = logging.getLogger(__name__)
 RULING_CARDS_FLAG = "RULING_CARDS_ENABLED"
 FILES_ENV = "RULING_CARDS_FILES"
 
+# Rulings of the execution of a sentence (artt. 656-678 c.p.p.: suspension of the order, incidente
+# di esecuzione, continuation in executivis, the supervision court) are about a stage no strategy
+# case of the PM's has reached: round 6 (23 Oct) cited them, as favourable, for stalking and burglary
+# defences. A card applying one of them is left out unless the case's own posture is that stage.
+_EXECUTION_ARTICLES = {f"{n} c.p.p." for n in range(656, 679)}
+_EXECUTION_POSTURE_RE = re.compile(r"esecuzion|sorveglianz", re.IGNORECASE)
+
 # Favourable cards first, then the strongest adverse one (0 to bring only favourable rulings).
 _FAVOURABLE_SLOTS, _UNFAVOURABLE_SLOTS = 2, 1
 _FAVOURABLE_FLOOR = 0.5            # a favourable card must still be on topic: half the best score
@@ -188,15 +195,22 @@ def score_card(card: Dict[str, Any], central: Dict[str, float], low_terms: str, 
     return score + (W_SIDE if favoured else 0)
 
 
+def execution_stage(card: Dict[str, Any]) -> bool:
+    """The ruling applies an article of the execution of a sentence (_EXECUTION_ARTICLES)."""
+    return bool(card["applied"] & _EXECUTION_ARTICLES)
+
+
 def rank(cards: CardStore, central: Dict[str, float], case_terms: str, side: str, party: str,
-         top: Optional[int] = None) -> List[Tuple[Dict[str, Any], float]]:
+         top: Optional[int] = None, execution: bool = False) -> List[Tuple[Dict[str, Any], float]]:
     """The scoring cards (the `top` best, else all) with their score, best first; ties broken by
-    full reference, then id."""
+    full reference, then id. Execution-stage rulings only when `execution` (the case is at that stage)."""
     low = " ".join((case_terms or "").lower().split())
     candidates = {i for article in central for i in cards.by_article.get(article, ())}
     scored = []
     for i in candidates:
         card = cards.cards[i]
+        if not execution and execution_stage(card):
+            continue
         s = score_card(card, central, low, favours_client(card, side, party), cards)
         if s > 0:
             scored.append((-s, not card["completo"], card["id"], i))
@@ -269,11 +283,15 @@ def card_rulings(session, driver, database: str, case: str, analysis: Dict[str, 
         central = central_weights(picked, _resolved_institutions(session, driver, database, analysis))
         party = f"{analysis.get('parte_assistita') or ''} {analysis.get('posizione') or ''}"
         side = client_side(analysis.get("posizione") or "")
-        best = choose(rank(cards, central, _case_terms(case, analysis), side, party), side, party)
+        frame = analysis.get("frame") or {}
+        execution = bool(_EXECUTION_POSTURE_RE.search(f"{frame.get('posture_type') or ''} "
+                                                      f"{frame.get('procedural_posture') or ''}"))
+        best = choose(rank(cards, central, _case_terms(case, analysis), side, party, execution=execution), side, party)
         ids = [card["id"] for card, _, _ in best]
         found = {row["d"]["id"]: row["d"] for row in session.run(
             "MATCH (d:Document) WHERE d.id IN $ids RETURN d", ids=ids).data() if row.get("d")} if ids else {}
         vlog("case_analysis_ruling_cards", {"cards": len(cards.cards), "central": len(central), "client_side": side,
+                                            "execution_stage_allowed": execution,
                                             "chosen": [{"riferimento": c["riferimento"], "score": round(s, 2),
                                                         "a_favore_di": c["a_favore_di"] or c["parte_favorita"],
                                                         "role": role} for c, s, role in best],

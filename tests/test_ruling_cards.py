@@ -138,6 +138,28 @@ def test_choose_by_side_favourable_first_then_one_adverse():
     assert rc.choose([], "imputato", "") == []
 
 
+def test_execution_stage_rulings_only_for_a_case_at_that_stage(tmp_path, monkeypatch):
+    # Round 6: supervision-court and suspension-of-execution rulings cited, as favourable, in a stalking defence.
+    path = tmp_path / "cards.jsonl"
+    path.write_text("\n".join(json.dumps(c) for c in [
+        _card("trial", ["572 c.p."], side="imputato"),
+        _card("execution", ["572 c.p.", "656 c.p.p."], keywords=["maltrattamenti"], side="imputato")]), encoding="utf-8")
+    monkeypatch.setenv(rc.FILES_ENV, str(path))
+    monkeypatch.setattr(rc, "_store", None)
+    monkeypatch.setattr(rc, "_signature", None)
+    cards = rc.store()
+    assert [c["id"] for c, _ in rc.rank(cards, {"572 c.p.": 1.0}, "maltrattamenti", "imputato", "")] == ["trial"]
+    assert {c["id"] for c, _ in rc.rank(cards, {"572 c.p.": 1.0}, "maltrattamenti", "imputato", "",
+                                         execution=True)} == {"trial", "execution"}
+    logged = []
+    monkeypatch.setattr(rc, "vlog", lambda event, data=None, *a, **k: logged.append((event, data)))
+    monkeypatch.setattr(rc, "_resolved_institutions", lambda *a: [("572", "c.p.")])
+    analysis = {"posizione": "condannato", "frame": {"posture_type": "", "procedural_posture":
+                                                     "Istanza al tribunale di sorveglianza dopo la condanna"}}
+    rows, _ = rc.card_rulings(_Session({"trial", "execution"}), None, "neo4j", "caso", analysis, {})
+    assert logged[-1][1]["execution_stage_allowed"] is True and {r["d"]["id"] for r in rows} == {"trial", "execution"}
+
+
 def test_a_civil_ruling_for_another_party_is_not_adverse():
     card = rc._trim(_card("x", ["2051 c.c."], branch="civile", favoured="agenzia delle entrate"))
     assert rc.role_of(card, "", "i genitori di Tizio, danneggiati") == "neutro"
