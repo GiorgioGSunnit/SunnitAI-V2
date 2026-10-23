@@ -58,7 +58,7 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
         elif event == "case_analysis_prompt_tokens":
             out.append(f"draft prompt: {data.get('total')} est. tokens, budget {data.get('budget')}, "
                        f"step {data.get('step')}, dropped to fit {data.get('dropped_for_size', '-')}, "
-                       f"left out {len(data.get('articles_left_out') or [])}")
+                       f"refilled {data.get('refilled', '-')}, left out {len(data.get('articles_left_out') or [])}")
     if isinstance(result, dict):
         out.append(f"answer: {len(result.get('draft') or '')} characters, "
                    f"{len(result.get('citations') or [])} citations")

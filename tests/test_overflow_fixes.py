@@ -131,6 +131,38 @@ def test_a_prompt_that_fits_at_the_last_step_drops_nothing(monkeypatch):
     assert logged[-1][1]["dropped_for_size"] == 0
 
 
+# --- the free room of a trimmed prompt (PM's test cases, 23 Oct) ---------------------------------
+
+def test_the_free_room_goes_back_checked_and_method_articles_first(monkeypatch):
+    # 60 unprotected articles don't fit even at 500 characters (step 3), so step 4 leaves them all
+    # out and the prompt ends far under budget: the room goes back, the applicable and method ones
+    # first although they come last in the pipeline's order.
+    logged = []
+    monkeypatch.setattr(dg, "vlog", lambda event, data=None, *a, **k: logged.append((event, data)))
+    rows = ([_article("584", "N")] + [_article(str(100 + i), "P") for i in range(50)]
+            + [_article(str(438 + i), "Q", _source=dg.METHOD_CANDIDATES_SOURCE) for i in range(3)]
+            + [_article(str(200 + i), "P") for i in range(4)]
+            + [_article(str(56 + i), "A", _applicability="applicabile") for i in range(3)])
+    articles, _, human = dg._fit_parere_prompt(SYSTEM, "Caso: art. 584 c.p.", {"questioni": []}, rows, [],
+                                               budget=6000)
+    sizes = logged[-1][1]
+    assert dg._estimate_tokens(SYSTEM) + dg._estimate_tokens(human) <= 6000 == sizes["budget"]
+    kept = set(re.findall(r"\[art\. (\d+)", articles))
+    assert sizes["step"] == 4 and 6 < sizes["refilled"] < 59
+    assert {"56", "57", "58", "438", "439", "440", "584"} <= kept           # checked, then method, first
+    assert "100" in kept and "149" not in kept and "203" not in kept        # then the rest, in order
+    assert "A" * 500 in articles and "A" * 501 not in articles              # given back short
+    assert "438 c.p." not in sizes["articles_left_out"] and "149 c.p." in sizes["articles_left_out"]
+
+
+def test_no_room_given_back_while_other_articles_are_still_in(monkeypatch):
+    logged = []
+    monkeypatch.setattr(dg, "vlog", lambda event, data=None, *a, **k: logged.append((event, data)))
+    rows = [_article("584", "N")] + [_article(str(100 + i), "P") for i in range(3)]
+    dg._fit_parere_prompt(SYSTEM, "Caso: art. 584 c.p.", {"questioni": []}, rows, [], budget=9100)
+    assert logged[-1][1]["step"] == 0 and logged[-1][1]["refilled"] == 0
+
+
 # --- the applicability check: capped, batched, short verdicts ------------------------------------
 
 FACTS = "Sempronio, agendo da solo, schiaffeggia Caio, che cade e muore. Il PM contesta l'art. 584 c.p."
@@ -175,6 +207,8 @@ def test_check_is_capped_and_batched(checker):
     assert len(sent) == dg._APPLICABILITY_MAX_CHECKED and "116 c.p." in sent and "648 c.p." not in sent
     assert "116" not in kept and "605" not in kept and "620" not in kept      # dropped where checked
     assert "648" in kept and len(kept) == 50 - 3                                # unchecked ones kept
+    verdicts = {r["_article"][0]: r.get("_applicability") for r in dg._filter_applicable_articles(FACTS, "", rows)}
+    assert verdicts["601"] == "applicabile" and verdicts["648"] is None         # the verdict travels
     batch_log = [data for event, data in logged if event == "case_analysis_applicability" and "batches" in data]
     assert batch_log[-1] == {"checked": 36, "batches": 3, "failed_batches": 0}
     assert logged[-1][1]["unchecked"] == 14

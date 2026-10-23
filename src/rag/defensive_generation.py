@@ -2560,6 +2560,19 @@ def _protection_rank(row: Dict[str, Any], named: set) -> int:
 
 
 _LAST_RESORT_CHARS = 500
+# Each article given back a trimmed prompt's free room: step 3's size for the other articles.
+_REFILL_CHARS = 500
+
+
+def _refill_order(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Left-out rows in the order a trimmed prompt's free room goes back to them: those the
+    applicability check judged applicable (or an alternative), then the method candidates of
+    the case's area and posture, then the rest; the pipeline's order within each."""
+    def priority(row: Dict[str, Any]) -> int:
+        if row.get("_applicability") in ("applicabile", "alternativa"):
+            return 0
+        return 1 if row.get("_source") == METHOD_CANDIDATES_SOURCE else 2
+    return sorted(rows, key=priority)
 
 
 def _with_text_cut(row: Dict[str, Any], chars: int) -> Dict[str, Any]:
@@ -2589,9 +2602,11 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
     until the estimated prompt fits `budget`: the ruling passages first, then
     the text of the other articles, then those articles themselves, then the
     text of protected ones (_protected_article_row), and as a last resort the
-    protected articles themselves, least protected first. The case text and
-    the instructions are never cut. A prompt that already fits is exactly the
-    one built before this existed."""
+    protected articles themselves, least protected first. When the other
+    articles were all left out, the room still free goes back to them, one at
+    a time and short (_refill_order). The case text and the instructions are
+    never cut. A prompt that already fits is exactly the one built before
+    this existed."""
     named = set(_refs_in(_case_text(facts, request)))
     questioni = analysis.get("questioni", [])
     for step, (ruling_chars, max_rulings, other_chars, kept_chars) in enumerate(_PROMPT_TRIM_STEPS):
@@ -2625,10 +2640,31 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
                                              questioni, _ARTICLE_CHARS)
             human = _parere_human(facts, analysis, articles, rulings, request, principles)
             total = _estimate_tokens(system) + _estimate_tokens(human)
+    refilled = 0
+    if not other_chars and not dropped_for_size and total < budget:
+        # Prod, 23 Oct (the PM's five test cases): from step 4 every unprotected article was
+        # left out at once -- 84 to 109 of them -- and the prompts ended at 8,481-11,461 of
+        # 13,000 tokens while 1218 c.c. (a delay without fault), 438/444 c.p.p. (the rites the
+        # user asked about) and 1158/1168/1170 c.c. sat among the left out. The free room goes
+        # back to them in _refill_order, one article at a time; one that does not fit is skipped.
+        have = {r["_article"] for r in rows if r.get("_article")}
+        for row in _refill_order([r for r in article_rows if not _protected_article_row(r, named)]):
+            if not row.get("_article") or row["_article"] in have:
+                continue
+            trial = rows + [_with_text_cut(row, _REFILL_CHARS)]
+            trial_articles = _grouped_source_block(trial, questioni, _ARTICLE_CHARS)
+            trial_human = _parere_human(facts, analysis, trial_articles, rulings, request, principles)
+            trial_total = _estimate_tokens(system) + _estimate_tokens(trial_human)
+            if trial_total > budget:
+                continue
+            rows, articles, human, total = trial, trial_articles, trial_human, trial_total
+            have.add(row["_article"])
+            refilled += 1
+        left_out = [a for a in left_out if a not in have]
     sizes = {"total": total, "budget": budget, "step": step, "instructions": _estimate_tokens(system),
              "case": _estimate_tokens(_case_text(facts, request)), "articles": _estimate_tokens(articles),
              "rulings": _estimate_tokens(rulings), "principles": _estimate_tokens(principles),
-             "dropped_for_size": dropped_for_size,
+             "dropped_for_size": dropped_for_size, "refilled": refilled,
              "articles_left_out": [f"{a[0]} {a[1]}" for a in left_out if a]}
     vlog("case_analysis_prompt_tokens", sizes)
     if step:
@@ -3441,7 +3477,15 @@ def _filter_applicable_articles(facts: str, request: str,
         "dropped": dropped,
         "unchecked": max(unchecked, 0),
     })
-    return [r for r in article_rows if r.get("_article") not in dropped_articles]
+    # The verdict travels with the rows checked and kept: a trimmed draft prompt gives its free
+    # room to those judged applicable first (_refill_order).
+    judged = {}
+    for article in to_check:
+        verdict = verdicts.get(_applicability_key(f"{article[0]} {article[1]}"))
+        if verdict and article not in dropped_articles:
+            judged[article] = str(verdict.get("verdict", "")).strip().lower()
+    return [{**r, "_applicability": judged[r["_article"]]} if r.get("_article") in judged else r
+            for r in article_rows if r.get("_article") not in dropped_articles]
 
 
 # --- Draft quality (r14, 21 Oct: held-out run after the parser fix) ------------
