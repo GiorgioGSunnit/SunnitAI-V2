@@ -36,6 +36,10 @@ def test_1434_never_matches_14340():
     ("Codice del processo amministrativo 2025", "cpa"),
     ("Legge 7 agosto 1990, n. 241 - Nuove norme in materia di procedimento amministrativo", "l241"),
     ("Legge sul Procedimento Amministrativo 2026", "l241"),
+    ("Codice dei contratti pubblici 2026", "dlgs36"), ("Codice degli Appalti 2026", "dlgs36"),
+    ("D.Lgs. 31 marzo 2023, n. 36", "dlgs36"), ("Sentenza n. 36/2023", None),
+    ("Testo unico degli enti locali 2026", "tuel"), ("TUEL 2026", "tuel"),
+    ("Decreto legislativo 18 agosto 2000, n. 267", "tuel"),
 ])
 def test_citation_documents_map_to_codes(document_name, code):
     assert ev.code_of_document(document_name) == code
@@ -88,7 +92,7 @@ def test_expected_documents_are_checked():
 
 def test_the_cases_file_is_complete():
     cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
-    ids = [c["id"] for c in cases if not c.get("extra") and not c.get("heldout")]
+    ids = [c["id"] for c in cases if not c.get("extra") and not c.get("heldout") and not c.get("set")]
     assert ids == ["sempronio", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4", "cp_short"]
     for case in cases:
         assert case["question"].strip()
@@ -102,7 +106,7 @@ def test_the_held_out_set_is_complete_and_separate_from_the_tuning_set():
     used to tune behaviour (see the module docstring and each case's own
     "expected_status")."""
     cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
-    heldout = [c for c in cases if c.get("heldout")]
+    heldout = [c for c in cases if c.get("heldout") and not c.get("set")]
     assert [c["id"] for c in heldout] == [f"h{n}" for n in range(1, 12)]
     for case in heldout:
         assert not case.get("extra")   # heldout and extra are different, non-overlapping concepts
@@ -129,7 +133,7 @@ def test_aggregate_reports_cited_rate_per_expected_article():
                 "score": {"expected": [{"expected": "art. 584 cp", "status": status_584},
                                        {"expected": "art. 581 cp", "status": status_581}]}}
     results = [run(0, "CITED", "CITED"), run(1, "CITED", "MISSING"), run(2, "CITED", "CITED")]
-    per_case, overall_avg = ev._aggregate(results, 3)
+    per_case, overall_avg, _ = ev._aggregate(results, 3)
     assert per_case["sempronio"]["counts"] == {"art. 584 cp": 3, "art. 581 cp": 2}
     assert per_case["sempronio"]["n"] == 3
     assert overall_avg == pytest.approx((3 + 2) / 3)
@@ -140,7 +144,7 @@ def test_aggregate_excludes_errored_runs_from_the_count():
         {"id": "c2", "score": {"expected": [{"expected": "art. 1490 cc", "status": "CITED"}]}},
         {"id": "c2", "error": "TimeoutError: ..."},
     ]
-    per_case, _ = ev._aggregate(results, 2)
+    per_case, _, _ = ev._aggregate(results, 2)
     assert per_case["c2"]["n"] == 1
     assert per_case["c2"]["errors"] == 1
     assert per_case["c2"]["counts"] == {"art. 1490 cc": 1}
@@ -148,10 +152,10 @@ def test_aggregate_excludes_errored_runs_from_the_count():
 
 def test_aggregate_lines_shows_counts_as_a_fraction():
     per_case = {"sempronio": {"counts": {"art. 584 cp": 3, "art. 581 cp": 2}, "n": 3, "errors": 0}}
-    lines = "\n".join(ev._aggregate_lines(per_case, 2.5, 3))
+    lines = "\n".join(ev._aggregate_lines(per_case, 2.5, 1.0, 3))
     assert "3/3  art. 584 cp" in lines
     assert "2/3  art. 581 cp" in lines
-    assert "OVERALL average CITED per case: 2.50" in lines
+    assert "OVERALL average MENTIONED per case: 1.00; average CITED per case: 2.50" in lines
 
 
 def test_aggregate_reports_average_seconds_per_case():
@@ -159,7 +163,7 @@ def test_aggregate_reports_average_seconds_per_case():
         return {"id": "sempronio", "repeat": repeat, "seconds": seconds,
                 "score": {"expected": [{"expected": "art. 584 cp", "status": "CITED"}]}}
     results = [run(0, 10.0), run(1, 20.0), run(2, 30.0)]
-    per_case, _ = ev._aggregate(results, 3)
+    per_case, _, _ = ev._aggregate(results, 3)
     assert per_case["sempronio"]["avg_seconds"] == pytest.approx(20.0)
 
 
@@ -168,7 +172,7 @@ def test_aggregate_lines_shows_average_seconds_and_an_overall_average():
         "sempronio": {"counts": {"art. 584 cp": 3}, "n": 2, "errors": 0, "avg_seconds": 10.0},
         "c2": {"counts": {"art. 1490 cc": 1}, "n": 2, "errors": 0, "avg_seconds": 30.0},
     }
-    lines = "\n".join(ev._aggregate_lines(per_case, 2.0, 3))
+    lines = "\n".join(ev._aggregate_lines(per_case, 2.0, 2.0, 3))
     assert "avg 10.0 s" in lines
     assert "avg 30.0 s" in lines
     assert "overall average 20.0 s per run" in lines
@@ -269,3 +273,111 @@ def test_heldout_only_selects_just_the_held_out_cases(monkeypatch, tmp_path):
     ev.main(["--heldout-only", "--base-url", "http://x", "--out", str(tmp_path)])
     attempted = {line.split()[1] for line in printed if line.startswith("... ")}
     assert attempted == {f"h{n}" for n in range(1, 12)}
+
+
+# --- 24 Oct: dlgs36 / tuel, MENTIONED as the primary metric, heldout2 / seen2, --set, --rescore
+
+@pytest.mark.parametrize("answer, expected", [
+    ("ai sensi dell'art. 95 del d.lgs. 36/2023", ("95", "dlgs36")),
+    ("l'art. 98 d.lgs. n. 36 del 2023", ("98", "dlgs36")),
+    ("l'art. 95 del Codice dei contratti pubblici", ("95", "dlgs36")),
+    ("l'art. 252 TUEL", ("252", "tuel")),
+    ("art. 252 del Testo unico degli enti locali", ("252", "tuel")),
+    ("art. 252 d.lgs. 267/2000", ("252", "tuel")),
+    ("art. 21 quinquies l. n. 241/1990", ("21-quinquies", "l241")),
+])
+def test_new_codes_are_recognised_in_the_answer(answer, expected):
+    assert expected in ev.mentions(answer)
+
+
+def test_mentioned_and_cited_are_scored_separately():
+    case = {"expected": [{"code": "cp", "article": "644"}, {"code": "cp", "article": "629"}]}
+    citations = [{"document_name": "Codice Penale 2026", "sections": [{"name": "629.0.0"}]}]
+    out = ev.score(case, "Il reato di usura (art. 644 c.p.) ...", citations)["expected"]
+    assert out[0] == {"expected": "art. 644 cp", "status": "NAMED-ONLY", "mentioned": True, "cited": False}
+    assert out[1] == {"expected": "art. 629 cp", "status": "CITED", "mentioned": False, "cited": True}
+
+
+def test_summary_puts_mentioned_first_and_each_set_in_its_own_section():
+    def result(case_id, mentioned, set_=None, heldout=False):
+        return {"id": case_id, "heldout": heldout, "set": set_, "seconds": 1.0,
+                "score": {"expected": [{"expected": "art. 1 cc", "status": "NAMED-ONLY", "mentioned": mentioned,
+                                        "cited": False}], "failures": [], "named_not_cited": []}}
+    results = [result("n1", True, "heldout2", True), result("n2", False, "heldout2", True), result("s1", True, "seen2")]
+    lines = "\n".join(ev._summary_lines(results))
+    assert "HELD-OUT SET 2" in lines and "SEEN, s1-s2" in lines
+    # heldout2's average is over n1, n2 only: s1 never counts in it.
+    assert "average MENTIONED per case: 0.50; average CITED per case: 0.00 (across 2 case(s))" in lines
+    assert lines.index("HELD-OUT SET 2") < lines.index("## n1") < lines.index("SEEN") < lines.index("## s1")
+
+
+def test_aggregate_counts_mentioned_per_article():
+    def run(repeat, mentioned):
+        return {"id": "n1", "repeat": repeat, "score": {"expected": [
+            {"expected": "art. 644 cp", "status": "NAMED-ONLY" if mentioned else "MISSING", "mentioned": mentioned}]}}
+    per_case, cited_avg, mentioned_avg = ev._aggregate([run(0, True), run(1, True), run(2, False)], 3)
+    assert per_case["n1"]["mentioned"] == {"art. 644 cp": 2}
+    assert mentioned_avg == pytest.approx(2 / 3) and cited_avg == 0
+
+
+def test_cases_file_has_heldout2_and_seen2():
+    cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
+    heldout2 = [c for c in cases if c.get("set") == "heldout2"]
+    seen2 = [c for c in cases if c.get("set") == "seen2"]
+    assert [c["id"] for c in heldout2] == [f"n{n}" for n in range(1, 10)]
+    assert [c["id"] for c in seen2] == ["s1", "s2"]
+    for case in heldout2:
+        assert case["heldout"] and case["expected_status"] == "draft — pending lawyer validation"
+        assert case["expected"]
+    for case in seen2:
+        assert case["seen"] and not case.get("heldout")
+    for case in heldout2 + seen2:
+        assert case["question"].strip()
+        assert all(item["code"] in ev.CODES for item in case["expected"])
+
+
+def test_set_cases_run_only_when_asked():
+    cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
+    default = {c["id"] for c in ev.select(cases)}
+    assert not default & {"s1", "n1"} and "sempronio" in default
+    assert [c["id"] for c in ev.select(cases, sets="heldout2")] == [f"n{n}" for n in range(1, 10)]
+    assert {c["id"] for c in ev.select(cases, heldout_only=True)} == {f"h{n}" for n in range(1, 12)}
+    assert [c["id"] for c in ev.select(cases, only="s1,n3")] == ["s1", "n3"]
+
+
+def test_rescore_uses_the_current_expected_lists(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    saved = {"id": "n1", "heldout": True, "set": "heldout2", "repeat": 0, "seconds": 2.0,
+             "answer": "Si configura l'usura (art. 644 c.p.).", "citations": [],
+             "score": {"expected": [], "failures": [], "named_not_cited": []}}
+    (run / "n1-r1.json").write_text(json.dumps(saved), encoding="utf-8")
+    (run / "summary.json").write_text(json.dumps({"repeat": 2, "base_url": "http://x", "results": [saved]}),
+                                      encoding="utf-8")
+    cases = [{"id": "n1", "heldout": True, "set": "heldout2", "question": "q",
+              "expected": [{"code": "cp", "article": "644"}]}]
+    ev.rescore(run, cases)
+    (out,) = [d for d in run.iterdir() if d.name.startswith("rescore-")]
+    result = json.loads((out / "summary.json").read_text(encoding="utf-8"))["results"][0]
+    assert result["score"]["expected"][0]["mentioned"] is True
+    assert "heldout2_overall_mentioned" in json.loads((out / "aggregate.json").read_text(encoding="utf-8"))
+    # the saved answer and its first score are untouched
+    assert json.loads((run / "n1-r1.json").read_text(encoding="utf-8"))["score"]["expected"] == []
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("art. 21-nonies l. 241/1990", ("21-nonies", "l241")),
+    ("art. 21 novies della l. n. 241/90", ("21-nonies", "l241")),     # legacy spelling, short year
+    ("art. 21-octies, comma 2, L. 241/1990", ("21-octies", "l241")),
+    ("art. 1785 bis c.c.", ("1785-bis", "cc")),
+    ("art. 416 bis c.p.", ("416-bis", "cp")),
+    ("art. 29 cod. proc. amm.", ("29", "cpa")),
+])
+def test_suffixes_use_the_shared_canonical_spelling(text, expected):
+    assert expected in ev.mentions(text)
+
+
+def test_a_nonies_section_is_cited_as_nonies():
+    case = {"expected": [{"code": "l241", "article": "21-nonies"}]}
+    citations = [{"document_name": "Legge sul Procedimento Amministrativo 2026", "sections": [{"name": "21-nonies.0.0"}]}]
+    assert ev.score(case, "", citations)["expected"][0]["status"] == "CITED"

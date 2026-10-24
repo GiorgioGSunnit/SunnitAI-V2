@@ -361,3 +361,52 @@ def test_hyde_human_lists_the_steps_told_plainly():
 def test_available_methods_drops_methods_some_case_lacks():
     results = {"a": {"hyde": [], "situation": []}, "b": {"hyde": []}}
     assert ed._available_methods(results, ["hyde", "situation"]) == ["hyde"]
+
+
+
+# --- Round 14: CITES_VOTE / CARDS_VOTE ------------------------------------------
+
+def test_vote_refs_map_codes_and_keep_unknown_ones_as_noise():
+    assert ed._vote_ref("584", "c.p.") == ("cp", "584")
+    assert ed._vote_ref("29", "c.p.a.") == ("cpa", "29")
+    assert ed._vote_ref("111", "Cost.") == ("Cost.", "111")
+
+
+def test_card_refs_read_applied_articles():
+    card = {"articoli_applicati": ["416-bis c.p.", "110 c.p.", "416-bis c.p.", "nonsense"]}
+    assert ed._card_refs(card) == [("cp", "416-bis"), ("cp", "110")]
+
+
+def test_ruling_sims_normalise_each_channel_and_keep_a_rulings_best_section():
+    vector = [{"doc_id": "r1", "score": 0.8}, {"doc_id": "r2", "score": 0.4}, {"doc_id": "r1", "score": 0.2}]
+    fulltext = [{"doc_id": "r2", "score": 12.0}, {"doc_id": "r3", "score": 3.0}]
+    assert ed._ruling_sims(vector, fulltext) == {"r1": 1.0, "r2": 1.0, "r3": 0.25}
+
+
+def test_vote_sums_sim_times_idf_and_rare_articles_win():
+    import math
+    idf = ed._idf_table(1000, [["c.p.", "584", 10], ["c.p.p.", "606", 900]])
+    sims = {"r1": 1.0, "r2": 0.5}
+    cites = {"r1": {("cp", "584"), ("cpp", "606")}, "r2": {("cpp", "606")}}
+    ranked = ed._vote(sims, cites, idf, math.log(1000))
+    assert ranked == [("cp", "584"), ("cpp", "606")]
+    # An article without a CITES count (a card's) weighs as if cited once.
+    assert ed._vote({"r1": 1.0}, {"r1": {("cc", "1785-bis")}}, idf, math.log(1000)) == [("cc", "1785-bis")]
+
+
+def test_hit_labels_handle_any_of_and_a_cutoff():
+    expected = [{"code": "cp", "article": "584"}, {"code": "consumo", "any_of": ["33", "36"]}]
+    ranked = [("cp", "1"), ("consumo", "36"), ("cp", "584")]
+    assert ed._hit_labels(ranked, expected) == ["584 cp", "33/36 consumo"]
+    assert ed._hit_labels(ranked, expected, 2) == ["33/36 consumo"]
+
+
+def test_load_cards_skips_errors_and_keeps_the_latest_line(tmp_path):
+    import json
+    path = tmp_path / "cards.jsonl"
+    path.write_text("\n".join(json.dumps(c) for c in [
+        {"id": "r1", "articoli_applicati": ["584 c.p."]},
+        {"id": "r2", "errore": "json"},
+        {"id": "r1", "articoli_applicati": ["589 c.p."]},
+        "not a card"]) + "\nnot json\n", encoding="utf-8")
+    assert ed._load_cards([str(path)]) == {"r1": [("cp", "589")]}

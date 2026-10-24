@@ -178,11 +178,36 @@ the same wording gap from the query side, with no index to build:
                           the situation index exists and holds situations;
                           otherwise every SITUATION method is left out of the
                           tables instead of reported as zeros.
+
+Round 14 (24 Oct), --vote: rulings -> articles, with nothing taken from the pool.
+
+  CITES_VOTE_K           the K most similar ruling Sections by the case's FACTS
+                          (vector on the raw text, and fulltext, K per channel,
+                          rulings only), grouped by ruling (best section, each
+                          channel's scores divided by its best); each ruling votes
+                          for the articles its (:Section)-[:CITES]->(:Section)
+                          edges point to (scripts/link_ruling_citations.py):
+                          score = sum over rulings of sim x log(N rulings / rulings
+                          citing the article). K = 30 and 60.
+  CARDS_VOTE_K           the same rulings; a carded ruling votes for its card's
+                          articoli_applicati (scripts/exp_ruling_cards.py, --cards
+                          or RULING_CARDS_FILES), the others for their CITES.
+
+Compared with CURRENT and FUSION_CLEAN (computed as above, its model calls cached
+in <out>/vote_cache.json, so a rerun only searches and votes), recall and noise
+@10/@k, and the number that matters: expected articles a vote finds in its top k
+that FUSION_CLEAN does not contain. Rulings are never chosen by the pool's own
+articles: that could only find what the pool already has. --include-heldout adds
+h1-h11 and n1-n9 for this measurement only, each set reported on its own.
+
+    cd /opt/chatbot && EMBEDDING_QUERY_MODE=text venv/bin/python scripts/exp_distill.py --vote \
+        --include-heldout --cards /tmp/ruling_cards_v3.jsonl --out /root/exp_vote
 """
 
 import argparse
 import json
 import logging
+import math
 import os
 import re
 import sys
@@ -633,6 +658,16 @@ def _retrieve_clean(session, text, index, k, warned, exclude_re, excluded):
     return list(dict.fromkeys(vector + fulltext))
 
 
+def _distill_clean(session, bullets, index, k, warned, exclude_re, excluded):
+    """FUSION_CLEAN's DISTILL list: each bullet and all of them joined, searched cleaned,
+    merged by hits (shared by _run_case and --vote's pool)."""
+    joined = " ".join(b["testo"] for b in bullets)
+    lists = [_retrieve_clean(session, b["testo"], index, k, warned, exclude_re, excluded) for b in bullets]
+    if joined:
+        lists.append(_retrieve_clean(session, joined, index, k, warned, exclude_re, excluded))
+    return _merge_by_hits(*lists) if lists else []
+
+
 _situation_embedder = None   # set in main(): the plain-text client build_situation_index.py embeds with
 
 
@@ -932,11 +967,7 @@ def _run_case(driver, database, case, vector_index, k, warned, situation_index="
                                                            excluded))
         latency["baseline_clean"] = time.time() - t0
         t0 = time.time()
-        clean_lists = [_retrieve_clean(session, b["testo"], vector_index, k, warned, exclude_re, excluded)
-                       for b in bullets]
-        if joined:
-            clean_lists.append(_retrieve_clean(session, joined, vector_index, k, warned, exclude_re, excluded))
-        distill_clean = _merge_by_hits(*clean_lists) if clean_lists else []
+        distill_clean = _distill_clean(session, bullets, vector_index, k, warned, exclude_re, excluded)
         latency["distill_clean_search"] = time.time() - t0
         detail["clean_excluded_documents"] = sorted(excluded)
 
@@ -1052,6 +1083,293 @@ def _run_case(driver, database, case, vector_index, k, warned, situation_index="
                 "situation_fusion_clean": _rrf(situation, fusion_clean),
                 "hyde_situation_fusion_clean": _rrf(hyde, situation, fusion_clean)} if situation is not None else {}),
             "union_candidate_count": len(union), "latency": latency, "detail": detail}
+
+
+# --- Round 14 (24 Oct): CITES_VOTE / CARDS_VOTE, --vote ------------------------
+#
+# Rulings similar to the case BY ITS FACTS (vector on the raw case text + fulltext, rulings
+# only), then the articles they cite, voted: score(article) = sum over the rulings citing it
+# of sim x IDF, IDF = log(N rulings / rulings citing it) over the (:Section)-[:CITES]->
+# (:Section) edges of scripts/link_ruling_citations.py. CARDS_VOTE: a carded ruling votes
+# for its card's articoli_applicati (scripts/exp_ruling_cards.py) instead. Rulings are never
+# chosen by the pool's articles: that would only find articles the pool already has.
+
+_VOTE_CODES = {**_ABBR_TO_EVAL_CODE, "c.p.a.": "cpa"}
+# The codes link_ruling_citations.py / the cards can link to (cited_articles' codes).
+_VOTE_REACHABLE = {"cp", "cc", "cpc", "cpp", "cpa"}
+VOTE_KS = (30, 60)
+VOTE_GROUPS = (("tuning", "TUNING (12)"), ("heldout", "HELD-OUT h1-h11"), ("heldout2", "HELD-OUT 2 n1-n9"))
+
+
+def _vote_ref(article, abbr):
+    """A CITES edge's or card's (article, "c.p.") -> (eval code, article). A code the eval has
+    no key for (Cost., c.d.s.) stays as written: its articles still count as noise."""
+    return (_VOTE_CODES.get(abbr, abbr), str(article))
+
+
+def _card_refs(card):
+    """A card's articoli_applicati ("416-bis c.p.") as vote refs, in order, once each."""
+    refs = []
+    for item in card.get("articoli_applicati") or []:
+        number, _, abbr = str(item).partition(" ")
+        if number and abbr.strip():
+            refs.append(_vote_ref(number, abbr.strip()))
+    return list(dict.fromkeys(refs))
+
+
+def _ruling_sims(vector_rows, fulltext_rows):
+    """{ruling id: similarity}: each channel's scores divided by its best, so both run 0..1
+    (a cosine and a Lucene score are not comparable), a ruling's best section over both."""
+    sims = {}
+    for rows in (vector_rows, fulltext_rows):
+        top = max((r.get("score") or 0 for r in rows), default=0)
+        if top <= 0:
+            continue
+        for r in rows:
+            if r.get("doc_id"):
+                sims[r["doc_id"]] = max(sims.get(r["doc_id"], 0.0), (r.get("score") or 0) / top)
+    return sims
+
+
+def _idf_table(n_rulings, df_rows):
+    """{ref: log(N / rulings citing it)} from [[code, article, df], ...]."""
+    return {_vote_ref(a, c): math.log(n_rulings / df) for c, a, df in df_rows if df}
+
+
+def _vote(sims, refs_by_ruling, idf, default_idf):
+    """Articles by sum over the rulings voting for them of sim x IDF, best first (ties by ref).
+    An article missing from the IDF table (a card's article no CITES edge has) counts as cited once."""
+    scores = {}
+    for ruling, sim in sims.items():
+        for ref in refs_by_ruling.get(ruling) or ():
+            scores[ref] = scores.get(ref, 0.0) + sim * idf.get(ref, default_idf)
+    return sorted((r for r in scores if scores[r] > 0), key=lambda r: (-scores[r], r))
+
+
+def _hit_labels(ranked, expected, k=None):
+    """The expected items (by label) found in ranked[:k] (the whole list when k is None)."""
+    top = set(ranked if k is None else ranked[:k])
+    labels = []
+    for e in expected:
+        articles = e.get("any_of") or [e["article"]]
+        if any((e["code"], a) in top for a in articles):
+            labels.append(f"{'/'.join(articles)} {e['code']}")
+    return labels
+
+
+def _load_cards(paths):
+    """{ruling id: card refs} from the cards' JSONL files (a later line wins: a re-carded ruling)."""
+    cards = {}
+    for path in paths:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    card = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(card, dict) and card.get("id") and not card.get("errore"):
+                    cards[card["id"]] = _card_refs(card)
+    return cards
+
+
+def _load_idf(session):
+    """(N rulings, [[code, article, rulings citing it], ...]): one pass over the CITES edges."""
+    n = session.run("MATCH (d:Document {document_type: 'interpretation'}) RETURN count(d) AS n").single()["n"]
+    rows = session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(:Section)-[r:CITES]->() "
+        "WITH r.code AS code, r.article AS article, count(DISTINCT d) AS df "
+        "RETURN code, article, df").data()
+    return n, [[r["code"], r["article"], r["df"]] for r in rows if r["code"] and r["article"]]
+
+
+def _ruling_citations(session, ruling_ids):
+    """{ruling id: {ref}} from each ruling's CITES edges."""
+    out = {}
+    for r in session.run(
+            "UNWIND $ids AS id MATCH (d:Document {id: id})-[:CONTAINS]->(:Section)-[r:CITES]->() "
+            "RETURN DISTINCT d.id AS ruling, r.code AS code, r.article AS article", ids=ruling_ids).data():
+        if r["code"] and r["article"]:
+            out.setdefault(r["ruling"], set()).add(_vote_ref(r["article"], r["code"]))
+    return out
+
+
+def _pool_parts(driver, database, case, vector_index, k, warned, exclude_re):
+    """What FUSION_CLEAN is made of, for one case: CURRENT (the case analysis and selection)
+    and the cleaned BASELINE and DISTILL searches -- the model calls --vote caches."""
+    text = case["question"]
+    errors = []
+    with driver.session(database=database) as session:
+        try:
+            bullets = _distill_bullets(text)
+        except Exception as exc:
+            errors.append(f"distill: {exc}")
+            bullets = []
+        excluded = set()
+        baseline_clean = _merge_best_rank(*_clean_searches(session, text, vector_index, k, warned, exclude_re,
+                                                           excluded))
+        distill_clean = _distill_clean(session, bullets, vector_index, k, warned, exclude_re, excluded)
+        try:
+            current, _ = _run_current(session, driver, database, text)
+        except Exception as exc:
+            errors.append(f"current: {exc}")
+            current = []
+    return {"question": text, "k": k, "current": current, "baseline_clean": baseline_clean,
+            "distill_clean": distill_clean, "errors": errors}
+
+
+def _vote_case(driver, database, case, parts, vector_index, warned, idf, default_idf, cards):
+    """CURRENT, FUSION_CLEAN (from the cached parts) and the votes at each K, for one case."""
+    text, kmax = case["question"], max(VOTE_KS)
+    with driver.session(database=database) as session:
+        vector = _vector_search(session, text, vector_index, kmax, warned, _RULING_TYPES, limit=kmax)
+        fulltext = _fulltext_search(session, text, kmax, _RULING_TYPES, limit=kmax)
+        cites = _ruling_citations(session, list(dict.fromkeys(r["doc_id"] for r in vector + fulltext
+                                                              if r.get("doc_id"))))
+    pool = [[tuple(r) for r in parts[key]] for key in ("current", "baseline_clean", "distill_clean")]
+    out = {"current": pool[0], "fusion_clean": _merge_by_hits(*pool), "rulings": {}, "carded": {}}
+    for k in VOTE_KS:
+        sims = _ruling_sims(vector[:k], fulltext[:k])
+        out[f"cites_vote_{k}"] = _vote(sims, cites, idf, default_idf)
+        out["rulings"][k], out["carded"][k] = len(sims), sum(r in cards for r in sims)
+        if cards:
+            out[f"cards_vote_{k}"] = _vote(sims, {r: cards.get(r, cites.get(r, ())) for r in sims}, idf, default_idf)
+    return out
+
+
+def _vote_group(case):
+    return case.get("set") or ("heldout" if case.get("heldout") else "tuning")
+
+
+def _vote_report(results, cases, methods, k):
+    lines = []
+    votes = [m for m in methods if "_vote_" in m]
+    for group, title in VOTE_GROUPS:
+        group_cases = [c for c in cases if _vote_group(c) == group]
+        if not group_cases:
+            continue
+        expected_n = sum(len(c["expected"]) for c in group_cases)
+        reachable = sum(e["code"] in _VOTE_REACHABLE for c in group_cases for e in c["expected"])
+        lines += ["", "=" * 78, f"{title}: {len(group_cases)} cases, {expected_n} expected articles "
+                  f"({reachable} in a code the CITES edges/cards can reach)", "=" * 78,
+                  f"{'method':<18s}{'recall@10':<12s}{'recall@' + str(k):<12s}{'noise@10':<10s}{'noise@' + str(k):<10s}"]
+        for m in methods:
+            f10 = fk = n10 = nk = 0
+            for c in group_cases:
+                f10 += _recall(results[c["id"]][m], c["expected"], 10)[0]
+                fk += _recall(results[c["id"]][m], c["expected"], k)[0]
+                n10 += _noise(results[c["id"]][m], c["expected"], 10)
+                nk += _noise(results[c["id"]][m], c["expected"], k)
+            lines.append(f"{m:<18s}{f'{f10}/{expected_n}':<12s}{f'{fk}/{expected_n}':<12s}{n10:<10d}{nk:<10d}")
+        lines += ["", f"Expected articles a vote finds in its top {k} that FUSION_CLEAN does not contain "
+                  f"(at all / in its top {k}):"]
+        totals = {m: [0, 0] for m in votes}
+        for c in group_cases:
+            r = results[c["id"]]
+            pool_all, pool_k = set(_hit_labels(r["fusion_clean"], c["expected"])), \
+                set(_hit_labels(r["fusion_clean"], c["expected"], k))
+            cells = []
+            for m in votes:
+                found = _hit_labels(r[m], c["expected"], k)
+                new_all = [x for x in found if x not in pool_all]
+                new_k = [x for x in found if x not in pool_k]
+                totals[m][0] += len(new_all)
+                totals[m][1] += len(new_k)
+                cells.append(f"{m}: {len(new_all)}/{len(new_k)}" + (f" {new_all or new_k}" if new_k else ""))
+            lines.append(f"  {c['id']:<18s}rulings {r['rulings'][VOTE_KS[0]]}/{r['rulings'][VOTE_KS[-1]]} "
+                         f"(carded {r['carded'][VOTE_KS[0]]}/{r['carded'][VOTE_KS[-1]]})  " + "  ".join(cells))
+        lines.append("  TOTAL  " + "  ".join(f"{m}: {a}/{b}" for m, (a, b) in totals.items()))
+    return lines
+
+
+def _vote_main(args, exclude_re):
+    """--vote: FUSION_CLEAN's parts from the cache (computed, with their model calls, only for
+    cases not cached), the votes fresh every run (no model call)."""
+    all_cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]
+    by_id = {c["id"]: c for c in all_cases}
+    cases = [by_id[cid] for cid in _CARRIED_OVER if cid in by_id]
+    if args.include_heldout:   # measurement only: held-out cases never tune anything
+        cases += [c for c in all_cases if c.get("heldout") and c.get("expected")]
+    if args.only:
+        wanted = {c.strip() for c in args.only.split(",")}
+        cases = [c for c in cases if c["id"] in wanted]
+    if not cases:
+        sys.exit("no cases selected")
+
+    from src.rag.main import NEO4J_DATABASE, driver
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = Path(args.vote_cache or out_dir / "vote_cache.json")
+    cache = json.loads(cache_path.read_text(encoding="utf-8")) if cache_path.exists() else {}
+
+    def save():
+        cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+
+    if "_idf" not in cache or args.refresh_idf:
+        t0 = time.time()
+        with driver.session(database=NEO4J_DATABASE) as session:
+            n, df_rows = _load_idf(session)
+        cache["_idf"] = {"n": n, "df": df_rows}
+        save()
+        print(f"IDF: {len(df_rows):,} cited articles over {n:,} rulings ({time.time() - t0:.0f}s)", flush=True)
+    n_rulings = cache["_idf"]["n"]
+    idf, default_idf = _idf_table(n_rulings, cache["_idf"]["df"]), math.log(max(n_rulings, 2))
+
+    card_paths = [p for p in (args.cards or os.getenv("RULING_CARDS_FILES", "")).split(",") if p.strip()]
+    missing = [p for p in card_paths if not os.path.isfile(p)]
+    cards = _load_cards([p for p in card_paths if p not in missing])
+    print(f"cards: {len(cards):,} from {', '.join(card_paths) or '(none given)'}"
+          + (f"; NOT FOUND: {', '.join(missing)}" if missing else "")
+          + ("" if cards else " -- CARDS_VOTE left out"), flush=True)
+
+    warned = set()
+    todo = [c for c in cases if args.refresh_cache or (cache.get(c["id"]) or {}).get("question") != c["question"]
+            or cache[c["id"]].get("k") != args.k or cache[c["id"]].get("errors")]
+    if todo:
+        print(f"FUSION_CLEAN parts for {len(todo)} case(s), with model calls ({args.workers} at a time) ...",
+              flush=True)
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(_pool_parts, driver, NEO4J_DATABASE, c, args.vector_index, args.k, warned,
+                                   exclude_re): c for c in todo}
+            for future in as_completed(futures):
+                case = futures[future]
+                cache[case["id"]] = future.result()
+                save()
+                errors = cache[case["id"]]["errors"]
+                print(f"... {case['id']} pool done" + (f" (errors, not reused next run: {errors})" if errors else ""),
+                      flush=True)
+
+    t0 = time.time()
+    results = {}
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(_vote_case, driver, NEO4J_DATABASE, c, cache[c["id"]], args.vector_index, warned,
+                               idf, default_idf, cards): c for c in cases}
+        for future in as_completed(futures):
+            results[futures[future]["id"]] = future.result()
+    print(f"votes for {len(cases)} case(s) in {time.time() - t0:.0f}s", flush=True)
+
+    methods = ["current", "fusion_clean"] + [f"cites_vote_{k}" for k in VOTE_KS] \
+        + ([f"cards_vote_{k}" for k in VOTE_KS] if cards else [])
+    lines = [f"CITES_VOTE / CARDS_VOTE vs FUSION_CLEAN -- recall and noise @10/@{args.k}, code-aware; "
+             f"rulings by facts, K = {'/'.join(map(str, VOTE_KS))} sections per channel; "
+             f"IDF over {n_rulings:,} rulings; {len(cards):,} cards. Per case: rulings found at each K "
+             f"(carded), then new expected articles at all / in the pool's top {args.k}."]
+    lines += _vote_report(results, cases, methods, args.k)
+    lines += ["", "Top 10 per method:"]
+    for c in cases:
+        labels = ", ".join(f"{'/'.join(e.get('any_of') or [e['article']])} {e['code']}" for e in c["expected"])
+        lines.append(f"## {c['id']}  expected: {labels}")
+        for m in methods:
+            lines.append(f"   {m:<16s} {[f'{a} {code}' for code, a in results[c['id']][m][:10]]}")
+    (out_dir / "vote_table.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    (out_dir / "vote_results.json").write_text(json.dumps(
+        {"k": args.k, "ks": VOTE_KS, "cards": len(cards), "n_rulings": n_rulings,
+         "cases": {c["id"]: c["expected"] for c in cases},
+         "results": results},
+        ensure_ascii=False, indent=2), encoding="utf-8")
+    print("\n".join(lines))
+    print(f"\nWrote {out_dir / 'vote_table.txt'}, {out_dir / 'vote_results.json'}; cache {cache_path}. "
+          "Nothing was written to the database.")
+    return 0
 
 
 # --- Reporting -------------------------------------------------------------
@@ -1258,6 +1576,14 @@ def main():
     parser.add_argument("--out", default="exp_distill_runs")
     parser.add_argument("--situation-index", default="situation_embeddings_v2")
     parser.add_argument("--exclude-docs", help="extra regex: documents whose name matches it are cut from FUSION_CLEAN")
+    parser.add_argument("--vote", action="store_true",
+                        help="only CITES_VOTE / CARDS_VOTE against CURRENT and FUSION_CLEAN (round 14)")
+    parser.add_argument("--include-heldout", action="store_true",
+                        help="--vote: also h1-h11 and n1-n9, measured only, reported per set")
+    parser.add_argument("--cards", help="--vote: comma-separated card JSONL files (default: $RULING_CARDS_FILES)")
+    parser.add_argument("--vote-cache", help="--vote: the cache of FUSION_CLEAN's parts (default <out>/vote_cache.json)")
+    parser.add_argument("--refresh-cache", action="store_true", help="--vote: recompute every case's pool parts")
+    parser.add_argument("--refresh-idf", action="store_true", help="--vote: count the CITES edges again")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s")
@@ -1273,6 +1599,8 @@ def main():
     _situation_embedder = plain_text_embedder()
     exclude_re = (re.compile(_NOT_A_LAW_RE.pattern + "|" + args.exclude_docs, re.IGNORECASE) if args.exclude_docs
                   else _NOT_A_LAW_RE)
+    if args.vote:
+        return _vote_main(args, exclude_re)
 
     carried = {c["id"]: c for c in json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]}
     cases = [carried[cid] for cid in _CARRIED_OVER if cid in carried]
