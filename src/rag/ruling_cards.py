@@ -48,6 +48,14 @@ FILES_ENV = "RULING_CARDS_FILES"
 _EXECUTION_ARTICLES = {f"{n} c.p.p." for n in range(656, 679)}
 _EXECUTION_POSTURE_RE = re.compile(r"esecuzion|sorveglianz", re.IGNORECASE)
 
+# An article applied by more than this share of the cards (and more than _GENERIC_MIN of them)
+# is generic. Round 7 (24 Oct, all 8,936 criminal cards): with 45-65 central articles, mostly the
+# model's broad pool, a ruling on the weapons of mafia associations ranked as favourable for a
+# stalking defence. A card now needs an anchor: an article it applies that is not generic and is
+# central to the case, named in it or resolved from its issues; or in the model's pool, with one
+# of the card's keyword phrases also found in the case.
+_GENERIC_SHARE, _GENERIC_MIN = 0.02, 50
+
 # Favourable cards first, then the strongest adverse one (0 to bring only favourable rulings).
 _FAVOURABLE_SLOTS, _UNFAVOURABLE_SLOTS = 2, 1
 _FAVOURABLE_FLOOR = 0.5            # a favourable card must still be on topic: half the best score
@@ -89,7 +97,11 @@ class CardStore:
             for article in c["applied"] | c["cited"]:
                 self.by_article.setdefault(article, []).append(i)
         n = max(len(cards), 2)
-        self.article_rarity = _rarity(Counter(a for c in cards for a in c["applied"]), n)
+        applied = Counter(a for c in cards for a in c["applied"])
+        self.article_rarity = _rarity(applied, n)
+        # Articles too common to say what a ruling is about (24 Oct, 8,936 criminal cards: 606 c.p.p.
+        # in 12%, 133 c.p. 7%, 81 c.p. 5%, 416-bis 3%): never an anchor (anchors()).
+        self.generic = {a for a, k in applied.items() if k > max(_GENERIC_SHARE * n, _GENERIC_MIN)}
         scale = math.log(n)
         self.keyword_rarity = {k: v / scale for k, v in
                                _rarity(Counter(k for c in cards for k in set(c["keywords"])), n).items()}
@@ -180,15 +192,26 @@ def _hit(keyword: str, low: str) -> bool:
     return bool(stems) and all(s in low for s in stems)
 
 
+def anchors(card: Dict[str, Any], central: Dict[str, float], low_terms: str, cards: CardStore) -> List[str]:
+    """The non-generic central articles the card applies that tie it to the case: named in the
+    case or resolved from its issues (CENTRAL); from the model's pool (CHOSEN) only when one of
+    the card's keyword phrases is also found in the case."""
+    specific = [a for a in card["applied"] if a in central and a not in cards.generic]
+    strong = [a for a in specific if central[a] >= CENTRAL]
+    if strong:
+        return sorted(strong)
+    return sorted(specific) if specific and any(_hit(k, low_terms) for k in card["keywords"]) else []
+
+
 def score_card(card: Dict[str, Any], central: Dict[str, float], low_terms: str, favoured: bool,
                cards: CardStore) -> float:
     """W_ARTICLE x weight x rarity per central article the card applies (x CITED_ONLY when the
     ruling only cites it), W_KEYWORD x rarity per keyword phrase found in the case, W_SIDE when
-    it favours the client; 0 when it shares no central article."""
+    it favours the client; 0 without an anchor (anchors())."""
+    if not anchors(card, central, low_terms, cards):
+        return 0.0
     shared = [a for a in card["applied"] if a in central]
     cited_only = [a for a in card["cited"] - card["applied"] if a in central]
-    if not shared and not cited_only:
-        return 0.0
     score = W_ARTICLE * sum(central[a] * cards.article_rarity.get(a, 1.0) for a in shared)
     score += W_ARTICLE * CITED_ONLY * sum(central[a] * cards.article_rarity.get(a, 1.0) for a in cited_only)
     score += W_KEYWORD * sum(cards.keyword_rarity.get(k, 1.0) for k in card["keywords"] if _hit(k, low_terms))
@@ -286,7 +309,9 @@ def card_rulings(session, driver, database: str, case: str, analysis: Dict[str, 
         frame = analysis.get("frame") or {}
         execution = bool(_EXECUTION_POSTURE_RE.search(f"{frame.get('posture_type') or ''} "
                                                       f"{frame.get('procedural_posture') or ''}"))
-        best = choose(rank(cards, central, _case_terms(case, analysis), side, party, execution=execution), side, party)
+        terms = _case_terms(case, analysis)
+        best = choose(rank(cards, central, terms, side, party, execution=execution), side, party)
+        low = " ".join(terms.lower().split())
         ids = [card["id"] for card, _, _ in best]
         found = {row["d"]["id"]: row["d"] for row in session.run(
             "MATCH (d:Document) WHERE d.id IN $ids RETURN d", ids=ids).data() if row.get("d")} if ids else {}
@@ -294,7 +319,8 @@ def card_rulings(session, driver, database: str, case: str, analysis: Dict[str, 
                                             "execution_stage_allowed": execution,
                                             "chosen": [{"riferimento": c["riferimento"], "score": round(s, 2),
                                                         "a_favore_di": c["a_favore_di"] or c["parte_favorita"],
-                                                        "role": role} for c, s, role in best],
+                                                        "role": role, "anchors": anchors(c, central, low, cards)}
+                                                       for c, s, role in best],
                                             "missing_in_db": [i for i in ids if i not in found]})
         return ([{"d": found[i]} for i in ids if i in found],
                 {c["id"]: {**c, "_role": role} for c, _, role in best if c["id"] in found})

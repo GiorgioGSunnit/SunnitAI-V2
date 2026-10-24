@@ -390,6 +390,8 @@ def main() -> None:
     parser.add_argument("--show", action="store_true", help="list each case's rulings, before and after (no text)")
     parser.add_argument("--issue-route", action="store_true",
                         help="also rank by the case's issues by name (off by default: no gain on the tuning cases)")
+    parser.add_argument("--production", action="store_true",
+                        help="AFTER = the chatbot's own choice (src/rag/ruling_cards.py: anchors, side, phase)")
     args = parser.parse_args()
 
     links = {r["id"]: r for r in (json.loads(line) for line in open(args.links, encoding="utf-8"))}
@@ -410,6 +412,9 @@ def main() -> None:
           + (f", pipeline outputs from {args.cache}" if args.use_cache else ""), file=sys.stderr)
 
     rarities = card_rarities(list(cards.values()))
+    if args.production:
+        from src.rag import ruling_cards as rc
+        store = rc.CardStore([rc._trim(c) for c in cards.values()])
     rows, shown = [], []
 
     no_issues = [c["id"] for c in cases if args.use_cache and not cache[c["id"]].get("issues")]
@@ -420,8 +425,12 @@ def main() -> None:
     def one_case(case, run):
         expected = expected_keys(case)
         issues = issues_of(run) if args.issue_route else []
-        after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"], rarities=rarities,
-                               issues=issues)
+        if args.production:
+            ranked = rc.rank(store, run["central"], run["terms"], run["side"], "")
+            after_ids = [c["id"] for c, _, _ in rc.choose(ranked, run["side"], "")]
+        else:
+            after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"],
+                                   rarities=rarities, issues=issues)
         rows.append((case["id"], run["side"], measure(run["before_ids"], links, cards, expected, run["side"]),
                      measure(after_ids, links, cards, expected, run["side"]),
                      available_on_topic(cards, links, expected)))

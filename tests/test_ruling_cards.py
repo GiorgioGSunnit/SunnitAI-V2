@@ -64,10 +64,25 @@ def test_rank_by_central_articles_keywords_and_the_clients_side(cards_file):
     central = {"584 c.p.": 1.0}
     case = "Sempronio dà uno schiaffo al volto a Caio, che cade: caduta mortale."
     best = rc.rank(cards, central, case, side="imputato", party="Sempronio, imputato")
-    assert [c["id"] for c, _ in best] == ["1", "2", "3"]                  # applied + keywords + side first
-    scores = [s for _, s in best]
-    assert scores[0] > scores[1] > scores[2] > 0                          # cited only: the weakest
+    assert [c["id"] for c, _ in best] == ["1", "2"]          # applied + keywords + side first; 3 only cites 584
+    assert best[0][1] > best[1][1] > 0
     assert rc.rank(cards, {"999 c.p.": 1.0}, case, "imputato", "") == []
+
+
+def test_a_card_needs_a_specific_central_anchor(cards_file, monkeypatch):
+    cards = rc.store()
+    assert rc.anchors(cards.cards[0], {"584 c.p.": 1.0}, "", cards) == ["584 c.p."]      # named or resolved
+    assert rc.anchors(cards.cards[0], {"584 c.p.": 0.5}, "nulla in comune", cards) == []  # pool only, no keyword
+    assert rc.anchors(cards.cards[0], {"584 c.p.": 0.5}, "uno schiaffo al volto", cards) == ["584 c.p."]
+    monkeypatch.setattr(cards, "generic", {"584 c.p."})                                   # too common to anchor
+    assert rc.anchors(cards.cards[0], {"584 c.p.": 1.0}, "schiaffo al volto", cards) == []
+    assert rc.rank(cards, {"584 c.p.": 1.0}, "schiaffo al volto", "imputato", "") == []
+
+
+def test_generic_articles_are_the_very_common_ones():
+    many = [rc._trim(_card(str(i), ["606 c.p.p."] + (["584 c.p."] if i < 60 else []))) for i in range(3000)]
+    store = rc.CardStore(many)
+    assert store.generic == {"606 c.p.p."}               # 3000 of 3000; 584 in 60 = 2%, not above max(60, 50)
 
 
 def test_side_of_a_criminal_and_of_a_civil_card(cards_file):
