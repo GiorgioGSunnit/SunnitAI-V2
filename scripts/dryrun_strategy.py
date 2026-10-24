@@ -87,6 +87,8 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
             else:
                 out.append(f"vote ({data.get('mode')}, K {data.get('k')}): {data.get('rulings')} rulings, "
                            f"{data.get('carded')} carded{took}; top: {', '.join(data.get('top') or []) or '-'}")
+                for reason, refs in (data.get("dropped") or {}).items():
+                    out.append(f"vote dropped ({reason}): {', '.join(refs)}")
         elif event == "case_pool_vote_cut":
             out.append(f"vote in the pool: added {', '.join(data.get('added') or []) or '-'}; "
                        f"tagged _vote {', '.join(data.get('tagged') or []) or '-'}")
@@ -135,7 +137,7 @@ def saved_run(code: str, request: str, status: str, elapsed: float, lines: list,
     result = result if isinstance(result, dict) else {}
     return {"code": code, "request": request, "status": status, "seconds": round(elapsed, 1),
             "report": lines, "events": [{"event": e, "data": d, "duration_ms": ms} for e, d, ms in events],
-            "draft": result.get("draft"), "citations": result.get("citations")}
+            "draft": result.get("draft"), "answer": result.get("draft"), "citations": result.get("citations")}
 
 
 def _document_text(document_id: str) -> str:

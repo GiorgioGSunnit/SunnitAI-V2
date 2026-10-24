@@ -17,6 +17,12 @@ at similar noise. The cards' applied articles voted about as the citations did.
      and the vote's merged by weighted reciprocal rank before the cap. scripts/vote_pool_combine.py
      measures both offline from exp_distill's vote_results.json.
 
+Before scoring (2c dry run, 24 Oct: the top 15 carried 360/112/115 c.p.c., 606/611 c.p.p., 2697 c.c.,
+111 Cost., and c.p.c. articles in a criminal case, all judged "applicable"), each ruling's votes are
+filtered (filter_refs): a main code outside the case's areas (criminal c.p./c.p.p., administrative
+c.p.a., any other area c.c./c.p.c.) is dropped unless the user's text names it; Cassation-procedure
+boilerplate (BOILERPLATE) is dropped unless the case is an appeal to the Cassation.
+
 The voted articles that make the cut are tagged _vote: the applicability check still judges them;
 the draft prompt keeps them like multi-signal ones; the plan is told to weigh them and its check
 never removes them (plan_then_write.py).
@@ -31,6 +37,7 @@ import json
 import logging
 import math
 import os
+import re
 import threading
 import time
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
@@ -52,6 +59,80 @@ _OVERFETCH = 5   # the indexes are queried for K x this, so K rulings' sections 
 
 def enabled() -> bool:
     return feature_flags.enabled(VOTE_POOL_FLAG)
+
+
+# --- pure: which votes count for the case --------------------------------------------------------
+
+# The main codes, by the case frame's areas (method_candidates.AREA_ARTICLES' keys); any area not
+# listed is civil. A code outside these (Cost., c.d.s.) is never dropped for its area.
+AREA_CODES = {"penale": {"c.p.", "c.p.p."}, "amministrativo": {"c.p.a."}}
+CIVIL_CODES = {"c.c.", "c.p.c."}
+MAIN_CODES = {"c.p.", "c.p.p.", "c.c.", "c.p.c.", "c.p.a."}
+# What a Cassation ruling cites for its own procedure, not for the case's law.
+BOILERPLATE = {(n, "c.p.c.") for n in ("360", "366", "369", "380-bis", "391")} \
+    | {(n, "c.p.p.") for n in ("606", "610", "611", "616")} | {("2697", "c.c."), ("2909", "c.c."), ("111", "Cost.")}
+# The frame's postures of a case already at the Cassation (defensive_generation._POSTURE_TYPES).
+CASSATION_POSTURES = {"sentenza_civile_appello", "sentenza_penale_appello"}
+# A code the user's text names: with or without dots ("art. 584 cp"), or in full.
+_NAMED_CODE_RES = {
+    "c.p.p.": re.compile(r"\bc\.?\s?p\.?\s?p\b|codice di procedura penale|cod\.\s*proc\.\s*pen", re.IGNORECASE),
+    "c.p.c.": re.compile(r"\bc\.?\s?p\.?\s?c\b|codice di procedura civile|cod\.\s*proc\.\s*civ", re.IGNORECASE),
+    "c.p.a.": re.compile(r"\bc\.?\s?p\.?\s?a\b|codice del processo amministrativo|cod\.\s*proc\.\s*amm",
+                         re.IGNORECASE),
+    "c.p.": re.compile(r"\bc\.?\s?p\b(?!\.?\s?[cpa]\b)|codice penale|cod\.\s*pen\b", re.IGNORECASE),
+    "c.c.": re.compile(r"\bc\.?\s?c\b(?!\.?\s?[p]\b)|codice civile|cod\.\s*civ\b", re.IGNORECASE),
+}
+
+
+def named_codes(text: str) -> set:
+    """The main codes the user's text names."""
+    return {code for code, pattern in _NAMED_CODE_RES.items() if pattern.search(text or "")}
+
+
+def case_areas(analysis: Optional[Dict[str, Any]]) -> List[str]:
+    """The case frame's areas, else the analysis' own area ("penale", "civile" ...); [] when unknown."""
+    from . import method_candidates
+    analysis = analysis or {}
+    area = str(analysis.get("area") or "").strip().lower()
+    return method_candidates.areas_for((analysis.get("frame") or {}).get("areas") or [], area) or ([area] if area else [])
+
+
+def allowed_codes(areas: Iterable[str], named: Iterable[str]) -> Optional[set]:
+    """The main codes a vote may name for these areas, plus those the user named; None (no
+    filter) when the areas are unknown."""
+    areas = list(areas)
+    if not areas:
+        return None
+    codes = set(named)
+    for area in areas:
+        codes |= AREA_CODES.get(area, CIVIL_CODES)
+    return codes
+
+
+def drop_reason(ref: tuple, allowed: Optional[set], posture: str) -> Optional[str]:
+    """Why a voted (article, code) does not count for the case, or None."""
+    if ref in BOILERPLATE and posture not in CASSATION_POSTURES:
+        return "boilerplate"
+    if allowed is not None and ref[1] in MAIN_CODES and ref[1] not in allowed:
+        return "other_area"
+    return None
+
+
+def filter_refs(refs_by_ruling: Dict[str, Iterable[tuple]], areas: Iterable[str], posture: str,
+                text: str) -> Tuple[Dict[str, List[tuple]], Dict[str, List[tuple]]]:
+    """({ruling: the refs that count}, {reason: the refs dropped, once each})."""
+    allowed = allowed_codes(areas, named_codes(text))
+    kept: Dict[str, List[tuple]] = {}
+    dropped: Dict[str, List[tuple]] = {}
+    for ruling, refs in refs_by_ruling.items():
+        kept[ruling] = []
+        for ref in refs:
+            reason = drop_reason(ref, allowed, posture or "")
+            if reason is None:
+                kept[ruling].append(ref)
+            elif ref not in dropped.setdefault(reason, []):
+                dropped[reason].append(ref)
+    return kept, dropped
 
 
 # --- pure: the vote and how it joins the pool (scripts/vote_pool_combine.py uses these too) --------
@@ -257,9 +338,10 @@ def _citations(session, ruling_ids: List[str]) -> Dict[str, set]:
     return out
 
 
-def ruling_vote(session, driver, database: str, case_text: str, index: str) -> List[tuple]:
-    """The case's voted articles [(article, code)], best first; [] when the counts are not ready
-    or on any failure."""
+def ruling_vote(session, driver, database: str, case_text: str, index: str,
+                analysis: Optional[Dict[str, Any]] = None) -> List[tuple]:
+    """The case's voted articles [(article, code)], best first, without other areas' codes and
+    Cassation boilerplate (filter_refs); [] when the counts are not ready or on any failure."""
     t0 = time.time()
     info: Dict[str, Any] = {"mode": ":".join(str(p) for p in mode())}
     try:
@@ -273,10 +355,15 @@ def ruling_vote(session, driver, database: str, case_text: str, index: str) -> L
         sims = ruling_sims(vector, fulltext)
         cites = _citations(session, list(sims))
         cards = _card_refs()
-        votes = {r: cards[r] if r in cards else cites.get(r, ()) for r in sims}
+        areas = case_areas(analysis)
+        posture = str(((analysis or {}).get("frame") or {}).get("posture_type") or "")
+        votes, dropped = filter_refs({r: cards[r] if r in cards else cites.get(r, ()) for r in sims},
+                                     areas, posture, case_text)
         scores = vote_scores(sims, votes, idf, default_idf)
         ranked = sorted((r for r in scores if scores[r] > 0), key=lambda r: (-scores[r], r))
         info.update(k=k, rulings=len(sims), carded=sum(r in cards for r in sims), cited=len(cites),
+                    areas=areas, posture=posture,
+                    dropped={reason: [f"{a} {c}" for a, c in refs[:20]] for reason, refs in dropped.items()},
                     top=[f"{a} {c} {scores[(a, c)]:.2f}" for a, c in ranked[:15]])
         return ranked
     except Exception as exc:

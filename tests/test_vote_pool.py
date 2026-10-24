@@ -113,3 +113,45 @@ def test_the_vote_never_breaks_the_pool(fresh):
     fresh.setattr(vp, "_similar_rulings", lambda *a: (_ for _ in ()).throw(RuntimeError("index down")))
     fresh.setattr(vp, "vlog", lambda *a, **k: None)
     assert vp.ruling_vote(object(), object(), "db", "fatti", "idx") == []
+
+
+# --- the filter: other areas' codes and Cassation boilerplate (2c dry run, 24 Oct) -------------------
+
+@pytest.mark.parametrize("text, codes", [
+    ("Il PM contesta a Sempronio l'art 584 cp.", {"c.p."}),
+    ("ai sensi dell'art. 2051 c.c. e dell'art. 696-bis c.p.c.", {"c.c.", "c.p.c."}),
+    ("il codice di procedura penale prevede", {"c.p.p."}),
+    ("ricorso ex art. 29 c.p.a.", {"c.p.a."}),
+    ("Tizio cade dalle scale", set()),
+])
+def test_named_codes(text, codes):
+    assert vp.named_codes(text) == codes
+
+
+def test_case_areas_from_the_frame_else_the_analysis():
+    assert vp.case_areas({"frame": {"areas": ["penale", "responsabilita_civile"]}, "area": "penale"}) == \
+        ["penale", "responsabilita_civile"]
+    assert vp.case_areas({"area": "civile"}) == ["civile"]
+    assert vp.case_areas({}) == [] and vp.case_areas(None) == []
+
+
+def test_the_filter_drops_other_areas_and_boilerplate():
+    votes = {"r1": [("584", "c.p."), ("360", "c.p.c."), ("2043", "c.c."), ("606", "c.p.p."), ("42", "Cost."),
+                    ("111", "Cost.")]}
+    kept, dropped = vp.filter_refs(votes, ["penale"], "giudizio_penale_primo_grado", "Tizio colpisce Caio")
+    assert kept == {"r1": [("584", "c.p."), ("42", "Cost.")]}
+    assert set(dropped["boilerplate"]) == {("360", "c.p.c."), ("606", "c.p.p."), ("111", "Cost.")}
+    assert dropped["other_area"] == [("2043", "c.c.")]
+
+
+def test_the_filter_keeps_a_named_code_and_boilerplate_at_the_cassation():
+    votes = {"r1": [("2043", "c.c."), ("606", "c.p.p."), ("224", "c.p.")]}
+    kept, _ = vp.filter_refs(votes, ["penale"], "sentenza_penale_appello", "danno ex art. 2043 c.c.")
+    assert kept == {"r1": [("2043", "c.c."), ("606", "c.p.p."), ("224", "c.p.")]}
+    kept, _ = vp.filter_refs(votes, ["responsabilita_civile"], "precontenzioso", "Tizio cade")
+    assert kept == {"r1": [("2043", "c.c.")]}     # 606 c.p.p. boilerplate, 224 c.p. another area
+
+
+def test_no_known_area_drops_only_boilerplate():
+    kept, _ = vp.filter_refs({"r1": [("2043", "c.c."), ("584", "c.p."), ("2697", "c.c.")]}, [], "", "")
+    assert kept == {"r1": [("2043", "c.c."), ("584", "c.p.")]}

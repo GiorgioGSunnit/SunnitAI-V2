@@ -9,6 +9,14 @@ live code's own functions (src/rag/vote_pool.combine):
   append:4, append:6, append:8  FUSION_CLEAN's top 16 (the live cap, _FUSION_POOL_CAP), then the first
                                 N voted articles not among them, then the rest of FUSION_CLEAN.
 
+The vote is filtered first as the live pool filters it (vote_pool.filter_refs: main codes outside
+the case's areas unless the user names them, Cassation boilerplate unless the case is at the
+Cassation); --no-filter skips it. The case's areas and posture come from vote_results.json when
+exp_distill saved them (runs from 25 Oct); for older results the areas are APPROXIMATED from the codes
+of FUSION_CLEAN's top 20 (a family holding 30%+ of them), and the posture is unknown (boilerplate
+dropped). The first table compares recall@20 unfiltered -> filtered for the vote and every variant
+and names every expected article the filter cost.
+
 Recall and noise @16/@20/@24, per set (tuning, h1-h11, n1-n9), and per variant the expected articles
 it gains or loses against FUSION_CLEAN @20, case by case. The best variant is chosen on the TUNING
 cases only -- the held-out sets never choose anything, they confirm -- by recall@20, then noise@20,
@@ -30,13 +38,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.rag.vote_pool import combine, parse_mode  # noqa: E402
+from src.rag.vote_pool import allowed_codes, combine, drop_reason, named_codes, parse_mode  # noqa: E402
 
 DEFAULT_CASES = ROOT / "tests" / "eval_narrative_cases.json"
 HEAD = 16   # the live pool's cap (defensive_generation._FUSION_POOL_CAP)
 KS = (16, 20, 24)
 VARIANTS = ["rrf:1:1", "rrf:1:0.5", "rrf:2:1", "append:4", "append:6", "append:8"]
 GROUPS = (("tuning", "TUNING"), ("heldout", "HELD-OUT h1-h11"), ("heldout2", "HELD-OUT 2 n1-n9"))
+# exp_distill's eval code keys -> the codes vote_pool filters on; the family each belongs to.
+EVAL_TO_CODE = {"cp": "c.p.", "cpp": "c.p.p.", "cc": "c.c.", "cpc": "c.p.c.", "cpa": "c.p.a."}
+FAMILY = {"cp": "penale", "cpp": "penale", "cc": "civile", "cpc": "civile", "consumo": "civile", "l392": "civile",
+          "cpa": "amministrativo", "l241": "amministrativo", "dlgs36": "amministrativo", "tuel": "amministrativo"}
+
+
+def approx_areas(pool: list, top: int = 20, share: float = 0.3) -> list:
+    """The families holding at least `share` of the coded articles in pool[:top] (no frame saved)."""
+    families = [FAMILY[code] for code, _ in pool[:top] if code in FAMILY]
+    return sorted({f for f in families if families.count(f) >= share * len(families)})
+
+
+def filtered(vote: list, areas: list, posture: str, text: str) -> list:
+    """The vote without what vote_pool.filter_refs drops (the score is a per-article sum, so
+    dropping after ranking is the same as dropping before)."""
+    allowed = allowed_codes(areas, named_codes(text))
+    return [(code, a) for code, a in vote if drop_reason((a, EVAL_TO_CODE.get(code, code)), allowed, posture) is None]
 
 
 def group_of(case_id: str, case: dict) -> str:
@@ -83,6 +108,7 @@ def main() -> int:
     parser.add_argument("results", help="exp_distill --vote's vote_results.json")
     parser.add_argument("--vote", default="cites_vote_60", help="the vote to combine (cites_vote_60, cards_vote_60 ...)")
     parser.add_argument("--cases", default=str(DEFAULT_CASES))
+    parser.add_argument("--no-filter", action="store_true", help="combine the vote as exp_distill saved it")
     args = parser.parse_args()
 
     data = json.loads(Path(args.results).read_text(encoding="utf-8"))
@@ -97,14 +123,47 @@ def main() -> int:
     def refs(cid, key):
         return [tuple(r) for r in results[cid][key]]
 
-    rows = {"fusion_clean": {c["id"]: refs(c["id"], "fusion_clean") for c in cases},
-            args.vote: {c["id"]: refs(c["id"], args.vote) for c in cases}}
-    for variant in VARIANTS:
-        how = parse_mode(variant)
-        rows[variant] = {c["id"]: combine(refs(c["id"], "fusion_clean"), refs(c["id"], args.vote), how, HEAD)
-                         for c in cases}
+    raw = {c["id"]: refs(c["id"], args.vote) for c in cases}
+    vote, approximated = dict(raw), []
+    if not args.no_filter:
+        for c in cases:
+            r = results[c["id"]]
+            areas = r.get("areas")
+            if areas is None:
+                areas = approx_areas(refs(c["id"], "fusion_clean"))
+                approximated.append(f"{c['id']} {'+'.join(areas) or '?'}")
+            vote[c["id"]] = filtered(raw[c["id"]], areas, r.get("posture") or "",
+                                     (current.get(c["id"]) or {}).get("question") or "")
 
-    lines = [f"FUSION_CLEAN + {args.vote}, from {args.results}; expected lists from {args.cases}", ""]
+    def variant_rows(votes):
+        out = {"fusion_clean": {c["id"]: refs(c["id"], "fusion_clean") for c in cases}, args.vote: votes}
+        for variant in VARIANTS:
+            out[variant] = {c["id"]: combine(out["fusion_clean"][c["id"]], votes[c["id"]], parse_mode(variant), HEAD)
+                            for c in cases}
+        return out
+
+    rows = variant_rows(vote)
+    lines = [f"FUSION_CLEAN + {args.vote}{'' if args.no_filter else ' (filtered)'}, from {args.results}; "
+             f"expected lists from {args.cases}", ""]
+    if approximated:
+        lines += [f"Areas APPROXIMATED from FUSION_CLEAN's codes (no frame saved): {'; '.join(approximated)}", ""]
+    if not args.no_filter:
+        before = variant_rows(raw)
+        lines += ["The filter's cost -- recall@20 unfiltered -> filtered (DROP marks a loss):"]
+        for group, title in GROUPS:
+            group_cases = [c for c in cases if c["group"] == group]
+            if not group_cases:
+                continue
+            cells = []
+            for method in [args.vote] + VARIANTS:
+                a = sum(len(found(before[method][c["id"]], c["expected"], 20)) for c in group_cases)
+                b = sum(len(found(rows[method][c["id"]], c["expected"], 20)) for c in group_cases)
+                cells.append(f"{method} {a}->{b}" + (" DROP" if b < a else ""))
+            lines.append(f"  {title}: " + ", ".join(cells))
+        lost = [f"{c['id']} {x}" for c in cases
+                for x in sorted(set(found(raw[c["id"]], c["expected"], len(raw[c["id"]])))
+                                - set(found(vote[c["id"]], c["expected"], len(vote[c["id"]]))))]
+        lines += [f"  expected articles the filter removed from the vote: {', '.join(lost) or 'none'}", ""]
     chosen = {}
     for group, title in GROUPS:
         group_cases = [c for c in cases if c["group"] == group]

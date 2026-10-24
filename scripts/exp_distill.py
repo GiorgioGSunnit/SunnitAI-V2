@@ -1194,12 +1194,14 @@ def _pool_parts(driver, database, case, vector_index, k, warned, exclude_re):
                                                            excluded))
         distill_clean = _distill_clean(session, bullets, vector_index, k, warned, exclude_re, excluded)
         try:
-            current, _ = _run_current(session, driver, database, text)
+            current, analysis = _run_current(session, driver, database, text)
         except Exception as exc:
             errors.append(f"current: {exc}")
-            current = []
+            current, analysis = [], {}
+    # The case's areas and posture, for the vote's filter (vote_pool.filter_refs) offline.
     return {"question": text, "k": k, "current": current, "baseline_clean": baseline_clean,
-            "distill_clean": distill_clean, "errors": errors}
+            "distill_clean": distill_clean, "errors": errors, "areas": vote_pool.case_areas(analysis),
+            "posture": str((analysis.get("frame") or {}).get("posture_type") or "")}
 
 
 def _vote_case(driver, database, case, parts, vector_index, warned, idf, default_idf, cards):
@@ -1211,7 +1213,8 @@ def _vote_case(driver, database, case, parts, vector_index, warned, idf, default
         cites = _ruling_citations(session, list(dict.fromkeys(r["doc_id"] for r in vector + fulltext
                                                               if r.get("doc_id"))))
     pool = [[tuple(r) for r in parts[key]] for key in ("current", "baseline_clean", "distill_clean")]
-    out = {"current": pool[0], "fusion_clean": _merge_by_hits(*pool), "rulings": {}, "carded": {}}
+    out = {"current": pool[0], "fusion_clean": _merge_by_hits(*pool), "rulings": {}, "carded": {},
+           "areas": parts.get("areas"), "posture": parts.get("posture")}
     for k in VOTE_KS:
         sims = _ruling_sims(vector[:k], fulltext[:k])
         out[f"cites_vote_{k}"] = _vote(sims, cites, idf, default_idf)

@@ -3177,7 +3177,8 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     from . import vote_pool
     voted, how = [], None
     if vote_pool.enabled():
-        voted, how = vote_pool.ruling_vote(session, driver, database, case, _CASE_POOL_VECTOR_INDEX), vote_pool.mode()
+        voted, how = vote_pool.ruling_vote(session, driver, database, case, _CASE_POOL_VECTOR_INDEX,
+                                           analysis), vote_pool.mode()
     # Exempt from the cap regardless of rank: found by two or more signals,
     # or resolved by the article's own rubrica (heading_matched) -- a
     # single-signal text-search hit is the only thing the cap should ever
