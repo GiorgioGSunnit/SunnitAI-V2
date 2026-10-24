@@ -2254,10 +2254,28 @@ def _other_branch(texts: List[str], area: str) -> bool:
     """A civil ruling for a criminal case, or the reverse, judged by the codes it
     cites most. Run 9, Oct 2026: the search for a race crash found a civil
     ruling on a pothole, and the parere cited it four times on criminal fault."""
+    if not area:
+        # Unknown branch: nothing is "the other" one. Prod tests, 23-24 Oct: when the case
+        # analysis failed (its fallback has area ""), every criminal ruling of a stalking case
+        # was dropped here and the parere was written from 1 ruling, or none.
+        return False
     codes = [code for text in texts for _, code in _refs_in(text)]
     penal = sum(code in _PENAL_CODES for code in codes)
     civil = sum(code in _CIVIL_CODES for code in codes)
     return civil > penal if area == "penale" else penal > civil
+
+
+def _case_branch(analysis: Dict[str, Any]) -> str:
+    """The analysis' area, else the case frame's ("penale" stays, "amministrativo" stays, any
+    other frame area is civil), else "" (unknown)."""
+    if analysis.get("area"):
+        return analysis["area"]
+    areas = (analysis.get("frame") or {}).get("areas") or []
+    if "penale" in areas:
+        return "penale"
+    if areas:
+        return "amministrativo" if all(a == "amministrativo" for a in areas) else "civile"
+    return ""
 
 
 def _ruling_passages(session, ruling_rows: List[Dict[str, Any]], selected: List[tuple],
@@ -2274,7 +2292,7 @@ def _ruling_passages(session, ruling_rows: List[Dict[str, Any]], selected: List[
     out = []
     for row in ruling_rows:
         texts = sections.get((row.get("d") or {}).get("id")) or [(row.get("s") or {}).get("plain_text") or ""]
-        if _other_branch(texts, analysis.get("area") or ""):
+        if _other_branch(texts, _case_branch(analysis)):
             continue
         passage = _best_passage(sections.get((row.get("d") or {}).get("id")) or [], selected, terms,
                                 _PASSAGE_CHARS)

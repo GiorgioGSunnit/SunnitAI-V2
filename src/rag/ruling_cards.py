@@ -23,6 +23,7 @@ law to rebut. Their passage starts with that label, the outcome, whom the ruling
 the verified quote. Any failure leaves the rulings as the pipeline found them.
 """
 
+import functools
 import json
 import logging
 import math
@@ -192,11 +193,23 @@ def _hit(keyword: str, low: str) -> bool:
     return bool(stems) and all(s in low for s in stems)
 
 
+@functools.lru_cache(maxsize=1)
+def _method_keys() -> frozenset:
+    """The general-part and procedural method articles of every area and posture (method_candidates.py):
+    specific by frequency but not by meaning (43 c.p., the mental element; 369-bis or 597 c.p.p.)."""
+    from . import method_candidates
+    refs = [r for _, rs in list(method_candidates.AREA_ARTICLES.values())
+            + list(method_candidates.POSTURE_ARTICLES.values()) for r in rs]
+    return frozenset(_article_key(*r) for r in refs)
+
+
 def anchors(card: Dict[str, Any], central: Dict[str, float], low_terms: str, cards: CardStore) -> List[str]:
     """The non-generic central articles the card applies that tie it to the case: named in the
     case or resolved from its issues (CENTRAL); from the model's pool (CHOSEN) only when one of
-    the card's keyword phrases is also found in the case."""
-    specific = [a for a in card["applied"] if a in central and a not in cards.generic]
+    the card's keyword phrases is also found in the case. Never a method article (_method_keys):
+    round 8 (24 Oct) anchored a stalking case's cards on 43 c.p. and on 369-bis and 597 c.p.p."""
+    method = _method_keys()
+    specific = [a for a in card["applied"] if a in central and a not in cards.generic and a not in method]
     strong = [a for a in specific if central[a] >= CENTRAL]
     if strong:
         return sorted(strong)

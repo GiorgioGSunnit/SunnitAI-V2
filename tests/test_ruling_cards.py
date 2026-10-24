@@ -187,3 +187,12 @@ def test_a_failure_leaves_the_rulings_alone(cards_file, monkeypatch):
         raise RuntimeError("database down")
     monkeypatch.setattr(rc, "_resolved_institutions", broken)
     assert rc.card_rulings(None, None, "neo4j", "caso", {}, {}) == ([], {})
+
+
+def test_method_articles_never_anchor(cards_file):
+    # Round 8: a stalking case's cards anchored on 43 c.p. (the mental element) and 369-bis / 597 c.p.p.
+    cards = rc.store()
+    card = rc._trim(_card("m", ["43 c.p.", "572 c.p."]))
+    assert rc.anchors(card, {"43 c.p.": 1.0, "572 c.p.": 1.0}, "", cards) == ["572 c.p."]
+    assert rc.anchors(rc._trim(_card("n", ["43 c.p.", "597 c.p.p."])), {"43 c.p.": 1.0, "597 c.p.p.": 1.0}, "", cards) == []
+    assert "43 c.p." in rc._method_keys() and "572 c.p." not in rc._method_keys()
