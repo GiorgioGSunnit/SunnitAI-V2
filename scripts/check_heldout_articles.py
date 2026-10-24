@@ -13,12 +13,19 @@ to the live corpus -- this is specifically how to find out whether it (or
 "Legge sul Procedimento Amministrativo", in case that's the document's
 real name instead) actually exists, and under which name.
 
+For a code searched under several names (l241, dlgs36, tuel) every document those
+names resolve to is checked, so the output says which one has the article: d.lgs.
+36/2023 may be in the corpus as "Codice dei contratti pubblici" or as "Codice degli
+Appalti 2026" (24 Oct, heldout2 n4: arts 95 and 98).
+
 Run from the app folder so it uses the app's code, .env and venv:
-    cd /opt/chatbot && venv/bin/python scripts/check_heldout_articles.py
+    cd /opt/chatbot && venv/bin/python scripts/check_heldout_articles.py                 # every held-out case
+    cd /opt/chatbot && venv/bin/python scripts/check_heldout_articles.py --set heldout2  # n1-n9
 
 Nothing is written to the database.
 """
 
+import argparse
 import json
 import logging
 import os
@@ -59,6 +66,8 @@ _EVAL_CODE_TO_SEARCH_NAMES = {
     "consumo": ["Codice del Consumo"], "l392": ["L. 392/1978"],
     "cpa": ["Codice del processo amministrativo"],
     "l241": ["Legge 241/1990", "Legge sul Procedimento Amministrativo"],
+    "dlgs36": ["D.Lgs. 36/2023", "Codice dei contratti pubblici", "Codice degli Appalti"],
+    "tuel": ["D.Lgs. 267/2000", "Testo unico degli enti locali", "TUEL"],
 }
 
 
@@ -68,33 +77,51 @@ def main():
     from src.rag.issue_spotting import fetch_article, resolve_code
     from src.rag.main import NEO4J_DATABASE, driver
 
+    parser = argparse.ArgumentParser(description="Do the held-out cases' expected articles exist in the corpus?")
+    parser.add_argument("--set", dest="sets", help="only the cases of these sets, e.g. heldout2")
+    parser.add_argument("--only", help="comma-separated case ids")
+    args = parser.parse_args()
+
     cases = [c for c in json.loads(DEFAULT_CASES.read_text(encoding="utf-8"))["cases"] if c.get("heldout")]
+    if args.sets:
+        cases = [c for c in cases if c.get("set") in {x.strip() for x in args.sets.split(",")}]
+    if args.only:
+        cases = [c for c in cases if c["id"] in {x.strip() for x in args.only.split(",")}]
     if not cases:
         sys.exit("no held-out cases found in " + str(DEFAULT_CASES))
+    missing_docs, missing_articles = [], []
 
     documents = _fetch_doc_names(driver, NEO4J_DATABASE)
     print(f"{len(documents)} documents in the corpus.\n")
 
     with driver.session(database=NEO4J_DATABASE) as session:
         for case in cases:
-            print(f"## {case['id']}")
+            print(f"## {case['id']}" + ("" if case.get("expected") else "  (no expected articles yet)"))
             for item in case.get("expected", []):
                 code, number = item["code"], item["article"]
                 names = _EVAL_CODE_TO_SEARCH_NAMES.get(code, [code])
-                resolved = None
+                resolved = {}
                 tried = []
                 for name in names:
                     doc = resolve_code(name, documents)
                     tried.append(f"{name!r} -> {doc['name'] if doc else 'no match'}")
-                    if doc and resolved is None:
-                        resolved = doc
-                if resolved is None:
+                    if doc:
+                        resolved.setdefault(doc["id"], doc)
+                if not resolved:
                     print(f"  {number:12s} {code:8s} DOCUMENT NOT FOUND ({'; '.join(tried)})")
+                    missing_docs.append(f"{case['id']}: art. {number} {code}")
                     continue
-                rows = fetch_article(session, resolved["id"], number)
-                found = "section found" if rows else "NO SECTION for this number"
-                print(f"  {number:12s} {code:8s} {resolved['name']!r}: {found}")
+                found_in = []
+                for doc in resolved.values():
+                    rows = fetch_article(session, doc["id"], number)
+                    found_in += [doc["name"]] if rows else []
+                    found = "section found" if rows else "NO SECTION for this number"
+                    print(f"  {number:12s} {code:8s} {doc['name']!r}: {found}")
+                if not found_in:
+                    missing_articles.append(f"{case['id']}: art. {number} {code}")
             print()
+    print("Documents not found: " + (", ".join(missing_docs) or "none"))
+    print("Articles not found in any matching document: " + (", ".join(missing_articles) or "none"))
     print("Done. Nothing was written.")
 
 

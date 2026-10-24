@@ -44,6 +44,19 @@ only runs just them. Their "expected" lists are themselves provisional
 ("expected_status": "draft — pending lawyer validation") -- scripts/
 check_heldout_articles.py checks whether the documents they name even
 exist in the corpus, separately from whether the numbers are right.
+
+24 Oct: the primary score is MENTIONED -- the expected article named in the
+answer text with its code (CITED or NAMED-ONLY above), what the lawyer reads.
+CITED is reported second. A second held-out set from the lawyer, n1-n9
+("set": "heldout2"), and the two cases of that batch already used to tune plan
+mode, s1-s2 ("set": "seen2"): each set gets its own section and averages,
+never mixed with another's. Cases with a set run only when asked:
+
+  python tests/eval_narrative.py --base-url http://localhost:8000 --set heldout2 --repeat 3 --label ptw-on
+  python tests/eval_narrative.py --set seen2 ...            # s1-s2
+  # the saved answers scored again with the current expected lists (no requests),
+  # into <run dir>/rescore-<timestamp>/ -- after the lawyer corrects them
+  python tests/eval_narrative.py --rescore eval_runs/<run dir>
 """
 
 import argparse
@@ -60,8 +73,14 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_CASES = HERE / "eval_narrative_cases.json"
+if str(HERE.parent) not in sys.path:
+    sys.path.insert(0, str(HERE.parent))
 
-_SUFFIX = r"(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)"
+# Every Latin suffix spelling, normalised to the canonical one the corpus uses
+# ("21 novies" -> "21-nonies"): the app's own table (src/rag/article_suffix.py, no
+# other imports). The list here before 24 Oct had no "nonies", so heldout2 n3's
+# 21-nonies l.241 could never match.
+from src.rag.article_suffix import SUFFIX as _SUFFIX, canonical_suffix  # noqa: E402
 
 # code key -> (citation document_name pattern, pattern for the code written in the answer)
 CODES = {
@@ -72,7 +91,7 @@ CODES = {
     # cpa (held-out h10/h11, 19 Oct): checked before "cp" in _CODE_ORDER, same
     # reason cpp/cpc are -- otherwise "c.p.a." would match "cp"'s own pattern.
     "cpa": (r"codice del processo amministrativo",
-            r"\bc\.?\s?p\.?\s?a\b\.?|codice del processo amministrativo"),
+            r"\bc\.?\s?p\.?\s?a\b\.?|codice del processo amministrativo|cod\.\s*proc\.\s*amm"),
     "cp": (r"codice penale(?!\s+commentat)",
            r"\bc\.?\s?p\b(?!\.?\s?[cp]\b)\.?|codice penale|cod\.\s*pen"),
     "cc": (r"codice civile",
@@ -87,9 +106,21 @@ CODES = {
     # Amministrativo", in case that's the document's real name instead; see
     # scripts/check_heldout_articles.py.
     "l241": (r"(?=.*\b241\b)(?=.*\b1990\b)|legge sul procedimento amministrativo",
-             r"\bl(?:egge)?\.?\s*(?:n\.\s*)?241\s*(?:/|del\s+)\s*1990|legge sul procedimento amministrativo"),
+             r"\bl(?:egge)?\.?\s*(?:n\.\s*)?241\s*(?:/|del\s+)\s*(?:19)?90\b|legge sul procedimento amministrativo"),
+    # dlgs36 (heldout2 n4, 24 Oct): D.Lgs. 31 marzo 2023, n. 36, Codice dei contratti
+    # pubblici -- in the corpus possibly as "Codice degli Appalti 2026" (arts 95 and 98:
+    # scripts/check_heldout_articles.py says which document has them).
+    "dlgs36": (r"(?:d\.?\s?lgs\.?|decreto legislativo)(?=.{0,40}\b36\b)(?=.{0,40}\b2023\b)|contratti pubblici"
+               r"|codice degli appalti",
+               r"d\.?\s?lgs\.?\s*(?:n\.\s*)?36\s*(?:/|del\s+)\s*2023|codice dei contratti(?:\s+pubblici)?"
+               r"|codice degli appalti"),
+    # tuel (heldout2 n5, 24 Oct): Testo unico degli enti locali, D.Lgs. 267/2000, art. 252.
+    "tuel": (r"\btuel\b|testo unico.{0,40}enti locali"
+             r"|(?:d\.?\s?lgs\.?|decreto legislativo)(?=.{0,40}\b267\b)(?=.{0,40}\b2000\b)",
+             r"\bt\.?\s?u\.?\s?e\.?\s?l\b\.?|testo unico.{0,40}enti locali"
+             r"|d\.?\s?lgs\.?\s*(?:n\.\s*)?267\s*(?:/|del\s+)\s*2000"),
 }
-_CODE_ORDER = ["cpp", "cpc", "cpa", "cp", "cc", "consumo", "l392", "l241"]   # longer abbreviations first
+_CODE_ORDER = ["cpp", "cpc", "cpa", "cp", "cc", "consumo", "l392", "l241", "dlgs36", "tuel"]   # longer abbreviations first
 
 # A section name's article: "1434", "1434.0.0", "1434.1", "1434_2", "624-bis", "624bis",
 # "Art. 52", "Articolo 5" -- and never "14340" for 1434.
@@ -105,7 +136,7 @@ def art_of(section_name):
     m = _SECTION_ART.match(section_name or "")
     if not m:
         return None
-    return f"{m.group(1)}-{m.group(2).lower()}" if m.group(2) else m.group(1)
+    return f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m.group(2) else m.group(1)
 
 
 def code_of_document(document_name):
@@ -131,7 +162,7 @@ def mentions(answer):
         prefix = re.match(r"\b(?:artt?\.?|articol[oi])\s*", run.group(0), re.I).end()
         code = _code_in_text(answer[run.end():run.end() + 60])
         for m in _MENTION_NUM.finditer(run.group(0)[prefix:]):
-            number = f"{m.group(1)}-{m.group(2).lower()}" if m.group(2) else m.group(1)
+            number = f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m.group(2) else m.group(1)
             if (number, code) not in found:
                 found.append((number, code))
     return found
@@ -164,15 +195,18 @@ def score(case, answer, citations):
     expected = []
     for item in case.get("expected", []):
         arts, code = _articles(item), item["code"]
-        if any(a in arts and c == code for a, c, _ in cites):
+        is_cited = any(a in arts and c == code for a, c, _ in cites)
+        is_mentioned = any(a in arts and c == code for a, c in named)
+        if is_cited:
             status = "CITED"
-        elif any(a in arts and c == code for a, c in named):
+        elif is_mentioned:
             status = "NAMED-ONLY"
         elif any(a in arts and c is None for a, c in named):
             status = "NAMED-BARE"
         else:
             status = "MISSING"
-        expected.append({"expected": _label(item), "status": status})
+        expected.append({"expected": _label(item), "status": status,
+                         "mentioned": is_mentioned, "cited": is_cited})
 
     cited_keys = {(a, c) for a, c, _ in cites}
     cited_numbers = {a for a, _, _ in cites}
@@ -246,9 +280,38 @@ def ask(base_url, token, question, timeout):
 
 # --- Reports -------------------------------------------------------------------
 
+# Primary metric (24 Oct): the expected article MENTIONED in the answer text with its
+# code -- what the lawyer reads. CITED (a citation from that code has the section) is
+# secondary. Items without the flag (expected_docs, or runs saved before 24 Oct and
+# not rescored) count for neither.
+_GROUP_TITLES = {
+    "tuning": None,
+    "heldout": "HELD-OUT SET h1-h11 (provisional expected articles -- never used to tune behaviour)",
+    "heldout2": "HELD-OUT SET 2, n1-n9 (provisional expected articles -- never used to tune behaviour)",
+    "seen2": "SEEN, s1-s2 (used to tune plan mode -- not held out, never in heldout2's average)",
+}
+
+
+def group_of(record):
+    """The report section a result belongs to: its case's "set", else "heldout" or "tuning"."""
+    return record.get("set") or ("heldout" if record.get("heldout") else "tuning")
+
+
+def _grouped(results):
+    groups = {}
+    for r in results:
+        groups.setdefault(group_of(r), []).append(r)
+    return sorted(groups.items(), key=lambda g: list(_GROUP_TITLES).index(g[0]) if g[0] in _GROUP_TITLES else 99)
+
+
+def _banner(group):
+    title = _GROUP_TITLES.get(group, f"SET {group}")
+    return ["\n" + "=" * 70, title, "=" * 70] if title else []
+
+
 def _summary_group_lines(results):
     lines = []
-    cited_counts = []
+    mentioned_counts, cited_counts = [], []
     for r in results:
         if r.get("error"):
             lines.append(f"## {r['id']}: ERROR {r['error']}")
@@ -256,77 +319,148 @@ def _summary_group_lines(results):
         s = r["score"]
         counts = {k: sum(1 for e in s["expected"] if e["status"] == k)
                   for k in ("CITED", "NAMED-ONLY", "NAMED-BARE", "MISSING")}
+        articles = [e for e in s["expected"] if "mentioned" in e]
+        mentioned = sum(1 for e in articles if e["mentioned"])
+        mentioned_counts.append(mentioned)
         cited_counts.append(counts["CITED"])
         lines.append(f"## {r['id']}{' (extra)' if r.get('extra') else ''}  {r['seconds']} s  "
-                     + "  ".join(f"{k} {v}" for k, v in counts.items() if v))
+                     f"MENTIONED {mentioned}/{len(articles)}  "
+                     + "  ".join(f"{k} {v}" for k, v in counts.items() if v)
+                     + ("" if s["expected"] else "  (NO EXPECTED ARTICLES)"))
         for e in s["expected"]:
-            lines.append(f"   {e['status']:10s} {e['expected']}")
+            flag = "" if "mentioned" not in e else ("  mentioned" if e["mentioned"] else "  not mentioned")
+            lines.append(f"   {e['status']:10s} {e['expected']}{flag}")
         for f in s["failures"]:
             lines.append(f"   {f}")
         if s["named_not_cited"]:
             lines.append(f"   named, not cited: {', '.join(s['named_not_cited'])}")
     if cited_counts:
-        lines.append(f"\naverage CITED per case: {sum(cited_counts) / len(cited_counts):.2f} "
-                     f"(across {len(cited_counts)} case(s))")
+        n = len(cited_counts)
+        lines.append(f"\naverage MENTIONED per case: {sum(mentioned_counts) / n:.2f}; "
+                     f"average CITED per case: {sum(cited_counts) / n:.2f} (across {n} case(s))")
     return lines
 
 
 def _summary_lines(results):
-    """Held-out results (record["heldout"]) are reported in their own
-    section with their own average -- never mixed into the tuning set's,
-    see the module docstring."""
-    tuning = [r for r in results if not r.get("heldout")]
-    heldout = [r for r in results if r.get("heldout")]
-    lines = _summary_group_lines(tuning)
-    if heldout:
-        lines.append("\n" + "=" * 70)
-        lines.append("HELD-OUT SET (provisional expected articles -- never used to tune behaviour)")
-        lines.append("=" * 70)
-        lines += _summary_group_lines(heldout)
+    """Each set in its own section with its own averages -- held-out and seen cases
+    never mixed into the tuning set's, see the module docstring."""
+    lines = []
+    for group, rows in _grouped(results):
+        lines += _banner(group) + _summary_group_lines(rows)
     return lines
 
 
 def _aggregate(results, repeat):
-    """Per case: {expected_label: (cited_count, repeat)}, average CITED count
-    per case, and the overall average — results is the flat list of per-
-    repeat records (each carrying "id" and "score"), grouped back by id."""
+    """Per case: {expected_label: count} of repeats that CITED it and of repeats that
+    MENTIONED it, the average of each per case, and the overall averages -- results is
+    the flat list of per-repeat records (each carrying "id" and "score"), grouped back by id."""
     by_case = {}
     for r in results:
         by_case.setdefault(r["id"], []).append(r)
 
     per_case = {}
-    totals = []
+    totals, totals_m = [], []
     for case_id, runs in by_case.items():
         ok_runs = [r for r in runs if not r.get("error")]
         labels = list(dict.fromkeys(e["expected"] for r in ok_runs for e in r["score"]["expected"]))
         counts = {label: sum(1 for r in ok_runs for e in r["score"]["expected"]
                              if e["expected"] == label and e["status"] == "CITED")
                   for label in labels}
+        mentioned = {label: sum(1 for r in ok_runs for e in r["score"]["expected"]
+                                if e["expected"] == label and e.get("mentioned"))
+                     for label in labels}
         avg_seconds = sum(r.get("seconds", 0.0) for r in ok_runs) / len(ok_runs) if ok_runs else 0.0
-        per_case[case_id] = {"counts": counts, "n": len(ok_runs), "errors": len(runs) - len(ok_runs),
-                             "avg_seconds": avg_seconds}
+        per_case[case_id] = {"counts": counts, "mentioned": mentioned, "n": len(ok_runs),
+                             "errors": len(runs) - len(ok_runs), "avg_seconds": avg_seconds}
         if ok_runs:
             totals.append(sum(counts.values()) / len(ok_runs))
+            totals_m.append(sum(mentioned.values()) / len(ok_runs))
     overall_avg = sum(totals) / len(totals) if totals else 0.0
-    return per_case, overall_avg
+    overall_mentioned = sum(totals_m) / len(totals_m) if totals_m else 0.0
+    return per_case, overall_avg, overall_mentioned
 
 
-def _aggregate_lines(per_case, overall_avg, repeat):
-    lines = [f"Averages over {repeat} repeats per case (CITED rate per expected article):"]
+def _aggregate_lines(per_case, overall_avg, overall_mentioned, repeat):
+    lines = [f"Averages over {repeat} repeats per case (MENTIONED / CITED rate per expected article):"]
     for case_id, data in per_case.items():
         n = data["n"]
         avg = sum(data["counts"].values()) / n if n else 0.0
+        avg_m = sum(data.get("mentioned", {}).values()) / n if n else 0.0
         err = f"  ({data['errors']} error(s))" if data["errors"] else ""
-        lines.append(f"## {case_id}  avg CITED {avg:.2f}/{len(data['counts'])}  "
+        lines.append(f"## {case_id}  avg MENTIONED {avg_m:.2f}/{len(data['counts'])}  avg CITED {avg:.2f}  "
                      f"avg {data.get('avg_seconds', 0.0):.1f} s{err}")
         for label, c in data["counts"].items():
-            lines.append(f"   {c}/{n}  {label}")
+            lines.append(f"   mentioned {data.get('mentioned', {}).get(label, 0)}/{n}  cited {c}/{n}  {label}")
     total_n = sum(d["n"] for d in per_case.values())
     overall_seconds = (sum(d.get("avg_seconds", 0.0) * d["n"] for d in per_case.values()) /
                        total_n) if total_n else 0.0
-    lines.append(f"\nOVERALL average CITED per case: {overall_avg:.2f} (across {len(per_case)} cases, "
-                 f"{repeat} repeats each) — overall average {overall_seconds:.1f} s per run")
+    lines.append(f"\nOVERALL average MENTIONED per case: {overall_mentioned:.2f}; average CITED per case: "
+                 f"{overall_avg:.2f} (across {len(per_case)} cases, {repeat} repeats each) — "
+                 f"overall average {overall_seconds:.1f} s per run")
     return lines
+
+
+def write_reports(results, run_dir, repeat, base_url):
+    """summary.json/.txt, and with repeat > 1 aggregate.json/.txt, one section per set."""
+    lines = _summary_lines(results)
+    (run_dir / "summary.json").write_text(
+        json.dumps({"run": run_dir.name, "base_url": base_url, "repeat": repeat, "results": results},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8")
+    (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print("\n".join(lines))
+
+    if repeat > 1:
+        agg_lines, agg_json = [], {"run": run_dir.name, "repeat": repeat}
+        for group, rows in _grouped(results):
+            per_case, overall_avg, overall_mentioned = _aggregate(rows, repeat)
+            agg_lines += _banner(group) + _aggregate_lines(per_case, overall_avg, overall_mentioned, repeat)
+            prefix = "" if group == "tuning" else f"{group}_"
+            agg_json.update({f"{prefix}overall_avg": overall_avg, f"{prefix}overall_mentioned": overall_mentioned,
+                             f"{prefix}per_case": per_case})
+        (run_dir / "aggregate.json").write_text(
+            json.dumps(agg_json, ensure_ascii=False, indent=2), encoding="utf-8")
+        (run_dir / "aggregate.txt").write_text("\n".join(agg_lines) + "\n", encoding="utf-8")
+        print("\n" + "\n".join(agg_lines))
+
+
+def _case_fields(case):
+    return {"extra": bool(case.get("extra")), "heldout": bool(case.get("heldout")),
+            "set": case.get("set"), "seen": bool(case.get("seen"))}
+
+
+def rescore(run_dir, cases):
+    """Scores every saved answer in run_dir again with the current expected lists, into
+    run_dir/rescore-<timestamp>/ -- the saved answers and the first scores stay as they are."""
+    run_dir = Path(run_dir)
+    by_id = {c["id"]: c for c in cases}
+    files = sorted(f for f in run_dir.glob("*.json") if f.name not in ("summary.json", "aggregate.json"))
+    if not files:
+        sys.exit(f"no saved answers (<case>.json) in {run_dir}")
+    try:
+        meta = json.loads((run_dir / "summary.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    results, unknown = [], []
+    for f in files:
+        record = json.loads(f.read_text(encoding="utf-8"))
+        case = by_id.get(record.get("id"))
+        if case is None:
+            unknown.append(record.get("id") or f.name)
+            continue
+        record.update(_case_fields(case))
+        if not record.get("error"):
+            record["score"] = score(case, record.get("answer", ""), record.get("citations", []))
+        results.append(record)
+    results.sort(key=lambda r: (list(by_id).index(r["id"]), r.get("repeat", 0)))
+    if unknown:
+        print(f"not in the cases file any more, skipped: {', '.join(sorted(set(unknown)))}")
+    repeat = meta.get("repeat") or max((r.get("repeat", 0) + 1 for r in results), default=1)
+    out = run_dir / f"rescore-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+    out.mkdir()
+    write_reports(results, out, repeat, meta.get("base_url", ""))
+    print(f"\nRescored {len(results)} answer(s) from {run_dir} into {out}")
+    return 0
 
 
 def compare(old_path, new_path):
@@ -347,44 +481,67 @@ def compare(old_path, new_path):
             print(f"   new: {f}")
 
 
+
+
+def select(cases, sets=None, only=None, include_heldout=False, heldout_only=False, skip_extra=False):
+    """The cases a run asks for. --only and --set pick from every case; otherwise the
+    default excludes held-out cases and cases of a named set (heldout2, seen2), so a
+    plain run costs what it always did."""
+    if only:
+        wanted = {c.strip() for c in only.split(",")}
+        cases = [c for c in cases if c["id"] in wanted]
+    elif sets:
+        wanted = {s.strip() for s in sets.split(",")}
+        cases = [c for c in cases if c.get("set") in wanted]
+    elif heldout_only:
+        cases = [c for c in cases if c.get("heldout") and not c.get("set")]
+    elif include_heldout:
+        cases = [c for c in cases if not c.get("set")]
+    else:
+        cases = [c for c in cases if not c.get("heldout") and not c.get("set")]
+    if skip_extra:
+        cases = [c for c in cases if not c.get("extra")]
+    return cases
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Acceptance set for narrative and strategy questions.")
     parser.add_argument("--base-url", help="e.g. http://localhost:8000 (on the server)")
     parser.add_argument("--token", help="a JWT instead of logging in")
     parser.add_argument("--cases", default=str(DEFAULT_CASES))
-    parser.add_argument("--only", help="comma-separated case ids")
+    parser.add_argument("--only", help="comma-separated case ids (from any set)")
+    parser.add_argument("--set", dest="sets", help="run only the cases of these sets, e.g. heldout2 or heldout2,seen2")
     parser.add_argument("--skip-extra", action="store_true", help="only Flavio's cases")
     heldout = parser.add_mutually_exclusive_group()
     heldout.add_argument("--include-heldout", action="store_true",
                          help="also run the held-out set (h1-h11), reported in its own section")
-    heldout.add_argument("--heldout-only", action="store_true", help="run only the held-out set")
+    heldout.add_argument("--heldout-only", action="store_true", help="run only the held-out set (h1-h11)")
     parser.add_argument("--out", default="eval_runs", help="folder for the run outputs")
     parser.add_argument("--label", default="", help="added to the run folder name, e.g. baseline")
     parser.add_argument("--timeout", type=int, default=400, help="seconds per question")
     parser.add_argument("--repeat", type=int, default=1,
-                        help="run every case N times; report per-article CITED rate and averages")
+                        help="run every case N times; report per-article MENTIONED/CITED rates and averages")
     parser.add_argument("--compare", nargs=2, metavar=("OLD_SUMMARY", "NEW_SUMMARY"))
+    parser.add_argument("--rescore", metavar="RUN_DIR",
+                        help="score a saved run's answers again with the current expected lists (no requests)")
     args = parser.parse_args(argv)
 
     if args.compare:
         compare(*args.compare)
         return 0
+    all_cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]
+    if args.rescore:
+        return rescore(args.rescore, all_cases)
     if not args.base_url:
-        parser.error("--base-url is required (or use --compare)")
+        parser.error("--base-url is required (or use --compare / --rescore)")
     base_url = args.base_url.rstrip("/")
-    cases = json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"]
-    # Held-out (h1-h11): excluded by default -- a plain run costs what it
-    # always did, and these are never meant to casually show up in day-to-
-    # day tuning output. See the module docstring.
-    if args.heldout_only:
-        cases = [c for c in cases if c.get("heldout")]
-    elif not args.include_heldout:
-        cases = [c for c in cases if not c.get("heldout")]
-    if args.only:
-        wanted = {c.strip() for c in args.only.split(",")}
-        cases = [c for c in cases if c["id"] in wanted]
-    if args.skip_extra:
-        cases = [c for c in cases if not c.get("extra")]
+    cases = select(all_cases, args.sets, args.only, args.include_heldout, args.heldout_only, args.skip_extra)
+    if not cases:
+        parser.error("no case matches the selection")
+    empty = [c["id"] for c in cases if not c.get("expected") and not c.get("expected_docs")]
+    if empty:
+        print(f"WARNING: no expected articles yet for {', '.join(empty)} -- answers are saved, "
+              f"score them later with --rescore")
 
     token = args.token or login(base_url)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -396,8 +553,7 @@ def main(argv=None):
         for i in range(args.repeat):
             label = f"{case['id']} (r{i + 1}/{args.repeat})" if args.repeat > 1 else case["id"]
             print(f"... {label}", flush=True)
-            record = {"id": case["id"], "extra": bool(case.get("extra")), "heldout": bool(case.get("heldout")),
-                      "question": case["question"]}
+            record = {"id": case["id"], **_case_fields(case), "question": case["question"]}
             if args.repeat > 1:
                 record["repeat"] = i
             try:
@@ -411,34 +567,7 @@ def main(argv=None):
             (run_dir / file_name).write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
             results.append(record)
 
-    lines = _summary_lines(results)
-    (run_dir / "summary.json").write_text(
-        json.dumps({"run": run_dir.name, "base_url": base_url, "repeat": args.repeat, "results": results},
-                   ensure_ascii=False, indent=2),
-        encoding="utf-8")
-    (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print("\n".join(lines))
-
-    if args.repeat > 1:
-        tuning_results = [r for r in results if not r.get("heldout")]
-        heldout_results = [r for r in results if r.get("heldout")]
-        agg_lines, agg_json = [], {"run": run_dir.name, "repeat": args.repeat}
-        if tuning_results:
-            per_case, overall_avg = _aggregate(tuning_results, args.repeat)
-            agg_lines += _aggregate_lines(per_case, overall_avg, args.repeat)
-            agg_json.update(overall_avg=overall_avg, per_case=per_case)
-        if heldout_results:
-            per_case_h, overall_avg_h = _aggregate(heldout_results, args.repeat)
-            agg_lines.append("\n" + "=" * 70)
-            agg_lines.append("HELD-OUT SET (provisional expected articles -- never used to tune behaviour)")
-            agg_lines.append("=" * 70)
-            agg_lines += _aggregate_lines(per_case_h, overall_avg_h, args.repeat)
-            agg_json.update(heldout_overall_avg=overall_avg_h, heldout_per_case=per_case_h)
-        (run_dir / "aggregate.json").write_text(
-            json.dumps(agg_json, ensure_ascii=False, indent=2), encoding="utf-8")
-        (run_dir / "aggregate.txt").write_text("\n".join(agg_lines) + "\n", encoding="utf-8")
-        print("\n" + "\n".join(agg_lines))
-
+    write_reports(results, run_dir, args.repeat, base_url)
     print(f"\nSaved in {run_dir}")
     return 0
 

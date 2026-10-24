@@ -1,5 +1,5 @@
 {
-  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names. 2026-10-18: c3's expected 'art. 5 l392' removed -- L. 392/1978 is not in the corpus; the law actually governing residential leases today is L. 431/1998, and its own art. 5 covers transitional contracts, not relevant to c3's facts. c3's expected is now just 658 cpc, 1453 cc, 1587 cc. 2026-10-19: added l1-l4, four long narrative cases written for scripts/exp_distill.py's experiment (not in Flavio's original list, but not 'extra' either -- their expected lists are curated, not just the question's own named article), moved here so exp_distill.py and eval_narrative.py share one source of truth. 2026-10-19: added h1-h11, 11 real exam-style cases from a practising lawyer (not Flavio's, not written for this project), flagged \"heldout\": true. Their \"expected\" lists are provisional (\"expected_status\": \"draft — pending lawyer validation\"); corrections will replace them. Held-out cases are a check on whatever the tuning set (everything else in this file) already converged on, never themselves used to write a prompt, pick a fixture, or decide whether a change helped -- and never added to scripts/exp_distill.py's case set either. eval_narrative.py excludes them by default; --include-heldout/--heldout-only opt in, and report them in their own section with their own average, never mixed into the tuning set's.",
+  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names. 2026-10-18: c3's expected 'art. 5 l392' removed -- L. 392/1978 is not in the corpus; the law actually governing residential leases today is L. 431/1998, and its own art. 5 covers transitional contracts, not relevant to c3's facts. c3's expected is now just 658 cpc, 1453 cc, 1587 cc. 2026-10-19: added l1-l4, four long narrative cases written for scripts/exp_distill.py's experiment (not in Flavio's original list, but not 'extra' either -- their expected lists are curated, not just the question's own named article), moved here so exp_distill.py and eval_narrative.py share one source of truth. 2026-10-19: added h1-h11, 11 real exam-style cases from a practising lawyer (not Flavio's, not written for this project), flagged \"heldout\": true. Their \"expected\" lists are provisional (\"expected_status\": \"draft — pending lawyer validation\"); corrections will replace them. Held-out cases are a check on whatever the tuning set (everything else in this file) already converged on, never themselves used to write a prompt, pick a fixture, or decide whether a change helped -- and never added to scripts/exp_distill.py's case set either. eval_narrative.py excludes them by default; --include-heldout/--heldout-only opt in, and report them in their own section with their own average, never mixed into the tuning set's. 2026-10-24: added a second held-out set from the lawyer (test2.txt, 11 cases), questions verbatim except the spreadsheet labels 'Amministrativo<tab>' before n4 and the heading 'CIVILE A SEGUIRE' before n6. n1-n9 (\"set\": \"heldout2\", \"heldout\": true) are the 9 fresh cases; s1-s2 (\"set\": \"seen2\", \"seen\": true) are the first two (Tizio/Caia maltrattamenti, Pio/Esposito), already used by Antonelo to tune plan mode, so reported in their own section and never in heldout2's average. Cases with a set run only with --set or --only. Their expected lists (from the lawyer's table, 24 Oct) are drafts, pending the lawyer's validation; after a correction, score saved runs again with --rescore. l241 is 'Legge sul Procedimento Amministrativo 2026' in the corpus. New codes: dlgs36, tuel. s1-s2 have no expected lists.",
   "cases": [
     {
       "id": "sempronio",
@@ -602,6 +602,241 @@
         {
           "code": "cpa",
           "article": "114"
+        }
+      ]
+    },
+    {
+      "id": "s1",
+      "question": "Tizio e Caia, conviventi more uxorio, decidono di cessare la loro relazione a causa dei tradimenti dell’uomo. Una volta separatosi dalla compagna, tuttavia, Tizio, animato da una morbosa gelosia pone in essere reiterate condotte vessatorie nei confronti di Caia, arrivando al punto di pedinarla a aggredirla verbalmente e fisicamente. Esasperata dalla condotta dell’uomo, Caia si rivolge all’Autorità giudiziaria per sporgere denuncia-querela nei confronti di Tizio. Accertate le circostanze denunciate dalla donna, viene avviato a carico di Tizio un procedimento penale per il delitto di maltrattamenti in famiglia. Il candidato, assunte le vesti del legale di Tizio, esamini e illustri i possibili profili di rilevanza penale che emergono nel caso concreto e prospetti una linea difensiva comprensiva delle iniziative che possono essere assunte.",
+      "seen": true,
+      "set": "seen2",
+      "expected": []
+    },
+    {
+      "id": "s2",
+      "question": "PIO ed ESPOSITO, due noti pregiudicati per delitti contro il patrimonio, decidono di svaligiare la casa dell'imprenditore DOLLARONE convinti che nel periodo estivo l'abitazione sia vuota. Una volta entrati nella villa, mentre PIO si occupa della cassaforte, ESPOSITO va nelle stanze da letto al piano superiore. Trova nell'occasione la figlia adolescente del padrone di casa, la sedicenne MEVIA, e decide improvvisamente di molestarla sessualmente. PIO sentendo le urla della giovane, senza aver nemmeno aperto la cassaforte, abbandona gli attrezzi da scasso e fugge subito seguito da ESPOSITO. Dica il candidato, assunte le vesti dei due soggetti, quali comportamenti penalmente rilevanti sono configurabili in capo agli assistiti, quali sono le problematiche di natura sostanziale e quale scelta processuale consiglierebbe loro.",
+      "seen": true,
+      "set": "seen2",
+      "expected": []
+    },
+    {
+      "id": "n1",
+      "question": "Tizio concede a Caio(piccolo imprenditore in difficoltà) un prestito di €50.000 applicando interessi annui del 35%, ben oltre il tasso soglia (18%+margine 4%=22%nel periodo).Il contratto è scritto ma Caio è costretto ad accettare per evitare il fallimento. Tizio percepisce per 12 mesi rate comprensive di capitale e interessi, incassando complessivamente 67.500.Caio denuncia dopo aver trovato altra fonte di finanziamento.\nIl candidato assuma le vesti di avvocato difensore dell'imputato Tizio ed esponga il parere motivato",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "cp",
+          "article": "644"
+        },
+        {
+          "code": "cc",
+          "article": "1815"
+        }
+      ]
+    },
+    {
+      "id": "n2",
+      "question": "Tizio viene raggiunto da ordinanza di custodia cautelare in carcere per concorso esterno in associazione a delinquere di stampo mafioso. in qualità di medico presso un ospedale di privato di Napoli aveva gratuitamente e riservatamente assistito in tale struttura un pericoloso e celebre capo di una cosca camorristica latitante la cui identità e situazione giuridica, universalmente nota, era a sua conoscenza. Dalle indagini svolte era risultato altresì che Tizio non aveva effettuato alcuna annotazione della visita nei documenti ospedalieri. Il candidato assunte le vesti di difensore dl sanitario indagato rediga motivato parere soffermandosi sugli istituti e sulle problematiche sottese al caso in esame.",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "cp",
+          "article": "110"
+        },
+        {
+          "code": "cp",
+          "article": "416-bis"
+        },
+        {
+          "code": "cp",
+          "article": "378"
+        },
+        {
+          "code": "cp",
+          "article": "365"
+        },
+        {
+          "code": "cpp",
+          "article": "309"
+        }
+      ]
+    },
+    {
+      "id": "n3",
+      "question": "La Società Alfa, autorizzata a svolgere attività di somministrazione di lavoro, è destinataria di un provvedimento del Ministero del Lavoro di sospensione dell'autorizzazione, motivato dalla presunta mancanza di una valida copertura assicurativa richiesta dalla normativa di settore.\nSuccessivamente, l'Amministrazione dispone la revoca dell'autorizzazione ai sensi dell'articolo 21 quinquies l. n. 241/1990, ritenendo che la società abbia da un lato prodotto una polizza assicurativa non idonea e, dall'altro, stipulato nuovi contratti di somministrazione durante il periodo di sospensione.\nLa Società impugna la revoca dinanzi al Giudice Amministrativo, che annulla il provvedimento per incompetenza dell'organo che lo ha adottato, assorbendo ogni ulteriore censura.\nA seguiro della sentenza, l'Amministrazione adotta un nuovo provvedimento di revoca, questa volta sottoscritto dall'organo competente. Il nuovo atto si limita, tuttavia, a richiamare il precedente provvedimento annullato, la sospensione già disposta e gli atti istruttori del procedimento originario, motivando per relationem con riferimento ai predetti atti, senza avviare un nuovo contraddittorio con la Società e senza procedwre ad un'autonoma rivalutazione della situazione attuale, inclusa la sopravvenuta produzione di una polizza assicurativa. La Società Alfa prospetta con propria nota all'Amministrazione queste circostanze chiedendo l'annullamento in autotutela del secondo provvedimento di revoca, ma l'Amministrazione si limita a rispondere che il secondo provvedimento adottato è perfettamente legittimo e, tutt'al più, è inquadrabile, ai sensi dell'articolo 21 nonies comma 2 l. n. 241/1990, in una convalida dell'originario provvedimento di revoca.\nLa Società Alfa, a questo punto, intende proporre ricorso.\"",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "l241",
+          "article": "21-quinquies"
+        },
+        {
+          "code": "l241",
+          "article": "21-nonies"
+        },
+        {
+          "code": "l241",
+          "article": "21-octies"
+        },
+        {
+          "code": "l241",
+          "article": "3"
+        },
+        {
+          "code": "l241",
+          "article": "7"
+        },
+        {
+          "code": "cpa",
+          "article": "29"
+        }
+      ]
+    },
+    {
+      "id": "n4",
+      "question": "La società Alfa srl partecipa a una procedura di gara aperta indetta dal Comune di Milano per l'affidamento del servizio di refezione scolastica. Tuttavia, prima dell'aggiudicazione, la stazione appaltante viene a conoscenza del fatto che l'amministratore unico di Alfa ha subito, l'anno precedente, una condanna penale non definitiva per il reato di turbata libertà degli incanti (art. 353 c.p.) legata a un'altra gara. Il comune, ritenendo configurabile un grave illecito professionale idoneo a compromettere l'integrità dell'operatore, dispone l'immediata esclusione di Alfa dalla gara senza attivare alcun contraddittorio preliminare. Alfa srl si rivolge a un legale.",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "dlgs36",
+          "article": "95"
+        },
+        {
+          "code": "dlgs36",
+          "article": "98"
+        },
+        {
+          "code": "cpa",
+          "article": "120"
+        }
+      ]
+    },
+    {
+      "id": "n5",
+      "question": "Tizio, dirigente del settore finanziario del Comune di Alfa, con ampia e qualificata esperienza nel settore contabile e finanziario, viene nominato componente dell'organismo straordinario di liquidazione insediatosi presso il Comune di Beta a seguito dell'intervenuto dissesto. In data 15 Maggio 2026 viene notificato a Tizio un provvedimento con il quale egli viene sostituito con altro soggetto. Tizio, non comprendendo le ragioni di tale sostituzione, in quanto il provvedimento non è chiaro sul punto, si reca dal proprio legale di fiducia per avere un parere in merito al provvedimento adottato in suo danno e per tutelare il proprio interesse legittimo. Il candidato, assunte le vesti del legale di Tizio, si soffermi sui vizi inficianti il provvedimento ed indichi le azioni proponibili a tutela dei diritti di Tizio.",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "tuel",
+          "article": "252"
+        },
+        {
+          "code": "l241",
+          "article": "3"
+        },
+        {
+          "code": "l241",
+          "article": "7"
+        },
+        {
+          "code": "cpa",
+          "article": "29"
+        }
+      ]
+    },
+    {
+      "id": "n6",
+      "question": "Tizio, cliente dell'hotel Miramare, subisce, nel primo pomeriggio, un furto di un computer e di un i-pad, appoggiati sul tavolo posto in una stanza adiacente alla hall, in una posizione difficilmente sorvegliabile.\nA fronte della richiesta di risarcimento avanzata da Tizio nei confronti del titolare dell'albergo, questi afferma la propria assenza di responsabilità o, quantomeno il concorso ex art. 1227 c.c., in quanto computer e i-pad non erano stati consegnati al servizio di custodia, posto al piano terreno della struttura alberghiera.\nIl candidato, assunte le vesti del legale di Tizio, individui la disciplina applicabile al caso di specie e le possibili iniziative giudiziarie che si potrebbero intraprendere nei confronti della struttura alberghiera.",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1783"
+        },
+        {
+          "code": "cc",
+          "article": "1784"
+        },
+        {
+          "code": "cc",
+          "article": "1785-bis"
+        },
+        {
+          "code": "cc",
+          "article": "1227"
+        }
+      ]
+    },
+    {
+      "id": "n7",
+      "question": "Tizio acquista nel 2018 una villa degli anni ‘40, in stato di abbandono, ed incarica la società Gamma di eseguire un ampio intervento di ristrutturazione. I lavori terminano nel 2020 e l’immobile, sottoposto positivamente al collaudo, viene consegnato. Nel gennaio 2026 la pavimentazione della rampa di scale che porta al piano superiore inizia a presentare gravi fessurazioni e segni di cedimento sempre più evidenti. Tizio si rivolge immediatamente alla società appaltatrice la quale, rilevato che i lavori sono terminati da oltre 6 anni, respinge ogni addebito, eccependo l’intervenuta prescrizione della garanzia ex art. 1667 c.c. e precisando altresì che le opere da lei effettuate hanno riguardato un edificio già esistente.\nDovendo intervenire velocemente per conservare la funzionalità delle scale, Tizio si rivolge all’avvocato al fine di comprendere se e quali azioni poter intraprendere nei confronti della società Gamma. Il candidato, assunte le vesti del legale di Tizio, esaminati gli istituti sottesi, renda il parere richiesto.",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1669"
+        },
+        {
+          "code": "cc",
+          "article": "1667"
+        },
+        {
+          "code": "cc",
+          "article": "1668"
+        }
+      ]
+    },
+    {
+      "id": "n8",
+      "question": "Pinco e Pallina sono sposati in comunione legale. Dopo il matrimonio Pallina trasforma il suo hoppy in un’attività lavorativa, acquistando un immobile per esercitare tale attività. Pinco chiede ed ottiene separazione personale e scioglimento del matrimonio. Pinco ritiene di aver diritto alla metà della titolarità del bene immobile di Pallina e vuole la divisione. Pallina si reca dal suo Avvocato facendo presente che ha già concluso un contratto preliminare per alienare il bene immobile.",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "177"
+        },
+        {
+          "code": "cc",
+          "article": "178"
+        },
+        {
+          "code": "cc",
+          "article": "179"
+        },
+        {
+          "code": "cc",
+          "article": "191"
+        }
+      ]
+    },
+    {
+      "id": "n9",
+      "question": "Tizio possiede da più di 30 anni una stanza a fianco della propria abitazione che risulta catastalmente intestata a Sempronio (proprietario dell'abitazione a fianco acquistata con legittimi titoli). Tizio ha di fatto accorpato la porzione di immobile alla propria abitazione. Il complesso immobiliare si trova in luogo isolato e poco frequentato. Qualificare giuridicamente la situazione prospettata da Sempronio e suggerire le possibilità per ottenere la restituzione della porzione di immobile posseduta da Tizio.",
+      "heldout": true,
+      "set": "heldout2",
+      "expected_status": "draft — pending lawyer validation",
+      "expected": [
+        {
+          "code": "cc",
+          "article": "1158"
+        },
+        {
+          "code": "cc",
+          "article": "1163"
+        },
+        {
+          "code": "cc",
+          "article": "1140"
+        },
+        {
+          "code": "cc",
+          "article": "948"
         }
       ]
     }
