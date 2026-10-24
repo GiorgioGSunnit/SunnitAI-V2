@@ -193,13 +193,26 @@ def clean_plan(raw: Any, known: set, references: Dict[str, List[Dict[str, Any]]]
             "subordinate": _texts(raw.get("subordinate")), "punti_deboli": _texts(raw.get("punti_deboli"))}, removed
 
 
+def _voted(article_rows: List[Dict[str, Any]]) -> List[tuple]:
+    """The articles the rulings on similar facts voted for (VOTE_POOL_ENABLED's _vote rows), best voted first."""
+    rows = sorted((r for r in article_rows if r.get("_vote") and r.get("_article")),
+                  key=lambda r: r.get("_vote_rank") or 0)
+    return list(dict.fromkeys(r["_article"] for r in rows))
+
+
 def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str,
-                principles: str, checks: List[str]) -> str:
+                principles: str, checks: List[str], voted: Optional[List[tuple]] = None) -> str:
     base = dg._parere_human(facts, analysis, articles, rulings, request, principles)
     base = base[:base.rfind("Redigi ora il parere.")].rstrip() if "Redigi ora il parere." in base else base
     verifiche = "\n".join(f"- {c}" for c in checks)
+    # VOTE_POOL_ENABLED: the articles the rulings on similar facts cite, for the plan to weigh
+    # issue by issue (prod, 24 Oct: 1158, 1218, 1453, 56, 378 ... found only this way).
+    votate = ", ".join(f"[art. {n} {c}]" for n, c in voted or [])
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
+            + (f"NORME APPLICATE DALLA GIURISPRUDENZA SU FATTI SIMILI (sono in NORME): {votate}. Per ogni "
+               "questione valuta se una di queste la disciplina, leggendone rubrica e testo; se sì, mettila tra "
+               "le sue norme, altrimenti lasciala fuori.\n\n" if votate else "")
             + "Prepara ora il piano.")
 
 
@@ -244,8 +257,11 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
     """(plan, checked): each issue's articles checked in parallel against their heading and text.
     Off-topic articles are removed; an issue whose argument contradicts its article is dropped;
     answers and subordinate requests naming a removed article go too (the writer then answers
-    from the issues). A failed check keeps its issue as it was. None when no issue is left."""
-    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": []}
+    from the issues). A failed check keeps its issue as it was. None when no issue is left.
+    An article voted by similar rulings (_vote) is never removed and never drops its issue:
+    the verdict is only logged ("kept_by_vote")."""
+    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
+    voted = set(_voted(article_rows))
     issues = [q for q in plan["questioni"] if q["norme"]]
     if not issues:
         return plan, checked
@@ -269,7 +285,9 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
             refs = dg._refs_in(str(v.get("articolo") or "")) if isinstance(v, dict) else []
             if refs:
                 by_ref[refs[0]] = v
-        if any(_yes(by_ref.get(ref, {}).get("contraddice")) for ref in q["norme"]):
+        checked["kept_by_vote"] += [f"{n} {c} (contraddice)" for n, c in q["norme"]
+                                    if (n, c) in voted and _yes(by_ref.get((n, c), {}).get("contraddice"))]
+        if any(_yes(by_ref.get(ref, {}).get("contraddice")) for ref in q["norme"] if ref not in voted):
             checked["contradicted"].append(q["titolo"])
             removed_refs.update(q["norme"])
             continue
@@ -278,9 +296,11 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
         # heading names what the issue is about stays.
         judged_off = [ref for ref in q["norme"] if _no(by_ref.get(ref, {}).get("pertinente"))]
         kept_by_heading = [ref for ref in judged_off if _heading_shares_title(headings.get(ref, ""), q["titolo"])]
-        off = [ref for ref in judged_off if ref not in kept_by_heading]
+        kept_by_vote = [ref for ref in judged_off if ref in voted and ref not in kept_by_heading]
+        off = [ref for ref in judged_off if ref not in kept_by_heading and ref not in voted]
         checked["off_topic"] += [f"{n} {c}" for n, c in off]
         checked["kept_by_heading"] += [f"{n} {c}" for n, c in kept_by_heading]
+        checked["kept_by_vote"] += [f"{n} {c} (fuori tema)" for n, c in kept_by_vote]
         removed_refs.update(off)
         kept.append({**q, "norme": [ref for ref in q["norme"] if ref not in off]})
     if not kept:
@@ -307,8 +327,9 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     (check_plan); None on failure."""
     known = {r["_article"] for r in article_rows if r.get("_article")}
     headings = _headings(article_rows)
+    voted = [ref for ref in _voted(article_rows) if f"[art. {ref[0]} {ref[1]}]" in articles]
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
-                        _checks(analysis))
+                        _checks(analysis), voted)
     messages = [SystemMessage(content=_PLAN_SYSTEM), HumanMessage(content=human)]
     t0 = time.time()
     try:
@@ -330,7 +351,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         return None
     finally:
         dg.vlog("case_analysis_plan_llm", duration_ms=(time.time() - t0) * 1000)
-    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": []}
+    checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
     if plan:
         plan, checked = check_plan(plan, article_rows, headings)
     dg.vlog("case_analysis_plan", {
@@ -338,7 +359,8 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         "opposing": [o["argomento"] for o in opposing],
         "norme": sorted({f"{n} {c}" for q in (plan or {}).get("questioni", []) for n, c in q["norme"]}),
         "pronunce": sorted({p for q in (plan or {}).get("questioni", []) for p in q["pronunce"]}),
-        "removed": removed, "checked": checked, "references_available": len(references)})
+        "removed": removed, "checked": checked, "references_available": len(references),
+        "voted_offered": [f"{n} {c}" for n, c in voted]})
     if plan is None:
         logger.warning("plan-then-write: the plan has no usable issue, the parere is written in one call")
         return None

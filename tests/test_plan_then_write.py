@@ -214,7 +214,7 @@ def test_the_plan_check_drops_contradicted_issues_and_off_topic_articles(model):
     assert "Sì, a titolo contrattuale." not in model.section_call("Risposte ai quesiti")["human"]
     plan_log = [d for e, d in model.logged if e == "case_analysis_plan"][-1]
     assert plan_log["checked"] == {"off_topic": ["2051 c.c."], "contradicted": ["Responsabilità contrattuale della scuola"],
-                                   "kept_by_heading": []}
+                                   "kept_by_heading": [], "kept_by_vote": []}
     assert len([c for c in model.calls if "controlli il piano" in c["system"]]) == 2   # one call per issue
 
 
@@ -251,7 +251,7 @@ def test_a_failed_plan_check_keeps_the_plan(model):
     model.check_fails = True
     assert _write()
     assert [d for e, d in model.logged if e == "case_analysis_plan"][-1]["checked"] == \
-        {"off_topic": [], "contradicted": [], "kept_by_heading": []}
+        {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
 
 
 def test_a_plan_arguing_for_the_other_side_is_made_once_more(model):
@@ -288,3 +288,35 @@ def test_practical_checks_follow_the_method_lists_keys():
     assert checks[0].startswith("Avviso di conclusione delle indagini")       # posture first
     assert any("art. 116 c.p." in c for c in checks) and len(checks) == len(set(checks))
     assert practical_checklist.checks_for([], "") == []
+
+
+# --- VOTE_POOL_ENABLED: voted articles are offered to the plan and never removed by its check ----
+
+def _voted_articles():
+    return [dict(a, _vote=True, _vote_rank=1) if a["_article"] == ("2051", "c.c.") else a for a in ARTICLES]
+
+
+def test_voted_articles_are_offered_to_the_plan_and_survive_its_check(model):
+    model.check = {"2051 c.c.": {"pertinente": False}, "1218 c.c.": {"pertinente": False}}
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, _voted_articles(), RULINGS,
+                     "[art. 2051 c.c.]\nCiascuno è responsabile", "GIURISPRUDENZA", "", "it")
+    plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
+    assert "SU FATTI SIMILI (sono in NORME): [art. 2051 c.c.]" in plan_call["human"]
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert "Posizione della panchina (norme: art. 2051 c.c.;" in applied     # voted: kept although off-topic
+    plan_log = [d for e, d in model.logged if e == "case_analysis_plan"][-1]
+    assert plan_log["checked"]["off_topic"] == ["1218 c.c."]
+    assert plan_log["checked"]["kept_by_vote"] == ["2051 c.c. (fuori tema)"]
+    assert plan_log["voted_offered"] == ["2051 c.c."]
+
+
+def test_a_voted_article_judged_contradicted_does_not_drop_its_issue(model):
+    model.check = {"2051 c.c.": {"contraddice": True}}
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, _voted_articles(), RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    assert "La panchina era nello spazio di gioco." in model.section_call("Applicazione al caso")["human"]
+    plan_log = [d for e, d in model.logged if e == "case_analysis_plan"][-1]
+    assert plan_log["checked"]["contradicted"] == [] and plan_log["checked"]["kept_by_vote"] == ["2051 c.c. (contraddice)"]
+    plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
+    assert "SU FATTI SIMILI" not in plan_call["human"]    # not in the NORME block given: not offered

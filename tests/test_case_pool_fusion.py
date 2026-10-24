@@ -302,3 +302,46 @@ def test_pipeline_uses_fusion_only_when_both_flags_are_on(monkeypatch):
     monkeypatch.setenv("CASE_ANALYSIS_ENABLED", "true")
     dg.run_case_analysis_pipeline("facts", "it")
     assert calls == ["fusion"]   # both flags on
+
+
+# --- VOTE_POOL_ENABLED: the vote of the rulings on similar facts joins the pool ------------------
+
+def _voting(fusion_env, voted, how):
+    from src.rag import vote_pool
+    calls = []
+    fusion_env.setattr(vote_pool, "ruling_vote", lambda *a, **k: calls.append(1) or list(voted))
+    fusion_env.setenv("VOTE_POOL_ENABLED", "true")
+    fusion_env.setenv("VOTE_POOL_MODE", how)
+    return calls
+
+
+def test_the_vote_is_appended_after_the_cap_and_tagged(fusion_env):
+    many = [(str(100 + i), "c.p.") for i in range(20)]
+    fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: many)
+    _voting(fusion_env, [("101", "c.p."), ("1158", "c.c."), ("43", "c.p."), ("56", "c.p.")], "append:2")
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": []})
+    assert len(picked["selected"]) == dg._FUSION_POOL_CAP + 2
+    assert picked["selected"][-2:] == [("1158", "c.c."), ("43", "c.p.")]
+    tagged = {r["_article"] for r in picked["article_rows"] if r.get("_vote")}
+    assert tagged == {("101", "c.p."), ("1158", "c.c."), ("43", "c.p.")}   # 101: in the pool and in the vote's top 2
+    assert not any(r.get("_multi_signal") for r in picked["article_rows"] if r["_article"] == ("1158", "c.c."))
+
+
+def test_the_vote_merged_by_rank_can_enter_inside_the_cap(fusion_env):
+    many = [(str(100 + i), "c.p.") for i in range(20)]
+    fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: many)
+    _voting(fusion_env, [("1158", "c.c.")], "rrf:1:1")
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": []})
+    assert ("1158", "c.c.") in picked["selected"] and len(picked["selected"]) == dg._FUSION_POOL_CAP
+
+
+def test_no_vote_with_the_flag_off(fusion_env):
+    calls = _voting(fusion_env, [("1158", "c.c.")], "append:2")
+    fusion_env.setenv("VOTE_POOL_ENABLED", "false")
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": []})
+    assert calls == [] and ("1158", "c.c.") not in picked["selected"]
+
+
+def test_voted_rows_are_kept_by_the_prompt_like_multi_signal_ones():
+    row = {"_article": ("1158", "c.c."), "_vote": True}
+    assert dg._protected_article_row(row, set()) and dg._protection_rank(row, set()) == 3

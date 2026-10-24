@@ -2598,12 +2598,13 @@ def _protected_article_row(row: Dict[str, Any], named: set) -> bool:
     or found by two or more independent signals."""
     from .nodes.cypher import CROSSREF_SOURCE
     return bool(row.get("_article") in named or row.get("_source") == CROSSREF_SOURCE
-                or row.get("_heading_match") or row.get("_multi_signal"))
+                or row.get("_heading_match") or row.get("_multi_signal") or row.get("_vote"))
 
 
 def _protection_rank(row: Dict[str, Any], named: set) -> int:
     """How strongly a row is protected, for the last-resort trim: 0 named in the case,
-    1 matched by its heading, 2 cross-referenced, 3 found by several signals, 4 none."""
+    1 matched by its heading, 2 cross-referenced, 3 found by several signals or voted by
+    similar rulings (VOTE_POOL_ENABLED), 4 none."""
     from .nodes.cypher import CROSSREF_SOURCE
     if row.get("_article") in named:
         return 0
@@ -2611,7 +2612,7 @@ def _protection_rank(row: Dict[str, Any], named: set) -> int:
         return 1
     if row.get("_source") == CROSSREF_SOURCE:
         return 2
-    return 3 if row.get("_multi_signal") else 4
+    return 3 if row.get("_multi_signal") or row.get("_vote") else 4
 
 
 _LAST_RESORT_CHARS = 500
@@ -3170,16 +3171,31 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     signals = [current_refs, baseline_refs, distill_refs] + ([frame_refs] if frame_refs else [])
     hits, best_rank = _fusion_hits_and_best_rank(*signals)
     fused = sorted(hits, key=lambda ref: (-hits[ref], best_rank[ref]))
+    # VOTE_POOL_ENABLED: the articles the rulings most similar to the case's facts cite
+    # (vote_pool.py), joined as VOTE_POOL_MODE says: appended after the cap, or merged into
+    # the ranking before it. Never a signal of its own: a voted article is not multi-signal.
+    from . import vote_pool
+    voted, how = [], None
+    if vote_pool.enabled():
+        voted, how = vote_pool.ruling_vote(session, driver, database, case, _CASE_POOL_VECTOR_INDEX), vote_pool.mode()
     # Exempt from the cap regardless of rank: found by two or more signals,
     # or resolved by the article's own rubrica (heading_matched) -- a
     # single-signal text-search hit is the only thing the cap should ever
     # bound. The cap only bounds how many of those fill the rest.
     not_keep = [ref for ref in fused if ref not in keep]
-    exempt_from_cap = {ref for ref in not_keep if hits[ref] >= 2} | (heading_matched & set(not_keep))
+    if voted and how[0] == "rrf":
+        not_keep = [ref for ref in vote_pool.weighted_rrf(not_keep, voted, how[1], how[2]) if ref not in keep]
+    exempt_from_cap = {ref for ref in not_keep if hits.get(ref, 0) >= 2} | (heading_matched & set(not_keep))
     survives_cap = [ref for ref in not_keep if ref in exempt_from_cap]
     fill = [ref for ref in not_keep if ref not in exempt_from_cap]
     capped = survives_cap + fill[:_FUSION_POOL_CAP]
+    added = vote_pool.new_votes(voted, set(keep) | set(capped), how[1]) if voted and how[0] == "append" else []
+    capped += added
     selected = keep + capped
+    vote_tagged = vote_pool.tagged(voted, selected, added, how) if voted else set()
+    if voted:
+        vlog("case_pool_vote_cut", {"mode": ":".join(str(p) for p in how), "added": [f"{n} {c}" for n, c in added],
+                                    "tagged": sorted(f"{n} {c}" for n, c in vote_tagged)})
 
     candidate_rows = _fetch_any(session, documents, selected)
     for row in candidate_rows:
@@ -3192,6 +3208,11 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
             # re-fetched by ref, not reused from v2's own rows) -- re-applied
             # by ref so the applicability exemption still reaches it.
             row["_heading_match"] = True
+        if ref in vote_tagged:
+            # Voted by similar rulings (VOTE_POOL_ENABLED): still checked for applicability;
+            # kept by the prompt's trimming like a multi-signal row; never removed by the plan check.
+            row["_vote"] = True
+            row["_vote_rank"] = voted.index(ref) + 1
     article_rows = sorted((r for r in candidate_rows if r.get("_article") in selected),
                           key=lambda r: selected.index(r["_article"]))
     have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name")) for r in article_rows}
@@ -3954,6 +3975,10 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # final, before both the citations and the draft prompt use them.
     if feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
         article_rows = _filter_applicable_articles(facts, request, article_rows)
+    voted_kept = sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in article_rows
+                         if r.get("_vote") and r.get("_article")})
+    if voted_kept:
+        vlog("case_pool_vote_kept", {"kept": voted_kept})   # voted articles past the applicability check
 
     principles = _extract_principles(facts, analysis, ruling_rows, request)
     system = _parere_system(analysis, session_lang)

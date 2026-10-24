@@ -16,8 +16,9 @@ Prints only status, sizes and timings, never the document's or the answer's text
   - the draft prompt: estimated tokens, budget, trim step, articles dropped to fit;
   - the answer's length and citation count, and the total time.
 
-The document is an upload (--document-id) or a local file read as an upload is (--file:
-.pdf/.docx/.txt). --save writes the report AND the answer's text to a JSON file, to compare
+The document is an upload (--document-id), a local file read as an upload is (--file:
+.pdf/.docx/.txt), or an eval case's question sent as the chat sends a message with no
+document (--case c1: tests/eval_narrative_cases.json). --save writes the report AND the answer's text to a JSON file, to compare
 two runs side by side: for test cases (the PM's of 23 Oct), not users' documents.
 
 Run from the folder whose code you want to test, with the live .env:
@@ -73,10 +74,25 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
             checked = data.get("checked")
             if checked is not None:
                 out.append(f"plan check: off-topic {', '.join(checked.get('off_topic') or []) or '-'}; "
-                           f"contradicted {'; '.join(checked.get('contradicted') or []) or '-'}")
+                           f"contradicted {'; '.join(checked.get('contradicted') or []) or '-'}"
+                           + (f"; kept as voted {', '.join(checked['kept_by_vote'])}"
+                              if checked.get("kept_by_vote") else ""))
         elif event in ("case_analysis_plan_llm", "case_analysis_plan_check_llm", "case_analysis_sections_llm",
                        "case_analysis_draft_llm") and duration is not None:
             out.append(f"{event[len('case_analysis_'):-len('_llm')]} call: {duration / 1000:.1f}s")
+        elif event == "case_pool_vote":
+            took = f", {duration / 1000:.1f}s" if duration is not None else ""
+            if data.get("skipped") or data.get("error"):
+                out.append(f"vote: {data.get('skipped') or data.get('error')}{took}")
+            else:
+                out.append(f"vote ({data.get('mode')}, K {data.get('k')}): {data.get('rulings')} rulings, "
+                           f"{data.get('carded')} carded{took}; top: {', '.join(data.get('top') or []) or '-'}")
+        elif event == "case_pool_vote_cut":
+            out.append(f"vote in the pool: added {', '.join(data.get('added') or []) or '-'}; "
+                       f"tagged _vote {', '.join(data.get('tagged') or []) or '-'}")
+        elif event == "case_pool_vote_idf":
+            out.append(f"vote IDF counts: {'ready' if data.get('ready') else 'FAILED'}"
+                       + (f", {duration / 1000:.0f}s" if duration is not None else ""))
         elif event == "case_analysis_prompt_tokens":
             out.append(f"draft prompt: {data.get('total')} est. tokens, budget {data.get('budget')}, "
                        f"step {data.get('step')}, dropped to fit {data.get('dropped_for_size', '-')}, "
@@ -84,7 +100,34 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
     if isinstance(result, dict):
         out.append(f"answer: {len(result.get('draft') or '')} characters, "
                    f"{len(result.get('citations') or [])} citations")
+    out += vote_trace(events, (result or {}).get("draft") if isinstance(result, dict) else "")
     return out
+
+
+def vote_trace(events: list, draft: str) -> list:
+    """Each article the vote put in the pool (VOTE_POOL_ENABLED): past the applicability check,
+    in the draft prompt, offered to the plan, in the plan, in the answer's text. [] without a vote."""
+    def last(name):
+        found = [d or {} for e, d, _ in events if e == name]
+        return found[-1] if found else None
+    cut = last("case_pool_vote_cut")
+    if not cut or not cut.get("tagged"):
+        return []
+    kept = set((last("case_pool_vote_kept") or {}).get("kept") or [])
+    left_out = set((last("case_analysis_prompt_tokens") or {}).get("articles_left_out") or [])
+    plan = last("case_analysis_plan") or {}
+    offered, in_plan = set(plan.get("voted_offered") or []), set(plan.get("norme") or [])
+    from src.rag.defensive_generation import _refs_in
+    in_answer = {f"{n} {c}" for n, c in _refs_in(draft or "")}
+    lines = ["voted article: applicable / prompt / offered to plan / plan / answer"]
+    for label in cut["tagged"]:
+        marks = [label in kept, label in kept and label not in left_out, label in offered, label in in_plan,
+                 label in in_answer]
+        lines.append(f"  {label:<16s} " + " / ".join("yes" if m else "no" for m in marks)
+                     + ("  (added by the vote)" if label in (cut.get("added") or []) else ""))
+    if not plan:
+        lines.append("  (no plan: PLAN_THEN_WRITE off or the plan failed)")
+    return lines
 
 
 def saved_run(code: str, request: str, status: str, elapsed: float, lines: list, events: list, result) -> dict:
@@ -115,6 +158,7 @@ def main() -> None:
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--document-id", help="a user_documents id")
     source.add_argument("--file", help="a local .pdf/.docx/.txt, read as an upload is")
+    source.add_argument("--case", help="an eval case id (tests/eval_narrative_cases.json), sent as a chat message")
     parser.add_argument("--request", default=DEFAULT_REQUEST, help="the user's message (default: a generic one)")
     parser.add_argument("--lang", default="it")
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
@@ -136,13 +180,20 @@ def main() -> None:
 
     events = []
     dg.vlog = lambda event, data=None, *a, **k: events.append((event, data, k.get("duration_ms")))
-    try:   # the ruling cards log through their own module's vlog (code from 8b76262 on)
-        import src.rag.ruling_cards as cards_module
-        cards_module.vlog = dg.vlog
-    except ImportError:
-        pass
+    for module in ("ruling_cards", "vote_pool"):   # modules that log through their own vlog
+        try:
+            setattr(__import__(f"src.rag.{module}", fromlist=["vlog"]), "vlog", dg.vlog)
+        except ImportError:
+            pass
 
-    if args.file:
+    request = args.request
+    if args.case:
+        cases = {c["id"]: c for c in json.load(open(os.path.join(os.getcwd(), "tests", "eval_narrative_cases.json"),
+                                                     encoding="utf-8"))["cases"]}
+        if args.case not in cases:
+            sys.exit(f"no case {args.case!r} in tests/eval_narrative_cases.json")
+        text = request = cases[args.case]["question"]   # the chat with no document: the message is both
+    elif args.file:
         from src.utils.document import extract_text_from_file
         text = extract_text_from_file(args.file)
     else:
@@ -150,7 +201,7 @@ def main() -> None:
     t0 = time.time()
     result = None
     try:
-        result = dg.run_defensive_pipeline(text, args.request, args.lang)
+        result = dg.run_defensive_pipeline(text, request, args.lang)
         status = "ok"
     except Exception as exc:
         status = f"ERROR {type(exc).__name__}: {str(exc)[:160]}"
@@ -158,7 +209,7 @@ def main() -> None:
     lines = summarise(events, status, result, elapsed, len(text))
     print("\n".join(lines))
     if args.save:
-        record = saved_run(os.path.abspath(dg.__file__), args.request, status, elapsed, lines, events, result)
+        record = saved_run(os.path.abspath(dg.__file__), request, status, elapsed, lines, events, result)
         record["settings"] = args.set
         with open(args.save, "w", encoding="utf-8") as fh:
             json.dump(record, fh, ensure_ascii=False, indent=1, default=str)

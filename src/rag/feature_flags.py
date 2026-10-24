@@ -97,6 +97,16 @@ else falls back to the default, so a typo never switches a feature on.
                                 central articles, keywords and the client's
                                 side; each passage led by the card's outcome,
                                 side and verified quote. See ruling_cards.py.
+  VOTE_POOL_ENABLED            false (acts in the fusion pool, CASE_POOL_FUSION_
+                                ENABLED): the articles cited by the rulings most
+                                similar to the case's facts, IDF-weighted (the
+                                cards' applied ones where a ruling has a card),
+                                joined to the pool as VOTE_POOL_MODE says
+                                (append:N or rrf:W_POOL:W_VOTE); VOTE_POOL_K
+                                rulings' sections per channel, VOTE_POOL_IDF_
+                                FILE for the counts. Tagged _vote: checked for
+                                applicability, never removed by the plan check.
+                                See vote_pool.py.
   QUALIFICATION_CHECK_ENABLED  false: every cited article outside the case's
                                 area/posture lists is checked, by its real
                                 heading, against the use the draft makes of

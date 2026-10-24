@@ -241,6 +241,7 @@ import eval_narrative as ev  # noqa: E402  (tests/eval_narrative.py: art_of, cod
 from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 
 import src.rag.defensive_generation as dg  # noqa: E402
+from src.rag import vote_pool  # noqa: E402
 from src.rag.ai_chat import embedding_model  # noqa: E402
 from src.rag.lookups import _sanitize_fulltext_query  # noqa: E402
 
@@ -1117,18 +1118,9 @@ def _card_refs(card):
     return list(dict.fromkeys(refs))
 
 
-def _ruling_sims(vector_rows, fulltext_rows):
-    """{ruling id: similarity}: each channel's scores divided by its best, so both run 0..1
-    (a cosine and a Lucene score are not comparable), a ruling's best section over both."""
-    sims = {}
-    for rows in (vector_rows, fulltext_rows):
-        top = max((r.get("score") or 0 for r in rows), default=0)
-        if top <= 0:
-            continue
-        for r in rows:
-            if r.get("doc_id"):
-                sims[r["doc_id"]] = max(sims.get(r["doc_id"], 0.0), (r.get("score") or 0) / top)
-    return sims
+# Shared with the live pool (VOTE_POOL_ENABLED), as _merge_best_rank is with fusion: one
+# similarity rule and one vote, so what is measured here is what runs.
+_ruling_sims = vote_pool.ruling_sims
 
 
 def _idf_table(n_rulings, df_rows):
@@ -1136,14 +1128,7 @@ def _idf_table(n_rulings, df_rows):
     return {_vote_ref(a, c): math.log(n_rulings / df) for c, a, df in df_rows if df}
 
 
-def _vote(sims, refs_by_ruling, idf, default_idf):
-    """Articles by sum over the rulings voting for them of sim x IDF, best first (ties by ref).
-    An article missing from the IDF table (a card's article no CITES edge has) counts as cited once."""
-    scores = {}
-    for ruling, sim in sims.items():
-        for ref in refs_by_ruling.get(ruling) or ():
-            scores[ref] = scores.get(ref, 0.0) + sim * idf.get(ref, default_idf)
-    return sorted((r for r in scores if scores[r] > 0), key=lambda r: (-scores[r], r))
+_vote = vote_pool.vote
 
 
 def _hit_labels(ranked, expected, k=None):
