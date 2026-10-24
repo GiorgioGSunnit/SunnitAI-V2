@@ -3968,7 +3968,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
     vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "pool_fusion": pool_fusion,
-                                     "articles": len(article_rows), "rulings": len(ruling_rows)},
+                                     "articles": len(article_rows), "rulings": len(ruling_rows),
+                                     "article_refs": sorted({f"{r['_article'][0]} {r['_article'][1]}"
+                                                             for r in article_rows if r.get("_article")})},
         duration_ms=(time.time() - retrieval_t0) * 1000)
 
     # Per-article applicability (round 3, item 3): off unless

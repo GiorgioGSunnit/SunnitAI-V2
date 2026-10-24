@@ -97,6 +97,13 @@ else falls back to the default, so a typo never switches a feature on.
                                 central articles, keywords and the client's
                                 side; each passage led by the card's outcome,
                                 side and verified quote. See ruling_cards.py.
+  PLAN_KEEP_APPLICABLE_ENABLED false (acts with PLAN_THEN_WRITE_ENABLED): the plan
+                                keeps every article the applicability check let
+                                through (in the case's areas): placed under an
+                                issue or in a last "Altre norme rilevanti" one,
+                                never removed by the plan check, up to 7 issues,
+                                each discussed by name in sections 3 and 4.
+                                See plan_then_write.py.
   VOTE_POOL_ENABLED            false (acts in the fusion pool, CASE_POOL_FUSION_
                                 ENABLED): the articles cited by the rulings most
                                 similar to the case's facts, IDF-weighted (the

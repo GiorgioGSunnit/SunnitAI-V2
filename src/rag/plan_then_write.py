@@ -28,6 +28,19 @@ burglary case's procedural question got "processo ordinario".
 
 Any failure (no plan, a plan without an argued issue, a section failing twice) returns None:
 the pipeline then writes the parere in one call, as before.
+
+PLAN_KEEP_APPLICABLE_ENABLED (heldout2, 24 Oct: MENTIONED 12.7/35 with the plan, 16.0 without; n4's
+95/98 d.lgs. 36/2023 and sempronio's 581/582 lost): the plan keeps the breadth of the articles the
+applicability check let through (_applicable: judged applicabile or alternativa, or exempt from it --
+named in the case, found by their heading, cross-referenced -- in the case's areas). The plan is told
+to place each under the issue it governs; the plan check never removes them (as the _vote ones);
+those the plan left out make a last issue, "Altre norme rilevanti"; up to _MAX_ISSUES_WIDE issues when
+_WIDE_APPLICABLE or more are applicable; sections 3 and 4 discuss every article of the plan by number
+and code. Logged as case_analysis_plan_applicable: placed by the plan, added to the last issue.
+
+The plan's articles are read back against the articles it was given (_refs_of), so a law named in
+full ("art. 95 Codice degli Appalti 2026", the identifier the plan is shown) is not removed as
+unreadable, as dg._refs_in alone did with every non-code law (d.lgs. 36/2023, l. 241, TUEL...).
 """
 
 import json
@@ -46,6 +59,10 @@ logger = logging.getLogger(__name__)
 
 _PLAN_TOKENS = 2000
 _MAX_ISSUES = 5
+KEEP_APPLICABLE_FLAG = "PLAN_KEEP_APPLICABLE_ENABLED"
+_MAX_ISSUES_WIDE, _WIDE_APPLICABLE = 7, 8
+OTHER_NORMS_TITLE = "Altre norme rilevanti"
+_ISSUE_COUNT_WORDS = {5: "cinque", 7: "sette"}
 
 _PLAN_SYSTEM = (
     "Sei un avvocato italiano con lunga esperienza di contenzioso. Prima di scrivere un parere ne prepari il "
@@ -83,6 +100,10 @@ _PLAN_SYSTEM = (
     '"subordinate": ["..."], "punti_deboli": ["..."]}\n'
     "Le questioni, da due a cinque, in ordine di forza per la parte assistita."
 )
+
+def _plan_system(max_issues: int = _MAX_ISSUES) -> str:
+    return _PLAN_SYSTEM.replace("da due a cinque", f"da due a {_ISSUE_COUNT_WORDS.get(max_issues, max_issues)}")
+
 
 _PLAN_CHECK_SYSTEM = (
     "Sei un giurista e controlli il piano di un parere prima che venga scritto. Ricevi una questione del piano "
@@ -152,7 +173,21 @@ def _matching_reference(text: str, references: Dict[str, List[Dict[str, Any]]]) 
     return None
 
 
-def clean_plan(raw: Any, known: set, references: Dict[str, List[Dict[str, Any]]]) -> Tuple[Optional[dict], dict]:
+def _refs_of(text: str, known: set) -> List[tuple]:
+    """The articles a plan item names: by sigla (dg._refs_in), and the known articles of a law
+    named in full ("art. 95 Codice degli Appalti 2026", as NORME labels them), which
+    dg._refs_in cannot read."""
+    refs = dg._refs_in(text)
+    low = (text or "").lower()
+    for number, code in known:
+        if code not in dg._CODE_PREFIXES and (number, code) not in refs and code.lower() in low \
+                and re.search(rf"(?<![\w-]){re.escape(number)}(?![\w-])", text or "", re.IGNORECASE):
+            refs.append((number, code))
+    return refs
+
+
+def clean_plan(raw: Any, known: set, references: Dict[str, List[Dict[str, Any]]],
+               max_issues: int = _MAX_ISSUES) -> Tuple[Optional[dict], dict]:
     """(plan, removed): the model's plan with only articles among `known` and rulings among
     `references`; issues without an argument dropped. None when no argued issue is left."""
     removed: Dict[str, List[str]] = {"norme": [], "pronunce": []}
@@ -164,7 +199,7 @@ def clean_plan(raw: Any, known: set, references: Dict[str, List[Dict[str, Any]]]
             continue
         norme: List[tuple] = []
         for item in _texts(q.get("norme")):
-            refs = dg._refs_in(item)
+            refs = _refs_of(item, known)
             if not refs:
                 removed["norme"].append(item)
             for ref in refs:
@@ -189,7 +224,7 @@ def clean_plan(raw: Any, known: set, references: Dict[str, List[Dict[str, Any]]]
                if isinstance(a, dict) and _text(a.get("risposta"))]
     return {"parte_assistita": _text(raw.get("parte_assistita")), "posizione": _text(raw.get("posizione")),
             "obiettivo": _text(raw.get("obiettivo")), "questione_centrale": _text(raw.get("questione_centrale")),
-            "risposte": answers, "questioni": issues[:_MAX_ISSUES],
+            "risposte": answers, "questioni": issues[:max_issues],
             "subordinate": _texts(raw.get("subordinate")), "punti_deboli": _texts(raw.get("punti_deboli"))}, removed
 
 
@@ -200,16 +235,58 @@ def _voted(article_rows: List[Dict[str, Any]]) -> List[tuple]:
     return list(dict.fromkeys(r["_article"] for r in rows))
 
 
+def _applicable(article_rows: List[Dict[str, Any]], facts: str, request: str, analysis: Dict[str, Any]) -> List[tuple]:
+    """PLAN_KEEP_APPLICABLE_ENABLED: the articles the applicability check let through -- judged
+    applicabile or alternativa, or exempt from it (named in the case, found by their heading,
+    cross-referenced) -- whose code belongs to the case's areas or is named in its text
+    (vote_pool's area rule), in the pipeline's order."""
+    from . import vote_pool
+    from .nodes.cypher import CROSSREF_SOURCE
+    case = dg._case_text(facts, request)
+    named = set(dg._refs_in(case))
+    allowed = vote_pool.allowed_codes(vote_pool.case_areas(analysis), vote_pool.named_codes(case))
+    out = []
+    for row in article_rows:
+        ref = row.get("_article")
+        if not ref or ref in out:
+            continue
+        through = row.get("_applicability") in ("applicabile", "alternativa") or ref in named \
+            or row.get("_heading_match") or row.get("_source") == CROSSREF_SOURCE
+        in_area = allowed is None or ref[1] not in vote_pool.MAIN_CODES or ref[1] in allowed
+        if through and in_area:
+            out.append(ref)
+    return out
+
+
+def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Dict[str, Any], List[tuple], List[tuple]]:
+    """(plan, placed, added): the applicable articles no issue holds, as a last issue."""
+    held = {ref for q in plan["questioni"] for ref in q["norme"]}
+    placed = [ref for ref in applicable if ref in held]
+    added = [ref for ref in applicable if ref not in held]
+    if added:
+        plan = {**plan, "questioni": plan["questioni"] + [{
+            "titolo": OTHER_NORMS_TITLE, "norme": added, "pronunce": [],
+            "argomento": "Le altre norme che si applicano ai fatti del caso, da esaminare una per una: che cosa "
+                         "prevedono e come incidono sulla posizione della parte assistita.",
+            "obiezione": "", "replica": ""}]}
+    return plan, placed, added
+
+
 def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str,
-                principles: str, checks: List[str], voted: Optional[List[tuple]] = None) -> str:
+                principles: str, checks: List[str], voted: Optional[List[tuple]] = None,
+                applicable: Optional[List[tuple]] = None) -> str:
     base = dg._parere_human(facts, analysis, articles, rulings, request, principles)
     base = base[:base.rfind("Redigi ora il parere.")].rstrip() if "Redigi ora il parere." in base else base
     verifiche = "\n".join(f"- {c}" for c in checks)
     # VOTE_POOL_ENABLED: the articles the rulings on similar facts cite, for the plan to weigh
     # issue by issue (prod, 24 Oct: 1158, 1218, 1453, 56, 378 ... found only this way).
     votate = ", ".join(f"[art. {n} {c}]" for n, c in voted or [])
+    applicabili = ", ".join(f"[art. {n} {c}]" for n, c in applicable or [])
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
+            + (f"NORME APPLICABILI AI FATTI: {applicabili}. Metti ciascuna tra le norme della questione che "
+               "disciplina; quelle che non disciplinano nessuna questione saranno trattate a parte, alla fine.\n\n"
+               if applicabili else "")
             + (f"NORME APPLICATE DALLA GIURISPRUDENZA SU FATTI SIMILI (sono in NORME): {votate}. Per ogni "
                "questione valuta se una di queste la disciplina, leggendone rubrica e testo; se sì, mettila tra "
                "le sue norme, altrimenti lasciala fuori.\n\n" if votate else "")
@@ -252,16 +329,23 @@ def _issue_check(issue: Dict[str, Any], article_rows: List[Dict[str, Any]], head
                          max_tokens=150 + 120 * len(issue["norme"]), temperature=0)
 
 
-def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
-               headings: Dict[tuple, str]) -> Tuple[Optional[Dict[str, Any]], dict]:
+def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], headings: Dict[tuple, str],
+               protected: Optional[List[tuple]] = None) -> Tuple[Optional[Dict[str, Any]], dict]:
     """(plan, checked): each issue's articles checked in parallel against their heading and text.
     Off-topic articles are removed; an issue whose argument contradicts its article is dropped;
     answers and subordinate requests naming a removed article go too (the writer then answers
     from the issues). A failed check keeps its issue as it was. None when no issue is left.
     An article voted by similar rulings (_vote) is never removed and never drops its issue:
-    the verdict is only logged ("kept_by_vote")."""
+    the verdict is only logged ("kept_by_vote"); so is one of `protected` (PLAN_KEEP_APPLICABLE_
+    ENABLED's applicable articles, "kept_as_applicable")."""
     checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
+    if protected is not None:
+        checked["kept_as_applicable"] = []
     voted = set(_voted(article_rows))
+    keepers = voted | set(protected or ())
+
+    def keep_log(ref):
+        return checked["kept_by_vote"] if ref in voted else checked["kept_as_applicable"]
     issues = [q for q in plan["questioni"] if q["norme"]]
     if not issues:
         return plan, checked
@@ -282,12 +366,13 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
         verdicts = results.get(id(q))
         by_ref = {}
         for v in verdicts if isinstance(verdicts, list) else []:
-            refs = dg._refs_in(str(v.get("articolo") or "")) if isinstance(v, dict) else []
+            refs = _refs_of(str(v.get("articolo") or ""), set(q["norme"])) if isinstance(v, dict) else []
             if refs:
                 by_ref[refs[0]] = v
-        checked["kept_by_vote"] += [f"{n} {c} (contraddice)" for n, c in q["norme"]
-                                    if (n, c) in voted and _yes(by_ref.get((n, c), {}).get("contraddice"))]
-        if any(_yes(by_ref.get(ref, {}).get("contraddice")) for ref in q["norme"] if ref not in voted):
+        for n, c in q["norme"]:
+            if (n, c) in keepers and _yes(by_ref.get((n, c), {}).get("contraddice")):
+                keep_log((n, c)).append(f"{n} {c} (contraddice)")
+        if any(_yes(by_ref.get(ref, {}).get("contraddice")) for ref in q["norme"] if ref not in keepers):
             checked["contradicted"].append(q["titolo"])
             removed_refs.update(q["norme"])
             continue
@@ -296,11 +381,12 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
         # heading names what the issue is about stays.
         judged_off = [ref for ref in q["norme"] if _no(by_ref.get(ref, {}).get("pertinente"))]
         kept_by_heading = [ref for ref in judged_off if _heading_shares_title(headings.get(ref, ""), q["titolo"])]
-        kept_by_vote = [ref for ref in judged_off if ref in voted and ref not in kept_by_heading]
-        off = [ref for ref in judged_off if ref not in kept_by_heading and ref not in voted]
+        kept_as_keepers = [ref for ref in judged_off if ref in keepers and ref not in kept_by_heading]
+        off = [ref for ref in judged_off if ref not in kept_by_heading and ref not in keepers]
         checked["off_topic"] += [f"{n} {c}" for n, c in off]
         checked["kept_by_heading"] += [f"{n} {c}" for n, c in kept_by_heading]
-        checked["kept_by_vote"] += [f"{n} {c} (fuori tema)" for n, c in kept_by_vote]
+        for n, c in kept_as_keepers:
+            keep_log((n, c)).append(f"{n} {c} (fuori tema)")
         removed_refs.update(off)
         kept.append({**q, "norme": [ref for ref in q["norme"] if ref not in off]})
     if not kept:
@@ -309,7 +395,7 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
     gone = removed_refs - still_used
 
     def names_gone(text: str) -> bool:
-        return any(ref in gone for ref in dg._refs_in(text))
+        return any(ref in gone for ref in _refs_of(text, gone))
 
     answers = [] if checked["contradicted"] else [a for a in plan["risposte"] if not names_gone(a["risposta"])]
     return {**plan, "questioni": kept, "risposte": answers,
@@ -328,13 +414,17 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     known = {r["_article"] for r in article_rows if r.get("_article")}
     headings = _headings(article_rows)
     voted = [ref for ref in _voted(article_rows) if f"[art. {ref[0]} {ref[1]}]" in articles]
+    keep_all = dg.feature_flags.enabled(KEEP_APPLICABLE_FLAG)
+    applicable = _applicable(article_rows, facts, request, analysis) if keep_all else []
+    max_issues = _MAX_ISSUES_WIDE if len(applicable) >= _WIDE_APPLICABLE else _MAX_ISSUES
+    system = _plan_system(max_issues)
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
-                        _checks(analysis), voted)
-    messages = [SystemMessage(content=_PLAN_SYSTEM), HumanMessage(content=human)]
+                        _checks(analysis), voted, applicable)
+    messages = [SystemMessage(content=system), HumanMessage(content=human)]
     t0 = time.time()
     try:
         raw = dg._chat_json(messages, max_tokens=_PLAN_TOKENS, temperature=0)
-        plan, removed = clean_plan(raw, known, references)
+        plan, removed = clean_plan(raw, known, references, max_issues)
         opposing = dg._opposing_arguments(facts, request, analysis, _arguments_text(plan)) if plan else []
         if opposing:
             listing = "\n".join(f"- {o['argomento']}: {o['perche']}" for o in opposing)
@@ -343,9 +433,9 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
                      f"{listing}\n\nRifai il piano: ogni argomento deve escludere, ridurre o contrastare la "
                      "responsabilità o la pretesa contro la parte assistita, o sostenerne la pretesa; un fatto "
                      "che favorisce la controparte va trattato come obiezione da superare.")
-            raw = dg._chat_json([SystemMessage(content=_PLAN_SYSTEM), HumanMessage(content=retry)],
+            raw = dg._chat_json([SystemMessage(content=system), HumanMessage(content=retry)],
                                 max_tokens=_PLAN_TOKENS, temperature=0)
-            plan, removed = clean_plan(raw, known, references)
+            plan, removed = clean_plan(raw, known, references, max_issues)
     except Exception as exc:
         logger.warning("plan-then-write: no plan, the parere is written in one call: %s", exc)
         return None
@@ -353,7 +443,12 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         dg.vlog("case_analysis_plan_llm", duration_ms=(time.time() - t0) * 1000)
     checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
     if plan:
-        plan, checked = check_plan(plan, article_rows, headings)
+        plan, checked = check_plan(plan, article_rows, headings, applicable if keep_all else None)
+    if plan and keep_all:
+        plan, placed, added = _with_other_norms(plan, applicable)
+        dg.vlog("case_analysis_plan_applicable", {
+            "applicable": [f"{n} {c}" for n, c in applicable], "max_issues": max_issues,
+            "placed": [f"{n} {c}" for n, c in placed], "added_to_last_issue": [f"{n} {c}" for n, c in added]})
     dg.vlog("case_analysis_plan", {
         "issues": len(plan["questioni"]) if plan else 0, "replanned": bool(opposing),
         "opposing": [o["argomento"] for o in opposing],
@@ -449,8 +544,9 @@ def _facts_list(analysis: Dict[str, Any]) -> str:
 
 def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[str, Any],
                  article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]],
-                 principles: str) -> List[Tuple[str, str, str, int]]:
-    """(title, instruction, material, max_tokens) for each section, in order."""
+                 principles: str, keep_all: bool = False) -> List[Tuple[str, str, str, int]]:
+    """(title, instruction, material, max_tokens) for each section, in order. With keep_all
+    (PLAN_KEEP_APPLICABLE_ENABLED) sections 3 and 4 discuss every article of the plan by name."""
     party = plan["parte_assistita"] or "la parte assistita"
     case = f"CASO:\n{dg._case_text(facts, request)}"
     frame = analysis.get("frame") or {}
@@ -471,6 +567,11 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
 
     def block(title: str, body: str) -> str:
         return f"{title}:\n{body}" if body.strip() else ""
+    every = (" Esamina una per una TUTTE le norme del PIANO, nessuna esclusa, ciascuna indicata con numero e "
+             "codice o legge come nel PIANO (\"art. 95 Codice degli Appalti 2026\", \"art. 1784 c.c.\")."
+             if keep_all else "")
+    every_issue = (f" Per la questione \"{OTHER_NORMS_TITLE}\", una o due frasi per ciascuna norma, con numero e "
+                   "codice, su come si applica ai fatti." if keep_all else "")
 
     def material(*parts: str) -> str:
         return "\n\n".join(p for p in parts if p)
@@ -494,20 +595,21 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "SEZIONE: Norme e giurisprudenza. Per ogni norma del PIANO: che cosa stabilisce, citando il testo "
          "fornito, e come si ripartisce l'onere della prova; per ogni pronuncia del PIANO: il principio che "
          "afferma, con il suo riferimento, e che cosa comporta per questo caso, senza svolgere gli argomenti "
-         "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti.",
+         "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti."
+         + every,
          material(case, _plan_text(plan),
                   block("TESTI DELLE NORME", texts(refs, per_article(15000, dg._ARTICLE_CHARS))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 1200)),
-                  block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1200),
+                  block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1600 if keep_all else 1200),
         (SECTION_TITLES[3],
          "SEZIONE: Applicazione al caso. Per ogni questione del PIANO, nell'ordine, con un sottotitolo: "
          f"l'argomento di {party} applicato ai fatti del caso, con le norme e le pronunce del piano; le prove da "
          "acquisire; l'obiezione più forte della controparte e la replica. Poi le tesi subordinate del PIANO. "
          "Prosa, senza ripetere per ogni questione lo stesso schema a voci; tra virgolette solo frasi dei testi e "
-         "dei passi forniti.",
+         "dei passi forniti." + every_issue,
          material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan, issues="full", subordinate=True),
                   block("TESTI DELLE NORME", texts(refs, per_article(9000, 600))),
-                  block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 600))), 1800),
+                  block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 600))), 2200 if keep_all else 1800),
         (SECTION_TITLES[4],
          "SEZIONE: Profili processuali e termini. La fase in cui si trova la vicenda e che cosa consente di fare "
          f"a {party}: gli atti da compiere e i loro termini, con l'articolo che li prevede; a chi rivolgersi o chi "
@@ -579,7 +681,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if plan is None:
         return None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
-                                                 principles), lang)
+                                                 principles, dg.feature_flags.enabled(KEEP_APPLICABLE_FLAG)), lang)
     if sections is None:
         return None
     return "\n\n".join(f"**{i}. {title}**\n\n{text}" for i, (title, text) in enumerate(sections, 1))

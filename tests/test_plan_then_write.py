@@ -320,3 +320,68 @@ def test_a_voted_article_judged_contradicted_does_not_drop_its_issue(model):
     assert plan_log["checked"]["contradicted"] == [] and plan_log["checked"]["kept_by_vote"] == ["2051 c.c. (contraddice)"]
     plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
     assert "SU FATTI SIMILI" not in plan_call["human"]    # not in the NORME block given: not offered
+
+
+# --- the plan reads back a law named in full; PLAN_KEEP_APPLICABLE_ENABLED keeps breadth ------------
+
+APPALTI = "Codice degli Appalti 2026"
+
+
+def test_a_law_named_in_full_is_read_back_not_removed():
+    known = {("95", APPALTI), ("98", APPALTI), ("1218", "c.c.")}
+    assert ptw._refs_of("art. 95 Codice degli Appalti 2026", known) == [("95", APPALTI)]
+    assert ptw._refs_of("art. 1218 c.c.", known) == [("1218", "c.c.")]
+    plan, removed = ptw.clean_plan({"questioni": [{"titolo": "Esclusione", "argomento": "x",
+                                                  "norme": ["art. 98 Codice degli Appalti 2026", "art. 5 d.lgs. 9"]}]},
+                                   known, {})
+    assert plan["questioni"][0]["norme"] == [("98", APPALTI)] and removed["norme"] == ["art. 5 d.lgs. 9"]
+
+
+def test_up_to_seven_issues_when_wide():
+    assert "da due a sette" in ptw._plan_system(7) and "da due a cinque" in ptw._plan_system()
+    raw = {"questioni": [{"titolo": f"Q{i}", "argomento": "x", "norme": []} for i in range(9)]}
+    assert len(ptw.clean_plan(raw, set(), {}, 7)[0]["questioni"]) == 7
+
+
+def _applicable_articles():
+    rows = [dict(a, _applicability="applicabile") for a in ARTICLES]            # 2048, 1218, 2051, 1917 c.c.
+    rows.append(dict(_article("624", "c.p.", "Furto."), _applicability="applicabile"))   # another area
+    rows.append(dict(_article("2043", "c.c.", "Risarcimento per fatto illecito."), _applicability="incompatibile"))
+    return rows
+
+
+def test_applicable_articles_in_the_cases_areas():
+    assert ptw._applicable(_applicable_articles(), FACTS, REQUEST, ANALYSIS) == \
+        [("2048", "c.c."), ("1218", "c.c."), ("2051", "c.c."), ("1917", "c.c.")]
+    # named in the text: kept even from another area
+    assert ("624", "c.p.") in ptw._applicable(_applicable_articles(), FACTS + " Ipotesi di art. 624 c.p.",
+                                              REQUEST, ANALYSIS)
+
+
+def test_keep_applicable_places_protects_and_adds_the_rest(model, monkeypatch):
+    monkeypatch.setenv("PLAN_KEEP_APPLICABLE_ENABLED", "true")
+    model.check = {"2051 c.c.": {"pertinente": False}}
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, _applicable_articles(), RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
+    assert "NORME APPLICABILI AI FATTI: [art. 2048 c.c.], [art. 1218 c.c.], [art. 2051 c.c.], [art. 1917 c.c.]" \
+        in plan_call["human"]
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert "Posizione della panchina (norme: art. 2051 c.c.;" in applied            # off-topic, but applicable
+    assert f"{ptw.OTHER_NORMS_TITLE} (norme: art. 2048 c.c., art. 1917 c.c." in applied
+    assert "TUTTE le norme del PIANO" in model.section_call("Norme e giurisprudenza")["system"]
+    assert ptw.OTHER_NORMS_TITLE in model.section_call("Applicazione al caso")["system"]
+    logged = [d for e, d in model.logged if e == "case_analysis_plan_applicable"][-1]
+    assert logged["placed"] == ["1218 c.c.", "2051 c.c."] and logged["added_to_last_issue"] == ["2048 c.c.", "1917 c.c."]
+    plan_log = [d for e, d in model.logged if e == "case_analysis_plan"][-1]
+    assert plan_log["checked"]["kept_as_applicable"] == ["2051 c.c. (fuori tema)"]
+
+
+def test_without_the_flag_nothing_is_added(model):
+    model.check = {"2051 c.c.": {"pertinente": False}}
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, _applicable_articles(), RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert ptw.OTHER_NORMS_TITLE not in applied and "Posizione della panchina (norme: -;" in applied
+    assert "TUTTE le norme del PIANO" not in model.section_call("Norme e giurisprudenza")["system"]
+    assert not [d for e, d in model.logged if e == "case_analysis_plan_applicable"]

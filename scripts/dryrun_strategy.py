@@ -76,7 +76,13 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
                 out.append(f"plan check: off-topic {', '.join(checked.get('off_topic') or []) or '-'}; "
                            f"contradicted {'; '.join(checked.get('contradicted') or []) or '-'}"
                            + (f"; kept as voted {', '.join(checked['kept_by_vote'])}"
-                              if checked.get("kept_by_vote") else ""))
+                              if checked.get("kept_by_vote") else "")
+                           + (f"; kept as applicable {', '.join(checked['kept_as_applicable'])}"
+                              if checked.get("kept_as_applicable") else ""))
+        elif event == "case_analysis_plan_applicable":
+            out.append(f"plan breadth: {len(data.get('applicable') or [])} applicable (up to {data.get('max_issues')} "
+                       f"issues); placed by the plan {', '.join(data.get('placed') or []) or '-'}; added to the last "
+                       f"issue {', '.join(data.get('added_to_last_issue') or []) or '-'}")
         elif event in ("case_analysis_plan_llm", "case_analysis_plan_check_llm", "case_analysis_sections_llm",
                        "case_analysis_draft_llm") and duration is not None:
             out.append(f"{event[len('case_analysis_'):-len('_llm')]} call: {duration / 1000:.1f}s")
@@ -104,6 +110,37 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
                    f"{len(result.get('citations') or [])} citations")
     out += vote_trace(events, (result or {}).get("draft") if isinstance(result, dict) else "")
     return out
+
+
+def _eval_module():
+    """tests/eval_narrative.py of the folder we run from: its mentions() is the MENTIONED score."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("eval_narrative",
+                                                  os.path.join(os.getcwd(), "tests", "eval_narrative.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def expected_trace(expected: list, events: list, draft: str) -> list:
+    """--case: each expected article in the pool (the retrieval's article rows), in the plan, and
+    MENTIONED in the answer with its code (tests/eval_narrative.py's primary score). A pool or plan
+    label ("584 c.p.", "95 Codice degli Appalti 2026") is read as the eval reads an answer."""
+    ev = _eval_module()
+
+    def keys(labels):
+        return {ref for label in labels or [] for ref in ev.mentions(f"art. {label}")}
+    pool = next((d.get("article_refs") for e, d, _ in reversed(events)
+                 if e == "case_analysis_retrieval" and d and "article_refs" in d), None)
+    plan = next((d for e, d, _ in reversed(events) if e == "case_analysis_plan" and d), {})
+    in_pool, in_plan, named = keys(pool), keys(plan.get("norme")), set(ev.mentions(draft or ""))
+    lines = ["expected article: pool / plan / MENTIONED in the answer"]
+    for item in expected:
+        wanted = {(str(a).lower(), item["code"]) for a in (item.get("any_of") or [item["article"]])}
+        cells = ["?" if pool is None else "yes" if wanted & in_pool else "no",
+                 "yes" if wanted & in_plan else "no", "yes" if wanted & named else "no"]
+        lines.append(f"  {'/'.join(sorted(a for a, _ in wanted)) + ' ' + item['code']:<22s} " + " / ".join(cells))
+    return lines
 
 
 def vote_trace(events: list, draft: str) -> list:
@@ -209,6 +246,9 @@ def main() -> None:
         status = f"ERROR {type(exc).__name__}: {str(exc)[:160]}"
     elapsed = time.time() - t0
     lines = summarise(events, status, result, elapsed, len(text))
+    if args.case:
+        lines += expected_trace(cases[args.case].get("expected") or [], events,
+                                (result or {}).get("draft") if isinstance(result, dict) else "")
     print("\n".join(lines))
     if args.save:
         record = saved_run(os.path.abspath(dg.__file__), request, status, elapsed, lines, events, result)

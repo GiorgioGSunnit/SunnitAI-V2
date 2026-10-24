@@ -68,3 +68,13 @@ def test_saved_run_keeps_the_answer_for_a_side_by_side():
                              "duration_ms": 9100.0}]
     failed = dr.saved_run("/opt/chatbot/src/rag/defensive_generation.py", "Strategia?", "ERROR X: y", 3.0, [], [], None)
     assert failed["draft"] is None and failed["citations"] is None
+
+
+def test_expected_trace_reads_pool_plan_and_answer():
+    events = [("case_analysis_retrieval", {"article_refs": ["95 Codice degli Appalti 2026", "584 c.p."]}, None),
+              ("case_analysis_plan", {"norme": ["584 c.p."]}, None)]
+    expected = [{"code": "dlgs36", "article": "95"}, {"code": "cp", "article": "584"}, {"code": "cp", "article": "581"}]
+    lines = dr.expected_trace(expected, events, "Si contesta l'art. 584 c.p. e l'art. 95 del d.lgs. 36/2023.")
+    assert lines[1].split() == ["95", "dlgs36", "yes", "/", "no", "/", "yes"]
+    assert lines[2].split() == ["584", "cp", "yes", "/", "yes", "/", "yes"]
+    assert lines[3].split() == ["581", "cp", "no", "/", "no", "/", "no"]
