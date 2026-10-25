@@ -327,7 +327,10 @@ def test_graded_check_keeps_by_grade_and_removes_grade_zero(monkeypatch, logged)
     assert kept["948"]["_grade"] == 2 and kept["948"]["_grade_issue"] == "usucapione"
     human = model.humans[0]
     text = ("La proprietà dei beni immobili " + "x" * 2000)[:400]
-    assert f"Rubrica: Usucapione dei beni immobili e dei diritti reali immobiliari\nTesto: {text}\n\n" in human
+    assert (f"Rubrica: Usucapione dei beni immobili e dei diritti reali immobiliari\nTrovato da: più fonti\n"
+            f"Testo: {text}\n\n") in human                                           # multi-signal (T1)
+    assert "[A1] 1140 c.c.\nRubrica: -\nTesto:" in human                            # one channel: no mark
+    assert "nel dubbio tra 1 e 2 scegli 2" in model.calls[0]["system"]
     assert "Questione centrale: usucapione" in human and "- Rivendicazione" in human and "- Chi è proprietario" in human
     assert model.calls[0]["temperature"] == 0 and model.calls[0]["max_tokens"] == 120 + 60 * 5
     assert "[A2] 1158 c.c.\nRubrica:" in human and "A1, A2, A3, A4, A5" in human
@@ -404,13 +407,108 @@ def test_a_grade_one_article_does_not_pass_for_the_checklist(monkeypatch):
     assert ptw._through_check(rows, "fatti", "") == []
 
 
-def test_graded_plan_keeps_twelve_by_grade_then_fusion_rank(monkeypatch):
+def test_graded_plan_keeps_fourteen_by_grade_then_fusion_rank(monkeypatch):
     monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
     rows = [dict(_row(str(n), "c.c.", "x"), _grade=2, _fused_rank=n) for n in range(20, 0, -1)]
     rows += [dict(_row("1158", "c.c.", "x"), _grade=3, _fused_rank=40), dict(_row("1140", "c.c.", "x"), _grade=1)]
     kept = ptw._checked(rows)
-    assert kept[0] == ("1158", "c.c.") and len(kept) == 12 and ("1140", "c.c.") not in kept
-    assert kept[1:] == [(str(n), "c.c.") for n in range(1, 12)]
+    assert kept[0] == ("1158", "c.c.") and len(kept) == 14 and ("1140", "c.c.") not in kept
+    assert kept[1:] == [(str(n), "c.c.") for n in range(1, 14)]
+
+
+# --- T2: exempt articles linked to a forced one -----------------------------------------------------
+
+def _sempronio_rows():
+    return [dict(_row("584", "c.p.", "Chiunque, con atti diretti a commettere uno dei delitti preveduti dagli "
+                                     "articoli 581 e 582, cagiona la morte di un uomo...", "Omicidio preterintenzionale"),
+                 _heading_match=True, _central=True, _fused_rank=1),
+            dict(_row("581", "c.p.", "Chiunque percuote taluno...", "Percosse"), _source=CROSSREF_SOURCE),
+            dict(_row("582", "c.p.", "Chiunque cagiona ad alcuno una lesione personale...", "Lesione personale"),
+                 _source=CROSSREF_SOURCE),
+            dict(_row("1", "c.p.", "Nessuno può essere punito...", "Reati e pene"), _source=CROSSREF_SOURCE),
+            dict(_row("589", "c.p.", "Chiunque cagiona per colpa la morte...", "Omicidio colposo"), _grade=2,
+                 _fused_rank=2),
+            dict(_row("41", "c.p.", "Il concorso di cause preesistenti...", "Concorso di cause"), _heading_match=True)]
+
+
+def test_forced_holds_the_central_articles_and_their_cross_references(monkeypatch):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    forced = ptw._forced(_sempronio_rows())
+    assert list(forced) == [("584", "c.p."), ("581", "c.p."), ("582", "c.p."), ("589", "c.p.")]
+    assert forced[("584", "c.p.")] == "central issue" and forced[("581", "c.p.")] == "cross-reference of 584 c.p."
+    # 1 c.p. is cross-referenced from nothing forced; 41 c.p. is heading-matched but not central
+    assert ("1", "c.p.") not in forced and ("41", "c.p.") not in forced
+    monkeypatch.setattr(ptw, "_GRADED_KEEP", 2)
+    assert list(ptw._forced(_sempronio_rows())) == [("584", "c.p."), ("581", "c.p.")]
+
+
+def test_a_cross_reference_goes_under_its_parents_issue_and_a_central_article_under_the_first():
+    plan = {"questioni": [{"titolo": "Qualificazione del fatto", "norme": [("584", "c.p.")], "pronunce": [],
+                           "argomento": "Manca il dolo di percosse.", "obiezione": "", "replica": ""},
+                          {"titolo": "Pena", "norme": [], "pronunce": [], "argomento": "Le attenuanti.",
+                           "obiezione": "", "replica": ""}]}
+    reasons = {("584", "c.p."): "central issue", ("581", "c.p."): "cross-reference of 584 c.p.",
+               ("43", "c.p."): "central issue"}
+    out, placed, grouped, added = ptw._group_checked(plan, list(reasons), {("43", "c.p."): "Elemento psicologico"},
+                                                     7, {}, catch_all=False, reasons=reasons)
+    assert grouped == {("581", "c.p."): "Qualificazione del fatto", ("43", "c.p."): "Qualificazione del fatto"}
+    assert out["questioni"][0]["norme"] == [("584", "c.p."), ("581", "c.p."), ("43", "c.p.")]
+
+
+def test_central_questions_are_the_frames_central_issues():
+    analysis = {"frame": {"central_issue_candidates": [{"nome": "Omicidio preterintenzionale", "codice": "c.p."}]},
+                "questioni": [{"titolo": "Questione centrale: x", "voce": "questione_centrale", "istituti": []},
+                              {"titolo": "Reato", "istituti": [{"nome": "omicidio  preterintenzionale"}]},
+                              {"titolo": "Pena", "istituti": [{"nome": "attenuanti generiche"}]}]}
+    assert dg._central_questions(analysis) == {0, 1}
+    assert dg._central_questions({}) == set()
+
+
+# --- T3: citations only from the section's material ---------------------------------------------------
+
+class Rephrase:
+    def __init__(self, reply):
+        self.reply, self.humans = reply, []
+
+    def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
+        self.humans.append(messages[-1].content)
+        return self.reply
+
+
+MATERIAL = "TESTI DELLE NORME:\n[art. 2051 c.c.] (Danno cagionato da cosa in custodia)\nCiascuno è responsabile..."
+
+
+def test_a_citation_the_material_lacks_is_rephrased_away(monkeypatch):
+    model = Rephrase('[{"i": 1, "frase": "La penale è riducibile dal giudice."}]')
+    monkeypatch.setattr(dg, "_call_chat", model)
+    text = ("Il custode risponde ai sensi dell'art. 2051 c.c. La penale è riducibile ex art. 1384 c.c. dal giudice. "
+            "Si veda Cass. civ., sez. III, n. 190/2026.")
+    out, log = ptw._cite_only_material("Applicazione al caso", text, MATERIAL, [], [])
+    assert out == ("Il custode risponde ai sensi dell'art. 2051 c.c. La penale è riducibile dal giudice. "
+                   "Si veda Cass. civ., sez. III, n. 190/2026.")
+    assert "1. La penale è riducibile ex art. 1384 c.c. dal giudice.\n   togli: art. 1384 c.c." == model.humans[0]
+    assert log == [{"section": "Applicazione al caso", "removed": ["1384 c.c."], "how": "rephrased",
+                    "sentence": "La penale è riducibile ex art. 1384 c.c. dal giudice.",
+                    "now": "La penale è riducibile dal giudice."}]
+
+
+def test_a_citation_the_case_names_stays_and_no_call_is_made(monkeypatch):
+    model = Rephrase("[]")
+    monkeypatch.setattr(dg, "_call_chat", model)
+    text = "La penale è riducibile ex art. 1384 c.c., come chiede il cliente."
+    assert ptw._cite_only_material("x", text, MATERIAL, [("1384", "c.c.")], []) == (text, [])
+    assert model.humans == []
+
+
+def test_a_rewrite_still_citing_from_memory_drops_the_sentence(monkeypatch):
+    monkeypatch.setattr(dg, "_call_chat", Rephrase('[{"i": 1, "frase": "Vale l\'art. 156 c.p.p."}]'))
+    text = "Prima frase.\nLa notifica è nulla ai sensi dell'art. 159 c.p.p. Seconda frase.\n- Terza: art. 33 Codice del Consumo."
+    docs = [{"id": "x", "name": "Codice del Consumo 2026", "aliases": []}]
+    out, log = ptw._cite_only_material("x", text, MATERIAL, [], docs)
+    assert out == "Prima frase.\nSeconda frase."                      # both dropped, the bullet whole; a law by name too
+    assert [e["how"] for e in log] == ["sentence dropped", "sentence dropped"]
+    assert log[1]["removed"] == ["33 Codice del Consumo 2026"]
+
 
 
 def test_graded_plan_forces_no_catch_all():

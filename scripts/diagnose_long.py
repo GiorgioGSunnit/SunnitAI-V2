@@ -398,7 +398,7 @@ _LLM_STAGES = {
     "_analyse_case_structured": "case_analysis_structured", "_structured_facts": "structured_facts",
     "_structured_grid": "structured_grid", "_fusion_distill_bullets": "distill", "_choose_articles": "v1_choice",
     "spot_issues": "issue_spotting", "spotted_rows": "issue_spotting", "_applicability_batch": "applicability",
-    "_graded_batch": "applicability",
+    "_graded_batch": "applicability", "_cite_only_material": "citation_rewrite",
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "run_case_analysis_pipeline": "draft",
@@ -726,6 +726,7 @@ def run_child(spec_path: str, env_path: str) -> None:
               "prompt": {"labels": cap["prompt_labels"], "tokens": last("case_analysis_prompt_tokens")},
               "plan": last("case_analysis_plan"), "plan_applicable": last("case_analysis_plan_applicable"),
               "qualification": last("case_analysis_qualification"),
+              "discipline": last("case_analysis_citation_discipline"),
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -1023,6 +1024,12 @@ def analyse_case(rec: dict, ev) -> dict:
         origin = t["channels"] or (["not_retrieved"] if not t["in_pool"] else ["other"])
         out["unexpected"].append({**t, "origin": origin, "fit": fit,
                                   "rubrica": t["rubrica"] or fit.get("rubrica", "")})
+    # PLAN_KEEP_CHECKED + CHECK_GRADED: the citations taken out of the sections (not in their material)
+    entries = (rec.get("discipline") or {}).get("removed") or []
+    taken = [label for e in entries for label in e.get("removed") or []]
+    out["discipline"] = {"taken": taken, "rephrased": sum(1 for e in entries if e.get("how") == "rephrased"),
+                         "dropped": sum(1 for e in entries if e.get("how") == "sentence dropped"),
+                         "expected_taken": [label for label in taken if K(label) in expected_keys]}
     return out
 
 
@@ -1078,7 +1085,13 @@ def aggregate(cases: list) -> dict:
         g["slots"].update(s["stage"] for s in c["slots"])
         g["wrong"] += len(c["unexpected"])
         g["wrong_origin"].update(ch for u in c["unexpected"] for ch in u["origin"])
+    discipline = {"taken": Counter(label for c in keyed for label in (c.get("discipline") or {}).get("taken") or []),
+                  "rephrased": sum((c.get("discipline") or {}).get("rephrased", 0) for c in keyed),
+                  "dropped": sum((c.get("discipline") or {}).get("dropped", 0) for c in keyed),
+                  "expected_taken": [(c["id"], label) for c in keyed
+                                     for label in (c.get("discipline") or {}).get("expected_taken") or []]}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
+            "discipline": discipline,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
             "resolved_articles": resolved_articles, "unrelated": unrelated, "generic": generic,
@@ -1198,6 +1211,16 @@ def render(cases: list, header: list) -> str:
         L.append("- Expected past the check but not written: " + "; ".join(
             f"{c['id']} {s['label']} ({s['stage']}{', plan: ' + '/'.join(s['plan_notes']) if s['plan_notes'] else ''})"
             for c, s in not_planned) + ".")
+
+    # --- T3
+    d = agg["discipline"]
+    if d["taken"]:
+        L += ["", "## Citations taken out of the sections (not in their material, not named in the case)", "",
+              f"{sum(d['taken'].values())} citations in {d['rephrased'] + d['dropped']} sentences: "
+              f"{d['rephrased']} rephrased, {d['dropped']} dropped. Most often: "
+              + ", ".join(f"{label} x{n}" for label, n in d["taken"].most_common(15)) + ".",
+              "Expected articles among them: " + (", ".join(f"{cid} {label}" for cid, label in d["expected_taken"])
+                                                  or "none") + "."]
 
     # --- B
     nw = len(wrong)
@@ -1481,7 +1504,9 @@ def compare(run_dirs: list, ev) -> str:
     rows = [("MENTIONED", [a["stage_counts"]["MENTIONED"] for a in aggs], lambda a: f" / {len(a['slots'])}"),
             ("not expected citations", [len(a["wrong"]) for a in aggs], lambda a: ""),
             ("not expected per answer", [round(len(a["wrong"]) / max(1, len(common)), 1) for a in aggs], lambda a: ""),
-            ("rubrica-incompatible", [a["fit"]["incompatible"] for a in aggs], lambda a: "")]
+            ("rubrica-incompatible", [a["fit"]["incompatible"] for a in aggs], lambda a: ""),
+            ("citations taken out of sections", [sum(a["discipline"]["taken"].values()) for a in aggs], lambda a: ""),
+            ("expected ones among them", [len(a["discipline"]["expected_taken"]) for a in aggs], lambda a: "")]
     for title, values, suffix in rows:
         L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")
     L += ["", "## A. Loss funnel of the expected articles", ""]

@@ -67,8 +67,10 @@ KEEP_APPLICABLE_FLAG = "PLAN_KEEP_APPLICABLE_ENABLED"
 KEEP_CHECKED_FLAG = "PLAN_KEEP_CHECKED_ENABLED"
 # With CHECK_GRADED_ENABLED (diagnose_long, 26 Oct: 263 articles cited without being expected came in through
 # "Altre norme rilevanti"): only grade 2-3 articles, at most _GRADED_KEEP by grade then fusion rank, and one
-# that fits no issue of the plan is left out, never put in a catch-all issue.
-_GRADED_KEEP = 12
+# that fits no issue of the plan is left out, never put in a catch-all issue. Run 1302 (sempronio 581/582,
+# h7 110 c.p., sempronio_no_hint 41 c.p. lost): with them the exempt articles linked to a forced one -- a
+# cross-reference in its text, an article resolved for a central issue (_forced) -- up to _GRADED_KEEP.
+_GRADED_KEEP = 14
 _MAX_ISSUES_WIDE, _WIDE_APPLICABLE = 7, 8
 OTHER_NORMS_TITLE = "Altre norme rilevanti"
 _ISSUE_COUNT_WORDS = {5: "cinque", 7: "sette"}
@@ -289,18 +291,82 @@ def _through_check(article_rows: List[Dict[str, Any]], facts: str, request: str)
 
 def _checked(article_rows: List[Dict[str, Any]]) -> List[tuple]:
     """PLAN_KEEP_CHECKED_ENABLED: the articles the check judged applicabile or alternativa, in the
-    pipeline's order; the exempt and the unchecked ones are not among them. CHECK_GRADED_ENABLED: those
-    graded 2 or 3, at most _GRADED_KEEP, by grade, then fusion rank, then the pipeline's order."""
+    pipeline's order; the exempt and the unchecked ones are not among them. CHECK_GRADED_ENABLED: _forced."""
     if not _graded():
         return list(dict.fromkeys(r["_article"] for r in article_rows
                                   if r.get("_article") and r.get("_applicability") in ("applicabile", "alternativa")))
+    return list(_forced(article_rows))
+
+
+def _forced(article_rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
+    """{article: why} the plan must hold (PLAN_KEEP_CHECKED_ENABLED with CHECK_GRADED_ENABLED), at most
+    _GRADED_KEEP, in this order: the articles resolved for a central issue (_central) that the check did
+    not grade 0, as grade 3; those graded 2 or 3; each by grade, then fusion rank, then the pipeline's
+    order -- and right after each one, the cross-referenced articles its own text cites (CROSSREF rows)."""
+    from .nodes.cypher import CROSSREF_SOURCE
+
     best: Dict[tuple, tuple] = {}
+    why: Dict[tuple, str] = {}
     for index, row in enumerate(article_rows):
         ref, grade = row.get("_article"), row.get("_grade")
-        if ref and isinstance(grade, int) and grade >= 2:
-            key = (-grade, row.get("_fused_rank") or 10 ** 6, index)
-            best[ref] = min(best.get(ref, key), key)
-    return sorted(best, key=lambda ref: best[ref])[:_GRADED_KEEP]
+        if not ref:
+            continue
+        if row.get("_central"):
+            grade, reason = 3, "central issue"
+        elif isinstance(grade, int) and grade >= 2:
+            reason = f"grade {grade}"
+        else:
+            continue
+        key = (-grade, row.get("_fused_rank") or 10 ** 6, index)
+        if ref not in best or key < best[ref]:
+            best[ref], why[ref] = key, reason
+    crossrefs = list(dict.fromkeys(r["_article"] for r in article_rows
+                                   if r.get("_article") and r.get("_source") == CROSSREF_SOURCE))
+    out: Dict[tuple, str] = {}
+    for ref in sorted(best, key=lambda r: best[r]):
+        out.setdefault(ref, why[ref])
+        cited = _cited_numbers(article_rows, ref)
+        for child in crossrefs:
+            if child[1] == ref[1] and child[0] in cited:
+                out.setdefault(child, f"cross-reference of {ref[0]} {ref[1]}")
+    return dict(list(out.items())[:_GRADED_KEEP])
+
+
+def _cited_numbers(article_rows: List[Dict[str, Any]], ref: tuple) -> set:
+    """The article numbers an article's own text cites within its code, as broaden_article_context reads
+    them (another act's articles left out)."""
+    from .article_suffix import canonical_suffix
+    from .nodes.retrieval import _CROSS_REF_NUM, _CROSS_REF_RUN, _OTHER_ACT_AFTER
+
+    numbers = set()
+    for row in article_rows:
+        if row.get("_article") != ref:
+            continue
+        section = row.get("s") or {}
+        text = section.get("plain_text") or section.get("abstract") or ""
+        for run in _CROSS_REF_RUN.finditer(text):
+            if _OTHER_ACT_AFTER.match(text, run.end(), run.end() + 160):
+                continue
+            for m in _CROSS_REF_NUM.finditer(run.group(0)):
+                numbers.add(f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m.group(2) else m.group(1))
+    return numbers
+
+
+def _forced_issues(plan: Dict[str, Any], reasons: Dict[tuple, str], issue_of: Dict[tuple, str]) -> List[Dict[str, Any]]:
+    """The forced articles the plan holds, each with the plan issues that hold it and the issue the
+    graded check named for it -- for the sections, which cite each only there (_scope_block)."""
+    out = []
+    for ref in reasons:
+        titles = [q["titolo"] for q in plan["questioni"] if ref in q["norme"]]
+        if titles:
+            out.append({"ref": ref, "questioni": titles, "tema": (issue_of or {}).get(ref, "")})
+    return out
+
+
+def _discipline() -> bool:
+    """PLAN_KEEP_CHECKED_ENABLED with CHECK_GRADED_ENABLED: the sections cite each forced article only in
+    its issue (_scope_block) and no article their material lacks (_cite_only_material)."""
+    return dg.feature_flags.enabled(KEEP_CHECKED_FLAG) and _graded()
 
 
 def _graded() -> bool:
@@ -339,12 +405,15 @@ def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Di
 
 def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tuple, str],
                    max_issues: int, issue_of: Optional[Dict[tuple, str]] = None,
-                   catch_all: bool = True) -> Tuple[Dict[str, Any], List[tuple], Dict[tuple, str], List[tuple]]:
+                   catch_all: bool = True, reasons: Optional[Dict[tuple, str]] = None
+                   ) -> Tuple[Dict[str, Any], List[tuple], Dict[tuple, str], List[tuple]]:
     """(plan, placed, grouped, added): every checked article in the plan (PLAN_KEEP_CHECKED_ENABLED).
     One the plan left out goes under the issue whose title and argument share the most words with its
     rubrica (and with the issue the graded check named for it, issue_of); with none sharing a word, into
     a last "Altre norme rilevanti" issue, or, at max_issues issues, into the last one -- or, without
-    catch_all (CHECK_GRADED_ENABLED), nowhere: it is not forced into the plan."""
+    catch_all (CHECK_GRADED_ENABLED), nowhere: it is not forced into the plan. With reasons (_forced): a
+    cross-reference goes under the issue of the article that cites it, and an article of a central issue
+    sharing no word with any issue under the first one."""
     held = {ref for q in plan["questioni"] for ref in q["norme"]}
     placed = [ref for ref in checked if ref in held]
     issues = [{**q, "norme": list(q["norme"])} for q in plan["questioni"]]
@@ -354,11 +423,17 @@ def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tu
     def stems(text):
         return {w[:5] for w in re.findall(r"\w{4,}", (text or "").lower()) if w not in _HEADING_STOP}
     for ref in (r for r in checked if r not in held):
-        words = stems(f"{headings.get(ref, '')} {(issue_of or {}).get(ref, '')}")
-        best = max(issues, key=lambda q: len(words & stems(f"{q['titolo']} {q['argomento']}")))
-        if words & stems(f"{best['titolo']} {best['argomento']}"):
-            best["norme"].append(ref)
-            grouped[ref] = best["titolo"]
+        why = (reasons or {}).get(ref, "")
+        parent = re.match(r"cross-reference of (\S+) (.+)$", why)
+        home = next((q for q in issues if parent and (parent.group(1), parent.group(2)) in q["norme"]), None)
+        if home is None:
+            words = stems(f"{headings.get(ref, '')} {(issue_of or {}).get(ref, '')}")
+            best = max(issues, key=lambda q: len(words & stems(f"{q['titolo']} {q['argomento']}")))
+            home = best if words & stems(f"{best['titolo']} {best['argomento']}") else \
+                issues[0] if why == "central issue" else None
+        if home is not None:
+            home["norme"].append(ref)
+            grouped[ref] = home["titolo"]
         else:
             rest.append(ref)
     plan = {**plan, "questioni": issues}
@@ -524,7 +599,8 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     voted = [ref for ref in _voted(article_rows) if f"[art. {ref[0]} {ref[1]}]" in articles]
     keep_checked = dg.feature_flags.enabled(KEEP_CHECKED_FLAG)
     keep_all = dg.feature_flags.enabled(KEEP_APPLICABLE_FLAG) and not keep_checked
-    applicable = (_checked(article_rows) if keep_checked
+    reasons = _forced(article_rows) if keep_checked and _graded() else None
+    applicable = (list(reasons) if reasons is not None else _checked(article_rows) if keep_checked
                   else _applicable(article_rows, facts, request, analysis) if keep_all else [])
     max_issues = _MAX_ISSUES_WIDE if keep_checked or len(applicable) >= _WIDE_APPLICABLE else _MAX_ISSUES
     system = _plan_system(max_issues)
@@ -558,9 +634,12 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     if plan and keep_checked:
         issue_of = {r["_article"]: r.get("_grade_issue") or "" for r in article_rows if r.get("_article")}
         plan, placed, grouped, added = _group_checked(plan, applicable, headings, max_issues, issue_of,
-                                                      catch_all=not _graded())
+                                                      catch_all=not _graded(), reasons=reasons)
+        if reasons is not None:
+            plan["forzate"] = _forced_issues(plan, reasons, issue_of)
         dg.vlog("case_analysis_plan_applicable", {
             "mode": "checked", "applicable": [f"{n} {c}" for n, c in applicable], "max_issues": max_issues,
+            "why": {f"{n} {c}": why for (n, c), why in (reasons or {}).items()},
             "placed": [f"{n} {c}" for n, c in placed],
             "grouped": {f"{n} {c}": title for (n, c), title in grouped.items()},
             "added_to_last_issue": [f"{n} {c}" for n, c in added]})
@@ -647,8 +726,11 @@ def _section_system(plan: Dict[str, Any], lang: str) -> str:
         "termini; conclusioni): non ripetere ciò che spetta alle altre, sii essenziale.\n"
         "- Non concedere mai un elemento contestato dell'accusa o della pretesa: una posizione che lo presuppone "
         "va presentata solo in via subordinata.\n"
-        "- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con il codice (\"art. 1384 c.c.\", mai "
-        "\"art. 1384\" da solo); riporta tra virgolette solo frasi presenti nei testi forniti.\n"
+        + ("- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con numero e codice o legge come vi "
+           "compaiono, mai il numero da solo; nessun articolo a memoria; riporta tra virgolette solo frasi presenti "
+           "nei testi forniti.\n" if _discipline() else
+           "- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con il codice (\"art. 1384 c.c.\", mai "
+           "\"art. 1384\" da solo); riporta tra virgolette solo frasi presenti nei testi forniti.\n") +
         "- Pronunce: cita solo quelle del PIANO, con il riferimento esatto indicato; senza riferimento non "
         "richiamare orientamenti giurisprudenziali. I fatti di una pronuncia non sono fatti del caso.\n"
         "- Non aggiungere fatti, date, importi o atti che il caso non contiene: se un dato manca, indica che cosa "
@@ -688,8 +770,12 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     def block(title: str, body: str) -> str:
         return f"{title}:\n{body}" if body.strip() else ""
     every = (" Esamina una per una TUTTE le norme del PIANO, nessuna esclusa, ciascuna indicata con numero e "
-             "codice o legge come nel PIANO (\"art. 95 Codice degli Appalti 2026\", \"art. 1784 c.c.\")."
+             + ("codice o legge esattamente come nel PIANO." if _discipline() else
+                "codice o legge come nel PIANO (\"art. 95 Codice degli Appalti 2026\", \"art. 1784 c.c.\").")
              if keep_all else "")
+    scope = _scope_block(plan)
+    scoped = (" Ogni norma di NORME E LORO QUESTIONE va citata solo a proposito della questione indicata accanto, "
+              "mai a sostegno di un'altra." if scope else "")
     every_issue = (f" Per la questione \"{OTHER_NORMS_TITLE}\", una o due frasi per ciascuna norma, con numero e "
                    "codice, su come si applica ai fatti." if keep_all else "")
 
@@ -701,23 +787,23 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "SEZIONE: Risposte ai quesiti. Una risposta diretta e motivata a ciascun quesito, nell'ordine in cui è "
          "posto, a partire dalle risposte del PIANO quando ci sono, altrimenti dalle sue questioni; se la "
          "questione centrale non è tra i quesiti, rispondi prima a essa. Ogni risposta in due-quattro frasi, con "
-         "la norma su cui si fonda." + no_rulings,
-         material(case, block("QUESITI", tasks), _plan_text(plan, answers=True, rulings=False)), 600),
+         "la norma su cui si fonda." + scoped + no_rulings,
+         material(case, block("QUESITI", tasks), _plan_text(plan, answers=True, rulings=False), scope), 600),
         (SECTION_TITLES[1],
          "SEZIONE: Inquadramento e questione centrale. La qualificazione giuridica della vicenda (la norma "
          "principale e quelle alternative o subordinate, e perché), la questione centrale e perché decide "
          f"l'esito; poi ogni fatto del caso valutato dal punto di vista di {party}: favorevole, sfavorevole o "
          f"neutro per {party}, e perché, in una frase. Non illustrare le norme nel dettaglio (sezione 3) né "
-         "sviluppare gli argomenti (sezione 4)." + no_rulings,
-         material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan, rulings=False),
+         "sviluppare gli argomenti (sezione 4)." + scoped + no_rulings,
+         material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan, rulings=False), scope,
                   block("TESTI DELLE NORME", texts(refs, per_article(8000, 700)))), 1000),
         (SECTION_TITLES[2],
          "SEZIONE: Norme e giurisprudenza. Per ogni norma del PIANO: che cosa stabilisce, citando il testo "
          "fornito, e come si ripartisce l'onere della prova; per ogni pronuncia del PIANO: il principio che "
          "afferma, con il suo riferimento, e che cosa comporta per questo caso, senza svolgere gli argomenti "
          "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti."
-         + every,
-         material(case, _plan_text(plan),
+         + every + scoped,
+         material(case, _plan_text(plan), scope,
                   block("TESTI DELLE NORME", texts(refs, per_article(15000, dg._ARTICLE_CHARS))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 1200)),
                   block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1600 if keep_all else 1200),
@@ -726,8 +812,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          f"l'argomento di {party} applicato ai fatti del caso, con le norme e le pronunce del piano; le prove da "
          "acquisire; l'obiezione più forte della controparte e la replica. Poi le tesi subordinate del PIANO. "
          "Prosa, senza ripetere per ogni questione lo stesso schema a voci; tra virgolette solo frasi dei testi e "
-         "dei passi forniti." + every_issue,
-         material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan, issues="full", subordinate=True),
+         "dei passi forniti." + every_issue + scoped,
+         material(case, block("FATTI DEL CASO", facts_list), _plan_text(plan, issues="full", subordinate=True), scope,
                   block("TESTI DELLE NORME", texts(refs, per_article(9000, 600))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 600))), 2200 if keep_all else 1800),
         (SECTION_TITLES[4],
@@ -750,6 +836,129 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     ]
 
 
+# --- T3: citations only from the section's own material (_discipline) ----------------------------
+# Run 1302: articles written from memory, in no section's material (1384 c.c. in 4 answers, 156/159/256
+# c.p.p.). After each section is written, a citation of an article its material does not hold and the
+# case does not name is taken out: the sentence is rewritten without it (one call per section, temperature
+# 0); a rewrite that fails or still cites one drops the sentence. Logged as case_analysis_citation_discipline.
+
+_REPHRASE_SYSTEM = (
+    "Ricevi alcune frasi di un parere legale, numerate. Ciascuna cita articoli di legge che non risultano dalle "
+    "fonti del parere, indicati accanto. Riscrivi ogni frase togliendo quei riferimenti (numero e codice o "
+    "legge), senza sostituirli con altri articoli e senza aggiungere altro: il resto resta com'è e la frase "
+    "deve restare corretta. Se senza quel riferimento la frase non dice più nulla, scrivi una stringa vuota. "
+    'Rispondi SOLO con un array JSON: [{"i": 1, "frase": "<la frase riscritta>"}]'
+)
+# A period after these words does not end a sentence ("art. 5", "Cass. pen., sez. V", "n. 190/2026").
+_ABBREVIATIONS = {"art", "artt", "sez", "sezz", "sent", "ord", "n", "nn", "co", "lett", "cass", "pen", "civ", "cfr",
+                  "pag", "pp", "d", "lgs", "dl", "dpr", "l", "ss", "es", "un", "cost", "trib", "app", "rv", "cit",
+                  "vol", "proc", "cod", "reg", "dott", "avv", "sig", "prof", "cd", "rel"}
+
+
+def _ends_sentence(text: str, i: int) -> bool:
+    """The punctuation at text[i] ends a sentence: not after an abbreviation, and followed by the end, a
+    line break, or a word that does not start in lower case or with a digit."""
+    word = re.search(r"(\w+)$", text[:i])
+    if text[i] == "." and word and word.group(1).lower() in _ABBREVIATIONS:
+        return False
+    rest = text[i + 1:]
+    nxt = rest.lstrip(" \t")
+    if not rest or not rest[0].isspace():
+        return not rest
+    return not nxt or nxt[0] == "\n" or not (nxt[0].islower() or nxt[0].isdigit())
+
+
+def _sentence_span(text: str, start: int, end: int) -> Tuple[int, int]:
+    """The sentence around text[start:end], within its line."""
+    s = start
+    while s > 0 and text[s - 1] != "\n" and not (text[s - 1] in ".!?" and _ends_sentence(text, s - 1)):
+        s -= 1
+    while s < start and text[s].isspace():
+        s += 1
+    e = end
+    while e < len(text) and text[e] != "\n" and not (text[e] in ".!?" and _ends_sentence(text, e)):
+        e += 1
+    return s, min(len(text), e + 1) if e < len(text) and text[e] in ".!?" else e
+
+
+def _material_refs(material: str, documents: List[Dict[str, Any]]) -> List[tuple]:
+    """Every article a text cites with its code or law, as the report counts them (dg._cited_articles)."""
+    return dg._cited_articles(material or "", set(), documents)
+
+
+def _unsupported(text: str, allowed: List[tuple], documents: List[Dict[str, Any]]) -> List[Tuple[int, int, List[tuple]]]:
+    """(start, end, refs) of each citation in text naming an article not among allowed."""
+    out = []
+    for m in dg._ARTICLE_RUN_RE.finditer(text or ""):
+        code = dg._code_after(text[m.end():m.end() + 120], documents)
+        if not code:
+            continue
+        refs = [(dg._article_num(n), code) for n in dg._RUN_NUMBER_RE.findall(m.group(1))]
+        bad = [r for r in refs if not any(_same_article(r, a) for a in allowed)]
+        if bad:
+            out.append((m.start(), m.end(), bad))
+    return out
+
+
+def _cite_only_material(title: str, text: str, material: str, named: List[tuple],
+                        documents: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): the section without the citations of articles its material does not hold and the
+    case does not name; each sentence holding one rewritten without it, or dropped."""
+    allowed = _material_refs(material, documents) + list(named)
+    found = _unsupported(text, allowed, documents)
+    if not found:
+        return text, []
+    spans: List[List[Any]] = []
+    for start, end, refs in found:
+        s, e = _sentence_span(text, start, end)
+        if spans and s < spans[-1][1]:
+            spans[-1][1] = max(spans[-1][1], e)
+            spans[-1][2] += [r for r in refs if r not in spans[-1][2]]
+        else:
+            spans.append([s, e, list(refs)])
+    listing = "\n".join(f"{i}. {text[s:e].strip()}\n   togli: {', '.join(f'art. {n} {c}' for n, c in refs)}"
+                        for i, (s, e, refs) in enumerate(spans, 1))
+    rewritten: Dict[int, str] = {}
+    try:
+        raw = dg._chat_json([SystemMessage(content=_REPHRASE_SYSTEM), HumanMessage(content=listing)],
+                            max_tokens=80 + sum(40 + dg._estimate_tokens(text[s:e]) * 3 // 2 for s, e, _ in spans),
+                            temperature=0)
+        for item in raw if isinstance(raw, list) else []:
+            if isinstance(item, dict) and isinstance(item.get("frase"), str) and str(item.get("i", "")).isdigit():
+                rewritten.setdefault(int(item["i"]), item["frase"].strip())
+    except Exception as exc:
+        logger.warning("plan-then-write: rewriting the sentences of %r failed, they are dropped: %s", title, exc)
+    log, out, pos = [], [], 0
+    for i, (s, e, refs) in enumerate(spans, 1):
+        new = rewritten.get(i, "")
+        how = "rephrased"
+        if not new or _unsupported(new, allowed, documents):
+            new, how = "", "sentence dropped"
+        out.append(text[pos:s] + new)
+        pos = e
+        if not new and (s == 0 or text[s - 1] == "\n"):
+            while pos < len(text) and text[pos] in " \t":      # a dropped first sentence: no leading blank
+                pos += 1
+        log.append({"section": title, "removed": [f"{n} {c}" for n, c in refs], "how": how,
+                    "sentence": text[s:e].strip()[:300], "now": new[:300]})
+    cleaned = "".join(out) + text[pos:]
+    return re.sub(r"(?<=\S)[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", cleaned)).strip(), log
+
+
+def _scope_block(plan: Dict[str, Any]) -> str:
+    """NORME E LORO QUESTIONE (_discipline): each forced article with the plan issue(s) that hold it and
+    the issue the graded check named for it (run 1302: 41/40/42 c.p., 1227 c.c., 590 c.p. cited for
+    arguments they do not govern)."""
+    if not _discipline() or not plan.get("forzate"):
+        return ""
+    lines = []
+    for item in plan["forzate"]:
+        n, c = item["ref"]
+        titles = " o ".join(f"«{t}»" for t in item["questioni"])
+        lines.append(f"- art. {n} {c}" + (f" ({item['tema']})" if item.get("tema") else "") + f": solo in {titles}")
+    return "NORME E LORO QUESTIONE:\n" + "\n".join(lines)
+
+
 def _without_heading(text: str, title: str) -> str:
     """The section's text without a heading line the model repeated anyway."""
     text = (text or "").strip()
@@ -758,9 +967,12 @@ def _without_heading(text: str, title: str) -> str:
     return rest.strip() if bare.lower() == title.lower() else text
 
 
-def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], lang: str) -> Optional[List[tuple]]:
+def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], lang: str,
+                   named: Optional[List[tuple]] = None,
+                   documents: Optional[List[Dict[str, Any]]] = None) -> Optional[List[tuple]]:
     """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
-    None if one still fails or comes back empty."""
+    None if one still fails or comes back empty. _discipline(): each section then loses the citations
+    its material does not hold (_cite_only_material; named: the articles the case names)."""
     system = _section_system(plan, lang)
 
     def write(job):
@@ -782,6 +994,18 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     finally:
         dg.vlog("case_analysis_sections_llm", duration_ms=(time.time() - t0) * 1000)
     sections = [(job[0], _without_heading(text, job[0])) for job, text in zip(jobs, texts)]
+    if _discipline() and all(text for _, text in sections):
+        t1 = time.time()
+        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+            done = list(pool.map(lambda pair: _cite_only_material(pair[0][0], pair[1], pair[0][2], named or [],
+                                                                  documents or []), zip(jobs, (t for _, t in sections))))
+        removed = [entry for _, log in done for entry in log]
+        dg.vlog("case_analysis_citation_discipline", {
+            "removed": removed, "count": sum(len(e["removed"]) for e in removed),
+            "rephrased": sum(1 for e in removed if e["how"] == "rephrased"),
+            "dropped": sum(1 for e in removed if e["how"] == "sentence dropped")},
+            duration_ms=(time.time() - t1) * 1000)
+        sections = [(title, text or original) for (title, original), (text, _) in zip(sections, done)]
     if any(not text for _, text in sections):
         logger.warning("plan-then-write: an empty section, the parere is written in one call")
         return None
@@ -790,9 +1014,10 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
 
 def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
                  ruling_rows: List[Dict[str, Any]], articles: str, rulings: str, principles: str,
-                 lang: str = "it") -> Optional[str]:
+                 lang: str = "it", documents: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
     """The parere from a plan, section by section, or None (the caller writes it in one call).
-    `articles` and `rulings` are the draft prompt's own blocks (_fit_parere_prompt)."""
+    `articles` and `rulings` are the draft prompt's own blocks (_fit_parere_prompt); `documents` (the
+    corpus' names) let _discipline() read a citation of a law by its name."""
     references: Dict[str, List[Dict[str, Any]]] = {}
     for row in ruling_rows:
         reference = dg._ruling_reference(row)
@@ -801,8 +1026,10 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     plan = make_plan(facts, request, analysis, articles, rulings, principles, article_rows, references)
     if plan is None:
         return None
+    case = dg._case_text(facts, request)
+    named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
-                                                 principles, _keep_all()), lang)
+                                                 principles, _keep_all()), lang, named, documents)
     if sections is None:
         return None
     return "\n\n".join(f"**{i}. {title}**\n\n{text}" for i, (title, text) in enumerate(sections, 1))

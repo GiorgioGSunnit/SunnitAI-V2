@@ -3248,6 +3248,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     keep, named = v2["keep"], v2["named"]
     institutions_resolved = v2.get("institutions_resolved") or []
     heading_matched = set(v2.get("heading_matched") or [])
+    central_matched = set(v2.get("central_matched") or [])
     current_refs = list(dict.fromkeys(v2["selected"]))
 
     documents = _fetch_doc_names(driver, database)
@@ -3335,6 +3336,8 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
             # re-fetched by ref, not reused from v2's own rows) -- re-applied
             # by ref so the applicability exemption still reaches it.
             row["_heading_match"] = True
+        if ref in central_matched:
+            row["_central"] = True                    # resolved for a central issue (_central_questions)
         if ref in vote_tagged:
             # Voted by similar rulings (VOTE_POOL_ENABLED): still checked for applicability;
             # kept by the prompt's trimming like a multi-signal row; never removed by the plan check.
@@ -3417,9 +3420,13 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     # Sequential, not concurrent: a neo4j Session isn't safe for concurrent
     # use from several threads, and these are DB-only round-trips (cheap)
     # — the one LLM call already happened, in _analyse_case_v2.
+    central_questions = _central_questions(analysis)
+    central_matched: List[tuple] = []
     for index, q in enumerate(analysis.get("questioni", [])):
         for istituto in q.get("istituti") or []:
             for row in _resolve_institution(session, documents, istituto, q.get("parole_chiave")):
+                if index in central_questions and row.get("_article"):
+                    central_matched.append(row["_article"])
                 key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
                 if key in have:
                     continue
@@ -3462,8 +3469,25 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     # own article_rows from scratch (_fetch_any) rather than reusing these.
     heading_matched = list(dict.fromkeys(r["_article"] for r in added
                                          if r.get("_heading_match") and r.get("_article")))
+    central_matched = list(dict.fromkeys(central_matched))
+    for row in article_rows:
+        if row.get("_article") in central_matched:
+            row["_central"] = True
     return {**base, "selected": base["selected"] + added_articles, "heading_matched": heading_matched,
-            "article_rows": article_rows, "institutions_resolved": added_articles}
+            "article_rows": article_rows, "institutions_resolved": added_articles, "central_matched": central_matched}
+
+
+def _central_questions(analysis: Dict[str, Any]) -> set:
+    """The indices of the analysis' questions about a central issue: the ones made from the frame's
+    central issues (voce "questione_centrale"), and any whose institution is one of them. Their resolved
+    articles are tagged _central (read by PLAN_KEEP_CHECKED under CHECK_GRADED)."""
+    names = [c.get("nome") or "" for c in ((analysis or {}).get("frame") or {}).get("central_issue_candidates") or []
+             if isinstance(c, dict)]
+    return {i for i, q in enumerate((analysis or {}).get("questioni") or [])
+            if isinstance(q, dict) and (q.get("voce") == "questione_centrale"
+                                        or any(_same_institution(ist.get("nome") or "", n)
+                                               for ist in q.get("istituti") or [] if isinstance(ist, dict)
+                                               for n in names if n))}
 
 
 # Round 3, item 3. 6db1125's check asked whether an article "applies to the
@@ -3780,7 +3804,8 @@ _GRADED_SYSTEM = (
     "- 0: non riguarda questi fatti, o è di un'altra materia o di un'altra fase (un articolo civile in un caso "
     "solo penale, il termine di un giudizio che non c'è).\n"
     "Giudica da ciò che l'articolo dispone, non dal numero e non da una parola in comune con i fatti. Nel dubbio "
-    "tra due voti scegli il più basso.\n"
+    "tra due voti scegli il più basso; solo per un articolo segnato \"Trovato da: più fonti\" (più ricerche "
+    "indipendenti, o le sentenze su fatti simili, lo hanno trovato), nel dubbio tra 1 e 2 scegli 2.\n"
     "Rispondi SOLO con un array JSON compatto, esattamente un oggetto per ogni identificativo ricevuto, "
     "nell'ordine dato, nessuno escluso (anche quelli con voto 0): "
     '[{"a": "A1", "g": 0, "q": "<la questione che serve, in poche parole>", '
@@ -3897,10 +3922,18 @@ def _grade(verdict: Optional[Dict[str, Any]]) -> Optional[int]:
 
 
 def _graded_texts(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]]]) -> Dict[str, str]:
-    """Each article as the graded check reads it: its rubrica and the first _GRADED_TEXT_CHARS of its text."""
+    """Each article as the graded check reads it: its rubrica and the first _GRADED_TEXT_CHARS of its text;
+    one the vote or two or more channels found is marked "Trovato da: più fonti" (run 1302: 15 central
+    articles graded 1, h7 319-321 c.p., c1 1218 c.c., n5 252 TUEL -- for these, a doubt between 1 and 2
+    goes to 2)."""
     rows_of = {f"{a[0]} {a[1]}": rows for a, rows in to_check.items()}
-    return {label: f"Rubrica: {_rows_heading(rows_of.get(label, [])) or '-'}\nTesto: {text[:_GRADED_TEXT_CHARS]}"
-            for label, text in texts.items()}
+
+    def entry(label: str, text: str) -> str:
+        rows = rows_of.get(label, [])
+        several = any(r.get("_vote") or r.get("_multi_signal") for r in rows)
+        return (f"Rubrica: {_rows_heading(rows) or '-'}\n" + ("Trovato da: più fonti\n" if several else "")
+                + f"Testo: {text[:_GRADED_TEXT_CHARS]}")
+    return {label: entry(label, text) for label, text in texts.items()}
 
 
 def _graded_case(facts: str, request: str, analysis: Optional[Dict[str, Any]]) -> str:
@@ -4378,8 +4411,15 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     planned = None
     if feature_flags.enabled(PLAN_THEN_WRITE_FLAG):
         from . import plan_then_write
+        documents_for_plan: List[Dict[str, Any]] = []
+        if plan_then_write._discipline():
+            try:
+                from .doc_lookup import _fetch_doc_names
+                documents_for_plan = _fetch_doc_names(driver, NEO4J_DATABASE)
+            except Exception as exc:
+                logger.warning("plan-then-write: no document names, citations read by code only: %s", exc)
         planned = plan_then_write.write_parere(facts, request, analysis, article_rows, ruling_rows,
-                                               articles, rulings, principles, session_lang)
+                                               articles, rulings, principles, session_lang, documents_for_plan)
     if planned:
         draft = planned
     else:

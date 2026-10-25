@@ -195,6 +195,7 @@ def test_compare_puts_tables_a_and_b_side_by_side():
     new_rec["answer"]["mentioned"] = ["584 c.p.", "43 c.p.", "582 c.p."]   # ...and now cited; 81 c.p. gone
     new_rec["answer"]["mentioned_eval"] = [["584", "cp"], ["43", "cp"], ["582", "cp"]]
     new_rec["flags"] = {"CHECK_PRIORITY_ENABLED": "true"}
+    new_rec["discipline"] = {"removed": [{"section": "s", "removed": ["1384 c.c.", "56 c.p."], "how": "rephrased"}]}
     root = tempfile.mkdtemp()
     dirs = []
     for name, rec in (("20261025-0940", old_rec), ("20261026-1000", new_rec)):
@@ -208,6 +209,9 @@ def test_compare_puts_tables_a_and_b_side_by_side():
     assert "| MENTIONED | 2 (33%) | 3 (50%) | +1 |" in text
     assert "| not expected per answer | 1.0 | 0.0 |" in text and "| MENTIONED | 2 / 6 | 3 / 6 |" in text
     assert "| rubrica-incompatible | 1 | 0 |" in text
+    assert "| citations taken out of sections | 0 | 2 |" in text and "| expected ones among them | 0 | 1 |" in text
+    report = dl.render([dl.analyse_case(new_rec, ev)], [])
+    assert "2 citations in 1 sentences: 1 rephrased, 0 dropped" in report and "x1 56 c.p." in report
     assert "| institution | 1 (100%) | 0 (-) | -1 |" in text
     assert "| x1 | 2 | 3 | 6 | 1 | 0 |" in text
     three = dl.compare([dirs[0], dirs[1], dirs[1]], ev)                 # the newest last, two earlier ones
