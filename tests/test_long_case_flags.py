@@ -561,3 +561,103 @@ def test_method_candidates_follow_the_verified_lists(monkeypatch, logged):
     assert ("1219", "c.c.") in added() and ("56", "c.p.") in added()                  # flag off: both lists
     monkeypatch.setenv("CHECKLIST_GATED_ENABLED", "true")
     assert ("1219", "c.c.") not in added() and ("56", "c.p.") in added()
+
+
+# --- FLAGGED_REMOVE ---------------------------------------------------------------------------------
+
+def test_the_citation_context_is_the_sentence_citing_that_article():
+    draft = ("Il proprietario risponde ex art. 2053 c.c. per la rovina dell'edificio, e non per altro.\n"
+             "Ai sensi dell'art. 658 c.p.c. si intima lo sfratto per finita locazione al conduttore moroso.\n"
+             "L'art. 658 Codice Civile prevede la nullità della donazione di beni futuri nel caso in esame.")
+    assert dg._citation_context(draft, ("658", "c.c.")).startswith("Ai sensi")            # without documents: as before
+    assert dg._citation_context(draft, ("658", "c.c."), []).startswith("L'art. 658 Codice Civile")
+    assert dg._citation_context(draft, ("1982", "c.c."), []) == ""                        # cited nowhere: not scored
+
+
+class Qualification:
+    """The qualification check (every article incompatible, tipo per label) and the sentence rewrite."""
+
+    def __init__(self, tipo, rewrite="[]"):
+        self.tipo, self.rewrite, self.systems = tipo, rewrite, []
+
+    def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
+        system = messages[0].content
+        self.systems.append(system)
+        if "Riscrivi ogni frase" in system:
+            return self.rewrite
+        labels = re.findall(r"^\[([^\]]+)\]$", messages[-1].content, re.MULTILINE)
+        return json.dumps([{"articolo": label, "compatibile": False, "perche": "x", "tipo": self.tipo.get(label, "materia")}
+                           for label in labels])
+
+
+H3_DRAFT = ("**Art. 757 c.c. – Effetti della divisione**\n\nIl coerede è reputato solo e immediato successore.\n\n"
+            "La servitù di passaggio spetta ex art. 1054 c.c. al fondo intercluso dalla divisione. La clausola è "
+            "riducibile ex art. 1384 c.c. dal giudice. Il reato di cui all'art. 600-bis c.p. non rileva qui. "
+            "Il fondo di Mevio era uno solo.\n\nSul punto si veda anche l'art. 681 c.c.")
+
+
+def _h3_rows():
+    return [dict(_row("757", "c.c.", "Ogni coerede è reputato solo e immediato successore...",
+                      "Retroattività della divisione"), _grade=1),
+            dict(_row("1054", "c.c.", "Se, in conseguenza di alienazione o di divisione...",
+                      "Interclusione per effetto di alienazione o di divisione"), _grade=2),
+            dict(_row("681", "c.c.", "Le fronde degli alberi...", "Luci e vedute"))]
+
+
+def test_flagged_citations_go_unless_the_pipeline_has_its_own_evidence(monkeypatch, logged):
+    monkeypatch.setenv("FLAGGED_REMOVE_ENABLED", "true")
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [
+        _row("600-bis", "c.p.", "Chiunque recluta o induce alla prostituzione...", "Prostituzione minorile"),
+        _row("1384", "c.c.", "La penale può essere diminuita...", "Riduzione della penale")])
+    model = Qualification({"1054 c.c.": "formulazione"}, rewrite='[{"i": 1, "frase": ""}, {"i": 2, "frase": ""}]')
+    monkeypatch.setattr(dg, "_call_chat", model)
+    out = dg._check_qualifications(H3_DRAFT, {}, _h3_rows(), None, [], "Il cliente chiede dell'art. 1384 c.c.")
+    assert "757" not in out and "Il coerede è reputato" not in out                   # heading with its paragraph
+    assert "600-bis" not in out and "681" not in out                                   # single channel, ungraded
+    assert "ex art. 1054 c.c. al fondo intercluso" in out and "DA VERIFICARE: l'art. 1054" not in out  # grade 2, wording
+    assert "art. 1384 c.c. [DA VERIFICARE: l'art. 1384 c.c. riguarda «Riduzione della penale»]" in out  # named: kept, marked
+    assert "Il fondo di Mevio era uno solo." in out
+    assert '"tipo"' in model.systems[0]
+    log = [d for e, d in logged if e == "case_analysis_qualification"][-1]
+    assert sorted(log["removed"]) == ["600-bis c.p.", "681 c.c.", "757 c.c."]
+    assert log["kept"] == {"1054 c.c.": "grade 2", "1384 c.c.": "named in the case"} and log["note_dropped"] == ["1054 c.c."]
+    removal = [d for e, d in logged if e == "case_analysis_flagged_removed"][-1]
+    assert [e["how"] for e in removal["removed"]] == ["heading and paragraph dropped", "sentence dropped", "sentence dropped"]
+
+
+def test_flagged_citations_are_only_marked_without_the_flag(monkeypatch, logged):
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [])
+    monkeypatch.setattr(dg, "_call_chat", Qualification({}))
+    out = dg._check_qualifications(H3_DRAFT, {}, _h3_rows(), None, [])
+    assert "Art. 757 c.c. [DA VERIFICARE: l'art. 757 c.c. riguarda «Retroattività della divisione»]" in out
+    assert "art. 1054 c.c. [DA VERIFICARE" in out and "681 c.c. [DA VERIFICARE" in out
+
+
+class _Session:
+    def __init__(self, types):
+        self.types = types
+
+    def run(self, query, **params):
+        class _R:
+            def __init__(self, rows):
+                self.rows = rows
+
+            def data(self):
+                return self.rows
+        return _R([{"name": n, "types": self.types.get(n, [])} for n in params.get("names", [])])
+
+
+MAXIMS = "CORTE SUPREMA DI CASSAZIONE – PRINCIPÎ DI DIRITTO 2025"
+
+
+def test_an_article_of_a_document_that_is_not_a_law_is_not_cited(monkeypatch, logged):
+    monkeypatch.setattr(dg, "_call_chat", Qualification({}, rewrite='[{"i": 1, "frase": "La massima conferma la tesi."}]'))
+    docs = [{"id": "m", "name": MAXIMS, "aliases": []}]
+    draft = f"La servitù spetta ex art. 1054 c.c. al fondo. La massima di cui all'art. 563 {MAXIMS} conferma la tesi."
+    out = dg._citation_hygiene(draft, _Session({MAXIMS: ["special"]}), docs, [], "Tizio chiede del suo fondo.")
+    assert out == "La servitù spetta ex art. 1054 c.c. al fondo. La massima conferma la tesi."
+    assert [d for e, d in logged if e == "case_analysis_citation_hygiene"][-1]["types"] == {MAXIMS: ["special"]}
+    # a law stays; a CCNL stays when the case is about one; nothing named in the case is removed
+    assert dg._citation_hygiene(draft, _Session({MAXIMS: ["primary"]}), docs, [], "x") == draft
+    assert dg._citation_hygiene(draft, _Session({MAXIMS: ["ccnl"]}), docs, [], "Il CCNL applicato al rapporto") == draft
+    assert dg._citation_hygiene(draft, _Session({MAXIMS: ["special"]}), docs, [], f"art. 563 {MAXIMS}") == draft

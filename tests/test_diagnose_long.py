@@ -196,6 +196,10 @@ def test_compare_puts_tables_a_and_b_side_by_side():
     new_rec["answer"]["mentioned_eval"] = [["584", "cp"], ["43", "cp"], ["582", "cp"]]
     new_rec["flags"] = {"CHECK_PRIORITY_ENABLED": "true"}
     new_rec["discipline"] = {"removed": [{"section": "s", "removed": ["1384 c.c.", "56 c.p."], "how": "rephrased"}]}
+    new_rec["qualification"] = {"flagged": ["757 c.c.", "56 c.p.", "1054 c.c."], "removed": ["757 c.c.", "56 c.p."],
+                                "kept": {"1054 c.c.": "grade 2"}, "note_dropped": ["1054 c.c."]}
+    new_rec["flagged_removed"] = {"count": 2}
+    new_rec["hygiene"] = {"removed": ["563 Massime"]}
     root = tempfile.mkdtemp()
     dirs = []
     for name, rec in (("20261025-0940", old_rec), ("20261026-1000", new_rec)):
@@ -212,6 +216,10 @@ def test_compare_puts_tables_a_and_b_side_by_side():
     assert "| citations taken out of sections | 0 | 2 |" in text and "| expected ones among them | 0 | 1 |" in text
     report = dl.render([dl.analyse_case(new_rec, ev)], [])
     assert "2 citations in 1 sentences: 1 rephrased, 0 dropped" in report and "x1 56 c.p." in report
+    assert "| removed after the draft (flagged + not a law) | 0 | 3 |" in text
+    assert "| expected ones removed after the draft | 0 | 1 |" in text
+    assert "Flagged by the qualification check and removed: 2" in report and "Not a law, removed: 1" in report
+    assert "mark dropped as a rubrica-wording mismatch: 1" in report
     assert "| institution | 1 (100%) | 0 (-) | -1 |" in text
     assert "| x1 | 2 | 3 | 6 | 1 | 0 |" in text
     three = dl.compare([dirs[0], dirs[1], dirs[1]], ev)                 # the newest last, two earlier ones

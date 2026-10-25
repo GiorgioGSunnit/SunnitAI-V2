@@ -4208,8 +4208,39 @@ _QUALIFICATION_SYSTEM = (
 )
 
 
-def _citation_context(draft: str, ref: tuple) -> str:
-    """The line of the draft where it first cites ref (any suffix spelling), cut to 400 chars."""
+# FLAGGED_REMOVE_ENABLED (diagnose_long run 1415, a sample of 20 rubrica-incompatible citations: about 9
+# real junk -- 757, 681 c.c., 600-bis c.p., 119/1/135 c.p.a., 35 c.p.c., a maxims collection cited as a law --
+# most already marked by this check, which only marked them): a citation the check finds incompatible is
+# removed, unless the pipeline has its own evidence for the article (_protected_refs: graded 2-3, forced,
+# voted, two or more channels, central, named in the case); then the mark stays, or goes when the check
+# calls it a rubrica-wording mismatch ("tipo": "formulazione"). And an article of a document that is not a
+# law is never cited as one (_citation_hygiene).
+FLAGGED_REMOVE_FLAG = "FLAGGED_REMOVE_ENABLED"
+_QUALIFICATION_SYSTEM_TYPED = _QUALIFICATION_SYSTEM.replace(
+    '"perche": una frase}.',
+    '"perche": una frase, "tipo": solo per un articolo incompatibile, "materia" se disciplina un\'altra '
+    'materia o un altro istituto rispetto all\'uso della frase, "formulazione" se riguarda lo stesso istituto '
+    'o uno vicino e solo la rubrica è formulata diversamente dalla frase}.')
+_LAW_DOCUMENT_TYPES = {"primary", "legislation"}
+_CCNL_CASE_RE = re.compile(r"\bc\.?\s*c\.?\s*n\.?\s*l\.?(?!\w)|contratt\w*\s+collettiv", re.IGNORECASE)
+
+
+def _citation_context(draft: str, ref: tuple, documents: Optional[List[Dict[str, Any]]] = None) -> str:
+    """The line of the draft where it first cites ref (any suffix spelling), cut to 400 chars. With
+    documents (FLAGGED_REMOVE_ENABLED, and scripts/diagnose_long.py): the sentence that cites ref itself,
+    by number and code (a line citing 2053 c.c. is not 1982's, "658 Codice Civile" is not 658 c.p.c.),
+    its whole line when the sentence is under 120 characters."""
+    if documents is not None:
+        from . import plan_then_write as ptw
+        for known in (None, {ref}):        # by its code first; a bare number only if no line names the code
+            for start, end, refs in ptw._citations(draft, documents, known):
+                if any(ptw._same_ref(r, ref) for r in refs):
+                    s, e = ptw._sentence_span(draft, start, end)
+                    if e - s >= 120:
+                        return draft[s:e].strip()[:400]
+                    a, b = draft.rfind("\n", 0, start) + 1, draft.find("\n", end)
+                    return draft[a:b if b != -1 else len(draft)].strip()[:400]
+        return ""
     number = re.escape(ref[0]).replace(r"\-", r"\s*-?\s*")
     m = re.search(rf"\b(?:artt?\.?|articol[oi])\s*(?:[\d\s,e-]*?)\b{number}\b", draft, re.IGNORECASE)
     if not m:
@@ -4220,11 +4251,16 @@ def _citation_context(draft: str, ref: tuple) -> str:
 
 
 def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
-                          session, documents: List[Dict[str, Any]]) -> str:
+                          session, documents: List[Dict[str, Any]], case_text: str = "") -> str:
     """The draft with each cited article whose real heading does not fit the use
     the draft makes of it flagged at its first citation. Articles of the case's
-    area/posture lists are trusted; the others are checked in one call."""
+    area/posture lists are trusted; the others are checked in one call.
+    FLAGGED_REMOVE_ENABLED: such a citation is removed instead (plan_then_write.remove_citations),
+    unless _protected_refs has the article; a protected one keeps its mark, or loses it when the
+    check calls the mismatch only the rubrica's wording."""
     from . import method_candidates
+
+    remove = feature_flags.enabled(FLAGGED_REMOVE_FLAG)
 
     trusted = set(method_candidates.candidate_refs(*method_candidates.case_lists(analysis)))
     known = {r["_article"] for r in article_rows if r.get("_article")}
@@ -4246,7 +4282,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     for ref in cited:
         s = (rows_by_ref.get(ref) or {}).get("s") or {}
         heading = (s.get("titolo_articolo") or s.get("title") or "").strip()
-        context = _citation_context(draft, ref)
+        context = _citation_context(draft, ref, documents if remove else None)
         if heading and context:
             headings[f"{ref[0]} {ref[1]}"] = (heading, context, ref)
     if not headings:
@@ -4255,8 +4291,9 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                         for label, (heading, context, _) in headings.items())
     t0 = time.time()
     try:
-        verdicts = _chat_json([SystemMessage(content=_QUALIFICATION_SYSTEM), HumanMessage(content=human)],
-                              max_tokens=max(600, 90 * len(headings)), temperature=0)
+        verdicts = _chat_json([SystemMessage(content=_QUALIFICATION_SYSTEM_TYPED if remove else _QUALIFICATION_SYSTEM),
+                               HumanMessage(content=human)],
+                              max_tokens=max(600, (110 if remove else 90) * len(headings)), temperature=0)
     except Exception as exc:
         logger.warning("qualification check failed, draft kept: %s", exc)
         return draft
@@ -4265,6 +4302,8 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     if not isinstance(verdicts, list):
         return draft
     flagged = []
+    protected = _protected_refs(article_rows, _named_refs(case_text, documents)) if remove else {}
+    to_remove, kept, note_dropped = [], {}, []
     for v in verdicts:
         if not isinstance(v, dict) or v.get("compatibile") is not False:
             continue
@@ -4273,9 +4312,87 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                                if _applicability_key(label) == _applicability_key(str(v.get("articolo") or ""))), None)
         if entry:
             heading, _, ref = entry
+            label = f"{ref[0]} {ref[1]}"
+            flagged.append(label)
+            if remove:
+                why = _protection(ref, protected)
+                if why is None:
+                    to_remove.append(ref)
+                    continue
+                kept[label] = why
+                if str(v.get("tipo") or "").strip().lower() == "formulazione":
+                    note_dropped.append(label)
+                    continue
             draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
-            flagged.append(f"{ref[0]} {ref[1]}")
-    vlog("case_analysis_qualification", {"checked": sorted(headings), "flagged": flagged})
+    log = {"checked": sorted(headings), "flagged": flagged}
+    if remove:
+        from . import plan_then_write
+        draft, removal = plan_then_write.remove_citations(draft, to_remove, documents, known)
+        log.update({"removed": [f"{n} {c}" for n, c in to_remove], "kept": kept, "note_dropped": note_dropped})
+        vlog("case_analysis_flagged_removed", {"removed": removal, "count": len(to_remove)})
+    vlog("case_analysis_qualification", log)
+    return draft
+
+
+def _named_refs(case_text: str, documents: List[Dict[str, Any]]) -> List[tuple]:
+    """The articles the case's own text cites, by code or by a law's name."""
+    return list(dict.fromkeys(_refs_in(case_text) + _cited_articles(case_text or "", set(), documents)))
+
+
+def _protected_refs(article_rows: List[Dict[str, Any]], named: List[tuple]) -> Dict[tuple, str]:
+    """{article: why} the pipeline has its own evidence for, so FLAGGED_REMOVE_ENABLED never removes it:
+    named in the case, forced into the plan (PLAN_KEEP_CHECKED with CHECK_GRADED), graded 2-3, voted by
+    similar rulings, found by two or more channels, resolved for a central issue."""
+    from . import plan_then_write
+    out: Dict[tuple, str] = {ref: "named in the case" for ref in named}
+    if plan_then_write._discipline():
+        for ref, why in plan_then_write._forced(article_rows).items():
+            out.setdefault(ref, f"forced ({why})")
+    for row in article_rows:
+        ref = row.get("_article")
+        if not ref:
+            continue
+        grade = row.get("_grade")
+        why = (f"grade {grade}" if isinstance(grade, int) and grade >= 2 else "voted" if row.get("_vote")
+               else "two or more channels" if row.get("_multi_signal") else "central issue" if row.get("_central")
+               else None)
+        if why:
+            out.setdefault(ref, why)
+    return out
+
+
+def _protection(ref: tuple, protected: Dict[tuple, str]) -> Optional[str]:
+    from . import plan_then_write
+    return next((why for other, why in protected.items() if plan_then_write._same_ref(ref, other)), None)
+
+
+def _citation_hygiene(draft: str, session, documents: List[Dict[str, Any]], article_rows: List[Dict[str, Any]],
+                      case_text: str) -> str:
+    """FLAGGED_REMOVE_ENABLED: the draft without the citations of articles of a document that is not a law
+    (document_type other than primary/legislation: maxims collections, books, contract models; a CCNL
+    unless the case speaks of one), never one the case names. Logged as case_analysis_citation_hygiene."""
+    from . import plan_then_write
+    known = {r["_article"] for r in article_rows if r.get("_article")}
+    cited = _cited_articles(draft, known, documents)
+    names = sorted({code for _, code in cited if code not in _CODE_PREFIXES})
+    if not names:
+        return draft
+    try:
+        types = {r["name"]: {t for t in r["types"] if t} for r in session.run(
+            "MATCH (d:Document) WHERE d.name IN $names RETURN d.name AS name, "
+            "collect(DISTINCT d.document_type) AS types", names=names).data()}
+    except Exception as exc:
+        logger.warning("citation hygiene: document types not read, draft kept: %s", exc)
+        return draft
+    named = _named_refs(case_text, documents)
+    ccnl_case = bool(_CCNL_CASE_RE.search(case_text or ""))
+    bad = [ref for ref in cited if ref[1] in types and types[ref[1]] and not types[ref[1]] & _LAW_DOCUMENT_TYPES
+           and not ("ccnl" in types[ref[1]] and ccnl_case) and _protection(ref, {n: "" for n in named}) is None]
+    if not bad:
+        return draft
+    draft, removal = plan_then_write.remove_citations(draft, bad, documents, known)
+    vlog("case_analysis_citation_hygiene", {"removed": [f"{n} {c}" for n, c in bad],
+                                            "types": {c: sorted(types[c]) for _, c in bad}, "log": removal})
     return draft
 
 
@@ -4445,14 +4562,20 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     draft = _mark_unverified(draft, found, articles + "\n" + rulings,
                              wrong_code=feature_flags.enabled(STRATEGY_DRAFT_RULES_FLAG))
     citations_only = feature_flags.enabled(DRAFT_CITATIONS_ONLY_FLAG)
+    qualification = feature_flags.enabled(QUALIFICATION_CHECK_FLAG)
+    flagged_remove = feature_flags.enabled(FLAGGED_REMOVE_FLAG)
     documents: List[Dict[str, Any]] = []
-    if citations_only or feature_flags.enabled(QUALIFICATION_CHECK_FLAG):
+    if citations_only or qualification or flagged_remove:
         try:
             from .doc_lookup import _fetch_doc_names
             documents = _fetch_doc_names(driver, NEO4J_DATABASE)
-            if feature_flags.enabled(QUALIFICATION_CHECK_FLAG):
+            if qualification or flagged_remove:
                 with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
-                    draft = _check_qualifications(draft, analysis, article_rows, session, documents)
+                    if flagged_remove:
+                        draft = _citation_hygiene(draft, session, documents, article_rows, _case_text(facts, request))
+                    if qualification:
+                        draft = _check_qualifications(draft, analysis, article_rows, session, documents,
+                                                      _case_text(facts, request))
         except Exception as exc:
             logger.warning("draft checks after the draft failed, draft kept: %s", exc)
 

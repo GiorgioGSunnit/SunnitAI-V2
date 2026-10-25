@@ -88,7 +88,8 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "VOTE_POOL_K", "RULING_CARDS_ENABLED", "PLAN_THEN_WRITE_ENABLED", "PLAN_KEEP_APPLICABLE_ENABLED",
          "QUALIFICATION_CHECK_ENABLED", "DRAFT_CITATIONS_ONLY_ENABLED", "CLIENT_STANCE_CHECK_ENABLED",
          "STRATEGY_DRAFT_RULES_ENABLED", "METHOD_CANDIDATES_ENABLED", "CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED",
-         "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED"]
+         "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED",
+         "FLAGGED_REMOVE_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -565,13 +566,17 @@ def _wait_for_vote_counts(vote_pool, driver, database, log) -> None:
     log(f"vote IDF counts ready ({time.time() - t0:.0f}s)")
 
 
-def _rubrica_fits(dg, draft: str, refs: list, rows_by_ref: dict) -> dict:
+def _rubrica_fits(dg, draft: str, refs: list, rows_by_ref: dict, documents: list = None) -> dict:
     """{label: rubrica, citing line, compatibile, perche}: the qualification check's comparison
-    (_QUALIFICATION_SYSTEM: the stored rubrica against the draft's line citing it), for refs."""
+    (_QUALIFICATION_SYSTEM: the stored rubrica against the draft's sentence citing it), for refs. The
+    sentence is the one citing that article by number and code (run 1415: a line citing 2053 c.c. was
+    scored as 1982's, "658 Codice Civile" as 658 c.p.c.); an article with no such sentence is not scored."""
     items = {}
     for ref in refs:
         heading, field = _rubrica(rows_by_ref.get(ref))
-        items[_lab(ref)] = {"rubrica": heading, "field": field, "context": dg._citation_context(draft, ref),
+        context = dg._citation_context(draft, ref, documents or []) if documents is not None else \
+            dg._citation_context(draft, ref)
+        items[_lab(ref)] = {"rubrica": heading, "field": field, "context": context,
                             "compatibile": None, "perche": ""}
     ask = [(label, v) for label, v in items.items() if v["rubrica"] and v["context"]]
     for i in range(0, len(ask), 25):
@@ -727,6 +732,8 @@ def run_child(spec_path: str, env_path: str) -> None:
               "plan": last("case_analysis_plan"), "plan_applicable": last("case_analysis_plan_applicable"),
               "qualification": last("case_analysis_qualification"),
               "discipline": last("case_analysis_citation_discipline"),
+              "flagged_removed": last("case_analysis_flagged_removed"),
+              "hygiene": last("case_analysis_citation_hygiene"),
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -762,7 +769,7 @@ def run_child(spec_path: str, env_path: str) -> None:
             for row in dg._fetch_any(session, documents, fetch):
                 if row.get("_article"):
                     rows_by_ref.setdefault(row["_article"], row)
-            record["fits"] = _rubrica_fits(dg, draft, to_fit, rows_by_ref) if draft else {}
+            record["fits"] = _rubrica_fits(dg, draft, to_fit, rows_by_ref, documents) if draft else {}
             record["in_pool_refs"] = len(pool_refs)
             if spec.get("expected"):
                 record["expected_info"] = _expected_info(dg, ev, session, documents, spec["expected"], analysis,
@@ -1030,6 +1037,13 @@ def analyse_case(rec: dict, ev) -> dict:
     out["discipline"] = {"taken": taken, "rephrased": sum(1 for e in entries if e.get("how") == "rephrased"),
                          "dropped": sum(1 for e in entries if e.get("how") == "sentence dropped"),
                          "expected_taken": [label for label in taken if K(label) in expected_keys]}
+    # FLAGGED_REMOVE_ENABLED: citations removed after the draft (flagged by the qualification check; not a law)
+    qual = rec.get("qualification") or {}
+    after = {"flagged": list((rec.get("flagged_removed") and qual.get("removed")) or []),
+             "not_a_law": list((rec.get("hygiene") or {}).get("removed") or []),
+             "kept": dict(qual.get("kept") or {}), "note_dropped": list(qual.get("note_dropped") or [])}
+    after["expected_removed"] = [label for label in after["flagged"] + after["not_a_law"] if K(label) in expected_keys]
+    out["after_draft"] = after
     return out
 
 
@@ -1090,8 +1104,13 @@ def aggregate(cases: list) -> dict:
                   "dropped": sum((c.get("discipline") or {}).get("dropped", 0) for c in keyed),
                   "expected_taken": [(c["id"], label) for c in keyed
                                      for label in (c.get("discipline") or {}).get("expected_taken") or []]}
+    after = {"flagged": Counter(l for c in keyed for l in (c.get("after_draft") or {}).get("flagged") or []),
+             "not_a_law": Counter(l for c in keyed for l in (c.get("after_draft") or {}).get("not_a_law") or []),
+             "kept": Counter(why for c in keyed for why in ((c.get("after_draft") or {}).get("kept") or {}).values()),
+             "note_dropped": sum(len((c.get("after_draft") or {}).get("note_dropped") or []) for c in keyed),
+             "expected_removed": [(c["id"], l) for c in keyed for l in (c.get("after_draft") or {}).get("expected_removed") or []]}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
-            "discipline": discipline,
+            "discipline": discipline, "after_draft": after,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
             "resolved_articles": resolved_articles, "unrelated": unrelated, "generic": generic,
@@ -1221,6 +1240,18 @@ def render(cases: list, header: list) -> str:
               + ", ".join(f"{label} x{n}" for label, n in d["taken"].most_common(15)) + ".",
               "Expected articles among them: " + (", ".join(f"{cid} {label}" for cid, label in d["expected_taken"])
                                                   or "none") + "."]
+
+    a = agg["after_draft"]
+    if a["flagged"] or a["not_a_law"] or a["kept"]:
+        L += ["", "## Citations removed after the draft (FLAGGED_REMOVE_ENABLED)", "",
+              f"Flagged by the qualification check and removed: {sum(a['flagged'].values())} ("
+              + (", ".join(f"{l} x{n}" for l, n in a["flagged"].most_common(15)) or "none") + "). "
+              f"Not a law, removed: {sum(a['not_a_law'].values())} ("
+              + (", ".join(f"{l} x{n}" for l, n in a["not_a_law"].most_common(10)) or "none") + ").",
+              f"Flagged but kept (the pipeline's own evidence): {sum(a['kept'].values())} ("
+              + (_counter_line(a["kept"], sum(a["kept"].values())) if a["kept"] else "none")
+              + f"); of these, mark dropped as a rubrica-wording mismatch: {a['note_dropped']}.",
+              "Expected articles removed: " + (", ".join(f"{cid} {l}" for cid, l in a["expected_removed"]) or "none") + "."]
 
     # --- B
     nw = len(wrong)
@@ -1506,7 +1537,12 @@ def compare(run_dirs: list, ev) -> str:
             ("not expected per answer", [round(len(a["wrong"]) / max(1, len(common)), 1) for a in aggs], lambda a: ""),
             ("rubrica-incompatible", [a["fit"]["incompatible"] for a in aggs], lambda a: ""),
             ("citations taken out of sections", [sum(a["discipline"]["taken"].values()) for a in aggs], lambda a: ""),
-            ("expected ones among them", [len(a["discipline"]["expected_taken"]) for a in aggs], lambda a: "")]
+            ("expected ones among them", [len(a["discipline"]["expected_taken"]) for a in aggs], lambda a: ""),
+            ("removed after the draft (flagged + not a law)",
+             [sum(a["after_draft"]["flagged"].values()) + sum(a["after_draft"]["not_a_law"].values()) for a in aggs],
+             lambda a: ""),
+            ("expected ones removed after the draft", [len(a["after_draft"]["expected_removed"]) for a in aggs],
+             lambda a: "")]
     for title, values, suffix in rows:
         L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")
     L += ["", "## A. Loss funnel of the expected articles", ""]

@@ -886,17 +886,50 @@ def _material_refs(material: str, documents: List[Dict[str, Any]]) -> List[tuple
     return dg._cited_articles(material or "", set(), documents)
 
 
-def _unsupported(text: str, allowed: List[tuple], documents: List[Dict[str, Any]]) -> List[Tuple[int, int, List[tuple]]]:
-    """(start, end, refs) of each citation in text naming an article not among allowed."""
+def _code_key(code: str) -> str:
+    """A code by its sigla, also when written as its document's name ("Codice Civile 2026" -> "c.c.")."""
+    return next((abbr for abbr, prefix in dg._CODE_PREFIXES.items() if code.startswith(prefix)), code)
+
+
+def _same_ref(a: tuple, b: tuple) -> bool:
+    """_same_article, a code named by its document read as its sigla."""
+    return _same_article((a[0], _code_key(a[1])), (b[0], _code_key(b[1])))
+
+
+def _citations(text: str, documents: List[Dict[str, Any]], known: Optional[set] = None) -> List[Tuple[int, int, List[tuple]]]:
+    """(start, end, refs) of each citation in text, with its code or law (dg._code_after); a number without
+    one counts when exactly one of `known` has it (as dg._cited_articles reads a draft)."""
     out = []
     for m in dg._ARTICLE_RUN_RE.finditer(text or ""):
         code = dg._code_after(text[m.end():m.end() + 120], documents)
-        if not code:
-            continue
-        refs = [(dg._article_num(n), code) for n in dg._RUN_NUMBER_RE.findall(m.group(1))]
-        bad = [r for r in refs if not any(_same_article(r, a) for a in allowed)]
+        numbers = [dg._article_num(n) for n in dg._RUN_NUMBER_RE.findall(m.group(1))]
+        if code:
+            refs = [(n, code) for n in numbers]
+        else:
+            refs = [same[0] for n in numbers for same in [[k for k in known or () if k[0] == n]] if len(same) == 1]
+        if refs:
+            out.append((m.start(), m.end(), refs))
+    return out
+
+
+def _unsupported(text: str, allowed: List[tuple], documents: List[Dict[str, Any]]) -> List[Tuple[int, int, List[tuple]]]:
+    """(start, end, refs) of each citation in text naming an article not among allowed."""
+    out = []
+    for start, end, refs in _citations(text, documents):
+        bad = [r for r in refs if not any(_same_ref(r, a) for a in allowed)]
         if bad:
-            out.append((m.start(), m.end(), bad))
+            out.append((start, end, bad))
+    return out
+
+
+def _citing(text: str, targets: List[tuple], documents: List[Dict[str, Any]],
+            known: Optional[set] = None) -> List[Tuple[int, int, List[tuple]]]:
+    """(start, end, refs) of each citation in text naming one of targets."""
+    out = []
+    for start, end, refs in _citations(text, documents, known):
+        hit = [r for r in refs if any(_same_ref(r, t) for t in targets)]
+        if hit:
+            out.append((start, end, hit))
     return out
 
 
@@ -905,7 +938,55 @@ def _cite_only_material(title: str, text: str, material: str, named: List[tuple]
     """(text, log): the section without the citations of articles its material does not hold and the
     case does not name; each sentence holding one rewritten without it, or dropped."""
     allowed = _material_refs(material, documents) + list(named)
-    found = _unsupported(text, allowed, documents)
+    return _rewrite_out(title, text, _unsupported(text, allowed, documents),
+                        lambda sentence: bool(_unsupported(sentence, allowed, documents)))
+
+
+def remove_citations(text: str, targets: List[tuple], documents: List[Dict[str, Any]], known: Optional[set] = None,
+                     title: str = "parere") -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): text without any citation of targets (FLAGGED_REMOVE_ENABLED): a heading line naming
+    one ("**Art. 757 c.c. ...**") goes with its paragraph, then each sentence citing one is rewritten
+    without it, or dropped (_rewrite_out)."""
+    if not targets:
+        return text, []
+    text, log = _without_article_headings(text, targets, documents, known, title)
+    text, more = _rewrite_out(title, text, _citing(text, targets, documents, known),
+                              lambda sentence: bool(_citing(sentence, targets, documents, known)))
+    return text, log + more
+
+
+_HEADING_LINE_RE = re.compile(r"\s*(#{1,6}\s+.+|\*\*[^*\n]+\*\*|__[^_\n]+__)(.*)$")
+
+
+def _without_article_headings(text: str, targets: List[tuple], documents: List[Dict[str, Any]],
+                              known: Optional[set], title: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """text without the heading lines that name one of targets: a heading alone on its line goes with the
+    paragraph under it; a bold lead-in followed by text on the same line goes with that line."""
+    lines, out, log, i = text.split("\n"), [], [], 0
+    while i < len(lines):
+        m = _HEADING_LINE_RE.match(lines[i])
+        hit = _citing(m.group(1), targets, documents, known) if m else []
+        if not hit:
+            out.append(lines[i])
+            i += 1
+            continue
+        removed = [lines[i]]
+        i += 1
+        if not m.group(2).strip(" .:;–-"):
+            while i < len(lines) and not lines[i].strip():
+                i += 1
+            while i < len(lines) and lines[i].strip() and not _HEADING_LINE_RE.match(lines[i]):
+                removed.append(lines[i])
+                i += 1
+        log.append({"section": title, "removed": [f"{n} {c}" for n, c in dict.fromkeys(r for _, _, rs in hit for r in rs)],
+                    "how": "heading and paragraph dropped", "sentence": " ".join(removed).strip()[:300], "now": ""})
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)), log
+
+
+def _rewrite_out(title: str, text: str, found: List[Tuple[int, int, List[tuple]]],
+                 still_cites) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): each sentence holding one of the citations found rewritten without them, in one call
+    (temperature 0); a rewrite that fails, comes back empty or still_cites(rewrite) drops the sentence."""
     if not found:
         return text, []
     spans: List[List[Any]] = []
@@ -927,12 +1008,12 @@ def _cite_only_material(title: str, text: str, material: str, named: List[tuple]
             if isinstance(item, dict) and isinstance(item.get("frase"), str) and str(item.get("i", "")).isdigit():
                 rewritten.setdefault(int(item["i"]), item["frase"].strip())
     except Exception as exc:
-        logger.warning("plan-then-write: rewriting the sentences of %r failed, they are dropped: %s", title, exc)
+        logger.warning("rewriting the sentences of %r failed, they are dropped: %s", title, exc)
     log, out, pos = [], [], 0
     for i, (s, e, refs) in enumerate(spans, 1):
         new = rewritten.get(i, "")
         how = "rephrased"
-        if not new or _unsupported(new, allowed, documents):
+        if not new or still_cites(new):
             new, how = "", "sentence dropped"
         out.append(text[pos:s] + new)
         pos = e

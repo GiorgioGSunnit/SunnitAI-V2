@@ -165,12 +165,25 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 3 its central question) with the issue it serves,
                                 from its rubrica and first 400 characters, for up
                                 to 72 articles (one found by the vote or by two or
-                                more channels: a doubt between 1 and 2 goes to 2); grade 0 leaves the pool before the
-                                prompt. Articles without a grade (skipped, a cut
+                                more channels: a doubt between 1 and 2 goes to 2);
+                                grade 0 leaves the pool before the prompt. Articles without a grade (skipped, a cut
                                 reply, a failed call) go once more in smaller
                                 batches; still none, they stay as "non valutato":
                                 not removed, not counted as passing, not kept by
                                 the plan. See _GRADED_SYSTEM, _graded_verdicts.
+  FLAGGED_REMOVE_ENABLED       false: after the draft, a citation QUALIFICATION_CHECK_
+                                ENABLED finds incompatible with the article's rubrica
+                                is removed (the sentence rewritten without it, or
+                                dropped; a heading "**Art. N ...**" with its paragraph),
+                                unless the pipeline has its own evidence for the
+                                article (named in the case, forced into the plan,
+                                graded 2-3, voted, two or more channels, central):
+                                then it stays, its mark dropped when the check calls
+                                the mismatch only the rubrica's wording. And an
+                                article of a document that is not a law (maxims,
+                                books, contract models; a CCNL unless the case is
+                                about one) is not cited. See _check_qualifications,
+                                _citation_hygiene.
 """
 
 import logging
