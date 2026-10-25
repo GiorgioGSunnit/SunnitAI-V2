@@ -60,6 +60,11 @@ logger = logging.getLogger(__name__)
 _PLAN_TOKENS = 2000
 _MAX_ISSUES = 5
 KEEP_APPLICABLE_FLAG = "PLAN_KEEP_APPLICABLE_ENABLED"
+# PLAN_KEEP_CHECKED_ENABLED (diagnose_long, 25 Oct: 34 of the 60 expected articles lost were in the
+# prompt and not in the plan, which placed 2-7 of 30-70 articles): every article the applicability
+# check judged applicabile or alternativa -- not the exempt ones, not the unchecked ones -- is in the
+# plan, under the issue it governs, up to _MAX_ISSUES_WIDE issues (_group_checked).
+KEEP_CHECKED_FLAG = "PLAN_KEEP_CHECKED_ENABLED"
 _MAX_ISSUES_WIDE, _WIDE_APPLICABLE = 7, 8
 OTHER_NORMS_TITLE = "Altre norme rilevanti"
 _ISSUE_COUNT_WORDS = {5: "cinque", 7: "sette"}
@@ -146,10 +151,16 @@ def _with_headings(block: str, headings: Dict[tuple, str]) -> str:
     return block
 
 
-def _checks(analysis: Dict[str, Any]) -> List[str]:
-    frame = analysis.get("frame") or {}
-    areas = method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or "")
-    return practical_checklist.checks_for(areas, frame.get("posture_type") or "")
+def _checks(analysis: Dict[str, Any], article_rows: Optional[List[Dict[str, Any]]] = None,
+            facts: str = "", request: str = "") -> List[str]:
+    """The practical checks for the plan and the procedural section. CHECKLIST_GATED_ENABLED: those of
+    the case's verified area x posture (method_candidates.case_lists), each only if every article it
+    names went through the applicability check."""
+    areas, posture = method_candidates.case_lists(analysis)
+    if not dg.feature_flags.enabled(method_candidates.CHECKLIST_GATED_FLAG):
+        return practical_checklist.checks_for(areas, posture)
+    through = _through_check(article_rows or [], facts, request)
+    return practical_checklist.gated_checks(areas, posture, lambda ref: any(_same_article(ref, t) for t in through))
 
 
 # --- 1. the plan -------------------------------------------------------------------------------
@@ -244,18 +255,55 @@ def _applicable(article_rows: List[Dict[str, Any]], facts: str, request: str, an
     from .nodes.cypher import CROSSREF_SOURCE
     case = dg._case_text(facts, request)
     named = set(dg._refs_in(case))
-    allowed = vote_pool.allowed_codes(vote_pool.case_areas(analysis), vote_pool.named_codes(case))
+    allowed = vote_pool.allowed_codes(vote_pool.filter_areas(analysis), vote_pool.named_codes(case))
     out = []
     for row in article_rows:
         ref = row.get("_article")
         if not ref or ref in out:
             continue
-        through = row.get("_applicability") in ("applicabile", "alternativa") or ref in named \
-            or row.get("_heading_match") or row.get("_source") == CROSSREF_SOURCE
+        through = _passed_check(row, named, CROSSREF_SOURCE)
         in_area = allowed is None or ref[1] not in vote_pool.MAIN_CODES or ref[1] in allowed
         if through and in_area:
             out.append(ref)
     return out
+
+
+def _passed_check(row: Dict[str, Any], named: set, crossref_source: str) -> bool:
+    """The row went through the applicability check: judged applicabile or alternativa, or exempt
+    from it (named in the case, found by its rubrica, cross-referenced)."""
+    return row.get("_applicability") in ("applicabile", "alternativa") or row.get("_article") in named \
+        or bool(row.get("_heading_match")) or row.get("_source") == crossref_source
+
+
+def _through_check(article_rows: List[Dict[str, Any]], facts: str, request: str) -> List[tuple]:
+    """Every article that went through the applicability check (_passed_check), in the pipeline's order."""
+    from .nodes.cypher import CROSSREF_SOURCE
+    named = set(dg._refs_in(dg._case_text(facts, request)))
+    return list(dict.fromkeys(r["_article"] for r in article_rows
+                              if r.get("_article") and _passed_check(r, named, CROSSREF_SOURCE)))
+
+
+def _checked(article_rows: List[Dict[str, Any]]) -> List[tuple]:
+    """PLAN_KEEP_CHECKED_ENABLED: the articles the check judged applicabile or alternativa, in the
+    pipeline's order; the exempt and the unchecked ones are not among them."""
+    return list(dict.fromkeys(r["_article"] for r in article_rows
+                              if r.get("_article") and r.get("_applicability") in ("applicabile", "alternativa")))
+
+
+def _keep_all() -> bool:
+    """Sections 3 and 4 discuss every article of the plan by name."""
+    return dg.feature_flags.enabled(KEEP_APPLICABLE_FLAG) or dg.feature_flags.enabled(KEEP_CHECKED_FLAG)
+
+
+def _same_article(a: tuple, b: tuple) -> bool:
+    """One article, however the list and the pool name its law: the codes by sigla, any other law by a
+    name one contains of the other ("Codice del Consumo" and "Codice del Consumo 2026")."""
+    if a[0] != b[0]:
+        return False
+    if a[1] in dg._CODE_PREFIXES or b[1] in dg._CODE_PREFIXES:
+        return a[1] == b[1]
+    x, y = a[1].lower(), b[1].lower()
+    return x in y or y in x
 
 
 def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Dict[str, Any], List[tuple], List[tuple]]:
@@ -272,9 +320,41 @@ def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Di
     return plan, placed, added
 
 
+def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tuple, str],
+                   max_issues: int) -> Tuple[Dict[str, Any], List[tuple], Dict[tuple, str], List[tuple]]:
+    """(plan, placed, grouped, added): every checked article in the plan (PLAN_KEEP_CHECKED_ENABLED).
+    One the plan left out goes under the issue whose title and argument share the most words with its
+    rubrica; with none sharing a word, into a last "Altre norme rilevanti" issue, or, at max_issues
+    issues, into the last one."""
+    held = {ref for q in plan["questioni"] for ref in q["norme"]}
+    placed = [ref for ref in checked if ref in held]
+    issues = [{**q, "norme": list(q["norme"])} for q in plan["questioni"]]
+    grouped: Dict[tuple, str] = {}
+    rest: List[tuple] = []
+
+    def stems(text):
+        return {w[:5] for w in re.findall(r"\w{4,}", (text or "").lower()) if w not in _HEADING_STOP}
+    for ref in (r for r in checked if r not in held):
+        words = stems(headings.get(ref, ""))
+        best = max(issues, key=lambda q: len(words & stems(f"{q['titolo']} {q['argomento']}")))
+        if words & stems(f"{best['titolo']} {best['argomento']}"):
+            best["norme"].append(ref)
+            grouped[ref] = best["titolo"]
+        else:
+            rest.append(ref)
+    plan = {**plan, "questioni": issues}
+    if rest and len(issues) >= max_issues:
+        issues[-1]["norme"] += rest
+        grouped.update({ref: issues[-1]["titolo"] for ref in rest})
+        rest = []
+    if rest:
+        plan, _, rest = _with_other_norms(plan, rest)
+    return plan, placed, grouped, rest
+
+
 def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str,
                 principles: str, checks: List[str], voted: Optional[List[tuple]] = None,
-                applicable: Optional[List[tuple]] = None) -> str:
+                applicable: Optional[List[tuple]] = None, must_place: bool = False) -> str:
     base = dg._parere_human(facts, analysis, articles, rulings, request, principles)
     base = base[:base.rfind("Redigi ora il parere.")].rstrip() if "Redigi ora il parere." in base else base
     verifiche = "\n".join(f"- {c}" for c in checks)
@@ -284,7 +364,11 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
     applicabili = ", ".join(f"[art. {n} {c}]" for n, c in applicable or [])
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
-            + (f"NORME APPLICABILI AI FATTI: {applicabili}. Metti ciascuna tra le norme della questione che "
+            + (f"NORME GIUDICATE APPLICABILI AI FATTI: {applicabili}. Ognuna deve comparire nel piano, tra le "
+               "norme della questione che disciplina: raggruppale per questione, aggiungendo una questione se "
+               "nessuna di quelle che hai la disciplina; non lasciarne fuori nessuna.\n\n"
+               if applicabili and must_place else
+               f"NORME APPLICABILI AI FATTI: {applicabili}. Metti ciascuna tra le norme della questione che "
                "disciplina; quelle che non disciplinano nessuna questione saranno trattate a parte, alla fine.\n\n"
                if applicabili else "")
             + (f"NORME APPLICATE DALLA GIURISPRUDENZA SU FATTI SIMILI (sono in NORME): {votate}. Per ogni "
@@ -414,12 +498,14 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     known = {r["_article"] for r in article_rows if r.get("_article")}
     headings = _headings(article_rows)
     voted = [ref for ref in _voted(article_rows) if f"[art. {ref[0]} {ref[1]}]" in articles]
-    keep_all = dg.feature_flags.enabled(KEEP_APPLICABLE_FLAG)
-    applicable = _applicable(article_rows, facts, request, analysis) if keep_all else []
-    max_issues = _MAX_ISSUES_WIDE if len(applicable) >= _WIDE_APPLICABLE else _MAX_ISSUES
+    keep_checked = dg.feature_flags.enabled(KEEP_CHECKED_FLAG)
+    keep_all = dg.feature_flags.enabled(KEEP_APPLICABLE_FLAG) and not keep_checked
+    applicable = (_checked(article_rows) if keep_checked
+                  else _applicable(article_rows, facts, request, analysis) if keep_all else [])
+    max_issues = _MAX_ISSUES_WIDE if keep_checked or len(applicable) >= _WIDE_APPLICABLE else _MAX_ISSUES
     system = _plan_system(max_issues)
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
-                        _checks(analysis), voted, applicable)
+                        _checks(analysis, article_rows, facts, request), voted, applicable, must_place=keep_checked)
     messages = [SystemMessage(content=system), HumanMessage(content=human)]
     t0 = time.time()
     try:
@@ -443,7 +529,14 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         dg.vlog("case_analysis_plan_llm", duration_ms=(time.time() - t0) * 1000)
     checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
     if plan:
-        plan, checked = check_plan(plan, article_rows, headings, applicable if keep_all else None)
+        plan, checked = check_plan(plan, article_rows, headings, applicable if keep_all or keep_checked else None)
+    if plan and keep_checked:
+        plan, placed, grouped, added = _group_checked(plan, applicable, headings, max_issues)
+        dg.vlog("case_analysis_plan_applicable", {
+            "mode": "checked", "applicable": [f"{n} {c}" for n, c in applicable], "max_issues": max_issues,
+            "placed": [f"{n} {c}" for n, c in placed],
+            "grouped": {f"{n} {c}": title for (n, c), title in grouped.items()},
+            "added_to_last_issue": [f"{n} {c}" for n, c in added]})
     if plan and keep_all:
         plan, placed, added = _with_other_norms(plan, applicable)
         dg.vlog("case_analysis_plan_applicable", {
@@ -561,7 +654,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
 
     def texts(wanted: List[tuple], chars: int) -> str:
         return _with_headings(_article_texts(article_rows, wanted, chars), headings)
-    posture = frame.get("posture_type") or ""
+    posture = method_candidates.case_lists(analysis)[1]
     procedural = [ref for ref in method_candidates.candidate_refs([], posture) if ref not in refs]
     no_rulings = " In questa sezione non citare pronunce."
 
@@ -619,7 +712,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "da fare." + no_rulings,
          material(case, block("FASE", frame.get("procedural_posture") or ""),
                   _plan_text(plan, issues="", subordinate=True, rulings=False),
-                  block("VERIFICHE PER QUESTA FASE E MATERIA", "\n".join(f"- {c}" for c in _checks(analysis))),
+                  block("VERIFICHE PER QUESTA FASE E MATERIA",
+                        "\n".join(f"- {c}" for c in _checks(analysis, article_rows, facts, request))),
                   block("TESTI DELLE NORME PROCESSUALI", texts(procedural, 500))), 900),
         (SECTION_TITLES[5],
          "SEZIONE: Conclusioni. In due o tre paragrafi: gli argomenti in ordine di forza, come nel PIANO; una "
@@ -681,7 +775,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if plan is None:
         return None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
-                                                 principles, dg.feature_flags.enabled(KEEP_APPLICABLE_FLAG)), lang)
+                                                 principles, _keep_all()), lang)
     if sections is None:
         return None
     return "\n\n".join(f"**{i}. {title}**\n\n{text}" for i, (title, text) in enumerate(sections, 1))

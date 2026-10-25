@@ -11,7 +11,24 @@ case supports it, and a deadline that needs a date the case lacks becomes a chec
 DRAFT, pending the lawyer's validation, like method_candidates.py.
 """
 
-from typing import Dict, Iterable, List
+import re
+from typing import Callable, Dict, Iterable, List, Tuple
+
+from .method_candidates import L241
+
+# Pre-litigation steps of an area: listed only with a civil pre-litigation posture under
+# CHECKLIST_GATED_ENABLED (gated_checks).
+_MEDIATION_REAL_RIGHTS = (
+    "Mediazione obbligatoria prima della causa nelle controversie in materia di diritti reali (art. 5 "
+    "d.lgs. 28/2010)."
+)
+_MEDIATION_LEASE = (
+    "Mediazione obbligatoria prima della causa in materia di locazione (art. 5 d.lgs. 28/2010), esclusa "
+    "per il procedimento di convalida."
+)
+_MEDIATION_SUCCESSION = (
+    "Mediazione obbligatoria prima della causa in materia di successioni (art. 5 d.lgs. 28/2010)."
+)
 
 # posture -> what to verify at that stage
 POSTURE_CHECKS: Dict[str, List[str]] = {
@@ -138,21 +155,19 @@ AREA_CHECKS: Dict[str, List[str]] = {
         "(artt. 1168 e 1170 c.c.).",
         "Azioni a tutela del diritto: confessoria della servitù (art. 1079 c.c.), negatoria (art. 949 c.c.), "
         "rivendicazione (art. 948 c.c.).",
-        "Mediazione obbligatoria prima della causa nelle controversie in materia di diritti reali (art. 5 "
-        "d.lgs. 28/2010).",
+        _MEDIATION_REAL_RIGHTS,
     ],
     "locazione": [
         "Rito delle locazioni (art. 447-bis c.p.c.) e procedimento per convalida di sfratto (artt. 657 e 658 "
         "c.p.c.).",
         "Inadempimento e sua importanza (artt. 1453 e 1455 c.c.); obblighi del locatore e del conduttore "
         "(artt. 1575 e 1587 c.c.).",
-        "Mediazione obbligatoria prima della causa in materia di locazione (art. 5 d.lgs. 28/2010), esclusa "
-        "per il procedimento di convalida.",
+        _MEDIATION_LEASE,
     ],
     "successioni": [
         "Accettazione o rinuncia all'eredità e loro termini (artt. 470, 480 e 519 c.c.); accettazione con "
         "beneficio d'inventario (art. 484 c.c.).",
-        "Mediazione obbligatoria prima della causa in materia di successioni (art. 5 d.lgs. 28/2010).",
+        _MEDIATION_SUCCESSION,
     ],
     "famiglia": [
         "Interesse del minore e affidamento (artt. 337-bis e 337-ter c.c.); mantenimento (art. 316-bis c.c.).",
@@ -175,3 +190,46 @@ def checks_for(areas: Iterable[str], posture_type: str = "") -> List[str]:
     for area in areas:
         checks += [c for c in AREA_CHECKS.get(area, []) if c not in checks]
     return checks
+
+
+# --- CHECKLIST_GATED_ENABLED: an item only with the articles it names ----------------------------
+# diagnose_long (25 Oct): 23% of the articles cited without being expected were not in the pool at
+# all, written from these items' own text ("art. 5 d.lgs. 28/2010", 2943/2946 c.c., 633 c.p.c.). With
+# the flag an item is listed only if every article it names went through the applicability check.
+
+# The codes and laws the items name, longest spelling first, as the pool names them.
+_ITEM_CODES = [("c.p.c.", "c.p.c."), ("c.p.p.", "c.p.p."), ("c.p.a.", "c.p.a."), ("c.c.", "c.c."), ("c.p.", "c.p."),
+               ("d.lgs. 28/2010", "d.lgs. 28/2010"), ("l. 241/1990", L241), ("Codice del Consumo", "Codice del Consumo")]
+_ITEM_REF_RE = re.compile(
+    r"\bartt?\.\s*(\d+(?:-[a-z]+)?(?:\s*(?:,|e|-)\s*\d+(?:-[a-z]+)?)*)(?:\s+ss\.)?\s*(?:,\s*)?(?:dell['’]\s*)?("
+    + "|".join(re.escape(spelling) for spelling, _ in _ITEM_CODES) + r")")
+_CODE_OF_SPELLING = dict(_ITEM_CODES)
+
+
+def item_refs(item: str) -> List[Tuple[str, str]]:
+    """(article, code) for every article an item names: "artt. 1168 e 1170 c.c.", "artt. 112-114 c.p.a."
+    (a range), "art. 415-bis c.p.p.", "art. 5 d.lgs. 28/2010", "artt. 128 ss. Codice del Consumo"."""
+    refs: List[Tuple[str, str]] = []
+    for m in _ITEM_REF_RE.finditer(item or ""):
+        code = _CODE_OF_SPELLING[m.group(2)]
+        for part in re.split(r"\s*(?:,|\be\b)\s*", m.group(1)):
+            span = re.fullmatch(r"(\d+)-(\d+)", part.strip())
+            numbers = ([str(n) for n in range(int(span.group(1)), int(span.group(2)) + 1)]
+                       if span and int(span.group(2)) - int(span.group(1)) <= 10 else [part.strip()])
+            refs += [(n, code) for n in numbers if n and (n, code) not in refs]
+    return refs
+
+
+def gated_checks(areas: Iterable[str], posture_type: str, allowed: Callable[[Tuple[str, str]], bool]) -> List[str]:
+    """checks_for, keeping only the items whose named articles are all allowed (allowed(ref): the
+    article went through the applicability check), and the areas' pre-litigation steps only with a
+    pre-litigation posture. The posture is method_candidates.case_lists' own: one that does not fit
+    the case's areas has already become "" there."""
+    pre_litigation = {_MEDIATION_REAL_RIGHTS, _MEDIATION_LEASE, _MEDIATION_SUCCESSION}
+    out = []
+    for item in checks_for(areas, posture_type):
+        if item in pre_litigation and posture_type != "precontenzioso":
+            continue
+        if all(allowed(ref) for ref in item_refs(item)):
+            out.append(item)
+    return out

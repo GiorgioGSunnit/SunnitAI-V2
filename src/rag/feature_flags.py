@@ -119,6 +119,40 @@ else falls back to the default, so a typo never switches a feature on.
                                 heading, against the use the draft makes of
                                 it; a mismatch is flagged [DA VERIFICARE: l'art.
                                 N riguarda «...»]. See _check_qualifications.
+
+The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases):
+  CHECKLIST_GATED_ENABLED      false: the method lists and the practical checklist
+                                only for the case's verified area x posture (a
+                                posture of another family than the areas' is
+                                dropped); the lists' candidates pass the
+                                applicability check or go; a checklist item only
+                                if every article it names went through the check;
+                                mediation steps only before a civil suit. See
+                                method_candidates.case_lists, practical_checklist.
+                                gated_checks.
+  FRAME_SANITY_ENABLED         false: a criminal proceeding, conviction or an offence
+                                the text asks about puts "penale" among the frame's
+                                areas and turns a civil or "altro" posture into a
+                                criminal one; the areas are then uncertain and the
+                                vote's area filter drops no code. See _sane_frame.
+  RESOLUTION_STRICT_ENABLED    false: an institution is not resolved through a
+                                generic rubrica alone ("Risarcimento dei danni",
+                                "Prescrizione") unless the model's own number names
+                                that article; a full-text resolution counts only
+                                when the rubrica shares a word with the institution.
+                                See _resolve_institution.
+  CHECK_PRIORITY_ENABLED       false: the applicability check's 36 slots go to the
+                                voted articles, then multi-signal ones, then the
+                                rest, the method lists last; an article left
+                                unchecked is removed; a rejection must quote the
+                                case word for word, else it counts as applicable.
+                                See _filter_applicable_articles.
+  PLAN_KEEP_CHECKED_ENABLED    false (acts with PLAN_THEN_WRITE_ENABLED): every
+                                article the check judged applicabile or
+                                alternativa is in the plan, grouped by issue, up
+                                to 7 issues; never removed by the plan check. Over
+                                PLAN_KEEP_APPLICABLE_ENABLED when both are on. See
+                                plan_then_write._group_checked.
 """
 
 import logging

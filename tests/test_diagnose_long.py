@@ -184,6 +184,33 @@ def test_material_puts_provenance_under_each_article():
     assert "LEFT OUT OF THE PROMPT BY ITS TRIMMING (1)" in text and "43 c.p.: requisito «dolo»" in text
 
 
+def test_compare_puts_tables_a_and_b_side_by_side():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    new_rec["check_result"]["dropped"] = []                       # 43 c.p. no longer rejected...
+    new_rec["answer"]["mentioned"] = ["584 c.p.", "43 c.p.", "582 c.p."]   # ...and now cited; 81 c.p. gone
+    new_rec["answer"]["mentioned_eval"] = [["584", "cp"], ["43", "cp"], ["582", "cp"]]
+    new_rec["flags"] = {"CHECK_PRIORITY_ENABLED": "true"}
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("20261025-0940", old_rec), ("20261026-1000", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs[0], dirs[1], ev)
+    assert "1 cases in both" in text and "CHECK_PRIORITY_ENABLED None -> true" in text
+    assert "| REJECTED_BY_CHECK | 1 (17%) | 0 (0%) | -1 |" in text
+    assert "| MENTIONED | 2 (33%) | 3 (50%) | +1 |" in text
+    assert "Citations: 1 old (1.0 per answer), 0 new (0.0 per answer)." in text
+    assert "| institution | 1 (100%) | 0 (-) | -1 |" in text
+    assert "| x1 | 2 | 3 | 6 | 1 | 0 |" in text
+
+
 if __name__ == "__main__":
     for _name, _test in list(globals().items()):
         if _name.startswith("test_"):

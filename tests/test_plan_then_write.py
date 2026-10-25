@@ -385,3 +385,23 @@ def test_without_the_flag_nothing_is_added(model):
     assert ptw.OTHER_NORMS_TITLE not in applied and "Posizione della panchina (norme: -;" in applied
     assert "TUTTE le norme del PIANO" not in model.section_call("Norme e giurisprudenza")["system"]
     assert not [d for e, d in model.logged if e == "case_analysis_plan_applicable"]
+
+
+def test_keep_checked_places_every_judged_article(model, monkeypatch):
+    """PLAN_KEEP_CHECKED_ENABLED: every article judged applicabile or alternativa is in the plan, under the
+    issue its rubrica shares words with or in a last one; protected from the plan check; seven issues."""
+    monkeypatch.setenv("PLAN_KEEP_CHECKED_ENABLED", "true")
+    model.check = {"2051 c.c.": {"pertinente": False}}
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, _applicable_articles(), RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
+    assert ("NORME GIUDICATE APPLICABILI AI FATTI: [art. 2048 c.c.], [art. 1218 c.c.], [art. 2051 c.c.], "
+            "[art. 1917 c.c.], [art. 624 c.p.]. Ognuna deve comparire nel piano") in plan_call["human"]
+    assert "da due a sette" in plan_call["system"]
+    logged = [d for e, d in model.logged if e == "case_analysis_plan_applicable"][-1]
+    assert logged["mode"] == "checked" and logged["placed"] == ["1218 c.c.", "2051 c.c."]
+    assert logged["added_to_last_issue"] == ["2048 c.c.", "1917 c.c.", "624 c.p."]       # no rubrica to group by
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert "Posizione della panchina (norme: art. 2051 c.c.;" in applied                   # off-topic, but checked
+    assert f"{ptw.OTHER_NORMS_TITLE} (norme: art. 2048 c.c., art. 1917 c.c., art. 624 c.p." in applied
+    assert "TUTTE le norme del PIANO" in model.section_call("Norme e giurisprudenza")["system"]

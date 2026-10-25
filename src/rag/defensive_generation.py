@@ -1314,6 +1314,7 @@ def _analyse_case_structured(facts: str, lang: str, request: str = "",
 CASE_FRAME_FLAG = "CASE_FRAME_ENABLED"
 _FRAME_MAX_TASKS = 6
 _FRAME_MAX_CENTRAL = 3
+_FRAME_MAX_AREAS = 3
 _FRAME_MAX_FACTS = 20
 _POSTURE_TYPES = (
     "precontenzioso", "giudizio_civile_primo_grado", "sentenza_civile_primo_grado", "sentenza_civile_appello",
@@ -1371,7 +1372,7 @@ def _case_frame(facts: str, request: str) -> Optional[Dict[str, Any]]:
         "facts": _as_list(parsed.get("facts") if isinstance(parsed.get("facts"), list) else [])[:_FRAME_MAX_FACTS],
         "procedural_posture": " ".join(str(parsed.get("procedural_posture") or "").split()),
         "posture_type": posture_type if posture_type in _POSTURE_TYPES else "altro",
-        "areas": [a for a in (x.lower() for x in _as_list(parsed.get("areas"))) if a in _FRAME_AREAS][:3],
+        "areas": [a for a in (x.lower() for x in _as_list(parsed.get("areas"))) if a in _FRAME_AREAS][:_FRAME_MAX_AREAS],
         "tasks": list(dict.fromkeys(" ".join(t.split()) for t in _as_list(
             parsed.get("tasks") if isinstance(parsed.get("tasks"), list) else [])))[:_FRAME_MAX_TASKS],
         "central_issue_candidates": central[:_FRAME_MAX_CENTRAL],
@@ -1380,7 +1381,71 @@ def _case_frame(facts: str, request: str) -> Optional[Dict[str, Any]]:
                                              "central_issue_candidates")})
     if not frame["tasks"] and not frame["central_issue_candidates"]:
         return None
+    if feature_flags.enabled(FRAME_SANITY_FLAG):
+        frame = _sane_frame(frame, _case_text(facts, request))
     return frame
+
+
+# FRAME_SANITY_ENABLED (diagnose_long, 25 Oct): the frame's areas and posture set the scaffolding (method
+# lists, checklist, the vote's area filter, the plan's area rule), and the model got them wrong on
+# criminal cases: h6 (a "denuncia-querela" against a surgeon) -> responsabilita_civile, so the vote's
+# filter dropped every c.p. article; n1 (usury, "difensore dell'imputato") -> contratti; h5/h9
+# (convictions to appeal) -> sentenza_civile_primo_grado, civil appeal articles cited; p2 ("Quali reati
+# sono configurabili?") -> precontenzioso. Deterministic signals in the text now override: a criminal
+# proceeding or conviction, or an offence the text asks about, puts "penale" among the areas and, for
+# a civil (or "altro") posture, a criminal one; the areas are then marked uncertain, and the vote's
+# area filter drops no code (vote_pool.filter_areas). A frame with an administrative posture is left as
+# it is: an exclusion from a tender for a director's conviction (n4) stays an administrative case.
+FRAME_SANITY_FLAG = "FRAME_SANITY_ENABLED"
+_CRIMINAL_PROCEEDING_RE = re.compile(
+    r"\bimputat\w*|\bindagat\w*|\bquerel[a-zà-ù]*\b(?!\s+di\s+falso)|\bsporg\w*\s+denuncia|pubblico\s+ministero"
+    r"|procura\s+della\s+repubblica|rinvio\s+a\s+giudizio|capo\s+d['’]\s?imputazione"
+    r"|giudizio\s+(?:immediato|abbreviato|direttissimo)|decreto\s+penale|\barrest\w*|\breclusione\b"
+    r"|\bpena\s+(?:detentiva|pecuniaria|di\s+giustizia)", re.IGNORECASE)
+_CRIMINAL_CONVICTION_RE = re.compile(
+    r"\bcondannat\w*\s+(?:per\b|alla\s+(?:pena|reclusione)|a\s+\d+\s+(?:anni|mesi))"
+    r"|\bcondanna\s+(?:penale\b|[^.;]{0,40}\b(?:alla\s+(?:pena|reclusione)|per\s+(?:il\s+)?(?:reato|delitto)))"
+    r"|\binflig\w*[^.;]{0,40}\bpen[ae]\b|\bgiudicat\w*\s+responsabil\w*[^.;]{0,80}\b(?:delitt|reat)"
+    r"|\briconosciut\w*\s+colpevol", re.IGNORECASE)
+_CRIMINAL_OFFENCE_RE = re.compile(
+    r"\breat[oi]\b|\bdelitt[oi]\b|\bcontravvenzion\w*|\bartt?\.?\s*\d+(?:-\w+)?\s*,?\s*c\.?\s?p\.?(?:\s?p\.?)?(?!\s?[ac]\b)",
+    re.IGNORECASE)
+_CRIMINAL_QUESTION_RE = re.compile(
+    r"\bqual[ie]?\s+(?:reat|delitt|fattispecie)|(?:reat|delitt)\w*[^.;?]{0,40}configurabil"
+    r"|configurabil\w*[^.;?]{0,40}(?:reat|delitt)|responsabilit[àa]\s+penale|rilevanza\s+penale|profil\w*\s+penal",
+    re.IGNORECASE)
+_CRIMINAL_TRIAL_RE = re.compile(
+    r"\bimputat\w*|rinvio\s+a\s+giudizio|dibattiment\w*|capo\s+d['’]\s?imputazione"
+    r"|giudizio\s+(?:immediato|abbreviato|direttissimo)|decreto\s+che\s+dispone\s+il\s+giudizio", re.IGNORECASE)
+_CRIMINAL_APPEAL_LEVEL_RE = re.compile(
+    r"corte\s+d['’]\s?appello[^.;]{0,60}\b(?:conferm|condann|riform|rigett)\w*"
+    r"|(?:conferm|condann)\w*[^.;]{0,40}\bin\s+(?:appello|secondo\s+grado)|sentenza\s+(?:di\s+secondo\s+grado|d['’]\s?appello)",
+    re.IGNORECASE)
+
+
+def _sane_frame(frame: Dict[str, Any], case_text: str) -> Dict[str, Any]:
+    """The frame with FRAME_SANITY_ENABLED's overrides (see above); unchanged when none applies."""
+    from . import method_candidates
+
+    convicted = bool(_CRIMINAL_CONVICTION_RE.search(case_text))
+    criminal = convicted or bool(_CRIMINAL_PROCEEDING_RE.search(case_text)) or (
+        bool(_CRIMINAL_OFFENCE_RE.search(case_text)) and bool(_CRIMINAL_QUESTION_RE.search(case_text)))
+    if not criminal or (frame.get("posture_type") or "") in method_candidates.ADMINISTRATIVE_POSTURES:
+        return frame
+    areas, posture, overrides = list(frame.get("areas") or []), frame.get("posture_type") or "altro", []
+    if "penale" not in areas:
+        areas = ["penale"] + areas[:_FRAME_MAX_AREAS - 1]
+        overrides.append("area penale added")
+    if posture == "altro" or posture in method_candidates.CIVIL_POSTURES:
+        new = (("sentenza_penale_appello" if _CRIMINAL_APPEAL_LEVEL_RE.search(case_text) else "condanna_primo_grado")
+               if convicted else "giudizio_penale_primo_grado" if _CRIMINAL_TRIAL_RE.search(case_text)
+               else "indagini_preliminari")
+        overrides.append(f"posture {posture} -> {new}")
+        posture = new
+    if not overrides:
+        return frame
+    vlog("case_frame_sanity", {"overrides": overrides, "areas": areas, "posture_type": posture})
+    return {**frame, "areas": areas, "posture_type": posture, "areas_uncertain": True, "sanity": overrides}
 
 
 def _frame_block(frame: Optional[Dict[str, Any]]) -> str:
@@ -1852,6 +1917,41 @@ def _number_matches_institution(session, doc_id: str, number: str, nome: str) ->
     return False
 
 
+RESOLUTION_STRICT_FLAG = "RESOLUTION_STRICT_ENABLED"
+# Words that make a rubrica generic when it has no other: many articles in many codes carry it, so a
+# match on it alone says nothing about the article (RESOLUTION_STRICT_ENABLED).
+_GENERIC_HEADING_WORDS = (
+    "risarcimento danno danni prescrizione accessione accessioni disposizioni generali comuni definizioni "
+    "definizione oggetto ambito applicazione effetti effetto termine termini competenza sanzioni sanzione "
+    "obblighi obbligo norme norma applicabili rinvio decadenza spese casi modalità procedimento finalità "
+    "principi principio regole regola diritto diritti disciplina")
+_generic_stems_cache: Dict[str, set] = {}
+
+
+def _stems_of(text: str) -> set:
+    from .issue_spotting import _stems
+    return _stems(text or "")
+
+
+def _rows_heading(rows: List[Dict[str, Any]]) -> str:
+    """The article's rubrica: titolo_articolo, else title, of its first row that has one."""
+    for row in rows or []:
+        s = row.get("s") or {}
+        heading = " ".join(str(s.get("titolo_articolo") or s.get("title") or "").split())
+        if heading:
+            return heading
+    return ""
+
+
+def _generic_heading(heading: str) -> bool:
+    """True when every content word of the rubrica is a generic one ("Risarcimento dei danni",
+    "Prescrizione", "Accessioni"); False for an empty rubrica."""
+    if "stems" not in _generic_stems_cache:
+        _generic_stems_cache["stems"] = _stems_of(_GENERIC_HEADING_WORDS)
+    stems = _stems_of(heading)
+    return bool(stems) and stems <= _generic_stems_cache["stems"]
+
+
 def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dict[str, str],
                          parole_chiave: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Article rows for one institution ({nome, codice, numero_indicativo}
@@ -1936,6 +2036,19 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                                            "reason": reason}, duration_ms=(time.time() - t0) * 1000)
         return rows
 
+    # RESOLUTION_STRICT_ENABLED: a match on a generic rubrica ("Risarcimento dei danni" is art. 81 c.c.'s,
+    # on the broken promise of marriage) is trusted only when the model's own number names that article.
+    strict = feature_flags.enabled(RESOLUTION_STRICT_FLAG)
+    numero_indicativo = _article_num(istituto.get("numero_indicativo", "") or "")
+
+    def _generic_alone(rows: List[Dict[str, Any]], number: str, path: str) -> bool:
+        heading = _rows_heading(rows)
+        if not strict or number == numero_indicativo or not _generic_heading(heading):
+            return False
+        vlog("case_analysis_institution_rejected", {"institution": nome, "article": f"{number} {abbr or codice}",
+                                                    "path": path, "heading": heading, "why": "generic heading alone"})
+        return True
+
     if doc:
         for term in [nome, *(parole_chiave or [])]:
             if not isinstance(term, str) or not term.strip():
@@ -1944,7 +2057,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                 number = article_by_title(session, doc["id"], term, field=field)
                 if number:
                     rows = fetch_article(session, doc["id"], number)
-                    if rows:
+                    if rows and not _generic_alone(rows, number, field):
                         reason = field if term == nome else f"{field}, via parola chiave {term!r}"
                         # Only the official heading exempts a row from the
                         # applicability check: s.title is LLM-written on every
@@ -1961,7 +2074,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
         number = _heading_index_match(session, doc["id"], nome)
         if number:
             rows = fetch_article(session, doc["id"], number)
-            if rows:
+            if rows and not _generic_alone(rows, number, "heading index"):
                 return _found(_tag(rows, number, heading_match=True), number,
                              "heading index, verified against its own words")
 
@@ -1969,9 +2082,19 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     if numbers:
         rows = []
         for number in numbers[:2]:
-            rows.extend(_tag(fetch_article(session, doc["id"], number), number))
+            found = fetch_article(session, doc["id"], number)
+            # RESOLUTION_STRICT_ENABLED: a full-text hit counts only if its rubrica shares a content word
+            # with the institution (diagnose_long, 25 Oct: concorso -> 544-quinquies c.p., dolo -> 133/118).
+            if strict and found and not (_stems_of(nome) & _stems_of(_rows_heading(found))):
+                vlog("case_analysis_institution_rejected", {
+                    "institution": nome, "article": f"{number} {abbr or codice}", "path": "fulltext",
+                    "heading": _rows_heading(found), "why": "rubrica shares no word with the institution"})
+                continue
+            if found and _generic_alone(found, number, "fulltext"):
+                continue
+            rows.extend(_tag(found, number))
         if rows:
-            label = ", ".join(numbers[:2])
+            label = ", ".join(dict.fromkeys(r["_article"][0] for r in rows)) if strict else ", ".join(numbers[:2])
             return _found(rows, label, "fulltext, scoped to the institution's own document and "
                                        "verified against its own words")
 
@@ -3450,7 +3573,7 @@ def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[
     return to_check, texts
 
 
-def _applicability_batch(case: str, texts: Dict[str, str]) -> tuple:
+def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLICABILITY_SYSTEM) -> tuple:
     """(verdict list or None, error text) for one batch of articles."""
     human = (
         f"Fatti del caso:\n{case}\n\n"
@@ -3462,7 +3585,7 @@ def _applicability_batch(case: str, texts: Dict[str, str]) -> tuple:
     # articles carry them now; the room still allows several drops per batch.
     max_tokens = 400 + 120 * len(texts)
     try:
-        verdicts = _chat_json([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
+        verdicts = _chat_json([SystemMessage(content=system), HumanMessage(content=human)],
                               max_tokens=max_tokens, temperature=0)
     except Exception as exc:
         logger.warning("applicability check failed for a batch of %d articles, keeping them: %s", len(texts), exc)
@@ -3470,7 +3593,8 @@ def _applicability_batch(case: str, texts: Dict[str, str]) -> tuple:
     return (verdicts, "") if isinstance(verdicts, list) else (None, "reply is not a JSON list")
 
 
-def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> Optional[Dict[str, Dict[str, Any]]]:
+def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str],
+                            system: str = _APPLICABILITY_SYSTEM) -> Optional[Dict[str, Dict[str, Any]]]:
     """{label key: verdict} from the model, _APPLICABILITY_BATCH articles per call and up to
     _APPLICABILITY_WORKERS calls at once; a failed batch only leaves its own articles without
     a verdict (kept). None if every batch fails."""
@@ -3482,11 +3606,11 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> 
                for i in range(0, len(labels), _APPLICABILITY_BATCH)]
     t0 = time.time()
     if len(batches) == 1:
-        results = [_applicability_batch(case, batches[0])]
+        results = [_applicability_batch(case, batches[0], system)]
     else:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(_APPLICABILITY_WORKERS, len(batches))) as pool:
-            results = list(pool.map(lambda batch: _applicability_batch(case, batch), batches))
+            results = list(pool.map(lambda batch: _applicability_batch(case, batch, system), batches))
     errors = [error for verdicts, error in results if verdicts is None]
     log = {"checked": len(texts), "batches": len(batches), "failed_batches": len(errors)}
     if errors:
@@ -3527,33 +3651,53 @@ def _filter_applicable_articles(facts: str, request: str,
                                 article_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """The article rows without those the model shows to be incompatible with
     the facts, in their original order. Fails open: on any error, unparseable
-    reply or missing verdict, the rows are kept."""
+    reply or missing verdict, the rows are kept -- except, with CHECK_PRIORITY_ENABLED,
+    the articles left without a verdict while the check ran, and, with
+    CHECKLIST_GATED_ENABLED, the method lists' candidates without one."""
+    from . import method_candidates
+
+    priority = feature_flags.enabled(CHECK_PRIORITY_FLAG)
+    gated = feature_flags.enabled(method_candidates.CHECKLIST_GATED_FLAG)
     to_check, texts = _applicability_candidates(facts, request, article_rows)
-    if not texts:
+    if not texts and not (priority or gated):
         return article_rows
+    if priority:
+        texts = _check_order(texts, to_check)
     # Only the first _APPLICABILITY_MAX_CHECKED, in the pipeline's order: the later ones
     # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
     unchecked = len(texts) - _APPLICABILITY_MAX_CHECKED
+    unchecked_labels = list(texts)[_APPLICABILITY_MAX_CHECKED:]
     if unchecked > 0:
         texts = dict(list(texts.items())[:_APPLICABILITY_MAX_CHECKED])
-    verdicts = _applicability_verdicts(facts, request, texts)
+    verdicts = (_applicability_verdicts(facts, request, texts,
+                                        _APPLICABILITY_SYSTEM_QUOTED if priority else _APPLICABILITY_SYSTEM)
+                if texts else {})
     if verdicts is None:
-        return article_rows
-    dropped_articles, dropped = set(), []
+        # Every batch failed: kept as before; the method lists' candidates are not (CHECKLIST_GATED).
+        return _without_unjudged(article_rows, to_check, {}, set(), method_only=True) if gated else article_rows
+    case = _case_text(facts, request)
+    dropped_articles, dropped, voided = set(), [], []
     for article in to_check:
         label = f"{article[0]} {article[1]}"
         verdict = verdicts.get(_applicability_key(label))
         if _drops_article(verdict, texts.get(label, "")):
+            # CHECK_PRIORITY_ENABLED: a rejection must quote the case; one that does not is a misreading
+            # (diagnose_long, 25 Oct: 1158, 416-bis, 1163 rejected on facts the case does not state).
+            if priority and not _quote_in_case(str(verdict.get("fatto") or ""), case):
+                voided.append({"article": label, "fatto": str(verdict.get("fatto"))[:200]})
+                verdicts[_applicability_key(label)] = {**verdict, "verdict": "applicabile"}
+                continue
             dropped_articles.add(article)
             dropped.append({"article": label, "requisito": str(verdict.get("requisito"))[:200],
                             "fatto": str(verdict.get("fatto"))[:200], "reason": str(verdict.get("reason", ""))[:200]})
-    vlog("case_analysis_applicability", {
+    log = {
         "checked": sorted(texts),
         "verdicts": {label: (verdicts.get(_applicability_key(label)) or {}).get("verdict", "missing")
                      for label in texts},
         "dropped": dropped,
         "unchecked": max(unchecked, 0),
-    })
+        "unchecked_labels": unchecked_labels,
+    }
     # The verdict travels with the rows checked and kept: a trimmed draft prompt gives its free
     # room to those judged applicable first (_refill_order).
     judged = {}
@@ -3561,8 +3705,78 @@ def _filter_applicable_articles(facts: str, request: str,
         verdict = verdicts.get(_applicability_key(f"{article[0]} {article[1]}"))
         if verdict and article not in dropped_articles:
             judged[article] = str(verdict.get("verdict", "")).strip().lower()
-    return [{**r, "_applicability": judged[r["_article"]]} if r.get("_article") in judged else r
+    if priority:
+        log["voided_rejections"] = voided
+    rows = [{**r, "_applicability": judged[r["_article"]]} if r.get("_article") in judged else r
             for r in article_rows if r.get("_article") not in dropped_articles]
+    if priority or gated:
+        # CHECK_PRIORITY_ENABLED: an article left unchecked may not be cited; CHECKLIST_GATED_ENABLED: nor
+        # may a method lists' candidate.
+        kept = _without_unjudged(rows, to_check, judged, dropped_articles, method_only=not priority)
+        log["removed_unchecked"] = sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in rows if r not in kept})
+        rows = kept
+    vlog("case_analysis_applicability", log)
+    return rows
+
+
+# CHECK_PRIORITY_ENABLED (diagnose_long, 25 Oct: half of the pool past the 36 checked slots, and
+# kept unchecked): the slots go first to the voted articles, then to those several signals found,
+# then the rest in the pipeline's order, the method lists last (_check_rank); an article left
+# unchecked is removed; a rejection must quote the case (_quote_in_case).
+CHECK_PRIORITY_FLAG = "CHECK_PRIORITY_ENABLED"
+_APPLICABILITY_QUOTE_RULE = (
+    "\nPer un articolo \"incompatibile\", \"fatto\" è la frase del caso che contraddice il requisito, copiata "
+    "parola per parola dal testo dei fatti, senza parafrasi: se nessuna frase del caso lo contraddice, "
+    "l'articolo è \"applicabile\"."
+)
+_APPLICABILITY_SYSTEM_QUOTED = _APPLICABILITY_SYSTEM.replace(
+    '"fatto": "<il fatto del caso>"', '"fatto": "<la frase del caso, copiata>"') + _APPLICABILITY_QUOTE_RULE
+
+
+def _check_rank(rows: List[Dict[str, Any]]) -> int:
+    """An article's place in the check's order, from all its rows (CHECK_PRIORITY_ENABLED): voted,
+    then several signals, then the rest, the method lists last. The articles the user named, the
+    cross-references and the rows found by their rubrica (_heading_match) are exempt from the check
+    (_applicability_candidates), so they never take a slot."""
+    if any(r.get("_vote") for r in rows):
+        return 0
+    if any(r.get("_multi_signal") for r in rows):
+        return 1
+    if all(r.get("_source") == METHOD_CANDIDATES_SOURCE for r in rows):
+        return 3
+    return 2
+
+
+def _check_order(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]]]) -> Dict[str, str]:
+    """texts reordered by _check_rank, the pipeline's order kept within each rank."""
+    rank = {f"{a[0]} {a[1]}": _check_rank(rows) for a, rows in to_check.items()}
+    order = sorted(enumerate(texts), key=lambda pair: (rank.get(pair[1], 2), pair[0]))
+    return {label: texts[label] for _, label in order}
+
+
+def _words(text: str) -> List[str]:
+    return re.findall(r"[a-zà-ÿ0-9]+", (text or "").lower())
+
+
+def _quote_in_case(quote: str, case: str) -> bool:
+    """True when the quote is the case's own words: each part of it (split at "...") found in the
+    case text, word for word once case and punctuation are set aside, one part of three words or more."""
+    flat = " " + " ".join(_words(case)) + " "
+    parts = [" ".join(_words(p)) for p in re.split(r"\.\.\.|…", quote or "")]
+    parts = [p for p in parts if p]
+    return bool(parts) and max(len(p.split()) for p in parts) >= 3 and all(f" {p} " in flat for p in parts)
+
+
+def _without_unjudged(rows: List[Dict[str, Any]], to_check: Dict[tuple, List[Dict[str, Any]]], judged: Dict[tuple, str],
+                      dropped: set, method_only: bool) -> List[Dict[str, Any]]:
+    """rows without the articles sent to the check that got no verdict (only the method lists'
+    candidates among them when method_only). Exempt articles are never in to_check, so never removed."""
+    def unjudged(row):
+        article = row.get("_article")
+        if article not in to_check or article in judged or article in dropped:
+            return False
+        return not method_only or all(r.get("_source") == METHOD_CANDIDATES_SOURCE for r in to_check[article])
+    return [r for r in rows if not unjudged(r)]
 
 
 # --- Draft quality (r14, 21 Oct: held-out run after the parser fix) ------------
@@ -3804,10 +4018,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     area/posture lists are trusted; the others are checked in one call."""
     from . import method_candidates
 
-    frame = analysis.get("frame") or {}
-    trusted = set(method_candidates.candidate_refs(
-        method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or ""),
-        frame.get("posture_type") or ""))
+    trusted = set(method_candidates.candidate_refs(*method_candidates.case_lists(analysis)))
     known = {r["_article"] for r in article_rows if r.get("_article")}
     cited = [ref for ref in _cited_articles(draft, known, documents) if ref not in trusted]
     if not cited:
@@ -3899,9 +4110,9 @@ def _add_method_candidates(session, driver, database: str, analysis: Dict[str, A
     from . import method_candidates
     from .doc_lookup import _fetch_doc_names
 
-    frame = analysis.get("frame") or {}
-    areas = method_candidates.areas_for(frame.get("areas") or [], analysis.get("area") or "")
-    refs = method_candidates.candidate_refs(areas, frame.get("posture_type") or "")
+    # CHECKLIST_GATED_ENABLED: only the lists of the case's verified area x posture (case_lists).
+    areas, posture = method_candidates.case_lists(analysis)
+    refs = method_candidates.candidate_refs(areas, posture)
     have = {r.get("_article") for r in picked.get("article_rows") or [] if r.get("_article")}
     wanted = [ref for ref in refs if ref not in have]
     if not wanted:
@@ -3914,7 +4125,7 @@ def _add_method_candidates(session, driver, database: str, analysis: Dict[str, A
     for row in rows:
         row["_source"] = METHOD_CANDIDATES_SOURCE
     added = list(dict.fromkeys(r["_article"] for r in rows if r.get("_article")))
-    vlog("case_analysis_method_candidates", {"areas": areas, "posture": frame.get("posture_type") or "",
+    vlog("case_analysis_method_candidates", {"areas": areas, "posture": posture,
                                              "added": [f"{n} {c}" for n, c in added],
                                              "not_found": [f"{n} {c}" for n, c in wanted if (n, c) not in added]})
     return {**picked, "article_rows": list(picked.get("article_rows") or []) + rows,

@@ -97,6 +97,15 @@ def case_areas(analysis: Optional[Dict[str, Any]]) -> List[str]:
     return method_candidates.areas_for((analysis.get("frame") or {}).get("areas") or [], area) or ([area] if area else [])
 
 
+def filter_areas(analysis: Optional[Dict[str, Any]]) -> List[str]:
+    """The areas the area filter goes by: case_areas, or none at all (no filter) when
+    FRAME_SANITY_ENABLED found the frame's areas uncertain (defensive_generation._sane_frame)."""
+    frame = (analysis or {}).get("frame") or {}
+    if feature_flags.enabled("FRAME_SANITY_ENABLED") and frame.get("areas_uncertain"):
+        return []
+    return case_areas(analysis)
+
+
 def allowed_codes(areas: Iterable[str], named: Iterable[str]) -> Optional[set]:
     """The main codes a vote may name for these areas, plus those the user named; None (no
     filter) when the areas are unknown."""
@@ -355,7 +364,7 @@ def ruling_vote(session, driver, database: str, case_text: str, index: str,
         sims = ruling_sims(vector, fulltext)
         cites = _citations(session, list(sims))
         cards = _card_refs()
-        areas = case_areas(analysis)
+        areas = filter_areas(analysis)
         posture = str(((analysis or {}).get("frame") or {}).get("posture_type") or "")
         votes, dropped = filter_refs({r: cards[r] if r in cards else cites.get(r, ()) for r in sims},
                                      areas, posture, case_text)
