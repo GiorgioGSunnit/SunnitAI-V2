@@ -3576,10 +3576,8 @@ def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[
     return to_check, texts
 
 
-def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLICABILITY_SYSTEM,
-                         tokens: tuple = (400, 120)) -> tuple:
-    """(verdict list or None, error text) for one batch of articles; tokens: (base, per article)
-    of the reply's max_tokens."""
+def _applicability_batch(case: str, texts: Dict[str, str]) -> tuple:
+    """(verdict list or None, error text) for one batch of articles."""
     human = (
         f"Fatti del caso:\n{case}\n\n"
         "Articoli candidati (testo reale dalla banca dati):\n"
@@ -3588,9 +3586,9 @@ def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLIC
     # Round 8 (19 Oct): a fixed 1200-token cap truncated the JSON reply past 6-7
     # articles when every verdict carried requisito/fatto/reason. Only dropped
     # articles carry them now; the room still allows several drops per batch.
-    max_tokens = tokens[0] + tokens[1] * len(texts)
+    max_tokens = 400 + 120 * len(texts)
     try:
-        verdicts = _chat_json([SystemMessage(content=system), HumanMessage(content=human)],
+        verdicts = _chat_json([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
                               max_tokens=max_tokens, temperature=0)
     except Exception as exc:
         logger.warning("applicability check failed for a batch of %d articles, keeping them: %s", len(texts), exc)
@@ -3598,26 +3596,23 @@ def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLIC
     return (verdicts, "") if isinstance(verdicts, list) else (None, "reply is not a JSON list")
 
 
-def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str],
-                            system: str = _APPLICABILITY_SYSTEM, case: Optional[str] = None,
-                            tokens: tuple = (400, 120)) -> Optional[Dict[str, Dict[str, Any]]]:
+def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str]) -> Optional[Dict[str, Dict[str, Any]]]:
     """{label key: verdict} from the model, _APPLICABILITY_BATCH articles per call and up to
     _APPLICABILITY_WORKERS calls at once; a failed batch only leaves its own articles without
-    a verdict (kept). None if every batch fails. A graded reply's short keys (CHECK_GRADED_ENABLED:
-    a, g, q, r) are read as article, grade, issue, reason."""
+    a verdict (kept). None if every batch fails. CHECK_GRADED_ENABLED has its own: _graded_verdicts."""
     if not texts:
         return {}
-    case = _case_text(facts, request)[:2000] if case is None else case
+    case = _case_text(facts, request)[:2000]
     labels = list(texts)
     batches = [{label: texts[label] for label in labels[i:i + _APPLICABILITY_BATCH]}
                for i in range(0, len(labels), _APPLICABILITY_BATCH)]
     t0 = time.time()
     if len(batches) == 1:
-        results = [_applicability_batch(case, batches[0], system, tokens)]
+        results = [_applicability_batch(case, batches[0])]
     else:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(_APPLICABILITY_WORKERS, len(batches))) as pool:
-            results = list(pool.map(lambda batch: _applicability_batch(case, batch, system, tokens), batches))
+            results = list(pool.map(lambda batch: _applicability_batch(case, batch), batches))
     errors = [error for verdicts, error in results if verdicts is None]
     log = {"checked": len(texts), "batches": len(batches), "failed_batches": len(errors)}
     if errors:
@@ -3625,15 +3620,8 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str],
     vlog("case_analysis_applicability", log, duration_ms=(time.time() - t0) * 1000)
     if len(errors) == len(results):
         return None
-    read = [_long_keys(v) for verdicts, _ in results for v in verdicts or [] if isinstance(v, dict)]
-    return {_applicability_key(v["article"]): v for v in read if isinstance(v.get("article"), str)}
-
-
-def _long_keys(verdict: Dict[str, Any]) -> Dict[str, Any]:
-    """A graded reply's {a, g, q, r} as {article, grade, issue, reason}; any other reply as it is."""
-    if "article" in verdict or "a" not in verdict:
-        return verdict
-    return {"article": verdict.get("a"), "grade": verdict.get("g"), "issue": verdict.get("q"), "reason": verdict.get("r")}
+    return {_applicability_key(v["article"]): v for verdicts, _ in results for v in verdicts or []
+            if isinstance(v, dict) and isinstance(v.get("article"), str)}
 
 
 # A limit or an exclusion: facts that exclude it make the article an argument
@@ -3668,8 +3656,10 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     reply or missing verdict, the rows are kept -- except, with CHECK_PRIORITY_ENABLED,
     the articles left without a verdict while the check ran, and, with
     CHECKLIST_GATED_ENABLED, the method lists' candidates without one.
-    CHECK_GRADED_ENABLED: a relevance grade instead of the verdict (_GRADED_SYSTEM); grade 0 is
-    removed, 1 stays as "marginale", 2 and 3 are "applicabile"; each kept row carries _grade."""
+    CHECK_GRADED_ENABLED: a relevance grade instead of the verdict (_GRADED_SYSTEM), for up to
+    _GRADED_MAX_CHECKED articles; grade 0 is removed, 1 stays as "marginale", 2 and 3 are "applicabile";
+    each kept row carries _grade. An article still without a grade after the retry (_graded_verdicts)
+    stays as "non valutato": never removed, never counted as passing the check."""
     from . import method_candidates
 
     priority = feature_flags.enabled(CHECK_PRIORITY_FLAG)
@@ -3682,15 +3672,17 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         texts = _check_order(texts, to_check)
     # Only the first _APPLICABILITY_MAX_CHECKED, in the pipeline's order: the later ones
     # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
-    unchecked = len(texts) - _APPLICABILITY_MAX_CHECKED
-    unchecked_labels = list(texts)[_APPLICABILITY_MAX_CHECKED:]
+    # A graded call costs about a third of a verdict per article: twice the slots.
+    limit = _GRADED_MAX_CHECKED if graded else _APPLICABILITY_MAX_CHECKED
+    unchecked = len(texts) - limit
+    unchecked_labels = list(texts)[limit:]
     if unchecked > 0:
-        texts = dict(list(texts.items())[:_APPLICABILITY_MAX_CHECKED])
+        texts = dict(list(texts.items())[:limit])
+    ungraded: List[str] = []
     if not texts:
         verdicts = {}
     elif graded:
-        verdicts = _applicability_verdicts(facts, request, _graded_texts(texts, to_check), _GRADED_SYSTEM,
-                                           case=_graded_case(facts, request, analysis), tokens=_GRADED_TOKENS)
+        verdicts, ungraded = _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(texts, to_check))
     else:
         verdicts = _applicability_verdicts(facts, request, texts)
     if verdicts is None:
@@ -3714,7 +3706,8 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
                             "fatto": str(verdict.get("fatto"))[:200], "reason": str(verdict.get("reason", ""))[:200]})
     if graded:
         shown = {label: f"grade {_grade(verdicts.get(_applicability_key(label)))}"
-                 if _grade(verdicts.get(_applicability_key(label))) is not None else "missing" for label in texts}
+                 if _grade(verdicts.get(_applicability_key(label))) is not None
+                 else "ungraded (kept)" if label in ungraded else "missing" for label in texts}
     else:
         shown = {label: (verdicts.get(_applicability_key(label)) or {}).get("verdict", "missing") for label in texts}
     log = {
@@ -3723,12 +3716,16 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         "dropped": dropped,
         "unchecked": max(unchecked, 0),
         "unchecked_labels": unchecked_labels,
+        "max_checked": limit,
     }
     # The verdict travels with the rows checked and kept: a trimmed draft prompt gives its free
     # room to those judged applicable first (_refill_order).
     judged = {}
     if graded:
         judged = {article: "applicabile" if grade >= 2 else "marginale" for article, (grade, _) in grades.items()}
+        # No grade even after the retry: kept for the writer, but neither passed nor forced into the plan.
+        judged.update({article: "non valutato" for article in to_check if f"{article[0]} {article[1]}" in ungraded})
+        log["ungraded"] = ungraded
         log["grades"] = {f"{a[0]} {a[1]}": g for a, (g, _) in grades.items()}
         log["issues"] = {f"{a[0]} {a[1]}": issue for a, (_, issue) in grades.items() if issue}
     else:
@@ -3766,11 +3763,15 @@ CHECK_PRIORITY_FLAG = "CHECK_PRIORITY_ENABLED"
 # questions and issues in view; grade 0 leaves the pool before the prompt, PLAN_KEEP_CHECKED keeps 2-3.
 CHECK_GRADED_FLAG = "CHECK_GRADED_ENABLED"
 _GRADED_TEXT_CHARS = 400
-_GRADED_TOKENS = (60, 45)       # reply max_tokens: base, per article
+# Reply max_tokens: base, per article. Run 1206 (60 + 45 per article): a compact entry in Italian runs
+# 45-60 tokens, so a batch of 12 was cut, and a cut array is no list: its 12 articles got no grade.
+_GRADED_TOKENS = (120, 60)
+_GRADED_MAX_CHECKED = 72
+_GRADED_RETRY_BATCH = 6         # the ids still without a grade go once more, this many per call
 _GRADED_SYSTEM = (
     "Sei un giurista. Ricevi i fatti di un caso, i suoi quesiti e le sue questioni, e alcuni articoli di legge "
-    "candidati, ciascuno con la sua rubrica e l'inizio del testo. Per ogni articolo dai un voto di pertinenza al "
-    "caso:\n"
+    "candidati, ciascuno con un identificativo tra parentesi quadre ([A1], [A2], ...), la sua rubrica e "
+    "l'inizio del testo. Per ogni articolo dai un voto di pertinenza al caso:\n"
     "- 3: disciplina la questione centrale, quella da cui dipende l'esito;\n"
     "- 2: disciplina un'altra questione del caso, o serve direttamente alla difesa o alla pretesa della parte "
     "assistita sui fatti dati;\n"
@@ -3780,10 +3781,113 @@ _GRADED_SYSTEM = (
     "solo penale, il termine di un giudizio che non c'è).\n"
     "Giudica da ciò che l'articolo dispone, non dal numero e non da una parola in comune con i fatti. Nel dubbio "
     "tra due voti scegli il più basso.\n"
-    "Rispondi SOLO con un array JSON compatto, un oggetto per articolo nell'ordine dato: "
-    '[{"a": "<l\'identificativo tra parentesi quadre>", "g": 0, "q": "<la questione che serve, in poche parole>", '
-    '"r": "<perché, in una frase breve>"}]'
+    "Rispondi SOLO con un array JSON compatto, esattamente un oggetto per ogni identificativo ricevuto, "
+    "nell'ordine dato, nessuno escluso (anche quelli con voto 0): "
+    '[{"a": "A1", "g": 0, "q": "<la questione che serve, in poche parole>", '
+    '"r": "<perché, in al massimo 15 parole>"}]'
 )
+
+
+def _graded_batch(case: str, texts: Dict[str, str], retry: bool = False) -> tuple:
+    """({label: verdict} for the articles one graded call returned a grade for, problem). Each article
+    is sent under a short id (A1, A2, ...) to echo back, and the reply is read object by object
+    (_graded_reply), so a reply cut short still gives the grades it holds. problem is "" when every
+    article got a grade, else what went wrong (error, how many missing, whether the reply was cut).
+    retry only names the call for scripts/diagnose_long.py's dumps."""
+    ids = {f"A{i}": label for i, label in enumerate(texts, 1)}
+    human = (
+        f"Fatti del caso:\n{case}\n\n"
+        f"Articoli candidati (testo reale dalla banca dati), {len(ids)}: un oggetto per ciascuno degli "
+        f"identificativi {', '.join(ids)}.\n\n"
+        + "\n\n".join(f"[{key}] {label}\n{texts[label]}" for key, label in ids.items())
+    )
+    try:
+        raw = _chat([SystemMessage(content=_GRADED_SYSTEM), HumanMessage(content=human)],
+                    max_tokens=_GRADED_TOKENS[0] + _GRADED_TOKENS[1] * len(ids), temperature=0)
+    except Exception as exc:
+        logger.warning("graded check failed for a batch of %d articles: %s", len(ids), exc)
+        return {}, f"error: {str(exc)[:160]}"
+    read = _graded_reply(raw, ids)
+    if len(read) == len(ids):
+        return read, ""
+    cut = not re.sub(r"`+\s*$", "", (raw or "").strip()).rstrip().endswith("]")
+    return read, f"{len(ids) - len(read)} of {len(ids)} without a grade" + (" (reply cut)" if cut else "")
+
+
+def _graded_reply(raw: str, ids: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    """{label: verdict} from a graded reply: each object whose id ("A3", or the label itself) is one
+    sent and whose grade is 0-3; the first one per article counts."""
+    by_key = {_applicability_key(label): label for label in ids.values()}
+    read: Dict[str, Dict[str, Any]] = {}
+    for item in _json_objects(raw):
+        ref = str(item.get("a") or item.get("article") or item.get("id") or "").strip()
+        short = re.match(r"\[?\s*(A\d+)\b", ref, re.IGNORECASE)
+        label = ids.get(short.group(1).upper()) if short else by_key.get(_applicability_key(ref.strip("[] ")))
+        grade = _grade({"grade": item.get("g", item.get("grade"))})
+        if label and grade is not None and label not in read:
+            read[label] = {"article": label, "grade": grade, "issue": item.get("q") or item.get("issue"),
+                           "reason": item.get("r") or item.get("reason")}
+    return read
+
+
+def _json_objects(raw: str) -> List[Dict[str, Any]]:
+    """Every JSON object in a reply, in order, also when the reply is cut in the middle of the array
+    (the objects before the cut) or wraps the array in an object ({"articoli": [...]})."""
+    import json
+    text, decoder = raw or "", json.JSONDecoder()
+    found: List[Dict[str, Any]] = []
+    i = text.find("{")
+    while i >= 0:
+        try:
+            item, end = decoder.raw_decode(text, i)
+        except ValueError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(item, dict):
+            lists = [v for v in item.values() if isinstance(v, list)]
+            if lists and not any(k in item for k in ("a", "article", "id")):
+                found += [x for v in lists for x in v if isinstance(x, dict)]
+            else:
+                found.append(item)
+        i = text.find("{", end)
+    return found
+
+
+def _graded_verdicts(case: str, texts: Dict[str, str]) -> tuple:
+    """({label key: verdict}, [labels left without a grade]) for the graded check: _APPLICABILITY_BATCH
+    articles per call, up to _APPLICABILITY_WORKERS at once; then the articles still without a grade --
+    skipped by the model, cut off, or in a failed call -- once more, _GRADED_RETRY_BATCH per call. Never
+    fails as a whole: an article that still has no grade is returned among the ungraded."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def run(labels: List[str], size: int, retry: bool) -> List[tuple]:
+        groups = [{label: texts[label] for label in labels[i:i + size]} for i in range(0, len(labels), size)]
+        if len(groups) == 1:
+            return [_graded_batch(case, groups[0], retry)]
+        with ThreadPoolExecutor(max_workers=min(_APPLICABILITY_WORKERS, len(groups))) as pool:
+            return list(pool.map(lambda group: _graded_batch(case, group, retry), groups))
+
+    t0 = time.time()
+    labels = list(texts)
+    got: Dict[str, Dict[str, Any]] = {}
+    first = run(labels, _APPLICABILITY_BATCH, False)
+    for read, _ in first:
+        got.update(read)
+    missing = [label for label in labels if label not in got]
+    second = run(missing, _GRADED_RETRY_BATCH, True) if missing else []
+    for read, _ in second:
+        got.update({label: v for label, v in read.items() if label not in got})
+    ungraded = [label for label in labels if label not in got]
+    problems = [problem for _, problem in first if problem]
+    log = {"checked": len(labels), "batches": len(first), "failed_batches": sum(1 for read, p in first if p and not read),
+           "incomplete_batches": sum(1 for read, p in first if p and read),
+           "cut_replies": sum(1 for _, p in first + second if "(reply cut)" in p),
+           "retried": len(missing), "retry_batches": len(second), "recovered": len(missing) - len(ungraded),
+           "ungraded": ungraded}
+    if problems:
+        log["error"] = problems[0]
+    vlog("case_analysis_applicability", log, duration_ms=(time.time() - t0) * 1000)
+    return {_applicability_key(label): v for label, v in got.items()}, ungraded
 
 
 def _grade(verdict: Optional[Dict[str, Any]]) -> Optional[int]:

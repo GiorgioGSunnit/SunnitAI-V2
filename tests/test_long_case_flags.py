@@ -21,7 +21,7 @@ from src.rag import issue_spotting, method_candidates, practical_checklist, vote
 from src.rag.nodes.cypher import CROSSREF_SOURCE  # noqa: E402
 
 FLAGS = ("CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED", "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED",
-         "PLAN_KEEP_CHECKED_ENABLED")
+         "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED")
 
 
 @pytest.fixture(autouse=True)
@@ -285,16 +285,27 @@ def test_a_rejection_drops_with_the_priority_flag_too(monkeypatch):
 # --- CHECK_GRADED -------------------------------------------------------------------------------
 
 class Grades:
-    """The graded model: grade per label (default 2), short keys as asked."""
+    """The graded model: grade per label (default 2), short keys and the ids sent, as asked. skip: labels
+    it leaves out on the first n calls; cut_after: the first reply cut after that many entries; fail: the
+    first n calls raise."""
 
-    def __init__(self, grades):
+    def __init__(self, grades, skip=(), skip_calls=1, cut_after=None, fail=0):
         self.grades, self.humans, self.calls = dict(grades), [], []
+        self.skip, self.skip_calls, self.cut_after, self.fail = set(skip), skip_calls, cut_after, fail
 
     def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
         self.calls.append({"system": messages[0].content, "max_tokens": max_tokens, "temperature": temperature})
         self.humans.append(messages[-1].content)
-        labels = re.findall(r"^\[([^\]]+)\]$", messages[-1].content, re.MULTILINE)
-        return json.dumps([{"a": label, "g": self.grades.get(label, 2), "q": "usucapione", "r": "x"} for label in labels])
+        n = len(self.calls)
+        if n <= self.fail:
+            raise RuntimeError("upstream timeout")
+        sent = re.findall(r"^\[(A\d+)\] (.+)$", messages[-1].content, re.MULTILINE)
+        entries = [{"a": key, "g": self.grades.get(label, 2), "q": "usucapione", "r": "x"} for key, label in sent
+                   if not (label in self.skip and n <= self.skip_calls)]
+        reply = json.dumps(entries)
+        if self.cut_after is not None and n == 1:
+            reply = json.dumps(entries[:self.cut_after])[:-1] + ', {"a": "A9", "g'
+        return reply
 
 
 GRADED_ANALYSIS = {"questioni": [{"titolo": "Usucapione del fondo"}, {"titolo": "Rivendicazione"}],
@@ -318,11 +329,74 @@ def test_graded_check_keeps_by_grade_and_removes_grade_zero(monkeypatch, logged)
     text = ("La proprietà dei beni immobili " + "x" * 2000)[:400]
     assert f"Rubrica: Usucapione dei beni immobili e dei diritti reali immobiliari\nTesto: {text}\n\n" in human
     assert "Questione centrale: usucapione" in human and "- Rivendicazione" in human and "- Chi è proprietario" in human
-    assert model.calls[0]["temperature"] == 0 and model.calls[0]["max_tokens"] == 60 + 45 * 5
+    assert model.calls[0]["temperature"] == 0 and model.calls[0]["max_tokens"] == 120 + 60 * 5
+    assert "[A2] 1158 c.c.\nRubrica:" in human and "A1, A2, A3, A4, A5" in human
     assert "voto di pertinenza" in model.calls[0]["system"]
     log = [d for e, d in logged if e == "case_analysis_applicability"][-1]
     assert log["grades"]["1158 c.c."] == 3 and log["verdicts"]["1163 c.c."] == "grade 0"
     assert log["dropped"][0]["article"] == "1163 c.c." and log["dropped"][0]["grade"] == 0
+    assert len(model.calls) == 1 and log["ungraded"] == []                     # nothing missing, no retry
+
+
+def test_a_cut_reply_keeps_its_grades_and_the_rest_are_retried_in_a_smaller_batch(monkeypatch, logged):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    monkeypatch.setattr(dg, "_GRADED_RETRY_BATCH", 2)
+    model = Grades({"1158 c.c.": 3}, cut_after=2)
+    monkeypatch.setattr(dg, "_call_chat", model)
+    kept = {r["_article"][0]: r for r in dg._filter_applicable_articles(CASE, "", _pool(), GRADED_ANALYSIS)}
+    assert all(r.get("_grade") is not None for r in kept.values())               # every article graded in the end
+    retried = [re.findall(r"^\[A\d+\] (.+)$", h, re.MULTILINE) for h in model.humans[1:]]
+    assert retried == [["948 c.c.", "1168 c.c."], ["1163 c.c."]]                 # only the 3 lost to the cut
+    batch_log = next(d for e, d in logged if e == "case_analysis_applicability" and "retried" in d)
+    assert batch_log["cut_replies"] == 1 and batch_log["retried"] == 3 and batch_log["recovered"] == 3
+
+
+def test_an_id_still_missing_after_the_retry_stays_ungraded(monkeypatch, logged):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    monkeypatch.setenv("CHECK_PRIORITY_ENABLED", "true")
+    monkeypatch.setenv("CHECKLIST_GATED_ENABLED", "true")
+    model = Grades({}, skip={"1158 c.c.", "1168 c.c."}, skip_calls=99)
+    monkeypatch.setattr(dg, "_call_chat", model)
+    kept = {r["_article"][0]: r for r in dg._filter_applicable_articles(CASE, "", _pool(), GRADED_ANALYSIS)}
+    assert len(model.calls) == 2 and re.findall(r"^\[A\d+\] (.+)$", model.humans[1], re.MULTILINE) == \
+        ["1158 c.c.", "1168 c.c."]
+    # kept for the writer, method candidate included, but not passing the check nor kept by the plan
+    assert kept["1158"]["_applicability"] == "non valutato" and "_grade" not in kept["1158"]
+    assert kept["1168"]["_applicability"] == "non valutato"
+    passed = ptw._through_check(list(kept.values()), "fatti", "")
+    assert ("948", "c.c.") in passed and ("1158", "c.c.") not in passed and ("1168", "c.c.") not in passed
+    log = [d for e, d in logged if e == "case_analysis_applicability"][-1]
+    assert log["ungraded"] == ["1158 c.c.", "1168 c.c."] and log["verdicts"]["1158 c.c."] == "ungraded (kept)"
+    assert log["removed_unchecked"] == []
+    monkeypatch.setenv("PLAN_KEEP_CHECKED_ENABLED", "true")
+    assert ("1158", "c.c.") not in ptw._checked(list(kept.values()))
+
+
+def test_a_failed_graded_call_is_retried(monkeypatch, logged):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    monkeypatch.setenv("CHECK_PRIORITY_ENABLED", "true")
+    model = Grades({"1158 c.c.": 3}, fail=1)
+    monkeypatch.setattr(dg, "_call_chat", model)
+    kept = {r["_article"][0]: r for r in dg._filter_applicable_articles(CASE, "", _pool(), GRADED_ANALYSIS)}
+    assert len(kept) == 5 and kept["1158"]["_grade"] == 3
+    batch_log = next(d for e, d in logged if e == "case_analysis_applicability" and "retried" in d)
+    assert batch_log["failed_batches"] == 1 and batch_log["recovered"] == 5 and batch_log["error"].startswith("error:")
+
+
+def test_a_reply_by_label_or_wrapped_still_counts():
+    ids = {"A1": "640-ter c.p.", "A2": "1453 c.c."}
+    wrapped = '```json\n{"articoli": [{"a": "Art. 640-ter c.p.", "g": "2"}, {"a": "[A2]", "g": 0}]}\n```'
+    assert {k: v["grade"] for k, v in dg._graded_reply(wrapped, ids).items()} == {"640-ter c.p.": 2, "1453 c.c.": 0}
+    assert dg._graded_reply('[{"a": "A1", "g": 5}, {"a": "A7", "g": 1}]', ids) == {}     # no grade, unknown id
+
+
+def test_the_graded_check_has_twice_the_slots(monkeypatch, logged):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    monkeypatch.setattr(dg, "_GRADED_MAX_CHECKED", 4)
+    monkeypatch.setattr(dg, "_call_chat", Grades({}))
+    dg._filter_applicable_articles(CASE, "", _pool(), GRADED_ANALYSIS)
+    log = [d for e, d in logged if e == "case_analysis_applicability"][-1]
+    assert log["max_checked"] == 4 and len(log["unchecked_labels"]) == 1
 
 
 def test_a_grade_one_article_does_not_pass_for_the_checklist(monkeypatch):

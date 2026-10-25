@@ -187,6 +187,13 @@ def _rubrica(row) -> tuple:
     return heading, "title" if heading else ""
 
 
+def _checked_slots(dg) -> int:
+    """How many articles the applicability check sends to the model in this process's settings."""
+    if dg.feature_flags.enabled(getattr(dg, "CHECK_GRADED_FLAG", "CHECK_GRADED_ENABLED")):
+        return getattr(dg, "_GRADED_MAX_CHECKED", dg._APPLICABILITY_MAX_CHECKED)
+    return dg._APPLICABILITY_MAX_CHECKED
+
+
 def _instrument(dg) -> dict:
     """Wrappers that record what the pipeline's steps return and change nothing."""
     import importlib
@@ -361,7 +368,7 @@ def _instrument(dg) -> dict:
                 output.setdefault(_lab(row["_article"]), row.get("_applicability") or "kept")
         cap["check"] = {"input": list(dict.fromkeys(_lab(r["_article"]) for r in rows if r.get("_article"))),
                         "exempt": exempt, "no_text": [_lab(a) for a in to_check if _lab(a) not in texts],
-                        "unchecked": list(texts)[dg._APPLICABILITY_MAX_CHECKED:], "output": output}
+                        "unchecked": list(texts)[_checked_slots(dg):], "output": output}
 
     def on_prompt(result, args, kwargs, ctx):
         cap["prompt_labels"] = re.findall(r"^\[art\. (.+?)\]$", result[0] or "", re.MULTILINE)
@@ -391,6 +398,7 @@ _LLM_STAGES = {
     "_analyse_case_structured": "case_analysis_structured", "_structured_facts": "structured_facts",
     "_structured_grid": "structured_grid", "_fusion_distill_bullets": "distill", "_choose_articles": "v1_choice",
     "spot_issues": "issue_spotting", "spotted_rows": "issue_spotting", "_applicability_batch": "applicability",
+    "_graded_batch": "applicability",
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "run_case_analysis_pipeline": "draft",
@@ -410,6 +418,8 @@ def _llm_stage(frame) -> str:
         if name == "write" and module.endswith("plan_then_write"):
             job = frame.f_locals.get("job") or ("",)
             return "section_" + re.sub(r"[^a-z0-9]+", "_", str(job[0]).lower()).strip("_")[:40]
+        if name == "_graded_batch" and frame.f_locals.get("retry"):
+            return "applicability_retry"
         if name in _LLM_STAGES:
             stage = _LLM_STAGES[name]
             if name == "_opposing_arguments":
@@ -917,7 +927,7 @@ def analyse_case(rec: dict, ev) -> dict:
             return "check failed (kept)"
         # The pipeline's own list when it logs one (CHECK_PRIORITY_ENABLED reorders the check).
         if k in keys(check_result.get("unchecked_labels", check.get("unchecked"))):
-            return "unchecked (past 36)"
+            return f"unchecked (past {check_result.get('max_checked', 36)})"
         if k in keys(check.get("no_text")):
             return "no text (kept)"
         if k in voided:
@@ -1001,7 +1011,7 @@ def analyse_case(rec: dict, ev) -> dict:
             if best is None or STAGES.index(name) > STAGES.index(best[0]):
                 best = (name, t, alt_infos.get(k) or {})
         name, t, alt = best
-        out["slots"].append({**t, "label": _item_label(item),
+        out["slots"].append({**t, "label": _item_label(item), "pool_label": t["label"],
                              "stage": name, "from_memory": name == "MENTIONED" and not t["in_prompt"],
                              "understanding": alt, "in_expected_rubrica": alt.get("rubrica", "")})
     fits = rec.get("fits") or {}
@@ -1259,6 +1269,146 @@ def render(cases: list, header: list) -> str:
     return "\n".join(L) + "\n"
 
 
+# =================================================================================================
+# Pure: --audit-grades, why graded articles came back without a grade
+# =================================================================================================
+
+def _dump_parts(text: str) -> tuple:
+    """({header field: value}, {SYSTEM/USER/REPLY...: content}) of an llm/NN_<stage>.txt file."""
+    head, _, rest = text.partition("\n\n===== ")
+    fields = dict(line.split(": ", 1) for line in head.splitlines() if ": " in line)
+    parts = {}
+    for chunk in re.split(r"(?:^|\n\n)===== ", "===== " + rest)[1:]:
+        name, _, body = chunk.partition(" =====\n")
+        parts[name.strip()] = body
+    return fields, parts
+
+
+def _loose(label: str) -> str:
+    """A label with only its letters and digits ("Art. 640-ter c.p." -> "640terc p" squeezed)."""
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"^\s*art(?:icolo)?\.?\s*", "", str(label).lower()))
+
+
+def _reply_objects(reply: str) -> tuple:
+    """(objects read, kind) of a check reply: kind "list", "object, not a list", "cut", "unparseable",
+    "empty"; a cut or wrapped reply's objects are read one by one, as the pipeline's _json_objects does."""
+    text = re.sub(r"```(?:json)?\s*", "", reply or "").strip().rstrip("`").strip()
+    if not text:
+        return [], "empty"
+    try:
+        value = json.loads(text)
+        if isinstance(value, list):
+            return [v for v in value if isinstance(v, dict)], "list"
+    except ValueError:
+        value = None
+    decoder, found, i = json.JSONDecoder(), [], text.find("{")
+    while i >= 0:
+        try:
+            item, end = decoder.raw_decode(text, i)
+        except ValueError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(item, dict):
+            lists = [v for v in item.values() if isinstance(v, list)]
+            found += [x for v in lists for x in v if isinstance(x, dict)] if lists and "a" not in item else [item]
+        i = text.find("{", end)
+    if isinstance(value, dict):
+        return found, "object, not a list"
+    if not text.endswith("]") and found:
+        return found, "cut"
+    return found, "cut" if text.startswith("[") else "unparseable"
+
+
+def audit_grades(run_dir: str, ev) -> str:
+    """For every graded applicability call of a run (its llm/ dumps): how the reply came back, and for
+    every article sent, whether it got a grade and if not why -- the call cut short (the reply ends
+    before the array does), the call failed, the id echoed differently from the one sent, or the model
+    skipped it. Then the same for the expected articles the report has as "missing" at the check."""
+    calls, outcome_of, mismatches, extra = Counter(), {}, [], Counter()
+    sizes = []
+    cases_dir = os.path.join(run_dir, "cases")
+    rank = {"graded": 0, "entry without a valid grade": 1, "id mismatch": 2, "skipped by the model": 3,
+            "lost: reply cut": 4, "lost: call failed": 5}
+    for cid in sorted(os.listdir(cases_dir)):
+        llm = os.path.join(cases_dir, cid, "llm")
+        if not os.path.isdir(llm):
+            continue
+        for name in sorted(os.listdir(llm)):
+            if "applicability" not in name:
+                continue
+            with open(os.path.join(llm, name), encoding="utf-8") as fh:
+                fields, parts = _dump_parts(fh.read())
+            if "voto di pertinenza" not in parts.get("SYSTEM", ""):
+                continue
+            sent = re.findall(r"^\[([^\]]+)\](?: (.+))?\nRubrica:", parts.get("USER", ""), re.MULTILINE)
+            by_id = {i.strip(): (label or i).strip() for i, label in sent}
+            by_loose = {_loose(label): label for label in by_id.values()}
+            by_key = {" ".join(re.sub(r"^\s*art(?:icolo)?\.?\s*", "", label.lower()).split()): label
+                      for label in by_id.values()}
+            reply = parts.get("REPLY", "")
+            if fields.get("status", "ok") != "ok":
+                objects, kind = [], "error"
+            else:
+                objects, kind = _reply_objects(reply)
+            calls[kind] += 1
+            if kind == "cut":
+                sizes.append((cid, name, len(sent), fields.get("max_tokens"), len(reply)))
+            got = {}
+            for item in objects:
+                ref = str(item.get("a") or item.get("article") or "").strip()
+                grade_ok = re.match(r"\s*[0-3]\b", str(item.get("g", item.get("grade", ""))))
+                exact = by_id.get(ref) or by_key.get(" ".join(re.sub(r"^\s*art(?:icolo)?\.?\s*", "", ref.lower()).split()))
+                if exact:
+                    got.setdefault(exact, "graded" if grade_ok else "entry without a valid grade")
+                elif by_loose.get(_loose(ref.strip("[] "))):
+                    label = by_loose[_loose(ref.strip("[] "))]
+                    got.setdefault(label, "id mismatch")
+                    mismatches.append((cid, label, ref))
+                else:
+                    extra[(cid, ref)] += 1
+            for label in by_id.values():
+                fate = got.get(label) or ("lost: reply cut" if kind == "cut" else
+                                          "lost: call failed" if kind in ("error", "unparseable", "empty",
+                                                                         "object, not a list")
+                                          else "skipped by the model")
+                key = (cid, _loose(label))
+                if key not in outcome_of or rank[fate] < rank[outcome_of[key][1]]:
+                    outcome_of[key] = (label, fate)
+    fates = Counter(fate for _, fate in outcome_of.values())
+    L = [f"# Graded check audit: {os.path.basename(os.path.normpath(run_dir))}", "",
+         f"{sum(calls.values())} graded calls; {len(outcome_of)} (case, article) pairs sent.", "",
+         "## Calls by how the reply came back", "", "| reply | calls |", "|---|---:|"]
+    L += [f"| {k} | {v} |" for k, v in calls.most_common()]
+    L += ["", "A cut reply is not a JSON list, so before this fix the pipeline read none of its grades.", "",
+          "## Every article sent, by its best outcome in the case", "", "| outcome | articles |", "|---|---:|"]
+    L += [f"| {k} | {v} |" for k, v in sorted(fates.items(), key=lambda kv: rank[kv[0]])]
+    _, cases = _load_cases(run_dir, ev)
+    lost = [(c["id"], slot["label"], slot.get("pool_label") or slot["label"]) for c in cases for slot in c["slots"]
+            if slot["stage"] == "NOT_IN_PROMPT" and slot.get("check") == "missing"]
+    if lost:
+        why = Counter()
+        rows = []
+        for cid, label, pool_label in lost:
+            hit = next((f for (case, loose), (_, f) in outcome_of.items()
+                        if case == cid and loose == _loose(pool_label)), None)
+            fate = hit or "not found in the dumps"
+            why[fate] += 1
+            rows.append(f"| {cid} | {label} | {fate} |")
+        L += ["", f"## The {len(lost)} expected articles NOT_IN_PROMPT with check \"missing\"", "",
+              "| cause | articles |", "|---|---:|"] + [f"| {k} | {v} |" for k, v in why.most_common()]
+        L += ["", "| case | expected | cause |", "|---|---|---|"] + rows
+    if sizes:
+        L += ["", "## Cut replies", "", "| case | call | articles sent | max_tokens | reply chars |", "|---|---|---:|---:|---:|"]
+        L += [f"| {cid} | {name} | {n} | {mt} | {chars} |" for cid, name, n, mt, chars in sizes]
+    if mismatches:
+        L += ["", "## Ids echoed differently (first 20)", "", "| case | sent | returned |", "|---|---|---|"]
+        L += [f"| {cid} | {label} | {ref} |" for cid, label, ref in mismatches[:20]]
+    if extra:
+        L += ["", f"## Ids in replies matching nothing sent: {sum(extra.values())} (first 20)", ""]
+        L += [f"- {cid}: «{ref}» x{n}" for (cid, ref), n in extra.most_common(20)]
+    return "\n".join(L) + "\n"
+
+
 def _load_cases(out_dir: str, ev) -> tuple:
     """(records, analysed cases) of a run folder, in the cases' usual order."""
     records = []
@@ -1417,6 +1567,9 @@ def main() -> None:
     parser.add_argument("--dump-llm", action=argparse.BooleanOptionalAction, default=True,
                         help="save every chat call (messages, raw reply, settings, duration) to "
                              "cases/<id>/llm/NN_<stage>.txt (default on; --no-dump-llm to skip)")
+    parser.add_argument("--audit-grades", metavar="RUN",
+                        help="no run: why articles sent to the graded check got no grade, from RUN's llm/ dumps "
+                             "(written to RUN/grade_audit.md)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -1425,6 +1578,13 @@ def main() -> None:
         return
     sys.path.insert(0, os.getcwd())
     ev = _eval_module()
+    if args.audit_grades:
+        run_dir = _run_dir(args.audit_grades)
+        text = audit_grades(run_dir, ev)
+        with open(os.path.join(run_dir, "grade_audit.md"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(text + f"\nWritten to {os.path.join(run_dir, 'grade_audit.md')}")
+        return
     if args.compare_only:
         if not args.compare or len(args.compare) < 2:
             parser.error("--compare-only needs two runs or more in --compare")

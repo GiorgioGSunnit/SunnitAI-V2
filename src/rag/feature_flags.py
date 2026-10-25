@@ -157,8 +157,13 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 check grades each article 0-3 (0 unrelated or
                                 another area, 1 tangential, 2 an issue of the case,
                                 3 its central question) with the issue it serves,
-                                from its rubrica and first 400 characters; grade 0
-                                leaves the pool before the prompt. See _GRADED_SYSTEM.
+                                from its rubrica and first 400 characters, for up
+                                to 72 articles; grade 0 leaves the pool before the
+                                prompt. Articles without a grade (skipped, a cut
+                                reply, a failed call) go once more in smaller
+                                batches; still none, they stay as "non valutato":
+                                not removed, not counted as passing, not kept by
+                                the plan. See _GRADED_SYSTEM, _graded_verdicts.
 """
 
 import logging

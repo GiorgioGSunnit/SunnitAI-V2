@@ -215,6 +215,32 @@ def test_compare_puts_tables_a_and_b_side_by_side():
         in three and "| MENTIONED | 2 (33%) | 3 (50%) | 3 (50%) | +1 | +0 |" in three
 
 
+def test_audit_grades_finds_cut_replies_and_echoed_ids():
+    import json as _json
+    import os as _os
+    import tempfile
+    rec = _record()
+    rec["check_result"] = {"verdicts": {"43 c.p.": "missing", "2043 c.c.": "grade 2", "81 c.p.": "missing"},
+                           "dropped": []}
+    run = tempfile.mkdtemp()
+    llm = _os.path.join(run, "cases", "x1", "llm")
+    _os.makedirs(llm)
+    with open(_os.path.join(run, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+        _json.dump(rec, fh)
+    head = "stage: applicability\nmax_tokens: {mt}\nstatus: ok\n\n===== SYSTEM =====\nun voto di pertinenza\n\n"
+    calls = [(150, "[2043 c.c.]\nRubrica: R\n\n[43 c.p.]\nRubrica: R",
+              '[{"a": "2043 c.c.", "g": 2, "q": "danno", "r": "fatto illecito"}, {"a": "43 c'),
+             (105, "[81 c.p.]\nRubrica: R", '[{"a": "art. 81 cp", "g": 1}]')]
+    for i, (mt, user, reply) in enumerate(calls, 1):
+        with open(_os.path.join(llm, f"0{i}_applicability.txt"), "w", encoding="utf-8") as fh:
+            fh.write(head.format(mt=mt) + f"===== USER =====\nFatti\n\n{user}\n\n===== REPLY =====\n{reply}\n")
+    text = dl.audit_grades(run, ev)
+    assert "| cut | 1 |" in text and "| list | 1 |" in text
+    assert "| graded | 1 |" in text and "| id mismatch | 1 |" in text and "| lost: reply cut | 1 |" in text
+    assert "| x1 | art. 43 cp | lost: reply cut |" in text
+    assert "| x1 | 81 c.p. | art. 81 cp |" in text
+
+
 if __name__ == "__main__":
     for _name, _test in list(globals().items()):
         if _name.startswith("test_"):
