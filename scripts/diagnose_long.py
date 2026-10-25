@@ -89,7 +89,7 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "QUALIFICATION_CHECK_ENABLED", "DRAFT_CITATIONS_ONLY_ENABLED", "CLIENT_STANCE_CHECK_ENABLED",
          "STRATEGY_DRAFT_RULES_ENABLED", "METHOD_CANDIDATES_ENABLED", "CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED",
          "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED",
-         "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED"]
+         "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED", "FACT_SIGNALS_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -399,7 +399,7 @@ _LLM_STAGES = {
     "_analyse_case_structured": "case_analysis_structured", "_structured_facts": "structured_facts",
     "_structured_grid": "structured_grid", "_fusion_distill_bullets": "distill", "_choose_articles": "v1_choice",
     "spot_issues": "issue_spotting", "spotted_rows": "issue_spotting", "_applicability_batch": "applicability",
-    "_graded_batch": "applicability", "_cite_only_material": "citation_rewrite",
+    "_graded_batch": "applicability", "_cite_only_material": "citation_rewrite", "extract_facts": "fact_signals",
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "run_case_analysis_pipeline": "draft",
@@ -734,6 +734,7 @@ def run_child(spec_path: str, env_path: str) -> None:
               "discipline": last("case_analysis_citation_discipline"),
               "flagged_removed": last("case_analysis_flagged_removed"),
               "hygiene": last("case_analysis_citation_hygiene"),
+              "fact_signals": last("case_analysis_fact_signals"),
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -1044,7 +1045,44 @@ def analyse_case(rec: dict, ev) -> dict:
              "kept": dict(qual.get("kept") or {}), "note_dropped": list(qual.get("note_dropped") or [])}
     after["expected_removed"] = [label for label in after["flagged"] + after["not_a_law"] if K(label) in expected_keys]
     out["after_draft"] = after
+    out["fact_signals"] = _fact_signal_trace(rec, out, K, expected_keys)
     return out
+
+
+def _fact_signal_trace(rec: dict, out: dict, K, expected_keys: set) -> dict:
+    """FACT_SIGNALS_ENABLED: the rules fired, the expected articles reached through a fired rule's
+    institution (and the stage they got to), and the fired rules none of whose articles is expected
+    (possible false triggers; an unrelated area is said)."""
+    signals = rec.get("fact_signals") or {}
+    fired = signals.get("fired") or []
+    by_name = {}
+    for inst in rec.get("institutions") or []:
+        if inst.get("phase") == "v2":
+            by_name.setdefault(str(inst.get("nome") or "").strip().lower(), []).extend(
+                a["label"] for a in inst.get("articles") or [])
+    stage_of = {}
+    for slot in out["slots"]:
+        stage_of.setdefault(K(slot["pool_label"]), (slot["label"], slot["stage"]))
+    areas = {str(a) for a in ((rec.get("frame") or {}).get("areas") or [])}
+    reached, false_triggers = [], []
+    for rule in fired:
+        labels = [label for name in rule.get("institutions") or [] for label in by_name.get(name.lower(), [])]
+        hits = [label for label in labels if K(label) in expected_keys]
+        for label in hits:
+            slot_label, stage = stage_of.get(K(label), (label, "?"))
+            reached.append({"rule": rule["id"], "article": slot_label, "stage": stage})
+        if not hits and out["keyed"]:
+            false_triggers.append({"rule": rule["id"], "area": rule.get("area"), "articles": labels[:6],
+                                   "other_area": bool(areas) and _rule_family(rule.get("area")) not in
+                                   {_rule_family(a) for a in areas}})
+    return {"fired": [r["id"] for r in fired], "terms": [t.get("text") for t in signals.get("terms") or []],
+            "reached": reached, "false_triggers": false_triggers, "problem": signals.get("problem") or ""}
+
+
+def _rule_family(area) -> str:
+    """A rule's or a frame's area as criminal, administrative or civil."""
+    area = str(area or "")
+    return area if area in ("penale", "amministrativo") else "civile"
 
 
 # =================================================================================================
@@ -1109,8 +1147,15 @@ def aggregate(cases: list) -> dict:
              "kept": Counter(why for c in keyed for why in ((c.get("after_draft") or {}).get("kept") or {}).values()),
              "note_dropped": sum(len((c.get("after_draft") or {}).get("note_dropped") or []) for c in keyed),
              "expected_removed": [(c["id"], l) for c in keyed for l in (c.get("after_draft") or {}).get("expected_removed") or []]}
+    facts = {"fired": Counter(r for c in keyed for r in (c.get("fact_signals") or {}).get("fired") or []),
+             "cases": sum(1 for c in keyed if (c.get("fact_signals") or {}).get("fired")),
+             "reached": [(c["id"], r) for c in keyed for r in (c.get("fact_signals") or {}).get("reached") or []],
+             "false": [(c["id"], r) for c in keyed for r in (c.get("fact_signals") or {}).get("false_triggers") or []],
+             "terms": sum(len((c.get("fact_signals") or {}).get("terms") or []) for c in keyed),
+             "problems": [(c["id"], (c.get("fact_signals") or {}).get("problem")) for c in keyed
+                          if (c.get("fact_signals") or {}).get("problem")]}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
-            "discipline": discipline, "after_draft": after,
+            "discipline": discipline, "after_draft": after, "fact_signals": facts,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
             "resolved_articles": resolved_articles, "unrelated": unrelated, "generic": generic,
@@ -1252,6 +1297,22 @@ def render(cases: list, header: list) -> str:
               + (_counter_line(a["kept"], sum(a["kept"].values())) if a["kept"] else "none")
               + f"); of these, mark dropped as a rubrica-wording mismatch: {a['note_dropped']}.",
               "Expected articles removed: " + (", ".join(f"{cid} {l}" for cid, l in a["expected_removed"]) or "none") + "."]
+
+    f = agg["fact_signals"]
+    if f["fired"] or f["problems"]:
+        reached_mentioned = sum(1 for _, r in f["reached"] if r["stage"] == "MENTIONED")
+        L += ["", "## Fact signals (FACT_SIGNALS_ENABLED)", "",
+              f"Rules fired in {f['cases']} cases, {sum(f['fired'].values())} times: "
+              + ", ".join(f"{rule} x{n}" for rule, n in f["fired"].most_common()) + f". Terms computed: {f['terms']}.",
+              f"Expected articles reached through a fired rule's institution: {len(f['reached'])} "
+              f"({reached_mentioned} of them MENTIONED): "
+              + (", ".join(f"{cid} {r['article']} ← {r['rule']} ({r['stage']})" for cid, r in f["reached"]) or "none") + ".",
+              f"Fired rules reaching no expected article (possible false triggers): {len(f['false'])}"
+              + (": " + "; ".join(f"{cid} {r['rule']}" + (" [other area]" if r["other_area"] else "")
+                                  + (f" → {', '.join(r['articles'])}" if r["articles"] else " → nothing resolved")
+                                  for cid, r in f["false"]) if f["false"] else "") + "."]
+        if f["problems"]:
+            L.append("Extraction problems: " + "; ".join(f"{cid}: {p}" for cid, p in f["problems"]) + ".")
 
     # --- B
     nw = len(wrong)
@@ -1542,6 +1603,10 @@ def compare(run_dirs: list, ev) -> str:
              [sum(a["after_draft"]["flagged"].values()) + sum(a["after_draft"]["not_a_law"].values()) for a in aggs],
              lambda a: ""),
             ("expected ones removed after the draft", [len(a["after_draft"]["expected_removed"]) for a in aggs],
+             lambda a: ""),
+            ("LOST_AT_UNDERSTANDING", [a["stage_counts"]["LOST_AT_UNDERSTANDING"] for a in aggs], lambda a: ""),
+            ("expected reached via a fired fact rule", [len(a["fact_signals"]["reached"]) for a in aggs], lambda a: ""),
+            ("fired fact rules reaching no expected article", [len(a["fact_signals"]["false"]) for a in aggs],
              lambda a: "")]
     for title, values, suffix in rows:
         L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")

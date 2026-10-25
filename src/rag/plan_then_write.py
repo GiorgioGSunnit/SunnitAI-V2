@@ -491,8 +491,10 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
                                 for issue, refs in groups.items())
                     + "\nMetti ciascuna tra le norme della questione del piano che corrisponde a quella indicata; una "
                     "che non disciplina nessuna questione del piano resta fuori.\n\n")
+    terms = _terms(analysis)
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
+            + (f"{_TERMS_TITLE}:\n{terms}\n{_TERMS_RULE}\n\n" if terms else "")
             + (by_issue if by_issue else
                f"NORME PIÙ PERTINENTI AL CASO: {applicabili}. Metti ciascuna tra le norme della questione che "
                "disciplina; una che non disciplina nessuna questione del piano resta fuori.\n\n"
@@ -857,8 +859,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "convenire; le voci di danno o le domande da proporre, anche in via subordinata. Usa le VERIFICHE solo "
          "se i fatti del caso le rendono pertinenti, dicendo perché, e solo quelle che la legge consente a "
          f"{party} nella sua posizione; un termine che dipende da una data che il caso non indica è una verifica "
-         "da fare." + no_rulings,
-         material(case, block("FASE", frame.get("procedural_posture") or ""),
+         "da fare." + (f" {_TERMS_RULE}" if _terms(analysis) else "") + no_rulings,
+         material(case, block("FASE", frame.get("procedural_posture") or ""), block(_TERMS_TITLE, _terms(analysis)),
                   _plan_text(plan, issues="", subordinate=True, rulings=False),
                   block("VERIFICHE PER QUESTA FASE E MATERIA",
                         "\n".join(f"- {c}" for c in _checks(analysis, article_rows, facts, request))),
@@ -1059,6 +1061,19 @@ def _rewrite_out(title: str, text: str, found: List[Tuple[int, int, List[tuple]]
                     "sentence": text[s:e].strip()[:300], "now": new[:300]})
     cleaned = "".join(out) + text[pos:]
     return re.sub(r"(?<=\S)[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", cleaned)).strip(), log
+
+
+# FACT_SIGNALS_ENABLED: the terms computed in code from the case's dates (fact_signals.compute_terms), given
+# to the plan and to the procedural section as facts, so an expired action is never proposed as open.
+_TERMS_TITLE = "TERMINI CALCOLATI DALLE DATE DEL CASO"
+_TERMS_RULE = ("Sono fatti, calcolati dalle date del caso: un'azione il cui termine è DECORSO non va proposta come "
+               "praticabile (indicala come preclusa e proponi le alternative); un termine INCERTO va indicato come "
+               "verifica da fare.")
+
+
+def _terms(analysis: Dict[str, Any]) -> str:
+    from . import fact_signals
+    return fact_signals.terms_block((analysis or {}).get("fact_signals"))
 
 
 def _scope_block(plan: Dict[str, Any]) -> str:

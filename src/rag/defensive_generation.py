@@ -1498,7 +1498,12 @@ def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict
     diagnostic scripts so they see what the pipeline does. CASE_FRAME_ENABLED
     reads the case's frame first and gives it to whichever analysis runs; the
     result then carries it as "frame"."""
-    frame = _case_frame(facts, request) if feature_flags.enabled(CASE_FRAME_FLAG) else None
+    from . import fact_signals
+    signals = None
+    if fact_signals.enabled():
+        frame, signals = _frame_and_fact_signals(facts, request)
+    else:
+        frame = _case_frame(facts, request) if feature_flags.enabled(CASE_FRAME_FLAG) else None
     extra = {"frame": frame} if frame else {}
     if not feature_flags.enabled(CASE_ANALYSIS_FLAG):
         analysis = _analyse_case(facts, lang, request, **extra)
@@ -1506,11 +1511,39 @@ def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict
         analysis = _analyse_case_structured(facts, lang, request, **extra)
     else:
         analysis = _analyse_case_v2(facts, lang, request, **extra)
+    if signals is not None:
+        analysis = {**analysis, "fact_signals": signals}
     if not frame:
         return analysis
     if feature_flags.enabled(CASE_ANALYSIS_FLAG):
         analysis = _with_central_questions(analysis, frame)
     return {**analysis, "frame": frame}
+
+
+def _frame_and_fact_signals(facts: str, request: str) -> tuple:
+    """FACT_SIGNALS_ENABLED: (frame, signals) -- the frame (CASE_FRAME_ENABLED) and the typed facts read at
+    once; the institutions the fact rules fire join the frame's central issues (fact_signals.central_issues),
+    so the analysis takes them as questions, they are resolved and tagged _central. signals None on failure."""
+    from concurrent.futures import ThreadPoolExecutor
+    from . import fact_signals
+
+    def read_signals():
+        try:
+            return fact_signals.analyse(_case_text(facts, request))
+        except Exception as exc:
+            logger.warning("fact signals failed, the case is read without them: %s", exc)
+            return None
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        frame_job = pool.submit(_case_frame, facts, request) if feature_flags.enabled(CASE_FRAME_FLAG) else None
+        signals = pool.submit(read_signals).result()
+        frame = frame_job.result() if frame_job else None
+    added = fact_signals.central_issues((signals or {}).get("fired") or [])
+    if added:
+        frame = dict(frame or {})
+        have = [c.get("nome") or "" for c in frame.get("central_issue_candidates") or [] if isinstance(c, dict)]
+        frame["central_issue_candidates"] = list(frame.get("central_issue_candidates") or []) + [
+            c for c in added if not any(_same_institution(c["nome"], h) for h in have)]
+    return frame, signals
 
 
 def _as_list(value) -> List[str]:

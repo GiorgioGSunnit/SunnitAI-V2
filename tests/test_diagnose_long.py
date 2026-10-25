@@ -253,6 +253,20 @@ def test_audit_grades_finds_cut_replies_and_echoed_ids():
     assert "| x1 | 81 c.p. | art. 81 cp |" in text
 
 
+def test_fact_signals_reached_and_false_triggers():
+    rec = _record()
+    rec["fact_signals"] = {"fired": [{"id": "morte_o_lesioni", "area": "penale", "institutions": ["omicidio preterintenzionale"]},
+                                     {"id": "caparra", "area": "contratti", "institutions": ["caparra confirmatoria"]}],
+                           "terms": [{"text": "querela: termine di 3 mesi DECORSO (minaccia 2026, oggi 2026-10-27)"}]}
+    case = dl.analyse_case(rec, ev)
+    f = case["fact_signals"]
+    assert f["reached"] == [{"rule": "morte_o_lesioni", "article": "art. 584 cp", "stage": "MENTIONED"}]
+    assert f["false_triggers"] == [{"rule": "caparra", "area": "contratti", "articles": [], "other_area": True}]
+    report = dl.render([case], [])
+    assert "Expected articles reached through a fired rule's institution: 1 (1 of them MENTIONED)" in report
+    assert "x1 caparra [other area] → nothing resolved" in report
+
+
 if __name__ == "__main__":
     for _name, _test in list(globals().items()):
         if _name.startswith("test_"):

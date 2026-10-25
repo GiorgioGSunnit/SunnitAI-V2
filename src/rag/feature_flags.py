@@ -193,6 +193,18 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 worked examples; PLAN_KEEP_CHECKED forces up to 18,
                                 offered to the plan by issue. scripts/grader_bench.py
                                 compares the prompt versions on a run's saved pools.
+  FACT_SIGNALS_ENABLED         false: one call reads the case's facts in a fixed
+                                schema (parties and roles, property history,
+                                possession, visible works, dated events, injuries,
+                                money, contracts, proceedings, questions); the code
+                                computes the legal terms from the dates (possessory
+                                year, usucapione, prescrizione, querela, appeals,
+                                TAR, guarantees) and fires the general rules of
+                                src/rag/fact_signal_rules.yaml, whose institutions
+                                join the frame's central issues; the terms go to the
+                                plan and the procedural section as facts. See
+                                src/rag/fact_signals.py, scripts/export_fact_rules.py,
+                                scripts/fact_signals_bench.py.
 """
 
 import logging
