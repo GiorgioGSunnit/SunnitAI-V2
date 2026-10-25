@@ -60,6 +60,27 @@ _GENERIC_SHARE, _GENERIC_MIN = 0.02, 50
 # Favourable cards first, then the strongest adverse one (0 to bring only favourable rulings).
 _FAVOURABLE_SLOTS, _UNFAVOURABLE_SLOTS = 2, 1
 _FAVOURABLE_FLOOR = 0.5            # a favourable card must still be on topic: half the best score
+
+# Civil cases (round 10, 25 Oct): the cards' parties are procedural (ricorrente / controricorrente),
+# so every civil pick is "neutro" and the slots are only a number; the civil search is already
+# fairly on topic (about 40%). Both settable from the .env, measured with exp_ruling_search.py
+# --combined --civil-slots N [--strong-only]: RULING_CARDS_CIVIL_SLOTS (default 3, as criminal) and
+# RULING_CARDS_CIVIL_STRONG_ONLY (default false: pool anchors with a keyword hit allowed).
+CIVIL_SLOTS_ENV, CIVIL_STRONG_ENV = "RULING_CARDS_CIVIL_SLOTS", "RULING_CARDS_CIVIL_STRONG_ONLY"
+
+
+def civil_settings() -> Tuple[int, bool]:
+    """(card slots, strong anchors only) for a civil case, from the .env."""
+    try:
+        slots = int(os.getenv(CIVIL_SLOTS_ENV, "") or _FAVOURABLE_SLOTS + _UNFAVOURABLE_SLOTS)
+    except ValueError:
+        slots = _FAVOURABLE_SLOTS + _UNFAVOURABLE_SLOTS
+    return max(0, min(slots, 5)), feature_flags.enabled(CIVIL_STRONG_ENV)
+
+
+def _slot_split(slots: int) -> Tuple[int, int]:
+    """(favourable, unfavourable) for `slots` card rulings: one adverse slot, the rest favourable."""
+    return (max(slots - _UNFAVOURABLE_SLOTS, 0), min(_UNFAVOURABLE_SLOTS, slots)) if slots else (0, 0)
 W_ARTICLE, W_KEYWORD, W_SIDE = 3, 1, 2
 CENTRAL, CHOSEN, CITED_ONLY = 1.0, 0.5, 0.3
 
@@ -203,25 +224,27 @@ def _method_keys() -> frozenset:
     return frozenset(_article_key(*r) for r in refs)
 
 
-def anchors(card: Dict[str, Any], central: Dict[str, float], low_terms: str, cards: CardStore) -> List[str]:
+def anchors(card: Dict[str, Any], central: Dict[str, float], low_terms: str, cards: CardStore,
+            strong_only: bool = False) -> List[str]:
     """The non-generic central articles the card applies that tie it to the case: named in the
     case or resolved from its issues (CENTRAL); from the model's pool (CHOSEN) only when one of
-    the card's keyword phrases is also found in the case. Never a method article (_method_keys):
-    round 8 (24 Oct) anchored a stalking case's cards on 43 c.p. and on 369-bis and 597 c.p.p."""
+    the card's keyword phrases is also found in the case, and never with `strong_only`. Never a
+    method article (_method_keys): round 8 (24 Oct) anchored a stalking case's cards on 43 c.p.
+    and on 369-bis and 597 c.p.p."""
     method = _method_keys()
     specific = [a for a in card["applied"] if a in central and a not in cards.generic and a not in method]
     strong = [a for a in specific if central[a] >= CENTRAL]
-    if strong:
+    if strong or strong_only:
         return sorted(strong)
     return sorted(specific) if specific and any(_hit(k, low_terms) for k in card["keywords"]) else []
 
 
 def score_card(card: Dict[str, Any], central: Dict[str, float], low_terms: str, favoured: bool,
-               cards: CardStore) -> float:
+               cards: CardStore, strong_only: bool = False) -> float:
     """W_ARTICLE x weight x rarity per central article the card applies (x CITED_ONLY when the
     ruling only cites it), W_KEYWORD x rarity per keyword phrase found in the case, W_SIDE when
     it favours the client; 0 without an anchor (anchors())."""
-    if not anchors(card, central, low_terms, cards):
+    if not anchors(card, central, low_terms, cards, strong_only):
         return 0.0
     shared = [a for a in card["applied"] if a in central]
     cited_only = [a for a in card["cited"] - card["applied"] if a in central]
@@ -237,9 +260,11 @@ def execution_stage(card: Dict[str, Any]) -> bool:
 
 
 def rank(cards: CardStore, central: Dict[str, float], case_terms: str, side: str, party: str,
-         top: Optional[int] = None, execution: bool = False) -> List[Tuple[Dict[str, Any], float]]:
+         top: Optional[int] = None, execution: bool = False,
+         strong_only: bool = False) -> List[Tuple[Dict[str, Any], float]]:
     """The scoring cards (the `top` best, else all) with their score, best first; ties broken by
-    full reference, then id. Execution-stage rulings only when `execution` (the case is at that stage)."""
+    full reference, then id. Execution-stage rulings only when `execution` (the case is at that
+    stage); with `strong_only`, anchors only on articles named in the case or resolved from it."""
     low = " ".join((case_terms or "").lower().split())
     candidates = {i for article in central for i in cards.by_article.get(article, ())}
     scored = []
@@ -247,7 +272,7 @@ def rank(cards: CardStore, central: Dict[str, float], case_terms: str, side: str
         card = cards.cards[i]
         if not execution and execution_stage(card):
             continue
-        s = score_card(card, central, low, favours_client(card, side, party), cards)
+        s = score_card(card, central, low, favours_client(card, side, party), cards, strong_only)
         if s > 0:
             scored.append((-s, not card["completo"], card["id"], i))
     return [(cards.cards[i], -s) for s, _, _, i in sorted(scored)[:top]]
@@ -323,7 +348,12 @@ def card_rulings(session, driver, database: str, case: str, analysis: Dict[str, 
         execution = bool(_EXECUTION_POSTURE_RE.search(f"{frame.get('posture_type') or ''} "
                                                       f"{frame.get('procedural_posture') or ''}"))
         terms = _case_terms(case, analysis)
-        best = choose(rank(cards, central, terms, side, party, execution=execution), side, party)
+        from .defensive_generation import _case_branch
+        civil = _case_branch(analysis) == "civile"
+        slots, strong_only = civil_settings() if civil else (_FAVOURABLE_SLOTS + _UNFAVOURABLE_SLOTS, False)
+        favourable, unfavourable = _slot_split(slots)
+        best = choose(rank(cards, central, terms, side, party, execution=execution, strong_only=strong_only),
+                      side, party, favourable, unfavourable)
         low = " ".join(terms.lower().split())
         ids = [card["id"] for card, _, _ in best]
         found = {row["d"]["id"]: row["d"] for row in session.run(
@@ -332,7 +362,7 @@ def card_rulings(session, driver, database: str, case: str, analysis: Dict[str, 
                                             "execution_stage_allowed": execution,
                                             "chosen": [{"riferimento": c["riferimento"], "score": round(s, 2),
                                                         "a_favore_di": c["a_favore_di"] or c["parte_favorita"],
-                                                        "role": role, "anchors": anchors(c, central, low, cards)}
+                                                        "role": role, "anchors": anchors(c, central, low, cards, strong_only)}
                                                        for c, s, role in best],
                                             "missing_in_db": [i for i in ids if i not in found]})
         return ([{"d": found[i]} for i in ids if i in found],

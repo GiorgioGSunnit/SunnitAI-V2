@@ -409,6 +409,13 @@ def main() -> None:
                         help="also rank by the case's issues by name (off by default: no gain on the tuning cases)")
     parser.add_argument("--branch", default="penale", choices=("penale", "civile"),
                         help="the cases whose expected articles are all of this branch's codes")
+    parser.add_argument("--combined", action="store_true",
+                        help="with --production, AFTER = what the writer reads: the card picks, then the search's "
+                             "own rulings, 5 in all (BEFORE is the search's 5)")
+    parser.add_argument("--civil-slots", type=int, help="with --production: card slots for a civil case (default as "
+                        "the chatbot's .env, RULING_CARDS_CIVIL_SLOTS)")
+    parser.add_argument("--strong-only", action="store_true",
+                        help="with --production, civil: anchors only on articles named in the case or resolved")
     parser.add_argument("--production", action="store_true",
                         help="AFTER = the chatbot's own choice (src/rag/ruling_cards.py: anchors, side, phase)")
     args = parser.parse_args()
@@ -446,8 +453,16 @@ def main() -> None:
         issues = issues_of(run) if args.issue_route else []
         if args.production:
             party = run.get("party") or ""
-            ranked = rc.rank(store, run["central"], run["terms"], run["side"], party)
-            after_ids = [c["id"] for c, _, _ in rc.choose(ranked, run["side"], party)]
+            if args.branch == "civile":
+                slots, strong = rc.civil_settings()
+                slots = slots if args.civil_slots is None else args.civil_slots
+                strong = strong or args.strong_only
+            else:
+                slots, strong = rc._FAVOURABLE_SLOTS + rc._UNFAVOURABLE_SLOTS, False
+            ranked = rc.rank(store, run["central"], run["terms"], run["side"], party, strong_only=strong)
+            after_ids = [c["id"] for c, _, _ in rc.choose(ranked, run["side"], party, *rc._slot_split(slots))]
+            if args.combined:   # what the writer reads: the card picks first, then the search's own, 5 in all
+                after_ids = (after_ids + [i for i in run["before_ids"] if i not in after_ids])[:len(run["before_ids"])]
         else:
             after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"],
                                    rarities=rarities, issues=issues)

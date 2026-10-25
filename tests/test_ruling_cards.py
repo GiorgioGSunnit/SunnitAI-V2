@@ -196,3 +196,30 @@ def test_method_articles_never_anchor(cards_file):
     assert rc.anchors(card, {"43 c.p.": 1.0, "572 c.p.": 1.0}, "", cards) == ["572 c.p."]
     assert rc.anchors(rc._trim(_card("n", ["43 c.p.", "597 c.p.p."])), {"43 c.p.": 1.0, "597 c.p.p.": 1.0}, "", cards) == []
     assert "43 c.p." in rc._method_keys() and "572 c.p." not in rc._method_keys()
+
+
+def test_civil_settings_from_the_env(monkeypatch):
+    monkeypatch.delenv(rc.CIVIL_SLOTS_ENV, raising=False)
+    monkeypatch.delenv(rc.CIVIL_STRONG_ENV, raising=False)
+    assert rc.civil_settings() == (3, False)                                   # default: as criminal
+    monkeypatch.setenv(rc.CIVIL_SLOTS_ENV, "2")
+    monkeypatch.setenv(rc.CIVIL_STRONG_ENV, "true")
+    assert rc.civil_settings() == (2, True)
+    monkeypatch.setenv(rc.CIVIL_SLOTS_ENV, "many")
+    assert rc.civil_settings()[0] == 3
+    assert rc._slot_split(3) == (2, 1) and rc._slot_split(2) == (1, 1) and rc._slot_split(1) == (0, 1)
+    assert rc._slot_split(0) == (0, 0)
+
+
+def test_strong_only_drops_pool_anchors(cards_file):
+    cards = rc.store()
+    assert rc.anchors(cards.cards[0], {"584 c.p.": 0.5}, "uno schiaffo al volto", cards) == ["584 c.p."]
+    assert rc.anchors(cards.cards[0], {"584 c.p.": 0.5}, "uno schiaffo al volto", cards, strong_only=True) == []
+    assert rc.anchors(cards.cards[0], {"584 c.p.": 1.0}, "", cards, strong_only=True) == ["584 c.p."]
+    assert rc.rank(cards, {"584 c.p.": 0.5}, "uno schiaffo al volto", "", "", strong_only=True) == []
+
+
+def test_two_civil_slots_take_the_best_two_neutral_cards():
+    ranked = _ranked(("a", "", 9, "civile"), ("b", "", 8, "civile"), ("c", "", 7, "civile"))
+    assert [c["id"] for c, _, _ in rc.choose(ranked, "", "il conduttore", *rc._slot_split(2))] == ["a", "b"]
+    assert [c["id"] for c, _, _ in rc.choose(ranked, "", "il conduttore", *rc._slot_split(3))] == ["a", "b", "c"]
