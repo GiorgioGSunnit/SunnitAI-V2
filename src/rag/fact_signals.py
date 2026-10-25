@@ -38,10 +38,12 @@ logger = logging.getLogger(__name__)
 
 FACT_SIGNALS_FLAG = "FACT_SIGNALS_ENABLED"
 RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fact_signal_rules.yaml")
-TODAY_ENV = "FACT_SIGNALS_TODAY"        # YYYY-MM-DD: the date terms run to when no action is dated (tests, benches)
+# YYYY-MM-DD: the case's present for a case that states none (tests, benches). Never the real today: an exam
+# case set years ago would have every term "DECORSO" (fact bench, run 1415).
+TODAY_ENV = "FACT_SIGNALS_TODAY"
 MAX_CENTRAL = 6                         # institutions the fired rules add as central issues, in the rules' order
 _CASE_CHARS = 12000
-_EXTRACT_TOKENS = 1800
+_EXTRACT_TOKENS = 3500                  # run 1415's longest cases (n2, n9) came back cut at 1800
 
 
 def enabled() -> bool:
@@ -67,6 +69,7 @@ SCHEMA: Dict[str, Any] = {
     "contracts": [{"type": "", "parties": "", "clauses": ""}],
     "proceedings": [{"stage": "", "authority": "", "decision": "", "date": ""}],
     "requests": [""],
+    "present_date": "",
 }
 
 _EXTRACT_SYSTEM = (
@@ -88,6 +91,9 @@ _EXTRACT_SYSTEM = (
     "- contracts: i contratti {type, parties, clauses (le clausole notate: penale, termine, caparra, esonero...)}.\n"
     "- proceedings: procedimenti e atti di autorità {stage, authority, decision, date (come scritta)}.\n"
     "- requests: le domande poste dal caso, una per voce.\n"
+    "- present_date: la data che il caso presenta come attuale (\"oggi\", \"alla data odierna\", la data della "
+    "consultazione), come scritta; vuota se il caso non la dice.\n"
+    "Sii conciso: what in al massimo 20 parole, al massimo 25 eventi.\n"
     "Non inventare date: una data compare solo se è scritta nel testo, e come vi è scritta. Rispondi SOLO con il JSON."
 )
 _RETRY_SUFFIX = ("\n\nLa risposta precedente non era un JSON valido con quelle chiavi. Rispondi SOLO con l'oggetto "
@@ -126,6 +132,9 @@ def validate_facts(raw: Any, case_text: str) -> Optional[Dict[str, Any]]:
                 if any(clean.values()):
                     items.append(clean)
             out[key] = items
+    present = out.get("present_date", "")
+    if present and " ".join(present.lower().split()) not in norm_case:
+        out["present_date"] = ""
     for key, field in (("events", "date"), ("proceedings", "date"), ("possession", "since"),
                        ("works_or_signs", "existing_since"), ("property_history", "from"), ("property_history", "to")):
         for item in out[key]:
@@ -146,7 +155,7 @@ def extract_facts(case_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
         try:
             raw = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                              max_tokens=_EXTRACT_TOKENS, temperature=0)
-            facts = validate_facts(parse_json_reply(raw), case_text)
+            facts = validate_facts(_parse_or_repair(raw), case_text)
         except Exception as exc:
             facts, problem = None, f"{type(exc).__name__}: {str(exc)[:160]}"
         if facts is not None:
@@ -154,6 +163,56 @@ def extract_facts(case_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
         problem = problem or "reply is not a JSON object with the schema's keys"
         system = _EXTRACT_SYSTEM + _RETRY_SUFFIX
     return None, problem
+
+
+def _parse_or_repair(raw: str) -> Any:
+    """The reply's JSON; a reply cut short (a long case past the token budget) is read up to its last complete
+    value, its open brackets closed."""
+    try:
+        value = parse_json_reply(raw)
+    except ValueError:
+        value = None
+    # parse_json_reply reads the first complete object it finds: in a cut reply, an inner event.
+    if isinstance(value, dict) and set(value) & set(SCHEMA):
+        return value
+    try:
+        return _repaired(raw)
+    except ValueError:
+        if value is None:
+            raise
+        return value
+
+
+def _repaired(raw: str) -> Any:
+    text = raw or ""
+    start = text.find("{")
+    if start < 0:
+        raise ValueError("no JSON object in the reply")
+    stack, in_string, escape, safe = [], False, False, None
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            safe = (i + 1, list(stack))
+            if not stack:
+                break
+    if not safe:
+        raise ValueError("the reply is cut before any complete value")
+    end, still_open = safe
+    return json.loads(text[start:end] + "".join(reversed(still_open)))
 
 
 # --- 2. dates and terms ----------------------------------------------------------------------------
@@ -217,12 +276,35 @@ def term_status(start: Tuple[dt.date, dt.date], end: Tuple[dt.date, dt.date], ye
     return "INCERTO"
 
 
-def today() -> dt.date:
+def present(facts: Optional[Dict[str, Any]]) -> Optional[Tuple[str, Tuple[dt.date, dt.date]]]:
+    """(what, interval) of the case's present: its own present_date, else TODAY_ENV (tests, benches), else
+    None -- the real today is never assumed."""
+    parsed = parse_date((facts or {}).get("present_date", ""))
+    if parsed:
+        return "data attuale del caso", (parsed[0], parsed[1])
     value = (os.getenv(TODAY_ENV) or "").strip()
     try:
-        return dt.date.fromisoformat(value) if value else dt.date.today()
+        return ("oggi", (dt.date.fromisoformat(value),) * 2) if value else None
     except ValueError:
-        return dt.date.today()
+        return None
+
+
+def latest_fact(facts: Optional[Dict[str, Any]]) -> Optional[Tuple[str, Tuple[dt.date, dt.date], str]]:
+    """(what, interval, written) of the latest dated fact: the case's present is no earlier than it."""
+    items = _events(facts or {}, r".") + [s for s in _possession_starts(facts or {})]
+    return max(((i[1], i[0], i[2]) for i in items), key=lambda x: x[1][0], default=None)
+
+
+def _status_to_now(facts, start, years=0, months=0, days=0) -> Tuple[str, str, str]:
+    """(status, what, written) of a term running to the case's present: against present() when known; else
+    DECORSO only if it had already run by the latest dated fact, otherwise NON VERIFICABILE."""
+    now = present(facts)
+    if now:
+        return term_status(start, now[1], years, months, days), now[0], now[1][0].isoformat()
+    last = latest_fact(facts)
+    if last and term_status(start, last[1], years, months, days) == "DECORSO":
+        return "DECORSO", f"già al fatto più recente ({last[0]})", last[2]
+    return "NON VERIFICABILE", "il caso non indica la data attuale", ""
 
 
 def _low(text: Any) -> str:
@@ -362,12 +444,11 @@ def _short(written: str) -> str:
     return written or "data non indicata"
 
 
-def compute_terms(facts: Optional[Dict[str, Any]], on: Optional[dt.date] = None) -> List[Dict[str, Any]]:
+def compute_terms(facts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Every term of TERMS the facts date: its status between the fact it runs from and the act that
-    ends it, or today when none does (TODAY_ENV in tests); one line of text each."""
+    ends it, or the case's present when none does (_status_to_now); one line of text each."""
     if not facts:
         return []
-    now = on or today()
     out = []
     for term in TERMS:
         if term.applies and not term.applies(facts):
@@ -378,8 +459,10 @@ def compute_terms(facts: Optional[Dict[str, Any]], on: Optional[dt.date] = None)
         start = starts[0]
         ends = _events(facts, term.end) if term.end else []
         end = _when([e for e in ends if e[1] != start[1] or e[0] != start[0]], start[0][0])
-        end_iv, end_what, end_written = (end[0], end[1], end[2]) if end else ((now, now), "oggi", now.isoformat())
-        status = term_status(start[0], end_iv, term.years, term.months, term.days)
+        if end:
+            status, end_what, end_written = term_status(start[0], end[0], term.years, term.months, term.days), end[1], end[2]
+        else:
+            status, end_what, end_written = _status_to_now(facts, start[0], term.years, term.months, term.days)
         out.append(_term_entry(term.id, term.label, term.ref, term.word or f"termine di {term.length()}",
                                term.length(), status, start, end_what, end_written))
     sentence = _events(facts, _SENTENCE)
@@ -387,13 +470,18 @@ def compute_terms(facts: Optional[Dict[str, Any]], on: Optional[dt.date] = None)
         start = sentence[-1]
         deposit = _events(facts, r"deposit\w* (?:delle |della )?motivazion")
         appeal = _when(_events(facts, _APPEAL), start[0][0])
-        end_iv, end_what, end_written = (appeal[0], appeal[1], appeal[2]) if appeal else ((now, now), "oggi", now.isoformat())
         if deposit:
             base, sure, latest = deposit[-1], 30, 45
         else:
             base, sure, latest = start, 15, 90 + 45
-        status = ("DECORSO" if end_iv[0] > add_period(base[0][1], days=latest) else
-                  "NON DECORSO" if end_iv[1] <= add_period(base[0][0], days=sure) else "INCERTO")
+        now = present(facts)
+        if appeal or now:
+            end_iv, end_what, end_written = ((appeal[0], appeal[1], appeal[2]) if appeal
+                                             else (now[1], now[0], now[1][0].isoformat()))
+            status = ("DECORSO" if end_iv[0] > add_period(base[0][1], days=latest) else
+                      "NON DECORSO" if end_iv[1] <= add_period(base[0][0], days=sure) else "INCERTO")
+        else:
+            status, end_what, end_written = _status_to_now(facts, base[0], days=latest)
         length = "15, 30 o 45 giorni dal deposito della motivazione"
         out.append(_term_entry("impugnazione_penale", "impugnazione della sentenza penale", _APPEAL_REF,
                                f"termine di {length}", length, status, base, end_what, end_written,
@@ -403,7 +491,7 @@ def compute_terms(facts: Optional[Dict[str, Any]], on: Optional[dt.date] = None)
 
 def _term_entry(id, label, ref, word, length, status, start, end_what, end_written, note=""):
     text = (f"{label}: {word} {status} ({start[1] or 'fatto'} {_short(start[2])}, {end_what} "
-            f"{_short(end_written)})" + (f"; {note}" if note and status == "INCERTO" else ""))
+            f"{end_written})".replace(" )", ")") + (f"; {note}" if note and status == "INCERTO" else ""))
     return {"id": id, "label": label, "ref": ref, "length": length, "status": status,
             "from": {"what": start[1], "date": start[2]}, "to": {"what": end_what, "date": end_written}, "text": text}
 
@@ -466,7 +554,11 @@ def _p_contract(facts, terms, arg):
 
 
 def _p_proceeding(facts, terms, arg):
-    return bool(re.search(arg["pattern"], _texts(facts, ("proceedings",))))
+    for p in facts.get("proceedings") or []:
+        text = " ".join(_low(p.get(f)) for f in ("stage", "decision", "authority"))
+        if re.search(arg["pattern"], text) and (not arg.get("authority") or re.search(arg["authority"], _low(p.get("authority")))):
+            return True
+    return False
 
 
 def _p_injury(facts, terms, arg):
@@ -489,38 +581,33 @@ def _p_money_over_threshold(facts, terms, arg):
     return False
 
 
-def _years_held(since: str, now: dt.date) -> Optional[Tuple[dt.date, dt.date]]:
+def _held_for(facts, since: str, years: int) -> bool:
+    """A state that began at since lasted at least years by the case's present (_status_to_now)."""
     parsed = parse_date(since)
-    return (parsed[0], parsed[1]) if parsed else None
+    return bool(parsed) and _status_to_now(facts, (parsed[0], parsed[1]), years)[0] == "DECORSO"
 
 
 def _p_possession(facts, terms, arg):
-    now = today()
     for p in facts.get("possession") or []:
         how = _low(p.get("how"))
         if arg.get("how") and not any(h in how for h in arg["how"]):
             continue
         if arg.get("how_not") and any(h in how for h in arg["how_not"]):
             continue
-        if arg.get("min_years"):
-            since = _years_held(p.get("since", ""), now)
-            if not since or term_status(since, (now, now), years=arg["min_years"]) != "DECORSO":
-                continue
+        if arg.get("min_years") and not _held_for(facts, p.get("since", ""), arg["min_years"]):
+            continue
         return True
     return False
 
 
 def _p_work(facts, terms, arg):
-    now = today()
     for w in facts.get("works_or_signs") or []:
         if arg.get("visible") and not _yes(w.get("visible")):
             continue
         if arg.get("pattern") and not re.search(arg["pattern"], _low(w.get("what"))):
             continue
-        if arg.get("min_years"):
-            since = _years_held(w.get("existing_since", ""), now)
-            if not since or term_status(since, (now, now), years=arg["min_years"]) != "DECORSO":
-                continue
+        if arg.get("min_years") and not _held_for(facts, w.get("existing_since", ""), arg["min_years"]):
+            continue
         return True
     return False
 
@@ -606,6 +693,9 @@ def load_rules(path: str = RULES_FILE) -> List[Dict[str, Any]]:
         missing = [k for k in ("id", "area", "when", "institution", "codice", "why", "status") if k not in rule]
         if missing:
             raise ValueError(f"rule {rule.get('id')!r}: missing {', '.join(missing)}")
+        for lo_hi in rule.get("ranges") or []:
+            if not (isinstance(lo_hi, list) and len(lo_hi) == 2 and all(isinstance(n, int) for n in lo_hi)):
+                raise ValueError(f"rule {rule['id']!r}: a range is [first, last] article number")
         if rule["id"] in seen:
             raise ValueError(f"rule {rule['id']!r} twice")
         seen.add(rule["id"])
@@ -635,13 +725,32 @@ def _institutions(rule: Dict[str, Any]) -> List[str]:
     return [value] if isinstance(value, str) else list(value or [])
 
 
+def family(area: Any) -> str:
+    """An area as criminal, administrative or civil ("" for none or "altro")."""
+    area = str(area or "").strip().lower()
+    if not area or area == "altro":
+        return ""
+    return area if area in ("penale", "amministrativo") else "civile"
+
+
+def rule_families(rule: Dict[str, Any]) -> set:
+    """The families a rule belongs to: its own "families", else its area's."""
+    return set(rule.get("families") or [family(rule["area"])])
+
+
 def fire_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
-               rules: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
-    """The rules whose conditions all hold, in the rules' order: {id, area, institutions, codice, why}."""
+               rules: Optional[List[Dict[str, Any]]] = None, areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """The rules whose conditions all hold, in the rules' order: {id, area, institutions, codice, ranges,
+    why, matched (each condition with the fact it matched)}. With the case's areas (the frame's), a rule of
+    another family (criminal, administrative, civil) does not fire (fact bench, run 1415: civil damages in
+    criminal cases)."""
     if not facts:
         return []
+    families = {family(a) for a in areas or []} - {""}
     fired = []
     for rule in rules if rules is not None else load_rules():
+        if families and not rule_families(rule) & families:
+            continue
         try:
             ok = all(holds(c, facts, terms) for c in rule["when"])
         except Exception as exc:
@@ -649,34 +758,133 @@ def fire_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
             ok = False
         if ok:
             fired.append({"id": rule["id"], "area": rule["area"], "institutions": _institutions(rule),
-                          "codice": rule["codice"], "why": rule["why"], "status": rule["status"]})
+                          "codice": rule["codice"], "ranges": rule.get("ranges") or [], "why": rule["why"],
+                          "status": rule["status"], "matched": why_fired(rule, facts, terms)})
     return fired
 
 
-def central_issues(fired: List[Dict[str, Any]], limit: int = MAX_CENTRAL) -> List[Dict[str, str]]:
-    """The fired rules' institutions as the frame's central issues ({nome, codice, fonte}), at most limit,
-    each once."""
+def why_fired(rule: Dict[str, Any], facts: Dict[str, Any], terms: List[Dict[str, Any]]) -> List[str]:
+    """Each condition of a fired rule in words, with the fact that met it: "un fondo senza accesso alla via
+    pubblica — «il fondo di tizio è intercluso»"."""
+    out = []
+    for condition in rule["when"]:
+        found = _evidence(condition, facts, terms)
+        out.append(describe([condition]) + (f" — «{found}»" if found else ""))
+    return out
+
+
+def _evidence(condition: Dict[str, Any], facts: Dict[str, Any], terms: List[Dict[str, Any]]) -> str:
+    (name, arg), = condition.items()
+
+    def line(text, pattern):
+        return next((ln[:140] for ln in text.split("\n") if re.search(pattern, ln)), "")
+    if name == "fact":
+        return line(_texts(facts, ("events", "works_or_signs", "injuries", "contracts", "proceedings",
+                                   "property_history", "possession", "money", "client_side")), arg["pattern"])
+    if name == "request":
+        return line(_texts(facts, ("requests",)), arg["pattern"])
+    if name == "proceeding":
+        return line(_texts(facts, ("proceedings",)), arg["pattern"])
+    if name in ("role", "role_count"):
+        roles = arg if name == "role" else arg["roles"]
+        return "; ".join(f"{p.get('name')} ({p.get('role')})" for p in facts.get("parties") or []
+                         if any(r in _low(p.get("role")) for r in roles))[:140]
+    if name == "age_under":
+        return "; ".join(f"{p.get('name')}, {p.get('age')} anni" for p in facts.get("parties") or [] if p.get("age"))
+    if name == "contract":
+        return "; ".join(f"{c.get('type')}" + (f" ({c.get('clauses')})" if c.get("clauses") else "")
+                         for c in facts.get("contracts") or [])[:140]
+    if name == "injury":
+        return "; ".join(f"{i.get('who')}: {i.get('days_to_heal') or '-'} giorni, {i.get('permanent') or '-'}"
+                         for i in facts.get("injuries") or [])[:140]
+    if name == "money_over_threshold":
+        return "; ".join(f"tasso {m.get('rate')}, soglia {m.get('threshold') or '-'}" for m in facts.get("money") or [])
+    if name == "possession":
+        return "; ".join(f"{p.get('who')} possiede {p.get('asset')} dal {p.get('since') or '?'} ({p.get('how') or '-'})"
+                         for p in facts.get("possession") or [])[:140]
+    if name == "work":
+        return "; ".join(f"{w.get('what')}, visibile {w.get('visible') or '?'}, dal {w.get('existing_since') or '?'}"
+                         for w in facts.get("works_or_signs") or [])[:140]
+    if name == "common_previous_owner":
+        return "; ".join(f"{p.get('asset')} di {p.get('owner')}" for p in facts.get("property_history") or [])[:140]
+    if name == "term":
+        ids = arg["id"] if isinstance(arg["id"], list) else [arg["id"]]
+        return next((t["text"] for t in terms if t["id"] in ids), "")
+    if name == "any":
+        held = next((c for c in arg if holds(c, facts, terms)), None)
+        return _evidence(held, facts, terms) if held else ""
+    return ""
+
+
+# --- the institution's articles ----------------------------------------------------------------------
+
+_STOP = {"della", "delle", "dello", "degli", "dell", "nella", "nelle", "nello", "negli", "dalla", "dalle", "dallo",
+         "dagli", "alla", "alle", "allo", "agli", "come", "sono", "altro", "altra", "altri", "diritto", "codice", "norme",
+         "norma", "articolo", "caso", "cose", "parte", "parti", "ogni", "suoi", "loro"}
+
+
+def _stems(text: str) -> set:
+    return {w[:5] for w in re.findall(r"[a-zà-ù]{4,}", (text or "").lower()) if w not in _STOP}
+
+
+def _in_ranges(number: str, ranges: List[List[int]]) -> bool:
+    m = re.match(r"\d+", str(number or ""))
+    return bool(m) and any(lo <= int(m.group(0)) <= hi for lo, hi in ranges)
+
+
+def keep_resolved(istituto: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The rows a fact rule's institution (its "fonte") may resolve to: within the rule's ranges of article
+    numbers when it has them (danno non patrimoniale resolved to art. 2634 c.c., company law: run 1415's fact
+    bench), and only an article whose rubrica shares a content word with the institution. Any other
+    institution's rows unchanged."""
+    if not istituto.get("fonte"):
+        return rows
+    ranges, words = istituto.get("ranges") or [], _stems(istituto.get("nome", ""))
+    kept = []
+    for row in rows:
+        number = (row.get("_article") or ("",))[0]
+        s = row.get("s") or {}
+        rubrica = " ".join(str(s.get("titolo_articolo") or s.get("title") or "").split())
+        if ranges and not _in_ranges(number, ranges):
+            continue
+        if not words & _stems(rubrica):
+            continue
+        kept.append(row)
+    return kept
+
+
+def central_issues(fired: List[Dict[str, Any]], limit: int = MAX_CENTRAL) -> List[Dict[str, Any]]:
+    """The fired rules' institutions as the frame's central issues ({nome, codice, fonte, ranges}), at most
+    limit, each once; fonte and ranges travel to the analysis' institution (keep_resolved)."""
     out, seen = [], set()
     for rule in fired:
         for name in rule["institutions"]:
             if name.lower() not in seen and len(out) < limit:
                 seen.add(name.lower())
-                out.append({"nome": name, "codice": rule["codice"], "fonte": f"regola {rule['id']}"})
+                out.append({"nome": name, "codice": rule["codice"], "fonte": f"regola {rule['id']}",
+                            "ranges": rule.get("ranges") or []})
     return out
 
 
-def analyse(case_text: str) -> Dict[str, Any]:
-    """{"facts", "terms", "fired", "problem"} for a case; logged as case_analysis_fact_signals."""
-    facts, problem = extract_facts(case_text)
+def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
+                 areas: Optional[List[str]] = None) -> Dict[str, Any]:
+    """{"facts", "terms", "fired", "problem"} from the extracted facts, the rules fired within the case's
+    areas; logged as case_analysis_fact_signals."""
     terms = compute_terms(facts)
     try:
-        fired = fire_rules(facts, terms)
+        fired = fire_rules(facts, terms, areas=areas)
     except Exception as exc:
         logger.warning("fact signals: rules not applied: %s", exc)
         fired, problem = [], problem or f"rules: {exc}"
-    out = {"facts": facts, "terms": terms, "fired": fired, "problem": problem}
+    out = {"facts": facts, "terms": terms, "fired": fired, "problem": problem, "areas": list(areas or [])}
     vlog("case_analysis_fact_signals", {**out, "central": central_issues(fired)})
     return out
+
+
+def analyse(case_text: str, areas: Optional[List[str]] = None) -> Dict[str, Any]:
+    """extract_facts then signals_from, in one go (the benches)."""
+    facts, problem = extract_facts(case_text)
+    return signals_from(facts, problem, areas)
 
 
 def terms_block(signals: Optional[Dict[str, Any]]) -> str:

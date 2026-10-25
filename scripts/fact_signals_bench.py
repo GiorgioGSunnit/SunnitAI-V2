@@ -30,14 +30,16 @@ def _diagnose_long():
     return module
 
 
-def bench_case(case: dict, text: str, fs, resolve) -> dict:
-    """One case: its facts, terms, fired rules, and per fired institution the articles it resolves to."""
-    signals = fs.analyse(text)
+def bench_case(case: dict, text: str, fs, resolve, areas: list) -> dict:
+    """One case: its facts, terms, the rules fired within its areas (the run's frame), and per fired
+    institution the articles it resolves to (within the rule's ranges, as the pipeline keeps them)."""
+    signals = fs.analyse(text, areas)
     resolved = {}
     for rule in signals["fired"]:
         for name in rule["institutions"]:
             if name not in resolved:
-                resolved[name] = resolve(name, rule["codice"])
+                resolved[name] = resolve({"nome": name, "codice": rule["codice"], "numero_indicativo": "",
+                                          "fonte": f"regola {rule['id']}", "ranges": rule.get("ranges") or []})
     lost = [s for s in case["slots"] if s["stage"] == "LOST_AT_UNDERSTANDING"]
     return {"case": case["id"], "signals": signals, "resolved": resolved, "lost": lost}
 
@@ -52,7 +54,7 @@ def render(run_dir: str, results: list, ekey, keys_of, seconds: float, skipped: 
             lost_keys[ekey(s["pool_label"])] = s["label"]
         lost_total += len(r["lost"])
         fired = r["signals"]["fired"]
-        lines.append(f"### {r['case']}")
+        lines.append(f"### {r['case']}" + (f" ({', '.join(r['areas'])})" if r.get("areas") else ""))
         lines.append("Termini: " + ("; ".join(t["text"] for t in r["signals"]["terms"]) or "nessuno"))
         if r["signals"].get("problem"):
             lines.append(f"Estrazione: {r['signals']['problem']}")
@@ -66,6 +68,7 @@ def render(run_dir: str, results: list, ekey, keys_of, seconds: float, skipped: 
             lines.append(f"- {rule['id']} → {', '.join(rule['institutions'])}: "
                          + (", ".join(f"**{l}**" if ekey(l) in expected else l for l in labels) or "nessun articolo")
                          + (f" — recupera {', '.join(recovered)}" if recovered else ""))
+            lines += [f"    - perché: {m}" for m in rule.get("matched") or []]
         if not fired:
             lines.append("- nessuna regola")
         lines.append("")
@@ -75,6 +78,8 @@ def render(run_dir: str, results: list, ekey, keys_of, seconds: float, skipped: 
             + (" (" + ", ".join(f"{c} {l} ← {rule}" for c, rule, l in reach) + ")" if reach else "") + ".",
             f"Fired rules reaching no expected article (possible false triggers): {len(false)}"
             + (" (" + "; ".join(f"{c} {rule}" for c, rule, _ in false) + ")" if false else "") + ".",
+            "Under each case: every fired rule, its articles (bold = expected), and why it fired (each condition, "
+            "with the fact that met it).",
             "", "Articles in bold are expected in that case.", ""]
     return "\n".join(head + lines) + "\n"
 
@@ -121,19 +126,19 @@ def main() -> None:
             continue
         keys_of[rec["id"]] = {(str(a).lower(), item["code"]) for item in rec.get("expected") or []
                               for a in item.get("any_of") or [item["article"]]}
-        jobs.append((case, text))
+        jobs.append((case, text, list((rec.get("frame") or {}).get("areas") or [])))
 
-    def resolve(name: str, codice: str) -> list:
+    def resolve(istituto: dict) -> list:
         with driver.session(database=NEO4J_DATABASE) as session:
-            rows = dg._resolve_institution(session, documents, {"nome": name, "codice": codice,
-                                                                 "numero_indicativo": ""}, [])
+            rows = fs.keep_resolved(istituto, dg._resolve_institution(session, documents, istituto, []))
         return list(dict.fromkeys(f"{r['_article'][0]} {r['_article'][1]}" for r in rows if r.get("_article")))
 
     def run(job):
-        case, text = job
+        case, text, areas = job
         t = time.time()
         try:
-            out = bench_case(case, text, fs, resolve)
+            out = bench_case(case, text, fs, resolve, areas)
+            out["areas"] = areas
             print(f"[{case['id']}] {len(out['signals']['fired'])} rules, {time.time() - t:.0f}s", flush=True)
             return out
         except Exception as exc:

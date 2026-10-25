@@ -261,7 +261,8 @@ def test_fact_signals_reached_and_false_triggers():
     case = dl.analyse_case(rec, ev)
     f = case["fact_signals"]
     assert f["reached"] == [{"rule": "morte_o_lesioni", "article": "art. 584 cp", "stage": "MENTIONED"}]
-    assert f["false_triggers"] == [{"rule": "caparra", "area": "contratti", "articles": [], "other_area": True}]
+    assert f["false_triggers"] == [{"rule": "caparra", "area": "contratti", "articles": [], "matched": [],
+                                    "other_area": True}]
     report = dl.render([case], [])
     assert "Expected articles reached through a fired rule's institution: 1 (1 of them MENTIONED)" in report
     assert "x1 caparra [other area] → nothing resolved" in report

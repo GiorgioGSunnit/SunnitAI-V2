@@ -4,10 +4,13 @@
 # (in words, statutory wording; one or a list), codice (the code or law where _resolve_institution looks the
 # institution up -- never an article), why (one line), status.
 # Rules are GENERAL patterns from legal knowledge and the tuning cases, never from the held-out texts
-# (h1-h11, n1-n9). status: experiment -- approved by the lawyer for the experiment (27 Oct); review with
+# (h1-h11, n1-n9). A rule fires only within the case's areas (its "families" when given); its
+# institution resolves only within its ranges of article numbers, to an article whose rubrica shares a word
+# with it (fact_signals.keep_resolved). status: experiment -- approved by the lawyer for the experiment (27 Oct); review with
 # scripts/export_fact_rules.py. Patterns are regular expressions over the extracted facts, in lower case.
 # No rule covers an institution chosen after seeing a held-out case's expected articles (27 Oct: corruption,
-# fraud and robbery-after-theft rules removed for that reason).
+# fraud and robbery-after-theft rules removed for that reason). Removed 28 Oct, the pipeline finds them anyway:
+# danno non patrimoniale, inadempimento e mora, danno da cose in custodia.
 
 # --- diritti reali e possesso ---------------------------------------------------------------------------
 
@@ -18,6 +21,7 @@
     - work: {visible: true, label: "un'opera visibile e permanente (strada, passaggio, finestra, condotta) già esistente"}
   institution: servitù per destinazione del padre di famiglia
   codice: c.c.
+  ranges: [[1027,1099]]
   why: "Due fondi di un unico proprietario, separati con un'opera visibile al servizio dell'uno sull'altro, fanno sorgere la servitù senza titolo."
   status: experiment
 
@@ -28,6 +32,7 @@
     - possession: {how_not: [violento, clandestino]}
   institution: usucapione di servitù apparente
   codice: c.c.
+  ranges: [[1027,1099],[1158,1167]]
   why: "Un'opera visibile e permanente usata da oltre vent'anni permette di usucapire la servitù apparente."
   status: experiment
 
@@ -37,6 +42,7 @@
     - possession: {min_years: 20, how_not: [violento, clandestino]}
   institution: usucapione
   codice: c.c.
+  ranges: [[1158,1167]]
   why: "Il possesso continuato per vent'anni, non violento né clandestino, fa acquistare la proprietà o il diritto reale."
   status: experiment
 
@@ -46,6 +52,7 @@
     - possession: {how: [violento, clandestino]}
   institution: possesso violento o clandestino non utile ad usucapire
   codice: c.c.
+  ranges: [[1140,1172]]
   why: "Il possesso acquistato con violenza o clandestinamente non giova all'usucapione finché la violenza o la clandestinità non sono cessate."
   status: experiment
 
@@ -55,6 +62,7 @@
     - term: {id: possessoria, status: DECORSO}
   institution: [decadenza dall'azione di reintegrazione e di manutenzione, azione confessoria e negatoria]
   codice: c.c.
+  ranges: [[1140,1172],[948,951],[1079,1079]]
   why: "Oltre l'anno dallo spoglio o dalla turbativa l'azione possessoria è preclusa; restano le azioni petitorie."
   status: experiment
 
@@ -64,6 +72,7 @@
     - term: {id: possessoria, status: [NON DECORSO, INCERTO]}
   institution: [azione di reintegrazione, azione di manutenzione]
   codice: c.c.
+  ranges: [[1140,1172]]
   why: "Lo spoglio o la turbativa sono recenti: l'azione possessoria va proposta entro l'anno."
   status: experiment
 
@@ -73,6 +82,7 @@
     - fact: {pattern: 'intercluso|senza (?:alcun )?accesso|non ha (?:alcun )?accesso|nessun accesso|privo di accesso|accesso alla (?:via|strada) pubblica', label: "un fondo senza accesso alla via pubblica"}
   institution: [passaggio coattivo, indennità per il passaggio coattivo]
   codice: c.c.
+  ranges: [[1051,1055]]
   why: "Il fondo circondato da fondi altrui senza uscita sulla via pubblica ha diritto al passaggio coattivo, contro indennità."
   status: experiment
 
@@ -82,6 +92,7 @@
     - fact: {pattern: 'rumor|fum[oi]|odor[ei]|esalazion|vibrazion|scuotiment', label: "rumori, fumi, odori o vibrazioni dal fondo vicino"}
   institution: immissioni
   codice: c.c.
+  ranges: [[844,844]]
   why: "Le immissioni dal fondo vicino si giudicano sulla normale tollerabilità."
   status: experiment
 
@@ -92,29 +103,21 @@
     - fact: {pattern: 'confin|distanz|vicin', label: "vicino al confine"}
   institution: [distanze nelle costruzioni, vedute verso il fondo del vicino]
   codice: c.c.
+  ranges: [[873,907]]
   why: "Costruzioni e aperture sul confine pongono le regole delle distanze e delle vedute."
   status: experiment
 
 - id: condominio_parti_comuni
   area: diritti_reali
   when:
-    - fact: {pattern: 'condomin|assemblea|parti comuni|amministratore', label: "un condominio o le sue parti comuni"}
+    - fact: {pattern: 'condomin', label: "un condominio o le sue parti comuni"}
   institution: [uso delle parti comuni, impugnazione delle deliberazioni dell'assemblea]
   codice: c.c.
+  ranges: [[1117,1139]]
   why: "Liti tra condomini o con l'assemblea toccano l'uso delle cose comuni e le delibere."
   status: experiment
 
 # --- obbligazioni e contratti ------------------------------------------------------------------------------
-
-- id: inadempimento_mora
-  area: contratti
-  when:
-    - contract: {label: "un contratto tra le parti"}
-    - fact: {pattern: 'inadempi|non (?:ha )?(?:pagat|consegnat|eseguit|restituit)|ritard|mancat\w* (?:pagament|consegn)|non paga', label: "una prestazione non eseguita o in ritardo"}
-  institution: [inadempimento e risarcimento del danno, mora del debitore]
-  codice: c.c.
-  why: "Una prestazione contrattuale non eseguita o tardiva pone l'inadempimento, la mora e il risarcimento."
-  status: experiment
 
 - id: clausola_penale
   area: contratti
@@ -123,6 +126,7 @@
     - fact: {pattern: 'ritard|inadempi|non (?:ha )?(?:pagat|consegnat|eseguit)', label: "un ritardo o un inadempimento"}
   institution: [clausola penale, riduzione della penale]
   codice: c.c.
+  ranges: [[1382,1386]]
   why: "Con una penale e un inadempimento si pongono la sua esigibilità e la riduzione se manifestamente eccessiva."
   status: experiment
 
@@ -132,6 +136,7 @@
     - contract: {clause: 'caparr', label: "un contratto con caparra"}
   institution: [caparra confirmatoria, recesso per inadempimento]
   codice: c.c.
+  ranges: [[1385,1386]]
   why: "La caparra dà alla parte non inadempiente il recesso, trattenendola o chiedendone il doppio."
   status: experiment
 
@@ -139,11 +144,10 @@
   area: contratti
   when:
     - contract: {label: "un contratto tra le parti"}
-    - any:
-        - fact: {pattern: 'risol|scioglie|scioglimento|recede|recesso', label: "lo scioglimento del contratto"}
-        - request: {pattern: 'risol|scioglie|liberar|recede', label: "si chiede come sciogliere il contratto"}
+    - request: {pattern: 'risol|scioglie|liberar|recede', label: "si chiede come sciogliere il contratto"}
   institution: [risoluzione per inadempimento, importanza dell'inadempimento]
   codice: c.c.
+  ranges: [[1453,1462]]
   why: "Chi vuole sciogliere il contratto per l'inadempimento altrui deve provarne la non scarsa importanza."
   status: experiment
 
@@ -154,6 +158,7 @@
     - fact: {pattern: 'vizi|difett|guast|malfunzion|non funzion', label: "la cosa venduta ha difetti"}
   institution: garanzia per i vizi della cosa venduta
   codice: c.c.
+  ranges: [[1490,1497]]
   why: "La cosa venduta con difetti pone la garanzia del venditore, con i suoi termini di denuncia e di azione."
   status: experiment
 
@@ -161,9 +166,8 @@
   area: consumo
   when:
     - role: [consumatore]
-    - any:
-        - role: [impresa, professionista]
-        - contract: {type: 'vendit|compravendit|acquist|fornitur', label: "un acquisto"}
+    - role: [impresa, professionista]
+    - contract: {type: 'vendit|compravendit|acquist|fornitur', label: "un acquisto"}
     - fact: {pattern: 'vizi|difett|guast|malfunzion|non funzion|non conform', label: "il bene ha difetti"}
   institution: garanzia legale di conformità
   codice: Codice del Consumo
@@ -186,6 +190,7 @@
     - money_over_threshold: {}
   institution: [usura, nullità della clausola degli interessi usurari]
   codice: c.p.
+  families: [civile, penale]
   why: "Un tasso oltre la soglia pone il reato di usura e, civilmente, la non debenza degli interessi."
   status: experiment
 
@@ -201,6 +206,7 @@
         - fact: {pattern: 'ferit|lesion|cadut|infortun|si è fatto male', label: "un danno subito"}
   institution: [responsabilità contrattuale da contatto sociale dell'istituto scolastico, responsabilità dei precettori]
   codice: c.c.
+  ranges: [[1218,1218],[2043,2059]]
   why: "Il danno all'alunno sotto la vigilanza della scuola pone la responsabilità dell'istituto da contatto sociale e quella dei precettori."
   status: experiment
 
@@ -208,13 +214,13 @@
   area: responsabilita_civile
   when:
     - role: [medico, struttura sanitaria]
-    - any:
-        - injury: {}
-        - fact: {pattern: 'intervent|operazion|diagnos|terapi|ricover|cur[ae]\b|parto', label: "una cura o un intervento"}
+    - injury: {}
+    - fact: {pattern: 'intervent|operazion|diagnos|terapi|ricover|cur[ae]\b|parto', label: "una cura o un intervento"}
     - not:
         proceeding: {pattern: 'procur|querel|denunci|indagin|imputa|penal'}
   institution: [responsabilità della struttura sanitaria, responsabilità del medico]
   codice: c.c.
+  ranges: [[1218,1229],[2043,2059]]
   why: "Un danno da cure pone la responsabilità contrattuale della struttura e quella extracontrattuale del medico."
   status: experiment
 
@@ -226,6 +232,7 @@
     - proceeding: {pattern: 'procur|querel|denunci|indagin|imputa|penal', label: "un procedimento penale"}
   institution: responsabilità colposa per morte o lesioni personali in ambito sanitario
   codice: c.p.
+  ranges: [[589,590]]
   why: "Morte o lesioni da cure in un procedimento penale pongono la colpa medica e i suoi limiti."
   status: experiment
 
@@ -238,6 +245,7 @@
     - fact: {pattern: 'furt|sottratt|rubat|scompars|smarrit|danneggiat', label: "cose del cliente rubate, sparite o danneggiate"}
   institution: [responsabilità dell'albergatore per le cose portate in albergo, cose consegnate in custodia all'albergatore]
   codice: c.c.
+  ranges: [[1783,1786]]
   why: "Le cose del cliente sottratte o danneggiate in albergo pongono la responsabilità dell'albergatore e i suoi limiti."
   status: experiment
 
@@ -248,6 +256,7 @@
     - fact: {pattern: 'vizi|difett|difform|crep|infiltraz|umidit|non a regola', label: "l'opera ha difetti"}
   institution: garanzia per le difformità e i vizi dell'opera
   codice: c.c.
+  ranges: [[1655,1677]]
   why: "Un'opera appaltata con difetti pone la garanzia dell'appaltatore, con la denuncia e l'azione nei termini."
   status: experiment
 
@@ -261,18 +270,8 @@
         - fact: {pattern: 'anni dopo|a distanza di anni|dopo (?:alcuni|qualche|diversi) anni', label: "i difetti compaiono anni dopo i lavori"}
   institution: [rovina e gravi difetti di cose immobili, garanzia per le difformità e i vizi dell'opera]
   codice: c.c.
+  ranges: [[1655,1677]]
   why: "Gravi difetti di un immobile comparsi anni dopo i lavori pongono la responsabilità decennale dell'appaltatore, oltre la garanzia ordinaria."
-  status: experiment
-
-- id: danno_cose_custodia
-  area: responsabilita_civile
-  when:
-    - fact: {pattern: 'buca|scivol|cornicion|tegol|crollat|cedut|albero cadut|ramo cadut|pavimento bagnat|caduto da', label: "un danno causato da una cosa (buca, crollo, pavimento, oggetto caduto)"}
-    - not:
-        contract: {}
-  institution: danno cagionato da cose in custodia
-  codice: c.c.
-  why: "Il danno prodotto da una cosa pone la responsabilità del custode, salvo il caso fortuito."
   status: experiment
 
 - id: circolazione_veicoli
@@ -281,18 +280,8 @@
     - fact: {pattern: 'incidente stradale|sinistro stradale|investit|tamponament|scontr\w* (?:tra|con) (?:auto|veicol|moto)', label: "un incidente stradale"}
   institution: [circolazione di veicoli, risarcimento del danno da sinistro stradale]
   codice: c.c.
+  ranges: [[2054,2054]]
   why: "Un sinistro stradale pone la responsabilità presunta del conducente e del proprietario."
-  status: experiment
-
-- id: danno_non_patrimoniale
-  area: responsabilita_civile
-  when:
-    - injury: {min_days: 40}
-    - not:
-        proceeding: {pattern: 'procur|querel|indagin|imputa|penal'}
-  institution: danno non patrimoniale
-  codice: c.c.
-  why: "Lesioni gravi o permanenti pongono il risarcimento del danno non patrimoniale."
   status: experiment
 
 - id: prescrizione_decorsa
@@ -301,6 +290,7 @@
     - term: {id: [prescrizione_extracontrattuale, prescrizione_circolazione, prescrizione_ordinaria], status: [DECORSO, INCERTO]}
   institution: [prescrizione, interruzione della prescrizione]
   codice: c.c.
+  ranges: [[2934,2969]]
   why: "Il tempo trascorso dal fatto può aver estinto il diritto: va verificato ogni atto interruttivo."
   status: experiment
 
@@ -312,6 +302,7 @@
     - fact: {pattern: 'preparat|procurat\w* (?:un|una|gli|le|l'')?\s*(?:arm|attrezz|mezz|chiav|piede di porco)|sopralluog|fermat\w* prima|interrott|non (?:è |e'' )?riuscit|senza riuscir|desistit|bloccat\w* prima', label: "il reato preparato o iniziato ma non compiuto"}
   institution: [delitto tentato, atti preparatori non punibili, desistenza volontaria]
   codice: c.p.
+  ranges: [[56,56]]
   why: "Mezzi preparati o un'azione interrotta pongono la distinzione tra tentativo punibile e atti preparatori."
   status: experiment
 
@@ -324,6 +315,7 @@
     - proceeding: {pattern: 'procur|querel|denunci|indagin|imputa|penal|reato|carabinier|polizia', label: "un fatto penalmente rilevante"}
   institution: concorso di persone nel reato
   codice: c.p.
+  ranges: [[110,119]]
   why: "Più persone nello stesso reato pongono il concorso e il contributo di ciascuna."
   status: experiment
 
@@ -335,6 +327,7 @@
     - proceeding: {pattern: 'procur|querel|denunci|indagin|imputa|penal|reato', label: "un procedimento penale"}
   institution: [concorso dell'estraneo nel reato proprio, mutamento del titolo del reato per taluno dei concorrenti]
   codice: c.p.
+  ranges: [[110,119]]
   why: "Un privato che agisce con un pubblico ufficiale risponde del reato proprio come concorrente estraneo."
   status: experiment
 
@@ -347,6 +340,7 @@
         - fact: {pattern: 'mort[oae]\b|decedut|decesso|è morto|ha perso la vita', label: "la morte o lesioni non volute"}
   institution: [morte o lesioni come conseguenza di altro delitto, omicidio preterintenzionale]
   codice: c.p.
+  ranges: [[575,593]]
   why: "Una morte non voluta durante un delitto doloso pone la preterintenzione o la responsabilità per l'evento più grave."
   status: experiment
 
@@ -358,6 +352,7 @@
     - fact: {pattern: 'non (?:ha )?(?:segnalat|denunciat|riferit|avvisat|informat|comunicat)|senza (?:segnalar|denunciar|avvisar|informar)|nascost|ospitat', label: "senza riferirne all'autorità"}
   institution: [omissione di referto, favoreggiamento personale]
   codice: c.p.
+  ranges: [[361,384]]
   why: "Chi cura una persona ricercata o ferita da un reato senza riferirne pone l'omissione di referto e il favoreggiamento."
   status: experiment
 
@@ -367,6 +362,7 @@
     - term: {id: querela, status: [DECORSO, INCERTO]}
   institution: [termine per proporre la querela, reati perseguibili d'ufficio]
   codice: c.p.
+  ranges: [[120,126]]
   why: "Oltre tre mesi dalla notizia del fatto la querela è tardiva: va verificato se il reato è procedibile d'ufficio."
   status: experiment
 
@@ -376,6 +372,7 @@
     - term: {id: impugnazione_penale, status: [DECORSO, NON DECORSO, INCERTO]}
   institution: [termini per impugnare, appello]
   codice: c.p.p.
+  ranges: [[568,626]]
   why: "Dopo una sentenza penale i termini per impugnare decorrono dal deposito della motivazione."
   status: experiment
 
@@ -388,6 +385,7 @@
         - fact: {pattern: 'colpend|colpit|ferit|spin[gt]|pugn|percoss', label: "un colpo inferto"}
   institution: [legittima difesa, eccesso colposo]
   codice: c.p.
+  ranges: [[50,59]]
   why: "Chi colpisce reagendo a un'aggressione pone la legittima difesa e il suo eccesso."
   status: experiment
 
@@ -396,10 +394,11 @@
 - id: ottemperanza
   area: amministrativo
   when:
-    - proceeding: {pattern: 'sentenz|giudicat|accolt|annullat', label: "una sentenza favorevole contro l'amministrazione"}
+    - proceeding: {pattern: 'sentenz|giudicat|accolt|annullat', authority: 'tar|tribunale amministrativo|consiglio di stato|giudice amministrativo', label: "una sentenza del giudice amministrativo"}
     - fact: {pattern: 'non (?:ha )?(?:eseguit|ottemperat|dato esecuzione|adempiut)|inerte|nuovo provvediment|riadottat|stesso contenuto|di nuovo', label: "l'amministrazione non esegue la sentenza o ripete l'atto"}
   institution: [giudizio di ottemperanza, nullità per violazione o elusione del giudicato]
   codice: c.p.a.
+  ranges: [[112,117]]
   why: "L'amministrazione che non esegue un giudicato, o lo aggira con un nuovo atto, pone l'ottemperanza e la nullità per elusione."
   status: experiment
 
@@ -430,6 +429,7 @@
     - term: {id: [ricorso_tar, ricorso_tar_appalti], status: [DECORSO, INCERTO]}
   institution: [termine per il ricorso, errore scusabile]
   codice: c.p.a.
+  ranges: [[29,41],[119,120]]
   why: "Oltre il termine dalla conoscenza dell'atto il ricorso è tardivo: va verificata la data di piena conoscenza."
   status: experiment
 
@@ -437,9 +437,11 @@
   area: amministrativo
   when:
     - role: [pubblica amministrazione, comune, ente]
-    - fact: {pattern: 'non (?:ha )?rispost|nessuna rispost|silenzi|inerzi|senza rispost|non si è pronunciat', label: "l'amministrazione non risponde a un'istanza"}
+    - fact: {pattern: 'istanz|domand|richiest', label: "un'istanza all'amministrazione"}
+    - fact: {pattern: 'non (?:ha )?rispost|nessuna rispost|silenzi|inerzi|senza rispost|non si è pronunciat', label: "l'amministrazione non risponde"}
   institution: [silenzio dell'amministrazione, rito avverso il silenzio]
   codice: c.p.a.
+  ranges: [[31,31],[117,117]]
   why: "L'amministrazione che non risponde a un'istanza pone il rito contro il silenzio."
   status: experiment
 
@@ -451,8 +453,9 @@
     - fact: {pattern: 'comunione legale|regime patrimoniale|coniug|matrimoni|marit|moglie', label: "due coniugi"}
     - fact: {pattern: 'impres|attivit|azienda|esercizio commerciale|studio professionale|negozio', label: "l'impresa o l'attività di un coniuge"}
     - fact: {pattern: 'acquist|comprat|intestat', label: "un bene acquistato"}
-  institution: [comunione de residuo, beni personali del coniuge]
+  institution: [comunione de residuo, beni destinati all'esercizio dell'impresa del coniuge, beni personali del coniuge]
   codice: c.c.
+  ranges: [[159,197]]
   why: "Un bene comprato durante il matrimonio per l'attività di un coniuge pone la comunione de residuo e i beni personali."
   status: experiment
 
@@ -463,6 +466,7 @@
     - fact: {pattern: 'mantenimento|assegn|alimenti|contribut|spese', label: "il mantenimento"}
   institution: [assegno di mantenimento, mantenimento dei figli]
   codice: c.c.
+  ranges: [[143,160],[315,338]]
   why: "La separazione pone l'assegno per il coniuge debole e il mantenimento dei figli."
   status: experiment
 
@@ -475,6 +479,7 @@
     - fact: {pattern: 'riscoss|incassat|canon|affitt|locat|pubblicazione del testamento|voltur|vendut|amministrat|riparazion', label: "atti dell'erede sui beni ereditari"}
   institution: [accettazione tacita dell'eredità, accettazione con beneficio d'inventario]
   codice: c.c.
+  ranges: [[459,490]]
   why: "Atti che solo un erede può compiere sui beni del defunto valgono accettazione tacita, con le sue conseguenze sui debiti."
   status: experiment
 
@@ -485,6 +490,7 @@
     - fact: {pattern: 'esclus|tutto (?:il patrimonio|a)|diseredat|legittim|niente|nulla', label: "un erede stretto escluso o ridotto"}
   institution: [azione di riduzione, quota di legittima]
   codice: c.c.
+  ranges: [[536,564]]
   why: "Il legittimario escluso o leso da testamento o donazioni ha l'azione di riduzione."
   status: experiment
 
@@ -497,6 +503,7 @@
     - fact: {pattern: 'non pag|morosit|canoni non|non ha pagato|arretrat|ritard\w* nel pagament', label: "canoni non pagati"}
   institution: [sfratto per morosità, risoluzione della locazione per inadempimento]
   codice: c.p.c.
+  ranges: [[657,669]]
   why: "Il conduttore che non paga i canoni pone lo sfratto per morosità e la risoluzione."
   status: experiment
 
@@ -507,6 +514,7 @@
     - fact: {pattern: 'scadenz|disdett|fine (?:della )?locazione|rilascio|lasciare l''immobile|non vuole (?:andar|lasciar)', label: "la scadenza o la disdetta"}
   institution: [licenza per finita locazione, disdetta]
   codice: c.p.c.
+  ranges: [[657,669]]
   why: "Alla scadenza il locatore che vuole l'immobile pone la licenza per finita locazione e la disdetta nei termini."
   status: experiment
 
@@ -517,6 +525,7 @@
     - fact: {pattern: 'licenzi|recesso del datore|allontanat|non (?:lo |la )?vuole più', label: "il lavoratore è licenziato"}
   institution: [licenziamento per giusta causa, recesso dal contratto di lavoro a tempo indeterminato]
   codice: c.c.
+  ranges: [[2118,2119]]
   why: "Un licenziamento pone la giusta causa o il preavviso e la sua impugnazione."
   status: experiment
 
@@ -527,5 +536,6 @@
     - fact: {pattern: 'straordinar|non (?:è stat[oa] )?(?:pagat|retribuit)|differenz\w* retributiv|stipendi\w* arretrat|ferie|tfr|contribut', label: "retribuzioni o contributi non pagati"}
   institution: [retribuzione del lavoratore, prescrizione dei crediti di lavoro]
   codice: c.c.
+  ranges: [[2094,2134],[2934,2969]]
   why: "Retribuzioni o straordinari non pagati pongono il diritto alla retribuzione e la prescrizione dei crediti di lavoro."
   status: experiment

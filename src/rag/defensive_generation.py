@@ -1486,7 +1486,8 @@ def _with_central_questions(analysis: Dict[str, Any], frame: Dict[str, Any]) -> 
     shape (questions with "istituti")."""
     named = [i.get("nome") or "" for q in analysis.get("questioni") or [] for i in q.get("istituti") or []]
     added = [{"titolo": f"Questione centrale: {c['nome']}", "categoria": "qualificazione",
-              "istituti": [{"nome": c["nome"], "codice": c.get("codice") or "", "numero_indicativo": ""}],
+              "istituti": [{"nome": c["nome"], "codice": c.get("codice") or "", "numero_indicativo": "",
+                            **{k: c[k] for k in ("fonte", "ranges") if c.get(k)}}],
               "parole_chiave": [], "voce": "questione_centrale"}
              for c in frame.get("central_issue_candidates") or []
              if not any(_same_institution(c["nome"], n) for n in named)]
@@ -1522,21 +1523,28 @@ def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict
 
 def _frame_and_fact_signals(facts: str, request: str) -> tuple:
     """FACT_SIGNALS_ENABLED: (frame, signals) -- the frame (CASE_FRAME_ENABLED) and the typed facts read at
-    once; the institutions the fact rules fire join the frame's central issues (fact_signals.central_issues),
-    so the analysis takes them as questions, they are resolved and tagged _central. signals None on failure."""
+    once, then the fact rules fired within the frame's areas; their institutions join the frame's central
+    issues (fact_signals.central_issues), so the analysis takes them as questions, they are resolved (within
+    the rule's article ranges: fact_signals.keep_resolved) and tagged _central. signals None on failure."""
     from concurrent.futures import ThreadPoolExecutor
     from . import fact_signals
 
-    def read_signals():
+    def read_facts():
         try:
-            return fact_signals.analyse(_case_text(facts, request))
+            return fact_signals.extract_facts(_case_text(facts, request))
         except Exception as exc:
             logger.warning("fact signals failed, the case is read without them: %s", exc)
             return None
     with ThreadPoolExecutor(max_workers=2) as pool:
         frame_job = pool.submit(_case_frame, facts, request) if feature_flags.enabled(CASE_FRAME_FLAG) else None
-        signals = pool.submit(read_signals).result()
+        read = pool.submit(read_facts).result()
         frame = frame_job.result() if frame_job else None
+    signals = None
+    if read is not None:
+        try:
+            signals = fact_signals.signals_from(read[0], read[1], (frame or {}).get("areas") or [])
+        except Exception as exc:
+            logger.warning("fact signals: rules not applied: %s", exc)
     added = fact_signals.central_issues((signals or {}).get("fired") or [])
     if added:
         frame = dict(frame or {})
@@ -3464,7 +3472,15 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     central_matched: List[tuple] = []
     for index, q in enumerate(analysis.get("questioni", [])):
         for istituto in q.get("istituti") or []:
-            for row in _resolve_institution(session, documents, istituto, q.get("parole_chiave")):
+            resolved = _resolve_institution(session, documents, istituto, q.get("parole_chiave"))
+            if istituto.get("fonte"):          # FACT_SIGNALS_ENABLED: a fact rule's institution, within its ranges
+                from . import fact_signals
+                kept = fact_signals.keep_resolved(istituto, resolved)
+                vlog("case_analysis_fact_institution", {"institution": istituto.get("nome"), "fonte": istituto["fonte"],
+                                                         "kept": [_label_of(r) for r in kept],
+                                                         "rejected": [_label_of(r) for r in resolved if r not in kept]})
+                resolved = kept
+            for row in resolved:
                 if index in central_questions and row.get("_article"):
                     central_matched.append(row["_article"])
                 key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
@@ -3515,6 +3531,11 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
             row["_central"] = True
     return {**base, "selected": base["selected"] + added_articles, "heading_matched": heading_matched,
             "article_rows": article_rows, "institutions_resolved": added_articles, "central_matched": central_matched}
+
+
+def _label_of(row: Dict[str, Any]) -> str:
+    ref = row.get("_article") or ("", "")
+    return f"{ref[0]} {ref[1]}".strip()
 
 
 def _central_questions(analysis: Dict[str, Any]) -> set:
@@ -3750,7 +3771,8 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         verdicts, ungraded = _graded_verdicts(
             _graded_case(facts, request, analysis, issues),
             _graded_texts(texts, to_check, _evidence_context(facts, request, analysis)),
-            _graded_system(evidence=True, issues=bool(issues), examples=True), issues)
+            _graded_system(evidence=True, issues=bool(issues), examples=feature_flags.enabled(GRADER_EXAMPLES_FLAG)),
+            issues)
     elif graded:
         verdicts, ungraded = _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(texts, to_check))
     else:
@@ -3999,6 +4021,8 @@ def _graded_texts(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, An
 # grades it per issue of the case (frame questions, central issues, analysis issues, numbered Q1, Q2 ...),
 # by how directly it governs that issue, with worked examples. PLAN_KEEP_CHECKED then keeps up to 18.
 GRADER_EVIDENCE_FLAG = "GRADER_EVIDENCE_ENABLED"
+# The worked examples apart (grader_bench on run 1415: the evidence and the per-issue grade, v2, without them).
+GRADER_EXAMPLES_FLAG = "GRADER_EXAMPLES_ENABLED"
 _GRADED_MAX_ISSUES = 10
 _SIGNAL_WORDS = {"current": "ricerca sull'analisi del caso", "baseline": "ricerca sul testo del caso",
                  "distill": "ricerca sui fatti essenziali", "frame": "ricerca sui quesiti e sulle questioni"}

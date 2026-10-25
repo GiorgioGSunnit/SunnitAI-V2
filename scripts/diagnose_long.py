@@ -89,7 +89,8 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "QUALIFICATION_CHECK_ENABLED", "DRAFT_CITATIONS_ONLY_ENABLED", "CLIENT_STANCE_CHECK_ENABLED",
          "STRATEGY_DRAFT_RULES_ENABLED", "METHOD_CANDIDATES_ENABLED", "CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED",
          "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED",
-         "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED", "FACT_SIGNALS_ENABLED"]
+         "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED", "FACT_SIGNALS_ENABLED",
+         "GRADER_EXAMPLES_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -1073,6 +1074,7 @@ def _fact_signal_trace(rec: dict, out: dict, K, expected_keys: set) -> dict:
             reached.append({"rule": rule["id"], "article": slot_label, "stage": stage})
         if not hits and out["keyed"]:
             false_triggers.append({"rule": rule["id"], "area": rule.get("area"), "articles": labels[:6],
+                                   "matched": list(rule.get("matched") or [])[:3],
                                    "other_area": bool(areas) and _rule_family(rule.get("area")) not in
                                    {_rule_family(a) for a in areas}})
     return {"fired": [r["id"] for r in fired], "terms": [t.get("text") for t in signals.get("terms") or []],
@@ -1310,6 +1312,7 @@ def render(cases: list, header: list) -> str:
               f"Fired rules reaching no expected article (possible false triggers): {len(f['false'])}"
               + (": " + "; ".join(f"{cid} {r['rule']}" + (" [other area]" if r["other_area"] else "")
                                   + (f" → {', '.join(r['articles'])}" if r["articles"] else " → nothing resolved")
+                                  + (f" (perché: {' / '.join(r.get('matched') or [])})" if r.get("matched") else "")
                                   for cid, r in f["false"]) if f["false"] else "") + "."]
         if f["problems"]:
             L.append("Extraction problems: " + "; ".join(f"{cid}: {p}" for cid, p in f["problems"]) + ".")

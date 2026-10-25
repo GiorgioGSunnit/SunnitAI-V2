@@ -151,12 +151,12 @@ FIXTURES = {
     "immissioni": F(events=[ev("odori e fumi dal ristorante vicino")]),
     "distanze_vedute": F(events=[ev("Caio costruisce un muro a un metro dal confine")]),
     "condominio_parti_comuni": F(events=[ev("l'assemblea del condominio vieta l'uso del cortile")]),
-    "inadempimento_mora": F(contracts=[contract("fornitura")], events=[ev("il fornitore non ha consegnato la merce")]),
     "clausola_penale": F(contracts=[contract("appalto", "penale per ritardo")], events=[ev("ritardo di tre mesi")]),
     "caparra": F(contracts=[contract("preliminare di vendita", "caparra confirmatoria")]),
     "risoluzione_contratto": F(contracts=[contract("vendita")], requests=["Può risolvere il contratto?"]),
     "vizi_vendita": F(contracts=[contract("compravendita")], events=[ev("la caldaia ha difetti")]),
     "conformita_consumatore": F(parties=[party("Tizio", "consumatore"), party("Alfa srl", "impresa")],
+                                contracts=[contract("compravendita di uno smartphone")],
                                 events=[ev("lo smartphone non funziona")]),
     "clausole_vessatorie": F(parties=[party("Tizio", "consumatore")],
                              contracts=[contract("abbonamento", "foro esclusivo dell'impresa")]),
@@ -165,6 +165,7 @@ FIXTURES = {
                                  events=[ev("durante la ricreazione a scuola Marco cade")],
                                  injuries=[{"who": "Marco", "days_to_heal": "20", "permanent": "no"}]),
     "responsabilita_sanitaria_civile": F(parties=[party("dott. Rossi", "medico")],
+                                         events=[ev("intervento chirurgico al ginocchio")],
                                          injuries=[{"who": "Tizio", "days_to_heal": "90", "permanent": "sì"}]),
     "responsabilita_sanitaria_penale": F(parties=[party("dott. Rossi", "medico")],
                                          injuries=[{"who": "Tizio", "days_to_heal": "90", "permanent": "sì"}],
@@ -173,9 +174,7 @@ FIXTURES = {
     "difformita_appalto": F(contracts=[contract("appalto di ristrutturazione")], events=[ev("infiltrazioni nel bagno")]),
     "rovina_gravi_difetti": F(contracts=[contract("appalto")], events=[ev("lavori ultimati", "2015"),
                                                                        ev("compaiono crepe nei muri portanti", "2025")]),
-    "danno_cose_custodia": F(events=[ev("Tizio inciampa in una buca del marciapiede")]),
     "circolazione_veicoli": F(events=[ev("incidente stradale all'incrocio")]),
-    "danno_non_patrimoniale": F(injuries=[{"who": "Tizio", "days_to_heal": "60", "permanent": "no"}]),
     "prescrizione_decorsa": F(events=[ev("incidente stradale", "2015")]),
     "tentativo": F(events=[ev("Tizio si è procurato un piede di porco e ha fatto un sopralluogo")]),
     "concorso_persone": F(parties=[party("Tizio", "indagato/imputato"), party("Caio", "indagato/imputato")],
@@ -190,7 +189,7 @@ FIXTURES = {
     "querela_tardiva": F(events=[ev("Caio minaccia Tizio", "gennaio 2026")]),
     "impugnazione_penale": F(proceedings=[proc("primo grado", "sentenza di condanna", "10 settembre 2026")]),
     "legittima_difesa": F(events=[ev("Tizio, aggredito da Caio, ha reagito colpendolo")]),
-    "ottemperanza": F(proceedings=[proc("TAR", "sentenza di annullamento del diniego")],
+    "ottemperanza": F(proceedings=[proc("ricorso", "sentenza di annullamento del diniego", authority="TAR")],
                       events=[ev("il Comune non ha dato esecuzione alla sentenza")]),
     "riadozione_senza_contraddittorio": F(events=[ev("il provvedimento annullato è stato riadottato con motivazione "
                                                      "per relationem")]),
@@ -234,7 +233,9 @@ def test_rules_that_must_not_fire():
     assert "usucapione_ordinaria" not in _fired(recent)
     assert "possessoria_in_termine" not in _fired(FIXTURES["possessoria_preclusa"])
     assert "responsabilita_sanitaria_civile" not in _fired(FIXTURES["responsabilita_sanitaria_penale"])
-    assert "danno_cose_custodia" not in _fired(F(contracts=[contract("noleggio")], events=[ev("una buca")]))
+    assert "condominio_parti_comuni" not in _fired(F(events=[ev("l'assemblea dei soci approva il bilancio")]))
+    assert "ottemperanza" not in _fired(F(proceedings=[proc("primo grado", "sentenza di condanna", authority="Tribunale")],
+                                          events=[ev("non ha eseguito la sentenza")]))
     criminal = {r["area"] for r in fs.fire_rules(FIXTURES["concorso_persone"], [])}
     assert criminal == {"penale"}
     assert _fired(F()) == set() and fs.fire_rules(None, []) == []
@@ -258,7 +259,7 @@ def test_central_issues_once_each_and_capped():
     fired = fs.fire_rules(FIXTURES["possessoria_preclusa"], fs.compute_terms(FIXTURES["possessoria_preclusa"]))
     central = fs.central_issues(fired + fired)
     assert central[0] == {"nome": "decadenza dall'azione di reintegrazione e di manutenzione", "codice": "c.c.",
-                          "fonte": "regola possessoria_preclusa"}
+                          "fonte": "regola possessoria_preclusa", "ranges": [[1140, 1172], [948, 951], [1079, 1079]]}
     assert len(central) == len({c["nome"] for c in central}) <= fs.MAX_CENTRAL
 
 
@@ -268,16 +269,32 @@ def test_fired_institutions_join_the_frames_central_issues(monkeypatch):
     monkeypatch.setenv("CASE_FRAME_ENABLED", "true")
     monkeypatch.setattr(dg, "_case_frame", lambda facts, request: {
         "tasks": ["Che cosa può fare Tizio?"], "central_issue_candidates": [{"nome": "usucapione", "codice": "c.c."}]})
-    signals = {"facts": FIXTURES["usucapione_ordinaria"], "terms": [], "fired": fs.fire_rules(
-        FIXTURES["usucapione_ordinaria"], []), "problem": ""}
-    monkeypatch.setattr(fs, "analyse", lambda text: signals)
+    monkeypatch.setattr(fs, "extract_facts", lambda text: (FIXTURES["usucapione_ordinaria"], ""))
     frame, got = dg._frame_and_fact_signals("Tizio coltiva l'orto di Caio dal 1995.", "")
-    assert got is signals
+    assert [r["id"] for r in got["fired"]] == ["usucapione_ordinaria"]
     assert [c["nome"] for c in frame["central_issue_candidates"]] == ["usucapione"]      # already there: once
-    monkeypatch.setattr(fs, "analyse", lambda text: {**signals, "fired": fs.fire_rules(FIXTURES["fondo_intercluso"], [])})
+    monkeypatch.setattr(fs, "extract_facts", lambda text: (FIXTURES["fondo_intercluso"], ""))
     frame, _ = dg._frame_and_fact_signals("x", "")
     assert [c["nome"] for c in frame["central_issue_candidates"]] == [
         "usucapione", "passaggio coattivo", "indennità per il passaggio coattivo"]
+    assert frame["central_issue_candidates"][1]["ranges"] == [[1051, 1055]]
+    analysis = dg._with_central_questions({"questioni": []}, frame)
+    assert analysis["questioni"][1]["istituti"][0] == {"nome": "passaggio coattivo", "codice": "c.c.", "numero_indicativo": "",
+                                                       "fonte": "regola fondo_intercluso", "ranges": [[1051, 1055]]}
+
+
+def test_rules_fire_only_within_the_case_areas(monkeypatch):
+    monkeypatch.setenv("CASE_FRAME_ENABLED", "true")
+    facts = FIXTURES["legittima_difesa"]
+    assert "legittima_difesa" in {r["id"] for r in fs.fire_rules(facts, [], areas=["penale"])}
+    assert fs.fire_rules(facts, [], areas=["contratti", "responsabilita_civile"]) == []
+    assert "legittima_difesa" in {r["id"] for r in fs.fire_rules(facts, [], areas=["altro"])}         # unknown: no gate
+    usura = FIXTURES["usura"]
+    assert {r["id"] for r in fs.fire_rules(usura, [], areas=["penale"])} == {"usura"}                 # both families
+    monkeypatch.setattr(dg, "_case_frame", lambda facts, request: {"areas": ["contratti"], "central_issue_candidates": []})
+    monkeypatch.setattr(fs, "extract_facts", lambda text: (facts, ""))
+    frame, got = dg._frame_and_fact_signals("x", "")
+    assert got["fired"] == [] and got["areas"] == ["contratti"]
 
 
 def test_computed_terms_reach_the_plan_and_the_procedural_section():
@@ -326,3 +343,89 @@ def test_the_bench_counts_lost_articles_a_rule_reaches():
     text = bench.render("/runs/r", [result], ekey, {"x1": {("1051", "cc")}}, 60, [])
     assert "LOST_AT_UNDERSTANDING in the run: 1; reached by a fired rule: 1 (x1 art. 1051 cc ← fondo_intercluso)" in text
     assert "possible false triggers): 1 (x1 caparra)" in text and "**1051 c.c.**, 1053 c.c." in text
+    assert "    - perché: un fondo senza accesso alla via pubblica — «il fondo di tizio è intercluso»" in text
+
+
+# --- the case's present ------------------------------------------------------------------------------
+
+def test_without_a_present_date_no_term_runs_to_the_real_today(monkeypatch):
+    monkeypatch.delenv(fs.TODAY_ENV)
+    lonely = F(events=[ev("Caio chiude il cancello", "marzo 2016")])
+    t = fs.compute_terms(lonely)[0]
+    assert t["status"] == "NON VERIFICABILE" and "il caso non indica la data attuale" in t["text"]
+    assert "possessoria_preclusa" not in _fired(lonely) and "possessoria_in_termine" not in _fired(lonely)
+    later = F(events=[ev("Caio chiude il cancello", "marzo 2016"), ev("Tizio scrive al vicino", "giugno 2018")])
+    t = fs.compute_terms(later)[0]
+    assert t["status"] == "DECORSO" and "già al fatto più recente" in t["text"]      # run even by the latest fact
+    dated = F(events=[ev("Caio chiude il cancello", "marzo 2016")], present_date="10 aprile 2016")
+    assert fs.compute_terms(dated)[0]["status"] == "NON DECORSO"
+    assert "usucapione_ordinaria" not in _fired(F(possession=[{"who": "T", "asset": "orto", "since": "2000", "how": "",
+                                                                "still_ongoing": "sì"}]))
+
+
+def test_a_present_date_is_kept_only_as_the_text_writes_it():
+    facts = fs.validate_facts({"present_date": "oggi, 10 marzo 2019", "events": []}, "Siamo a oggi, 10 marzo 2019.")
+    assert facts["present_date"] == "oggi, 10 marzo 2019"
+    assert fs.validate_facts({"present_date": "1 gennaio 2030", "events": []}, "Nessuna data.")["present_date"] == ""
+
+
+def test_a_cut_reply_keeps_its_complete_values(monkeypatch):
+    cut = '{"parties": [{"name": "Tizio", "role": "cliente"}], "events": [{"date": "2016", "what": "a \\"b\\""}, {"date": "20'
+    assert fs._parse_or_repair(cut) == {"parties": [{"name": "Tizio", "role": "cliente"}],
+                                        "events": [{"date": "2016", "what": 'a "b"'}]}
+    assert fs._parse_or_repair('```json\n{"events": []}\n```') == {"events": []}
+    monkeypatch.setattr(fs, "_call_chat", lambda messages, **kw: cut)
+    facts, problem = fs.extract_facts("Tizio, nel 2016, a.")
+    assert facts["parties"][0]["name"] == "Tizio" and problem == ""
+
+
+# --- why, and which articles ---------------------------------------------------------------------------
+
+def test_a_fired_rule_says_why():
+    rule = next(r for r in fs.fire_rules(FIXTURES["fondo_intercluso"], []) if r["id"] == "fondo_intercluso")
+    assert rule["matched"] == ["un fondo senza accesso alla via pubblica — «il fondo di tizio è intercluso»"]
+    rule = next(r for r in fs.fire_rules(FIXTURES["medico_e_latitante"], []) if r["id"] == "medico_e_latitante")
+    assert rule["matched"][0] == "una parte è medico o professionista o struttura sanitaria — «dott. Verdi (medico)»"
+
+
+def test_a_rule_institution_keeps_only_articles_in_range_whose_rubrica_fits():
+    def row(number, rubrica):
+        return {"_article": (number, "c.c."), "s": {"titolo_articolo": rubrica}}
+    istituto = {"nome": "passaggio coattivo", "codice": "c.c.", "fonte": "regola fondo_intercluso", "ranges": [[1051, 1055]]}
+    rows = [row("1051", "Passaggio coattivo"), row("2634", "Infedeltà patrimoniale"), row("1052", "Passaggio coattivo a favore di fondo non intercluso"),
+            row("1053", "Indennità")]
+    assert [r["_article"][0] for r in fs.keep_resolved(istituto, rows)] == ["1051", "1052"]
+    out_of_range = {"nome": "danno non patrimoniale", "fonte": "regola x", "ranges": [[2043, 2059]]}
+    assert fs.keep_resolved(out_of_range, [row("2634", "Danno non patrimoniale della società")]) == []
+    assert fs.keep_resolved({"nome": "passaggio coattivo"}, rows) == rows                # not a fact rule's: unchanged
+    assert fs.keep_resolved({"nome": "accettazione tacita dell'eredità", "fonte": "r"}, [row("476-bis", "Accettazione tacita")])
+
+
+# --- answers to .docx, blind A/B --------------------------------------------------------------------------
+
+def test_an_answer_and_its_sources_go_to_a_docx(tmp_path):
+    from docx import Document
+    docx_script = _script("answer_docx")
+    record = {"status": "ok", "request": "Che cosa può fare Tizio?",
+              "answer": "**1. Risposte ai quesiti**\n\nTizio può agire ex **art. 1051 c.c.**\n- prova del passaggio",
+              "citations": [{"document_name": "Codice Civile 2026", "document_type": "primary",
+                             "sections": [{"name": "1051.0.0", "title": "Passaggio coattivo", "plain_text": "Il proprietario..."}]},
+                            {"document_name": "Cass. civ., sez. II, n. 1/2026", "document_type": "interpretation",
+                             "sections": [{"name": "1", "title": "", "plain_text": "Il fondo intercluso ha diritto..."}]}]}
+    out = str(tmp_path / "r.docx")
+    docx_script.build(record, out, "Risposta 1", record["request"], None)
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    for part in ("Risposta 1", "Che cosa può fare Tizio?", "1. Risposte ai quesiti", "Tizio può agire ex art. 1051 c.c.",
+                 "prova del passaggio", "Fonti citate", "Norme", "Codice Civile 2026", "Art. 1051 — Passaggio coattivo",
+                 "Giurisprudenza", "Il fondo intercluso ha diritto..."):
+        assert part in text
+    assert "Configurazione" not in text                                          # blind
+    docx_script.build(record, out, "Risposta", "", ["FACT_SIGNALS_ENABLED=true"])
+    assert "FACT_SIGNALS_ENABLED=true" in "\n".join(p.text for p in Document(out).paragraphs)
+
+
+def test_the_ab_order_is_random_and_the_settings_parse():
+    ab = _script("ab_answers")
+    assert ab.settings("A=1, B=2,") == ["A=1", "B=2"] and ab.settings("") == []
+    assert ab.assign(1) == ab.assign(1) and sorted(ab.assign(1).values()) == ["A", "B"]
+    assert {tuple(ab.assign(seed).values()) for seed in range(20)} == {("A", "B"), ("B", "A")}

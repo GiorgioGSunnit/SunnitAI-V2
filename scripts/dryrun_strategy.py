@@ -214,6 +214,7 @@ def main() -> None:
     source.add_argument("--document-id", help="a user_documents id")
     source.add_argument("--file", help="a local .pdf/.docx/.txt, read as an upload is")
     source.add_argument("--case", help="an eval case id (tests/eval_narrative_cases.json), sent as a chat message")
+    source.add_argument("--text", help="a message with no document, sent as the chat sends it (the request itself)")
     parser.add_argument("--request", default=DEFAULT_REQUEST, help="the user's message (default: a generic one)")
     parser.add_argument("--lang", default="it")
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
@@ -248,6 +249,8 @@ def main() -> None:
         if args.case not in cases:
             sys.exit(f"no case {args.case!r} in tests/eval_narrative_cases.json")
         text = request = cases[args.case]["question"]   # the chat with no document: the message is both
+    elif args.text:
+        text = request = args.text                     # as --case: the message is both
     elif args.file:
         from src.utils.document import extract_text_from_file
         text = extract_text_from_file(args.file)

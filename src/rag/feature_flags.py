@@ -189,8 +189,9 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 similar rulings apply it, a central issue, the area),
                                 with the rule "applied by 3+ similar rulings and of
                                 the case's area: at least 2", grades it per numbered
-                                issue of the case by how directly it governs it, with
-                                worked examples; PLAN_KEEP_CHECKED forces up to 18,
+                                issue of the case by how directly it governs it (the
+                                worked examples only with GRADER_EXAMPLES_ENABLED, off);
+                                PLAN_KEEP_CHECKED forces up to 18,
                                 offered to the plan by issue. scripts/grader_bench.py
                                 compares the prompt versions on a run's saved pools.
   FACT_SIGNALS_ENABLED         false: one call reads the case's facts in a fixed
@@ -200,9 +201,13 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 computes the legal terms from the dates (possessory
                                 year, usucapione, prescrizione, querela, appeals,
                                 TAR, guarantees) and fires the general rules of
-                                src/rag/fact_signal_rules.yaml, whose institutions
-                                join the frame's central issues; the terms go to the
-                                plan and the procedural section as facts. See
+                                src/rag/fact_signal_rules.yaml within the frame's
+                                areas, whose institutions join the frame's central
+                                issues and resolve only within each rule's article
+                                ranges, to an article whose rubrica shares a word
+                                with them; the terms go to the plan and the
+                                procedural section as facts, run to the case's own
+                                present date (never the real today). See
                                 src/rag/fact_signals.py, scripts/export_fact_rules.py,
                                 scripts/fact_signals_bench.py.
 """

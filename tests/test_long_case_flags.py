@@ -21,7 +21,8 @@ from src.rag import issue_spotting, method_candidates, practical_checklist, vote
 from src.rag.nodes.cypher import CROSSREF_SOURCE  # noqa: E402
 
 FLAGS = ("CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED", "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED",
-         "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED", "GRADER_EVIDENCE_ENABLED", "FLAGGED_REMOVE_ENABLED")
+         "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED", "GRADER_EVIDENCE_ENABLED", "FLAGGED_REMOVE_ENABLED",
+         "GRADER_EXAMPLES_ENABLED")
 
 
 @pytest.fixture(autouse=True)
@@ -709,9 +710,14 @@ def test_the_examples_teach_no_held_out_article():
     assert len(cited) >= 20 and not {(n, codes[c]) for n, c in cited} & held
 
 
-def test_with_evidence_the_check_grades_per_issue(monkeypatch, logged):
+def test_with_evidence_the_check_grades_per_issue_without_examples(monkeypatch, logged):
     monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
     monkeypatch.setenv("GRADER_EVIDENCE_ENABLED", "true")
+    model = Grades({})
+    monkeypatch.setattr(dg, "_call_chat", model)
+    dg._filter_applicable_articles(CASE, "", _pool(), GRADED_ANALYSIS)
+    assert "ESEMPI" not in model.calls[0]["system"] and "Q1. Chi è proprietario" in model.humans[0]   # v2
+    monkeypatch.setenv("GRADER_EXAMPLES_ENABLED", "true")
     model = Grades({"1158 c.c.": 3})
     monkeypatch.setattr(dg, "_call_chat", model)
     pool = _pool()

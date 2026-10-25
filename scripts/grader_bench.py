@@ -13,8 +13,8 @@ Versions (defensive_generation._graded_system):
   saved  the grades the run itself logged
   v0     the live prompt (CHECK_GRADED_ENABLED), run again: how much the grades move between runs
   v1     + the evidence per article (searches, similar rulings applying it, area) and its rule
-  v2     + the grade per numbered issue of the case
-  v3     + the worked examples = GRADER_EVIDENCE_ENABLED
+  v2     + the grade per numbered issue of the case = GRADER_EVIDENCE_ENABLED
+  v3     + the worked examples = GRADER_EVIDENCE_ENABLED with GRADER_EXAMPLES_ENABLED
 
     cd /opt/chatbot && venv/bin/python scripts/grader_bench.py <run folder> [--variants v0,v3] [--only c1,h3]
 
@@ -123,7 +123,7 @@ def render(run_dir: str, results: list, versions: list, seconds: float, skipped:
     L = [f"# Grader bench: {os.path.basename(os.path.normpath(run_dir))}", "",
          f"{len(cases)} cases, {len(results)} graded articles ({sum(r['expected'] for r in results)} expected); "
          f"{seconds / 60:.1f} min." + (f" Skipped: {', '.join(skipped)}." if skipped else ""), "",
-         "v3 is GRADER_EVIDENCE_ENABLED; saved is what the run logged. Exempt and unchecked articles are not graded, "
+         "v2 is GRADER_EVIDENCE_ENABLED, v3 adds GRADER_EXAMPLES_ENABLED; saved is what the run logged. Exempt and unchecked articles are not graded, "
          "so not here.", "",
          "| version | expected | expected >= 2 | other | other >= 2 | expected 0/1/2/3/none | other 0/1/2/3/none |",
          "|---|---:|---:|---:|---:|---|---|"]
