@@ -21,7 +21,7 @@ from src.rag import issue_spotting, method_candidates, practical_checklist, vote
 from src.rag.nodes.cypher import CROSSREF_SOURCE  # noqa: E402
 
 FLAGS = ("CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED", "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED",
-         "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED")
+         "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED", "GRADER_EVIDENCE_ENABLED", "FLAGGED_REMOVE_ENABLED")
 
 
 @pytest.fixture(autouse=True)
@@ -661,3 +661,88 @@ def test_an_article_of_a_document_that_is_not_a_law_is_not_cited(monkeypatch, lo
     assert dg._citation_hygiene(draft, _Session({MAXIMS: ["primary"]}), docs, [], "x") == draft
     assert dg._citation_hygiene(draft, _Session({MAXIMS: ["ccnl"]}), docs, [], "Il CCNL applicato al rapporto") == draft
     assert dg._citation_hygiene(draft, _Session({MAXIMS: ["special"]}), docs, [], f"art. 563 {MAXIMS}") == draft
+
+
+# --- GRADER_EVIDENCE ------------------------------------------------------------------------------
+
+def test_evidence_lines_say_what_found_the_article():
+    rows = [dict(_row("1218", "c.c.", "x"), _signals=["current", "frame"], _vote=True, _central=True,
+                 _vote_stats={"rulings": 4, "similar": 30, "carded": 2, "cards": 9})]
+    lines = dg._evidence_lines(rows, {"allowed": {"c.c.", "c.p.c."}})
+    assert lines[0] == ("Trovato da: ricerca sull'analisi del caso; ricerca sui quesiti e sulle questioni; "
+                        "sentenze su fatti simili; istituto di una questione centrale (più fonti)")
+    assert lines[1] == "Sentenze simili: applicato da 4 delle 30 più simili; 2 delle 9 con scheda lo applicano"
+    assert lines[2] == "Materia: del caso"
+    alone = [dict(_row("2043", "c.c.", "x"), _signals=["baseline"])]
+    assert dg._evidence_lines(alone, {"allowed": {"c.p.", "c.p.p."}}) == [
+        "Trovato da: ricerca sul testo del caso", "Materia: un'altra rispetto alle aree del caso"]
+    assert dg._evidence_lines(alone, {"allowed": None}) == ["Trovato da: ricerca sul testo del caso"]
+
+
+def test_the_issues_are_numbered_and_a_q_reply_reads_as_the_issue():
+    analysis = {"frame": {"tasks": ["Chi è proprietario del fondo?"],
+                          "central_issue_candidates": [{"nome": "usucapione"}]},
+                "questioni": [{"titolo": "Questione centrale: usucapione"}, {"titolo": "Rivendicazione"}]}
+    issues = dg._graded_issues(analysis)
+    assert issues == ["Chi è proprietario del fondo?", "usucapione", "Rivendicazione"]
+    assert dg._graded_case("Fatti.", "", analysis, issues).endswith(
+        "Questioni del caso:\nQ1. Chi è proprietario del fondo?\nQ2. usucapione\nQ3. Rivendicazione")
+    read = dg._graded_reply('[{"a": "A1", "g": 3, "q": "Q2", "r": "x"}, {"a": "A2", "g": 0, "q": "", "r": "y"}]',
+                            {"A1": "1158 c.c.", "A2": "2043 c.c."}, issues)
+    assert read["1158 c.c."]["issue"] == "usucapione" and read["2043 c.c."]["issue"] == ""
+
+
+def test_the_grader_versions_build_on_the_live_prompt():
+    assert dg._graded_system() == dg._GRADED_SYSTEM
+    full = dg._graded_system(evidence=True, issues=True, examples=True)
+    assert "3 o più sentenze simili e della materia del caso vale almeno 2" in full and "ESEMPI" in full
+    assert '"q": "Q2"' in full and "quanto direttamente la disciplina" in full
+    assert "ESEMPI" not in dg._graded_system(evidence=True) and "voto di pertinenza" in dg._graded_system(evidence=True)
+
+
+def test_the_examples_teach_no_held_out_article():
+    cases = json.load(open(os.path.join(os.path.dirname(__file__), "eval_narrative_cases.json"), encoding="utf-8"))["cases"]
+    held = {(str(a), e["code"]) for c in cases if re.match(r"^(h\d+|n\d+)$", c["id"])
+            for e in c.get("expected") or [] for a in (e.get("any_of") or [e["article"]])}
+    codes = {"c.p.": "cp", "c.c.": "cc", "c.p.p.": "cpp", "c.p.c.": "cpc", "c.p.a.": "cpa", "l. 241/1990": "l241"}
+    cited = re.findall(r"[Aa]rt\. ([\w-]+) (c\.p\.p\.|c\.p\.a\.|c\.p\.c\.|c\.p\.|c\.c\.|l\. 241/1990)", dg._GRADED_EXAMPLES)
+    assert len(cited) >= 20 and not {(n, codes[c]) for n, c in cited} & held
+
+
+def test_with_evidence_the_check_grades_per_issue(monkeypatch, logged):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    monkeypatch.setenv("GRADER_EVIDENCE_ENABLED", "true")
+    model = Grades({"1158 c.c.": 3})
+    monkeypatch.setattr(dg, "_call_chat", model)
+    pool = _pool()
+    pool[1]["_signals"] = ["current", "baseline"]
+    pool[1]["_vote_stats"] = {"rulings": 5, "similar": 30, "carded": 0, "cards": 0}
+    kept = {r["_article"][0]: r for r in dg._filter_applicable_articles(CASE, "", pool, GRADED_ANALYSIS)}
+    human, system = model.humans[0], model.calls[0]["system"]
+    assert "ESEMPI" in system and "Q1. Chi è proprietario del fondo?" in human
+    assert ("[A2] 1158 c.c.\nRubrica: -\nTrovato da: ricerca sull'analisi del caso; ricerca sul testo del caso "
+            "(più fonti)\nSentenze simili: applicato da 5 delle 30 più simili\n") in human
+    assert kept["1158"]["_grade"] == 3
+
+
+def test_vote_stats_count_the_rulings_applying_each_article():
+    stats = vote_pool.vote_stats({"r1": [("1218", "c.c."), ("1218", "c.c.")], "r2": [("1218", "c.c.")], "r3": []},
+                                 {"r2"})
+    assert stats == {("1218", "c.c."): {"rulings": 2, "similar": 3, "carded": 1, "cards": 1}}
+
+
+def test_with_evidence_the_plan_forces_eighteen_offered_by_issue(monkeypatch):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    rows = [dict(_row(str(n), "c.c.", "x"), _grade=2, _fused_rank=n, _grade_issue="Q" if n % 2 else "R")
+            for n in range(1, 25)]
+    assert len(ptw._forced(rows)) == 14
+    monkeypatch.setenv("GRADER_EVIDENCE_ENABLED", "true")
+    forced = ptw._forced(rows)
+    assert len(forced) == 18
+    groups = ptw._issue_groups(forced, {r["_article"]: r["_grade_issue"] for r in rows})
+    assert list(groups) == ["Q", "R"] and len(groups["Q"]) == 9
+    reasons = {("584", "c.p."): "central issue", ("581", "c.p."): "cross-reference of 584 c.p."}
+    assert ptw._issue_groups(reasons, {("584", "c.p."): "omicidio"}) == {"omicidio": [("584", "c.p."), ("581", "c.p.")]}
+    human = ptw._plan_human("Fatti.", "", {}, "NORME", "", "", [], applicable=list(forced), must_place="graded",
+                            groups=groups)
+    assert "NORME PIÙ PERTINENTI AL CASO, per la questione che disciplinano:\n- Q: [art. 1 c.c.], [art. 3 c.c.]" in human

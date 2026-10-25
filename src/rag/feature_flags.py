@@ -184,6 +184,15 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 books, contract models; a CCNL unless the case is
                                 about one) is not cited. See _check_qualifications,
                                 _citation_hygiene.
+  GRADER_EVIDENCE_ENABLED      false (acts with CHECK_GRADED_ENABLED): the grader sees
+                                per article what found it (the searches, how many
+                                similar rulings apply it, a central issue, the area),
+                                with the rule "applied by 3+ similar rulings and of
+                                the case's area: at least 2", grades it per numbered
+                                issue of the case by how directly it governs it, with
+                                worked examples; PLAN_KEEP_CHECKED forces up to 18,
+                                offered to the plan by issue. scripts/grader_bench.py
+                                compares the prompt versions on a run's saved pools.
 """
 
 import logging

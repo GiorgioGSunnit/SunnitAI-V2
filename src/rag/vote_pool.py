@@ -195,6 +195,20 @@ def vote_scores(sims: Dict[str, float], refs_by_ruling: Dict[str, Iterable[tuple
     return scores
 
 
+def vote_stats(refs_by_ruling: Dict[str, Iterable[tuple]], carded: set) -> Dict[tuple, Dict[str, int]]:
+    """{article: {"rulings": the similar rulings applying it, "similar": the similar rulings, "carded": those
+    applying it with a card, "cards": the similar rulings with a card}} -- the grader's evidence
+    (GRADER_EVIDENCE_ENABLED)."""
+    out: Dict[tuple, Dict[str, int]] = {}
+    for ruling, refs in refs_by_ruling.items():
+        for ref in set(refs or ()):
+            item = out.setdefault(ref, {"rulings": 0, "similar": len(refs_by_ruling), "carded": 0,
+                                        "cards": len(carded)})
+            item["rulings"] += 1
+            item["carded"] += ruling in carded
+    return out
+
+
 def vote(sims, refs_by_ruling, idf, default_idf) -> List[tuple]:
     """The voted articles, best first (ties by the article itself, so a rerun orders them alike)."""
     scores = vote_scores(sims, refs_by_ruling, idf, default_idf)
@@ -348,9 +362,11 @@ def _citations(session, ruling_ids: List[str]) -> Dict[str, set]:
 
 
 def ruling_vote(session, driver, database: str, case_text: str, index: str,
-                analysis: Optional[Dict[str, Any]] = None) -> List[tuple]:
+                analysis: Optional[Dict[str, Any]] = None, stats: Optional[Dict[tuple, Dict[str, int]]] = None
+                ) -> List[tuple]:
     """The case's voted articles [(article, code)], best first, without other areas' codes and
-    Cassation boilerplate (filter_refs); [] when the counts are not ready or on any failure."""
+    Cassation boilerplate (filter_refs); [] when the counts are not ready or on any failure.
+    stats, when given, is filled with each voted article's vote_stats (GRADER_EVIDENCE_ENABLED)."""
     t0 = time.time()
     info: Dict[str, Any] = {"mode": ":".join(str(p) for p in mode())}
     try:
@@ -370,6 +386,8 @@ def ruling_vote(session, driver, database: str, case_text: str, index: str,
                                      areas, posture, case_text)
         scores = vote_scores(sims, votes, idf, default_idf)
         ranked = sorted((r for r in scores if scores[r] > 0), key=lambda r: (-scores[r], r))
+        if stats is not None:
+            stats.update(vote_stats(votes, set(r for r in sims if r in cards)))
         info.update(k=k, rulings=len(sims), carded=sum(r in cards for r in sims), cited=len(cites),
                     areas=areas, posture=posture,
                     dropped={reason: [f"{a} {c}" for a, c in refs[:20]] for reason, refs in dropped.items()},

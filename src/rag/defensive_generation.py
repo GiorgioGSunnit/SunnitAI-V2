@@ -3300,9 +3300,10 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     # the ranking before it. Never a signal of its own: a voted article is not multi-signal.
     from . import vote_pool
     voted, how = [], None
+    vote_stats: Dict[tuple, Dict[str, int]] = {}
     if vote_pool.enabled():
         voted, how = vote_pool.ruling_vote(session, driver, database, case, _CASE_POOL_VECTOR_INDEX,
-                                           analysis), vote_pool.mode()
+                                           analysis, vote_stats), vote_pool.mode()
     # Exempt from the cap regardless of rank: found by two or more signals,
     # or resolved by the article's own rubrica (heading_matched) -- a
     # single-signal text-search hit is the only thing the cap should ever
@@ -3324,10 +3325,16 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
 
     candidate_rows = _fetch_any(session, documents, selected)
     fused_rank = {ref: i for i, ref in enumerate(fused, 1)}
+    signal_names = ["current", "baseline", "distill"] + (["frame"] if frame_refs else [])
+    signal_sets = [set(refs) for refs in signals]
     for row in candidate_rows:
         ref = row.get("_article")
         if ref in fused_rank:
             row["_fused_rank"] = fused_rank[ref]      # read by PLAN_KEEP_CHECKED under CHECK_GRADED
+        # The grader's evidence (GRADER_EVIDENCE_ENABLED): which searches found it, how many similar rulings apply it.
+        row["_signals"] = [name for name, refs in zip(signal_names, signal_sets) if ref in refs]
+        if ref in vote_stats:
+            row["_vote_stats"] = dict(vote_stats[ref])
         if hits.get(ref, 0) >= 2:
             row["_multi_signal"] = True
         if ref in heading_matched:
@@ -3705,6 +3712,12 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     ungraded: List[str] = []
     if not texts:
         verdicts = {}
+    elif graded and feature_flags.enabled(GRADER_EVIDENCE_FLAG):
+        issues = _graded_issues(analysis)
+        verdicts, ungraded = _graded_verdicts(
+            _graded_case(facts, request, analysis, issues),
+            _graded_texts(texts, to_check, _evidence_context(facts, request, analysis)),
+            _graded_system(evidence=True, issues=bool(issues), examples=True), issues)
     elif graded:
         verdicts, ungraded = _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(texts, to_check))
     else:
@@ -3813,7 +3826,8 @@ _GRADED_SYSTEM = (
 )
 
 
-def _graded_batch(case: str, texts: Dict[str, str], retry: bool = False) -> tuple:
+def _graded_batch(case: str, texts: Dict[str, str], retry: bool = False, system: str = _GRADED_SYSTEM,
+                  issues: Optional[List[str]] = None) -> tuple:
     """({label: verdict} for the articles one graded call returned a grade for, problem). Each article
     is sent under a short id (A1, A2, ...) to echo back, and the reply is read object by object
     (_graded_reply), so a reply cut short still gives the grades it holds. problem is "" when every
@@ -3827,21 +3841,22 @@ def _graded_batch(case: str, texts: Dict[str, str], retry: bool = False) -> tupl
         + "\n\n".join(f"[{key}] {label}\n{texts[label]}" for key, label in ids.items())
     )
     try:
-        raw = _chat([SystemMessage(content=_GRADED_SYSTEM), HumanMessage(content=human)],
+        raw = _chat([SystemMessage(content=system), HumanMessage(content=human)],
                     max_tokens=_GRADED_TOKENS[0] + _GRADED_TOKENS[1] * len(ids), temperature=0)
     except Exception as exc:
         logger.warning("graded check failed for a batch of %d articles: %s", len(ids), exc)
         return {}, f"error: {str(exc)[:160]}"
-    read = _graded_reply(raw, ids)
+    read = _graded_reply(raw, ids, issues)
     if len(read) == len(ids):
         return read, ""
     cut = not re.sub(r"`+\s*$", "", (raw or "").strip()).rstrip().endswith("]")
     return read, f"{len(ids) - len(read)} of {len(ids)} without a grade" + (" (reply cut)" if cut else "")
 
 
-def _graded_reply(raw: str, ids: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+def _graded_reply(raw: str, ids: Dict[str, str], issues: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """{label: verdict} from a graded reply: each object whose id ("A3", or the label itself) is one
-    sent and whose grade is 0-3; the first one per article counts."""
+    sent and whose grade is 0-3; the first one per article counts. With the case's numbered issues
+    (GRADER_EVIDENCE_ENABLED), an issue given as "Q2" is read as the second one's title."""
     by_key = {_applicability_key(label): label for label in ids.values()}
     read: Dict[str, Dict[str, Any]] = {}
     for item in _json_objects(raw):
@@ -3850,7 +3865,11 @@ def _graded_reply(raw: str, ids: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
         label = ids.get(short.group(1).upper()) if short else by_key.get(_applicability_key(ref.strip("[] ")))
         grade = _grade({"grade": item.get("g", item.get("grade"))})
         if label and grade is not None and label not in read:
-            read[label] = {"article": label, "grade": grade, "issue": item.get("q") or item.get("issue"),
+            issue = item.get("q") or item.get("issue") or ""
+            number = re.match(r"\s*Q\s*(\d+)\b", str(issue or ""), re.IGNORECASE) if issues else None
+            if number and 1 <= int(number.group(1)) <= len(issues):
+                issue = issues[int(number.group(1)) - 1]
+            read[label] = {"article": label, "grade": grade, "issue": issue,
                            "reason": item.get("r") or item.get("reason")}
     return read
 
@@ -3878,7 +3897,8 @@ def _json_objects(raw: str) -> List[Dict[str, Any]]:
     return found
 
 
-def _graded_verdicts(case: str, texts: Dict[str, str]) -> tuple:
+def _graded_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYSTEM,
+                     issues: Optional[List[str]] = None) -> tuple:
     """({label key: verdict}, [labels left without a grade]) for the graded check: _APPLICABILITY_BATCH
     articles per call, up to _APPLICABILITY_WORKERS at once; then the articles still without a grade --
     skipped by the model, cut off, or in a failed call -- once more, _GRADED_RETRY_BATCH per call. Never
@@ -3888,9 +3908,9 @@ def _graded_verdicts(case: str, texts: Dict[str, str]) -> tuple:
     def run(labels: List[str], size: int, retry: bool) -> List[tuple]:
         groups = [{label: texts[label] for label in labels[i:i + size]} for i in range(0, len(labels), size)]
         if len(groups) == 1:
-            return [_graded_batch(case, groups[0], retry)]
+            return [_graded_batch(case, groups[0], retry, system, issues)]
         with ThreadPoolExecutor(max_workers=min(_APPLICABILITY_WORKERS, len(groups))) as pool:
-            return list(pool.map(lambda group: _graded_batch(case, group, retry), groups))
+            return list(pool.map(lambda group: _graded_batch(case, group, retry, system, issues), groups))
 
     t0 = time.time()
     labels = list(texts)
@@ -3921,7 +3941,8 @@ def _grade(verdict: Optional[Dict[str, Any]]) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
-def _graded_texts(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]]]) -> Dict[str, str]:
+def _graded_texts(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]]],
+                  evidence: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
     """Each article as the graded check reads it: its rubrica and the first _GRADED_TEXT_CHARS of its text;
     one the vote or two or more channels found is marked "Trovato da: più fonti" (run 1302: 15 central
     articles graded 1, h7 319-321 c.p., c1 1218 c.c., n5 252 TUEL -- for these, a doubt between 1 and 2
@@ -3930,14 +3951,157 @@ def _graded_texts(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, An
 
     def entry(label: str, text: str) -> str:
         rows = rows_of.get(label, [])
+        if evidence is not None:
+            return (f"Rubrica: {_rows_heading(rows) or '-'}\n" + "".join(f"{line}\n" for line in _evidence_lines(rows, evidence))
+                    + f"Testo: {text[:_GRADED_TEXT_CHARS]}")
         several = any(r.get("_vote") or r.get("_multi_signal") for r in rows)
         return (f"Rubrica: {_rows_heading(rows) or '-'}\n" + ("Trovato da: più fonti\n" if several else "")
                 + f"Testo: {text[:_GRADED_TEXT_CHARS]}")
     return {label: entry(label, text) for label, text in texts.items()}
 
 
-def _graded_case(facts: str, request: str, analysis: Optional[Dict[str, Any]]) -> str:
-    """The case for the graded check: its text, then its questions, central issues and issues."""
+# GRADER_EVIDENCE_ENABLED (diagnose_long run 1415: 20 of 122 expected articles lost at NOT_IN_PLAN, 15 of
+# them graded 1 although central): the grader sees, per article, what found it -- the searches, the similar
+# rulings applying it, the central issue it was resolved for, whether its code is the case's area's -- and
+# grades it per issue of the case (frame questions, central issues, analysis issues, numbered Q1, Q2 ...),
+# by how directly it governs that issue, with worked examples. PLAN_KEEP_CHECKED then keeps up to 18.
+GRADER_EVIDENCE_FLAG = "GRADER_EVIDENCE_ENABLED"
+_GRADED_MAX_ISSUES = 10
+_SIGNAL_WORDS = {"current": "ricerca sull'analisi del caso", "baseline": "ricerca sul testo del caso",
+                 "distill": "ricerca sui fatti essenziali", "frame": "ricerca sui quesiti e sulle questioni"}
+
+
+def _evidence_context(facts: str, request: str, analysis: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """What _evidence_lines needs of the case: the main codes of its area (None when unknown)."""
+    from . import vote_pool
+    return {"allowed": vote_pool.allowed_codes(vote_pool.filter_areas(analysis),
+                                               vote_pool.named_codes(_case_text(facts, request)))}
+
+
+def _evidence_lines(rows: List[Dict[str, Any]], evidence: Dict[str, Any]) -> List[str]:
+    """The grader's evidence on one article, from its rows' tags: "Trovato da" (the searches, the similar
+    rulings, the area's list, the central issue), "Sentenze simili" (how many apply it), "Materia"."""
+    from . import vote_pool
+    found = list(dict.fromkeys(_SIGNAL_WORDS[name] for r in rows for name in r.get("_signals") or []
+                               if name in _SIGNAL_WORDS))
+    if any(r.get("_vote") for r in rows):
+        found.append("sentenze su fatti simili")
+    if any(r.get("_central") for r in rows):
+        found.append("istituto di una questione centrale")
+    if rows and all(r.get("_source") == METHOD_CANDIDATES_SOURCE for r in rows):
+        found.append("elenco degli articoli della materia")
+    lines = [f"Trovato da: {'; '.join(found)}" + (" (più fonti)" if len(found) >= 2 else "")] if found else []
+    stats = next((r["_vote_stats"] for r in rows if r.get("_vote_stats")), None)
+    if stats and stats.get("rulings"):
+        cards = (f"; {stats['carded']} delle {stats['cards']} con scheda lo applicano" if stats.get("cards") else "")
+        lines.append(f"Sentenze simili: applicato da {stats['rulings']} delle {stats.get('similar') or '?'} più simili"
+                     + cards)
+    code = next((r["_article"][1] for r in rows if r.get("_article")), "")
+    allowed = evidence.get("allowed")
+    if allowed is not None and code in vote_pool.MAIN_CODES:
+        lines.append("Materia: del caso" if code in allowed else "Materia: un'altra rispetto alle aree del caso")
+    return lines
+
+
+def _graded_issues(analysis: Optional[Dict[str, Any]]) -> List[str]:
+    """The case's issues for the grader, numbered in this order: the frame's questions, its central
+    issues, the analysis' issues (deduplicated, at most _GRADED_MAX_ISSUES)."""
+    analysis = analysis or {}
+    frame = analysis.get("frame") or {}
+    items = [str(t).strip() for t in frame.get("tasks") or [] if str(t or "").strip()]
+    items += [str(c.get("nome")).strip() for c in frame.get("central_issue_candidates") or []
+              if isinstance(c, dict) and c.get("nome")]
+    items += [re.sub(r"^Questione centrale:\s*", "", str(q.get("titolo"))).strip()
+              for q in analysis.get("questioni") or [] if isinstance(q, dict) and q.get("titolo")]
+    seen, out = set(), []
+    for item in items:
+        if item.lower() not in seen:
+            seen.add(item.lower())
+            out.append(item)
+    return out[:_GRADED_MAX_ISSUES]
+
+
+# Invented cases; no article in them is expected in h1-h11 or n1-n9 (checked against
+# tests/eval_narrative_cases.json), so they set the scale without teaching a held-out answer.
+_GRADED_EXAMPLES = (
+    "ESEMPI (casi inventati, solo per il metro di giudizio):\n"
+    "1. Penale. Durante una lite Tizio rompe con un bastone il vetro dell'auto del vicino, poi lo ripaga. Q1 "
+    "qualificazione del fatto; Q2 attenuanti. Art. 635 c.p. -> 3 (Q1, il reato); art. 62 c.p. -> 2 (Q2, il danno "
+    "risarcito prima del giudizio); art. 133 c.p. -> 1 (la misura della pena non decide nessuna questione); "
+    "art. 2043 c.c. -> 0 (civile, il caso è solo penale).\n"
+    "2. Penale, fase. Il cliente ha ricevuto l'avviso di conclusione delle indagini. Q1 che cosa può fare ora. "
+    "Art. 415-bis c.p.p. -> 3 (Q1); art. 408 c.p.p. -> 2 (Q1, l'archiviazione da sollecitare); art. 585 c.p.p. "
+    "-> 0 (i termini per impugnare una sentenza che non c'è).\n"
+    "3. Penale, parte generale. Tizio, aggredito con un coltello, colpisce l'aggressore. Q1 se il fatto è "
+    "giustificato. Art. 52 c.p. -> 3 (Q1: una norma generale che qui decide la questione); art. 55 c.p. -> 2 (Q1, "
+    "l'eccesso colposo, se i fatti lo pongono); art. 62-bis c.p. -> 1 (le attenuanti generiche non decidono se il "
+    "fatto è giustificato).\n"
+    "4. Civile, contratti. Il compratore riceve merce difettosa e vuole sciogliere il contratto. Q1 risoluzione "
+    "per inadempimento; Q2 garanzia per vizi. Art. 1453 c.c. -> 3 (Q1); art. 1455 c.c. -> 2 (Q1, l'importanza "
+    "dell'inadempimento); art. 1495 c.c. -> 2 (Q2, i termini della denuncia); art. 1175 c.c. -> 1 (principio "
+    "generale che qui non decide nulla); art. 2051 c.c. -> 0 (nessuna cosa in custodia).\n"
+    "5. Civile, illecito. Un vaso cade da un balcone e danneggia un'auto in sosta. Q1 responsabilità del "
+    "proprietario del vaso; Q2 il danno. Art. 2051 c.c. -> 3 (Q1, la custodia); art. 2056 c.c. -> 2 (Q2, la "
+    "misura del risarcimento); art. 1490 c.c. -> 0 (garanzia nella vendita: nessuna vendita).\n"
+    "6. Amministrativo. Il Comune non risponde da mesi a un'istanza di accesso agli atti. Q1 come ottenere i "
+    "documenti. Art. 25 l. 241/1990 -> 3 (Q1, il rimedio contro il diniego o il silenzio sull'accesso); art. 116 "
+    "c.p.a. -> 3 (Q1, il rito dell'accesso); art. 22 l. 241/1990 -> 2 (Q1, chi ha diritto di accesso); art. 41 "
+    "c.p.a. -> 1 (la notifica di ogni ricorso: non decide nulla qui); art. 1453 c.c. -> 0 (nessun contratto con il "
+    "Comune).\n"
+    "7. Indizi. Un articolo dalla rubrica generica, applicato da 5 sentenze simili e della materia del caso, che "
+    "disciplina un elemento di Q1 -> 2, non 1; lo stesso articolo trovato da una sola ricerca, senza un fatto che "
+    "lo ponga -> 1.\n"
+)
+
+
+def _graded_system(evidence: bool = False, issues: bool = False, examples: bool = False) -> str:
+    """The graded check's instructions: _GRADED_SYSTEM, or with GRADER_EVIDENCE_ENABLED's parts -- the
+    evidence and its rule, the grade per numbered issue, the worked examples (scripts/grader_bench.py
+    compares them one by one)."""
+    if not (evidence or issues or examples):
+        return _GRADED_SYSTEM
+    head = ("Sei un giurista. Ricevi i fatti di un caso, " + ("le sue questioni numerate (Q1, Q2, ...), " if issues else
+                                                              "i suoi quesiti e le sue questioni, ")
+            + "e alcuni articoli di legge candidati, ciascuno con un identificativo tra parentesi quadre ([A1], "
+            "[A2], ...), la sua rubrica, " + ("gli indizi raccolti dal sistema " if evidence else "")
+            + "e l'inizio del testo.\n")
+    if issues:
+        scale = ("Per ogni articolo indica in \"q\" la questione che disciplina più direttamente e dai il voto "
+                 "secondo quanto direttamente la disciplina:\n"
+                 "- 3: la decide: è la norma da cui dipende la risposta a quella questione;\n"
+                 "- 2: ne disciplina un elemento, o serve direttamente all'argomento della parte assistita su di "
+                 "essa;\n"
+                 "- 1: la tocca solo di lato (una regola generale che lì non decide nulla, un aspetto che i fatti "
+                 "non pongono);\n"
+                 "- 0: non disciplina nessuna questione del caso, o è di un'altra materia o di un'altra fase (un "
+                 "articolo civile in un caso solo penale, il termine di un giudizio che non c'è); \"q\": \"\".\n")
+    else:
+        scale = _GRADED_SYSTEM[_GRADED_SYSTEM.index("Per ogni articolo"):_GRADED_SYSTEM.index("Giudica da")]
+    judge = "Giudica da ciò che l'articolo dispone, non dal numero e non da una parola in comune con i fatti. "
+    if evidence:
+        doubt = ("Gli indizi (Trovato da, Sentenze simili, Materia) vanno pesati insieme al testo: un articolo "
+                 "applicato da 3 o più sentenze simili e della materia del caso vale almeno 2, salvo che sia "
+                 "chiaramente di un'altra materia o di un'altra fase. Per un articolo trovato da più fonti, nel "
+                 "dubbio tra 1 e 2 scegli 2; per uno trovato da una sola ricerca, nel dubbio tra due voti scegli il "
+                 "più basso.\n")
+    else:
+        doubt = ("Nel dubbio tra due voti scegli il più basso; solo per un articolo segnato \"Trovato da: più "
+                 "fonti\", nel dubbio tra 1 e 2 scegli 2.\n")
+    output = ("Rispondi SOLO con un array JSON compatto, esattamente un oggetto per ogni identificativo ricevuto, "
+              "nell'ordine dato, nessuno escluso (anche quelli con voto 0): "
+              + ('[{"a": "A1", "g": 0, "q": "Q2", "r": "<perché, in al massimo 15 parole>"}]' if issues else
+                 '[{"a": "A1", "g": 0, "q": "<la questione che serve, in poche parole>", '
+                 '"r": "<perché, in al massimo 15 parole>"}]'))
+    return head + scale + judge + doubt + (_GRADED_EXAMPLES if examples else "") + output
+
+
+def _graded_case(facts: str, request: str, analysis: Optional[Dict[str, Any]],
+                 issues: Optional[List[str]] = None) -> str:
+    """The case for the graded check: its text, then its questions, central issues and issues -- or, given
+    the numbered issues (GRADER_EVIDENCE_ENABLED, _graded_issues), those."""
+    if issues:
+        return (_case_text(facts, request)[:2000] + "\n\nQuestioni del caso:\n"
+                + "\n".join(f"Q{i}. {issue}" for i, issue in enumerate(issues, 1)))
     analysis = analysis or {}
     frame = analysis.get("frame") or {}
     parts = [_case_text(facts, request)[:2000]]

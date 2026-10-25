@@ -71,6 +71,9 @@ KEEP_CHECKED_FLAG = "PLAN_KEEP_CHECKED_ENABLED"
 # h7 110 c.p., sempronio_no_hint 41 c.p. lost): with them the exempt articles linked to a forced one -- a
 # cross-reference in its text, an article resolved for a central issue (_forced) -- up to _GRADED_KEEP.
 _GRADED_KEEP = 14
+# GRADER_EVIDENCE_ENABLED (run 1415: 20 of 122 expected articles lost at NOT_IN_PLAN): the grades come per
+# issue of the case, so up to _GRADED_KEEP_BY_ISSUE are forced, offered to the plan grouped by that issue.
+_GRADED_KEEP_BY_ISSUE = 18
 _MAX_ISSUES_WIDE, _WIDE_APPLICABLE = 7, 8
 OTHER_NORMS_TITLE = "Altre norme rilevanti"
 _ISSUE_COUNT_WORDS = {5: "cinque", 7: "sette"}
@@ -329,7 +332,29 @@ def _forced(article_rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
         for child in crossrefs:
             if child[1] == ref[1] and child[0] in cited:
                 out.setdefault(child, f"cross-reference of {ref[0]} {ref[1]}")
-    return dict(list(out.items())[:_GRADED_KEEP])
+    return dict(list(out.items())[:_keep_cap()])
+
+
+def _by_issue() -> bool:
+    return dg.feature_flags.enabled(dg.GRADER_EVIDENCE_FLAG)
+
+
+def _keep_cap() -> int:
+    return _GRADED_KEEP_BY_ISSUE if _by_issue() else _GRADED_KEEP
+
+
+def _issue_groups(reasons: Dict[tuple, str], issue_of: Dict[tuple, str]) -> Dict[str, List[tuple]]:
+    """{issue: forced articles} in the order of the forced list: each by the issue the graded check named for
+    it, a cross-reference with the article citing it, the rest under "altre"."""
+    groups: Dict[str, List[tuple]] = {}
+    home: Dict[tuple, str] = {}
+    for ref, why in reasons.items():
+        parent = re.match(r"cross-reference of (\S+) (.+)$", why)
+        issue = home.get((parent.group(1), parent.group(2))) if parent else None
+        issue = issue or (issue_of or {}).get(ref) or "altre"
+        home[ref] = issue
+        groups.setdefault(issue, []).append(ref)
+    return groups
 
 
 def _cited_numbers(article_rows: List[Dict[str, Any]], ref: tuple) -> set:
@@ -450,7 +475,8 @@ def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tu
 
 def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str,
                 principles: str, checks: List[str], voted: Optional[List[tuple]] = None,
-                applicable: Optional[List[tuple]] = None, must_place: Any = False) -> str:
+                applicable: Optional[List[tuple]] = None, must_place: Any = False,
+                groups: Optional[Dict[str, List[tuple]]] = None) -> str:
     base = dg._parere_human(facts, analysis, articles, rulings, request, principles)
     base = base[:base.rfind("Redigi ora il parere.")].rstrip() if "Redigi ora il parere." in base else base
     verifiche = "\n".join(f"- {c}" for c in checks)
@@ -458,9 +484,17 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
     # issue by issue (prod, 24 Oct: 1158, 1218, 1453, 56, 378 ... found only this way).
     votate = ", ".join(f"[art. {n} {c}]" for n, c in voted or [])
     applicabili = ", ".join(f"[art. {n} {c}]" for n, c in applicable or [])
+    by_issue = ""
+    if groups and applicable and must_place == "graded":      # GRADER_EVIDENCE_ENABLED: by the grader's issue
+        by_issue = ("NORME PIÙ PERTINENTI AL CASO, per la questione che disciplinano:\n"
+                    + "\n".join(f"- {issue}: " + ", ".join(f"[art. {n} {c}]" for n, c in refs)
+                                for issue, refs in groups.items())
+                    + "\nMetti ciascuna tra le norme della questione del piano che corrisponde a quella indicata; una "
+                    "che non disciplina nessuna questione del piano resta fuori.\n\n")
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
-            + (f"NORME PIÙ PERTINENTI AL CASO: {applicabili}. Metti ciascuna tra le norme della questione che "
+            + (by_issue if by_issue else
+               f"NORME PIÙ PERTINENTI AL CASO: {applicabili}. Metti ciascuna tra le norme della questione che "
                "disciplina; una che non disciplina nessuna questione del piano resta fuori.\n\n"
                if applicabili and must_place == "graded" else
                f"NORME GIUDICATE APPLICABILI AI FATTI: {applicabili}. Ognuna deve comparire nel piano, tra le "
@@ -604,9 +638,11 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
                   else _applicable(article_rows, facts, request, analysis) if keep_all else [])
     max_issues = _MAX_ISSUES_WIDE if keep_checked or len(applicable) >= _WIDE_APPLICABLE else _MAX_ISSUES
     system = _plan_system(max_issues)
+    issue_of = {r["_article"]: r.get("_grade_issue") or "" for r in article_rows if r.get("_article")}
+    groups = _issue_groups(reasons, issue_of) if reasons is not None and _by_issue() else None
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
                         _checks(analysis, article_rows, facts, request), voted, applicable,
-                        must_place="graded" if keep_checked and _graded() else keep_checked)
+                        must_place="graded" if keep_checked and _graded() else keep_checked, groups=groups)
     messages = [SystemMessage(content=system), HumanMessage(content=human)]
     t0 = time.time()
     try:
@@ -632,7 +668,6 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     if plan:
         plan, checked = check_plan(plan, article_rows, headings, applicable if keep_all or keep_checked else None)
     if plan and keep_checked:
-        issue_of = {r["_article"]: r.get("_grade_issue") or "" for r in article_rows if r.get("_article")}
         plan, placed, grouped, added = _group_checked(plan, applicable, headings, max_issues, issue_of,
                                                       catch_all=not _graded(), reasons=reasons)
         if reasons is not None:
