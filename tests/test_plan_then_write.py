@@ -75,6 +75,7 @@ class FakeModel:
         self.check = {}                           # "1218 c.c." -> verdict fields for the plan check
         self.check_fails = False
         self.calls, self.lock = [], threading.Lock()
+        self.texts, self.rephrase = {}, "[]"        # section title -> its text; the rewrite's reply
 
     def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
         system, human = messages[0].content, messages[-1].content
@@ -93,7 +94,11 @@ class FakeModel:
             labels = re.findall(r"^\[art\. ([^\]]+)\]", human, re.MULTILINE)
             return json.dumps([{"articolo": f"art. {label}", "pertinente": True, "contraddice": False,
                                 "perche": "x", **self.check.get(label, {})} for label in labels])
+        if "Riscrivi ogni frase" in system:
+            return self.rephrase
         title = next(t for t in ptw.SECTION_TITLES if f"SEZIONE: {t}" in system)
+        if title in self.texts:
+            return self.texts[title]
         with self.lock:
             if self.failing.get(title):
                 self.failing[title] -= 1
@@ -385,3 +390,66 @@ def test_without_the_flag_nothing_is_added(model):
     assert ptw.OTHER_NORMS_TITLE not in applied and "Posizione della panchina (norme: -;" in applied
     assert "TUTTE le norme del PIANO" not in model.section_call("Norme e giurisprudenza")["system"]
     assert not [d for e, d in model.logged if e == "case_analysis_plan_applicable"]
+
+
+def test_keep_checked_places_every_judged_article(model, monkeypatch):
+    """PLAN_KEEP_CHECKED_ENABLED: every article judged applicabile or alternativa is in the plan, under the
+    issue its rubrica shares words with or in a last one; protected from the plan check; seven issues."""
+    monkeypatch.setenv("PLAN_KEEP_CHECKED_ENABLED", "true")
+    model.check = {"2051 c.c.": {"pertinente": False}}
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, _applicable_articles(), RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
+    assert ("NORME GIUDICATE APPLICABILI AI FATTI: [art. 2048 c.c.], [art. 1218 c.c.], [art. 2051 c.c.], "
+            "[art. 1917 c.c.], [art. 624 c.p.]. Ognuna deve comparire nel piano") in plan_call["human"]
+    assert "da due a sette" in plan_call["system"]
+    logged = [d for e, d in model.logged if e == "case_analysis_plan_applicable"][-1]
+    assert logged["mode"] == "checked" and logged["placed"] == ["1218 c.c.", "2051 c.c."]
+    assert logged["added_to_last_issue"] == ["2048 c.c.", "1917 c.c.", "624 c.p."]       # no rubrica to group by
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert "Posizione della panchina (norme: art. 2051 c.c.;" in applied                   # off-topic, but checked
+    assert f"{ptw.OTHER_NORMS_TITLE} (norme: art. 2048 c.c., art. 1917 c.c., art. 624 c.p." in applied
+    assert "TUTTE le norme del PIANO" in model.section_call("Norme e giurisprudenza")["system"]
+
+
+def test_graded_keep_checked_offers_the_best_and_forces_none(model, monkeypatch):
+    """CHECK_GRADED_ENABLED with PLAN_KEEP_CHECKED_ENABLED: grades 2-3 only, offered to the plan; an
+    article the plan does not place and whose rubrica fits no issue stays out (no catch-all issue)."""
+    monkeypatch.setenv("PLAN_KEEP_CHECKED_ENABLED", "true")
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    rows = [dict(ARTICLES[0], _applicability="applicabile", _grade=2, _fused_rank=3),
+            dict(ARTICLES[1], _applicability="applicabile", _grade=3, _fused_rank=1),
+            dict(ARTICLES[2], _applicability="applicabile", _grade=2, _fused_rank=2),
+            dict(ARTICLES[3], _applicability="marginale", _grade=1, _fused_rank=4)]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, rows, RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
+    assert ("NORME PIÙ PERTINENTI AL CASO: [art. 1218 c.c.], [art. 2051 c.c.], [art. 2048 c.c.]. Metti ciascuna "
+            "tra le norme della questione che disciplina; una che non disciplina nessuna questione del piano resta "
+            "fuori.") in plan_call["human"]
+    logged = [d for e, d in model.logged if e == "case_analysis_plan_applicable"][-1]
+    assert logged["placed"] == ["1218 c.c.", "2051 c.c."] and logged["added_to_last_issue"] == []
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert ptw.OTHER_NORMS_TITLE not in applied and "1917" not in applied
+
+
+def test_graded_sections_cite_forced_articles_in_their_issue_and_nothing_from_memory(model, monkeypatch):
+    """T3/T4 (PLAN_KEEP_CHECKED_ENABLED with CHECK_GRADED_ENABLED): each forced article goes to the sections
+    with its issue, the system prompt no longer shows a real article as its example, and a citation the
+    section's material lacks is rewritten away (logged)."""
+    monkeypatch.setenv("PLAN_KEEP_CHECKED_ENABLED", "true")
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    model.texts["Applicazione al caso"] = ("La scuola risponde ex art. 2051 c.c. La clausola penale è riducibile "
+                                           "(art. 1384 c.c.) dal giudice.")
+    model.rephrase = '[{"i": 1, "frase": "La clausola penale è riducibile dal giudice."}]'
+    rows = [dict(ARTICLES[1], _applicability="applicabile", _grade=3, _fused_rank=1, _grade_issue="inadempimento"),
+            dict(ARTICLES[2], _applicability="applicabile", _grade=2, _fused_rank=2, _grade_issue="custodia")]
+    draft = ptw.write_parere(FACTS, REQUEST, ANALYSIS, rows, RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    applied = model.section_call("Applicazione al caso")
+    assert "NORME E LORO QUESTIONE:\n- art. 1218 c.c. (inadempimento): solo in «" in applied["human"]
+    assert "- art. 2051 c.c. (custodia): solo in «Posizione della panchina»" in applied["human"]
+    assert "mai a sostegno di un'altra" in applied["system"] and "1384" not in applied["system"]
+    assert "La scuola risponde ex art. 2051 c.c. La clausola penale è riducibile dal giudice." in draft
+    logged = [d for e, d in model.logged if e == "case_analysis_citation_discipline"][-1]
+    assert logged["count"] == 1 and logged["rephrased"] == 1 and logged["removed"][0]["removed"] == ["1384 c.c."]

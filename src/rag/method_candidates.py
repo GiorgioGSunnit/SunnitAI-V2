@@ -98,6 +98,61 @@ def areas_for(frame_areas: Iterable[str], analysis_area: str) -> List[str]:
     return areas or _ANALYSIS_AREA_TO_AREAS.get((analysis_area or "").strip().lower(), [])
 
 
+# --- CHECKLIST_GATED_ENABLED ---------------------------------------------------------------------
+# diagnose_long, 33 long cases (25 Oct): 49% of the articles cited without being expected came from
+# these lists or the practical checklist (2943/2946/2947/1219/1454 c.c., 633/696-bis c.p.c., art. 5
+# d.lgs. 28/2010 in 16-20 of 32 answers, criminal ones included): a civil pre-litigation posture on a
+# criminal conviction gave the civil list to a criminal case. With the flag, a posture's list is
+# offered only when the posture belongs to the family of one of the case's areas, and then only the
+# areas of that family are offered with it.
+
+CHECKLIST_GATED_FLAG = "CHECKLIST_GATED_ENABLED"
+
+CRIMINAL_POSTURES = frozenset({"indagini_preliminari", "giudizio_penale_primo_grado", "condanna_primo_grado",
+                               "sentenza_penale_appello"})
+ADMINISTRATIVE_POSTURES = frozenset({"provvedimento_amministrativo", "silenzio_amministrazione",
+                                     "giudicato_amministrativo_non_eseguito"})
+CIVIL_POSTURES = frozenset({"precontenzioso", "giudizio_civile_primo_grado", "sentenza_civile_primo_grado",
+                            "sentenza_civile_appello", "esecuzione_civile"})
+
+
+def posture_family(posture_type: str) -> str:
+    """"penale", "amministrativo", "civile", or "" for "altro" and anything unknown."""
+    if posture_type in CRIMINAL_POSTURES:
+        return "penale"
+    if posture_type in ADMINISTRATIVE_POSTURES:
+        return "amministrativo"
+    return "civile" if posture_type in CIVIL_POSTURES else ""
+
+
+def area_family(area: str) -> str:
+    """The family of a frame area: criminal and administrative are their own, every other is civil."""
+    return area if area in ("penale", "amministrativo") else "civile"
+
+
+def posture_fits(areas: Iterable[str], posture_type: str) -> bool:
+    """True when the posture belongs to the family of at least one of the areas ("altro" never fits)."""
+    family = posture_family(posture_type)
+    return bool(family) and any(area_family(a) == family for a in areas if a and a != "altro")
+
+
+def case_lists(analysis: Dict) -> Tuple[List[str], str]:
+    """(areas, posture_type) whose lists the case is offered: the method articles, the practical
+    checklist, the procedural texts of the parere, the qualification check's trusted articles.
+    Flag off: the frame's areas and posture as they are. CHECKLIST_GATED_ENABLED: a posture that does
+    not fit the areas is dropped (posture ""), and with a fitting one only the areas of its family stay."""
+    frame = (analysis or {}).get("frame") or {}
+    areas = areas_for(frame.get("areas") or [], (analysis or {}).get("area") or "")
+    posture = frame.get("posture_type") or ""
+    from . import feature_flags
+    if not feature_flags.enabled(CHECKLIST_GATED_FLAG):
+        return areas, posture
+    if not posture_fits(frame.get("areas") or areas, posture):
+        return areas, ""
+    family = posture_family(posture)
+    return [a for a in areas if area_family(a) == family], posture
+
+
 def table_rows() -> List[Tuple[str, str, str, str]]:
     """(kind, key, label, articles) per list, for the lawyer's table."""
     def joined(refs: List[Ref]) -> str:

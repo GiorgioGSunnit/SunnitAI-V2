@@ -184,6 +184,90 @@ def test_material_puts_provenance_under_each_article():
     assert "LEFT OUT OF THE PROMPT BY ITS TRIMMING (1)" in text and "43 c.p.: requisito «dolo»" in text
 
 
+def test_compare_puts_tables_a_and_b_side_by_side():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    new_rec["check_result"]["dropped"] = []                       # 43 c.p. no longer rejected...
+    new_rec["answer"]["mentioned"] = ["584 c.p.", "43 c.p.", "582 c.p."]   # ...and now cited; 81 c.p. gone
+    new_rec["answer"]["mentioned_eval"] = [["584", "cp"], ["43", "cp"], ["582", "cp"]]
+    new_rec["flags"] = {"CHECK_PRIORITY_ENABLED": "true"}
+    new_rec["discipline"] = {"removed": [{"section": "s", "removed": ["1384 c.c.", "56 c.p."], "how": "rephrased"}]}
+    new_rec["qualification"] = {"flagged": ["757 c.c.", "56 c.p.", "1054 c.c."], "removed": ["757 c.c.", "56 c.p."],
+                                "kept": {"1054 c.c.": "grade 2"}, "note_dropped": ["1054 c.c."]}
+    new_rec["flagged_removed"] = {"count": 2}
+    new_rec["hygiene"] = {"removed": ["563 Massime"]}
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("20261025-0940", old_rec), ("20261026-1000", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs, ev)
+    assert "1 cases in every run" in text and "CHECK_PRIORITY_ENABLED None / true" in text
+    assert "| REJECTED_BY_CHECK | 1 (17%) | 0 (0%) | -1 |" in text
+    assert "| MENTIONED | 2 (33%) | 3 (50%) | +1 |" in text
+    assert "| not expected per answer | 1.0 | 0.0 |" in text and "| MENTIONED | 2 / 6 | 3 / 6 |" in text
+    assert "| rubrica-incompatible | 1 | 0 |" in text
+    assert "| citations taken out of sections | 0 | 2 |" in text and "| expected ones among them | 0 | 1 |" in text
+    report = dl.render([dl.analyse_case(new_rec, ev)], [])
+    assert "2 citations in 1 sentences: 1 rephrased, 0 dropped" in report and "x1 56 c.p." in report
+    assert "| removed after the draft (flagged + not a law) | 0 | 3 |" in text
+    assert "| expected ones removed after the draft | 0 | 1 |" in text
+    assert "Flagged by the qualification check and removed: 2" in report and "Not a law, removed: 1" in report
+    assert "mark dropped as a rubrica-wording mismatch: 1" in report
+    assert "| institution | 1 (100%) | 0 (-) | -1 |" in text
+    assert "| x1 | 2 | 3 | 6 | 1 | 0 |" in text
+    three = dl.compare([dirs[0], dirs[1], dirs[1]], ev)                 # the newest last, two earlier ones
+    assert "| stage | 20261025-0940 | 20261026-1000 | 20261026-1000 | change vs 20261025-0940 | change vs 20261026-1000 |" \
+        in three and "| MENTIONED | 2 (33%) | 3 (50%) | 3 (50%) | +1 | +0 |" in three
+
+
+def test_audit_grades_finds_cut_replies_and_echoed_ids():
+    import json as _json
+    import os as _os
+    import tempfile
+    rec = _record()
+    rec["check_result"] = {"verdicts": {"43 c.p.": "missing", "2043 c.c.": "grade 2", "81 c.p.": "missing"},
+                           "dropped": []}
+    run = tempfile.mkdtemp()
+    llm = _os.path.join(run, "cases", "x1", "llm")
+    _os.makedirs(llm)
+    with open(_os.path.join(run, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+        _json.dump(rec, fh)
+    head = "stage: applicability\nmax_tokens: {mt}\nstatus: ok\n\n===== SYSTEM =====\nun voto di pertinenza\n\n"
+    calls = [(150, "[2043 c.c.]\nRubrica: R\n\n[43 c.p.]\nRubrica: R",
+              '[{"a": "2043 c.c.", "g": 2, "q": "danno", "r": "fatto illecito"}, {"a": "43 c'),
+             (105, "[81 c.p.]\nRubrica: R", '[{"a": "art. 81 cp", "g": 1}]')]
+    for i, (mt, user, reply) in enumerate(calls, 1):
+        with open(_os.path.join(llm, f"0{i}_applicability.txt"), "w", encoding="utf-8") as fh:
+            fh.write(head.format(mt=mt) + f"===== USER =====\nFatti\n\n{user}\n\n===== REPLY =====\n{reply}\n")
+    text = dl.audit_grades(run, ev)
+    assert "| cut | 1 |" in text and "| list | 1 |" in text
+    assert "| graded | 1 |" in text and "| id mismatch | 1 |" in text and "| lost: reply cut | 1 |" in text
+    assert "| x1 | art. 43 cp | lost: reply cut |" in text
+    assert "| x1 | 81 c.p. | art. 81 cp |" in text
+
+
+def test_fact_signals_reached_and_false_triggers():
+    rec = _record()
+    rec["fact_signals"] = {"fired": [{"id": "morte_o_lesioni", "area": "penale", "institutions": ["omicidio preterintenzionale"]},
+                                     {"id": "caparra", "area": "contratti", "institutions": ["caparra confirmatoria"]}],
+                           "terms": [{"text": "querela: termine di 3 mesi DECORSO (minaccia 2026, oggi 2026-10-27)"}]}
+    case = dl.analyse_case(rec, ev)
+    f = case["fact_signals"]
+    assert f["reached"] == [{"rule": "morte_o_lesioni", "article": "art. 584 cp", "stage": "MENTIONED"}]
+    assert f["false_triggers"] == [{"rule": "caparra", "area": "contratti", "articles": [], "matched": [],
+                                    "other_area": True}]
+    report = dl.render([case], [])
+    assert "Expected articles reached through a fired rule's institution: 1 (1 of them MENTIONED)" in report
+    assert "x1 caparra [other area] → nothing resolved" in report
+
+
 if __name__ == "__main__":
     for _name, _test in list(globals().items()):
         if _name.startswith("test_"):

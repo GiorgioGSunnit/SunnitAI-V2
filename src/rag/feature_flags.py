@@ -119,6 +119,97 @@ else falls back to the default, so a typo never switches a feature on.
                                 heading, against the use the draft makes of
                                 it; a mismatch is flagged [DA VERIFICARE: l'art.
                                 N riguarda «...»]. See _check_qualifications.
+
+The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases):
+  CHECKLIST_GATED_ENABLED      false: the method lists and the practical checklist
+                                only for the case's verified area x posture (a
+                                posture of another family than the areas' is
+                                dropped); the lists' candidates pass the
+                                applicability check or go; a checklist item only
+                                if every article it names went through the check;
+                                mediation steps only before a civil suit. See
+                                method_candidates.case_lists, practical_checklist.
+                                gated_checks.
+  FRAME_SANITY_ENABLED         false: a criminal proceeding, conviction or an offence
+                                the text asks about puts "penale" among the frame's
+                                areas and turns a civil or "altro" posture into a
+                                criminal one; the areas are then uncertain and the
+                                vote's area filter drops no code. See _sane_frame.
+  RESOLUTION_STRICT_ENABLED    false: an institution is not resolved through a
+                                generic rubrica alone ("Risarcimento dei danni",
+                                "Prescrizione") unless the model's own number names
+                                that article; a full-text resolution counts only
+                                when the rubrica shares a word with the institution.
+                                See _resolve_institution.
+  CHECK_PRIORITY_ENABLED       false: the applicability check's 36 slots go to the
+                                voted articles, then multi-signal ones, then the
+                                rest, the method lists last; an article left
+                                unchecked is removed. See _filter_applicable_articles.
+  PLAN_KEEP_CHECKED_ENABLED    false (acts with PLAN_THEN_WRITE_ENABLED): every
+                                article the check judged applicabile or
+                                alternativa is in the plan, grouped by issue, up
+                                to 7 issues; never removed by the plan check. Over
+                                PLAN_KEEP_APPLICABLE_ENABLED when both are on. With
+                                CHECK_GRADED_ENABLED: only grades 2-3 and the
+                                articles resolved for a central issue, each followed
+                                by the cross-references its text cites, at most 14,
+                                none forced into a catch-all issue (_forced); the
+                                sections get each forced article with its issue, to
+                                cite it only there, and lose any citation their own
+                                material lacks and the case does not name (the
+                                sentence rewritten without it, or dropped:
+                                _cite_only_material). See plan_then_write.
+  CHECK_GRADED_ENABLED         false (acts with APPLICABILITY_CHECK_ENABLED): the
+                                check grades each article 0-3 (0 unrelated or
+                                another area, 1 tangential, 2 an issue of the case,
+                                3 its central question) with the issue it serves,
+                                from its rubrica and first 400 characters, for up
+                                to 72 articles (one found by the vote or by two or
+                                more channels: a doubt between 1 and 2 goes to 2);
+                                grade 0 leaves the pool before the prompt. Articles without a grade (skipped, a cut
+                                reply, a failed call) go once more in smaller
+                                batches; still none, they stay as "non valutato":
+                                not removed, not counted as passing, not kept by
+                                the plan. See _GRADED_SYSTEM, _graded_verdicts.
+  FLAGGED_REMOVE_ENABLED       false: after the draft, a citation QUALIFICATION_CHECK_
+                                ENABLED finds incompatible with the article's rubrica
+                                is removed (the sentence rewritten without it, or
+                                dropped; a heading "**Art. N ...**" with its paragraph),
+                                unless the pipeline has its own evidence for the
+                                article (named in the case, forced into the plan,
+                                graded 2-3, voted, two or more channels, central):
+                                then it stays, its mark dropped when the check calls
+                                the mismatch only the rubrica's wording. And an
+                                article of a document that is not a law (maxims,
+                                books, contract models; a CCNL unless the case is
+                                about one) is not cited. See _check_qualifications,
+                                _citation_hygiene.
+  GRADER_EVIDENCE_ENABLED      false (acts with CHECK_GRADED_ENABLED): the grader sees
+                                per article what found it (the searches, how many
+                                similar rulings apply it, a central issue, the area),
+                                with the rule "applied by 3+ similar rulings and of
+                                the case's area: at least 2", grades it per numbered
+                                issue of the case by how directly it governs it (the
+                                worked examples only with GRADER_EXAMPLES_ENABLED, off);
+                                PLAN_KEEP_CHECKED forces up to 18,
+                                offered to the plan by issue. scripts/grader_bench.py
+                                compares the prompt versions on a run's saved pools.
+  FACT_SIGNALS_ENABLED         false: one call reads the case's facts in a fixed
+                                schema (parties and roles, property history,
+                                possession, visible works, dated events, injuries,
+                                money, contracts, proceedings, questions); the code
+                                computes the legal terms from the dates (possessory
+                                year, usucapione, prescrizione, querela, appeals,
+                                TAR, guarantees) and fires the general rules of
+                                src/rag/fact_signal_rules.yaml within the frame's
+                                areas, whose institutions join the frame's central
+                                issues and resolve only within each rule's article
+                                ranges, to an article whose rubrica shares a word
+                                with them; the terms go to the plan and the
+                                procedural section as facts, run to the case's own
+                                present date (never the real today). See
+                                src/rag/fact_signals.py, scripts/export_fact_rules.py,
+                                scripts/fact_signals_bench.py.
 """
 
 import logging

@@ -101,6 +101,22 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
         elif event == "case_pool_vote_idf":
             out.append(f"vote IDF counts: {'ready' if data.get('ready') else 'FAILED'}"
                        + (f", {duration / 1000:.0f}s" if duration is not None else ""))
+        elif event == "case_analysis_qualification":
+            line = (f"qualification check: {len(data.get('checked') or [])} checked, flagged "
+                    f"{', '.join(data.get('flagged') or []) or '-'}")
+            if "removed" in data:      # FLAGGED_REMOVE_ENABLED
+                kept = data.get("kept") or {}
+                line += (f"; removed {', '.join(data['removed']) or '-'}; kept "
+                         + (", ".join(f"{label} ({why})" for label, why in kept.items()) or "-")
+                         + f"; mark dropped (wording) {', '.join(data.get('note_dropped') or []) or '-'}")
+            out.append(line)
+        elif event == "case_analysis_citation_hygiene":
+            out.append(f"not a law, removed: {', '.join(data.get('removed') or []) or '-'} "
+                       f"({'; '.join(f'{c}: {t}' for c, t in (data.get('types') or {}).items())})")
+        elif event == "case_analysis_citation_discipline":
+            out.append(f"citations taken out of the sections: {data.get('count', 0)} "
+                       f"({data.get('rephrased', 0)} rephrased, {data.get('dropped', 0)} dropped): "
+                       + (", ".join(r for e in data.get("removed") or [] for r in e.get("removed") or []) or "-"))
         elif event == "case_analysis_prompt_tokens":
             out.append(f"draft prompt: {data.get('total')} est. tokens, budget {data.get('budget')}, "
                        f"step {data.get('step')}, dropped to fit {data.get('dropped_for_size', '-')}, "
@@ -198,6 +214,7 @@ def main() -> None:
     source.add_argument("--document-id", help="a user_documents id")
     source.add_argument("--file", help="a local .pdf/.docx/.txt, read as an upload is")
     source.add_argument("--case", help="an eval case id (tests/eval_narrative_cases.json), sent as a chat message")
+    source.add_argument("--text", help="a message with no document, sent as the chat sends it (the request itself)")
     parser.add_argument("--request", default=DEFAULT_REQUEST, help="the user's message (default: a generic one)")
     parser.add_argument("--lang", default="it")
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
@@ -232,6 +249,8 @@ def main() -> None:
         if args.case not in cases:
             sys.exit(f"no case {args.case!r} in tests/eval_narrative_cases.json")
         text = request = cases[args.case]["question"]   # the chat with no document: the message is both
+    elif args.text:
+        text = request = args.text                     # as --case: the message is both
     elif args.file:
         from src.utils.document import extract_text_from_file
         text = extract_text_from_file(args.file)

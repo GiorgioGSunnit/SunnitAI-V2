@@ -46,6 +46,8 @@ Run from the app folder, with its venv and live .env:
     ... --only h3,n2              # some cases only
     ... --out /root/diag          # default: ./diagnose_long_runs/<date-time>
     ... --report-only DIR         # rebuild DIR/report.md from DIR/cases/*.json, no run
+    ... --compare 20261025-0940 20261026-1010   # after the run: tables A and B, those runs and this one
+    ... --compare OLD NEW --compare-only        # runs already made, no new run
 
 --dump-llm (on by default; --no-dump-llm to skip) saves every chat call of a case -- frame, analysis,
 distill, v1's choice, issue spotting, applicability batches, principles, plan, plan stance, plan check,
@@ -85,7 +87,10 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "APPLICABILITY_CHECK_ENABLED", "METHOD_CANDIDATES_ENABLED", "VOTE_POOL_ENABLED", "VOTE_POOL_MODE",
          "VOTE_POOL_K", "RULING_CARDS_ENABLED", "PLAN_THEN_WRITE_ENABLED", "PLAN_KEEP_APPLICABLE_ENABLED",
          "QUALIFICATION_CHECK_ENABLED", "DRAFT_CITATIONS_ONLY_ENABLED", "CLIENT_STANCE_CHECK_ENABLED",
-         "STRATEGY_DRAFT_RULES_ENABLED"]
+         "STRATEGY_DRAFT_RULES_ENABLED", "METHOD_CANDIDATES_ENABLED", "CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED",
+         "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED",
+         "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED", "FACT_SIGNALS_ENABLED",
+         "GRADER_EXAMPLES_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -182,6 +187,13 @@ def _rubrica(row) -> tuple:
         return heading, "titolo_articolo"
     heading = (s.get("title") or "").strip()
     return heading, "title" if heading else ""
+
+
+def _checked_slots(dg) -> int:
+    """How many articles the applicability check sends to the model in this process's settings."""
+    if dg.feature_flags.enabled(getattr(dg, "CHECK_GRADED_FLAG", "CHECK_GRADED_ENABLED")):
+        return getattr(dg, "_GRADED_MAX_CHECKED", dg._APPLICABILITY_MAX_CHECKED)
+    return dg._APPLICABILITY_MAX_CHECKED
 
 
 def _instrument(dg) -> dict:
@@ -358,7 +370,7 @@ def _instrument(dg) -> dict:
                 output.setdefault(_lab(row["_article"]), row.get("_applicability") or "kept")
         cap["check"] = {"input": list(dict.fromkeys(_lab(r["_article"]) for r in rows if r.get("_article"))),
                         "exempt": exempt, "no_text": [_lab(a) for a in to_check if _lab(a) not in texts],
-                        "unchecked": list(texts)[dg._APPLICABILITY_MAX_CHECKED:], "output": output}
+                        "unchecked": list(texts)[_checked_slots(dg):], "output": output}
 
     def on_prompt(result, args, kwargs, ctx):
         cap["prompt_labels"] = re.findall(r"^\[art\. (.+?)\]$", result[0] or "", re.MULTILINE)
@@ -388,6 +400,7 @@ _LLM_STAGES = {
     "_analyse_case_structured": "case_analysis_structured", "_structured_facts": "structured_facts",
     "_structured_grid": "structured_grid", "_fusion_distill_bullets": "distill", "_choose_articles": "v1_choice",
     "spot_issues": "issue_spotting", "spotted_rows": "issue_spotting", "_applicability_batch": "applicability",
+    "_graded_batch": "applicability", "_cite_only_material": "citation_rewrite", "extract_facts": "fact_signals",
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "run_case_analysis_pipeline": "draft",
@@ -407,6 +420,8 @@ def _llm_stage(frame) -> str:
         if name == "write" and module.endswith("plan_then_write"):
             job = frame.f_locals.get("job") or ("",)
             return "section_" + re.sub(r"[^a-z0-9]+", "_", str(job[0]).lower()).strip("_")[:40]
+        if name == "_graded_batch" and frame.f_locals.get("retry"):
+            return "applicability_retry"
         if name in _LLM_STAGES:
             stage = _LLM_STAGES[name]
             if name == "_opposing_arguments":
@@ -532,7 +547,8 @@ def _write_material(path: str, record: dict, blocks, ev) -> None:
     rejected = [t for t in case["pool_traces"] if t["check"] == "rejected"]
     out += ["", f"========== DROPPED BY THE APPLICABILITY CHECK ({len(rejected)}) =========="]
     out += [f"{t['label']}: requisito «{(t['dropped'] or {}).get('requisito', '')}», fatto "
-            f"«{(t['dropped'] or {}).get('fatto', '')}»\n{_provenance_line(t, ekey(t['label']) in expected)}"
+            f"«{(t['dropped'] or {}).get('fatto', '')}», reason «{(t['dropped'] or {}).get('reason', '')}»\n"
+            f"{_provenance_line(t, ekey(t['label']) in expected)}"
             for t in rejected] or ["(none)"]
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out) + "\n")
@@ -551,13 +567,17 @@ def _wait_for_vote_counts(vote_pool, driver, database, log) -> None:
     log(f"vote IDF counts ready ({time.time() - t0:.0f}s)")
 
 
-def _rubrica_fits(dg, draft: str, refs: list, rows_by_ref: dict) -> dict:
+def _rubrica_fits(dg, draft: str, refs: list, rows_by_ref: dict, documents: list = None) -> dict:
     """{label: rubrica, citing line, compatibile, perche}: the qualification check's comparison
-    (_QUALIFICATION_SYSTEM: the stored rubrica against the draft's line citing it), for refs."""
+    (_QUALIFICATION_SYSTEM: the stored rubrica against the draft's sentence citing it), for refs. The
+    sentence is the one citing that article by number and code (run 1415: a line citing 2053 c.c. was
+    scored as 1982's, "658 Codice Civile" as 658 c.p.c.); an article with no such sentence is not scored."""
     items = {}
     for ref in refs:
         heading, field = _rubrica(rows_by_ref.get(ref))
-        items[_lab(ref)] = {"rubrica": heading, "field": field, "context": dg._citation_context(draft, ref),
+        context = dg._citation_context(draft, ref, documents or []) if documents is not None else \
+            dg._citation_context(draft, ref)
+        items[_lab(ref)] = {"rubrica": heading, "field": field, "context": context,
                             "compatibile": None, "perche": ""}
     ask = [(label, v) for label, v in items.items() if v["rubrica"] and v["context"]]
     for i in range(0, len(ask), 25):
@@ -712,6 +732,10 @@ def run_child(spec_path: str, env_path: str) -> None:
               "prompt": {"labels": cap["prompt_labels"], "tokens": last("case_analysis_prompt_tokens")},
               "plan": last("case_analysis_plan"), "plan_applicable": last("case_analysis_plan_applicable"),
               "qualification": last("case_analysis_qualification"),
+              "discipline": last("case_analysis_citation_discipline"),
+              "flagged_removed": last("case_analysis_flagged_removed"),
+              "hygiene": last("case_analysis_citation_hygiene"),
+              "fact_signals": last("case_analysis_fact_signals"),
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -747,7 +771,7 @@ def run_child(spec_path: str, env_path: str) -> None:
             for row in dg._fetch_any(session, documents, fetch):
                 if row.get("_article"):
                     rows_by_ref.setdefault(row["_article"], row)
-            record["fits"] = _rubrica_fits(dg, draft, to_fit, rows_by_ref) if draft else {}
+            record["fits"] = _rubrica_fits(dg, draft, to_fit, rows_by_ref, documents) if draft else {}
             record["in_pool_refs"] = len(pool_refs)
             if spec.get("expected"):
                 record["expected_info"] = _expected_info(dg, ev, session, documents, spec["expected"], analysis,
@@ -877,6 +901,7 @@ def analyse_case(rec: dict, ev) -> dict:
     check_result = rec.get("check_result") or {}
     verdicts = {K(label): v for label, v in (check_result.get("verdicts") or {}).items()}
     dropped = {K(d.get("article", "")): d for d in check_result.get("dropped") or []}
+    voided = {K(d.get("article", "")) for d in check_result.get("voided_rejections") or []}
     prompt_labels = (rec.get("prompt") or {}).get("labels")
     in_prompt = keys(prompt_labels) if prompt_labels is not None else None
     plan = rec.get("plan")
@@ -910,10 +935,13 @@ def analyse_case(rec: dict, ev) -> dict:
             return "rejected"
         if not check_result:
             return "check failed (kept)"
-        if k in keys(check.get("unchecked")):
-            return "unchecked (past 36)"
+        # The pipeline's own list when it logs one (CHECK_PRIORITY_ENABLED reorders the check).
+        if k in keys(check_result.get("unchecked_labels", check.get("unchecked"))):
+            return f"unchecked (past {check_result.get('max_checked', 36)})"
         if k in keys(check.get("no_text")):
             return "no text (kept)"
+        if k in voided:
+            return "applicabile (rejection without a quote)"
         verdict = str(verdicts.get(k) or "missing").lower()
         return "incompatibile, kept (limit rule)" if verdict == "incompatibile" else verdict
 
@@ -993,7 +1021,7 @@ def analyse_case(rec: dict, ev) -> dict:
             if best is None or STAGES.index(name) > STAGES.index(best[0]):
                 best = (name, t, alt_infos.get(k) or {})
         name, t, alt = best
-        out["slots"].append({**t, "label": _item_label(item),
+        out["slots"].append({**t, "label": _item_label(item), "pool_label": t["label"],
                              "stage": name, "from_memory": name == "MENTIONED" and not t["in_prompt"],
                              "understanding": alt, "in_expected_rubrica": alt.get("rubrica", "")})
     fits = rec.get("fits") or {}
@@ -1005,7 +1033,58 @@ def analyse_case(rec: dict, ev) -> dict:
         origin = t["channels"] or (["not_retrieved"] if not t["in_pool"] else ["other"])
         out["unexpected"].append({**t, "origin": origin, "fit": fit,
                                   "rubrica": t["rubrica"] or fit.get("rubrica", "")})
+    # PLAN_KEEP_CHECKED + CHECK_GRADED: the citations taken out of the sections (not in their material)
+    entries = (rec.get("discipline") or {}).get("removed") or []
+    taken = [label for e in entries for label in e.get("removed") or []]
+    out["discipline"] = {"taken": taken, "rephrased": sum(1 for e in entries if e.get("how") == "rephrased"),
+                         "dropped": sum(1 for e in entries if e.get("how") == "sentence dropped"),
+                         "expected_taken": [label for label in taken if K(label) in expected_keys]}
+    # FLAGGED_REMOVE_ENABLED: citations removed after the draft (flagged by the qualification check; not a law)
+    qual = rec.get("qualification") or {}
+    after = {"flagged": list((rec.get("flagged_removed") and qual.get("removed")) or []),
+             "not_a_law": list((rec.get("hygiene") or {}).get("removed") or []),
+             "kept": dict(qual.get("kept") or {}), "note_dropped": list(qual.get("note_dropped") or [])}
+    after["expected_removed"] = [label for label in after["flagged"] + after["not_a_law"] if K(label) in expected_keys]
+    out["after_draft"] = after
+    out["fact_signals"] = _fact_signal_trace(rec, out, K, expected_keys)
     return out
+
+
+def _fact_signal_trace(rec: dict, out: dict, K, expected_keys: set) -> dict:
+    """FACT_SIGNALS_ENABLED: the rules fired, the expected articles reached through a fired rule's
+    institution (and the stage they got to), and the fired rules none of whose articles is expected
+    (possible false triggers; an unrelated area is said)."""
+    signals = rec.get("fact_signals") or {}
+    fired = signals.get("fired") or []
+    by_name = {}
+    for inst in rec.get("institutions") or []:
+        if inst.get("phase") == "v2":
+            by_name.setdefault(str(inst.get("nome") or "").strip().lower(), []).extend(
+                a["label"] for a in inst.get("articles") or [])
+    stage_of = {}
+    for slot in out["slots"]:
+        stage_of.setdefault(K(slot["pool_label"]), (slot["label"], slot["stage"]))
+    areas = {str(a) for a in ((rec.get("frame") or {}).get("areas") or [])}
+    reached, false_triggers = [], []
+    for rule in fired:
+        labels = [label for name in rule.get("institutions") or [] for label in by_name.get(name.lower(), [])]
+        hits = [label for label in labels if K(label) in expected_keys]
+        for label in hits:
+            slot_label, stage = stage_of.get(K(label), (label, "?"))
+            reached.append({"rule": rule["id"], "article": slot_label, "stage": stage})
+        if not hits and out["keyed"]:
+            false_triggers.append({"rule": rule["id"], "area": rule.get("area"), "articles": labels[:6],
+                                   "matched": list(rule.get("matched") or [])[:3],
+                                   "other_area": bool(areas) and _rule_family(rule.get("area")) not in
+                                   {_rule_family(a) for a in areas}})
+    return {"fired": [r["id"] for r in fired], "terms": [t.get("text") for t in signals.get("terms") or []],
+            "reached": reached, "false_triggers": false_triggers, "problem": signals.get("problem") or ""}
+
+
+def _rule_family(area) -> str:
+    """A rule's or a frame's area as criminal, administrative or civil."""
+    area = str(area or "")
+    return area if area in ("penale", "amministrativo") else "civile"
 
 
 # =================================================================================================
@@ -1060,7 +1139,25 @@ def aggregate(cases: list) -> dict:
         g["slots"].update(s["stage"] for s in c["slots"])
         g["wrong"] += len(c["unexpected"])
         g["wrong_origin"].update(ch for u in c["unexpected"] for ch in u["origin"])
+    discipline = {"taken": Counter(label for c in keyed for label in (c.get("discipline") or {}).get("taken") or []),
+                  "rephrased": sum((c.get("discipline") or {}).get("rephrased", 0) for c in keyed),
+                  "dropped": sum((c.get("discipline") or {}).get("dropped", 0) for c in keyed),
+                  "expected_taken": [(c["id"], label) for c in keyed
+                                     for label in (c.get("discipline") or {}).get("expected_taken") or []]}
+    after = {"flagged": Counter(l for c in keyed for l in (c.get("after_draft") or {}).get("flagged") or []),
+             "not_a_law": Counter(l for c in keyed for l in (c.get("after_draft") or {}).get("not_a_law") or []),
+             "kept": Counter(why for c in keyed for why in ((c.get("after_draft") or {}).get("kept") or {}).values()),
+             "note_dropped": sum(len((c.get("after_draft") or {}).get("note_dropped") or []) for c in keyed),
+             "expected_removed": [(c["id"], l) for c in keyed for l in (c.get("after_draft") or {}).get("expected_removed") or []]}
+    facts = {"fired": Counter(r for c in keyed for r in (c.get("fact_signals") or {}).get("fired") or []),
+             "cases": sum(1 for c in keyed if (c.get("fact_signals") or {}).get("fired")),
+             "reached": [(c["id"], r) for c in keyed for r in (c.get("fact_signals") or {}).get("reached") or []],
+             "false": [(c["id"], r) for c in keyed for r in (c.get("fact_signals") or {}).get("false_triggers") or []],
+             "terms": sum(len((c.get("fact_signals") or {}).get("terms") or []) for c in keyed),
+             "problems": [(c["id"], (c.get("fact_signals") or {}).get("problem")) for c in keyed
+                          if (c.get("fact_signals") or {}).get("problem")]}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
+            "discipline": discipline, "after_draft": after, "fact_signals": facts,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
             "resolved_articles": resolved_articles, "unrelated": unrelated, "generic": generic,
@@ -1163,7 +1260,9 @@ def render(cases: list, header: list) -> str:
     if rejected:
         L.append("")
         L.append("Expected rejected by the applicability check:")
-        L += [f"- {c['id']} {s['label']}: requisito «{(s['dropped'] or {}).get('requisito', '')}», fatto "
+        L += [f"- {c['id']} {s['label']}: graded 0, «{(s['dropped'] or {}).get('reason', '')}»"
+              if (s["dropped"] or {}).get("grade") == 0 else
+              f"- {c['id']} {s['label']}: requisito «{(s['dropped'] or {}).get('requisito', '')}», fatto "
               f"«{(s['dropped'] or {}).get('fatto', '')}»" for c, s in rejected]
     exp_checks = Counter(s["check"] for s in slots if s["in_pool"])
     L.append("")
@@ -1178,6 +1277,45 @@ def render(cases: list, header: list) -> str:
         L.append("- Expected past the check but not written: " + "; ".join(
             f"{c['id']} {s['label']} ({s['stage']}{', plan: ' + '/'.join(s['plan_notes']) if s['plan_notes'] else ''})"
             for c, s in not_planned) + ".")
+
+    # --- T3
+    d = agg["discipline"]
+    if d["taken"]:
+        L += ["", "## Citations taken out of the sections (not in their material, not named in the case)", "",
+              f"{sum(d['taken'].values())} citations in {d['rephrased'] + d['dropped']} sentences: "
+              f"{d['rephrased']} rephrased, {d['dropped']} dropped. Most often: "
+              + ", ".join(f"{label} x{n}" for label, n in d["taken"].most_common(15)) + ".",
+              "Expected articles among them: " + (", ".join(f"{cid} {label}" for cid, label in d["expected_taken"])
+                                                  or "none") + "."]
+
+    a = agg["after_draft"]
+    if a["flagged"] or a["not_a_law"] or a["kept"]:
+        L += ["", "## Citations removed after the draft (FLAGGED_REMOVE_ENABLED)", "",
+              f"Flagged by the qualification check and removed: {sum(a['flagged'].values())} ("
+              + (", ".join(f"{l} x{n}" for l, n in a["flagged"].most_common(15)) or "none") + "). "
+              f"Not a law, removed: {sum(a['not_a_law'].values())} ("
+              + (", ".join(f"{l} x{n}" for l, n in a["not_a_law"].most_common(10)) or "none") + ").",
+              f"Flagged but kept (the pipeline's own evidence): {sum(a['kept'].values())} ("
+              + (_counter_line(a["kept"], sum(a["kept"].values())) if a["kept"] else "none")
+              + f"); of these, mark dropped as a rubrica-wording mismatch: {a['note_dropped']}.",
+              "Expected articles removed: " + (", ".join(f"{cid} {l}" for cid, l in a["expected_removed"]) or "none") + "."]
+
+    f = agg["fact_signals"]
+    if f["fired"] or f["problems"]:
+        reached_mentioned = sum(1 for _, r in f["reached"] if r["stage"] == "MENTIONED")
+        L += ["", "## Fact signals (FACT_SIGNALS_ENABLED)", "",
+              f"Rules fired in {f['cases']} cases, {sum(f['fired'].values())} times: "
+              + ", ".join(f"{rule} x{n}" for rule, n in f["fired"].most_common()) + f". Terms computed: {f['terms']}.",
+              f"Expected articles reached through a fired rule's institution: {len(f['reached'])} "
+              f"({reached_mentioned} of them MENTIONED): "
+              + (", ".join(f"{cid} {r['article']} ← {r['rule']} ({r['stage']})" for cid, r in f["reached"]) or "none") + ".",
+              f"Fired rules reaching no expected article (possible false triggers): {len(f['false'])}"
+              + (": " + "; ".join(f"{cid} {r['rule']}" + (" [other area]" if r["other_area"] else "")
+                                  + (f" → {', '.join(r['articles'])}" if r["articles"] else " → nothing resolved")
+                                  + (f" (perché: {' / '.join(r.get('matched') or [])})" if r.get("matched") else "")
+                                  for cid, r in f["false"]) if f["false"] else "") + "."]
+        if f["problems"]:
+            L.append("Extraction problems: " + "; ".join(f"{cid}: {p}" for cid, p in f["problems"]) + ".")
 
     # --- B
     nw = len(wrong)
@@ -1249,7 +1387,148 @@ def render(cases: list, header: list) -> str:
     return "\n".join(L) + "\n"
 
 
-def write_report(out_dir: str, ev) -> str:
+# =================================================================================================
+# Pure: --audit-grades, why graded articles came back without a grade
+# =================================================================================================
+
+def _dump_parts(text: str) -> tuple:
+    """({header field: value}, {SYSTEM/USER/REPLY...: content}) of an llm/NN_<stage>.txt file."""
+    head, _, rest = text.partition("\n\n===== ")
+    fields = dict(line.split(": ", 1) for line in head.splitlines() if ": " in line)
+    parts = {}
+    for chunk in re.split(r"(?:^|\n\n)===== ", "===== " + rest)[1:]:
+        name, _, body = chunk.partition(" =====\n")
+        parts[name.strip()] = body
+    return fields, parts
+
+
+def _loose(label: str) -> str:
+    """A label with only its letters and digits ("Art. 640-ter c.p." -> "640terc p" squeezed)."""
+    return re.sub(r"[^a-z0-9]", "", re.sub(r"^\s*art(?:icolo)?\.?\s*", "", str(label).lower()))
+
+
+def _reply_objects(reply: str) -> tuple:
+    """(objects read, kind) of a check reply: kind "list", "object, not a list", "cut", "unparseable",
+    "empty"; a cut or wrapped reply's objects are read one by one, as the pipeline's _json_objects does."""
+    text = re.sub(r"```(?:json)?\s*", "", reply or "").strip().rstrip("`").strip()
+    if not text:
+        return [], "empty"
+    try:
+        value = json.loads(text)
+        if isinstance(value, list):
+            return [v for v in value if isinstance(v, dict)], "list"
+    except ValueError:
+        value = None
+    decoder, found, i = json.JSONDecoder(), [], text.find("{")
+    while i >= 0:
+        try:
+            item, end = decoder.raw_decode(text, i)
+        except ValueError:
+            i = text.find("{", i + 1)
+            continue
+        if isinstance(item, dict):
+            lists = [v for v in item.values() if isinstance(v, list)]
+            found += [x for v in lists for x in v if isinstance(x, dict)] if lists and "a" not in item else [item]
+        i = text.find("{", end)
+    if isinstance(value, dict):
+        return found, "object, not a list"
+    if not text.endswith("]") and found:
+        return found, "cut"
+    return found, "cut" if text.startswith("[") else "unparseable"
+
+
+def audit_grades(run_dir: str, ev) -> str:
+    """For every graded applicability call of a run (its llm/ dumps): how the reply came back, and for
+    every article sent, whether it got a grade and if not why -- the call cut short (the reply ends
+    before the array does), the call failed, the id echoed differently from the one sent, or the model
+    skipped it. Then the same for the expected articles the report has as "missing" at the check."""
+    calls, outcome_of, mismatches, extra = Counter(), {}, [], Counter()
+    sizes = []
+    cases_dir = os.path.join(run_dir, "cases")
+    rank = {"graded": 0, "entry without a valid grade": 1, "id mismatch": 2, "skipped by the model": 3,
+            "lost: reply cut": 4, "lost: call failed": 5}
+    for cid in sorted(os.listdir(cases_dir)):
+        llm = os.path.join(cases_dir, cid, "llm")
+        if not os.path.isdir(llm):
+            continue
+        for name in sorted(os.listdir(llm)):
+            if "applicability" not in name:
+                continue
+            with open(os.path.join(llm, name), encoding="utf-8") as fh:
+                fields, parts = _dump_parts(fh.read())
+            if "voto di pertinenza" not in parts.get("SYSTEM", ""):
+                continue
+            sent = re.findall(r"^\[([^\]]+)\](?: (.+))?\nRubrica:", parts.get("USER", ""), re.MULTILINE)
+            by_id = {i.strip(): (label or i).strip() for i, label in sent}
+            by_loose = {_loose(label): label for label in by_id.values()}
+            by_key = {" ".join(re.sub(r"^\s*art(?:icolo)?\.?\s*", "", label.lower()).split()): label
+                      for label in by_id.values()}
+            reply = parts.get("REPLY", "")
+            if fields.get("status", "ok") != "ok":
+                objects, kind = [], "error"
+            else:
+                objects, kind = _reply_objects(reply)
+            calls[kind] += 1
+            if kind == "cut":
+                sizes.append((cid, name, len(sent), fields.get("max_tokens"), len(reply)))
+            got = {}
+            for item in objects:
+                ref = str(item.get("a") or item.get("article") or "").strip()
+                grade_ok = re.match(r"\s*[0-3]\b", str(item.get("g", item.get("grade", ""))))
+                exact = by_id.get(ref) or by_key.get(" ".join(re.sub(r"^\s*art(?:icolo)?\.?\s*", "", ref.lower()).split()))
+                if exact:
+                    got.setdefault(exact, "graded" if grade_ok else "entry without a valid grade")
+                elif by_loose.get(_loose(ref.strip("[] "))):
+                    label = by_loose[_loose(ref.strip("[] "))]
+                    got.setdefault(label, "id mismatch")
+                    mismatches.append((cid, label, ref))
+                else:
+                    extra[(cid, ref)] += 1
+            for label in by_id.values():
+                fate = got.get(label) or ("lost: reply cut" if kind == "cut" else
+                                          "lost: call failed" if kind in ("error", "unparseable", "empty",
+                                                                         "object, not a list")
+                                          else "skipped by the model")
+                key = (cid, _loose(label))
+                if key not in outcome_of or rank[fate] < rank[outcome_of[key][1]]:
+                    outcome_of[key] = (label, fate)
+    fates = Counter(fate for _, fate in outcome_of.values())
+    L = [f"# Graded check audit: {os.path.basename(os.path.normpath(run_dir))}", "",
+         f"{sum(calls.values())} graded calls; {len(outcome_of)} (case, article) pairs sent.", "",
+         "## Calls by how the reply came back", "", "| reply | calls |", "|---|---:|"]
+    L += [f"| {k} | {v} |" for k, v in calls.most_common()]
+    L += ["", "A cut reply is not a JSON list, so before this fix the pipeline read none of its grades.", "",
+          "## Every article sent, by its best outcome in the case", "", "| outcome | articles |", "|---|---:|"]
+    L += [f"| {k} | {v} |" for k, v in sorted(fates.items(), key=lambda kv: rank[kv[0]])]
+    _, cases = _load_cases(run_dir, ev)
+    lost = [(c["id"], slot["label"], slot.get("pool_label") or slot["label"]) for c in cases for slot in c["slots"]
+            if slot["stage"] == "NOT_IN_PROMPT" and slot.get("check") == "missing"]
+    if lost:
+        why = Counter()
+        rows = []
+        for cid, label, pool_label in lost:
+            hit = next((f for (case, loose), (_, f) in outcome_of.items()
+                        if case == cid and loose == _loose(pool_label)), None)
+            fate = hit or "not found in the dumps"
+            why[fate] += 1
+            rows.append(f"| {cid} | {label} | {fate} |")
+        L += ["", f"## The {len(lost)} expected articles NOT_IN_PROMPT with check \"missing\"", "",
+              "| cause | articles |", "|---|---:|"] + [f"| {k} | {v} |" for k, v in why.most_common()]
+        L += ["", "| case | expected | cause |", "|---|---|---|"] + rows
+    if sizes:
+        L += ["", "## Cut replies", "", "| case | call | articles sent | max_tokens | reply chars |", "|---|---|---:|---:|---:|"]
+        L += [f"| {cid} | {name} | {n} | {mt} | {chars} |" for cid, name, n, mt, chars in sizes]
+    if mismatches:
+        L += ["", "## Ids echoed differently (first 20)", "", "| case | sent | returned |", "|---|---|---|"]
+        L += [f"| {cid} | {label} | {ref} |" for cid, label, ref in mismatches[:20]]
+    if extra:
+        L += ["", f"## Ids in replies matching nothing sent: {sum(extra.values())} (first 20)", ""]
+        L += [f"- {cid}: «{ref}» x{n}" for (cid, ref), n in extra.most_common(20)]
+    return "\n".join(L) + "\n"
+
+
+def _load_cases(out_dir: str, ev) -> tuple:
+    """(records, analysed cases) of a run folder, in the cases' usual order."""
     records = []
     cases_dir = os.path.join(out_dir, "cases")
     for name in sorted(os.listdir(cases_dir)):
@@ -1258,7 +1537,11 @@ def write_report(out_dir: str, ev) -> str:
                 records.append(json.load(fh))
     order = {cid: i for i, cid in enumerate(TUNING_IDS + HELDOUT_IDS)}
     records.sort(key=lambda r: (r.get("kind") == "file", order.get(r["id"], 999), r["id"]))
-    cases = [analyse_case(r, ev) for r in records]
+    return records, [analyse_case(r, ev) for r in records]
+
+
+def write_report(out_dir: str, ev) -> str:
+    records, cases = _load_cases(out_dir, ev)
     first = records[0] if records else {}
     flags = first.get("flags") or {}
     header = [f"Run: {out_dir}", f"Code: {first.get('code', '-')}",
@@ -1271,6 +1554,84 @@ def write_report(out_dir: str, ev) -> str:
     with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as fh:
         json.dump(cases, fh, ensure_ascii=False, indent=1, default=str)
     return os.path.join(out_dir, "report.md")
+
+
+def _run_dir(name: str) -> str:
+    """A run folder by path, or by its name under ./diagnose_long_runs ("20261025-0940")."""
+    for path in (name, os.path.join("diagnose_long_runs", name)):
+        if os.path.isdir(os.path.join(path, "cases")):
+            return os.path.abspath(path)
+    sys.exit(f"--compare: no run folder {name!r} (looked for {name}/cases and diagnose_long_runs/{name}/cases)")
+
+
+def _side_by_side(title: str, counters: list, totals: list, names: list, order=None) -> list:
+    """One table: a row per key, a column per run (n and % of that run's total), then the last run's
+    change against each earlier one."""
+    keys = order or sorted(set().union(*counters), key=lambda k: (-sum(c.get(k, 0) for c in counters), str(k)))
+    head = f"| {title} | " + " | ".join(names) + " | " + " | ".join(f"change vs {n}" for n in names[:-1]) + " |"
+    rows = [head, "|---|" + "---:|" * (2 * len(names) - 1)]
+    for k in keys:
+        values = [c.get(k, 0) for c in counters]
+        if any(values):
+            rows.append(f"| {k} | " + " | ".join(f"{v} ({_pct(v, t)})" for v, t in zip(values, totals)) + " | "
+                        + " | ".join(f"{values[-1] - v:+d}" for v in values[:-1]) + " |")
+    return rows
+
+
+def compare(run_dirs: list, ev) -> str:
+    """Tables A (loss funnel) and B (where the articles cited without being expected come from) of
+    several runs side by side, the last one the newest, over the cases every run has with an answer key
+    and an answer."""
+    loaded = [_load_cases(d, ev) for d in run_dirs]
+    names = [os.path.basename(os.path.normpath(d)) for d in run_dirs]
+    by = [{c["id"]: c for c in cases if c["keyed"] and c["ok"]} for _, cases in loaded]
+    common = [cid for cid in by[-1] if all(cid in b for b in by)]
+    left_out = sorted(set().union(*by) - set(common))
+    aggs = [aggregate([b[c] for c in common]) for b in by]
+    flags = [((records or [{}])[0].get("flags") or {}) for records, _ in loaded]
+    changed = [k for k in sorted(set().union(*flags)) if len({f.get(k) for f in flags}) > 1]
+    L = [f"# diagnose_long: {' vs '.join(names)} (the last is the newest)", "",
+         f"{len(common)} cases in every run, with an answer key and an answer"
+         + (f"; left out (missing or failed in a run): {', '.join(left_out)}" if left_out else "") + ".",
+         "Flags that differ: " + ("; ".join(f"{k} " + " / ".join(str(f.get(k)) for f in flags) for k in changed)
+                                  or "none") + " (in run order).", "",
+         "## Headline", "", "| | " + " | ".join(names) + " |", "|---|" + "---:|" * len(names)]
+    rows = [("MENTIONED", [a["stage_counts"]["MENTIONED"] for a in aggs], lambda a: f" / {len(a['slots'])}"),
+            ("not expected citations", [len(a["wrong"]) for a in aggs], lambda a: ""),
+            ("not expected per answer", [round(len(a["wrong"]) / max(1, len(common)), 1) for a in aggs], lambda a: ""),
+            ("rubrica-incompatible", [a["fit"]["incompatible"] for a in aggs], lambda a: ""),
+            ("citations taken out of sections", [sum(a["discipline"]["taken"].values()) for a in aggs], lambda a: ""),
+            ("expected ones among them", [len(a["discipline"]["expected_taken"]) for a in aggs], lambda a: ""),
+            ("removed after the draft (flagged + not a law)",
+             [sum(a["after_draft"]["flagged"].values()) + sum(a["after_draft"]["not_a_law"].values()) for a in aggs],
+             lambda a: ""),
+            ("expected ones removed after the draft", [len(a["after_draft"]["expected_removed"]) for a in aggs],
+             lambda a: ""),
+            ("LOST_AT_UNDERSTANDING", [a["stage_counts"]["LOST_AT_UNDERSTANDING"] for a in aggs], lambda a: ""),
+            ("expected reached via a fired fact rule", [len(a["fact_signals"]["reached"]) for a in aggs], lambda a: ""),
+            ("fired fact rules reaching no expected article", [len(a["fact_signals"]["false"]) for a in aggs],
+             lambda a: "")]
+    for title, values, suffix in rows:
+        L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")
+    L += ["", "## A. Loss funnel of the expected articles", ""]
+    L += _side_by_side("stage", [a["stage_counts"] for a in aggs], [len(a["slots"]) for a in aggs], names, STAGES)
+    L += ["", "MENTIONED without being in the prompt: "
+          + ", ".join(f"{n} {sum(s['from_memory'] for s in a['slots'])}" for n, a in zip(names, aggs)) + ".",
+          "", "## B. Articles cited without being expected", ""]
+    channel_order = CHANNELS + ["other_search", "not_retrieved", "other"]
+    for title, key, order in (("by channel (any)", "any_channel", channel_order),
+                              ("by one channel only", "sole", channel_order),
+                              ("by applicability status", "by_check", None),
+                              ("by plan protection", "by_plan", None),
+                              ("rubrica vs citing line", "fit", None)):
+        L += _side_by_side(title, [a[key] for a in aggs], [len(a["wrong"]) for a in aggs], names, order) + [""]
+    L += ["## Per case", "", "| case | " + " | ".join(f"MENTIONED {n}" for n in names) + " | of | "
+          + " | ".join(f"not expected {n}" for n in names) + " |", "|---|" + "---:|" * (2 * len(names) + 1)]
+    for cid in common:
+        mentioned = [sum(s["stage"] == "MENTIONED" for s in b[cid]["slots"]) for b in by]
+        L.append(f"| {cid} | " + " | ".join(map(str, mentioned)) + f" | {len(by[-1][cid]['slots'])} | "
+                 + " | ".join(str(len(b[cid]["unexpected"])) for b in by) + " |")
+    return "\n".join(L) + "\n"
 
 
 # =================================================================================================
@@ -1299,6 +1660,15 @@ def _vote_idf_file(out_dir: str) -> None:
           file=sys.stderr)
 
 
+def _print_compare(run_dirs: list, ev) -> None:
+    text = compare(run_dirs, ev)
+    path = os.path.join(run_dirs[-1], "compare_" + "_".join(os.path.basename(os.path.normpath(d)) for d in run_dirs[:-1])
+                        + ".md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    print("\n" + text + f"\nSaved to {path}")
+
+
 def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_") or "document"
 
@@ -1318,9 +1688,17 @@ def main() -> None:
     parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                         help="a switch for this run only, over the .env")
     parser.add_argument("--report-only", metavar="DIR", help="rebuild DIR/report.md from DIR/cases, no run")
+    parser.add_argument("--compare", nargs="+", metavar="RUN",
+                        help="earlier runs (a folder, or its name under ./diagnose_long_runs) whose tables A and B "
+                             "are printed side by side with this run's, or with --report-only's DIR")
+    parser.add_argument("--compare-only", action="store_true",
+                        help="no run: compare the --compare runs among themselves, the last as the newest")
     parser.add_argument("--dump-llm", action=argparse.BooleanOptionalAction, default=True,
                         help="save every chat call (messages, raw reply, settings, duration) to "
                              "cases/<id>/llm/NN_<stage>.txt (default on; --no-dump-llm to skip)")
+    parser.add_argument("--audit-grades", metavar="RUN",
+                        help="no run: why articles sent to the graded check got no grade, from RUN's llm/ dumps "
+                             "(written to RUN/grade_audit.md)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -1329,8 +1707,22 @@ def main() -> None:
         return
     sys.path.insert(0, os.getcwd())
     ev = _eval_module()
+    if args.audit_grades:
+        run_dir = _run_dir(args.audit_grades)
+        text = audit_grades(run_dir, ev)
+        with open(os.path.join(run_dir, "grade_audit.md"), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        print(text + f"\nWritten to {os.path.join(run_dir, 'grade_audit.md')}")
+        return
+    if args.compare_only:
+        if not args.compare or len(args.compare) < 2:
+            parser.error("--compare-only needs two runs or more in --compare")
+        _print_compare([_run_dir(r) for r in args.compare], ev)
+        return
     if args.report_only:
         print(f"Report: {write_report(args.report_only, ev)}")
+        if args.compare:
+            _print_compare([_run_dir(r) for r in args.compare] + [os.path.abspath(args.report_only)], ev)
         return
 
     from dotenv import load_dotenv
@@ -1405,6 +1797,8 @@ def main() -> None:
 
     print(f"\nAll cases in {time.time() - t0:.0f}s.")
     print(f"Report: {write_report(out_dir, ev)}")
+    if args.compare:
+        _print_compare([_run_dir(r) for r in args.compare] + [out_dir], ev)
     print("Nothing was written to the database.")
 
 
