@@ -405,3 +405,24 @@ def test_keep_checked_places_every_judged_article(model, monkeypatch):
     assert "Posizione della panchina (norme: art. 2051 c.c.;" in applied                   # off-topic, but checked
     assert f"{ptw.OTHER_NORMS_TITLE} (norme: art. 2048 c.c., art. 1917 c.c., art. 624 c.p." in applied
     assert "TUTTE le norme del PIANO" in model.section_call("Norme e giurisprudenza")["system"]
+
+
+def test_graded_keep_checked_offers_the_best_and_forces_none(model, monkeypatch):
+    """CHECK_GRADED_ENABLED with PLAN_KEEP_CHECKED_ENABLED: grades 2-3 only, offered to the plan; an
+    article the plan does not place and whose rubrica fits no issue stays out (no catch-all issue)."""
+    monkeypatch.setenv("PLAN_KEEP_CHECKED_ENABLED", "true")
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    model.plans = [_second_issue_titled("Posizione della panchina")]
+    rows = [dict(ARTICLES[0], _applicability="applicabile", _grade=2, _fused_rank=3),
+            dict(ARTICLES[1], _applicability="applicabile", _grade=3, _fused_rank=1),
+            dict(ARTICLES[2], _applicability="applicabile", _grade=2, _fused_rank=2),
+            dict(ARTICLES[3], _applicability="marginale", _grade=1, _fused_rank=4)]
+    ptw.write_parere(FACTS, REQUEST, ANALYSIS, rows, RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    plan_call = next(c for c in model.calls if "PIANO, nell'interesse" in c["system"])
+    assert ("NORME PIÙ PERTINENTI AL CASO: [art. 1218 c.c.], [art. 2051 c.c.], [art. 2048 c.c.]. Metti ciascuna "
+            "tra le norme della questione che disciplina; una che non disciplina nessuna questione del piano resta "
+            "fuori.") in plan_call["human"]
+    logged = [d for e, d in model.logged if e == "case_analysis_plan_applicable"][-1]
+    assert logged["placed"] == ["1218 c.c.", "2051 c.c."] and logged["added_to_last_issue"] == []
+    applied = model.section_call("Applicazione al caso")["human"]
+    assert ptw.OTHER_NORMS_TITLE not in applied and "1917" not in applied

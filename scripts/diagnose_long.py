@@ -46,8 +46,8 @@ Run from the app folder, with its venv and live .env:
     ... --only h3,n2              # some cases only
     ... --out /root/diag          # default: ./diagnose_long_runs/<date-time>
     ... --report-only DIR         # rebuild DIR/report.md from DIR/cases/*.json, no run
-    ... --compare 20261025-0940   # after the run: tables A and B side by side with that run
-    ... --compare OLD NEW         # the same for two runs already made, no run
+    ... --compare 20261025-0940 20261026-1010   # after the run: tables A and B, those runs and this one
+    ... --compare OLD NEW --compare-only        # runs already made, no new run
 
 --dump-llm (on by default; --no-dump-llm to skip) saves every chat call of a case -- frame, analysis,
 distill, v1's choice, issue spotting, applicability batches, principles, plan, plan stance, plan check,
@@ -88,7 +88,7 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "VOTE_POOL_K", "RULING_CARDS_ENABLED", "PLAN_THEN_WRITE_ENABLED", "PLAN_KEEP_APPLICABLE_ENABLED",
          "QUALIFICATION_CHECK_ENABLED", "DRAFT_CITATIONS_ONLY_ENABLED", "CLIENT_STANCE_CHECK_ENABLED",
          "STRATEGY_DRAFT_RULES_ENABLED", "METHOD_CANDIDATES_ENABLED", "CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED",
-         "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED"]
+         "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -535,7 +535,8 @@ def _write_material(path: str, record: dict, blocks, ev) -> None:
     rejected = [t for t in case["pool_traces"] if t["check"] == "rejected"]
     out += ["", f"========== DROPPED BY THE APPLICABILITY CHECK ({len(rejected)}) =========="]
     out += [f"{t['label']}: requisito «{(t['dropped'] or {}).get('requisito', '')}», fatto "
-            f"«{(t['dropped'] or {}).get('fatto', '')}»\n{_provenance_line(t, ekey(t['label']) in expected)}"
+            f"«{(t['dropped'] or {}).get('fatto', '')}», reason «{(t['dropped'] or {}).get('reason', '')}»\n"
+            f"{_provenance_line(t, ekey(t['label']) in expected)}"
             for t in rejected] or ["(none)"]
     with open(path, "w", encoding="utf-8") as fh:
         fh.write("\n".join(out) + "\n")
@@ -1170,7 +1171,9 @@ def render(cases: list, header: list) -> str:
     if rejected:
         L.append("")
         L.append("Expected rejected by the applicability check:")
-        L += [f"- {c['id']} {s['label']}: requisito «{(s['dropped'] or {}).get('requisito', '')}», fatto "
+        L += [f"- {c['id']} {s['label']}: graded 0, «{(s['dropped'] or {}).get('reason', '')}»"
+              if (s["dropped"] or {}).get("grade") == 0 else
+              f"- {c['id']} {s['label']}: requisito «{(s['dropped'] or {}).get('requisito', '')}», fatto "
               f"«{(s['dropped'] or {}).get('fatto', '')}»" for c, s in rejected]
     exp_checks = Counter(s["check"] for s in slots if s["in_pool"])
     L.append("")
@@ -1293,53 +1296,62 @@ def _run_dir(name: str) -> str:
     sys.exit(f"--compare: no run folder {name!r} (looked for {name}/cases and diagnose_long_runs/{name}/cases)")
 
 
-def _side_by_side(title: str, old: Counter, new: Counter, n_old: int, n_new: int, order=None) -> list:
-    keys = order or sorted(set(old) | set(new), key=lambda k: (-(old.get(k, 0) + new.get(k, 0)), str(k)))
-    rows = [f"| {title} | old | new | change |", "|---|---:|---:|---:|"]
+def _side_by_side(title: str, counters: list, totals: list, names: list, order=None) -> list:
+    """One table: a row per key, a column per run (n and % of that run's total), then the last run's
+    change against each earlier one."""
+    keys = order or sorted(set().union(*counters), key=lambda k: (-sum(c.get(k, 0) for c in counters), str(k)))
+    head = f"| {title} | " + " | ".join(names) + " | " + " | ".join(f"change vs {n}" for n in names[:-1]) + " |"
+    rows = [head, "|---|" + "---:|" * (2 * len(names) - 1)]
     for k in keys:
-        a, b = old.get(k, 0), new.get(k, 0)
-        if a or b:
-            rows.append(f"| {k} | {a} ({_pct(a, n_old)}) | {b} ({_pct(b, n_new)}) | {b - a:+d} |")
+        values = [c.get(k, 0) for c in counters]
+        if any(values):
+            rows.append(f"| {k} | " + " | ".join(f"{v} ({_pct(v, t)})" for v, t in zip(values, totals)) + " | "
+                        + " | ".join(f"{values[-1] - v:+d}" for v in values[:-1]) + " |")
     return rows
 
 
-def compare(old_dir: str, new_dir: str, ev) -> str:
-    """Tables A (loss funnel) and B (where the articles cited without being expected come from) of two
-    runs side by side, over the cases both have run with an answer key and an answer."""
-    _, old_cases = _load_cases(old_dir, ev)
-    _, new_cases = _load_cases(new_dir, ev)
-    ok = lambda cases: {c["id"]: c for c in cases if c["keyed"] and c["ok"]}     # noqa: E731
-    old_by, new_by = ok(old_cases), ok(new_cases)
-    common = [cid for cid in new_by if cid in old_by]
-    only = sorted(set(old_by) ^ set(new_by))
-    old, new = aggregate([old_by[c] for c in common]), aggregate([new_by[c] for c in common])
-    flags = lambda d: (_load_cases(d, ev)[0] or [{}])[0].get("flags") or {}      # noqa: E731
-    changed = {k: (flags(old_dir).get(k), v) for k, v in flags(new_dir).items() if flags(old_dir).get(k) != v}
-    n_old, n_new = len(old["slots"]), len(new["slots"])
-    L = [f"# diagnose_long: {os.path.basename(old_dir)} (old) vs {os.path.basename(new_dir)} (new)", "",
-         f"{len(common)} cases in both, with an answer key and an answer"
-         + (f"; left out, in one run only or failed in one: {', '.join(only)}" if only else "") + ".",
-         "Flags changed: " + (", ".join(f"{k} {a} -> {b}" for k, (a, b) in changed.items()) or "none") + ".", "",
-         "## A. Loss funnel of the expected articles", ""]
-    L += _side_by_side("stage", old["stage_counts"], new["stage_counts"], n_old, n_new, STAGES)
-    L += ["", f"Slots: {n_old} old, {n_new} new. MENTIONED without being in the prompt: "
-              f"{sum(s['from_memory'] for s in old['slots'])} old, {sum(s['from_memory'] for s in new['slots'])} new.",
-          "", "## B. Articles cited without being expected", "",
-          f"Citations: {len(old['wrong'])} old ({len(old['wrong']) / max(1, len(common)):.1f} per answer), "
-          f"{len(new['wrong'])} new ({len(new['wrong']) / max(1, len(common)):.1f} per answer).", ""]
+def compare(run_dirs: list, ev) -> str:
+    """Tables A (loss funnel) and B (where the articles cited without being expected come from) of
+    several runs side by side, the last one the newest, over the cases every run has with an answer key
+    and an answer."""
+    loaded = [_load_cases(d, ev) for d in run_dirs]
+    names = [os.path.basename(os.path.normpath(d)) for d in run_dirs]
+    by = [{c["id"]: c for c in cases if c["keyed"] and c["ok"]} for _, cases in loaded]
+    common = [cid for cid in by[-1] if all(cid in b for b in by)]
+    left_out = sorted(set().union(*by) - set(common))
+    aggs = [aggregate([b[c] for c in common]) for b in by]
+    flags = [((records or [{}])[0].get("flags") or {}) for records, _ in loaded]
+    changed = [k for k in sorted(set().union(*flags)) if len({f.get(k) for f in flags}) > 1]
+    L = [f"# diagnose_long: {' vs '.join(names)} (the last is the newest)", "",
+         f"{len(common)} cases in every run, with an answer key and an answer"
+         + (f"; left out (missing or failed in a run): {', '.join(left_out)}" if left_out else "") + ".",
+         "Flags that differ: " + ("; ".join(f"{k} " + " / ".join(str(f.get(k)) for f in flags) for k in changed)
+                                  or "none") + " (in run order).", "",
+         "## Headline", "", "| | " + " | ".join(names) + " |", "|---|" + "---:|" * len(names)]
+    rows = [("MENTIONED", [a["stage_counts"]["MENTIONED"] for a in aggs], lambda a: f" / {len(a['slots'])}"),
+            ("not expected citations", [len(a["wrong"]) for a in aggs], lambda a: ""),
+            ("not expected per answer", [round(len(a["wrong"]) / max(1, len(common)), 1) for a in aggs], lambda a: ""),
+            ("rubrica-incompatible", [a["fit"]["incompatible"] for a in aggs], lambda a: "")]
+    for title, values, suffix in rows:
+        L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")
+    L += ["", "## A. Loss funnel of the expected articles", ""]
+    L += _side_by_side("stage", [a["stage_counts"] for a in aggs], [len(a["slots"]) for a in aggs], names, STAGES)
+    L += ["", "MENTIONED without being in the prompt: "
+          + ", ".join(f"{n} {sum(s['from_memory'] for s in a['slots'])}" for n, a in zip(names, aggs)) + ".",
+          "", "## B. Articles cited without being expected", ""]
     channel_order = CHANNELS + ["other_search", "not_retrieved", "other"]
     for title, key, order in (("by channel (any)", "any_channel", channel_order),
                               ("by one channel only", "sole", channel_order),
                               ("by applicability status", "by_check", None),
                               ("by plan protection", "by_plan", None),
                               ("rubrica vs citing line", "fit", None)):
-        L += _side_by_side(title, old[key], new[key], len(old["wrong"]), len(new["wrong"]), order) + [""]
-    per_case = [(cid, sum(s["stage"] == "MENTIONED" for s in old_by[cid]["slots"]),
-                 sum(s["stage"] == "MENTIONED" for s in new_by[cid]["slots"]), len(new_by[cid]["slots"]),
-                 len(old_by[cid]["unexpected"]), len(new_by[cid]["unexpected"])) for cid in common]
-    L += ["## Per case", "", "| case | MENTIONED old | new | of | not expected old | new |",
-          "|---|---:|---:|---:|---:|---:|"]
-    L += [f"| {cid} | {a} | {b} | {n} | {u} | {v} |" for cid, a, b, n, u, v in per_case]
+        L += _side_by_side(title, [a[key] for a in aggs], [len(a["wrong"]) for a in aggs], names, order) + [""]
+    L += ["## Per case", "", "| case | " + " | ".join(f"MENTIONED {n}" for n in names) + " | of | "
+          + " | ".join(f"not expected {n}" for n in names) + " |", "|---|" + "---:|" * (2 * len(names) + 1)]
+    for cid in common:
+        mentioned = [sum(s["stage"] == "MENTIONED" for s in b[cid]["slots"]) for b in by]
+        L.append(f"| {cid} | " + " | ".join(map(str, mentioned)) + f" | {len(by[-1][cid]['slots'])} | "
+                 + " | ".join(str(len(b[cid]["unexpected"])) for b in by) + " |")
     return "\n".join(L) + "\n"
 
 
@@ -1369,9 +1381,10 @@ def _vote_idf_file(out_dir: str) -> None:
           file=sys.stderr)
 
 
-def _print_compare(old_dir: str, new_dir: str, ev) -> None:
-    text = compare(old_dir, new_dir, ev)
-    path = os.path.join(new_dir, f"compare_{os.path.basename(old_dir)}.md")
+def _print_compare(run_dirs: list, ev) -> None:
+    text = compare(run_dirs, ev)
+    path = os.path.join(run_dirs[-1], "compare_" + "_".join(os.path.basename(os.path.normpath(d)) for d in run_dirs[:-1])
+                        + ".md")
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
     print("\n" + text + f"\nSaved to {path}")
@@ -1397,8 +1410,10 @@ def main() -> None:
                         help="a switch for this run only, over the .env")
     parser.add_argument("--report-only", metavar="DIR", help="rebuild DIR/report.md from DIR/cases, no run")
     parser.add_argument("--compare", nargs="+", metavar="RUN",
-                        help="OLD [NEW]: tables A and B of two runs side by side (a folder, or its name under "
-                             "./diagnose_long_runs); with OLD only, against this run or --report-only's DIR")
+                        help="earlier runs (a folder, or its name under ./diagnose_long_runs) whose tables A and B "
+                             "are printed side by side with this run's, or with --report-only's DIR")
+    parser.add_argument("--compare-only", action="store_true",
+                        help="no run: compare the --compare runs among themselves, the last as the newest")
     parser.add_argument("--dump-llm", action=argparse.BooleanOptionalAction, default=True,
                         help="save every chat call (messages, raw reply, settings, duration) to "
                              "cases/<id>/llm/NN_<stage>.txt (default on; --no-dump-llm to skip)")
@@ -1410,15 +1425,15 @@ def main() -> None:
         return
     sys.path.insert(0, os.getcwd())
     ev = _eval_module()
-    if args.compare and len(args.compare) > 2:
-        parser.error("--compare takes OLD [NEW]")
-    if args.compare and len(args.compare) == 2:
-        _print_compare(_run_dir(args.compare[0]), _run_dir(args.compare[1]), ev)
+    if args.compare_only:
+        if not args.compare or len(args.compare) < 2:
+            parser.error("--compare-only needs two runs or more in --compare")
+        _print_compare([_run_dir(r) for r in args.compare], ev)
         return
     if args.report_only:
         print(f"Report: {write_report(args.report_only, ev)}")
         if args.compare:
-            _print_compare(_run_dir(args.compare[0]), os.path.abspath(args.report_only), ev)
+            _print_compare([_run_dir(r) for r in args.compare] + [os.path.abspath(args.report_only)], ev)
         return
 
     from dotenv import load_dotenv
@@ -1494,7 +1509,7 @@ def main() -> None:
     print(f"\nAll cases in {time.time() - t0:.0f}s.")
     print(f"Report: {write_report(out_dir, ev)}")
     if args.compare:
-        _print_compare(_run_dir(args.compare[0]), out_dir, ev)
+        _print_compare([_run_dir(r) for r in args.compare] + [out_dir], ev)
     print("Nothing was written to the database.")
 
 

@@ -202,13 +202,17 @@ def test_compare_puts_tables_a_and_b_side_by_side():
         with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
             _json.dump(rec, fh)
         dirs.append(_os.path.join(root, name))
-    text = dl.compare(dirs[0], dirs[1], ev)
-    assert "1 cases in both" in text and "CHECK_PRIORITY_ENABLED None -> true" in text
+    text = dl.compare(dirs, ev)
+    assert "1 cases in every run" in text and "CHECK_PRIORITY_ENABLED None / true" in text
     assert "| REJECTED_BY_CHECK | 1 (17%) | 0 (0%) | -1 |" in text
     assert "| MENTIONED | 2 (33%) | 3 (50%) | +1 |" in text
-    assert "Citations: 1 old (1.0 per answer), 0 new (0.0 per answer)." in text
+    assert "| not expected per answer | 1.0 | 0.0 |" in text and "| MENTIONED | 2 / 6 | 3 / 6 |" in text
+    assert "| rubrica-incompatible | 1 | 0 |" in text
     assert "| institution | 1 (100%) | 0 (-) | -1 |" in text
     assert "| x1 | 2 | 3 | 6 | 1 | 0 |" in text
+    three = dl.compare([dirs[0], dirs[1], dirs[1]], ev)                 # the newest last, two earlier ones
+    assert "| stage | 20261025-0940 | 20261026-1000 | 20261026-1000 | change vs 20261025-0940 | change vs 20261026-1000 |" \
+        in three and "| MENTIONED | 2 (33%) | 3 (50%) | 3 (50%) | +1 | +0 |" in three
 
 
 if __name__ == "__main__":

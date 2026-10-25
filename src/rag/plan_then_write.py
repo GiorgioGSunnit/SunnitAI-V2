@@ -65,6 +65,10 @@ KEEP_APPLICABLE_FLAG = "PLAN_KEEP_APPLICABLE_ENABLED"
 # check judged applicabile or alternativa -- not the exempt ones, not the unchecked ones -- is in the
 # plan, under the issue it governs, up to _MAX_ISSUES_WIDE issues (_group_checked).
 KEEP_CHECKED_FLAG = "PLAN_KEEP_CHECKED_ENABLED"
+# With CHECK_GRADED_ENABLED (diagnose_long, 26 Oct: 263 articles cited without being expected came in through
+# "Altre norme rilevanti"): only grade 2-3 articles, at most _GRADED_KEEP by grade then fusion rank, and one
+# that fits no issue of the plan is left out, never put in a catch-all issue.
+_GRADED_KEEP = 12
 _MAX_ISSUES_WIDE, _WIDE_APPLICABLE = 7, 8
 OTHER_NORMS_TITLE = "Altre norme rilevanti"
 _ISSUE_COUNT_WORDS = {5: "cinque", 7: "sette"}
@@ -285,9 +289,22 @@ def _through_check(article_rows: List[Dict[str, Any]], facts: str, request: str)
 
 def _checked(article_rows: List[Dict[str, Any]]) -> List[tuple]:
     """PLAN_KEEP_CHECKED_ENABLED: the articles the check judged applicabile or alternativa, in the
-    pipeline's order; the exempt and the unchecked ones are not among them."""
-    return list(dict.fromkeys(r["_article"] for r in article_rows
-                              if r.get("_article") and r.get("_applicability") in ("applicabile", "alternativa")))
+    pipeline's order; the exempt and the unchecked ones are not among them. CHECK_GRADED_ENABLED: those
+    graded 2 or 3, at most _GRADED_KEEP, by grade, then fusion rank, then the pipeline's order."""
+    if not _graded():
+        return list(dict.fromkeys(r["_article"] for r in article_rows
+                                  if r.get("_article") and r.get("_applicability") in ("applicabile", "alternativa")))
+    best: Dict[tuple, tuple] = {}
+    for index, row in enumerate(article_rows):
+        ref, grade = row.get("_article"), row.get("_grade")
+        if ref and isinstance(grade, int) and grade >= 2:
+            key = (-grade, row.get("_fused_rank") or 10 ** 6, index)
+            best[ref] = min(best.get(ref, key), key)
+    return sorted(best, key=lambda ref: best[ref])[:_GRADED_KEEP]
+
+
+def _graded() -> bool:
+    return dg.feature_flags.enabled(dg.CHECK_GRADED_FLAG)
 
 
 def _keep_all() -> bool:
@@ -321,11 +338,13 @@ def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Di
 
 
 def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tuple, str],
-                   max_issues: int) -> Tuple[Dict[str, Any], List[tuple], Dict[tuple, str], List[tuple]]:
+                   max_issues: int, issue_of: Optional[Dict[tuple, str]] = None,
+                   catch_all: bool = True) -> Tuple[Dict[str, Any], List[tuple], Dict[tuple, str], List[tuple]]:
     """(plan, placed, grouped, added): every checked article in the plan (PLAN_KEEP_CHECKED_ENABLED).
     One the plan left out goes under the issue whose title and argument share the most words with its
-    rubrica; with none sharing a word, into a last "Altre norme rilevanti" issue, or, at max_issues
-    issues, into the last one."""
+    rubrica (and with the issue the graded check named for it, issue_of); with none sharing a word, into
+    a last "Altre norme rilevanti" issue, or, at max_issues issues, into the last one -- or, without
+    catch_all (CHECK_GRADED_ENABLED), nowhere: it is not forced into the plan."""
     held = {ref for q in plan["questioni"] for ref in q["norme"]}
     placed = [ref for ref in checked if ref in held]
     issues = [{**q, "norme": list(q["norme"])} for q in plan["questioni"]]
@@ -335,7 +354,7 @@ def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tu
     def stems(text):
         return {w[:5] for w in re.findall(r"\w{4,}", (text or "").lower()) if w not in _HEADING_STOP}
     for ref in (r for r in checked if r not in held):
-        words = stems(headings.get(ref, ""))
+        words = stems(f"{headings.get(ref, '')} {(issue_of or {}).get(ref, '')}")
         best = max(issues, key=lambda q: len(words & stems(f"{q['titolo']} {q['argomento']}")))
         if words & stems(f"{best['titolo']} {best['argomento']}"):
             best["norme"].append(ref)
@@ -343,6 +362,8 @@ def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tu
         else:
             rest.append(ref)
     plan = {**plan, "questioni": issues}
+    if not catch_all:
+        return plan, placed, grouped, []
     if rest and len(issues) >= max_issues:
         issues[-1]["norme"] += rest
         grouped.update({ref: issues[-1]["titolo"] for ref in rest})
@@ -354,7 +375,7 @@ def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tu
 
 def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str,
                 principles: str, checks: List[str], voted: Optional[List[tuple]] = None,
-                applicable: Optional[List[tuple]] = None, must_place: bool = False) -> str:
+                applicable: Optional[List[tuple]] = None, must_place: Any = False) -> str:
     base = dg._parere_human(facts, analysis, articles, rulings, request, principles)
     base = base[:base.rfind("Redigi ora il parere.")].rstrip() if "Redigi ora il parere." in base else base
     verifiche = "\n".join(f"- {c}" for c in checks)
@@ -364,7 +385,10 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
     applicabili = ", ".join(f"[art. {n} {c}]" for n, c in applicable or [])
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
-            + (f"NORME GIUDICATE APPLICABILI AI FATTI: {applicabili}. Ognuna deve comparire nel piano, tra le "
+            + (f"NORME PIÙ PERTINENTI AL CASO: {applicabili}. Metti ciascuna tra le norme della questione che "
+               "disciplina; una che non disciplina nessuna questione del piano resta fuori.\n\n"
+               if applicabili and must_place == "graded" else
+               f"NORME GIUDICATE APPLICABILI AI FATTI: {applicabili}. Ognuna deve comparire nel piano, tra le "
                "norme della questione che disciplina: raggruppale per questione, aggiungendo una questione se "
                "nessuna di quelle che hai la disciplina; non lasciarne fuori nessuna.\n\n"
                if applicabili and must_place else
@@ -505,7 +529,8 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     max_issues = _MAX_ISSUES_WIDE if keep_checked or len(applicable) >= _WIDE_APPLICABLE else _MAX_ISSUES
     system = _plan_system(max_issues)
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
-                        _checks(analysis, article_rows, facts, request), voted, applicable, must_place=keep_checked)
+                        _checks(analysis, article_rows, facts, request), voted, applicable,
+                        must_place="graded" if keep_checked and _graded() else keep_checked)
     messages = [SystemMessage(content=system), HumanMessage(content=human)]
     t0 = time.time()
     try:
@@ -531,7 +556,9 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     if plan:
         plan, checked = check_plan(plan, article_rows, headings, applicable if keep_all or keep_checked else None)
     if plan and keep_checked:
-        plan, placed, grouped, added = _group_checked(plan, applicable, headings, max_issues)
+        issue_of = {r["_article"]: r.get("_grade_issue") or "" for r in article_rows if r.get("_article")}
+        plan, placed, grouped, added = _group_checked(plan, applicable, headings, max_issues, issue_of,
+                                                      catch_all=not _graded())
         dg.vlog("case_analysis_plan_applicable", {
             "mode": "checked", "applicable": [f"{n} {c}" for n, c in applicable], "max_issues": max_issues,
             "placed": [f"{n} {c}" for n, c in placed],

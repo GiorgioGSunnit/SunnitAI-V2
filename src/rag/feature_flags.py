@@ -144,15 +144,21 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
   CHECK_PRIORITY_ENABLED       false: the applicability check's 36 slots go to the
                                 voted articles, then multi-signal ones, then the
                                 rest, the method lists last; an article left
-                                unchecked is removed; a rejection must quote the
-                                case word for word, else it counts as applicable.
-                                See _filter_applicable_articles.
+                                unchecked is removed. See _filter_applicable_articles.
   PLAN_KEEP_CHECKED_ENABLED    false (acts with PLAN_THEN_WRITE_ENABLED): every
                                 article the check judged applicabile or
                                 alternativa is in the plan, grouped by issue, up
                                 to 7 issues; never removed by the plan check. Over
-                                PLAN_KEEP_APPLICABLE_ENABLED when both are on. See
-                                plan_then_write._group_checked.
+                                PLAN_KEEP_APPLICABLE_ENABLED when both are on. With
+                                CHECK_GRADED_ENABLED: only grades 2-3, at most 12 by
+                                grade then fusion rank, and none forced into a
+                                catch-all issue. See plan_then_write._group_checked.
+  CHECK_GRADED_ENABLED         false (acts with APPLICABILITY_CHECK_ENABLED): the
+                                check grades each article 0-3 (0 unrelated or
+                                another area, 1 tangential, 2 an issue of the case,
+                                3 its central question) with the issue it serves,
+                                from its rubrica and first 400 characters; grade 0
+                                leaves the pool before the prompt. See _GRADED_SYSTEM.
 """
 
 import logging

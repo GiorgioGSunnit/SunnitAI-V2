@@ -3322,8 +3322,11 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
                                     "tagged": sorted(f"{n} {c}" for n, c in vote_tagged)})
 
     candidate_rows = _fetch_any(session, documents, selected)
+    fused_rank = {ref: i for i, ref in enumerate(fused, 1)}
     for row in candidate_rows:
         ref = row.get("_article")
+        if ref in fused_rank:
+            row["_fused_rank"] = fused_rank[ref]      # read by PLAN_KEEP_CHECKED under CHECK_GRADED
         if hits.get(ref, 0) >= 2:
             row["_multi_signal"] = True
         if ref in heading_matched:
@@ -3573,8 +3576,10 @@ def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[
     return to_check, texts
 
 
-def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLICABILITY_SYSTEM) -> tuple:
-    """(verdict list or None, error text) for one batch of articles."""
+def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLICABILITY_SYSTEM,
+                         tokens: tuple = (400, 120)) -> tuple:
+    """(verdict list or None, error text) for one batch of articles; tokens: (base, per article)
+    of the reply's max_tokens."""
     human = (
         f"Fatti del caso:\n{case}\n\n"
         "Articoli candidati (testo reale dalla banca dati):\n"
@@ -3583,7 +3588,7 @@ def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLIC
     # Round 8 (19 Oct): a fixed 1200-token cap truncated the JSON reply past 6-7
     # articles when every verdict carried requisito/fatto/reason. Only dropped
     # articles carry them now; the room still allows several drops per batch.
-    max_tokens = 400 + 120 * len(texts)
+    max_tokens = tokens[0] + tokens[1] * len(texts)
     try:
         verdicts = _chat_json([SystemMessage(content=system), HumanMessage(content=human)],
                               max_tokens=max_tokens, temperature=0)
@@ -3594,23 +3599,25 @@ def _applicability_batch(case: str, texts: Dict[str, str], system: str = _APPLIC
 
 
 def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str],
-                            system: str = _APPLICABILITY_SYSTEM) -> Optional[Dict[str, Dict[str, Any]]]:
+                            system: str = _APPLICABILITY_SYSTEM, case: Optional[str] = None,
+                            tokens: tuple = (400, 120)) -> Optional[Dict[str, Dict[str, Any]]]:
     """{label key: verdict} from the model, _APPLICABILITY_BATCH articles per call and up to
     _APPLICABILITY_WORKERS calls at once; a failed batch only leaves its own articles without
-    a verdict (kept). None if every batch fails."""
+    a verdict (kept). None if every batch fails. A graded reply's short keys (CHECK_GRADED_ENABLED:
+    a, g, q, r) are read as article, grade, issue, reason."""
     if not texts:
         return {}
-    case = _case_text(facts, request)[:2000]
+    case = _case_text(facts, request)[:2000] if case is None else case
     labels = list(texts)
     batches = [{label: texts[label] for label in labels[i:i + _APPLICABILITY_BATCH]}
                for i in range(0, len(labels), _APPLICABILITY_BATCH)]
     t0 = time.time()
     if len(batches) == 1:
-        results = [_applicability_batch(case, batches[0], system)]
+        results = [_applicability_batch(case, batches[0], system, tokens)]
     else:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=min(_APPLICABILITY_WORKERS, len(batches))) as pool:
-            results = list(pool.map(lambda batch: _applicability_batch(case, batch, system), batches))
+            results = list(pool.map(lambda batch: _applicability_batch(case, batch, system, tokens), batches))
     errors = [error for verdicts, error in results if verdicts is None]
     log = {"checked": len(texts), "batches": len(batches), "failed_batches": len(errors)}
     if errors:
@@ -3618,8 +3625,15 @@ def _applicability_verdicts(facts: str, request: str, texts: Dict[str, str],
     vlog("case_analysis_applicability", log, duration_ms=(time.time() - t0) * 1000)
     if len(errors) == len(results):
         return None
-    return {_applicability_key(v["article"]): v for verdicts, _ in results for v in verdicts or []
-            if isinstance(v, dict) and isinstance(v.get("article"), str)}
+    read = [_long_keys(v) for verdicts, _ in results for v in verdicts or [] if isinstance(v, dict)]
+    return {_applicability_key(v["article"]): v for v in read if isinstance(v.get("article"), str)}
+
+
+def _long_keys(verdict: Dict[str, Any]) -> Dict[str, Any]:
+    """A graded reply's {a, g, q, r} as {article, grade, issue, reason}; any other reply as it is."""
+    if "article" in verdict or "a" not in verdict:
+        return verdict
+    return {"article": verdict.get("a"), "grade": verdict.get("g"), "issue": verdict.get("q"), "reason": verdict.get("r")}
 
 
 # A limit or an exclusion: facts that exclude it make the article an argument
@@ -3647,17 +3661,20 @@ def _drops_article(verdict: Optional[Dict[str, Any]], article_text: str = "") ->
         and not _LIMIT_WORDING.search(requisito) and not _is_limit_rule(article_text)
 
 
-def _filter_applicable_articles(facts: str, request: str,
-                                article_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dict[str, Any]],
+                                analysis: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """The article rows without those the model shows to be incompatible with
     the facts, in their original order. Fails open: on any error, unparseable
     reply or missing verdict, the rows are kept -- except, with CHECK_PRIORITY_ENABLED,
     the articles left without a verdict while the check ran, and, with
-    CHECKLIST_GATED_ENABLED, the method lists' candidates without one."""
+    CHECKLIST_GATED_ENABLED, the method lists' candidates without one.
+    CHECK_GRADED_ENABLED: a relevance grade instead of the verdict (_GRADED_SYSTEM); grade 0 is
+    removed, 1 stays as "marginale", 2 and 3 are "applicabile"; each kept row carries _grade."""
     from . import method_candidates
 
     priority = feature_flags.enabled(CHECK_PRIORITY_FLAG)
     gated = feature_flags.enabled(method_candidates.CHECKLIST_GATED_FLAG)
+    graded = feature_flags.enabled(CHECK_GRADED_FLAG)
     to_check, texts = _applicability_candidates(facts, request, article_rows)
     if not texts and not (priority or gated):
         return article_rows
@@ -3669,31 +3686,40 @@ def _filter_applicable_articles(facts: str, request: str,
     unchecked_labels = list(texts)[_APPLICABILITY_MAX_CHECKED:]
     if unchecked > 0:
         texts = dict(list(texts.items())[:_APPLICABILITY_MAX_CHECKED])
-    verdicts = (_applicability_verdicts(facts, request, texts,
-                                        _APPLICABILITY_SYSTEM_QUOTED if priority else _APPLICABILITY_SYSTEM)
-                if texts else {})
+    if not texts:
+        verdicts = {}
+    elif graded:
+        verdicts = _applicability_verdicts(facts, request, _graded_texts(texts, to_check), _GRADED_SYSTEM,
+                                           case=_graded_case(facts, request, analysis), tokens=_GRADED_TOKENS)
+    else:
+        verdicts = _applicability_verdicts(facts, request, texts)
     if verdicts is None:
         # Every batch failed: kept as before; the method lists' candidates are not (CHECKLIST_GATED).
         return _without_unjudged(article_rows, to_check, {}, set(), method_only=True) if gated else article_rows
-    case = _case_text(facts, request)
-    dropped_articles, dropped, voided = set(), [], []
+    dropped_articles, dropped, grades = set(), [], {}
     for article in to_check:
         label = f"{article[0]} {article[1]}"
         verdict = verdicts.get(_applicability_key(label))
-        if _drops_article(verdict, texts.get(label, "")):
-            # CHECK_PRIORITY_ENABLED: a rejection must quote the case; one that does not is a misreading
-            # (diagnose_long, 25 Oct: 1158, 416-bis, 1163 rejected on facts the case does not state).
-            if priority and not _quote_in_case(str(verdict.get("fatto") or ""), case):
-                voided.append({"article": label, "fatto": str(verdict.get("fatto"))[:200]})
-                verdicts[_applicability_key(label)] = {**verdict, "verdict": "applicabile"}
-                continue
+        if graded:
+            grade = _grade(verdict)
+            if grade == 0:
+                dropped_articles.add(article)
+                dropped.append({"article": label, "grade": 0, "requisito": "", "fatto": "",
+                                "reason": str(verdict.get("reason") or "")[:200]})
+            elif grade is not None:
+                grades[article] = (grade, " ".join(str(verdict.get("issue") or "").split())[:120])
+        elif _drops_article(verdict, texts.get(label, "")):
             dropped_articles.add(article)
             dropped.append({"article": label, "requisito": str(verdict.get("requisito"))[:200],
                             "fatto": str(verdict.get("fatto"))[:200], "reason": str(verdict.get("reason", ""))[:200]})
+    if graded:
+        shown = {label: f"grade {_grade(verdicts.get(_applicability_key(label)))}"
+                 if _grade(verdicts.get(_applicability_key(label))) is not None else "missing" for label in texts}
+    else:
+        shown = {label: (verdicts.get(_applicability_key(label)) or {}).get("verdict", "missing") for label in texts}
     log = {
         "checked": sorted(texts),
-        "verdicts": {label: (verdicts.get(_applicability_key(label)) or {}).get("verdict", "missing")
-                     for label in texts},
+        "verdicts": shown,
         "dropped": dropped,
         "unchecked": max(unchecked, 0),
         "unchecked_labels": unchecked_labels,
@@ -3701,14 +3727,23 @@ def _filter_applicable_articles(facts: str, request: str,
     # The verdict travels with the rows checked and kept: a trimmed draft prompt gives its free
     # room to those judged applicable first (_refill_order).
     judged = {}
-    for article in to_check:
-        verdict = verdicts.get(_applicability_key(f"{article[0]} {article[1]}"))
-        if verdict and article not in dropped_articles:
-            judged[article] = str(verdict.get("verdict", "")).strip().lower()
-    if priority:
-        log["voided_rejections"] = voided
-    rows = [{**r, "_applicability": judged[r["_article"]]} if r.get("_article") in judged else r
-            for r in article_rows if r.get("_article") not in dropped_articles]
+    if graded:
+        judged = {article: "applicabile" if grade >= 2 else "marginale" for article, (grade, _) in grades.items()}
+        log["grades"] = {f"{a[0]} {a[1]}": g for a, (g, _) in grades.items()}
+        log["issues"] = {f"{a[0]} {a[1]}": issue for a, (_, issue) in grades.items() if issue}
+    else:
+        for article in to_check:
+            verdict = verdicts.get(_applicability_key(f"{article[0]} {article[1]}"))
+            if verdict and article not in dropped_articles:
+                judged[article] = str(verdict.get("verdict", "")).strip().lower()
+
+    def tagged(row):
+        article = row.get("_article")
+        if article not in judged:
+            return row
+        extra = {"_grade": grades[article][0], "_grade_issue": grades[article][1]} if article in grades else {}
+        return {**row, "_applicability": judged[article], **extra}
+    rows = [tagged(r) for r in article_rows if r.get("_article") not in dropped_articles]
     if priority or gated:
         # CHECK_PRIORITY_ENABLED: an article left unchecked may not be cited; CHECKLIST_GATED_ENABLED: nor
         # may a method lists' candidate.
@@ -3722,15 +3757,64 @@ def _filter_applicable_articles(facts: str, request: str,
 # CHECK_PRIORITY_ENABLED (diagnose_long, 25 Oct: half of the pool past the 36 checked slots, and
 # kept unchecked): the slots go first to the voted articles, then to those several signals found,
 # then the rest in the pipeline's order, the method lists last (_check_rank); an article left
-# unchecked is removed; a rejection must quote the case (_quote_in_case).
+# unchecked is removed.
 CHECK_PRIORITY_FLAG = "CHECK_PRIORITY_ENABLED"
-_APPLICABILITY_QUOTE_RULE = (
-    "\nPer un articolo \"incompatibile\", \"fatto\" è la frase del caso che contraddice il requisito, copiata "
-    "parola per parola dal testo dei fatti, senza parafrasi: se nessuna frase del caso lo contraddice, "
-    "l'articolo è \"applicabile\"."
+
+# CHECK_GRADED_ENABLED (diagnose_long, 26 Oct, F1-F5 on: 75% of the 685 articles cited without being
+# expected had been judged "applicabile" -- the yes/no check let almost everything through). A grade of
+# relevance instead, from the rubrica and the first _GRADED_TEXT_CHARS of the text, with the case's
+# questions and issues in view; grade 0 leaves the pool before the prompt, PLAN_KEEP_CHECKED keeps 2-3.
+CHECK_GRADED_FLAG = "CHECK_GRADED_ENABLED"
+_GRADED_TEXT_CHARS = 400
+_GRADED_TOKENS = (60, 45)       # reply max_tokens: base, per article
+_GRADED_SYSTEM = (
+    "Sei un giurista. Ricevi i fatti di un caso, i suoi quesiti e le sue questioni, e alcuni articoli di legge "
+    "candidati, ciascuno con la sua rubrica e l'inizio del testo. Per ogni articolo dai un voto di pertinenza al "
+    "caso:\n"
+    "- 3: disciplina la questione centrale, quella da cui dipende l'esito;\n"
+    "- 2: disciplina un'altra questione del caso, o serve direttamente alla difesa o alla pretesa della parte "
+    "assistita sui fatti dati;\n"
+    "- 1: tocca il caso solo di lato (una regola generale che qui non decide nulla, un aspetto che i fatti non "
+    "pongono);\n"
+    "- 0: non riguarda questi fatti, o è di un'altra materia o di un'altra fase (un articolo civile in un caso "
+    "solo penale, il termine di un giudizio che non c'è).\n"
+    "Giudica da ciò che l'articolo dispone, non dal numero e non da una parola in comune con i fatti. Nel dubbio "
+    "tra due voti scegli il più basso.\n"
+    "Rispondi SOLO con un array JSON compatto, un oggetto per articolo nell'ordine dato: "
+    '[{"a": "<l\'identificativo tra parentesi quadre>", "g": 0, "q": "<la questione che serve, in poche parole>", '
+    '"r": "<perché, in una frase breve>"}]'
 )
-_APPLICABILITY_SYSTEM_QUOTED = _APPLICABILITY_SYSTEM.replace(
-    '"fatto": "<il fatto del caso>"', '"fatto": "<la frase del caso, copiata>"') + _APPLICABILITY_QUOTE_RULE
+
+
+def _grade(verdict: Optional[Dict[str, Any]]) -> Optional[int]:
+    """The grade 0-3 of a graded verdict, or None when it has none."""
+    match = re.match(r"\s*([0-3])\b", str((verdict or {}).get("grade", "")))
+    return int(match.group(1)) if match else None
+
+
+def _graded_texts(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]]]) -> Dict[str, str]:
+    """Each article as the graded check reads it: its rubrica and the first _GRADED_TEXT_CHARS of its text."""
+    rows_of = {f"{a[0]} {a[1]}": rows for a, rows in to_check.items()}
+    return {label: f"Rubrica: {_rows_heading(rows_of.get(label, [])) or '-'}\nTesto: {text[:_GRADED_TEXT_CHARS]}"
+            for label, text in texts.items()}
+
+
+def _graded_case(facts: str, request: str, analysis: Optional[Dict[str, Any]]) -> str:
+    """The case for the graded check: its text, then its questions, central issues and issues."""
+    analysis = analysis or {}
+    frame = analysis.get("frame") or {}
+    parts = [_case_text(facts, request)[:2000]]
+    tasks = [t for t in frame.get("tasks") or [] if t]
+    central = [c.get("nome") for c in frame.get("central_issue_candidates") or [] if isinstance(c, dict) and c.get("nome")]
+    issues = list(dict.fromkeys(str(q.get("titolo")).strip() for q in analysis.get("questioni") or []
+                                if isinstance(q, dict) and q.get("titolo")))[:8]
+    if tasks:
+        parts.append("Quesiti:\n" + "\n".join(f"- {t}" for t in tasks))
+    if central:
+        parts.append("Questione centrale: " + "; ".join(central))
+    if issues:
+        parts.append("Questioni del caso:\n" + "\n".join(f"- {q}" for q in issues))
+    return "\n\n".join(parts)
 
 
 def _check_rank(rows: List[Dict[str, Any]]) -> int:
@@ -3752,19 +3836,6 @@ def _check_order(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any
     rank = {f"{a[0]} {a[1]}": _check_rank(rows) for a, rows in to_check.items()}
     order = sorted(enumerate(texts), key=lambda pair: (rank.get(pair[1], 2), pair[0]))
     return {label: texts[label] for _, label in order}
-
-
-def _words(text: str) -> List[str]:
-    return re.findall(r"[a-zà-ÿ0-9]+", (text or "").lower())
-
-
-def _quote_in_case(quote: str, case: str) -> bool:
-    """True when the quote is the case's own words: each part of it (split at "...") found in the
-    case text, word for word once case and punctuation are set aside, one part of three words or more."""
-    flat = " " + " ".join(_words(case)) + " "
-    parts = [" ".join(_words(p)) for p in re.split(r"\.\.\.|…", quote or "")]
-    parts = [p for p in parts if p]
-    return bool(parts) and max(len(p.split()) for p in parts) >= 3 and all(f" {p} " in flat for p in parts)
 
 
 def _without_unjudged(rows: List[Dict[str, Any]], to_check: Dict[tuple, List[Dict[str, Any]]], judged: Dict[tuple, str],
@@ -4188,7 +4259,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # APPLICABILITY_CHECK_ENABLED. Runs after article_rows/ruling_rows are
     # final, before both the citations and the draft prompt use them.
     if feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
-        article_rows = _filter_applicable_articles(facts, request, article_rows)
+        article_rows = _filter_applicable_articles(facts, request, article_rows, analysis)
     voted_kept = sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in article_rows
                          if r.get("_vote") and r.get("_article")})
     if voted_kept:

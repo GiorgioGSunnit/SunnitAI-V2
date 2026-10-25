@@ -273,29 +273,81 @@ def test_the_checked_slots_go_by_priority_and_the_unchecked_are_removed(monkeypa
     assert log["removed_unchecked"] == ["1163 c.c.", "1168 c.c."] and log["unchecked_labels"] == ["1163 c.c.", "1168 c.c."]
 
 
-def test_a_rejection_must_quote_the_case(monkeypatch, logged):
+def test_a_rejection_drops_with_the_priority_flag_too(monkeypatch):
+    # the rule "a rejection without a quote counts as applicable" is gone: it revived 46 wrong articles
     monkeypatch.setenv("CHECK_PRIORITY_ENABLED", "true")
-    model = Check({"1158 c.c.": "il possesso dura da meno di venti anni",                  # a misreading
-                   "1163 c.c.": "in modo pacifico e pubblico"})                             # the case's words
+    model = Check({"1158 c.c.": "il possesso dura da meno di venti anni"})
     monkeypatch.setattr(dg, "_call_chat", model)
-    kept = {r["_article"][0]: r.get("_applicability") for r in dg._filter_applicable_articles(CASE, "", _pool())}
-    assert kept["1158"] == "applicabile" and "1163" not in kept
-    log = [d for e, d in logged if e == "case_analysis_applicability"][-1]
-    assert [v["article"] for v in log["voided_rejections"]] == ["1158 c.c."]
-    assert "copiata parola per parola" in model.systems[0]
-
-
-def test_without_the_flag_a_paraphrased_rejection_still_drops(monkeypatch):
-    monkeypatch.setattr(dg, "_call_chat", Check({"1158 c.c.": "il possesso dura da meno di venti anni"}))
     assert "1158" not in {r["_article"][0] for r in dg._filter_applicable_articles(CASE, "", _pool())}
+    assert model.systems[0] == dg._APPLICABILITY_SYSTEM
 
 
-def test_quotes():
-    assert dg._quote_in_case("«in modo pacifico e pubblico»", CASE)
-    assert dg._quote_in_case("Tizio possiede il fondo ... Caio rivendica il fondo", CASE)
-    assert not dg._quote_in_case("pacifico", CASE)                                       # too short to be a quote
-    assert not dg._quote_in_case("il possesso è clandestino", CASE)
-    assert dg._APPLICABILITY_SYSTEM_QUOTED != dg._APPLICABILITY_SYSTEM + dg._APPLICABILITY_QUOTE_RULE
+# --- CHECK_GRADED -------------------------------------------------------------------------------
+
+class Grades:
+    """The graded model: grade per label (default 2), short keys as asked."""
+
+    def __init__(self, grades):
+        self.grades, self.humans, self.calls = dict(grades), [], []
+
+    def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
+        self.calls.append({"system": messages[0].content, "max_tokens": max_tokens, "temperature": temperature})
+        self.humans.append(messages[-1].content)
+        labels = re.findall(r"^\[([^\]]+)\]$", messages[-1].content, re.MULTILINE)
+        return json.dumps([{"a": label, "g": self.grades.get(label, 2), "q": "usucapione", "r": "x"} for label in labels])
+
+
+GRADED_ANALYSIS = {"questioni": [{"titolo": "Usucapione del fondo"}, {"titolo": "Rivendicazione"}],
+                   "frame": {"tasks": ["Chi è proprietario del fondo?"],
+                             "central_issue_candidates": [{"nome": "usucapione", "codice": "c.c."}]}}
+
+
+def test_graded_check_keeps_by_grade_and_removes_grade_zero(monkeypatch, logged):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    model = Grades({"1158 c.c.": 3, "1140 c.c.": 1, "1163 c.c.": 0})
+    monkeypatch.setattr(dg, "_call_chat", model)
+    pool = _pool()
+    pool[1]["s"]["titolo_articolo"] = "Usucapione dei beni immobili e dei diritti reali immobiliari"
+    pool[1]["s"]["plain_text"] = "La proprietà dei beni immobili " + "x" * 2000
+    kept = {r["_article"][0]: r for r in dg._filter_applicable_articles(CASE, "", pool, GRADED_ANALYSIS)}
+    assert "1163" not in kept                                                       # grade 0: out of the pool
+    assert kept["1158"]["_grade"] == 3 and kept["1158"]["_applicability"] == "applicabile"
+    assert kept["1140"]["_grade"] == 1 and kept["1140"]["_applicability"] == "marginale"
+    assert kept["948"]["_grade"] == 2 and kept["948"]["_grade_issue"] == "usucapione"
+    human = model.humans[0]
+    text = ("La proprietà dei beni immobili " + "x" * 2000)[:400]
+    assert f"Rubrica: Usucapione dei beni immobili e dei diritti reali immobiliari\nTesto: {text}\n\n" in human
+    assert "Questione centrale: usucapione" in human and "- Rivendicazione" in human and "- Chi è proprietario" in human
+    assert model.calls[0]["temperature"] == 0 and model.calls[0]["max_tokens"] == 60 + 45 * 5
+    assert "voto di pertinenza" in model.calls[0]["system"]
+    log = [d for e, d in logged if e == "case_analysis_applicability"][-1]
+    assert log["grades"]["1158 c.c."] == 3 and log["verdicts"]["1163 c.c."] == "grade 0"
+    assert log["dropped"][0]["article"] == "1163 c.c." and log["dropped"][0]["grade"] == 0
+
+
+def test_a_grade_one_article_does_not_pass_for_the_checklist(monkeypatch):
+    rows = [dict(_row("2943", "c.c.", "x"), _applicability="marginale", _grade=1)]
+    assert ptw._through_check(rows, "fatti", "") == []
+
+
+def test_graded_plan_keeps_twelve_by_grade_then_fusion_rank(monkeypatch):
+    monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
+    rows = [dict(_row(str(n), "c.c.", "x"), _grade=2, _fused_rank=n) for n in range(20, 0, -1)]
+    rows += [dict(_row("1158", "c.c.", "x"), _grade=3, _fused_rank=40), dict(_row("1140", "c.c.", "x"), _grade=1)]
+    kept = ptw._checked(rows)
+    assert kept[0] == ("1158", "c.c.") and len(kept) == 12 and ("1140", "c.c.") not in kept
+    assert kept[1:] == [(str(n), "c.c.") for n in range(1, 12)]
+
+
+def test_graded_plan_forces_no_catch_all():
+    plan = {"questioni": [{"titolo": "Usucapione del fondo", "norme": [], "pronunce": [],
+                           "argomento": "Il possesso ventennale fonda l'acquisto.", "obiezione": "", "replica": ""}]}
+    headings = {("1158", "c.c."): "Usucapione dei beni immobili", ("1227", "c.c."): "Concorso del fatto colposo"}
+    issue_of = {("1227", "c.c."): "risarcimento"}
+    out, placed, grouped, added = ptw._group_checked(plan, [("1158", "c.c."), ("1227", "c.c.")], headings, 7,
+                                                     issue_of, catch_all=False)
+    assert grouped == {("1158", "c.c."): "Usucapione del fondo"} and added == []
+    assert [q["titolo"] for q in out["questioni"]] == ["Usucapione del fondo"]
 
 
 # --- F5 PLAN_KEEP_CHECKED -----------------------------------------------------------------------
