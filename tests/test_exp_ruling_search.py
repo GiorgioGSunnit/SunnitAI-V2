@@ -176,3 +176,24 @@ def test_report_lines_totals():
     assert any(line.startswith("p1") and line.endswith("(available 12)") for line in lines)
     assert any(line.startswith("BEFORE total rulings 5: criminal 3 (60%)") for line in lines)
     assert any(line.startswith("AFTER  total rulings 5: criminal 5 (100%), on topic 4 (80%)") for line in lines)
+
+
+def test_civil_cases_only_cc_cpc():
+    cases = [{"id": "c1", "expected": [{"article": "1453", "code": "cc"}, {"article": "658", "code": "cpc"}]},
+             {"id": "p9", "expected": [{"article": "584", "code": "cp"}]},
+             {"id": "n3", "expected": [{"article": "3", "code": "l241"}], "heldout": True},
+             {"id": "n6", "expected": [{"article": "1783", "code": "cc"}], "heldout": True}]
+    assert [c["id"] for c in rs.branch_cases(cases, "civile", False)] == ["c1"]
+    assert [c["id"] for c in rs.branch_cases(cases, "civile", True)] == ["c1", "n6"]
+    assert [c["id"] for c in rs.criminal_cases(cases, True)] == ["p9"]          # civil never in the criminal set
+    assert rs.expected_keys(cases[0]) == {"1453 c.c.", "658 c.p.c."}
+
+
+def test_civil_side_is_the_favoured_party_against_the_client():
+    links = {"r1": {"branch": "civile", "articles": ["2051 c.c."], "italgiure": None}}
+    cards = {"r1": {"id": "r1", "articoli_applicati": ["2051 c.c."], "parte_favorita": "danneggiato",
+                    "a_favore_di": "ricorrente", "riferimento_completo": True, "branch": "civile"}}
+    m = rs.measure(["r1"], links, cards, {"2051 c.c."}, "", "civile", "i genitori di Tizio, danneggiati")
+    assert m["criminal"] == 1 and m["on_topic"] == 1 and m["client_side"] == 1 and m["side_known"] == 1
+    lines = rs.report_lines([("c1", "", m, m, 3)], "civil")
+    assert lines[0].count("civil / on topic") == 1 and any("civil 1 (100%)" in l for l in lines)

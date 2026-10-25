@@ -68,7 +68,9 @@ _spec.loader.exec_module(rl)   # loads the app; main() makes every Neo4j session
 import src.rag.defensive_generation as dg  # noqa: E402
 
 TOP = dg._PASSAGE_RULINGS
-CODE_ABBR = {"cp": "c.p.", "cpp": "c.p.p."}
+CODE_ABBR = {"cp": "c.p.", "cpp": "c.p.p.", "cc": "c.c.", "cpc": "c.p.c."}
+# A case belongs to a branch when all its expected articles are of that branch's codes.
+BRANCH_CODES = {"penale": {"cp", "cpp"}, "civile": {"cc", "cpc"}}
 W_ARTICLE, W_KEYWORD, W_SIDE = 3, 1, 2
 CENTRAL, CHOSEN = 1.0, 0.5
 # A central article the ruling cites (step 1) but its card does not list as applied: still a
@@ -91,10 +93,16 @@ _VICTIM_RE = re.compile(r"persona\s+offesa|parte\s+civile|vittim|danneggiat|denu
 
 def criminal_cases(cases: list, include_heldout: bool, only=None) -> list:
     """The cases whose expected articles are all c.p. / c.p.p.; held-out ones only on request."""
+    return branch_cases(cases, "penale", include_heldout, only)
+
+
+def branch_cases(cases: list, branch: str, include_heldout: bool, only=None) -> list:
+    """The cases whose expected articles are all of the branch's codes (BRANCH_CODES); held-out
+    ones only on request."""
     out = []
     for c in cases:
         codes = {e.get("code") for e in c.get("expected") or []}
-        if not codes or not codes <= set(CODE_ABBR):
+        if not codes or not codes <= BRANCH_CODES[branch]:
             continue
         if c.get("heldout") and not include_heldout:
             continue
@@ -238,8 +246,11 @@ def available_on_topic(cards: dict, links: dict, expected: set) -> int:
     return sum(1 for doc_id in cards if set((links.get(doc_id) or {}).get("articles") or []) & expected)
 
 
-def measure(ids: list, links: dict, cards: dict, expected: set, side: str) -> dict:
-    """The yardsticks over a list of ruling ids (see the module docstring)."""
+def measure(ids: list, links: dict, cards: dict, expected: set, side: str, branch: str = "penale",
+            party: str = "") -> dict:
+    """The yardsticks over a list of ruling ids (see the module docstring). "criminal" counts the
+    rulings of the case's branch; for a civil case the client's side is the card's favoured party
+    against the client's role (src/rag/ruling_cards.favours_client)."""
     m = {"rulings": len(ids), "criminal": 0, "on_topic": 0, "full_reference": 0, "client_side": 0,
          "side_known": 0, "not_a_ruling": 0}
     for doc_id in ids:
@@ -247,10 +258,14 @@ def measure(ids: list, links: dict, cards: dict, expected: set, side: str) -> di
         if link is None:              # commentary (Codice Penale Commentato) or another document type
             m["not_a_ruling"] += 1
             continue
-        m["criminal"] += link["branch"] == "penale"
+        m["criminal"] += link["branch"] == branch
         m["on_topic"] += bool(set(link["articles"]) & expected)
         m["full_reference"] += bool(card["riferimento_completo"] if card else rl.full_reference(link))
-        if card and side:
+        if card and branch == "civile" and party.strip():
+            from src.rag import ruling_cards as rc
+            m["side_known"] += bool(card.get("parte_favorita"))
+            m["client_side"] += rc.favours_client(rc._trim(card), "", party)
+        elif card and side:
             m["side_known"] += card["a_favore_di"] != "non chiaro"
             m["client_side"] += card["a_favore_di"] == side
     return m
@@ -287,10 +302,10 @@ def _cell(m: dict, key: str) -> str:
     return f"{m[key]}/{m['rulings']}"
 
 
-def report_lines(rows: list) -> list:
-    """rows: (case id, side, before, after, available)."""
+def report_lines(rows: list, branch_word: str = "criminal") -> list:
+    """rows: (case id, side, before, after, available). branch_word labels the branch column."""
     keys = ("criminal", "on_topic", "full_reference", "client_side")
-    out = [f"{'case':18s} {'side':9s} | {'BEFORE: criminal / on topic / full ref / client side':52s} | "
+    out = [f"{'case':18s} {'side':9s} | {'BEFORE: ' + branch_word + ' / on topic / full ref / client side':52s} | "
            f"AFTER  (available: carded rulings citing an expected article)", "-" * 130]
     totals = {"before": dict.fromkeys(keys + ("rulings",), 0), "after": dict.fromkeys(keys + ("rulings",), 0)}
     for case_id, side, before, after, available in rows:
@@ -304,7 +319,8 @@ def report_lines(rows: list) -> list:
     for name in ("before", "after"):
         t = totals[name]
         out.append(f"{name.upper():6s} total rulings {t['rulings']}: "
-                   + ", ".join(f"{k.replace('_', ' ')} {rl._pct(t[k], t['rulings'])}" for k in keys))
+                   + ", ".join(f"{(branch_word if k == 'criminal' else k.replace('_', ' '))} "
+                               f"{rl._pct(t[k], t['rulings'])}" for k in keys))
     return out
 
 
@@ -337,6 +353,7 @@ def live_ruling_ids(session, driver, database: str, question: str) -> dict:
                                list(picked.get("institutions_resolved") or []) + resolved})
     istituti = [i for q in analysis.get("questioni") or [] for i in (q.get("istituti") or []) if isinstance(i, dict)]
     return {"terms": _case_terms(question, analysis), "side": client_side(analysis.get("posizione") or ""),
+            "party": f"{analysis.get('parte_assistita') or ''} {analysis.get('posizione') or ''}".strip(),
             "selected": sorted({ref_key(r) for r in selected}), "central": central, "istituti": istituti,
             "issues": case_issues(analysis), "before_ids": [(r.get("d") or {}).get("id") for r in rows]}
 
@@ -390,6 +407,8 @@ def main() -> None:
     parser.add_argument("--show", action="store_true", help="list each case's rulings, before and after (no text)")
     parser.add_argument("--issue-route", action="store_true",
                         help="also rank by the case's issues by name (off by default: no gain on the tuning cases)")
+    parser.add_argument("--branch", default="penale", choices=("penale", "civile"),
+                        help="the cases whose expected articles are all of this branch's codes")
     parser.add_argument("--production", action="store_true",
                         help="AFTER = the chatbot's own choice (src/rag/ruling_cards.py: anchors, side, phase)")
     args = parser.parse_args()
@@ -401,14 +420,14 @@ def main() -> None:
         if not card.get("errore"):
             card["_cited"] = (links.get(card["id"]) or {}).get("articles") or []
             cards[card["id"]] = card
-    cases = criminal_cases(json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"], args.include_heldout,
-                           set(args.only.split(",")) if args.only else None)
+    cases = branch_cases(json.loads(Path(args.cases).read_text(encoding="utf-8"))["cases"], args.branch,
+                         args.include_heldout, set(args.only.split(",")) if args.only else None)
     cache = json.loads(Path(args.cache).read_text(encoding="utf-8")) if os.path.exists(args.cache) else {}
     if args.use_cache:
         missing = [c["id"] for c in cases if c["id"] not in cache]
         if missing:
             sys.exit(f"--use-cache: no cached pipeline output for {', '.join(missing)}; run once without it")
-    print(f"{len(cases)} criminal cases, {len(cards)} cards, {len(links)} rulings in step 1's labels"
+    print(f"{len(cases)} {args.branch} cases, {len(cards)} cards, {len(links)} rulings in step 1's labels"
           + (f", pipeline outputs from {args.cache}" if args.use_cache else ""), file=sys.stderr)
 
     rarities = card_rarities(list(cards.values()))
@@ -426,13 +445,16 @@ def main() -> None:
         expected = expected_keys(case)
         issues = issues_of(run) if args.issue_route else []
         if args.production:
-            ranked = rc.rank(store, run["central"], run["terms"], run["side"], "")
-            after_ids = [c["id"] for c, _, _ in rc.choose(ranked, run["side"], "")]
+            party = run.get("party") or ""
+            ranked = rc.rank(store, run["central"], run["terms"], run["side"], party)
+            after_ids = [c["id"] for c, _, _ in rc.choose(ranked, run["side"], party)]
         else:
             after_ids = rank_cards(list(cards.values()), run["central"], run["terms"], run["side"],
                                    rarities=rarities, issues=issues)
-        rows.append((case["id"], run["side"], measure(run["before_ids"], links, cards, expected, run["side"]),
-                     measure(after_ids, links, cards, expected, run["side"]),
+        party = run.get("party") or ""
+        rows.append((case["id"], run["side"],
+                     measure(run["before_ids"], links, cards, expected, run["side"], args.branch, party),
+                     measure(after_ids, links, cards, expected, run["side"], args.branch, party),
                      available_on_topic(cards, links, expected)))
         if args.show:
             central = sorted(run["central"], key=lambda k: (-run["central"][k], k))
@@ -459,7 +481,7 @@ def main() -> None:
 
     if shown:
         print("\n".join(shown))
-    print("\n".join(report_lines(rows)))
+    print("\n".join(report_lines(rows, "criminal" if args.branch == "penale" else "civil")))
     print(f"\nDone. Nothing was written to the database. Pipeline outputs: {args.cache}")
 
 
