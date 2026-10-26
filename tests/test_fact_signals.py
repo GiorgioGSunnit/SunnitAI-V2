@@ -248,11 +248,11 @@ def test_rules_name_institutions_never_articles(tmp_path):
         assert rule["status"] == "experiment" and rule["codice"]
     bad = tmp_path / "bad.yaml"
     bad.write_text("- {id: x, area: penale, when: [{fact: {pattern: 'a'}}], institution: 'art. 56 c.p.', "
-                   "codice: c.p., why: y, status: experiment}\n", encoding="utf-8")
+                   "codice: c.p., ranges: [[56, 56]], why: y, status: experiment}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="names an article"):
         fs.load_rules(str(bad))
-    bad.write_text("- {id: x, area: penale, when: [{guess: 1}], institution: tentativo, codice: c.p., why: y, "
-                   "status: experiment}\n", encoding="utf-8")
+    bad.write_text("- {id: x, area: penale, when: [{guess: 1}], institution: tentativo, codice: c.p., "
+                   "ranges: [[56, 56]], why: y, status: experiment}\n", encoding="utf-8")
     with pytest.raises(ValueError, match="unknown condition"):
         fs.load_rules(str(bad))
 

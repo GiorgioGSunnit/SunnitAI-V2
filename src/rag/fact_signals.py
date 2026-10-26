@@ -1157,7 +1157,9 @@ def load_rules(path: str = RULES_FILE) -> List[Dict[str, Any]]:
         missing = [k for k in ("id", "area", "when", "institution", "codice", "why", "status") if k not in rule]
         if missing:
             raise ValueError(f"rule {rule.get('id')!r}: missing {', '.join(missing)}")
-        for lo_hi in rule.get("ranges") or []:
+        if not rule.get("ranges"):
+            raise ValueError(f"rule {rule['id']!r}: no ranges (the article numbers its institutions may resolve to)")
+        for lo_hi in rule["ranges"]:
             if not (isinstance(lo_hi, list) and len(lo_hi) == 2 and all(isinstance(n, int) for n in lo_hi)):
                 raise ValueError(f"rule {rule['id']!r}: a range is [first, last] article number")
         if rule["id"] in seen:
@@ -1223,7 +1225,8 @@ def fire_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
         if ok:
             fired.append({"id": rule["id"], "area": rule["area"], "institutions": _institutions(rule),
                           "codice": rule["codice"], "ranges": rule.get("ranges") or [], "why": rule["why"],
-                          "status": rule["status"], "matched": why_fired(rule, facts, terms)})
+                          "status": rule["status"], "acquired_right": bool(rule.get("acquired_right")),
+                          "matched": why_fired(rule, facts, terms)})
     return fired
 
 
@@ -1341,6 +1344,8 @@ def keep_resolved(istituto: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[
     if not istituto.get("fonte"):
         return rows
     ranges, words = istituto.get("ranges") or [], _stems(istituto.get("nome", ""))
+    if not ranges and str(istituto["fonte"]).startswith("regola"):
+        return []                      # a rule's institution resolves only inside its ranges (load_rules: mandatory)
     kept = []
     for row in rows:
         number = (row.get("_article") or ("",))[0]
@@ -1352,6 +1357,24 @@ def keep_resolved(istituto: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[
             continue
         kept.append(row)
     return kept
+
+
+# A rubrica word every part of a code uses: an institution matching an article on this word alone resolves only
+# inside the word's own chapter (the live answer of 26 Oct: "usucapione di servitù apparente" -> art. 2689 c.c.,
+# "Usucapione", the transcription of the judgment). Per code sigla: (stem, ranges).
+GENERIC_RUBRICA_RANGES = {
+    "c.c.": {"usuca": [[1158, 1167], [1061, 1061]], "presc": [[2934, 2969]], "acces": [[934, 947]]},
+}
+
+
+def generic_out_of_range(name: str, code: str, number: str, rubrica: str) -> str:
+    """The generic rubrica word (its stem) when `name` and `rubrica` share only that word and article `number` of
+    `code` lies outside its ranges (GENERIC_RUBRICA_RANGES), else "": then the institution does not resolve there."""
+    table = GENERIC_RUBRICA_RANGES.get(code) or {}
+    shared = _stems(name) & _stems(rubrica)
+    if not shared or not shared <= set(table):
+        return ""
+    return next((stem for stem in sorted(shared) if not _in_ranges(number, table[stem])), "")
 
 
 def central_issues(fired: List[Dict[str, Any]], limit: int = MAX_CENTRAL) -> List[Dict[str, Any]]:
@@ -1368,7 +1391,7 @@ def central_issues(fired: List[Dict[str, Any]], limit: int = MAX_CENTRAL) -> Lis
 
 
 def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
-                 areas: Optional[List[str]] = None, rules: Optional[bool] = None) -> Dict[str, Any]:
+                 areas: Optional[List[str]] = None, rules: Optional[bool] = None, request: str = "") -> Dict[str, Any]:
     """{"facts", "terms", "fired", "problem", ...} from the extracted facts, the rules fired within the case's
     areas (only with FACT_SIGNALS_ENABLED, or rules); FACT_REGIMES_ENABLED first qualifies the parties
     (qualify_parties) and adds "qualifications", "regimes" and "tools". Logged as case_analysis_fact_signals."""
@@ -1387,7 +1410,7 @@ def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
     out = {"facts": facts, "terms": terms, "fired": fired, "problem": problem, "areas": list(areas or [])}
     if regimes:
         out.update({"qualifications": qualifications, "regimes": regime_issues(facts, qualifications, areas),
-                    "tools": procedural_tools(facts, areas), "damages": damage_heads(facts),
+                    "tools": procedural_tools(facts, areas, request), "damages": damage_heads(facts),
                     "multi_roles": multiple_roles(facts)})
     vlog("case_analysis_fact_signals", {**out, "central": all_central(out)})
     return out
@@ -1628,13 +1651,35 @@ PROCEDURAL_TOOLS: List[Dict[str, Any]] = [
              "(accertamenti, consulenze, testimonianze) e la prescrizione più lunga dell'azione civile quando il "
              "fatto è considerato dalla legge come reato (art. 2947, terzo comma, c.c.).",
      "why": "la morte o lesioni di una persona causate per colpa"},
+    # The live answer of 26 Oct: asked whether "una richiesta anche sanzionatoria" was possible against the neighbour
+    # who locked the road, the answer offered only damages. The tool for a sum per violation or day of delay.
+    {"id": "misure_coercitive", "refs": [("614-bis", "c.p.c.")],
+     "text": "Misure di coercizione indiretta (art. 614-bis c.p.c.): con il provvedimento di condanna all'adempimento "
+             "di obblighi diversi dal pagamento di somme di denaro (rimuovere un ostacolo, consentire un passaggio, "
+             "astenersi da una condotta) il giudice, su richiesta di parte e salvo che sia manifestamente iniquo, "
+             "fissa la somma dovuta dall'obbligato per ogni violazione o inosservanza successiva o per ogni ritardo "
+             "nell'esecuzione del provvedimento; la richiesta va fatta con la domanda di condanna.",
+     "why": "la richiesta di una sanzione o di una penalità per chi non adempie o non rispetta l'ordine del giudice"},
 ]
 
+# A request for a sanction or a penalty against who does not comply (FACT_REGIMES_ENABLED: art. 614-bis c.p.c.).
+_SANCTION = (r"sanzion|penalit|astreinte|coerci|somma (?:di denaro )?per ogni (?:giorno|violazione|ritardo)|"
+             r"per ogni giorno di ritardo|costringer\w* (?:a|ad) (?:rispettar|adempier|eseguir|rimuover)")
 
-def procedural_tools(facts: Optional[Dict[str, Any]], areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+
+def asks_sanction(text: str) -> str:
+    """The words of `text` asking for a sanction or a penalty for non-compliance, or ""."""
+    m = re.search(_SANCTION, _low(text))
+    return m.group(0) if m else ""
+
+
+def procedural_tools(facts: Optional[Dict[str, Any]], areas: Optional[List[str]] = None,
+                     request: str = "") -> List[Dict[str, Any]]:
     """The PROCEDURAL_TOOLS the facts call for, in civil cases (none when the case's areas are all criminal or
     administrative): {id, refs, text, why, matched}. The accertamento preventivo for defects, damage to things
-    or evidence that may be lost; the provvedimento d'urgenza for a safety risk, a harm that grows or urgency."""
+    or evidence that may be lost; the provvedimento d'urgenza for a safety risk, a harm that grows or urgency;
+    the measures of art. 614-bis c.p.c. when the client's requests (or `request`, the user's message) ask for a
+    sanction or a penalty against who does not comply."""
     if not facts:
         return []
     families = {family(a) for a in areas or []} - {""}
@@ -1660,6 +1705,9 @@ def procedural_tools(facts: Optional[Dict[str, Any]], areas: Optional[List[str]]
     harm = _personal_harm(facts)
     if harm and not re.search(_INTENT, texts):
         found["profilo_penale"] = [harm]
+    sanction = next((str(r)[:140] for r in facts.get("requests") or [] if r and asks_sanction(str(r))), "")
+    if sanction or (request and asks_sanction(request)):
+        found["misure_coercitive"] = [sanction or " ".join(request.split())[:140]]
     out = []
     for t in PROCEDURAL_TOOLS:
         if t["id"] not in found:

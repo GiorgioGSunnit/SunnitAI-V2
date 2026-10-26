@@ -1577,7 +1577,8 @@ def _frame_and_fact_signals(facts: str, request: str) -> tuple:
     signals = None
     if read is not None:
         try:
-            signals = fact_signals.signals_from(read[0], read[1], (frame or {}).get("areas") or [])
+            signals = fact_signals.signals_from(read[0], read[1], (frame or {}).get("areas") or [],
+                                                request=request)
         except Exception as exc:
             logger.warning("fact signals: rules not applied: %s", exc)
     if signals is not None and fact_signals.regimes_enabled():
@@ -2176,6 +2177,24 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                                                     "why": "keyword match shares no specific word with the institution"})
         return True
 
+    # FACT_SIGNALS_ENABLED / STRICT_ARTICLES_ENABLED (the live answer of 26 Oct): a match on a generic rubrica word
+    # alone ("usucapione", "prescrizione", "accessioni") counts only inside that word's chapter of the code -- never
+    # art. 2689 c.c. ("Usucapione", the transcription of the judgment) for "usucapione di servitù apparente".
+    from . import fact_signals
+    generic_ranges = strict_articles or fact_signals.enabled()
+
+    def _generic_word_out(rows: List[Dict[str, Any]], number: str, path: str) -> bool:
+        if not generic_ranges:             # not even the model's own number: 2689 is a wrong guess too
+            return False
+        heading = _rows_heading(rows)
+        word = fact_signals.generic_out_of_range(nome, abbr or "", number, heading)
+        if not word:
+            return False
+        vlog("case_analysis_institution_rejected", {"institution": nome, "article": f"{number} {abbr or codice}",
+                                                    "path": path, "heading": heading,
+                                                    "why": f"generic rubrica word {word!r} outside its chapter"})
+        return True
+
     # STRICT_ARTICLES_ENABLED: an institution a code table names the article of (fact_signals.REGIMES' "articolo":
     # "foro del consumatore" is art. 33 Cod. cons., whose rubrica is about unfair terms) is that article.
     table_number = _article_num(str(istituto.get("articolo") or ""))
@@ -2193,7 +2212,8 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                 if number:
                     rows = fetch_article(session, doc["id"], number)
                     if rows and not _generic_alone(rows, number, field) and \
-                            not _keyword_unrelated(rows, number, term, field):
+                            not _keyword_unrelated(rows, number, term, field) and \
+                            not _generic_word_out(rows, number, field):
                         reason = field if term == nome else f"{field}, via parola chiave {term!r}"
                         # Only the official heading exempts a row from the
                         # applicability check: s.title is LLM-written on every
@@ -2210,7 +2230,8 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
         number = _heading_index_match(session, doc["id"], nome)
         if number:
             rows = fetch_article(session, doc["id"], number)
-            if rows and not _generic_alone(rows, number, "heading index"):
+            if rows and not _generic_alone(rows, number, "heading index") and \
+                    not _generic_word_out(rows, number, "heading index"):
                 return _found(_tag(rows, number, heading_match=True), number,
                              "heading index, verified against its own words")
 
@@ -2231,7 +2252,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                     "institution": nome, "article": f"{number} {abbr or codice}", "path": "fulltext",
                     "heading": _rows_heading(found), "why": "rubrica shares no word with the institution"})
                 continue
-            if found and _generic_alone(found, number, "fulltext"):
+            if found and (_generic_alone(found, number, "fulltext") or _generic_word_out(found, number, "fulltext")):
                 continue
             rows.extend(_tag(found, number))
         if rows:
@@ -2242,7 +2263,8 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     numero = _article_num(istituto.get("numero_indicativo", ""))
     if numero and doc and _number_matches_institution(session, doc["id"], numero, nome):
         rows = fetch_article(session, doc["id"], numero)
-        if rows:
+        if rows and not (generic_ranges and fact_signals.generic_out_of_range(nome, abbr or "", numero,
+                                                                              _rows_heading(rows))):
             return _found(_tag(rows, numero), numero, "model's numero_indicativo, verified against its title")
 
     vlog("case_analysis_institution", {"institution": nome, "resolved": None, "reason": "not found"},
@@ -2671,6 +2693,19 @@ _RULING_FIT_SYSTEM = (
     "\"uso\": \"fatti\", \"regola\", \"passo\" o \"nessuno\", \"fatto\": \"il fatto del CASO (per fatti) o il "
     "passo (per passo); vuoto altrimenti\", \"perche\": \"motivo in poche parole\"}."
 )
+# The live answer of 26 Oct: a ruling that denied the passage (the plot "non può essere considerato intercluso")
+# was cited three times in support of a client claiming one. Each ruling's direction for the client's position:
+# from its card (outcome, favoured party) when it has one, else in the same call.
+_RULING_FIT_DIRECTION = (
+    "\nPer ogni pronuncia indica anche \"verso\" rispetto alla POSIZIONE DELLA PARTE ASSISTITA: \"contro\" se "
+    "l'esito (la domanda accolta o respinta, chi ha vinto) o il principio va contro ciò che la parte assistita "
+    "sostiene o chiede -- nega il diritto che afferma, esclude un presupposto di cui ha bisogno, accoglie la pretesa "
+    "che essa contrasta; \"a favore\" se lo sostiene; \"neutro\" altrimenti. Quando il passo riporta l'esito e la "
+    "parte favorita della scheda, decidi da quelli. Aggiungi all'oggetto: \"verso\": \"a favore\", \"contro\" o "
+    "\"neutro\"."
+)
+_ADVERSE_NOTE = ("ORIENTAMENTO SFAVOREVOLE alla parte assistita (esito o principio contrario alla sua posizione): "
+                 "solo come argomento della controparte, nell'obiezione, con la replica; mai a sostegno.")
 _RULING_FIT_NOTES = {
     "fatti": "Fatto del caso che ne integra i presupposti: {}.",
     "regola": "Uso nel parere: regola generale sulla questione, da citare come tale, senza attribuire al caso i "
@@ -2679,15 +2714,26 @@ _RULING_FIT_NOTES = {
 }
 
 
-def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _adverse_by_card(row: Dict[str, Any]) -> Optional[bool]:
+    """True when the ruling's card puts it against the client (its role "sfavorevole"), False when for the
+    client ("favorevole"), None without a card or a role (then the check decides)."""
+    role = row.get("_card_role")
+    return True if role == "sfavorevole" else False if role == "favorevole" else None
+
+
+def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]],
+                analysis: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """RULING_FIT_ENABLED: the rulings that can serve the parere -- a fact of the case meets the principle's
     conditions ("fatti"), it states a general rule on a question the case raises ("regola"), or a step the
     client can take now ("passo") -- each with its use as _fit_use and the fact or step as _fit_fact; one call
     for all. A ruling of no use ("nessuno") goes, and so does a "fatti" one whose fact is not the case's own (most
     of its longer words absent from the case: the boat case's hidden defects). No verdict or an unknown use, a
-    failed call or the flag off: the row unchanged. Logged as case_analysis_ruling_fit."""
+    failed call or the flag off: the row unchanged. Logged as case_analysis_ruling_fit.
+    A kept ruling whose outcome or principle goes against the client's position is marked _fit_adverse (its card's
+    role when it has one, else the call's "verso"): only the opponent's argument, with the reply."""
     if not ruling_rows or not feature_flags.enabled(RULING_FIT_FLAG):
         return ruling_rows
+    party = _stance_party(analysis or {})
     case = _case_text(facts, request)
     texts = [r.get("_passage") or " ".join(((r.get("s") or {}).get("plain_text") or "").split())[:_PASSAGE_CHARS]
              for r in ruling_rows]
@@ -2695,9 +2741,10 @@ def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]]) -> 
     passages = "\n\n".join(f"[S{i}] {label}\n{text}" for i, (label, text) in enumerate(zip(labels, texts), 1))
     t0 = time.time()
     try:
-        verdicts = _chat_json([SystemMessage(content=_RULING_FIT_SYSTEM),
-                               HumanMessage(content=f"CASO:\n{case[:3000]}\n\nPASSI DELLE PRONUNCE:\n{passages}")],
-                              max_tokens=200 + 150 * len(ruling_rows), temperature=0)
+        verdicts = _chat_json([SystemMessage(content=_RULING_FIT_SYSTEM + _RULING_FIT_DIRECTION),
+                               HumanMessage(content=f"CASO:\n{case[:3000]}\n\nPOSIZIONE DELLA PARTE ASSISTITA: {party}"
+                                                    f"\n\nPASSI DELLE PRONUNCE:\n{passages}")],
+                              max_tokens=200 + 170 * len(ruling_rows), temperature=0)
     except Exception as exc:
         logger.warning("ruling fit check failed, rulings kept: %s", exc)
         return ruling_rows
@@ -2715,12 +2762,21 @@ def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]]) -> 
             log["dropped"].append({"ruling": label, "why": why})
         elif use == "fatti" and (not fact or not _found_in(fact, case)):
             log["dropped"].append({"ruling": label, "why": f"fact not in the case: {fact[:200]}"})
-        elif use in _RULING_FIT_NOTES:
-            kept.append({**row, "_fit_use": use, "_fit_fact": fact})
-            log["kept"].append({"ruling": label, "use": use, "fact": fact[:200]})
         else:
+            by_card = _adverse_by_card(row)
+            direction = str(verdict.get("verso") or "").strip().lower()
+            adverse = by_card if by_card is not None else direction == "contro"
+            how = "card" if by_card is not None else "check"
+            entry = {"ruling": label, "use": use if use in _RULING_FIT_NOTES else "(no verdict)"}
+            if use in _RULING_FIT_NOTES:
+                row = {**row, "_fit_use": use, "_fit_fact": fact}
+                entry["fact"] = fact[:200]
+            if adverse:
+                row = {**row, "_fit_adverse": True}
+                entry.update(adverse=True, adverse_by=how, outcome=str(row.get("_card_esito") or "")[:120])
             kept.append(row)
-            log["kept"].append({"ruling": label, "use": "(no verdict)"})
+            log["kept"].append(entry)
+    log["adverse"] = [e["ruling"] for e in log["kept"] if e.get("adverse")]
     vlog("case_analysis_ruling_fit", log)
     return kept
 
@@ -2732,10 +2788,12 @@ def _with_fit_facts(ruling_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
     for row in ruling_rows:
         use = row.get("_fit_use")
-        if use in _RULING_FIT_NOTES and (use == "regola" or row.get("_fit_fact")):
+        notes = [_ADVERSE_NOTE] if row.get("_fit_adverse") else []
+        if use in _RULING_FIT_NOTES and (use == "regola" or row.get("_fit_fact")) and not row.get("_fit_adverse"):
+            notes.append(_RULING_FIT_NOTES[use].format((row.get("_fit_fact") or "").rstrip(".")))
+        if notes:
             passage = row.get("_passage") or " ".join(((row.get("s") or {}).get("plain_text") or "").split())
-            note = _RULING_FIT_NOTES[use].format((row.get("_fit_fact") or "").rstrip("."))
-            row = {**row, "_passage": f"{note} {passage}".strip()}
+            row = {**row, "_passage": f"{' '.join(notes)} {passage}".strip()}
         out.append(row)
     return out
 
@@ -5172,7 +5230,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     if hybrid:
         ruling_rows = _support_rulings(facts, request, article_rows, analysis)
 
-    ruling_rows = _ruling_fit(facts, request, ruling_rows)
+    ruling_rows = _ruling_fit(facts, request, ruling_rows, analysis)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
     ruling_rows = _with_fit_facts(ruling_rows)
     system = _parere_system(analysis, session_lang)

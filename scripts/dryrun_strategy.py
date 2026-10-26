@@ -71,6 +71,15 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
                        f"{len(data.get('pronunce') or [])} of {data.get('references_available')} rulings, "
                        f"removed {len(removed.get('norme') or [])} articles and {len(removed.get('pronunce') or [])} "
                        f"rulings, replanned {'yes' if data.get('replanned') else 'no'}")
+            fixes = data.get("review_fixes") or {}
+            if fixes:                            # REVIEW_FIXES_ENABLED / RULING_FIT_ENABLED, the live answer of 26 Oct
+                order = fixes.get("order") or {}
+                out.append("plan fixes: " + (f"made again for: {' | '.join(fixes['problems'])}; " if fixes.get("problems") else "")
+                           + f"merged {'; '.join(m['merged'] + ' -> ' + m['into'] for m in fixes.get('merged') or []) or '-'}; "
+                           + (f"order for an acquired right: {' > '.join(order.get('after') or [])}; " if order else "")
+                           + f"unanswered {' | '.join(fixes.get('unanswered') or []) or '-'}"
+                           + (f"; adverse rulings out of the support {', '.join(fixes['adverse_moved'])}"
+                              if fixes.get("adverse_moved") else ""))
             checked = data.get("checked")
             if checked is not None:
                 out.append(f"plan check: off-topic {', '.join(checked.get('off_topic') or []) or '-'}; "
@@ -115,8 +124,23 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
                        f"({'; '.join(f'{c}: {t}' for c, t in (data.get('types') or {}).items())})")
         elif event == "case_analysis_citation_discipline":
             out.append(f"citations taken out of the sections: {data.get('count', 0)} "
-                       f"({data.get('rephrased', 0)} rephrased, {data.get('dropped', 0)} dropped): "
+                       f"({data.get('dropped', 0)} sentences dropped, {data.get('dangling', 0)} fragments after them): "
                        + (", ".join(r for e in data.get("removed") or [] for r in e.get("removed") or []) or "-"))
+        elif event == "case_analysis_dangling":
+            out.append(f"dangling fragments dropped or cut: {data.get('count', 0)}")
+        elif event == "case_analysis_adverse_rulings":
+            out.append(f"adverse rulings {', '.join(data.get('adverse') or []) or '-'}: {data.get('dropped', 0)} "
+                       "sentences citing one as support dropped")
+        elif event == "case_analysis_questions":
+            out.append(f"explicit questions: {len(data.get('questions') or [])}, unanswered "
+                       + (" | ".join(data.get("unanswered") or []) or "none")
+                       + ("; answers rewritten" if data.get("rewritten") else "")
+                       + (f"; still unanswered: {' | '.join(data['still_unanswered'])}"
+                          if data.get("still_unanswered") else ""))
+        elif event == "case_analysis_evidence_dedup":
+            out.append(f"evidence lists repeated, replaced by a reference: {len(data.get('entries') or [])}")
+        elif event == "case_analysis_ruling_fit" and data.get("adverse"):
+            out.append(f"ruling fit, adverse to the client: {'; '.join(data['adverse'])}")
         elif event == "case_analysis_writer_rules":
             out.append(f"writer rules: {data.get('cut', 0)} cut sections, {data.get('non_application', 0)} "
                        f"'does not apply' sentences and {data.get('burden', 0)} burden templates dropped, "

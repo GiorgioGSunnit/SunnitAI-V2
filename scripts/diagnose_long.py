@@ -1080,6 +1080,7 @@ def analyse_case(rec: dict, ev) -> dict:
     out["after_draft"] = after
     out["fact_signals"] = _fact_signal_trace(rec, out, K, expected_keys)
     out["form"] = _form_trace(rec, K, expected_keys)
+    out["live"] = _live_trace(rec)
     out["tiers"] = rec.get("tiers") or {}
     return out
 
@@ -1132,6 +1133,59 @@ def _form_trace(rec: dict, K, expected_keys: set) -> dict:
             "regimes": list(regimes.get("regimes") or []),
             "review": {k: writer.get(k, 0) for k in ("cut", "non_application", "burden", "facts_flagged")},
             "expected_dropped": expected_dropped}
+
+
+_ACQUIRED_RULES = {"destinazione_padre_famiglia", "usucapione_servitu_apparente", "usucapione_ordinaria"}
+
+
+def _live_trace(rec: dict) -> dict:
+    """The live answer's six defects (26 Oct), read off the answer -- so an older run counts them too -- and off the
+    events of the checks that now fix them: dangling fragments ("Questa disposizione ..." with no norm, "Inoltre,
+    conferma che ...", "..., in conformità."); evidence lists repeated whole; explicit questions of the request
+    left unanswered in section 1 (a sanction question without art. 614-bis c.p.c. or a sanction word); issue
+    headings of section 4 that are near-duplicates; section 4 opening with a constitutive remedy while a fact rule
+    shows a right already acquired; adverse rulings found and dropped as support; generic rubrica words refused
+    outside their chapter (usucapione -> 2689 c.c.)."""
+    from src.rag import plan_then_write as ptw
+    draft = rec.get("draft") or ""
+    body = re.sub(r"\n+Vuoi approfondire in particolare[^\n]*", "", draft.split("⚠️")[0]).rstrip()
+    parts = re.split(r"(?m)^\*\*(\d+)\.\s[^*\n]+\*\*\s*$", body)
+    by_number = {parts[i]: parts[i + 1] for i in range(1, len(parts) - 1, 2)}
+    answers, applied = by_number.get("1", ""), by_number.get("4", "")
+    questions = ptw.explicit_questions(rec.get("request") or "")
+    unanswered = [q for q in questions if not ptw._answers(q, answers)]
+    headings = [re.sub(r"^[#*_\s]+|[*_\s]+$", "", ln) for ln in applied.split("\n")
+                if (m := ptw._HEADING_LINE_RE.match(ln)) and not m.group(2).strip() and not ptw._EVIDENCE_HEAD_RE.match(ln)]
+    near = [(a, b) for i, a in enumerate(headings) for b in headings[i + 1:] if ptw._near_titles(a, b)]
+    fired = {r.get("id") for r in ((rec.get("fact_signals") or {}).get("fired") or []) if isinstance(r, dict)}
+    first_kind = ptw._issue_kind({"titolo": headings[0], "norme": []}) if headings else ""
+    events = [(e[0], e[1]) for e in rec.get("events") or [] if isinstance(e, (list, tuple)) and len(e) >= 2]
+
+    def last(name):
+        found = [d for e, d in events if e == name and isinstance(d, dict)]
+        return found[-1] if found else {}
+    fit = last("case_analysis_ruling_fit")
+    plan_fixes = (rec.get("plan") or {}).get("review_fixes") or {}
+    return {"dangling": [e["sentence"] for e in ptw.drop_dangling(body)[1]],
+            "evidence_repeated": len(ptw.dedupe_evidence(body)[1]),
+            "questions": len(questions), "unanswered": unanswered,
+            "sanction_asked": any(fs_asks(q) for q in questions),
+            "sanction_614bis": bool(re.search(r"614-bis", body)),
+            "near_duplicate_issues": [f"{a} ~ {b}" for a, b in near],
+            "acquired_rule": sorted(fired & _ACQUIRED_RULES),
+            "constitutive_first": bool(fired & _ACQUIRED_RULES) and first_kind == "constitutive",
+            "adverse_found": len(fit.get("adverse") or []),
+            "adverse_dropped": int(last("case_analysis_adverse_rulings").get("dropped") or 0),
+            "generic_refused": sorted({d.get("article", "") for e, d in events
+                                       if e == "case_analysis_institution_rejected" and isinstance(d, dict)
+                                       and "outside its chapter" in str(d.get("why"))}),
+            "merged": len(plan_fixes.get("merged") or []), "reordered": bool(plan_fixes.get("order")),
+            "plan_retried": bool(plan_fixes.get("problems"))}
+
+
+def fs_asks(question: str) -> bool:
+    from src.rag import fact_signals
+    return bool(fact_signals.asks_sanction(question))
 
 
 def _fact_signal_trace(rec: dict, out: dict, K, expected_keys: set) -> dict:
@@ -1257,6 +1311,21 @@ def aggregate(cases: list) -> dict:
         form["review"].update(f.get("review") or {})
     form["qualified"] = [(c["id"], q) for c in keyed for q in (c.get("form") or {}).get("qualifications") or []]
     form["expected_dropped"] = [(c["id"], l) for c in keyed for l in (c.get("form") or {}).get("expected_dropped") or []]
+    lives = [c.get("live") or {} for c in keyed]
+    live = {"dangling": sum(len(x.get("dangling") or []) for x in lives),
+            "evidence_repeated": sum(x.get("evidence_repeated", 0) for x in lives),
+            "questions": sum(x.get("questions", 0) for x in lives),
+            "unanswered": [(c["id"], q) for c in keyed for q in (c.get("live") or {}).get("unanswered") or []],
+            "sanction_asked": sum(1 for x in lives if x.get("sanction_asked")),
+            "sanction_614bis": sum(1 for x in lives if x.get("sanction_asked") and x.get("sanction_614bis")),
+            "near_duplicates": [(c["id"], d) for c in keyed for d in (c.get("live") or {}).get("near_duplicate_issues") or []],
+            "acquired": sum(1 for x in lives if x.get("acquired_rule")),
+            "constitutive_first": [c["id"] for c in keyed if (c.get("live") or {}).get("constitutive_first")],
+            "adverse_found": sum(x.get("adverse_found", 0) for x in lives),
+            "adverse_dropped": sum(x.get("adverse_dropped", 0) for x in lives),
+            "generic_refused": [(c["id"], a) for c in keyed for a in (c.get("live") or {}).get("generic_refused") or []],
+            "merged": sum(x.get("merged", 0) for x in lives), "reordered": sum(1 for x in lives if x.get("reordered")),
+            "plan_retried": sum(1 for x in lives if x.get("plan_retried"))}
     tiers = [c.get("tiers") or {} for c in keyed]
     tier = {"routes": Counter(str(t.get("route")) for t in tiers if t.get("route")),
             "authority_ran": sum(1 for t in tiers if t.get("authority_ran")),
@@ -1267,7 +1336,7 @@ def aggregate(cases: list) -> dict:
             "citing": sum(t.get("rulings_citing_answer_article", 0) for t in tiers),
             "boilerplate_only": sum(t.get("rulings_boilerplate_only", 0) for t in tiers)}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
-            "tiers": tier,
+            "tiers": tier, "live": live,
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1471,6 +1540,36 @@ def render(cases: list, header: list) -> str:
           f"{fm['facts_marked']}); flags filtered out as arguments, quotes, sources or evidence: {fm['facts_filtered']}.",
           "Procedural section, items offered → written: " + (", ".join(
               f"{b} {fm['use_offered'][b]} → {fm['use_written'].get(b, 0)}" for b in fm["use_offered"]) or "none") + "."]
+
+    lv = agg["live"]
+    L += ["", "## The live answer's defects (26 Oct; REVIEW_FIXES, RULING_FIT, FLAGGED_REMOVE, FACT_SIGNALS)", "",
+          f"Dangling fragments left in the answers: {lv['dangling']}. Evidence lists repeated whole: "
+          f"{lv['evidence_repeated']}. Plans made again for a missing recognition or answer: {lv['plan_retried']}; "
+          f"issues merged: {lv['merged']}; plans reordered for a right already acquired: {lv['reordered']}.",
+          f"Explicit questions: {lv['questions']}, unanswered in section 1: "
+          + ("; ".join(f"{cid} «{q}»" for cid, q in lv["unanswered"]) or "none")
+          + f". Sanction questions answered with art. 614-bis c.p.c.: {lv['sanction_614bis']} / {lv['sanction_asked']}.",
+          "Near-duplicate issue headings: " + ("; ".join(f"{cid} {d}" for cid, d in lv["near_duplicates"]) or "none")
+          + f". A right already acquired (fact rule) in {lv['acquired']} cases; section 4 opening with a "
+          "constitutive remedy in: " + (", ".join(lv["constitutive_first"]) or "none") + ".",
+          f"Adverse rulings found by RULING_FIT: {lv['adverse_found']}; sentences citing one as support dropped: "
+          f"{lv['adverse_dropped']}. Generic rubrica words refused outside their chapter: "
+          + (", ".join(f"{cid} {a}" for cid, a in lv["generic_refused"]) or "none") + "."]
+    L += ["", "Per case, every answer (with or without an answer key):", "",
+          "| case | dangling | evidence repeated | unanswered / questions | 614-bis for a sanction | near-duplicate "
+          "issues | constitutive first | adverse found / dropped | generic refused |",
+          "|---|---:|---:|---:|---|---:|---|---:|---|"]
+    for c in cases:
+        x = c.get("live") or {}
+        if not c["ok"]:
+            continue
+        L.append(f"| {c['id']} | {len(x.get('dangling') or [])} | {x.get('evidence_repeated', 0)} | "
+                 f"{len(x.get('unanswered') or [])} / {x.get('questions', 0)} | "
+                 + ("yes" if x.get("sanction_614bis") else "NO") * bool(x.get("sanction_asked")) + " | "
+                 f"{len(x.get('near_duplicate_issues') or [])} | "
+                 + ("YES" if x.get("constitutive_first") else "no") * bool(x.get("acquired_rule")) + " | "
+                 f"{x.get('adverse_found', 0)} / {x.get('adverse_dropped', 0)} | "
+                 f"{', '.join(x.get('generic_refused') or []) or '-'} |")
 
     # --- B
     nw = len(wrong)
@@ -1793,6 +1892,21 @@ def compare(run_dirs: list, ev) -> str:
             ("boilerplate-only rulings cited (target 0)",
              [a["tiers"]["boilerplate_only"] if a["tiers"]["logged"] else "n/a" for a in aggs], lambda a: ""),
             ("routes", [", ".join(f"{r} {n}" for r, n in sorted(a["tiers"]["routes"].items())) or "n/a" for a in aggs],
+             lambda a: ""),
+            ("dangling fragments in the answers (target 0)", [a["live"]["dangling"] for a in aggs], lambda a: ""),
+            ("evidence lists repeated whole (target 0)", [a["live"]["evidence_repeated"] for a in aggs], lambda a: ""),
+            ("explicit questions unanswered in section 1", [len(a["live"]["unanswered"]) for a in aggs],
+             lambda a: f" / {a['live']['questions']}"),
+            ("sanction questions with art. 614-bis", [a["live"]["sanction_614bis"] for a in aggs],
+             lambda a: f" / {a['live']['sanction_asked']}"),
+            ("near-duplicate issue headings in section 4", [len(a["live"]["near_duplicates"]) for a in aggs],
+             lambda a: ""),
+            ("acquired right, section 4 opens with a constitutive remedy", [len(a["live"]["constitutive_first"])
+                                                                           for a in aggs],
+             lambda a: f" / {a['live']['acquired']}"),
+            ("adverse rulings found / dropped as support", [a["live"]["adverse_found"] for a in aggs],
+             lambda a: f" / {a['live']['adverse_dropped']}"),
+            ("generic rubrica words refused outside their chapter", [len(a["live"]["generic_refused"]) for a in aggs],
              lambda a: "")]
     for title, values, suffix in rows:
         L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")

@@ -551,18 +551,16 @@ class Rephrase:
 MATERIAL = "TESTI DELLE NORME:\n[art. 2051 c.c.] (Danno cagionato da cosa in custodia)\nCiascuno è responsabile..."
 
 
-def test_a_citation_the_material_lacks_is_rephrased_away(monkeypatch):
+def test_a_citation_the_material_lacks_goes_with_its_whole_sentence(monkeypatch):
     model = Rephrase('[{"i": 1, "frase": "La penale è riducibile dal giudice."}]')
     monkeypatch.setattr(dg, "_call_chat", model)
     text = ("Il custode risponde ai sensi dell'art. 2051 c.c. La penale è riducibile ex art. 1384 c.c. dal giudice. "
             "Si veda Cass. civ., sez. III, n. 190/2026.")
     out, log = ptw._cite_only_material("Applicazione al caso", text, MATERIAL, [], [])
-    assert out == ("Il custode risponde ai sensi dell'art. 2051 c.c. La penale è riducibile dal giudice. "
-                   "Si veda Cass. civ., sez. III, n. 190/2026.")
-    assert "1. La penale è riducibile ex art. 1384 c.c. dal giudice.\n   togli: art. 1384 c.c." == model.humans[0]
-    assert log == [{"section": "Applicazione al caso", "removed": ["1384 c.c."], "how": "rephrased",
-                    "sentence": "La penale è riducibile ex art. 1384 c.c. dal giudice.",
-                    "now": "La penale è riducibile dal giudice."}]
+    assert out == "Il custode risponde ai sensi dell'art. 2051 c.c. Si veda Cass. civ., sez. III, n. 190/2026."
+    assert model.humans == []                                   # no rewriting call: the sentence goes whole
+    assert log == [{"section": "Applicazione al caso", "removed": ["1384 c.c."], "how": "sentence dropped",
+                    "sentence": "La penale è riducibile ex art. 1384 c.c. dal giudice.", "now": ""}]
 
 
 def test_a_citation_the_case_names_stays_and_no_call_is_made(monkeypatch):
@@ -729,7 +727,7 @@ def test_an_article_of_a_document_that_is_not_a_law_is_not_cited(monkeypatch, lo
     docs = [{"id": "m", "name": MAXIMS, "aliases": []}]
     draft = f"La servitù spetta ex art. 1054 c.c. al fondo. La massima di cui all'art. 563 {MAXIMS} conferma la tesi."
     out = dg._citation_hygiene(draft, _Session({MAXIMS: ["special"]}), docs, [], "Tizio chiede del suo fondo.")
-    assert out == "La servitù spetta ex art. 1054 c.c. al fondo. La massima conferma la tesi."
+    assert out == "La servitù spetta ex art. 1054 c.c. al fondo."           # the whole sentence goes
     assert [d for e, d in logged if e == "case_analysis_citation_hygiene"][-1]["types"] == {MAXIMS: ["special"]}
     # a law stays; a CCNL stays when the case is about one; nothing named in the case is removed
     assert dg._citation_hygiene(draft, _Session({MAXIMS: ["primary"]}), docs, [], "x") == draft

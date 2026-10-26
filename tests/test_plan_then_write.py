@@ -451,13 +451,12 @@ def test_graded_keep_checked_offers_the_best_and_forces_none(model, monkeypatch)
 def test_graded_sections_cite_forced_articles_in_their_issue_and_nothing_from_memory(model, monkeypatch):
     """T3/T4 (PLAN_KEEP_CHECKED_ENABLED with CHECK_GRADED_ENABLED): each forced article goes to the sections
     with its issue, the system prompt no longer shows a real article as its example, and a citation the
-    section's material lacks is rewritten away (logged)."""
+    section's material lacks goes with its whole sentence (logged)."""
     monkeypatch.setenv("PLAN_KEEP_CHECKED_ENABLED", "true")
     monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
     model.plans = [_second_issue_titled("Posizione della panchina")]
     model.texts["Applicazione al caso"] = ("La scuola risponde ex art. 2051 c.c. La clausola penale è riducibile "
                                            "(art. 1384 c.c.) dal giudice.")
-    model.rephrase = '[{"i": 1, "frase": "La clausola penale è riducibile dal giudice."}]'
     rows = [dict(ARTICLES[1], _applicability="applicabile", _grade=3, _fused_rank=1, _grade_issue="inadempimento"),
             dict(ARTICLES[2], _applicability="applicabile", _grade=2, _fused_rank=2, _grade_issue="custodia")]
     draft = ptw.write_parere(FACTS, REQUEST, ANALYSIS, rows, RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
@@ -465,9 +464,9 @@ def test_graded_sections_cite_forced_articles_in_their_issue_and_nothing_from_me
     assert "NORME E LORO QUESTIONE:\n- art. 1218 c.c. (inadempimento): solo in «" in applied["human"]
     assert "- art. 2051 c.c. (custodia): solo in «Posizione della panchina»" in applied["human"]
     assert "mai a sostegno di un'altra" in applied["system"] and "1384" not in applied["system"]
-    assert "La scuola risponde ex art. 2051 c.c. La clausola penale è riducibile dal giudice." in draft
+    assert "La scuola risponde ex art. 2051 c.c.\n" in draft and "riducibile" not in draft     # the sentence goes
     logged = [d for e, d in model.logged if e == "case_analysis_citation_discipline"][-1]
-    assert logged["count"] == 1 and logged["rephrased"] == 1 and logged["removed"][0]["removed"] == ["1384 c.c."]
+    assert logged["count"] == 1 and logged["dropped"] == 1 and logged["removed"][0]["removed"] == ["1384 c.c."]
 
 
 # --- WRITER_RULES_ENABLED (the lawyer's blind review, 26 Oct) ----------------------------------------

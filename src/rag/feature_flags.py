@@ -183,7 +183,15 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 article of a document that is not a law (maxims,
                                 books, contract models; a CCNL unless the case is
                                 about one) is not cited. See _check_qualifications,
-                                _citation_hygiene.
+                                _citation_hygiene. A removed citation takes its whole
+                                sentence (never a rewriting, which left fragments: the
+                                live answer of 26 Oct), here and in the sections' own
+                                citation check; then a "Questa disposizione ..." with
+                                no norm before it under the same heading, an "Inoltre,
+                                conferma che ..." with no subject and an empty tail
+                                ("..., in conformità.") go too (drop_dangling, also on
+                                every section with WRITER_RULES_ENABLED or the graded
+                                discipline; logged as case_analysis_dangling).
   GRADER_EVIDENCE_ENABLED      false (acts with CHECK_GRADED_ENABLED): the grader sees
                                 per article what found it (the searches, how many
                                 similar rulings apply it, a central issue, the area),
@@ -204,7 +212,7 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 src/rag/fact_signal_rules.yaml within the frame's
                                 areas, whose institutions join the frame's central
                                 issues and resolve only within each rule's article
-                                ranges, to an article whose rubrica shares a word
+                                ranges (mandatory for every rule), to an article whose rubrica shares a word
                                 with them; the terms go to the plan and the
                                 procedural section as facts, run to the case's own
                                 present date (never the real today). See
@@ -254,7 +262,9 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 the heads of damage (iure proprio, iure hereditatis,
                                 the insurers); a party with several activities, each
                                 role. The procedural section treats each block it gets
-                                (terms, tools, criminal route, heads of damage) in its
+                                (terms, tools, criminal route, heads of damage; the measures of art. 614-bis
+                                c.p.c. when the client asks for a sanction or a penalty
+                                against who does not comply) in its
                                 own paragraph, is written once more if it leaves one
                                 out; offered vs written logged as
                                 case_analysis_material_use. A claimant client (seeks damages or an action)
@@ -278,6 +288,12 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 not named in the case, not a procedural tool) gets one call
                                 on the case and the article's full text: governing no
                                 question of the case, it is removed (_second_opinion).
+                                With this flag or FACT_SIGNALS_ENABLED, an institution
+                                matching an article only on a generic rubrica word
+                                ("usucapione", "prescrizione", "accessioni") resolves
+                                only inside that word's chapter of the code: never art.
+                                2689 c.c. for usucapione (fact_signals.
+                                GENERIC_RUBRICA_RANGES).
   RULING_FIT_ENABLED           false (the lawyer's review, 26 Oct): before the plan, one
                                 call asks what each ruling can serve for: a fact the
                                 case describes meets its conditions ("fatti", which
@@ -287,7 +303,14 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 case does not describe). Nothing, or a "fact" not in the
                                 case's words, and the ruling goes; each kept one
                                 reaches the plan and the writer led by its use. Logged
-                                as case_analysis_ruling_fit. See _ruling_fit.
+                                as case_analysis_ruling_fit. See _ruling_fit. A kept
+                                ruling whose outcome or principle goes against the
+                                client's position (its card's role when carded, else
+                                "verso" in the same call) is adverse: out of the plan's
+                                supporting rulings into the issue's "pronunce della
+                                controparte", cited only in the objection with the
+                                reply; a written sentence citing it with no objection
+                                or reply word is dropped (case_analysis_adverse_rulings).
   REVIEW_FIXES_ENABLED         false (the lawyer's review, 26 Oct; acts with
                                 PLAN_THEN_WRITE_ENABLED and FACT_REGIMES_ENABLED): the
                                 inquadramento names the facts that decide the case
@@ -310,7 +333,19 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 cited article's text; a criminal route still missing after
                                 the rewrite gets its standard paragraph. See plan_then_write.
                                 rewrite_unsupported, standard_blocks, fact_signals.
-                                _recognition_note, _private_cues.
+                                _recognition_note, _private_cues. Round 4 (the live
+                                answer of 26 Oct): a right the facts show already
+                                acquired (a fact rule marked acquired_right, or the
+                                analysis) is argued first, its recognition and
+                                protection; a constitutive remedy (passaggio coattivo)
+                                last, "In via subordinata"; each explicit question of
+                                the request has its own answer and treatment (the plan
+                                made once more when one lacks it, the answers section
+                                once more when it leaves one out); issues on the same
+                                governing article or with near-identical titles merged;
+                                an evidence list identical to an earlier one replaced by
+                                a reference. See order_for_acquired, explicit_questions,
+                                merge_duplicate_issues, dedupe_evidence.
 
 The three below are the source-tiered retrieval (26 Oct): the AUTHORITY tier is the primary
 documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what the authority found.

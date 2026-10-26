@@ -401,13 +401,16 @@ def card_summary(card: Dict[str, Any]) -> str:
 
 
 def annotate(ruling_rows: List[Dict[str, Any]], carded: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The rows of carded rulings with the card summary before their passage."""
+    """The rows of carded rulings with the card summary before their passage, and the card's role for the client,
+    outcome and favoured party as _card_role, _card_esito, _card_favoured (RULING_FIT_ENABLED reads them)."""
     out = []
     for row in ruling_rows:
         card = carded.get((row.get("d") or {}).get("id"))
         if card:
             passage = row.get("_passage") or (row.get("s") or {}).get("plain_text") or ""
-            row = {**row, "_passage": f"{card_summary(card)} Passo: {passage}".strip()}
+            row = {**row, "_passage": f"{card_summary(card)} Passo: {passage}".strip(),
+                   "_card_role": card.get("_role") or "", "_card_esito": card.get("esito") or "",
+                   "_card_favoured": card.get("parte_favorita") or card.get("a_favore_di") or ""}
         out.append(row)
     return out
 

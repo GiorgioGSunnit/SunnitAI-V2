@@ -139,6 +139,9 @@ def _plan_system(max_issues: int = _MAX_ISSUES) -> str:
     if _writer_rules():
         system = system.replace("- Non aggiungere fatti che il caso non contiene.\n",
                                 _STANCE_RULES + "- Non aggiungere fatti che il caso non contiene.\n")
+    if _review_fixes():
+        system = system.replace("- Non aggiungere fatti che il caso non contiene.\n",
+                                _ACQUIRED_RULE + _QUESTIONS_RULE + "- Non aggiungere fatti che il caso non contiene.\n")
     return system
 
 
@@ -562,7 +565,12 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
     terms = _terms(analysis)
     qualified, tools = _qualifications(analysis), _tools(analysis)
     damages, roles = _damages(analysis), _roles(analysis)
+    fixes = _review_fixes()
+    questions = "\n".join(f"{i}. {q}" for i, q in enumerate(explicit_questions(request, facts), 1)) if fixes else ""
+    acquired = "\n".join(f"- {a}" for a in acquired_rights(analysis)) if fixes else ""
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
+            + (f"{_QUESTIONS_TITLE}:\n{questions}\n\n" if questions else "")
+            + (f"{_ACQUIRED_TITLE}:\n{acquired}\n\n" if acquired else "")
             + (f"{_QUALIFIED_TITLE}:\n{qualified}\n{_QUALIFIED_RULE}\n\n" if qualified else "")
             + (f"{_ROLES_TITLE}:\n{roles}\n\n" if roles else "")
             + (f"{_DAMAGES_TITLE}:\n{damages}\n{_DAMAGES_RULE}\n\n" if damages else "")
@@ -706,6 +714,192 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], heading
             "subordinate": [s for s in plan["subordinate"] if not names_gone(s)]}, checked
 
 
+# --- REVIEW_FIXES_ENABLED, the live answer of 26 Oct (a long narrative on a locked dirt road) ---------------------
+# 1. A right the facts show ALREADY acquired (servitù per destinazione del padre di famiglia, usucapione, a contract)
+#    is argued first, its recognition and protection (accertamento, confessoria); a remedy that creates the right
+#    anew (passaggio coattivo, with its indennità) only as subordinate -- the answer led with art. 1051 c.c.
+# 5. Every explicit question of the request gets its own answer and a treatment ("una richiesta anche
+#    sanzionatoria?" got none).
+# 6. Two issues on the same governing article or with near-identical titles are one ("Passaggio coattivo" and
+#    "Diritto di passaggio", both art. 1051 c.c.); an evidence list identical to an earlier one is not repeated.
+
+_ACQUIRED_RULE = (
+    "- Se i fatti o i DIRITTI GIÀ ACQUISITI indicano che la parte assistita ha già acquistato il diritto (servitù "
+    "per destinazione del padre di famiglia, usucapione, un contratto), la prima questione è il riconoscimento e "
+    "la tutela di quel diritto (accertamento, azione confessoria, cessazione delle turbative); un rimedio che "
+    "costituisce il diritto ex novo (passaggio coattivo con indennità, costituzione giudiziale di una servitù) va "
+    "solo in via subordinata, dopo, e non è la questione centrale.\n")
+_QUESTIONS_RULE = (
+    "- Ogni quesito dei QUESITI ESPLICITI ha la sua voce in \"risposte\", con il quesito ripreso, e una questione o "
+    "una subordinata che lo tratta; se chiede sanzioni o penalità per chi non adempie, considera le misure "
+    "coercitive indicate negli STRUMENTI PROCESSUALI.\n")
+_ACQUIRED_TITLE = "DIRITTI GIÀ ACQUISITI SECONDO I FATTI"
+_QUESTIONS_TITLE = "QUESITI ESPLICITI"
+
+_ACQUIRED_RE = re.compile(r"destinazione del padre di famiglia|usucapi|servit\w* (?:costituita|acquisita|nata) "
+                          r"(?:per|con|da)|diritto (?:già )?acquisit|in forza (?:del|di un) (?:contratto|titolo|atto)",
+                          re.IGNORECASE)
+_CONSTITUTIVE_RE = re.compile(r"passaggio coattiv|servit\w* coattiv|costituzion\w* (?:coattiv|giudizial|della servit)|"
+                              r"costituire (?:la|una) servit|indennit\w* (?:per il|di) passaggio", re.IGNORECASE)
+_RECOGNITION_RE = re.compile(r"accertament|confessori|riconosciment|destinazione del padre|usucapi|esistenza della "
+                             r"servit|tutela (?:del|della) (?:diritto|servit)|cessazione delle turbative|reintegr",
+                             re.IGNORECASE)
+_CONSTITUTIVE_ARTICLES = [[1032, 1032], [1051, 1057]]
+_RECOGNITION_ARTICLES = [[1031, 1031], [1061, 1062], [1079, 1079], [1158, 1167], [1168, 1170]]
+
+
+def _civil_in(ref: tuple, ranges: List[List[int]]) -> bool:
+    from . import fact_signals
+    return _code_key(ref[1]) == "c.c." and fact_signals._in_ranges(ref[0], ranges)
+
+
+def _issue_kind(issue: Dict[str, Any]) -> str:
+    """"recognition" (of a right already acquired), "constitutive" (a remedy creating it) or "": by the title,
+    else by the articles."""
+    title = issue.get("titolo") or ""
+    if _RECOGNITION_RE.search(title):
+        return "recognition"
+    if _CONSTITUTIVE_RE.search(title):
+        return "constitutive"
+    norms = issue.get("norme") or []
+    recognition = any(_civil_in(r, _RECOGNITION_ARTICLES) for r in norms)
+    constitutive = any(_civil_in(r, _CONSTITUTIVE_ARTICLES) for r in norms)
+    return "recognition" if recognition and not constitutive else "constitutive" if constitutive and not recognition else ""
+
+
+def acquired_rights(analysis: Dict[str, Any]) -> List[str]:
+    """The rights the case shows already acquired: the fired fact rules marked acquired_right (their institution and
+    why), then the analysis' questions and institutions naming one."""
+    out = []
+    for rule in (_signals(analysis) or {}).get("fired") or []:
+        if rule.get("acquired_right"):
+            out.append(f"{', '.join(rule.get('institutions') or [])}: {rule.get('why') or ''}".strip(": "))
+    for q in (analysis or {}).get("questioni") or []:
+        names = [q.get("titolo") or ""] + [i.get("nome") or "" for i in q.get("istituti") or [] if isinstance(i, dict)]
+        out += [n for n in names if n and _ACQUIRED_RE.search(n) and not _CONSTITUTIVE_RE.search(n)]
+    return list(dict.fromkeys(out))
+
+
+_QUESTION_STOP = {"richiesta", "richiesto", "possibile", "esserci", "essere", "anche", "quali", "quale", "posso",
+                  "possiamo", "potrebbe", "potrei", "cliente", "propri", "proprio", "propria", "nostro", "nostra",
+                  "fare", "questo", "questa", "dovrebbe", "chiedere", "allora", "ancora", "quanto", "come"}
+
+
+def explicit_questions(request: str, facts: str = "") -> List[str]:
+    """The questions the request asks, each sentence ending with "?" (else the facts' own, when the request has none)."""
+    for text in (request, facts):
+        found = [" ".join(q.split()) for q in re.findall(r"[^.?!\n]*\?", text or "")]
+        found = [q for q in found if len(_question_stems(q)) >= 2]
+        if found:
+            return list(dict.fromkeys(found))
+    return []
+
+
+def _question_stems(text: str) -> set:
+    return {w[:6] for w in re.findall(r"[a-zàèéìòù]{5,}", (text or "").lower()) if w not in _QUESTION_STOP}
+
+
+def _answers(question: str, text: str) -> bool:
+    """`text` takes up the question: half its content words at least, and a question about sanctions for
+    non-compliance answered with them (fact_signals.asks_sanction)."""
+    from . import fact_signals
+    stems = _question_stems(question)
+    found = _question_stems(text)
+    if fact_signals.asks_sanction(question) and not re.search(r"sanzion|coerci|614-bis|penalit|astreinte",
+                                                               text or "", re.IGNORECASE):
+        return False
+    return bool(stems) and len(stems & found) * 2 >= len(stems)
+
+
+def _plan_problems(plan: Dict[str, Any], analysis: Dict[str, Any], questions: List[str]) -> List[str]:
+    """What the plan gets wrong on items 1 and 5: a constitutive remedy argued without (or as the central question
+    instead of) the recognition of the right already acquired; an explicit question with no answer or treatment."""
+    problems = []
+    kinds = [_issue_kind(q) for q in plan["questioni"]]
+    central_constitutive = bool(_CONSTITUTIVE_RE.search(plan.get("questione_centrale") or ""))
+    if acquired_rights(analysis) and ("constitutive" in kinds or central_constitutive):
+        if "recognition" not in kinds:
+            problems.append("manca la questione del riconoscimento e della tutela del diritto già acquisito "
+                            f"({'; '.join(acquired_rights(analysis))[:300]}): va per prima, il rimedio costitutivo "
+                            "solo in via subordinata")
+        if central_constitutive:
+            problems.append("la questione centrale è un rimedio costitutivo: va posta sul riconoscimento del diritto "
+                            "già acquisito")
+    treated = " ".join(f"{q['titolo']} {q['argomento']}" for q in plan["questioni"]) + " " + " ".join(plan["subordinate"])
+    for question in questions:
+        if not any(_answers(question, f"{a['quesito']} {a['risposta']}") for a in plan["risposte"]):
+            problems.append(f"il quesito «{question}» non ha la sua risposta in \"risposte\"")
+        elif not _answers(question, treated):
+            problems.append(f"il quesito «{question}» non è trattato da nessuna questione o subordinata")
+    return problems
+
+
+def _title_stems(title: str) -> set:
+    return {w[:5] for w in re.findall(r"\w{4,}", (title or "").lower()) if w not in _HEADING_STOP}
+
+
+def _near_titles(a: str, b: str) -> bool:
+    x, y = _title_stems(a), _title_stems(b)
+    return bool(x and y) and (x <= y or y <= x or len(x & y) * 3 >= 2 * len(x | y))
+
+
+def merge_duplicate_issues(plan: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """(plan, merged): an issue whose governing (first) article is an earlier issue's, or whose title is nearly the
+    same, merged into that one -- its articles and rulings added, its argument kept only when the first has none."""
+    out: List[Dict[str, Any]] = []
+    merged = []
+    for q in plan["questioni"]:
+        twin = next((p for p in out if (p["norme"] and q["norme"] and _same_article(p["norme"][0], q["norme"][0]))
+                     or _near_titles(p["titolo"], q["titolo"])), None)
+        if twin is None:
+            out.append(dict(q))
+            continue
+        twin["norme"] = twin["norme"] + [r for r in q["norme"] if r not in twin["norme"]]
+        twin["pronunce"] = twin["pronunce"] + [r for r in q["pronunce"] if r not in twin["pronunce"]]
+        for key in ("argomento", "obiezione", "replica"):
+            twin[key] = twin.get(key) or q.get(key) or ""
+        merged.append({"into": twin["titolo"], "merged": q["titolo"]})
+    return {**plan, "questioni": out}, merged
+
+
+_SUBORDINATE_PREFIX = "In via subordinata: "
+
+
+def order_for_acquired(plan: Dict[str, Any], acquired: List[str]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(plan, log): with a right already acquired, the recognition issues first, a constitutive remedy last and
+    titled as subordinate (and named in the plan's subordinate requests); the plan says which right is acquired
+    ("diritto_acquisito", for every section)."""
+    kinds = [_issue_kind(q) for q in plan["questioni"]]
+    if not acquired or "constitutive" not in kinds:
+        return plan, {}
+    first = [q for q, k in zip(plan["questioni"], kinds) if k == "recognition"]
+    middle = [q for q, k in zip(plan["questioni"], kinds) if k == ""]
+    last = [{**q, "titolo": q["titolo"] if re.search(r"subordin", q["titolo"], re.IGNORECASE)
+             else _SUBORDINATE_PREFIX + q["titolo"]} for q, k in zip(plan["questioni"], kinds) if k == "constitutive"]
+    issues = first + middle + last
+    subordinate = list(plan["subordinate"]) + [
+        f"{q['titolo'][len(_SUBORDINATE_PREFIX):] if q['titolo'].startswith(_SUBORDINATE_PREFIX) else q['titolo']}: "
+        "solo se il diritto già acquisito non fosse riconosciuto" for q in last
+        if not any(_near_titles(q["titolo"], s) for s in plan["subordinate"])]
+    log = {"acquired": acquired, "before": [q["titolo"] for q in plan["questioni"]],
+           "after": [q["titolo"] for q in issues]}
+    return {**plan, "questioni": issues, "subordinate": subordinate, "diritto_acquisito": "; ".join(acquired)}, log
+
+
+def split_adverse(plan: Dict[str, Any], references: Dict[str, List[Dict[str, Any]]]) -> Tuple[Dict[str, Any], List[str]]:
+    """(plan, moved): RULING_FIT_ENABLED's adverse rulings (_fit_adverse) out of each issue's supporting rulings
+    into its "pronunce_contrarie", cited only in the objection with the reply."""
+    adverse = {ref for ref, rows in references.items() if any(r.get("_fit_adverse") for r in rows)}
+    moved: List[str] = []
+    issues = []
+    for q in plan["questioni"]:
+        against = [p for p in q["pronunce"] if p in adverse]
+        moved += against
+        issues.append({**q, "pronunce": [p for p in q["pronunce"] if p not in adverse],
+                       "pronunce_contrarie": list(dict.fromkeys(q.get("pronunce_contrarie", []) + against))})
+    return {**plan, "questioni": issues, "pronunce_contrarie": sorted(adverse)}, list(dict.fromkeys(moved))
+
+
 def _arguments_text(plan: Dict[str, Any]) -> str:
     """The plan's arguments as the stance check reads a section 3."""
     return "3. Argomenti\n" + "\n".join(f"#### {q['titolo']}\n{q['argomento']}" for q in plan["questioni"])
@@ -732,6 +926,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
                         must_place="graded" if keep_checked and _graded() else keep_checked, groups=groups)
     messages = [SystemMessage(content=system), HumanMessage(content=human)]
     t0 = time.time()
+    problems: List[str] = []
     try:
         raw = dg._chat_json(messages, max_tokens=_PLAN_TOKENS, temperature=0)
         plan, removed = clean_plan(raw, known, references, max_issues)
@@ -746,6 +941,16 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
             raw = dg._chat_json([SystemMessage(content=system), HumanMessage(content=retry)],
                                 max_tokens=_PLAN_TOKENS, temperature=0)
             plan, removed = clean_plan(raw, known, references, max_issues)
+        problems = _plan_problems(plan, analysis, explicit_questions(request, facts)) if plan and _review_fixes() else []
+        if problems:
+            listing = "\n".join(f"- {p}" for p in problems)
+            again = (f"{human}\n\nIl tuo piano:\n{json.dumps(raw, ensure_ascii=False)}\n\nUna revisione ha trovato:\n"
+                     f"{listing}\n\nRifai il piano correggendo questi punti, con le stesse regole.")
+            raw_again = dg._chat_json([SystemMessage(content=system), HumanMessage(content=again)],
+                                      max_tokens=_PLAN_TOKENS, temperature=0)
+            plan_again, removed_again = clean_plan(raw_again, known, references, max_issues)
+            if plan_again:
+                plan, removed, raw = plan_again, removed_again, raw_again
     except Exception as exc:
         logger.warning("plan-then-write: no plan, the parere is written in one call: %s", exc)
         return None
@@ -754,6 +959,17 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
     if plan:
         plan, checked = check_plan(plan, article_rows, headings, applicable if keep_all or keep_checked else None)
+    fixes: Dict[str, Any] = {}
+    if plan and _review_fixes():
+        plan, merged = merge_duplicate_issues(plan)
+        plan, order = order_for_acquired(plan, acquired_rights(analysis))
+        fixes = {"problems": problems, "merged": merged, "order": order,
+                 "questions": explicit_questions(request, facts),
+                 "unanswered": [q for q in explicit_questions(request, facts)
+                                if not any(_answers(q, f"{a['quesito']} {a['risposta']}") for a in plan["risposte"])]}
+    if plan and dg.feature_flags.enabled(dg.RULING_FIT_FLAG):
+        plan, moved = split_adverse(plan, references)
+        fixes["adverse_moved"] = moved
     if plan and keep_checked:
         plan, placed, grouped, added = _group_checked(plan, applicable, headings, max_issues, issue_of,
                                                       catch_all=not _graded(), reasons=reasons)
@@ -776,7 +992,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         "norme": sorted({f"{n} {c}" for q in (plan or {}).get("questioni", []) for n, c in q["norme"]}),
         "pronunce": sorted({p for q in (plan or {}).get("questioni", []) for p in q["pronunce"]}),
         "removed": removed, "checked": checked, "references_available": len(references),
-        "voted_offered": [f"{n} {c}" for n, c in voted]})
+        "voted_offered": [f"{n} {c}" for n, c in voted], **({"review_fixes": fixes} if fixes else {})})
     if plan is None:
         logger.warning("plan-then-write: the plan has no usable issue, the parere is written in one call")
         return None
@@ -797,6 +1013,9 @@ def _plan_text(plan: Dict[str, Any], answers: bool = False, issues: str = "title
         lines.append(f"Obiettivo: {plan['obiettivo']}")
     if plan["questione_centrale"]:
         lines.append(f"Questione centrale: {plan['questione_centrale']}")
+    if plan.get("diritto_acquisito"):
+        lines.append(f"Diritto già acquisito: {plan['diritto_acquisito']}. Prima il suo riconoscimento e la sua "
+                     "tutela; il rimedio che costituisce il diritto ex novo solo in via subordinata.")
     if answers and plan["risposte"]:
         lines.append("Risposte ai quesiti:")
         lines += [f"- {a['quesito']} -> {a['risposta']}" if a["quesito"] else f"- {a['risposta']}"
@@ -806,6 +1025,9 @@ def _plan_text(plan: Dict[str, Any], answers: bool = False, issues: str = "title
         for i, q in enumerate(plan["questioni"], 1):
             norms = ", ".join(f"art. {n} {c}" for n, c in q["norme"]) or "-"
             cited = f"; pronunce: {', '.join(q['pronunce']) or '-'}" if rulings else ""
+            if rulings and q.get("pronunce_contrarie"):
+                cited += (f"; pronunce della controparte, solo nell'obiezione con la replica: "
+                          f"{', '.join(q['pronunce_contrarie'])}")
             lines.append(f"{i}. {q['titolo']} (norme: {norms}{cited})")
             if issues == "full":
                 lines += [f"   Argomento: {q['argomento']}"]
@@ -830,7 +1052,7 @@ def _article_texts(article_rows: List[Dict[str, Any]], refs: List[tuple], chars:
 
 
 def _ruling_texts(plan: Dict[str, Any], references: Dict[str, List[Dict[str, Any]]], chars: int) -> str:
-    cited = list(dict.fromkeys(p for q in plan["questioni"] for p in q["pronunce"]))
+    cited = list(dict.fromkeys(p for q in plan["questioni"] for p in q["pronunce"] + q.get("pronunce_contrarie", [])))
     return dg._source_block([references[p][0] for p in cited if references.get(p)], chars)
 
 
@@ -955,14 +1177,27 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
 
     def material(*parts: str) -> str:
         return "\n\n".join(p for p in parts if p)
+    fixes = _review_fixes()
+    questions = explicit_questions(request, facts) if fixes else []
+    asked = ("\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)))
+    one_each = (" Ai QUESITI ESPLICITI rispondi uno per uno, nell'ordine, ciascuno in un paragrafo che si apre "
+                "riprendendo il quesito; nessuno va omesso, e per una richiesta di sanzioni o penalità contro chi non "
+                "adempie indica le misure coercitive degli strumenti processuali." if questions else "")
+    adverse = (f" Una pronuncia tra quelle «della controparte» si presenta solo come argomento della controparte, "
+               f"seguito dalla replica di {party}; mai a sostegno di {party}."
+               if any(q.get("pronunce_contrarie") for q in plan["questioni"]) else "")
+    evidence = (" Le prove da acquisire di una questione che coincidono con quelle di una questione precedente non si "
+                "ripetono: si rinvia a quella." if fixes else "")
 
     jobs = [
         (SECTION_TITLES[0],
          "SEZIONE: Risposte ai quesiti. Una risposta diretta e motivata a ciascun quesito, nell'ordine in cui è "
          "posto, a partire dalle risposte del PIANO quando ci sono, altrimenti dalle sue questioni; se la "
          "questione centrale non è tra i quesiti, rispondi prima a essa. Ogni risposta in due-quattro frasi, con "
-         "la norma su cui si fonda." + scoped + no_rulings,
-         material(case, block("QUESITI", tasks), _plan_text(plan, answers=True, rulings=False), scope), 600),
+         "la norma su cui si fonda." + one_each + scoped + no_rulings,
+         material(case, block("QUESITI", tasks), block(_QUESTIONS_TITLE, asked),
+                  block(_TOOLS_TITLE, tools if questions and any(fact_signals_asks(q) for q in questions) else ""),
+                  _plan_text(plan, answers=True, rulings=False), scope), 600 + 150 * max(0, len(questions) - 1)),
         (SECTION_TITLES[1],
          "SEZIONE: Inquadramento e questione centrale. La qualificazione giuridica della vicenda (la norma "
          "principale e quelle alternative o subordinate, e perché), la questione centrale e perché decide "
@@ -975,7 +1210,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          f"SEZIONE: Norme e giurisprudenza. {norms}; per ogni pronuncia del PIANO: il principio che "
          "afferma, con il suo riferimento, e che cosa comporta per questo caso, senza svolgere gli argomenti "
          "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti."
-         + every + scoped,
+         + every + scoped + adverse,
          material(case, _plan_text(plan), scope,
                   block("TESTI DELLE NORME", texts(refs, per_article(15000, dg._ARTICLE_CHARS))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 1200)),
@@ -985,7 +1220,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          f"l'argomento di {party} applicato ai fatti del caso, con le norme e le pronunce del piano; le prove da "
          "acquisire; l'obiezione più forte della controparte e la replica. Poi le tesi subordinate del PIANO. "
          "Prosa, senza ripetere per ogni questione lo stesso schema a voci; tra virgolette solo frasi dei testi e "
-         "dei passi forniti." + every_issue + scoped + applied,
+         "dei passi forniti." + every_issue + scoped + applied + adverse + evidence,
          material(case, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
                   block(_ROLES_TITLE, roles), block(_DAMAGES_TITLE, damages),
                   _plan_text(plan, issues="full", subordinate=True), scope,
@@ -1014,6 +1249,11 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     return [_with_budget(job) for job in jobs] if rules else jobs
 
 
+def fact_signals_asks(question: str) -> bool:
+    from . import fact_signals
+    return bool(fact_signals.asks_sanction(question))
+
+
 def _with_budget(job: Tuple[str, str, str, int]) -> Tuple[str, str, str, int]:
     """WRITER_RULES_ENABLED: the section's words, said in its instruction, within more tokens than the old budget
     (Italian runs ~1.6 tokens a word), so it is never cut; the conclusions get their own."""
@@ -1025,16 +1265,10 @@ def _with_budget(job: Tuple[str, str, str, int]) -> Tuple[str, str, str, int]:
 # --- T3: citations only from the section's own material (_discipline) ----------------------------
 # Run 1302: articles written from memory, in no section's material (1384 c.c. in 4 answers, 156/159/256
 # c.p.p.). After each section is written, a citation of an article its material does not hold and the
-# case does not name is taken out: the sentence is rewritten without it (one call per section, temperature
-# 0); a rewrite that fails or still cites one drops the sentence. Logged as case_analysis_citation_discipline.
-
-_REPHRASE_SYSTEM = (
-    "Ricevi alcune frasi di un parere legale, numerate. Ciascuna cita articoli di legge che non risultano dalle "
-    "fonti del parere, indicati accanto. Riscrivi ogni frase togliendo quei riferimenti (numero e codice o "
-    "legge), senza sostituirli con altri articoli e senza aggiungere altro: il resto resta com'è e la frase "
-    "deve restare corretta. Se senza quel riferimento la frase non dice più nulla, scrivi una stringa vuota. "
-    'Rispondi SOLO con un array JSON: [{"i": 1, "frase": "<la frase riscritta>"}]'
-)
+# case does not name is taken out with its whole sentence. Logged as case_analysis_citation_discipline.
+# The live answer of 26 Oct: a sentence rewritten without its citation left fragments ("Inoltre, conferma che
+# ...", "... un risarcimento per il danno subito, in conformità."), and a "Questa disposizione è pertinente ..."
+# whose article had gone. No rewriting any more: the sentence goes, then drop_dangling.
 # A period after these words does not end a sentence ("art. 5", "Cass. pen., sez. V", "n. 190/2026").
 _ABBREVIATIONS = {"art", "artt", "sez", "sezz", "sent", "ord", "n", "nn", "co", "lett", "cass", "pen", "civ", "cfr",
                   "pag", "pp", "d", "lgs", "dl", "dpr", "l", "ss", "es", "un", "cost", "trib", "app", "rv", "cit",
@@ -1122,23 +1356,31 @@ def _citing(text: str, targets: List[tuple], documents: List[Dict[str, Any]],
 def _cite_only_material(title: str, text: str, material: str, named: List[tuple],
                         documents: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log): the section without the citations of articles its material does not hold and the
-    case does not name; each sentence holding one rewritten without it, or dropped."""
+    case does not name: each sentence holding one dropped, then the fragments left without their norm
+    (drop_dangling)."""
     allowed = _material_refs(material, documents) + list(named)
-    return _rewrite_out(title, text, _unsupported(text, allowed, documents),
-                        lambda sentence: bool(_unsupported(sentence, allowed, documents)))
+    text, log = _rewrite_out(title, text, _unsupported(text, allowed, documents))
+    return _cleaned_after(title, text, log)
 
 
 def remove_citations(text: str, targets: List[tuple], documents: List[Dict[str, Any]], known: Optional[set] = None,
                      title: str = "parere") -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log): text without any citation of targets (FLAGGED_REMOVE_ENABLED): a heading line naming
-    one ("**Art. 757 c.c. ...**") goes with its paragraph, then each sentence citing one is rewritten
-    without it, or dropped (_rewrite_out)."""
+    one ("**Art. 757 c.c. ...**") goes with its paragraph, then each sentence citing one is dropped whole
+    (_rewrite_out), then the fragments left without their norm (drop_dangling)."""
     if not targets:
         return text, []
     text, log = _without_article_headings(text, targets, documents, known, title)
-    text, more = _rewrite_out(title, text, _citing(text, targets, documents, known),
-                              lambda sentence: bool(_citing(sentence, targets, documents, known)))
-    return text, log + more
+    text, more = _rewrite_out(title, text, _citing(text, targets, documents, known))
+    return _cleaned_after(title, text, log + more)
+
+
+def _cleaned_after(title: str, text: str, log: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """After a removal: the fragments it left without their norm dropped too (drop_dangling), logged with it."""
+    if not log:
+        return text, log
+    text, dangling = drop_dangling(text, title)
+    return text, log + dangling
 
 
 _HEADING_LINE_RE = re.compile(r"\s*(#{1,6}\s+.+|\*\*[^*\n]+\*\*|__[^_\n]+__)(.*)$")
@@ -1169,10 +1411,9 @@ def _without_article_headings(text: str, targets: List[tuple], documents: List[D
     return re.sub(r"\n{3,}", "\n\n", "\n".join(out)), log
 
 
-def _rewrite_out(title: str, text: str, found: List[Tuple[int, int, List[tuple]]],
-                 still_cites) -> Tuple[str, List[Dict[str, Any]]]:
-    """(text, log): each sentence holding one of the citations found rewritten without them, in one call
-    (temperature 0); a rewrite that fails, comes back empty or still_cites(rewrite) drops the sentence."""
+def _rewrite_out(title: str, text: str, found: List[Tuple[int, int, List[tuple]]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): each sentence holding one of the citations found dropped whole (the live answer of 26 Oct: a
+    rewriting without the citation left fragments)."""
     if not found:
         return text, []
     spans: List[List[Any]] = []
@@ -1183,33 +1424,87 @@ def _rewrite_out(title: str, text: str, found: List[Tuple[int, int, List[tuple]]
             spans[-1][2] += [r for r in refs if r not in spans[-1][2]]
         else:
             spans.append([s, e, list(refs)])
-    listing = "\n".join(f"{i}. {text[s:e].strip()}\n   togli: {', '.join(f'art. {n} {c}' for n, c in refs)}"
-                        for i, (s, e, refs) in enumerate(spans, 1))
-    rewritten: Dict[int, str] = {}
-    try:
-        raw = dg._chat_json([SystemMessage(content=_REPHRASE_SYSTEM), HumanMessage(content=listing)],
-                            max_tokens=80 + sum(40 + dg._estimate_tokens(text[s:e]) * 3 // 2 for s, e, _ in spans),
-                            temperature=0)
-        for item in raw if isinstance(raw, list) else []:
-            if isinstance(item, dict) and isinstance(item.get("frase"), str) and str(item.get("i", "")).isdigit():
-                rewritten.setdefault(int(item["i"]), item["frase"].strip())
-    except Exception as exc:
-        logger.warning("rewriting the sentences of %r failed, they are dropped: %s", title, exc)
     log, out, pos = [], [], 0
-    for i, (s, e, refs) in enumerate(spans, 1):
-        new = rewritten.get(i, "")
-        how = "rephrased"
-        if not new or still_cites(new):
-            new, how = "", "sentence dropped"
-        out.append(text[pos:s] + new)
+    for s, e, refs in spans:
+        out.append(text[pos:s])
         pos = e
-        if not new and (s == 0 or text[s - 1] == "\n"):
+        if s == 0 or text[s - 1] == "\n":
             while pos < len(text) and text[pos] in " \t":      # a dropped first sentence: no leading blank
                 pos += 1
-        log.append({"section": title, "removed": [f"{n} {c}" for n, c in refs], "how": how,
-                    "sentence": text[s:e].strip()[:300], "now": new[:300]})
-    cleaned = "".join(out) + text[pos:]
-    return re.sub(r"(?<=\S)[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", cleaned)).strip(), log
+        log.append({"section": title, "removed": [f"{n} {c}" for n, c in refs], "how": "sentence dropped",
+                    "sentence": text[s:e].strip()[:300], "now": ""})
+    return _tidy("".join(out) + text[pos:]), log
+
+
+def _tidy(text: str) -> str:
+    """Blank runs and empty list items left by a removal collapsed."""
+    text = re.sub(r"(?m)^[ \t]*(?:[-•*]|\d+[.)])[ \t]*$\n?", "", text)
+    return re.sub(r"(?<=\S)[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", text)).strip()
+
+
+# --- drop_dangling: the fragments a removal leaves ------------------------------------------------------------
+# A sentence pointing back to a norm or a ruling ("Questa disposizione è pertinente ...", "Tale principio ..."),
+# or with no subject at all ("Inoltre, conferma che ..."), that has no norm of its own and nothing before it, under
+# the same heading, naming one; and a tail with nothing after its preposition ("..., in conformità.").
+_NORM_MENTION_RE = re.compile(
+    r"\bart(?:icol[oi]|t)?\.?\s*\d+|\bn\.\s*\d+/\d{2,4}\b|\bcass(?:azione)?\b|\bcorte\b|\bd\.\s?lgs\b|\blegge\b|"
+    r"\bcodice\b|\bc\.\s?[cp]\.|\bcost\.", re.IGNORECASE)
+_BACK_REFERENCE_RE = re.compile(
+    r"^\W*(?:(?:inoltre|infatti|pertanto|quindi|dunque|anche),?\s+)?(?:quest[aoei]|tal[ei]|dett[aoei]|la stessa|lo stesso|"
+    r"la medesima|il medesimo)\s+(?:disposizion|norm|articol|principi|pronunc|sentenz|ordinanz|orientament|"
+    r"previsione|regola|massim)\w*", re.IGNORECASE)
+_NO_SUBJECT_RE = re.compile(
+    r"^\W*(?:(?:inoltre|infatti|altresì|anche),?\s+)?(?:conferma|stabilisce|prevede|dispone|afferma|ribadisce|precisa|"
+    r"chiarisce|sancisce)\s+(?:che|il|la|l'|lo|i|gli|le|un|una|altresì|inoltre)\b", re.IGNORECASE)
+_EMPTY_TAIL_RE = re.compile(
+    r"(?:,\s*|\s+)(?:in conformità|ai sensi|in virtù|come previsto|secondo quanto (?:previsto|disposto|stabilito)|"
+    r"a norma|in base|come stabilito|conformemente)(?:\s+(?:a|al|alla|allo|ai|alle|all'|dal|dalla|dall'|del|della|dell'|"
+    r"di|degli|delle|dei))?\s*(?=[.;:!?]\s*$)", re.IGNORECASE)
+
+
+def _dangling(sentence: str, context: bool) -> bool:
+    if _NORM_MENTION_RE.search(sentence):
+        return False
+    return bool(_NO_SUBJECT_RE.search(sentence)) or (not context and bool(_BACK_REFERENCE_RE.search(sentence)))
+
+
+def drop_dangling(text: str, title: str = "") -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): the sentences pointing back to a norm or a ruling with none named in them or before them under
+    the same heading, and those with no subject ("Inoltre, conferma che ..."), dropped; an empty tail ("...,
+    in conformità.") cut from its sentence. A paragraph left with nothing goes too."""
+    if not text:
+        return text, []
+    out_lines, log, context = [], [], False
+    for line in text.split("\n"):
+        m = _HEADING_LINE_RE.match(line)
+        if m and not m.group(2).strip():
+            context = bool(_NORM_MENTION_RE.search(line))
+            out_lines.append(line)
+            continue
+        spans = _sentence_spans(line)
+        if not spans:
+            out_lines.append(line)
+            continue
+        keep: List[str] = []
+        changed = False
+        for s, e in spans:
+            sentence = line[s:e].strip()
+            if _dangling(sentence, context):
+                log.append({"section": title, "kind": "dangling", "how": "sentence dropped", "sentence": sentence[:300]})
+                changed = True
+                continue
+            cut = _EMPTY_TAIL_RE.sub("", sentence)
+            if cut != sentence:
+                log.append({"section": title, "kind": "dangling", "how": "empty tail cut", "sentence": sentence[:300],
+                            "now": cut[:300]})
+                sentence, changed = cut, True
+            context = context or bool(_NORM_MENTION_RE.search(sentence))
+            keep.append(sentence)
+        if not changed:
+            out_lines.append(line)                      # untouched: kept exactly as written
+        elif keep:
+            out_lines.append(line[:spans[0][0]] + " ".join(keep))
+    return (_tidy("\n".join(out_lines)) if log else text), log
 
 
 # FACT_SIGNALS_ENABLED: the terms computed in code from the case's dates (fact_signals.compute_terms), given
@@ -1791,13 +2086,18 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
                    documents: Optional[List[Dict[str, Any]]] = None,
                    article_rows: Optional[List[Dict[str, Any]]] = None, case_text: str = "",
                    coverage: Optional[Callable[[str], Dict[str, Dict[str, List[str]]]]] = None,
-                   standard: Optional[Dict[str, str]] = None) -> Optional[List[tuple]]:
+                   standard: Optional[Dict[str, str]] = None,
+                   questions: Optional[List[str]] = None) -> Optional[List[tuple]]:
     """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
     None if one still fails or comes back empty. _discipline(): each section then loses the citations
     its material does not hold (_cite_only_material; named: the articles the case names).
     _writer_rules(): a cut section is written again or trimmed, then each is reviewed (review_section).
     coverage (FACT_REGIMES_ENABLED: material_use): the procedural section, leaving out a block it was given, is
-    written once more naming what it left out, and the version covering more is kept."""
+    written once more naming what it left out, and the version covering more is kept.
+    Then (the live answer of 26 Oct): a sentence citing an adverse ruling (RULING_FIT_ENABLED) as support dropped;
+    the fragments left without their norm dropped (drop_dangling, with any of the citation checks); an evidence
+    list identical to an earlier one replaced by a reference to it, and the answers written once more when one of
+    the explicit `questions` goes unanswered (REVIEW_FIXES_ENABLED)."""
     system = _section_system(plan, lang)
 
     def write(job):
@@ -1833,7 +2133,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         dg.vlog("case_analysis_citation_discipline", {
             "removed": removed, "count": sum(len(e["removed"]) for e in removed),
             "rephrased": sum(1 for e in removed if e["how"] == "rephrased"),
-            "dropped": sum(1 for e in removed if e["how"] == "sentence dropped")},
+            "dropped": sum(1 for e in removed if e["how"] == "sentence dropped" and e.get("kind") != "dangling"),
+            "dangling": sum(1 for e in removed if e.get("kind") == "dangling")},
             duration_ms=(time.time() - t1) * 1000)
         sections = [(title, text or original) for (title, original), (text, _) in zip(sections, done)]
     if _writer_rules() and all(text for _, text in sections):
@@ -1857,6 +2158,124 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     if any(not text for _, text in sections):
         logger.warning("plan-then-write: an empty section, the parere is written in one call")
         return None
+    return _after_checks(plan, sections, jobs, system, questions or [])
+
+
+_OBJECTION_RE = re.compile(r"controparte|obiezion|obiett|potrebbe (?:invocare|sostenere|richiamare)|contrari|sfavorevol|"
+                           r"replica|tuttavia|diversamente|non si attaglia|si distingue|a differenza|invece|"
+                           r"non (?:è|sono) (?:applicabil|pertinent)", re.IGNORECASE)
+
+
+def adverse_as_support(title: str, text: str, adverse: List[str]) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): each sentence citing an adverse ruling (by its number, "14015/2026") with no word of an
+    objection or a reply dropped: an adverse ruling is only the opponent's argument."""
+    numbers = {n for ref in adverse for n in re.findall(r"\b\d{1,6}/\d{4}\b", ref)}
+    if not numbers:
+        return text, []
+    drop, log = [], []
+    for s, e in _sentence_spans(text):
+        sentence = text[s:e]
+        hit = sorted(n for n in numbers if re.search(rf"(?<![\d/]){re.escape(n)}(?![\d/])", sentence))
+        if hit and not _OBJECTION_RE.search(sentence):
+            drop.append((s, e))
+            log.append({"section": title, "kind": "adverse_as_support", "how": "sentence dropped", "ruling": hit,
+                        "sentence": " ".join(sentence.split())[:300]})
+    return (_drop_spans(text, drop) if drop else text), log
+
+
+_EVIDENCE_HEAD_RE = re.compile(r"^\s*(?:#{1,6}\s*)?[*_]*\s*prove\s+da\s+acquisire\s*:?\s*[*_]*\s*:?\s*$", re.IGNORECASE)
+
+
+def dedupe_evidence(text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): an evidence list ("Prove da acquisire:" and its items) identical to an earlier one replaced by
+    one line referring to the issue where it first appears."""
+    lines, out, log = text.split("\n"), [], []
+    seen: Dict[tuple, str] = {}
+    heading, i = "", 0
+    while i < len(lines):
+        line = lines[i]
+        m = _HEADING_LINE_RE.match(line)
+        if m and not m.group(2).strip() and not _EVIDENCE_HEAD_RE.match(line):
+            heading = re.sub(r"^[#*_\s]+|[*_\s]+$", "", line)
+        if not _EVIDENCE_HEAD_RE.match(line):
+            out.append(line)
+            i += 1
+            continue
+        j, items = i + 1, []
+        while j < len(lines) and (not lines[j].strip() or _LIST_ITEM_RE.match(lines[j])):
+            if lines[j].strip():
+                items.append(" ".join(_LIST_ITEM_RE.sub("", lines[j]).lower().split()).rstrip(".;"))
+            j += 1
+        key = tuple(sorted(items))
+        if items and key in seen:
+            out.append(f"Prove da acquisire: le stesse indicate per «{seen[key]}»." if seen[key]
+                       else "Prove da acquisire: le stesse indicate sopra.")
+            if j < len(lines):
+                out.append("")
+            log.append({"kind": "evidence_repeated", "how": "list replaced by a reference", "under": heading,
+                        "same_as": seen[key], "items": len(items)})
+        else:
+            if items:
+                seen[key] = heading
+            out.extend(lines[i:j])
+        i = j
+    return ("\n".join(out) if log else text), log
+
+
+def _cover_questions(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]], system: str,
+                     questions: List[str]) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
+    """The answers section written once more when it leaves an explicit question unanswered (_answers); the version
+    answering more is kept."""
+    i = next((k for k, (title, _) in enumerate(sections) if title == SECTION_TITLES[0]), None)
+    if i is None or not questions:
+        return sections, {}
+    missing = [q for q in questions if not _answers(q, sections[i][1])]
+    log: Dict[str, Any] = {"questions": questions, "unanswered": missing, "rewritten": False}
+    if not missing:
+        return sections, log
+    title, instruction, material, max_tokens = jobs[i]
+    try:
+        again = _without_heading(dg._call_chat([
+            SystemMessage(content=f"{system}\n\n{instruction} La stesura precedente non rispondeva a: "
+                                  + " | ".join(missing) + ". Rispondi a ciascun quesito, uno per uno."),
+            HumanMessage(content=material)], max_tokens=max_tokens), title)
+    except Exception as exc:
+        logger.warning("review fixes: answers not rewritten for the questions: %s", exc)
+        return sections, log
+    still = [q for q in questions if not _answers(q, again or "")]
+    if again and len(still) < len(missing):
+        out = list(sections)
+        out[i] = (title, again)
+        log.update(rewritten=True, still_unanswered=still)
+        return out, log
+    log["still_unanswered"] = missing
+    return sections, log
+
+
+def _after_checks(plan: Dict[str, Any], sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]],
+                  system: str, questions: List[str]) -> List[Tuple[str, str]]:
+    """The checks on the written sections of the live answer of 26 Oct (write_sections' docstring)."""
+    adverse = plan.get("pronunce_contrarie") or []
+    if adverse:
+        done = [adverse_as_support(title, text, adverse) for title, text in sections]
+        entries = [e for _, log in done for e in log]
+        dg.vlog("case_analysis_adverse_rulings", {"adverse": adverse, "entries": entries, "dropped": len(entries)})
+        sections = [(title, text or original) for (title, original), (text, _) in zip(sections, done)]
+    if _discipline() or _writer_rules() or dg.feature_flags.enabled("FLAGGED_REMOVE_ENABLED"):
+        done = [drop_dangling(text, title) for title, text in sections]
+        entries = [e for _, log in done for e in log]
+        dg.vlog("case_analysis_dangling", {"entries": entries, "count": len(entries)})
+        sections = [(title, text or original) for (title, original), (text, _) in zip(sections, done)]
+    if _review_fixes():
+        i = next((k for k, (title, _) in enumerate(sections) if title == SECTION_TITLES[3]), None)
+        if i is not None:
+            text, log = dedupe_evidence(sections[i][1])
+            if log:
+                dg.vlog("case_analysis_evidence_dedup", {"entries": log})
+                sections = sections[:i] + [(sections[i][0], text)] + sections[i + 1:]
+        if questions:
+            sections, log = _cover_questions(sections, jobs, system, questions)
+            dg.vlog("case_analysis_questions", log)
     return sections
 
 
@@ -1988,7 +2407,8 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
                                                  principles, _keep_all()), lang, named, documents,
-                              article_rows, case, coverage=use_of, standard=standard_blocks(analysis))
+                              article_rows, case, coverage=use_of, standard=standard_blocks(analysis),
+                              questions=explicit_questions(request, facts) if _review_fixes() else [])
     if sections is None:
         return None
     if use_of is not None:

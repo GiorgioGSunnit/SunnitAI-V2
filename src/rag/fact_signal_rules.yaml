@@ -2,7 +2,10 @@
 #
 # Each rule: id, area, when (all conditions must hold; predicates in fact_signals.PREDICATES), institution
 # (in words, statutory wording; one or a list), codice (the code or law where _resolve_institution looks the
-# institution up -- never an article), why (one line), status.
+# institution up -- never an article), ranges (MANDATORY: the article numbers its institutions may resolve to;
+# usucapione -> 1158-1167 and 1061 c.c., never art. 2689, the transcription of the judgment), why (one line),
+# status; acquired_right: true when the rule shows a right ALREADY acquired (the plan argues its recognition first,
+# a constitutive remedy only as subordinate).
 # Rules are GENERAL patterns from legal knowledge and the tuning cases, never from the held-out texts
 # (h1-h11, n1-n9). A rule fires only within the case's areas (its "families" when given); its
 # institution resolves only within its ranges of article numbers, to an article whose rubrica shares a word
@@ -23,6 +26,7 @@
   codice: c.c.
   ranges: [[1027,1099]]
   why: "Due fondi di un unico proprietario, separati con un'opera visibile al servizio dell'uno sull'altro, fanno sorgere la servitù senza titolo."
+  acquired_right: true
   status: experiment
 
 - id: usucapione_servitu_apparente
@@ -32,8 +36,9 @@
     - possession: {how_not: [violento, clandestino]}
   institution: usucapione di servitù apparente
   codice: c.c.
-  ranges: [[1027,1099],[1158,1167]]
+  ranges: [[1158,1167],[1061,1061]]
   why: "Un'opera visibile e permanente usata da oltre vent'anni permette di usucapire la servitù apparente."
+  acquired_right: true
   status: experiment
 
 - id: usucapione_ordinaria
@@ -44,6 +49,7 @@
   codice: c.c.
   ranges: [[1158,1167]]
   why: "Il possesso continuato per vent'anni, non violento né clandestino, fa acquistare la proprietà o il diritto reale."
+  acquired_right: true
   status: experiment
 
 - id: possesso_vizioso
@@ -171,6 +177,7 @@
     - fact: {pattern: 'vizi|difett|guast|malfunzion|non funzion|non conform', label: "il bene ha difetti"}
   institution: garanzia legale di conformità
   codice: Codice del Consumo
+  ranges: [[128,135]]
   why: "Il consumatore che acquista un bene difettoso da un professionista ha la garanzia di conformità del Codice del Consumo."
   status: experiment
 
@@ -181,6 +188,7 @@
     - contract: {clause: 'esoner|limitazion|foro|recesso|penal|rinnovo|decadenz', label: "una clausola che limita i diritti del consumatore"}
   institution: clausole vessatorie
   codice: Codice del Consumo
+  ranges: [[33,38]]
   why: "Una clausola che squilibra i diritti a danno del consumatore può essere vessatoria e nulla."
   status: experiment
 
@@ -190,6 +198,7 @@
     - money_over_threshold: {}
   institution: [usura, nullità della clausola degli interessi usurari]
   codice: c.p.
+  ranges: [[644,644]]
   families: [civile, penale]
   why: "Un tasso oltre la soglia pone il reato di usura e, civilmente, la non debenza degli interessi."
   status: experiment
@@ -410,6 +419,7 @@
     - fact: {pattern: 'per relationem|richiam|rinvi\w* (?:al|alla|a)|senza (?:nuova )?(?:istruttoria|contraddittorio|comunicazion|preavviso)|motivazione', label: "con la stessa motivazione o senza nuovo contraddittorio"}
   institution: [obbligo di motivazione, comunicazione dei motivi ostativi all'accoglimento dell'istanza, annullamento d'ufficio, convalida]
   codice: Legge sul Procedimento Amministrativo 2026
+  ranges: [[3,3],[10,10],[21,21]]
   why: "Un atto rifatto rinviando al precedente e senza contraddittorio pone i vizi di motivazione e di partecipazione."
   status: experiment
 
@@ -420,6 +430,7 @@
     - fact: {pattern: 'esclus', label: "l'esclusione di un concorrente"}
   institution: [cause di esclusione per gravi illeciti professionali, rito speciale in materia di appalti]
   codice: Codice degli Appalti
+  ranges: [[94,98],[209,209]]
   why: "L'esclusione da una gara pone le cause di esclusione, il contraddittorio dovuto e il rito accelerato degli appalti."
   status: experiment
 

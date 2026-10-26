@@ -337,3 +337,50 @@ def test_compare_shows_the_source_tiers_rows():
     assert "| narrative | 4 / 3 / 1 |" in text
     report = dl.render([dl.analyse_case(new_rec, ev)], [])
     assert "routes narrative 1; non-primary hits left in the authority stage 0" in report
+
+
+def test_live_trace_counts_the_six_defects_off_old_and_new_answers():
+    """The live answer of 26 Oct: read off the answer (an older run counts too) and the events of the new checks."""
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_draft = ("**1. Risposte ai quesiti**\n\nOttavia ha diritto al passaggio coattivo (art. 1051 c.c.).\n\n"
+                 "**3. Norme e giurisprudenza**\n\n#### Usucapione\nQuesta disposizione è pertinente al caso.\n\n"
+                 "**4. Applicazione al caso**\n\n#### Passaggio coattivo\nArgomento.\n\nProve da acquisire:\n- Foto.\n\n"
+                 "#### Diritto di passaggio\nArgomento.\n\nProve da acquisire:\n- Foto.\n\n"
+                 "**6. Conclusioni**\n\nOttavia può chiedere i danni, in conformità.")
+    new_draft = ("**1. Risposte ai quesiti**\n\nSì: per ogni giorno di ritardo nel riaprire la sbarra si chiede una "
+                 "somma ex art. 614-bis c.p.c.\n\n**4. Applicazione al caso**\n\n#### Accertamento della servitù\n"
+                 "Argomento.\n\n#### In via subordinata: Passaggio coattivo\nArgomento.\n\n**6. Conclusioni**\n\nFine.")
+    old = {**_record(), "request": "Difendi Ottavia. Può chiedere una sanzione per ogni giorno di ritardo nel riaprire "
+                                   "la sbarra?", "draft": old_draft,
+           "fact_signals": {"fired": [{"id": "destinazione_padre_famiglia"}]}}
+    new = copy.deepcopy(old)
+    new.update(draft=new_draft, plan={**old["plan"], "review_fixes": {"merged": [{"into": "a", "merged": "b"}],
+                                                                     "order": {"after": []}, "problems": ["x"]}},
+               events=[["case_analysis_ruling_fit", {"adverse": ["R1"]}, 0],
+                       ["case_analysis_adverse_rulings", {"dropped": 1}, 0],
+                       ["case_analysis_institution_rejected", {"article": "2689 c.c.",
+                                                              "why": "generic rubrica word 'usuca' outside its chapter"}, 0]])
+    live_old, live_new = dl.analyse_case(old, ev)["live"], dl.analyse_case(new, ev)["live"]
+    assert len(live_old["dangling"]) == 2 and live_old["evidence_repeated"] == 1
+    assert live_old["unanswered"] and not live_old["sanction_614bis"] and live_old["constitutive_first"]
+    assert live_old["near_duplicate_issues"] == ["Passaggio coattivo ~ Diritto di passaggio"]
+    assert live_new["dangling"] == [] and live_new["unanswered"] == [] and live_new["sanction_614bis"]
+    assert not live_new["constitutive_first"] and live_new["near_duplicate_issues"] == []
+    assert (live_new["adverse_found"], live_new["adverse_dropped"], live_new["generic_refused"]) == (1, 1, ["2689 c.c."])
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("20261026-2128", old), ("20261027-0900", new)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs, ev)
+    assert "| dangling fragments in the answers (target 0) | 2 | 0 |" in text
+    assert "| explicit questions unanswered in section 1 | 1 / 1 | 0 / 1 |" in text
+    assert "| acquired right, section 4 opens with a constitutive remedy | 1 / 1 | 0 / 1 |" in text
+    assert "| adverse rulings found / dropped as support | 0 / 0 | 1 / 1 |" in text
+    report = dl.render([dl.analyse_case(old, ev)], [])
+    assert "## The live answer's defects" in report and "| x1 | 2 | 1 | 1 / 1 | NO | 1 | YES | 0 / 0 | - |" in report
