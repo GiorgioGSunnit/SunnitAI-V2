@@ -725,3 +725,27 @@ def test_review_fixes_no_urgent_measure_after_a_death(monkeypatch):
     monkeypatch.setenv("REVIEW_FIXES_ENABLED", "true")
     ids = [t["id"] for t in fs.procedural_tools(pool, ["responsabilita_civile"])]
     assert "provvedimento_urgenza" not in ids and "profilo_penale" in ids
+
+
+CAMPER = F(parties=[person("Dario", "cliente", occupation="insegnante"),
+                    person("Camper Gamma s.r.l.", "controparte", "società")],
+           contracts=[contract("compravendita di un camper")],
+           events=[ev("Dario usa il camper per le vacanze con la famiglia"), ev("il frigorifero si guasta")], risks=[])
+
+
+def test_review_fixes_a_wider_private_use_and_cues_in_the_events_make_the_consumer(monkeypatch):
+    monkeypatch.delenv("REVIEW_FIXES_ENABLED", raising=False)
+    assert fs.qualify_parties(CAMPER)[1] == []                                   # no purpose extracted
+    leisure = F(**{**CAMPER, "parties": [person("Dario", purpose="svago"), CAMPER["parties"][1]]})
+    assert fs.qualify_parties(leisure)[1] == []
+    monkeypatch.setenv("REVIEW_FIXES_ENABLED", "true")
+    assert [q["quality"] for q in fs.qualify_parties(leisure)[1]] == ["consumatore", "professionista"]
+    assert [q["quality"] for q in fs.qualify_parties(CAMPER)[1]] == ["consumatore", "professionista"]
+
+
+def test_review_fixes_an_occupation_tied_to_the_purchase_is_not_a_consumer(monkeypatch):
+    monkeypatch.setenv("REVIEW_FIXES_ENABLED", "true")
+    renter = F(**{**CAMPER, "parties": [person("Dario", occupation="noleggiatore di camper"), CAMPER["parties"][1]]})
+    assert fs.qualify_parties(renter)[1] == []
+    stated = F(**{**CAMPER, "parties": [person("Dario", purpose="attività di noleggio"), CAMPER["parties"][1]]})
+    assert fs.qualify_parties(stated)[1] == []                                   # a purpose given is read as given

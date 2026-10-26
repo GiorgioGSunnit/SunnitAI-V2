@@ -1,5 +1,6 @@
 """Source tiers (src/rag/source_tiers.py): primary-only article channels, rulings only as support for the
-articles found. Invented data only."""
+articles found, the narrative map's hypotheses confirmed by a primary channel or by 3+ similar rulings.
+Invented data only."""
 import os
 
 os.environ.setdefault("EMBEDDING_PROVIDER", "openai")
@@ -123,11 +124,21 @@ def test_a_failure_gives_no_support(no_embedding, logged):
     assert "error" in logged[-1][1]
 
 
+def test_a_hypothesis_needs_a_primary_channel_or_three_similar_rulings():
+    hypotheses = [("1490", "c.c."), ("2043", "c.c."), ("1218", "c.c.")]
+    stats = {("2043", "c.c."): {"rulings": 3}, ("1218", "c.c."): {"rulings": 2}}
+    kept, why = st.confirmed_hypotheses(hypotheses, [("1490", "c.c.")], stats)
+    assert kept == [("1490", "c.c."), ("2043", "c.c.")]
+    assert why == {"channel": ["1490 c.c."], "rulings": ["2043 c.c."], "rejected": ["1218 c.c."]}
+
+
 def test_the_flags_act_on_their_route(monkeypatch):
+    monkeypatch.setenv("HYBRID_NARRATIVE_ENABLED", "true")
     monkeypatch.setenv("PRIMARY_FIRST_ENABLED", "true")
+    assert st.hybrid_enabled("narrative") and not st.hybrid_enabled("direct")
     assert st.primary_first_enabled("direct") and not st.primary_first_enabled("ccnl")
-    monkeypatch.setenv("PRIMARY_FIRST_ENABLED", "false")
-    assert not st.primary_first_enabled("direct")
+    monkeypatch.setenv("HYBRID_NARRATIVE_ENABLED", "false")
+    assert not st.hybrid_enabled("narrative")
 
 
 class _Driver:
@@ -184,3 +195,22 @@ def test_the_synthesis_gets_the_support_rulings(monkeypatch, no_embedding, logge
     assert [r["d"]["id"] for r in seen["rows"]] == ["cc", "cassB", "cassA"]
     assert out["answer"] == "ok" and len(out["raw_result"]) == 3
 
+
+def test_the_narrative_writer_gets_rulings_citing_the_kept_articles(monkeypatch, logged):
+    os.environ.setdefault("NEO4J_URI", "bolt://localhost:7687")
+    os.environ.setdefault("NEO4J_USER", "neo4j")
+    os.environ.setdefault("NEO4J_PASSWORD", "test-password")
+    import src.rag.defensive_generation as dg
+    import src.rag.main as main
+    monkeypatch.setattr(main, "driver", _Driver(object()))
+    seen = {}
+
+    def fake_support(session, refs, text, k, weight_shared=False, stage=""):
+        seen.update(refs=refs, weight_shared=weight_shared, stage=stage)
+        return [{"d": {"id": "cassA", "name": "Cass. A"}, "s": {"name": "1"}}]
+    monkeypatch.setattr(st, "support_rulings", fake_support)
+    monkeypatch.setattr(dg, "_ruling_passages", lambda session, rows, sel, analysis: [{**r, "_passage": "p"} for r in rows])
+    rows = dg._support_rulings("fatti", "", [{"_article": ("1490", "c.c."), "d": {}, "s": {}},
+                                             {"_article": ("130", "Codice del Consumo"), "d": {}, "s": {}}], {})
+    assert seen == {"refs": [("1490", "c.c.")], "weight_shared": True, "stage": "narrative"}
+    assert [r["d"]["id"] for r in rows] == ["cassA"] and rows[0]["_passage"] == "p"

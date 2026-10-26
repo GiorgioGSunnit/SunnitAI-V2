@@ -1674,10 +1674,41 @@ def review_section(title: str, text: str, case_text: str, article_rows: Optional
     return marked, log
 
 
+def standard_blocks(analysis: Dict[str, Any]) -> Dict[str, str]:
+    """REVIEW_FIXES_ENABLED (round 3: the pool case's 589 c.p. never named, even after the rewrite): the block's
+    standard text, appended to the procedural section when it is still missing after _cover_blocks -- for the
+    criminal route, PROCEDURAL_TOOLS' text with the articles that apply to the case (589 and/or 590 c.p., 76
+    c.p.p., 2947 co. 3 c.c.)."""
+    from . import fact_signals
+    if not _review_fixes():
+        return {}
+    tool = next((t for t in (_signals(analysis) or {}).get("tools") or []
+                 if t.get("id") == fact_signals.CRIMINAL_TOOL), None)
+    if not tool:
+        return {}
+    refs = ", ".join(f"art. {n}{', terzo comma,' if n == '2947' else ''} {c}" for n, c in tool.get("refs") or [])
+    return {fact_signals.CRIMINAL_TOOL: f"**Profilo penale**\n\n{tool['text']}" + (f" Norme: {refs}." if refs else "")}
+
+
+def _with_standard_blocks(sections: List[Tuple[str, str]], i: int,
+                          coverage: Callable[[str], Dict[str, Dict[str, List[str]]]],
+                          standard: Optional[Dict[str, str]]) -> List[Tuple[str, str]]:
+    """The procedural section with the standard text of each block it still leaves out (standard_blocks)."""
+    still = [b for b in _missing_blocks(coverage(sections[i][1])) if b in (standard or {})]
+    if not still:
+        return sections
+    out = list(sections)
+    out[i] = (sections[i][0], sections[i][1].rstrip() + "".join(f"\n\n{standard[b]}" for b in still))
+    dg.vlog("case_analysis_standard_blocks", {"appended": still})
+    return out
+
+
 def _cover_blocks(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]], system: str,
-                  coverage: Callable[[str], Dict[str, Dict[str, List[str]]]]) -> List[Tuple[str, str]]:
+                  coverage: Callable[[str], Dict[str, Dict[str, List[str]]]],
+                  standard: Optional[Dict[str, str]] = None) -> List[Tuple[str, str]]:
     """The procedural section written once more when it leaves out a block of its material (_missing_blocks); the
-    version that writes more items of the blocks is kept."""
+    version that writes more items of the blocks is kept. A block still missing then gets its standard text
+    (standard_blocks, REVIEW_FIXES_ENABLED)."""
     i = next((k for k, (title, _) in enumerate(sections) if title == SECTION_TITLES[4]), None)
     if i is None or not sections[i][1]:
         return sections
@@ -1695,15 +1726,15 @@ def _cover_blocks(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, st
             HumanMessage(content=material)], max_tokens=max_tokens), title)
     except Exception as exc:
         logger.warning("plan-then-write: procedural section not rewritten for its blocks: %s", exc)
-        return sections
+        return _with_standard_blocks(sections, i, coverage, standard)
 
     def written(u):
         return sum(len(v["written"]) for v in u.values())
     if again and written(coverage(again)) > written(use):
         out = list(sections)
         out[i] = (title, again)
-        return out
-    return sections
+        return _with_standard_blocks(out, i, coverage, standard)
+    return _with_standard_blocks(sections, i, coverage, standard)
 
 
 def _complete_sections(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]],
@@ -1759,7 +1790,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
                    named: Optional[List[tuple]] = None,
                    documents: Optional[List[Dict[str, Any]]] = None,
                    article_rows: Optional[List[Dict[str, Any]]] = None, case_text: str = "",
-                   coverage: Optional[Callable[[str], Dict[str, Dict[str, List[str]]]]] = None) -> Optional[List[tuple]]:
+                   coverage: Optional[Callable[[str], Dict[str, Dict[str, List[str]]]]] = None,
+                   standard: Optional[Dict[str, str]] = None) -> Optional[List[tuple]]:
     """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
     None if one still fails or comes back empty. _discipline(): each section then loses the citations
     its material does not hold (_cite_only_material; named: the articles the case names).
@@ -1788,7 +1820,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         dg.vlog("case_analysis_sections_llm", duration_ms=(time.time() - t0) * 1000)
     sections = [(job[0], _without_heading(text, job[0])) for job, text in zip(jobs, texts)]
     if coverage is not None:
-        sections = _cover_blocks(sections, jobs, system, coverage)
+        sections = _cover_blocks(sections, jobs, system, coverage, standard)
     writer_log: List[Dict[str, Any]] = []
     if _writer_rules() and all(text for _, text in sections):
         sections, writer_log = _complete_sections(sections, jobs, system)
@@ -1815,7 +1847,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     if _review_fixes() and all(text for _, text in sections):
         t3 = time.time()
         with ThreadPoolExecutor(max_workers=len(sections)) as pool:
-            fixed = list(pool.map(lambda pair: rewrite_unsupported(pair[0], pair[1], case_text), sections))
+            fixed = list(pool.map(lambda pair: rewrite_unsupported(pair[0], pair[1], case_text, article_rows),
+                                  sections))
         entries = [entry for _, log in fixed for entry in log]
         dg.vlog("case_analysis_unsupported_claims", {
             "entries": entries, "rewritten": sum(1 for e in entries if e["how"] == "rewritten")},
@@ -1862,13 +1895,46 @@ def _claim_refs(sentence: str) -> set:
     return {a or b for a, b in _CLAIM_REFS_RE.findall(sentence or "")}
 
 
-def rewrite_unsupported(title: str, text: str, case_text: str) -> Tuple[str, List[Dict[str, Any]]]:
+# Round 3 (the boat case v7): the check rewrote a correct rule -- "La denuncia non è necessaria se il venditore ha
+# riconosciuto ... o l'ha occultato" (art. 1495 co. 2) got a condition appended. A sentence stating a condition, or
+# restating the text of an article it cites, is never sent to the check.
+_CONDITION_RE = re.compile(r"\b(?:se|qualora|ove|purché|purche|salvo che|nel caso in cui|a meno che)\b",
+                           re.IGNORECASE)
+_VERBATIM_SHARE = 0.7
+
+
+def _content_stems(text: str) -> set:
+    return {w[:6] for w in re.findall(r"[a-zàèéìòù]{5,}", (text or "").lower())}
+
+
+def _states_a_rule(sentence: str, article_rows: Optional[List[Dict[str, Any]]]) -> bool:
+    """A condition marker, or most of the sentence's content words in the text of an article it cites (a quote
+    or a near-verbatim restatement of the norm)."""
+    if _CONDITION_RE.search(sentence):
+        return True
+    cited = _claim_refs(sentence)
+    stems = _content_stems(re.sub(r"\bartt?\.\s*\d+\S*|\b[cC]\.\s?[cpCP]\.\S*", " ", sentence))
+    if not cited or len(stems) < 4:
+        return False
+    for row in article_rows or []:
+        number = str((row.get("_article") or ("",))[0])
+        if number and number in cited:
+            text = (row.get("s") or {}).get("plain_text") or ""
+            if len(stems & _content_stems(text)) >= _VERBATIM_SHARE * len(stems):
+                return True
+    return False
+
+
+def rewrite_unsupported(title: str, text: str, case_text: str,
+                        article_rows: Optional[List[Dict[str, Any]]] = None) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log), REVIEW_FIXES_ENABLED: the sentences matching _UNSUPPORTED_RE that do not restate the case
-    (_from_the_case), checked in one call; each the check finds stating as certain what the case does not say is
-    replaced by its rewriting as a condition -- kept as it was when the rewriting is empty, loses an article or a
-    ruling the sentence cites, or is out of proportion with it."""
+    (_from_the_case) nor state a rule or a condition (_states_a_rule: never rewritten, round 3), checked in one
+    call; each the check finds stating as certain what the case does not say is replaced by its rewriting as a
+    condition -- kept as it was when the rewriting is empty, loses an article or a ruling the sentence cites, or
+    is out of proportion with it."""
     spans = [(s, e) for s, e in _sentence_spans(text)
-             if _UNSUPPORTED_RE.search(text[s:e]) and not _from_the_case(text[s:e], case_text)]
+             if _UNSUPPORTED_RE.search(text[s:e]) and not _from_the_case(text[s:e], case_text)
+             and not _states_a_rule(text[s:e], article_rows)]
     if not spans:
         return text, []
     numbered = "\n".join(f"{k}. {' '.join(text[s:e].split())}" for k, (s, e) in enumerate(spans, 1))
@@ -1922,7 +1988,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
                                                  principles, _keep_all()), lang, named, documents,
-                              article_rows, case, coverage=use_of)
+                              article_rows, case, coverage=use_of, standard=standard_blocks(analysis))
     if sections is None:
         return None
     if use_of is not None:

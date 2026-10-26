@@ -106,7 +106,9 @@ def _trim(card: Dict[str, Any]) -> Dict[str, Any]:
             "a_favore_di": str(card.get("a_favore_di") or ""), "parte_favorita": str(card.get("parte_favorita") or ""),
             "citazione": str(card.get("citazione") or "") if card.get("citazione_verificata") else "",
             "riferimento": str(card.get("riferimento") or ""), "completo": bool(card.get("riferimento_completo")),
-            "branch": str(card.get("branch") or "")}
+            "branch": str(card.get("branch") or ""),
+            # The issues it decides: the narrative map's issue queries (HYBRID_NARRATIVE_ENABLED, source_tiers).
+            "issues": [str(k).strip() for k in card.get("parole_chiave_questioni") or [] if str(k).strip()]}
 
 
 class CardStore:

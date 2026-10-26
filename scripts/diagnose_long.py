@@ -90,7 +90,9 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "STRATEGY_DRAFT_RULES_ENABLED", "METHOD_CANDIDATES_ENABLED", "CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED",
          "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED",
          "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED", "FACT_SIGNALS_ENABLED",
-         "GRADER_EXAMPLES_ENABLED", "WRITER_RULES_ENABLED", "FACT_REGIMES_ENABLED", "FACT_MARK_INLINE_ENABLED"]
+         "GRADER_EXAMPLES_ENABLED", "WRITER_RULES_ENABLED", "FACT_REGIMES_ENABLED", "FACT_MARK_INLINE_ENABLED",
+         "STRICT_ARTICLES_ENABLED", "RULING_FIT_ENABLED", "REVIEW_FIXES_ENABLED", "ROUTER_ENABLED",
+         "HYBRID_NARRATIVE_ENABLED", "PRIMARY_FIRST_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -654,6 +656,31 @@ def _expected_info(dg, ev, session, documents, expected, analysis, case_text, in
     return out
 
 
+def _tier_record(events: list, session, mentioned: list) -> dict:
+    """The source tiers of one run (ROUTER / HYBRID_NARRATIVE, 26 Oct): the route chosen; the authority stage's
+    hits by document type, the rows the filter dropped and any non-primary one left (must be 0); the rulings the
+    answer cites, read by their CITES edges against the articles it names: how many cite one of them, how many
+    only a Cassation-boilerplate one (target 0), how many none."""
+    from src.rag import source_tiers
+    route = next((d for e, d, _ in reversed(events) if e == "case_analysis_route"), None) or {}
+    hits = [d for e, d, _ in events if e == "source_tier_hits" and str((d or {}).get("stage", "")).startswith("authority")]
+    by_type = Counter()
+    for d in hits:
+        by_type.update(d.get("by_type") or {})
+    cited_log = next((d for e, d, _ in reversed(events) if e == "case_analysis_rulings_cited"), None)
+    ids = [r["id"] for r in (cited_log or {}).get("rulings") or [] if r.get("cited") and r.get("id")]
+    cites = source_tiers.ruling_citations(session, ids) if ids else {}
+    fit = source_tiers.ruling_answer_fit({i: cites.get(i, set()) for i in ids}, mentioned)
+    return {"route": route.get("route"), "route_reasons": route.get("reasons"), "hybrid": route.get("hybrid"),
+            "authority_ran": bool(hits), "authority_by_type": dict(by_type),
+            "authority_dropped": sum(d.get("dropped", 0) for d in hits),
+            "authority_non_primary_after": sum(d.get("non_primary_after", 0) for d in hits),
+            "rulings_logged": cited_log is not None, "rulings_to_writer": len((cited_log or {}).get("rulings") or []),
+            "rulings_cited": fit["rulings"], "rulings_citing_answer_article": fit["citing_answer_article"],
+            "rulings_boilerplate_only": fit["boilerplate_only"], "rulings_unrelated": fit["unrelated"],
+            "rulings_shared": fit["per_ruling"]}
+
+
 def run_child(spec_path: str, env_path: str) -> None:
     spec = json.load(open(spec_path, encoding="utf-8"))
 
@@ -776,6 +803,7 @@ def run_child(spec_path: str, env_path: str) -> None:
                 if row.get("_article"):
                     rows_by_ref.setdefault(row["_article"], row)
             record["fits"] = _rubrica_fits(dg, draft, to_fit, rows_by_ref, documents) if draft else {}
+            record["tiers"] = _tier_record(events, session, mentioned)
             record["in_pool_refs"] = len(pool_refs)
             if spec.get("expected"):
                 record["expected_info"] = _expected_info(dg, ev, session, documents, spec["expected"], analysis,
@@ -1052,6 +1080,7 @@ def analyse_case(rec: dict, ev) -> dict:
     out["after_draft"] = after
     out["fact_signals"] = _fact_signal_trace(rec, out, K, expected_keys)
     out["form"] = _form_trace(rec, K, expected_keys)
+    out["tiers"] = rec.get("tiers") or {}
     return out
 
 
@@ -1228,12 +1257,31 @@ def aggregate(cases: list) -> dict:
         form["review"].update(f.get("review") or {})
     form["qualified"] = [(c["id"], q) for c in keyed for q in (c.get("form") or {}).get("qualifications") or []]
     form["expected_dropped"] = [(c["id"], l) for c in keyed for l in (c.get("form") or {}).get("expected_dropped") or []]
+    tiers = [c.get("tiers") or {} for c in keyed]
+    tier = {"routes": Counter(str(t.get("route")) for t in tiers if t.get("route")),
+            "authority_ran": sum(1 for t in tiers if t.get("authority_ran")),
+            "non_primary_after": sum(t.get("authority_non_primary_after", 0) for t in tiers),
+            "dropped": sum(t.get("authority_dropped", 0) for t in tiers),
+            "logged": sum(1 for t in tiers if t.get("rulings_logged")),
+            "cited": sum(t.get("rulings_cited", 0) for t in tiers),
+            "citing": sum(t.get("rulings_citing_answer_article", 0) for t in tiers),
+            "boilerplate_only": sum(t.get("rulings_boilerplate_only", 0) for t in tiers)}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
+            "tiers": tier,
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
             "resolved_articles": resolved_articles, "unrelated": unrelated, "generic": generic,
             "no_rubrica": no_rubrica, "areas": areas}
+
+
+def _tier_share(a: dict) -> str:
+    """"k / n (p%)" of the cited rulings that cite an article the answer names; "n/a" for a run made before the
+    rulings were logged (26 Oct)."""
+    t = a["tiers"]
+    if not t["logged"]:
+        return "n/a"
+    return f"{t['citing']} / {t['cited']} ({_pct(t['citing'], t['cited'])})" if t["cited"] else "0 / 0"
 
 
 def _counter_line(counter: Counter, total: int, order=None) -> str:
@@ -1253,6 +1301,17 @@ def render(cases: list, header: list) -> str:
     errors = [f"{c['id']}: {e}" for c in cases for e in c["capture_errors"]]
     if errors:
         L.append(f"Capture errors (the runs themselves were unaffected): {'; '.join(errors[:10])}")
+    t = agg["tiers"]
+    L.append(f"Source tiers: routes {', '.join(f'{r} {n}' for r, n in sorted(t['routes'].items())) or 'n/a'}; "
+             + (f"non-primary hits left in the authority stage {t['non_primary_after']} (must be 0; dropped by the "
+                f"filter {t['dropped']}); " if t["authority_ran"] else "authority filter off; ")
+             + f"cited rulings citing an answer article {_tier_share(agg)}; boilerplate-only "
+             + (str(t["boilerplate_only"]) if t["logged"] else "n/a") + ".")
+    L += ["", "| case | route | rulings cited | citing an answer article | boilerplate-only |", "|---|---|---:|---:|---:|"]
+    for c in keyed:
+        ct = c.get("tiers") or {}
+        L.append(f"| {c['id']} | {ct.get('route') or 'n/a'} | {ct.get('rulings_cited', '-')} | "
+                 f"{ct.get('rulings_citing_answer_article', '-')} | {ct.get('rulings_boilerplate_only', '-')} |")
 
     # --- A
     L += ["", "## A. Loss funnel of the expected articles", "",
@@ -1726,6 +1785,14 @@ def compare(run_dirs: list, ev) -> str:
             ("procedural section: items written / offered", [sum(a["form"]["use_written"].values()) for a in aggs],
              lambda a: f" / {sum(a['form']['use_offered'].values())}"),
             ("expected articles cited only in dropped sentences", [len(a["form"]["expected_dropped"]) for a in aggs],
+             lambda a: ""),
+            ("non-primary hits in the authority stage (must be 0)",
+             [a["tiers"]["non_primary_after"] if a["tiers"]["authority_ran"] else "n/a" for a in aggs],
+             lambda a: f" (dropped by the filter: {a['tiers']['dropped']})" if a["tiers"]["authority_ran"] else ""),
+            ("cited rulings citing >=1 answer article", [_tier_share(a) for a in aggs], lambda a: ""),
+            ("boilerplate-only rulings cited (target 0)",
+             [a["tiers"]["boilerplate_only"] if a["tiers"]["logged"] else "n/a" for a in aggs], lambda a: ""),
+            ("routes", [", ".join(f"{r} {n}" for r, n in sorted(a["tiers"]["routes"].items())) or "n/a" for a in aggs],
              lambda a: "")]
     for title, values, suffix in rows:
         L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")
@@ -1742,11 +1809,16 @@ def compare(run_dirs: list, ev) -> str:
                               ("rubrica vs citing line", "fit", None)):
         L += _side_by_side(title, [a[key] for a in aggs], [len(a["wrong"]) for a in aggs], names, order) + [""]
     L += ["## Per case", "", "| case | " + " | ".join(f"MENTIONED {n}" for n in names) + " | of | "
-          + " | ".join(f"not expected {n}" for n in names) + " |", "|---|" + "---:|" * (2 * len(names) + 1)]
+          + " | ".join(f"not expected {n}" for n in names) + " | route (newest) | rulings cited / citing an answer "
+          "article / boilerplate-only (newest) |", "|---|" + "---:|" * (2 * len(names) + 1) + "---|---|"]
     for cid in common:
         mentioned = [sum(s["stage"] == "MENTIONED" for s in b[cid]["slots"]) for b in by]
+        t = by[-1][cid].get("tiers") or {}
+        rulings = (f"{t.get('rulings_cited', 0)} / {t.get('rulings_citing_answer_article', 0)} / "
+                   f"{t.get('rulings_boilerplate_only', 0)}") if t.get("rulings_logged") else "n/a"
         L.append(f"| {cid} | " + " | ".join(map(str, mentioned)) + f" | {len(by[-1][cid]['slots'])} | "
-                 + " | ".join(str(len(b[cid]["unexpected"])) for b in by) + " |")
+                 + " | ".join(str(len(b[cid]["unexpected"])) for b in by)
+                 + f" | {t.get('route') or 'n/a'} | {rulings} |")
     return "\n".join(L) + "\n"
 
 

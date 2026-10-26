@@ -6,6 +6,12 @@ the rulings, always filtered by what the authority tier found.
       hits are logged by document type, and a check after the filter asserts none is left. Rulings come only as
       support: those whose Sections CITE an article the answer is built on (Cassation boilerplate excluded),
       ranked by similarity to the question -- no vote.
+  HYBRID_NARRATIVE_ENABLED (the strategy pipeline, defensive_generation): the rulings similar to the facts act
+      first as a MAP -- the issues and articles they suggest are hypotheses only, never candidates by themselves
+      (ruling_map); the article channels search primary documents only (keep_types, "authority"); a hypothesis becomes
+      a candidate when the article exists in the primary corpus and a primary channel finds it, or three or more
+      of the top similar rulings of the case's area apply it (confirmed_hypotheses); the rulings the writer gets
+      cite at least one selected article (support_rulings, by fact similarity x shared articles).
 
 The CITES edges are (:Section)-[:CITES {code, article}]->(:Section), scripts/link_ruling_citations.py, for the
 six codes and the Constitution.
@@ -21,8 +27,13 @@ from .verbose_logger import vlog
 logger = logging.getLogger(__name__)
 
 PRIMARY_FIRST_FLAG = "PRIMARY_FIRST_ENABLED"
+HYBRID_FLAG = "HYBRID_NARRATIVE_ENABLED"
+AUTHORITY_TYPES = ("primary",)
 DIRECT_TYPES = ("primary", "special")
 SUPPORT_SOURCE = "ruling_support"
+# A hypothesis no primary channel found is a candidate only when this many of the top similar rulings apply it.
+MAP_MIN_RULINGS = 3
+MAP_TOP_RULINGS = 20
 
 
 def boilerplate() -> set:
@@ -206,6 +217,88 @@ def support_rulings(session, article_refs: Sequence[tuple], text: str, k: int,
         return []
     finally:
         vlog("source_tier_support", info, duration_ms=(time.time() - t0) * 1000)
+
+
+# --- the narrative path's map (HYBRID_NARRATIVE_ENABLED) -------------------------------------------------
+
+def ruling_map(session, driver, database: str, case_text: str, index: str,
+               analysis: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The rulings most similar to the facts, read as a map -- hypotheses, never candidates by themselves:
+      "articles": [(article, code)] they apply (cards' applied articles where carded, else CITES), IDF-weighted,
+                  boilerplate and other areas' codes dropped (vote_pool.filter_refs), best first;
+      "stats":    {ref: {"rulings": the top similar rulings applying it, ...}} (vote_pool.vote_stats);
+      "issues":   the issues the carded ones decide (parole_chiave_questioni), most frequent first;
+      "top":      the similar rulings' ids, best first.
+    Empty on any failure."""
+    from . import ruling_cards, vote_pool
+    t0 = time.time()
+    out: Dict[str, Any] = {"articles": [], "stats": {}, "issues": [], "top": []}
+    info: Dict[str, Any] = {}
+    try:
+        table = vote_pool.idf_table(driver, database)
+        if table is None:
+            info["skipped"] = "IDF counts not ready"
+            return out
+        idf, default_idf = table
+        k = vote_pool.DEFAULT_K
+        vector, fulltext = vote_pool._similar_rulings(session, case_text, index, k)
+        sims = vote_pool.ruling_sims(vector, fulltext)
+        top = [r for r, _ in sorted(sims.items(), key=lambda kv: (-kv[1], kv[0]))]
+        cites = vote_pool._citations(session, top)
+        cards = vote_pool._card_refs()
+        areas = vote_pool.filter_areas(analysis)
+        posture = str(((analysis or {}).get("frame") or {}).get("posture_type") or "")
+        votes, dropped = vote_pool.filter_refs({r: cards[r] if r in cards else cites.get(r, ()) for r in top},
+                                               areas, posture, case_text)
+        scores = vote_pool.vote_scores(sims, votes, idf, default_idf)
+        out["articles"] = sorted((r for r in scores if scores[r] > 0), key=lambda r: (-scores[r], r))
+        head = top[:MAP_TOP_RULINGS]
+        out["stats"] = vote_pool.vote_stats({r: votes.get(r, []) for r in head}, {r for r in head if r in cards})
+        out["top"] = top
+        store = ruling_cards.store()
+        issues: Dict[str, int] = {}
+        if store is not None:
+            by_id = {c["id"]: c for c in store.cards}
+            for ruling in head:
+                for issue in (by_id.get(ruling) or {}).get("issues") or []:
+                    issues[issue] = issues.get(issue, 0) + 1
+        out["issues"] = [i for i, _ in sorted(issues.items(), key=lambda kv: (-kv[1], kv[0]))][:6]
+        info.update(rulings=len(top), carded=sum(r in cards for r in head), areas=areas,
+                    dropped={reason: [f"{a} {c}" for a, c in refs[:20]] for reason, refs in dropped.items()},
+                    hypotheses=[f"{a} {c} {scores[(a, c)]:.2f}" for a, c in out["articles"][:15]],
+                    issues=out["issues"])
+        return out
+    except Exception as exc:
+        info["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        logger.warning("ruling map failed, no hypotheses: %s", exc)
+        return {"articles": [], "stats": {}, "issues": [], "top": []}
+    finally:
+        vlog("hybrid_map", info, duration_ms=(time.time() - t0) * 1000)
+
+
+def confirmed_hypotheses(hypotheses: Sequence[tuple], channel_refs: Iterable[tuple],
+                         stats: Dict[tuple, Dict[str, int]], min_rulings: int = MAP_MIN_RULINGS
+                         ) -> Tuple[List[tuple], Dict[str, List[str]]]:
+    """(the hypotheses that may become candidates, why each did or did not): found by a primary channel, or
+    applied by min_rulings or more of the top similar rulings of the case's area (the map already dropped
+    other areas' codes). Whether the article exists in the primary corpus is the fetch's to say."""
+    found = set(channel_refs)
+    kept, why = [], {"channel": [], "rulings": [], "rejected": []}
+    for ref in hypotheses:
+        if ref in found:
+            kept.append(ref)
+            why["channel"].append(f"{ref[0]} {ref[1]}")
+        elif (stats.get(ref) or {}).get("rulings", 0) >= min_rulings:
+            kept.append(ref)
+            why["rulings"].append(f"{ref[0]} {ref[1]}")
+        else:
+            why["rejected"].append(f"{ref[0]} {ref[1]}")
+    return kept, why
+
+
+def hybrid_enabled(route: Optional[str]) -> bool:
+    """HYBRID_NARRATIVE_ENABLED, for a request routed narrative (query_router.route_for_pipeline)."""
+    return feature_flags.enabled(HYBRID_FLAG) and route == "narrative"
 
 
 def primary_first_enabled(route: Optional[str]) -> bool:

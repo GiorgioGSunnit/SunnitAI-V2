@@ -711,6 +711,8 @@ _FUSION_SEARCH_K = 20
 # 31/18 -- if either is genuinely single-signal, this cap increase alone
 # won't reach it either; re-run the funnel to see which it was).
 _FUSION_POOL_CAP = 16
+# HYBRID_NARRATIVE_ENABLED: the map's and the analysis' issues searched as queries, at most this many.
+_HYBRID_ISSUE_QUERIES = 8
 
 # HEADING_INDEX_ENABLED (default false): resolve an institution against a
 # dedicated vector index over every primary Section's titolo_articolo (its
@@ -1480,6 +1482,14 @@ def _frame_queries(frame: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(q.strip() for q in queries if q and q.strip()))
 
 
+def _analysis_issue_titles(analysis: Dict[str, Any]) -> List[str]:
+    """The analysis' own issues as search queries (HYBRID_NARRATIVE_ENABLED): each question's title without
+    the "Questione centrale:" label the frame's issues carry (those are searched as the frame's queries)."""
+    titles = [str(q.get("titolo") or "").strip() for q in analysis.get("questioni") or [] if isinstance(q, dict)
+              and q.get("voce") != "questione_centrale"]
+    return list(dict.fromkeys(t for t in titles if t))
+
+
 def _same_institution(a: str, b: str) -> bool:
     return " ".join(a.lower().split()) == " ".join(b.lower().split())
 
@@ -2018,7 +2028,7 @@ _generic_stems_cache: Dict[str, set] = {}
 STRICT_ARTICLES_FLAG = "STRICT_ARTICLES_ENABLED"
 # STRICT_ARTICLES_ENABLED: words too common in rubriche to tie a keyword's article to an institution (art. 492
 # c.c.'s rubrica is "Garanzia"): the generic ones above and these.
-_STRICT_GENERIC_WORDS = "garanzia garanzie"
+_STRICT_GENERIC_WORDS = "garanzia garanzie prestazione prestazioni"
 
 
 def _strict_generic_stems() -> set:
@@ -3089,12 +3099,18 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
     the diagnosis sees exactly what the pipeline does.
     """
     from .nodes.retrieval import broaden_article_context
+    from . import source_tiers
 
-    first_rulings = _search_case_law(session, analysis)
-    similar = _search_similar_facts(session, analysis, {(r.get("d") or {}).get("id") for r in first_rulings})
+    # HYBRID_NARRATIVE_ENABLED: the articles the rulings agree on are the map's hypotheses
+    # (_select_articles_fusion), never a channel of their own here; their searches are skipped.
+    hybrid = source_tiers.hybrid_enabled(analysis.get("route"))
+    first_rulings = [] if hybrid else _search_case_law(session, analysis)
+    similar = [] if hybrid else _search_similar_facts(session, analysis,
+                                                      {(r.get("d") or {}).get("id") for r in first_rulings})
     counts = _articles_cited_in_rulings(
-        session, [(r.get("d") or {}).get("id") for r in (similar + first_rulings)[:10]])
-    similar_counts = _articles_cited_in_rulings(session, [(r.get("d") or {}).get("id") for r in similar])
+        session, [(r.get("d") or {}).get("id") for r in (similar + first_rulings)[:10]]) if not hybrid else {}
+    similar_counts = _articles_cited_in_rulings(
+        session, [(r.get("d") or {}).get("id") for r in similar]) if not hybrid else {}
     case = _case_text(facts, request)
     keep, candidates = _candidate_articles(case, analysis, similar + first_rulings,
                                            _search_code_articles(session, analysis), counts, similar_counts)
@@ -3510,11 +3526,25 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     frame_queries = _frame_queries(analysis.get("frame") or {})
     frame_lists = [search(q) for q in frame_queries]
     frame_refs = _fusion_merge_by_hits(*frame_lists) if frame_lists else []
+    # HYBRID_NARRATIVE_ENABLED (source_tiers.py): the rulings similar to the facts read first as a MAP. The
+    # issues their cards decide and the analysis' own issues are searched in the primary documents as one
+    # more signal; the articles they apply are hypotheses only (confirmed below), in place of the vote.
+    from . import source_tiers
+    hybrid = source_tiers.hybrid_enabled(analysis.get("route"))
+    ruling_map, issue_refs = None, []
+    if hybrid:
+        ruling_map = source_tiers.ruling_map(session, driver, database, case, _CASE_POOL_VECTOR_INDEX, analysis)
+        issue_queries = [q for q in dict.fromkeys(ruling_map["issues"] + _analysis_issue_titles(analysis))
+                         if q and q not in frame_queries][:_HYBRID_ISSUE_QUERIES]
+        issue_lists = [search(q) for q in issue_queries]
+        issue_refs = _fusion_merge_by_hits(*issue_lists) if issue_lists else []
+        vlog("hybrid_issue_queries", {"queries": issue_queries, "found": len(issue_refs)})
     vlog("case_pool_fusion_sources", {"clean": clean, "frame_queries": len(frame_queries),
                                       "baseline": len(baseline_refs), "distill": len(distill_refs),
-                                      "frame": len(frame_refs)})
+                                      "frame": len(frame_refs), "issues": len(issue_refs)})
 
-    signals = [current_refs, baseline_refs, distill_refs] + ([frame_refs] if frame_refs else [])
+    signals = [current_refs, baseline_refs, distill_refs] + ([frame_refs] if frame_refs else []) \
+        + ([issue_refs] if issue_refs else [])
     hits, best_rank = _fusion_hits_and_best_rank(*signals)
     fused = sorted(hits, key=lambda ref: (-hits[ref], best_rank[ref]))
     # VOTE_POOL_ENABLED: the articles the rulings most similar to the case's facts cite
@@ -3523,9 +3553,21 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     from . import vote_pool
     voted, how = [], None
     vote_stats: Dict[tuple, Dict[str, int]] = {}
-    if vote_pool.enabled():
+    if vote_pool.enabled() and not hybrid:
         voted, how = vote_pool.ruling_vote(session, driver, database, case, _CASE_POOL_VECTOR_INDEX,
                                            analysis, vote_stats), vote_pool.mode()
+    # HYBRID_NARRATIVE_ENABLED: a map hypothesis is a candidate only if a primary channel found it (it then
+    # passes the cap as found by two sources) or 3+ of the top similar rulings of the case's area apply it
+    # (added after the cap); the fetch below says whether it exists in the primary corpus. Graded like any.
+    map_channel: List[tuple] = []
+    map_rulings: List[tuple] = []
+    if hybrid and ruling_map and ruling_map["articles"]:
+        channel_refs = set().union(*(set(refs) for refs in signals))
+        confirmed, why = source_tiers.confirmed_hypotheses(ruling_map["articles"], channel_refs, ruling_map["stats"])
+        map_channel = [ref for ref in confirmed if ref in channel_refs]
+        map_rulings = [ref for ref in confirmed if ref not in channel_refs]
+        vote_stats.update({ref: dict(ruling_map["stats"][ref]) for ref in confirmed if ref in ruling_map["stats"]})
+        vlog("hybrid_hypotheses", why)
     # Exempt from the cap regardless of rank: found by two or more signals,
     # or resolved by the article's own rubrica (heading_matched) -- a
     # single-signal text-search hit is the only thing the cap should ever
@@ -3533,12 +3575,14 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     not_keep = [ref for ref in fused if ref not in keep]
     if voted and how[0] == "rrf":
         not_keep = [ref for ref in vote_pool.weighted_rrf(not_keep, voted, how[1], how[2]) if ref not in keep]
-    exempt_from_cap = {ref for ref in not_keep if hits.get(ref, 0) >= 2} | (heading_matched & set(not_keep))
+    exempt_from_cap = {ref for ref in not_keep if hits.get(ref, 0) >= 2} | (heading_matched & set(not_keep)) \
+        | (set(map_channel) & set(not_keep))
     survives_cap = [ref for ref in not_keep if ref in exempt_from_cap]
     fill = [ref for ref in not_keep if ref not in exempt_from_cap]
     capped = survives_cap + fill[:_FUSION_POOL_CAP]
     added = vote_pool.new_votes(voted, set(keep) | set(capped), how[1]) if voted and how[0] == "append" else []
     capped += added
+    capped += [ref for ref in map_rulings if ref not in keep and ref not in capped]
     selected = keep + capped
     vote_tagged = vote_pool.tagged(voted, selected, added, how) if voted else set()
     if voted:
@@ -3546,8 +3590,13 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
                                     "tagged": sorted(f"{n} {c}" for n, c in vote_tagged)})
 
     candidate_rows = _fetch_any(session, documents, selected)
+    if hybrid and (map_channel or map_rulings):
+        fetched = {row.get("_article") for row in candidate_rows}
+        vlog("hybrid_hypotheses_fetched", {"not_in_primary_corpus": [f"{n} {c}" for n, c in map_channel + map_rulings
+                                                                       if (n, c) not in fetched]})
     fused_rank = {ref: i for i, ref in enumerate(fused, 1)}
-    signal_names = ["current", "baseline", "distill"] + (["frame"] if frame_refs else [])
+    signal_names = ["current", "baseline", "distill"] + (["frame"] if frame_refs else []) \
+        + (["issues"] if issue_refs else [])
     signal_sets = [set(refs) for refs in signals]
     for row in candidate_rows:
         ref = row.get("_article")
@@ -3567,6 +3616,13 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
             row["_heading_match"] = True
         if ref in central_matched:
             row["_central"] = True                    # resolved for a central issue (_central_questions)
+        if ref in map_channel or ref in map_rulings:
+            # A confirmed map hypothesis (HYBRID_NARRATIVE_ENABLED): the grader sees how many similar rulings
+            # apply it; found by a channel too, it counts as found by two sources. No other protection.
+            row["_map"] = True
+            row["_signals"] = row["_signals"] + ["map"]
+            if ref in map_channel:
+                row["_multi_signal"] = True
         if ref in vote_tagged:
             # Voted by similar rulings (VOTE_POOL_ENABLED): still checked for applicability;
             # kept by the prompt's trimming like a multi-signal row; never removed by the plan check.
@@ -4206,7 +4262,9 @@ GRADER_EVIDENCE_FLAG = "GRADER_EVIDENCE_ENABLED"
 GRADER_EXAMPLES_FLAG = "GRADER_EXAMPLES_ENABLED"
 _GRADED_MAX_ISSUES = 10
 _SIGNAL_WORDS = {"current": "ricerca sull'analisi del caso", "baseline": "ricerca sul testo del caso",
-                 "distill": "ricerca sui fatti essenziali", "frame": "ricerca sui quesiti e sulle questioni"}
+                 "distill": "ricerca sui fatti essenziali", "frame": "ricerca sui quesiti e sulle questioni",
+                 "issues": "ricerca sulle questioni del caso e delle sentenze simili",
+                 "map": "sentenze su fatti simili"}
 
 
 def _evidence_context(facts: str, request: str, analysis: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -4721,6 +4779,11 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     protected = _protected_refs(article_rows, _named_refs(case_text, documents)) if remove else {}
     named = _named_refs(case_text, documents) if direction else []
     to_remove, kept, note_dropped, inverse = [], {}, [], []
+    # STRICT_ARTICLES_ENABLED (round 3): a flagged article kept only by the pipeline's own evidence (graded,
+    # forced, voted, channels, central -- not named in the case, not a procedural tool) gets a second opinion
+    # on its full text; "it governs no question of the case" removes it (_second_opinion).
+    second_opinion = remove and feature_flags.enabled(STRICT_ARTICLES_FLAG)
+    deferred: List[tuple] = []
     for v in verdicts:
         if not isinstance(v, dict) or v.get("compatibile") is not False:
             continue
@@ -4741,12 +4804,28 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                 if why is None:
                     to_remove.append(ref)
                     continue
+                if second_opinion and why not in _SECOND_OPINION_EXEMPT:
+                    deferred.append((ref, heading, why, str(v.get("tipo") or "").strip().lower()))
+                    continue
                 kept[label] = why
                 if str(v.get("tipo") or "").strip().lower() == "formulazione":
                     note_dropped.append(label)
                     continue
             draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
+    governs = _second_opinion(case_text, [ref for ref, *_ in deferred], rows_by_ref) if deferred else {}
+    for ref, heading, why, kind in deferred:
+        label = f"{ref[0]} {ref[1]}"
+        if governs.get(ref) is False:
+            to_remove.append(ref)
+            continue
+        kept[label] = why
+        if kind == "formulazione":
+            note_dropped.append(label)
+            continue
+        draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
     log = {"checked": sorted(headings), "flagged": flagged}
+    if deferred:
+        log["second_opinion"] = {f"{n} {c}": governs.get((n, c)) for (n, c), *_ in deferred}
     if direction:
         log["inverse"] = inverse
     if remove or to_remove:
@@ -4755,6 +4834,44 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         vlog("case_analysis_flagged_removed", {"removed": removal, "count": len(to_remove)})
     vlog("case_analysis_qualification", log)
     return draft
+
+
+_SECOND_OPINION_EXEMPT = {"named in the case", "procedural tool for the facts"}
+_SECOND_OPINION_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati un caso e il testo integrale di un articolo di legge. Decidi se "
+    "l'articolo disciplina almeno una delle questioni giuridiche che il caso pone, anche come regola generale "
+    "applicabile ai suoi fatti; non basta che usi parole del caso o che riguardi un istituto vicino. Nel dubbio "
+    'rispondi true. Restituisci SOLO un oggetto JSON {"disciplina": true o false, "perche": una frase}.')
+_SECOND_OPINION_CHARS = 3000
+
+
+def _second_opinion(case_text: str, refs: List[tuple], rows_by_ref: Dict[tuple, Dict[str, Any]]) -> Dict[tuple, Any]:
+    """STRICT_ARTICLES_ENABLED: {article: True / False / None} -- one call per article, in parallel, the case and
+    the article's full text: does it govern any question of the case? None (kept as before) without a text, on a
+    failed call or an unreadable reply. Logged as case_analysis_second_opinion."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def ask(ref):
+        text = " ".join(str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())
+        if not text:
+            return ref, None, "no text"
+        try:
+            reply = _chat_json([SystemMessage(content=_SECOND_OPINION_SYSTEM),
+                                HumanMessage(content=f"CASO:\n{(case_text or '')[:3000]}\n\nARTICOLO: art. {ref[0]} "
+                                                     f"{ref[1]}\n{text[:_SECOND_OPINION_CHARS]}")],
+                               max_tokens=200, temperature=0)
+        except Exception as exc:
+            return ref, None, f"failed: {type(exc).__name__}"
+        if not isinstance(reply, dict) or not isinstance(reply.get("disciplina"), bool):
+            return ref, None, "unreadable"
+        return ref, reply["disciplina"], str(reply.get("perche") or "")[:200]
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=min(6, len(refs)) or 1) as pool:
+        answers = list(pool.map(ask, refs))
+    vlog("case_analysis_second_opinion", {"answers": [{"article": f"{r[0]} {r[1]}", "governs": g, "why": w}
+                                                      for r, g, w in answers]},
+         duration_ms=(time.time() - t0) * 1000)
+    return {ref: governs for ref, governs, _ in answers}
 
 
 def _named_refs(case_text: str, documents: List[Dict[str, Any]]) -> List[tuple]:
@@ -4927,6 +5044,45 @@ def _with_regime_rows(article_rows: List[Dict[str, Any]], regime_rows: List[Dict
     return out
 
 
+def _support_rulings(facts: str, request: str, article_rows: List[Dict[str, Any]],
+                     analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """HYBRID_NARRATIVE_ENABLED: the rulings the writer gets are those citing at least one selected article
+    (Cassation boilerplate excluded), ranked by similarity to the facts x articles shared
+    (source_tiers.support_rulings), each with its best passage (_ruling_passages: the case's branch only) and,
+    when carded, its card (ruling_cards.annotate). [] on any failure: RULING_FIT then has nothing to judge."""
+    import neo4j
+    from . import ruling_cards, source_tiers
+    from .main import driver, NEO4J_DATABASE
+
+    refs = source_tiers.refs_of(article_rows)
+    try:
+        with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+            support = source_tiers.support_rulings(session, refs, _case_text(facts, request), _MAX_RULINGS,
+                                                   weight_shared=True, stage="narrative")
+            rows = _ruling_passages(session, support, refs, analysis)
+    except Exception as exc:
+        logger.warning("hybrid: support rulings failed, none given: %s", exc)
+        return []
+    store = ruling_cards.store()
+    carded = {}
+    if store is not None:
+        ids = {(r.get("d") or {}).get("id") for r in rows}
+        carded = {c["id"]: c for c in store.cards if c["id"] in ids}
+    vlog("hybrid_support_rulings", {"articles": [f"{n} {c}" for n, c in refs], "found": len(support),
+                                    "kept": len(rows), "carded": len(carded)})
+    return ruling_cards.annotate(rows, carded)
+
+
+def _log_rulings_cited(draft: str, ruling_rows: List[Dict[str, Any]]) -> None:
+    """Which rulings given to the writer the draft cites (scripts/diagnose_long.py reads their CITES edges
+    against the articles the answer names)."""
+    draft_low, numbers = " ".join((draft or "").lower().split()), _decision_numbers(draft or "")
+    vlog("case_analysis_rulings_cited", {"rulings": [
+        {"id": (r.get("d") or {}).get("id"), "label": _ruling_label(r),
+         "cited": _ruling_is_cited(_ruling_label(r), draft_low, numbers), "source": r.get("_source") or ""}
+        for r in ruling_rows]})
+
+
 def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: str = "") -> dict:
     """A reasoned parere on a case: facts described in the message, or an
     uploaded document (`facts`) with the user's message as `request`.
@@ -4940,6 +5096,13 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     case_analysis_v2 = feature_flags.enabled(CASE_ANALYSIS_FLAG)
     pool_fusion = case_analysis_v2 and feature_flags.enabled(_CASE_POOL_FUSION_FLAG)
     analysis = _analyse_case_for_pipeline(facts, session_lang, request)
+    # ROUTER_ENABLED: the request's route, confirmed by the case frame; HYBRID_NARRATIVE_ENABLED acts on a
+    # narrative only (source_tiers.py). Without the router the strategy pipeline is the narrative path.
+    from . import query_router, source_tiers
+    route = query_router.route_for_pipeline(_case_text(facts, request), analysis)
+    analysis = {**analysis, "route": route["route"]}
+    hybrid = source_tiers.hybrid_enabled(route["route"])
+    vlog("case_analysis_route", {"route": route["route"], "reasons": route.get("reasons"), "hybrid": hybrid})
     article_rows, ruling_rows, candidates, selected, regime_rows = [], [], [], [], []
     retrieval_t0 = time.time()
     try:
@@ -4951,32 +5114,42 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             regime_rows = _regime_rows(session, driver, NEO4J_DATABASE, analysis)
             first_rulings, similar = picked["first_rulings"], picked["similar"]
             candidates, selected, article_rows = picked["candidates"], picked["selected"], picked["article_rows"]
+            if hybrid:
+                # The authority tier: the articles come from primary documents only, whatever channel found
+                # them (logged by type; none other may be left: source_tier_hits' non_primary_after).
+                article_rows = source_tiers.keep_types(session, article_rows, source_tiers.AUTHORITY_TYPES,
+                                                       "authority")
+                regime_rows = source_tiers.keep_types(session, regime_rows, source_tiers.AUTHORITY_TYPES,
+                                                      "authority_regimes")
             try:
                 filled = article_text.fill_texts(session, article_rows + regime_rows)
                 if filled:
                     vlog("case_analysis_in_force_only_filled", {"sections": filled})
             except Exception as exc:
                 logger.warning("articles holding only their date in force not filled: %s", exc)
-            # Second search with the verified article numbers: rulings on the
-            # article itself, not on whatever else the keywords match.
-            second = _search_case_law(session, analysis, numbers=[n for n, _ in selected[:4]],
-                                      exclude_docs={(r.get("d") or {}).get("id") for r in similar})
-            reading = _reading_order(similar, second, first_rulings)
-            # RULING_CARDS_ENABLED: the rulings the precomputed cards rank best for the case are
-            # read first, each passage led by the card's outcome, side and quote (ruling_cards.py).
-            from . import ruling_cards
-            carded: Dict[str, Dict[str, Any]] = {}
-            if ruling_cards.enabled():
-                searched = len(reading)
-                card_rows, carded = ruling_cards.card_rulings(session, driver, NEO4J_DATABASE,
-                                                              _case_text(facts, request), analysis, picked)
-                reading = ruling_cards.lead_with(card_rows, reading)
-            ruling_rows = ruling_cards.annotate(_ruling_passages(session, reading, selected, analysis), carded)
-            if carded:
-                vlog("case_analysis_ruling_cards_reading", {
-                    "searched": searched, "card_rows": len(carded), "reading": len(reading),
-                    "kept": len(ruling_rows),
-                    "cards_kept": sum((r.get("d") or {}).get("id") in carded for r in ruling_rows)})
+            # HYBRID_NARRATIVE_ENABLED: the rulings come after the applicability check, from the articles it
+            # kept (_support_rulings), not from searches of their own.
+            if not hybrid:
+                # Second search with the verified article numbers: rulings on the
+                # article itself, not on whatever else the keywords match.
+                second = _search_case_law(session, analysis, numbers=[n for n, _ in selected[:4]],
+                                          exclude_docs={(r.get("d") or {}).get("id") for r in similar})
+                reading = _reading_order(similar, second, first_rulings)
+                # RULING_CARDS_ENABLED: the rulings the precomputed cards rank best for the case are
+                # read first, each passage led by the card's outcome, side and quote (ruling_cards.py).
+                from . import ruling_cards
+                carded: Dict[str, Dict[str, Any]] = {}
+                if ruling_cards.enabled():
+                    searched = len(reading)
+                    card_rows, carded = ruling_cards.card_rulings(session, driver, NEO4J_DATABASE,
+                                                                  _case_text(facts, request), analysis, picked)
+                    reading = ruling_cards.lead_with(card_rows, reading)
+                ruling_rows = ruling_cards.annotate(_ruling_passages(session, reading, selected, analysis), carded)
+                if carded:
+                    vlog("case_analysis_ruling_cards_reading", {
+                        "searched": searched, "card_rows": len(carded), "reading": len(reading),
+                        "kept": len(ruling_rows),
+                        "cards_kept": sum((r.get("d") or {}).get("id") in carded for r in ruling_rows)})
     except Exception as exc:
         logger.warning("case analysis retrieval failed: %s", exc)
     vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "pool_fusion": pool_fusion,
@@ -4996,6 +5169,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                          if r.get("_vote") and r.get("_article")})
     if voted_kept:
         vlog("case_pool_vote_kept", {"kept": voted_kept})   # voted articles past the applicability check
+    if hybrid:
+        ruling_rows = _support_rulings(facts, request, article_rows, analysis)
 
     ruling_rows = _ruling_fit(facts, request, ruling_rows)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
@@ -5078,6 +5253,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # "Codice Penale Commentato") fails _extract_citations' length gate and
     # comes back with sections: [] — a citation naming a source with nothing
     # in it. Drop it here rather than let it reach the user.
+    _log_rulings_cited(draft, ruling_rows)
     source_rows = (_draft_sources(draft, article_rows, ruling_rows, documents) if citations_only
                    else article_rows + ruling_rows)
     citations = [c for c in _rows_to_sources(source_rows) if c.get("sections")]

@@ -248,6 +248,16 @@ def test_strict_articles_a_keyword_match_needs_a_specific_word_of_the_institutio
         ("1917 c.c.", "keyword match shares no specific word with the institution")]
 
 
+def test_strict_articles_prestazioni_is_a_generic_word(monkeypatch, corpus):
+    """Round 3 (the boat case v7): "prestazioni" -> art. 2116 c.c. ("Prestazioni") for the analysis' "garanzia
+    delle prestazioni"."""
+    monkeypatch.setitem(HEADINGS, "2116", "Prestazioni")
+    corpus["titled"] = {"prestazioni": "2116"}
+    assert _resolve_by("garanzia delle prestazioni", "c.c.", ["prestazioni"]) == ["2116"]   # flag off: as before
+    monkeypatch.setenv("STRICT_ARTICLES_ENABLED", "true")
+    assert _resolve_by("garanzia delle prestazioni", "c.c.", ["prestazioni"]) == []
+
+
 def test_strict_articles_a_full_text_hit_needs_a_specific_shared_word(monkeypatch, corpus):
     """The boat case, round 1 (26 Oct): "risarcimento danni" -> art. 2767 c.c. by full text, sharing only
     "risarcimento"."""
@@ -835,3 +845,42 @@ def test_an_article_about_the_inverse_situation_goes_even_when_protected(monkeyp
     assert "situazione inversa" in model.systems[0] and "Testo: I padroni e i committenti" in model.humans[0]
     log = [d for e, d in logged if e == "case_analysis_qualification"][-1]
     assert log["inverse"] == ["2049 c.c."] and log["removed"] == ["2049 c.c."]
+
+
+INVENTED_DRAFT = ("La responsabilità del costruttore discende dall'art. 1669 c.c. per i gravi difetti dell'opera. "
+                  "Si applica anche l'art. 2116 c.c. alle prestazioni del costruttore. "
+                  "Il committente può chiedere la riduzione del prezzo ex art. 1668 c.c. nei termini di legge.")
+
+
+def test_strict_articles_a_protected_flagged_article_gets_a_second_opinion(monkeypatch, logged):
+    """Round 3: a flagged article kept only by the pipeline's evidence is asked about on its full text; "governs
+    nothing in the case" removes it. Named in the case: never asked. Invented case."""
+    monkeypatch.setenv("FLAGGED_REMOVE_ENABLED", "true")
+    monkeypatch.setenv("STRICT_ARTICLES_ENABLED", "true")
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [])
+    asked = []
+
+    def model(messages, max_tokens=None, temperature=None, **kwargs):
+        system, human = messages[0].content, messages[-1].content
+        if "testo integrale di un articolo" in system:
+            asked.append(re.search(r"ARTICOLO: art\. (\S+)", human).group(1))
+            return json.dumps({"disciplina": "2116" not in human, "perche": "x"})
+        if "Riscrivi ogni frase" in system:
+            return '[{"i": 1, "frase": ""}]'
+        labels = re.findall(r"^\[([^\]]+)\]$", human, re.MULTILINE)
+        return json.dumps([{"articolo": label, "compatibile": False, "perche": "x", "tipo": "materia"}
+                           for label in labels])
+    monkeypatch.setattr(dg, "_call_chat", model)
+    rows = [dict(_row("1669", "c.c.", "Quando si tratta di edifici...", "Rovina e difetti di cose immobili"), _grade=3),
+            dict(_row("2116", "c.c.", "Le prestazioni indicate nell'articolo 2114...", "Prestazioni"), _grade=2),
+            dict(_row("1668", "c.c.", "Il committente può chiedere...", "Contenuto della garanzia per difetti"))]
+    out = dg._check_qualifications(INVENTED_DRAFT, {}, rows, None, [], "Il cliente chiede dell'art. 1668 c.c.")
+    assert sorted(asked) == ["1669", "2116"]                                    # 1668 is named: not asked
+    assert "2116" not in out
+    assert "art. 1669 c.c. [DA VERIFICARE" in out and "art. 1668 c.c. [DA VERIFICARE" in out
+    log = [d for e, d in logged if e == "case_analysis_qualification"][-1]
+    assert log["second_opinion"] == {"1669 c.c.": True, "2116 c.c.": False} and log["removed"] == ["2116 c.c."]
+    monkeypatch.setenv("STRICT_ARTICLES_ENABLED", "false")
+    asked.clear()
+    out = dg._check_qualifications(INVENTED_DRAFT, {}, rows, None, [], "Il cliente chiede dell'art. 1668 c.c.")
+    assert asked == [] and "art. 2116 c.c. [DA VERIFICARE" in out                # flag off: as before

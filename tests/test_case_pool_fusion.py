@@ -345,3 +345,52 @@ def test_no_vote_with_the_flag_off(fusion_env):
 def test_voted_rows_are_kept_by_the_prompt_like_multi_signal_ones():
     row = {"_article": ("1158", "c.c."), "_vote": True}
     assert dg._protected_article_row(row, set()) and dg._protection_rank(row, set()) == 3
+
+
+# --- HYBRID_NARRATIVE_ENABLED: the rulings as a map, hypotheses confirmed by a primary channel or 3+ rulings ----
+
+def _mapping(fusion_env, articles, stats, issues=()):
+    from src.rag import source_tiers, vote_pool
+    voted = []
+    fusion_env.setattr(vote_pool, "ruling_vote", lambda *a, **k: voted.append(1) or [])
+    fusion_env.setattr(source_tiers, "ruling_map", lambda *a, **k: {"articles": list(articles), "stats": stats,
+                                                                     "issues": list(issues), "top": []})
+    fusion_env.setenv("VOTE_POOL_ENABLED", "true")
+    fusion_env.setenv("HYBRID_NARRATIVE_ENABLED", "true")
+    return voted
+
+
+def test_hybrid_takes_a_hypothesis_found_by_a_channel_or_applied_by_three_rulings_and_no_vote(fusion_env):
+    many = [(str(100 + i), "c.p.") for i in range(20)]
+    fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: many)
+    stats = {("119", "c.p."): {"rulings": 1}, ("43", "c.p."): {"rulings": 3}, ("56", "c.p."): {"rulings": 2}}
+    voted = _mapping(fusion_env, [("119", "c.p."), ("43", "c.p."), ("56", "c.p.")], stats)
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "",
+                                        {"questioni": [], "route": "narrative"})
+    assert voted == []                                                    # the vote does not run
+    assert ("119", "c.p.") in picked["selected"]                          # rank 20 of a channel, past the cap
+    assert ("43", "c.p.") in picked["selected"]                           # 3 similar rulings apply it
+    assert ("56", "c.p.") not in picked["selected"]                       # 2 rulings only, no channel
+    rows = {r["_article"]: r for r in picked["article_rows"]}
+    assert rows[("119", "c.p.")]["_multi_signal"] and rows[("119", "c.p.")]["_map"]
+    assert rows[("43", "c.p.")]["_map"] and not rows[("43", "c.p.")].get("_multi_signal")
+    assert rows[("43", "c.p.")]["_vote_stats"] == {"rulings": 3}
+    assert not any(r.get("_vote") for r in rows.values())                # graded like any article
+
+
+def test_hybrid_searches_the_maps_and_the_analysis_issues(fusion_env):
+    searched = []
+    fusion_env.setattr(dg, "_fusion_text_search", lambda session, text, index, k: searched.append(text) or [])
+    _mapping(fusion_env, [], {}, issues=["vizio occulto"])
+    dg._select_articles_fusion(object(), object(), "db", "facts", "",
+                               {"questioni": [{"titolo": "Garanzia per vizi"},
+                                              {"titolo": "Questione centrale: x", "voce": "questione_centrale"}],
+                                "route": "narrative"})
+    assert "vizio occulto" in searched and "Garanzia per vizi" in searched
+    assert "Questione centrale: x" not in searched
+
+
+def test_hybrid_needs_a_narrative_route(fusion_env):
+    voted = _mapping(fusion_env, [("43", "c.p.")], {("43", "c.p."): {"rulings": 5}})
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": [], "route": "direct"})
+    assert voted == [1] and ("43", "c.p.") not in picked["selected"]

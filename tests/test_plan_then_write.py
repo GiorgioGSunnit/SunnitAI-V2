@@ -724,6 +724,24 @@ def test_the_procedural_section_is_written_again_when_it_leaves_out_a_block(mode
     assert use["missing"] == [] and use["written"]["profilo_penale"] == ["profilo_penale"]
 
 
+def test_review_fixes_a_criminal_route_still_missing_gets_its_standard_paragraph(model, monkeypatch):
+    """Round 3: 589 c.p. never named even after the rewrite."""
+    monkeypatch.setenv("FACT_REGIMES_ENABLED", "true")
+    without = ("**Termini**\nOtto giorni per la denuncia; 26 mesi per l'azione.\n\n**Strumenti processuali**\nUn ATP "
+               "(art. 696 c.p.c.).\n\n**Voci di danno**\nIure proprio e iure hereditatis; le assicurazioni.")
+    model.texts["Profili processuali e termini"] = [without, without]
+    analysis = {**ANALYSIS, "fact_signals": SIGNALS_5}
+    out = ptw.write_parere(FACTS, REQUEST, analysis, ARTICLES, RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    assert "**Profilo penale**" not in out                                       # flag off: as before
+    monkeypatch.setenv(ptw.REVIEW_FIXES_FLAG, "true")
+    model.texts["Profili processuali e termini"] = [without, without]
+    out = ptw.write_parere(FACTS, REQUEST, analysis, ARTICLES, RULINGS, "NORME", "GIURISPRUDENZA", "", "it")
+    assert "**Profilo penale**\n\nProfilo penale (art. 589 c.p.). Norme: art. 589 c.p." in out
+    assert [d for e, d in model.logged if e == "case_analysis_standard_blocks"][-1] == {"appended": ["profilo_penale"]}
+    use = [d for e, d in model.logged if e == "case_analysis_material_use"][-1]
+    assert use["written"]["profilo_penale"] == ["profilo_penale"]
+
+
 # --- REVIEW_FIXES_ENABLED (the lawyer's review of the boat and pool cases, 26 Oct) ------------------------------
 
 def test_review_fixes_section_2_names_the_decisive_facts(monkeypatch):
@@ -777,6 +795,28 @@ def test_review_fixes_claims_the_case_does_not_make_become_conditions(monkeypatc
     assert calls[0]["temperature"] == 0
     assert ptw.rewrite_unsupported("x", "Tizio ha acquistato la barca da Marex.", BOAT) == (
         "Tizio ha acquistato la barca da Marex.", [])
+
+
+CAMPER = ("Caio acquista dalla Delta s.r.l. un camper usato. Dopo un mese il frigorifero smette di funzionare. "
+          "Delta si offre di ripararlo.")
+
+
+def test_review_fixes_rules_conditions_and_article_text_are_never_rewritten(monkeypatch):
+    """Round 3: a correct rule (art. 1495 co. 2) got a condition appended. Invented case."""
+    calls = []
+    monkeypatch.setattr(ptw.dg, "_call_chat", lambda messages, **k: calls.append(messages[-1].content) or "[]")
+    rule = "La denuncia non è necessaria se il venditore ha riconosciuto l'esistenza del vizio (art. 1495 c.c.)."
+    assert ptw.rewrite_unsupported("x", rule, CAMPER) == (rule, []) and calls == []
+    rows = [{"_article": ("1495", "c.c."), "s": {"plain_text": "Il compratore decade dal diritto alla garanzia, "
+                                                             "se non denunzia i vizi al venditore entro otto giorni "
+                                                             "dalla scoperta."}}]
+    verbatim = "Il compratore decade dal diritto alla garanzia quando non denunzia i vizi entro otto giorni (art. 1495 c.c.)."
+    assert ptw._states_a_rule(verbatim, rows)
+    assert ptw.rewrite_unsupported("x", verbatim, CAMPER, rows) == (verbatim, []) and calls == []
+    claim = "I vizi non sono stati denunciati entro il termine di 8 giorni previsto dall'art. 1495 c.c."
+    assert not ptw._states_a_rule(claim, rows)
+    ptw.rewrite_unsupported("x", claim, CAMPER, rows)
+    assert len(calls) == 1                                                       # a claim still goes to the check
 
 
 def test_review_fixes_the_timing_of_a_death_is_a_claim_to_check():

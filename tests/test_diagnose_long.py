@@ -309,3 +309,31 @@ def test_form_trace_reads_the_lawyers_review_points_off_the_answer():
     report = dl.render([case], [])
     assert "flags filtered out as arguments, quotes, sources or evidence: 3" in report
     assert "items offered → written: termini 2 → 1, strumenti 1 → 0." in report
+
+
+def test_compare_shows_the_source_tiers_rows():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    new_rec["tiers"] = {"route": "narrative", "hybrid": True, "authority_ran": True,
+                        "authority_by_type": {"primary": 12, "special": 1}, "authority_dropped": 1,
+                        "authority_non_primary_after": 0, "rulings_logged": True, "rulings_cited": 4,
+                        "rulings_citing_answer_article": 3, "rulings_boilerplate_only": 1, "rulings_unrelated": 1}
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("20261026-0934", old_rec), ("20261026-2100", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs, ev)
+    assert "| non-primary hits in the authority stage (must be 0) | n/a | 0 (dropped by the filter: 1) |" in text
+    assert "| cited rulings citing >=1 answer article | n/a | 3 / 4 (75%) |" in text
+    assert "| boilerplate-only rulings cited (target 0) | n/a | 1 |" in text
+    assert "| routes | n/a | narrative 1 |" in text
+    assert "| narrative | 4 / 3 / 1 |" in text
+    report = dl.render([dl.analyse_case(new_rec, ev)], [])
+    assert "routes narrative 1; non-primary hits left in the authority stage 0" in report

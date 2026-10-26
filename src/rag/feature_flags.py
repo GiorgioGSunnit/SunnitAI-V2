@@ -271,7 +271,13 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 refused); an institution a code table names the article
                                 of is that article, also when the analysis names it
                                 itself (foro del consumatore -> art. 33 Cod. cons., with
-                                its note to the writer).
+                                its note to the writer). Round 3: "prestazione" is a
+                                generic word too (2116 c.c.); with FLAGGED_REMOVE_ENABLED,
+                                a citation the qualification check flags but the pipeline's
+                                evidence keeps (graded, forced, voted, channels, central --
+                                not named in the case, not a procedural tool) gets one call
+                                on the case and the article's full text: governing no
+                                question of the case, it is removed (_second_opinion).
   RULING_FIT_ENABLED           false (the lawyer's review, 26 Oct): before the plan, one
                                 call asks what each ruling can serve for: a fact the
                                 case describes meets its conditions ("fatti", which
@@ -295,10 +301,18 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 stepped in to repair gets the recognition of the defect
                                 (1495 co. 2, 2944 c.c.) as a central issue with art.
                                 1495 c.c. and as a note on the terms; no art. 700 c.p.c.
-                                after a death. See plan_then_write.rewrite_unsupported,
-                                fact_signals._recognition_note.
+                                after a death. Round 3: the consumer read from wider
+                                private-use words (diporto, svago, vacanze, ospiti ...),
+                                and with no purpose extracted from those words in the
+                                events or contracts of a natural person whose occupation
+                                has nothing to do with the purchase; the rewrite never
+                                touches a sentence stating a condition or restating a
+                                cited article's text; a criminal route still missing after
+                                the rewrite gets its standard paragraph. See plan_then_write.
+                                rewrite_unsupported, standard_blocks, fact_signals.
+                                _recognition_note, _private_cues.
 
-The flags below are the source-tiered retrieval (26 Oct): the AUTHORITY tier is the primary
+The three below are the source-tiered retrieval (26 Oct): the AUTHORITY tier is the primary
 documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what the authority found.
   ROUTER_ENABLED               false: each chat request is classified narrative (a fact pattern:
                                 several sentences, two or more parties, a sequence of events,
@@ -322,6 +336,20 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 CITE an article the answer is built on (Cassation boilerplate
                                 excluded), by similarity to the question, no vote. Scored by
                                 tests/eval_narrative.py --direct. See src/rag/source_tiers.py.
+  HYBRID_NARRATIVE_ENABLED     false (acts in the fusion pool, CASE_POOL_FUSION_ENABLED; on a
+                                request routed narrative, every strategy run without the
+                                router): the rulings similar to the facts are read first as a
+                                map -- the issues their cards decide and the analysis' issues
+                                searched in the primary documents as one more signal, the
+                                articles they apply only hypotheses, in place of the vote: a
+                                hypothesis is a candidate when it exists in the primary corpus
+                                and a primary channel finds it (it then passes the cap) or 3+
+                                of the top similar rulings of the case's area apply it; graded
+                                like any article. Every article row is from a primary document
+                                (source_tier_hits "authority"). The writer's rulings are those
+                                citing at least one article kept by the check, by similarity
+                                to the facts x articles shared, then RULING_FIT. See
+                                source_tiers.ruling_map, _support_rulings.
 """
 
 import logging

@@ -1049,6 +1049,11 @@ _PUBLIC_FUNCTION = (r"agente di polizia|poliziott|carabinier|vigil[ei] urban|pol
                     r"docent\w* (?:di scuola )?(?:statal|pubblic)|medico (?:di|del) (?:un )?(?:ospedale pubblico|"
                     r"servizio sanitario|pronto soccorso pubblico)|ispettor\w* (?:del lavoro|asl|comunal)")
 _PRIVATE_USE = r"personal|privat|famigli|domestic"
+# REVIEW_FIXES_ENABLED (round 3, 26 Oct): the extraction fills "purpose" differently run to run, and the boat case
+# lost its consumer once ("da diporto", "propri ospiti" are private use): these words count too, and with no
+# purpose at all they are read in the events and the contracts of a natural person whose occupation has nothing
+# to do with the purchase (_private_cues).
+_PRIVATE_USE_WIDE = _PRIVATE_USE + r"|diport|svago|tempo libero|vacanz|hobby|ricreativ|ospiti"
 _CONSUMER_CONTRACT = (r"vendit|compravendit|acquist|fornitur|servizi|appalt|riparaz|manutenz|abbonament|viagg|"
                       r"noleggi|assicuraz|finanziament|credit|prestito|mutuo|conto|utenz|trasport")
 _SALE = r"vendit|compravendit|acquist|fornitur"
@@ -1079,6 +1084,21 @@ def _with_role(p: Dict[str, Any], role: str) -> Dict[str, Any]:
     return p if role in have else {**p, "role": f"{p.get('role')}, {role}" if p.get("role") else role}
 
 
+def _private_cues(p: Dict[str, Any], facts: Dict[str, Any], contracts: List[Dict[str, Any]]) -> bool:
+    """REVIEW_FIXES_ENABLED, for a party with no purpose extracted: the case's events or contracts name a private
+    use (_PRIVATE_USE_WIDE) and the party's occupation, if any, shares no word with the contracts (a fisherman
+    buying a boat is not a consumer for it; a lawyer buying one for leisure is)."""
+    where = " ".join(_low(e.get(k)) for e in facts.get("events") or [] if isinstance(e, dict) for k in ("what", "who"))
+    where += " " + " ".join(_low(c.get(k)) for c in facts.get("contracts") or [] if isinstance(c, dict)
+                            for k in ("type", "clauses", "object"))
+    if not re.search(_PRIVATE_USE_WIDE, where):
+        return False
+    occupation = {w[:5] for w in re.findall(r"[a-zàèéìòù]{4,}", _low(p.get("occupation")))}
+    dealt = {w[:5] for c in contracts for w in re.findall(r"[a-zàèéìòù]{4,}", " ".join(
+        _low(c.get(k)) for k in ("type", "clauses", "object")))}
+    return not (occupation & dealt)
+
+
 def qualify_parties(facts: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
     """(facts, qualifications): the facts with each inferred qualification added to the party's role (so the
     terms and the rules read it), marked "_regimes"; [{party, quality, why}]. A natural person who contracts for
@@ -1089,10 +1109,13 @@ def qualify_parties(facts: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[st
     contracts = [c for c in facts.get("contracts") or [] if re.search(_CONSUMER_CONTRACT, _low(c.get("type")))]
     out: List[Dict[str, str]] = []
     businesses = [i for i, p in enumerate(parties) if _business(p) and not re.search(_PUBLIC_BODY, _party_text(p))]
+    wide = feature_flags.enabled(REVIEW_FIXES_FLAG)
     for i, p in enumerate(parties):
         name = p.get("name") or "una parte"
         consumer_role = CONSUMER in _low(p.get("role"))
-        private = re.search(_PRIVATE_USE, _low(p.get("purpose")))
+        private = re.search(_PRIVATE_USE_WIDE if wide else _PRIVATE_USE, _low(p.get("purpose")))
+        if not private and wide and not _low(p.get("purpose")):
+            private = _private_cues(p, facts, contracts)
         if contracts and businesses and i not in businesses and _natural(p) and (private or consumer_role):
             if not consumer_role:
                 parties[i] = _with_role(p, CONSUMER)
