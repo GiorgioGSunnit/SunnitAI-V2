@@ -18,7 +18,7 @@
   area: diritti_reali
   when:
     - common_previous_owner: true
-    - work: {visible: true, label: "un'opera visibile e permanente (strada, passaggio, finestra, condotta) già esistente"}
+    - work: {visible: true, before_separation: true, label: "un'opera visibile e permanente (strada, passaggio, finestra, condotta) già esistente quando i fondi furono separati"}
   institution: servitù per destinazione del padre di famiglia
   codice: c.c.
   ranges: [[1027,1099]]

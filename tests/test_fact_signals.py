@@ -137,7 +137,8 @@ def test_extraction_is_one_call_retried_once(monkeypatch):
 
 FIXTURES = {
     "destinazione_padre_famiglia": F(property_history=[{"asset": "fondo A", "owner": "Mevio"}, {"asset": "fondo B", "owner": "Mevio"}],
-                                     works_or_signs=[{"what": "strada sterrata", "visible": "sì", "existing_since": ""}]),
+                                     works_or_signs=[{"what": "strada sterrata", "visible": "sì", "existing_since": "",
+                                                      "before_separation": "sì"}]),
     "usucapione_servitu_apparente": F(works_or_signs=[{"what": "sentiero", "visible": "sì", "existing_since": "1990"}],
                                       possession=[{"who": "Tizio", "asset": "sentiero", "since": "1990", "how": "pacifico",
                                                    "still_ongoing": "sì"}]),

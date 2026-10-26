@@ -13,6 +13,12 @@ diagnose_long run 1415 lost 8-11 of 122 expected articles at LOST_AT_UNDERSTANDI
      why, status}. A rule names INSTITUTIONS in words, never an article: the case analysis takes them as
      central issues, and _resolve_institution finds their articles as for any other.
 
+Typed fields (27 Oct, a prod dry run that fired nothing on a dated narrative): roles only from ROLES, a qualified
+one only when the text states it of that party, else "privato"; owners with their period, the assets they held
+together and how their ownership ended; works with whether they existed before the separation; events with a kind
+from EVENT_KINDS, which the terms read before any words; possession with its end and use. scripts/fact_probe.py
+prints one extraction whole, with every term and rule explained (explain_terms, explain_rules).
+
 Integration (defensive_generation._analyse_case_for_pipeline): the fired institutions join the frame's
 central issues (so they are resolved, tagged _central and forced into the plan after grading); the terms go
 to the plan and to the procedural section as facts (plan_then_write), so an expired action is never
@@ -62,18 +68,60 @@ def regimes_enabled() -> bool:
 
 # --- 1. typed facts ------------------------------------------------------------------------------
 
-ROLES = ("cliente", "controparte", "terzo", "indagato/imputato", "persona offesa", "pubblico ufficiale",
-         "incaricato di pubblico servizio", "medico", "struttura sanitaria", "professionista", "datore di lavoro",
-         "lavoratore", "consumatore", "impresa", "pubblica amministrazione", "minore", "erede", "coniuge",
-         "locatore", "conduttore", "albergatore", "committente", "appaltatore")
+ROLES = ("cliente", "controparte", "terzo", "privato", "proprietario", "possessore", "vicino", "venditore",
+         "acquirente", "indagato/imputato", "persona offesa", "pubblico ufficiale", "incaricato di pubblico servizio",
+         "medico", "struttura sanitaria", "professionista", "datore di lavoro", "lavoratore", "consumatore", "impresa",
+         "pubblica amministrazione", "minore", "erede", "coniuge", "locatore", "conduttore", "albergatore",
+         "committente", "appaltatore")
+# 27 Oct (a prod dry run): the extraction gave a landowner the role "incaricato di pubblico servizio". A qualified
+# role is kept only when the text states it: a cue in the party's own name or in the words around it
+# (_clean_roles); a party left with no role, or only its side in the case, is "privato".
+QUALIFIED_ROLE_CUES = {
+    "pubblico ufficiale": r"pubblic\w* ufficial|agent[ei]|poliziott|polizia|carabinier|vigil[ei]|sindaco|assessor|"
+                          r"funzionari|giudic|magistrat|notai|ufficiale|militar|guardia di finanza",
+    "incaricato di pubblico servizio": r"pubblic\w* servizi|incaricat\w* di (?:un )?pubblico|dipendente (?:pubblic|"
+                                       r"comunal|regional)|bidell|postin|controllor|autista (?:di |del )?(?:autobus|"
+                                       r"bus|mezzi pubblici)|ausiliari",
+    "medico": r"medic|dottor|chirurg|anestesist|ginecolog|pediatr|ortoped|cardiolog|sanitari",
+    "struttura sanitaria": r"ospedal|clinic|struttura sanitaria|casa di cura|\basl\b|azienda sanitaria|"
+                           r"pronto soccorso|policlinic",
+    "professionista": r"avvocat|notai|commercialist|architett|ingegner|geometr|medic|professionist|consulent|"
+                      r"perit|progettist|direttore dei lavori",
+    "pubblica amministrazione": r"\bcomune\b|regione|provincia|ministero|amministrazion|ente pubblico|\basl\b|"
+                                r"agenzia|prefettur|questur|\binps\b|\binail\b|universit|scuola statale",
+    "albergatore": r"albergo|hotel|albergator|struttura ricettiva|pensione|b&b|bed and breakfast",
+    "impresa": r"societ|impres|ditta|s\.?r\.?l|s\.?p\.?a|s\.?n\.?c|s\.?a\.?s|aziend|negozi|concessionari|"
+               r"\bspa\b|\bsrl\b|commerciant|costrutt|produttor|cantier",
+}
+_SIDE_ROLES = {"cliente", "controparte", "terzo"}
+# The roles as models write them outside the list, to the list's word.
+_ROLE_SYNONYMS = ((r"parte assistita|assistit", "cliente"), (r"convenut|resistent|controinteressat", "controparte"),
+                  (r"vittim|offes", "persona offesa"), (r"imputat|indagat", "indagato/imputato"),
+                  (r"propriet", "proprietario"), (r"possessor", "possessore"), (r"vicin", "vicino"),
+                  (r"vendit", "venditore"), (r"acquirent|compratore", "acquirente"), (r"inquilin", "conduttore"),
+                  (r"dipendent", "lavoratore"), (r"\beredi\b", "erede"), (r"moglie|marito", "coniuge"),
+                  (r"minorenn", "minore"))
+# The kind of each event, from a fixed list, so the terms read what happened by its kind (a gate locked is a
+# "chiusura/ostruzione accesso", which starts the possessory term), not by its words.
+EVENT_KINDS = ("vendita", "divisione", "successione", "donazione", "consegna", "fine lavori", "costruzione/opera",
+               "uso/passaggio", "spoglio", "turbativa", "chiusura/ostruzione accesso", "scoperta vizio",
+               "denuncia/reclamo", "querela", "diffida", "azione giudiziaria", "impugnazione", "sentenza", "notifica",
+               "provvedimento", "inadempimento", "pagamento", "incidente", "lesione", "decesso", "danneggiamento",
+               "reato", "altro")
+# How a property was acquired, and how an owner's ownership ended.
+TRANSFER_KINDS = ("compravendita", "donazione", "successione", "divisione", "usucapione", "costituzione", "altro")
+_TRANSFER_SYNONYMS = ((r"vend|compr|acquist", "compravendita"), (r"don", "donazione"),
+                      (r"succe|eredit|testament", "successione"), (r"divis|frazion|separa|lottizz", "divisione"),
+                      (r"usucap", "usucapione"))
 
 SCHEMA: Dict[str, Any] = {
     "parties": [{"name": "", "role": "", "age": ""}],
     "client_side": "",
-    "property_history": [{"asset": "", "owner": "", "from": "", "to": "", "how_acquired": ""}],
-    "possession": [{"who": "", "asset": "", "since": "", "how": "", "still_ongoing": ""}],
-    "works_or_signs": [{"what": "", "visible": "", "existing_since": ""}],
-    "events": [{"date": "", "what": "", "who": ""}],
+    "property_history": [{"asset": "", "owner": "", "from": "", "to": "", "period": "", "together_with": "",
+                          "how_acquired": "", "ended_by": ""}],
+    "possession": [{"who": "", "asset": "", "since": "", "until": "", "how": "", "use": "", "still_ongoing": ""}],
+    "works_or_signs": [{"what": "", "visible": "", "existing_since": "", "before_separation": "", "serves": ""}],
+    "events": [{"date": "", "what": "", "who": "", "kind": ""}],
     "injuries": [{"who": "", "days_to_heal": "", "permanent": ""}],
     "money": [{"amount": "", "rate": "", "period": "", "threshold": ""}],
     "contracts": [{"type": "", "parties": "", "clauses": ""}],
@@ -95,17 +143,29 @@ def schema(regimes: Optional[bool] = None) -> Dict[str, Any]:
 _EXTRACT_SYSTEM = (
     "Sei un giurista. Leggi un caso e riporta i suoi fatti in un JSON con ESATTAMENTE queste chiavi (lascia vuoto "
     "ciò che il testo non dice; non dedurre, non completare):\n"
-    "- parties: le persone e gli enti, ciascuno {name, role, age}; role tra: " + ", ".join(ROLES)
-    + " (più ruoli separati da virgola); age solo se il testo la dice.\n"
+    "- parties: le persone e gli enti, ciascuno {name, role, age}; role SOLO tra: " + ", ".join(ROLES)
+    + " (più ruoli separati da virgola). Un ruolo qualificato (pubblico ufficiale, incaricato di pubblico servizio, "
+    "medico, struttura sanitaria, professionista, pubblica amministrazione, albergatore, impresa) SOLO se il testo "
+    "lo dice di quella parte: essere proprietario, vicino o usare una strada non lo è; in mancanza «privato». "
+    "age solo se il testo la dice.\n"
     "- client_side: chi assiste il parere (nome e ruolo), se il testo lo dice.\n"
-    "- property_history: i passaggi di proprietà {asset (quale bene), owner (chi ne era proprietario), from, to "
-    "(date come scritte), how_acquired (come lo ha acquistato: compravendita, donazione, successione, divisione...)}.\n"
-    "- possession: chi possiede o usa un bene altrui {who, asset, since (da quando, come scritto), how (pacifico, "
-    "pubblico, violento, clandestino, con tolleranza...), still_ongoing (sì/no)}.\n"
-    "- works_or_signs: opere e segni visibili {what (strada, sentiero, finestra, condotta, muro...), visible (sì/no), "
-    "existing_since (da quando, come scritto)}.\n"
+    "- property_history: i proprietari, anche precedenti, di ciascun bene (\"appartenevano a X\", \"erano di X\", "
+    "\"di proprietà di X fino a...\") {asset (quale bene), owner (chi ne era proprietario), from, to (date come "
+    "scritte), period (il periodo come scritto, per esempio \"all'inizio del 1900\", \"fino al 1950\"), together_with "
+    "(gli altri beni che lo stesso proprietario aveva insieme a questo in quel periodo, o vuoto), how_acquired e "
+    "ended_by (come lo ha acquistato e come ha smesso di esserne proprietario, tra: " + ", ".join(TRANSFER_KINDS)
+    + ")}.\n"
+    "- possession: chi possiede o usa un bene o un passaggio {who, asset, since e until (da quando e fino a quando, "
+    "come scritto), how (come scritto: pacifico, continuo, pubblico, violento, clandestino, con tolleranza...), use "
+    "(che uso: passaggio, coltivazione, abitazione, parcheggio...), still_ongoing (sì/no)}.\n"
+    "- works_or_signs: opere e segni, anche preesistenti (strade, sentieri, passaggi, finestre, condotte, muri) "
+    "{what, visible (sì se si vedono: una strada o un sentiero tracciati, una finestra, una condotta in vista; no se "
+    "interrati o nascosti), existing_since (da quando, come scritto), before_separation (sì se esisteva già quando i "
+    "beni sono stati divisi o venduti, \"esisteva già\", \"c'era già\"; no se è stata fatta dopo; vuoto se il testo "
+    "non lo dice), serves (il bene che l'opera serve)}.\n"
     "- events: i fatti datati e non {date (ESATTAMENTE come scritta nel testo, o vuota), what (in una frase, "
-    "neutra), who}.\n"
+    "neutra), who, kind (SOLO tra: " + ", ".join(EVENT_KINDS) + "; chi chiude un cancello, sbarra o ostruisce un "
+    "passaggio o un accesso: chiusura/ostruzione accesso)}.\n"
     "- injuries: lesioni e morte {who, days_to_heal (numero, se detto), permanent (sì/no, o \"morte\")}.\n"
     "- money: somme, interessi e soglie {amount, rate (tasso in %, se detto), period, threshold (soglia, se detta)}.\n"
     "- contracts: i contratti {type, parties, clauses (le clausole notate: penale, termine, caparra, esonero...)}.\n"
@@ -168,8 +228,16 @@ def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> 
     present = out.get("present_date", "")
     if present and " ".join(present.lower().split()) not in norm_case:
         out["present_date"] = ""
-    for key, field in (("events", "date"), ("proceedings", "date"), ("possession", "since"),
-                       ("works_or_signs", "existing_since"), ("property_history", "from"), ("property_history", "to")):
+    for party in out.get("parties") or []:
+        party["role"] = _clean_roles(party.get("role", ""), party.get("name", ""), case_text)
+    for item in out.get("events") or []:
+        item["kind"] = _enum(item.get("kind", ""), EVENT_KINDS)
+    for item in out.get("property_history") or []:
+        for field in ("how_acquired", "ended_by"):
+            item[field] = _enum(item.get(field, ""), TRANSFER_KINDS, _TRANSFER_SYNONYMS)
+    for key, field in (("events", "date"), ("proceedings", "date"), ("possession", "since"), ("possession", "until"),
+                       ("works_or_signs", "existing_since"), ("property_history", "from"), ("property_history", "to"),
+                       ("property_history", "period")):
         for item in out[key]:
             written = item.get(field, "")
             if written and " ".join(written.lower().split()) not in norm_case:
@@ -179,9 +247,50 @@ def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> 
     return out
 
 
-def extract_facts(case_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
+def _enum(value: str, allowed: Tuple[str, ...], synonyms: Tuple[Tuple[str, str], ...] = ()) -> str:
+    """value as one of allowed (the first it names, else by synonyms), "altro" for anything else, "" when empty."""
+    low = _low(value)
+    if not low:
+        return ""
+    found = next((a for a in allowed if a != "altro" and a in low), None) \
+        or next((a for pattern, a in synonyms if re.search(pattern, low)), None)
+    return found or "altro"
+
+
+def _party_context(name: str, case_text: str) -> str:
+    """What the case says of the party itself: at each mention of its name (a word of 4+ letters), the two words
+    before it within its clause ("la dottoressa Neri") and the rest of its sentence after it, up to 100 characters
+    ("Neri, medico del pronto soccorso"); "" when the name is not in the text. A cue elsewhere in the sentence is
+    another party's."""
+    words = [w for w in re.findall(r"[a-zà-ù]{4,}", _low(name)) if w not in ("della", "dello", "degli", "delle")]
+    low = _low(case_text)
+    out = []
+    for word in words:
+        for m in re.finditer(rf"\b{re.escape(word)}\b", low):
+            before = " ".join(re.split(r"[,.;:!?()\n]", low[:m.start()])[-1].split()[-2:])
+            after = re.split(r"[.;!?\n]", low[m.end():m.end() + 100])[0]
+            out.append(f"{before} {word}{after}")
+    return " ".join(out)
+
+
+def _clean_roles(written: str, name: str, case_text: str) -> str:
+    """The party's roles from ROLES only (synonyms mapped); a qualified one (QUALIFIED_ROLE_CUES) only if the
+    party's name or the words around it in the case state it (_party_context); "privato" for a party left with
+    no role but its side."""
+    low = _low(written)
+    roles = [r for r in ROLES if r in low]
+    roles += [r for pattern, r in _ROLE_SYNONYMS if re.search(pattern, low) and r not in roles]
+    where = _low(name) + " " + _party_context(name, case_text)
+    roles = [r for r in roles if r not in QUALIFIED_ROLE_CUES or re.search(QUALIFIED_ROLE_CUES[r], where)]
+    if not set(roles) - _SIDE_ROLES:
+        roles.append("privato")
+    return ", ".join(dict.fromkeys(roles))
+
+
+def extract_facts(case_text: str, raw_replies: Optional[List[str]] = None) -> Tuple[Optional[Dict[str, Any]], str]:
     """(facts or None, problem): one call at temperature 0, its reply validated (validate_facts) and,
-    when it is not valid, asked once more."""
+    when it is not valid, asked once more. raw_replies, when given, receives each reply as it came
+    (scripts/fact_probe.py)."""
     human = f"CASO:\n{(case_text or '')[:_CASE_CHARS]}"
     base = _EXTRACT_SYSTEM.replace("Sii conciso:", _EXTRACT_REGIMES.lstrip("\n") + "Sii conciso:") \
         if regimes_enabled() else _EXTRACT_SYSTEM
@@ -190,6 +299,8 @@ def extract_facts(case_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
         try:
             raw = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                              max_tokens=_EXTRACT_TOKENS, temperature=0)
+            if raw_replies is not None:
+                raw_replies.append(raw)
             facts = validate_facts(_parse_or_repair(raw), case_text)
         except Exception as exc:
             facts, problem = None, f"{type(exc).__name__}: {str(exc)[:160]}"
@@ -326,8 +437,10 @@ def present(facts: Optional[Dict[str, Any]]) -> Optional[Tuple[str, Tuple[dt.dat
 
 def latest_fact(facts: Optional[Dict[str, Any]]) -> Optional[Tuple[str, Tuple[dt.date, dt.date], str]]:
     """(what, interval, written) of the latest dated fact: the case's present is no earlier than it."""
-    items = _events(facts or {}, r".") + [s for s in _possession_starts(facts or {})]
-    return max(((i[1], i[0], i[2]) for i in items), key=lambda x: x[1][0], default=None)
+    starts = _possession_starts(facts or {})
+    items = [(i[1], i[0], i[2]) for i in _events(facts or {}, r".") + starts] \
+        + [(i[1], i[3], i[4]) for i in starts if i[3]]
+    return max(items, key=lambda x: x[1][0], default=None)
 
 
 def _status_to_now(facts, start, years=0, months=0, days=0) -> Tuple[str, str, str]:
@@ -346,20 +459,35 @@ def _low(text: Any) -> str:
     return " ".join(str(text or "").lower().split())
 
 
-def _dated(items: List[Dict[str, str]], pattern: str, fields: Tuple[str, ...], date_field: str = "date") -> List[tuple]:
-    """[(interval, what, written date)] of the items whose fields match pattern and whose date parses, earliest first."""
+def _typed_kind(item: Dict[str, Any]) -> str:
+    kind = _low(item.get("kind"))
+    return kind if kind in EVENT_KINDS and kind != "altro" else ""
+
+
+def _matches(item: Dict[str, Any], pattern: str, fields: Tuple[str, ...], kinds: Tuple[str, ...] = (),
+             both: bool = False) -> bool:
+    """An event by its typed kind when it has one and kinds are asked (no keyword match on its words then; with
+    both, its words must match too); by pattern over its fields otherwise."""
+    kind = _typed_kind(item)
+    if kinds and kind:
+        return kind in kinds and (not both or bool(re.search(pattern, " ".join(_low(item.get(f)) for f in fields))))
+    return bool(pattern) and bool(re.search(pattern, " ".join(_low(item.get(f)) for f in fields)))
+
+
+def _dated(items: List[Dict[str, str]], pattern: str, fields: Tuple[str, ...], date_field: str = "date",
+           kinds: Tuple[str, ...] = (), both: bool = False) -> List[tuple]:
+    """[(interval, what, written date)] of the items that match (_matches) and whose date parses, earliest first."""
     out = []
     for item in items or []:
-        text = " ".join(_low(item.get(f)) for f in fields)
         parsed = parse_date(item.get(date_field, ""))
-        if parsed and re.search(pattern, text):
+        if parsed and _matches(item, pattern, fields, kinds, both):
             out.append(((parsed[0], parsed[1]), " ".join(str(item.get(fields[0]) or "").split()[:6]),
                         item.get(date_field, "")))
     return sorted(out, key=lambda x: x[0][0])
 
 
-def _events(facts: Dict[str, Any], pattern: str) -> List[tuple]:
-    return sorted(_dated(facts.get("events"), pattern, ("what", "who"))
+def _events(facts: Dict[str, Any], pattern: str, kinds: Tuple[str, ...] = (), both: bool = False) -> List[tuple]:
+    return sorted(_dated(facts.get("events"), pattern, ("what", "who"), kinds=kinds, both=both)
                   + _dated(facts.get("proceedings"), pattern, ("stage", "decision", "authority")),
                   key=lambda x: x[0][0])
 
@@ -372,8 +500,12 @@ class Term:
     def __init__(self, id: str, label: str, ref: str, start: str, end: str, years: int = 0, months: int = 0,
                  days: int = 0, applies: Optional[Callable[[Dict[str, Any]], bool]] = None, word: str = "",
                  start_items: Optional[Callable[[Dict[str, Any]], List[tuple]]] = None, since: str = "",
-                 family: str = "civile", regimes_only: bool = False):
+                 family: str = "civile", regimes_only: bool = False, start_kinds: Tuple[str, ...] = (),
+                 end_kinds: Tuple[str, ...] = (), both: bool = False):
         self.id, self.label, self.ref, self.start, self.end = id, label, ref, start, end
+        # The kinds of event (EVENT_KINDS) it runs from and to: a typed event is read by its kind, an untyped one by
+        # the patterns; both: a typed one must match the start pattern too (a road accident among accidents).
+        self.start_kinds, self.end_kinds, self.both = start_kinds, end_kinds, both
         self.years, self.months, self.days, self.applies, self.word = years, months, days, applies, word
         self.start_items = start_items
         # FACT_REGIMES_ENABLED: what the term runs from, in words, for a case that gives no dates; the family of
@@ -394,9 +526,17 @@ def _has_role(facts, pattern):
 
 
 def _possession_starts(facts):
-    return [((p[0], p[1]), " ".join(str(item.get("asset") or "il bene").split()[:6]), item.get("since", ""))
-            for item in facts.get("possession") or [] if _low(item.get("still_ongoing")) not in ("no", "false")
-            for p in [parse_date(item.get("since", ""))] if p]
+    """[(interval, what, since as written, until interval or None, until as written)] of the possessions with a
+    date they began: an ongoing one runs to the case's present, an ended one to its "until" (one ended with no
+    date it ended is left out)."""
+    out = []
+    for item in facts.get("possession") or []:
+        start, until = parse_date(item.get("since", "")), parse_date(item.get("until", ""))
+        ended = _low(item.get("still_ongoing")) in ("no", "false") or bool(until)
+        if start and (not ended or until):
+            out.append(((start[0], start[1]), " ".join(str(item.get("asset") or "il bene").split()[:6]),
+                        item.get("since", ""), (until[0], until[1]) if until else None, item.get("until", "")))
+    return out
 
 
 _SPOGLIO = (r"spogli|turbativ|molest|impedi|sbarr|chiu[ds]\w* (?:il |l'|la |lo )?(?:passaggio|accesso|cancello|strada|varco)"
@@ -424,7 +564,8 @@ _MOVABLE = r"\bauto|veicol|\bmoto|gioiell|quadr|orolog|bicicl|barca|opera d'arte
 
 TERMS: List[Term] = [
     Term("possessoria", "azione possessoria (spoglio o turbativa)", "artt. 1168 e 1170 c.c.", _SPOGLIO, _ACTION,
-         years=1, word="termine annuale", since="dallo spoglio o dalla turbativa"),
+         years=1, word="termine annuale", since="dallo spoglio o dalla turbativa",
+         start_kinds=("spoglio", "turbativa", "chiusura/ostruzione accesso"), end_kinds=("azione giudiziaria",)),
     Term("usucapione_ordinaria", "usucapione ordinaria di beni immobili", "art. 1158 c.c.", "", "", years=20,
          word="ventennio di possesso", start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))],
          since="di possesso continuato"),
@@ -439,53 +580,66 @@ TERMS: List[Term] = [
          start_items=lambda f: [s for s in _possession_starts(f) if re.search(_MOVABLE, _low(s[1]))],
          since="di possesso continuato"),
     Term("prescrizione_circolazione", "prescrizione del risarcimento da circolazione di veicoli", "art. 2947 c.c.",
-         _ROAD, _INTERRUPT, years=2, applies=lambda f: not f.get("contracts"), since="dal fatto"),
+         _ROAD, _INTERRUPT, years=2, applies=lambda f: not f.get("contracts"), since="dal fatto",
+         start_kinds=("incidente",), end_kinds=("diffida", "azione giudiziaria"), both=True),
     Term("prescrizione_extracontrattuale", "prescrizione del risarcimento del danno extracontrattuale",
-         "art. 2947 c.c.", _DAMAGE, _INTERRUPT, years=5, applies=lambda f: not f.get("contracts"), since="dal fatto"),
+         "art. 2947 c.c.", _DAMAGE, _INTERRUPT, years=5, applies=lambda f: not f.get("contracts"), since="dal fatto",
+         start_kinds=("incidente", "lesione", "decesso", "danneggiamento"), end_kinds=("diffida", "azione giudiziaria")),
     Term("prescrizione_ordinaria", "prescrizione ordinaria (diritti da contratto)", "art. 2946 c.c.",
          r"inadempi|non (?:ha )?pagat|scadenz|ritard|mancat\w* (?:pagament|consegn)", _INTERRUPT, years=10,
-         applies=lambda f: bool(f.get("contracts")), since="dal giorno in cui il diritto può essere fatto valere"),
+         applies=lambda f: bool(f.get("contracts")), since="dal giorno in cui il diritto può essere fatto valere",
+         start_kinds=("inadempimento",), end_kinds=("diffida", "azione giudiziaria")),
     Term("querela", "querela", "art. 124 c.p.", _OFFENCE, r"querel|denunci", months=3,
-         since="dalla notizia del fatto che costituisce il reato", family="penale"),
+         since="dalla notizia del fatto che costituisce il reato", family="penale",
+         start_kinds=("reato", "lesione", "danneggiamento"), end_kinds=("querela", "denuncia/reclamo")),
     Term("ricorso_tar_appalti", "ricorso al TAR in materia di appalti pubblici (rito speciale)", "art. 120 c.p.a.",
          _ACT, _TAR, days=30,
          applies=lambda f: any(re.search(_TENDER, _low(" ".join(map(str, e.values()))))
                                for e in (f.get("events") or []) + (f.get("proceedings") or [])),
-         since="dalla comunicazione o conoscenza dell'atto", family="amministrativo"),
+         since="dalla comunicazione o conoscenza dell'atto", family="amministrativo",
+         start_kinds=("notifica", "provvedimento"), end_kinds=("azione giudiziaria",)),
     Term("ricorso_tar", "ricorso al TAR per l'annullamento", "artt. 29 e 41 c.p.a.", _ACT, _TAR, days=60,
          applies=lambda f: not any(re.search(_TENDER, _low(" ".join(map(str, e.values()))))
                                    for e in (f.get("events") or []) + (f.get("proceedings") or []))
          and _has_role(f, r"pubblica amministrazione|comune|ente"),
-         since="dalla notificazione, comunicazione o piena conoscenza dell'atto", family="amministrativo"),
+         since="dalla notificazione, comunicazione o piena conoscenza dell'atto", family="amministrativo",
+         start_kinds=("notifica", "provvedimento"), end_kinds=("azione giudiziaria",)),
     Term("denuncia_vizi_vendita", "denuncia dei vizi della cosa venduta", "art. 1495 c.c.", _DISCOVERY + "|" + _DEFECT,
          _DENOUNCE, days=8, applies=lambda f: _has_contract(f, r"vendit|compravendit|acquist")
-         and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla scoperta del vizio"),
+         and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla scoperta del vizio",
+         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
     Term("azione_vizi_vendita", "azione di garanzia per i vizi della cosa venduta", "art. 1495 c.c.", _DELIVERY,
          _ACTION, years=1, applies=lambda f: _has_contract(f, r"vendit|compravendit|acquist")
-         and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla consegna"),
+         and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla consegna",
+         start_kinds=("consegna", "vendita"), end_kinds=("azione giudiziaria",)),
     Term("denuncia_conformita_consumo", "denuncia del difetto di conformità (consumatore)", "Codice del Consumo",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, months=2,
          applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
-         since="dalla scoperta del difetto"),
+         since="dalla scoperta del difetto", start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
     Term("responsabilita_conformita_consumo", "responsabilità del venditore per il difetto di conformità "
          "(consumatore)", "Codice del Consumo", _DELIVERY, _DISCOVERY + "|" + _DEFECT,
          years=2, word="manifestazione del difetto entro 2 anni", applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
-         since="dalla consegna del bene", regimes_only=True),
+         since="dalla consegna del bene", regimes_only=True, start_kinds=("consegna", "vendita"),
+         end_kinds=("scoperta vizio",)),
     Term("azione_conformita_consumo", "prescrizione dell'azione per il difetto di conformità non dolosamente "
          "occultato (consumatore)", "Codice del Consumo", _DELIVERY, _ACTION, months=26,
          applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
-         since="dalla consegna del bene", regimes_only=True),
+         since="dalla consegna del bene", regimes_only=True, start_kinds=("consegna", "vendita"), end_kinds=("azione giudiziaria",)),
     Term("denuncia_difformita_appalto", "denuncia delle difformità e dei vizi dell'opera (appalto)", "art. 1667 c.c.",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, days=60,
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta"),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta",
+         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
     Term("azione_garanzia_appalto", "azione di garanzia nell'appalto", "art. 1667 c.c.", _WORKS_DONE, _ACTION, years=2,
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla consegna dell'opera"),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla consegna dell'opera",
+         start_kinds=("fine lavori", "consegna"), end_kinds=("azione giudiziaria",)),
     Term("manifestazione_gravi_difetti", "manifestazione dei gravi difetti entro dieci anni dal compimento dell'opera",
          "art. 1669 c.c.", _WORKS_DONE, _DISCOVERY + "|" + _DEFECT, years=10, word="decennio dal compimento",
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dal compimento dell'opera"),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dal compimento dell'opera",
+         start_kinds=("fine lavori", "consegna"), end_kinds=("scoperta vizio",)),
     Term("denuncia_gravi_difetti", "denuncia dei gravi difetti dell'immobile", "art. 1669 c.c.",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, years=1,
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta"),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta",
+         start_kinds=("scoperta vizio",), end_kinds=("denuncia/reclamo", "diffida")),
 ]
 
 # Criminal appeals run from the deposit of the reasons (art. 585 c.p.p.): 15 days with the reasons read in
@@ -506,52 +660,101 @@ def compute_terms(facts: Optional[Dict[str, Any]], areas: Optional[List[str]] = 
     ends it, or the case's present when none does (_status_to_now); one line of text each. FACT_REGIMES_
     ENABLED (facts carrying "_regimes"): also every term that applies to facts the case states without a
     date, as DA VERIFICARE (_undated_entry), within the families of the case's areas."""
+    return [t["entry"] for t in explain_terms(facts, areas) if t["entry"]]
+
+
+def explain_terms(facts: Optional[Dict[str, Any]], areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """For every term (TERMS, then the criminal appeal): {"id", "entry" (compute_terms' item, or None), "why"
+    (each step in words: applies or not, the facts it runs from and to and how they were matched)}
+    -- scripts/fact_probe.py prints it."""
     if not facts:
         return []
     undated = bool(facts.get("_regimes"))
     families = {family(a) for a in areas or []} - {""}
-    out = []
-    for term in TERMS:
-        if term.regimes_only and not undated:
-            continue
-        if term.applies and not term.applies(facts):
-            continue
-        starts = term.start_items(facts) if term.start_items else _events(facts, term.start)
-        if not starts:
-            if undated and (not families or term.family in families) and _mentioned(facts, term):
-                out.append(_undated_entry(term))
-            continue
-        start = starts[0]
-        ends = _events(facts, term.end) if term.end else []
+    out = [_term_trace(term, facts, families, undated) for term in TERMS]
+    out.append(_appeal_trace(facts))
+    return out
+
+
+def _how(term: Term, facts: Dict[str, Any], kinds: Tuple[str, ...], pattern: str) -> str:
+    typed = any(_typed_kind(e) for e in facts.get("events") or [])
+    return (f"eventi del tipo {' / '.join(kinds)}" + (" (e per parole: «" + pattern + "»)" if term.both else "")
+            + ("; eventi senza tipo per parole" if pattern else "")) if kinds and typed else f"per parole: «{pattern}»"
+
+
+def _term_trace(term: Term, facts: Dict[str, Any], families: set, undated: bool) -> Dict[str, Any]:
+    why: List[str] = []
+    trace = {"id": term.id, "entry": None, "why": why}
+    if term.regimes_only and not undated:
+        why.append("solo con FACT_REGIMES_ENABLED: non calcolato")
+        return trace
+    if term.applies and not term.applies(facts):
+        why.append("non si applica ai fatti (contratto, ruoli o materia richiesti assenti)")
+        return trace
+    if term.start_items:
+        starts = term.start_items(facts)
+        why.append(f"decorre dal possesso: {len(starts)} possessi con data di inizio"
+                   + "".join(f"; «{x[1]}» dal {x[2]}" + (f" al {x[4]}" if x[3] else "") for x in starts))
+    else:
+        starts = _events(facts, term.start, term.start_kinds, term.both)
+        why.append(f"inizio ({_how(term, facts, term.start_kinds, term.start)}): "
+                   + ("; ".join(f"«{x[1]}» {x[2]}" for x in starts) or "nessun fatto datato"))
+    if not starts:
+        if undated and (not families or term.family in families) and _mentioned(facts, term):
+            trace["entry"] = _undated_entry(term)
+            why.append("fatto citato senza data: DA VERIFICARE")
+        elif undated and families and term.family not in families:
+            why.append(f"materia {term.family} fuori dalle aree del caso")
+        return trace
+    start = starts[0]
+    if len(start) > 3 and start[3]:
+        status = term_status(start[0], start[3], term.years, term.months, term.days)
+        end_what, end_written = "fine del possesso", start[4]
+        why.append(f"fine: il possesso cessa {start[4]}")
+    else:
+        ends = _events(facts, term.end, term.end_kinds) if (term.end or term.end_kinds) else []
         end = _when([e for e in ends if e[1] != start[1] or e[0] != start[0]], start[0][0])
         if end:
-            status, end_what, end_written = term_status(start[0], end[0], term.years, term.months, term.days), end[1], end[2]
+            status, end_what, end_written = term_status(start[0], end[0], term.years, term.months, term.days), \
+                end[1], end[2]
+            why.append(f"fine ({_how(term, facts, term.end_kinds, term.end)}): «{end[1]}» {end[2]}")
         else:
             status, end_what, end_written = _status_to_now(facts, start[0], term.years, term.months, term.days)
-        out.append(_term_entry(term.id, term.label, term.ref, term.word or f"termine di {term.length()}",
-                               term.length(), status, start, end_what, end_written))
-    sentence = _events(facts, _SENTENCE)
-    if sentence:
-        start = sentence[-1]
-        deposit = _events(facts, r"deposit\w* (?:delle |della )?motivazion")
-        appeal = _when(_events(facts, _APPEAL), start[0][0])
-        if deposit:
-            base, sure, latest = deposit[-1], 30, 45
-        else:
-            base, sure, latest = start, 15, 90 + 45
-        now = present(facts)
-        if appeal or now:
-            end_iv, end_what, end_written = ((appeal[0], appeal[1], appeal[2]) if appeal
-                                             else (now[1], now[0], now[1][0].isoformat()))
-            status = ("DECORSO" if end_iv[0] > add_period(base[0][1], days=latest) else
-                      "NON DECORSO" if end_iv[1] <= add_period(base[0][0], days=sure) else "INCERTO")
-        else:
-            status, end_what, end_written = _status_to_now(facts, base[0], days=latest)
-        length = "15, 30 o 45 giorni dal deposito della motivazione"
-        out.append(_term_entry("impugnazione_penale", "impugnazione della sentenza penale", _APPEAL_REF,
-                               f"termine di {length}", length, status, base, end_what, end_written,
-                               note="" if deposit else "dipende da quando è depositata la motivazione"))
-    return out
+            why.append(f"nessun atto che lo interrompa: fino a {end_what} {end_written}".rstrip())
+    trace["entry"] = _term_entry(term.id, term.label, term.ref, term.word or f"termine di {term.length()}",
+                                 term.length(), status, start, end_what, end_written)
+    why.append(f"stato: {status}")
+    return trace
+
+
+def _appeal_trace(facts: Dict[str, Any]) -> Dict[str, Any]:
+    why: List[str] = []
+    trace = {"id": "impugnazione_penale", "entry": None, "why": why}
+    sentence = _events(facts, _SENTENCE, ("sentenza",))
+    if not sentence:
+        why.append("nessuna sentenza datata")
+        return trace
+    start = sentence[-1]
+    deposit = _events(facts, r"deposit\w* (?:delle |della )?motivazion")
+    appeal = _when(_events(facts, _APPEAL, ("impugnazione",)), start[0][0])
+    if deposit:
+        base, sure, latest = deposit[-1], 30, 45
+    else:
+        base, sure, latest = start, 15, 90 + 45
+    now = present(facts)
+    if appeal or now:
+        end_iv, end_what, end_written = ((appeal[0], appeal[1], appeal[2]) if appeal
+                                         else (now[1], now[0], now[1][0].isoformat()))
+        status = ("DECORSO" if end_iv[0] > add_period(base[0][1], days=latest) else
+                  "NON DECORSO" if end_iv[1] <= add_period(base[0][0], days=sure) else "INCERTO")
+    else:
+        status, end_what, end_written = _status_to_now(facts, base[0], days=latest)
+    length = "15, 30 o 45 giorni dal deposito della motivazione"
+    trace["entry"] = _term_entry("impugnazione_penale", "impugnazione della sentenza penale", _APPEAL_REF,
+                                 f"termine di {length}", length, status, base, end_what, end_written,
+                                 note="" if deposit else "dipende da quando è depositata la motivazione")
+    why += [f"sentenza: «{start[1]}» {start[2]}", f"stato: {status}"]
+    return trace
 
 
 def _mentioned(facts: Dict[str, Any], term: Term) -> bool:
@@ -560,6 +763,8 @@ def _mentioned(facts: Dict[str, Any], term: Term) -> bool:
         movable = term.id == "usucapione_mobili"
         return any(bool(re.search(_MOVABLE, _low(p.get("asset")))) == movable
                    for p in facts.get("possession") or [] if _low(p.get("still_ongoing")) not in ("no", "false"))
+    if term.start_kinds and any(_typed_kind(e) in term.start_kinds for e in facts.get("events") or []):
+        return True
     return bool(term.start) and bool(re.search(term.start, _texts(facts, ("events", "proceedings", "contracts",
                                                                              "works_or_signs", "injuries", "risks"))))
 
@@ -664,10 +869,15 @@ def _p_money_over_threshold(facts, terms, arg):
     return False
 
 
-def _held_for(facts, since: str, years: int) -> bool:
-    """A state that began at since lasted at least years by the case's present (_status_to_now)."""
-    parsed = parse_date(since)
-    return bool(parsed) and _status_to_now(facts, (parsed[0], parsed[1]), years)[0] == "DECORSO"
+def _held_for(facts, since: str, years: int, until: str = "") -> bool:
+    """A state that began at since lasted at least years: by its end (until) when written, else by the case's
+    present (_status_to_now)."""
+    parsed, end = parse_date(since), parse_date(until)
+    if not parsed:
+        return False
+    if end:
+        return term_status((parsed[0], parsed[1]), (end[0], end[1]), years) == "DECORSO"
+    return _status_to_now(facts, (parsed[0], parsed[1]), years)[0] == "DECORSO"
 
 
 def _p_possession(facts, terms, arg):
@@ -677,7 +887,7 @@ def _p_possession(facts, terms, arg):
             continue
         if arg.get("how_not") and any(h in how for h in arg["how_not"]):
             continue
-        if arg.get("min_years") and not _held_for(facts, p.get("since", ""), arg["min_years"]):
+        if arg.get("min_years") and not _held_for(facts, p.get("since", ""), arg["min_years"], p.get("until", "")):
             continue
         return True
     return False
@@ -686,6 +896,8 @@ def _p_possession(facts, terms, arg):
 def _p_work(facts, terms, arg):
     for w in facts.get("works_or_signs") or []:
         if arg.get("visible") and not _yes(w.get("visible")):
+            continue
+        if arg.get("before_separation") and not _yes(w.get("before_separation")):
             continue
         if arg.get("pattern") and not re.search(arg["pattern"], _low(w.get("what"))):
             continue
@@ -699,11 +911,20 @@ def _p_common_owner(facts, terms, arg):
     by_owner: Dict[str, set] = {}
     for p in facts.get("property_history") or []:
         owner = _low(p.get("owner"))
+        # Typed: the owner held another asset with it, or the ownership ended by a division.
+        if owner and (_low(p.get("together_with")) or _low(p.get("ended_by")) == "divisione"):
+            return True
         if owner:
             by_owner.setdefault(owner, set()).add(_low(p.get("asset")))
         if owner and re.search(r"divisi|frazionat|separat|lottizz", _low(p.get("how_acquired")) + " " + _low(p.get("asset"))):
             return True
     return any(len(assets) >= 2 for assets in by_owner.values())
+
+
+def _p_event(facts, terms, arg):
+    """An event of one of the kinds (EVENT_KINDS) -- typed, never by its words."""
+    kinds = arg["kind"] if isinstance(arg.get("kind"), list) else [arg.get("kind")]
+    return any(_typed_kind(e) in kinds for e in facts.get("events") or [])
 
 
 def _p_term(facts, terms, arg):
@@ -741,7 +962,10 @@ PREDICATES: Dict[str, Tuple[Callable, Callable]] = {
                    + (f", {' o '.join(a['how'])}" if a.get("how") else "")
                    + (f", non {' né '.join(a['how_not'])}" if a.get("how_not") else "")),
     "work": (_p_work, lambda a: a.get("label") or ("un'opera visibile" if a.get("visible") else "un'opera")
+             + (" già esistente quando i beni furono divisi o venduti" if a.get("before_separation") else "")
              + (f" esistente da almeno {a['min_years']} anni" if a.get("min_years") else "")),
+    "event": (_p_event, lambda a: a.get("label") or "un evento del tipo "
+              + " o ".join(a["kind"] if isinstance(a.get("kind"), list) else [str(a.get("kind"))])),
     "common_previous_owner": (_p_common_owner, lambda a: "i beni appartenevano a un unico proprietario, poi diviso o "
                               "alienato in parti"),
     "term": (_p_term, lambda a: f"termine calcolato «{a['id'] if isinstance(a['id'], str) else ' o '.join(a['id'])}» "
@@ -846,6 +1070,30 @@ def fire_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
     return fired
 
 
+def explain_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
+                  rules: Optional[List[Dict[str, Any]]] = None, areas: Optional[List[str]] = None
+                  ) -> List[Dict[str, Any]]:
+    """For every rule: {"id", "fired", "skipped" (why it was not evaluated: another family), "conditions": [{"text",
+    "matched", "fact"}]} -- every condition evaluated, with the fact it matched or the facts it looked at
+    (scripts/fact_probe.py)."""
+    families = {family(a) for a in areas or []} - {""}
+    out = []
+    for rule in rules if rules is not None else load_rules():
+        item = {"id": rule["id"], "fired": False, "skipped": "", "conditions": []}
+        if families and not rule_families(rule) & families:
+            item["skipped"] = f"famiglia {'/'.join(sorted(rule_families(rule)))} fuori dalle aree del caso"
+        for condition in rule["when"]:
+            try:
+                ok = holds(condition, facts or {}, terms)
+                fact = _evidence(condition, facts or {}, terms)
+            except Exception as exc:
+                ok, fact = False, f"errore: {exc}"
+            item["conditions"].append({"text": describe([condition]), "matched": ok, "fact": fact})
+        item["fired"] = not item["skipped"] and all(c["matched"] for c in item["conditions"])
+        out.append(item)
+    return out
+
+
 def why_fired(rule: Dict[str, Any], facts: Dict[str, Any], terms: List[Dict[str, Any]]) -> List[str]:
     """Each condition of a fired rule in words, with the fact that met it: "un fondo senza accesso alla via
     pubblica — «il fondo di tizio è intercluso»"."""
@@ -887,9 +1135,17 @@ def _evidence(condition: Dict[str, Any], facts: Dict[str, Any], terms: List[Dict
                          for p in facts.get("possession") or [])[:140]
     if name == "work":
         return "; ".join(f"{w.get('what')}, visibile {w.get('visible') or '?'}, dal {w.get('existing_since') or '?'}"
-                         for w in facts.get("works_or_signs") or [])[:140]
+                         + (f", prima della divisione {w.get('before_separation')}" if w.get("before_separation") else "")
+                         for w in facts.get("works_or_signs") or [])[:200]
     if name == "common_previous_owner":
-        return "; ".join(f"{p.get('asset')} di {p.get('owner')}" for p in facts.get("property_history") or [])[:140]
+        return "; ".join(f"{p.get('asset')} di {p.get('owner')}" + (f" {p.get('period')}" if p.get("period") else "")
+                         + (f" insieme a {p.get('together_with')}" if p.get("together_with") else "")
+                         + (f", finita per {p.get('ended_by')}" if p.get("ended_by") else "")
+                         for p in facts.get("property_history") or [])[:200]
+    if name == "event":
+        kinds = arg["kind"] if isinstance(arg.get("kind"), list) else [arg.get("kind")]
+        return "; ".join(f"{e.get('what')} ({e.get('kind')})" for e in facts.get("events") or []
+                         if _typed_kind(e) in kinds)[:200]
     if name == "term":
         ids = arg["id"] if isinstance(arg["id"], list) else [arg["id"]]
         return next((t["text"] for t in terms if t["id"] in ids), "")

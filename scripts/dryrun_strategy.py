@@ -204,8 +204,12 @@ def vote_trace(events: list, draft: str) -> list:
 def saved_run(code: str, request: str, status: str, elapsed: float, lines: list, events: list, result) -> dict:
     """What --save writes: the report, the vlog events and the answer (draft + citations)."""
     result = result if isinstance(result, dict) else {}
+    signals = next((d for e, d, _ in reversed(events) if e == "case_analysis_fact_signals" and isinstance(d, dict)),
+                   None) or {}
     return {"code": code, "request": request, "status": status, "seconds": round(elapsed, 1),
             "report": lines, "events": [{"event": e, "data": d, "duration_ms": ms} for e, d, ms in events],
+            # The typed facts whole (FACT_SIGNALS / FACT_REGIMES), with the terms and rules they gave.
+            "facts": signals.get("facts"), "fact_terms": signals.get("terms"), "fact_rules_fired": signals.get("fired"),
             "draft": result.get("draft"), "answer": result.get("draft"), "citations": result.get("citations")}
 
 
@@ -252,7 +256,8 @@ def main() -> None:
 
     events = []
     dg.vlog = lambda event, data=None, *a, **k: events.append((event, data, k.get("duration_ms")))
-    for module in ("ruling_cards", "vote_pool"):   # modules that log through their own vlog
+    # modules that log through their own vlog (fact_signals: its typed facts, saved whole as "facts")
+    for module in ("ruling_cards", "vote_pool", "fact_signals", "source_tiers", "query_router"):
         try:
             setattr(__import__(f"src.rag.{module}", fromlist=["vlog"]), "vlog", dg.vlog)
         except ImportError:
