@@ -1443,7 +1443,14 @@ def terms_block(signals: Optional[Dict[str, Any]], refs: bool = False) -> str:
     """The computed terms as facts for the plan and the procedural section ("" without any); with refs, each
     with the article it belongs to (FACT_REGIMES_ENABLED); with REVIEW_FIXES_ENABLED, then _recognition_note."""
     terms = (signals or {}).get("terms") or []
-    lines = [f"- {t['text']}" + (f" [{t['ref']}]" if refs and t.get("ref") else "") for t in terms]
+    from . import answer_invariants
+    plain = answer_invariants.enabled()          # ANSWER_INVARIANTS_ENABLED (I5): statuses in plain Italian
+
+    def line(t):
+        text = answer_invariants.plain_status(t["text"]) if plain else t["text"]
+        ref = (f" (art. {t['ref']})" if plain else f" [{t['ref']}]") if refs and t.get("ref") else ""
+        return f"- {text}{ref}"
+    lines = [line(t) for t in terms]
     note = _recognition_note(signals) if lines and feature_flags.enabled(REVIEW_FIXES_FLAG) else ""
     return "\n".join(lines + ([note] if note else []))
 

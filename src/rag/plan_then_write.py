@@ -1438,7 +1438,7 @@ def _rewrite_out(title: str, text: str, found: List[Tuple[int, int, List[tuple]]
 
 def _tidy(text: str) -> str:
     """Blank runs and empty list items left by a removal collapsed."""
-    text = re.sub(r"(?m)^[ \t]*(?:[-•*]|\d+[.)])[ \t]*$\n?", "", text)
+    text = re.sub(r"[ \t]+\n", "\n", re.sub(r"(?m)^[ \t]*(?:[-•*]|\d+[.)])[ \t]*$\n?", "", text))
     return re.sub(r"(?<=\S)[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", text)).strip()
 
 

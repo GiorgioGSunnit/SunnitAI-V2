@@ -767,6 +767,7 @@ def run_child(spec_path: str, env_path: str) -> None:
               "fact_regimes": last("case_analysis_fact_regimes"),
               "claimant_frame": last("case_frame_claimant"),
               "material_use": last("case_analysis_material_use"),
+              "invariants": last("case_analysis_invariants"),
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -1081,6 +1082,7 @@ def analyse_case(rec: dict, ev) -> dict:
     out["fact_signals"] = _fact_signal_trace(rec, out, K, expected_keys)
     out["form"] = _form_trace(rec, K, expected_keys)
     out["live"] = _live_trace(rec)
+    out["invariants"] = _invariants_trace(rec)
     out["tiers"] = rec.get("tiers") or {}
     return out
 
@@ -1133,6 +1135,41 @@ def _form_trace(rec: dict, K, expected_keys: set) -> dict:
             "regimes": list(regimes.get("regimes") or []),
             "review": {k: writer.get(k, 0) for k in ("cut", "non_application", "burden", "facts_flagged")},
             "expected_dropped": expected_dropped}
+
+
+INVARIANTS = (("I1", "citation closure"), ("I2", "claim <-> article"), ("I3", "institution within its chapter"),
+              ("I4", "ruling relevance"), ("I5", "no internal tokens"), ("I6", "readability"), ("I7", "terms"))
+
+
+def _invariants_trace(rec: dict) -> dict:
+    """ANSWER_INVARIANTS_ENABLED: {I1..I7: {found, fixed, remaining} or None, "guards": {...}} from the run's
+    case_analysis_invariants event. I3 from the resolution events (refused outside the chapter; remaining: an
+    institution of the chapter table resolved outside it), I5's remaining from the answer itself -- both also for
+    a run made before the layer (the other invariants None there)."""
+    from src.rag import answer_invariants as ai
+    logged = rec.get("invariants") or {}
+    out = {key: ({k: int((logged.get(key) or {}).get(k) or 0) for k in ("found", "fixed", "remaining")}
+                 if logged.get(key) and key != "I3" else None) for key, _ in INVARIANTS}
+    events = [(e[0], e[1]) for e in rec.get("events") or [] if isinstance(e, (list, tuple)) and len(e) >= 2]
+    refused = [d for e, d in events if e == "case_analysis_institution_rejected" and isinstance(d, dict)
+               and "(I3)" in str(d.get("why"))]
+    outside = []
+    for e, d in events:
+        if e != "case_analysis_institution" or not isinstance(d, dict) or not d.get("resolved"):
+            continue
+        number, _, code = str(d["resolved"]).partition(" ")
+        ranges = ai.chapter(str(d.get("institution") or ""), code.strip())
+        if ranges and not all(ai.in_ranges(n.strip(), ranges) for n in number.split(",") if n.strip()):
+            outside.append(f"{d.get('institution')} -> {d['resolved']}")
+    out["I3"] = {"found": len(refused) + len(outside), "fixed": len(refused), "remaining": len(outside),
+                 "outside": outside}
+    if out["I5"] is None:
+        draft = (rec.get("draft") or "").split("\n\n⚠️")[0]
+        tokens = ai.internal_tokens(draft)
+        out["I5"] = {"found": len(tokens), "fixed": 0, "remaining": len(tokens)}
+    out["guards"] = logged.get("guards") or {}
+    out["against_client"] = int((rec.get("writer_rules") or {}).get("against_client") or 0)
+    return out
 
 
 _ACQUIRED_RULES = {"destinazione_padre_famiglia", "usucapione_servitu_apparente", "usucapione_ordinaria"}
@@ -1311,6 +1348,18 @@ def aggregate(cases: list) -> dict:
         form["review"].update(f.get("review") or {})
     form["qualified"] = [(c["id"], q) for c in keyed for q in (c.get("form") or {}).get("qualifications") or []]
     form["expected_dropped"] = [(c["id"], l) for c in keyed for l in (c.get("form") or {}).get("expected_dropped") or []]
+    inv = {}
+    for key, _ in INVARIANTS:
+        got = [(c.get("invariants") or {}).get(key) for c in keyed]
+        got = [g for g in got if g]
+        inv[key] = ({k: sum(g[k] for g in got) for k in ("found", "fixed", "remaining")} if got else None)
+    guards = [(c.get("invariants") or {}).get("guards") or {} for c in keyed]
+    inv["guards"] = {"unanswered": sum(len(g.get("questions_unanswered") or []) for g in guards),
+                     "questions": sum(g.get("questions", 0) for g in guards),
+                     "not_apply": sum(g.get("not_apply", 0) for g in guards),
+                     "orphans": sum(g.get("orphans_removed", 0) for g in guards),
+                     "against_client": sum((c.get("invariants") or {}).get("against_client", 0) for c in keyed),
+                     "logged": any(guards)}
     lives = [c.get("live") or {} for c in keyed]
     live = {"dangling": sum(len(x.get("dangling") or []) for x in lives),
             "evidence_repeated": sum(x.get("evidence_repeated", 0) for x in lives),
@@ -1336,7 +1385,7 @@ def aggregate(cases: list) -> dict:
             "citing": sum(t.get("rulings_citing_answer_article", 0) for t in tiers),
             "boilerplate_only": sum(t.get("rulings_boilerplate_only", 0) for t in tiers)}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
-            "tiers": tier, "live": live,
+            "tiers": tier, "live": live, "invariants": inv,
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1541,6 +1590,17 @@ def render(cases: list, header: list) -> str:
           "Procedural section, items offered → written: " + (", ".join(
               f"{b} {fm['use_offered'][b]} → {fm['use_written'].get(b, 0)}" for b in fm["use_offered"]) or "none") + "."]
 
+    iv = agg["invariants"]
+    L += ["", "## Answer invariants (ANSWER_INVARIANTS_ENABLED): found / fixed / remaining, target remaining 0", "",
+          "| invariant | found | fixed | remaining |", "|---|---:|---:|---:|"]
+    for key, name in INVARIANTS:
+        v = iv[key]
+        L.append(f"| {key} {name} | " + (f"{v['found']} | {v['fixed']} | {v['remaining']} |" if v else "n/a | n/a | n/a |"))
+    g = iv["guards"]
+    L.append("Guards on the final answers: " + (f"questions unanswered {g['unanswered']} of {g['questions']}, "
+                                                  f"'does not apply' sentences {g['not_apply']}, orphan fragments removed "
+                                                  f"{g['orphans']}, " if g["logged"] else "")
+             + f"sentences against the client dropped {g['against_client']}.")
     lv = agg["live"]
     L += ["", "## The live answer's defects (26 Oct; REVIEW_FIXES, RULING_FIT, FLAGGED_REMOVE, FACT_SIGNALS)", "",
           f"Dangling fragments left in the answers: {lv['dangling']}. Evidence lists repeated whole: "
@@ -1850,7 +1910,17 @@ def compare(run_dirs: list, ev) -> str:
          "Flags that differ: " + ("; ".join(f"{k} " + " / ".join(str(f.get(k)) for f in flags) for k in changed)
                                   or "none") + " (in run order).", "",
          "## Headline", "", "| | " + " | ".join(names) + " |", "|---|" + "---:|" * len(names)]
-    rows = [("MENTIONED", [a["stage_counts"]["MENTIONED"] for a in aggs], lambda a: f" / {len(a['slots'])}"),
+    def inv_cell(a, key):
+        v = a["invariants"][key]
+        return f"{v['found']} / {v['fixed']} / {v['remaining']}" if v else "n/a"
+    rows = [(f"{key} {name}: found / fixed / remaining (target 0)", [inv_cell(a, key) for a in aggs], lambda a: "")
+            for key, name in INVARIANTS]
+    rows += [("guards: questions unanswered / not-apply / orphans removed / against client dropped",
+              [(f"{a['invariants']['guards']['unanswered']} of {a['invariants']['guards']['questions']} / "
+                f"{a['invariants']['guards']['not_apply']} / {a['invariants']['guards']['orphans']} / "
+                f"{a['invariants']['guards']['against_client']}") if a["invariants"]["guards"]["logged"] else
+               f"n/a / n/a / n/a / {a['invariants']['guards']['against_client']}" for a in aggs], lambda a: "")]
+    rows += [("MENTIONED", [a["stage_counts"]["MENTIONED"] for a in aggs], lambda a: f" / {len(a['slots'])}"),
             ("not expected citations", [len(a["wrong"]) for a in aggs], lambda a: ""),
             ("not expected per answer", [round(len(a["wrong"]) / max(1, len(common)), 1) for a in aggs], lambda a: ""),
             ("rubrica-incompatible", [a["fit"]["incompatible"] for a in aggs], lambda a: ""),

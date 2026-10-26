@@ -2183,7 +2183,19 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     from . import fact_signals
     generic_ranges = strict_articles or fact_signals.enabled()
 
+    # ANSWER_INVARIANTS_ENABLED, I3: an institution of the chapter table resolves only inside its chapter, the
+    # model's own number too; refused everywhere, the article inside whose rubrica fits it best (below).
+    from . import answer_invariants
+    chapter = answer_invariants.chapter(nome, abbr or "") if answer_invariants.enabled() else None
+    refused: List[str] = []
+
     def _generic_word_out(rows: List[Dict[str, Any]], number: str, path: str) -> bool:
+        if chapter and not answer_invariants.in_ranges(number, chapter):
+            refused.append(number)
+            vlog("case_analysis_institution_rejected", {
+                "institution": nome, "article": f"{number} {abbr or codice}", "path": path,
+                "heading": _rows_heading(rows), "why": "outside the institution's chapter (I3)"})
+            return True
         if not generic_ranges:             # not even the model's own number: 2689 is a wrong guess too
             return False
         heading = _rows_heading(rows)
@@ -2264,12 +2276,48 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     if numero and doc and _number_matches_institution(session, doc["id"], numero, nome):
         rows = fetch_article(session, doc["id"], numero)
         if rows and not (generic_ranges and fact_signals.generic_out_of_range(nome, abbr or "", numero,
-                                                                              _rows_heading(rows))):
+                                                                              _rows_heading(rows))) \
+                and not _generic_word_out(rows, numero, "model's numero_indicativo"):
             return _found(_tag(rows, numero), numero, "model's numero_indicativo, verified against its title")
 
+    if chapter and doc:
+        number = answer_invariants.pick_in_chapter(session, doc["id"], nome, chapter, parole_chiave)
+        vlog("case_analysis_institution_range", {"institution": nome, "refused": refused, "picked": number,
+                                                 "chapter": chapter})
+        rows = fetch_article(session, doc["id"], number) if number else []
+        if rows:
+            return _found(_tag(rows, number, heading_match=True), number, "rubrica inside the institution's chapter")
     vlog("case_analysis_institution", {"institution": nome, "resolved": None, "reason": "not found"},
         duration_ms=(time.time() - t0) * 1000)
     return []
+
+
+def _pick_in_rule_ranges(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any],
+                         parole_chiave: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """ANSWER_INVARIANTS_ENABLED (I3): a fact rule's institution that resolved nowhere inside its ranges, resolved
+    to the article inside them whose rubrica fits it best; [] with the flag off or nothing found."""
+    from . import answer_invariants
+    from .issue_spotting import fetch_article, resolve_code
+    if not answer_invariants.enabled():
+        return []
+    abbr = _code_of(istituto.get("codice") or "")
+    doc = (next((d for d in documents if (d.get("name") or "").startswith(_CODE_PREFIXES[abbr])), None) if abbr
+           else resolve_code(istituto.get("codice") or "", documents))
+    if not doc:
+        return []
+    try:
+        number = answer_invariants.pick_in_chapter(session, doc["id"], istituto.get("nome") or "",
+                                                   istituto["ranges"], parole_chiave)
+    except Exception as exc:
+        logger.warning("I3: no pick inside the rule's ranges: %s", exc)
+        return []
+    vlog("case_analysis_institution_range", {"institution": istituto.get("nome"), "refused": [],
+                                             "picked": number, "chapter": istituto["ranges"],
+                                             "fonte": istituto.get("fonte")})
+    rows = fetch_article(session, doc["id"], number) if number else []
+    for row in rows:
+        row["_article"] = (number, abbr or doc.get("name"))
+    return rows
 
 
 def _search_case_law(session, analysis: Dict[str, Any], numbers: Optional[List[str]] = None,
@@ -3771,6 +3819,8 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
             if istituto.get("fonte"):          # FACT_SIGNALS_ENABLED: a fact rule's institution, within its ranges
                 from . import fact_signals
                 kept = fact_signals.keep_resolved(istituto, resolved)
+                if not kept and istituto.get("ranges"):       # ANSWER_INVARIANTS_ENABLED, I3: inside the ranges
+                    kept = _pick_in_rule_ranges(session, documents, istituto, q.get("parole_chiave"))
                 vlog("case_analysis_fact_institution", {"institution": istituto.get("nome"), "fonte": istituto["fonte"],
                                                          "kept": [_label_of(r) for r in kept],
                                                          "rejected": [_label_of(r) for r in resolved if r not in kept]})
@@ -5295,6 +5345,20 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                                                       _case_text(facts, request))
         except Exception as exc:
             logger.warning("draft checks after the draft failed, draft kept: %s", exc)
+    # ANSWER_INVARIANTS_ENABLED: the general checks on the written answer (answer_invariants.py).
+    from . import answer_invariants
+    invariants = answer_invariants.enabled()
+    if invariants:
+        try:
+            if not documents:
+                from .doc_lookup import _fetch_doc_names
+                documents = _fetch_doc_names(driver, NEO4J_DATABASE)
+            with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+                draft, _ = answer_invariants.enforce(draft, facts=facts, request=request, analysis=analysis,
+                                                     article_rows=article_rows, ruling_rows=ruling_rows,
+                                                     documents=documents, session=session)
+        except Exception as exc:
+            logger.warning("answer invariants failed, draft kept: %s", exc)
 
     arguments_at = "**4." if planned else "**3."      # where the client's arguments start
     # WRITER_RULES_ENABLED: a parere is complete in itself, no "deep-dive" links under it (the lawyer's review).
@@ -5302,7 +5366,11 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
         draft[draft.find(arguments_at):] if arguments_at in draft else draft, {})
     if topics:
         draft += "\n\n" + _format_deepdive_suggestion(topics)
-    if ruling_rows or _UNVERIFIED.rstrip("]") in draft:
+    if invariants and (ruling_rows or "(da verificare" in draft):
+        draft += ("\n\n⚠️ Le sentenze citate provengono dal corpus documentale; i riferimenti segnati «da "
+                  "verificare» non sono stati trovati nelle fonti consultate o vanno controllati. Verificare tutto "
+                  "prima dell'uso.")
+    elif ruling_rows or _UNVERIFIED.rstrip("]") in draft:
         draft += (
             "\n\n⚠️ Le sentenze citate provengono dal corpus documentale; i riferimenti segnati "
             "[DA VERIFICARE] non sono stati trovati nelle fonti consultate. Verificare tutto prima dell'uso."

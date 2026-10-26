@@ -384,3 +384,42 @@ def test_live_trace_counts_the_six_defects_off_old_and_new_answers():
     assert "| adverse rulings found / dropped as support | 0 / 0 | 1 / 1 |" in text
     report = dl.render([dl.analyse_case(old, ev)], [])
     assert "## The live answer's defects" in report and "| x1 | 2 | 1 | 1 / 1 | NO | 1 | YES | 0 / 0 | - |" in report
+
+
+def test_invariant_rows_per_run_old_runs_partly_read_off_the_answer():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old = {**_record(), "draft": "**6. Conclusioni**\n\nIl termine è DECORSO.",
+           "events": [["case_analysis_institution", {"institution": "usucapione di servitù apparente",
+                                                    "resolved": "2689 c.c.", "reason": "titolo_articolo"}, 0]]}
+    new = copy.deepcopy(old)
+    new.update(draft="**6. Conclusioni**\n\nIl termine è già decorso.", writer_rules={"against_client": 1},
+               invariants={**{k: {"found": 2, "fixed": 2, "remaining": 0} for k in ("I1", "I2", "I4", "I6", "I7")},
+                           "I5": {"found": 1, "fixed": 1, "remaining": 0},
+                           "guards": {"questions": 2, "questions_unanswered": ["x"], "not_apply": 0,
+                                      "orphans_removed": 3}},
+               events=[["case_analysis_institution_rejected", {"article": "2689 c.c.",
+                                                              "why": "outside the institution's chapter (I3)"}, 0],
+                       ["case_analysis_institution", {"institution": "usucapione di servitù apparente",
+                                                     "resolved": "1061 c.c.", "reason": "rubrica inside"}, 0]])
+    inv_old, inv_new = dl.analyse_case(old, ev)["invariants"], dl.analyse_case(new, ev)["invariants"]
+    assert inv_old["I1"] is None and inv_old["I5"] == {"found": 1, "fixed": 0, "remaining": 1}
+    assert inv_old["I3"]["remaining"] == 1 and inv_new["I3"] == {"found": 1, "fixed": 1, "remaining": 0, "outside": []}
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("20261026-2128", old), ("20261027-1000", new)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs, ev)
+    assert "| I1 citation closure: found / fixed / remaining (target 0) | n/a | 2 / 2 / 0 |" in text
+    assert "| I3 institution within its chapter: found / fixed / remaining (target 0) | 1 / 0 / 1 | 1 / 1 / 0 |" in text
+    assert "| I5 no internal tokens: found / fixed / remaining (target 0) | 1 / 0 / 1 | 1 / 1 / 0 |" in text
+    assert ("| guards: questions unanswered / not-apply / orphans removed / against client dropped | n/a / n/a / n/a / 0 "
+            "| 1 of 2 / 0 / 3 / 1 |") in text
+    assert text.index("| I7 terms") < text.index("| MENTIONED |") < text.index("| rubrica-incompatible |")
+    report = dl.render([dl.analyse_case(new, ev)], [])
+    assert "## Answer invariants" in report and "| I4 ruling relevance | 2 | 2 | 0 |" in report

@@ -347,6 +347,28 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 a reference. See order_for_acquired, explicit_questions,
                                 merge_duplicate_issues, dedupe_evidence.
 
+  ANSWER_INVARIANTS_ENABLED    false (27 Oct): one general layer of checks on every strategy
+                                answer after its sections are written, each logged found /
+                                fixed / remaining (case_analysis_invariants): I1 every cited
+                                article is checked material (graded 2-3, user-named, an
+                                offered procedural tool, a computed term's article), else its
+                                sentence goes; I2 every citation compared with its article's
+                                rubrica and text, a mismatch removes the sentence (graded 3 or
+                                user-named: the clause, else a "(da verificare: ...)" mark);
+                                I3 an institution of the chapter table (usucapione 1158-1167
+                                and 1061, servitù 1027-1099, possesso 1140-1172, passaggio
+                                coattivo 1051-1055, ...) resolves only inside its chapter, the
+                                model's number too, else the best rubrica inside it (fact
+                                rules too); I4 a cited ruling shares a substantive article
+                                with the answer by CITES, has a substantive holding, and if
+                                adverse sits only in an objection or reply; I5 no internal
+                                tokens (status labels, ids, placeholders, "1158.0.0"), the
+                                terms given to the writer in plain Italian; I6 one call per
+                                section rewrites ungrammatical sentences, refused if a
+                                citation number changes; I7 a duration stated must be in the
+                                term table, the case or the cited article's text. See
+                                src/rag/answer_invariants.py.
+
 The three below are the source-tiered retrieval (26 Oct): the AUTHORITY tier is the primary
 documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what the authority found.
   ROUTER_ENABLED               false: each chat request is classified narrative (a fact pattern:

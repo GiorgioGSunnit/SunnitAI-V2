@@ -126,6 +126,14 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
             out.append(f"citations taken out of the sections: {data.get('count', 0)} "
                        f"({data.get('dropped', 0)} sentences dropped, {data.get('dangling', 0)} fragments after them): "
                        + (", ".join(r for e in data.get("removed") or [] for r in e.get("removed") or []) or "-"))
+        elif event == "case_analysis_invariants":
+            out.append("answer invariants (found/fixed/remaining): " + ", ".join(
+                f"{k} {v.get('found', 0)}/{v.get('fixed', 0)}/{v.get('remaining', 0)}"
+                for k, v in sorted(data.items()) if k.startswith("I") and isinstance(v, dict) and "found" in v)
+                + f"; guards {json.dumps({k: (len(v) if isinstance(v, list) else v) for k, v in (data.get('guards') or {}).items()})}")
+        elif event == "case_analysis_institution_range":
+            out.append(f"I3 {data.get('institution')}: refused {', '.join(data.get('refused') or []) or '-'}, "
+                       f"picked in {data.get('chapter')}: {data.get('picked') or 'none'}")
         elif event == "case_analysis_dangling":
             out.append(f"dangling fragments dropped or cut: {data.get('count', 0)}")
         elif event == "case_analysis_adverse_rulings":
