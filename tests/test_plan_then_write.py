@@ -245,6 +245,10 @@ def test_an_article_whose_heading_names_the_issue_is_never_removed(model):
     assert ptw._heading_shares_title("Furto in abitazione e furto con strappo", "Tentativo di furto in abitazione")
     assert not ptw._heading_shares_title("Intimazione di licenza e di sfratto", "Sanzioni per il cancello chiuso")
     assert not ptw._heading_shares_title("Disposizioni generali sul reato", "Reato di stalking")
+    # The boat case (the lawyer's review, 26 Oct): "garanzia" alone ties nothing; "vizi" still does.
+    assert not ptw._heading_shares_title("Garanzia", "Garanzia per i vizi della barca")
+    assert not ptw._heading_shares_title("Garanzia e rischi dei conferimenti", "Garanzia per i vizi della barca")
+    assert ptw._heading_shares_title("Garanzia per i vizi della cosa venduta", "Garanzia per i vizi della barca")
 
 
 def test_answers_naming_a_removed_article_are_dropped(model):
@@ -499,6 +503,7 @@ def test_writer_rules_section_prompts(monkeypatch):
     system = ptw._section_system(PLAN_CLEAN, "it")
     assert "«non pertinente»" in system and "l'onere della prova ricade su" in system
     assert "I fatti di una pronuncia non sono mai fatti del caso" in system and "stesse norme e pronunce" not in system
+    assert "Una pronuncia si cita solo dove i fatti del CASO ne integrano i presupposti" in system
 
 
 SECTION_TEXT = (

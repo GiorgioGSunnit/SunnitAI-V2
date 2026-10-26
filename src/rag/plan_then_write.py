@@ -581,13 +581,21 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
 _HEADING_STOP = {"disposizioni", "articolo", "codice", "norme", "norma", "generali", "comuni", "particolari", "speciali",
                  "della", "delle", "dello", "degli", "nella", "nelle", "altri", "altre", "casi", "pena", "pene",
                  "reato", "reati", "delitto", "delitti", "questione", "responsabilità", "diritto", "diritti"}
+# Legal words that headings of every area share: alone they never tie an article to an issue. The lawyer's
+# review of the boat case (26 Oct): art. 492 c.c. ("Garanzia", the heir's) and art. 2254 ("Garanzia e rischi
+# dei conferimenti") were kept for "Garanzia delle cose vendute" on the word "garanzia" alone.
+_HEADING_GENERIC = {"garanzia", "garanzie", "danno", "danni", "risarcimento", "contratto", "contratti",
+                    "obbligazione", "obbligazioni", "effetti", "termini", "condizioni", "azione", "azioni",
+                    "esclusione", "tutela", "provvedimenti", "procedimento"}
 
 
 def _heading_shares_title(heading: str, title: str) -> bool:
     """The article's heading and the issue's title share a content word (5-letter stems):
-    "Furto in abitazione e furto con strappo" and "Tentativo di furto in abitazione" do."""
+    "Furto in abitazione e furto con strappo" and "Tentativo di furto in abitazione" do;
+    "Garanzia" (art. 492 c.c.) and "Garanzia per vizi della barca" do not."""
     def stems(text):
-        return {w[:5] for w in re.findall(r"\w{4,}", (text or "").lower()) if w not in _HEADING_STOP}
+        return {w[:5] for w in re.findall(r"\w{4,}", (text or "").lower())
+                if w not in _HEADING_STOP and w not in _HEADING_GENERIC}
     return bool(stems(heading) & stems(title))
 
 
@@ -857,6 +865,8 @@ _WRITER_RULES = (
     "- Non attribuire a una parte condotte, conoscenze, intenzioni o qualità che il CASO non afferma (che sapesse, "
     "che abbia omesso, che abbia agito in malafede): se servono all'argomento, presentale come circostanze da "
     "accertare. I fatti di una pronuncia non sono mai fatti del caso.\n"
+    "- Una pronuncia si cita solo dove i fatti del CASO ne integrano i presupposti, indicando quale fatto li "
+    "integra; se nessun fatto del caso li integra, la pronuncia si omette.\n"
     "- Termini (giorni, mesi, anni): solo quelli del materiale fornito, mai a memoria.\n"
     "- Non proporre mai azioni, domande, denunce o querele contro {party} o contro chi è assistito insieme; un loro "
     "eventuale concorso di colpa è solo una difesa della controparte, da superare.\n"
