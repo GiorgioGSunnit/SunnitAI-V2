@@ -37,6 +37,12 @@ from .verbose_logger import vlog
 logger = logging.getLogger(__name__)
 
 FACT_SIGNALS_FLAG = "FACT_SIGNALS_ENABLED"
+# FACT_REGIMES_ENABLED (the lawyer's blind review of two new cases, 26 Oct): the parties' qualifications inferred
+# from the facts (a natural person buying for private use from a business is a consumer; a public body; a public
+# official), the special regimes they bring in as central issues, every applicable legal term of TERMS stated
+# even when the case gives no dates, and the procedural tools the facts call for (PROCEDURAL_TOOLS). Runs the
+# extraction also with FACT_SIGNALS_ENABLED off; the rules of fact_signal_rules.yaml fire only with it on.
+REGIMES_FLAG = "FACT_REGIMES_ENABLED"
 RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fact_signal_rules.yaml")
 # YYYY-MM-DD: the case's present for a case that states none (tests, benches). Never the real today: an exam
 # case set years ago would have every term "DECORSO" (fact bench, run 1415).
@@ -48,6 +54,10 @@ _EXTRACT_TOKENS = 3500                  # run 1415's longest cases (n2, n9) came
 
 def enabled() -> bool:
     return feature_flags.enabled(FACT_SIGNALS_FLAG)
+
+
+def regimes_enabled() -> bool:
+    return feature_flags.enabled(REGIMES_FLAG)
 
 
 # --- 1. typed facts ------------------------------------------------------------------------------
@@ -71,6 +81,16 @@ SCHEMA: Dict[str, Any] = {
     "requests": [""],
     "present_date": "",
 }
+# FACT_REGIMES_ENABLED: what the parties' qualifications and the procedural tools are inferred from.
+SCHEMA_REGIMES: Dict[str, Any] = {
+    "parties": [{"name": "", "role": "", "age": "", "kind": "", "occupation": "", "purpose": "", "activities": ""}],
+    "risks": [{"what": "", "kind": ""}],
+}
+
+
+def schema(regimes: Optional[bool] = None) -> Dict[str, Any]:
+    """SCHEMA, with SCHEMA_REGIMES' fields when FACT_REGIMES_ENABLED (or regimes) is on."""
+    return {**SCHEMA, **SCHEMA_REGIMES} if (regimes_enabled() if regimes is None else regimes) else SCHEMA
 
 _EXTRACT_SYSTEM = (
     "Sei un giurista. Leggi un caso e riporta i suoi fatti in un JSON con ESATTAMENTE queste chiavi (lascia vuoto "
@@ -96,6 +116,19 @@ _EXTRACT_SYSTEM = (
     "Sii conciso: what in al massimo 20 parole, al massimo 25 eventi.\n"
     "Non inventare date: una data compare solo se è scritta nel testo, e come vi è scritta. Rispondi SOLO con il JSON."
 )
+_EXTRACT_REGIMES = (
+    "\nInoltre:\n"
+    "- per ogni parte anche kind (persona fisica, società, ente pubblico, impresa individuale), occupation (il "
+    "mestiere, la professione o la funzione pubblica, se detti) e purpose (per che cosa ha contratto: «personale» "
+    "se il testo mostra che contrae per sé o per la famiglia, fuori da un'attività d'impresa o professionale; "
+    "«professionale» se per la sua attività; vuoto se il testo non permette di dirlo), activities (ciò che la "
+    "parte ha fatto o fa nei fatti rispetto al bene o all'attività da cui nasce la vicenda: ha costruito, "
+    "installato, venduto, progettato, gestisce, custodisce, manutiene, sorveglia..., separati da virgola).\n"
+    "- risks: i pericoli e le urgenze che il testo riferisce {what (in una frase), kind: sicurezza (rischio per "
+    "persone o cose), aggravamento (un danno che continua o peggiora), prova (lo stato dei luoghi o della cosa "
+    "può cambiare o andare perduto: riparazioni, smaltimento, lavori), urgenza (un evento o una scadenza "
+    "imminente)}; lista vuota se il testo non ne riferisce.\n"
+)
 _RETRY_SUFFIX = ("\n\nLa risposta precedente non era un JSON valido con quelle chiavi. Rispondi SOLO con l'oggetto "
                  "JSON, dal primo carattere.")
 
@@ -108,15 +141,15 @@ def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").split()) if isinstance(value, str) else ""
 
 
-def validate_facts(raw: Any, case_text: str) -> Optional[Dict[str, Any]]:
-    """The facts in SCHEMA's shape (unknown keys dropped, every value a string or a list of string
-    dicts), or None when raw is not a JSON object with at least one of SCHEMA's keys. A date the case
-    text does not contain is emptied (never invented); each dated item gains date_iso, from code."""
+def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+    """The facts in SCHEMA's shape (schema(regimes); unknown keys dropped, every value a string or a list
+    of string dicts), or None when raw is not a JSON object with at least one of SCHEMA's keys. A date the
+    case text does not contain is emptied (never invented); each dated item gains date_iso, from code."""
     if not isinstance(raw, dict) or not set(raw) & set(SCHEMA):
         return None
     norm_case = " ".join((case_text or "").lower().split())
     out: Dict[str, Any] = {}
-    for key, shape in SCHEMA.items():
+    for key, shape in schema(regimes).items():
         value = raw.get(key)
         if isinstance(shape, str):
             out[key] = _clean_text(value)
@@ -150,7 +183,9 @@ def extract_facts(case_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
     """(facts or None, problem): one call at temperature 0, its reply validated (validate_facts) and,
     when it is not valid, asked once more."""
     human = f"CASO:\n{(case_text or '')[:_CASE_CHARS]}"
-    system, problem = _EXTRACT_SYSTEM, ""
+    base = _EXTRACT_SYSTEM.replace("Sii conciso:", _EXTRACT_REGIMES.lstrip("\n") + "Sii conciso:") \
+        if regimes_enabled() else _EXTRACT_SYSTEM
+    system, problem = base, ""
     for attempt in (1, 2):
         try:
             raw = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
@@ -161,7 +196,7 @@ def extract_facts(case_text: str) -> Tuple[Optional[Dict[str, Any]], str]:
         if facts is not None:
             return facts, ""
         problem = problem or "reply is not a JSON object with the schema's keys"
-        system = _EXTRACT_SYSTEM + _RETRY_SUFFIX
+        system = base + _RETRY_SUFFIX
     return None, problem
 
 
@@ -336,10 +371,14 @@ class Term:
 
     def __init__(self, id: str, label: str, ref: str, start: str, end: str, years: int = 0, months: int = 0,
                  days: int = 0, applies: Optional[Callable[[Dict[str, Any]], bool]] = None, word: str = "",
-                 start_items: Optional[Callable[[Dict[str, Any]], List[tuple]]] = None):
+                 start_items: Optional[Callable[[Dict[str, Any]], List[tuple]]] = None, since: str = "",
+                 family: str = "civile", regimes_only: bool = False):
         self.id, self.label, self.ref, self.start, self.end = id, label, ref, start, end
         self.years, self.months, self.days, self.applies, self.word = years, months, days, applies, word
         self.start_items = start_items
+        # FACT_REGIMES_ENABLED: what the term runs from, in words, for a case that gives no dates; the family of
+        # the cases it belongs to; a term only listed with the flag on.
+        self.since, self.family, self.regimes_only = since, family, regimes_only
 
     def length(self) -> str:
         parts = [(self.years, "anno", "anni"), (self.months, "mese", "mesi"), (self.days, "giorno", "giorni")]
@@ -382,53 +421,68 @@ _MOVABLE = r"\bauto|veicol|\bmoto|gioiell|quadr|orolog|bicicl|barca|opera d'arte
 
 TERMS: List[Term] = [
     Term("possessoria", "azione possessoria (spoglio o turbativa)", "artt. 1168 e 1170 c.c.", _SPOGLIO, _ACTION,
-         years=1, word="termine annuale"),
+         years=1, word="termine annuale", since="dallo spoglio o dalla turbativa"),
     Term("usucapione_ordinaria", "usucapione ordinaria di beni immobili", "art. 1158 c.c.", "", "", years=20,
-         word="ventennio di possesso", start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))]),
+         word="ventennio di possesso", start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))],
+         since="di possesso continuato"),
     Term("usucapione_abbreviata", "usucapione abbreviata (solo con titolo idoneo trascritto e buona fede)",
          "art. 1159 c.c.", "", "", years=10, word="decennio di possesso",
          applies=lambda f: any(re.search(r"trascri|rogito|atto pubblico|compravendit|donazion", _low(p.get("how_acquired")))
                                for p in f.get("property_history") or []),
-         start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))]),
+         start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))],
+         since="dalla trascrizione del titolo"),
     Term("usucapione_mobili", "usucapione di beni mobili (10 anni in buona fede; 20 altrimenti)", "art. 1161 c.c.",
          "", "", years=10, word="decennio di possesso",
-         start_items=lambda f: [s for s in _possession_starts(f) if re.search(_MOVABLE, _low(s[1]))]),
+         start_items=lambda f: [s for s in _possession_starts(f) if re.search(_MOVABLE, _low(s[1]))],
+         since="di possesso continuato"),
     Term("prescrizione_circolazione", "prescrizione del risarcimento da circolazione di veicoli", "art. 2947 c.c.",
-         _ROAD, _INTERRUPT, years=2, applies=lambda f: not f.get("contracts")),
+         _ROAD, _INTERRUPT, years=2, applies=lambda f: not f.get("contracts"), since="dal fatto"),
     Term("prescrizione_extracontrattuale", "prescrizione del risarcimento del danno extracontrattuale",
-         "art. 2947 c.c.", _DAMAGE, _INTERRUPT, years=5, applies=lambda f: not f.get("contracts")),
+         "art. 2947 c.c.", _DAMAGE, _INTERRUPT, years=5, applies=lambda f: not f.get("contracts"), since="dal fatto"),
     Term("prescrizione_ordinaria", "prescrizione ordinaria (diritti da contratto)", "art. 2946 c.c.",
          r"inadempi|non (?:ha )?pagat|scadenz|ritard|mancat\w* (?:pagament|consegn)", _INTERRUPT, years=10,
-         applies=lambda f: bool(f.get("contracts"))),
-    Term("querela", "querela", "art. 124 c.p.", _OFFENCE, r"querel|denunci", months=3),
+         applies=lambda f: bool(f.get("contracts")), since="dal giorno in cui il diritto può essere fatto valere"),
+    Term("querela", "querela", "art. 124 c.p.", _OFFENCE, r"querel|denunci", months=3,
+         since="dalla notizia del fatto che costituisce il reato", family="penale"),
     Term("ricorso_tar_appalti", "ricorso al TAR in materia di appalti pubblici (rito speciale)", "art. 120 c.p.a.",
          _ACT, _TAR, days=30,
          applies=lambda f: any(re.search(_TENDER, _low(" ".join(map(str, e.values()))))
-                               for e in (f.get("events") or []) + (f.get("proceedings") or []))),
+                               for e in (f.get("events") or []) + (f.get("proceedings") or [])),
+         since="dalla comunicazione o conoscenza dell'atto", family="amministrativo"),
     Term("ricorso_tar", "ricorso al TAR per l'annullamento", "artt. 29 e 41 c.p.a.", _ACT, _TAR, days=60,
          applies=lambda f: not any(re.search(_TENDER, _low(" ".join(map(str, e.values()))))
                                    for e in (f.get("events") or []) + (f.get("proceedings") or []))
-         and _has_role(f, r"pubblica amministrazione|comune|ente")),
+         and _has_role(f, r"pubblica amministrazione|comune|ente"),
+         since="dalla notificazione, comunicazione o piena conoscenza dell'atto", family="amministrativo"),
     Term("denuncia_vizi_vendita", "denuncia dei vizi della cosa venduta", "art. 1495 c.c.", _DISCOVERY + "|" + _DEFECT,
          _DENOUNCE, days=8, applies=lambda f: _has_contract(f, r"vendit|compravendit|acquist")
-         and not _has_role(f, "consumatore")),
+         and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla scoperta del vizio"),
     Term("azione_vizi_vendita", "azione di garanzia per i vizi della cosa venduta", "art. 1495 c.c.", _DELIVERY,
          _ACTION, years=1, applies=lambda f: _has_contract(f, r"vendit|compravendit|acquist")
-         and not _has_role(f, "consumatore")),
+         and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla consegna"),
     Term("denuncia_conformita_consumo", "denuncia del difetto di conformità (consumatore)", "Codice del Consumo",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, months=2,
-         applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist")),
+         applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
+         since="dalla scoperta del difetto"),
+    Term("responsabilita_conformita_consumo", "responsabilità del venditore per il difetto di conformità "
+         "(consumatore)", "Codice del Consumo", _DELIVERY, _DISCOVERY + "|" + _DEFECT,
+         years=2, word="manifestazione del difetto entro 2 anni", applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
+         since="dalla consegna del bene", regimes_only=True),
+    Term("azione_conformita_consumo", "prescrizione dell'azione per il difetto di conformità non dolosamente "
+         "occultato (consumatore)", "Codice del Consumo", _DELIVERY, _ACTION, months=26,
+         applies=lambda f: _has_role(f, "consumatore") and _has_contract(f, r"vendit|compravendit|acquist"),
+         since="dalla consegna del bene", regimes_only=True),
     Term("denuncia_difformita_appalto", "denuncia delle difformità e dei vizi dell'opera (appalto)", "art. 1667 c.c.",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, days=60,
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz")),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta"),
     Term("azione_garanzia_appalto", "azione di garanzia nell'appalto", "art. 1667 c.c.", _WORKS_DONE, _ACTION, years=2,
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz")),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla consegna dell'opera"),
     Term("manifestazione_gravi_difetti", "manifestazione dei gravi difetti entro dieci anni dal compimento dell'opera",
          "art. 1669 c.c.", _WORKS_DONE, _DISCOVERY + "|" + _DEFECT, years=10, word="decennio dal compimento",
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz")),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dal compimento dell'opera"),
     Term("denuncia_gravi_difetti", "denuncia dei gravi difetti dell'immobile", "art. 1669 c.c.",
          _DISCOVERY + "|" + _DEFECT, _DENOUNCE, years=1,
-         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz")),
+         applies=lambda f: _has_contract(f, r"appalt|lavori|ristruttur|costruz"), since="dalla scoperta"),
 ]
 
 # Criminal appeals run from the deposit of the reasons (art. 585 c.p.p.): 15 days with the reasons read in
@@ -444,17 +498,25 @@ def _short(written: str) -> str:
     return written or "data non indicata"
 
 
-def compute_terms(facts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def compute_terms(facts: Optional[Dict[str, Any]], areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """Every term of TERMS the facts date: its status between the fact it runs from and the act that
-    ends it, or the case's present when none does (_status_to_now); one line of text each."""
+    ends it, or the case's present when none does (_status_to_now); one line of text each. FACT_REGIMES_
+    ENABLED (facts carrying "_regimes"): also every term that applies to facts the case states without a
+    date, as DA VERIFICARE (_undated_entry), within the families of the case's areas."""
     if not facts:
         return []
+    undated = bool(facts.get("_regimes"))
+    families = {family(a) for a in areas or []} - {""}
     out = []
     for term in TERMS:
+        if term.regimes_only and not undated:
+            continue
         if term.applies and not term.applies(facts):
             continue
         starts = term.start_items(facts) if term.start_items else _events(facts, term.start)
         if not starts:
+            if undated and (not families or term.family in families) and _mentioned(facts, term):
+                out.append(_undated_entry(term))
             continue
         start = starts[0]
         ends = _events(facts, term.end) if term.end else []
@@ -487,6 +549,24 @@ def compute_terms(facts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
                                f"termine di {length}", length, status, base, end_what, end_written,
                                note="" if deposit else "dipende da quando è depositata la motivazione"))
     return out
+
+
+def _mentioned(facts: Dict[str, Any], term: Term) -> bool:
+    """The case states, without a usable date, the fact a term runs from."""
+    if term.start_items:
+        movable = term.id == "usucapione_mobili"
+        return any(bool(re.search(_MOVABLE, _low(p.get("asset")))) == movable
+                   for p in facts.get("possession") or [] if _low(p.get("still_ongoing")) not in ("no", "false"))
+    return bool(term.start) and bool(re.search(term.start, _texts(facts, ("events", "proceedings", "contracts",
+                                                                             "works_or_signs", "injuries", "risks"))))
+
+
+def _undated_entry(term: Term) -> Dict[str, Any]:
+    word = term.word or f"termine di {term.length()}"
+    text = (f"{term.label}: {word} {term.since}".rstrip() + " — DA VERIFICARE: il caso non indica le date da cui "
+            "decorre")
+    return {"id": term.id, "label": term.label, "ref": term.ref, "length": term.length(), "status": "DA VERIFICARE",
+            "from": {"what": term.since, "date": ""}, "to": {"what": "", "date": ""}, "text": text, "undated": True}
 
 
 def _term_entry(id, label, ref, word, length, status, start, end_what, end_written, note=""):
@@ -867,30 +947,422 @@ def central_issues(fired: List[Dict[str, Any]], limit: int = MAX_CENTRAL) -> Lis
 
 
 def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
-                 areas: Optional[List[str]] = None) -> Dict[str, Any]:
-    """{"facts", "terms", "fired", "problem"} from the extracted facts, the rules fired within the case's
-    areas; logged as case_analysis_fact_signals."""
-    terms = compute_terms(facts)
-    try:
-        fired = fire_rules(facts, terms, areas=areas)
-    except Exception as exc:
-        logger.warning("fact signals: rules not applied: %s", exc)
-        fired, problem = [], problem or f"rules: {exc}"
+                 areas: Optional[List[str]] = None, rules: Optional[bool] = None) -> Dict[str, Any]:
+    """{"facts", "terms", "fired", "problem", ...} from the extracted facts, the rules fired within the case's
+    areas (only with FACT_SIGNALS_ENABLED, or rules); FACT_REGIMES_ENABLED first qualifies the parties
+    (qualify_parties) and adds "qualifications", "regimes" and "tools". Logged as case_analysis_fact_signals."""
+    regimes = regimes_enabled()
+    qualifications: List[Dict[str, Any]] = []
+    if regimes and facts:
+        facts, qualifications = qualify_parties(facts)
+    terms = compute_terms(facts, areas)
+    fired: List[Dict[str, Any]] = []
+    if enabled() if rules is None else rules:
+        try:
+            fired = fire_rules(facts, terms, areas=areas)
+        except Exception as exc:
+            logger.warning("fact signals: rules not applied: %s", exc)
+            problem = problem or f"rules: {exc}"
     out = {"facts": facts, "terms": terms, "fired": fired, "problem": problem, "areas": list(areas or [])}
-    vlog("case_analysis_fact_signals", {**out, "central": central_issues(fired)})
+    if regimes:
+        out.update({"qualifications": qualifications, "regimes": regime_issues(facts, qualifications, areas),
+                    "tools": procedural_tools(facts, areas), "damages": damage_heads(facts),
+                    "multi_roles": multiple_roles(facts)})
+    vlog("case_analysis_fact_signals", {**out, "central": all_central(out)})
+    return out
+
+
+def all_central(signals: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The central issues the signals add to the frame: the regimes of the parties' qualifications first, then
+    the fired rules' institutions (central_issues), each once, at most MAX_CENTRAL."""
+    signals = signals or {}
+    out, seen = [], set()
+    for item in list(signals.get("regimes") or []) + central_issues(signals.get("fired") or [], limit=MAX_CENTRAL):
+        if item["nome"].lower() not in seen and len(out) < MAX_CENTRAL:
+            seen.add(item["nome"].lower())
+            out.append({k: item[k] for k in ("nome", "codice", "fonte", "ranges")})
     return out
 
 
 def analyse(case_text: str, areas: Optional[List[str]] = None) -> Dict[str, Any]:
-    """extract_facts then signals_from, in one go (the benches)."""
+    """extract_facts then signals_from with the rules, in one go (the benches)."""
     facts, problem = extract_facts(case_text)
-    return signals_from(facts, problem, areas)
+    return signals_from(facts, problem, areas, rules=True)
 
 
-def terms_block(signals: Optional[Dict[str, Any]]) -> str:
-    """The computed terms as facts for the plan and the procedural section ("" without any)."""
+def terms_block(signals: Optional[Dict[str, Any]], refs: bool = False) -> str:
+    """The computed terms as facts for the plan and the procedural section ("" without any); with refs, each
+    with the article it belongs to (FACT_REGIMES_ENABLED)."""
     terms = (signals or {}).get("terms") or []
-    return "\n".join(f"- {t['text']}" for t in terms)
+    return "\n".join(f"- {t['text']}" + (f" [{t['ref']}]" if refs and t.get("ref") else "") for t in terms)
+
+
+# --- 4. FACT_REGIMES_ENABLED: qualifications, regimes, procedural tools ------------------------------
+# The lawyer's blind review (26 Oct): a natural person who bought for private use from a business was never
+# treated as a consumer, so the Codice del Consumo's guarantee and the consumer's forum were missed; the legal
+# terms were left out when the case gave no dates; the procedural tools for defects and urgency (ATP, art. 700
+# c.p.c.) were gone. General inferences from the typed facts, never from a case's text.
+
+_BUSINESS = (r"impres|societ|\bs\.?\s?r\.?\s?l\b|\bs\.?\s?p\.?\s?a\b|\bs\.?\s?n\.?\s?c\b|\bs\.?\s?a\.?\s?s\b|ditta|negozi|"
+             r"concessionari|rivendit|commerciant|professionist|aziend|cantier|costrutt|produttor|fornitor|artigian|"
+             r"albergator|struttura sanitaria|esercizio commerciale|venditore professionale|\bspa\b|\bsrl\b")
+_PUBLIC_BODY = (r"\bcomune\b|\bregione\b|\bprovincia\b|ministero|prefettur|questur|\basl\b|\bats\b|\basp\b|"
+                r"azienda sanitaria|azienda ospedalier|agenzia delle entrate|\binps\b|\binail\b|ente pubblico|"
+                r"pubblica amministrazione|amministrazione (?:comunale|regionale|provinciale|statale|pubblica)|"
+                r"scuola (?:statale|pubblica)|istituto comprensivo|universit[àa] statale|camera di commercio")
+_PUBLIC_FUNCTION = (r"agente di polizia|poliziott|carabinier|vigil[ei] urban|polizia (?:locale|municipale|di stato)|"
+                    r"guardia di finanza|finanzier|funzionari\w* (?:pubblic|comunal|regional|ministerial)|"
+                    r"dipendente (?:pubblic|comunal|regional|ministerial)|dirigente (?:pubblic|comunal|scolastic)|"
+                    r"\bsindaco|assessor|\bnotai|\bgiudic|magistrat|cancellier|ufficiale giudiziari|"
+                    r"ufficiale di stato civile|insegnant\w* (?:di scuola )?(?:statal|pubblic)|"
+                    r"docent\w* (?:di scuola )?(?:statal|pubblic)|medico (?:di|del) (?:un )?(?:ospedale pubblico|"
+                    r"servizio sanitario|pronto soccorso pubblico)|ispettor\w* (?:del lavoro|asl|comunal)")
+_PRIVATE_USE = r"personal|privat|famigli|domestic"
+_CONSUMER_CONTRACT = (r"vendit|compravendit|acquist|fornitur|servizi|appalt|riparaz|manutenz|abbonament|viagg|"
+                      r"noleggi|assicuraz|finanziament|credit|prestito|mutuo|conto|utenz|trasport")
+_SALE = r"vendit|compravendit|acquist|fornitur"
+CONSUMER, PROFESSIONAL = "consumatore", "professionista"
+PUBLIC_BODY = "pubblica amministrazione"
+PUBLIC_OFFICIAL = "pubblico ufficiale o incaricato di pubblico servizio"
+
+
+def _party_text(p: Dict[str, Any]) -> str:
+    return " ".join(_low(p.get(k)) for k in ("name", "role", "kind", "occupation"))
+
+
+def _natural(p: Dict[str, Any]) -> bool:
+    kind = _low(p.get("kind"))
+    if kind:
+        return "fisic" in kind
+    return not re.search(_BUSINESS + "|" + _PUBLIC_BODY, _party_text(p))
+
+
+def _business(p: Dict[str, Any]) -> bool:
+    kind = _low(p.get("kind"))
+    return (bool(re.search(r"societ|impres|ditta", kind)) or bool(re.search(_BUSINESS, _party_text(p)))
+            or (bool(_low(p.get("occupation"))) and _low(p.get("purpose")).startswith("profession")))
+
+
+def _with_role(p: Dict[str, Any], role: str) -> Dict[str, Any]:
+    have = _low(p.get("role"))
+    return p if role in have else {**p, "role": f"{p.get('role')}, {role}" if p.get("role") else role}
+
+
+def qualify_parties(facts: Dict[str, Any]) -> Tuple[Dict[str, Any], List[Dict[str, str]]]:
+    """(facts, qualifications): the facts with each inferred qualification added to the party's role (so the
+    terms and the rules read it), marked "_regimes"; [{party, quality, why}]. A natural person who contracts for
+    private use with a business is a consumer, and the business a professional; a public body is a public
+    administration; a party with a public function a public official or a person in charge of a public service
+    (which of the two depends on the function exercised)."""
+    parties = [dict(p) for p in facts.get("parties") or []]
+    contracts = [c for c in facts.get("contracts") or [] if re.search(_CONSUMER_CONTRACT, _low(c.get("type")))]
+    out: List[Dict[str, str]] = []
+    businesses = [i for i, p in enumerate(parties) if _business(p) and not re.search(_PUBLIC_BODY, _party_text(p))]
+    for i, p in enumerate(parties):
+        name = p.get("name") or "una parte"
+        consumer_role = CONSUMER in _low(p.get("role"))
+        private = re.search(_PRIVATE_USE, _low(p.get("purpose")))
+        if contracts and businesses and i not in businesses and _natural(p) and (private or consumer_role):
+            if not consumer_role:
+                parties[i] = _with_role(p, CONSUMER)
+            seller = parties[businesses[0]].get("name") or "un'impresa"
+            out.append({"party": name, "quality": CONSUMER,
+                        "why": f"persona fisica che contrae per uso personale o familiare con {seller}, che agisce "
+                               f"nell'esercizio della sua attività ({_low(contracts[0].get('type'))})"})
+            for j in businesses:
+                if PROFESSIONAL not in _low(parties[j].get("role")):
+                    parties[j] = _with_role(parties[j], PROFESSIONAL)
+                    out.append({"party": parties[j].get("name") or "l'impresa", "quality": PROFESSIONAL,
+                                "why": "impresa o professionista che contratta con un consumatore"})
+        text = _party_text(parties[i])
+        if re.search(_PUBLIC_BODY, text) and PUBLIC_BODY not in _low(parties[i].get("role")):
+            parties[i] = _with_role(parties[i], PUBLIC_BODY)
+            out.append({"party": name, "quality": PUBLIC_BODY, "why": "ente pubblico"})
+        elif (re.search(_PUBLIC_FUNCTION, text) and "pubblico ufficiale" not in _low(parties[i].get("role"))
+              and "incaricato di pubblico servizio" not in _low(parties[i].get("role"))):
+            parties[i] = _with_role(parties[i], PUBLIC_OFFICIAL)
+            out.append({"party": name, "quality": PUBLIC_OFFICIAL,
+                        "why": f"esercita una funzione pubblica ({_low(p.get('occupation')) or _low(p.get('role'))}); "
+                               "la qualifica dipende dalla funzione esercitata nel fatto"})
+    return {**facts, "parties": parties, "_regimes": True}, out
+
+
+# quality -> the regimes it brings in, as central issues (institutions in words, never an article; ranges as the
+# rules' own: fact_signal_rules.yaml); "when": a condition of holds() the facts must also meet.
+REGIMES: List[Dict[str, Any]] = [
+    {"id": "consumatore_garanzia", "quality": CONSUMER, "institution": "garanzia legale di conformità",
+     "codice": "Codice del Consumo", "ranges": [[128, 135]], "families": ["civile"],
+     "when": [{"contract": {"type": _SALE}}]},
+    {"id": "consumatore_foro", "quality": CONSUMER, "institution": "foro del consumatore",
+     "codice": "Codice del Consumo", "ranges": [], "families": ["civile"], "when": []},
+    {"id": "consumatore_clausole", "quality": CONSUMER,
+     "institution": "clausole vessatorie nel contratto tra professionista e consumatore",
+     "codice": "Codice del Consumo", "ranges": [[33, 38]], "families": ["civile"],
+     "when": [{"contract": {"clause": r"\w"}}]},
+    {"id": "nozione_pubblico_ufficiale", "quality": PUBLIC_OFFICIAL,
+     "institution": "nozione di pubblico ufficiale e di incaricato di pubblico servizio", "codice": "c.p.",
+     "ranges": [[357, 360]], "families": ["penale"], "when": []},
+]
+
+
+def regime_issues(facts: Optional[Dict[str, Any]], qualifications: List[Dict[str, str]],
+                  areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """The REGIMES of the qualifications found, within the families of the case's areas, as central issues
+    ({nome, codice, fonte, ranges}, as central_issues)."""
+    qualities = {q["quality"] for q in qualifications} | {CONSUMER for p in (facts or {}).get("parties") or []
+                                                          if CONSUMER in _low(p.get("role"))}
+    families = {family(a) for a in areas or []} - {""}
+    out = []
+    for regime in REGIMES:
+        if regime["quality"] not in qualities or (families and not set(regime["families"]) & families):
+            continue
+        if not all(holds(c, facts or {}, []) for c in regime["when"]):
+            continue
+        out.append({"nome": regime["institution"], "codice": regime["codice"], "fonte": f"qualifica {regime['id']}",
+                    "ranges": regime["ranges"]})
+    return out
+
+
+_DEFECTS = _DEFECT + r"|non conform|danneggi|rott|allag|incendi|crollo"
+_LOSABLE = r"\bprov|dispers|perd|ripar|ripristin|smalt|demol|modific|alter|cancell|deterior|sostitu"
+_URGENT = (r"pericol|sicurezz|incolumit|rischio di (?:crollo|caduta|incendio|allagamento)|crollo|urgen|imminent|"
+           r"irreparabil|aggrav|peggior|sta per")
+
+# The procedural tools the facts call for, with the articles they rest on (a code table, like
+# practical_checklist.py): offered to the plan and to the procedural section with their texts.
+PROCEDURAL_TOOLS: List[Dict[str, Any]] = [
+    {"id": "accertamento_preventivo", "refs": [("696", "c.p.c."), ("696-bis", "c.p.c.")],
+     "text": "Accertamento tecnico preventivo (art. 696 c.p.c.), per fissare lo stato dei luoghi, della cosa o dei "
+             "danni prima che cambi, o consulenza tecnica preventiva ai fini della composizione della lite (art. "
+             "696-bis c.p.c.), che accerta anche le cause e l'entità dei danni e tenta la conciliazione.",
+     "why": "difetti, danni a cose o una prova che può andare perduta"},
+    {"id": "provvedimento_urgenza", "refs": [("700", "c.p.c.")],
+     "text": "Provvedimento d'urgenza (art. 700 c.p.c.), se nel tempo necessario per la causa il diritto è "
+             "minacciato da un pregiudizio imminente e irreparabile e nessun altro provvedimento cautelare lo tutela.",
+     "why": "un pericolo per la sicurezza, un danno che si aggrava o un'urgenza"},
+    # The criminal route of a personal harm caused by negligence, also when the frame's area is only civil.
+    {"id": "profilo_penale", "refs": [("589", "c.p."), ("590", "c.p."), ("76", "c.p.p."), ("2947", "c.c.")],
+     "text": "Profilo penale: la morte o le lesioni di una persona causate per colpa possono costituire reato "
+             "(omicidio colposo, art. 589 c.p., procedibile d'ufficio; lesioni personali colpose, art. 590 c.p., "
+             "di regola procedibili a querela): valutare la denuncia o la querela e i suoi termini, la costituzione "
+             "di parte civile nel processo penale (art. 76 c.p.p.), le prove che il procedimento penale acquisisce "
+             "(accertamenti, consulenze, testimonianze) e la prescrizione più lunga dell'azione civile quando il "
+             "fatto è considerato dalla legge come reato (art. 2947, terzo comma, c.c.).",
+     "why": "la morte o lesioni di una persona causate per colpa"},
+]
+
+
+def procedural_tools(facts: Optional[Dict[str, Any]], areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """The PROCEDURAL_TOOLS the facts call for, in civil cases (none when the case's areas are all criminal or
+    administrative): {id, refs, text, why, matched}. The accertamento preventivo for defects, damage to things
+    or evidence that may be lost; the provvedimento d'urgenza for a safety risk, a harm that grows or urgency."""
+    if not facts:
+        return []
+    families = {family(a) for a in areas or []} - {""}
+    if families and "civile" not in families:
+        return []
+    risks = facts.get("risks") or []
+    texts = _texts(facts, ("events", "works_or_signs", "contracts", "injuries", "risks", "proceedings"))
+
+    def line(pattern):
+        return next((ln[:140] for ln in texts.split("\n") if re.search(pattern, ln)), "")
+    found = {}
+    defect = line(_DEFECTS)
+    evidence = next((_low(r.get("what"))[:140] for r in risks if "prov" in _low(r.get("kind"))
+                     or re.search(_LOSABLE, _low(r.get("what")))), "")
+    if defect or evidence:
+        found["accertamento_preventivo"] = [m for m in (defect, evidence) if m]
+    urgent = next((_low(r.get("what"))[:140] for r in risks if re.search(r"sicurezz|aggrav|urgen", _low(r.get("kind")))), "")
+    urgent = urgent or line(_URGENT)
+    if urgent:
+        found["provvedimento_urgenza"] = [urgent]
+    harm = _personal_harm(facts)
+    if harm and not re.search(_INTENT, texts):
+        found["profilo_penale"] = [harm]
+    out = []
+    for t in PROCEDURAL_TOOLS:
+        if t["id"] not in found:
+            continue
+        refs = [list(r) for r in t["refs"]]
+        if t["id"] == "profilo_penale":         # the offence the harm fits: death, injury, or both
+            death = _death(facts)
+            drop = ([["590", "c.p."]] if death and not _injured(facts) else []) + ([] if death else [["589", "c.p."]])
+            refs = [r for r in refs if r not in drop]
+        out.append({"id": t["id"], "refs": refs, "text": t["text"], "why": t["why"], "matched": found[t["id"]]})
+    return out
+
+
+_DEATH_RE = r"\bmort[eoi]\b|\bdeced|\bdecess|perso la vita|\bannegat|\bucciso|privo di vita|\bsenza vita"
+_INTENT = r"\bvolontariament|intenzional|\bdi proposito|\baggred|\bpicchi|\bpercoss|\bcon dolo\b|\ballo scopo di"
+
+
+def _death(facts: Dict[str, Any]) -> bool:
+    return any("mort" in _low(i.get("permanent")) for i in facts.get("injuries") or []) or bool(
+        re.search(_DEATH_RE, _texts(facts, ("events", "injuries"))))
+
+
+def _injured(facts: Dict[str, Any]) -> bool:
+    return any("mort" not in _low(i.get("permanent")) and (i.get("who") or i.get("days_to_heal"))
+               for i in facts.get("injuries") or [])
+
+
+def _personal_harm(facts: Dict[str, Any]) -> str:
+    """The fact of a person's death or injury, or "" (the injuries the extraction found, else a death in the events)."""
+    for i in facts.get("injuries") or []:
+        if i.get("who") or i.get("days_to_heal") or i.get("permanent"):
+            return "; ".join(str(v) for v in (i.get("who"), i.get("permanent") or i.get("days_to_heal")) if v)[:140]
+    return next((ln[:140] for ln in _texts(facts, ("events",)).split("\n") if re.search(_DEATH_RE, ln)), "")
+
+
+# The heads of damage for the death of a person, a general rule for the plan and the sections (the lawyer's review):
+# what the relatives claim in their own right, what they claim as heirs, and who pays.
+DAMAGES_DEATH = {
+    "id": "danni_morte", "refs": [("2059", "c.c."), ("1917", "c.c.")],
+    "lines": [
+        "Iure proprio, per ciascun familiare: il danno non patrimoniale da perdita del rapporto parentale o familiare "
+        "(art. 2059 c.c., letto alla luce dei diritti inviolabili della Costituzione), da provare anche per "
+        "presunzioni dal legame e dalla convivenza; il danno patrimoniale: spese funerarie, mediche e di assistenza "
+        "psicologica, perdita del contributo economico della vittima.",
+        "Iure hereditatis, per gli eredi: il danno terminale o catastrofale se la vittima è rimasta in vita e cosciente "
+        "per un tempo apprezzabile tra la lesione e la morte; altrimenti nessun danno da morte si trasmette agli eredi.",
+        "Chi paga: le assicurazioni della responsabilità civile delle parti responsabili (art. 1917 c.c.), da "
+        "individuare e chiamare in causa, con l'azione diretta solo dove la legge la prevede.",
+    ]}
+
+
+def damage_heads(facts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """[DAMAGES_DEATH] when the facts tell of a person's death, else []."""
+    if not facts or not _death(facts):
+        return []
+    return [{"id": DAMAGES_DEATH["id"], "refs": [list(r) for r in DAMAGES_DEATH["refs"]],
+             "lines": list(DAMAGES_DEATH["lines"]), "matched": [_personal_harm(facts)]}]
+
+
+def multiple_roles(facts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The parties with two or more activities in the facts (built and maintains, sold and installed): each role is a
+    ground of liability of its own. [{party, activities}]."""
+    out = []
+    for p in (facts or {}).get("parties") or []:
+        acts = [a.strip() for a in re.split(r"[,;]|\be\b", str(p.get("activities") or "")) if len(a.strip()) > 2]
+        acts = list(dict.fromkeys(acts))
+        if len(acts) >= 2:
+            out.append({"party": p.get("name") or "una parte", "activities": acts})
+    return out
+
+
+# Who claims: a client who seeks damages or brings an action is a claimant; the "respond to a claim received"
+# scaffolding only when the case says a claim or an act was received (the lawyer's review).
+_CLAIMANT_RE = re.compile(
+    r"\b(?:ottenere|chiedere|richiedere|domandare|esigere|far valere|agire|citare in giudizio|fare causa|"
+    r"denunciare|querelare)\b[^.?\n]{0,60}?(?:risarciment|indennizz|ristor|rimbors|restituzion|responsabil|giudizio|"
+    r"causa|danni|danno)|\b(?:vogliono|vuole|intendono|intende|possono|può)\s+(?:\w+\s+){0,2}(?:agire|citare|"
+    r"denunciare|querelare|chiedere il risarcimento|ottenere il risarcimento|fare causa)|\brisarcimento\s+(?:dei|del)\s+"
+    r"dann\w*\s+(?:subit|patit)", re.IGNORECASE)
+_RECEIVED_RE = re.compile(
+    r"\b(?:ricevut\w*|ricev\w+|pervenut\w*|recapitat\w*|notificat\w*|inviat\w*\s+(?:a|al|alla|ai))\b[^.\n]{0,80}?"
+    r"(?:lettera|diffida|messa in mora|richiesta|pretesa|atto di citazione|citazione|ricorso|decreto ingiuntivo|"
+    r"precetto|reclamo|contestazione|avviso|verbale|sanzione|pec|raccomandata)|\b(?:lettera|diffida|messa in mora|"
+    r"richiesta di risarcimento|atto di citazione|citazione|ricorso|decreto ingiuntivo|precetto|contestazione|avviso|"
+    r"raccomandata|pec)\b[^.\n]{0,60}?\b(?:ricevut\w*|pervenut\w*|notificat\w*|recapitat\w*)", re.IGNORECASE)
+
+
+def claim_posture(case_text: str, facts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """{"claimant", "received", "why"}: the client seeks damages or an action (the case's text or the extracted
+    requests), and the case says a claim or an act was received."""
+    text = " ".join([case_text or ""] + list((facts or {}).get("requests") or []))
+    claim, received = _CLAIMANT_RE.search(text), _RECEIVED_RE.search(case_text or "")
+    return {"claimant": bool(claim), "received": bool(received),
+            "why": "; ".join(m.group(0)[:100] for m in (claim, received) if m)}
+
+
+def damages_block(signals: Optional[Dict[str, Any]]) -> str:
+    return "\n".join(f"- {line}" for d in (signals or {}).get("damages") or [] for line in d["lines"])
+
+
+def roles_block(signals: Optional[Dict[str, Any]]) -> str:
+    return "\n".join(f"- {r['party']}: {'; '.join(r['activities'])} — la responsabilità va valutata per ciascun ruolo"
+                     for r in (signals or {}).get("multi_roles") or [])
+
+
+def regime_refs(signals: Optional[Dict[str, Any]]) -> Dict[Tuple[str, str], str]:
+    """{article: what calls for it} of the procedural tools and the heads of damage, for their texts."""
+    out: Dict[Tuple[str, str], str] = {}
+    for item in list((signals or {}).get("tools") or []) + list((signals or {}).get("damages") or []):
+        for r in item["refs"]:
+            out.setdefault(tuple(r), item["id"])
+    return out
+
+
+def qualifications_block(signals: Optional[Dict[str, Any]]) -> str:
+    """The parties' inferred qualifications, one line each ("" without any)."""
+    return "\n".join(f"- {q['party']}: {q['quality']} ({q['why']})" for q in (signals or {}).get("qualifications") or [])
+
+
+def tools_block(signals: Optional[Dict[str, Any]]) -> str:
+    """The procedural tools the facts call for, one line each, with the facts that call for them."""
+    return "\n".join(f"- {t['text']} Nel caso: {'; '.join(t['matched'])}." for t in (signals or {}).get("tools") or [])
+
+
+def tool_refs(signals: Optional[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    return list(regime_refs(signals))
+
+
+# Terms whose article is found in the corpus by its words (the Codice del Consumo's numbering changed in 2021):
+# term id -> (code, phrases its article's text holds, tried in order). Not found: the term keeps the code alone.
+_LOCATE = {
+    "denuncia_conformita_consumo": ("Codice del Consumo", ["due mesi dalla data in cui ha scoperto",
+                                                           "due mesi dalla scoperta"]),
+    "responsabilita_conformita_consumo": ("Codice del Consumo", ["si manifesta entro due anni dalla consegna",
+                                                                 "entro il termine di due anni dalla consegna",
+                                                                 "entro due anni dalla consegna"]),
+    "azione_conformita_consumo": ("Codice del Consumo", ["ventisei mesi dalla consegna", "ventisei mesi"]),
+}
+_REF_RE = re.compile(r"\bartt?\.\s*(\d+(?:-[a-z]+)?(?:\s*(?:,|e)\s*\d+(?:-[a-z]+)?)*)\s+(c\.c\.|c\.p\.c\.|c\.p\.p\.|"
+                     r"c\.p\.a\.|c\.p\.)")
+
+
+def attach_term_sources(session, documents: List[Dict[str, Any]], signals: Optional[Dict[str, Any]],
+                        chars: int = 700) -> None:
+    """In place: each term's article read from the corpus -- a _LOCATE term's found by the words of its text
+    (its "ref" then names it), any other's by its ref -- with the first chars of its text as "sources"
+    [{ref, text}], for the procedural section to quote. A failure leaves the terms as they are."""
+    from . import defensive_generation as dg
+    from .issue_spotting import resolve_code
+    for term in (signals or {}).get("terms") or []:
+        try:
+            if term["id"] in _LOCATE:
+                code, phrases = _LOCATE[term["id"]]
+                doc = resolve_code(code, documents)
+                row = _section_with(session, doc["id"], phrases) if doc else None
+                if row:
+                    number = str((row.get("s") or {}).get("name") or "").split(".")[0]
+                    term["ref"] = f"art. {number} {doc['name']}"
+                    term["sources"] = [{"ref": term["ref"], "text": _section_text(row)[:chars]}]
+                continue
+            refs = [(dg._article_num(n), code) for m in _REF_RE.finditer(term.get("ref") or "")
+                    for n in re.split(r"\s*(?:,|\be\b)\s*", m.group(1)) for code in [m.group(2)] if n]
+            rows = dg._fetch_any(session, documents, refs) if refs else []
+            term["sources"] = [{"ref": f"art. {r['_article'][0]} {r['_article'][1]}", "text": _section_text(r)[:chars]}
+                               for r in rows if r.get("_article") and _section_text(r)]
+        except Exception as exc:
+            logger.warning("fact regimes: no text for the term %s: %s", term.get("id"), exc)
+
+
+def _section_text(row: Dict[str, Any]) -> str:
+    s = row.get("s") or {}
+    return " ".join(str(s.get("plain_text") or s.get("abstract") or "").split())
+
+
+def _section_with(session, doc_id: str, phrases: List[str]) -> Optional[Dict[str, Any]]:
+    """The first section of the document whose text holds one of phrases (in their order), lowest number first."""
+    for phrase in phrases:
+        rows = session.run(
+            "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id = $doc_id "
+            "AND toLower(coalesce(s.plain_text, s.abstract, '')) CONTAINS $phrase RETURN d, s LIMIT 5",
+            doc_id=doc_id, phrase=phrase.lower()).data()
+        if rows:
+            return min(rows, key=lambda r: _number(str((r.get("s") or {}).get("name") or "")) or 9999)
+    return None
 
 
 def as_json(signals: Dict[str, Any]) -> str:

@@ -8,7 +8,8 @@ rulings the app shows under the answer (document, section, text) -- to a Word fi
     ... --case h3                                                                     (an eval case)
     ... --from-json saved.json                                                        (a dryrun --save, no run)
 
---blind leaves the flag set out of the file (scripts/ab_answers.py); --label is the title ("Risposta 1").
+--blind leaves the flag set out of the file and strips the "Vuoi approfondire" line and any deep-dive link, so
+the two answers of an A/B differ only in what they argue (scripts/ab_answers.py); --label is the title.
 """
 
 import argparse
@@ -21,6 +22,14 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 _INLINE_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_DEEP_DIVE_LINE = re.compile(r"^[^\n]*Vuoi approfondire[^\n]*$", re.MULTILINE)
+_DEEP_DIVE_LINK = re.compile(r"\[([^\]]+)\]\(deepdive:[^)]*\)")
+
+
+def without_deep_dive(answer: str) -> str:
+    """The answer without the "Vuoi approfondire ..." suggestion line and with any other deep-dive link as plain text."""
+    text = _DEEP_DIVE_LINK.sub(r"\1", _DEEP_DIVE_LINE.sub("", answer or ""))
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def run_dryrun(args) -> dict:
@@ -104,9 +113,10 @@ def add_sources(doc, citations: list, chars: int = 3000) -> None:
                     doc.add_paragraph(text[:chars] + ("…" if len(text) > chars else ""))
 
 
-def build(record: dict, out: str, label: str = "Risposta", question: str = "", settings=None) -> str:
+def build(record: dict, out: str, label: str = "Risposta", question: str = "", settings=None,
+          blind: bool = False) -> str:
     """The .docx of one dryrun record: title, the question, the answer, the sources; the flag set only when
-    settings is given (never with --blind)."""
+    settings is given (never with --blind); blind, the answer without deep-dive suggestions."""
     from docx import Document
     doc = Document()
     doc.core_properties.author = ""
@@ -120,7 +130,8 @@ def build(record: dict, out: str, label: str = "Risposta", question: str = "", s
     doc.add_heading("Risposta", level=1)
     if record.get("status") != "ok":
         doc.add_paragraph(f"(nessuna risposta: {record.get('status')})")
-    add_answer(doc, record.get("answer") or record.get("draft") or "")
+    answer = record.get("answer") or record.get("draft") or ""
+    add_answer(doc, without_deep_dive(answer) if blind else answer)
     add_sources(doc, record.get("citations") or [])
     if settings is not None:
         doc.add_heading("Configurazione", level=1)
@@ -154,7 +165,7 @@ def main() -> None:
         with open(args.save_json, "w", encoding="utf-8") as fh:
             json.dump(record, fh, ensure_ascii=False, indent=1)
     question = args.text or record.get("request") or args.request or ""
-    build(record, args.out, args.label, question, None if args.blind else args.set)
+    build(record, args.out, args.label, question, None if args.blind else args.set, blind=args.blind)
     print(f"{args.out}: {record.get('status')}, {len(record.get('answer') or '')} characters, "
           f"{len(record.get('citations') or [])} sources")
 

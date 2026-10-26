@@ -210,6 +210,50 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 present date (never the real today). See
                                 src/rag/fact_signals.py, scripts/export_fact_rules.py,
                                 scripts/fact_signals_bench.py.
+  WRITER_RULES_ENABLED         false (acts with PLAN_THEN_WRITE_ENABLED; the review also
+                                on a one-call parere): the sections cite an article only
+                                where it supports an argument (never "every plan
+                                article", never "non pertinente/non applicabile"); the
+                                burden of proof only where the norm allocates it, in
+                                its words; no conduct, knowledge or intent the case does
+                                not state; facts favourable when they ground the client's
+                                claim; a word budget per section, a cut section written
+                                again or trimmed; no deep-dive links. After writing: a
+                                sentence citing an article only to say it does not
+                                apply, or a burden template whose norm allocates
+                                nothing, is dropped; a sentence stating a fact about a
+                                party the case does not hold is flagged "[fatto non
+                                indicato nel caso: da verificare]"; one proposing an
+                                action against the client or a co-client is dropped
+                                (their negligence is only the opponent's defence). A
+                                party with several roles is examined for each. The plan
+                                check and the qualification check (which reads the
+                                article's opening text) reject an article about the
+                                inverse situation; the qualification check removes it
+                                even when protected, unless the case names it. Logged
+                                as case_analysis_writer_rules. See plan_then_write.
+  FACT_REGIMES_ENABLED         false: the typed facts (FACT_SIGNALS' extraction, run
+                                also with that flag off) qualify the parties (a natural
+                                person contracting for private use with a business is a
+                                consumer; a public body; a public official), whose
+                                special regimes (consumer guarantee, consumer's forum,
+                                unfair terms; the notion of public official) join the
+                                central issues; every applicable term of the term table
+                                is stated with its article, DA VERIFICARE when the case
+                                gives no dates; the accertamento tecnico preventivo
+                                (696/696-bis c.p.c.) for defects or evidence that may be
+                                lost and the art. 700 c.p.c. for safety or urgency are
+                                offered to the plan and the procedural section, with
+                                their texts. A person's death or injury by negligence
+                                brings the criminal route (589/590 c.p., querela, parte
+                                civile, 2947 co. 3 c.c.) also in a civil case; a death,
+                                the heads of damage (iure proprio, iure hereditatis,
+                                the insurers); a party with several activities, each
+                                role. A claimant client (seeks damages or an action)
+                                with no claim received gets a claimant frame and no
+                                "respond to a claim" checklist item. See
+                                fact_signals.qualify_parties, procedural_tools,
+                                claim_posture.
 """
 
 import logging

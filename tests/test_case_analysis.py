@@ -486,6 +486,14 @@ def test_the_parere_is_written_from_the_retrieved_law(pipeline):
         "Codice Civile 2026", "Ordinanza sul ricorso iscritto al n. 23908/2022 R.G."]
 
 
+def test_writer_rules_no_deep_dive_links_and_the_one_call_draft_reviewed(pipeline, monkeypatch):
+    """WRITER_RULES_ENABLED (the lawyer's blind review, 26 Oct): a parere is complete in itself."""
+    monkeypatch.setenv("WRITER_RULES_ENABLED", "true")
+    out = DG.run_case_analysis_pipeline(CASE, "it")
+    assert "Vuoi approfondire" not in out["draft"] and "deepdive:" not in out["draft"]
+    assert "art. 2051 c.c., non" in out["draft"] and "⚠️" in out["draft"]
+
+
 def test_civil_cases_do_not_search_the_criminal_commentary(pipeline):
     fake, _ = pipeline
     DG.run_case_analysis_pipeline(CASE, "it")
@@ -497,7 +505,7 @@ def test_the_applicability_check_runs_only_when_enabled(pipeline, monkeypatch):
     """Round 3, item 3: 6db1125 ran it unconditionally; on production it dropped
     the alternative charges. Off by default, so the next deploy turns it off."""
     calls = []
-    monkeypatch.setattr(DG, "_filter_applicable_articles", lambda facts, request, rows: calls.append(rows) or rows)
+    monkeypatch.setattr(DG, "_filter_applicable_articles", lambda facts, request, rows, analysis=None: calls.append(rows) or rows)
     monkeypatch.delenv("APPLICABILITY_CHECK_ENABLED", raising=False)
     DG.run_case_analysis_pipeline(CASE, "it")
     assert calls == []

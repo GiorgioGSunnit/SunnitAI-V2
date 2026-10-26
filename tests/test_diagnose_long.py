@@ -273,3 +273,32 @@ if __name__ == "__main__":
         if _name.startswith("test_"):
             _test()
     print("ok")
+
+
+def test_form_trace_reads_the_lawyers_review_points_off_the_answer():
+    draft = ("**3. Norme e giurisprudenza**\n\nL'art. 2043 c.p. non è pertinente al caso. L'onere della prova ricade "
+             "sull'attore. Il termine per la denuncia è di 8 giorni.\n\n**4. Applicazione al caso**\n\nTizio sapeva "
+             "del rischio [fatto non indicato nel caso: da verificare]. Si chiede un accertamento (art. 696 c.p.c.)."
+             "\n\n**6. Conclusioni**\n\nIl rischio è\n\nVuoi approfondire in particolare [x](deepdive:x)?")
+    rec = {**_record(), "draft": draft,
+           "fact_signals": {"terms": [{"length": "8 giorni", "status": "DA VERIFICARE"}, {"length": "26 mesi"}],
+                            "tools": [{"refs": [["696", "c.p.c."], ["696-bis", "c.p.c."]]}]},
+           "fact_regimes": {"qualifications": [{"party": "Anna", "quality": "consumatore"}], "regimes": ["foro"]},
+           "writer_rules": {"cut": 1, "non_application": 2, "burden": 1, "facts_flagged": 1,
+                            "entries": [{"how": "sentence dropped", "sentence": "L'art. 43 c.p. non si applica."}]}}
+    form = dl.analyse_case(rec, ev)["form"]
+    assert (form["not_apply"], form["burden"], form["deep_dive"], form["cut"], form["facts_marked"]) == (1, 1, True, 1, 1)
+    assert (form["terms"], form["terms_stated"], form["terms_undated"]) == (2, 1, 1)
+    assert (form["tools_offered"], form["tools_cited"]) == (2, 1)
+    assert form["qualifications"] == ["Anna: consumatore"] and form["expected_dropped"] == ["43 c.p."]
+    report = dl.render([dl.analyse_case(rec, ev)], [])
+    assert "## Form and writing" in report and "Parties qualified: x1 Anna: consumatore." in report
+    rec = {**rec, "qualification": {"inverse": ["2049 c.c."]}, "claimant_frame": {"changed": ["posture text"]},
+           "draft": draft.replace("(art. 696 c.p.c.).", "(art. 696 c.p.c.). Si valuti la querela (art. 590 c.p.)."),
+           "fact_signals": {**rec["fact_signals"], "tools": [{"id": "profilo_penale", "refs": [["590", "c.p."]]}],
+                            "damages": [{"id": "danni_morte"}]},
+           "writer_rules": {**rec["writer_rules"], "against_client": 1}}
+    form = dl.analyse_case(rec, ev)["form"]
+    assert (form["against_client"], form["inverse"], form["posture_fixed"]) == (1, ["2049 c.c."], ["posture text"])
+    assert form["criminal_offered"] and form["criminal_cited"] and form["damages_offered"]
+    assert "Articles about the inverse situation removed: x1 2049 c.c." in dl.render([dl.analyse_case(rec, ev)], [])

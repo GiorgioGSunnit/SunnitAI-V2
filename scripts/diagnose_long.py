@@ -90,7 +90,7 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "STRATEGY_DRAFT_RULES_ENABLED", "METHOD_CANDIDATES_ENABLED", "CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED",
          "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED", "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED",
          "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED", "FACT_SIGNALS_ENABLED",
-         "GRADER_EXAMPLES_ENABLED"]
+         "GRADER_EXAMPLES_ENABLED", "WRITER_RULES_ENABLED", "FACT_REGIMES_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -736,6 +736,9 @@ def run_child(spec_path: str, env_path: str) -> None:
               "flagged_removed": last("case_analysis_flagged_removed"),
               "hygiene": last("case_analysis_citation_hygiene"),
               "fact_signals": last("case_analysis_fact_signals"),
+              "writer_rules": last("case_analysis_writer_rules"),
+              "fact_regimes": last("case_analysis_fact_regimes"),
+              "claimant_frame": last("case_frame_claimant"),
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -1047,7 +1050,54 @@ def analyse_case(rec: dict, ev) -> dict:
     after["expected_removed"] = [label for label in after["flagged"] + after["not_a_law"] if K(label) in expected_keys]
     out["after_draft"] = after
     out["fact_signals"] = _fact_signal_trace(rec, out, K, expected_keys)
+    out["form"] = _form_trace(rec, K, expected_keys)
     return out
+
+
+def _form_trace(rec: dict, K, expected_keys: set) -> dict:
+    """The lawyer's review points, read off the answer for every run (flag on or off): sentences citing an
+    article only to say it does not apply, per-article burden templates, a deep-dive link, a section cut short;
+    the terms of the term table stated in the answer and the procedural tools cited. With WRITER_RULES_ENABLED,
+    what its review dropped or flagged (and the expected articles cited only in dropped sentences); with
+    FACT_REGIMES_ENABLED, the parties' qualifications, regimes and tools."""
+    from src.rag import plan_then_write as ptw
+    draft = rec.get("draft") or ""
+    body = re.sub(r"\n+Vuoi approfondire in particolare[^\n]*", "", draft.split("⚠️")[0]).rstrip()
+    sentences = [body[a:b] for a, b in ptw._sentence_spans(body)]
+    sections = re.split(r"(?m)^\*\*\d+\.\s[^*\n]+\*\*\s*$", body)
+    signals = rec.get("fact_signals") or {}
+    terms = signals.get("terms") or []
+    low = " ".join(body.lower().split())
+    stated = [t for t in terms if str(t.get("length") or "").lower() and str(t["length"]).lower() in low]
+    tools = [r for t in signals.get("tools") or [] for r in t.get("refs") or []]
+    cited = {K(f"{n} {c}") for n, c in tools if re.search(rf"\bart(?:t)?\.\s*{re.escape(n)}\b[^.\n]{{0,20}}c\.p\.c", body)}
+    writer = rec.get("writer_rules") or {}
+    entries = writer.get("entries") or []
+    dropped = " ".join(e.get("sentence") or "" for e in entries if e.get("how") == "sentence dropped")
+    expected_dropped = sorted({label for label in re.findall(r"\bart\.\s*(\d+(?:-\w+)?\s+c\.[a-z.]+)", dropped)
+                               if K(label) in expected_keys and K(label) not in
+                               {K(lab) for lab in re.findall(r"\bart\.\s*(\d+(?:-\w+)?\s+c\.[a-z.]+)", body)}})
+    regimes = rec.get("fact_regimes") or {}
+    criminal = next((t for t in signals.get("tools") or [] if t.get("id") == "profilo_penale"), None)
+    return {"against_client": writer.get("against_client", 0),
+            "inverse": list((rec.get("qualification") or {}).get("inverse") or []),
+            "posture_fixed": list((rec.get("claimant_frame") or {}).get("changed") or []),
+            "criminal_offered": bool(criminal),
+            "criminal_cited": bool(criminal) and bool(re.search(r"\bart\.\s*(?:589|590)\b[^.\n]{0,15}c\.p\.", body)),
+            "damages_offered": bool(signals.get("damages")),
+            "multi_roles": len(signals.get("multi_roles") or []),"not_apply": sum(1 for x in sentences if ptw._cites(x) and ptw._NOT_APPLY_RE.search(x)),
+            "burden": sum(1 for x in sentences if ptw._BURDEN_RE.search(x)),
+            "deep_dive": "deepdive:" in draft or "Vuoi approfondire" in draft,
+            "cut": sum(1 for sec in sections[1:] if ptw._looks_cut(sec)),
+            "facts_marked": draft.count(ptw._FACT_MARK.strip()),
+            "terms": len(terms), "terms_stated": len(stated),
+            "terms_undated": sum(1 for t in terms if t.get("status") == "DA VERIFICARE"),
+            "tools_offered": len(tools), "tools_cited": len(cited),
+            "qualifications": [f"{q.get('party')}: {q.get('quality')}" for q in regimes.get("qualifications")
+                               or signals.get("qualifications") or []],
+            "regimes": list(regimes.get("regimes") or []),
+            "review": {k: writer.get(k, 0) for k in ("cut", "non_application", "burden", "facts_flagged")},
+            "expected_dropped": expected_dropped}
 
 
 def _fact_signal_trace(rec: dict, out: dict, K, expected_keys: set) -> dict:
@@ -1156,8 +1206,20 @@ def aggregate(cases: list) -> dict:
              "terms": sum(len((c.get("fact_signals") or {}).get("terms") or []) for c in keyed),
              "problems": [(c["id"], (c.get("fact_signals") or {}).get("problem")) for c in keyed
                           if (c.get("fact_signals") or {}).get("problem")]}
+    forms = [c.get("form") or {} for c in keyed]
+    form = {key: sum(int(f.get(key) or 0) for f in forms) for key in
+            ("not_apply", "burden", "deep_dive", "cut", "facts_marked", "terms", "terms_stated", "terms_undated",
+             "tools_offered", "tools_cited", "against_client", "criminal_offered", "criminal_cited",
+             "damages_offered", "multi_roles")}
+    form["inverse"] = [(c["id"], l) for c in keyed for l in (c.get("form") or {}).get("inverse") or []]
+    form["posture_fixed"] = [c["id"] for c in keyed if (c.get("form") or {}).get("posture_fixed")]
+    form["review"] = Counter()
+    for f in forms:
+        form["review"].update(f.get("review") or {})
+    form["qualified"] = [(c["id"], q) for c in keyed for q in (c.get("form") or {}).get("qualifications") or []]
+    form["expected_dropped"] = [(c["id"], l) for c in keyed for l in (c.get("form") or {}).get("expected_dropped") or []]
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
-            "discipline": discipline, "after_draft": after, "fact_signals": facts,
+            "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
             "resolved_articles": resolved_articles, "unrelated": unrelated, "generic": generic,
@@ -1316,6 +1378,26 @@ def render(cases: list, header: list) -> str:
                                   for cid, r in f["false"]) if f["false"] else "") + "."]
         if f["problems"]:
             L.append("Extraction problems: " + "; ".join(f"{cid}: {p}" for cid, p in f["problems"]) + ".")
+
+    fm = agg["form"]
+    L += ["", "## Form and writing (the lawyer's review points; WRITER_RULES_ENABLED, FACT_REGIMES_ENABLED)", "",
+          f"In the {len(keyed)} answers: {fm['not_apply']} sentences citing an article to say it does not apply; "
+          f"{fm['burden']} burden-of-proof sentences; {fm['deep_dive']} with deep-dive links; {fm['cut']} sections "
+          f"cut short; {fm['facts_marked']} facts marked as not in the case.",
+          f"Review after writing: {fm['review'].get('non_application', 0)} 'does not apply' and "
+          f"{fm['review'].get('burden', 0)} burden sentences dropped, {fm['review'].get('facts_flagged', 0)} facts "
+          f"flagged, {fm['review'].get('cut', 0)} cut sections redone or trimmed. Expected articles cited only in "
+          "dropped sentences: " + (", ".join(f"{cid} {l}" for cid, l in fm["expected_dropped"]) or "none") + ".",
+          f"Terms of the term table: {fm['terms']} applicable ({fm['terms_undated']} without dates), "
+          f"{fm['terms_stated']} stated in the answer. Procedural tools: {fm['tools_offered']} articles offered, "
+          f"{fm['tools_cited']} cited.",
+          "Parties qualified: " + ("; ".join(f"{cid} {q}" for cid, q in fm["qualified"]) or "none") + ".",
+          f"Sentences against the client dropped: {fm['against_client']}. Articles about the inverse situation "
+          "removed: " + (", ".join(f"{cid} {l}" for cid, l in fm["inverse"]) or "none") + ". Claimant posture fixed in: "
+          + (", ".join(fm["posture_fixed"]) or "none") + ".",
+          f"Criminal route of a personal harm: offered in {fm['criminal_offered']} cases, 589/590 c.p. cited in "
+          f"{fm['criminal_cited']}. Heads of damage for a death offered in {fm['damages_offered']}. Parties with "
+          f"several roles: {fm['multi_roles']}."]
 
     # --- B
     nw = len(wrong)
@@ -1610,6 +1692,22 @@ def compare(run_dirs: list, ev) -> str:
             ("LOST_AT_UNDERSTANDING", [a["stage_counts"]["LOST_AT_UNDERSTANDING"] for a in aggs], lambda a: ""),
             ("expected reached via a fired fact rule", [len(a["fact_signals"]["reached"]) for a in aggs], lambda a: ""),
             ("fired fact rules reaching no expected article", [len(a["fact_signals"]["false"]) for a in aggs],
+             lambda a: ""),
+            ("'does not apply' sentences in the answers", [a["form"]["not_apply"] for a in aggs], lambda a: ""),
+            ("burden-of-proof sentences in the answers", [a["form"]["burden"] for a in aggs], lambda a: ""),
+            ("answers with deep-dive links", [a["form"]["deep_dive"] for a in aggs], lambda a: ""),
+            ("sections cut short", [a["form"]["cut"] for a in aggs], lambda a: ""),
+            ("facts marked as not in the case", [a["form"]["facts_marked"] for a in aggs], lambda a: ""),
+            ("terms stated / applicable", [a["form"]["terms_stated"] for a in aggs],
+             lambda a: f" / {a['form']['terms']}"),
+            ("procedural tools cited / offered", [a["form"]["tools_cited"] for a in aggs],
+             lambda a: f" / {a['form']['tools_offered']}"),
+            ("parties qualified", [len(a["form"]["qualified"]) for a in aggs], lambda a: ""),
+            ("sentences against the client dropped", [a["form"]["against_client"] for a in aggs], lambda a: ""),
+            ("inverse-situation articles removed", [len(a["form"]["inverse"]) for a in aggs], lambda a: ""),
+            ("criminal route cited / offered", [a["form"]["criminal_cited"] for a in aggs],
+             lambda a: f" / {a['form']['criminal_offered']}"),
+            ("expected articles cited only in dropped sentences", [len(a["form"]["expected_dropped"]) for a in aggs],
              lambda a: "")]
     for title, values, suffix in rows:
         L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")

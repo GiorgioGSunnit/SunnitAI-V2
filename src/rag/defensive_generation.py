@@ -1462,6 +1462,11 @@ def _frame_block(frame: Optional[Dict[str, Any]]) -> str:
         lines.append("Questioni centrali candidate:")
         lines += [f"- {c['nome']} ({c['codice']})" if c.get("codice") else f"- {c['nome']}"
                   for c in frame["central_issue_candidates"]]
+    if frame.get("client_role"):             # FACT_REGIMES_ENABLED
+        lines.append(f"Ruolo della parte assistita: {frame['client_role']}")
+    if frame.get("qualifications"):          # FACT_REGIMES_ENABLED
+        lines.append("Qualifiche delle parti dedotte dai fatti (con i regimi speciali che comportano):")
+        lines.append(frame["qualifications"])
     lines.append("Le questioni devono comprendere le questioni centrali candidate che i fatti pongono davvero e "
                  "servire a rispondere a ciascun quesito, tenendo conto della fase.")
     return "\n".join(lines)
@@ -1501,7 +1506,7 @@ def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict
     result then carries it as "frame"."""
     from . import fact_signals
     signals = None
-    if fact_signals.enabled():
+    if fact_signals.enabled() or fact_signals.regimes_enabled():
         frame, signals = _frame_and_fact_signals(facts, request)
     else:
         frame = _case_frame(facts, request) if feature_flags.enabled(CASE_FRAME_FLAG) else None
@@ -1522,10 +1527,12 @@ def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict
 
 
 def _frame_and_fact_signals(facts: str, request: str) -> tuple:
-    """FACT_SIGNALS_ENABLED: (frame, signals) -- the frame (CASE_FRAME_ENABLED) and the typed facts read at
-    once, then the fact rules fired within the frame's areas; their institutions join the frame's central
-    issues (fact_signals.central_issues), so the analysis takes them as questions, they are resolved (within
-    the rule's article ranges: fact_signals.keep_resolved) and tagged _central. signals None on failure."""
+    """FACT_SIGNALS_ENABLED or FACT_REGIMES_ENABLED: (frame, signals) -- the frame (CASE_FRAME_ENABLED) and the
+    typed facts read at once, then the fact rules fired within the frame's areas (FACT_SIGNALS_ENABLED); their
+    institutions and the regimes of the parties' qualifications (FACT_REGIMES_ENABLED) join the frame's central
+    issues (fact_signals.all_central), so the analysis takes them as questions, they are resolved (within the
+    rule's article ranges: fact_signals.keep_resolved) and tagged _central; the qualifications go to the frame
+    as "qualifications" (_frame_block). signals None on failure."""
     from concurrent.futures import ThreadPoolExecutor
     from . import fact_signals
 
@@ -1545,13 +1552,45 @@ def _frame_and_fact_signals(facts: str, request: str) -> tuple:
             signals = fact_signals.signals_from(read[0], read[1], (frame or {}).get("areas") or [])
         except Exception as exc:
             logger.warning("fact signals: rules not applied: %s", exc)
-    added = fact_signals.central_issues((signals or {}).get("fired") or [])
+    if signals is not None and fact_signals.regimes_enabled():
+        signals["posture"] = fact_signals.claim_posture(_case_text(facts, request), signals.get("facts"))
+        frame = _claimant_frame(frame, signals["posture"], signals.get("facts"))
+    added = fact_signals.all_central(signals)
+    qualified = fact_signals.qualifications_block(signals)
+    if qualified:
+        frame = {**(frame or {}), "qualifications": qualified}
     if added:
         frame = dict(frame or {})
         have = [c.get("nome") or "" for c in frame.get("central_issue_candidates") or [] if isinstance(c, dict)]
         frame["central_issue_candidates"] = list(frame.get("central_issue_candidates") or []) + [
             c for c in added if not any(_same_institution(c["nome"], h) for h in have)]
     return frame, signals
+
+
+# FACT_REGIMES_ENABLED (the lawyer's review of the pool case's answer: clients seeking damages got the
+# "respond to a claim received" scaffolding): a claimant client's frame says so; a posture text about answering a
+# claim is replaced when the case says no claim or act was received; no posture at all, with no proceeding, is the
+# civil pre-litigation one.
+_ANSWERING_RE = re.compile(r"ricev|rispond|rispost|pretesa\s+(?:avversaria|altrui|della controparte)|difender\w*\s+da",
+                           re.IGNORECASE)
+
+
+def _claimant_frame(frame: Optional[Dict[str, Any]], posture: Dict[str, Any],
+                    facts: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not frame or not posture.get("claimant") or posture.get("received"):
+        return frame
+    out = {**frame, "client_role": "attore: la parte assistita intende far valere una pretesa (risarcimento o azione)"}
+    changed = []
+    if _ANSWERING_RE.search(frame.get("procedural_posture") or ""):
+        out["procedural_posture"] = ("Nessun giudizio avviato e nessuna pretesa ricevuta: la parte assistita intende "
+                                     "far valere le proprie pretese.")
+        changed.append("posture text")
+    if (frame.get("posture_type") or "altro") == "altro" and not (facts or {}).get("proceedings") and any(
+            a not in ("penale", "amministrativo") for a in frame.get("areas") or []):
+        out["posture_type"] = "precontenzioso"
+        changed.append("posture type")
+    vlog("case_frame_claimant", {"why": posture.get("why"), "changed": changed})
+    return out
 
 
 def _as_list(value) -> List[str]:
@@ -4442,6 +4481,14 @@ _QUALIFICATION_SYSTEM_TYPED = _QUALIFICATION_SYSTEM.replace(
     '"perche": una frase, "tipo": solo per un articolo incompatibile, "materia" se disciplina un\'altra '
     'materia o un altro istituto rispetto all\'uso della frase, "formulazione" se riguarda lo stesso istituto '
     'o uno vicino e solo la rubrica è formulata diversamente dalla frase}.')
+# WRITER_RULES_ENABLED (the lawyer's review of the pool case's answer): an article about the inverse situation
+# (the damage a party causes cited for the damage that party suffers) is never right for the sentence; the check
+# reads the article's opening text too, and such a citation is removed (unless the case names the article).
+_QUALIFICATION_DIRECTION = (
+    " Leggi anche l'inizio del testo: è incompatibile anche un articolo che disciplina la situazione inversa a "
+    "quella della frase (il danno cagionato da un soggetto citato per il danno subito da quel soggetto; la "
+    "responsabilità del debitore citata per quella del creditore; l'obbligo del conduttore citato per quello del "
+    "locatore): \"tipo\": \"direzione\".")
 _LAW_DOCUMENT_TYPES = {"primary", "legislation"}
 _CCNL_CASE_RE = re.compile(r"\bc\.?\s*c\.?\s*n\.?\s*l\.?(?!\w)|contratt\w*\s+collettiv", re.IGNORECASE)
 
@@ -4482,6 +4529,8 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     from . import method_candidates
 
     remove = feature_flags.enabled(FLAGGED_REMOVE_FLAG)
+    from . import plan_then_write
+    direction = plan_then_write._writer_rules()
 
     trusted = set(method_candidates.candidate_refs(*method_candidates.case_lists(analysis)))
     known = {r["_article"] for r in article_rows if r.get("_article")}
@@ -4503,18 +4552,22 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     for ref in cited:
         s = (rows_by_ref.get(ref) or {}).get("s") or {}
         heading = (s.get("titolo_articolo") or s.get("title") or "").strip()
-        context = _citation_context(draft, ref, documents if remove else None)
+        context = _citation_context(draft, ref, documents if remove or direction else None)
         if heading and context:
             headings[f"{ref[0]} {ref[1]}"] = (heading, context, ref)
     if not headings:
         return draft
-    human = "\n\n".join(f"[{label}]\nRubrica: {heading}\nFrase: {context}"
-                        for label, (heading, context, _) in headings.items())
+    opening = {label: " ".join(str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())[:300]
+               for label, (_, _, ref) in headings.items()} if direction else {}
+    human = "\n\n".join(f"[{label}]\nRubrica: {heading}" + (f"\nTesto: {opening[label]}" if opening.get(label) else "")
+                        + f"\nFrase: {context}" for label, (heading, context, _) in headings.items())
+    system = _QUALIFICATION_SYSTEM_TYPED if remove or direction else _QUALIFICATION_SYSTEM
+    if direction:
+        system = system.replace(" Nel dubbio è compatibile.", _QUALIFICATION_DIRECTION + " Nel dubbio è compatibile.")
     t0 = time.time()
     try:
-        verdicts = _chat_json([SystemMessage(content=_QUALIFICATION_SYSTEM_TYPED if remove else _QUALIFICATION_SYSTEM),
-                               HumanMessage(content=human)],
-                              max_tokens=max(600, (110 if remove else 90) * len(headings)), temperature=0)
+        verdicts = _chat_json([SystemMessage(content=system), HumanMessage(content=human)],
+                              max_tokens=max(600, (110 if remove or direction else 90) * len(headings)), temperature=0)
     except Exception as exc:
         logger.warning("qualification check failed, draft kept: %s", exc)
         return draft
@@ -4524,7 +4577,8 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         return draft
     flagged = []
     protected = _protected_refs(article_rows, _named_refs(case_text, documents)) if remove else {}
-    to_remove, kept, note_dropped = [], {}, []
+    named = _named_refs(case_text, documents) if direction else []
+    to_remove, kept, note_dropped, inverse = [], {}, [], []
     for v in verdicts:
         if not isinstance(v, dict) or v.get("compatibile") is not False:
             continue
@@ -4535,6 +4589,11 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
             heading, _, ref = entry
             label = f"{ref[0]} {ref[1]}"
             flagged.append(label)
+            if direction and str(v.get("tipo") or "").strip().lower() == "direzione" and \
+                    _protection(ref, {n: "" for n in named}) is None:
+                inverse.append(label)
+                to_remove.append(ref)          # the inverse situation: removed even when protected
+                continue
             if remove:
                 why = _protection(ref, protected)
                 if why is None:
@@ -4546,8 +4605,9 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                     continue
             draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
     log = {"checked": sorted(headings), "flagged": flagged}
-    if remove:
-        from . import plan_then_write
+    if direction:
+        log["inverse"] = inverse
+    if remove or to_remove:
         draft, removal = plan_then_write.remove_citations(draft, to_remove, documents, known)
         log.update({"removed": [f"{n} {c}" for n, c in to_remove], "kept": kept, "note_dropped": note_dropped})
         vlog("case_analysis_flagged_removed", {"removed": removal, "count": len(to_remove)})
@@ -4576,7 +4636,7 @@ def _protected_refs(article_rows: List[Dict[str, Any]], named: List[tuple]) -> D
         grade = row.get("_grade")
         why = (f"grade {grade}" if isinstance(grade, int) and grade >= 2 else "voted" if row.get("_vote")
                else "two or more channels" if row.get("_multi_signal") else "central issue" if row.get("_central")
-               else None)
+               else "procedural tool for the facts" if row.get("_procedural_tool") else None)
         if why:
             out.setdefault(ref, why)
     return out
@@ -4679,6 +4739,52 @@ def _add_method_candidates(session, driver, database: str, analysis: Dict[str, A
             "method_candidates": added}
 
 
+def _regime_rows(session, driver, database: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """FACT_REGIMES_ENABLED: the article rows of the procedural tools the facts call for (fact_signals.
+    procedural_tools), tagged _procedural_tool; and, in place, each legal term's article and text
+    (fact_signals.attach_term_sources). [] with the flag off, without signals, or on any failure."""
+    from . import fact_signals
+    signals = analysis.get("fact_signals")
+    if not fact_signals.regimes_enabled() or not signals:
+        return []
+    try:
+        from .doc_lookup import _fetch_doc_names
+        documents = _fetch_doc_names(driver, database)
+        fact_signals.attach_term_sources(session, documents, signals)
+        tools = fact_signals.regime_refs(signals)
+        rows = _fetch_any(session, documents, list(tools)) if tools else []
+    except Exception as exc:
+        logger.warning("fact regimes: tools and terms not read: %s", exc)
+        return []
+    for row in rows:
+        row["_procedural_tool"] = tools.get(row.get("_article"), True)
+        row["_source"] = row.get("_source") or "procedural_tool"
+    vlog("case_analysis_fact_regimes", {
+        "qualifications": signals.get("qualifications") or [], "regimes": [r["nome"] for r in signals.get("regimes") or []],
+        "tools": [t["id"] for t in signals.get("tools") or []],
+        "damages": [d["id"] for d in signals.get("damages") or []],
+        "multi_roles": signals.get("multi_roles") or [], "posture": signals.get("posture") or {},
+        "tool_articles": sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in rows if r.get("_article")}),
+        "terms": [t.get("text") for t in signals.get("terms") or []],
+        "term_refs": {t["id"]: t.get("ref") for t in signals.get("terms") or []}})
+    return rows
+
+
+def _with_regime_rows(article_rows: List[Dict[str, Any]], regime_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """article_rows with the procedural tools' rows (_regime_rows) after the applicability check, which never
+    removes them: an article already there is tagged, any other appended."""
+    have = {r["_article"]: r for r in article_rows if r.get("_article")}
+    out = list(article_rows)
+    for row in regime_rows:
+        ref = row.get("_article")
+        if ref in have:
+            have[ref]["_procedural_tool"] = row["_procedural_tool"]
+        else:
+            out.append(row)
+            have[ref] = row
+    return out
+
+
 def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: str = "") -> dict:
     """A reasoned parere on a case: facts described in the message, or an
     uploaded document (`facts`) with the user's message as `request`.
@@ -4692,7 +4798,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     case_analysis_v2 = feature_flags.enabled(CASE_ANALYSIS_FLAG)
     pool_fusion = case_analysis_v2 and feature_flags.enabled(_CASE_POOL_FUSION_FLAG)
     analysis = _analyse_case_for_pipeline(facts, session_lang, request)
-    article_rows, ruling_rows, candidates, selected = [], [], [], []
+    article_rows, ruling_rows, candidates, selected, regime_rows = [], [], [], [], []
     retrieval_t0 = time.time()
     try:
         with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
@@ -4700,6 +4806,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 _select_articles_v2 if case_analysis_v2 else _select_articles)
             picked = select_fn(session, driver, NEO4J_DATABASE, facts, request, analysis)
             picked = _add_method_candidates(session, driver, NEO4J_DATABASE, analysis, picked)
+            regime_rows = _regime_rows(session, driver, NEO4J_DATABASE, analysis)
             first_rulings, similar = picked["first_rulings"], picked["similar"]
             candidates, selected, article_rows = picked["candidates"], picked["selected"], picked["article_rows"]
             # Second search with the verified article numbers: rulings on the
@@ -4735,6 +4842,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # final, before both the citations and the draft prompt use them.
     if feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
         article_rows = _filter_applicable_articles(facts, request, article_rows, analysis)
+    if regime_rows:
+        article_rows = _with_regime_rows(article_rows, regime_rows)
     voted_kept = sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in article_rows
                          if r.get("_vote") and r.get("_article")})
     if voted_kept:
@@ -4779,6 +4888,10 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # A planned parere had its arguments checked for the client's side before it was written.
     if feature_flags.enabled(CLIENT_STANCE_CHECK_FLAG) and not planned:
         draft = _check_client_stance(draft, facts, request, analysis, system, human)
+    from . import plan_then_write as _ptw
+    writer_rules = _ptw._writer_rules()
+    if writer_rules and not planned:
+        draft = _ptw.review_parere(draft, _case_text(facts, request), article_rows, analysis)
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
     draft = _mark_unverified(draft, found, articles + "\n" + rulings,
                              wrong_code=feature_flags.enabled(STRATEGY_DRAFT_RULES_FLAG))
@@ -4801,7 +4914,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             logger.warning("draft checks after the draft failed, draft kept: %s", exc)
 
     arguments_at = "**4." if planned else "**3."      # where the client's arguments start
-    topics = _extract_deepdive_topics(draft[draft.find(arguments_at):] if arguments_at in draft else draft, {})
+    # WRITER_RULES_ENABLED: a parere is complete in itself, no "deep-dive" links under it (the lawyer's review).
+    topics = [] if writer_rules else _extract_deepdive_topics(
+        draft[draft.find(arguments_at):] if arguments_at in draft else draft, {})
     if topics:
         draft += "\n\n" + _format_deepdive_suggestion(topics)
     if ruling_rows or _UNVERIFIED.rstrip("]") in draft:

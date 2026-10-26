@@ -76,6 +76,7 @@ class FakeModel:
         self.check_fails = False
         self.calls, self.lock = [], threading.Lock()
         self.texts, self.rephrase = {}, "[]"        # section title -> its text; the rewrite's reply
+        self.review = {}                            # section title -> the review's reply (WRITER_RULES_ENABLED)
 
     def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
         system, human = messages[0].content, messages[-1].content
@@ -96,9 +97,19 @@ class FakeModel:
                                 "perche": "x", **self.check.get(label, {})} for label in labels])
         if "Riscrivi ogni frase" in system:
             return self.rephrase
+        if "Controlli una sezione" in system:               # WRITER_RULES_ENABLED's review
+            title = re.search(r"SEZIONE «([^»]+)»", human).group(1)
+            reply = self.review.get(title, "[]")
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
         title = next(t for t in ptw.SECTION_TITLES if f"SEZIONE: {t}" in system)
         if title in self.texts:
-            return self.texts[title]
+            text = self.texts[title]
+            if isinstance(text, list):                      # one text per call, the last one repeated
+                with self.lock:
+                    return text.pop(0) if len(text) > 1 else text[0]
+            return text
         with self.lock:
             if self.failing.get(title):
                 self.failing[title] -= 1
@@ -453,3 +464,181 @@ def test_graded_sections_cite_forced_articles_in_their_issue_and_nothing_from_me
     assert "La scuola risponde ex art. 2051 c.c. La clausola penale è riducibile dal giudice." in draft
     logged = [d for e, d in model.logged if e == "case_analysis_citation_discipline"][-1]
     assert logged["count"] == 1 and logged["rephrased"] == 1 and logged["removed"][0]["removed"] == ["1384 c.c."]
+
+
+# --- WRITER_RULES_ENABLED (the lawyer's blind review, 26 Oct) ----------------------------------------
+
+def _job(jobs, title):
+    return next(j for j in jobs if j[0] == title)
+
+
+PLAN_CLEAN = ptw.clean_plan(PLAN, {r["_article"] for r in ARTICLES} | {("2052", "c.c.")}, {})[0]
+
+
+def test_writer_rules_off_keeps_the_old_section_prompts(monkeypatch):
+    monkeypatch.delenv(ptw.WRITER_RULES_FLAG, raising=False)
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, ANALYSIS, ARTICLES, {}, "", keep_all=True)
+    assert "come si ripartisce l'onere della prova" in _job(jobs, "Norme e giurisprudenza")[1]
+    assert "TUTTE le norme del PIANO" in _job(jobs, "Norme e giurisprudenza")[1]
+    assert "Al massimo" not in _job(jobs, "Conclusioni")[1] and _job(jobs, "Conclusioni")[3] == 500
+    assert "non pertinente" not in ptw._section_system(PLAN_CLEAN, "it")
+
+
+def test_writer_rules_section_prompts(monkeypatch):
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, ANALYSIS, ARTICLES, {}, "", keep_all=True)
+    norms = _job(jobs, "Norme e giurisprudenza")[1]
+    assert "TUTTE le norme" not in norms and "come si ripartisce" not in norms
+    assert "solo se la norma stessa pone una presunzione" in norms
+    assert "Altre norme rilevanti" not in _job(jobs, "Applicazione al caso")[1]
+    assert "fonda o sostiene la pretesa o la difesa di i genitori di Tizio" in _job(
+        jobs, "Inquadramento e questione centrale")[1]
+    title, instruction, _, tokens = _job(jobs, "Conclusioni")
+    assert tokens == 900 and instruction.endswith("Al massimo 300 parole; chiudi sempre l'ultima frase.")
+    assert _job(jobs, "Applicazione al caso")[3] == int(2200 * 1.3)
+    system = ptw._section_system(PLAN_CLEAN, "it")
+    assert "«non pertinente»" in system and "l'onere della prova ricade su" in system
+    assert "I fatti di una pronuncia non sono mai fatti del caso" in system and "stesse norme e pronunce" not in system
+
+
+SECTION_TEXT = (
+    "L'art. 2051 c.c. pone la responsabilità del custode. L'onere della prova ricade sulla scuola (art. 2051 c.c.). "
+    "Il debitore risponde se non prova la causa non imputabile (art. 1218 c.c.); l'onere della prova grava quindi "
+    "sulla scuola. L'art. 1917 c.c. non è pertinente al caso. La scuola sapeva che la panchina era instabile. "
+    "Va escluso che l'art. 2048 c.c. si applichi, perché Tizio si è fatto male da solo.")
+
+
+def test_review_drops_does_not_apply_and_burden_templates_and_flags_facts(model, monkeypatch):
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    model.review["Applicazione al caso"] = json.dumps([
+        {"i": 4, "tipo": "non_applicabile", "perche": "solo per dire che non rileva"},
+        {"i": 5, "tipo": "fatto_non_nel_caso", "perche": "il caso non dice che la scuola lo sapesse"},
+        {"i": 6, "tipo": "non_applicabile", "perche": "esclude una norma"}])
+    text, log = ptw.review_section("Applicazione al caso", SECTION_TEXT, FACTS, ARTICLES, [])
+    assert "1917" not in text                                        # cited only to say it does not apply
+    assert "L'onere della prova ricade sulla scuola" not in text     # 2051's text allocates nothing
+    assert "se non prova la causa non imputabile" in text            # 1218's own text allocates the burden
+    assert "panchina era instabile [fatto non indicato nel caso: da verificare]." in text
+    assert "Va escluso che l'art. 2048 c.c. si applichi" in text      # no "does not apply" wording: kept
+    assert sorted(e["kind"] for e in log) == ["burden", "fact_not_in_case", "non_application"]
+    review = next(c for c in model.calls if "Controlli una sezione" in c["system"])
+    assert FACTS in review["human"] and review["temperature"] == 0
+
+
+def test_review_without_the_call_drops_only_remarks_on_relevance(model, monkeypatch):
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    model.review["Applicazione al caso"] = RuntimeError("upstream timeout")
+    text = ("L'art. 1917 c.c. non è pertinente al caso. L'aggravante dell'art. 61 c.p. non si applica, perché il "
+            "fatto è avvenuto di giorno.")
+    out, log = ptw.review_section("Applicazione al caso", text, FACTS, ARTICLES, [])
+    assert out == "L'aggravante dell'art. 61 c.p. non si applica, perché il fatto è avvenuto di giorno."
+    assert [e["kind"] for e in log] == ["non_application"]
+
+
+def test_burden_without_a_norm_dropped_only_in_the_norms_section():
+    text = "La norma regola la custodia. L'onere della prova grava sul danneggiato."
+    spans = ptw._sentence_spans(text)
+    assert ptw._burden_templates("Norme e giurisprudenza", text, spans, ARTICLES, [], set()) == {
+        1: "burden stated without a norm"}
+    assert ptw._burden_templates("Applicazione al caso", text, spans, ARTICLES, [], set()) == {}
+    quoted = "L'onere della prova grava sul custode, che risponde «salvo che provi il caso fortuito» (art. 2051 c.c.)."
+    assert ptw._burden_templates("Norme e giurisprudenza", quoted, ptw._sentence_spans(quoted), ARTICLES, [], set()) == {}
+
+
+def test_cut_sections(monkeypatch):
+    assert ptw._looks_cut("Il venditore risponde dei vizi della")
+    assert not ptw._looks_cut("Il venditore risponde dei vizi.")
+    assert not ptw._looks_cut("Prove da acquisire:\n- fotografie\n- perizia tecnica")
+    assert ptw._looks_cut("Prove da acquisire:\n- fotografie dei")
+    assert ptw._trim_to_sentence("Prima frase. Seconda frase tronc") == "Prima frase."
+    assert ptw._trim_to_sentence("Prove:\n- fotografie\n- perizia del") == "Prove:\n- fotografie"
+
+
+def test_a_cut_section_is_written_again_then_trimmed(model, monkeypatch):
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    model.texts["Conclusioni"] = ["Il rischio è contenuto. La condotta consigliata è di",
+                                  "Il rischio è contenuto. Si consiglia di"]
+    model.texts["Risposte ai quesiti"] = ["Sì, la scuola risponde. Poi tronc", "Sì, la scuola risponde."]
+    out = _write()
+    assert out.endswith("**6. Conclusioni**\n\nIl rischio è contenuto.")
+    assert "Sì, la scuola risponde." in out and "Poi tronc" not in out
+    calls = [c for c in model.calls if "SEZIONE: Conclusioni" in c["system"]]
+    assert [c["max_tokens"] for c in calls] == [900, 1350]
+    writer = [d for e, d in model.logged if e == "case_analysis_writer_rules"][-1]
+    assert writer["cut"] == 2 and {e["how"] for e in writer["entries"] if e["kind"] == "cut"} == {
+        "rewritten with more tokens", "trimmed to the last sentence"}
+
+
+def test_drop_spans_leaves_no_empty_list_item():
+    text = "Prove:\n- L'art. 1917 c.c. non è pertinente.\n- fotografie"
+    spans = ptw._sentence_spans(text)
+    assert ptw._drop_spans(text, [s for s in spans if "1917" in text[s[0]:s[1]]]) == "Prove:\n- fotografie"
+
+
+def test_regime_blocks_reach_the_plan_and_the_procedural_section(monkeypatch):
+    monkeypatch.setenv("FACT_REGIMES_ENABLED", "true")
+    signals = {"qualifications": [{"party": "Anna", "quality": "consumatore", "why": "persona fisica"}],
+               "tools": [{"id": "provvedimento_urgenza", "refs": [["700", "c.p.c."]], "text": "Provvedimento "
+                          "d'urgenza (art. 700 c.p.c.).", "why": "w", "matched": ["la caldaia perde gas"]}],
+               "terms": [{"id": "denuncia_vizi_vendita", "text": "denuncia dei vizi: termine di 8 giorni — DA "
+                          "VERIFICARE", "ref": "art. 1495 c.c.", "status": "DA VERIFICARE",
+                          "sources": [{"ref": "art. 1495 c.c.", "text": "Il compratore decade dal diritto..."}]}]}
+    analysis = {**ANALYSIS, "fact_signals": signals}
+    rows = ARTICLES + [_article("700", "c.p.c.", "Fuori dei casi regolati nelle precedenti sezioni...")]
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, analysis, rows, {}, "")
+    title, instruction, material, _ = _job(jobs, "Profili processuali e termini")
+    assert "Proponi gli STRUMENTI PROCESSUALI INDICATI DAI FATTI" in instruction
+    assert "Indica sempre ciascuno di questi termini" in instruction
+    assert "Nel caso: la caldaia perde gas." in material and "[art. 1495 c.c.]" in material
+    assert "Il compratore decade dal diritto" in material and "[art. 700 c.p.c.]\nFuori dei casi" in material
+    assert "- Anna: consumatore (persona fisica)" in material
+    assert "QUALIFICHE DELLE PARTI" in _job(jobs, "Applicazione al caso")[2]
+    human = ptw._plan_human(FACTS, REQUEST, analysis, "NORME", "", "", [])
+    assert "QUALIFICHE DELLE PARTI" in human and "STRUMENTI PROCESSUALI INDICATI DAI FATTI" in human
+    monkeypatch.delenv("FACT_REGIMES_ENABLED")
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, analysis, rows, {}, "")
+    assert "STRUMENTI" not in _job(jobs, "Profili processuali e termini")[2]
+
+
+def test_stance_and_roles_rules_in_the_plan_and_the_sections(monkeypatch):
+    monkeypatch.delenv(ptw.WRITER_RULES_FLAG, raising=False)
+    assert "contro la parte assistita o contro chi è assistito" not in ptw._plan_system()
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    plan_system = ptw._plan_system(7)
+    assert "concorso di colpa è solo una difesa della controparte" in plan_system and "da due a sette" in plan_system
+    assert "per ciascun ruolo" in plan_system
+    section = ptw._section_system(PLAN_CLEAN, "it")
+    assert "contro i genitori di Tizio o contro chi è assistito insieme" in section
+
+
+def test_the_plan_check_rejects_the_inverse_situation(model, monkeypatch):
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    _write()
+    check = next(c for c in model.calls if "controlli il piano" in c["system"])
+    assert "situazione inversa" in check["system"]
+
+
+def test_review_drops_a_sentence_against_the_client(model, monkeypatch):
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    model.review["Profili processuali e termini"] = json.dumps([{"i": 2, "tipo": "contro_assistito", "perche": "x"}])
+    text = ("Si propone la domanda di risarcimento contro la scuola. Si valuti anche una denuncia contro la madre di "
+            "Tizio per omessa vigilanza.")
+    out, log = ptw.review_section("Profili processuali e termini", text, FACTS, ARTICLES, [], "i genitori di Tizio")
+    assert out == "Si propone la domanda di risarcimento contro la scuola."
+    assert [e["kind"] for e in log] == ["against_client"]
+    call = next(c for c in model.calls if "Controlli una sezione" in c["system"])
+    assert call["human"].startswith("PARTE ASSISTITA: i genitori di Tizio") and "contro_assistito" in call["system"]
+
+
+def test_damages_and_roles_blocks_reach_the_plan_and_the_sections(monkeypatch):
+    monkeypatch.setenv("FACT_REGIMES_ENABLED", "true")
+    signals = {"damages": [{"id": "danni_morte", "refs": [["2059", "c.c."]], "lines": ["Iure proprio: ..."]}],
+               "multi_roles": [{"party": "Edil Gamma", "activities": ["ha costruito", "manutiene"]}]}
+    analysis = {**ANALYSIS, "fact_signals": signals}
+    human = ptw._plan_human(FACTS, REQUEST, analysis, "NORME", "", "", [])
+    assert "VOCI DI DANNO DA CONSIDERARE:\n- Iure proprio" in human and "PARTI CON PIÙ RUOLI NEI FATTI" in human
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, analysis, ARTICLES, {}, "")
+    title, instruction, material, _ = _job(jobs, "Applicazione al caso")
+    assert "la responsabilità per ciascun ruolo" in instruction and "- Edil Gamma: ha costruito; manutiene" in material
+    assert "VOCI DI DANNO" in _job(jobs, "Profili processuali e termini")[2]
+    assert ("2059", "c.c.") in ptw._tool_refs(analysis)

@@ -22,7 +22,7 @@ from src.rag.nodes.cypher import CROSSREF_SOURCE  # noqa: E402
 
 FLAGS = ("CHECKLIST_GATED_ENABLED", "FRAME_SANITY_ENABLED", "RESOLUTION_STRICT_ENABLED", "CHECK_PRIORITY_ENABLED",
          "PLAN_KEEP_CHECKED_ENABLED", "CHECK_GRADED_ENABLED", "GRADER_EVIDENCE_ENABLED", "FLAGGED_REMOVE_ENABLED",
-         "GRADER_EXAMPLES_ENABLED")
+         "GRADER_EXAMPLES_ENABLED", "WRITER_RULES_ENABLED", "FACT_REGIMES_ENABLED")
 
 
 @pytest.fixture(autouse=True)
@@ -579,11 +579,12 @@ class Qualification:
     """The qualification check (every article incompatible, tipo per label) and the sentence rewrite."""
 
     def __init__(self, tipo, rewrite="[]"):
-        self.tipo, self.rewrite, self.systems = tipo, rewrite, []
+        self.tipo, self.rewrite, self.systems, self.humans = tipo, rewrite, [], []
 
     def __call__(self, messages, max_tokens=None, temperature=None, **kwargs):
         system = messages[0].content
         self.systems.append(system)
+        self.humans.append(messages[-1].content)
         if "Riscrivi ogni frase" in system:
             return self.rewrite
         labels = re.findall(r"^\[([^\]]+)\]$", messages[-1].content, re.MULTILINE)
@@ -752,3 +753,23 @@ def test_with_evidence_the_plan_forces_eighteen_offered_by_issue(monkeypatch):
     human = ptw._plan_human("Fatti.", "", {}, "NORME", "", "", [], applicable=list(forced), must_place="graded",
                             groups=groups)
     assert "NORME PIÙ PERTINENTI AL CASO, per la questione che disciplinano:\n- Q: [art. 1 c.c.], [art. 3 c.c.]" in human
+
+
+def test_an_article_about_the_inverse_situation_goes_even_when_protected(monkeypatch, logged):
+    """WRITER_RULES_ENABLED: the qualification check reads the article's opening text and rejects one about the
+    inverse situation ("tipo": "direzione"), removed even when graded 2, kept only when the case names it."""
+    monkeypatch.setenv("WRITER_RULES_ENABLED", "true")
+    rows = [dict(_row("2049", "c.c.", "I padroni e i committenti sono responsabili per i danni arrecati dal fatto "
+                      "illecito dei loro domestici e commessi...", "Responsabilità dei padroni e dei committenti"), _grade=2),
+            dict(_row("1588", "c.c.", "Il conduttore risponde della perdita e del deterioramento della cosa...",
+                      "Perdita e deterioramento della cosa locata"))]
+    draft = ("Il lavoratore ferito può chiedere il risarcimento ex art. 2049 c.c. per il danno subito. Il locatore "
+             "risponde dei vizi ex art. 1588 c.c.")
+    model = Qualification({"2049 c.c.": "direzione", "1588 c.c.": "direzione"}, rewrite="[]")
+    monkeypatch.setattr(dg, "_call_chat", model)
+    out = dg._check_qualifications(draft, {}, rows, None, [], "Il cliente chiede dell'art. 1588 c.c.")
+    assert "2049" not in out                                                  # graded 2, still removed
+    assert "art. 1588 c.c. [DA VERIFICARE" in out                             # named in the case: only marked
+    assert "situazione inversa" in model.systems[0] and "Testo: I padroni e i committenti" in model.humans[0]
+    log = [d for e, d in logged if e == "case_analysis_qualification"][-1]
+    assert log["inverse"] == ["2049 c.c."] and log["removed"] == ["2049 c.c."]

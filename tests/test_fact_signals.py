@@ -25,6 +25,7 @@ TODAY = "2026-10-27"
 def fixed_today(monkeypatch):
     monkeypatch.setenv(fs.TODAY_ENV, TODAY)
     monkeypatch.delenv(fs.FACT_SIGNALS_FLAG, raising=False)
+    monkeypatch.delenv(fs.REGIMES_FLAG, raising=False)
 
 
 def F(**kw):
@@ -267,6 +268,7 @@ def test_central_issues_once_each_and_capped():
 
 def test_fired_institutions_join_the_frames_central_issues(monkeypatch):
     monkeypatch.setenv("CASE_FRAME_ENABLED", "true")
+    monkeypatch.setenv("FACT_SIGNALS_ENABLED", "true")
     monkeypatch.setattr(dg, "_case_frame", lambda facts, request: {
         "tasks": ["Che cosa può fare Tizio?"], "central_issue_candidates": [{"nome": "usucapione", "codice": "c.c."}]})
     monkeypatch.setattr(fs, "extract_facts", lambda text: (FIXTURES["usucapione_ordinaria"], ""))
@@ -429,3 +431,233 @@ def test_the_ab_order_is_random_and_the_settings_parse():
     assert ab.settings("A=1, B=2,") == ["A=1", "B=2"] and ab.settings("") == []
     assert ab.assign(1) == ab.assign(1) and sorted(ab.assign(1).values()) == ["A", "B"]
     assert {tuple(ab.assign(seed).values()) for seed in range(20)} == {("A", "B"), ("B", "A")}
+
+
+# --- FACT_REGIMES_ENABLED (the lawyer's blind review, 26 Oct): invented cases only ---------------------
+
+def person(name, role="", kind="persona fisica", purpose="", occupation="", activities=""):
+    return {"name": name, "role": role, "age": "", "kind": kind, "occupation": occupation, "purpose": purpose,
+            "activities": activities}
+
+
+SOFA = F(parties=[person("Anna", "cliente", purpose="personale"), person("Arredi Beta s.r.l.", "controparte", "società")],
+         contracts=[contract("compravendita di un divano")],
+         events=[ev("dopo la consegna il divano presenta difetti di cucitura")], risks=[])
+
+
+def test_a_natural_person_buying_for_private_use_from_a_business_is_a_consumer():
+    facts, quals = fs.qualify_parties(SOFA)
+    assert [(q["party"], q["quality"]) for q in quals] == [("Anna", "consumatore"), ("Arredi Beta s.r.l.", "professionista")]
+    assert facts["parties"][0]["role"] == "cliente, consumatore" and facts["_regimes"] is True
+    assert "professionista" in facts["parties"][1]["role"]
+    # bought for the business, or from another private person: no consumer
+    work = F(**{**SOFA, "parties": [person("Anna", purpose="professionale"), SOFA["parties"][1]]})
+    assert fs.qualify_parties(work)[1] == []
+    private = F(**{**SOFA, "parties": [SOFA["parties"][0], person("Bruno", "venditore")]})
+    assert fs.qualify_parties(private)[1] == []
+    assert fs.qualify_parties(F(**{**SOFA, "contracts": []}))[1] == []
+
+
+def test_public_bodies_and_public_officials():
+    facts, quals = fs.qualify_parties(F(parties=[
+        person("Comune di Alfa", "controparte", "ente pubblico"), person("Carlo", "indagato/imputato",
+                                                                          occupation="agente di polizia locale")]))
+    assert [(q["party"], q["quality"]) for q in quals] == [("Comune di Alfa", fs.PUBLIC_BODY),
+                                                            ("Carlo", fs.PUBLIC_OFFICIAL)]
+    assert "pubblico ufficiale" in facts["parties"][1]["role"]
+    assert fs.regime_issues(facts, quals, ["penale"])[0]["nome"].startswith("nozione di pubblico ufficiale")
+    assert fs.regime_issues(facts, quals, ["responsabilita_civile"]) == []
+
+
+def test_consumer_regimes_join_the_central_issues_in_civil_cases_only():
+    facts, quals = fs.qualify_parties(SOFA)
+    names = [r["nome"] for r in fs.regime_issues(facts, quals, ["contratti"])]
+    assert names == ["garanzia legale di conformità", "foro del consumatore"]      # no clause: no unfair terms
+    assert fs.regime_issues(facts, quals, ["penale"]) == []
+    with_clause = F(**{**SOFA, "contracts": [contract("vendita di un divano", "foro esclusivo del venditore")]})
+    facts, quals = fs.qualify_parties(with_clause)
+    assert fs.regime_issues(facts, quals, [])[-1]["ranges"] == [[33, 38]]
+
+
+def test_terms_without_dates_listed_only_with_the_flag_and_within_the_case_family(monkeypatch):
+    assert fs.compute_terms(SOFA) == []                                   # no dates, no regimes: as before
+    facts, _ = fs.qualify_parties(SOFA)
+    terms = {t["id"]: t for t in fs.compute_terms(facts, ["contratti"])}
+    assert set(terms) == {"denuncia_vizi_vendita", "azione_vizi_vendita", "denuncia_conformita_consumo",
+                          "responsabilita_conformita_consumo", "azione_conformita_consumo"}
+    assert terms["azione_conformita_consumo"]["text"].startswith(
+        "prescrizione dell'azione per il difetto di conformità non dolosamente occultato (consumatore): termine di "
+        "26 mesi dalla consegna del bene — DA VERIFICARE")
+    assert {t["status"] for t in terms.values()} == {"DA VERIFICARE"}
+    offence = F(events=[ev("Tizio danneggia la vetrina del negozio di Caio")], _regimes=True)
+    assert [t["id"] for t in fs.compute_terms(offence, ["responsabilita_civile"])] == ["prescrizione_extracontrattuale"]
+    assert "querela" in [t["id"] for t in fs.compute_terms(offence, ["penale"])]
+    block = fs.terms_block({"terms": list(terms.values())}, refs=True)
+    assert "[art. 1495 c.c.]" in block and "[Codice del Consumo]" in block
+    assert "[" not in fs.terms_block({"terms": list(terms.values())})
+
+
+def test_procedural_tools_follow_the_facts():
+    facts, _ = fs.qualify_parties(SOFA)
+    tools = fs.procedural_tools(facts, ["contratti"])
+    assert [t["id"] for t in tools] == ["accertamento_preventivo"]
+    assert tools[0]["refs"] == [["696", "c.p.c."], ["696-bis", "c.p.c."]] and "difetti" in tools[0]["matched"][0]
+    gas = F(events=[ev("la caldaia installata dalla ditta perde gas")],
+            risks=[{"what": "fuga di gas in casa", "kind": "sicurezza"}])
+    assert [t["id"] for t in fs.procedural_tools(gas, [])] == ["provvedimento_urgenza"]
+    assert fs.procedural_tools(gas, ["penale"]) == []
+    assert fs.procedural_tools(F(events=[ev("Tizio non paga il canone")]), ["contratti"]) == []
+    assert fs.tool_refs({"tools": tools}) == [("696", "c.p.c."), ("696-bis", "c.p.c.")]
+
+
+def test_extraction_asks_for_the_regime_fields_only_with_the_flag(monkeypatch):
+    seen = []
+    monkeypatch.setattr(fs, "_call_chat", lambda messages, **k: seen.append(messages[0].content) or json.dumps(
+        {"parties": [{"name": "Anna", "role": "cliente", "kind": "persona fisica", "purpose": "personale"}]}))
+    facts, _ = fs.extract_facts("Anna compra un divano.")
+    assert "purpose" not in seen[-1] and set(facts["parties"][0]) == {"name", "role", "age"}
+    monkeypatch.setenv(fs.REGIMES_FLAG, "true")
+    facts, _ = fs.extract_facts("Anna compra un divano.")
+    assert "purpose (per che cosa ha contratto" in seen[-1] and facts["parties"][0]["purpose"] == "personale"
+    assert facts["risks"] == []
+
+
+def test_regimes_alone_qualify_without_firing_the_rules(monkeypatch):
+    monkeypatch.setenv(fs.REGIMES_FLAG, "true")
+    monkeypatch.setenv("CASE_FRAME_ENABLED", "true")
+    monkeypatch.setattr(dg, "_case_frame", lambda facts, request: {
+        "tasks": ["Che tutele ha Anna?"], "areas": ["contratti"], "central_issue_candidates": []})
+    monkeypatch.setattr(fs, "extract_facts", lambda text: (SOFA, ""))
+    frame, signals = dg._frame_and_fact_signals("Anna compra un divano difettoso da Arredi Beta s.r.l.", "")
+    assert signals["fired"] == [] and [q["quality"] for q in signals["qualifications"]] == ["consumatore", "professionista"]
+    assert [c["nome"] for c in frame["central_issue_candidates"]] == ["garanzia legale di conformità", "foro del consumatore"]
+    assert frame["central_issue_candidates"][0]["fonte"] == "qualifica consumatore_garanzia"
+    assert "Anna: consumatore" in frame["qualifications"] and "Anna: consumatore" in dg._frame_block(frame)
+    analysis = dg._with_central_questions({"questioni": []}, frame)
+    assert analysis["questioni"][0]["istituti"][0]["ranges"] == [[128, 135]]
+
+
+class _Session:
+    def __init__(self, sections):
+        self.sections, self.queries = sections, []
+
+    def run(self, query, **params):
+        self.queries.append(params)
+        rows = [{"d": {"id": params["doc_id"]}, "s": s} for s in self.sections
+                if params["phrase"] in s["plain_text"].lower()]
+        return type("R", (), {"data": lambda self_: rows})()
+
+
+def test_term_articles_found_by_their_words(monkeypatch):
+    documents = [{"id": "CONS", "name": "Codice del Consumo"}]
+    session = _Session([{"name": "133.0.0", "plain_text": "L'azione ... si prescrive nel termine di ventisei mesi "
+                                                         "dalla consegna del bene."}])
+    monkeypatch.setattr(dg, "_fetch_any", lambda s, d, refs: [
+        {"_article": refs[0], "s": {"plain_text": "Il compratore decade dal diritto alla garanzia..."}}])
+    facts, _ = fs.qualify_parties(SOFA)
+    signals = {"terms": fs.compute_terms(facts, ["contratti"])}
+    fs.attach_term_sources(session, documents, signals)
+    by_id = {t["id"]: t for t in signals["terms"]}
+    assert by_id["azione_conformita_consumo"]["ref"] == "art. 133 Codice del Consumo"
+    assert by_id["azione_conformita_consumo"]["sources"][0]["text"].startswith("L'azione")
+    assert by_id["denuncia_conformita_consumo"]["ref"] == "Codice del Consumo"        # not found: the code alone
+    assert by_id["denuncia_vizi_vendita"]["sources"] == [{"ref": "art. 1495 c.c.",
+                                                          "text": "Il compratore decade dal diritto alla garanzia..."}]
+
+
+def test_procedural_tool_rows_join_after_the_check_and_are_protected(monkeypatch):
+    existing = {"_article": ("700", "c.p.c."), "s": {"plain_text": "x"}}
+    other = {"_article": ("1490", "c.c."), "s": {"plain_text": "y"}}
+    added = {"_article": ("696", "c.p.c."), "_procedural_tool": "accertamento_preventivo", "s": {"plain_text": "z"}}
+    tagged = {"_article": ("700", "c.p.c."), "_procedural_tool": "provvedimento_urgenza", "s": {"plain_text": "x"}}
+    rows = dg._with_regime_rows([existing, other], [added, tagged])
+    assert [r["_article"] for r in rows] == [("700", "c.p.c."), ("1490", "c.c."), ("696", "c.p.c.")]
+    assert rows[0]["_procedural_tool"] == "provvedimento_urgenza"
+    assert dg._protected_refs(rows, [])[("696", "c.p.c.")] == "procedural tool for the facts"
+
+
+# --- the lawyer's review of the second case's answer: posture, criminal route, damages, roles --------------
+
+def test_claimants_and_claims_received():
+    claim = fs.claim_posture("Il figlio è rimasto ferito. I genitori vogliono ottenere il risarcimento dei danni.")
+    assert claim["claimant"] and not claim["received"]
+    received = fs.claim_posture("Il negozio ha ricevuto una lettera di diffida dal cliente. Come rispondere?")
+    assert received["received"] and not received["claimant"]
+    assert fs.claim_posture("Che cosa prevede la legge?") == {"claimant": False, "received": False, "why": ""}
+    assert fs.claim_posture("Cosa possiamo fare?", F(requests=["possono chiedere il risarcimento del danno?"]))["claimant"]
+
+
+def test_a_claimant_frame_drops_the_answer_a_claim_posture(monkeypatch):
+    logged = []
+    monkeypatch.setattr(dg, "vlog", lambda e, d=None, *a, **k: logged.append((e, d)))
+    frame = {"procedural_posture": "Risposta alla richiesta di risarcimento ricevuta", "posture_type": "altro",
+             "areas": ["responsabilita_civile"]}
+    out = dg._claimant_frame(frame, {"claimant": True, "received": False, "why": "x"}, F())
+    assert out["procedural_posture"].startswith("Nessun giudizio avviato e nessuna pretesa ricevuta")
+    assert out["posture_type"] == "precontenzioso" and out["client_role"].startswith("attore")
+    assert "Ruolo della parte assistita: attore" in dg._frame_block(out)
+    assert dg._claimant_frame(frame, {"claimant": True, "received": True}, F()) == frame
+    assert dg._claimant_frame(frame, {"claimant": False, "received": False}, F()) == frame
+
+
+def test_the_checklist_follows_the_claim_posture(monkeypatch):
+    monkeypatch.setenv(fs.REGIMES_FLAG, "true")
+    from src.rag import practical_checklist
+    checks = practical_checklist.POSTURE_CHECKS["precontenzioso"]
+    analysis = {"fact_signals": {"posture": {"claimant": True, "received": False}}}
+    out = ptw._by_claim_posture(checks, analysis)
+    assert not any(c.startswith("Se la parte assistita riceve") for c in out)
+    assert any(c.startswith("Messa in mora (art. 1219 c.c.)") for c in out)
+    analysis = {"fact_signals": {"posture": {"claimant": False, "received": True}}}
+    assert ptw._by_claim_posture(checks, analysis) == checks
+    monkeypatch.delenv(fs.REGIMES_FLAG)
+    assert ptw._by_claim_posture(checks, {"fact_signals": {"posture": {"claimant": True}}}) == checks
+
+
+def test_a_personal_harm_by_negligence_brings_the_criminal_route():
+    death = F(events=[ev("durante la gita il ragazzo cade dal pontile ed è morto")],
+              injuries=[{"who": "il ragazzo", "days_to_heal": "", "permanent": "morte"}])
+    tool = {t["id"]: t for t in fs.procedural_tools(death, ["responsabilita_civile"])}["profilo_penale"]
+    assert tool["refs"] == [["589", "c.p."], ["76", "c.p.p."], ["2947", "c.c."]]
+    assert "art. 2947, terzo comma, c.c." in tool["text"]
+    injury = F(events=[ev("Tizio inciampa nella buca e si frattura il polso")],
+               injuries=[{"who": "Tizio", "days_to_heal": "40", "permanent": "no"}])
+    tool = {t["id"]: t for t in fs.procedural_tools(injury, ["responsabilita_civile"])}["profilo_penale"]
+    assert ["590", "c.p."] in tool["refs"] and ["589", "c.p."] not in tool["refs"]
+    beaten = F(events=[ev("Caio aggredisce Tizio e lo colpisce")], injuries=[{"who": "Tizio", "days_to_heal": "10"}])
+    assert "profilo_penale" not in [t["id"] for t in fs.procedural_tools(beaten, [])]
+
+
+def test_heads_of_damage_for_a_death_only():
+    death = F(events=[ev("il paziente è deceduto il giorno dopo")])
+    heads = fs.damage_heads(death)
+    assert [h["id"] for h in heads] == ["danni_morte"] and ["2059", "c.c."] in heads[0]["refs"]
+    block = fs.damages_block({"damages": heads})
+    assert "Iure proprio" in block and "Iure hereditatis" in block and "art. 1917 c.c." in block
+    assert fs.damage_heads(F(events=[ev("Tizio si frattura il polso")])) == []
+    assert fs.regime_refs({"damages": heads, "tools": []}) == {("2059", "c.c."): "danni_morte",
+                                                                ("1917", "c.c."): "danni_morte"}
+
+
+def test_a_party_with_two_roles_is_examined_for_each():
+    facts = F(parties=[person("Edil Gamma s.r.l.", kind="società", activities="ha costruito il capannone, ne cura la "
+                              "manutenzione"), person("Anna", activities="ha acquistato")])
+    roles = fs.multiple_roles(facts)
+    assert roles == [{"party": "Edil Gamma s.r.l.", "activities": ["ha costruito il capannone", "ne cura la manutenzione"]}]
+    assert "la responsabilità va valutata per ciascun ruolo" in fs.roles_block({"multi_roles": roles})
+
+
+def test_blind_answers_lose_the_deep_dive_suggestion(tmp_path):
+    from docx import Document
+    docx_script = _script("answer_docx")
+    answer = ("**6. Conclusioni**\n\nIl rischio è contenuto, vedi [custodia](deepdive:custodia).\n\n"
+              "Vuoi approfondire in particolare [custodia](deepdive:custodia) o [caso fortuito](deepdive:caso-fortuito)?"
+              "\n\n⚠️ Verificare tutto prima dell'uso.")
+    assert docx_script.without_deep_dive(answer) == ("**6. Conclusioni**\n\nIl rischio è contenuto, vedi custodia."
+                                                     "\n\n⚠️ Verificare tutto prima dell'uso.")
+    out = str(tmp_path / "r.docx")
+    docx_script.build({"status": "ok", "answer": answer}, out, "Risposta 1", "", None, blind=True)
+    text = "\n".join(p.text for p in Document(out).paragraphs)
+    assert "approfondire" not in text and "deepdive" not in text
+    docx_script.build({"status": "ok", "answer": answer}, out, "Risposta", "", None)
+    assert "Vuoi approfondire" in "\n".join(p.text for p in Document(out).paragraphs)

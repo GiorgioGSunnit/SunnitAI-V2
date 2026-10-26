@@ -117,6 +117,18 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
             out.append(f"citations taken out of the sections: {data.get('count', 0)} "
                        f"({data.get('rephrased', 0)} rephrased, {data.get('dropped', 0)} dropped): "
                        + (", ".join(r for e in data.get("removed") or [] for r in e.get("removed") or []) or "-"))
+        elif event == "case_analysis_writer_rules":
+            out.append(f"writer rules: {data.get('cut', 0)} cut sections, {data.get('non_application', 0)} "
+                       f"'does not apply' sentences and {data.get('burden', 0)} burden templates dropped, "
+                       f"{data.get('facts_flagged', 0)} facts not in the case flagged, "
+                       f"{data.get('against_client', 0)} sentences against the client dropped")
+        elif event == "case_frame_claimant":
+            out.append(f"claimant client: frame {', '.join(data.get('changed') or []) or 'unchanged'} ({data.get('why')})")
+        elif event == "case_analysis_fact_regimes":
+            out.append("fact regimes: qualifications "
+                       + (", ".join(f"{q['party']} {q['quality']}" for q in data.get("qualifications") or []) or "-")
+                       + f"; regimes {', '.join(data.get('regimes') or []) or '-'}; tools "
+                       f"{', '.join(data.get('tool_articles') or []) or '-'}; {len(data.get('terms') or [])} terms")
         elif event == "case_analysis_prompt_tokens":
             out.append(f"draft prompt: {data.get('total')} est. tokens, budget {data.get('budget')}, "
                        f"step {data.get('step')}, dropped to fit {data.get('dropped_for_size', '-')}, "

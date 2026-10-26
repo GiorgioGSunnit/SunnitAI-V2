@@ -44,6 +44,19 @@ def markdown(fs) -> str:
     lines += [f"| {t.label} | {t.length()} | {t.ref} |" for t in fs.TERMS]
     lines.append("| impugnazione della sentenza penale | 15, 30 o 45 giorni dal deposito della motivazione | "
                  f"{fs._APPEAL_REF} |")
+    lines += ["", "Con FACT_REGIMES_ENABLED ogni termine applicabile è indicato anche quando il caso non dà le date "
+              "(\"DA VERIFICARE\", con il fatto da cui decorre); il riferimento dei termini del Codice del Consumo è "
+              "cercato nella banca dati dalle parole del testo.",
+              "", "## Qualifiche delle parti e regimi speciali (FACT_REGIMES_ENABLED, in sperimentazione)", "",
+              "Una persona fisica che contratta per uso personale o familiare con un'impresa o un professionista è "
+              "consumatore (e la controparte professionista); un ente pubblico è pubblica amministrazione; chi "
+              "esercita una funzione pubblica è pubblico ufficiale o incaricato di pubblico servizio (secondo la "
+              "funzione esercitata).", "", "| qualifica | istituto aggiunto alle questioni centrali | dove si cerca | "
+              "materia |", "|---|---|---|---|"]
+    lines += [f"| {r['quality']} | {r['institution']} | {r['codice']} | {', '.join(r['families'])} |" for r in fs.REGIMES]
+    lines += ["", "## Strumenti processuali indicati dai fatti (FACT_REGIMES_ENABLED, in sperimentazione)", "",
+              "| strumento | quando (dai fatti estratti; solo materia civile) |", "|---|---|"]
+    lines += [f"| {t['text']} | {t['why']} |" for t in fs.PROCEDURAL_TOOLS]
     return "\n".join(lines) + "\n"
 
 
