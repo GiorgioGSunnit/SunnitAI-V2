@@ -980,7 +980,7 @@ def all_central(signals: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for item in list(signals.get("regimes") or []) + central_issues(signals.get("fired") or [], limit=MAX_CENTRAL):
         if item["nome"].lower() not in seen and len(out) < MAX_CENTRAL:
             seen.add(item["nome"].lower())
-            out.append({k: item[k] for k in ("nome", "codice", "fonte", "ranges")})
+            out.append({k: item[k] for k in ("nome", "codice", "fonte", "ranges", "articolo") if k in item})
     return out
 
 
@@ -1093,8 +1093,15 @@ REGIMES: List[Dict[str, Any]] = [
     {"id": "consumatore_garanzia", "quality": CONSUMER, "institution": "garanzia legale di conformità",
      "codice": "Codice del Consumo", "ranges": [[128, 135]], "families": ["civile"],
      "when": [{"contract": {"type": _SALE}}]},
+    # STRICT_ARTICLES_ENABLED: "articolo" is the institution's article (the resolver takes it as it is: no rubrica
+    # names the consumer's forum, so the answers cited art. 1374 or 1469-bis c.c. for it, 26 Oct) and "nota"
+    # what the writer reads about it (the provision is one letter of a long article, past its text's cut).
     {"id": "consumatore_foro", "quality": CONSUMER, "institution": "foro del consumatore",
-     "codice": "Codice del Consumo", "ranges": [], "families": ["civile"], "when": []},
+     "codice": "Codice del Consumo", "ranges": [], "families": ["civile"], "when": [], "articolo": "33",
+     "nota": "foro del consumatore: si presume vessatoria la clausola che stabilisce come sede del foro competente "
+             "una località diversa da quella di residenza o domicilio elettivo del consumatore (art. 33, comma 2, "
+             "lettera u), Codice del Consumo); la giurisprudenza ne ricava la competenza esclusiva del giudice del "
+             "luogo di residenza o domicilio del consumatore."},
     {"id": "consumatore_clausole", "quality": CONSUMER,
      "institution": "clausole vessatorie nel contratto tra professionista e consumatore",
      "codice": "Codice del Consumo", "ranges": [[33, 38]], "families": ["civile"],
@@ -1119,7 +1126,7 @@ def regime_issues(facts: Optional[Dict[str, Any]], qualifications: List[Dict[str
         if not all(holds(c, facts or {}, []) for c in regime["when"]):
             continue
         out.append({"nome": regime["institution"], "codice": regime["codice"], "fonte": f"qualifica {regime['id']}",
-                    "ranges": regime["ranges"]})
+                    "ranges": regime["ranges"], **{k: regime[k] for k in ("articolo", "nota") if regime.get(k)}})
     return out
 
 
@@ -1294,8 +1301,12 @@ def regime_refs(signals: Optional[Dict[str, Any]]) -> Dict[Tuple[str, str], str]
 
 
 def qualifications_block(signals: Optional[Dict[str, Any]]) -> str:
-    """The parties' inferred qualifications, one line each ("" without any)."""
-    return "\n".join(f"- {q['party']}: {q['quality']} ({q['why']})" for q in (signals or {}).get("qualifications") or [])
+    """The parties' inferred qualifications, one line each ("" without any); with STRICT_ARTICLES_ENABLED, then
+    the "nota" of each regime they bring in."""
+    lines = [f"- {q['party']}: {q['quality']} ({q['why']})" for q in (signals or {}).get("qualifications") or []]
+    if lines and feature_flags.enabled("STRICT_ARTICLES_ENABLED"):
+        lines += [f"- {r['nota']}" for r in (signals or {}).get("regimes") or [] if r.get("nota")]
+    return "\n".join(lines)
 
 
 CRIMINAL_TOOL = "profilo_penale"

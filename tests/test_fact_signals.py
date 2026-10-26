@@ -479,6 +479,20 @@ def test_consumer_regimes_join_the_central_issues_in_civil_cases_only():
     assert fs.regime_issues(facts, quals, [])[-1]["ranges"] == [[33, 38]]
 
 
+def test_strict_articles_the_consumer_forum_is_art_33_with_its_note(monkeypatch):
+    facts, quals = fs.qualify_parties(SOFA)
+    forum = fs.regime_issues(facts, quals, ["contratti"])[1]
+    assert forum["articolo"] == "33" and "lettera u)" in forum["nota"]
+    signals = {"qualifications": quals, "regimes": fs.regime_issues(facts, quals, ["contratti"])}
+    assert [c.get("articolo") for c in fs.all_central(signals)] == [None, "33"]
+    assert "lettera u)" not in fs.qualifications_block(signals)                  # flag off: as before
+    monkeypatch.setenv("STRICT_ARTICLES_ENABLED", "true")
+    block = fs.qualifications_block(signals)
+    assert block.splitlines()[0].startswith("- Anna: consumatore") and block.splitlines()[-1].startswith(
+        "- foro del consumatore: si presume vessatoria")
+    assert fs.qualifications_block({"regimes": signals["regimes"]}) == ""        # no qualification, no note
+
+
 def test_terms_without_dates_listed_only_with_the_flag_and_within_the_case_family(monkeypatch):
     assert fs.compute_terms(SOFA) == []                                   # no dates, no regimes: as before
     facts, _ = fs.qualify_parties(SOFA)

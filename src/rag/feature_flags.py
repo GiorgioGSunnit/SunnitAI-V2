@@ -262,6 +262,18 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 "respond to a claim" checklist item. See
                                 fact_signals.qualify_parties, procedural_tools,
                                 claim_posture.
+  STRICT_ARTICLES_ENABLED      false (the lawyer's review, 26 Oct): an institution's
+                                article found by one of the issue's keywords, not by its
+                                own name or number, counts only if its rubrica shares a
+                                word with the institution beyond the generic ones
+                                (garanzia -> 492 c.c., responsabilità civile -> 1917
+                                c.c. refused); an institution a code table names the
+                                article of is that article (foro del consumatore ->
+                                art. 33 Cod. cons., with its note to the writer); with
+                                FLAGGED_REMOVE_ENABLED, a citation the qualification
+                                check finds misused stays only if the case names it, it
+                                is a procedural tool, resolved for a central issue or
+                                graded 3 -- not for grade 2, a vote or two channels.
 """
 
 import logging

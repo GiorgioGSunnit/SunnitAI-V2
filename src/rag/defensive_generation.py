@@ -1492,7 +1492,7 @@ def _with_central_questions(analysis: Dict[str, Any], frame: Dict[str, Any]) -> 
     named = [i.get("nome") or "" for q in analysis.get("questioni") or [] for i in q.get("istituti") or []]
     added = [{"titolo": f"Questione centrale: {c['nome']}", "categoria": "qualificazione",
               "istituti": [{"nome": c["nome"], "codice": c.get("codice") or "", "numero_indicativo": "",
-                            **{k: c[k] for k in ("fonte", "ranges") if c.get(k)}}],
+                            **{k: c[k] for k in ("fonte", "ranges", "articolo") if c.get(k)}}],
               "parole_chiave": [], "voce": "questione_centrale"}
              for c in frame.get("central_issue_candidates") or []
              if not any(_same_institution(c["nome"], n) for n in named)]
@@ -2057,6 +2057,16 @@ _GENERIC_HEADING_WORDS = (
     "obblighi obbligo norme norma applicabili rinvio decadenza spese casi modalità procedimento finalità "
     "principi principio regole regola diritto diritti disciplina")
 _generic_stems_cache: Dict[str, set] = {}
+STRICT_ARTICLES_FLAG = "STRICT_ARTICLES_ENABLED"
+# STRICT_ARTICLES_ENABLED: words too common in rubriche to tie a keyword's article to an institution (art. 492
+# c.c.'s rubrica is "Garanzia"): the generic ones above and these.
+_STRICT_GENERIC_WORDS = "garanzia garanzie"
+
+
+def _strict_generic_stems() -> set:
+    if "strict" not in _generic_stems_cache:
+        _generic_stems_cache["strict"] = _stems_of(f"{_GENERIC_HEADING_WORDS} {_STRICT_GENERIC_WORDS}")
+    return _generic_stems_cache["strict"]
 
 
 def _stems_of(text: str) -> set:
@@ -2180,6 +2190,32 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                                                     "path": path, "heading": heading, "why": "generic heading alone"})
         return True
 
+    # STRICT_ARTICLES_ENABLED (the lawyer's review, 26 Oct): an article found by one of the issue's keywords,
+    # not by the institution's own name, counts only if its rubrica shares a word with the institution beyond
+    # the generic ones -- "garanzia delle cose vendute" was resolved to art. 492 c.c. ("Garanzia", the heir's)
+    # by the keyword "garanzia", "risarcimento danni" and "lesioni personali" to art. 1917 c.c. by
+    # "responsabilità civile". The full-text path has its own such check (RESOLUTION_STRICT_ENABLED).
+    strict_articles = feature_flags.enabled(STRICT_ARTICLES_FLAG)
+
+    def _keyword_unrelated(rows: List[Dict[str, Any]], number: str, term: str, path: str) -> bool:
+        if not strict_articles or term == nome or number == numero_indicativo:
+            return False
+        heading = _rows_heading(rows)
+        if (_stems_of(nome) & _stems_of(heading)) - _strict_generic_stems():
+            return False
+        vlog("case_analysis_institution_rejected", {"institution": nome, "article": f"{number} {abbr or codice}",
+                                                    "path": f"{path}, via parola chiave {term!r}", "heading": heading,
+                                                    "why": "keyword match shares no specific word with the institution"})
+        return True
+
+    # STRICT_ARTICLES_ENABLED: an institution a code table names the article of (fact_signals.REGIMES' "articolo":
+    # "foro del consumatore" is art. 33 Cod. cons., whose rubrica is about unfair terms) is that article.
+    table_number = _article_num(str(istituto.get("articolo") or ""))
+    if strict_articles and table_number and doc:
+        rows = fetch_article(session, doc["id"], table_number)
+        if rows:
+            return _found(_tag(rows, table_number, heading_match=True), table_number, "code table")
+
     if doc:
         for term in [nome, *(parole_chiave or [])]:
             if not isinstance(term, str) or not term.strip():
@@ -2188,7 +2224,8 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                 number = article_by_title(session, doc["id"], term, field=field)
                 if number:
                     rows = fetch_article(session, doc["id"], number)
-                    if rows and not _generic_alone(rows, number, field):
+                    if rows and not _generic_alone(rows, number, field) and \
+                            not _keyword_unrelated(rows, number, term, field):
                         reason = field if term == nome else f"{field}, via parola chiave {term!r}"
                         # Only the official heading exempts a row from the
                         # applicability check: s.title is LLM-written on every
@@ -4647,6 +4684,8 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                 continue
             if remove:
                 why = _protection(ref, protected)
+                if why is not None and feature_flags.enabled(STRICT_ARTICLES_FLAG) and not _strong_protection(why):
+                    why = None
                 if why is None:
                     to_remove.append(ref)
                     continue
@@ -4691,6 +4730,14 @@ def _protected_refs(article_rows: List[Dict[str, Any]], named: List[tuple]) -> D
         if why:
             out.setdefault(ref, why)
     return out
+
+
+def _strong_protection(why: str) -> bool:
+    """STRICT_ARTICLES_ENABLED: the protections (_protected_refs) that keep an article the qualification check
+    found misused -- named in the case, a procedural tool, resolved for a central issue, graded 3. Graded 2,
+    voted or found by two channels does not: the lawyer's review (26 Oct) of answers that kept art. 1374 c.c.
+    for the consumer's forum, 2047 and 2048 c.c. for the parents of a drowned child, all graded 2."""
+    return why == "named in the case" or any(w in why for w in ("procedural tool", "central issue", "grade 3"))
 
 
 def _protection(ref: tuple, protected: Dict[tuple, str]) -> Optional[str]:
