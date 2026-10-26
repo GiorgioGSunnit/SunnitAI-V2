@@ -675,3 +675,39 @@ def test_blind_answers_lose_the_deep_dive_suggestion(tmp_path):
     assert "approfondire" not in text and "deepdive" not in text
     docx_script.build({"status": "ok", "answer": answer}, out, "Risposta", "", None)
     assert "Vuoi approfondire" in "\n".join(p.text for p in Document(out).paragraphs)
+
+
+# --- REVIEW_FIXES_ENABLED (the lawyer's review of the boat and pool cases, 26 Oct) ------------------------------
+
+BOAT = F(parties=[person("Tizio", "cliente", purpose="personale"), person("Marex s.r.l.", "controparte", "società")],
+         contracts=[contract("compravendita di una barca")],
+         events=[ev("durante la navigazione il motore segnala allarmi e va in modalità protetta"),
+                 ev("la società venditrice garantisce la riparazione e la messa a punto")])
+
+
+def test_review_fixes_a_machine_fault_brings_the_atp_and_the_sale_terms(monkeypatch):
+    monkeypatch.delenv("REVIEW_FIXES_ENABLED", raising=False)
+    monkeypatch.setenv(fs.REGIMES_FLAG, "true")
+    facts, _ = fs.qualify_parties(BOAT)
+    assert "accertamento_preventivo" in [t["id"] for t in fs.procedural_tools(facts, ["contratti"])]
+    signals = {"facts": facts, "terms": fs.compute_terms(facts, ["contratti"])}
+    assert {"denuncia_vizi_vendita", "azione_vizi_vendita"} <= {t["id"] for t in signals["terms"]}
+    assert "2944" not in fs.terms_block(signals)                               # flag off: as before
+    monkeypatch.setenv("REVIEW_FIXES_ENABLED", "true")
+    block = fs.terms_block(signals)
+    assert block.splitlines()[-1].startswith("- Il venditore che interviene per riparare la cosa")
+    assert "art. 1495, secondo comma, c.c." in block and "art. 2944 c.c." in block
+    no_repair = {**signals, "facts": {**facts, "events": facts["events"][:1]}}
+    assert "2944" not in fs.terms_block(no_repair)
+    assert fs.terms_block({"facts": facts, "terms": []}) == ""
+
+
+def test_review_fixes_no_urgent_measure_after_a_death(monkeypatch):
+    monkeypatch.delenv("REVIEW_FIXES_ENABLED", raising=False)
+    pool = F(events=[ev("la bambina resta incastrata nella grata della piscina e muore annegata")],
+             injuries=[{"who": "la bambina", "days_to_heal": "", "permanent": "morte"}],
+             risks=[{"what": "la grata non fissata è un pericolo per gli altri bagnanti", "kind": "sicurezza"}])
+    assert "provvedimento_urgenza" in [t["id"] for t in fs.procedural_tools(pool, ["responsabilita_civile"])]
+    monkeypatch.setenv("REVIEW_FIXES_ENABLED", "true")
+    ids = [t["id"] for t in fs.procedural_tools(pool, ["responsabilita_civile"])]
+    assert "provvedimento_urgenza" not in ids and "profilo_penale" in ids

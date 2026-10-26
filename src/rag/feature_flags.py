@@ -282,6 +282,20 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 the case's); each kept ruling reaches the plan and the
                                 writer led by that fact. Logged as
                                 case_analysis_ruling_fit. See _ruling_fit.
+  REVIEW_FIXES_ENABLED         false (the lawyer's review, 26 Oct; acts with
+                                PLAN_THEN_WRITE_ENABLED and FACT_REGIMES_ENABLED): the
+                                inquadramento names the facts that decide the case
+                                instead of labelling each one; the procedural section
+                                writes every item of each block (iure hereditatis);
+                                after the review, a sentence stating as certain what the
+                                case does not say about a deadline, a report or a
+                                party's proof, knowledge or concealment is rewritten as
+                                a condition (case_analysis_unsupported_claims); a sale
+                                whose seller stepped in to repair gets the note that the
+                                repair recognises the defect (1495 co. 2, 2944 c.c.);
+                                no art. 700 c.p.c. after a death. See
+                                plan_then_write.rewrite_unsupported,
+                                fact_signals._recognition_note.
 """
 
 import logging

@@ -412,7 +412,10 @@ _ACT = r"notific|provvediment|diniego|esclusion|aggiudicazion|ordinanz|decreto|r
 _TENDER = r"gara|appalt|aggiudicaz|affidament"
 _TAR = r"\btar\b|ricorso al tribunale amministrativo|ricors\w* giurisdizional|ricorso amministrativo"
 _DISCOVERY = r"scopr|scopert|si accorg|accort|manifest|emers|compars\w* (?:di |delle |dei )?(?:crep|infiltraz|vizi|difett)"
-_DEFECT = r"vizi|difett|guast|malfunzion|non funzion|crep|infiltraz|cedim|distacc|umidit"
+# A machine's fault is told by its symptoms as often as by "guasto" (the boat case, 26 Oct: alarms, the engine in
+# protected mode -- no ATP offered, no 8-day denuncia term).
+_DEFECT = (r"vizi|difett|guast|malfunzion|non funzion|crep|infiltraz|cedim|distacc|umidit|allarm|avari|anomal|"
+           r"modalit\w* protett|in protezione|in panne")
 _DENOUNCE = r"denunci|contestaz|reclam|segnal|comunica"
 _DELIVERY = r"consegn|acquist|compr|ritir"
 _WORKS_DONE = r"ultimat|consegn|complet|fine dei lavori|terminat|collaud"
@@ -992,9 +995,31 @@ def analyse(case_text: str, areas: Optional[List[str]] = None) -> Dict[str, Any]
 
 def terms_block(signals: Optional[Dict[str, Any]], refs: bool = False) -> str:
     """The computed terms as facts for the plan and the procedural section ("" without any); with refs, each
-    with the article it belongs to (FACT_REGIMES_ENABLED)."""
+    with the article it belongs to (FACT_REGIMES_ENABLED); with REVIEW_FIXES_ENABLED, then _recognition_note."""
     terms = (signals or {}).get("terms") or []
-    return "\n".join(f"- {t['text']}" + (f" [{t['ref']}]" if refs and t.get("ref") else "") for t in terms)
+    lines = [f"- {t['text']}" + (f" [{t['ref']}]" if refs and t.get("ref") else "") for t in terms]
+    note = _recognition_note(signals) if lines and feature_flags.enabled(REVIEW_FIXES_FLAG) else ""
+    return "\n".join(lines + ([note] if note else []))
+
+
+REVIEW_FIXES_FLAG = "REVIEW_FIXES_ENABLED"
+_SALE_TERMS = {"denuncia_vizi_vendita", "azione_vizi_vendita"}
+_REPAIR = r"ripar|messa a punto|sostitu|aggiust|sistemat|eliminare i vizi|eliminazione dei vizi"
+
+
+def _recognition_note(signals: Optional[Dict[str, Any]]) -> str:
+    """REVIEW_FIXES_ENABLED: a sale whose seller stepped in to repair the thing has its defects recognised -- the
+    point the boat case's answers missed (26 Oct), saying instead that Tizio had not reported them in time.
+    "" when no sale term applies or the facts tell of no repair."""
+    signals = signals or {}
+    if not {t.get("id") for t in signals.get("terms") or []} & _SALE_TERMS:
+        return ""
+    if not re.search(_REPAIR, _texts(signals.get("facts") or {}, ("events", "contracts", "works_or_signs"))):
+        return ""
+    return ("- Il venditore che interviene per riparare la cosa o si impegna a eliminarne i vizi ne riconosce "
+            "l'esistenza: la denuncia non è necessaria (art. 1495, secondo comma, c.c.) e il riconoscimento "
+            "interrompe la prescrizione dell'azione (art. 2944 c.c.); va verificato quando e come è avvenuto "
+            "l'intervento.")
 
 
 # --- 4. FACT_REGIMES_ENABLED: qualifications, regimes, procedural tools ------------------------------
@@ -1181,7 +1206,9 @@ def procedural_tools(facts: Optional[Dict[str, Any]], areas: Optional[List[str]]
         found["accertamento_preventivo"] = [m for m in (defect, evidence) if m]
     urgent = next((_low(r.get("what"))[:140] for r in risks if re.search(r"sicurezz|aggrav|urgen", _low(r.get("kind")))), "")
     urgent = urgent or line(_URGENT)
-    if urgent:
+    # REVIEW_FIXES_ENABLED: after a death the client's right is to damages, which no danger in the meantime makes
+    # irreparable (the pool case, 26 Oct: art. 700 c.p.c. offered "to make the pool safe" for the parents).
+    if urgent and not (feature_flags.enabled(REVIEW_FIXES_FLAG) and _death(facts)):
         found["provvedimento_urgenza"] = [urgent]
     harm = _personal_harm(facts)
     if harm and not re.search(_INTENT, texts):

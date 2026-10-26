@@ -722,3 +722,58 @@ def test_the_procedural_section_is_written_again_when_it_leaves_out_a_block(mode
     assert len(calls) == 2 and "La stesura precedente ometteva: termini: azione_conformita_consumo" in calls[1]["system"]
     use = [d for e, d in model.logged if e == "case_analysis_material_use"][-1]
     assert use["missing"] == [] and use["written"]["profilo_penale"] == ["profilo_penale"]
+
+
+# --- REVIEW_FIXES_ENABLED (the lawyer's review of the boat and pool cases, 26 Oct) ------------------------------
+
+def test_review_fixes_section_2_names_the_decisive_facts(monkeypatch):
+    monkeypatch.delenv(ptw.REVIEW_FIXES_FLAG, raising=False)
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, ANALYSIS, ARTICLES, {}, "")
+    assert "ogni fatto del caso valutato dal punto di vista" in _job(jobs, "Inquadramento e questione centrale")[1]
+    monkeypatch.setenv(ptw.REVIEW_FIXES_FLAG, "true")
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, ANALYSIS, ARTICLES, {}, "")
+    instruction = _job(jobs, "Inquadramento e questione centrale")[1]
+    assert "i fatti che decidono l'esito" in instruction and "Non elencare né etichettare" in instruction
+    assert "ogni fatto del caso valutato" not in instruction
+
+
+def test_review_fixes_every_item_of_a_block_is_written(monkeypatch):
+    use = {"voci_di_danno": {"offered": ["iure proprio", "iure hereditatis", "assicurazioni"],
+                             "written": ["iure proprio", "assicurazioni"]},
+           "strumenti": {"offered": ["provvedimento_urgenza"], "written": ["provvedimento_urgenza"]}}
+    monkeypatch.delenv(ptw.REVIEW_FIXES_FLAG, raising=False)
+    assert ptw._missing_blocks(use) == []
+    monkeypatch.setenv(ptw.REVIEW_FIXES_FLAG, "true")
+    assert ptw._missing_blocks(use) == ["voci_di_danno"]
+
+
+BOAT = ("Tizio acquista dalla società Marex una barca. Il motore segnala allarmi. La società venditrice garantisce "
+        "la riparazione. L'episodio si ripete in alto mare.")
+CLAIMS = ("I vizi non sono stati denunciati entro il termine di 8 giorni previsto dall'art. 1495 c.c. "
+          "Marex non ha dimostrato di ignorare i vizi senza colpa, come richiede l'art. 1494 c.c. "
+          "L'azione si prescrive in un anno dalla consegna, entro il termine dell'art. 1495 c.c. "
+          "Tizio ha acquistato la barca da Marex.")
+
+
+def test_review_fixes_claims_the_case_does_not_make_become_conditions(monkeypatch):
+    calls = []
+
+    def fake(messages, max_tokens=None, **kwargs):
+        calls.append({"human": messages[-1].content, **kwargs})
+        return json.dumps([
+            {"i": 1, "da_correggere": True, "frase": "Se i vizi non sono stati denunciati entro otto giorni dalla "
+                                                    "scoperta, Tizio decade dalla garanzia (art. 1495 c.c.): il caso "
+                                                    "non lo indica."},
+            {"i": 2, "da_correggere": True, "frase": "Marex deve provare."},          # loses art. 1494: unusable
+            {"i": 3, "da_correggere": False}])
+    monkeypatch.setattr(ptw.dg, "_call_chat", fake)
+    out, log = ptw.rewrite_unsupported("Risposte ai quesiti", CLAIMS, BOAT)
+    assert out.startswith("Se i vizi non sono stati denunciati entro otto giorni dalla scoperta, Tizio decade")
+    assert "Marex non ha dimostrato di ignorare i vizi senza colpa, come richiede l'art. 1494 c.c." in out
+    assert "entro il termine dell'art. 1495 c.c." in out and out.endswith("Tizio ha acquistato la barca da Marex.")
+    assert [e["how"] for e in log] == ["rewritten", "kept"]
+    sent = calls[0]["human"].split("FRASI DEL PARERE:")[1]
+    assert "3. L'azione si prescrive" in sent and "Tizio ha acquistato" not in sent
+    assert calls[0]["temperature"] == 0
+    assert ptw.rewrite_unsupported("x", "Tizio ha acquistato la barca da Marex.", BOAT) == (
+        "Tizio ha acquistato la barca da Marex.", [])

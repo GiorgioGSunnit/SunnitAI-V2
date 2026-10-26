@@ -88,6 +88,12 @@ WRITER_RULES_FLAG = "WRITER_RULES_ENABLED"
 # marked sentences were arguments, quotes of the case, of a norm or a ruling, or evidence to gather): the "fact not
 # in the case" marker written into the answer. Off, the flagged sentences are only logged.
 FACT_MARK_FLAG = "FACT_MARK_INLINE_ENABLED"
+# REVIEW_FIXES_ENABLED (the lawyer's review of the boat and pool cases, 26 Oct): the inquadramento names the facts
+# that decide the case instead of labelling each one (the child's death came out "neutro" in one run, "sfavorevole"
+# in the other); the procedural section writes every item of each block it is given (iure hereditatis offered
+# twice, written never); a sentence stating as certain what the case does not say about a deadline, a report or a
+# party's proof, knowledge or concealment is rewritten as a condition (rewrite_unsupported).
+REVIEW_FIXES_FLAG = "REVIEW_FIXES_ENABLED"
 OTHER_NORMS_TITLE = "Altre norme rilevanti"
 _ISSUE_COUNT_WORDS = {5: "cinque", 7: "sette"}
 
@@ -450,6 +456,10 @@ def _discipline() -> bool:
 
 def _writer_rules() -> bool:
     return dg.feature_flags.enabled(WRITER_RULES_FLAG)
+
+
+def _review_fixes() -> bool:
+    return dg.feature_flags.enabled(REVIEW_FIXES_FLAG)
 
 
 def _graded() -> bool:
@@ -922,6 +932,10 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
               f"un difetto o un torto che {party} ha subito), sfavorevole se la controparte può usarlo contro "
               f"{party}, neutro altrimenti; e perché, in una frase." if rules else
               f"favorevole, sfavorevole o neutro per {party}, e perché, in una frase.")
+    facts_part = (f"in un paragrafo, i fatti che decidono l'esito: quelli che fondano la pretesa o la difesa di "
+                  f"{party} e quelli che la controparte può usare contro {party}, ciascuno con il perché in poche "
+                  "parole. Non elencare né etichettare uno per uno i fatti del caso." if _review_fixes() else
+                  f"ogni fatto del caso valutato dal punto di vista di {party}: {labels}")
     norms = ("Per le norme del PIANO su cui si fondano gli argomenti: che cosa stabilisce ciascuna, citando il testo "
              "fornito, e, solo se la norma stessa pone una presunzione o ripartisce l'onere della prova, quella "
              "regola con le sue parole" if rules else
@@ -952,7 +966,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
         (SECTION_TITLES[1],
          "SEZIONE: Inquadramento e questione centrale. La qualificazione giuridica della vicenda (la norma "
          "principale e quelle alternative o subordinate, e perché), la questione centrale e perché decide "
-         f"l'esito; poi ogni fatto del caso valutato dal punto di vista di {party}: {labels} Non illustrare le "
+         f"l'esito; poi {facts_part} Non illustrare le "
          "norme nel dettaglio (sezione 3) né sviluppare gli argomenti (sezione 4)." + scoped + no_rulings,
          material(case, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
                   _plan_text(plan, rulings=False), scope,
@@ -1329,9 +1343,12 @@ def material_use(analysis: Dict[str, Any], text: str) -> Dict[str, Dict[str, Lis
 
 
 def _missing_blocks(use: Dict[str, Dict[str, List[str]]]) -> List[str]:
-    """The blocks the section left out: no item written, or for the terms any term left out."""
+    """The blocks the section left out: no item written, or for the terms (with REVIEW_FIXES_ENABLED, for every
+    block) any item left out."""
+    every = _review_fixes()
     return [block for block, u in use.items()
-            if u["offered"] and (not u["written"] or (block == "termini" and len(u["written"]) < len(u["offered"])))]
+            if u["offered"] and (not u["written"] or ((every or block == "termini")
+                                                      and len(u["written"]) < len(u["offered"])))]
 
 
 _DAMAGES_TITLE = "VOCI DI DANNO DA CONSIDERARE"
@@ -1795,10 +1812,91 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         writer_log += [entry for _, log in reviewed for entry in log]
         dg.vlog("case_analysis_writer_rules", _writer_log(writer_log), duration_ms=(time.time() - t2) * 1000)
         sections = [(title, text or original) for (title, original), (text, _) in zip(sections, reviewed)]
+    if _review_fixes() and all(text for _, text in sections):
+        t3 = time.time()
+        with ThreadPoolExecutor(max_workers=len(sections)) as pool:
+            fixed = list(pool.map(lambda pair: rewrite_unsupported(pair[0], pair[1], case_text), sections))
+        entries = [entry for _, log in fixed for entry in log]
+        dg.vlog("case_analysis_unsupported_claims", {
+            "entries": entries, "rewritten": sum(1 for e in entries if e["how"] == "rewritten")},
+            duration_ms=(time.time() - t3) * 1000)
+        sections = [(title, text or original) for (title, original), (text, _) in zip(sections, fixed)]
     if any(not text for _, text in sections):
         logger.warning("plan-then-write: an empty section, the parere is written in one call")
         return None
     return sections
+
+
+# REVIEW_FIXES_ENABLED: the sentences that may state as certain what the case does not say -- a deadline met,
+# missed or not yet run, a report made or not, a party's proof, knowledge or concealment (the boat case: "i vizi
+# non sono stati denunciati entro il termine di 8 giorni"; the pool case: "poiché l'incidente è recente, il diritto
+# non è ancora prescritto"). Only these go to the check; the review's own fact flag missed both.
+_UNSUPPORTED_RE = re.compile(
+    r"\b(?:è|sono|sia|siano|era|erano)\s+(?:ancora\s+|già\s+)?(?:prescritt|decadut|decors|scadut)\w*"
+    r"|\bentro\s+(?:il\s+)?termin|\bnei\s+termini\b|\btempestiv|\bin\s+tempo\s+utile|\brecent"
+    r"|\b(?:è|sono)\s+stat[aeio]\s+(?:denunciat|contestat|comunicat|segnalat)\w*"
+    r"|\bnon\s+ha\s+(?:mai\s+)?(?:dimostrato|provato|fornito\s+(?:la\s+)?prova|adottato|denunciato|contestato|"
+    r"segnalato)|\bha\s+(?:occultato|nascosto|taciuto|reso\s+difficile)|\bera\s+(?:a\s+conoscenza|consapevole)"
+    r"|\bsapeva\b|\bin\s+mala\s+fede", re.IGNORECASE)
+_UNSUPPORTED_SYSTEM = (
+    "Sei un avvocato italiano e rivedi un parere. Ti vengono dati il CASO e alcune frasi del parere, numerate. Una "
+    "frase è da correggere solo se afferma come certo, riguardo ai fatti di questo caso, qualcosa che il CASO non "
+    "dice: che un termine sia stato rispettato, sia scaduto o non sia ancora decorso; che una denuncia, una "
+    "contestazione o una comunicazione sia o non sia avvenuta, o quando; quando sono accaduti i fatti; che una "
+    "parte abbia o non abbia provato, saputo, nascosto o taciuto qualcosa. Non è da correggere una frase che "
+    "enuncia una regola, un termine di legge o un onere della prova, che pone una condizione o che riporta ciò che "
+    "il CASO dice. Riscrivi ogni frase da correggere presentando quel punto come condizione o come circostanza da "
+    "verificare (\"se la denuncia è avvenuta entro otto giorni dalla scoperta...\", \"spetterà al venditore "
+    "provare di avere ignorato senza colpa i vizi\"), lasciando invariati il resto della frase e le norme e le "
+    "pronunce che cita. Rispondi solo con un array JSON, un oggetto per frase: {\"i\": numero, "
+    "\"da_correggere\": true o false, \"frase\": \"la frase riscritta, solo se da correggere\"}."
+)
+_CLAIM_REFS_RE = re.compile(r"\bartt?\.\s*(\d+(?:-[a-z]+)?)|\bn\.\s*(\d+/\d{4})", re.IGNORECASE)
+
+
+def _claim_refs(sentence: str) -> set:
+    return {a or b for a, b in _CLAIM_REFS_RE.findall(sentence or "")}
+
+
+def rewrite_unsupported(title: str, text: str, case_text: str) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log), REVIEW_FIXES_ENABLED: the sentences matching _UNSUPPORTED_RE that do not restate the case
+    (_from_the_case), checked in one call; each the check finds stating as certain what the case does not say is
+    replaced by its rewriting as a condition -- kept as it was when the rewriting is empty, loses an article or a
+    ruling the sentence cites, or is out of proportion with it."""
+    spans = [(s, e) for s, e in _sentence_spans(text)
+             if _UNSUPPORTED_RE.search(text[s:e]) and not _from_the_case(text[s:e], case_text)]
+    if not spans:
+        return text, []
+    numbered = "\n".join(f"{k}. {' '.join(text[s:e].split())}" for k, (s, e) in enumerate(spans, 1))
+    try:
+        verdicts = dg._chat_json([SystemMessage(content=_UNSUPPORTED_SYSTEM),
+                                  HumanMessage(content=f"CASO:\n{case_text[:3000]}\n\nFRASI DEL PARERE:\n{numbered}")],
+                                 max_tokens=200 + 160 * len(spans), temperature=0)
+    except Exception as exc:
+        logger.warning("review fixes: claims of %r not checked: %s", title, exc)
+        return text, []
+    replace: Dict[int, str] = {}
+    log: List[Dict[str, Any]] = []
+    for v in verdicts if isinstance(verdicts, list) else []:
+        if not isinstance(v, dict) or not _yes(v.get("da_correggere")):
+            continue
+        try:
+            k = int(v.get("i")) - 1
+        except (TypeError, ValueError):
+            continue
+        if not 0 <= k < len(spans) or k in replace:
+            continue
+        old = text[spans[k][0]:spans[k][1]]
+        new = " ".join(str(v.get("frase") or "").split())
+        usable = bool(new) and _claim_refs(old) <= _claim_refs(new) and 0.5 * len(old) <= len(new) <= 2.5 * len(old)
+        if usable:
+            replace[k] = new
+        log.append({"section": title, "kind": "unsupported_claim", "how": "rewritten" if usable else "kept",
+                    "sentence": " ".join(old.split())[:300], "rewritten": new[:300]})
+    for k in sorted(replace, reverse=True):
+        s, e = spans[k]
+        text = text[:s] + replace[k] + text[e:]
+    return text, log
 
 
 def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
