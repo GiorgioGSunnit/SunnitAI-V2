@@ -274,6 +274,14 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 check finds misused stays only if the case names it, it
                                 is a procedural tool, resolved for a central issue or
                                 graded 3 -- not for grade 2, a vote or two channels.
+  RULING_FIT_ENABLED           false (the lawyer's review, 26 Oct): before the plan, one
+                                call asks of each ruling whether a fact the case
+                                describes meets its conditions, and which; a ruling
+                                that does not apply goes, and so does one whose "fact"
+                                is not the case's own words (the ruling's facts read as
+                                the case's); each kept ruling reaches the plan and the
+                                writer led by that fact. Logged as
+                                case_analysis_ruling_fit. See _ruling_fit.
 """
 
 import logging

@@ -2676,6 +2676,81 @@ def _extract_principles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
                      if line.startswith("- ") or (i + 1 < len(lines) and lines[i + 1].startswith("- ")))
 
 
+RULING_FIT_FLAG = "RULING_FIT_ENABLED"
+# RULING_FIT_ENABLED (the lawyer's review, 26 Oct): the pool case cited a ruling on asylum for minors, the boat
+# case one on a seller who hid the defects -- applied as if Marex had hidden them, which the case never says.
+# The writer's rule (cite a ruling only where the case's facts meet its conditions) did not stop either.
+_RULING_FIT_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati un CASO e alcuni passi di pronunce, ciascuno con un "
+    "identificativo [S1], [S2]... Per ogni pronuncia decidi se il principio che afferma si applica al CASO. "
+    "Si applica solo se un fatto che il CASO descrive ne integra i presupposti: lo stesso istituto e le stesse "
+    "condizioni. Non basta un tema simile o parole in comune. I fatti del giudizio deciso dalla pronuncia non "
+    "sono fatti del caso: non supporre che nel caso sia accaduto ciò che è accaduto lì. Rispondi solo con un "
+    "array JSON, un oggetto per pronuncia: {\"id\": \"S1\", \"si_applica\": true o false, \"fatto\": \"il fatto "
+    "del CASO che ne integra i presupposti, con le parole del caso; vuoto se non si applica\", \"perche\": "
+    "\"motivo in poche parole\"}."
+)
+_RULING_FIT_NOTE = "Fatto del caso che ne integra i presupposti: "
+
+
+def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """RULING_FIT_ENABLED: the rulings whose principle a fact of the case meets, each with that fact as
+    _fit_fact -- one call for all. A ruling the model says does not apply goes, and so does one whose
+    "fact" is not the case's own (most of its longer words absent from the case: the boat case's hidden
+    defects). No verdict, a failed call or the flag off: the rows unchanged. Logged as case_analysis_ruling_fit."""
+    if not ruling_rows or not feature_flags.enabled(RULING_FIT_FLAG):
+        return ruling_rows
+    case = _case_text(facts, request)
+    texts = [r.get("_passage") or " ".join(((r.get("s") or {}).get("plain_text") or "").split())[:_PASSAGE_CHARS]
+             for r in ruling_rows]
+    labels = [_ruling_label(r) for r in ruling_rows]
+    passages = "\n\n".join(f"[S{i}] {label}\n{text}" for i, (label, text) in enumerate(zip(labels, texts), 1))
+    t0 = time.time()
+    try:
+        verdicts = _chat_json([SystemMessage(content=_RULING_FIT_SYSTEM),
+                               HumanMessage(content=f"CASO:\n{case[:3000]}\n\nPASSI DELLE PRONUNCE:\n{passages}")],
+                              max_tokens=200 + 150 * len(ruling_rows), temperature=0)
+    except Exception as exc:
+        logger.warning("ruling fit check failed, rulings kept: %s", exc)
+        return ruling_rows
+    finally:
+        vlog("case_analysis_ruling_fit_llm", duration_ms=(time.time() - t0) * 1000)
+    by_id = {str(v.get("id") or "").strip().strip("[]").upper(): v for v in verdicts or [] if isinstance(v, dict)} \
+        if isinstance(verdicts, list) else {}
+    kept, log = [], {"kept": [], "dropped": []}
+    for i, (row, label) in enumerate(zip(ruling_rows, labels), 1):
+        verdict = by_id.get(f"S{i}")
+        fact = " ".join(str((verdict or {}).get("fatto") or "").split())
+        if verdict is None:
+            kept.append(row)
+            log["kept"].append({"ruling": label, "fact": "(no verdict)"})
+        elif _says_no(verdict.get("si_applica")):
+            log["dropped"].append({"ruling": label, "why": str(verdict.get("perche") or "")[:200]})
+        elif not fact or not _found_in(fact, case):
+            log["dropped"].append({"ruling": label, "why": f"fact not in the case: {fact[:200]}"})
+        else:
+            kept.append({**row, "_fit_fact": fact})
+            log["kept"].append({"ruling": label, "fact": fact[:200]})
+    vlog("case_analysis_ruling_fit", log)
+    return kept
+
+
+def _says_no(value: Any) -> bool:
+    return value is False or str(value).strip().lower() in ("false", "no")
+
+
+def _with_fit_facts(ruling_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """RULING_FIT_ENABLED: each kept ruling's passage led by the fact of the case that meets its conditions, for
+    the plan and the writer (after the principles, which read the passages alone)."""
+    out = []
+    for row in ruling_rows:
+        if row.get("_fit_fact"):
+            passage = row.get("_passage") or " ".join(((row.get("s") or {}).get("plain_text") or "").split())
+            row = {**row, "_passage": f"{_RULING_FIT_NOTE}{row['_fit_fact'].rstrip('.')}. {passage}".strip()}
+        out.append(row)
+    return out
+
+
 def _wrong_code_mark(ref: tuple, known: set) -> str:
     """" [DA VERIFICARE: nelle fonti è l'art. N <code>]" when the sources hold
     this number only under other codes (the draft put it under the wrong one,
@@ -4953,7 +5028,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     if voted_kept:
         vlog("case_pool_vote_kept", {"kept": voted_kept})   # voted articles past the applicability check
 
+    ruling_rows = _ruling_fit(facts, request, ruling_rows)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
+    ruling_rows = _with_fit_facts(ruling_rows)
     system = _parere_system(analysis, session_lang)
     articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
                                                   request, principles)
