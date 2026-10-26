@@ -230,15 +230,15 @@ class _FakeCodicePenaleSession:
                     for num, a in self.articles.items()
                     if all(w in a["title"].lower() for w in stems)]
             return _Result(rows)
-        if "s.name IN [$zero_zero, $num]" in q:               # fetch_article, exact
-            art = self.articles.get(params["num"])
-            if not art:
-                return _Result([])
-            num = params["num"]
-            return _Result([{"d": {"id": "cp-doc", "name": "Codice Penale 2026"},
-                             "s": {"name": f"{num}.0.0", "title": art["title"], "plain_text": art["text"]}}])
-        if "s.name STARTS WITH $num" in q:                    # fetch_article, comma-level fallback
-            return _Result([])
+        if "UNWIND $items AS it" in q:                        # article_text.fetch_article
+            rows = []
+            for it in params["items"]:
+                art = self.articles.get(it["num"])
+                if art:
+                    rows.append({"doc": it["doc"], "num": it["num"],
+                                 "d": {"id": "cp-doc", "name": "Codice Penale 2026"},
+                                 "s": {"name": f"{it['num']}.0.0", "title": art["title"], "plain_text": art["text"]}})
+            return _Result(rows)
         if "d.name STARTS WITH $prefix" in q:                 # _fetch_articles (standard-code fast path)
             art = self.articles.get(params["n"])
             if not art:

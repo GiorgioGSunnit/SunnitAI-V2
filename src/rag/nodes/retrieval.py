@@ -16,6 +16,7 @@ from ...preprocessing.schema.schema import (
 )
 from ..ai_chat import _call_chat, structured_entities_model
 from ..article_suffix import SUFFIX, canonical_suffix
+from ..article_text import fetch_article, fill_from_rows
 from ..answer_processing import _visibility_filter
 from .cypher import CROSSREF_SOURCE
 from ..cypher_logger import log_cypher_event, log_cypher_multiline
@@ -743,6 +744,9 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 data = [{k: _node_to_dict(v) for k, v in row.items()} for row in data]
                 for row in data:
                     row["_source"] = "bm25"
+                # An amended article's "N.0.0" holds only its date in force:
+                # the article's text by the rule every path shares.
+                fill_from_rows(article_number, data)
 
                 # Merge fragment nodes: same article name + same document → one row
                 # This fixes ingestion splits where one article became N Section nodes
@@ -997,44 +1001,16 @@ def broaden_article_context(state: Dict[str, Any], driver, database: str) -> Dic
                 # ingestion noise (a name-collision counter — see flatten.py),
                 # never a real continuation, so they are never matched here.
                 #
-                # Tier 1: only the two canonical names for this article,
-                # exact match (IN, not STARTS WITH — no partial-match surface
-                # at all). Deduped per name first (the corpus has exact
-                # duplicate nodes per name), then ".0.0" ordered before the
-                # bare name in Python, matching the convention seen elsewhere
-                # in this codebase (article_router) of preferring ".0.0" when
-                # both exist.
-                _zero_zero = f"{number}.0.0"
-                primary = session.run(
-                    "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                    "WHERE d.id = $doc_id AND s.name IN [$zero_zero, $num] "
-                    f"AND {_visibility_filter()} "
-                    "WITH d, s.name AS name, head(collect(s)) AS s "
-                    "RETURN d, s, name",
-                    num=number, zero_zero=_zero_zero, doc_id=source_doc_id,
+                # Its canonical row ("N.0.0" or "N") with the article's real
+                # text -- "N.0.0" holds only the date in force for many
+                # amended articles (Codice del Consumo, c.p.p., Appalti) --
+                # else its dot fragments ("590.1", "590.2"), never "_N" ones
+                # and never another article sharing its first digits: the
+                # rule every path shares (article_text.fetch_article).
+                records = fetch_article(
+                    session, source_doc_id, number, _visibility_filter(),
                     user_id=user_id, tenant_id=tenant_id,
-                ).data()
-                if primary:
-                    primary.sort(key=lambda r: 0 if r.get("name") == _zero_zero else 1)
-                    records = [{"d": r["d"], "s": r["s"]} for r in primary]
-                else:
-                    # Tier 2: neither canonical name exists — fall back to real
-                    # dot-delimited sub-fragments only (comma/sottocomma
-                    # splits, e.g. "590.1", "590.2"), never underscore ones.
-                    # STARTS WITH keeps the same partial-match safety: the
-                    # dot delimiter blocks numeric-prefix collisions ("59"
-                    # can't match "590." because the next character is "0",
-                    # not "."; "590" can't match "5901." the same way).
-                    records = session.run(
-                        "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                        "WHERE d.id = $doc_id AND s.name STARTS WITH $num + '.' "
-                        f"AND {_visibility_filter()} "
-                        "WITH d, s.name AS name, head(collect(s)) AS s "
-                        "RETURN d, s "
-                        "ORDER BY name "
-                        "LIMIT 3",
-                        num=number, doc_id=source_doc_id, user_id=user_id, tenant_id=tenant_id,
-                    ).data()
+                )
                 for row in records:
                     row["_source"] = CROSSREF_SOURCE
                     new_rows.append(row)

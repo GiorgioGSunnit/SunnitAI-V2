@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import feature_flags
+from . import article_text, feature_flags
 from .ai_chat import _call_chat, embedding_model, parse_json_reply
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
@@ -1820,69 +1820,9 @@ def _rows_to_sources(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return _extract_citations(rows)
 
 
-def _section_quality(section: Dict[str, Any]) -> tuple:
-    """Sort key for picking one Section among exact duplicates sharing a
-    name: titolo_articolo set (the newer parser's own rubrica — BE issue
-    7.1 — only exists on a document's current, re-ingested copy) beats
-    plain_text length alone. Round 3, 18 Oct: length alone (the previous
-    tie-break) won article 628 for a stale duplicate and lost it from the
-    draft (3/3 -> 0/3 on the same code, same facts) — a longer duplicate
-    isn't necessarily the current one; a titolo_articolo'd one is."""
-    return (
-        1 if ((section or {}).get("titolo_articolo") or "").strip() else 0,
-        len((section or {}).get("plain_text") or ""),
-    )
-
-
-# The "N.0.0" Section of many articles holds only their date of entry into force ("In vigore dal 10 dicembre
-# 2021"): 205 articles of the Codice del Consumo, 224 of the Codice degli Appalti, 138 of the c.p.p. (26 Oct);
-# the rule itself is in the bare "N" Section and in the commi "N.1.0", "N.2.0"... Every lookup that prefers
-# "N.0.0" read the date alone: the boat case quoted art. 135-octiesdecies Cod. cons. as "In vigore dal 11
-# dicembre 2021", and the applicability check judged the date.
-_IN_FORCE_RE = re.compile(r"\s*in vigore dal\s+\d{1,2}\s+\w+\s+\d{4}\.?\s*", re.IGNORECASE)
-_COMMA_RE = re.compile(r"\.(\d+)\.0$")
-
-
-def _in_force_only(text: Optional[str]) -> bool:
-    match = _IN_FORCE_RE.match(text or "")
-    return bool(match) and match.end() == len(text or "")
-
-
-def _fill_in_force_only(session, rows: List[Dict[str, Any]]) -> List[str]:
-    """In place: each row whose text is only the date of entry into force gets the article's text -- its bare
-    "N" Section (without the date it opens with), else its commi "N.1.0", "N.2.0"... in order. Returns the
-    sections filled, "doc_name N.0.0"."""
-    stubs = [r for r in rows if _in_force_only((r.get("s") or {}).get("plain_text"))
-             and (r.get("d") or {}).get("id") and (r["s"].get("name") or "")]
-    if not stubs:
-        return []
-    items = sorted({(r["d"]["id"], r["s"]["name"].split(".")[0]) for r in stubs})
-    found = session.run(
-        "UNWIND $items AS it "
-        "MATCH (d:Document {id: it.doc})-[:CONTAINS]->(s:Section) "
-        "WHERE s.name = it.num OR (s.name STARTS WITH it.num + '.' AND s.name ENDS WITH '.0') "
-        "RETURN it.doc AS doc, it.num AS num, s.name AS name, s.plain_text AS text",
-        items=[{"doc": doc, "num": num} for doc, num in items]).data()
-    texts: Dict[tuple, str] = {}
-    for doc, num in items:
-        mine = [f for f in found if f["doc"] == doc and f["num"] == num and (f.get("text") or "").strip()]
-        bare = max((_IN_FORCE_RE.sub("", f["text"], count=1).strip() for f in mine if f["name"] == num),
-                   key=len, default="")
-        commi = {}
-        for f in mine:
-            m = _COMMA_RE.search(f["name"][len(num):])
-            if m and int(m.group(1)) > 0 and len(f["text"]) > len(commi.get(int(m.group(1)), "")):
-                commi[int(m.group(1))] = f["text"].strip()
-        text = bare if len(bare) >= 60 else "\n".join(commi[k] for k in sorted(commi))
-        if text and not _in_force_only(text):
-            texts[(doc, num)] = text
-    filled = []
-    for row in stubs:
-        text = texts.get((row["d"]["id"], row["s"]["name"].split(".")[0]))
-        if text:
-            row["s"] = {**row["s"], "plain_text": text}
-            filled.append(f"{row['d'].get('name', '')} {row['s']['name']}")
-    return filled
+# Which duplicate Section wins, and an article's real text when its "N.0.0" holds only the date its wording
+# took effect: one rule for every path, in article_text.py.
+_section_quality = article_text.section_quality
 
 
 def _dedupe_sections(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1904,13 +1844,10 @@ def _dedupe_sections(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
-    """The text of each article, read from its code by number.
-
-    Duplicates sharing a Section name are resolved by _dedupe_sections, not
-    left to Neo4j's unspecified order or to plain_text length alone — see
-    _section_quality. The Cypher's own ORDER BY/LIMIT only keeps the result
-    set small before that Python-side tie-break; it does not decide which
-    duplicate wins."""
+    """The text of each article, read from its code by number: per document, the canonical row carrying the
+    article's real text (article_text.article_rows -- "N.0.0" unless it holds only its date in force, else the
+    bare "N", else the commi joined), else its dot fragments. Duplicates sharing a Section name are resolved
+    by _section_quality, not left to Neo4j's unspecified order."""
     rows = []
     for num, abbr in refs:
         prefix = _CODE_PREFIXES.get(abbr)
@@ -1920,19 +1857,22 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
         # The canonical spelling, then legacy ones ("21-novies") of Sections
         # ingested before the BE normalised suffixes (article_suffix.py).
         for spelling in number_variants(num):
-            found = session.run(
+            raw = session.run(
                 "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                 "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
-                "AND (s.name = $n + '.0.0' OR s.name STARTS WITH $n + '.') "
-                "RETURN d, s ORDER BY s.name LIMIT 30",
+                "AND (s.name = $n OR s.name STARTS WITH $n + '.') "
+                "RETURN d, s ORDER BY s.name LIMIT 80",
                 prefix=prefix, n=spelling,
             ).data()
+            by_doc: Dict[Any, List[Dict[str, Any]]] = {}
+            for row in raw:
+                by_doc.setdefault((row.get("d") or {}).get("id"), []).append(row)
+            found = [r for doc_rows in by_doc.values() for r in article_text.article_rows(spelling, doc_rows)]
             if found:
                 break
-        found = _dedupe_sections(found)[:6]
-        for row in found:
+        for row in found[:6]:
             row["_article"] = (num, abbr)
-        rows.extend(found)
+            rows.append(row)
     return rows
 
 
@@ -5012,7 +4952,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             first_rulings, similar = picked["first_rulings"], picked["similar"]
             candidates, selected, article_rows = picked["candidates"], picked["selected"], picked["article_rows"]
             try:
-                filled = _fill_in_force_only(session, article_rows + regime_rows)
+                filled = article_text.fill_texts(session, article_rows + regime_rows)
                 if filled:
                     vlog("case_analysis_in_force_only_filled", {"sections": filled})
             except Exception as exc:

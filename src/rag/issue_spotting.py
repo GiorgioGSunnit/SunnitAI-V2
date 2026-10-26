@@ -27,7 +27,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
 from .ai_chat import _call_chat, parse_json_reply
-from .article_suffix import SUFFIX, canonical_suffix, number_variants
+from .article_suffix import SUFFIX, canonical_suffix
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -144,34 +144,12 @@ def resolve_code(code: str, documents: List[Dict[str, Any]]) -> Optional[Dict[st
 
 
 def fetch_article(session, doc_id: str, number: str, visibility: str = "", **params) -> List[Dict[str, Any]]:
-    """The article's sections in that one document: its canonical name
-    ("N.0.0" or "N"), else its dot-delimited fragments ("N.1", "N.2"), never
-    another article that merely starts with the same digits. Any spelling of
-    the suffix: the canonical one first ("21-novies" finds "21-nonies.0.0"),
-    then the legacy spellings of Sections ingested before the BE normalised them."""
-    for spelling in number_variants(number):
-        rows = _fetch_article_named(session, doc_id, spelling, visibility, **params)
-        if rows:
-            return rows
-    return []
+    """The article's canonical row with its real text (article_text.fetch_article: "N.0.0" unless it holds
+    only its date in force, else the bare "N", else the commi joined), else its dot fragments ("N.1", "N.2"),
+    never another article that merely starts with the same digits."""
+    from .article_text import fetch_article as shared_fetch
 
-
-def _fetch_article_named(session, doc_id: str, number: str, visibility: str = "", **params) -> List[Dict[str, Any]]:
-    rows = session.run(
-        "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-        "WHERE d.id = $doc_id AND s.name IN [$zero_zero, $num] " + (f"AND {visibility} " if visibility else "")
-        + "WITH d, s.name AS name, head(collect(s)) AS s RETURN d, s, name",
-        doc_id=doc_id, num=number, zero_zero=f"{number}.0.0", **params,
-    ).data()
-    if rows:
-        rows.sort(key=lambda r: 0 if r.get("name") == f"{number}.0.0" else 1)
-        return [{"d": r["d"], "s": r["s"]} for r in rows[:1]]
-    return [{"d": r["d"], "s": r["s"]} for r in session.run(
-        "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-        "WHERE d.id = $doc_id AND s.name STARTS WITH $num + '.' " + (f"AND {visibility} " if visibility else "")
-        + "WITH d, s.name AS name, head(collect(s)) AS s RETURN d, s ORDER BY name LIMIT 3",
-        doc_id=doc_id, num=number, **params,
-    ).data()]
+    return shared_fetch(session, doc_id, number, visibility, **params)
 
 
 def _stems(text: str) -> set:

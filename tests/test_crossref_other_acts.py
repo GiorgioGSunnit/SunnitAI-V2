@@ -37,7 +37,7 @@ class _Session:
         return False
 
     def run(self, query, **params):
-        self.looked_up.add(params["num"])
+        self.looked_up.update(it["num"] for it in params["items"])
         return _Result()
 
 

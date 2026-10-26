@@ -118,13 +118,16 @@ class _Session:
         if "toLower(coalesce(s.title" in query:     # Neo4j's CONTAINS: a substring test
             return _Result([{"name": name, "title": title} for (doc, name), title in self.TITLES.items()
                             if doc == params["doc_id"] and all(w in title.lower() for w in params["stems"])])
-        if "s.name IN [$zero_zero, $num]" in query:
-            for name in (params["zero_zero"], params["num"]):
-                text = self.ARTICLES.get((params["doc_id"], name))
-                if text:
-                    return _Result([{"d": {"id": params["doc_id"], "name": next(d["name"] for d in DOCS if d["id"] == params["doc_id"])},
-                                     "s": {"id": f"{params['doc_id']}::{name}", "name": name, "plain_text": text},
-                                     "name": name}])
+        if "UNWIND $items AS it" in query:                  # article_text.fetch_article
+            rows = []
+            for it in params["items"]:
+                for name in (f"{it['num']}.0.0", it["num"]):
+                    text = self.ARTICLES.get((it["doc"], name))
+                    if text:
+                        rows.append({"doc": it["doc"], "num": it["num"],
+                                     "d": {"id": it["doc"], "name": next(d["name"] for d in DOCS if d["id"] == it["doc"])},
+                                     "s": {"id": f"{it['doc']}::{name}", "name": name, "plain_text": text}})
+            return _Result(rows)
         return _Result([])
 
 

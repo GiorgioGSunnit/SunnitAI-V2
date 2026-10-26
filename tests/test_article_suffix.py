@@ -46,9 +46,10 @@ class _Session:
         self.name, self.asked = name, []
 
     def run(self, query, **params):
-        self.asked.append(params.get("num"))
-        if "IN [$zero_zero, $num]" in query and self.name in (params["zero_zero"], params["num"]):
-            return _Result([{"d": {"id": "doc"}, "s": {"name": self.name}, "name": self.name}])
+        num = params["items"][0]["num"]
+        self.asked.append(num)
+        if self.name in (f"{num}.0.0", num) or self.name.startswith(num + "."):
+            return _Result([{"doc": "doc", "num": num, "d": {"id": "doc"}, "s": {"name": self.name}}])
         return _Result([])
 
 
@@ -56,4 +57,4 @@ def test_fetch_article_tries_the_canonical_spelling_then_legacy_ones():
     session = _Session("21-novies.0.0")
     rows = issue_spotting.fetch_article(session, "doc", "21-nonies")
     assert rows and rows[0]["s"]["name"] == "21-novies.0.0"
-    assert session.asked == ["21-nonies", "21-nonies", "21-novies"]       # exact, fragments, then legacy
+    assert session.asked == ["21-nonies", "21-novies"]       # one query per spelling, the canonical one first
