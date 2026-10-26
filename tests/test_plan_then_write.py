@@ -518,9 +518,13 @@ def test_review_drops_does_not_apply_and_burden_templates_and_flags_facts(model,
     assert "1917" not in text                                        # cited only to say it does not apply
     assert "L'onere della prova ricade sulla scuola" not in text     # 2051's text allocates nothing
     assert "se non prova la causa non imputabile" in text            # 1218's own text allocates the burden
-    assert "panchina era instabile [fatto non indicato nel caso: da verificare]." in text
+    assert "La scuola sapeva che la panchina era instabile." in text      # FACT_MARK_INLINE_ENABLED off: only logged
     assert "Va escluso che l'art. 2048 c.c. si applichi" in text      # no "does not apply" wording: kept
     assert sorted(e["kind"] for e in log) == ["burden", "fact_not_in_case", "non_application"]
+    assert next(e for e in log if e["kind"] == "fact_not_in_case")["how"] == "logged"
+    monkeypatch.setenv(ptw.FACT_MARK_FLAG, "true")
+    text, log = ptw.review_section("Applicazione al caso", SECTION_TEXT, FACTS, ARTICLES, [])
+    assert "panchina era instabile [fatto non indicato nel caso: da verificare]." in text
     review = next(c for c in model.calls if "Controlli una sezione" in c["system"])
     assert FACTS in review["human"] and review["temperature"] == 0
 
@@ -587,7 +591,8 @@ def test_regime_blocks_reach_the_plan_and_the_procedural_section(monkeypatch):
     rows = ARTICLES + [_article("700", "c.p.c.", "Fuori dei casi regolati nelle precedenti sezioni...")]
     jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, analysis, rows, {}, "")
     title, instruction, material, _ = _job(jobs, "Profili processuali e termini")
-    assert "Proponi gli STRUMENTI PROCESSUALI INDICATI DAI FATTI" in instruction
+    assert "senza ometterne nessuno: **Termini**: ogni termine" in instruction
+    assert "**Strumenti processuali**" in instruction and "**Profilo penale**" not in instruction
     assert "Indica sempre ciascuno di questi termini" in instruction
     assert "Nel caso: la caldaia perde gas." in material and "[art. 1495 c.c.]" in material
     assert "Il compratore decade dal diritto" in material and "[art. 700 c.p.c.]\nFuori dei casi" in material
@@ -642,3 +647,73 @@ def test_damages_and_roles_blocks_reach_the_plan_and_the_sections(monkeypatch):
     assert "la responsabilità per ciascun ruolo" in instruction and "- Edil Gamma: ha costruito; manutiene" in material
     assert "VOCI DI DANNO" in _job(jobs, "Profili processuali e termini")[2]
     assert ("2059", "c.c.") in ptw._tool_refs(analysis)
+
+
+def test_fact_flags_on_arguments_quotes_sources_and_evidence_are_filtered():
+    case = "Tizio, alunno, scivola durante l'ora di educazione fisica e urta una panchina di legno."
+    assert ptw._fact_flag_excluded("I genitori possono sostenere che la scuola conosceva il pericolo.", case)
+    assert ptw._fact_flag_excluded("- testimonianze dei compagni di classe", case) == "evidence to gather"
+    assert ptw._fact_flag_excluded("La Cassazione ha ritenuto la scuola responsabile (Cass. n. 190/2026).", case)
+    assert ptw._fact_flag_excluded("Tizio scivola durante l'ora di educazione fisica e urta la panchina.", case) == \
+        "restates the case"
+    assert ptw._fact_flag_excluded("Il caso dice: «scivola durante l'ora di educazione fisica».", case) == \
+        "restates the case"
+    assert ptw._fact_flag_excluded("La scuola sapeva che la panchina era instabile.", case) is None
+    assert ptw._fact_flag_excluded("L'insegnante si era allontanata dalla palestra senza avvisare.", case) is None
+
+
+def test_a_filtered_fact_flag_is_logged_as_such(model, monkeypatch):
+    monkeypatch.setenv(ptw.WRITER_RULES_FLAG, "true")
+    model.review["Applicazione al caso"] = json.dumps([{"i": 1, "tipo": "fatto_non_nel_caso", "perche": "x"}])
+    text = "I genitori possono sostenere che la scuola conosceva il pericolo."
+    out, log = ptw.review_section("Applicazione al caso", text, FACTS, ARTICLES, [])
+    assert out == text and [(e["kind"], e["why"]) for e in log] == [("fact_flag_filtered", "argues or supposes")]
+    assert ptw._writer_log(log)["facts_filtered"] == {"argues or supposes": 1}
+
+
+SIGNALS_5 = {"tools": [{"id": "accertamento_preventivo", "refs": [["696", "c.p.c."], ["696-bis", "c.p.c."]],
+                        "text": "ATP (art. 696 c.p.c.).", "why": "w", "matched": ["difetti"]},
+                       {"id": "profilo_penale", "refs": [["589", "c.p."]], "text": "Profilo penale (art. 589 c.p.).",
+                        "why": "w", "matched": ["morte"]}],
+             "damages": [{"id": "danni_morte", "refs": [["2059", "c.c."]], "lines": ["Iure proprio: ..."]}],
+             "terms": [{"id": "denuncia_vizi_vendita", "length": "8 giorni", "text": "denuncia: 8 giorni",
+                        "ref": "art. 1495 c.c."},
+                       {"id": "azione_conformita_consumo", "length": "26 mesi", "text": "azione: 26 mesi",
+                        "ref": "Codice del Consumo"}]}
+
+
+def test_material_use_reads_each_block_off_the_section(monkeypatch):
+    monkeypatch.setenv("FACT_REGIMES_ENABLED", "true")
+    analysis = {**ANALYSIS, "fact_signals": SIGNALS_5}
+    text = ("**Termini**\nLa denuncia va fatta entro otto giorni dalla scoperta (art. 1495 c.c.).\n\n**Strumenti "
+            "processuali**\nUn ATP (artt. 696 e 696-bis c.p.c.).\n\n**Voci di danno**\nIl danno da perdita del "
+            "rapporto parentale e le assicurazioni delle parti.")
+    use = ptw.material_use(analysis, text)
+    assert use["termini"] == {"offered": ["denuncia_vizi_vendita", "azione_conformita_consumo"],
+                              "written": ["denuncia_vizi_vendita"]}
+    assert use["strumenti"]["written"] == ["accertamento_preventivo"] and use["profilo_penale"]["written"] == []
+    assert use["voci_di_danno"]["written"] == ["iure proprio", "assicurazioni"]
+    assert ptw._missing_blocks(use) == ["termini", "profilo_penale"]
+    assert ptw._length_written("1 anno", "entro un anno dalla consegna") and not ptw._length_written("2 anni", "entro un anno")
+    jobs = ptw.section_jobs(PLAN_CLEAN, FACTS, REQUEST, analysis, ARTICLES, {}, "")
+    title, instruction, material, tokens = _job(jobs, "Profili processuali e termini")
+    for block in ("**Termini**", "**Strumenti processuali**", "**Profilo penale**", "**Voci di danno**"):
+        assert block in instruction
+    assert tokens == 900 + 4 * 250 and "PROFILO PENALE DEL DANNO ALLA PERSONA:\n- Profilo penale" in material
+    assert "Profilo penale" not in material.split("STRUMENTI PROCESSUALI INDICATI DAI FATTI:")[1].split("\n\n")[0]
+
+
+def test_the_procedural_section_is_written_again_when_it_leaves_out_a_block(model, monkeypatch):
+    monkeypatch.setenv("FACT_REGIMES_ENABLED", "true")
+    model.texts["Profili processuali e termini"] = [
+        "Un ATP (art. 696 c.p.c.).",
+        "**Termini**\nOtto giorni per la denuncia; 26 mesi per l'azione.\n\n**Strumenti processuali**\nUn ATP (art. "
+        "696 c.p.c.).\n\n**Profilo penale**\nOmicidio colposo (art. 589 c.p.).\n\n**Voci di danno**\nIure proprio "
+        "e iure hereditatis; le assicurazioni."]
+    out = ptw.write_parere(FACTS, REQUEST, {**ANALYSIS, "fact_signals": SIGNALS_5}, ARTICLES, RULINGS, "NORME",
+                           "GIURISPRUDENZA", "", "it")
+    assert "Omicidio colposo (art. 589 c.p.)" in out
+    calls = [c for c in model.calls if "SEZIONE: Profili processuali" in c["system"]]
+    assert len(calls) == 2 and "La stesura precedente ometteva: termini: azione_conformita_consumo" in calls[1]["system"]
+    use = [d for e, d in model.logged if e == "case_analysis_material_use"][-1]
+    assert use["missing"] == [] and use["written"]["profilo_penale"] == ["profilo_penale"]

@@ -47,8 +47,9 @@ import json
 import logging
 import re
 import time
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -83,6 +84,10 @@ _MAX_ISSUES_WIDE, _WIDE_APPLICABLE = 7, 8
 # article only to say it does not apply is dropped, a per-article burden template whose norm allocates nothing is
 # dropped, a sentence stating a fact about a party the case does not hold is flagged (review_section).
 WRITER_RULES_FLAG = "WRITER_RULES_ENABLED"
+# FACT_MARK_INLINE_ENABLED (default off; acts with WRITER_RULES_ENABLED. Run 20261026-0841: ~10 of a sample of 12
+# marked sentences were arguments, quotes of the case, of a norm or a ruling, or evidence to gather): the "fact not
+# in the case" marker written into the answer. Off, the flagged sentences are only logged.
+FACT_MARK_FLAG = "FACT_MARK_INLINE_ENABLED"
 OTHER_NORMS_TITLE = "Altre norme rilevanti"
 _ISSUE_COUNT_WORDS = {5: "cinque", 7: "sette"}
 
@@ -553,6 +558,7 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
             + (f"{_DAMAGES_TITLE}:\n{damages}\n{_DAMAGES_RULE}\n\n" if damages else "")
             + (f"VERIFICHE PER LA FASE E LA MATERIA:\n{verifiche}\n\n" if verifiche else "")
             + (f"{_TOOLS_TITLE}:\n{tools}\n{_TOOLS_RULE}\n\n" if tools else "")
+            + (f"{_CRIMINAL_TITLE}:\n{_tools(analysis, criminal=True)}\n\n" if _tools(analysis, criminal=True) else "")
             + (f"{_TERMS_TITLE}:\n{terms}\n{_terms_rule()}\n\n" if terms else "")
             + (by_issue if by_issue else
                f"NORME PIÙ PERTINENTI AL CASO: {applicabili}. Metti ciascuna tra le norme della questione che "
@@ -911,9 +917,15 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
              "regola con le sue parole" if rules else
              "Per ogni norma del PIANO: che cosa stabilisce, citando il testo fornito, e come si ripartisce l'onere "
              "della prova")
+    criminal = _tools(analysis, criminal=True)
+    present = {"termini": bool(_terms(analysis)), "strumenti": bool(tools), "profilo_penale": bool(criminal),
+               "voci_di_danno": bool(damages)}
+    blocks = ([(title, what) for key, title, what in _SECTION5_BLOCKS if present[key]]
+              if _qualifications_or_regimes(analysis) else [])
     regimes = ((f" Tieni conto delle {_QUALIFIED_TITLE} e dei regimi speciali che comportano." if qualified else "")
-               + (f" Proponi gli {_TOOLS_TITLE}, spiegando a che cosa servono in questo caso." if tools else "")
-               + (f" Indica le {_DAMAGES_TITLE} che spettano a {party}." if damages else ""))
+               + (" Tratta uno per uno, ciascuno in un breve paragrafo aperto dal suo titolo in grassetto, senza "
+                  "ometterne nessuno: " + "; ".join(f"**{title}**: {what}" for title, what in blocks) + "."
+                  if blocks else ""))
     applied = ((f" Per ogni parte di {_ROLES_TITLE}, la responsabilità per ciascun ruolo." if roles else "")
                + (f" Tieni conto delle {_DAMAGES_TITLE}." if damages else ""))
 
@@ -965,10 +977,10 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          material(case, block("FASE", frame.get("procedural_posture") or ""), block(_QUALIFIED_TITLE, qualified),
                   block(_TERMS_TITLE, _terms(analysis)), block(_TERM_TEXTS_TITLE, _term_texts(analysis)),
                   _plan_text(plan, issues="", subordinate=True, rulings=False),
-                  block(_TOOLS_TITLE, tools), block(_DAMAGES_TITLE, damages),
+                  block(_TOOLS_TITLE, tools), block(_CRIMINAL_TITLE, criminal), block(_DAMAGES_TITLE, damages),
                   block("VERIFICHE PER QUESTA FASE E MATERIA",
                         "\n".join(f"- {c}" for c in _checks(analysis, article_rows, facts, request))),
-                  block("TESTI DELLE NORME PROCESSUALI", texts(procedural, 500))), 900),
+                  block("TESTI DELLE NORME PROCESSUALI", texts(procedural, 500))), 900 + 250 * len(blocks)),
         (SECTION_TITLES[5],
          "SEZIONE: Conclusioni. In due o tre paragrafi: gli argomenti in ordine di forza, come nel PIANO; una "
          f"stima motivata del rischio, tenendo conto dei punti deboli; la condotta consigliata a {party}."
@@ -1202,6 +1214,12 @@ def _signals(analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return (analysis or {}).get("fact_signals")
 
 
+def _qualifications_or_regimes(analysis: Dict[str, Any]) -> bool:
+    """FACT_REGIMES_ENABLED ran on the case (its signals carry its keys)."""
+    from . import fact_signals
+    return fact_signals.regimes_enabled() and "tools" in (_signals(analysis) or {})
+
+
 def _terms(analysis: Dict[str, Any]) -> str:
     from . import fact_signals
     return fact_signals.terms_block(_signals(analysis), refs=fact_signals.regimes_enabled())
@@ -1229,9 +1247,81 @@ def _qualifications(analysis: Dict[str, Any]) -> str:
     return fact_signals.qualifications_block(_signals(analysis)) if fact_signals.regimes_enabled() else ""
 
 
-def _tools(analysis: Dict[str, Any]) -> str:
+def _tools(analysis: Dict[str, Any], criminal: bool = False) -> str:
     from . import fact_signals
-    return fact_signals.tools_block(_signals(analysis)) if fact_signals.regimes_enabled() else ""
+    return fact_signals.tools_block(_signals(analysis), criminal) if fact_signals.regimes_enabled() else ""
+
+
+_CRIMINAL_TITLE = "PROFILO PENALE DEL DANNO ALLA PERSONA"
+# FACT_REGIMES_ENABLED (run 20261026-0841: terms stated 8/22, tools cited 6/33, criminal route 2/4): the procedural
+# section treats each block it is given in its own short paragraph, under its own bold title (_SECTION5_BLOCKS);
+# one that it leaves out gets the section written once more (write_sections), and what was offered and what
+# written is logged as case_analysis_material_use.
+_SECTION5_BLOCKS = (
+    ("termini", "Termini", "ogni termine di " + "TERMINI CALCOLATI DALLE DATE DEL CASO" + ", con durata, decorrenza e norma"),
+    ("strumenti", "Strumenti processuali", "ogni strumento di STRUMENTI PROCESSUALI INDICATI DAI FATTI, con la sua "
+                                           "norma e a che cosa serve in questo caso"),
+    ("profilo_penale", "Profilo penale", "il reato configurabile con la sua norma, la procedibilità, la "
+                                         "costituzione di parte civile, le prove del procedimento penale e la "
+                                         "prescrizione dell'azione civile"),
+    ("voci_di_danno", "Voci di danno", "ciascuna delle VOCI DI DANNO DA CONSIDERARE che spettano alla parte assistita"),
+)
+_NUMBER_WORDS = {1: "un|uno|una", 2: "due", 3: "tre", 4: "quattro", 5: "cinque", 6: "sei", 8: "otto", 10: "dieci",
+                 12: "dodici", 15: "quindici", 20: "venti", 26: "ventisei", 30: "trenta", 45: "quarantacinque",
+                 60: "sessanta", 90: "novanta", 120: "centoventi"}
+_UNIT_STEMS = {"anno": "ann", "anni": "ann", "mese": "mes", "mesi": "mes", "giorno": "giorn", "giorni": "giorn"}
+
+
+def _length_written(length: str, text: str) -> bool:
+    """A term's length ("8 giorni", "26 mesi", "1 anno") in the text, in figures or in words."""
+    m = re.search(r"(\d+)\s+(anno|anni|mese|mesi|giorno|giorni)\b", length or "")
+    if not m:
+        return False
+    n = int(m.group(1))
+    number = f"{n}" + (f"|{_NUMBER_WORDS[n]}" if n in _NUMBER_WORDS else "")
+    return bool(re.search(rf"\b(?:{number})\s+{_UNIT_STEMS[m.group(2)]}\w*", text or "", re.IGNORECASE))
+
+
+def _cited_number(number: str, text: str) -> bool:
+    return bool(re.search(rf"\bartt?\.\s*(?:[\w-]+\s*(?:,|e)\s*)*{re.escape(number)}\b", text or "", re.IGNORECASE))
+
+
+_DAMAGE_HEADS = (("iure proprio", r"iure proprio|rapporto parentale|perdita del rapporto"),
+                 ("iure hereditatis", r"iure hereditatis|danno terminale|catastrofale"),
+                 ("assicurazioni", r"assicura"))
+
+
+def material_use(analysis: Dict[str, Any], text: str) -> Dict[str, Dict[str, List[str]]]:
+    """{block: {"offered": [...], "written": [...]}} of the procedural section's blocks, read off its text: a term by
+    its length, a tool by one of its articles, the criminal route by 589/590 c.p., a head of damage by its words."""
+    from . import fact_signals
+    if not fact_signals.regimes_enabled():
+        return {}
+    signals = _signals(analysis) or {}
+    out: Dict[str, Dict[str, List[str]]] = {}
+    terms = signals.get("terms") or []
+    if terms:
+        out["termini"] = {"offered": [t["id"] for t in terms],
+                          "written": [t["id"] for t in terms if _length_written(t.get("length", ""), text)]}
+    tools = [t for t in signals.get("tools") or [] if t["id"] != fact_signals.CRIMINAL_TOOL]
+    if tools:
+        out["strumenti"] = {"offered": [t["id"] for t in tools],
+                            "written": [t["id"] for t in tools if any(_cited_number(r[0], text) for r in t["refs"])]}
+    if any(t["id"] == fact_signals.CRIMINAL_TOOL for t in signals.get("tools") or []):
+        out["profilo_penale"] = {"offered": [fact_signals.CRIMINAL_TOOL],
+                                 "written": [fact_signals.CRIMINAL_TOOL] if _cited_number("589", text)
+                                 or _cited_number("590", text) else []}
+    if signals.get("damages"):
+        out["voci_di_danno"] = {"offered": [name for name, _ in _DAMAGE_HEADS],
+                                "written": [name for name, pattern in _DAMAGE_HEADS
+                                            if re.search(pattern, text or "", re.IGNORECASE)]}
+    return out
+
+
+def _missing_blocks(use: Dict[str, Dict[str, List[str]]]) -> List[str]:
+    """The blocks the section left out: no item written, or for the terms any term left out."""
+    return [block for block, u in use.items()
+            if u["offered"] and (not u["written"] or (block == "termini" and len(u["written"]) < len(u["offered"])))]
 
 
 _DAMAGES_TITLE = "VOCI DI DANNO DA CONSIDERARE"
@@ -1385,16 +1475,64 @@ _REVIEW_SYSTEM = (
     "- \"non_applicabile\": la frase cita una norma soltanto per dire che non è pertinente, non si applica o non "
     "rileva nel caso, senza usarla per un argomento. Non segnalare la frase che esclude una norma su cui la "
     "controparte o l'accusa fonda la pretesa contro la parte assistita: è un argomento.\n"
-    "- \"fatto_non_nel_caso\": la frase afferma come fatto del caso una condotta, una conoscenza, un'intenzione, "
-    "un evento o una qualità di una parte che il CASO non dice né rende evidente. Non segnalare le ipotesi e le "
-    "verifiche («se risultasse», «occorre accertare»), le qualificazioni giuridiche dei fatti narrati, le norme e i "
-    "principi; segnala i fatti di una pronuncia attribuiti alle parti del caso.\n"
+    "- \"fatto_non_nel_caso\": solo una frase che afferma come avvenuta, senza riserve, una condotta, una "
+    "conoscenza o un'intenzione di una parte (che abbia fatto, omesso, saputo o voluto qualcosa) che il CASO non "
+    "dice né rende evidente, compresi i fatti di una pronuncia attribuiti alle parti del caso. Non segnalare mai: un "
+    "argomento («la parte può sostenere, eccepire, dimostrare»), un'ipotesi o una verifica («se risultasse», "
+    "«occorre accertare»), una frase che riprende il testo del CASO, una citazione di una norma o di una pronuncia, "
+    "un elenco di prove da acquisire, una qualificazione giuridica dei fatti narrati.\n"
     "- \"contro_assistito\": la frase propone un'azione, una domanda, una denuncia o una querela contro la PARTE "
     "ASSISTITA o contro chi è assistito insieme a essa. Non segnalare la frase che riporta un'obiezione della "
     "controparte per replicarvi.\n"
     'Rispondi SOLO con un array JSON, vuoto se nessuna frase va segnalata: '
     '[{"i": 3, "tipo": "fatto_non_nel_caso", "perche": "una frase"}]'
 )
+
+
+# What a "fact not in the case" flag is never about (run 20261026-0841's false positives), checked in code.
+_ARGUES_RE = re.compile(
+    r"\b(?:può|possono|potrà|potranno|potrebbe|potrebbero|dovrà|dovranno|deve|devono|occorre|occorrerà|occorrerebbe|"
+    r"bisogna|conviene|va|vanno|si\s+potrà|si\s+può|è\s+possibile|sarà\s+possibile)\s+(?:\w+\s+){0,2}?(?:sostenere|"
+    r"eccepire|dimostrare|provare|argomentare|affermare|contestare|rilevare|dedurre|allegare|accertare|verificare|"
+    r"chiedere|invocare|far\s+valere|osservare|obiettare|replicare)\b|\b(?:se|qualora|ove|laddove|nel\s+caso\s+in\s+cui)\s",
+    re.IGNORECASE)
+_SOURCE_RE = re.compile(r"\bcass\.|\bsent\.|\bord\.|\bn\.\s*\d+/\d{2,4}\b|\bsez\.|\bcorte\b|\btribunale\b",
+                        re.IGNORECASE)
+_EVIDENCE_RE = re.compile(r"\bacquisir|\bda\s+acquisire|\bprodurre\b|\bchiedere\s+copia|\bprove\s+da|\braccogliere|"
+                          r"\bdocumentazione\b|\btestimon|\bperizi|\bconsulenza\s+tecnica|\bfotograf", re.IGNORECASE)
+_QUOTED_RE = re.compile(r"[«“\"]([^»”\"]{12,})[»”\"]")
+
+
+def _words(text: str) -> List[str]:
+    return [w for w in re.findall(r"[a-zà-ù]{4,}", (text or "").lower())]
+
+
+def _from_the_case(sentence: str, case_text: str) -> bool:
+    """The sentence restates the case: a quoted passage of it, or (fuzzy) most of its content words are the case's."""
+    case_norm = " ".join(_words(case_text))
+    for quoted in _QUOTED_RE.findall(sentence):
+        if len(_words(quoted)) >= 3 and " ".join(_words(quoted)) in case_norm:
+            return True
+    words = [w for w in _words(sentence) if w not in _HEADING_STOP]
+    case_words = set(_words(case_text)) | {w[:6] for w in _words(case_text)}
+    hits = sum(1 for w in words if w in case_words or w[:6] in case_words)
+    return len(words) >= 4 and hits / len(words) >= 0.8
+
+
+def _fact_flag_excluded(sentence: str, case_text: str) -> Optional[str]:
+    """Why a "fact not in the case" flag on the sentence is not kept, or None: it argues, lists evidence to gather,
+    quotes or cites a norm or a ruling, or restates the case."""
+    if re.match(r"\s*(?:[-•*]|\d+[.)])\s+", sentence) or _EVIDENCE_RE.search(sentence):
+        return "evidence to gather"
+    if _ARGUES_RE.search(sentence):
+        return "argues or supposes"
+    if _cites(sentence) or _SOURCE_RE.search(sentence):
+        return "cites a source"
+    if _QUOTED_RE.search(sentence) and not _from_the_case(sentence, case_text):
+        return "quotes a norm or ruling"
+    if _from_the_case(sentence, case_text):
+        return "restates the case"
+    return None
 
 
 def _cites(sentence: str) -> bool:
@@ -1463,7 +1601,8 @@ def review_section(title: str, text: str, case_text: str, article_rows: Optional
     """(text, log), WRITER_RULES_ENABLED: dropped, each sentence citing an article only to say it does not apply
     (the review call, and _NOT_APPLY_RE in the sentence; without the call, only a remark on relevance,
     _NOT_RELEVANT_RE) and each burden template whose norm allocates nothing (_burden_templates); flagged with
-    _FACT_MARK, each sentence the review finds stating a fact about a party the case does not hold; dropped, each
+    _FACT_MARK (only with FACT_MARK_INLINE_ENABLED; otherwise logged), each sentence the review finds asserting a
+    party's conduct, knowledge or intent the case does not hold, unless _fact_flag_excluded; dropped, each
     sentence proposing an action against the client (party) or a co-client."""
     rows, documents = article_rows or [], documents or []
     known = {r["_article"] for r in rows if r.get("_article")}
@@ -1473,6 +1612,7 @@ def review_section(title: str, text: str, case_text: str, article_rows: Optional
     flags = _review_call(title, text, spans, case_text, party)
     drop: Dict[int, Tuple[str, str]] = {}
     mark: Dict[int, str] = {}
+    filtered: List[Dict[str, Any]] = []
     for k, (s, e) in enumerate(spans):
         sentence = text[s:e]
         if flags is None and _cites(sentence) and _NOT_RELEVANT_RE.search(sentence):
@@ -1482,22 +1622,61 @@ def review_section(title: str, text: str, case_text: str, article_rows: Optional
         if flag["tipo"] == "non_applicabile" and _cites(sentence) and _NOT_APPLY_RE.search(sentence):
             drop[k] = ("non_application", flag["perche"])
         elif flag["tipo"] == "fatto_non_nel_caso":
-            mark[k] = flag["perche"]
+            excluded = _fact_flag_excluded(sentence, case_text)
+            if excluded:
+                filtered.append({"section": title, "kind": "fact_flag_filtered", "how": "kept", "why": excluded,
+                                 "sentence": sentence.strip()[:300]})
+            else:
+                mark[k] = flag["perche"]
         elif flag["tipo"] == "contro_assistito" and party:
             drop[k] = ("against_client", flag["perche"])
     for k, why in _burden_templates(title, text, spans, rows, documents, known).items():
         drop.setdefault(k, ("burden", why))
     log = [{"section": title, "kind": kind, "how": "sentence dropped", "why": why,
             "sentence": text[spans[k][0]:spans[k][1]].strip()[:300]} for k, (kind, why) in sorted(drop.items())]
-    log += [{"section": title, "kind": "fact_not_in_case", "how": "flagged", "why": why,
+    inline = dg.feature_flags.enabled(FACT_MARK_FLAG)
+    log += [{"section": title, "kind": "fact_not_in_case", "how": "marked" if inline else "logged", "why": why,
              "sentence": text[spans[k][0]:spans[k][1]].strip()[:300]} for k, why in sorted(mark.items()) if k not in drop]
-    marked = _mark_spans(text, [spans[k] for k in mark if k not in drop])
+    log += filtered
+    marked = _mark_spans(text, [spans[k] for k in mark if k not in drop]) if inline else text
     # the marks shift the offsets: drop on the marked text by the same sentences, found again
     if drop:
         spans_after = _sentence_spans(marked)
         dropped = {text[spans[k][0]:spans[k][1]].strip() for k in drop}
         marked = _drop_spans(marked, [(s, e) for s, e in spans_after if marked[s:e].strip() in dropped])
     return marked, log
+
+
+def _cover_blocks(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]], system: str,
+                  coverage: Callable[[str], Dict[str, Dict[str, List[str]]]]) -> List[Tuple[str, str]]:
+    """The procedural section written once more when it leaves out a block of its material (_missing_blocks); the
+    version that writes more items of the blocks is kept."""
+    i = next((k for k, (title, _) in enumerate(sections) if title == SECTION_TITLES[4]), None)
+    if i is None or not sections[i][1]:
+        return sections
+    use = coverage(sections[i][1])
+    missing = _missing_blocks(use)
+    if not missing:
+        return sections
+    title, instruction, material, max_tokens = jobs[i]
+    lacking = "; ".join(f"{block}: " + ", ".join(sorted(set(u["offered"]) - set(u["written"])))
+                        for block, u in use.items() if block in missing)
+    try:
+        again = _without_heading(dg._call_chat([
+            SystemMessage(content=f"{system}\n\n{instruction} La stesura precedente ometteva: {lacking}. Tratta "
+                                  "ciascun blocco, uno per uno."),
+            HumanMessage(content=material)], max_tokens=max_tokens), title)
+    except Exception as exc:
+        logger.warning("plan-then-write: procedural section not rewritten for its blocks: %s", exc)
+        return sections
+
+    def written(u):
+        return sum(len(v["written"]) for v in u.values())
+    if again and written(coverage(again)) > written(use):
+        out = list(sections)
+        out[i] = (title, again)
+        return out
+    return sections
 
 
 def _complete_sections(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]],
@@ -1545,17 +1724,21 @@ def _writer_log(log: List[Dict[str, Any]]) -> Dict[str, Any]:
             "non_application": sum(1 for e in log if e["kind"] == "non_application"),
             "burden": sum(1 for e in log if e["kind"] == "burden"),
             "facts_flagged": sum(1 for e in log if e["kind"] == "fact_not_in_case"),
+            "facts_filtered": dict(Counter(e["why"] for e in log if e["kind"] == "fact_flag_filtered")),
             "against_client": sum(1 for e in log if e["kind"] == "against_client")}
 
 
 def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], lang: str,
                    named: Optional[List[tuple]] = None,
                    documents: Optional[List[Dict[str, Any]]] = None,
-                   article_rows: Optional[List[Dict[str, Any]]] = None, case_text: str = "") -> Optional[List[tuple]]:
+                   article_rows: Optional[List[Dict[str, Any]]] = None, case_text: str = "",
+                   coverage: Optional[Callable[[str], Dict[str, Dict[str, List[str]]]]] = None) -> Optional[List[tuple]]:
     """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
     None if one still fails or comes back empty. _discipline(): each section then loses the citations
     its material does not hold (_cite_only_material; named: the articles the case names).
-    _writer_rules(): a cut section is written again or trimmed, then each is reviewed (review_section)."""
+    _writer_rules(): a cut section is written again or trimmed, then each is reviewed (review_section).
+    coverage (FACT_REGIMES_ENABLED: material_use): the procedural section, leaving out a block it was given, is
+    written once more naming what it left out, and the version covering more is kept."""
     system = _section_system(plan, lang)
 
     def write(job):
@@ -1577,6 +1760,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     finally:
         dg.vlog("case_analysis_sections_llm", duration_ms=(time.time() - t0) * 1000)
     sections = [(job[0], _without_heading(text, job[0])) for job, text in zip(jobs, texts)]
+    if coverage is not None:
+        sections = _cover_blocks(sections, jobs, system, coverage)
     writer_log: List[Dict[str, Any]] = []
     if _writer_rules() and all(text for _, text in sections):
         sections, writer_log = _complete_sections(sections, jobs, system)
@@ -1622,9 +1807,15 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
         return None
     case = dg._case_text(facts, request)
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
+    use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
                                                  principles, _keep_all()), lang, named, documents,
-                              article_rows, case)
+                              article_rows, case, coverage=use_of)
     if sections is None:
         return None
+    if use_of is not None:
+        final = use_of(next((text for title, text in sections if title == SECTION_TITLES[4]), ""))
+        dg.vlog("case_analysis_material_use", {
+            "offered": {b: u["offered"] for b, u in final.items()}, "written": {b: u["written"] for b, u in final.items()},
+            "missing": _missing_blocks(final)})
     return "\n\n".join(f"**{i}. {title}**\n\n{text}" for i, (title, text) in enumerate(sections, 1))

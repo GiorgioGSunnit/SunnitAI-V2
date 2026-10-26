@@ -122,6 +122,10 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
                        f"'does not apply' sentences and {data.get('burden', 0)} burden templates dropped, "
                        f"{data.get('facts_flagged', 0)} facts not in the case flagged, "
                        f"{data.get('against_client', 0)} sentences against the client dropped")
+        elif event == "case_analysis_material_use":
+            out.append("procedural section, written / offered: " + ", ".join(
+                f"{b} {len((data.get('written') or {}).get(b) or [])}/{len(v)}" for b, v in (data.get("offered") or {}).items())
+                + (f"; missing {', '.join(data.get('missing'))}" if data.get("missing") else ""))
         elif event == "case_frame_claimant":
             out.append(f"claimant client: frame {', '.join(data.get('changed') or []) or 'unchanged'} ({data.get('why')})")
         elif event == "case_analysis_fact_regimes":

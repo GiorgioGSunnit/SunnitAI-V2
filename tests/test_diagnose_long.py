@@ -302,3 +302,10 @@ def test_form_trace_reads_the_lawyers_review_points_off_the_answer():
     assert (form["against_client"], form["inverse"], form["posture_fixed"]) == (1, ["2049 c.c."], ["posture text"])
     assert form["criminal_offered"] and form["criminal_cited"] and form["damages_offered"]
     assert "Articles about the inverse situation removed: x1 2049 c.c." in dl.render([dl.analyse_case(rec, ev)], [])
+    rec = {**rec, "writer_rules": {**rec["writer_rules"], "facts_filtered": {"argues or supposes": 3}},
+           "material_use": {"offered": {"termini": ["a", "b"], "strumenti": ["t"]}, "written": {"termini": ["a"]}}}
+    case = dl.analyse_case(rec, ev)
+    assert case["form"]["facts_filtered"] == 3 and case["form"]["use_written"] == {"termini": 1}
+    report = dl.render([case], [])
+    assert "flags filtered out as arguments, quotes, sources or evidence: 3" in report
+    assert "items offered → written: termini 2 → 1, strumenti 1 → 0." in report

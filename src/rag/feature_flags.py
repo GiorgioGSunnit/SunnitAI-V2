@@ -221,9 +221,13 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 again or trimmed; no deep-dive links. After writing: a
                                 sentence citing an article only to say it does not
                                 apply, or a burden template whose norm allocates
-                                nothing, is dropped; a sentence stating a fact about a
-                                party the case does not hold is flagged "[fatto non
-                                indicato nel caso: da verificare]"; one proposing an
+                                nothing, is dropped; a sentence asserting a party's
+                                conduct, knowledge or intent the case does not hold is
+                                logged (arguments, quotes of the case, of a norm or a
+                                ruling, citations and evidence lists never count), and
+                                marked "[fatto non indicato nel caso: da verificare]"
+                                only with FACT_MARK_INLINE_ENABLED (default off); one
+                                proposing an
                                 action against the client or a co-client is dropped
                                 (their negligence is only the opponent's defence). A
                                 party with several roles is examined for each. The plan
@@ -249,7 +253,11 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 civile, 2947 co. 3 c.c.) also in a civil case; a death,
                                 the heads of damage (iure proprio, iure hereditatis,
                                 the insurers); a party with several activities, each
-                                role. A claimant client (seeks damages or an action)
+                                role. The procedural section treats each block it gets
+                                (terms, tools, criminal route, heads of damage) in its
+                                own paragraph, is written once more if it leaves one
+                                out; offered vs written logged as
+                                case_analysis_material_use. A claimant client (seeks damages or an action)
                                 with no claim received gets a claimant frame and no
                                 "respond to a claim" checklist item. See
                                 fact_signals.qualify_parties, procedural_tools,

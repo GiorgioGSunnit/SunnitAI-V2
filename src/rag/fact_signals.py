@@ -1298,9 +1298,14 @@ def qualifications_block(signals: Optional[Dict[str, Any]]) -> str:
     return "\n".join(f"- {q['party']}: {q['quality']} ({q['why']})" for q in (signals or {}).get("qualifications") or [])
 
 
-def tools_block(signals: Optional[Dict[str, Any]]) -> str:
-    """The procedural tools the facts call for, one line each, with the facts that call for them."""
-    return "\n".join(f"- {t['text']} Nel caso: {'; '.join(t['matched'])}." for t in (signals or {}).get("tools") or [])
+CRIMINAL_TOOL = "profilo_penale"
+
+
+def tools_block(signals: Optional[Dict[str, Any]], criminal: bool = False) -> str:
+    """The procedural tools the facts call for, one line each, with the facts that call for them; the criminal route
+    of a personal harm alone with criminal, never among the others."""
+    return "\n".join(f"- {t['text']} Nel caso: {'; '.join(t['matched'])}." for t in (signals or {}).get("tools") or []
+                     if (t["id"] == CRIMINAL_TOOL) == criminal)
 
 
 def tool_refs(signals: Optional[Dict[str, Any]]) -> List[Tuple[str, str]]:
