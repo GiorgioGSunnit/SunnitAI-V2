@@ -1816,6 +1816,57 @@ def _section_quality(section: Dict[str, Any]) -> tuple:
     )
 
 
+# The "N.0.0" Section of many articles holds only their date of entry into force ("In vigore dal 10 dicembre
+# 2021"): 205 articles of the Codice del Consumo, 224 of the Codice degli Appalti, 138 of the c.p.p. (26 Oct);
+# the rule itself is in the bare "N" Section and in the commi "N.1.0", "N.2.0"... Every lookup that prefers
+# "N.0.0" read the date alone: the boat case quoted art. 135-octiesdecies Cod. cons. as "In vigore dal 11
+# dicembre 2021", and the applicability check judged the date.
+_IN_FORCE_RE = re.compile(r"\s*in vigore dal\s+\d{1,2}\s+\w+\s+\d{4}\.?\s*", re.IGNORECASE)
+_COMMA_RE = re.compile(r"\.(\d+)\.0$")
+
+
+def _in_force_only(text: Optional[str]) -> bool:
+    match = _IN_FORCE_RE.match(text or "")
+    return bool(match) and match.end() == len(text or "")
+
+
+def _fill_in_force_only(session, rows: List[Dict[str, Any]]) -> List[str]:
+    """In place: each row whose text is only the date of entry into force gets the article's text -- its bare
+    "N" Section (without the date it opens with), else its commi "N.1.0", "N.2.0"... in order. Returns the
+    sections filled, "doc_name N.0.0"."""
+    stubs = [r for r in rows if _in_force_only((r.get("s") or {}).get("plain_text"))
+             and (r.get("d") or {}).get("id") and (r["s"].get("name") or "")]
+    if not stubs:
+        return []
+    items = sorted({(r["d"]["id"], r["s"]["name"].split(".")[0]) for r in stubs})
+    found = session.run(
+        "UNWIND $items AS it "
+        "MATCH (d:Document {id: it.doc})-[:CONTAINS]->(s:Section) "
+        "WHERE s.name = it.num OR (s.name STARTS WITH it.num + '.' AND s.name ENDS WITH '.0') "
+        "RETURN it.doc AS doc, it.num AS num, s.name AS name, s.plain_text AS text",
+        items=[{"doc": doc, "num": num} for doc, num in items]).data()
+    texts: Dict[tuple, str] = {}
+    for doc, num in items:
+        mine = [f for f in found if f["doc"] == doc and f["num"] == num and (f.get("text") or "").strip()]
+        bare = max((_IN_FORCE_RE.sub("", f["text"], count=1).strip() for f in mine if f["name"] == num),
+                   key=len, default="")
+        commi = {}
+        for f in mine:
+            m = _COMMA_RE.search(f["name"][len(num):])
+            if m and int(m.group(1)) > 0 and len(f["text"]) > len(commi.get(int(m.group(1)), "")):
+                commi[int(m.group(1))] = f["text"].strip()
+        text = bare if len(bare) >= 60 else "\n".join(commi[k] for k in sorted(commi))
+        if text and not _in_force_only(text):
+            texts[(doc, num)] = text
+    filled = []
+    for row in stubs:
+        text = texts.get((row["d"]["id"], row["s"]["name"].split(".")[0]))
+        if text:
+            row["s"] = {**row["s"], "plain_text": text}
+            filled.append(f"{row['d'].get('name', '')} {row['s']['name']}")
+    return filled
+
+
 def _dedupe_sections(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """One row per distinct (document, section name), keeping the
     highest-_section_quality duplicate, in first-seen order. The corpus has
@@ -4809,6 +4860,12 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             regime_rows = _regime_rows(session, driver, NEO4J_DATABASE, analysis)
             first_rulings, similar = picked["first_rulings"], picked["similar"]
             candidates, selected, article_rows = picked["candidates"], picked["selected"], picked["article_rows"]
+            try:
+                filled = _fill_in_force_only(session, article_rows + regime_rows)
+                if filled:
+                    vlog("case_analysis_in_force_only_filled", {"sections": filled})
+            except Exception as exc:
+                logger.warning("articles holding only their date in force not filled: %s", exc)
             # Second search with the verified article numbers: rulings on the
             # article itself, not on whatever else the keywords match.
             second = _search_case_law(session, analysis, numbers=[n for n, _ in selected[:4]],
