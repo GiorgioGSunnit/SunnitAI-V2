@@ -28,6 +28,7 @@ from .calculation import (
     route_after_gate,
 )
 from .issue_spotting import issue_spotting
+from . import source_tiers
 from .graph_nodes import (
     apply_summary_confirmation,
     article_router,
@@ -141,6 +142,7 @@ class AgentState(TypedDict, total=False):
     tone: int
     standing: int
     response_length: int
+    route: Optional[str]
 
 
 # ---------------------------------------------------------------------------
@@ -196,15 +198,20 @@ def build_graph(compile_graph: bool = True):
     """Wire the RAG state machine and optionally compile it."""
     graph = StateGraph(AgentState)
 
-    # Nodes that need the Neo4j driver are wrapped with partial
+    # Nodes that need the Neo4j driver are wrapped with partial.
+    # PRIMARY_FIRST_ENABLED (source_tiers.py): on a direct question, every node that finds articles keeps
+    # only primary (and special) documents' rows; the rulings join at the synthesis, as support.
+    def tiered(fn, stage):
+        return source_tiers.primary_node(fn, stage, driver, NEO4J_DATABASE)
+
     graph.add_node("decompose_query", partial(decompose_query, driver=driver, database=NEO4J_DATABASE))
     graph.add_node(
         "article_router",
-        partial(article_router, driver=driver, database=NEO4J_DATABASE),
+        tiered(partial(article_router, driver=driver, database=NEO4J_DATABASE), "article_router"),
     )
     graph.add_node(
         "broaden_article_context",
-        partial(broaden_article_context, driver=driver, database=NEO4J_DATABASE),
+        tiered(partial(broaden_article_context, driver=driver, database=NEO4J_DATABASE), "broaden_article_context"),
     )
     graph.add_node(
         "entity_linking",
@@ -212,13 +219,13 @@ def build_graph(compile_graph: bool = True):
     )
     graph.add_node(
         "context_retrieval",
-        partial(context_retrieval, driver=driver, database=NEO4J_DATABASE),
+        tiered(partial(context_retrieval, driver=driver, database=NEO4J_DATABASE), "context_retrieval"),
     )
     # A no-op unless ISSUE_SPOTTING_ENABLED (round 3, item 2). It comes after
     # context_retrieval, which rebuilds raw_result from scratch.
     graph.add_node(
         "issue_spotting",
-        partial(issue_spotting, driver=driver, database=NEO4J_DATABASE),
+        tiered(partial(issue_spotting, driver=driver, database=NEO4J_DATABASE), "issue_spotting"),
     )
     graph.add_node(
         "generate_cypher_intersection",
@@ -228,11 +235,11 @@ def build_graph(compile_graph: bool = True):
     graph.add_node("generate_cypher_fallback", generate_cypher_fallback)
     graph.add_node(
         "execute_cypher",
-        partial(execute_cypher, driver=driver, database=NEO4J_DATABASE),
+        tiered(partial(execute_cypher, driver=driver, database=NEO4J_DATABASE), "execute_cypher"),
     )
     graph.add_node(
         "evaluate_retrieval_quality",
-        partial(evaluate_retrieval_quality, driver=driver, database=NEO4J_DATABASE),
+        tiered(partial(evaluate_retrieval_quality, driver=driver, database=NEO4J_DATABASE), "evaluate_retrieval_quality"),
     )
     graph.add_node(
         "dottrina_search",
@@ -241,11 +248,11 @@ def build_graph(compile_graph: bool = True):
     graph.add_node("generate_cypher_reformulation", generate_cypher_reformulation)
     graph.add_node(
         "comparison_retrieval",
-        partial(comparison_retrieval, driver=driver, database=NEO4J_DATABASE),
+        tiered(partial(comparison_retrieval, driver=driver, database=NEO4J_DATABASE), "comparison_retrieval"),
     )
-    graph.add_node("synthesize_answer", synthesize_answer)
+    graph.add_node("synthesize_answer", source_tiers.support_node(synthesize_answer, driver, NEO4J_DATABASE))
     graph.add_node("generate_clarifying_question", generate_clarifying_question)
-    graph.add_node("rerank_from_clarification", rerank_from_clarification)
+    graph.add_node("rerank_from_clarification", tiered(rerank_from_clarification, "rerank_from_clarification"))
     graph.add_node("apply_summary_confirmation", apply_summary_confirmation)
     graph.add_node("calculation_gate", calculation_gate)
     graph.add_node(

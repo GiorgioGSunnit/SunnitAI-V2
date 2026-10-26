@@ -1,0 +1,29 @@
+{
+  "_about": "Direct questions (a norm, an institution, a term or a procedure; no fact pattern) for the chat's direct path (ROUTER_ENABLED, PRIMARY_FIRST_ENABLED). Expected articles from general legal knowledge, not from any held-out case; 'any_of' lists accepted alternatives. Run with: python tests/eval_narrative.py --direct (see tests/eval_direct.py). Written 26 Oct 2026, pending lawyer validation.",
+  "cases": [
+    {"id": "d1", "area": "procedura penale", "question": "Qual è il termine per proporre appello contro una sentenza penale di primo grado?",
+     "expected": [{"code": "cpp", "article": "585"}, {"code": "cpp", "article": "593"}]},
+    {"id": "d2", "area": "penale", "question": "Quali sono i requisiti della legittima difesa?",
+     "expected": [{"code": "cp", "article": "52"}]},
+    {"id": "d3", "area": "penale", "question": "Quando si applica lo stato di necessità come causa di giustificazione?",
+     "expected": [{"code": "cp", "article": "54"}]},
+    {"id": "d4", "area": "penale", "question": "Entro quale termine deve essere proposta la querela?",
+     "expected": [{"code": "cp", "article": "124"}]},
+    {"id": "d5", "area": "civile", "question": "Come funziona la garanzia per i vizi della cosa venduta e in che termini vanno denunciati i vizi?",
+     "expected": [{"code": "cc", "article": "1490"}, {"code": "cc", "article": "1495"}]},
+    {"id": "d6", "area": "civile", "question": "In che cosa consiste l'accettazione tacita dell'eredità?",
+     "expected": [{"code": "cc", "article": "476"}, {"code": "cc", "article": "474"}]},
+    {"id": "d7", "area": "civile", "question": "In quanto tempo si prescrive il diritto al risarcimento del danno da fatto illecito?",
+     "expected": [{"code": "cc", "article": "2947"}]},
+    {"id": "d8", "area": "civile", "question": "Quali sono i presupposti della risoluzione del contratto per inadempimento?",
+     "expected": [{"code": "cc", "article": "1453"}, {"code": "cc", "article": "1455"}]},
+    {"id": "d9", "area": "civile", "question": "Dopo quanti anni di possesso si usucapisce la proprietà di un immobile?",
+     "expected": [{"code": "cc", "article": "1158"}]},
+    {"id": "d10", "area": "procedura civile", "question": "Entro quale termine si propone opposizione a decreto ingiuntivo?",
+     "expected": [{"code": "cpc", "article": "641"}, {"code": "cpc", "article": "645"}]},
+    {"id": "d11", "area": "amministrativo", "question": "Qual è il termine per impugnare un provvedimento amministrativo davanti al TAR?",
+     "expected": [{"code": "cpa", "article": "29"}, {"code": "cpa", "article": "41"}]},
+    {"id": "d12", "area": "amministrativo", "question": "Quali sono i presupposti dell'annullamento d'ufficio di un provvedimento amministrativo?",
+     "expected": [{"code": "l241", "article": "21-nonies"}]}
+  ]
+}

@@ -314,6 +314,14 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 pipeline the case frame must confirm a narrative (two or more
                                 parties and events), else it is treated as direct. See
                                 src/rag/query_router.py.
+  PRIMARY_FIRST_ENABLED        false: on a direct question (all graph turns without the
+                                router), every article-finding node of the chat's graph keeps
+                                only primary and special documents' rows, each node's hits
+                                logged by type (source_tier_hits, nothing else may be left);
+                                the rulings join only at the synthesis, those whose Sections
+                                CITE an article the answer is built on (Cassation boilerplate
+                                excluded), by similarity to the question, no vote. Scored by
+                                tests/eval_narrative.py --direct. See src/rag/source_tiers.py.
 """
 
 import logging

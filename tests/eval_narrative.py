@@ -524,8 +524,19 @@ def main(argv=None):
     parser.add_argument("--compare", nargs=2, metavar=("OLD_SUMMARY", "NEW_SUMMARY"))
     parser.add_argument("--rescore", metavar="RUN_DIR",
                         help="score a saved run's answers again with the current expected lists (no requests)")
+    direct = parser.add_argument_group("direct questions (tests/eval_direct.py, in process, no --base-url)")
+    direct.add_argument("--direct", action="store_true",
+                        help="run tests/eval_direct_cases.json through the chat's graph in this process")
+    direct.add_argument("--direct-cases", default=str(HERE / "eval_direct_cases.json"))
+    direct.add_argument("--flag", dest="set_flags", action="append", default=[], metavar="NAME=VALUE",
+                        help="a flag for this run only, e.g. --flag PRIMARY_FIRST_ENABLED=true (repeatable)")
+    direct.add_argument("--compare-direct", nargs=2, metavar=("OLD_SUMMARY", "NEW_SUMMARY"))
     args = parser.parse_args(argv)
 
+    if args.direct or args.compare_direct:
+        import eval_direct
+        eval_direct.main(args)
+        return 0
     if args.compare:
         compare(*args.compare)
         return 0
