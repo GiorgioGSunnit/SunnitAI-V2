@@ -248,6 +248,34 @@ def test_strict_articles_a_keyword_match_needs_a_specific_word_of_the_institutio
         ("1917 c.c.", "keyword match shares no specific word with the institution")]
 
 
+def test_strict_articles_a_full_text_hit_needs_a_specific_shared_word(monkeypatch, corpus):
+    """The boat case, round 1 (26 Oct): "risarcimento danni" -> art. 2767 c.c. by full text, sharing only
+    "risarcimento"."""
+    monkeypatch.setitem(HEADINGS, "2767", "Privilegio per il risarcimento del danno")
+    corpus["fulltext"] = ["2767"]
+    monkeypatch.setenv("RESOLUTION_STRICT_ENABLED", "true")
+    assert _resolve_by("risarcimento danni", "c.c.", []) == ["2767"]                # shares "risarcimento"
+    monkeypatch.setenv("STRICT_ARTICLES_ENABLED", "true")
+    assert _resolve_by("risarcimento danni", "c.c.", []) == []
+    monkeypatch.delenv("RESOLUTION_STRICT_ENABLED")
+    assert _resolve_by("risarcimento danni", "c.c.", []) == []                      # STRICT_ARTICLES alone too
+
+
+def test_strict_articles_an_institution_the_analysis_names_takes_the_table_article():
+    frame = {"central_issue_candidates": [{"nome": "foro del consumatore", "codice": "Codice del Consumo",
+                                           "articolo": "33"},
+                                          {"nome": "garanzia legale di conformità", "codice": "Codice del Consumo"}]}
+    analysis = {"questioni": [{"titolo": "Il foro", "istituti": [{"nome": "Foro del consumatore", "codice": "c.p.c.",
+                                                                    "numero_indicativo": ""}]}]}
+    out = dg._with_central_questions(analysis, frame)
+    assert [q["titolo"] for q in out["questioni"]] == ["Questione centrale: garanzia legale di conformità", "Il foro"]
+    assert out["questioni"][1]["istituti"][0] == {"nome": "Foro del consumatore", "codice": "Codice del Consumo",
+                                                  "numero_indicativo": "", "articolo": "33"}
+    assert analysis["questioni"][0]["istituti"][0]["codice"] == "c.p.c."             # the input is not changed
+    plain = {"questioni": [{"titolo": "x", "istituti": [{"nome": "a"}]}]}
+    assert dg._with_central_questions(plain, {}) is plain
+
+
 def test_strict_articles_a_code_table_names_the_article(monkeypatch, corpus):
     monkeypatch.setitem(HEADINGS, "33", "Clausole vessatorie nel contratto tra professionista e consumatore")
     assert _resolve_by("foro del consumatore", "c.c.", [], articolo="33") == []              # flag off: not found
@@ -659,30 +687,6 @@ def test_flagged_citations_go_unless_the_pipeline_has_its_own_evidence(monkeypat
     assert log["kept"] == {"1054 c.c.": "grade 2", "1384 c.c.": "named in the case"} and log["note_dropped"] == ["1054 c.c."]
     removal = [d for e, d in logged if e == "case_analysis_flagged_removed"][-1]
     assert [e["how"] for e in removal["removed"]] == ["heading and paragraph dropped", "sentence dropped", "sentence dropped"]
-
-
-def test_strict_articles_flagged_citations_keep_only_strong_protections(monkeypatch, logged):
-    monkeypatch.setenv("FLAGGED_REMOVE_ENABLED", "true")
-    monkeypatch.setenv("STRICT_ARTICLES_ENABLED", "true")
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [
-        _row("600-bis", "c.p.", "Chiunque recluta o induce alla prostituzione...", "Prostituzione minorile"),
-        _row("1384", "c.c.", "La penale può essere diminuita...", "Riduzione della penale")])
-    model = Qualification({}, rewrite='[{"i": 1, "frase": ""}, {"i": 2, "frase": ""}, {"i": 3, "frase": ""}]')
-    monkeypatch.setattr(dg, "_call_chat", model)
-    out = dg._check_qualifications(H3_DRAFT, {}, _h3_rows(), None, [], "Il cliente chiede dell'art. 1384 c.c.")
-    assert "1054" not in out                                                  # graded 2: no longer enough
-    assert "art. 1384 c.c. [DA VERIFICARE: l'art. 1384 c.c. riguarda «Riduzione della penale»]" in out  # named
-    log = [d for e, d in logged if e == "case_analysis_qualification"][-1]
-    assert sorted(log["removed"]) == ["1054 c.c.", "600-bis c.p.", "681 c.c.", "757 c.c."]
-    assert log["kept"] == {"1384 c.c.": "named in the case"}
-
-
-def test_strong_protections():
-    assert dg._strong_protection("named in the case") and dg._strong_protection("procedural tool for the facts")
-    assert dg._strong_protection("central issue") and dg._strong_protection("forced (central issue)")
-    assert dg._strong_protection("forced (grade 3)") and dg._strong_protection("grade 3")
-    for weak in ("grade 2", "forced (grade 2)", "voted", "two or more channels"):
-        assert not dg._strong_protection(weak)
 
 
 def test_flagged_citations_are_only_marked_without_the_flag(monkeypatch, logged):

@@ -702,6 +702,20 @@ def test_review_fixes_a_machine_fault_brings_the_atp_and_the_sale_terms(monkeypa
     assert fs.terms_block({"facts": facts, "terms": []}) == ""
 
 
+def test_review_fixes_the_sellers_repair_is_a_central_issue_with_its_article(monkeypatch):
+    monkeypatch.delenv("REVIEW_FIXES_ENABLED", raising=False)
+    monkeypatch.setenv(fs.REGIMES_FLAG, "true")
+    facts, quals = fs.qualify_parties(BOAT)
+    signals = {"facts": facts, "terms": fs.compute_terms(facts, ["contratti"]),
+               "regimes": fs.regime_issues(facts, quals, ["contratti"])}
+    assert fs.RECOGNITION_ISSUE not in [c["nome"] for c in fs.all_central(signals)]
+    monkeypatch.setenv("REVIEW_FIXES_ENABLED", "true")
+    central = fs.all_central(signals)
+    assert [c["nome"] for c in central] == ["garanzia legale di conformità", "foro del consumatore",
+                                            fs.RECOGNITION_ISSUE]
+    assert central[2] == {"nome": fs.RECOGNITION_ISSUE, "codice": "c.c.", "ranges": [], "articolo": "1495"}
+
+
 def test_review_fixes_no_urgent_measure_after_a_death(monkeypatch):
     monkeypatch.delenv("REVIEW_FIXES_ENABLED", raising=False)
     pool = F(events=[ev("la bambina resta incastrata nella grata della piscina e muore annegata")],

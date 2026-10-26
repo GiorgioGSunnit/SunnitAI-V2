@@ -777,3 +777,10 @@ def test_review_fixes_claims_the_case_does_not_make_become_conditions(monkeypatc
     assert calls[0]["temperature"] == 0
     assert ptw.rewrite_unsupported("x", "Tizio ha acquistato la barca da Marex.", BOAT) == (
         "Tizio ha acquistato la barca da Marex.", [])
+
+
+def test_review_fixes_the_timing_of_a_death_is_a_claim_to_check():
+    claim = "Poiché Tizietta è deceduta immediatamente, non si trasmette alcun danno da morte agli eredi."
+    assert ptw._UNSUPPORTED_RE.search(claim)
+    assert ptw._UNSUPPORTED_RE.search("La morte è sopraggiunta sul colpo.")
+    assert not ptw._UNSUPPORTED_RE.search("I genitori chiedono il risarcimento per la morte della figlia.")

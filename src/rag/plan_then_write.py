@@ -1837,13 +1837,17 @@ _UNSUPPORTED_RE = re.compile(
     r"|\b(?:è|sono)\s+stat[aeio]\s+(?:denunciat|contestat|comunicat|segnalat)\w*"
     r"|\bnon\s+ha\s+(?:mai\s+)?(?:dimostrato|provato|fornito\s+(?:la\s+)?prova|adottato|denunciato|contestato|"
     r"segnalato)|\bha\s+(?:occultato|nascosto|taciuto|reso\s+difficile)|\bera\s+(?:a\s+conoscenza|consapevole)"
-    r"|\bsapeva\b|\bin\s+mala\s+fede", re.IGNORECASE)
+    r"|\bsapeva\b|\bin\s+mala\s+fede"
+    # round 1 (26 Oct): "poiché Tizietta è deceduta immediatamente, non si trasmette alcun danno da morte agli eredi"
+    r"|\b(?:mort|decedut|deceduto|decesso|annegat)\w*\b[^.;]{0,40}\b(?:immediat|sul\s+colpo|istantane|subito)"
+    r"|\b(?:immediat\w*|sul\s+colpo|istantane\w*)\b[^.;]{0,40}\b(?:mort|deced|decesso|annegat)", re.IGNORECASE)
 _UNSUPPORTED_SYSTEM = (
     "Sei un avvocato italiano e rivedi un parere. Ti vengono dati il CASO e alcune frasi del parere, numerate. Una "
     "frase è da correggere solo se afferma come certo, riguardo ai fatti di questo caso, qualcosa che il CASO non "
     "dice: che un termine sia stato rispettato, sia scaduto o non sia ancora decorso; che una denuncia, una "
     "contestazione o una comunicazione sia o non sia avvenuta, o quando; quando sono accaduti i fatti; che una "
-    "parte abbia o non abbia provato, saputo, nascosto o taciuto qualcosa. Non è da correggere una frase che "
+    "parte abbia o non abbia provato, saputo, nascosto o taciuto qualcosa; quanto tempo una persona sia rimasta "
+    "in vita o cosciente. Non è da correggere una frase che "
     "enuncia una regola, un termine di legge o un onere della prova, che pone una condizione o che riporta ciò che "
     "il CASO dice. Riscrivi ogni frase da correggere presentando quel punto come condizione o come circostanza da "
     "verificare (\"se la denuncia è avvenuta entro otto giorni dalla scoperta...\", \"spetterà al venditore "

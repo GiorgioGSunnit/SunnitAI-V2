@@ -980,7 +980,12 @@ def all_central(signals: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
     the fired rules' institutions (central_issues), each once, at most MAX_CENTRAL."""
     signals = signals or {}
     out, seen = [], set()
-    for item in list(signals.get("regimes") or []) + central_issues(signals.get("fired") or [], limit=MAX_CENTRAL):
+    # REVIEW_FIXES_ENABLED: the seller's repair as an issue of its own (round 1, 26 Oct: as a note on the terms
+    # only, the boat case's answer listed it among the checks and never argued it).
+    recognition = [{"nome": RECOGNITION_ISSUE, "codice": "c.c.", "ranges": [], "articolo": "1495"}] \
+        if feature_flags.enabled(REVIEW_FIXES_FLAG) and _recognition_note(signals) else []
+    for item in (list(signals.get("regimes") or []) + recognition
+                 + central_issues(signals.get("fired") or [], limit=MAX_CENTRAL)):
         if item["nome"].lower() not in seen and len(out) < MAX_CENTRAL:
             seen.add(item["nome"].lower())
             out.append({k: item[k] for k in ("nome", "codice", "fonte", "ranges", "articolo") if k in item})
@@ -1003,6 +1008,7 @@ def terms_block(signals: Optional[Dict[str, Any]], refs: bool = False) -> str:
 
 
 REVIEW_FIXES_FLAG = "REVIEW_FIXES_ENABLED"
+RECOGNITION_ISSUE = "riconoscimento del vizio da parte del venditore"
 _SALE_TERMS = {"denuncia_vizi_vendita", "azione_vizi_vendita"}
 _REPAIR = r"ripar|messa a punto|sostitu|aggiust|sistemat|eliminare i vizi|eliminazione dei vizi"
 

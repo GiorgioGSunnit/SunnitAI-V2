@@ -52,10 +52,10 @@ def flag_off(monkeypatch):
 
 
 VERDICTS = json.dumps([
-    {"id": "S1", "si_applica": True, "fatto": "la condotta di Marex ha reso difficile la scoperta dei vizi",
+    {"id": "S1", "uso": "fatti", "fatto": "la condotta di Marex ha reso difficile la scoperta dei vizi",
      "perche": "occultamento"},
-    {"id": "S2", "si_applica": False, "fatto": "", "perche": "riguarda la protezione internazionale"},
-    {"id": "S3", "si_applica": True, "fatto": "intervenuta la società venditrice garantisce la riparazione",
+    {"id": "S2", "uso": "nessuno", "fatto": "", "perche": "riguarda la protezione internazionale"},
+    {"id": "S3", "uso": "fatti", "fatto": "intervenuta la società venditrice garantisce la riparazione",
      "perche": "riconoscimento"},
 ])
 
@@ -71,10 +71,10 @@ def test_rulings_the_case_does_not_meet_go_and_the_kept_ones_carry_the_case_fact
     model = Model(VERDICTS)
     monkeypatch.setattr(dg, "_call_chat", model)
     kept = dg._ruling_fit(CASE, "", RULINGS)
-    # S1's "fact" is the ruling's, not the case's; S2 does not apply; S4 has no verdict and stays
+    # S1's "fact" is the ruling's, not the case's; S2 serves nothing; S4 has no verdict and stays
     assert [r["d"]["name"] for r in kept] == ["Riparazione", "Prescrizione"]
     assert kept[0]["_fit_fact"] == "intervenuta la società venditrice garantisce la riparazione"
-    assert "_fit_fact" not in kept[1]
+    assert "_fit_use" not in kept[1]
     assert model.calls[0]["temperature"] == 0 and "[S4] Prescrizione" in model.calls[0]["human"]
     log = [d for e, d in logged if e == "case_analysis_ruling_fit"][-1]
     assert [d["ruling"] for d in log["dropped"]] == ["Occultamento", "Asilo"]
@@ -83,6 +83,23 @@ def test_rulings_the_case_does_not_meet_go_and_the_kept_ones_carry_the_case_fact
     assert led[0]["_passage"].startswith("Fatto del caso che ne integra i presupposti: intervenuta la società "
                                          "venditrice garantisce la riparazione. L'impegno del venditore")
     assert led[1]["_passage"] == RULINGS[3]["_passage"]
+
+
+def test_general_rules_and_steps_stay_with_their_use(monkeypatch, logged):
+    """Round 2 (26 Oct): a ruling stating a general rule, or a step the client can take, is kept."""
+    monkeypatch.setenv(dg.RULING_FIT_FLAG, "true")
+    monkeypatch.setattr(dg, "_call_chat", Model(json.dumps([
+        {"id": "S1", "uso": "nessuno", "perche": "presuppone un occultamento che il caso non descrive"},
+        {"id": "S2", "uso": "nessuno"},
+        {"id": "S3", "uso": "regola", "fatto": ""},
+        {"id": "S4", "uso": "passo", "fatto": "inviare a Marex una diffida scritta"}])))
+    kept = dg._with_fit_facts(dg._ruling_fit(CASE, "", RULINGS))
+    assert [r["d"]["name"] for r in kept] == ["Riparazione", "Prescrizione"]
+    assert kept[0]["_passage"].startswith("Uso nel parere: regola generale sulla questione, da citare come tale")
+    assert kept[1]["_passage"].startswith("Uso nel parere: passo che la parte assistita può compiere ora: inviare a "
+                                          "Marex una diffida scritta. Le manifestazioni")
+    log = [d for e, d in logged if e == "case_analysis_ruling_fit"][-1]
+    assert [d["use"] for d in log["kept"]] == ["regola", "passo"]
 
 
 def test_a_failed_check_keeps_every_ruling(monkeypatch):

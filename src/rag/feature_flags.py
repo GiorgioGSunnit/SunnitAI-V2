@@ -264,37 +264,38 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 claim_posture.
   STRICT_ARTICLES_ENABLED      false (the lawyer's review, 26 Oct): an institution's
                                 article found by one of the issue's keywords, not by its
-                                own name or number, counts only if its rubrica shares a
-                                word with the institution beyond the generic ones
-                                (garanzia -> 492 c.c., responsabilità civile -> 1917
-                                c.c. refused); an institution a code table names the
-                                article of is that article (foro del consumatore ->
-                                art. 33 Cod. cons., with its note to the writer); with
-                                FLAGGED_REMOVE_ENABLED, a citation the qualification
-                                check finds misused stays only if the case names it, it
-                                is a procedural tool, resolved for a central issue or
-                                graded 3 -- not for grade 2, a vote or two channels.
+                                own name or number, or by full text, counts only if its
+                                rubrica shares a word with the institution beyond the
+                                generic ones (garanzia -> 492 c.c., responsabilità
+                                civile -> 1917 c.c., risarcimento -> 2767 c.c.
+                                refused); an institution a code table names the article
+                                of is that article, also when the analysis names it
+                                itself (foro del consumatore -> art. 33 Cod. cons., with
+                                its note to the writer).
   RULING_FIT_ENABLED           false (the lawyer's review, 26 Oct): before the plan, one
-                                call asks of each ruling whether a fact the case
-                                describes meets its conditions, and which; a ruling
-                                that does not apply goes, and so does one whose "fact"
-                                is not the case's own words (the ruling's facts read as
-                                the case's); each kept ruling reaches the plan and the
-                                writer led by that fact. Logged as
-                                case_analysis_ruling_fit. See _ruling_fit.
+                                call asks what each ruling can serve for: a fact the
+                                case describes meets its conditions ("fatti", which
+                                fact), a general rule on a question the case raises
+                                ("regola"), a step the client can take now ("passo"),
+                                or nothing ("nessuno": another question, or facts the
+                                case does not describe). Nothing, or a "fact" not in the
+                                case's words, and the ruling goes; each kept one
+                                reaches the plan and the writer led by its use. Logged
+                                as case_analysis_ruling_fit. See _ruling_fit.
   REVIEW_FIXES_ENABLED         false (the lawyer's review, 26 Oct; acts with
                                 PLAN_THEN_WRITE_ENABLED and FACT_REGIMES_ENABLED): the
                                 inquadramento names the facts that decide the case
                                 instead of labelling each one; the procedural section
                                 writes every item of each block (iure hereditatis);
                                 after the review, a sentence stating as certain what the
-                                case does not say about a deadline, a report or a
-                                party's proof, knowledge or concealment is rewritten as
-                                a condition (case_analysis_unsupported_claims); a sale
-                                whose seller stepped in to repair gets the note that the
-                                repair recognises the defect (1495 co. 2, 2944 c.c.);
-                                no art. 700 c.p.c. after a death. See
-                                plan_then_write.rewrite_unsupported,
+                                case does not say about a deadline, a report, a party's
+                                proof, knowledge or concealment, or how soon a death
+                                came, is rewritten as a condition
+                                (case_analysis_unsupported_claims); a sale whose seller
+                                stepped in to repair gets the recognition of the defect
+                                (1495 co. 2, 2944 c.c.) as a central issue with art.
+                                1495 c.c. and as a note on the terms; no art. 700 c.p.c.
+                                after a death. See plan_then_write.rewrite_unsupported,
                                 fact_signals._recognition_note.
 """
 

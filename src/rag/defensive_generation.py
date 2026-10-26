@@ -1496,7 +1496,25 @@ def _with_central_questions(analysis: Dict[str, Any], frame: Dict[str, Any]) -> 
               "parole_chiave": [], "voce": "questione_centrale"}
              for c in frame.get("central_issue_candidates") or []
              if not any(_same_institution(c["nome"], n) for n in named)]
-    return {**analysis, "questioni": added + list(analysis.get("questioni") or [])} if added else analysis
+    # STRICT_ARTICLES_ENABLED: an institution the analysis names itself takes the code table's article and code
+    # (the boat case, 26 Oct: the analysis named "foro del consumatore" on its own, so the regime's art. 33 Cod.
+    # cons. never reached the resolver and the answer cited art. 24 Cost.).
+    tables = [c for c in frame.get("central_issue_candidates") or [] if isinstance(c, dict) and c.get("articolo")]
+    questions = list(analysis.get("questioni") or [])
+    if tables:
+        questions = [{**q, "istituti": [_with_table_article(i, tables) for i in q["istituti"]]}
+                     if isinstance(q.get("istituti"), list) else q for q in questions]
+    if not added and questions == list(analysis.get("questioni") or []):
+        return analysis
+    return {**analysis, "questioni": added + questions}
+
+
+def _with_table_article(istituto: Dict[str, Any], tables: List[Dict[str, Any]]) -> Dict[str, Any]:
+    table = next((c for c in tables if isinstance(istituto, dict)
+                  and _same_institution(c["nome"], istituto.get("nome") or "")), None)
+    if table is None or istituto.get("articolo"):
+        return istituto
+    return {**istituto, "articolo": table["articolo"], "codice": table.get("codice") or istituto.get("codice") or ""}
 
 
 def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict[str, Any]:
@@ -2253,7 +2271,12 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
             found = fetch_article(session, doc["id"], number)
             # RESOLUTION_STRICT_ENABLED: a full-text hit counts only if its rubrica shares a content word
             # with the institution (diagnose_long, 25 Oct: concorso -> 544-quinquies c.p., dolo -> 133/118).
-            if strict and found and not (_stems_of(nome) & _stems_of(_rows_heading(found))):
+            # STRICT_ARTICLES_ENABLED: nor is a shared generic word (the boat case, 26 Oct: "risarcimento danni"
+            # -> art. 2767 c.c., the injured party's privilege on the insurer's indemnity).
+            shared = _stems_of(nome) & _stems_of(_rows_heading(found))
+            if strict_articles:
+                shared -= _strict_generic_stems()
+            if (strict or strict_articles) and found and not shared:
                 vlog("case_analysis_institution_rejected", {
                     "institution": nome, "article": f"{number} {abbr or codice}", "path": "fulltext",
                     "heading": _rows_heading(found), "why": "rubrica shares no word with the institution"})
@@ -2680,24 +2703,39 @@ RULING_FIT_FLAG = "RULING_FIT_ENABLED"
 # RULING_FIT_ENABLED (the lawyer's review, 26 Oct): the pool case cited a ruling on asylum for minors, the boat
 # case one on a seller who hid the defects -- applied as if Marex had hidden them, which the case never says.
 # The writer's rule (cite a ruling only where the case's facts meet its conditions) did not stop either.
+# Round 2 (26 Oct): asked only whether a fact of the case meets the ruling's conditions, the check dropped every
+# ruling of the boat case, the general rules with the wrong ones ("a letter interrupts the limitation period").
 _RULING_FIT_SYSTEM = (
     "Sei un avvocato italiano. Ti vengono dati un CASO e alcuni passi di pronunce, ciascuno con un "
-    "identificativo [S1], [S2]... Per ogni pronuncia decidi se il principio che afferma si applica al CASO. "
-    "Si applica solo se un fatto che il CASO descrive ne integra i presupposti: lo stesso istituto e le stesse "
-    "condizioni. Non basta un tema simile o parole in comune. I fatti del giudizio deciso dalla pronuncia non "
-    "sono fatti del caso: non supporre che nel caso sia accaduto ciò che è accaduto lì. Rispondi solo con un "
-    "array JSON, un oggetto per pronuncia: {\"id\": \"S1\", \"si_applica\": true o false, \"fatto\": \"il fatto "
-    "del CASO che ne integra i presupposti, con le parole del caso; vuoto se non si applica\", \"perche\": "
-    "\"motivo in poche parole\"}."
+    "identificativo [S1], [S2]... Per ogni pronuncia indica a che cosa può servire in un parere sul CASO:\n"
+    "- \"fatti\": il principio si applica perché un fatto che il CASO descrive ne integra i presupposti; indica "
+    "quel fatto con le parole del caso;\n"
+    "- \"regola\": il principio enuncia una regola generale su una questione giuridica che il CASO pone (lo "
+    "stesso istituto), senza presupporre fatti che il CASO non descrive;\n"
+    "- \"passo\": il principio indica qualcosa che la parte assistita può fare ora per tutelarsi (un atto, un "
+    "termine da interrompere, un giudice da adire); indica quel passo;\n"
+    "- \"nessuno\": il principio riguarda un'altra questione giuridica, oppure presuppone fatti che il CASO non "
+    "descrive (che una parte abbia nascosto, saputo o fatto qualcosa che il caso non dice).\n"
+    "I fatti del giudizio deciso dalla pronuncia non sono fatti del caso: non supporre che nel caso sia accaduto "
+    "ciò che è accaduto lì. Rispondi solo con un array JSON, un oggetto per pronuncia: {\"id\": \"S1\", "
+    "\"uso\": \"fatti\", \"regola\", \"passo\" o \"nessuno\", \"fatto\": \"il fatto del CASO (per fatti) o il "
+    "passo (per passo); vuoto altrimenti\", \"perche\": \"motivo in poche parole\"}."
 )
-_RULING_FIT_NOTE = "Fatto del caso che ne integra i presupposti: "
+_RULING_FIT_NOTES = {
+    "fatti": "Fatto del caso che ne integra i presupposti: {}.",
+    "regola": "Uso nel parere: regola generale sulla questione, da citare come tale, senza attribuire al caso i "
+              "fatti del giudizio deciso.",
+    "passo": "Uso nel parere: passo che la parte assistita può compiere ora: {}.",
+}
 
 
 def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """RULING_FIT_ENABLED: the rulings whose principle a fact of the case meets, each with that fact as
-    _fit_fact -- one call for all. A ruling the model says does not apply goes, and so does one whose
-    "fact" is not the case's own (most of its longer words absent from the case: the boat case's hidden
-    defects). No verdict, a failed call or the flag off: the rows unchanged. Logged as case_analysis_ruling_fit."""
+    """RULING_FIT_ENABLED: the rulings that can serve the parere -- a fact of the case meets the principle's
+    conditions ("fatti"), it states a general rule on a question the case raises ("regola"), or a step the
+    client can take now ("passo") -- each with its use as _fit_use and the fact or step as _fit_fact; one call
+    for all. A ruling of no use ("nessuno") goes, and so does a "fatti" one whose fact is not the case's own (most
+    of its longer words absent from the case: the boat case's hidden defects). No verdict or an unknown use, a
+    failed call or the flag off: the row unchanged. Logged as case_analysis_ruling_fit."""
     if not ruling_rows or not feature_flags.enabled(RULING_FIT_FLAG):
         return ruling_rows
     case = _case_text(facts, request)
@@ -2719,34 +2757,35 @@ def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]]) -> 
         if isinstance(verdicts, list) else {}
     kept, log = [], {"kept": [], "dropped": []}
     for i, (row, label) in enumerate(zip(ruling_rows, labels), 1):
-        verdict = by_id.get(f"S{i}")
-        fact = " ".join(str((verdict or {}).get("fatto") or "").split())
-        if verdict is None:
-            kept.append(row)
-            log["kept"].append({"ruling": label, "fact": "(no verdict)"})
-        elif _says_no(verdict.get("si_applica")):
-            log["dropped"].append({"ruling": label, "why": str(verdict.get("perche") or "")[:200]})
-        elif not fact or not _found_in(fact, case):
+        verdict = by_id.get(f"S{i}") or {}
+        use = str(verdict.get("uso") or "").strip().lower()
+        fact = " ".join(str(verdict.get("fatto") or "").split())
+        why = str(verdict.get("perche") or "")[:200]
+        if use == "nessuno":
+            log["dropped"].append({"ruling": label, "why": why})
+        elif use == "fatti" and (not fact or not _found_in(fact, case)):
             log["dropped"].append({"ruling": label, "why": f"fact not in the case: {fact[:200]}"})
+        elif use in _RULING_FIT_NOTES:
+            kept.append({**row, "_fit_use": use, "_fit_fact": fact})
+            log["kept"].append({"ruling": label, "use": use, "fact": fact[:200]})
         else:
-            kept.append({**row, "_fit_fact": fact})
-            log["kept"].append({"ruling": label, "fact": fact[:200]})
+            kept.append(row)
+            log["kept"].append({"ruling": label, "use": "(no verdict)"})
     vlog("case_analysis_ruling_fit", log)
     return kept
 
 
-def _says_no(value: Any) -> bool:
-    return value is False or str(value).strip().lower() in ("false", "no")
-
-
 def _with_fit_facts(ruling_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """RULING_FIT_ENABLED: each kept ruling's passage led by the fact of the case that meets its conditions, for
-    the plan and the writer (after the principles, which read the passages alone)."""
+    """RULING_FIT_ENABLED: each kept ruling's passage led by what it serves for -- the fact of the case that meets
+    its conditions, a general rule, or the step the client can take -- for the plan and the writer (after the
+    principles, which read the passages alone)."""
     out = []
     for row in ruling_rows:
-        if row.get("_fit_fact"):
+        use = row.get("_fit_use")
+        if use in _RULING_FIT_NOTES and (use == "regola" or row.get("_fit_fact")):
             passage = row.get("_passage") or " ".join(((row.get("s") or {}).get("plain_text") or "").split())
-            row = {**row, "_passage": f"{_RULING_FIT_NOTE}{row['_fit_fact'].rstrip('.')}. {passage}".strip()}
+            note = _RULING_FIT_NOTES[use].format((row.get("_fit_fact") or "").rstrip("."))
+            row = {**row, "_passage": f"{note} {passage}".strip()}
         out.append(row)
     return out
 
@@ -4759,8 +4798,6 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                 continue
             if remove:
                 why = _protection(ref, protected)
-                if why is not None and feature_flags.enabled(STRICT_ARTICLES_FLAG) and not _strong_protection(why):
-                    why = None
                 if why is None:
                     to_remove.append(ref)
                     continue
@@ -4805,14 +4842,6 @@ def _protected_refs(article_rows: List[Dict[str, Any]], named: List[tuple]) -> D
         if why:
             out.setdefault(ref, why)
     return out
-
-
-def _strong_protection(why: str) -> bool:
-    """STRICT_ARTICLES_ENABLED: the protections (_protected_refs) that keep an article the qualification check
-    found misused -- named in the case, a procedural tool, resolved for a central issue, graded 3. Graded 2,
-    voted or found by two channels does not: the lawyer's review (26 Oct) of answers that kept art. 1374 c.c.
-    for the consumer's forum, 2047 and 2048 c.c. for the parents of a drowned child, all graded 2."""
-    return why == "named in the case" or any(w in why for w in ("procedural tool", "central issue", "grade 3"))
 
 
 def _protection(ref: tuple, protected: Dict[tuple, str]) -> Optional[str]:
