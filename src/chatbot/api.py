@@ -2026,6 +2026,33 @@ def _classifier_view(message: str) -> str:
     return f"{message[:_CLASSIFY_HEAD_CHARS]}\n[…]\n{message[-_CLASSIFY_TAIL_CHARS:]}"
 
 
+def _routed_intent(message: str, legal_intent: str, pending_calculation: Optional[dict] = None) -> str:
+    """ROUTER_ENABLED (src/rag/query_router.py): the request's route, logged with its reasons. The intents
+    that decided before keep precedence -- a defensive draft, a generation, a calculation still collecting
+    inputs or one the message asks for; a "rag" request the router reads as a narrative (a fact pattern
+    with a request for action or a parere) goes to the strategy pipeline. Direct and ccnl requests keep
+    the RAG path, tagged. Unchanged with the flag off."""
+    from ..rag import query_router
+
+    if not query_router.enabled():
+        return legal_intent
+    try:
+        route = query_router.classify(message)
+    except Exception as exc:
+        logger.warning("chat: router failed, intent kept: %s", exc)
+        return legal_intent
+    intent = legal_intent
+    if legal_intent == "rag" and route["route"] == "narrative":
+        if pending_calculation or query_router.asks_calculation(message):
+            logger.info("chat: route=narrative, but a calculation keeps precedence")
+        else:
+            intent = "defensive_draft"
+    logger.info("chat: route=%s intent=%s->%s reasons=%s", route["route"], legal_intent, intent,
+                "; ".join(route["reasons"]))
+    vlog("chat_route", {"route": route["route"], "intent_before": legal_intent, "intent": intent})
+    return intent
+
+
 def _classify_legal_intent(message: str, session_lang: str) -> str:
     """
     Classification of a message with NO document attached, deciding
@@ -2935,6 +2962,9 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                     filename=_matched_doc.original_filename,
                     default="analyse" if getattr(_matched_doc, "document_role", "document") == "document" else "rag",
                 )
+                if feature_flags.enabled("ROUTER_ENABLED"):     # tagged only: a document keeps its path
+                    logger.info("chat: route=document intent=%s", doc_intent)
+                    vlog("chat_route", {"route": "document", "intent": doc_intent})
 
                 if doc_intent == "generate":
                     # User wants to fill/duplicate their own uploaded document.
@@ -3379,6 +3409,7 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
     if _legal_intent == "defensive_draft" and _is_topic_question(request.message):
         logger.info("chat: %r is a short topic question, not a case: answered, not drafted", request.message)
         _legal_intent = "rag"
+    _legal_intent = _routed_intent(request.message, _legal_intent, last_pending_calculation(_session))
     if _legal_intent == "defensive_draft":
         # Use message text as source — no document required
         from ..rag.defensive_generation import run_defensive_pipeline

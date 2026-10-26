@@ -297,6 +297,23 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 1495 c.c. and as a note on the terms; no art. 700 c.p.c.
                                 after a death. See plan_then_write.rewrite_unsupported,
                                 fact_signals._recognition_note.
+
+The flags below are the source-tiered retrieval (26 Oct): the AUTHORITY tier is the primary
+documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what the authority found.
+  ROUTER_ENABLED               false: each chat request is classified narrative (a fact pattern:
+                                several sentences, two or more parties, a sequence of events,
+                                and a request for action, an opinion or a parere), direct (a
+                                question about a norm, an institution, a term or a procedure),
+                                ccnl (a collective agreement, or an employment question that
+                                needs one: tagged, today's path) or document (an upload: its
+                                own path) -- by signals first, one short LLM call only for a
+                                tie; logged with its reasons (route_chosen, chat_route). The
+                                intents that decided before keep precedence (defensive draft,
+                                generation, a calculation pending or asked for); a "rag"
+                                request routed narrative goes to the strategy pipeline. In the
+                                pipeline the case frame must confirm a narrative (two or more
+                                parties and events), else it is treated as direct. See
+                                src/rag/query_router.py.
 """
 
 import logging
