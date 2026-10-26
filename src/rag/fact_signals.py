@@ -122,6 +122,7 @@ SCHEMA: Dict[str, Any] = {
     "possession": [{"who": "", "asset": "", "since": "", "until": "", "how": "", "use": "", "still_ongoing": ""}],
     "works_or_signs": [{"what": "", "visible": "", "existing_since": "", "before_separation": "", "serves": ""}],
     "events": [{"date": "", "what": "", "who": "", "kind": ""}],
+    "access": [{"asset": "", "landlocked": "", "how_reached": ""}],
     "injuries": [{"who": "", "days_to_heal": "", "permanent": ""}],
     "money": [{"amount": "", "rate": "", "period": "", "threshold": ""}],
     "contracts": [{"type": "", "parties": "", "clauses": ""}],
@@ -148,7 +149,8 @@ _EXTRACT_SYSTEM = (
     "medico, struttura sanitaria, professionista, pubblica amministrazione, albergatore, impresa) SOLO se il testo "
     "lo dice di quella parte: essere proprietario, vicino o usare una strada non lo è; in mancanza «privato». "
     "age solo se il testo la dice.\n"
-    "- client_side: chi assiste il parere (nome e ruolo), se il testo lo dice.\n"
+    "- client_side: la parte per cui si scrive il parere, cioè il cliente (nome e ruolo): dalla richiesta "
+    "(\"assumi la difesa di X\", \"il legale di X\", \"per conto di X\"), altrimenti dal testo; mai l'avvocato.\n"
     "- property_history: i proprietari, anche precedenti, di ciascun bene (\"appartenevano a X\", \"erano di X\", "
     "\"di proprietà di X fino a...\") {asset (quale bene), owner (chi ne era proprietario), from, to (date come "
     "scritte), period (il periodo come scritto, per esempio \"all'inizio del 1900\", \"fino al 1950\"), together_with "
@@ -157,12 +159,17 @@ _EXTRACT_SYSTEM = (
     + ")}.\n"
     "- possession: chi possiede o usa un bene o un passaggio {who, asset, since e until (da quando e fino a quando, "
     "come scritto), how (come scritto: pacifico, continuo, pubblico, violento, clandestino, con tolleranza...), use "
-    "(che uso: passaggio, coltivazione, abitazione, parcheggio...), still_ongoing (sì/no)}.\n"
+    "(che uso: passaggio, coltivazione, abitazione, parcheggio...), still_ongoing (sì/no)}; \"con tolleranza\" o "
+    "\"con permesso\" solo se il testo dice tolleranza, permesso o cortesia.\n"
     "- works_or_signs: opere e segni, anche preesistenti (strade, sentieri, passaggi, finestre, condotte, muri) "
     "{what, visible (sì se si vedono: una strada o un sentiero tracciati, una finestra, una condotta in vista; no se "
-    "interrati o nascosti), existing_since (da quando, come scritto), before_separation (sì se esisteva già quando i "
+    "interrati o nascosti), existing_since (da quando, come scritto: anche \"esisteva già all'inizio del 1900\" dà "
+    "\"all'inizio del 1900\"), before_separation (sì se esisteva già quando i "
     "beni sono stati divisi o venduti, \"esisteva già\", \"c'era già\"; no se è stata fatta dopo; vuoto se il testo "
     "non lo dice), serves (il bene che l'opera serve)}.\n"
+    "- access: per ogni bene di cui il testo dice come si raggiunge {asset, landlocked (sì se il testo lo dice "
+    "intercluso, senza accesso alla via pubblica o raggiungibile solo attraverso fondi altrui; no se ha un accesso "
+    "suo), how_reached (come scritto)}.\n"
     "- events: i fatti datati e non {date (ESATTAMENTE come scritta nel testo, o vuota), what (in una frase, "
     "neutra), who, kind (SOLO tra: " + ", ".join(EVENT_KINDS) + "; chi chiude un cancello, sbarra o ostruisce un "
     "passaggio o un accesso: chiusura/ostruzione accesso)}.\n"
@@ -232,6 +239,12 @@ def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> 
         party["role"] = _clean_roles(party.get("role", ""), party.get("name", ""), case_text)
     for item in out.get("events") or []:
         item["kind"] = _enum(item.get("kind", ""), EVENT_KINDS)
+    if "possession" in out:
+        _stated_tolerance(out, case_text)
+    if "access" in out:
+        _stated_landlocked(out, case_text)
+    if "client_side" in out:
+        _client(out, case_text)
     for item in out.get("property_history") or []:
         for field in ("how_acquired", "ended_by"):
             item[field] = _enum(item.get(field, ""), TRANSFER_KINDS, _TRANSFER_SYNONYMS)
@@ -244,7 +257,136 @@ def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> 
                 item[field] = ""                          # not in the text as written: never kept
             parsed = parse_date(item.get(field, ""))
             item[f"{field}_iso"] = parsed[2] if parsed else ""
+    if "works_or_signs" in out:
+        _work_since(out, case_text)
     return out
+
+
+# --- what the case states, read where the model left a field empty or filled it without the text ----------------
+
+# 27 Oct (fact_probe on a prod narrative): a road that "esisteva già all'inizio del 1900" came out with no date, so
+# the servitù by usucapione could not be weighed; "con tolleranza" given though the text never says so; a plot the
+# text calls "intercluso" left the landlocked rule unfired; the client taken from the wrong place.
+_ALREADY_RE = re.compile(r"esistev\w* già|c'er\w* già|er\w* già (?:present|esistent|tracciat|in uso|aperta|aperto)|"
+                         r"già esistent|preesistent|già allora|già al(?:l')? ?(?:tempo|epoca)|risal\w* a", re.IGNORECASE)
+_DATE_PREFIX_RE = re.compile(r"(?:(?:all'inizio|alla fine|alla metà|ai primi|agli inizi) (?:del|degli anni|dell')\s*|"
+                             r"(?:negli|dagli) anni\s+|(?:sin|fin) dal\s+|dal\s+|nel\s+|intorno al\s+)$", re.IGNORECASE)
+
+
+def _written_date(sentence: str) -> str:
+    """The first date of the sentence as written, with its leading words ("all'inizio del 1900", "nel 1980")."""
+    for pattern, _ in _DATE_PATTERNS:
+        m = pattern.search(sentence or "")
+        if m:
+            prefix = _DATE_PREFIX_RE.search(sentence[:m.start()])
+            return sentence[prefix.start() if prefix else m.start():m.end()].strip()
+    return ""
+
+
+def _sentences_of(text: str) -> List[str]:
+    return [x.strip() for x in re.split(r"(?<=[.;!?])\s+|\n+", text or "") if x.strip()]
+
+
+def _work_since(out: Dict[str, Any], case_text: str) -> None:
+    """A work with no existing_since: the date of a sentence saying the work already existed then ("la strada
+    esisteva già all'inizio del 1900"); else, for a work that existed before the separation, the date the common
+    ownership ended (property_history's to or period). existing_since_how says which."""
+    sentences = _sentences_of(case_text)
+    for work in out.get("works_or_signs") or []:
+        if work.get("existing_since"):
+            continue
+        stems = {w[:5] for w in re.findall(r"[a-zà-ù]{4,}", _low(work.get("what")))}
+        written = next((d for x in sentences if _ALREADY_RE.search(x) and stems & {w[:5] for w in re.findall(
+            r"[a-zà-ù]{4,}", _low(x))} for d in [_written_date(x)] if d), "")
+        how = "il testo: esisteva già"
+        if not written and _yes(work.get("before_separation")):
+            written = next((h.get(f) for h in out.get("property_history") or [] for f in ("to", "period")
+                            if h.get(f) and parse_date(h[f]) and (_low(h.get("together_with"))
+                                                                  or h.get("ended_by") in ("divisione", "compravendita"))), "")
+            how = "la fine della proprietà comune (esisteva già alla divisione o vendita)"
+        if written:
+            parsed = parse_date(written)
+            work.update(existing_since=written, existing_since_iso=parsed[2] if parsed else "", existing_since_how=how)
+
+
+_TOLERANCE_RE = r"toller|permess|cortesi|concess|precari|autorizz|consens|benevol|favore"
+_TOLERANCE_STATED_RE = (r"tolleranz|tollerat|permesso|per cortesia|cortesia|in concessione|concession|precari|"
+                        r"autorizzazion|autorizzat|consenso|acconsent|benevolenz|per favore|a titolo di favore")
+
+
+def _stated_tolerance(out: Dict[str, Any], case_text: str) -> None:
+    """Tolerance or permission in a possession's "how" only when the text states it; otherwise those words go
+    (how_dropped keeps them)."""
+    if re.search(_TOLERANCE_STATED_RE, _low(case_text)):
+        return
+    for item in out.get("possession") or []:
+        parts = [x.strip() for x in re.split(r",|;|/|\be\b", item.get("how", "")) if x.strip()]
+        dropped = [x for x in parts if re.search(_TOLERANCE_RE, _low(x))]
+        if dropped:
+            item["how"] = ", ".join(x for x in parts if x not in dropped)
+            item["how_dropped"] = ", ".join(dropped)
+
+
+_LANDLOCKED_RE = re.compile(
+    r"(?<!non è )(?<!non era )(?<!non sia )\binterclus\w*|senza (?:alcun |nessun |un )?(?:accesso|sbocco|uscita) "
+    r"(?:diretto |autonomo |propri\w )?(?:alla|sulla|verso la|alle|sulle) (?:via|strada|vie|strade) pubblic\w*|"
+    r"non (?:ha|abbia|aveva|hanno) (?:alcun |altro |un )?(?:accesso|sbocco|uscita) (?:diretto |autonomo )?"
+    r"(?:alla|sulla|alle) (?:via|strada|vie) pubblic\w*|privo di (?:ogni |qualsiasi |alcun )?(?:accesso|sbocco)|"
+    r"non (?:è|era|sono|erano) raggiungibil\w* se non|raggiungibil\w* (?:solo|soltanto|unicamente) (?:attraverso|"
+    r"passando|tramite)|unic\w* (?:accesso|sbocco|via d'accesso)|circondat\w* da fondi altrui", re.IGNORECASE)
+
+
+def _stated_landlocked(out: Dict[str, Any], case_text: str) -> None:
+    """A plot the text explicitly calls landlocked gets access.landlocked "sì" (the fondo_intercluso rule reads it),
+    with the sentence that says so, when the model left it out."""
+    if any(_yes(a.get("landlocked")) for a in out.get("access") or []):
+        return
+    said = next((x for x in _sentences_of(case_text) if _LANDLOCKED_RE.search(x)), "")
+    if said:
+        out.setdefault("access", []).append({"asset": "", "landlocked": "sì", "how_reached": " ".join(said.split())[:200]})
+
+
+_NAME = r"((?:[A-Z][\w'’.-]*)(?:\s+(?:[A-Z][\w'’.-]*|s\.?r\.?l\.?|s\.?p\.?a\.?|srl|spa))*)"
+_THE = r"(?:(?:il|la|lo|l'|i|gli|le) )?(?:(?:sig\.?(?:ra)?|signor[ae]?|dott\.?(?:ssa)?|società|ditta) )?"
+_CLIENT_RES = [re.compile(r"(?i:assum\w*|prend\w*)\s+(?i:la\s+|le\s+)?(?i:difesa|patrocinio|vesti del (?:legale|"
+                          r"difensore|avvocato))\s+(?i:di|del|della|dello|dell')\s*" + _THE + _NAME),
+               re.compile(r"(?i:legale|difensore|avvocato|patrocinatore)\s+(?i:di|del|della|dello|dell')\s*" + _THE + _NAME),
+               re.compile(r"(?i:per conto|nell'interesse)\s+(?i:di|del|della|dello|dell')\s*" + _THE + _NAME)]
+_LAWYER_RE = r"\bavvocat|\blegale\b|difensor|candidat|studio legale|\bscrivente\b|\bconsulente\b|\bio\b"
+_NOT_A_CLIENT = {"Il", "La", "Lo", "Si", "Che", "Codice", "Corte", "Tribunale", "Cassazione", "Stato"}
+
+
+def client_from(text: str) -> str:
+    """The client a text names ("assumi la difesa di X", "il legale di X", "per conto di X"), or ""."""
+    for pattern in _CLIENT_RES:
+        for m in pattern.finditer(text or ""):
+            name = m.group(1).strip(" .,'’")
+            if name and name.split()[0] not in _NOT_A_CLIENT:
+                return name
+    return ""
+
+
+def _client(out: Dict[str, Any], case_text: str) -> None:
+    """client_side from the user's request, else from the text, else the model's own when it names no lawyer
+    ("" then); the party it names gets the role "cliente". client_side_how says where it came from."""
+    text = case_text or ""
+    request = text.split("DOCUMENTO CARICATO:", 1)[0] if text.startswith("RICHIESTA DELL'UTENTE:") else ""
+    model = out.get("client_side", "")
+    name, how = client_from(request), "la richiesta"
+    if not name:
+        name, how = client_from(text), "il testo"
+    if not name:
+        name, how = client_from(model), "la risposta del modello"
+    if not name:
+        if model and re.search(_LAWYER_RE, _low(model)):
+            out["client_side"], out["client_side_how"] = "", f"scartato: «{model}» è l'avvocato"
+        return
+    party = next((p for p in out.get("parties") or [] if p.get("name") and (
+        _low(name) in _low(p["name"]) or _low(p["name"]) in _low(name))), None)
+    if party is not None and "cliente" not in _low(party.get("role")):
+        party["role"] = ", ".join(["cliente"] + [r for r in (party.get("role") or "").split(", ") if r and r != "cliente"])
+    out["client_side"] = name + (f" ({party['role']})" if party and party.get("role") else "")
+    out["client_side_how"] = how
 
 
 def _enum(value: str, allowed: Tuple[str, ...], synonyms: Tuple[Tuple[str, str], ...] = ()) -> str:
@@ -367,11 +509,11 @@ _MONTHS = {m: i for i, m in enumerate(("gennaio", "febbraio", "marzo", "aprile",
                                        "agosto", "settembre", "ottobre", "novembre", "dicembre"), 1)}
 _MONTH_RE = "|".join(_MONTHS)
 _DATE_PATTERNS = (
-    (re.compile(r"\b(\d{1,2})[/.-](\d{1,2})[/.-]((?:19|20)\d{2})\b"), "dmy"),
-    (re.compile(r"\b((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})\b"), "ymd"),
-    (re.compile(rf"\b(\d{{1,2}})(?:°|º)?\s+({_MONTH_RE})\s+((?:19|20)\d{{2}})\b", re.IGNORECASE), "d month y"),
-    (re.compile(rf"\b({_MONTH_RE})\s+(?:del\s+|dell'\s*)?((?:19|20)\d{{2}})\b", re.IGNORECASE), "month y"),
-    (re.compile(r"\b((?:19|20)\d{2})\b"), "y"),
+    (re.compile(r"\b(\d{1,2})[/.-](\d{1,2})[/.-]((?:18|19|20)\d{2})\b"), "dmy"),
+    (re.compile(r"\b((?:18|19|20)\d{2})-(\d{1,2})-(\d{1,2})\b"), "ymd"),
+    (re.compile(rf"\b(\d{{1,2}})(?:°|º)?\s+({_MONTH_RE})\s+((?:18|19|20)\d{{2}})\b", re.IGNORECASE), "d month y"),
+    (re.compile(rf"\b({_MONTH_RE})\s+(?:del\s+|dell'\s*)?((?:18|19|20)\d{{2}})\b", re.IGNORECASE), "month y"),
+    (re.compile(r"\b((?:18|19|20)\d{2})\b"), "y"),
 )
 
 
@@ -921,6 +1063,20 @@ def _p_common_owner(facts, terms, arg):
     return any(len(assets) >= 2 for assets in by_owner.values())
 
 
+_LANDLOCKED_WORDS = (r"intercluso|senza (?:alcun )?accesso|non ha (?:alcun )?accesso|nessun accesso|privo di accesso|"
+                     r"accesso alla (?:via|strada) pubblica")
+
+
+def _p_landlocked(facts, terms, arg):
+    """A plot the text calls landlocked: access.landlocked when the facts say how a plot is reached (typed; the
+    validation sets it from an explicit statement, _stated_landlocked); by the facts' words only when they say
+    nothing of access."""
+    access = facts.get("access") or []
+    if access:
+        return any(_yes(a.get("landlocked")) for a in access)
+    return _p_fact(facts, terms, {"pattern": _LANDLOCKED_WORDS})
+
+
 def _p_event(facts, terms, arg):
     """An event of one of the kinds (EVENT_KINDS) -- typed, never by its words."""
     kinds = arg["kind"] if isinstance(arg.get("kind"), list) else [arg.get("kind")]
@@ -964,6 +1120,7 @@ PREDICATES: Dict[str, Tuple[Callable, Callable]] = {
     "work": (_p_work, lambda a: a.get("label") or ("un'opera visibile" if a.get("visible") else "un'opera")
              + (" già esistente quando i beni furono divisi o venduti" if a.get("before_separation") else "")
              + (f" esistente da almeno {a['min_years']} anni" if a.get("min_years") else "")),
+    "landlocked": (_p_landlocked, lambda a: a.get("label") or "un fondo senza accesso alla via pubblica"),
     "event": (_p_event, lambda a: a.get("label") or "un evento del tipo "
               + " o ".join(a["kind"] if isinstance(a.get("kind"), list) else [str(a.get("kind"))])),
     "common_previous_owner": (_p_common_owner, lambda a: "i beni appartenevano a un unico proprietario, poi diviso o "
@@ -1142,6 +1299,11 @@ def _evidence(condition: Dict[str, Any], facts: Dict[str, Any], terms: List[Dict
                          + (f" insieme a {p.get('together_with')}" if p.get("together_with") else "")
                          + (f", finita per {p.get('ended_by')}" if p.get("ended_by") else "")
                          for p in facts.get("property_history") or [])[:200]
+    if name == "landlocked":
+        if not facts.get("access"):
+            return _evidence({"fact": {"pattern": _LANDLOCKED_WORDS}}, facts, terms)
+        return "; ".join(f"{a.get('asset') or 'il fondo'}: {a.get('how_reached') or a.get('landlocked')}"
+                         for a in facts.get("access") or [] if _yes(a.get("landlocked")))[:200]
     if name == "event":
         kinds = arg["kind"] if isinstance(arg.get("kind"), list) else [arg.get("kind")]
         return "; ".join(f"{e.get('what')} ({e.get('kind')})" for e in facts.get("events") or []

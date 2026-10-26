@@ -79,7 +79,7 @@
 - id: fondo_intercluso
   area: diritti_reali
   when:
-    - fact: {pattern: 'intercluso|senza (?:alcun )?accesso|non ha (?:alcun )?accesso|nessun accesso|privo di accesso|accesso alla (?:via|strada) pubblica', label: "un fondo senza accesso alla via pubblica"}
+    - landlocked: {}
   institution: [passaggio coattivo, indennità per il passaggio coattivo]
   codice: c.c.
   ranges: [[1051,1055]]

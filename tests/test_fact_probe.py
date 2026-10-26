@@ -188,3 +188,85 @@ def test_the_dry_run_record_carries_the_facts():
     events = [("case_analysis_fact_signals", {"facts": f, "terms": [{"id": "possessoria"}], "fired": []}, None)]
     record = dryrun.saved_run("code", "req", "ok", 1.0, [], events, {"draft": "d"})
     assert record["facts"] == f and record["fact_terms"] == [{"id": "possessoria"}] and record["fact_rules_fired"] == []
+
+
+# --- 27 Oct, second probe: work dates, tolerance, landlocked plots, the client ------------------------------
+
+def test_a_work_said_to_exist_already_at_a_date_takes_that_date():
+    case = ("Il mulino e il prato erano di Ferri. La mulattiera che sale al prato esisteva già all'inizio del 1800. "
+            "Nel 1990 Ferri vende il prato a Gori.")
+    reply = {"works_or_signs": [{"what": "mulattiera", "visible": "sì", "existing_since": ""}]}
+    work = fs.validate_facts(reply, case)["works_or_signs"][0]
+    assert work["existing_since"] == "all'inizio del 1800" and work["existing_since_iso"] == "1800"
+    assert work["existing_since_how"] == "il testo: esisteva già"
+    other = fs.validate_facts({"works_or_signs": [{"what": "pozzo", "visible": "sì", "existing_since": ""}]}, case)
+    assert other["works_or_signs"][0]["existing_since"] == ""                # not the mulattiera's date
+
+
+def test_a_work_there_before_the_division_dates_from_the_end_of_the_common_ownership(monkeypatch):
+    monkeypatch.setenv(fs.TODAY_ENV, "2026-10-27")
+    case = "I due orti appartenevano a Sala fino al 1975, quando li divise. Il sentiero c'era già allora."
+    reply = {"property_history": [{"asset": "orto nord", "owner": "Sala", "to": "1975", "together_with": "orto sud",
+                                   "ended_by": "divisione"}],
+             "works_or_signs": [{"what": "sentiero", "visible": "sì", "existing_since": "", "before_separation": "sì"}],
+             "possession": [{"who": "Pace", "asset": "sentiero", "since": "1975", "how": "pacifico",
+                             "still_ongoing": "sì"}]}
+    facts = fs.validate_facts(reply, case + " Pace lo usa dal 1975.")
+    work = facts["works_or_signs"][0]
+    assert work["existing_since"] == "1975" and work["existing_since_how"].startswith("la fine della proprietà comune")
+    fired = [r["id"] for r in fs.fire_rules(facts, fs.compute_terms(facts))]
+    assert "usucapione_servitu_apparente" in fired and "destinazione_padre_famiglia" in fired
+
+
+def test_tolerance_only_when_the_text_says_it():
+    reply = {"possession": [{"who": "Lena", "asset": "cortile", "since": "2001", "how": "pacifico, con tolleranza"}]}
+    silent = fs.validate_facts(reply, "Lena attraversa il cortile dal 2001.")["possession"][0]
+    assert silent["how"] == "pacifico" and silent["how_dropped"] == "con tolleranza"
+    for said in ("Lena passa per tolleranza del vicino dal 2001.", "Dal 2001 Lena passa con il permesso di Ugo.",
+                 "Ugo la lascia passare per cortesia dal 2001."):
+        assert fs.validate_facts(json.loads(json.dumps(reply)), said)["possession"][0]["how"] == "pacifico, con tolleranza"
+
+
+@pytest.mark.parametrize("sentence", [
+    "Il fondo di Ivo è intercluso.",
+    "Il terreno di Ivo è senza accesso alla via pubblica.",
+    "La casa di Ivo non è raggiungibile se non attraverso il fondo di Ada.",
+    "Il podere di Ivo è raggiungibile solo passando dal cortile di Ada.",
+])
+def test_an_explicit_landlocked_statement_sets_access_and_fires_the_rule(sentence):
+    facts = fs.validate_facts({"events": [{"what": "Ada chiude il cortile"}]}, sentence + " Ada chiude il cortile.")
+    assert facts["access"][0]["landlocked"] == "sì" and facts["access"][0]["how_reached"] == sentence
+    assert "fondo_intercluso" in [r["id"] for r in fs.fire_rules(facts, [])]
+
+
+def test_a_plot_not_landlocked_or_with_its_own_access_does_not_fire():
+    facts = fs.validate_facts({"events": [{"what": "Ada pianta una siepe"}]},
+                              "Il fondo di Ivo non è intercluso: ha un accesso sulla provinciale. Ada pianta una siepe.")
+    assert facts["access"] == [] and "fondo_intercluso" not in [r["id"] for r in fs.fire_rules(facts, [])]
+    own = fs.validate_facts({"access": [{"asset": "fondo di Ivo", "landlocked": "no"}],
+                             "events": [{"what": "il fondo di Ivo è intercluso secondo Ada"}]}, "Testo.")
+    assert not fs.holds({"landlocked": {}}, own, [])                     # typed: the words do not count
+
+
+def test_the_client_comes_from_the_request_then_the_text_never_the_lawyer():
+    case = ("RICHIESTA DELL'UTENTE: Assumi la difesa di Bianca Riva e indica le azioni.\n\nDOCUMENTO CARICATO:\n"
+            "L'avv. Conti scrive per conto di Dario Pino. Bianca Riva e Dario Pino litigano sul confine.")
+    reply = {"client_side": "avv. Conti", "parties": [{"name": "Bianca Riva", "role": "vicino"},
+                                                      {"name": "Dario Pino", "role": "vicino"}]}
+    facts = fs.validate_facts(reply, case)
+    assert facts["client_side"] == "Bianca Riva (cliente, vicino)" and facts["client_side_how"] == "la richiesta"
+    assert facts["parties"][1]["role"] == "vicino"
+    text_only = fs.validate_facts({"client_side": "", "parties": []},
+                                  "Il candidato, legale di Sara Neri, rediga parere. Sara Neri compra un'auto.")
+    assert text_only["client_side"] == "Sara Neri" and text_only["client_side_how"] == "il testo"
+    lawyer = fs.validate_facts({"client_side": "l'avvocato dello studio"}, "Un caso senza cliente indicato.")
+    assert lawyer["client_side"] == "" and "avvocato" in lawyer["client_side_how"]
+    kept = fs.validate_facts({"client_side": "Ugo, proprietario"}, "Ugo possiede un orto.")
+    assert kept["client_side"] == "Ugo, proprietario"
+
+
+def test_client_from_reads_the_usual_phrasings():
+    assert fs.client_from("Assunte le vesti del legale di Caio, rediga parere") == "Caio"
+    assert fs.client_from("il difensore della società Alfa srl chiede") == "Alfa srl"
+    assert fs.client_from("Agisci nell'interesse di Mara Sole.") == "Mara Sole"
+    assert fs.client_from("Una lite tra vicini.") == ""
