@@ -1,0 +1,115 @@
+"""scripts/maint_health.py: the maintenance agent's job 1, the nightly read-only health report (27 Oct)."""
+import importlib.util
+import json
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+_spec = importlib.util.spec_from_file_location("maint_health", HERE.parent / "scripts" / "maint_health.py")
+mh = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(mh)
+
+
+def test_article_of_and_gaps():
+    assert mh.article_of("1490.0.0") == "1490" and mh.article_of("1117.3.0_2") == "1117"
+    assert mh.article_of("337-ter") == "337-ter" and mh.article_of("corte_cassazione.8") is None
+    assert mh.numbering_gaps(["1", "2", "4", "4-bis", "7"]) == [3, 5, 6] and mh.numbering_gaps([]) == []
+
+
+def test_date_only_articles_need_text_elsewhere():
+    sections = [("128.0.0", 30, True), ("128", 4004, False),            # date only, text in the bare Section
+                ("105.0.0", 29, True), ("105.1.0", 321, False),         # date only, text in a comma
+                ("9.0.0", 28, True),                                    # date only, nothing else: not counted
+                ("1490.0.0", 321, False), ("1490.1.0", 200, False)]     # real text in N.0.0
+    assert mh.date_only_articles(sections) == ["105", "128"]
+
+
+def test_suspected_duplicates():
+    docs = [{"name": "Codice del Consumo 2026", "hash": "a"}, {"name": "Codice del Consumo 2025", "hash": "b"},
+            {"name": "Testo Unico della Finanza 2026", "hash": "c"}, {"name": "Testo unico della finanza 2026", "hash": "d"},
+            {"name": "Copia", "hash": "c"}, {"name": "Unico", "hash": None}]
+    found = mh.suspected_duplicates(docs)
+    assert found["same hash"] == [["Testo Unico della Finanza 2026", "Copia"]]
+    assert found["same name"] == [["Testo Unico della Finanza 2026", "Testo unico della finanza 2026"]]
+    assert found["same name but the year"] == [["Codice del Consumo 2026", "Codice del Consumo 2025"]]
+
+
+def test_branch_of():
+    assert mh.branch_of("snpen@s10@a2026@n00190@tS.clean.pdf", "") == "penale"
+    assert mh.branch_of("", "[CIVILE] snciv_s30_a2026_n12345_tO") == "civile"
+    assert mh.branch_of("altro.pdf", "") == "unknown"
+
+
+NUMBERS = {"sections_no_v2_with_text": 10, "sections_empty": 3, "docs_untyped": 2, "sections_detached": 0,
+           "date_only_articles": 1100, "numbering_gaps": 40, "numbering_gaps_new": 0, "rulings_without_cites": 4254,
+           "queue_waiting": 13000, "queue_failed": 5, "duplicates": 1, "rulings_without_card": None}
+
+
+def test_summary_line_with_deltas_and_cards():
+    line = mh.summary_line(NUMBERS, None)
+    assert line.startswith("v2 missing 10 · empty sections 3 · untyped docs 2") and "card" not in line
+    assert "suspected duplicates 1 (not touched)" in line
+    prev = {**NUMBERS, "sections_no_v2_with_text": 4, "rulings_without_cites": 4300}
+    line = mh.summary_line({**NUMBERS, "rulings_without_card": 5939}, {**prev, "rulings_without_card": 6000})
+    assert "v2 missing 10 (+6)" in line and "rulings without CITES 4,254 (-46)" in line
+    assert "rulings without card 5,939 (-61)" in line
+
+
+GRAPH = {"documents": 6, "docs_by_type": {"interpretation": 3, "primary": 1, "(none)": 2},
+         "docs_untyped_names": ["doc A", "doc B"], "docs_unknown_type": {},
+         "sections_by_type": {"interpretation": 30, "primary": 100}, "sections_empty_by_type": {"primary": 1},
+         "sections_no_v2_by_type": {"primary": 2}, "sections_no_v2_with_text_by_type": {"primary": 1},
+         "sections_detached": 0, "date_only_by_doc": {"Codice del Consumo 2026": 205},
+         "numbering_gaps_by_code": {"Codice Civile 2026": [3, 5]},
+         "rulings_by_branch": {"penale": {"rulings": 2, "without_cites": 1}, "civile": {"rulings": 1, "without_cites": 0}},
+         "ruling_ids_by_branch": {"penale": ["p1", "p2"], "civile": ["c1"]},
+         "duplicates": {"same hash": [], "same name": [], "same name but the year": []}}
+QUEUE = {"waiting": 2, "by_kind": {"penale": 2}, "failed": 0, "service": "active", "queue_dir_found": True}
+
+
+def test_build_report_first_night_and_new_gaps(tmp_path):
+    md, state, line = mh.build_report(GRAPH, QUEUE, [{"log": "/var/log/x.log", "found": False}], (7, {"not_found": 7}),
+                                      {"p1", "c1"}, None, 12.0)
+    assert "First report: no comparison." in md and "- Codice del Consumo 2026: 205" in md
+    assert "| penale | 2 | 1 | 1 |" in md and "untyped docs 2" in line and "rulings without card 1" in line
+    assert "CITES unresolved citations (linker log): 7 -- not_found 7" in md and "/var/log/x.log: not found" in md
+    (tmp_path / "state_20261026.json").write_text(json.dumps(state), encoding="utf-8")
+    prev = mh.previous_state(str(tmp_path), "20261027")
+    gaps = {**GRAPH, "numbering_gaps_by_code": {"Codice Civile 2026": [3, 5, 9]}}
+    md, state, line = mh.build_report(gaps, QUEUE, [], (0, {}), None, prev, 3.0)
+    assert "**NEW since the last report: 9**" in md and "numbering gaps 3 (new 1)" in line
+    assert "no card file readable here" in md
+    assert mh.previous_state(str(tmp_path), "20261026") is None                     # today's own state is not "previous"
+
+
+class _Session:
+    """Fake read session answering each of graph_checks' queries."""
+
+    def run(self, query, **params):
+        if query.startswith("MATCH (d:Document) RETURN d.id"):
+            data = [{"id": "cc", "name": "Codice Civile 2026", "hash": "h1", "type": "primary", "file": ""},
+                    {"id": "r1", "name": "[PENALE] x", "hash": "h2", "type": "interpretation",
+                     "file": "snpen@s10@a2026@n00190@tS.clean.pdf"},
+                    {"id": "r2", "name": "[CIVILE] y", "hash": "h3", "type": "interpretation",
+                     "file": "snciv_s30_a2026_n00001_tO.pdf"},
+                    {"id": "u", "name": "senza tipo", "hash": "h4", "type": None, "file": ""}]
+        elif "embedding_v2 IS NULL" in query:
+            data = [{"t": "primary", "n": 5, "empty": 1, "no_v2": 2, "no_v2_text": 1}] if "cc" in params["ids"] else []
+        elif "NOT ()-[:CONTAINS|PART_OF]->(s)" in query:
+            return type("R", (), {"single": lambda self_: {"n": 4}})()
+        elif "left(coalesce(s.plain_text" in query:
+            data = [{"name": "1.0.0", "n": 100, "head": "Il primo"}, {"name": "3.0.0", "n": 30,
+                                                                       "head": "In vigore dal 1 gennaio 2020"},
+                    {"name": "3.1.0", "n": 200, "head": "Testo"}]
+        elif "[:CITES]" in query:
+            data = [{"id": "r1"}]
+        else:
+            raise AssertionError(query)
+        return type("R", (), {"data": lambda self_: data})()
+
+
+def test_graph_checks_on_a_fake_graph():
+    g = mh.graph_checks(_Session(), batch=2, pause=0)
+    assert g["docs_by_type"] == {"primary": 1, "interpretation": 2, "(none)": 1} and g["docs_untyped_names"] == ["senza tipo"]
+    assert g["sections_no_v2_with_text_by_type"] == {"primary": 1} and g["sections_detached"] == 4
+    assert g["date_only_by_doc"] == {"Codice Civile 2026": 1} and g["numbering_gaps_by_code"] == {"Codice Civile 2026": [2]}
+    assert g["rulings_by_branch"] == {"penale": {"rulings": 1, "without_cites": 0}, "civile": {"rulings": 1, "without_cites": 1}}
