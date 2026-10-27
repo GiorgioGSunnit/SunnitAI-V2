@@ -480,13 +480,13 @@ def test_a_grade_one_article_does_not_pass_for_the_checklist(monkeypatch):
     assert ptw._through_check(rows, "fatti", "") == []
 
 
-def test_graded_plan_keeps_fourteen_by_grade_then_fusion_rank(monkeypatch):
+def test_graded_plan_keeps_eighteen_by_grade_then_fusion_rank(monkeypatch):
     monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
     rows = [dict(_row(str(n), "c.c.", "x"), _grade=2, _fused_rank=n) for n in range(20, 0, -1)]
     rows += [dict(_row("1158", "c.c.", "x"), _grade=3, _fused_rank=40), dict(_row("1140", "c.c.", "x"), _grade=1)]
     kept = ptw._checked(rows)
-    assert kept[0] == ("1158", "c.c.") and len(kept) == 14 and ("1140", "c.c.") not in kept
-    assert kept[1:] == [(str(n), "c.c.") for n in range(1, 14)]
+    assert kept[0] == ("1158", "c.c.") and len(kept) == 18 and ("1140", "c.c.") not in kept      # cap 14 -> 18
+    assert kept[1:] == [(str(n), "c.c.") for n in range(1, 18)]
 
 
 # --- T2: exempt articles linked to a forced one -----------------------------------------------------
@@ -812,7 +812,7 @@ def test_with_evidence_the_plan_forces_eighteen_offered_by_issue(monkeypatch):
     monkeypatch.setenv("CHECK_GRADED_ENABLED", "true")
     rows = [dict(_row(str(n), "c.c.", "x"), _grade=2, _fused_rank=n, _grade_issue="Q" if n % 2 else "R")
             for n in range(1, 25)]
-    assert len(ptw._forced(rows)) == 14
+    assert len(ptw._forced(rows)) == 18                         # the cap without the evidence: 14 -> 18 too
     monkeypatch.setenv("GRADER_EVIDENCE_ENABLED", "true")
     forced = ptw._forced(rows)
     assert len(forced) == 18

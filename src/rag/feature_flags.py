@@ -369,6 +369,16 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 term table, the case or the cited article's text. See
                                 src/rag/answer_invariants.py.
 
+Evidence tiers (27 Oct, src/rag/evidence_tiers.py; no flag of their own): computed in the fusion pool
+(CASE_POOL_FUSION_ENABLED) and carried on each row -- T1 named in the case, resolved from a fired fact rule (or a
+procedural tool the facts call for), exact rubrica match of an analysis institution; T2 applied by 3+ similar rulings
+or found by 2+ channels; T3 one channel. Inside each step's own flag: every capacity limit (the fusion cap, the
+checked slots, the plan's forced list -- now 18 --, the prompt's trimming and refill) orders by tier, grade, fusion
+rank and never drops a T1/T2 candidate (past a limit it stays, ungraded or unforced); a T1/T2 article is removed
+(grade 0, incompatibile, qualification mismatch, second opinion) only by two agreeing judgements or a contradicting
+fact found in the case, else demoted (never forced into the plan, still the writer's); the forced list orders by
+grade, tier, fusion rank, article id. Logged as evidence_tiers, evidence_cutoff, evidence_removal.
+
 The three below are the source-tiered retrieval (26 Oct): the AUTHORITY tier is the primary
 documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what the authority found.
   ROUTER_ENABLED               false: each chat request is classified narrative (a fact pattern:

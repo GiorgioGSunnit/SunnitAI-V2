@@ -2126,9 +2126,12 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     elif codice:
         doc = resolve_code(codice, documents)
 
-    def _tag(rows: List[Dict[str, Any]], number: str, heading_match: bool = False) -> List[Dict[str, Any]]:
+    def _tag(rows: List[Dict[str, Any]], number: str, heading_match: bool = False,
+             exact: bool = False) -> List[Dict[str, Any]]:
         for row in rows:
             row["_article"] = (number, abbr or (doc or {}).get("name", codice))
+            if exact:
+                row["_heading_exact"] = True        # evidence tier T1 (evidence_tiers.py)
             if heading_match:
                 # Round 9 (19 Oct): resolved by the article's own rubrica
                 # (titolo_articolo/title), the strongest of the four paths
@@ -2213,7 +2216,7 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
     if strict_articles and table_number and doc:
         rows = fetch_article(session, doc["id"], table_number)
         if rows:
-            return _found(_tag(rows, table_number, heading_match=True), table_number, "code table")
+            return _found(_tag(rows, table_number, heading_match=True, exact=True), table_number, "code table")
 
     if doc:
         for term in [nome, *(parole_chiave or [])]:
@@ -2231,8 +2234,8 @@ def _resolve_institution(session, documents: List[Dict[str, Any]], istituto: Dic
                         # applicability check: s.title is LLM-written on every
                         # document not yet re-ingested (BE, 16 Oct: "Estorsione"
                         # on art. 612 and on sub-sections of 346, 628, 630).
-                        return _found(_tag(rows, number, heading_match=(field == "titolo_articolo")),
-                                      number, reason)
+                        return _found(_tag(rows, number, heading_match=(field == "titolo_articolo"),
+                                           exact=(field == "titolo_articolo" and term == nome)), number, reason)
 
     # HEADING_INDEX_ENABLED: "nome" only, not every parola_chiave -- one
     # embedding call per unresolved institution, not up to 1+len(parole_
@@ -3057,18 +3060,23 @@ def _protected_article_row(row: Dict[str, Any], named: set) -> bool:
     """Rows the prompt keeps whole until the last trimming step: named in the
     case, cross-referenced from a selected article, matched by their heading,
     or found by two or more independent signals."""
+    from . import evidence_tiers
     from .nodes.cypher import CROSSREF_SOURCE
     return bool(row.get("_article") in named or row.get("_source") == CROSSREF_SOURCE
-                or row.get("_heading_match") or row.get("_multi_signal") or row.get("_vote"))
+                or row.get("_heading_match") or row.get("_multi_signal") or row.get("_vote")
+                or evidence_tiers.evidenced(row))
 
 
 def _protection_rank(row: Dict[str, Any], named: set) -> int:
     """How strongly a row is protected, for the last-resort trim: 0 named in the case,
     1 matched by its heading, 2 cross-referenced, 3 found by several signals or voted by
     similar rulings (VOTE_POOL_ENABLED), 4 none."""
+    from . import evidence_tiers
     from .nodes.cypher import CROSSREF_SOURCE
     if row.get("_article") in named:
         return 0
+    if evidence_tiers.tier(row):              # evidence tiers, Rule 1: T1, T2, then the rest
+        return {1: 1, 2: 3}.get(evidence_tiers.tier(row), 4)
     if row.get("_heading_match"):
         return 1
     if row.get("_source") == CROSSREF_SOURCE:
@@ -3077,6 +3085,7 @@ def _protection_rank(row: Dict[str, Any], named: set) -> int:
 
 
 _LAST_RESORT_CHARS = 500
+_EVIDENCED_MIN_CHARS = 200        # a T1/T2 article's text before it may be dropped for size (evidence tiers)
 # Each article given back a trimmed prompt's free room: step 3's size for the other articles.
 _REFILL_CHARS = 500
 
@@ -3085,6 +3094,10 @@ def _refill_order(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Left-out rows in the order a trimmed prompt's free room goes back to them: those the
     applicability check judged applicable (or an alternative), then the method candidates of
     the case's area and posture, then the rest; the pipeline's order within each."""
+    from . import evidence_tiers
+    if any(evidence_tiers.tier(r) for r in rows):           # evidence tiers, Rule 1: tier, grade, fusion rank, id
+        return sorted(rows, key=evidence_tiers.cut_key)
+
     def priority(row: Dict[str, Any]) -> int:
         if row.get("_applicability") in ("applicabile", "alternativa"):
             return 0
@@ -3149,12 +3162,19 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
         # The protected rows are dropped one by one, least protected first (_protection_rank)
         # and, within a rank, latest first; the rest are cut to _LAST_RESORT_CHARS.
         step = len(_PROMPT_TRIM_STEPS)
-        ranked = sorted(rows, key=lambda r: _protection_rank(r, named))
+        from . import evidence_tiers
+        ranked = sorted(rows, key=lambda r: (_protection_rank(r, named), evidence_tiers.cut_key(r)))
+        shrunk = False
         while ranked and total > budget:
-            left_out.append(ranked.pop().get("_article"))
-            dropped_for_size += 1
-            articles = _grouped_source_block([_with_text_cut(r, _LAST_RESORT_CHARS) for r in ranked],
-                                             questioni, _ARTICLE_CHARS)
+            # Evidence tiers, Rule 1: before a T1/T2 article is dropped, every T1/T2 one is cut to its opening.
+            if not shrunk and evidence_tiers.evidenced(ranked[-1]):
+                shrunk = True
+            else:
+                left_out.append(ranked.pop().get("_article"))
+                dropped_for_size += 1
+            articles = _grouped_source_block([_with_text_cut(r, _EVIDENCED_MIN_CHARS if shrunk and
+                                                             evidence_tiers.evidenced(r) else _LAST_RESORT_CHARS)
+                                              for r in ranked], questioni, _ARTICLE_CHARS)
             human = _parere_human(facts, analysis, articles, rulings, request, principles)
             total = _estimate_tokens(system) + _estimate_tokens(human)
     refilled = 0
@@ -3184,6 +3204,10 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
              "dropped_for_size": dropped_for_size, "refilled": refilled,
              "articles_left_out": [f"{a[0]} {a[1]}" for a in left_out if a]}
     vlog("case_analysis_prompt_tokens", sizes)
+    from . import evidence_tiers
+    if any(evidence_tiers.tier(r) for r in article_rows):
+        gone = [r for r in article_rows if r.get("_article") in set(left_out)]
+        vlog("evidence_cutoff", evidence_tiers.cutoff_log("prompt", budget, gone, [], gone))
     if step:
         logger.info("draft prompt trimmed to fit the context: %s", sizes)
     return articles, rulings, human
@@ -3593,6 +3617,8 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     institutions_resolved = v2.get("institutions_resolved") or []
     heading_matched = set(v2.get("heading_matched") or [])
     central_matched = set(v2.get("central_matched") or [])
+    heading_exact = set(v2.get("heading_exact") or [])
+    fact_resolved = set(v2.get("fact_resolved") or [])
     current_refs = list(dict.fromkeys(v2["selected"]))
 
     documents = _fetch_doc_names(driver, database)
@@ -3681,13 +3707,22 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     not_keep = [ref for ref in fused if ref not in keep]
     if voted and how[0] == "rrf":
         not_keep = [ref for ref in vote_pool.weighted_rrf(not_keep, voted, how[1], how[2]) if ref not in keep]
+    # Evidence tiers, Rule 1 (evidence_tiers.py): a T1/T2 candidate -- resolved from a fired fact rule, applied by
+    # MIN_RULINGS+ similar rulings -- is never cut by the cap either; the cap reaches single-channel ones only.
+    from . import evidence_tiers
+    well_voted = {ref for ref, st in vote_stats.items()
+                  if int((st or {}).get("rulings") or 0) >= evidence_tiers.MIN_RULINGS}
     exempt_from_cap = {ref for ref in not_keep if hits.get(ref, 0) >= 2} | (heading_matched & set(not_keep)) \
-        | (set(map_channel) & set(not_keep))
+        | (set(map_channel) & set(not_keep)) | (fact_resolved & set(not_keep)) | (well_voted & set(not_keep))
     survives_cap = [ref for ref in not_keep if ref in exempt_from_cap]
     fill = [ref for ref in not_keep if ref not in exempt_from_cap]
     capped = survives_cap + fill[:_FUSION_POOL_CAP]
     added = vote_pool.new_votes(voted, set(keep) | set(capped), how[1]) if voted and how[0] == "append" else []
     capped += added
+    capped += [ref for ref in voted if ref in well_voted and ref not in keep and ref not in capped]
+    vlog("evidence_cutoff", evidence_tiers.cutoff_log(
+        "fusion_cap", _FUSION_POOL_CAP, [{"_article": ref, "_tier": evidence_tiers.T3} for ref in fill[_FUSION_POOL_CAP:]
+                                         if ref not in capped]))
     capped += [ref for ref in map_rulings if ref not in keep and ref not in capped]
     selected = keep + capped
     vote_tagged = vote_pool.tagged(voted, selected, added, how) if voted else set()
@@ -3768,11 +3803,13 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         if key not in have:
             have.add(key)
             article_rows.append(row)
+    vlog("evidence_tiers", evidence_tiers.annotate(article_rows, set(named) | set(keep), fact_resolved, heading_exact))
 
     return {"first_rulings": v2["first_rulings"], "similar": v2["similar"], "keep": keep,
             "named": named, "candidates": fused, "chosen": capped, "selected": selected,
             "article_rows": article_rows, "spotted": spotted,
-            "institutions_resolved": institutions_resolved}
+            "institutions_resolved": institutions_resolved, "fact_resolved": sorted(fact_resolved),
+            "heading_exact": sorted(heading_exact), "tiers": True}
 
 
 def _select_articles_v2(session, driver, database: str, facts: str, request: str,
@@ -3813,6 +3850,7 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     # — the one LLM call already happened, in _analyse_case_v2.
     central_questions = _central_questions(analysis)
     central_matched: List[tuple] = []
+    fact_resolved: List[tuple] = []
     for index, q in enumerate(analysis.get("questioni", [])):
         for istituto in q.get("istituti") or []:
             resolved = _resolve_institution(session, documents, istituto, q.get("parole_chiave"))
@@ -3825,6 +3863,8 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                                                          "kept": [_label_of(r) for r in kept],
                                                          "rejected": [_label_of(r) for r in resolved if r not in kept]})
                 resolved = kept
+                if str(istituto["fonte"]).startswith("regola"):
+                    fact_resolved += [r["_article"] for r in kept if r.get("_article")]
             for row in resolved:
                 if index in central_questions and row.get("_article"):
                     central_matched.append(row["_article"])
@@ -3870,12 +3910,14 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     # own article_rows from scratch (_fetch_any) rather than reusing these.
     heading_matched = list(dict.fromkeys(r["_article"] for r in added
                                          if r.get("_heading_match") and r.get("_article")))
+    heading_exact = list(dict.fromkeys(r["_article"] for r in added if r.get("_heading_exact") and r.get("_article")))
     central_matched = list(dict.fromkeys(central_matched))
     for row in article_rows:
         if row.get("_article") in central_matched:
             row["_central"] = True
     return {**base, "selected": base["selected"] + added_articles, "heading_matched": heading_matched,
-            "article_rows": article_rows, "institutions_resolved": added_articles, "central_matched": central_matched}
+            "article_rows": article_rows, "institutions_resolved": added_articles, "central_matched": central_matched,
+            "heading_exact": heading_exact, "fact_resolved": list(dict.fromkeys(fact_resolved))}
 
 
 def _label_of(row: Dict[str, Any]) -> str:
@@ -4098,7 +4140,12 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     to_check, texts = _applicability_candidates(facts, request, article_rows)
     if not texts and not (priority or gated):
         return article_rows
-    if priority:
+    from . import evidence_tiers
+    tiers = evidence_tiers.tiers_by_ref(r for rows in to_check.values() for r in rows)
+    if tiers:
+        # Evidence tiers, Rule 1: the slots go by tier, then fusion rank, then article id (cut_key).
+        texts = _tier_order(texts, to_check)
+    elif priority:
         texts = _check_order(texts, to_check)
     # Only the first _APPLICABILITY_MAX_CHECKED, in the pipeline's order: the later ones
     # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
@@ -4108,6 +4155,8 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     unchecked_labels = list(texts)[limit:]
     if unchecked > 0:
         texts = dict(list(texts.items())[:limit])
+    by_label = {f"{a[0]} {a[1]}": a for a in to_check}
+    past_limit = [r for label in unchecked_labels for r in to_check.get(by_label.get(label), [])[:1]]
     ungraded: List[str] = []
     if not texts:
         verdicts = {}
@@ -4126,21 +4175,53 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         # Every batch failed: kept as before; the method lists' candidates are not (CHECKLIST_GATED).
         return _without_unjudged(article_rows, to_check, {}, set(), method_only=True) if gated else article_rows
     dropped_articles, dropped, grades = set(), [], {}
+    demoted: Dict[tuple, str] = {}
+    removals: List[Dict[str, Any]] = []
+    case = _case_text(facts, request)
+    # Evidence tiers, Rule 2: a T1/T2 article graded 0 gets a second, independent judgement (the yes/no check); it
+    # goes only when that one agrees, else it is demoted (kept for the writer, never forced into the plan).
+    zero_evidenced = [a for a in to_check if graded and tiers.get(a) in (1, 2)
+                      and _grade(verdicts.get(_applicability_key(f"{a[0]} {a[1]}"))) == 0]
+    second = (_applicability_verdicts(facts, request, {f"{a[0]} {a[1]}": texts.get(f"{a[0]} {a[1]}", "")
+                                                       for a in zero_evidenced}) or {}) if zero_evidenced else {}
     for article in to_check:
         label = f"{article[0]} {article[1]}"
         verdict = verdicts.get(_applicability_key(label))
+        row0 = to_check[article][0]
         if graded:
             grade = _grade(verdict)
-            if grade == 0:
+            if grade == 0 and article in zero_evidenced:
+                other = second.get(_applicability_key(label))
+                if _drops_article(other, texts.get(label, "")):
+                    dropped_articles.add(article)
+                    dropped.append({"article": label, "grade": 0, "requisito": str(other.get("requisito"))[:200],
+                                    "fatto": str(other.get("fatto"))[:200], "reason": "grade 0 and incompatibile"})
+                    removals.append(evidence_tiers.removal_entry(row0, "removed", 2, "grade 0 and incompatibile",
+                                                                 evidence_tiers.fact_in_case(other.get("fatto"), case)))
+                else:
+                    demoted[article] = "grade 0 by one judgement"
+                    removals.append(evidence_tiers.removal_entry(row0, "demoted", 1, str((verdict or {}).get("reason"))))
+            elif grade == 0:
                 dropped_articles.add(article)
                 dropped.append({"article": label, "grade": 0, "requisito": "", "fatto": "",
                                 "reason": str(verdict.get("reason") or "")[:200]})
+                if tiers:
+                    removals.append(evidence_tiers.removal_entry(row0, "removed", 1, str(verdict.get("reason") or "")))
             elif grade is not None:
                 grades[article] = (grade, " ".join(str(verdict.get("issue") or "").split())[:120])
         elif _drops_article(verdict, texts.get(label, "")):
+            verified = evidence_tiers.fact_in_case(verdict.get("fatto"), case)
+            if tiers.get(article) in (1, 2) and not verified:
+                # Rule 2: one "incompatibile" whose fact is not in the case's text only demotes a T1/T2 article.
+                demoted[article] = "incompatibile by one judgement, fact not found in the case"
+                removals.append(evidence_tiers.removal_entry(row0, "demoted", 1, str(verdict.get("reason", ""))))
+                continue
             dropped_articles.add(article)
             dropped.append({"article": label, "requisito": str(verdict.get("requisito"))[:200],
                             "fatto": str(verdict.get("fatto"))[:200], "reason": str(verdict.get("reason", ""))[:200]})
+            if tiers:
+                removals.append(evidence_tiers.removal_entry(row0, "removed", 1, str(verdict.get("reason", "")),
+                                                             verified))
     if graded:
         shown = {label: f"grade {_grade(verdicts.get(_applicability_key(label)))}"
                  if _grade(verdicts.get(_applicability_key(label))) is not None
@@ -4160,6 +4241,7 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     judged = {}
     if graded:
         judged = {article: "applicabile" if grade >= 2 else "marginale" for article, (grade, _) in grades.items()}
+        judged.update({article: "marginale" for article in demoted})
         # No grade even after the retry: kept for the writer, but neither passed nor forced into the plan.
         judged.update({article: "non valutato" for article in to_check if f"{article[0]} {article[1]}" in ungraded})
         log["ungraded"] = ungraded
@@ -4171,21 +4253,46 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
             if verdict and article not in dropped_articles:
                 judged[article] = str(verdict.get("verdict", "")).strip().lower()
 
+    if not graded:
+        judged.update({article: "marginale" for article in demoted})
+    # Rule 1: a T1/T2 article past the checked slots stays in the material, ungraded.
+    kept_aside = [r for r in past_limit if evidence_tiers.evidenced(r)]
+    judged.update({r["_article"]: "non valutato" for r in kept_aside})
+    judged.update({a: "non valutato" for a in to_check
+                   if tiers.get(a) in (1, 2) and a not in judged and a not in dropped_articles})
+
     def tagged(row):
         article = row.get("_article")
         if article not in judged:
             return row
         extra = {"_grade": grades[article][0], "_grade_issue": grades[article][1]} if article in grades else {}
+        if article in demoted:
+            extra["_demoted"] = demoted[article]
         return {**row, "_applicability": judged[article], **extra}
     rows = [tagged(r) for r in article_rows if r.get("_article") not in dropped_articles]
+    lost: List[Dict[str, Any]] = []
     if priority or gated:
         # CHECK_PRIORITY_ENABLED: an article left unchecked may not be cited; CHECKLIST_GATED_ENABLED: nor
-        # may a method lists' candidate.
+        # may a method lists' candidate. Never a T1/T2 one (Rule 1: it is "non valutato", kept).
         kept = _without_unjudged(rows, to_check, judged, dropped_articles, method_only=not priority)
-        log["removed_unchecked"] = sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in rows if r not in kept})
+        lost = [r for r in rows if r not in kept]
+        log["removed_unchecked"] = sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in lost})
         rows = kept
+    if demoted:
+        log["demoted"] = {f"{a[0]} {a[1]}": why for a, why in demoted.items()}
     vlog("case_analysis_applicability", log)
+    if tiers:
+        vlog("evidence_cutoff", evidence_tiers.cutoff_log("checked_slots", limit, past_limit, kept_aside, lost))
+        vlog("evidence_removal", {"stage": "graded check" if graded else "applicability check", "entries": removals})
     return rows
+
+
+def _tier_order(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]]]) -> Dict[str, str]:
+    """Evidence tiers, Rule 1: texts in the order of evidence_tiers.cut_key (tier, grade, fusion rank, article id) of
+    each article's best row."""
+    from . import evidence_tiers
+    key = {f"{a[0]} {a[1]}": min(evidence_tiers.cut_key(r) for r in rows) for a, rows in to_check.items()}
+    return {label: texts[label] for label in sorted(texts, key=lambda label: key.get(label, (9,)))}
 
 
 # CHECK_PRIORITY_ENABLED (diagnose_long, 25 Oct: half of the pool past the 36 checked slots, and
@@ -4892,6 +4999,9 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     # on its full text; "it governs no question of the case" removes it (_second_opinion).
     second_opinion = remove and feature_flags.enabled(STRICT_ARTICLES_FLAG)
     deferred: List[tuple] = []
+    from . import evidence_tiers
+    tier_of = evidence_tiers.tiers_by_ref(article_rows)
+    removals: List[Dict[str, Any]] = []
     for v in verdicts:
         if not isinstance(v, dict) or v.get("compatibile") is not False:
             continue
@@ -4902,16 +5012,28 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
             heading, _, ref = entry
             label = f"{ref[0]} {ref[1]}"
             flagged.append(label)
+            # Evidence tiers, Rule 2: one mismatch never removes a T1/T2 article by itself -- it goes to the second
+            # opinion (STRICT_ARTICLES_ENABLED), and only an agreeing "no" removes it; without one it keeps its mark.
+            evidenced = tier_of.get(ref) in (1, 2) and _protection(ref, {n: "" for n in named}) is None
             if direction and str(v.get("tipo") or "").strip().lower() == "direzione" and \
-                    _protection(ref, {n: "" for n in named}) is None:
+                    _protection(ref, {n: "" for n in named}) is None and not evidenced:
                 inverse.append(label)
                 to_remove.append(ref)          # the inverse situation: removed even when protected
+                removals.append({"article": label, "tier": tier_of.get(ref), "how": "removed", "judgements": 1,
+                                 "verified_fact": False, "why": "inverse situation"})
                 continue
             if remove:
                 why = _protection(ref, protected)
+                if why is None and evidenced:
+                    why = f"evidence tier T{tier_of[ref]}"
                 if why is None:
                     to_remove.append(ref)
+                    removals.append({"article": label, "tier": tier_of.get(ref), "how": "removed", "judgements": 1,
+                                     "verified_fact": False, "why": "qualification mismatch"})
                     continue
+                if evidenced and not second_opinion:
+                    removals.append({"article": label, "tier": tier_of.get(ref), "how": "demoted", "judgements": 1,
+                                     "verified_fact": False, "why": "qualification mismatch, no second opinion"})
                 if second_opinion and why not in _SECOND_OPINION_EXEMPT:
                     deferred.append((ref, heading, why, str(v.get("tipo") or "").strip().lower()))
                     continue
@@ -4925,7 +5047,12 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         label = f"{ref[0]} {ref[1]}"
         if governs.get(ref) is False:
             to_remove.append(ref)
+            removals.append({"article": label, "tier": tier_of.get(ref), "how": "removed", "judgements": 2,
+                             "verified_fact": False, "why": "qualification mismatch and second opinion"})
             continue
+        if tier_of.get(ref) in (1, 2):
+            removals.append({"article": label, "tier": tier_of.get(ref), "how": "demoted", "judgements": 1,
+                             "verified_fact": False, "why": "qualification mismatch, second opinion disagrees"})
         kept[label] = why
         if kind == "formulazione":
             note_dropped.append(label)
@@ -4941,6 +5068,8 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         log.update({"removed": [f"{n} {c}" for n, c in to_remove], "kept": kept, "note_dropped": note_dropped})
         vlog("case_analysis_flagged_removed", {"removed": removal, "count": len(to_remove)})
     vlog("case_analysis_qualification", log)
+    if tier_of:
+        vlog("evidence_removal", {"stage": "qualification check", "entries": removals})
     return draft
 
 
@@ -5220,6 +5349,13 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             picked = select_fn(session, driver, NEO4J_DATABASE, facts, request, analysis)
             picked = _add_method_candidates(session, driver, NEO4J_DATABASE, analysis, picked)
             regime_rows = _regime_rows(session, driver, NEO4J_DATABASE, analysis)
+            if picked.get("tiers"):          # evidence tiers: the method candidates and the procedural tools too
+                from . import evidence_tiers
+                for row in regime_rows:
+                    row["_regime"] = True
+                evidence_tiers.annotate(picked["article_rows"] + regime_rows,
+                                        set(picked.get("named") or []) | set(picked.get("keep") or []),
+                                        picked.get("fact_resolved") or [], picked.get("heading_exact") or [])
             first_rulings, similar = picked["first_rulings"], picked["similar"]
             candidates, selected, article_rows = picked["candidates"], picked["selected"], picked["article_rows"]
             if hybrid:

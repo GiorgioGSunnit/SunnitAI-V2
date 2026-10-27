@@ -71,7 +71,7 @@ KEEP_CHECKED_FLAG = "PLAN_KEEP_CHECKED_ENABLED"
 # that fits no issue of the plan is left out, never put in a catch-all issue. Run 1302 (sempronio 581/582,
 # h7 110 c.p., sempronio_no_hint 41 c.p. lost): with them the exempt articles linked to a forced one -- a
 # cross-reference in its text, an article resolved for a central issue (_forced) -- up to _GRADED_KEEP.
-_GRADED_KEEP = 14
+_GRADED_KEEP = 18
 # GRADER_EVIDENCE_ENABLED (run 1415: 20 of 122 expected articles lost at NOT_IN_PLAN): the grades come per
 # issue of the case, so up to _GRADED_KEEP_BY_ISSUE are forced, offered to the plan grouped by that issue.
 _GRADED_KEEP_BY_ISSUE = 18
@@ -367,15 +367,18 @@ def _checked(article_rows: List[Dict[str, Any]]) -> List[tuple]:
 def _forced(article_rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
     """{article: why} the plan must hold (PLAN_KEEP_CHECKED_ENABLED with CHECK_GRADED_ENABLED), at most
     _GRADED_KEEP, in this order: the articles resolved for a central issue (_central) that the check did
-    not grade 0, as grade 3; those graded 2 or 3; each by grade, then fusion rank, then the pipeline's
-    order -- and right after each one, the cross-referenced articles its own text cites (CROSSREF rows)."""
+    not grade 0, as grade 3; those graded 2 or 3; each by grade, then evidence tier, then fusion rank, then
+    article id (evidence_tiers.forced_key: the same list every run) -- and right after each one, the
+    cross-referenced articles its own text cites (CROSSREF rows). A demoted article (evidence tiers, Rule 2) is
+    never forced. Past the cap a T1/T2 article stays in the material, unforced (logged as evidence_cutoff)."""
+    from . import evidence_tiers
     from .nodes.cypher import CROSSREF_SOURCE
 
     best: Dict[tuple, tuple] = {}
     why: Dict[tuple, str] = {}
     for index, row in enumerate(article_rows):
         ref, grade = row.get("_article"), row.get("_grade")
-        if not ref:
+        if not ref or row.get("_demoted"):
             continue
         if row.get("_central"):
             grade, reason = 3, "central issue"
@@ -383,7 +386,7 @@ def _forced(article_rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
             reason = f"grade {grade}"
         else:
             continue
-        key = (-grade, row.get("_fused_rank") or 10 ** 6, index)
+        key = evidence_tiers.forced_key(row, grade)
         if ref not in best or key < best[ref]:
             best[ref], why[ref] = key, reason
     crossrefs = list(dict.fromkeys(r["_article"] for r in article_rows
@@ -395,7 +398,13 @@ def _forced(article_rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
         for child in crossrefs:
             if child[1] == ref[1] and child[0] in cited:
                 out.setdefault(child, f"cross-reference of {ref[0]} {ref[1]}")
-    return dict(list(out.items())[:_keep_cap()])
+    forced = dict(list(out.items())[:_keep_cap()])
+    rows_of = {r["_article"]: r for r in article_rows if r.get("_article")}
+    if any(evidence_tiers.tier(r) for r in rows_of.values()):
+        past = [rows_of[ref] for ref in list(out)[_keep_cap():]]
+        dg.vlog("evidence_cutoff", evidence_tiers.cutoff_log(
+            "plan_forced", _keep_cap(), past, [r for r in past if evidence_tiers.evidenced(r)]))
+    return forced
 
 
 def _by_issue() -> bool:

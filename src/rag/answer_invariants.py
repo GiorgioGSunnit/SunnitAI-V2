@@ -290,11 +290,12 @@ def _counts(found: int, fixed: int, remaining: int, entries: List[Dict[str, Any]
 
 def allowed_refs(article_rows: List[Dict[str, Any]], named: List[tuple], signals: Optional[Dict[str, Any]],
                  procedural: List[tuple]) -> List[tuple]:
-    """I1's checked material: articles graded 2-3 (every article of the checked pool when nothing was graded), the
-    user's own, the offered procedural tools, the articles of the computed terms."""
+    """I1's checked material: articles graded 2-3 (every article of the checked pool when nothing was graded) or of
+    evidence tier T1/T2 (evidence_tiers: never dropped, a demoted one still the writer's), the user's own, the
+    offered procedural tools, the articles of the computed terms."""
     graded = any(r.get("_grade") is not None for r in article_rows)
     rows = [r["_article"] for r in article_rows if r.get("_article")
-            and (not graded or (isinstance(r.get("_grade"), int) and r["_grade"] >= 2))]
+            and (not graded or (isinstance(r.get("_grade"), int) and r["_grade"] >= 2) or r.get("_tier") in (1, 2))]
     tools = [tuple(ref) for t in (signals or {}).get("tools") or [] for ref in t.get("refs") or []]
     terms = []
     for t in (signals or {}).get("terms") or []:
@@ -576,7 +577,9 @@ def enforce(draft: str, *, facts: str, request: str, analysis: Dict[str, Any], a
                 rows_by_ref.setdefault(row.get("_article"), row)
         except Exception as exc:
             logger.warning("answer invariants: article fetch failed: %s", exc)
-    protected = {r["_article"] for r in article_rows if r.get("_article") and r.get("_grade") == 3} | set(named)
+    # Graded 3, named by the user, or (evidence tiers, Rule 2) T1/T2: one mismatch drops a clause or marks, never more.
+    protected = {r["_article"] for r in article_rows if r.get("_article")
+                 and (r.get("_grade") == 3 or r.get("_tier") in (1, 2))} | set(named)
     body, log["I2"] = i2_consistency(body, rows_by_ref, protected, documents, known, chat_json)
     body, log["I7"] = i7_terms(body, signals, case_text, rows_by_ref, documents, known)
     cited_rulings = [r for r in ruling_rows if (r.get("d") or {}).get("id")]

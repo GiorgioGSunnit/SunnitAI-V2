@@ -1083,6 +1083,7 @@ def analyse_case(rec: dict, ev) -> dict:
     out["form"] = _form_trace(rec, K, expected_keys)
     out["live"] = _live_trace(rec)
     out["invariants"] = _invariants_trace(rec)
+    out["evidence"] = _evidence_trace(rec)
     out["tiers"] = rec.get("tiers") or {}
     return out
 
@@ -1139,6 +1140,27 @@ def _form_trace(rec: dict, K, expected_keys: set) -> dict:
 
 INVARIANTS = (("I1", "citation closure"), ("I2", "claim <-> article"), ("I3", "institution within its chapter"),
               ("I4", "ruling relevance"), ("I5", "no internal tokens"), ("I6", "readability"), ("I7", "terms"))
+
+
+def _evidence_trace(rec: dict) -> dict:
+    """Evidence tiers (evidence_tiers.py): the T1/T2 articles dropped at a cut-off (evidence_cutoff's t12_dropped)
+    and those removed by a single judgement without a verified fact (evidence_removal), both target 0; the
+    demotions; the cut-offs by stage. "logged" False for a run made before the tiers."""
+    events = [(e[0], e[1]) for e in rec.get("events") or [] if isinstance(e, (list, tuple)) and len(e) >= 2]
+    cutoffs = [d for e, d in events if e == "evidence_cutoff" and isinstance(d, dict)]
+    removals = [x for e, d in events if e == "evidence_removal" and isinstance(d, dict)
+                for x in d.get("entries") or [] if isinstance(x, dict)]
+    tiers = next((d for e, d in events if e == "evidence_tiers" and isinstance(d, dict)), {})
+    return {"logged": bool(cutoffs or removals or tiers),
+            "t1": len(tiers.get("T1") or []), "t2": len(tiers.get("T2") or []),
+            "dropped": [f"{d.get('stage')}: {i.get('article')} (T{i.get('tier')})"
+                        for d in cutoffs for i in d.get("t12_dropped") or []],
+            "single_removed": [f"{x.get('article')} (T{x.get('tier')}, {x.get('why')})" for x in removals
+                               if x.get("how") == "removed" and x.get("tier") in (1, 2)
+                               and int(x.get("judgements") or 0) < 2 and not x.get("verified_fact")],
+            "demoted": sum(1 for x in removals if x.get("how") == "demoted"),
+            "kept_aside": sum(len(d.get("kept_aside") or []) for d in cutoffs),
+            "cut": {d.get("stage"): len(d.get("cut") or []) for d in cutoffs}}
 
 
 def _invariants_trace(rec: dict) -> dict:
@@ -1360,6 +1382,13 @@ def aggregate(cases: list) -> dict:
                      "orphans": sum(g.get("orphans_removed", 0) for g in guards),
                      "against_client": sum((c.get("invariants") or {}).get("against_client", 0) for c in keyed),
                      "logged": any(guards)}
+    evs = [c.get("evidence") or {} for c in keyed]
+    evidence = {"logged": any(e.get("logged") for e in evs),
+                "dropped": [(c["id"], d) for c in keyed for d in (c.get("evidence") or {}).get("dropped") or []],
+                "single_removed": [(c["id"], d) for c in keyed
+                                   for d in (c.get("evidence") or {}).get("single_removed") or []],
+                "demoted": sum(e.get("demoted", 0) for e in evs), "kept_aside": sum(e.get("kept_aside", 0) for e in evs),
+                "t1": sum(e.get("t1", 0) for e in evs), "t2": sum(e.get("t2", 0) for e in evs)}
     lives = [c.get("live") or {} for c in keyed]
     live = {"dangling": sum(len(x.get("dangling") or []) for x in lives),
             "evidence_repeated": sum(x.get("evidence_repeated", 0) for x in lives),
@@ -1385,7 +1414,7 @@ def aggregate(cases: list) -> dict:
             "citing": sum(t.get("rulings_citing_answer_article", 0) for t in tiers),
             "boilerplate_only": sum(t.get("rulings_boilerplate_only", 0) for t in tiers)}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
-            "tiers": tier, "live": live, "invariants": inv,
+            "tiers": tier, "live": live, "invariants": inv, "evidence": evidence,
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1590,6 +1619,14 @@ def render(cases: list, header: list) -> str:
           "Procedural section, items offered → written: " + (", ".join(
               f"{b} {fm['use_offered'][b]} → {fm['use_written'].get(b, 0)}" for b in fm["use_offered"]) or "none") + "."]
 
+    evd = agg["evidence"]
+    L += ["", "## Evidence tiers (evidence_tiers.py)", ""]
+    L.append(("Not logged in this run." if not evd["logged"] else
+              f"T1 articles {evd['t1']}, T2 {evd['t2']} (summed over the cases). T1/T2 dropped at a cut-off: "
+              + ("; ".join(f"{cid} {d}" for cid, d in evd["dropped"]) or "none") + " (target none). T1/T2 removed by "
+              "a single judgement: " + ("; ".join(f"{cid} {d}" for cid, d in evd["single_removed"]) or "none")
+              + f" (target none). Demoted instead: {evd['demoted']}; kept aside past a limit (ungraded or "
+              f"unforced): {evd['kept_aside']}."))
     iv = agg["invariants"]
     L += ["", "## Answer invariants (ANSWER_INVARIANTS_ENABLED): found / fixed / remaining, target remaining 0", "",
           "| invariant | found | fixed | remaining |", "|---|---:|---:|---:|"]
@@ -1862,7 +1899,13 @@ def write_report(out_dir: str, ev) -> str:
               "Per case: cases/<id>.json (capture), cases/<id>/material.txt (what the writer saw), "
               "cases/<id>/llm/NN_<stage>.txt (every chat call, with --dump-llm).",
               "Flags: " + ", ".join(f"{k}={v}" for k, v in flags.items() if v is not None)]
-    report = render(cases, header)
+    if any(_rep(c["id"])[1] > 1 for c in cases):
+        # --repeat: the report reads the first repetition; every repetition's headline and funnel follow, as
+        # mean (min–max), from compare on this run alone.
+        report = render([c for c in cases if _rep(c["id"])[1] == 1], header + ["Repetitions: see the end."])
+        report += "\n\n## Repetitions\n\n" + compare([out_dir], ev).split("\n", 1)[1]
+    else:
+        report = render(cases, header)
     with open(os.path.join(out_dir, "report.md"), "w", encoding="utf-8") as fh:
         fh.write(report)
     with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as fh:
@@ -1876,6 +1919,64 @@ def _run_dir(name: str) -> str:
         if os.path.isdir(os.path.join(path, "cases")):
             return os.path.abspath(path)
     sys.exit(f"--compare: no run folder {name!r} (looked for {name}/cases and diagnose_long_runs/{name}/cases)")
+
+
+_NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+def _fmt(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else f"{x:.1f}"
+
+
+def merge_cells(cells: list) -> str:
+    """One cell from the same cell of several repetitions: each number as its mean, with (min–max) when they differ
+    ("3 / 2" and "5 / 2" -> "4 (3–5) / 2"); cells that differ in more than their numbers are joined with " ; "."""
+    cells = [str(c) for c in cells]
+    if len(cells) == 1:
+        return cells[0]
+    if len({_NUMBER_RE.sub("#", c) for c in cells}) != 1:
+        return " ; ".join(cells)
+    columns = list(zip(*[[float(x) for x in _NUMBER_RE.findall(c)] for c in cells]))
+    pieces = _NUMBER_RE.split(cells[0])
+    out = pieces[0]
+    for i, col in enumerate(columns):
+        lo, hi = min(col), max(col)
+        out += _fmt(sum(col) / len(col)) + ("" if lo == hi else f" ({_fmt(lo)}–{_fmt(hi)})") + pieces[i + 1]
+    return out
+
+
+def _rep(case_id: str) -> tuple:
+    """("h3", 2) of "h3@r2"; ("h3", 1) of "h3"."""
+    m = re.match(r"^(.*)@r(\d+)$", str(case_id))
+    return (m.group(1), int(m.group(2))) if m else (str(case_id), 1)
+
+
+def _by_repeat(cases: list) -> list:
+    """[{case id: case} per repetition, in order] of a run's keyed cases with an answer (one dict without --repeat)."""
+    reps: dict = {}
+    for c in cases:
+        if c["keyed"] and c["ok"]:
+            base, k = _rep(c["id"])
+            reps.setdefault(k, {})[base] = c
+    return [reps[k] for k in sorted(reps)]
+
+
+def _side_by_side_reps(title: str, counters: list, totals: list, names: list, order=None) -> list:
+    """_side_by_side with several repetitions per run: counters[run] and totals[run] are lists (one per repetition);
+    a cell is "n (p%)" merged over them (merge_cells), the change is between the means."""
+    flat = [c for run in counters for c in run]
+    keys = order or sorted(set().union(*flat), key=lambda k: (-sum(c.get(k, 0) for c in flat), str(k)))
+    head = f"| {title} | " + " | ".join(names) + " | " + " | ".join(f"change vs {n}" for n in names[:-1]) + " |"
+    rows = [head, "|---|" + "---:|" * (2 * len(names) - 1)]
+    for k in keys:
+        per_run = [[c.get(k, 0) for c in run] for run in counters]
+        if any(v for run in per_run for v in run):
+            means = [sum(run) / len(run) for run in per_run]
+            cells = [merge_cells([f"{v} ({_pct(v, t)})" for v, t in zip(run, tots)]) for run, tots in zip(per_run, totals)]
+            rows.append(f"| {k} | " + " | ".join(cells) + " | "
+                        + " | ".join(("+" if means[-1] - m >= 0 else "-") + _fmt(abs(means[-1] - m)) for m in means[:-1])
+                        + " |")
+    return rows
 
 
 def _side_by_side(title: str, counters: list, totals: list, names: list, order=None) -> list:
@@ -1898,92 +1999,106 @@ def compare(run_dirs: list, ev) -> str:
     and an answer."""
     loaded = [_load_cases(d, ev) for d in run_dirs]
     names = [os.path.basename(os.path.normpath(d)) for d in run_dirs]
-    by = [{c["id"]: c for c in cases if c["keyed"] and c["ok"]} for _, cases in loaded]
-    common = [cid for cid in by[-1] if all(cid in b for b in by)]
-    left_out = sorted(set().union(*by) - set(common))
-    aggs = [aggregate([b[c] for c in common]) for b in by]
+    runs = [_by_repeat(cases) for _, cases in loaded]          # per run: [{case id: case} per repetition]
+    common = [cid for cid in (runs[-1][0] if runs[-1] else {}) if all(cid in r for run in runs for r in run)]
+    left_out = sorted(set().union(*(set(r) for run in runs for r in run)) - set(common))
+    aggs_by_run = [[aggregate([r[c] for c in common]) for r in run] for run in runs]
+    by = [run[0] for run in runs]
+    repeats = [len(run) for run in runs]
     flags = [((records or [{}])[0].get("flags") or {}) for records, _ in loaded]
     changed = [k for k in sorted(set().union(*flags)) if len({f.get(k) for f in flags}) > 1]
     L = [f"# diagnose_long: {' vs '.join(names)} (the last is the newest)", "",
          f"{len(common)} cases in every run, with an answer key and an answer"
          + (f"; left out (missing or failed in a run): {', '.join(left_out)}" if left_out else "") + ".",
          "Flags that differ: " + ("; ".join(f"{k} " + " / ".join(str(f.get(k)) for f in flags) for k in changed)
-                                  or "none") + " (in run order).", "",
+                                  or "none") + " (in run order).",
+         ("Repetitions: " + ", ".join(f"{n} {k}" for n, k in zip(names, repeats))
+          + "; a value of a run with several is their mean (min–max)." if max(repeats) > 1 else ""), "",
          "## Headline", "", "| | " + " | ".join(names) + " |", "|---|" + "---:|" * len(names)]
     def inv_cell(a, key):
         v = a["invariants"][key]
         return f"{v['found']} / {v['fixed']} / {v['remaining']}" if v else "n/a"
-    rows = [(f"{key} {name}: found / fixed / remaining (target 0)", [inv_cell(a, key) for a in aggs], lambda a: "")
-            for key, name in INVARIANTS]
+    rows = [(f"{key} {name}: found / fixed / remaining (target 0)", (lambda a, key=key: inv_cell(a, key)),
+             lambda a: "") for key, name in INVARIANTS]
+    rows += [("T1/T2 dropped at a cut-off (target 0)",
+              lambda a: len(a["evidence"]["dropped"]) if a["evidence"]["logged"] else "n/a", lambda a: ""),
+             ("T1/T2 removed by a single judgement (target 0)",
+              lambda a: len(a["evidence"]["single_removed"]) if a["evidence"]["logged"] else "n/a", lambda a: ""),
+             ("T1/T2 demoted instead / kept aside past a limit",
+              lambda a: (f"{a['evidence']['demoted']} / {a['evidence']['kept_aside']}" if a["evidence"]["logged"]
+                         else "n/a"), lambda a: "")]
     rows += [("guards: questions unanswered / not-apply / orphans removed / against client dropped",
-              [(f"{a['invariants']['guards']['unanswered']} of {a['invariants']['guards']['questions']} / "
+              lambda a: (f"{a['invariants']['guards']['unanswered']} of {a['invariants']['guards']['questions']} / "
                 f"{a['invariants']['guards']['not_apply']} / {a['invariants']['guards']['orphans']} / "
                 f"{a['invariants']['guards']['against_client']}") if a["invariants"]["guards"]["logged"] else
-               f"n/a / n/a / n/a / {a['invariants']['guards']['against_client']}" for a in aggs], lambda a: "")]
-    rows += [("MENTIONED", [a["stage_counts"]["MENTIONED"] for a in aggs], lambda a: f" / {len(a['slots'])}"),
-            ("not expected citations", [len(a["wrong"]) for a in aggs], lambda a: ""),
-            ("not expected per answer", [round(len(a["wrong"]) / max(1, len(common)), 1) for a in aggs], lambda a: ""),
-            ("rubrica-incompatible", [a["fit"]["incompatible"] for a in aggs], lambda a: ""),
-            ("citations taken out of sections", [sum(a["discipline"]["taken"].values()) for a in aggs], lambda a: ""),
-            ("expected ones among them", [len(a["discipline"]["expected_taken"]) for a in aggs], lambda a: ""),
+               f"n/a / n/a / n/a / {a['invariants']['guards']['against_client']}", lambda a: "")]
+    rows += [("MENTIONED", lambda a: a["stage_counts"]["MENTIONED"], lambda a: f" / {len(a['slots'])}"),
+            ("not expected citations", lambda a: len(a["wrong"]), lambda a: ""),
+            ("not expected per answer", lambda a: round(len(a["wrong"]) / max(1, len(common)), 1), lambda a: ""),
+            ("rubrica-incompatible", lambda a: a["fit"]["incompatible"], lambda a: ""),
+            ("citations taken out of sections", lambda a: sum(a["discipline"]["taken"].values()), lambda a: ""),
+            ("expected ones among them", lambda a: len(a["discipline"]["expected_taken"]), lambda a: ""),
             ("removed after the draft (flagged + not a law)",
-             [sum(a["after_draft"]["flagged"].values()) + sum(a["after_draft"]["not_a_law"].values()) for a in aggs],
+             lambda a: sum(a["after_draft"]["flagged"].values()) + sum(a["after_draft"]["not_a_law"].values()),
              lambda a: ""),
-            ("expected ones removed after the draft", [len(a["after_draft"]["expected_removed"]) for a in aggs],
+            ("expected ones removed after the draft", lambda a: len(a["after_draft"]["expected_removed"]),
              lambda a: ""),
-            ("LOST_AT_UNDERSTANDING", [a["stage_counts"]["LOST_AT_UNDERSTANDING"] for a in aggs], lambda a: ""),
-            ("expected reached via a fired fact rule", [len(a["fact_signals"]["reached"]) for a in aggs], lambda a: ""),
-            ("fired fact rules reaching no expected article", [len(a["fact_signals"]["false"]) for a in aggs],
+            ("LOST_AT_UNDERSTANDING", lambda a: a["stage_counts"]["LOST_AT_UNDERSTANDING"], lambda a: ""),
+            ("expected reached via a fired fact rule", lambda a: len(a["fact_signals"]["reached"]), lambda a: ""),
+            ("fired fact rules reaching no expected article", lambda a: len(a["fact_signals"]["false"]),
              lambda a: ""),
-            ("'does not apply' sentences in the answers", [a["form"]["not_apply"] for a in aggs], lambda a: ""),
-            ("burden-of-proof sentences in the answers", [a["form"]["burden"] for a in aggs], lambda a: ""),
-            ("answers with deep-dive links", [a["form"]["deep_dive"] for a in aggs], lambda a: ""),
-            ("sections cut short", [a["form"]["cut"] for a in aggs], lambda a: ""),
-            ("facts marked as not in the case", [a["form"]["facts_marked"] for a in aggs], lambda a: ""),
-            ("terms stated / applicable", [a["form"]["terms_stated"] for a in aggs],
+            ("'does not apply' sentences in the answers", lambda a: a["form"]["not_apply"], lambda a: ""),
+            ("burden-of-proof sentences in the answers", lambda a: a["form"]["burden"], lambda a: ""),
+            ("answers with deep-dive links", lambda a: a["form"]["deep_dive"], lambda a: ""),
+            ("sections cut short", lambda a: a["form"]["cut"], lambda a: ""),
+            ("facts marked as not in the case", lambda a: a["form"]["facts_marked"], lambda a: ""),
+            ("terms stated / applicable", lambda a: a["form"]["terms_stated"],
              lambda a: f" / {a['form']['terms']}"),
-            ("procedural tools cited / offered", [a["form"]["tools_cited"] for a in aggs],
+            ("procedural tools cited / offered", lambda a: a["form"]["tools_cited"],
              lambda a: f" / {a['form']['tools_offered']}"),
-            ("parties qualified", [len(a["form"]["qualified"]) for a in aggs], lambda a: ""),
-            ("sentences against the client dropped", [a["form"]["against_client"] for a in aggs], lambda a: ""),
-            ("inverse-situation articles removed", [len(a["form"]["inverse"]) for a in aggs], lambda a: ""),
-            ("criminal route cited / offered", [a["form"]["criminal_cited"] for a in aggs],
+            ("parties qualified", lambda a: len(a["form"]["qualified"]), lambda a: ""),
+            ("sentences against the client dropped", lambda a: a["form"]["against_client"], lambda a: ""),
+            ("inverse-situation articles removed", lambda a: len(a["form"]["inverse"]), lambda a: ""),
+            ("criminal route cited / offered", lambda a: a["form"]["criminal_cited"],
              lambda a: f" / {a['form']['criminal_offered']}"),
-            ("facts flagged by the review (filtered out)", [a["form"]["review"].get("facts_flagged", 0) for a in aggs],
+            ("facts flagged by the review (filtered out)", lambda a: a["form"]["review"].get("facts_flagged", 0),
              lambda a: f" ({a['form']['facts_filtered']})"),
-            ("procedural section: items written / offered", [sum(a["form"]["use_written"].values()) for a in aggs],
+            ("procedural section: items written / offered", lambda a: sum(a["form"]["use_written"].values()),
              lambda a: f" / {sum(a['form']['use_offered'].values())}"),
-            ("expected articles cited only in dropped sentences", [len(a["form"]["expected_dropped"]) for a in aggs],
+            ("expected articles cited only in dropped sentences", lambda a: len(a["form"]["expected_dropped"]),
              lambda a: ""),
             ("non-primary hits in the authority stage (must be 0)",
-             [a["tiers"]["non_primary_after"] if a["tiers"]["authority_ran"] else "n/a" for a in aggs],
+             lambda a: a["tiers"]["non_primary_after"] if a["tiers"]["authority_ran"] else "n/a",
              lambda a: f" (dropped by the filter: {a['tiers']['dropped']})" if a["tiers"]["authority_ran"] else ""),
-            ("cited rulings citing >=1 answer article", [_tier_share(a) for a in aggs], lambda a: ""),
+            ("cited rulings citing >=1 answer article", lambda a: _tier_share(a), lambda a: ""),
             ("boilerplate-only rulings cited (target 0)",
-             [a["tiers"]["boilerplate_only"] if a["tiers"]["logged"] else "n/a" for a in aggs], lambda a: ""),
-            ("routes", [", ".join(f"{r} {n}" for r, n in sorted(a["tiers"]["routes"].items())) or "n/a" for a in aggs],
+             lambda a: a["tiers"]["boilerplate_only"] if a["tiers"]["logged"] else "n/a", lambda a: ""),
+            ("routes", lambda a: ", ".join(f"{r} {n}" for r, n in sorted(a["tiers"]["routes"].items())) or "n/a",
              lambda a: ""),
-            ("dangling fragments in the answers (target 0)", [a["live"]["dangling"] for a in aggs], lambda a: ""),
-            ("evidence lists repeated whole (target 0)", [a["live"]["evidence_repeated"] for a in aggs], lambda a: ""),
-            ("explicit questions unanswered in section 1", [len(a["live"]["unanswered"]) for a in aggs],
+            ("dangling fragments in the answers (target 0)", lambda a: a["live"]["dangling"], lambda a: ""),
+            ("evidence lists repeated whole (target 0)", lambda a: a["live"]["evidence_repeated"], lambda a: ""),
+            ("explicit questions unanswered in section 1", lambda a: len(a["live"]["unanswered"]),
              lambda a: f" / {a['live']['questions']}"),
-            ("sanction questions with art. 614-bis", [a["live"]["sanction_614bis"] for a in aggs],
+            ("sanction questions with art. 614-bis", lambda a: a["live"]["sanction_614bis"],
              lambda a: f" / {a['live']['sanction_asked']}"),
-            ("near-duplicate issue headings in section 4", [len(a["live"]["near_duplicates"]) for a in aggs],
+            ("near-duplicate issue headings in section 4", lambda a: len(a["live"]["near_duplicates"]),
              lambda a: ""),
-            ("acquired right, section 4 opens with a constitutive remedy", [len(a["live"]["constitutive_first"])
-                                                                           for a in aggs],
+            ("acquired right, section 4 opens with a constitutive remedy", lambda a: len(a["live"]["constitutive_first"])
+                                                                          ,
              lambda a: f" / {a['live']['acquired']}"),
-            ("adverse rulings found / dropped as support", [a["live"]["adverse_found"] for a in aggs],
+            ("adverse rulings found / dropped as support", lambda a: a["live"]["adverse_found"],
              lambda a: f" / {a['live']['adverse_dropped']}"),
-            ("generic rubrica words refused outside their chapter", [len(a["live"]["generic_refused"]) for a in aggs],
+            ("generic rubrica words refused outside their chapter", lambda a: len(a["live"]["generic_refused"]),
              lambda a: "")]
-    for title, values, suffix in rows:
-        L.append(f"| {title} | " + " | ".join(f"{v}{suffix(a)}" for v, a in zip(values, aggs)) + " |")
+    for title, value, suffix in rows:
+        L.append(f"| {title} | " + " | ".join(merge_cells([f"{value(a)}{suffix(a)}" for a in run])
+                                               for run in aggs_by_run) + " |")
     L += ["", "## A. Loss funnel of the expected articles", ""]
-    L += _side_by_side("stage", [a["stage_counts"] for a in aggs], [len(a["slots"]) for a in aggs], names, STAGES)
+    L += _side_by_side_reps("stage", [[a["stage_counts"] for a in run] for run in aggs_by_run],
+                            [[len(a["slots"]) for a in run] for run in aggs_by_run], names, STAGES)
     L += ["", "MENTIONED without being in the prompt: "
-          + ", ".join(f"{n} {sum(s['from_memory'] for s in a['slots'])}" for n, a in zip(names, aggs)) + ".",
+          + ", ".join(f"{n} " + merge_cells([str(sum(s['from_memory'] for s in a['slots'])) for a in run])
+                      for n, run in zip(names, aggs_by_run)) + ".",
           "", "## B. Articles cited without being expected", ""]
     channel_order = CHANNELS + ["other_search", "not_retrieved", "other"]
     for title, key, order in (("by channel (any)", "any_channel", channel_order),
@@ -1991,17 +2106,19 @@ def compare(run_dirs: list, ev) -> str:
                               ("by applicability status", "by_check", None),
                               ("by plan protection", "by_plan", None),
                               ("rubrica vs citing line", "fit", None)):
-        L += _side_by_side(title, [a[key] for a in aggs], [len(a["wrong"]) for a in aggs], names, order) + [""]
+        L += _side_by_side_reps(title, [[a[key] for a in run] for run in aggs_by_run],
+                                [[len(a["wrong"]) for a in run] for run in aggs_by_run], names, order) + [""]
     L += ["## Per case", "", "| case | " + " | ".join(f"MENTIONED {n}" for n in names) + " | of | "
           + " | ".join(f"not expected {n}" for n in names) + " | route (newest) | rulings cited / citing an answer "
           "article / boilerplate-only (newest) |", "|---|" + "---:|" * (2 * len(names) + 1) + "---|---|"]
     for cid in common:
-        mentioned = [sum(s["stage"] == "MENTIONED" for s in b[cid]["slots"]) for b in by]
+        mentioned = [merge_cells([str(sum(s["stage"] == "MENTIONED" for s in r[cid]["slots"])) for r in run])
+                     for run in runs]
         t = by[-1][cid].get("tiers") or {}
         rulings = (f"{t.get('rulings_cited', 0)} / {t.get('rulings_citing_answer_article', 0)} / "
                    f"{t.get('rulings_boilerplate_only', 0)}") if t.get("rulings_logged") else "n/a"
         L.append(f"| {cid} | " + " | ".join(map(str, mentioned)) + f" | {len(by[-1][cid]['slots'])} | "
-                 + " | ".join(str(len(b[cid]["unexpected"])) for b in by)
+                 + " | ".join(merge_cells([str(len(r[cid]["unexpected"])) for r in run]) for run in runs)
                  + f" | {t.get('route') or 'n/a'} | {rulings} |")
     return "\n".join(L) + "\n"
 
@@ -2071,6 +2188,9 @@ def main() -> None:
     parser.add_argument("--audit-grades", metavar="RUN",
                         help="no run: why articles sent to the graded check got no grade, from RUN's llm/ dumps "
                              "(written to RUN/grade_audit.md)")
+    parser.add_argument("--repeat", type=int, default=1, metavar="N",
+                        help="run each case N times (ids <id>@r1..@rN); the report and --compare give each headline "
+                             "row and funnel stage as mean (min–max)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -2140,6 +2260,8 @@ def main() -> None:
             print(f"--file {path}: no --request, using the generic one", file=sys.stderr)
         specs.append({"id": _slug(os.path.splitext(os.path.basename(path))[0]), "file": os.path.abspath(path),
                       "request": request, "expected": None})
+    if args.repeat > 1:
+        specs = [{**spec, "id": f"{spec['id']}@r{k}"} for spec in specs for k in range(1, args.repeat + 1)]
     for spec in specs:
         spec.update(lang=args.lang, settings=settings, dump_llm=args.dump_llm,
                     out=os.path.join(out_dir, "cases", f"{spec['id']}.json"))

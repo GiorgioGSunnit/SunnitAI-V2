@@ -131,6 +131,17 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
                 f"{k} {v.get('found', 0)}/{v.get('fixed', 0)}/{v.get('remaining', 0)}"
                 for k, v in sorted(data.items()) if k.startswith("I") and isinstance(v, dict) and "found" in v)
                 + f"; guards {json.dumps({k: (len(v) if isinstance(v, list) else v) for k, v in (data.get('guards') or {}).items()})}")
+        elif event == "evidence_tiers":
+            out.append(f"evidence tiers: T1 {', '.join(data.get('T1') or []) or '-'}; T2 {', '.join(data.get('T2') or []) or '-'}; "
+                       f"T3 {data.get('T3', 0)}")
+        elif event == "evidence_cutoff":
+            out.append(f"cut-off {data.get('stage')} (limit {data.get('limit')}): cut {len(data.get('cut') or [])}"
+                       + (f", T1/T2 kept aside {', '.join(i['article'] for i in data['kept_aside'])}" if data.get("kept_aside") else "")
+                       + (f", T1/T2 DROPPED {', '.join(i['article'] for i in data['t12_dropped'])}" if data.get("t12_dropped") else ""))
+        elif event == "evidence_removal" and data.get("entries"):
+            out.append(f"{data.get('stage')}: " + "; ".join(
+                f"{e['article']} T{e.get('tier')} {e['how']} ({e['judgements']} judgement{'s' if e['judgements'] != 1 else ''}"
+                + (", fact in the case" if e.get("verified_fact") else "") + ")" for e in data["entries"]))
         elif event == "case_analysis_institution_range":
             out.append(f"I3 {data.get('institution')}: refused {', '.join(data.get('refused') or []) or '-'}, "
                        f"picked in {data.get('chapter')}: {data.get('picked') or 'none'}")

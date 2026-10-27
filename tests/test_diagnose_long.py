@@ -423,3 +423,55 @@ def test_invariant_rows_per_run_old_runs_partly_read_off_the_answer():
     assert text.index("| I7 terms") < text.index("| MENTIONED |") < text.index("| rubrica-incompatible |")
     report = dl.render([dl.analyse_case(new, ev)], [])
     assert "## Answer invariants" in report and "| I4 ruling relevance | 2 | 2 | 0 |" in report
+
+
+def test_merge_cells_and_repetitions():
+    assert dl.merge_cells(["3 / 2"]) == "3 / 2"
+    assert dl.merge_cells(["3 / 2", "5 / 2"]) == "4 (3–5) / 2"
+    assert dl.merge_cells(["1", "2"]) == "1.5 (1–2)"
+    assert dl.merge_cells(["n/a", "2"]) == "n/a ; 2"
+    assert dl._rep("h3@r2") == ("h3", 2) and dl._rep("h3") == ("h3", 1)
+
+
+def test_evidence_rows_and_repeats_in_compare():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old = _record()
+    reps = []
+    for k, (dropped, single) in enumerate(((0, 0), (1, 0)), 1):
+        rec = copy.deepcopy(old)
+        rec["id"] = f"x1@r{k}"
+        rec["events"] = [["evidence_tiers", {"T1": ["584 c.p."], "T2": ["43 c.p."], "T3": 3}, 0],
+                         ["evidence_cutoff", {"stage": "checked_slots", "cut": [], "kept_aside": [{"article": "43 c.p.",
+                                                                                              "tier": 2}],
+                                              "t12_dropped": [{"article": "56 c.p.", "tier": 2}] * dropped}, 0],
+                         ["evidence_removal", {"stage": "graded check", "entries": [
+                             {"article": "61 c.p.", "tier": 1, "how": "removed", "judgements": 1, "verified_fact": False,
+                              "why": "x"}] * single + [{"article": "81 c.p.", "tier": 2, "how": "demoted",
+                                                        "judgements": 1, "verified_fact": False, "why": "y"}]}, 0]]
+        if k == 2:
+            rec["answer"] = {**rec["answer"], "mentioned_eval": [["584", "cp"], ["43", "cp"], ["81", "cp"], ["582", "cp"]]}
+        reps.append(rec)
+    ev_new = dl.analyse_case(reps[1], ev)["evidence"]
+    assert ev_new["logged"] and ev_new["dropped"] == ["checked_slots: 56 c.p. (T2)"] and ev_new["demoted"] == 1
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, recs in (("20261026-2335", [old]), ("20261027-1200", reps)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        for rec in recs:
+            with open(_os.path.join(root, name, "cases", f"{rec['id']}.json"), "w", encoding="utf-8") as fh:
+                _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs, ev)
+    assert "Repetitions: 20261026-2335 1, 20261027-1200 2; a value of a run with several is their mean (min–max)." in text
+    assert "| T1/T2 dropped at a cut-off (target 0) | n/a | 0.5 (0–1) |" in text
+    assert "| T1/T2 removed by a single judgement (target 0) | n/a | 0 |" in text
+    assert "| T1/T2 demoted instead / kept aside past a limit | n/a | 1 / 1 |" in text
+    assert "| MENTIONED | 2 / 6 | 2.5 (2–3) / 6 |" in text
+    assert "| MENTIONED | 2 (33%) | 2.5 (2–3) (41.5 (33–50)%) | +0.5 |" in text
+    assert "| x1 | 2 | 2.5 (2–3) | 6 |" in text
+    report = dl.write_report(dirs[1], ev)
+    body = open(report, encoding="utf-8").read()
+    assert "## Repetitions" in body and "## Evidence tiers" in body and "1 cases run" in body
