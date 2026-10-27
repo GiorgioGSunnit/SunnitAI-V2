@@ -155,12 +155,23 @@ def _code_in_text(text):
     return None
 
 
+def _code_before(text):
+    """The code written just before an article ("Codice civile, art. 1490", "(c.p., art. 52)"): only when
+    nothing but a comma, colon or dash stands between, so "art. 1490 c.c. e art. 52" gives 52 no code."""
+    for key in _CODE_ORDER:
+        if re.search(rf"(?:{CODES[key][1]})\s*[,:;\u2013\u2014-]?\s*\(?\s*$", text, re.I):
+            return key
+    return None
+
+
 def mentions(answer):
-    """(article, code key or None) for every article the answer names."""
+    """(article, code key or None) for every article the answer names: the code just after it, else the
+    one just before."""
     found = []
     for run in _MENTION_RUN.finditer(answer or ""):
         prefix = re.match(r"\b(?:artt?\.?|articol[oi])\s*", run.group(0), re.I).end()
-        code = _code_in_text(answer[run.end():run.end() + 60])
+        code = (_code_in_text(answer[run.end():run.end() + 60])
+                or _code_before(answer[max(0, run.start() - 50):run.start()]))
         for m in _MENTION_NUM.finditer(run.group(0)[prefix:]):
             number = f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m.group(2) else m.group(1)
             if (number, code) not in found:
@@ -531,6 +542,9 @@ def main(argv=None):
     direct.add_argument("--flag", dest="set_flags", action="append", default=[], metavar="NAME=VALUE",
                         help="a flag for this run only, e.g. --flag PRIMARY_FIRST_ENABLED=true (repeatable)")
     direct.add_argument("--compare-direct", nargs=2, metavar=("OLD_SUMMARY", "NEW_SUMMARY"))
+    direct.add_argument("--debug", nargs="?", type=int, const=3, default=None, metavar="N",
+                        help="print each case's route, answer, every node's rows with their document_type, the "
+                             "primary filter's decisions and the MENTIONED scoring (first N cases, default 3)")
     args = parser.parse_args(argv)
 
     if args.direct or args.compare_direct:

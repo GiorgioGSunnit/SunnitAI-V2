@@ -42,3 +42,27 @@ def test_totals_add_up_the_cases():
               "id": "d1", "route": "direct", "status": "ok"}
     assert eval_direct.totals([record, record])["non_primary_hits"] == 6
     assert any("MENTIONED: 2/4" in line for line in eval_direct.summary_lines([record, record], "x"))
+
+
+def test_the_debug_report_shows_the_route_rows_filter_decisions_and_scoring():
+    record = {"id": "d2", "question": "Quali sono i requisiti della legittima difesa?", "route": "direct",
+              "status": "ok", "result_keys": ["answer", "citations", "raw_result"], "rows": 1,
+              "rows_by_type": {"primary": 1}, "mentioned": 1, "cited": 0, "expected": 1,
+              "answer": "La legittima difesa (Codice penale, art. 52) richiede ...",
+              "scoring": {"expected": [{"expected": "art. 52 cp", "status": "NAMED-ONLY", "mentioned": True,
+                                        "cited": False}], "cited": []}}
+    events = [("route_chosen", {"route": "direct", "reasons": ["1 sentences", "no fact pattern"]}),
+              ("source_tier_hits", {"stage": "article_router", "rows": 2, "kept": 1, "dropped": 1})]
+    nodes = [{"stage": "article_router", "filter": True, "decisions": [
+                 {"doc": "LEGAL_DOC::cp", "section": "52.0.0", "type": "primary", "type_from": "d.document_type",
+                  "kept": True, "why": "primary allowed"},
+                 {"doc": "LEGAL_DOC::cass1", "section": "3", "type": "interpretation",
+                  "type_from": "Document lookup (s.id -> LEGAL_DOC::cass1)", "kept": False,
+                  "why": "interpretation not in primary/special"}]},
+             {"stage": "context_retrieval", "filter": False, "route": "narrative",
+              "rows": [{"doc": "LEGAL_DOC::cc", "section": "1", "type": None, "type_from": "d (no document_type)"}]}]
+    text = "\n".join(eval_direct.debug_report(record, events, nodes, eval_narrative))
+    assert "no fact pattern" in text and "Codice penale, art. 52" in text
+    assert "KEEP LEGAL_DOC::cp" in text and "DROP LEGAL_DOC::cass1" in text and "from=d.document_type" in text
+    assert "filter off (route narrative): 1 rows" in text
+    assert "named: 52 cp" in text and "MENTIONED 1/1, CITED 0/1" in text

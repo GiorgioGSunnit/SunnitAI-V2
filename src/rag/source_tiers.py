@@ -2,8 +2,9 @@
 the rulings, always filtered by what the authority tier found.
 
   PRIMARY_FIRST_ENABLED (the chat's direct questions, src/rag/main.py): every article-finding node of the graph
-      keeps only rows of primary documents (and special ones, the books the chat cites as doctrine); each node's
-      hits are logged by document type, and a check after the filter asserts none is left. Rulings come only as
+      keeps only rows of primary documents (and special ones, the books the chat cites as doctrine), failing
+      open: a row whose type is on neither the row nor its Document is kept, only a known other type is dropped;
+      each node's hits are logged by document type, and a check after the filter asserts none is left. Rulings come only as
       support: those whose Sections CITE an article the answer is built on (Cassation boilerplate excluded),
       ranked by similarity to the question -- no vote.
   HYBRID_NARRATIVE_ENABLED (the strategy pipeline, defensive_generation): the rulings similar to the facts act
@@ -46,60 +47,116 @@ def boilerplate() -> set:
 def row_doc(row: Dict[str, Any]) -> Tuple[Optional[str], Optional[str]]:
     """(document id, document type) of a graph row: its "d" node, else a Document-like value, else the
     Section's own id ("DOCUMENT_SECTION::<doc>::<name>"); the type is None when the row does not carry it."""
+    doc, kind, _ = row_doc_source(row)
+    return doc, kind
+
+
+def row_doc_source(row: Dict[str, Any]) -> Tuple[Optional[str], Optional[str], str]:
+    """row_doc, plus where the row's document came from: "d.document_type" (the key the type was read
+    from), "d (no document_type)", "<key>.document_type", "s.id", "s.document_id" or "none"."""
     d = row.get("d")
     if isinstance(d, dict) and (d.get("id") or d.get("document_id")):
-        return d.get("id") or d.get("document_id"), d.get("document_type")
+        kind = d.get("document_type")
+        return d.get("id") or d.get("document_id"), kind, "d.document_type" if kind else "d (no document_type)"
     for key, value in row.items():
-        if isinstance(value, dict) and "document_type" in value and (value.get("id") or value.get("document_id")):
-            return value.get("id") or value.get("document_id"), value.get("document_type")
+        if isinstance(value, dict) and value.get("document_type") and (value.get("id") or value.get("document_id")):
+            return value.get("id") or value.get("document_id"), value["document_type"], f"{key}.document_type"
     s = row.get("s")
     if isinstance(s, dict):
         parts = str(s.get("id") or "").split("::")
         if len(parts) >= 3:
-            return "LEGAL_DOC::" + parts[1], None
+            return "LEGAL_DOC::" + parts[1], None, "s.id"
         if s.get("document_id"):
-            return s["document_id"], None
-    return None, None
+            return s["document_id"], None, "s.document_id"
+    return None, None, "none"
 
 
-def doc_types(session, rows: Sequence[Dict[str, Any]]) -> List[Optional[str]]:
-    """Each row's document type ("unknown" for a row with no document at all), looking up the ones its row
-    does not carry in one query."""
-    found = [row_doc(r) for r in rows]
-    missing = sorted({doc for doc, kind in found if doc and kind is None})
-    looked: Dict[str, Optional[str]] = {}
-    if missing and session is not None:
-        try:
-            looked = {r["id"]: r["type"] for r in session.run(
-                "MATCH (d:Document) WHERE d.id IN $ids RETURN d.id AS id, d.document_type AS type",
-                ids=missing).data()}
-        except Exception as exc:
-            logger.warning("source tiers: document types not read: %s", exc)
+def _lookup_types(session, ids: Sequence[str]) -> Dict[str, Optional[str]]:
+    """{document id: its document_type} for the ids, read from their Documents in one query; {} on failure."""
+    if not ids or session is None:
+        return {}
+    try:
+        return {r["id"]: r["type"] for r in session.run(
+            "MATCH (d:Document) WHERE d.id IN $ids RETURN d.id AS id, d.document_type AS type",
+            ids=list(ids)).data()}
+    except Exception as exc:
+        logger.warning("source tiers: document types not read: %s", exc)
+        return {}
+
+
+def doc_types(session, rows: Sequence[Dict[str, Any]]) -> List[str]:
+    """Each row's document type, looking up from its Document the ones its row does not carry (one query);
+    "unknown" for a row whose type cannot be told -- no document, no such Document, or a Document with no
+    document_type."""
+    return [kind for kind, _ in _typed(session, rows)]
+
+
+def _typed(session, rows: Sequence[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """(type, where it was read) per row: "<key>.document_type", "Document lookup", or why it is unknown."""
+    found = [row_doc_source(r) for r in rows]
+    looked = _lookup_types(session, sorted({doc for doc, kind, _ in found if doc and kind is None}))
     out = []
-    for doc, kind in found:
-        if doc is None:
-            out.append("unknown")
+    for doc, kind, source in found:
+        if kind:
+            out.append((kind, source))
+        elif doc is None:
+            out.append(("unknown", "no document on the row"))
+        elif looked.get(doc):
+            out.append((looked[doc], f"Document lookup ({source} -> {doc})"))
+        elif doc in looked:
+            out.append(("unknown", f"Document {doc} has no document_type"))
         else:
-            out.append(kind if kind is not None else looked.get(doc) or "null")
+            out.append(("unknown", f"no Document {doc} found ({source})"))
+    return out
+
+
+# tests/eval_direct.py --debug: when a list, every wrapped node appends its rows and the filter's decision on
+# each (primary_node), with or without PRIMARY_FIRST_ENABLED. None in the app.
+DEBUG_ROWS: Optional[List[Dict[str, Any]]] = None
+
+
+def _decisions(session, rows: Sequence[Dict[str, Any]], allowed: set) -> List[Dict[str, Any]]:
+    """Per row: its document, type, where the type was read, kept or dropped and why. Fails open: only a row
+    whose type is known and not allowed is dropped; a row with no type, even after the lookup, is kept."""
+    out = []
+    for row, (kind, source) in zip(rows, _typed(session, rows)):
+        doc = row_doc(row)[0]
+        if kind == "unknown":
+            keep, why = True, f"type unknown ({source}): kept, fail open"
+        elif kind in allowed:
+            keep, why = True, f"{kind} allowed"
+        else:
+            keep, why = False, f"{kind} not in {'/'.join(sorted(allowed))}"
+        out.append({"doc": doc, "name": (row.get("d") or {}).get("name") if isinstance(row.get("d"), dict) else None,
+                    "section": (row.get("s") or {}).get("name") if isinstance(row.get("s"), dict) else None,
+                    "type": kind, "type_from": source, "kept": keep, "why": why})
     return out
 
 
 def keep_types(session, rows: List[Dict[str, Any]], allowed: Iterable[str], stage: str) -> List[Dict[str, Any]]:
-    """The rows of an allowed document type; rows with no document at all are kept (they carry no source).
-    Logs the hits by type before and the non-allowed ones left after ("source_tier_hits", which must be 0)."""
+    """The rows of an allowed document type -- failing open: a row whose type is missing (not on the row,
+    not on its Document, no Document at all) is kept, only a known other type is dropped. Logs the hits by
+    type, kept and dropped ("source_tier_hits"), and the non-allowed ones left after (must be 0)."""
     allowed = set(allowed)
     if not rows:
         return rows
-    types = doc_types(session, rows)
+    decisions = _decisions(session, rows, allowed)
     by_type: Dict[str, int] = {}
-    for kind in types:
-        by_type[kind] = by_type.get(kind, 0) + 1
-    kept = [r for r, kind in zip(rows, types) if kind in allowed or kind == "unknown"]
+    for item in decisions:
+        by_type[item["type"]] = by_type.get(item["type"], 0) + 1
+    kept = [r for r, item in zip(rows, decisions) if item["kept"]]
     # The check on the filter's own output, row by row as it leaves (a row whose type its own "d" now
     # contradicts counts too).
     left = sum(1 for r in kept if (row_doc(r)[1] or "primary") not in allowed and row_doc(r)[0] is not None)
-    vlog("source_tier_hits", {"stage": stage, "by_type": by_type, "dropped": len(rows) - len(kept),
+    dropped = len(rows) - len(kept)
+    vlog("source_tier_hits", {"stage": stage, "rows": len(rows), "kept": len(kept), "by_type": by_type,
+                              "dropped": dropped, "unknown_kept": by_type.get("unknown", 0),
+                              "looked_up": sum(1 for d in decisions if d["type_from"].startswith("Document lookup")),
                               "non_primary_after": left})
+    logger.info("source tiers: %s %d rows, kept %d, dropped %d, by type %s", stage, len(rows), len(kept), dropped,
+                by_type)
+    if DEBUG_ROWS is not None:
+        DEBUG_ROWS.append({"stage": stage, "filter": True, "decisions": decisions})
     if left:
         logger.error("source tiers: %d non-%s rows left after the filter at %s", left, "/".join(sorted(allowed)),
                      stage)
@@ -327,7 +384,16 @@ def primary_node(fn, stage: str, driver, database: str):
     PRIMARY_FIRST_ENABLED (keep_types logs the hits by type); unchanged otherwise or on a failed check."""
     def node(state):
         out = fn(state)
-        if not isinstance(out, dict) or not out.get("raw_result") or not primary_first_enabled(graph_route(state)):
+        if not isinstance(out, dict) or not out.get("raw_result"):
+            return out
+        route = graph_route(state)
+        if not primary_first_enabled(route):
+            if DEBUG_ROWS is not None:
+                DEBUG_ROWS.append({"stage": stage, "filter": False, "route": route,
+                                   "rows": [dict(zip(("doc", "type", "type_from"), row_doc_source(r)),
+                                                 section=(r.get("s") or {}).get("name")
+                                                 if isinstance(r.get("s"), dict) else None)
+                                            for r in out["raw_result"]]})
             return out
         try:
             import neo4j

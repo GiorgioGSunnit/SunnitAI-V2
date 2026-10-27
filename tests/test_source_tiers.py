@@ -49,11 +49,46 @@ def test_keep_types_keeps_primary_and_logs_the_hits_by_type(logged):
             _row("manuale", "Manuale", "special"), {"x": 1}, _row("nodoc", "Senza tipo")]
     session = TypeSession({"nodoc": None})
     kept = st.keep_types(session, rows, st.DIRECT_TYPES, "context_retrieval")
-    assert [((r.get("d") or {}).get("id")) for r in kept] == ["cc", "manuale", None]
+    assert [((r.get("d") or {}).get("id")) for r in kept] == ["cc", "manuale", None, "nodoc"]
     event, data = logged[-1]
     assert event == "source_tier_hits" and data["stage"] == "context_retrieval"
-    assert data["by_type"] == {"primary": 1, "interpretation": 1, "special": 1, "unknown": 1, "null": 1}
-    assert data["dropped"] == 2 and data["non_primary_after"] == 0
+    assert data["by_type"] == {"primary": 1, "interpretation": 1, "special": 1, "unknown": 2}
+    assert data["dropped"] == 1 and data["kept"] == 4 and data["non_primary_after"] == 0
+
+
+def test_the_filter_fails_open_on_a_missing_type_and_looks_it_up_from_the_document(logged):
+    """No document_type on the row: read from its Document; not there either, or no such Document: kept."""
+    rows = [{"d": {"id": "LEGAL_DOC::cp", "name": "Codice Penale"}, "s": {"name": "52.0.0"}},
+            {"s": {"id": "DOCUMENT_SECTION::cass7::4", "name": "4"}},
+            {"d": {"id": "LEGAL_DOC::ghost", "name": "?"}, "s": {"name": "1"}},
+            {"d": {"id": "LEGAL_DOC::bare", "name": "Senza tipo"}, "s": {"name": "2"}}]
+
+    class Missing(TypeSession):          # only the Documents that exist come back
+        def run(self, query, **params):
+            self.asked.append(params.get("ids"))
+            return _Result([{"id": i, "type": self.types[i]} for i in params["ids"] if i in self.types])
+    session = Missing({"LEGAL_DOC::cp": "primary", "LEGAL_DOC::cass7": "interpretation", "LEGAL_DOC::bare": None})
+    kept = st.keep_types(session, rows, st.DIRECT_TYPES, "article_router")
+    assert [(r.get("d") or {}).get("id") for r in kept] == ["LEGAL_DOC::cp", "LEGAL_DOC::ghost", "LEGAL_DOC::bare"]
+    decisions = st._decisions(session, rows, set(st.DIRECT_TYPES))
+    assert decisions[0]["type_from"].startswith("Document lookup") and decisions[1]["why"].startswith("interpretation")
+    assert "no Document" in decisions[2]["why"] and "has no document_type" in decisions[3]["why"]
+
+
+def test_a_failed_lookup_keeps_every_untyped_row(logged):
+    class Broken:
+        def run(self, *a, **k):
+            raise RuntimeError("down")
+    rows = [{"d": {"id": "a", "name": "A"}}, {"d": {"id": "b", "name": "B", "document_type": "interpretation"}}]
+    assert [r["d"]["id"] for r in st.keep_types(Broken(), rows, st.DIRECT_TYPES, "x")] == ["a"]
+
+
+def test_the_debug_hook_records_each_nodes_rows_and_decisions(monkeypatch, logged):
+    monkeypatch.setattr(st, "DEBUG_ROWS", [])
+    st.keep_types(TypeSession({}), [_row("cc", "Codice Civile", "primary", article="1490")], st.DIRECT_TYPES, "n")
+    record = st.DEBUG_ROWS[-1]
+    assert record["stage"] == "n" and record["decisions"][0]["type_from"] == "d.document_type"
+    assert record["decisions"][0]["kept"] and record["decisions"][0]["section"] == "1490.0.0"
 
 
 def test_a_row_without_its_document_type_is_looked_up_once():

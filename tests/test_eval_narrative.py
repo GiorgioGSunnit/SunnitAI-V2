@@ -290,6 +290,17 @@ def test_new_codes_are_recognised_in_the_answer(answer, expected):
     assert expected in ev.mentions(answer)
 
 
+@pytest.mark.parametrize("answer, expected", [
+    ("Ai sensi del Codice civile, art. 1490, il venditore garantisce", ("1490", "cc")),
+    ("(c.p., art. 52)", ("52", "cp")),
+    ("Codice di procedura penale \u2013 art. 585", ("585", "cpp")),
+    ("l'art. 1490 c.c. e l'art. 52 della legge", ("52", None)),       # the earlier article's code is not taken
+    ("Il codice civile disciplina la vendita; l'art. 1490 prevede", ("1490", None)),
+])
+def test_a_code_written_just_before_the_article_counts(answer, expected):
+    assert expected in ev.mentions(answer)
+
+
 def test_mentioned_and_cited_are_scored_separately():
     case = {"expected": [{"code": "cp", "article": "644"}, {"code": "cp", "article": "629"}]}
     citations = [{"document_name": "Codice Penale 2026", "sections": [{"name": "629.0.0"}]}]
