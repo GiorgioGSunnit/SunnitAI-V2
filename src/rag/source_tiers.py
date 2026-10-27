@@ -379,9 +379,84 @@ def graph_route(state: Dict[str, Any]) -> str:
     return query_router.classify(state.get("raw_query") or state.get("query") or "")["route"]
 
 
+PRIMARY_RERUN_K = 10
+# The index is asked for this many nodes, so the primary-document filter inside the query still leaves k when
+# rulings fill the index's own top ranks.
+PRIMARY_RERUN_FETCH = 400
+PRIMARY_RERUN_SOURCE = "primary_rerun"
+
+
+def _rerun_texts(state: Dict[str, Any]) -> Tuple[str, str]:
+    """(fulltext query, vector text) for a channel's second pass: the turn's keywords, else its query."""
+    query = state.get("generalized_query") or state.get("raw_query") or state.get("query") or ""
+    return " ".join(state.get("retrieval_keywords") or []) or query, query
+
+
+def primary_search(session, fulltext_text: str, vector_text: str, k: int = PRIMARY_RERUN_K,
+                   user_id: str = "", tenant_id: str = "") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """The top-k Sections of primary documents for the texts, fulltext and vector, the document_type filter
+    inside each query (over-fetched from the index, PRIMARY_RERUN_FETCH): rows {"d", "s", "_source",
+    "_score"}, fulltext first, one per (document, section name). ([], info) on failure."""
+    from . import embedding_config
+    from .answer_processing import _visibility_filter
+    from .lookups import VECTOR_INDEX_SETTINGS, _cached_embed_query, _index_config, _sanitize_fulltext_query
+    where = f"d.document_type = 'primary' AND {_visibility_filter()}"
+    info: Dict[str, Any] = {"fulltext_query": fulltext_text, "fulltext": 0, "vector": 0}
+    fulltext: List[Dict[str, Any]] = []
+    q = _sanitize_fulltext_query(fulltext_text or "")
+    if q:
+        try:
+            fulltext = session.run(
+                "CALL db.index.fulltext.queryNodes('section_fulltext', $q, {limit: $fetch}) YIELD node, score "
+                f"MATCH (d:Document)-[:CONTAINS]->(node) WHERE {where} "
+                "RETURN d, node AS s, score ORDER BY score DESC LIMIT $k",
+                q=q, fetch=PRIMARY_RERUN_FETCH, k=k, user_id=user_id, tenant_id=tenant_id).data()
+        except Exception as exc:
+            info["fulltext_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            logger.warning("source tiers: primary fulltext pass failed: %s", exc)
+    vector: List[Dict[str, Any]] = []
+    # The live search's own index, query embedding and threshold (lookups.vector_lookup): the configured
+    # suffix (EMBEDDING_INDEX_SUFFIX, "section_embeddings_v2"), the query mode's instruction
+    # (EMBEDDING_QUERY_MODE), the text-mode min_score.
+    base = "section_embeddings"
+    index = embedding_config.vector_index_name(base)
+    min_score = _index_config(base, VECTOR_INDEX_SETTINGS).get("min_score")
+    info.update(vector_index=index, vector_property=embedding_config.VECTOR_PROPERTY,
+                query_mode=embedding_config.QUERY_MODE, min_score=min_score)
+    if (vector_text or "").strip() and embedding_config.searched(base):
+        try:
+            vector = session.run(
+                "CALL db.index.vector.queryNodes($index, $fetch, $embedding) YIELD node, score "
+                "WHERE 'Section' IN labels(node) AND node.plain_text IS NOT NULL AND node.plain_text <> '' "
+                "AND score >= $min_score "
+                f"MATCH (d:Document)-[:CONTAINS]->(node) WHERE {where} "
+                "RETURN d, node AS s, score ORDER BY score DESC LIMIT $k",
+                index=index, fetch=PRIMARY_RERUN_FETCH, k=k, min_score=-1.0 if min_score is None else min_score,
+                embedding=list(_cached_embed_query(vector_text)), user_id=user_id, tenant_id=tenant_id).data()
+        except Exception as exc:
+            info["vector_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            logger.warning("source tiers: primary vector pass failed: %s", exc)
+    info["fulltext"], info["vector"] = len(fulltext), len(vector)
+    rows, seen = [], set()
+    for channel, found in (("fulltext", fulltext), ("vector", vector)):
+        for r in found:
+            d, s = r.get("d") or {}, r.get("s") or {}
+            key = (d.get("id"), s.get("name") or s.get("id"))
+            if key in seen:
+                continue
+            seen.add(key)
+            rows.append({"d": d, "s": s, "_source": f"{PRIMARY_RERUN_SOURCE}_{channel}", "_score": r.get("score")})
+    info["rows"] = len(rows)
+    info["kept"] = [f"{(r['d'] or {}).get('name')} {(r['s'] or {}).get('name')}" for r in rows[:2 * k]]
+    return rows, info
+
+
 def primary_node(fn, stage: str, driver, database: str):
     """The graph node `fn`, its "raw_result" kept to primary and special documents on a direct turn with
-    PRIMARY_FIRST_ENABLED (keep_types logs the hits by type); unchanged otherwise or on a failed check."""
+    PRIMARY_FIRST_ENABLED (keep_types logs the hits by type); unchanged otherwise or on a failed check.
+    When the filter leaves none of the node's rows, the channel runs again restricted to primary documents
+    (primary_search) so it gives its top-k primary rows instead of nothing; both passes are logged
+    ("source_tier_hits", then "source_tier_rerun")."""
     def node(state):
         out = fn(state)
         if not isinstance(out, dict) or not out.get("raw_result"):
@@ -398,12 +473,33 @@ def primary_node(fn, stage: str, driver, database: str):
         try:
             import neo4j
             with driver.session(database=database, default_access_mode=neo4j.READ_ACCESS) as session:
-                return {**out, "raw_result": keep_types(session, list(out["raw_result"]), DIRECT_TYPES, stage)}
+                rows = list(out["raw_result"])
+                kept = keep_types(session, rows, DIRECT_TYPES, stage)
+                if not kept:
+                    kept = _rerun(session, state, stage, rows)
+                return {**out, "raw_result": kept}
         except Exception as exc:
             logger.warning("source tiers: %s rows not checked: %s", stage, exc)
             return out
     node.__name__ = getattr(fn, "__name__", stage)
     return node
+
+
+def _rerun(session, state: Dict[str, Any], stage: str, first: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The second pass of a channel whose every row the filter dropped: primary_search on the turn's texts."""
+    t0 = time.time()
+    fulltext_text, vector_text = _rerun_texts(state)
+    rows, info = primary_search(session, fulltext_text, vector_text, PRIMARY_RERUN_K,
+                                state.get("user_id") or "", state.get("tenant_id") or "")
+    vlog("source_tier_rerun", {"stage": stage, "first_pass": {"rows": len(first), "kept": 0},
+                               "second_pass": info}, duration_ms=(time.time() - t0) * 1000)
+    logger.info("source tiers: %s kept none of %d rows; primary pass gave %d (fulltext %d, vector %d on %s)",
+                stage, len(first), len(rows), info["fulltext"], info["vector"], info.get("vector_index"))
+    if DEBUG_ROWS is not None:
+        DEBUG_ROWS.append({"stage": f"{stage} (primary pass)", "filter": False, "route": "direct",
+                           "rows": [dict(zip(("doc", "type", "type_from"), row_doc_source(r)),
+                                         section=(r.get("s") or {}).get("name")) for r in rows]})
+    return rows
 
 
 def support_node(fn, driver, database: str):

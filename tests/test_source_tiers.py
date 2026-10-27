@@ -249,3 +249,108 @@ def test_the_narrative_writer_gets_rulings_citing_the_kept_articles(monkeypatch,
                                              {"_article": ("130", "Codice del Consumo"), "d": {}, "s": {}}], {})
     assert seen == {"refs": [("1490", "c.c.")], "weight_shared": True, "stage": "narrative"}
     assert [r["d"]["id"] for r in rows] == ["cassA"] and rows[0]["_passage"] == "p"
+
+
+class RerunSession(TypeSession):
+    """Document types, plus the primary-restricted fulltext/vector passes (their Cypher recorded)."""
+    def __init__(self, types, fulltext, vector):
+        super().__init__(types)
+        self.fulltext, self.vector, self.queries = fulltext, vector, []
+
+    def run(self, query, **params):
+        if "RETURN d.id AS id, d.document_type AS type" in query:
+            return super().run(query, **params)
+        self.queries.append(query)
+        return _Result(self.fulltext if "fulltext" in query else self.vector)
+
+
+def _hit(doc, name, article, score):
+    return {"d": {"id": doc, "name": name, "document_type": "primary"}, "s": {"name": article}, "score": score}
+
+
+@pytest.fixture
+def cached_embedding(monkeypatch):
+    import src.rag.lookups as lookups
+    monkeypatch.setattr(lookups, "_cached_embed_query", lambda text: (0.1, 0.2))
+
+
+def test_a_channel_left_with_nothing_runs_again_on_primary_documents_only(monkeypatch, cached_embedding, logged):
+    monkeypatch.setenv("PRIMARY_FIRST_ENABLED", "true")
+    monkeypatch.delenv("ROUTER_ENABLED", raising=False)
+    rulings = [_row(f"cass{i}", f"Cass. pen. {i}/2024", "interpretation") for i in range(15)]
+    session = RerunSession({}, fulltext=[_hit("LEGAL_DOC::cpp", "Codice di procedura penale", "585.0.0", 9.1)],
+                           vector=[_hit("LEGAL_DOC::cpp", "Codice di procedura penale", "585.0.0", 0.8),
+                                   _hit("LEGAL_DOC::cpp", "Codice di procedura penale", "593.0.0", 0.7)])
+    node = st.primary_node(lambda state: {"raw_result": rulings}, "context_retrieval", _Driver(session), "db")
+    out = node({"query": "termine appello penale", "retrieval_keywords": ["termine appello", "sentenza penale"]})
+    assert [(r["s"]["name"], r["_source"]) for r in out["raw_result"]] == [
+        ("585.0.0", "primary_rerun_fulltext"), ("593.0.0", "primary_rerun_vector")]
+    # the document_type filter is inside each search, before its LIMIT -- not applied to the results after
+    assert len(session.queries) == 2 and all("d.document_type = 'primary'" in q and q.index("document_type") <
+                                             q.index("LIMIT $k") for q in session.queries)
+    events = dict(logged)
+    assert events["source_tier_hits"]["kept"] == 0 and events["source_tier_hits"]["dropped"] == 15
+    rerun = events["source_tier_rerun"]
+    assert rerun["stage"] == "context_retrieval" and rerun["first_pass"] == {"rows": 15, "kept": 0}
+    assert rerun["second_pass"]["fulltext"] == 1 and rerun["second_pass"]["vector"] == 2
+    assert rerun["second_pass"]["fulltext_query"] == "termine appello sentenza penale"
+
+
+def test_a_channel_with_some_primary_rows_is_not_run_again(monkeypatch, cached_embedding, logged):
+    monkeypatch.setenv("PRIMARY_FIRST_ENABLED", "true")
+    monkeypatch.delenv("ROUTER_ENABLED", raising=False)
+    session = RerunSession({}, fulltext=[], vector=[])
+    rows = [_row("cpp", "Codice di procedura penale", "primary", "586"), _row("cass1", "Cass.", "interpretation")]
+    out = st.primary_node(lambda state: {"raw_result": rows}, "execute_cypher", _Driver(session), "db")({"query": "q"})
+    assert [r["d"]["id"] for r in out["raw_result"]] == ["cpp"] and session.queries == []
+    assert "source_tier_rerun" not in dict(logged)
+
+
+def test_a_failed_primary_pass_gives_nothing_and_says_why(cached_embedding):
+    class Broken:
+        def run(self, *a, **k):
+            raise RuntimeError("index missing")
+    rows, info = st.primary_search(Broken(), "appello", "appello")
+    assert rows == [] and "index missing" in info["fulltext_error"] and "index missing" in info["vector_error"]
+
+
+def test_the_primary_pass_reads_the_configured_index_property_and_query_mode(monkeypatch):
+    """EMBEDDING_INDEX_SUFFIX=_v2, EMBEDDING_PROPERTY=embedding_v2, EMBEDDING_QUERY_MODE=text: the live
+    search's index, query instruction and text-mode threshold -- never the v1 "section_embeddings"."""
+    import sys
+    import src.rag.lookups as lookups
+    # The modules the live embedding actually reads (other tests swap src.rag.ai_chat in sys.modules).
+    ai_globals = lookups._embed_query_with_prefix.__globals__
+    configs = {id(m): m for m in (ai_globals["embedding_config"], lookups.embedding_config,
+                                  sys.modules["src.rag.embedding_config"])}.values()
+    for config in configs:
+        monkeypatch.setattr(config, "INDEX_SUFFIX", "_v2")
+        monkeypatch.setattr(config, "VECTOR_PROPERTY", "embedding_v2")
+        monkeypatch.setattr(config, "QUERY_MODE", "text")
+    ec = lookups.embedding_config
+    embedded = []
+
+    class _Model:
+        def embed_query(self, text):
+            embedded.append(text)
+            return [0.1, 0.2]
+    monkeypatch.setitem(ai_globals, "embedding_model", _Model())
+    lookups._cached_embed_query.cache_clear()
+
+    class Session:
+        def __init__(self):
+            self.vector_params = None
+
+        def run(self, query, **params):
+            if "db.index.vector.queryNodes" in query:
+                self.vector_params = params
+            return _Result([])
+    session = Session()
+    rows, info = st.primary_search(session, "appello", "termine per l'appello penale")
+    assert session.vector_params, info.get("vector_error")
+    assert session.vector_params["index"] == "section_embeddings_v2"
+    assert session.vector_params["min_score"] == ec.TEXT_MODE_INDEX_SETTINGS["section_embeddings"]["min_score"]
+    assert embedded == [ec.QUERY_INSTRUCTION + "termine per l'appello penale"]
+    assert (info["vector_index"], info["vector_property"], info["query_mode"]) == (
+        "section_embeddings_v2", "embedding_v2", "text")
+    lookups._cached_embed_query.cache_clear()

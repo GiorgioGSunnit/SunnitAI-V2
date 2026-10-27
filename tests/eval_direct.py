@@ -145,7 +145,7 @@ def debug_report(record, events, node_rows, ev, max_rows=25):
         if hidden > 0:
             out.append(f"      ... {hidden} more")
     for e, d in events:
-        if e in ("source_tier_hits", "source_tier_support"):
+        if e in ("source_tier_hits", "source_tier_rerun", "source_tier_support", "article_code_check"):
             out.append(f"  {e}: {json.dumps(d, ensure_ascii=False, default=str)[:400]}")
     out.append(f"FINAL raw_result: {record['rows']} rows (support rulings excluded); by type {record['rows_by_type']}")
     named = ev.mentions(record["answer"])

@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ..ai_chat import _call_chat
+from ..article_codes import complete_codes
 from ..article_suffix import SUFFIX, normalize_number
 from ..answer_processing import (
     _GAP_PHRASES,
@@ -706,6 +707,12 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                     answer = dottrina_answer.strip()
 
     answer = re.sub(r'\n[A-Z][^\n]{0,500}\?[^\n]*$', '', answer.rstrip()).rstrip()
+
+    # Every article cited carries its code or law ("art. 585 c.p.p."): a bare one gets the code of the
+    # retrieved rows when exactly one of them has that article (article_codes.py).
+    answer, _code_check = complete_codes(answer, state.get("raw_result") or [])
+    if _code_check["bare"]:
+        vlog("article_code_check", _code_check)
 
     # Dottrina sources are merged into `citations` above, so build the Fonti
     # line from the complete list. Kept above the dottrina note so the layout is
