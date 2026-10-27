@@ -394,3 +394,36 @@ def test_hybrid_needs_a_narrative_route(fusion_env):
     voted = _mapping(fusion_env, [("43", "c.p.")], {("43", "c.p."): {"rulings": 5}})
     picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": [], "route": "direct"})
     assert voted == [1] and ("43", "c.p.") not in picked["selected"]
+
+
+# --- ARTICLE_RELATIONS_ENABLED: the relations agent's related articles join after the cap ---------
+
+def _relations(fusion_env, tmp_path, flag="true"):
+    from src.rag import article_relations as ar
+    path = tmp_path / "relations_cc.json"
+    path.write_text(json.dumps({"related": {"1490": [["1492", 0.03], ["1495", 0.02]]}, "via": {
+        "1490": {"1492": "applied,cited", "1495": "cited"}}, "profiles": {}}), encoding="utf-8")
+    fusion_env.setenv(ar.FILE_ENV, str(path))
+    fusion_env.setenv(ar.ARTICLE_RELATIONS_FLAG, flag)
+
+
+def test_related_articles_are_appended_after_the_cap_tagged_and_never_multi_signal(fusion_env, tmp_path):
+    many = [(str(100 + i), "c.p.") for i in range(20)]
+    fusion_env.setattr(dg, "_fusion_text_search", lambda *a, **k: many)
+    fusion_env.setattr(dg, "_select_articles_v2",
+                       lambda *a, **k: _v2_result(selected=[("1490", "c.c.")], institutions_resolved=[("1490", "c.c.")]))
+    _relations(fusion_env, tmp_path)
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "",
+                                        {"questioni": [], "area": "civile"})
+    assert picked["selected"][-2:] == [("1492", "c.c."), ("1495", "c.c.")]
+    rows = {r["_article"]: r for r in picked["article_rows"]}
+    assert rows[("1492", "c.c.")]["_related"] == "related to 1490 c.c. (applied,cited)"
+    assert not rows[("1492", "c.c.")].get("_multi_signal") and not rows[("1495", "c.c.")].get("_heading_match")
+
+
+def test_no_related_articles_with_the_flag_off(fusion_env, tmp_path):
+    fusion_env.setattr(dg, "_select_articles_v2",
+                       lambda *a, **k: _v2_result(selected=[("1490", "c.c.")], institutions_resolved=[("1490", "c.c.")]))
+    _relations(fusion_env, tmp_path, flag="false")
+    picked = dg._select_articles_fusion(object(), object(), "db", "facts", "", {"questioni": [], "area": "civile"})
+    assert picked["selected"] == [("1490", "c.c.")] and not any(r.get("_related") for r in picked["article_rows"])

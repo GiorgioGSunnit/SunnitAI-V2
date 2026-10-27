@@ -3724,6 +3724,18 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         "fusion_cap", _FUSION_POOL_CAP, [{"_article": ref, "_tier": evidence_tiers.T3} for ref in fill[_FUSION_POOL_CAP:]
                                          if ref not in capped]))
     capped += [ref for ref in map_rulings if ref not in keep and ref not in capped]
+    # ARTICLE_RELATIONS_ENABLED (article_relations.py, relations agent v0): the c.c. articles the rulings use
+    # together with the strongest candidates, and in a civil case those whose rulings' profile matches the case,
+    # appended after the cap. Never a signal and never exempt: each one is graded like any candidate.
+    from . import article_relations
+    related_why: Dict[tuple, str] = {}
+    if article_relations.enabled():
+        seeds = list(dict.fromkeys(list(keep) + list(institutions_resolved) + fused[:article_relations.SEED_TOP]))
+        related_added, related_why = article_relations.candidates(seeds, case, set(keep) | set(capped),
+                                                                  _case_branch(analysis) == "civile")
+        capped += [ref for ref in related_added if ref not in keep and ref not in capped]
+        vlog("article_relations_added", {"seeds": [f"{n} {c}" for n, c in seeds if c == article_relations.CODE],
+                                         "added": {f"{n} {c}": why for (n, c), why in related_why.items()}})
     selected = keep + capped
     vote_tagged = vote_pool.tagged(voted, selected, added, how) if voted else set()
     if voted:
@@ -3764,6 +3776,8 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
             row["_signals"] = row["_signals"] + ["map"]
             if ref in map_channel:
                 row["_multi_signal"] = True
+        if ref in related_why:
+            row["_related"] = related_why[ref]        # ARTICLE_RELATIONS_ENABLED: why it joined (graded as any)
         if ref in vote_tagged:
             # Voted by similar rulings (VOTE_POOL_ENABLED): still checked for applicability;
             # kept by the prompt's trimming like a multi-signal row; never removed by the plan check.

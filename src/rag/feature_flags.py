@@ -417,6 +417,18 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 citing at least one article kept by the check, by similarity
                                 to the facts x articles shared, then RULING_FIT. See
                                 source_tiers.ruling_map, _support_rulings.
+
+  ARTICLE_RELATIONS_ENABLED    false (relations agent v0, 28 Oct; acts in the fusion pool): reads
+                                ARTICLE_RELATIONS_FILE, which scripts/maint_relations.py builds
+                                from the civil ruling cards, the CITES edges and the Codice
+                                Civile's texts (it never writes the graph): after the cap, up to
+                                6 c.c. articles related to the named, resolved and first 5 fused
+                                candidates (applied together by the same rulings, cited
+                                together, named by the article's text), and in a civil case up
+                                to 4 whose rulings' profile matches the case. Never a signal,
+                                never exempt: graded like any candidate; tagged _related with
+                                why; logged as article_relations_added. Measured with
+                                scripts/relations_compare.py. See src/rag/article_relations.py.
 """
 
 import logging
