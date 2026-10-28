@@ -136,3 +136,50 @@ def test_the_audit_and_its_report_on_a_fake_graph():
                     "## 6 Links", "## 7 Representative documents"):
         assert heading in text
     assert "| out | AMENDS | ccnl | 1 |" in text and "Sfera di applicazione" in text
+
+
+# --- 8 versions and 9 order (the CCNL path) ---------------------------------------------------------------
+
+def test_version_stats_count_testi_consolidati_and_later_renewals():
+    from datetime import date
+    docs = [
+        {"sector": "A", "name": "[CCNL] A — Testo Consolidato - A", "document_subtype": "Testo Consolidato - A",
+         "valid_from": "2021-01-01", "valid_until": "2023-12-31"},
+        {"sector": "A", "document_subtype": "Accordo di rinnovo", "valid_from": "2024-03-01", "name": "x"},
+        {"sector": "A", "document_subtype": "Ipotesi di Accordo", "valid_from": "2025-01-01", "name": "x"},
+        {"sector": "A", "document_subtype": "Accordo", "valid_from": "2022-01-01", "name": "x"},
+        {"sector": "B", "document_subtype": "Testo Consolidato - B", "valid_from": "2020-01-01",
+         "valid_until": "2028-12-31", "name": "x"},
+        {"sector": "C", "document_subtype": "CCNL", "valid_from": "2020-01-01", "name": "x"},
+    ]
+    v = audit_ccnl.version_stats(docs, today=date(2026, 10, 28))
+    assert (v["sectors"], v["with_tc"], v["without_tc"]) == (3, 2, 1)
+    assert (v["renewals_after_tc"], v["sectors_with_renewal_after_tc"], v["amending_after_tc"]) == (2, 1, 3)
+    assert (v["tc_expired"], v["tc_expired_with_later_renewal"]) == (1, 1)
+    assert v["largest_renewal_gaps"][0]["sector"] == "A"
+
+
+def test_order_scores_find_the_order_that_keeps_articles_ascending():
+    texts = ["Art. 1 - Oggetto Il contratto", "Art. 2 - Prova La prova", "Art. 3 - Ferie Le ferie",
+             "Art. 4 - Malattia La malattia", "Art. 5 - Preavviso Il preavviso"]
+    # The database returns them shuffled; the elementId keeps the creation order; the names sort them wrong.
+    order = [3, 0, 4, 1, 2]
+    rows = [{"doc": "d", "id": f"DOCUMENT_SECTION::h::{w}", "name": w, "text": texts[i],
+             "element_id": f"4:u:{10 + i}", "rel": {}, "props": {}}
+            for i, w in zip(order, ["z", "y", "x", "w", "v"])]
+    scores = audit_ccnl.order_scores({"d": rows})
+    assert scores["element_id"] == {"usable_on": 1, "measured": 1, "mean_monotonic": 1.0}
+    assert scores["name"]["mean_monotonic"] < 1.0 and scores["id_suffix"]["usable_on"] == 0
+    assert audit_ccnl.monotonic_share([1, 2, 2, 3]) == 1.0 and audit_ccnl.monotonic_share([4]) is None
+
+
+def test_report_paths_renders():
+    from datetime import date
+    v = audit_ccnl.version_stats([{"sector": "A", "document_subtype": "Testo Consolidato - A",
+                                   "valid_from": "2021-01-01", "name": "x"}], today=date(2026, 10, 28))
+    o = {"contains_keys": {}, "section_relationships": {}, "section_id_shapes": [("DOCUMENT_SECTION::H::x", 3)],
+         "element_id_sample": ["4:u:1"], "documents_measured": 1,
+         "scores": {"element_id": {"usable_on": 1, "measured": 1, "mean_monotonic": 1.0}},
+         "best": "element_id", "chosen_by_ccnl_path": [("element_id", 1)]}
+    text = "\n".join(audit_ccnl.report_paths({"versions": v, "order": o}))
+    assert "with a Testo Consolidato 1" in text and "| element_id | 1 | 1 | 1.0 |" in text

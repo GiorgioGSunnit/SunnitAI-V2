@@ -15,6 +15,13 @@
                 property naming a predecessor
   7 examples    10 representative documents (by type and by the largest sectors), each with its properties and
                 its first sections (name, heading, the first 300 characters)
+  8 versions    (for the CCNL path, src/rag/ccnl_path.py) how many sectors have a Testo Consolidato (by
+                document_subtype), how many renewals (CCNL, accordo di rinnovo, ipotesi) and other amending
+                documents start after it, how many Testi Consolidati are expired with or without a later renewal
+  9 order       what orders a document's Sections: the CONTAINS edges' properties, Section-to-Section
+                relationships, the shapes of Section ids, and per order candidate (ccnl_path.ORDER_CANDIDATES,
+                the name, the database's own order) the share of consecutive "Art. N" headings that do not go
+                down, on the documents whose texts carry five or more headings
 
 Run from the app folder so it uses the app's .env:
     cd /opt/chatbot && venv/bin/python scripts/audit_ccnl.py                  # report to stdout and a file
@@ -331,6 +338,164 @@ def _one_per_shape(rows: Iterable[Dict[str, Any]], per_shape: int = 2) -> List[D
     return out
 
 
+# --- 8 versions and 9 order (the CCNL path) -------------------------------------------------------------
+
+def version_stats(docs: List[Dict[str, Any]], today=None) -> Dict[str, Any]:
+    """Per sector, from documents {"sector", "name", "document_subtype", "valid_from", "valid_until"}: how many
+    have a Testo Consolidato (and more than one), the renewals (CCNL, accordo di rinnovo, ipotesi) and the other
+    amending documents starting after the sector's latest one, the expired ones with or without a later renewal."""
+    from datetime import date
+    from src.rag import ccnl_path as cp
+    today = today or date.today()
+    by_sector: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for d in docs:
+        by_sector[str(d.get("sector") or "(no sector)")].append(cp._doc_view(d))
+    out = {"sectors": len(by_sector), "with_tc": 0, "with_several_tc": 0, "without_tc": 0, "tc_without_from": 0,
+           "renewals_after_tc": 0, "sectors_with_renewal_after_tc": 0, "amending_after_tc": 0,
+           "tc_expired": 0, "tc_expired_with_later_renewal": 0, "tc_expired_without": 0,
+           "largest_renewal_gaps": [], "without_tc_examples": []}
+    gaps = []
+    for sector, items in by_sector.items():
+        tcs = [d for d in items if d["kind"] == cp.TC]
+        if not tcs:
+            out["without_tc"] += 1
+            if len(out["without_tc_examples"]) < 15:
+                out["without_tc_examples"].append(f"{sector} ({len(items)} docs)")
+            continue
+        out["with_tc"] += 1
+        out["with_several_tc"] += len(tcs) > 1
+        tc = max(tcs, key=lambda d: d["from"] or date.min)
+        if tc["from"] is None:
+            out["tc_without_from"] += 1
+            continue
+        later = [d for d in items if d is not tc and d["from"] and d["from"] > tc["from"]]
+        renewals = [d for d in later if d["kind"] in (cp.CCNL, cp.RINNOVO, cp.IPOTESI)]
+        out["renewals_after_tc"] += len(renewals)
+        out["amending_after_tc"] += len([d for d in later if d["kind"] in cp.AMENDING_KINDS])
+        out["sectors_with_renewal_after_tc"] += bool(renewals)
+        if renewals:
+            gaps.append((len(renewals), sector, [f"{cp.short_name(d).split(' — ')[-1]} ({d['from']})"
+                                                 for d in sorted(renewals, key=lambda d: d["from"])][-3:]))
+        if tc["until"] and tc["until"] < today:
+            out["tc_expired"] += 1
+            if [d for d in renewals if d["from"] > tc["until"]]:
+                out["tc_expired_with_later_renewal"] += 1
+            else:
+                out["tc_expired_without"] += 1
+    out["largest_renewal_gaps"] = [{"sector": s, "renewals": n, "latest": names}
+                                   for n, s, names in sorted(gaps, key=lambda g: (-g[0], g[1]))[:15]]
+    return out
+
+
+def audit_versions(session) -> Dict[str, Any]:
+    docs = session.run("MATCH (d:Document) WHERE d.document_type = $t RETURN d.id AS id, d.name AS name, "
+                       "d.sector AS sector, d.document_subtype AS document_subtype, d.valid_from AS valid_from, "
+                       "d.valid_until AS valid_until", t=TYPE).data()
+    return version_stats(docs)
+
+
+def monotonic_share(numbers: List[int]) -> Optional[float]:
+    """The share of consecutive article numbers that do not go down; None under two numbers."""
+    pairs = list(zip(numbers, numbers[1:]))
+    return round(sum(1 for a, b in pairs if b >= a) / len(pairs), 3) if pairs else None
+
+
+def _heading_numbers(rows: List[Dict[str, Any]]) -> List[int]:
+    from src.rag import ccnl_path as cp
+    out = []
+    for r in rows:
+        heads = cp.article_headings(cp.clean(r.get("text")))
+        if heads:
+            m = re.match(r"Art\. (\d+)", heads[0][1])
+            if m:
+                out.append(int(m.group(1)))
+    return out
+
+
+def order_scores(rows_by_doc: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Dict[str, Any]]:
+    """Per order candidate: on how many documents it is usable (ccnl_path.order_key forced to it), and the mean
+    monotonic share of their heading numbers in that order; "name" and "database" as baselines."""
+    from src.rag import ccnl_path as cp
+    scores: Dict[str, List[float]] = defaultdict(list)
+    usable: Dict[str, int] = defaultdict(int)
+    for rows in rows_by_doc.values():
+        variants = {"database": list(rows), "name": sorted(rows, key=lambda r: str(r.get("name") or ""))}
+        for key in cp.ORDER_CANDIDATES:
+            if cp.order_key(rows, forced=key) == key:
+                usable[key] += 1
+                variants[key] = cp.ordered(list(rows), forced=key)[0]
+        for key, seq in variants.items():
+            share = monotonic_share(_heading_numbers(seq))
+            if share is not None:
+                scores[key].append(share)
+    out = {}
+    for key in ["database", "name"] + list(cp.ORDER_CANDIDATES):
+        values = scores.get(key) or []
+        out[key] = {"usable_on": usable.get(key, len(rows_by_doc) if key in ("database", "name") else 0),
+                    "measured": len(values), "mean_monotonic": round(sum(values) / len(values), 3) if values else None}
+    return out
+
+
+def audit_order(session, n_docs: int) -> Dict[str, Any]:
+    from src.rag import ccnl_path as cp
+    out: Dict[str, Any] = {}
+    out["contains_keys"] = {r["k"]: r["n"] for r in session.run(
+        "MATCH (d:Document)-[r:CONTAINS]->(:Section) WHERE d.document_type = $t WITH r LIMIT 50000 "
+        "UNWIND keys(r) AS k RETURN k, count(*) AS n ORDER BY n DESC", t=TYPE).data()}
+    out["section_relationships"] = {r["type"]: r["n"] for r in session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section)-[r]-(o:Section) WHERE d.document_type = $t "
+        "RETURN type(r) AS type, count(*) AS n ORDER BY n DESC LIMIT 20", t=TYPE).data()}
+    ids = session.run("MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.document_type = $t "
+                      "RETURN s.id AS id, elementId(s) AS eid LIMIT 5000", t=TYPE).data()
+    out["section_id_shapes"] = Counter(re.sub(r"\d+", "N", re.sub(r"[0-9a-f]{16,}", "H", str(r["id"])))[:80]
+                                       for r in ids).most_common(10)
+    out["element_id_sample"] = [r["eid"] for r in ids[:3]]
+    docs = session.run(
+        "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.document_type = $t "
+        "AND s.plain_text =~ $headed "
+        "WITH d, count(s) AS headed WHERE headed >= 5 RETURN d.id AS id, headed ORDER BY headed DESC LIMIT $n",
+        t=TYPE, n=n_docs, headed=r"(?s).*\b(Art\.|Articolo)\s*\d+\s*[-–—.:].*").data()
+    rows_by_doc: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for r in cp.document_sections(session, [d["id"] for d in docs], None):
+        rows_by_doc[r["doc"]].append(r)
+    out["documents_measured"] = len(rows_by_doc)
+    out["scores"] = order_scores(rows_by_doc)
+    measured = {k: v for k, v in out["scores"].items() if v["mean_monotonic"] is not None
+                and k not in ("database", "name")}
+    best = max(measured.items(), key=lambda kv: (kv[1]["mean_monotonic"], kv[1]["usable_on"]), default=None)
+    out["best"] = best[0] if best else None
+    out["chosen_by_ccnl_path"] = Counter(cp.order_key(rows) or "none (database order)"
+                                         for rows in rows_by_doc.values()).most_common()
+    return out
+
+
+def report_paths(a: Dict[str, Any]) -> List[str]:
+    v, o = a["versions"], a["order"]
+    L = ["", "## 8 Versions (Testo Consolidato and later documents)",
+         f"Sectors {v['sectors']}: with a Testo Consolidato {v['with_tc']} (more than one: {v['with_several_tc']}; "
+         f"no valid_from: {v['tc_without_from']}); without {v['without_tc']}",
+         f"Renewals (CCNL, accordo di rinnovo, ipotesi) starting after the sector's Testo Consolidato: "
+         f"{v['renewals_after_tc']} in {v['sectors_with_renewal_after_tc']} sectors; all amending documents after "
+         f"it: {v['amending_after_tc']}",
+         f"Testi Consolidati expired today: {v['tc_expired']} (with a later renewal {v['tc_expired_with_later_renewal']}, "
+         f"without {v['tc_expired_without']})",
+         f"Sectors without a Testo Consolidato (first 15): {'; '.join(v['without_tc_examples']) or 'none'}", "",
+         "| sector | renewals after the TC | latest |", "|---|---:|---|"]
+    L += [f"| {g['sector'][:50]} | {g['renewals']} | {'; '.join(g['latest'])} |" for g in v["largest_renewal_gaps"]]
+    L += ["", "## 9 Section order",
+          f"CONTAINS edge properties: {o['contains_keys'] or 'none'}",
+          f"Section-to-Section relationships: {o['section_relationships'] or 'none'}",
+          f"Section id shapes (H = hash, N = number): {o['section_id_shapes']}",
+          f"elementId sample: {o['element_id_sample']}",
+          f"Documents measured (five or more 'Art. N' headings in their texts): {o['documents_measured']}", "",
+          "| order by | usable on | measured | mean share of headings not going down |", "|---|---:|---:|---:|"]
+    L += [f"| {k} | {s['usable_on']} | {s['measured']} | {s['mean_monotonic'] if s['mean_monotonic'] is not None else '-'} |"
+          for k, s in o["scores"].items()]
+    L += ["", f"Best candidate: {o['best']}; what ccnl_path.order_key picks per document: {o['chosen_by_ccnl_path']}",
+          "(Set CCNL_SECTION_ORDER to a candidate to force it; a share near 0.5 is no better than random.)"]
+    return L
+
+
 # --- the report ------------------------------------------------------------------------------------------
 
 def report(a: Dict[str, Any], vector_property: str) -> List[str]:
@@ -384,13 +549,19 @@ def main(argv=None):
     parser.add_argument("--examples", type=int, default=10, help="representative documents shown (default 10)")
     parser.add_argument("--sections", type=int, default=5, help="first sections shown per document (default 5)")
     parser.add_argument("--out", default="ccnl_audit", help="folder for report.md and audit.json")
+    parser.add_argument("--order-docs", type=int, default=40, help="documents measured for the order (default 40)")
+    parser.add_argument("--only-paths", action="store_true", help="only sections 8 and 9 (versions, order)")
     args = parser.parse_args(argv)
     driver, database = _read_only_driver()
     from src.rag import embedding_config
     with driver.session(database=database) as session:
-        result = audit(session, args.examples, args.sections, embedding_config.VECTOR_PROPERTY)
+        result = {} if args.only_paths else audit(session, args.examples, args.sections,
+                                                  embedding_config.VECTOR_PROPERTY)
+        result["versions"] = audit_versions(session)
+        result["order"] = audit_order(session, args.order_docs)
     driver.close()
-    lines = report(result, embedding_config.VECTOR_PROPERTY)
+    lines = [] if args.only_paths else report(result, embedding_config.VECTOR_PROPERTY)
+    lines += report_paths(result)
     folder = os.path.join(args.out, datetime.now().strftime("%Y%m%d-%H%M%S"))
     os.makedirs(folder, exist_ok=True)
     with open(os.path.join(folder, "report.md"), "w", encoding="utf-8") as f:
