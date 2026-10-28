@@ -113,3 +113,19 @@ def test_graph_checks_on_a_fake_graph():
     assert g["sections_no_v2_with_text_by_type"] == {"primary": 1} and g["sections_detached"] == 4
     assert g["date_only_by_doc"] == {"Codice Civile 2026": 1} and g["numbering_gaps_by_code"] == {"Codice Civile 2026": [2]}
     assert g["rulings_by_branch"] == {"penale": {"rulings": 1, "without_cites": 0}, "civile": {"rulings": 1, "without_cites": 1}}
+
+
+def test_graph_checks_can_skip_the_heavy_stages():
+    class Counting(_Session):
+        def __init__(self):
+            self.queries = []
+
+        def run(self, query, **params):
+            self.queries.append(query)
+            return super().run(query, **params)
+    session = Counting()
+    g = mh.graph_checks(session, batch=2, pause=0, skip=("sections", "detached"))
+    assert not any("embedding_v2" in q or "NOT ()-[:CONTAINS" in q for q in session.queries)
+    assert g["skipped"] == ["detached", "sections"] and g["sections_detached"] == 0
+    md, state, line = mh.build_report(g, QUEUE, [], (0, {}), None, None, 1.0)
+    assert line.endswith("skipped: detached, sections")

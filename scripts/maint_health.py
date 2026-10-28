@@ -7,7 +7,8 @@ CITES jobs. Writes, in --dir (default /var/log/maint):
   state_YYYYMMDD.json    the numbers, so the next night reports what changed (new numbering gaps above all)
 
 What it counts:
-  - Sections without embedding_v2 (by document type, the empty ones apart) and Sections with no text at all
+  - Sections without embedding_v2 (by document type, the empty ones apart) and Sections with no text property
+    (neither plain_text nor abstract; tested for presence, never read)
   - Documents with no document_type or an unknown one
   - Sections detached from any Document (no incoming CONTAINS / PART_OF)
   - articles whose "N.0.0" holds only "In vigore dal ..." while another Section of theirs has the text, per code
@@ -21,6 +22,7 @@ Safeguards: read-only session; skipped (with a summary line saying why) when Mem
 job is running; documents read in batches with a pause; prints counts and document names only, no section text.
 
     python /opt/v2tools/maint_health.py --env /opt/chatbot/.env            # writes /var/log/maint/...
+    python maint_health.py --skip sections,detached        # the quick version: no per-Section stages
     python maint_health.py --dir /tmp/maint --cards /root/ruling_cards/cards_pen_v3.jsonl,/root/ruling_cards/cards_civ_v1.jsonl
 """
 
@@ -220,8 +222,15 @@ def card_ids(paths: List[str]) -> Optional[Set[str]]:
 
 # --- graph checks (read-only) --------------------------------------------------------------------
 
-def graph_checks(session, batch: int, pause: float) -> dict:
-    out: dict = {}
+def _progress(t0: float, message: str) -> None:
+    print(f"[{time.time() - t0:5.0f}s] {message}", file=sys.stderr, flush=True)
+
+
+def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) -> dict:
+    """The graph's numbers. `skip` leaves out the heavy stages: "sections" (every Section's vector and text, about 20
+    minutes on prod's 450k Sections, 28 Oct), "detached" (one count over all Sections)."""
+    skip, t0 = set(skip), time.time()
+    out: dict = {"skipped": sorted(skip)}
     docs = session.run("MATCH (d:Document) RETURN d.id AS id, d.name AS name, d.hash AS hash, "
                        "d.document_type AS type, coalesce(d.file_name, '') AS file").data()
     out["documents"] = len(docs)
@@ -229,15 +238,19 @@ def graph_checks(session, batch: int, pause: float) -> dict:
     out["docs_untyped_names"] = sorted(d["name"] or d["id"] for d in docs if not d["type"])[:30]
     out["docs_unknown_type"] = {t: k for t, k in out["docs_by_type"].items() if t != "(none)" and t not in KNOWN_TYPES}
 
-    # sections without embedding_v2 / without text, by document type, a batch of documents at a time
+    _progress(t0, f"{len(docs):,} documents read")
+    # sections without embedding_v2 / without text, by document type, a batch of documents at a time. The text is
+    # only tested for presence (IS NULL), never read: reading every Section's text made this stage take 20+ minutes.
     no_v2, no_v2_text, empty, sections = Counter(), Counter(), Counter(), Counter()
-    ids = [d["id"] for d in docs]
+    ids = [d["id"] for d in docs] if "sections" not in skip else []
     for start in range(0, len(ids), batch):
         if start:
             time.sleep(pause)
+            if (start // batch) % 20 == 0:
+                _progress(t0, f"sections: {start:,}/{len(ids):,} documents")
         for r in session.run(
                 "MATCH (d:Document) WHERE d.id IN $ids MATCH (d)-[:CONTAINS]->(s:Section) "
-                "WITH d.document_type AS t, s, (coalesce(s.plain_text, '') = '' AND coalesce(s.abstract, '') = '') AS empty "
+                "WITH d.document_type AS t, s, (s.plain_text IS NULL AND s.abstract IS NULL) AS empty "
                 "RETURN t, count(s) AS n, sum(CASE WHEN empty THEN 1 ELSE 0 END) AS empty, "
                 "sum(CASE WHEN s.embedding_v2 IS NULL THEN 1 ELSE 0 END) AS no_v2, "
                 "sum(CASE WHEN s.embedding_v2 IS NULL AND NOT empty THEN 1 ELSE 0 END) AS no_v2_text",
@@ -250,8 +263,10 @@ def graph_checks(session, batch: int, pause: float) -> dict:
     out.update({"sections_by_type": dict(sections), "sections_empty_by_type": dict(empty),
                 "sections_no_v2_by_type": dict(no_v2), "sections_no_v2_with_text_by_type": dict(no_v2_text)})
 
-    out["sections_detached"] = session.run(
+    _progress(t0, "sections done" if "sections" not in skip else "sections skipped")
+    out["sections_detached"] = 0 if "detached" in skip else session.run(
         "MATCH (s:Section) WHERE NOT ()-[:CONTAINS|PART_OF]->(s) RETURN count(s) AS n").single()["n"]
+    _progress(t0, "detached count done" if "detached" not in skip else "detached count skipped")
 
     # per primary document: date-only articles, and numbering gaps for the main codes
     primary = [d for d in docs if d["type"] == "primary"]
@@ -274,6 +289,7 @@ def graph_checks(session, batch: int, pause: float) -> dict:
         if d["id"] in main.values():
             gaps[d["name"]] = numbering_gaps({article_of(n) for n, _, _ in sections_} - {None})
     out["date_only_by_doc"] = dict(sorted(date_only.items(), key=lambda x: -x[1]))
+    _progress(t0, f"{len(primary)} codes and laws done")
     out["numbering_gaps_by_code"] = gaps
 
     # rulings without CITES, by branch
@@ -290,6 +306,7 @@ def graph_checks(session, batch: int, pause: float) -> dict:
     out["ruling_ids_by_branch"] = {b: [d["id"] for d in rulings if branch_of(d["file"], d["name"]) == b]
                                    for b in by_branch}
     out["duplicates"] = suspected_duplicates(docs)
+    _progress(t0, "rulings and duplicates done")
     return out
 
 
@@ -326,6 +343,8 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[int, 
             card_rows[b] = {"rulings": len(ids), "with_card": sum(i in cards for i in ids)}
         n["rulings_without_card"] = sum(v["rulings"] - v["with_card"] for b, v in card_rows.items() if b != "unknown")
     line = summary_line(n, (prev or {}).get("numbers"))
+    if g.get("skipped"):
+        line += f" · skipped: {', '.join(g['skipped'])}"
     md = [f"# Graph health, {dt.date.today().isoformat()}", "", f"**Summary:** {line}", "",
           f"Read-only. {g['documents']:,} documents. Took {took:.0f}s." + ("" if prev else " First report: no comparison."),
           "", "## Documents by type", "", "| type | documents | sections | empty | no embedding_v2 (with text) |",
@@ -385,6 +404,7 @@ def main() -> int:
     p.add_argument("--unresolved", default="/var/log/ruling_citations_unresolved.jsonl")
     p.add_argument("--cards", default="", help="comma-separated card files (optional)")
     p.add_argument("--force", action="store_true", help="run even if memory is low or a heavy job is running")
+    p.add_argument("--skip", default="", help="heavy stages to leave out: sections,detached")
     args = p.parse_args()
     os.makedirs(args.dir, exist_ok=True)
     today = dt.date.today().strftime("%Y%m%d")
@@ -408,7 +428,7 @@ def main() -> int:
     driver = GraphDatabase.driver(os.getenv("NEO4J_URI"), auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD")))
     try:
         with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j"), default_access_mode=READ_ACCESS) as session:
-            g = graph_checks(session, args.batch, args.pause)
+            g = graph_checks(session, args.batch, args.pause, [x for x in args.skip.split(",") if x])
     finally:
         driver.close()
     md, state, line = build_report(g, queue_status(args.queue_dir, args.failed_dir),
