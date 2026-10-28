@@ -77,8 +77,11 @@ _EARLIER_CODE = re.compile(r"c\.\s?p\.\s?p\.|c\.\s?p\.\s?c\.|c\.\s?c\.|c\.\s?p\.
 _EARLIER_LAW = re.compile(_TYPE + r"\s*(?:n\.?\s*)?\d", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"[.;:]\s+(?=[A-ZÀ-Ý(«\"])|\n")
 _PRECEDENT = re.compile(r"(?:cass\.?(?:\s*(?:civ|pen|lav|trib)\.?)?|cassazione|sez\.?\s*u(?:n(?:ite)?)?\.?|s\.\s?u\.)"
-                        r"[^;\n]{0,90}?\bn\.?\s*(\d{1,6})\s*(?:/|del\s+(?:\d{1,2}\s+\w+\s+)?)\s*((?:19|20)\d{2})\b",
+                        r"(?P<pre>[^;\n]{0,90}?)\bn\.?\s*(\d{1,6})\s*(?:/|del\s+(?:\d{1,2}\s+\w+\s+)?)\s*((?:19|20)\d{2})\b",
                         re.IGNORECASE)
+# "Cass. ... d.P.R. n. 115/2002": a law's number, not a ruling's (run 1 counted n. 115/2002, 103/2017, 546/1992).
+_LAW_BEFORE_NUMBER = re.compile(r"\b(?:d\.?\s?p\.?\s?r\.?|d\.?\s?lgs\.?|d\.?\s?l\.|legge|\bl\.|r\.?\s?d\.?|d\.?\s?m\.?)\s*$",
+                                re.IGNORECASE)
 
 
 def _type_of(raw: str) -> str:
@@ -115,13 +118,51 @@ def law_of(rest: str) -> Optional[str]:
     return None
 
 
-def classify(tail: str, head: str) -> Tuple[str, str]:
+# Run 1 (28 Oct, 6,000 rulings): 44% "unknown", led by main-code citations today's rule misses -- a page footer between
+# the number and the code, a list ("606, comma 1, lett. b) e 125, comma 3, cod. proc. pen."), "1° co.", "comma 1 quater".
+_FOOTER = re.compile(r"corte\s+di\s+cassazione\s*[-–—]\s*copia\s+non\s+ufficiale(?:\s+\d+)?", re.IGNORECASE)
+_SUFF = "bis|ter|quater|quinquies|sexies|septies|octies|novies|nonies|decies"
+_PART = re.compile(r"^\s*[,;-]?\s*(?:"
+                   r"\d+\s*[°ºª]\s*(?:co\.|comma)"
+                   r"|(?:co\.|comma|commi|lett\.|lettera|lettere|nn?\.|num\.|par\.|paragrafo|punto|periodo)\s*[\w\-)]+"
+                   rf"(?:[\s-]+(?:{_SUFF})\b)?"
+                   r"|(?:e|ed)\s+[a-z]\)"
+                   rf"|(?:e|ed)\s+\d+(?:[\s-]*(?:{_SUFF})\b)?"
+                   r"|(?:primo|secondo|terzo|quarto|quinto|sesto|settimo|ultimo|penultimo)\s+(?:comma|periodo)"
+                   rf"|(?:{_SUFF})\b"
+                   r")\s*,?", re.IGNORECASE)
+# The court fee of every Cassation ruling's closing (art. 13, comma 1-quater, d.P.R. 115/2002, as l. 228/2012 amended):
+# procedure, never a link worth making nor a law worth acquiring.
+BOILERPLATE_LAWS = {"d.P.R. 115/2002", "l. 228/2012"}
+_SAME_BEFORE = re.compile(r"(?:stess|medesim|citat|predett|suddett)\w*\s*$", re.IGNORECASE)
+
+
+def skip_parts(text: str) -> str:
+    """The text after a mention without its commi, letters, numbers and list items, a page footer removed."""
+    text = _FOOTER.sub(" ", text)
+    for _ in range(10):
+        m = _PART.match(text)
+        if not m or not m.end():
+            break
+        text = text[m.end():]
+    return text
+
+
+def classify(tail: str, head: str, code_after=None) -> Tuple[str, str]:
     """(kind, detail) of an article mention with no code after it, from the 120 characters after the mention and the
-    text before it."""
-    rest = tail[_LEAD.match(tail).end():]
+    text before it. code_after (the linker's _code_after): a code found once the footer and the list parts are skipped
+    is a main-code citation today's rule misses ("code missed by today's rule", the code)."""
+    skipped = skip_parts(tail)
+    if code_after:
+        code = code_after(skipped)
+        if code:
+            return "code missed by today's rule", code
+    rest = skipped[_LEAD.match(skipped).end():]
     law = law_of(rest)
     if law:
-        return "special law", law
+        return ("court-fee boilerplate", law) if law in BOILERPLATE_LAWS else ("special law", law)
+    if _SAME_BEFORE.search(head[-40:] if head else ""):
+        return "same act, named before", ""
     imp = _IMPLEMENTING.match(rest)
     if imp and imp.group(0).strip():
         code = re.sub(r"[\s.]", "", (imp.group(1) or "").lower())
@@ -139,7 +180,7 @@ def classify(tail: str, head: str) -> Tuple[str, str]:
         return "code named earlier in the sentence", ""
     if _EARLIER_LAW.search(sentence):
         return "law named earlier in the sentence", ""
-    return "unknown", re.sub(r"\d", "#", " ".join(rest[:30].lower().split()))
+    return "unknown", re.sub(r"\d", "#", " ".join((rest if rest.strip() else tail)[:30].lower().split()))
 
 
 _OWN_CASE = re.compile(r"ricors|r\.\s?g\.|iscritt|ruolo", re.IGNORECASE)
@@ -148,8 +189,8 @@ _OWN_CASE = re.compile(r"ricors|r\.\s?g\.|iscritt|ruolo", re.IGNORECASE)
 def precedents(text: str) -> List[Tuple[str, str]]:
     """(number, year) of every Cassation ruling the text cites -- not the case's own docket number ("sul ricorso
     iscritto al n. 15966/2025")."""
-    return [(str(int(m.group(1))), m.group(2)) for m in _PRECEDENT.finditer(text or "")
-            if not _OWN_CASE.search(m.group(0))]
+    return [(str(int(m.group(2))), m.group(3)) for m in _PRECEDENT.finditer(text or "")
+            if not _OWN_CASE.search(m.group(0)) and not _LAW_BEFORE_NUMBER.search(m.group("pre")[-20:])]
 
 
 # The laws whose corpus document's name does not carry their number: (type number/year) -> the name it starts with.
@@ -228,6 +269,7 @@ def main() -> int:
 
     t0 = time.time()
     kinds, laws, named, implementing, unknown = Counter(), Counter(), Counter(), Counter(), Counter()
+    missed_codes, boilerplate = Counter(), Counter()
     law_rulings, law_branch = defaultdict(set), defaultdict(Counter)
     linked = bare = 0
     years, cited_precedents, precedent_rulings = Counter(), Counter(), 0
@@ -263,9 +305,13 @@ def main() -> int:
                         linked += n
                         continue
                     bare += n
-                    kind, detail = classify(tail, text[max(0, m.start() - 250):m.start()])
+                    kind, detail = classify(tail, text[max(0, m.start() - 250):m.start()], rl._code_after)
                     kinds[kind] += n
-                    if kind == "special law":
+                    if kind == "code missed by today's rule":
+                        missed_codes[detail] += n
+                    elif kind == "court-fee boilerplate":
+                        boilerplate[detail] += n
+                    elif kind == "special law":
                         laws[detail] += n
                         law_rulings[detail].add(doc)
                         law_branch[detail][branch[doc]] += n
@@ -290,6 +336,11 @@ def main() -> int:
     print("\nMentions with no code after them, by kind:")
     for kind, n in kinds.most_common():
         print(f"  {n:>9,}  {pct(n, bare):>4}  {kind}")
+    if missed_codes:
+        print("\nMain-code citations today's rule misses (a footer, a list, '1° co.', 'comma 1 quater' between number "
+              "and code): " + ", ".join(f"{c} {n:,}" for c, n in missed_codes.most_common()))
+    if boilerplate:
+        print("Court-fee boilerplate, not to link: " + ", ".join(f"{law} {n:,}" for law, n in boilerplate.most_common()))
 
     merged = Counter(laws)
     for label, n in named.items():
@@ -320,6 +371,7 @@ def main() -> int:
           + "; ".join(f"'{k}' {n:,}" for k, n in unknown.most_common(20)))
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump({"rulings": len(ids), "sample": args.sample, "linked": linked, "bare": bare, "kinds": kinds,
+                   "missed_codes": missed_codes, "boilerplate": boilerplate,
                    "laws": {law: {"mentions": n, "rulings": len(law_rulings[law]), "branch": law_branch[law],
                                   "document": in_db.get(law)} for law, n in merged.most_common(300)},
                    "implementing": implementing, "precedent_years": years,

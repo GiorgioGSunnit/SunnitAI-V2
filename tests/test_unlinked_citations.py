@@ -61,3 +61,36 @@ def test_find_document():
     assert uc.find_document("d.P.R. 600/1973", docs) is None
     assert uc.find_document("d.P.R. 600/1973", docs, resolve=lambda law, d: {"name": "Accertamento"}) == \
         "Accertamento (by name: to check)"
+
+
+def _code_after(tail):
+    """A stand-in for the linker's rule: a code right at the start (after "del")."""
+    import re
+    m = re.match(r"\s*,?\s*(?:del\s+)?(c\.p\.p\.|cod\. proc\. pen|cod\. proc\. civ|c\.c\.)", tail, re.IGNORECASE)
+    return {"c.p.p.": "c.p.p.", "cod. proc. pen": "c.p.p.", "cod. proc. civ": "c.p.c.", "c.c.": "c.c."}.get(
+        m.group(1).lower()) if m else None
+
+
+def test_main_code_citations_todays_rule_misses():
+    assert uc.classify(" Corte di Cassazione - copia non ufficiale 3 cod. proc. pen.", "", _code_after) == \
+        ("code missed by today's rule", "c.p.p.")
+    assert uc.classify(", comma 1, lett. b) ed e), cod. proc. pen., in relazione", "", _code_after) == \
+        ("code missed by today's rule", "c.p.p.")
+    assert uc.classify(", comma 1, lett. b) e 125, comma 3, cod. proc. pen.", "", _code_after) == \
+        ("code missed by today's rule", "c.p.p.")
+    assert uc.classify(", 1° co., n. 3, cod. proc. civ.", "", _code_after) == ("code missed by today's rule", "c.p.c.")
+    assert uc.classify("-ter, comma 1, c.p.p.", "", _code_after) == ("code missed by today's rule", "c.p.p.")
+    assert uc.classify(" d.lgs. 231/2001", "", _code_after) == ("special law", "d.lgs. 231/2001")
+
+
+def test_suffixed_commi_the_court_fee_and_the_same_article():
+    assert uc.classify(", comma 1 quater, del d.P.R. n. 115 del 2002", "") == ("court-fee boilerplate", "d.P.R. 115/2002")
+    assert uc.classify(", comma 17, della legge n. 228 del 2012", "") == ("court-fee boilerplate", "l. 228/2012")
+    assert uc.classify(", comma 1-quater, d.P.R. 30 maggio 2002, n. 115", "") == ("court-fee boilerplate", "d.P.R. 115/2002")
+    assert uc.classify(", se dovuto. Così deciso in Roma", "a norma del comma 1-bis dello stesso ") == \
+        ("same act, named before", "")
+
+
+def test_a_law_number_is_not_a_precedent():
+    assert uc.precedents("come ritenuto da Cass. n. 1234/2021, ai sensi del d.P.R. n. 115/2002") == [("1234", "2021")]
+    assert uc.precedents("Cass., sez. VI, in applicazione della legge n. 103/2017") == []
