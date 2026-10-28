@@ -386,7 +386,8 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 and a request for action, an opinion or a parere), direct (a
                                 question about a norm, an institution, a term or a procedure),
                                 ccnl (a collective agreement, or an employment question that
-                                needs one: tagged, today's path) or document (an upload: its
+                                needs one: its own path with CCNL_PATH_ENABLED, else tagged,
+                                today's path) or document (an upload: its
                                 own path) -- by signals first, one short LLM call only for a
                                 tie; logged with its reasons (route_chosen, chat_route). The
                                 intents that decided before keep precedence (defensive draft,
@@ -429,6 +430,23 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 never exempt: graded like any candidate; tagged _related with
                                 why; logged as article_relations_added. Measured with
                                 scripts/relations_compare.py. See src/rag/article_relations.py.
+  CCNL_PATH_ENABLED            false (28 Oct, after scripts/audit_ccnl.py): a turn the router routes
+                                ccnl (decided by its signals, with or without ROUTER_ENABLED; a
+                                pending turn or a calculation asked keeps the graph) is answered from
+                                the agreement: the contract from the sector index (517 sectors, common
+                                names, a variant the text does not settle used as an assumption to
+                                confirm), the version in force at the case's date (the Testo
+                                Consolidato covering it, else the latest CCNL; the later accordi /
+                                verbali / rinnovi, a signed one over an ipotesi), the clauses inside
+                                those documents only (v2 cosine + lexical, grown to their neighbouring
+                                Sections, cited by "Art. N - Title"; pay rows read, never inferred;
+                                the provider's watermark stripped), the primary labour law of the
+                                topic and the rulings citing it. Paraphrase only: a passage copied
+                                from a clause is rewritten once, then dropped; an amount not in the
+                                material goes with its sentence. Falls back to the graph when no
+                                contract is found or on any failure. Logged as ccnl_route,
+                                ccnl_contract, ccnl_version, ccnl_clauses, ccnl_framework, ccnl_path.
+                                Scored by tests/eval_narrative.py --ccnl. See src/rag/ccnl_path.py.
 """
 
 import logging

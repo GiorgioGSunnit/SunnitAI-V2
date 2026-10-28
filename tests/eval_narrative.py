@@ -545,8 +545,18 @@ def main(argv=None):
     direct.add_argument("--debug", nargs="?", type=int, const=3, default=None, metavar="N",
                         help="print each case's route, answer, every node's rows with their document_type, the "
                              "primary filter's decisions and the MENTIONED scoring (first N cases, default 3)")
+    ccnl = parser.add_argument_group("CCNL questions (tests/eval_ccnl.py, in process; --flag, --only, --debug, "
+                                     "--label, --repeat as above)")
+    ccnl.add_argument("--ccnl", action="store_true",
+                      help="run tests/eval_ccnl_cases.json through the CCNL path (CCNL_PATH_ENABLED=true unless "
+                           "--flag sets it) in this process")
+    ccnl.add_argument("--ccnl-cases", default=str(HERE / "eval_ccnl_cases.json"))
     args = parser.parse_args(argv)
 
+    if args.ccnl:
+        import eval_ccnl
+        eval_ccnl.main(args)
+        return 0
     if args.direct or args.compare_direct:
         import eval_direct
         eval_direct.main(args)

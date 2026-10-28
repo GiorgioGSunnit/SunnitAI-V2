@@ -430,7 +430,38 @@ def run(query: str, session_language: str = "it",
         "confirmed_summary_covers_turns": None,
         "skip_calculation": skip_calculation,
     }
+    ccnl = _ccnl_turn(raw_query or query, initial_state)
+    if ccnl is not None:
+        return ccnl
     return compiled.invoke(initial_state)
+
+
+def _ccnl_turn(text: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """CCNL_PATH_ENABLED (src/rag/ccnl_path.py): a turn the router routes "ccnl" is answered from the collective
+    agreement in force at its date instead of the graph. None -- the graph answers -- when the flag is off, the
+    turn is not a ccnl one (or a calculation, a clarification or a summary is pending, or a calculation is
+    asked), no contract is identified, or the path fails."""
+    from . import ccnl_path
+    from .verbose_logger import vlog
+
+    if not ccnl_path.enabled():
+        return None
+    go, why = ccnl_path.should_run(
+        text, pending_calculation=state.get("pending_calculation"),
+        awaiting=bool(state.get("awaiting_clarification") or state.get("awaiting_summary_confirmation")),
+        skip_calculation=bool(state.get("skip_calculation")))
+    vlog("ccnl_route", {"run": go, "why": why})
+    if not go:
+        return None
+    try:
+        result = ccnl_path.answer(text, driver, NEO4J_DATABASE)
+    except Exception as exc:
+        logger.warning("ccnl path failed, the graph answers: %s", exc)
+        vlog("ccnl_path", {"outcome": "failed", "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+        return None
+    if result is None:
+        return None
+    return {**state, **result}
 
 
 async def run_async(query: str, session_language: str = "it") -> Dict[str, Any]:
