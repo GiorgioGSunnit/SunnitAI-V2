@@ -47,4 +47,13 @@ def test_main(tmp_path, capsys):
         sys.argv = argv
     text = capsys.readouterr().out
     assert "expected articles the plan dropped: 1; among the most connected: 1" in text
-    assert text.count("barca") == 1                     # the A run only
+    assert text.count("barca") == 2                     # the A run only, once per mode
+    assert "hubs dampened  separation" in text
+
+
+def test_dampening_weighs_a_hub_down():
+    related = {"1227": [["1490", 0.03], ["2043", 0.03], ["1218", 0.03], ["2051", 0.03]], "1490": [["1495", 0.03]]}
+    plain = rc.relation_scores(related)
+    damped = rc.dampen_hubs(plain)
+    assert plain[("1490", "1227")] == plain[("1490", "1495")]                 # the same before
+    assert damped[("1490", "1227")] < damped[("1490", "1495")]               # 1227 has 4 partners, 1495 one

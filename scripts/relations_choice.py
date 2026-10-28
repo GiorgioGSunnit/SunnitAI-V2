@@ -16,6 +16,7 @@ Prints article numbers and scores only.
 
 import argparse
 import json
+import math
 import os
 import re
 import sys
@@ -49,6 +50,15 @@ def relation_scores(related: Dict[str, List[list]]) -> Dict[Tuple[str, str], flo
             for pair in ((a, b), (b, a)):
                 out[pair] = max(out.get(pair, 0.0), float(score))
     return out
+
+
+def dampen_hubs(scores: Dict[Tuple[str, str], float]) -> Dict[Tuple[str, str], float]:
+    """Each pair's score divided by sqrt(partners of a x partners of b): an article related to everything (1227, 1223,
+    2043, 1218 in the first run, 28 Oct) stops winning by being common."""
+    partners: Dict[str, int] = {}
+    for a, _ in scores:
+        partners[a] = partners.get(a, 0) + 1
+    return {(a, b): s / math.sqrt(partners[a] * partners[b]) for (a, b), s in scores.items()}
 
 
 def coherence(pool: List[str], scores: Dict[Tuple[str, str], float]) -> Dict[str, float]:
@@ -93,6 +103,20 @@ def main() -> int:
                              if isinstance(e, dict) and e.get("code") == "cc" and e.get("article")}
                    for c in items if isinstance(c, dict)}
     expected_of.update({k: set(v) for k, v in EXTRA.items()})
+    modes = {"plain": scores, "hubs dampened": dampen_hubs(scores)}
+    totals = {}
+    for mode, mode_scores in modes.items():
+        print(f"\n=== {mode}")
+        totals[mode] = run_cases(args, mode_scores, expected_of)
+    print("\n=== both")
+    for mode, (seps, dropped, rescued, extra_in) in totals.items():
+        print(f"{mode:14} separation {sum(seps) / max(len(seps), 1):.2f} (cases above 0.6: {sum(s > 0.6 for s in seps)}, "
+              f"below 0.4: {sum(s < 0.4 for s in seps)}); dropped by the plan {dropped}, rescued {rescued}, "
+              f"other articles brought in {extra_in}")
+    return 0
+
+
+def run_cases(args, scores, expected_of):
     seps, dropped, rescued, extra_in = [], 0, 0, 0
     print("case       pool c.c.  expected in pool   plan dropped -> rescued by coherence   separation   other articles the top brings in")
     for f in sorted(os.listdir(args.dir)):
@@ -124,7 +148,7 @@ def main() -> int:
               f"{sum(s < 0.4 for s in seps)}")
     print(f"expected articles the plan dropped: {dropped}; among the most connected: {rescued}; "
           f"other articles that ranking would add: {extra_in}")
-    return 0
+    return seps, dropped, rescued, extra_in
 
 
 if __name__ == "__main__":
