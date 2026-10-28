@@ -44,6 +44,23 @@ def test_cited_articles_skips_numbers_without_a_code():
     assert rl.cited_articles(text) == []
 
 
+def test_cited_articles_past_lists_footers_and_ordinals():
+    text = ("art. 606, comma 1, lett. b) ed e), cod. proc. pen., in relazione; "
+            "art. 13, comma 1, e 125, comma 3, cod. proc. pen.; "
+            "art. 192 Corte di Cassazione - copia non ufficiale 4 cod. proc. pen.; "
+            "art. 360, 1° co., n. 3, cod. proc. civ.; art. 2059, ultima parte, c.c.; "
+            "art. 129 cod. proc. pen, non ravvisando; art. 81 cod. pen")
+    assert rl.cited_articles(text) == ["606 c.p.p.", "13 c.p.p.", "192 c.p.p.", "360 c.p.c.", "2059 c.c.",
+                                       "129 c.p.p.", "81 c.p."]   # not "1 c.p.c." from "360, 1° co."
+
+
+def test_cited_articles_past_the_lists_still_needs_a_main_code():
+    text = ("art. 13, comma 1 quater, del d.P.R. n. 115 del 2002; art. 5, comma 2, lett. a), del d.lgs. n. 74 del 2000; "
+            "art. 4, comma 1, e art. 7 della legge n. 689; art. 6, comma 2, reg. esec. cod. proc. pen.; "
+            "art. 1, comma 3, disp. att. c.p.c.")
+    assert rl.cited_articles(text) == []
+
+
 # --- Court, branch ----------------------------------------------------------------
 
 def test_court_of_takes_the_court_named_first():

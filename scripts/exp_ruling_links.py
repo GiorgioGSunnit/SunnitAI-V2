@@ -89,7 +89,40 @@ _PART = (r"(?:(?:co\.|comma|commi|cpv\.?|capoverso|" + _ORD + r"\s+comma)(?:\s*(
          r"|(?:n\.|num\.|numero|lett\.|lettera)\s*\w+\s*\)?)")
 _LEAD_RE = re.compile(r"^\s*,?\s*(?:" + _PART + r"\s*,?\s*){0,4}(?:del(?:la|lo|l['’])?\s+|d\.\s*)?",
                       re.IGNORECASE)
-_EXTRA_CODES = [(r"cost\.?(?!\w)|costituzione", "Cost.")]
+_EXTRA_CODES = [(r"cost\.?(?!\w)|costituzione", "Cost."),
+                # without the last dot, "cod. proc. pen, non ravvisando" (unlinked_citations.py, 28 Oct)
+                (r"cod\.\s*proc\.\s*pen(?!\w)", "c.p.p."), (r"cod\.\s*proc\.\s*civ(?!\w)", "c.p.c."),
+                (r"cod\.\s*pen(?!\w)", "c.p."), (r"cod\.\s*civ(?!\w)", "c.c.")]
+
+# What _LEAD_RE does not pass, found by unlinked_citations.py (28 Oct, 6,000 rulings: 4,617 main-code mentions, about
+# 7% of those with no code after them): a page footer ("Corte di Cassazione - copia non ufficiale 3"), a list
+# ("lett. b) ed e)", "e 125, comma 3"), "1° co.", "comma 1 quater", "ultima parte" between the number and the code.
+_FOOTER = re.compile(r"corte\s+di\s+cassazione\s*[-–—]\s*copia\s+non\s+ufficiale(?:\s+\d+)?", re.IGNORECASE)
+_SUFF = "bis|ter|quater|quinquies|sexies|septies|octies|novies|nonies|decies"
+_LIST_PART = re.compile(
+    r"^\s*[,;-]?\s*(?:"
+    r"\d*\s*[°ºª]\s*(?:co\.|comma)?"
+    r"|(?:co\.|comma|commi|lett\.|lettera|lettere|nn?\.|num\.|par\.|paragrafo|punto|periodo)\s*[\w\-)]+"
+    rf"(?:[\s-]+(?:{_SUFF})\b)?"
+    r"|(?:e|ed)\s+[a-z]\)"
+    rf"|(?:e|ed)\s+\d+(?:[\s-]*(?:{_SUFF})\b)?"
+    r"|(?:primo|secondo|terzo|quarto|quinto|sesto|settimo|ultimo|penultimo)\s+(?:comma|periodo)"
+    r"|(?:prima|seconda|ultima)\s+parte"
+    rf"|(?:{_SUFF})\b"
+    r")\s*,?", re.IGNORECASE)
+# "art. 360, 1° co.": the run reads "360, 1", but the 1 is the comma's.
+_ORDINAL_TAIL = re.compile(r"^\s*[°ºª]")
+
+
+def skip_parts(text: str) -> str:
+    """The text after a cited number without its commi, letters, numbers and list items, a page footer removed."""
+    text = _FOOTER.sub(" ", text)
+    for _ in range(10):
+        m = _LIST_PART.match(text)
+        if not m or not m.end():
+            break
+        text = text[m.end():]
+    return text
 
 
 def _code_after(tail: str):
@@ -106,17 +139,31 @@ def _code_after(tail: str):
     return None
 
 
-def cited_articles(text: str) -> list:
+def code_of_run(numbers: list, tail: str):
+    """(numbers, code) for one run of cited numbers ("artt. 110 e 117") and the 120 characters after it; code None when
+    no code follows. Past what _code_after reads, the code may follow a list or a page footer ("art. 606, comma 1,
+    lett. b) ed e), cod. proc. pen."); in "art. 360, 1° co., n. 3, cod. proc. civ." the run's 1 is dropped."""
+    code = _code_after(tail)
+    if code:
+        return numbers, code
+    if _ORDINAL_TAIL.match(tail) and len(numbers) > 1:
+        numbers = numbers[:-1]
+    return numbers, _code_after(skip_parts(tail))
+
+
+def cited_articles(text: str, past_lists: bool = True) -> list:
     """Every article the text cites with its code, as "584 c.p.", in order, each once.
     A number with no code after it is skipped: in a ruling it is often a special law's.
     P.Q.M. is blanked first: the codes' patterns allow spaces between the letters, so
-    "art. 41 c.p. P.Q.M." would read as c.p.p."""
+    "art. 41 c.p. P.Q.M." would read as c.p.p. past_lists=False: the rule before 29 Oct
+    (no code found past a list, an ordinal or a page footer)."""
     found = {}
     text = _PQM_RE.sub(" ; ", text or "")
     for m in _ARTICLE_RUN_RE.finditer(text):
-        code = _code_after(text[m.end():m.end() + 120])
+        numbers, tail = _RUN_NUMBER_RE.findall(m.group(1)), text[m.end():m.end() + 120]
+        numbers, code = code_of_run(numbers, tail) if past_lists else (numbers, _code_after(tail))
         if code:
-            for n in _RUN_NUMBER_RE.findall(m.group(1)):
+            for n in numbers:
                 found.setdefault(f"{_article_num(n)} {code}", None)
     return list(found)
 
