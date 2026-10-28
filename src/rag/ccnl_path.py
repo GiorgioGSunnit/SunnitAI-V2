@@ -430,63 +430,98 @@ def choose_version(docs: Sequence[Dict[str, Any]], when: date) -> Dict[str, Any]
 
 # --- step 3: the clauses --------------------------------------------------------------------------------
 
-# Topic -> the question's words, the words a clause on it uses, the primary labour law around it (article,
-# "c.c." or the law's label as article_codes.law_label writes it).
+# Topic -> the question's words ("re"), the words a clause on it uses ("keywords": specific ones only -- a
+# generic "durata" or "mesi" matches half a contract), the phrases its heading carries ("headings": "Art. 23 -
+# Periodo di prova", or a Section named after its heading's tail, "di prova"), the primary labour law around it
+# ("framework": article, "c.c." or the law's label as article_codes.law_label writes it).
 TOPICS: Dict[str, Dict[str, Any]] = {
     "retribuzione": {"re": r"retribu\w*|stipend\w*|\bpaga\b|minim[io] (?:tabellar|contrattual|retributiv)\w*|"
                            r"tabell\w* retributiv\w*|busta paga|quanto (?:prende|guadagna|spetta)|lordo|"
                            r"superminimo|aument\w* (?:retributiv|contrattual)\w*",
-                     "keywords": ["minimi tabellari", "retribuzione tabellare", "minimi", "tabellare", "paga base",
-                                  "minimo contrattuale", "conglobato", "aumento", "decorrenza", "livello"],
+                     "keywords": ["minimi tabellari", "retribuzione tabellare", "minimi retributivi", "minimi",
+                                  "tabellare", "paga base", "minimo contrattuale", "conglobato", "stipendio base",
+                                  "tabella retributiva", "importi mensili"],
+                     "headings": ["minimi tabellari", "minimi retributivi", "minimi contrattuali", "tabelle retributive",
+                                  "tabella retributiva", "retribuzione", "trattamento economico", "aumenti retributivi"],
                      "pay": True, "framework": [("2099", "c.c."), ("36", "Cost.")]},
-    "ferie": {"re": r"\bferie\b", "keywords": ["ferie", "periodo feriale", "settimane", "giorni lavorativi",
-                                               "fruizione", "godimento"],
+    "ferie": {"re": r"\bferie\b",
+              "keywords": ["ferie", "periodo feriale", "periodo di ferie", "ferie annuali", "godimento delle ferie",
+                           "fruizione delle ferie"],
+              "headings": ["ferie"],
               "framework": [("2109", "c.c."), ("10", "d.lgs. 66/2003")]},
     "preavviso": {"re": r"preavviso|dimission\w*|dimett\w*",
-                  "keywords": ["preavviso", "termini di preavviso", "dimissioni", "indennità sostitutiva",
-                               "licenziamento"],
+                  "keywords": ["preavviso", "termini di preavviso", "periodo di preavviso", "preavviso di licenziamento",
+                               "preavviso di dimissioni", "indennità sostitutiva del preavviso", "indennità di mancato "
+                               "preavviso", "dimissioni"],
+                  "headings": ["preavviso", "termini di preavviso", "preavviso di licenziamento e dimissioni",
+                               "risoluzione del rapporto", "recesso", "dimissioni"],
                   "framework": [("2118", "c.c."), ("2119", "c.c.")]},
-    "prova": {"re": r"periodo di prova|\bin prova\b|patto di prova",
-              "keywords": ["periodo di prova", "prova", "durata", "giorni di lavoro effettivo", "mesi"],
+    "prova": {"re": r"periodo di prova|\bin prova\b|patto di prova|\bla prova\b",
+              "keywords": ["periodo di prova", "patto di prova", "assunzione in prova", "durata della prova",
+                           "superamento della prova", "in prova", "conferma in servizio"],
+              "headings": ["periodo di prova", "assunzione in prova", "patto di prova", "prova"],
               "framework": [("2096", "c.c.")]},
     "malattia": {"re": r"malatti\w*|comporto|infortuni\w*",
-                 "keywords": ["malattia", "comporto", "conservazione del posto", "trattamento economico",
-                              "certificato medico", "infortunio"],
+                 "keywords": ["malattia", "comporto", "periodo di comporto", "conservazione del posto",
+                              "certificato medico", "infortunio", "assenze per malattia"],
+                 "headings": ["malattia", "malattia e infortunio", "trattamento di malattia", "comporto",
+                              "infortunio"],
                  "framework": [("2110", "c.c.")]},
     "disciplinare": {"re": r"disciplinar\w*|contestazion\w*|sanzion\w*|richiamo|\bmulta\b|sospension\w* dal "
                            r"servizio|provvediment\w*",
-                     "keywords": ["provvedimenti disciplinari", "disciplinari", "contestazione", "rimprovero",
-                                  "richiamo", "multa", "sospensione", "giustificazioni"],
+                     "keywords": ["provvedimenti disciplinari", "sanzioni disciplinari", "codice disciplinare",
+                                  "norme disciplinari", "procedura disciplinare", "rimprovero verbale",
+                                  "rimprovero scritto", "ammonizione", "multa", "sospensione dal lavoro",
+                                  "sospensione dal servizio", "licenziamento disciplinare", "contestazione",
+                                  "giustificazioni", "recidiva", "disciplinari"],
+                     "headings": ["provvedimenti disciplinari", "sanzioni disciplinari", "codice disciplinare",
+                                  "norme disciplinari", "procedura disciplinare", "provvedimenti", "disciplina"],
                      "framework": [("7", "l. 300/1970"), ("2106", "c.c."), ("2104", "c.c.")]},
     "licenziamento": {"re": r"licenzi\w*",
-                      "keywords": ["licenziamento", "giusta causa", "giustificato motivo", "recesso"],
+                      "keywords": ["licenziamento", "licenziamenti", "giusta causa", "giustificato motivo", "recesso"],
+                      "headings": ["licenziamento", "licenziamenti", "risoluzione del rapporto", "recesso"],
                       "framework": [("2118", "c.c."), ("2119", "c.c."), ("1", "l. 604/1966"), ("3", "l. 604/1966"),
                                     ("3", "d.lgs. 23/2015")]},
     "orario": {"re": r"orario|straordinari\w*|lavoro notturno|\bturni\b|riposo settimanale",
-               "keywords": ["orario di lavoro", "orario normale", "straordinario", "maggiorazione",
-                            "ore settimanali", "lavoro notturno"],
+               "keywords": ["orario di lavoro", "orario normale", "lavoro straordinario", "straordinario",
+                            "maggiorazione", "ore settimanali", "lavoro notturno"],
+               "headings": ["orario di lavoro", "orario", "lavoro straordinario", "straordinario", "lavoro notturno"],
                "framework": [("3", "d.lgs. 66/2003"), ("5", "d.lgs. 66/2003")]},
     "tempo determinato": {"re": r"tempo determinato|contratto a termine|\bproroga\b",
                           "keywords": ["tempo determinato", "contratto a termine", "proroga", "durata massima"],
+                          "headings": ["contratto a tempo determinato", "tempo determinato", "contratto a termine"],
                           "framework": [("19", "d.lgs. 81/2015"), ("21", "d.lgs. 81/2015")]},
     "part-time": {"re": r"part[- ]?time|tempo parziale",
                   "keywords": ["tempo parziale", "part-time", "clausole elastiche", "lavoro supplementare"],
+                  "headings": ["tempo parziale", "part-time", "part time"],
                   "framework": [("4", "d.lgs. 81/2015"), ("6", "d.lgs. 81/2015")]},
     "apprendistato": {"re": r"apprendist\w*",
-                      "keywords": ["apprendistato", "apprendista", "piano formativo", "durata"],
+                      "keywords": ["apprendistato", "apprendista", "piano formativo", "apprendistato professionalizzante"],
+                      "headings": ["apprendistato"],
                       "framework": [("41", "d.lgs. 81/2015"), ("42", "d.lgs. 81/2015")]},
     "inquadramento": {"re": r"mansion\w*|inquadrament\w*|livell\w* di inquadramento|qualific\w*|declaratori\w*",
-                      "keywords": ["inquadramento", "classificazione", "livello", "mansioni", "declaratoria"],
+                      "keywords": ["inquadramento", "classificazione", "mansioni", "declaratoria", "profili professionali"],
+                      "headings": ["classificazione del personale", "inquadramento", "classificazione", "mansioni"],
                       "framework": [("2103", "c.c."), ("2095", "c.c.")]},
     "tfr": {"re": r"\btfr\b|trattamento di fine rapporto|liquidazione",
-            "keywords": ["trattamento di fine rapporto", "tfr", "anticipazione"], "framework": [("2120", "c.c.")]},
+            "keywords": ["trattamento di fine rapporto", "tfr", "anticipazione"],
+            "headings": ["trattamento di fine rapporto"], "framework": [("2120", "c.c.")]},
     "mensilita": {"re": r"tredicesim\w*|quattordicesim\w*|mensilit\w* aggiuntiv\w*",
                   "keywords": ["tredicesima", "quattordicesima", "mensilità aggiuntiva", "gratifica natalizia"],
+                  "headings": ["tredicesima", "quattordicesima", "mensilità"],
                   "framework": [("2099", "c.c.")]},
     "permessi": {"re": r"permess\w*|\brol\b|ex festivit\w*",
                  "keywords": ["permessi retribuiti", "riduzione dell'orario", "rol", "ex festività", "permessi"],
+                 "headings": ["permessi", "riduzione dell'orario", "permessi retribuiti"],
                  "framework": []},
 }
+
+
+def topic_headings(topics: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    for name in topics:
+        out += [h for h in TOPICS[name].get("headings") or [] if h not in out]
+    return out
 
 
 def topics_of(text: str) -> List[str]:
@@ -621,11 +656,40 @@ CLAUSE_CHARS = 4000
 RRF_K = 60
 
 
-def rank_sections(rows: Sequence[Dict[str, Any]], keywords: Sequence[str]) -> List[Dict[str, Any]]:
-    """The rows worth a look, best first, each with "_lex", "_rrf": the cosine ranking (rows with a "sim") and
-    the lexical one fused by reciprocal rank; a row needs a lexical hit or a top-10 cosine."""
+def heading_score(row: Dict[str, Any], phrases: Sequence[str]) -> int:
+    """How surely the Section opens a clause on the topic: 3 an "Art. N - <title>" in its text whose title holds
+    one of the phrases; 2 its name is a phrase, holds one, or is a phrase's tail of two words or more ("di prova"
+    of "periodo di prova": the heading cut by the ingestion); 1 its text opens with a phrase; 0 otherwise -- also
+    for a table of contents (four or more headings with little text between)."""
+    text = row.get("text") or ""
+    folded_phrases = [_fold(p) for p in phrases if _fold(p)]
+    if not folded_phrases:
+        return 0
+    heads = article_headings(text)
+    if len(heads) >= 4 and len(text) / len(heads) < 160:
+        return 0
+    for _, _, title in heads:
+        t = _fold(title)
+        if t and any(re.search(rf"\b{re.escape(p)}\b", t) for p in folded_phrases):
+            return 3
+    name = _fold(row.get("name") or "")
+    if name and (any(name == p or re.search(rf"\b{re.escape(p)}\b", name) for p in folded_phrases)
+                 or (len(name) >= 5 and " " in name and any(p.endswith(" " + name) for p in folded_phrases))):
+        return 2
+    opening = _fold(text[:80])
+    if any(opening.startswith(p) for p in folded_phrases):
+        return 1
+    return 0
+
+
+def rank_sections(rows: Sequence[Dict[str, Any]], keywords: Sequence[str],
+                  headings: Sequence[str] = ()) -> List[Dict[str, Any]]:
+    """The rows worth a look, best first, each with "_lex", "_head", "_rrf": a Section whose heading names the
+    topic (heading_score) first, then the cosine ranking (rows with a "sim") and the lexical one fused by
+    reciprocal rank; a row needs a heading match, a lexical hit or a top-10 cosine."""
     for r in rows:
         r["_lex"] = lexical_score(r.get("text") or "", keywords)
+        r["_head"] = heading_score(r, headings)
     by_sim = sorted((r for r in rows if r.get("sim") is not None), key=lambda r: -float(r["sim"]))
     by_lex = sorted((r for r in rows if r["_lex"] > 0), key=lambda r: -r["_lex"])
     sim_rank = {id(r): i for i, r in enumerate(by_sim)}
@@ -633,17 +697,30 @@ def rank_sections(rows: Sequence[Dict[str, Any]], keywords: Sequence[str]) -> Li
     out = []
     for r in rows:
         s, lx = sim_rank.get(id(r)), lex_rank.get(id(r))
-        if lx is None and (s is None or s >= 10):
+        if lx is None and (s is None or s >= 10) and not r["_head"]:
             continue
         r["_rrf"] = (1 / (RRF_K + s) if s is not None else 0) + (1 / (RRF_K + lx) if lx is not None else 0)
         out.append(r)
-    return sorted(out, key=lambda r: (-r["_rrf"], str(r.get("id"))))
+    return sorted(out, key=lambda r: (-r["_head"], -r["_rrf"], str(r.get("id"))))
+
+
+HEADING_ONLY_CHARS = 150
+
+
+def _body_chars(text: str) -> int:
+    """The characters of a Section's text after its last article heading and that heading's title."""
+    heads = article_headings(text or "")
+    if not heads:
+        return len((text or "").strip())
+    pos, ref, title = heads[-1]
+    return max(0, len((text or "")[pos:].strip()) - len(ref) - len(title) - 4)
 
 
 def rebuild_clause(doc_rows: List[Dict[str, Any]], at: int, max_chars: int = CLAUSE_CHARS) -> Dict[str, Any]:
     """The clause around the hit doc_rows[at] (the document's Sections in order): from the section holding its
     heading (the hit itself, else up to 3 before) -- or the one before -- to the sections after it that do not
-    open a new article, while under max_chars. {"start", "end", "text", "ref", "title", "hit"}."""
+    open a new article (5 after a heading-only hit, else 2), while under max_chars. {"start", "end", "text", "ref",
+    "title", "hit"}."""
     start = at
     heading_at = None
     for back in range(0, 4):
@@ -659,7 +736,10 @@ def rebuild_clause(doc_rows: List[Dict[str, Any]], at: int, max_chars: int = CLA
         start = at - 1
     end = at
     size = sum(len(doc_rows[i].get("text") or "") for i in range(start, at + 1))
-    while end + 1 < len(doc_rows) and end - at < 2:
+    # A hit that is only a heading ("Art. 23 - Periodo di prova", or a heading's tail) has its clause in the
+    # sections after it: up to 5 of them instead of 2.
+    after = 5 if _body_chars(doc_rows[at].get("text") or "") < HEADING_ONLY_CHARS else 2
+    while end + 1 < len(doc_rows) and end - at < after:
         nxt = doc_rows[end + 1].get("text") or ""
         if opens_with_heading(nxt) or size + len(nxt) > max_chars:
             break
@@ -708,7 +788,7 @@ _AMOUNT_RE = re.compile(_AMOUNT)
 _LEVEL = (r"(?:(?i:livello|liv\.?|categoria|cat\.?)\s*)?(?:Q(?:uadr[oi])?|[1-9](?:°|º|o)?(?:\s?S(?:uper)?)?|"
           r"A[1-3S]?|B[1-3S]?|C[1-3]?(?:\s?Super)?|D[1-3]?(?:\s?Super)?|E[1-3]?|F)")
 _ROW_RE = re.compile(rf"(?:(?<=\s)|^|(?<=\|))(?<!€ )\s*({_LEVEL})(?:\s+|\s*\|\s*)((?:{_AMOUNT}\s*\|?\s*)+)")
-_DECORRENZA_RE = re.compile(r"(?:dal|decorrenza(?: dal)?|a decorrere dal|al)\s+(\d{1,2}(?:°|º)?[/.\s-]\s*(?:\d{1,2}|"
+_DECORRENZA_RE = re.compile(r"(?:dal|decorrenza(?: dal)?|a decorrere dal)\s+(\d{1,2}(?:°|º)?[/.\s-]\s*(?:\d{1,2}|"
                             rf"{'|'.join(_MONTHS)})[/.\s-]\s*(?:19|20)\d{{2}})", re.IGNORECASE)
 
 
@@ -757,9 +837,16 @@ def _law_parts(label: str) -> Optional[Tuple[str, str]]:
     return (m.group(1), m.group(2)) if m else None
 
 
+# A law some corpora name by its title, not its number: looked up by these words when the number finds none.
+LAW_ALIASES = {"l. 300/1970": ["statuto dei lavoratori"], "d.lgs. 23/2015": ["tutele crescenti"],
+               "d.lgs. 81/2015": ["disciplina organica dei contratti di lavoro"],
+               "d.lgs. 66/2003": ["organizzazione dell'orario di lavoro"]}
+
+
 def fetch_framework(session, refs: Sequence[Tuple[str, str]]) -> Tuple[List[Dict[str, Any]], List[str]]:
     """([{"d", "s", "_article": (number, label)}] from primary documents only, [refs not found]). A code by its
-    document's name (defensive_generation._CODE_PREFIXES), a law by article_codes.law_label of its name."""
+    document's name (defensive_generation._CODE_PREFIXES), a law by article_codes.law_label of its name, else by
+    its title (LAW_ALIASES)."""
     from .article_codes import law_label
     from .article_text import fetch_article
     from .defensive_generation import _CODE_PREFIXES
@@ -780,6 +867,11 @@ def fetch_framework(session, refs: Sequence[Tuple[str, str]]) -> Tuple[List[Dict
                     "AND d.name CONTAINS $year RETURN d.id AS id, d.name AS name",
                     number=parts[0], year=parts[1]).data() if parts else []
                 found = [d for d in found if law_label(d["name"]) == label]
+                if not found and LAW_ALIASES.get(label):
+                    found = session.run(
+                        "MATCH (d:Document) WHERE d.document_type = 'primary' AND "
+                        "any(a IN $aliases WHERE toLower(d.name) CONTAINS a) RETURN d.id AS id, d.name AS name",
+                        aliases=LAW_ALIASES[label]).data()
             docs_for[label] = found
         got = None
         for doc in docs_for[label]:
@@ -800,25 +892,63 @@ def fetch_framework(session, refs: Sequence[Tuple[str, str]]) -> Tuple[List[Dict
 # --- the answer ---------------------------------------------------------------------------------------------
 
 VERBATIM_WORDS = 10
-SYSTEM = (
+_SYSTEM_HEAD = (
     "Sei un consulente del lavoro italiano. Rispondi in italiano alla domanda usando SOLO il materiale fornito: "
-    "le clausole del CCNL individuato (nella versione indicata), le tabelle estratte, gli articoli di legge e le "
-    "pronunce. L'intestazione con il contratto applicato è già scritta: non ripeterla.\n"
+    "le clausole del CCNL individuato (nella versione indicata), le tabelle, gli articoli di legge e le pronunce. "
+    "L'intestazione con il contratto applicato (e la fonte degli importi) è già scritta: non ripeterla.\n"
     "Scrivi queste sezioni, con questi titoli in grassetto:\n"
     "**Cosa prevede il CCNL** - spiega con parole tue cosa stabiliscono le clausole pertinenti, ciascuna con il "
     "suo riferimento tra parentesi (es. «art. 16 - Diritti e rapporti sindacali», o il titolo della clausola) e "
     "il documento da cui viene. Se un accordo successivo modifica la clausola, indica la regola aggiornata e da "
     "quando vale. NON copiare frasi del contratto: riformula sempre; puoi riportare solo cifre brevi (importi, "
-    "giorni, mesi, percentuali). Gli importi solo se scritti nelle tabelle o nel testo fornito, con livello e "
-    "decorrenza: mai calcolarli, stimarli o dedurli. Se le clausole non rispondono alla domanda, dillo.\n"
-    "**Quadro normativo** - gli articoli di legge forniti, citati con il codice o la legge (es. art. 2109 c.c., "
-    "art. 7 l. 300/1970), e come il CCNL vi si inserisce (il contratto collettivo può migliorare, non peggiorare, "
-    "le tutele inderogabili). Cita solo gli articoli forniti.\n"
-    "**Giurisprudenza** - solo le pronunce fornite che riguardano il punto, in una o due frasi ciascuna; ometti la "
-    "sezione se nessuna è pertinente.\n"
+    "giorni, mesi, percentuali). Se le clausole non rispondono alla domanda, dillo.\n")
+_SYSTEM_PAY = (
+    "Importi: usa SOLO le righe delle TABELLE IMPORTI (sono quelle in vigore alla data di riferimento), con livello "
+    "e decorrenza; mai calcolarli, stimarli o dedurli, mai prenderli da altre clausole. Se non ci sono TABELLE "
+    "IMPORTI, non indicare importi.\n")
+_SYSTEM_NO_PAY = "Importi solo se scritti nel materiale, con livello e decorrenza: mai calcolarli, stimarli o dedurli.\n"
+_SYSTEM_LAW = (
+    "**Quadro normativo** - ciascun articolo di legge fornito che riguarda la domanda, citato con il codice o la "
+    "legge (es. art. 2109 c.c., art. 7 l. 300/1970), e come il CCNL vi si inserisce (il contratto collettivo può "
+    "migliorare, non peggiorare, le tutele inderogabili). Cita solo gli articoli forniti.\n")
+_SYSTEM_RULINGS = (
+    "**Giurisprudenza** - solo le pronunce fornite che decidono il punto della domanda, in una o due frasi "
+    "ciascuna. Se nessuna lo decide, NON scrivere questa sezione e non dire che le pronunce non sono pertinenti.\n")
+_SYSTEM_TAIL = (
     "**Risposta pratica** - la risposta concreta alla domanda.\n"
     "**Da verificare** - un elenco breve: il livello di inquadramento e l'anzianità del lavoratore, eventuali "
     "accordi territoriali o aziendali, ciò che il materiale non chiarisce.")
+
+
+def system_prompt(pay: bool, rulings: bool) -> str:
+    """The writer's instructions: the amounts rule of a pay question, the case-law section only with rulings."""
+    return (_SYSTEM_HEAD + (_SYSTEM_PAY if pay else _SYSTEM_NO_PAY) + _SYSTEM_LAW
+            + (_SYSTEM_RULINGS if rulings else "") + _SYSTEM_TAIL)
+
+
+SYSTEM = system_prompt(False, True)
+_CASELAW_HEAD_RE = re.compile(r"^\s*\*\*\s*Giurisprudenza\s*\*\*.*$", re.I | re.M)
+_NEXT_HEAD_RE = re.compile(r"^\s*\*\*[^*\n]{3,60}\*\*", re.M)
+_NONE_RELEVANT_RE = re.compile(r"\b(?:non|nessun\w*)\b[^.\n]{0,90}\b(?:pertinent\w*|rilevant\w*|riguard\w*|"
+                               r"attinent\w*|specific\w*|applicabil\w*|decid\w*|affront\w*|tratt\w*)", re.I)
+_RULING_REF_RE = re.compile(r"\b(?:Cass|Corte|Trib|App\.|sent|ord|sez)\w*\.?|\bn\.\s*\d+", re.I)
+
+
+def drop_empty_caselaw(body: str) -> Tuple[str, str]:
+    """(the answer without a case-law section that only says no ruling is relevant -- or without such sentences
+    in one that also discusses a ruling --, what was done: "", "section", "sentences")."""
+    m = _CASELAW_HEAD_RE.search(body or "")
+    if not m:
+        return body, ""
+    nxt = _NEXT_HEAD_RE.search(body, m.end())
+    end = nxt.start() if nxt else len(body)
+    section = body[m.end():end]
+    if not _NONE_RELEVANT_RE.search(section):
+        return body, ""
+    kept = [x for x in _sentences(section) if not _NONE_RELEVANT_RE.search(x)]
+    if not any(_RULING_REF_RE.search(x) for x in kept):
+        return (body[:m.start()].rstrip() + "\n\n" + body[end:].lstrip()).strip(), "section"
+    return body[:m.end()] + "".join(kept) + body[end:], "sentences"
 
 
 def _clause_block(i: int, clause: Dict[str, Any], with_rows: bool) -> str:
@@ -1069,7 +1199,18 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
         rows = document_sections(session, [d["id"] for d in chosen], embedding)
         for r in rows:
             r["text"] = clean(r.get("text"))
-        clauses, order_used = select_clauses(rows, chosen, keywords, pay=any(TOPICS[t].get("pay") for t in topics))
+        is_pay = any(TOPICS[t].get("pay") for t in topics)
+        clauses, order_used = select_clauses(rows, chosen, keywords, pay=is_pay, headings=topic_headings(topics))
+        pay = pay_tables(group_ordered(rows)[0], chosen, when) if is_pay else None
+        if pay is not None:
+            info["pay"] = {"candidates": pay["candidates"],
+                           "source": short_name(pay["source"]) if pay["source"] else None,
+                           "decorrenza": pay["decorrenza"].isoformat() if pay["decorrenza"] else None,
+                           "tables": [{"sections": t["sections"], "rows": len(t["rows"]["rows"])} for t in pay["tables"]],
+                           "superseded_by": {"doc": short_name(pay["superseded_by"]["doc"]),
+                                             "decorrenza": pay["superseded_by"]["decorrenza"].isoformat()}
+                           if pay["superseded_by"] else None}
+            vlog("ccnl_pay", info["pay"])
         info["clauses"] = {"topics": topics, "keywords": keywords, "sections": len(rows), "order_by": order_used,
                            "found": [{"doc": short_name(c["doc"]), "ref": clause_reference(c),
                                       "sections": c["span"], "rows": len((c.get("rows") or {}).get("rows") or []),
@@ -1085,19 +1226,22 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
                              "found": [f"{r['_article'][0]} {r['_article'][1]}" for r in framework],
                              "rulings": [(r.get("d") or {}).get("name") for r in rulings]}
         vlog("ccnl_framework", info["framework"])
-    material_blocks = [_clause_block(i, c, True) for i, c in enumerate(clauses, 1)]
+    material_blocks = [_clause_block(i, c, pay is None) for i, c in enumerate(clauses, 1)]
+    if pay is not None and pay["tables"]:
+        material_blocks.append(pay_block(pay))
     law_blocks = [f"[LEGGE] art. {r['_article'][0]} {r['_article'][1]}"
                   f"{' - ' + r['s'].get('titolo_articolo') if r['s'].get('titolo_articolo') else ''}\n"
                   f"{clean(r['s'].get('plain_text'))[:1500]}" for r in framework]
     ruling_blocks = [f"[PRONUNCIA] {_doc_name(r.get('d') or {})}\n"
                      f"{clean((r.get('s') or {}).get('plain_text'))[:900]}" for r in rulings]
-    head = header(contract, version, when, how)
+    head = header(contract, version, when, how) + (f"\n{pay_line(pay)}" if pay is not None else "")
     human = (f"Domanda: {question}\n\nContratto: CCNL {contract['sector']}; data di riferimento {_fmt(when)}.\n"
              f"Le clausole di accordi successivi prevalgono su quelle del testo base sullo stesso punto.\n\n"
              + ("\n\n".join(material_blocks) or "[nessuna clausola pertinente trovata nel CCNL]")
              + "\n\n" + ("\n\n".join(law_blocks) or "[nessun articolo di legge reperito]")
              + ("\n\n" + "\n\n".join(ruling_blocks) if ruling_blocks else ""))
-    body = _call_chat([SystemMessage(content=SYSTEM), HumanMessage(content=human)], max_tokens=1800) if llm else ""
+    body = _call_chat([SystemMessage(content=system_prompt(pay is not None, bool(rulings))),
+                       HumanMessage(content=human)], max_tokens=1800) if llm else ""
     body = clean(body)
     clause_texts = [c["text"] for c in clauses]
     copied = verbatim_sentences(body, clause_texts)
@@ -1111,11 +1255,13 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     still = verbatim_sentences(body, clause_texts)
     if still:
         body = _drop_sentences(body, still)
-    material = "\n".join(clause_texts + [b for b in law_blocks])
-    body, amounts = check_amounts(body, material)
+    # A pay question's amounts only from the tables in force; any other question's from its material.
+    amount_texts = [t["text"] for t in pay["tables"]] if pay is not None else clause_texts
+    body, amounts = check_amounts(body, "\n".join(amount_texts + law_blocks))
+    body, caselaw = drop_empty_caselaw(body)
     final = f"{head}\n\n{body.strip()}".strip()
     info["answer"] = {"verbatim_found": len(copied), "rewritten": rewritten, "verbatim_dropped": len(still),
-                      "amounts_removed": amounts, "chars": len(final)}
+                      "amounts_removed": amounts, "caselaw_dropped": caselaw, "chars": len(final)}
     info["outcome"] = "answered"
     vlog("ccnl_path", {k: v for k, v in info.items() if k != "question"}, duration_ms=(time.time() - t0) * 1000)
     ccnl_rows = [{"d": {"id": c["doc"]["id"], "name": c["doc"].get("name"), "document_type": TYPE,
@@ -1137,26 +1283,35 @@ def _doc_log(d: Dict[str, Any]) -> Dict[str, Any]:
             "valid_until": d["until"].isoformat() if d.get("until") else None}
 
 
-def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]], keywords: Sequence[str],
-                   pay: bool = False) -> Tuple[List[Dict[str, Any]], Dict[str, Optional[str]]]:
-    """(the clauses, rebuilt from the best hits: at most MAX_BASE_CLAUSES from the base, MAX_AMENDMENT_CLAUSES
-    from the amendments -- the latest first on a tie --, MAX_CLAUSES in all, a hit inside a clause already taken
-    skipped; {document: the order key used}). On a pay question each clause gets its table rows."""
+def group_ordered(rows: List[Dict[str, Any]]) -> Tuple[Dict[str, List[Dict[str, Any]]], Dict[str, Optional[str]]]:
+    """({document: its Sections in order}, {document: the order key used}); CCNL_SECTION_ORDER forces a key."""
     forced = os.getenv(ORDER_ENV) or None
     by_doc: Dict[str, List[Dict[str, Any]]] = {}
     for r in rows:
         by_doc.setdefault(r["doc"], []).append(r)
     order_used: Dict[str, Optional[str]] = {}
-    position: Dict[Any, Tuple[str, int]] = {}
     for doc_id, doc_rows in by_doc.items():
         by_doc[doc_id], order_used[doc_id] = ordered(doc_rows, forced)
-        for i, r in enumerate(by_doc[doc_id]):
+    return by_doc, order_used
+
+
+def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]], keywords: Sequence[str],
+                   pay: bool = False, headings: Sequence[str] = ()
+                   ) -> Tuple[List[Dict[str, Any]], Dict[str, Optional[str]]]:
+    """(the clauses, rebuilt from the best hits -- a heading naming the topic first (rank_sections) --: at most
+    MAX_BASE_CLAUSES from the base, MAX_AMENDMENT_CLAUSES from the amendments -- the latest first on a tie --,
+    MAX_CLAUSES in all, a hit inside a clause already taken skipped; {document: the order key used}). On a pay
+    question each clause gets its table rows."""
+    by_doc, order_used = group_ordered(rows)
+    position: Dict[Any, Tuple[str, int]] = {}
+    for doc_id, doc_rows in by_doc.items():
+        for i, r in enumerate(doc_rows):
             position[id(r)] = (doc_id, i)
     docs = {d["id"]: d for d in chosen}
     base_id = chosen[0]["id"] if chosen else None
     rank = {d["id"]: i for i, d in enumerate(chosen)}
-    hits = rank_sections(rows, keywords)
-    hits.sort(key=lambda r: (-round(r["_rrf"], 6), -rank.get(r["doc"], 0), str(r.get("id"))))
+    hits = rank_sections(rows, keywords, headings)
+    hits.sort(key=lambda r: (-r["_head"], -round(r["_rrf"], 6), -rank.get(r["doc"], 0), str(r.get("id"))))
     clauses: List[Dict[str, Any]] = []
     taken: Dict[str, List[Tuple[int, int]]] = {}
     counts = {"base": 0, "amendments": 0}
@@ -1179,3 +1334,111 @@ def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]],
         clauses.append(clause)
     clauses.sort(key=lambda c: (rank.get(c["doc"]["id"], 0), c["start"]))
     return clauses, {short_name(docs.get(k) or {"id": k}): v for k, v in order_used.items()}
+
+
+# --- pay: the table in force at the date ---------------------------------------------------------------------
+
+_PAY_WORDS_RE = re.compile(r"minim[io]|tabell\w*|retribu\w*|paga|stipendi\w*|importi|conglobat\w*", re.I)
+_LOOSE_DATE_RE = re.compile(rf"(\d{{1,2}})(?:°|º)?\s*[/.\s-]\s*(\d{{1,2}}|{'|'.join(_MONTHS)})\s*[/.\s-]\s*((?:19|20)\d{{2}})",
+                            re.I)
+MAX_PAY_TABLES = 3
+
+
+def loose_date(text: str) -> Optional[date]:
+    """"01/09/2022", "1-1-2024", "1º giugno 2024", "01.07.2021" -> a date; None otherwise."""
+    m = _LOOSE_DATE_RE.search(text or "")
+    if not m:
+        return None
+    month = m.group(2)
+    month = int(month) if month.isdigit() else _MONTHS.index(month.lower()) + 1
+    try:
+        return date(int(m.group(3)), month, int(m.group(1)))
+    except ValueError:
+        return None
+
+
+def pay_tables(by_doc: Dict[str, List[Dict[str, Any]]], chosen: Sequence[Dict[str, Any]], when: date
+               ) -> Dict[str, Any]:
+    """The pay table in force at `when`, across the base and every amending document (not only the clauses
+    found): each Section with pay words and three or more amounts (or two table rows), joined to the table rows
+    that follow it; its decorrenza the latest date it writes on or before `when` (the date before it included,
+    where a header sits), else its document's valid_from; a table whose every date is after `when` is not yet
+    in force. Readable: two or more rows read (pay_rows).
+      {"tables": up to MAX_PAY_TABLES readable ones of the best (document, decorrenza), "source", "decorrenza",
+       "superseded_by": {"doc", "decorrenza"} when a later table is unreadable, "candidates": n}"""
+    rank = {d["id"]: i for i, d in enumerate(chosen)}
+    docs = {d["id"]: d for d in chosen}
+    candidates = []
+    for doc_id, rows in by_doc.items():
+        doc = docs.get(doc_id)
+        if doc is None:
+            continue
+        i = 0
+        while i < len(rows):
+            text = rows[i].get("text") or ""
+            parsed = pay_rows(text)
+            if not (_PAY_WORDS_RE.search(text) and len(_AMOUNT_RE.findall(text)) >= 3) and len(parsed["rows"]) < 2:
+                i += 1
+                continue
+            j = i
+            while j + 1 < len(rows) and j - i < 4 and pay_rows(rows[j + 1].get("text") or "")["rows"] \
+                    and not opens_with_heading(rows[j + 1].get("text") or ""):
+                j += 1
+            table = "\n".join(rows[k].get("text") or "" for k in range(i, j + 1))
+            context = (rows[i - 1].get("text") or "")[-300:] + "\n" + table if i else table
+            dates = [d for d in (loose_date(x) for x in _DECORRENZA_RE.findall(context)) if d]
+            dates += [d for d in (loose_date(m.group(0)) for m in _LOOSE_DATE_RE.finditer(context[:400])) if d]
+            in_force = [d for d in dates if d <= when]
+            if dates and not in_force:
+                i = j + 1
+                continue
+            decorrenza = max(in_force) if in_force else (doc.get("from") if doc.get("from") and doc["from"] <= when
+                                                         else None)
+            if decorrenza is not None:
+                rows_read = pay_rows(table)
+                candidates.append({"doc": doc, "decorrenza": decorrenza, "readable": len(rows_read["rows"]) >= 2,
+                                   "rows": rows_read, "text": table, "position": i,
+                                   "sections": [rows[k].get("name") for k in range(i, j + 1)]})
+            i = j + 1
+    out: Dict[str, Any] = {"tables": [], "source": None, "decorrenza": None, "superseded_by": None,
+                           "candidates": len(candidates)}
+    if not candidates:
+        return out
+
+    def key(c):
+        return (c["decorrenza"], rank.get(c["doc"]["id"], 0))
+    latest = max(candidates, key=key)
+    readable = [c for c in candidates if c["readable"]]
+    best = max(readable, key=key) if readable else None
+    if best is None or key(best) < key(latest):
+        out["superseded_by"] = {"doc": latest["doc"], "decorrenza": latest["decorrenza"]}
+    if best is not None:
+        same = [c for c in readable if c["doc"]["id"] == best["doc"]["id"] and c["decorrenza"] == best["decorrenza"]]
+        out["tables"] = sorted(same, key=lambda c: c["position"])[:MAX_PAY_TABLES]
+        out["source"], out["decorrenza"] = best["doc"], best["decorrenza"]
+    return out
+
+
+def pay_line(pay: Dict[str, Any]) -> str:
+    """The header's line on the amounts: the source document and decorrenza, or why none is given."""
+    if pay.get("source"):
+        line = (f"**Importi**: dalla tabella di {short_name(pay['source']).split(' — ')[-1]} con decorrenza dal "
+                f"{_fmt(pay['decorrenza'])}.")
+        later = pay.get("superseded_by")
+        if later:
+            line += (f" Potrebbe essere stata superata da {short_name(later['doc']).split(' — ')[-1]} (dal "
+                     f"{_fmt(later['decorrenza'])}), la cui tabella non è leggibile: verificare gli importi aggiornati.")
+        return line
+    if pay.get("superseded_by"):
+        later = pay["superseded_by"]
+        return (f"**Importi**: la tabella in vigore ({short_name(later['doc']).split(' — ')[-1]}, dal "
+                f"{_fmt(later['decorrenza'])}) non è leggibile: non indico importi, da verificare sul testo.")
+    return "**Importi**: nei documenti in vigore alla data non c'è una tabella retributiva leggibile: non indico importi."
+
+
+def pay_block(pay: Dict[str, Any]) -> str:
+    blocks = []
+    for n, t in enumerate(pay.get("tables") or [], 1):
+        blocks.append(f"[TABELLA IMPORTI {n}] fonte: {short_name(t['doc'])}, decorrenza dal {_fmt(t['decorrenza'])}\n"
+                      f"{_rows_block(t['rows'])}")
+    return "\n\n".join(blocks)

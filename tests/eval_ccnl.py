@@ -49,6 +49,9 @@ _RUN_RE = re.compile(r"\b(?:artt?\.|art\b|articol[oi])\s*(\d+(?:-[a-z]+)?(?:\s*(
                      re.IGNORECASE)
 _LAW_RE = re.compile(r"(?:\b(?:l\.|legge)|\bd\.?\s?lgs\.?|\bdecreto legislativo)\s*(?:n\.?\s*)?(\d{1,4})\s*"
                      r"(?:/|del(?:l')?\s*(?:\d{1,2}\s+\w+\s+)?)\s*((?:19|20)\d{2})", re.IGNORECASE)
+# "legge 20 maggio 1970, n. 300", "d.lgs. 8 aprile 2003, n. 66": the date before the number.
+_LAW_DATED_RE = re.compile(r"(?:\b(?:l\.|legge)|\bd\.?\s?lgs\.?|\bdecreto legislativo)\s*(?:\d{1,2}\s+\w+\s+)?"
+                           r"((?:19|20)\d{2})\s*,?\s*n\.?\s*(\d{1,4})\b", re.IGNORECASE)
 _NAMED_LAWS = [(re.compile(r"statuto dei lavoratori", re.I), "l. 300/1970")]
 
 
@@ -62,9 +65,12 @@ def _label_after(text):
         return "c.c."
     if re.match(r"cost\.|costituzione", rest, re.I):
         return "Cost."
+    kind = "l." if re.match(r"l\.|legge", rest, re.I) else "d.lgs."
+    dated = _LAW_DATED_RE.match(rest)
+    if dated:
+        return f"{kind} {dated.group(2)}/{dated.group(1)}"
     law = _LAW_RE.match(rest)
     if law:
-        kind = "l." if re.match(r"l\.|legge", rest, re.I) else "d.lgs."
         return f"{kind} {law.group(1)}/{law.group(2)}"
     for pattern, label in _NAMED_LAWS:
         if pattern.match(rest):
@@ -197,6 +203,8 @@ def debug_report(case, record):
     if fw:
         out.append(f"FRAMEWORK wanted {fw.get('wanted')}; found {fw.get('found')}; missing {fw.get('missing')}")
         out.append(f"RULINGS {fw.get('rulings')}")
+    if info.get("pay"):
+        out.append(f"PAY {json.dumps(info['pay'], ensure_ascii=False)}")
     out.append(f"ANSWER CHECKS {json.dumps(info.get('answer') or {}, ensure_ascii=False)}")
     out.append(f"CITED IN THE ANSWER {s['cited_in_answer']}; expected "
                f"{[f['article'] + (' ok' if f['cited'] else ' MISSING') for f in s['framework']]}")

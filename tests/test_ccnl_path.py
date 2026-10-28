@@ -385,3 +385,106 @@ def test_score_case():
     assert (s["sector_right"], s["version_right"], s["clause_found"], s["framework_cited"], s["ambiguity_right"]) \
         == (True, True, True, 1, True)
     assert eval_ccnl.score_case({**case, "ambiguous": True}, result)["ambiguity_right"] is False
+
+
+# --- second round: headings, wider window, pay tables in force, case law, framework --------------------------
+
+def test_the_heading_names_the_topic():
+    phrases = cp.topic_headings(["prova"])
+    assert cp.heading_score({"text": "Art. 23 - Periodo di prova L'assunzione", "name": "x"}, phrases) == 3
+    assert cp.heading_score({"text": "La durata è di tre mesi", "name": "di prova"}, phrases) == 2
+    assert cp.heading_score({"text": "Periodo di prova: tre mesi", "name": "x"}, phrases) == 1
+    assert cp.heading_score({"text": "Il lavoratore durante il periodo di prova", "name": "x"}, phrases) == 0
+    toc = "Art. 21 - Assunzione Art. 22 - Documenti Art. 23 - Periodo di prova Art. 24 - Orario"
+    assert cp.heading_score({"text": toc, "name": "Indice"}, phrases) == 0
+
+
+def test_a_heading_hit_wins_over_a_wordy_section():
+    rows = _rows(["Art. 23 - Periodo di prova", "La durata è di sei mesi per i quadri, tre per gli altri.",
+                  "Art. 24 - Orario", "Durante il periodo di prova, il patto di prova e la prova " * 3])
+    chosen = [{"id": "tc", "kind": cp.TC, "name": "TC"}]
+    clauses, _ = cp.select_clauses(rows, chosen, cp.topic_keywords("", ["prova"]),
+                                   headings=cp.topic_headings(["prova"]))
+    assert clauses[0]["ref"] == "Art. 23" and clauses[0]["title"] == "Periodo di prova"
+    assert "sei mesi" in clauses[0]["text"]
+
+
+def test_a_heading_only_hit_takes_more_sections():
+    rows = _rows(["Art. 23 - Periodo di prova", "a) quadri: sei mesi;", "b) impiegati: tre mesi;",
+                  "c) operai: un mese;", "d) apprendisti: un mese.", "Art. 24 - Orario"])
+    clause = cp.rebuild_clause(rows, 0)
+    assert (clause["start"], clause["end"]) == (0, 4)
+    wordy = _rows(["Art. 23 - Periodo di prova " + "testo della clausola " * 20, "a", "b", "c", "d"])
+    assert cp.rebuild_clause(wordy, 0)["end"] == 2
+
+
+def _pay_doc(id_, kind, frm):
+    return {"id": id_, "kind": kind, "from": date.fromisoformat(frm), "until": None,
+            "name": f"[CCNL] Settore — {kind} {id_}"}
+
+
+TABLE_2022 = "Minimi tabellari dal 01/09/2022 1 € 2.000,00 2 € 1.900,00 3 € 1.800,00"
+TABLE_2024 = "Minimi tabellari dal 01/06/2024 1 € 2.100,00 2 € 2.000,00 3 € 1.900,00"
+TABLE_2027 = "Minimi tabellari dal 01/06/2027 1 € 2.300,00 2 € 2.200,00 3 € 2.100,00"
+
+
+def test_the_pay_table_in_force_is_the_latest_decorrenza_across_all_documents():
+    tc, r24 = _pay_doc("tc", cp.TC, "2021-02-05"), _pay_doc("r24", cp.RINNOVO, "2024-05-01")
+    by_doc = {"tc": _rows(["Art. 30 - Minimi", TABLE_2022]),
+              "r24": _rows(["Le parti concordano", TABLE_2024 + " " + TABLE_2027], doc="r24")}
+    pay = cp.pay_tables(by_doc, [tc, r24], date(2026, 10, 28))
+    assert pay["source"]["id"] == "r24" and pay["decorrenza"] == date(2024, 6, 1)
+    assert pay["superseded_by"] is None and pay["tables"][0]["rows"]["rows"][0][0] == "1"
+    old = cp.pay_tables(by_doc, [tc, r24], date(2023, 1, 1))
+    assert old["source"]["id"] == "tc" and old["decorrenza"] == date(2022, 9, 1)
+    assert "dalla tabella di" in cp.pay_line(pay) and "01/06/2024" in cp.pay_line(pay)
+
+
+def test_an_unreadable_later_table_is_named_as_possibly_superseding():
+    tc, r25 = _pay_doc("tc", cp.TC, "2021-02-05"), _pay_doc("r25", cp.RINNOVO, "2025-03-01")
+    by_doc = {"tc": _rows([TABLE_2022]),
+              "r25": _rows(["Minimi tabellari dal 01/03/2025: importi 2.150,00 / 2.050,00 / 1.950,00 per livello"],
+                           doc="r25")}
+    pay = cp.pay_tables(by_doc, [tc, r25], date(2026, 10, 28))
+    assert pay["source"]["id"] == "tc" and pay["superseded_by"]["doc"]["id"] == "r25"
+    line = cp.pay_line(pay)
+    assert "Potrebbe essere stata superata da" in line and "01/03/2025" in line
+    none = cp.pay_tables({"tc": _rows(["Art. 1 - Oggetto"])}, [tc], date(2026, 10, 28))
+    assert none["source"] is None and "non indico importi" in cp.pay_line(none)
+
+
+def test_an_empty_case_law_section_is_omitted():
+    body = ("**Quadro normativo**\nL'art. 2109 c.c.\n**Giurisprudenza**\nLe pronunce fornite non sono pertinenti "
+            "alla domanda.\n**Risposta pratica**\nQuattro settimane.")
+    out, done = cp.drop_empty_caselaw(body)
+    assert done == "section" and "Giurisprudenza" not in out and "**Risposta pratica**" in out
+    mixed = ("**Giurisprudenza**\nCass. civ., sez. lav., n. 123/2020 conferma il principio. Le altre non sono "
+             "pertinenti.\n**Risposta pratica**\nX.")
+    out, done = cp.drop_empty_caselaw(mixed)
+    assert done == "sentences" and "n. 123/2020" in out and "non sono pertinenti" not in out
+    assert cp.drop_empty_caselaw("**Giurisprudenza**\nCass. n. 1/2020 afferma X.\n")[1] == ""
+    assert "Giurisprudenza" not in cp.system_prompt(pay=False, rulings=False)
+    assert "TABELLE IMPORTI" in cp.system_prompt(pay=True, rulings=True)
+
+
+def test_a_law_found_by_its_title(monkeypatch):
+    from src.rag import article_text
+
+    class S:
+        def run(self, query, **params):
+            if "CONTAINS $number" in query:
+                return _Result([])
+            if "any(a IN $aliases" in query:
+                assert params["aliases"] == ["statuto dei lavoratori"]
+                return _Result([{"id": "LEGAL_DOC::st", "name": "Statuto dei Lavoratori"}])
+            raise AssertionError(query)
+    monkeypatch.setattr(article_text, "fetch_article",
+                        lambda session, doc, n: [{"d": {"id": doc, "name": "Statuto dei Lavoratori"},
+                                                  "s": {"name": f"{n}.0.0", "plain_text": "Sanzioni disciplinari"}}])
+    rows, missing = cp.fetch_framework(S(), [("7", "l. 300/1970")])
+    assert rows[0]["_article"] == ("7", "l. 300/1970") and missing == []
+
+
+def test_framework_mentions_with_the_law_dated():
+    answer = "l'art. 7 della legge 20 maggio 1970, n. 300 e l'art. 10 del d.lgs. 8 aprile 2003, n. 66"
+    assert eval_ccnl.framework_mentions(answer) == {("7", "l. 300/1970"), ("10", "d.lgs. 66/2003")}
