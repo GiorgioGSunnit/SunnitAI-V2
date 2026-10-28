@@ -111,7 +111,7 @@ def clause_report(session, cases, ids, cp, embed, top, today):
               f"documents"]
         by_doc, order_used = cp.group_ordered(p["rows"])
         L.append(f"order used: {order_used}")
-        ranked = cp.rank_sections(p["rows"], p["keywords"], p["headings"])
+        ranked = cp.rank_sections(p["rows"], p["keywords"], p["headings"], case["question"])
         names = {d["id"]: cp.short_name(d).split(" — ")[-1][:30] for d in p["chosen"]}
         rank_of = {id(r): i for i, r in enumerate(ranked)}
         L.append(f"top {top} sections as ranked now (head, lex, cos, document, name, text):")
@@ -119,7 +119,8 @@ def clause_report(session, cases, ids, cp, embed, top, today):
             sim = f"{r['sim']:.3f}" if r.get("sim") is not None else "  -  "
             L.append(f"    h{r['_head']} lex{r['_lex']:>5.1f} cos{sim} [{names.get(r['doc'], r['doc'])[:30]}] "
                      f"{str(r.get('name'))[:40]!r}: {' '.join((r.get('text') or '').split())[:120]}")
-        clauses, _ = cp.select_clauses(p["rows"], p["chosen"], p["keywords"], headings=p["headings"])
+        clauses, _ = cp.select_clauses(p["rows"], p["chosen"], p["keywords"], headings=p["headings"],
+                                       question=case["question"])
         L.append("clauses selected now:")
         L += [f"    [{names.get(c['doc']['id'], '')}] {cp.clause_reference(c)} (sections {c['span']}): "
               f"{' '.join(c['text'].split())[:160]}" for c in clauses] or ["    none"]
@@ -132,7 +133,7 @@ def clause_report(session, cases, ids, cp, embed, top, today):
                 text = r.get("text") or ""
                 at = cp._fold(text).find(cp._fold(phrase))
                 L.append(f"        rank {pos if pos is not None else 'not ranked'}; [{names.get(r['doc'], '')}] "
-                         f"{str(r.get('name'))[:40]!r} h{cp.heading_score(r, p['headings'])}: "
+                         f"{str(r.get('name'))[:40]!r} h{cp.heading_score(r, p['headings'], case['question'])}: "
                          f"{' '.join(text[max(0, at - 30):at + 90].split())}")
     return L
 

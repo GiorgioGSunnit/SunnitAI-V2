@@ -391,9 +391,19 @@ def test_score_case():
 
 def test_the_heading_names_the_topic():
     phrases = cp.topic_headings(["prova"])
-    assert cp.heading_score({"text": "Art. 23 - Periodo di prova L'assunzione", "name": "x"}, phrases) == 3
-    assert cp.heading_score({"text": "La durata è di tre mesi", "name": "di prova"}, phrases) == 2
+    assert cp.heading_score({"text": "Art. 23 - Periodo di prova L'assunzione", "name": "x"}, phrases) == 4
+    assert cp.heading_score({"text": "La durata è di tre mesi", "name": "di prova"}, phrases) == 4    # the tail
+    assert cp.heading_score({"text": "Art. 50 - Periodo di prova - periodo di comporto e preavviso Il",
+                             "name": "x"}, phrases) == 3
     assert cp.heading_score({"text": "Periodo di prova: tre mesi", "name": "x"}, phrases) == 1
+    # a generic tail is no heading: "del rapporto" of "risoluzione del rapporto"
+    assert cp.heading_score({"text": "Il rapporto si sospende", "name": "del rapporto"},
+                            cp.topic_headings(["preavviso"])) == 0
+    # the apprentices' own clause, for a question that is not about them
+    apprentice = {"text": "Art. 7 - Periodo di prova Per l'assunzione in prova dell'apprendista è richiesto", "name": "x"}
+    assert cp.heading_score(apprentice, phrases, "Quanto dura la prova per un operaio?") == 1
+    assert cp.heading_score(apprentice, phrases, "Quanto dura la prova di un apprendista?") == 4
+    assert cp.heading_score({"text": "", "name": "di prova"}, phrases) == 0
     assert cp.heading_score({"text": "Il lavoratore durante il periodo di prova", "name": "x"}, phrases) == 0
     toc = "Art. 21 - Assunzione Art. 22 - Documenti Art. 23 - Periodo di prova Art. 24 - Orario"
     assert cp.heading_score({"text": toc, "name": "Indice"}, phrases) == 0
@@ -488,3 +498,107 @@ def test_a_law_found_by_its_title(monkeypatch):
 def test_framework_mentions_with_the_law_dated():
     answer = "l'art. 7 della legge 20 maggio 1970, n. 300 e l'art. 10 del d.lgs. 8 aprile 2003, n. 66"
     assert eval_ccnl.framework_mentions(answer) == {("7", "l. 300/1970"), ("10", "d.lgs. 66/2003")}
+
+
+def test_an_anchored_clause_runs_from_its_heading_to_the_next():
+    rows = _rows(["Art. 9 - Orario Le ore sono 40. Art. 10 - Ferie Il lavoratore ha diritto a quattro settimane. "
+                  "Art. 11 - Malattia La malattia ...", "altro"])
+    match = cp.heading_match(rows[0], cp.topic_headings(["ferie"]))
+    assert match["via"] == "heading" and match["score"] == 4
+    clause = cp.rebuild_clause(rows, 0, anchor=match["anchor"])
+    assert clause["ref"] == "Art. 10" and clause["title"] == "Ferie"
+    assert clause["text"].startswith("Art. 10 - Ferie") and "Malattia" not in clause["text"]
+
+
+def test_a_name_headed_clause_starts_at_its_section():
+    rows = _rows(["Art. 38 - Variazione dei minimi Le retribuzioni sono variate ogni anno.",
+                  "1. Il rapporto può essere risolto con i seguenti termini di preavviso: 15 giorni.",
+                  "2. In caso di licenziamento", "Art. 40 - Altro"])
+    rows[1]["name"] = "del rapporto di lavoro e preavviso"
+    clause = cp.rebuild_clause(rows, 1, name_headed=True)
+    assert clause["start"] == 1 and clause["ref"] is None              # not Art. 38
+    assert clause["title"] == "Del rapporto di lavoro e preavviso" and "2. In caso" in clause["text"]
+    rows[0]["text"] += " Art. 39 - Risoluzione"
+    clause = cp.rebuild_clause(rows, 1, name_headed=True)
+    assert (clause["ref"], clause["title"]) == ("Art. 39", "Risoluzione del rapporto di lavoro e preavviso")
+
+
+TOURISM = {"Turismo Confcommercio - Pubblici esercizi": 19, "Turismo Confcommercio - Pubblici esercizi minori": 19,
+           "Turismo Confesercenti - Pubblici esercizi": 8, "Turismo Confindustria - Pubblici Esercizi": 4,
+           "Turismo Confcommercio - Aziende alberghiere": 10, "Turismo Confcommercio - Aziende alberghiere minori": 10,
+           "Dirigenti - Aziende Alberghiere": 9, "Pubblici Esercizi - Personale Artistico": 1,
+           "Turismo, Pubblici esercizi (Confsal - Cifa Fedarcom)": 8, "Commercio - Confcommercio": 20,
+           "Commercio - Confesercenti": 11, "Terziario (FID - FederPartiteIva)": 3, "Dirigenti - Commercio": 12,
+           "Distribuzione moderna organizzata - Federdistribuzione": 8, "Poste S.P.A. - Ente Poste Italiane": 56,
+           "Agenti e Rappresentanti - Commercio": 4, "Terziario (Sinalp - Aniac)": 1}
+
+
+def test_the_eval_key_cases_of_commercio_and_turismo():
+    c1 = cp.identify_contract("Nel CCNL Terziario Distribuzione e Servizi Confcommercio, qual è il preavviso di "
+                              "dimissioni per un impiegato di 4° livello?", TOURISM, llm=False)
+    assert c1["sector"] == "Commercio - Confcommercio" and not c1["ambiguous"]
+    c2 = cp.identify_contract("Sono commessa in un supermercato: per quanti giorni di malattia mi viene conservato "
+                              "il posto (periodo di comporto)?", TOURISM, llm=False)
+    assert c2["sector"] == "Commercio - Confcommercio" and c2["ambiguous"]          # not Poste ("posto")
+    assert c2["alternatives"][:2] == ["Commercio - Confesercenti",
+                                      "Distribuzione moderna organizzata - Federdistribuzione"]
+    t1 = cp.identify_contract("Faccio il cameriere in un ristorante: quanto dura il periodo di prova?", TOURISM,
+                              llm=False)
+    assert t1["sector"] == "Turismo Confcommercio - Pubblici esercizi" and t1["ambiguous"]
+    t2 = cp.identify_contract("CCNL Turismo Confcommercio: quante settimane di ferie spettano ai dipendenti di un "
+                              "albergo?", TOURISM, llm=False)
+    assert t2["sector"] == "Turismo Confcommercio - Aziende alberghiere"
+    assert t2["alternatives"] == ["Turismo Confcommercio - Aziende alberghiere minori"]
+    same = [{"document_subtype": "Testo Consolidato", "valid_from": "2010-01-01", "valid_until": "2027-12-31"}]
+    settled = cp.settle_by_documents(t2, same, lambda sector: same)
+    assert not settled["ambiguous"] and not settled["assumption"] and settled["same_documents"]
+    other = [{"document_subtype": "CCNL", "valid_from": "2024-06-01", "valid_until": "2027-12-31"}]
+    kept = cp.settle_by_documents(t1, same, lambda sector: other)
+    assert kept["ambiguous"] and kept["alternatives"]
+
+
+def test_pay_tables_need_pay_words_and_skip_contribution_agreements():
+    tc = _pay_doc("tc", cp.TC, "2021-01-01")
+    fund = {**_pay_doc("prev", cp.ACCORDO, "2025-07-04"), "document_subtype": "Accordo Previdenza Integrativa"}
+    by_doc = {"tc": _rows(["Allegato A: Tabella dei minimi di paga base mensile dal 01/03/2024",
+                           "Operaio specializzato 1.800,00 Operaio qualificato 1.650,00 Operaio comune 1.480,00"]),
+              "prev": _rows(["TABELLA A contributi", "5 12,00 4 10,00 3 9,00 1 8,00"], doc="prev")}
+    pay = cp.pay_tables(by_doc, [tc, fund], date(2026, 10, 28))
+    assert pay["source"]["id"] == "tc" and pay["decorrenza"] == date(2024, 3, 1)
+    assert [r[0] for r in pay["tables"][0]["rows"]["rows"]] == ["Operaio specializzato", "Operaio qualificato",
+                                                                "Operaio comune"]
+    quota = cp.pay_tables({"tc": _rows(["Quote di adesione al fondo dal 01/01/2025 1 € 10,00 2 € 12,00 3 € 14,00"])},
+                          [tc], date(2026, 10, 28))
+    assert quota["source"] is None and quota["candidates"] == 0
+
+
+def test_the_later_full_text_for_a_renewal_base():
+    docs = [_doc("r19", "Accordo di rinnovo", "2019-05-30"), _doc("tc", "Testo Consolidato - X", "2021-02-05"),
+            _doc("c21", "CCNL", "2021-02-05"), _doc("c16", "CCNL", "2016-11-26", name="x")]
+    assert cp.later_full_text(docs, date(2019, 12, 31))["id"] == "c21"      # the CCNL before the consolidated
+    assert cp.later_full_text(docs, date(2026, 1, 1)) is None
+
+
+def test_a_law_missing_from_the_corpus_is_cited_by_reference(path):
+    session, calls = path
+    real = session.run
+
+    def run(query, **params):
+        if "CONTAINS $number" in query or "any(a IN $aliases" in query:
+            return _Result([])
+        return real(query, **params)
+    session.run = run
+    out = cp.answer("Secondo il CCNL Metalmeccanica Industria quante ferie spettano?", _Driver(session), "neo4j",
+                    today=date(2026, 10, 28))
+    assert "[LEGGE - testo non disponibile] art. 10 d.lgs. 66/2003 - Ferie annuali" in calls[0]
+    assert out["ccnl"]["framework"]["by_reference"] == ["10 d.lgs. 66/2003"]
+
+
+def test_twin_alternatives_are_listed_once():
+    contract = {"sector": "A", "how": "concept", "ambiguous": True, "assumption": True,
+                "alternatives": ["B", "B minori", "C"]}
+    mine = [{"document_subtype": "CCNL", "valid_from": "2020-01-01"}]
+    other = [{"document_subtype": "CCNL", "valid_from": "2024-06-01"}]
+    docs = {"B": other, "B minori": other, "C": mine}
+    out = cp.settle_by_documents(contract, mine, docs.get)
+    assert out["alternatives"] == ["B"] and out["same_documents"] == ["B minori", "C"] and out["ambiguous"]

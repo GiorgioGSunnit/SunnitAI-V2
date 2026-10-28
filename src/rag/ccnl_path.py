@@ -168,15 +168,20 @@ def _fmt(d: Optional[date]) -> str:
 # --- step 1: the contract -------------------------------------------------------------------------------
 
 # Common names of a sector family: (label, the question's words, the sector names' words). Both sides are
-# matched on folded text (_fold).
+# matched on folded text (_fold). Tourism is split by activity: its sectors are named "Turismo <association> -
+# <activity>" (pubblici esercizi, aziende alberghiere, campeggi, agenzie di viaggi, stabilimenti balneari).
 CONCEPTS: List[Tuple[str, str, str]] = [
     ("metalmeccanici", r"metalmeccanic\w*|officina meccanica|carpenteria metallica|siderurgic\w*|fonderi\w*",
      r"metalmeccanic"),
-    ("commercio", r"commerci(?:o|ale)?\b|terziario|negozi\w*|commess[oaie]|supermercat\w*|grande distribuzione|"
-                  r"vendita al dettaglio|cassier[ea]", r"terziario|\bcommercio\b|distribuzione"),
-    ("turismo", r"turism\w*|turistic\w*|alberg\w*|hotel|pubblici esercizi|ristorant\w*|\bbar\b|camerier\w*|"
-                r"\bcuoc[oa]\b|barista|pizzeri\w*|stabiliment\w* balnear\w*|campeggi\w*",
-     r"turismo|pubblici esercizi|alberghi|ristorazione"),
+    ("commercio", r"commerci(?:o|ale)?\b|terziario|negozi\w*|commess[oaie]|supermercat\w*|ipermercat\w*|"
+                  r"grande distribuzione|vendita al dettaglio|cassier[ea]", r"\bterziario|\bcommercio\b|\bdistribuzione"),
+    ("turismo", r"turism\w*|turistic\w*", r"turismo"),
+    ("pubblici esercizi", r"pubblici esercizi|ristorant\w*|\bbar\b|camerier\w*|\bcuoc[oa]\b|barista|pizzeri\w*|"
+                          r"trattori\w*|\bpub\b|somministrazione di (?:alimenti|bevande)", r"pubblici esercizi|\bp esercizi"),
+    ("alberghi", r"alberg\w*|hotel|\bresort\b", r"\balberg\w*\b(?! diurn)"),     # "Alberghi diurni": another trade
+    ("campeggi", r"campeggi\w*|villaggi\w* turistic\w*", r"campegg"),
+    ("agenzie di viaggi", r"agenzi\w* (?:di )?viagg\w*|tour operator", r"agenzie (?:di )?viagg|ag viaggi|imprese di viaggi"),
+    ("stabilimenti balneari", r"stabiliment\w* balnear\w*|\blido\b|bagnin\w*", r"balnear"),
     ("studi professionali", r"studi\w* professional\w*|studio legale|studio (?:di )?commercialist\w*|"
                             r"studio notarile|studio tecnico|studio medico|praticant\w*",
      r"studi professionali"),
@@ -210,15 +215,26 @@ VARIANT_GROUPS: Dict[str, List[Tuple[str, str]]] = {
               ("cooperative", r"cooperativ\w*"),
               ("industria", r"\bindustri\w*")],
     "convivenza": [("non convivente", r"\bnon convivent\w*"), ("convivente", r"(?<!non )\bconvivent\w*")],
-    "sindacato": [("cisal-anpit", r"\bcisal\b|\banpit\b"), ("ugl", r"\bugl\b"), ("confsal", r"\bconfsal\b"),
-                  ("confcommercio", r"confcommercio"), ("confesercenti", r"confesercenti")],
 }
+# The employers' associations a sector's name may carry outside brackets ("Commercio - Confcommercio",
+# "Turismo Confesercenti - Alberghi"); the ones in brackets are read from the brackets.
+_ASSOCIATIONS_RE = re.compile(r"\b(?:confcommercio|confesercenti|confindustria|federdistribuzione|confapi|"
+                              r"confartigianato|casartigiani|cna|legacoop|confcooperative|federterziario)\b")
+# Categories of workers with a contract of their own: a sector naming one fits only a question that does.
+SPECIAL_CATEGORIES = [("dirigenti", r"\bdirigent\w*"),
+                      ("agenti e rappresentanti", r"\bagenti e rappresentant\w*|\bagent\w* di commercio|"
+                                                  r"\brappresentant\w* di commercio"),
+                      ("personale artistico", r"\bpersonale artistic\w*|\bartist\w*")]
+# A size or a scope inside one contract ("minori", "fino a 15 dip."): never the first choice the text does not ask.
+_SIZE_RE = re.compile(r"\bminori\b|\bmaggiori\b|\bfino a \d+|\boltre \d+|\bda \d+ (?:a \d+ )?dip")
 _STOP = {"del", "della", "dello", "dei", "delle", "degli", "di", "da", "dal", "dalla", "per", "con", "e", "ed",
          "il", "la", "lo", "le", "gli", "i", "un", "una", "uno", "in", "su", "tra", "fra", "a", "al", "alla", "ai",
          "ccnl", "contratto", "collettivo", "nazionale", "lavoro", "settore", "personale", "dipendenti", "addetti",
          "aziende", "imprese"}
 # A sector's name ends with a date qualifier ("(dal 01.07.04)") that is no part of its words.
 _DATE_QUALIFIER_RE = re.compile(r"\(\s*dal\s+[\d.\s/]+\)", re.I)
+_BRACKETS_RE = re.compile(r"\(([^)]*)\)")
+MIN_STEM = 5
 
 
 def _stem(word: str) -> str:
@@ -227,6 +243,13 @@ def _stem(word: str) -> str:
 
 def _words(text: str) -> List[str]:
     return [w for w in _fold(text).split() if w not in _STOP and len(w) >= 4 and not w.isdigit()]
+
+
+def _written(word: str, words: set, stems: set) -> bool:
+    """A sector's word written in the text: by its stem when that has MIN_STEM letters or more, else as the word
+    itself ("posto" is not "Poste")."""
+    stem = _stem(word)
+    return stem in stems if len(stem) >= MIN_STEM else word in words
 
 
 def _variant(text_folded: str, group: str) -> Optional[str]:
@@ -243,15 +266,29 @@ def sector_head(sector: str) -> str:
     return re.split(r"\s+[-–—]\s+|\(", name, maxsplit=1)[0].strip()
 
 
+def signatory(sector: str) -> Tuple[str, bool]:
+    """(the folded words of who signed the sector's contract -- its brackets, except a date, and any employers'
+    association its name carries --, whether they come from brackets: a minor signatory)."""
+    name = _DATE_QUALIFIER_RE.sub(" ", sector or "")
+    bracketed = " ".join(_fold(m) for m in _BRACKETS_RE.findall(name))
+    named = " ".join(_ASSOCIATIONS_RE.findall(_fold(_BRACKETS_RE.sub(" ", name))))
+    return " ".join(x for x in (bracketed, named) if x), bool(bracketed.strip())
+
+
 def score_sectors(text: str, sectors: Dict[str, int]) -> List[Dict[str, Any]]:
     """Every sector the text points to, best first: {"sector", "score", "why", "variants", "docs"}. The score:
     the whole name written in the text +10; a common name (CONCEPTS) of its family +3; every word of its family
-    part written (as a stem) +3; each other word of its name written +1; per variant group, the variant the text
-    names +2, another variant of that group -2."""
+    part written +3; each other word of its name written +1; per variant group, the variant the text names +2,
+    another variant of that group -2; a signatory the text names +2, another signatory -2 (when the text names
+    one); a special category of workers (dirigenti ...) the text does not ask -3."""
     folded = _fold(text)
+    words = set(_words(text)) | set(folded.split())
     stems = {_stem(w) for w in _words(text)}
     asked = {group: _variant(folded, group) for group in VARIANT_GROUPS}
-    concepts = [(label, side) for label, words, side in CONCEPTS if re.search(words, folded)]
+    concepts = [(label, side) for label, phrase, side in CONCEPTS if re.search(phrase, folded)]
+    signatories = {sector: signatory(sector) for sector in sectors}
+    vocabulary = {w for sig, _ in signatories.values() for w in sig.split() if len(w) >= 3 and w not in _STOP}
+    asked_signatory = {w for w in folded.split() if w in vocabulary}
     out = []
     for sector, docs in sectors.items():
         name = _fold(_DATE_QUALIFIER_RE.sub(" ", sector))
@@ -265,12 +302,12 @@ def score_sectors(text: str, sectors: Dict[str, int]) -> List[Dict[str, Any]]:
             if re.search(side, name):
                 score += 3
                 why.append(f"concept {label}")
-        head = [_stem(w) for w in _words(sector_head(sector))]
-        if head and all(h in stems for h in head):
+        head = _words(sector_head(sector))
+        if head and all(_written(w, words, stems) for w in head):
             score += 3
             why.append("family words")
-        rest = [_stem(w) for w in _words(sector)][len(head):]
-        extra = [w for w in rest if w in stems]
+        rest = _words(sector)[len(head):]
+        extra = [w for w in rest if _written(w, words, stems)]
         if extra and score:
             score += len(extra)
             why.append(f"words {', '.join(extra)}")
@@ -286,25 +323,40 @@ def score_sectors(text: str, sectors: Dict[str, int]) -> List[Dict[str, Any]]:
             else:
                 score -= 2
                 why.append(f"other variant {variants[group]} (asked {wanted})")
+        sig, minor = signatories[sector]
+        if asked_signatory and sig:
+            if set(sig.split()) & asked_signatory:
+                score += 2
+                why.append(f"signatory {sig}")
+            else:
+                score -= 2
+                why.append(f"other signatory {sig} (asked {', '.join(sorted(asked_signatory))})")
+        for label, pattern in SPECIAL_CATEGORIES:
+            if re.search(pattern, name) and not re.search(pattern, folded):
+                score -= 3
+                why.append(f"{label} not asked")
+        variants["signatory"] = sig if minor else None
+        variants["size"] = bool(_SIZE_RE.search(name))
         out.append({"sector": sector, "score": score, "why": why, "variants": variants, "docs": docs,
-                    "unmatched": len([w for w in _words(sector) if _stem(w) not in stems])})
+                    "unmatched": len([w for w in _words(sector) if not _written(w, words, stems)])})
     out.sort(key=lambda c: (-c["score"], -_preference(c), c["unmatched"], -c["docs"], c["sector"]))
     return out
 
 
 def _preference(candidate: Dict[str, Any]) -> int:
-    """Between variants the text does not settle: the industry's own contract, then a name with no variant,
-    then the others; no union qualifier before one."""
+    """Between sectors the text does not tell apart: no minor (bracketed) signatory first, then no size or
+    scope ("minori", "fino a 15 dip."), then the industry's own form, then a name with no form."""
     variants = candidate.get("variants") or {}
     form = variants.get("forma")
     rank = 2 if form == "industria" else 1 if form is None else 0
-    return rank * 2 + (0 if variants.get("sindacato") else 1)
+    return (0 if variants.get("signatory") else 8) + (0 if variants.get("size") else 4) + rank
 
 
 def identify_contract(text: str, sectors: Dict[str, int], llm: bool = True) -> Dict[str, Any]:
     """{"sector", "how", "ambiguous", "alternatives", "candidates", "assumption"}; sector None when nothing
     matches. Ambiguous: two or more sectors share the top score -- the text did not settle the variant; the
-    first by _preference is used and the others are the alternatives to confirm."""
+    first by _preference is used and the others are the alternatives to confirm (settle_by_documents then drops
+    those filed with the very same documents)."""
     candidates = score_sectors(text, sectors)
     info: Dict[str, Any] = {"sector": None, "how": None, "ambiguous": False, "alternatives": [],
                             "candidates": [{k: c[k] for k in ("sector", "score", "why", "docs")} for c in candidates[:8]]}
@@ -315,7 +367,7 @@ def identify_contract(text: str, sectors: Dict[str, int], llm: bool = True) -> D
         info["how"] = "; ".join(candidates[0]["why"])
         if len(tied) > 1:
             info["ambiguous"] = True
-            info["alternatives"] = [c["sector"] for c in tied[1:5]]
+            info["alternatives"] = [c["sector"] for c in tied[1:9]]
     elif llm and sectors:
         from .calculation import _classify_sector_llm
         picked = _classify_sector_llm(text, sorted(sectors))
@@ -323,6 +375,33 @@ def identify_contract(text: str, sectors: Dict[str, int], llm: bool = True) -> D
             info.update(sector=picked, how="llm pick from the sector list", ambiguous=True)
     info["assumption"] = bool(info["sector"] and info["ambiguous"])
     return info
+
+
+def documents_signature(docs: Iterable[Dict[str, Any]]) -> frozenset:
+    """A sector's documents as (kind, valid_from, valid_until): two sectors with the same signature hold one
+    contract filed twice ("Pubblici esercizi" and "Pubblici esercizi minori")."""
+    return frozenset((doc_kind(d), str(to_date(d.get("valid_from"))), str(to_date(d.get("valid_until"))))
+                     for d in docs)
+
+
+def settle_by_documents(contract: Dict[str, Any], chosen_docs: Sequence[Dict[str, Any]],
+                        docs_of) -> Dict[str, Any]:
+    """The contract without the alternatives filed with the chosen sector's very documents, or with an earlier
+    alternative's (docs_of(sector) -> its documents); no alternative left, no ambiguity. At most 4 kept."""
+    if not contract.get("ambiguous") or not contract.get("alternatives") or contract.get("how", "").startswith("llm"):
+        return contract
+    seen = {documents_signature(chosen_docs)}
+    kept, same = [], []
+    for sector in contract["alternatives"]:
+        if len(kept) >= 4:
+            break
+        signature = documents_signature(docs_of(sector))
+        (same if signature in seen else kept).append(sector)
+        seen.add(signature)
+    out = {**contract, "alternatives": kept, "same_documents": same}
+    if not kept:
+        out.update(ambiguous=False, assumption=False)
+    return out
 
 
 # --- step 2: the version --------------------------------------------------------------------------------
@@ -454,7 +533,7 @@ TOPICS: Dict[str, Dict[str, Any]] = {
                                "preavviso di dimissioni", "indennità sostitutiva del preavviso", "indennità di mancato "
                                "preavviso", "dimissioni"],
                   "headings": ["preavviso", "termini di preavviso", "preavviso di licenziamento e dimissioni",
-                               "risoluzione del rapporto", "recesso", "dimissioni"],
+                               "risoluzione del rapporto", "dimissioni"],
                   "framework": [("2118", "c.c."), ("2119", "c.c.")]},
     "prova": {"re": r"periodo di prova|\bin prova\b|patto di prova|\bla prova\b",
               "keywords": ["periodo di prova", "patto di prova", "assunzione in prova", "durata della prova",
@@ -475,7 +554,7 @@ TOPICS: Dict[str, Dict[str, Any]] = {
                                   "sospensione dal servizio", "licenziamento disciplinare", "contestazione",
                                   "giustificazioni", "recidiva", "disciplinari"],
                      "headings": ["provvedimenti disciplinari", "sanzioni disciplinari", "codice disciplinare",
-                                  "norme disciplinari", "procedura disciplinare", "provvedimenti", "disciplina"],
+                                  "norme disciplinari", "procedura disciplinare", "provvedimenti e sanzioni"],
                      "framework": [("7", "l. 300/1970"), ("2106", "c.c."), ("2104", "c.c.")]},
     "licenziamento": {"re": r"licenzi\w*",
                       "keywords": ["licenziamento", "licenziamenti", "giusta causa", "giustificato motivo", "recesso"],
@@ -656,40 +735,85 @@ CLAUSE_CHARS = 4000
 RRF_K = 60
 
 
-def heading_score(row: Dict[str, Any], phrases: Sequence[str]) -> int:
-    """How surely the Section opens a clause on the topic: 3 an "Art. N - <title>" in its text whose title holds
-    one of the phrases; 2 its name is a phrase, holds one, or is a phrase's tail of two words or more ("di prova"
-    of "periodo di prova": the heading cut by the ingestion); 1 its text opens with a phrase; 0 otherwise -- also
-    for a table of contents (four or more headings with little text between)."""
+# A regime with rules of its own: a heading inside one (the apprentices' "Art. 7 - Periodo di prova", a
+# fixed-term title's) answers only a question about it.
+SPECIAL_CONTEXTS = [r"apprendist\w*", r"tempo determinato|contratt\w* a termine", r"dirigent\w*",
+                    r"somministra\w*", r"tempo parziale|part[- ]?time", r"telelavor\w*|lavoro agile"]
+# Words a heading's tail must hold more than ("del rapporto" is the tail of many headings).
+_GENERIC_TAIL_WORDS = {"rapporto", "lavoro", "contratto", "personale", "trattamento", "disciplina", "periodo",
+                       "durata", "norme", "lavoratori", "lavoratore", "generale", "generali"}
+
+
+def _special(context: str, question: str) -> bool:
+    folded_q = _fold(question)
+    return any(re.search(p, context) and not re.search(p, folded_q) for p in SPECIAL_CONTEXTS)
+
+
+def heading_match(row: Dict[str, Any], phrases: Sequence[str], question: str = "") -> Dict[str, Any]:
+    """How surely the Section holds a clause on the topic, and where it starts: {"score", "via", "anchor",
+    "ref", "title"}. Score 4: an "Art. N - <title>" in its text whose title is a phrase (via "heading", anchor its
+    offset), or a name that is a phrase or its tail of two words or more holding a specific word ("di prova" of
+    "periodo di prova": the heading cut by the ingestion; via "name"); 3: a heading title holding a phrase; 2: a
+    name holding one; 1: a text opening with one; 0: none, an empty text, a table of contents (four or more
+    headings with little text between). A match inside a special regime the question does not ask about (the
+    apprentices', a fixed-term title) loses 3."""
     text = row.get("text") or ""
+    none = {"score": 0, "via": None, "anchor": None, "ref": None, "title": None}
     folded_phrases = [_fold(p) for p in phrases if _fold(p)]
-    if not folded_phrases:
-        return 0
+    if not folded_phrases or not text.strip():
+        return none
     heads = article_headings(text)
     if len(heads) >= 4 and len(text) / len(heads) < 160:
-        return 0
-    for _, _, title in heads:
+        return none
+    best = dict(none)
+    for pos, ref, title in heads:
         t = _fold(title)
-        if t and any(re.search(rf"\b{re.escape(p)}\b", t) for p in folded_phrases):
-            return 3
+        if not t:
+            continue
+        if any(t == p or (t.startswith(p) and len(t) <= len(p) + 4) for p in folded_phrases):
+            score = 4
+        elif any(re.search(rf"\b{re.escape(p)}\b", t) for p in folded_phrases):
+            score = 3
+        else:
+            continue
+        if _special(_fold(text[max(0, pos - 200):pos + 300]), question):
+            score = max(0, score - 3)
+        if score > best["score"]:
+            best = {"score": score, "via": "heading", "anchor": pos, "ref": ref, "title": title}
     name = _fold(row.get("name") or "")
-    if name and (any(name == p or re.search(rf"\b{re.escape(p)}\b", name) for p in folded_phrases)
-                 or (len(name) >= 5 and " " in name and any(p.endswith(" " + name) for p in folded_phrases))):
-        return 2
-    opening = _fold(text[:80])
-    if any(opening.startswith(p) for p in folded_phrases):
-        return 1
-    return 0
+    if name:
+        tail = (len(name) >= 5 and " " in name and set(name.split()) - _GENERIC_TAIL_WORDS - _STOP
+                and any(p.endswith(" " + name) for p in folded_phrases))
+        if name in folded_phrases or tail:
+            score = 4
+        elif any(re.search(rf"\b{re.escape(p)}\b", name) for p in folded_phrases):
+            score = 2
+        else:
+            score = 0
+        if score and _special(_fold(name + " " + text[:300]), question):
+            score = max(0, score - 3)
+        if score > best["score"]:
+            best = {"score": score, "via": "name", "anchor": None, "ref": None, "title": None}
+    if not best["score"]:
+        opening = _fold(text[:80])
+        if any(opening.startswith(p) for p in folded_phrases):
+            best = {"score": 1, "via": "opening", "anchor": None, "ref": None, "title": None}
+    return best
+
+
+def heading_score(row: Dict[str, Any], phrases: Sequence[str], question: str = "") -> int:
+    return heading_match(row, phrases, question)["score"]
 
 
 def rank_sections(rows: Sequence[Dict[str, Any]], keywords: Sequence[str],
-                  headings: Sequence[str] = ()) -> List[Dict[str, Any]]:
+                  headings: Sequence[str] = (), question: str = "") -> List[Dict[str, Any]]:
     """The rows worth a look, best first, each with "_lex", "_head", "_rrf": a Section whose heading names the
     topic (heading_score) first, then the cosine ranking (rows with a "sim") and the lexical one fused by
     reciprocal rank; a row needs a heading match, a lexical hit or a top-10 cosine."""
     for r in rows:
         r["_lex"] = lexical_score(r.get("text") or "", keywords)
-        r["_head"] = heading_score(r, headings)
+        match = heading_match(r, headings, question)
+        r["_head"], r["_via"], r["_anchor"] = match["score"], match["via"], match["anchor"]
     by_sim = sorted((r for r in rows if r.get("sim") is not None), key=lambda r: -float(r["sim"]))
     by_lex = sorted((r for r in rows if r["_lex"] > 0), key=lambda r: -r["_lex"])
     sim_rank = {id(r): i for i, r in enumerate(by_sim)}
@@ -716,11 +840,64 @@ def _body_chars(text: str) -> int:
     return max(0, len((text or "")[pos:].strip()) - len(ref) - len(title) - 4)
 
 
-def rebuild_clause(doc_rows: List[Dict[str, Any]], at: int, max_chars: int = CLAUSE_CHARS) -> Dict[str, Any]:
-    """The clause around the hit doc_rows[at] (the document's Sections in order): from the section holding its
-    heading (the hit itself, else up to 3 before) -- or the one before -- to the sections after it that do not
-    open a new article (5 after a heading-only hit, else 2), while under max_chars. {"start", "end", "text", "ref",
-    "title", "hit"}."""
+def _extend(doc_rows: List[Dict[str, Any]], at: int, size: int, after: int, max_chars: int) -> Tuple[List[str], int]:
+    """The sections after doc_rows[at] that continue its clause: up to `after` of them, while under max_chars,
+    stopping at one that opens a new article and cutting one at the first heading it holds."""
+    parts, end = [], at
+    while end + 1 < len(doc_rows) and end - at < after and size < max_chars:
+        nxt = doc_rows[end + 1].get("text") or ""
+        heads = article_headings(nxt)
+        cut = heads[0][0] if heads else None
+        if cut is not None and cut <= 3:
+            break
+        piece = nxt[:cut] if cut is not None else nxt
+        parts.append(piece)
+        end += 1
+        size += len(piece)
+        if cut is not None:
+            break
+    return parts, end
+
+
+def rebuild_clause(doc_rows: List[Dict[str, Any]], at: int, max_chars: int = CLAUSE_CHARS,
+                   anchor: Optional[int] = None, name_headed: bool = False) -> Dict[str, Any]:
+    """The clause around the hit doc_rows[at] (the document's Sections in order), {"start", "end", "text", "ref",
+    "title", "hit"}:
+      anchor       (a heading matched at that offset of the hit's text) from that heading to the next one, in
+                   the hit or in the sections after it -- a Section often holds several articles;
+      name_headed  (the hit is named after its heading's tail, "di prova") from the hit, its article number
+                   only from a heading ending the section before ("... Art. 109 -"), its title that heading's
+                   title and the name;
+      otherwise    from the section holding its heading (the hit itself, else up to 3 before) -- or the one
+                   before -- to the sections after it that do not open a new article.
+    5 sections after a heading-only hit, else 2."""
+    hit_text = doc_rows[at].get("text") or ""
+    after = 5 if _body_chars(hit_text) < HEADING_ONLY_CHARS else 2
+    if anchor is not None and 0 <= anchor < len(hit_text):
+        segment = hit_text[anchor:]
+        heads = article_headings(segment)
+        ref, title = (heads[0][1], heads[0][2]) if heads else (None, "")
+        later = [h for h in heads if h[0] > 5]
+        if later:
+            text, end = segment[:later[0][0]], at
+        else:
+            parts, end = _extend(doc_rows, at, len(segment), 5 if len(segment) < 600 else after, max_chars)
+            text = "\n".join([segment] + [p for p in parts if p.strip()])
+        return {"start": at, "end": end, "text": text.strip()[:max_chars], "ref": ref,
+                "title": title or _title_from_name(doc_rows[at].get("name") or ""), "hit": doc_rows[at].get("id")}
+    if name_headed:
+        ref, head_title = None, ""
+        if at > 0:
+            prev = doc_rows[at - 1].get("text") or ""
+            heads = article_headings(prev)
+            if heads and len(prev[heads[-1][0]:].strip()) <= len(heads[-1][1]) + len(heads[-1][2]) + 6:
+                ref, head_title = heads[-1][1], heads[-1][2]          # the heading ends the section
+        name = (doc_rows[at].get("name") or "").strip(" -–—,.")
+        title = f"{head_title} {name}".strip() if head_title else (name[:1].upper() + name[1:])[:90]
+        parts, end = _extend(doc_rows, at, len(hit_text), after, max_chars)
+        text = "\n".join([hit_text] + [p for p in parts if p.strip()])
+        return {"start": at, "end": end, "text": text.strip()[:max_chars], "ref": ref, "title": title,
+                "hit": doc_rows[at].get("id")}
     start = at
     heading_at = None
     for back in range(0, 4):
@@ -732,20 +909,11 @@ def rebuild_clause(doc_rows: List[Dict[str, Any]], at: int, max_chars: int = CLA
             break
     if heading_at is not None and at - heading_at <= 2:
         start = heading_at
-    elif at > 0 and not opens_with_heading(doc_rows[at].get("text") or ""):
+    elif at > 0 and not opens_with_heading(hit_text):
         start = at - 1
-    end = at
     size = sum(len(doc_rows[i].get("text") or "") for i in range(start, at + 1))
-    # A hit that is only a heading ("Art. 23 - Periodo di prova", or a heading's tail) has its clause in the
-    # sections after it: up to 5 of them instead of 2.
-    after = 5 if _body_chars(doc_rows[at].get("text") or "") < HEADING_ONLY_CHARS else 2
-    while end + 1 < len(doc_rows) and end - at < after:
-        nxt = doc_rows[end + 1].get("text") or ""
-        if opens_with_heading(nxt) or size + len(nxt) > max_chars:
-            break
-        end += 1
-        size += len(nxt)
-    parts = [doc_rows[i].get("text") or "" for i in range(start, end + 1)]
+    more, end = _extend(doc_rows, at, size, after, max_chars)
+    parts = [doc_rows[i].get("text") or "" for i in range(start, at + 1)] + more
     text = "\n".join(p for p in parts if p.strip())
     # The heading that governs the hit: the last one before the hit's own text, else the first one in it near
     # its start, else one up to 3 sections before.
@@ -785,7 +953,10 @@ def clause_reference(clause: Dict[str, Any]) -> str:
 # "Livello 3 1.743,75".
 _AMOUNT = r"(?:€\s*)?\d{1,3}(?:\.\d{3})*,\d{2}"
 _AMOUNT_RE = re.compile(_AMOUNT)
-_LEVEL = (r"(?:(?i:livello|liv\.?|categoria|cat\.?)\s*)?(?:Q(?:uadr[oi])?|[1-9](?:°|º|o)?(?:\s?S(?:uper)?)?|"
+_LEVEL = (r"(?i:operai[oe]?\s+(?:specializzat[oi]|qualificat[oi]|comun[ei])(?:\s+super)?|"
+          r"impiegat[oi]\s+(?:di\s+)?[1-9](?:°|º|ª|a)?\s*(?:categoria|livello)(?:\s+super)?|"
+          r"[1-9](?:°|º|ª)?\s*(?:livello|categoria|liv\.)|quadr[oi]|apprendist[ai])|"
+          r"(?:(?i:livello|liv\.?|categoria|cat\.?)\s*)?(?:Q(?:uadr[oi])?|[1-9](?:°|º|ª|o)?(?:\s?S(?:uper)?)?|"
           r"A[1-3S]?|B[1-3S]?|C[1-3]?(?:\s?Super)?|D[1-3]?(?:\s?Super)?|E[1-3]?|F)")
 _ROW_RE = re.compile(rf"(?:(?<=\s)|^|(?<=\|))(?<!€ )\s*({_LEVEL})(?:\s+|\s*\|\s*)((?:{_AMOUNT}\s*\|?\s*)+)")
 _DECORRENZA_RE = re.compile(r"(?:dal|decorrenza(?: dal)?|a decorrere dal)\s+(\d{1,2}(?:°|º)?[/.\s-]\s*(?:\d{1,2}|"
@@ -835,6 +1006,21 @@ def framework_refs(topics: Sequence[str]) -> List[Tuple[str, str]]:
 def _law_parts(label: str) -> Optional[Tuple[str, str]]:
     m = re.search(r"(\d{1,4})/((?:19|20)\d{2})$", label)
     return (m.group(1), m.group(2)) if m else None
+
+
+# The standard labour norms the corpus may lack (no primary document for d.lgs. 66/2003 or l. 300/1970 on 28 Oct):
+# cited by reference with their rubrica, never with a text.
+FRAMEWORK_REFERENCES = {
+    ("7", "l. 300/1970"): "Statuto dei lavoratori - Sanzioni disciplinari",
+    ("18", "l. 300/1970"): "Statuto dei lavoratori - Tutela del lavoratore in caso di licenziamento illegittimo",
+    ("10", "d.lgs. 66/2003"): "Ferie annuali",
+    ("3", "d.lgs. 66/2003"): "Orario normale di lavoro",
+    ("5", "d.lgs. 66/2003"): "Lavoro straordinario",
+    ("3", "d.lgs. 23/2015"): "Licenziamento per giustificato motivo e giusta causa",
+    ("19", "d.lgs. 81/2015"): "Apposizione del termine e durata massima",
+    ("21", "d.lgs. 81/2015"): "Proroghe e rinnovi",
+    ("42", "d.lgs. 81/2015"): "Disciplina generale dell'apprendistato",
+}
 
 
 # A law some corpora name by its title, not its number: looked up by these words when the number finds none.
@@ -910,7 +1096,9 @@ _SYSTEM_NO_PAY = "Importi solo se scritti nel materiale, con livello e decorrenz
 _SYSTEM_LAW = (
     "**Quadro normativo** - ciascun articolo di legge fornito che riguarda la domanda, citato con il codice o la "
     "legge (es. art. 2109 c.c., art. 7 l. 300/1970), e come il CCNL vi si inserisce (il contratto collettivo può "
-    "migliorare, non peggiorare, le tutele inderogabili). Cita solo gli articoli forniti.\n")
+    "migliorare, non peggiorare, le tutele inderogabili). Cita solo gli articoli forniti; quelli segnati «testo "
+    "non disponibile» citali come norma di riferimento con la loro rubrica, senza attribuire loro contenuti che il "
+    "materiale non riporta.\n")
 _SYSTEM_RULINGS = (
     "**Giurisprudenza** - solo le pronunce fornite che decidono il punto della domanda, in una o due frasi "
     "ciascuna. Se nessuna lo decide, NON scrivere questa sezione e non dire che le pronunce non sono pertinenti.\n")
@@ -1173,6 +1361,8 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
         # 2 the version
         when, how = relevant_date(question, today)
         docs = sector_documents(session, contract["sector"])
+        contract = settle_by_documents(contract, docs, lambda sector: sector_documents(session, sector))
+        info["contract"] = contract
         version = choose_version(docs, when)
         if version["base"] is None:
             info["outcome"] = "no documents for the sector"
@@ -1200,7 +1390,30 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
         for r in rows:
             r["text"] = clean(r.get("text"))
         is_pay = any(TOPICS[t].get("pay") for t in topics)
-        clauses, order_used = select_clauses(rows, chosen, keywords, pay=is_pay, headings=topic_headings(topics))
+        clauses, order_used = select_clauses(rows, chosen, keywords, pay=is_pay, headings=topic_headings(topics),
+                                             question=question)
+        # A clause the topic's words or headings found; the rest (cosine alone) only when nothing else is.
+        strong = [c for c in clauses if c.get("_head", 0) >= 2 or c.get("_lex", 0) >= 4]
+        later = None
+        if strong:
+            clauses = [c for c in clauses if c.get("_head", 0) or c.get("_lex", 0)]
+        elif version["base"]["kind"] not in BASE_KINDS:
+            # The base is a renewal (the full text in force at the date is not in the database): the clause from
+            # the earliest full text after the date, said to be later.
+            later = later_full_text(docs, when)
+            if later is not None:
+                later_rows = document_sections(session, [later["id"]], embedding)
+                for r in later_rows:
+                    r["text"] = clean(r.get("text"))
+                found, _ = select_clauses(later_rows, [later], keywords, headings=topic_headings(topics),
+                                          question=question)
+                found = [c for c in found if c.get("_head", 0) >= 2 or c.get("_lex", 0) >= 4]
+                if found:
+                    for c in found:
+                        c["later"] = True
+                    clauses = found
+                else:
+                    later = None
         pay = pay_tables(group_ordered(rows)[0], chosen, when) if is_pay else None
         if pay is not None:
             info["pay"] = {"candidates": pay["candidates"],
@@ -1212,6 +1425,7 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
                            if pay["superseded_by"] else None}
             vlog("ccnl_pay", info["pay"])
         info["clauses"] = {"topics": topics, "keywords": keywords, "sections": len(rows), "order_by": order_used,
+                           "later_text": _doc_log(later) if later else None,
                            "found": [{"doc": short_name(c["doc"]), "ref": clause_reference(c),
                                       "sections": c["span"], "rows": len((c.get("rows") or {}).get("rows") or []),
                                       "text": c["text"][:400]} for c in clauses]}
@@ -1224,6 +1438,8 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
         rulings = source_tiers.support_rulings(session, code_refs, question, 3, stage="ccnl") if code_refs else []
         info["framework"] = {"wanted": [f"{n} {label}" for n, label in refs], "missing": missing,
                              "found": [f"{r['_article'][0]} {r['_article'][1]}" for r in framework],
+                             "by_reference": [f"{n} {label}" for n, label in refs if f"{n} {label}" in missing
+                                              and (n, label) in FRAMEWORK_REFERENCES],
                              "rulings": [(r.get("d") or {}).get("name") for r in rulings]}
         vlog("ccnl_framework", info["framework"])
     material_blocks = [_clause_block(i, c, pay is None) for i, c in enumerate(clauses, 1)]
@@ -1232,11 +1448,21 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     law_blocks = [f"[LEGGE] art. {r['_article'][0]} {r['_article'][1]}"
                   f"{' - ' + r['s'].get('titolo_articolo') if r['s'].get('titolo_articolo') else ''}\n"
                   f"{clean(r['s'].get('plain_text'))[:1500]}" for r in framework]
+    law_blocks += [f"[LEGGE - testo non disponibile] art. {n} {label} - {FRAMEWORK_REFERENCES[(n, label)]}"
+                   for n, label in refs if f"{n} {label}" in missing and (n, label) in FRAMEWORK_REFERENCES]
     ruling_blocks = [f"[PRONUNCIA] {_doc_name(r.get('d') or {})}\n"
                      f"{clean((r.get('s') or {}).get('plain_text'))[:900]}" for r in rulings]
     head = header(contract, version, when, how) + (f"\n{pay_line(pay)}" if pay is not None else "")
+    if later is not None:
+        head += (f"\nNota: il testo integrale del CCNL in vigore al {_fmt(when)} non è nella banca dati (c'è "
+                 f"{short_name(version['base']).split(' — ')[-1]}, che non regola questo punto); la clausola citata è "
+                 f"tratta da {short_name(later).split(' — ')[-1]} (in vigore dal {_fmt(later.get('from'))}), successivo "
+                 f"alla data: verificare che la regola fosse già la stessa.")
     human = (f"Domanda: {question}\n\nContratto: CCNL {contract['sector']}; data di riferimento {_fmt(when)}.\n"
-             f"Le clausole di accordi successivi prevalgono su quelle del testo base sullo stesso punto.\n\n"
+             f"Le clausole di accordi successivi prevalgono su quelle del testo base sullo stesso punto.\n"
+             + (f"ATTENZIONE: le clausole vengono da {short_name(later)}, in vigore dal {_fmt(later.get('from'))}, "
+                f"successivo alla data: presentale come la regola del testo successivo, da verificare per la data.\n"
+                if later is not None else "") + "\n"
              + ("\n\n".join(material_blocks) or "[nessuna clausola pertinente trovata nel CCNL]")
              + "\n\n" + ("\n\n".join(law_blocks) or "[nessun articolo di legge reperito]")
              + ("\n\n" + "\n\n".join(ruling_blocks) if ruling_blocks else ""))
@@ -1273,6 +1499,13 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
             "ccnl": info, "route": "ccnl"}
 
 
+def later_full_text(docs: Sequence[Dict[str, Any]], when: date) -> Optional[Dict[str, Any]]:
+    """The sector's earliest CCNL or Testo Consolidato starting after `when` (a CCNL before a Testo Consolidato
+    of the same date: the text closest to the date's), None without one."""
+    full = [d for d in (_doc_view(x) for x in docs) if d["kind"] in BASE_KINDS and d["from"] and d["from"] > when]
+    return min(full, key=lambda d: (d["from"], d["kind"] != CCNL, d.get("id") or "")) if full else None
+
+
 def _doc_name(d: Dict[str, Any]) -> str:
     return re.sub(r"^\s*\[[A-Z]+\]\s*", "", str(d.get("name") or d.get("id") or ""))
 
@@ -1296,7 +1529,7 @@ def group_ordered(rows: List[Dict[str, Any]]) -> Tuple[Dict[str, List[Dict[str, 
 
 
 def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]], keywords: Sequence[str],
-                   pay: bool = False, headings: Sequence[str] = ()
+                   pay: bool = False, headings: Sequence[str] = (), question: str = ""
                    ) -> Tuple[List[Dict[str, Any]], Dict[str, Optional[str]]]:
     """(the clauses, rebuilt from the best hits -- a heading naming the topic first (rank_sections) --: at most
     MAX_BASE_CLAUSES from the base, MAX_AMENDMENT_CLAUSES from the amendments -- the latest first on a tie --,
@@ -1310,7 +1543,7 @@ def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]],
     docs = {d["id"]: d for d in chosen}
     base_id = chosen[0]["id"] if chosen else None
     rank = {d["id"]: i for i, d in enumerate(chosen)}
-    hits = rank_sections(rows, keywords, headings)
+    hits = rank_sections(rows, keywords, headings, question)
     hits.sort(key=lambda r: (-r["_head"], -round(r["_rrf"], 6), -rank.get(r["doc"], 0), str(r.get("id"))))
     clauses: List[Dict[str, Any]] = []
     taken: Dict[str, List[Tuple[int, int]]] = {}
@@ -1324,7 +1557,9 @@ def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]],
             continue
         if any(a <= i <= b for a, b in taken.get(doc_id, [])):
             continue
-        clause = rebuild_clause(by_doc[doc_id], i)
+        clause = rebuild_clause(by_doc[doc_id], i, anchor=r.get("_anchor") if r.get("_via") == "heading" else None,
+                                name_headed=r.get("_via") == "name" and r.get("_head", 0) >= 2)
+        clause["_head"], clause["_lex"] = r.get("_head", 0), r.get("_lex", 0)
         taken.setdefault(doc_id, []).append((clause["start"], clause["end"]))
         clause["doc"] = docs.get(doc_id) or {"id": doc_id, "name": doc_id, "kind": OTHER}
         clause["span"] = [by_doc[doc_id][k].get("name") for k in range(clause["start"], clause["end"] + 1)]
@@ -1338,7 +1573,13 @@ def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]],
 
 # --- pay: the table in force at the date ---------------------------------------------------------------------
 
-_PAY_WORDS_RE = re.compile(r"minim[io]|tabell\w*|retribu\w*|paga|stipendi\w*|importi|conglobat\w*", re.I)
+# A pay table names what it pays (minimi, paga base, stipendio...) in its text or in the header before it;
+# a contribution table (fondi, casse, enti bilaterali) does not.
+_PAY_WORDS_RE = re.compile(r"minim[io]\b|minimi|paga base|paga oraria|tabellar\w*|stipendi\w*|conglobat\w*|"
+                           r"retribuzion\w* (?:base|mensil\w*|tabellar\w*|minim\w*|contrattual\w*)|importi mensili",
+                           re.I)
+# Agreements about something else than pay, whose tables are contributions or quotas.
+_NOT_PAY_DOC_RE = re.compile(r"previdenz|assistenz|sanitari|welfare|formazion|bilateral|sicurezz|\bfondo\b", re.I)
 _LOOSE_DATE_RE = re.compile(rf"(\d{{1,2}})(?:°|º)?\s*[/.\s-]\s*(\d{{1,2}}|{'|'.join(_MONTHS)})\s*[/.\s-]\s*((?:19|20)\d{{2}})",
                             re.I)
 MAX_PAY_TABLES = 3
@@ -1360,8 +1601,9 @@ def loose_date(text: str) -> Optional[date]:
 def pay_tables(by_doc: Dict[str, List[Dict[str, Any]]], chosen: Sequence[Dict[str, Any]], when: date
                ) -> Dict[str, Any]:
     """The pay table in force at `when`, across the base and every amending document (not only the clauses
-    found): each Section with pay words and three or more amounts (or two table rows), joined to the table rows
-    that follow it; its decorrenza the latest date it writes on or before `when` (the date before it included,
+    found): each Section with pay words (in it or in the header ending the section before: minimi, paga base,
+    stipendio, retribuzione tabellare ...) and three or more amounts or two table rows -- never in an agreement on
+    pensions, health, welfare, training or bilateral bodies --, joined to the table rows that follow it; its decorrenza the latest date it writes on or before `when` (the date before it included,
     where a header sits), else its document's valid_from; a table whose every date is after `when` is not yet
     in force. Readable: two or more rows read (pay_rows).
       {"tables": up to MAX_PAY_TABLES readable ones of the best (document, decorrenza), "source", "decorrenza",
@@ -1371,13 +1613,14 @@ def pay_tables(by_doc: Dict[str, List[Dict[str, Any]]], chosen: Sequence[Dict[st
     candidates = []
     for doc_id, rows in by_doc.items():
         doc = docs.get(doc_id)
-        if doc is None:
+        if doc is None or _NOT_PAY_DOC_RE.search(str(doc.get("document_subtype") or short_name(doc).split(" — ")[-1])):
             continue
         i = 0
         while i < len(rows):
             text = rows[i].get("text") or ""
+            header = ((rows[i - 1].get("text") or "")[-300:] + "\n" if i else "") + text
             parsed = pay_rows(text)
-            if not (_PAY_WORDS_RE.search(text) and len(_AMOUNT_RE.findall(text)) >= 3) and len(parsed["rows"]) < 2:
+            if not _PAY_WORDS_RE.search(header) or (len(_AMOUNT_RE.findall(text)) < 3 and len(parsed["rows"]) < 2):
                 i += 1
                 continue
             j = i
