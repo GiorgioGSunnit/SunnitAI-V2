@@ -52,6 +52,10 @@ def relation_scores(related: Dict[str, List[list]]) -> Dict[Tuple[str, str], flo
     return out
 
 
+# The live use under test: give the plan back the m most connected articles of the pool it left out.
+GIVE_BACK = (1, 2, 3, 5)
+
+
 def dampen_hubs(scores: Dict[Tuple[str, str], float]) -> Dict[Tuple[str, str], float]:
     """Each pair's score divided by sqrt(partners of a x partners of b): an article related to everything (1227, 1223,
     2043, 1218 in the first run, 28 Oct) stops winning by being common."""
@@ -81,7 +85,9 @@ def case_report(pool: List[str], plan: List[str], expected: Set[str], scores: Di
     k = max(len([a for a in plan if a in pool]), 5)
     top = set(ranked[:k])
     dropped = [a for a in pool if a in expected and a not in plan]
-    return {"pool_cc": len(pool), "expected_in_pool": sorted(expected & set(pool), key=lambda a: int(re.match(r"\d+", a).group(0))),
+    left_out = [a for a in ranked if a not in plan]            # the pool's articles the plan did not take, most connected first
+    give_back = {m: (sum(a in expected for a in left_out[:m]), len(left_out[:m])) for m in GIVE_BACK}
+    return {"give_back": give_back, "pool_cc": len(pool), "expected_in_pool": sorted(expected & set(pool), key=lambda a: int(re.match(r"\d+", a).group(0))),
             "plan_cc": [a for a in plan if a in pool], "separation": separation(coh, expected),
             "dropped_by_plan": dropped, "rescued": [a for a in dropped if a in top],
             "unexpected_in_top": sorted(a for a in top if a not in expected and a not in plan),
@@ -109,15 +115,17 @@ def main() -> int:
         print(f"\n=== {mode}")
         totals[mode] = run_cases(args, mode_scores, expected_of)
     print("\n=== both")
-    for mode, (seps, dropped, rescued, extra_in) in totals.items():
+    for mode, (seps, dropped, rescued, extra_in, back) in totals.items():
         print(f"{mode:14} separation {sum(seps) / max(len(seps), 1):.2f} (cases above 0.6: {sum(s > 0.6 for s in seps)}, "
               f"below 0.4: {sum(s < 0.4 for s in seps)}); dropped by the plan {dropped}, rescued {rescued}, "
               f"other articles brought in {extra_in}")
+        print(f"{'':14} given back to the plan: " + "; ".join(f"m={m}: {g} correct of {n}" for m, (g, n) in back.items()))
     return 0
 
 
 def run_cases(args, scores, expected_of):
     seps, dropped, rescued, extra_in = [], 0, 0, 0
+    back = {m: [0, 0] for m in GIVE_BACK}
     print("case       pool c.c.  expected in pool   plan dropped -> rescued by coherence   separation   other articles the top brings in")
     for f in sorted(os.listdir(args.dir)):
         m = re.match(rf"(.+)_{args.run}\.json$", f)
@@ -137,6 +145,9 @@ def run_cases(args, scores, expected_of):
         dropped += len(r["dropped_by_plan"])
         rescued += len(r["rescued"])
         extra_in += len(r["unexpected_in_top"])
+        for m, (good, given) in r["give_back"].items():
+            back[m][0] += good
+            back[m][1] += given
         sep = "-" if r["separation"] is None else f"{r['separation']:.2f}"
         print(f"{case:10} {r['pool_cc']:<10} {','.join(r['expected_in_pool']) or '-':18} "
               f"{','.join(r['dropped_by_plan']) or '-':>12} -> {','.join(r['rescued']) or '-':24} {sep:12} "
@@ -148,7 +159,9 @@ def run_cases(args, scores, expected_of):
               f"{sum(s < 0.4 for s in seps)}")
     print(f"expected articles the plan dropped: {dropped}; among the most connected: {rescued}; "
           f"other articles that ranking would add: {extra_in}")
-    return seps, dropped, rescued, extra_in
+    print("give the plan back the m most connected articles it left out: "
+          + "; ".join(f"m={m}: {g} correct of {n} given back" for m, (g, n) in back.items()))
+    return seps, dropped, rescued, extra_in, back
 
 
 if __name__ == "__main__":

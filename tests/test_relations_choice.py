@@ -25,6 +25,7 @@ def test_case_report_separation_and_rescue():
     assert r["separation"] == 1.0                      # the three expected are connected, the others are not
     assert r["dropped_by_plan"] == ["1492", "1495"] and r["rescued"] == ["1492", "1495"] and r["k"] == 5
     assert r["unexpected_in_top"] == ["2043"]          # the top 5 also brings in an unexpected one
+    assert r["give_back"][2] == (2, 2) and r["give_back"][5] == (2, 4)   # left out: 1492, 1495, 2043, 1176
     assert rc.separation({"a": 1.0}, {"a"}) is None
 
 
