@@ -11,13 +11,20 @@ read the date alone. The rule here, for article N:
   2. else the bare "N", its date line stripped;
   3. else the commi "N.k.0", in order, joined.
 The row returned keeps the canonical Section ("N.0.0", else "N") with that text in plain_text.
+
+A short "N.0.0" (under SHORT_FIRST characters) is taken only when nothing fuller exists (28 Oct, data_checks.py on
+prod: 757 articles whose "N.0.0" is a tail fragment -- art. 709 c.p.p. "all'estero", 732 "civili" --, a list's opening
+line -- art. 2948 c.c. "Si prescrivono in cinque anni:" --, a rubrica or a page footer, while "N" holds the article):
+the bare "N" when it is longer, else the commi when longer. A date line repeated ("In vigore dal 6 marzo 2026 In
+vigore dal 6 marzo 2026") is a date line.
 An article with neither canonical Section keeps its dot fragments ("N.1", "N.2"), the first 3.
 """
 
 import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-IN_FORCE_RE = re.compile(r"\s*in vigore dal\s+\d{1,2}\s+\w+\s+\d{4}\.?\s*", re.IGNORECASE)
+IN_FORCE_RE = re.compile(r"\s*(?:in vigore dal\s+\d{1,2}\s+\w+\s+\d{4}\.?\s*)+", re.IGNORECASE)
+SHORT_FIRST = 60
 _COMMA_RE = re.compile(r"^\.(\d+)\.0$")
 _NUMBER_RE = re.compile(r"^(\d+(?:-[a-z]+)?)(?:\.|$)", re.IGNORECASE)
 
@@ -45,21 +52,36 @@ def article_number(section_name: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def choose_text(number: str, texts: Dict[str, str]) -> str:
-    """The article's text from its Sections' {name: plain_text}, by the rule in the module's docstring;
-    "" when none holds more than a date."""
-    zero = (texts.get(f"{number}.0.0") or "").strip()
-    if zero and not in_force_only(zero):
-        return strip_in_force(zero)
-    bare = strip_in_force(texts.get(number))
-    if bare:
-        return bare
+def _commi(number: str, texts: Dict[str, str]) -> str:
     commi = {}
     for name, text in texts.items():
         m = _COMMA_RE.match(name[len(number):]) if name.startswith(number + ".") else None
         if m and int(m.group(1)) > 0 and (text or "").strip() and not in_force_only(text):
             commi[int(m.group(1))] = text.strip()
     return "\n".join(commi[k] for k in sorted(commi))
+
+
+def short_first(name: Optional[str], number: str, text: Optional[str]) -> bool:
+    """The article's "N.0.0" holding less than SHORT_FIRST characters of text (its date line apart)."""
+    return name == f"{number}.0.0" and len(strip_in_force(text)) < SHORT_FIRST
+
+
+def choose_text(number: str, texts: Dict[str, str]) -> str:
+    """The article's text from its Sections' {name: plain_text}, by the rule in the module's docstring;
+    "" when none holds more than a date."""
+    zero = (texts.get(f"{number}.0.0") or "").strip()
+    bare = strip_in_force(texts.get(number))
+    if zero and not in_force_only(zero):
+        zero = strip_in_force(zero)
+        if len(zero) >= SHORT_FIRST:
+            return zero
+        if len(bare) > len(zero):
+            return bare
+        commi = _commi(number, texts)
+        return commi if len(commi) > len(zero) else zero
+    if bare:
+        return bare
+    return _commi(number, texts)
 
 
 def _best_by_name(rows: Iterable[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
@@ -119,6 +141,11 @@ def fetch_article(session, doc_id: str, number: str, visibility: str = "", **par
     return []
 
 
+def _lookup(section: Dict[str, Any], number: str) -> bool:
+    """The row's text has to come from the article's other Sections: only a date, or a short first piece."""
+    return in_force_only(section.get("plain_text")) or short_first(section.get("name"), number, section.get("plain_text"))
+
+
 def fill_texts(session, rows: List[Dict[str, Any]]) -> List[str]:
     """In place, for rows other paths found (searches, votes, tables): a row of an article's canonical Section
     whose text is only its date in force, or opens with it, gets the article's text by the same rule. Returns
@@ -128,15 +155,15 @@ def fill_texts(session, rows: List[Dict[str, Any]]) -> List[str]:
         s, d = row.get("s") or {}, row.get("d") or {}
         number = article_number(s.get("name") or "")
         if number and d.get("id") and s.get("name") in (number, f"{number}.0.0") \
-                and IN_FORCE_RE.match(s.get("plain_text") or ""):
+                and (IN_FORCE_RE.match(s.get("plain_text") or "") or short_first(s.get("name"), number, s.get("plain_text"))):
             stubs.append((row, d["id"], number))
     if not stubs:
         return []
-    need = sorted({(doc, num) for row, doc, num in stubs if in_force_only(row["s"].get("plain_text"))})
+    need = sorted({(doc, num) for row, doc, num in stubs if _lookup(row["s"], num)})
     grouped = _sections(session, need) if need else {}
     filled = []
     for row, doc, num in stubs:
-        if in_force_only(row["s"].get("plain_text")):
+        if _lookup(row["s"], num):
             best = _best_by_name(grouped.get((doc, num), []))
             text = choose_text(num, {name: (r.get("s") or {}).get("plain_text") or "" for name, r in best.items()})
         else:
@@ -160,10 +187,10 @@ def fill_from_rows(number: str, rows: List[Dict[str, Any]]) -> List[str]:
         texts = {name: (r.get("s") or {}).get("plain_text") or "" for name, r in best.items()}
         for row in doc_rows:
             s = row.get("s") or {}
-            if s.get("name") not in (number, f"{number}.0.0") or not IN_FORCE_RE.match(s.get("plain_text") or ""):
+            if s.get("name") not in (number, f"{number}.0.0") or not (
+                    IN_FORCE_RE.match(s.get("plain_text") or "") or short_first(s.get("name"), number, s.get("plain_text"))):
                 continue
-            text = (choose_text(number, texts) if in_force_only(s.get("plain_text"))
-                    else strip_in_force(s.get("plain_text")))
+            text = (choose_text(number, texts) if _lookup(s, number) else strip_in_force(s.get("plain_text")))
             if text and text != s.get("plain_text"):
                 row["s"] = {**s, "plain_text": text}
                 changed.append(f"{(row.get('d') or {}).get('name', '')} {s.get('name')}")

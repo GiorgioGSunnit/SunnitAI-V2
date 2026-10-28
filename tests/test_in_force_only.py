@@ -146,3 +146,39 @@ def test_fetch_articles_by_code_prefix_takes_the_shared_rule():
     rows = dg._fetch_articles(PrefixSession(), [("1495", "c.c.")])
     assert len(rows) == 1 and rows[0]["_article"] == ("1495", "c.c.")
     assert rows[0]["s"]["plain_text"] == "Il compratore decade.\nLa denunzia non è necessaria."
+
+
+# --- short first pieces (28 Oct, data_checks.py on prod: 757 articles) ----------------------------------------
+
+def test_a_short_first_piece_gives_way_to_the_fuller_text():
+    # art. 709 c.p.p.: "N.0.0" a tail fragment, the bare "N" the article
+    assert article_text.choose_text("709", {"709.0.0": "all'estero", "709": "1. Le sentenze penali straniere sono "
+                                            "riconosciute ai fini indicati ... all'estero"}).startswith("1. Le sentenze")
+    # art. 2948 c.c.: the list's opening line, the items in the commi
+    assert article_text.choose_text("2948", {"2948.0.0": "Si prescrivono in cinque anni:",
+                                             "2948.1.0": "le annualità delle rendite perpetue o vitalizie;",
+                                             "2948.2.0": "il capitale nominale dei titoli di Stato emessi al portatore;"}) \
+        == "le annualità delle rendite perpetue o vitalizie;\nil capitale nominale dei titoli di Stato emessi al portatore;"
+    # nothing fuller: the short piece stays (an article "Abrogato.")
+    assert article_text.choose_text("559", {"559.0.0": "Abrogato.", "559": "Abrogato."}) == "Abrogato."
+    assert article_text.short_first("709.0.0", "709", "all'estero")
+    assert not article_text.short_first("709", "709", "all'estero")
+
+
+def test_a_repeated_date_line_is_a_date_line():
+    assert article_text.in_force_only("In vigore dal 6 marzo 2026 In vigore dal 6 marzo 2026")
+    assert article_text.strip_in_force("In vigore dal 6 marzo 2026 In vigore dal 6 marzo 2026 1. Testo.") == "1. Testo."
+
+
+def test_fill_texts_looks_up_a_short_first_piece():
+    SECTIONS["cpp"] = [("709.0.0", "all'estero"),
+                       ("709", "1. Le sentenze penali straniere sono riconosciute ai fini indicati dalla legge."),
+                       ("1490.0.0", "Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi.")]
+    try:
+        rows = [_row("709.0.0", "all'estero", doc="cpp"),
+                _row("1490.0.0", "Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi.", doc="cpp")]
+        filled = article_text.fill_texts(FakeSession(), rows)
+        assert rows[0]["s"]["plain_text"].startswith("1. Le sentenze penali straniere")
+        assert filled == ["Codice del Consumo 2026 709.0.0"]                    # the long first piece untouched
+    finally:
+        SECTIONS.pop("cpp")
