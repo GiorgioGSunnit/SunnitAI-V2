@@ -94,3 +94,16 @@ def test_suffixed_commi_the_court_fee_and_the_same_article():
 def test_a_law_number_is_not_a_precedent():
     assert uc.precedents("come ritenuto da Cass. n. 1234/2021, ai sensi del d.P.R. n. 115/2002") == [("1234", "2021")]
     assert uc.precedents("Cass., sez. VI, in applicazione della legge n. 103/2017") == []
+
+
+def test_other_courts_and_the_fund_are_not_cassation_precedents():
+    text = ("in favore della Cassa delle ammende, non ravvisandosi assenza di colpa (Corte cost. n. 186 del 13 giugno 2000). "
+            "Avverso la sentenza propone ricorso per cassazione, richiamando Corte cost. n. 120/2014; "
+            "Corte di Cassazione - copia non ufficiale 4 n. 77/2019; come da Cass. pen. Sez. 6, n. 5501 del 2020")
+    assert uc.precedents(text) == [("5501", "2020")]
+
+
+def test_our_ruling_from_its_file_stem():
+    assert uc.our_ruling("snpen@s10@a2026@n01234@tS.clean.pdf Sentenza") == ("penale", "1234", "2026")
+    assert uc.our_ruling("snciv_s30_a2025_n27195_tO.pdf") == ("civile", "27195", "2025")
+    assert uc.our_ruling("Ordinanza senza file") is None

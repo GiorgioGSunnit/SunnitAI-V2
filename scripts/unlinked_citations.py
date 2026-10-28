@@ -10,7 +10,8 @@ _code_after on the 120 characters after the mention), each such mention is sorte
   same act, named before "art. 3 dello stesso decreto", "art. 12 cit."
   code or law named earlier in the sentence  "artt. 2043 c.c. e 2059" (the 2059)
   unknown
-and the precedents the rulings cite ("Cass. Sez. U, n. 18672/2019") are counted by year. Each special law and named act
+and the precedents the rulings cite ("Cass. Sez. U, n. 18672/2019") are counted by year and matched with our rulings
+(by the number and year in their Italgiure file stem): which years we would need. Each special law and named act
 is looked up among our documents: in the database, or not (the list of laws worth acquiring).
 
 Prints counts, law references and document names only, never ruling text (an unknown mention's 30 characters after
@@ -76,12 +77,17 @@ _EARLIER_CODE = re.compile(r"c\.\s?p\.\s?p\.|c\.\s?p\.\s?c\.|c\.\s?c\.|c\.\s?p\.
                            r"codice\s+(?:civile|penale|di\s+procedura)|cost\.(?!\w)|costituzione", re.IGNORECASE)
 _EARLIER_LAW = re.compile(_TYPE + r"\s*(?:n\.?\s*)?\d", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"[.;:]\s+(?=[A-ZÀ-Ý(«\"])|\n")
-_PRECEDENT = re.compile(r"(?:cass\.?(?:\s*(?:civ|pen|lav|trib)\.?)?|cassazione|sez\.?\s*u(?:n(?:ite)?)?\.?|s\.\s?u\.)"
+_PRECEDENT = re.compile(r"\b(?:cass\b\.?(?:\s*(?:civ|pen|lav|trib)\.?)?|cassazione|sez\.?\s*u(?:n(?:ite)?)?\.?|s\.\s?u\.)"
                         r"(?P<pre>[^;\n]{0,90}?)\bn\.?\s*(\d{1,6})\s*(?:/|del\s+(?:\d{1,2}\s+\w+\s+)?)\s*((?:19|20)\d{2})\b",
                         re.IGNORECASE)
 # "Cass. ... d.P.R. n. 115/2002": a law's number, not a ruling's (run 1 counted n. 115/2002, 103/2017, 546/1992).
 _LAW_BEFORE_NUMBER = re.compile(r"\b(?:d\.?\s?p\.?\s?r\.?|d\.?\s?lgs\.?|d\.?\s?l\.|legge|\bl\.|r\.?\s?d\.?|d\.?\s?m\.?)\s*$",
                                 re.IGNORECASE)
+# "... ricorso per cassazione ... (Corte cost. n. 186 del 2000)": the Constitutional Court's, not a Cassation ruling
+# (run 2's 4th most cited "precedent", from the inadmissibility sentence).
+_OTHER_COURT = re.compile(r"\bcost\b|costituzional|\bc\.\s?cost|europea|\bcgue\b|\bcedu\b", re.IGNORECASE)
+# Our rulings' Italgiure file stems carry their number and year: snpen@s10@a2026@n01234@tS.
+_ITALGIURE = re.compile(r"(snpen|snciv)[@_]s\w\w[@_]a(\d{4})[@_]n0*(\d+)", re.IGNORECASE)
 
 
 def _type_of(raw: str) -> str:
@@ -189,8 +195,53 @@ _OWN_CASE = re.compile(r"ricors|r\.\s?g\.|iscritt|ruolo", re.IGNORECASE)
 def precedents(text: str) -> List[Tuple[str, str]]:
     """(number, year) of every Cassation ruling the text cites -- not the case's own docket number ("sul ricorso
     iscritto al n. 15966/2025")."""
-    return [(str(int(m.group(2))), m.group(3)) for m in _PRECEDENT.finditer(text or "")
-            if not _OWN_CASE.search(m.group(0)) and not _LAW_BEFORE_NUMBER.search(m.group("pre")[-20:])]
+    return [(str(int(m.group(2))), m.group(3)) for m in _PRECEDENT.finditer(_FOOTER.sub(" ", text or ""))
+            if not _OWN_CASE.search(m.group(0)) and not _LAW_BEFORE_NUMBER.search(m.group("pre")[-20:])
+            and not _OTHER_COURT.search(m.group("pre"))]
+
+
+def our_ruling(file_and_name: str) -> Optional[Tuple[str, str, str]]:
+    """(branch, number, year) of one of our rulings, from its Italgiure file stem; None without one."""
+    m = _ITALGIURE.search(file_and_name or "")
+    return ("penale" if m.group(1).lower() == "snpen" else "civile", str(int(m.group(3))), m.group(2)) if m else None
+
+
+# What the laws are, for the report to the PM (the most cited, by hand).
+LAW_NAMES = {
+    "d.lgs. 546/1992": "Processo tributario", "d.P.R. 600/1973": "Accertamento delle imposte sui redditi",
+    "r.d. 267/1942": "Legge fallimentare", "d.P.R. 633/1972": "IVA",
+    "d.lgs. 472/1997": "Sanzioni amministrative tributarie (principi generali)",
+    "d.P.R. 602/1973": "Riscossione delle imposte sui redditi", "d.lgs. 152/2006": "Codice dell'ambiente",
+    "l. 689/1981": "Depenalizzazione e sanzioni amministrative", "d.lgs. 165/2001": "Testo unico del pubblico impiego",
+    "d.lgs. 150/2022": "Riforma Cartabia (processo penale)", "d.lgs. 149/2022": "Riforma Cartabia (processo civile)",
+    "l. 134/2021": "Legge delega Cartabia (penale)", "l. 206/2021": "Legge delega Cartabia (civile)",
+    "d.lgs. 504/1992": "ICI e finanza degli enti territoriali", "d.P.R. 131/1986": "Testo unico dell'imposta di registro",
+    "d.l. 4/2019": "Reddito di cittadinanza", "l. 197/2022": "Legge di bilancio 2023 (tregua fiscale)",
+    "d.m. 55/2014": "Parametri dei compensi forensi", "d.l. 83/2012": "Decreto Sviluppo 2012",
+    "l. 103/2017": "Riforma Orlando (codice e processo penale)", "l. 190/2014": "Legge di stabilità 2015",
+    "d.lgs. 276/2003": "Riforma Biagi (mercato del lavoro)", "d.l. 119/2018": "Decreto fiscale 2019 (pace fiscale)",
+    "d.lgs. 507/1993": "Tributi locali (pubblicità, suolo pubblico, rifiuti)", "d.lgs. 446/1997": "IRAP",
+    "d.l. 137/2020": "Decreto Ristori (Covid)", "l. 110/1975": "Legge sulle armi",
+    "d.lgs. 471/1997": "Sanzioni tributarie non penali", "l. 296/2006": "Legge finanziaria 2007",
+    "l. 69/2005": "Mandato d'arresto europeo", "d.P.R. 115/2002": "Testo unico spese di giustizia",
+    "l. 228/2012": "Legge di stabilità 2013", "l. 392/1978": "Locazioni di immobili urbani (equo canone)",
+    "l. 300/1970": "Statuto dei lavoratori", "d.lgs. 23/2015": "Jobs Act (tutele crescenti)",
+    "l. 92/2012": "Riforma Fornero del lavoro", "l. 104/1992": "Legge sull'handicap",
+    "d.P.R. 445/2000": "Testo unico documentazione amministrativa", "l. 47/1985": "Condono edilizio",
+    "d.l. 201/2011": "Decreto Salva Italia", "l. 223/1991": "Licenziamenti collettivi e cassa integrazione",
+    "l. 604/1966": "Licenziamenti individuali", "l. 89/2001": "Legge Pinto (equa riparazione)",
+    "l. 67/2014": "Messa alla prova", "d.lgs. 271/1989": "Disposizioni di attuazione del c.p.p.",
+    "l. 3/2019": "Spazzacorrotti", "l. 69/2019": "Codice rosso", "r.d. 1736/1933": "Legge sull'assegno",
+    "r.d. 1669/1933": "Legge cambiaria", "l. 47/1948": "Legge sulla stampa",
+    "d.P.R. 1124/1965": "Testo unico infortuni sul lavoro", "l. 335/1995": "Riforma Dini delle pensioni",
+    "d.lgs. 28/2015": "Particolare tenuità del fatto", "l. 401/1989": "Scommesse clandestine e frode sportiva",
+    "l. 157/1992": "Caccia", "d.lgs. 109/2006": "Illeciti disciplinari dei magistrati", "l. 184/1983": "Adozione",
+    "l. 54/2006": "Affidamento condiviso", "d.l. 18/2020": "Decreto Cura Italia", "d.l. 34/2020": "Decreto Rilancio",
+    "d.lgs. 241/1997": "Versamenti unificati e compensazione (F24)", "d.lgs. 218/1997": "Accertamento con adesione",
+    "d.lgs. 158/2015": "Revisione delle sanzioni tributarie 2015", "l. 130/2022": "Riforma della giustizia tributaria",
+    "d.lgs. 175/2024": "Testo unico della giustizia tributaria", "d.lgs. 173/2024": "Testo unico sanzioni tributarie",
+    "l. 266/2005": "Legge finanziaria 2006", "l. 244/2007": "Legge finanziaria 2008", "l. 388/2000": "Legge finanziaria 2001",
+}
 
 
 # The laws whose corpus document's name does not carry their number: (type number/year) -> the name it starts with.
@@ -273,9 +324,14 @@ def main() -> int:
     law_rulings, law_branch = defaultdict(set), defaultdict(Counter)
     linked = bare = 0
     years, cited_precedents, precedent_rulings = Counter(), Counter(), 0
+    cited_by, have, missing_years = Counter(), Counter(), defaultdict(Counter)
     with driver.session(database=NEO4J_DATABASE) as session:
         rulings = session.run("MATCH (d:Document {document_type:'interpretation'}) RETURN d.id AS id, "
                               "coalesce(d.file_name, '') + ' ' + coalesce(d.name, '') AS f").data()
+        ours = {r for r in (our_ruling(x["f"]) for x in rulings) if r}       # every ruling we have, before any sample
+        our_years = defaultdict(Counter)
+        for b, _, y in ours:
+            our_years[b][y] += 1
         if args.sample and args.sample < len(rulings):
             rulings = random.Random(28).sample(rulings, args.sample)
         branch = {r["id"]: ("penale" if "snpen" in r["f"] else "civile" if "snciv" in r["f"] else "altro") for r in rulings}
@@ -293,10 +349,16 @@ def main() -> int:
             for doc, parts in texts.items():
                 text = rl._PQM_RE.sub(" ; ", " ".join(parts))
                 found_precedent = False
+                b = branch[doc]
                 for number, year in precedents(text):
                     years[year] += 1
                     cited_precedents[(number, year)] += 1
                     found_precedent = True
+                    cited_by[b] += 1
+                    if (b, number, year) in ours:            # matched in the citing ruling's own branch
+                        have[b] += 1
+                    else:
+                        missing_years[b][year] += 1
                 precedent_rulings += found_precedent
                 for m in _ARTICLE_RUN_RE.finditer(text):
                     n = len(_RUN_NUMBER_RE.findall(m.group(1)))
@@ -346,17 +408,24 @@ def main() -> int:
     for label, n in named.items():
         if label in _NAMED_LAW:
             merged[_NAMED_LAW[label]] += n
-    in_db = {law: find_document(law, docs, resolve_code) for law, _ in merged.most_common(args.top * 3)}
+    in_db = {law: find_document(law, docs, resolve_code) for law, _ in merged.most_common(300)}
     covered = sum(n for law, n in merged.items() if in_db.get(law))
     print(f"\nSpecial laws and named acts: {sum(merged.values()):,} mentions of {len(merged):,} laws; "
-          f"in our database: {covered:,} ({pct(covered, sum(merged.values()))} of the mentions, top {args.top * 3} laws checked)")
+          f"in our database: {covered:,} ({pct(covered, sum(merged.values()))} of the mentions, top 300 laws checked)")
+
+    def named_law(law):
+        return f"{law} ({LAW_NAMES[law]})" if law in LAW_NAMES else law
     print(f"{'mentions':>9}  {'rulings':>7}  {'penale':>7}  {'civile':>7}  law -> our document")
     for law, n in merged.most_common(args.top):
         b = law_branch[law]
-        print(f"{n:>9,}  {len(law_rulings[law]):>7,}  {b['penale']:>7,}  {b['civile']:>7,}  {law} -> {in_db.get(law) or 'NOT IN THE DATABASE'}")
-    missing = [(law, n) for law, n in merged.most_common(args.top * 3) if not in_db.get(law)]
-    print("\nMost cited laws NOT in the database (worth acquiring): "
-          + "; ".join(f"{law} ({n:,})" for law, n in missing[:15]))
+        print(f"{n:>9,}  {len(law_rulings[law]):>7,}  {b['penale']:>7,}  {b['civile']:>7,}  {named_law(law)} -> "
+              f"{in_db.get(law) or 'NOT IN THE DATABASE'}")
+    missing = [(law, n) for law, n in merged.most_common(300) if not in_db.get(law) and law not in BOILERPLATE_LAWS]
+    print(f"\nMost cited laws NOT in the database (worth acquiring), {min(args.top, len(missing))} of {len(missing)}:")
+    print(f"{'mentions':>9}  {'rulings':>7}  {'penale':>7}  {'civile':>7}  law")
+    for law, n in missing[:args.top]:
+        b = law_branch[law]
+        print(f"{n:>9,}  {len(law_rulings[law]):>7,}  {b['penale']:>7,}  {b['civile']:>7,}  {named_law(law)}")
     if implementing:
         print("\nImplementing rules: " + ", ".join(f"{k} {n:,}" for k, n in implementing.most_common()))
     if named.get("testo unico (not named)"):
@@ -367,14 +436,28 @@ def main() -> int:
     decades = Counter(f"{y[:3]}0s" for y in years.elements())
     print("  by decade: " + ", ".join(f"{d} {n:,}" for d, n in sorted(decades.items(), reverse=True)))
     print("  most cited: " + ", ".join(f"n. {num}/{y} ({n})" for (num, y), n in cited_precedents.most_common(15)))
+    print("  matched with our rulings by number and year, in the citing ruling's branch:")
+    for b in ("penale", "civile"):
+        if not cited_by[b]:
+            continue
+        print(f"    cited by {b} rulings: {cited_by[b]:,}, in our database {have[b]:,} ({pct(have[b], cited_by[b])})")
+        print(f"      missing, by year: " + ", ".join(
+            f"{y} {n:,}" for y, n in sorted(missing_years[b].items(), key=lambda x: -int(x[0]))[:20]))
+        print(f"      our {b} rulings, by year: " + ", ".join(
+            f"{y} {n:,}" for y, n in sorted(our_years[b].items(), key=lambda x: -int(x[0]))))
     print("\nUnknown, the most frequent next words (digits as #): "
           + "; ".join(f"'{k}' {n:,}" for k, n in unknown.most_common(20)))
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump({"rulings": len(ids), "sample": args.sample, "linked": linked, "bare": bare, "kinds": kinds,
                    "missed_codes": missed_codes, "boilerplate": boilerplate,
-                   "laws": {law: {"mentions": n, "rulings": len(law_rulings[law]), "branch": law_branch[law],
-                                  "document": in_db.get(law)} for law, n in merged.most_common(300)},
+                   "laws": {law: {"name": LAW_NAMES.get(law), "mentions": n, "rulings": len(law_rulings[law]),
+                                  "branch": law_branch[law], "document": in_db.get(law)}
+                            for law, n in merged.most_common(300)},
+                   "our_law_documents": sorted(d["name"] for d in docs if d.get("name")),
                    "implementing": implementing, "precedent_years": years,
+                   "precedents_by_branch": {b: {"cited": cited_by[b], "in_our_database": have[b],
+                                                "missing_by_year": missing_years[b], "ours_by_year": our_years[b]}
+                                            for b in ("penale", "civile")},
                    "precedents_top": [[f"{num}/{y}", n] for (num, y), n in cited_precedents.most_common(100)]},
                   fh, ensure_ascii=False, indent=1)
     print(f"\nreport: {args.out} ({time.time() - t0:.0f}s)")
