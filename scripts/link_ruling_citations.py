@@ -17,7 +17,10 @@ Section names are read once at the start, so resolving costs no query.
 Dry run by default: how many rulings and citations resolve, the unresolved ones by
 reason. --write MERGEs the edges (idempotent), --tx-edges per transaction, --pause
 seconds between batches of --batch rulings. The edges carry created_by, so --undo
-deletes exactly them.
+deletes exactly them. Since 29 Oct the code may also follow a list, an ordinal or a page
+footer ("art. 606, comma 1, lett. b) ed e), cod. proc. pen."); the edges only that rule
+finds carry rule "past_lists": the summary counts them, --undo --only-past-lists --write
+deletes just them.
 
 Run on be2 from the app folder, with exp_ruling_links.py next to this file:
     cd /opt/chatbot && venv/bin/python /tmp/link_ruling_citations.py            # dry run
@@ -36,12 +39,15 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from exp_ruling_links import _PQM_RE, _code_after, cited_articles  # noqa: E402  (sets up sys.path and .env)
+from exp_ruling_links import _PQM_RE, cited_articles, code_of_run  # noqa: E402  (sets up sys.path and .env)
 
 from src.rag.article_suffix import number_variants  # noqa: E402
 from src.rag.defensive_generation import _ARTICLE_RUN_RE, _CODE_PREFIXES, _RUN_NUMBER_RE  # noqa: E402
 
 CREATED_BY = "link_ruling_citations"
+# Edges only the 29 Oct rule finds (the code past a list, an ordinal or a page footer: exp_ruling_links.code_of_run)
+# carry rule: PAST_LISTS, so the dry run counts them and --undo --only-past-lists removes just them.
+PAST_LISTS = "past_lists"
 CODE_PREFIXES = {**_CODE_PREFIXES, "Cost.": "Costituzione"}
 
 
@@ -49,7 +55,7 @@ def bare_numbers(text: str) -> int:
     """How many article numbers the text cites with no code after them."""
     text = _PQM_RE.sub(" ; ", text or "")
     return sum(len(_RUN_NUMBER_RE.findall(m.group(1))) for m in _ARTICLE_RUN_RE.finditer(text)
-               if not _code_after(text[m.end():m.end() + 120]))
+               if not code_of_run([], text[m.end():m.end() + 120])[1])
 
 
 class Codes:
@@ -93,6 +99,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--write", action="store_true", help="create the edges (default: dry run)")
     p.add_argument("--undo", action="store_true", help=f"delete the CITES edges created_by '{CREATED_BY}' (with --write)")
+    p.add_argument("--only-past-lists", action="store_true",
+                   help=f"with --undo: only the edges with rule '{PAST_LISTS}' (the 29 Oct rule's)")
     p.add_argument("--batch", type=int, default=50, help="rulings per read")
     p.add_argument("--tx-edges", type=int, default=500)
     p.add_argument("--pause", type=float, default=1.0, help="seconds between batches")
@@ -113,14 +121,17 @@ def main() -> None:
             if not args.write:
                 sys.exit("--undo deletes edges: add --write")
             total = 0
+            match = ("MATCH ()-[r:CITES {created_by: $by, rule: $rule}]->()" if args.only_past_lists
+                     else "MATCH ()-[r:CITES {created_by: $by}]->()")
             while True:
-                n = session.run("MATCH ()-[r:CITES {created_by: $by}]->() WITH r LIMIT $n DELETE r RETURN count(*) AS c",
-                                by=CREATED_BY, n=args.tx_edges).single()["c"]
+                n = session.run(match + " WITH r LIMIT $n DELETE r RETURN count(*) AS c",
+                                by=CREATED_BY, rule=PAST_LISTS, n=args.tx_edges).single()["c"]
                 total += n
                 if not n:
                     break
                 time.sleep(0.2)
-            print(f"Deleted {total:,} CITES edges created by {CREATED_BY}.")
+            print(f"Deleted {total:,} CITES edges created by {CREATED_BY}"
+                  + (f" with rule {PAST_LISTS}." if args.only_past_lists else "."))
             return
 
         codes = Codes(session)
@@ -137,7 +148,7 @@ def main() -> None:
         sections = no_text = bare = written = 0
         rulings_citing, rulings_linked = set(), set()
         how, reasons, per_code, per_code_ok = Counter(), Counter(), Counter(), Counter()
-        top_ok, top_missing = Counter(), Counter()
+        top_ok, top_missing, past_lists = Counter(), Counter(), Counter()
         t0 = time.time()
         with open(args.out, "w", encoding="utf-8") as out:
             for start in range(0, len(ids), args.batch):
@@ -154,6 +165,7 @@ def main() -> None:
                         no_text += 1
                         continue
                     bare += bare_numbers(text)
+                    before_lists = set(cited_articles(text, past_lists=False))
                     for citation in cited_articles(text):
                         number, code = citation.split(" ", 1)
                         rulings_citing.add(row["doc"])
@@ -169,9 +181,12 @@ def main() -> None:
                         per_code_ok[code] += 1
                         top_ok[citation] += 1
                         rulings_linked.add(row["doc"])
-                        edges.append({"a": row["id"], "b": target,
-                                      "props": {"article": number, "code": code, "how": result,
-                                                "created_by": CREATED_BY}})
+                        # rule None removes the property (SET r += ...): an edge the earlier rule also finds is untagged
+                        props = {"article": number, "code": code, "how": result, "created_by": CREATED_BY, "rule": None}
+                        if citation not in before_lists:
+                            props["rule"] = PAST_LISTS
+                            past_lists[code] += 1
+                        edges.append({"a": row["id"], "b": target, "props": props})
                 if args.write:
                     for i in range(0, len(edges), args.tx_edges):
                         written += (getattr(session, "execute_write", None) or session.write_transaction)(lambda tx, part: tx.run(
@@ -189,6 +204,8 @@ def main() -> None:
           f"with at least one resolved: {len(rulings_linked):,} ({pct(len(rulings_linked), len(ids))})")
     print(f"Citations (section, article): {cited:,}; resolved {resolved:,} ({pct(resolved, cited)})"
           + "".join(f", {k} {v:,}" for k, v in how.most_common()))
+    print(f"Of the resolved, found only past a list, an ordinal or a page footer (rule {PAST_LISTS}, 29 Oct): "
+          f"{sum(past_lists.values()):,}" + "".join(f", {c} {n:,}" for c, n in past_lists.most_common()))
     print("Unresolved by reason: " + (", ".join(f"{k} {v:,}" for k, v in reasons.most_common()) or "none"))
     print(f"Article numbers with no code after them (special laws, or the code named earlier): {bare:,} -- not linked")
     print("By code: " + ", ".join(f"{c} {per_code_ok[c]:,}/{n:,}" for c, n in per_code.most_common()))
