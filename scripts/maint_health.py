@@ -78,17 +78,42 @@ def date_only_articles(sections: List[Tuple[str, int, bool]]) -> List[str]:
     return sorted(zero_date_only & has_text, key=lambda a: (int(ARTICLE_NAME.match(a).group(1)), a))
 
 
+def short_first_pieces(sections: List[Tuple[str, int, bool]]) -> List[str]:
+    """The articles whose N.0.0 is short (under 60 chars) but NOT a date in force, while another Section of theirs has
+    the text (60+ chars): the shared read rule (article_text.choose_text) takes such an N.0.0 as the text."""
+    short_zero, has_text = set(), set()
+    for name, length, date_only in sections:
+        art = article_of(name)
+        if not art:
+            continue
+        if name == f"{art}.0.0" and length < 60 and not date_only:
+            short_zero.add(art)
+        elif name != f"{art}.0.0" and length >= 60:
+            has_text.add(art)
+    return sorted(short_zero & has_text, key=lambda a: (int(ARTICLE_NAME.match(a).group(1)), a))
+
+
 def normalize_name(name: str) -> str:
     return " ".join(re.sub(r"[^\w\s]", " ", (name or "").lower()).split())
 
 
 def suspected_duplicates(docs: List[dict]) -> Dict[str, List[List[str]]]:
-    """{reason: [[document names], ...]}: same hash, same normalized name, same name but the year. Report only."""
-    by_hash, by_name, by_prefix = defaultdict(list), defaultdict(list), defaultdict(list)
+    """{reason: [[documents], ...]}: same hash, same normalized name, same name but the year -- report only. Rulings
+    (interpretation) are compared by their Italgiure file stem, never by title: their titles are generic or anonymised
+    ("Sentenza della Corte Suprema di Cassazione", "... proposto da XXXX"), and "ricorso 17360-2020" / "-2022" are two
+    cases (the first report, 28 Oct: 496 such false alarms). A ruling is shown by its stem or id, never its title."""
+    by_hash, by_name, by_prefix, by_stem = defaultdict(list), defaultdict(list), defaultdict(list), defaultdict(list)
     for d in docs:
-        name = d.get("name") or ""
+        ruling = d.get("type") == "interpretation"
+        stem = ITALGIURE.search(d.get("file") or "") or ITALGIURE.search(d.get("name") or "")
+        label = (stem.group(0) if stem else d.get("id") or "?") if ruling else (d.get("name") or d.get("id") or "?")
         if d.get("hash"):
-            by_hash[d["hash"]].append(name)
+            by_hash[d["hash"]].append(label)
+        if ruling:
+            if stem:
+                by_stem[stem.group(0).lower().replace("_", "@")].append(d.get("id") or "?")
+            continue
+        name = d.get("name") or ""
         norm = normalize_name(name)
         if norm:
             by_name[norm].append(name)
@@ -99,6 +124,7 @@ def suspected_duplicates(docs: List[dict]) -> Dict[str, List[List[str]]]:
            "same name": [v for v in by_name.values() if len(v) > 1]}
     out["same name but the year"] = [v for v in by_prefix.values() if len(set(v)) > 1
                                      and not any(set(v) <= set(g) for g in out["same name"])]
+    out["same ruling file"] = [v for v in by_stem.values() if len(v) > 1]
     return out
 
 
@@ -189,9 +215,9 @@ def log_status(paths: List[str]) -> List[dict]:
     return out
 
 
-def unresolved_reasons(path: str) -> Tuple[int, Dict[str, int]]:
+def unresolved_reasons(path: str) -> Tuple[Optional[int], Dict[str, int]]:
     if not os.path.isfile(path):
-        return 0, {}
+        return None, {}
     reasons, n = Counter(), 0
     with open(path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -201,6 +227,22 @@ def unresolved_reasons(path: str) -> Tuple[int, Dict[str, int]]:
             except ValueError:
                 reasons["unparseable"] += 1
     return n, dict(reasons.most_common(8))
+
+
+def closures(path: str) -> Set[str]:
+    """The civil rulings step 1 reads as closures ("estinto"): no card by design (exp_ruling_cards.pick)."""
+    out = set()
+    if not path or not os.path.isfile(path):
+        return out
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("branch") == "civile" and r.get("outcome") == "estinto" and r.get("id"):
+                out.add(r["id"])
+    return out
 
 
 def card_ids(paths: List[str]) -> Optional[Set[str]]:
@@ -235,7 +277,7 @@ def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) ->
                        "d.document_type AS type, coalesce(d.file_name, '') AS file").data()
     out["documents"] = len(docs)
     out["docs_by_type"] = dict(Counter(d["type"] or "(none)" for d in docs).most_common())
-    out["docs_untyped_names"] = sorted(d["name"] or d["id"] for d in docs if not d["type"])[:30]
+    out["docs_untyped_ids"] = sorted(d["id"] for d in docs if not d["type"])[:30]
     out["docs_unknown_type"] = {t: k for t, k in out["docs_by_type"].items() if t != "(none)" and t not in KNOWN_TYPES}
 
     _progress(t0, f"{len(docs):,} documents read")
@@ -276,7 +318,7 @@ def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) ->
                 and not any((d["name"] or "").startswith(p) for p in MAIN_CODES if p != prefix and len(p) > len(prefix))]
         if hits:
             main[prefix] = min(hits, key=lambda d: len(d["name"] or ""))["id"]
-    date_only, gaps = {}, {}
+    date_only, gaps, short_first = {}, {}, {}
     for d in primary:
         time.sleep(pause / 4)
         rows = session.run("MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) "
@@ -286,9 +328,13 @@ def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) ->
         found = date_only_articles(sections_)
         if found:
             date_only[d["name"]] = len(found)
+        short = short_first_pieces(sections_)
+        if short:
+            short_first[d["name"]] = len(short)
         if d["id"] in main.values():
             gaps[d["name"]] = numbering_gaps({article_of(n) for n, _, _ in sections_} - {None})
     out["date_only_by_doc"] = dict(sorted(date_only.items(), key=lambda x: -x[1]))
+    out["short_first_by_doc"] = dict(sorted(short_first.items(), key=lambda x: -x[1]))
     _progress(t0, f"{len(primary)} codes and laws done")
     out["numbering_gaps_by_code"] = gaps
 
@@ -322,8 +368,11 @@ def previous_state(directory: str, today: str) -> Optional[dict]:
         return None
 
 
-def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[int, Dict[str, int]],
-                 cards: Optional[Set[str]], prev: Optional[dict], took: float) -> Tuple[str, dict, str]:
+def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optional[int], Dict[str, int]],
+                 cards: Optional[Set[str]], prev: Optional[dict], took: float,
+                 by_design: Optional[Set[str]] = None) -> Tuple[str, dict, str]:
+    """by_design: the rulings left without a card on purpose (civil closures, "estinto" in step 1's links)."""
+    by_design = by_design or set()
     prev_gaps = (prev or {}).get("gaps", {})
     gaps_new = {code: sorted(set(g_) - set(prev_gaps.get(code, g_))) for code, g_ in g["numbering_gaps_by_code"].items()}
     n = {"sections_no_v2_with_text": sum(g["sections_no_v2_with_text_by_type"].values()),
@@ -340,8 +389,10 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[int, 
     card_rows = {}
     if cards is not None:
         for b, ids in g["ruling_ids_by_branch"].items():
-            card_rows[b] = {"rulings": len(ids), "with_card": sum(i in cards for i in ids)}
-        n["rulings_without_card"] = sum(v["rulings"] - v["with_card"] for b, v in card_rows.items() if b != "unknown")
+            card_rows[b] = {"rulings": len(ids), "with_card": sum(i in cards for i in ids),
+                            "skipped_by_design": sum(i in by_design and i not in cards for i in ids)}
+        n["rulings_without_card"] = sum(v["rulings"] - v["with_card"] - v["skipped_by_design"]
+                                        for b, v in card_rows.items() if b != "unknown")
     line = summary_line(n, (prev or {}).get("numbers"))
     if g.get("skipped"):
         line += f" · skipped: {', '.join(g['skipped'])}"
@@ -352,27 +403,35 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[int, 
     for t, k in g["docs_by_type"].items():
         md.append(f"| {t} | {k:,} | {g['sections_by_type'].get(t, 0):,} | {g['sections_empty_by_type'].get(t, 0):,} | "
                   f"{g['sections_no_v2_with_text_by_type'].get(t, 0):,} |")
-    if g["docs_untyped_names"]:
-        md += ["", "Untyped documents: " + "; ".join(g["docs_untyped_names"])]
+    if g["docs_untyped_ids"]:
+        md += ["", "Untyped documents (ids; scripts/document_types.py proposes a type): " + "; ".join(g["docs_untyped_ids"])]
     if g["docs_unknown_type"]:
         md += ["", "Unknown types: " + ", ".join(f"{t} {k}" for t, k in g["docs_unknown_type"].items())]
     md += ["", f"Sections detached from any document: {g['sections_detached']:,}", "",
            "## Articles holding only their date in force (N.0.0 = \"In vigore dal ...\")", ""]
     md += [f"- {doc}: {k:,}" for doc, k in g["date_only_by_doc"].items()] or ["- none"]
+    md += ["", "## Articles whose first piece (N.0.0) is short but not a date", "",
+           "The shared read rule takes such a piece as the article's text: check what it holds.", ""]
+    md += [f"- {doc}: {k:,}" for doc, k in (g.get("short_first_by_doc") or {}).items()] or ["- none"]
     md += ["", "## Article numbering of the main codes", ""]
     for code, gl in g["numbering_gaps_by_code"].items():
         new = gaps_new.get(code) or []
         md.append(f"- {code}: {len(gl):,} missing numbers" + (f" -- **NEW since the last report: {', '.join(map(str, new[:40]))}**"
                                                               if new and prev else "")
                   + (f" (first: {', '.join(map(str, gl[:25]))})" if gl else ""))
-    md += ["", "## Rulings", "", "| branch | rulings | without CITES |" + (" with a card |" if cards is not None else ""),
-           "|---|---|---|" + ("---|" if cards is not None else "")]
+    md += ["", "## Rulings", "", "| branch | rulings | without CITES |"
+           + (" with a card | skipped by design (closures) | still to card |" if cards is not None else ""),
+           "|---|---|---|" + ("---|---|---|" if cards is not None else "")]
     for b, v in g["rulings_by_branch"].items():
+        row = card_rows.get(b) or {}
         md.append(f"| {b} | {v['rulings']:,} | {v['without_cites']:,} |"
-                  + (f" {card_rows[b]['with_card']:,} |" if cards is not None else ""))
+                  + (f" {row.get('with_card', 0):,} | {row.get('skipped_by_design', 0):,} | "
+                     f"{row.get('rulings', 0) - row.get('with_card', 0) - row.get('skipped_by_design', 0):,} |"
+                     if cards is not None else ""))
     if cards is None:
         md += ["", "Ruling cards: no card file readable here (they live on prod in /root/ruling_cards today)."]
-    md += ["", f"CITES unresolved citations (linker log): {unresolved[0]:,}"
+    md += ["", "CITES unresolved citations (linker log): " + ("log not found on this machine" if unresolved[0] is None
+                                                             else f"{unresolved[0]:,}")
            + (" -- " + ", ".join(f"{r} {k:,}" for r, k in unresolved[1].items()) if unresolved[1] else "")]
     md += ["", "## Suspected duplicate documents (REPORTED ONLY, never touched)", ""]
     for reason, groups in g["duplicates"].items():
@@ -403,6 +462,8 @@ def main() -> int:
     p.add_argument("--logs", default="/var/log/backfill_v2_nightly.log,/var/log/link_rulings_nightly.log")
     p.add_argument("--unresolved", default="/var/log/ruling_citations_unresolved.jsonl")
     p.add_argument("--cards", default="", help="comma-separated card files (optional)")
+    p.add_argument("--links", default="/root/ruling_cards/ruling_links.jsonl",
+                   help="step 1's links: the civil closures ('estinto') are left without a card by design")
     p.add_argument("--force", action="store_true", help="run even if memory is low or a heavy job is running")
     p.add_argument("--skip", default="", help="heavy stages to leave out: sections,detached")
     args = p.parse_args()
@@ -434,7 +495,7 @@ def main() -> int:
     md, state, line = build_report(g, queue_status(args.queue_dir, args.failed_dir),
                                    log_status([x for x in args.logs.split(",") if x]), unresolved_reasons(args.unresolved),
                                    card_ids([x for x in args.cards.split(",") if x]),
-                                   previous_state(args.dir, today), time.time() - t0)
+                                   previous_state(args.dir, today), time.time() - t0, closures(args.links))
     for name, content in ((f"health_{today}.md", md), (f"summary_{today}.txt", line + "\n")):
         with open(os.path.join(args.dir, name), "w", encoding="utf-8") as fh:
             fh.write(content)

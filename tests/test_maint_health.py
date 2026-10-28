@@ -31,6 +31,38 @@ def test_suspected_duplicates():
     assert found["same hash"] == [["Testo Unico della Finanza 2026", "Copia"]]
     assert found["same name"] == [["Testo Unico della Finanza 2026", "Testo unico della finanza 2026"]]
     assert found["same name but the year"] == [["Codice del Consumo 2026", "Codice del Consumo 2025"]]
+    assert found["same ruling file"] == []
+
+
+def test_rulings_compared_by_file_never_by_title():
+    """The first report (28 Oct): 496 false alarms from generic or anonymised ruling titles."""
+    r = lambda i, name, file, h=None: {"id": i, "name": name, "file": file, "hash": h, "type": "interpretation"}  # noqa: E731
+    docs = [r("1", "Sentenza della Corte Suprema di Cassazione", "snpen@s10@a2026@n00190@tS.clean.pdf"),
+            r("2", "Sentenza della Corte Suprema di Cassazione", "snpen@s10@a2026@n00191@tS.clean.pdf"),
+            r("3", "Ordinanza sul ricorso 17360-2020", "snciv_s30_a2026_n00001_tO.pdf"),
+            r("4", "Ordinanza sul ricorso 17360-2022", "snciv@s30@a2026@n00001@tO.clean.pdf", "h"),
+            r("5", "Sentenza sul ricorso proposto da Rossi", "", "h")]
+    found = mh.suspected_duplicates(docs)
+    assert found["same name"] == [] and found["same name but the year"] == []
+    assert found["same ruling file"] == [["3", "4"]]                                # the same file loaded twice
+    assert found["same hash"] == [["snciv@s30@a2026@n00001@tO", "5"]]              # never the ruling's title
+
+
+def test_short_first_pieces_are_not_dates():
+    sections = [("564.0.0", 3, False), ("564.1.0", 300, False),     # "1." in N.0.0, the text in the comma
+                ("128.0.0", 30, True), ("128", 4004, False),        # a date: counted elsewhere
+                ("9.0.0", 10, False),                               # nothing else: not counted
+                ("1490.0.0", 321, False)]
+    assert mh.short_first_pieces(sections) == ["564"]
+
+
+def test_closures_are_left_out_of_the_cards_to_do(tmp_path):
+    links = tmp_path / "links.jsonl"
+    links.write_text("\n".join(json.dumps(x) for x in [{"id": "c9", "branch": "civile", "outcome": "estinto"},
+                                                        {"id": "c1", "branch": "civile", "outcome": "rigetto"},
+                                                        {"id": "p1", "branch": "penale", "outcome": "estinto"}]),
+                     encoding="utf-8")
+    assert mh.closures(str(links)) == {"c9"} and mh.closures(str(tmp_path / "none.jsonl")) == set()
 
 
 def test_branch_of():
@@ -55,10 +87,11 @@ def test_summary_line_with_deltas_and_cards():
 
 
 GRAPH = {"documents": 6, "docs_by_type": {"interpretation": 3, "primary": 1, "(none)": 2},
-         "docs_untyped_names": ["doc A", "doc B"], "docs_unknown_type": {},
+         "docs_untyped_ids": ["id-a", "id-b"], "docs_unknown_type": {},
          "sections_by_type": {"interpretation": 30, "primary": 100}, "sections_empty_by_type": {"primary": 1},
          "sections_no_v2_by_type": {"primary": 2}, "sections_no_v2_with_text_by_type": {"primary": 1},
          "sections_detached": 0, "date_only_by_doc": {"Codice del Consumo 2026": 205},
+         "short_first_by_doc": {"Codice di procedura penale 2026": 138},
          "numbering_gaps_by_code": {"Codice Civile 2026": [3, 5]},
          "rulings_by_branch": {"penale": {"rulings": 2, "without_cites": 1}, "civile": {"rulings": 1, "without_cites": 0}},
          "ruling_ids_by_branch": {"penale": ["p1", "p2"], "civile": ["c1"]},
@@ -68,14 +101,16 @@ QUEUE = {"waiting": 2, "by_kind": {"penale": 2}, "failed": 0, "service": "active
 
 def test_build_report_first_night_and_new_gaps(tmp_path):
     md, state, line = mh.build_report(GRAPH, QUEUE, [{"log": "/var/log/x.log", "found": False}], (7, {"not_found": 7}),
-                                      {"p1", "c1"}, None, 12.0)
+                                      {"p1", "c1"}, None, 12.0, by_design={"c9"})
     assert "First report: no comparison." in md and "- Codice del Consumo 2026: 205" in md
-    assert "| penale | 2 | 1 | 1 |" in md and "untyped docs 2" in line and "rulings without card 1" in line
+    assert "| penale | 2 | 1 | 1 | 0 | 1 |" in md and "untyped docs 2" in line and "rulings without card 1" in line
+    assert "- Codice di procedura penale 2026: 138" in md and "Untyped documents (ids" in md and "id-a; id-b" in md
     assert "CITES unresolved citations (linker log): 7 -- not_found 7" in md and "/var/log/x.log: not found" in md
     (tmp_path / "state_20261026.json").write_text(json.dumps(state), encoding="utf-8")
     prev = mh.previous_state(str(tmp_path), "20261027")
     gaps = {**GRAPH, "numbering_gaps_by_code": {"Codice Civile 2026": [3, 5, 9]}}
-    md, state, line = mh.build_report(gaps, QUEUE, [], (0, {}), None, prev, 3.0)
+    md, state, line = mh.build_report(gaps, QUEUE, [], (None, {}), None, prev, 3.0)
+    assert "CITES unresolved citations (linker log): log not found on this machine" in md
     assert "**NEW since the last report: 9**" in md and "numbering gaps 3 (new 1)" in line
     assert "no card file readable here" in md
     assert mh.previous_state(str(tmp_path), "20261026") is None                     # today's own state is not "previous"
@@ -109,7 +144,7 @@ class _Session:
 
 def test_graph_checks_on_a_fake_graph():
     g = mh.graph_checks(_Session(), batch=2, pause=0)
-    assert g["docs_by_type"] == {"primary": 1, "interpretation": 2, "(none)": 1} and g["docs_untyped_names"] == ["senza tipo"]
+    assert g["docs_by_type"] == {"primary": 1, "interpretation": 2, "(none)": 1} and g["docs_untyped_ids"] == ["u"]
     assert g["sections_no_v2_with_text_by_type"] == {"primary": 1} and g["sections_detached"] == 4
     assert g["date_only_by_doc"] == {"Codice Civile 2026": 1} and g["numbering_gaps_by_code"] == {"Codice Civile 2026": [2]}
     assert g["rulings_by_branch"] == {"penale": {"rulings": 1, "without_cites": 0}, "civile": {"rulings": 1, "without_cites": 1}}
