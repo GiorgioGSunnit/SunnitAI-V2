@@ -602,3 +602,94 @@ def test_twin_alternatives_are_listed_once():
     docs = {"B": other, "B minori": other, "C": mine}
     out = cp.settle_by_documents(contract, mine, docs.get)
     assert out["alternatives"] == ["B"] and out["same_documents"] == ["B minori", "C"] and out["ambiguous"]
+
+
+# --- fourth round: headings without a dash, Commercio's clauses, no clause, no pay date ----------------------
+
+def test_headings_without_a_dash_in_brackets_or_in_capitals():
+    assert cp.article_headings("Art. 186 Conservazione del posto\nIn caso di malattia")[0][1:] == \
+        ("Art. 186", "Conservazione del posto")
+    assert cp.article_headings("Art. 236 (Termini di preavviso) I termini sono")[0][1:] == \
+        ("Art. 236", "Termini di preavviso")
+    assert cp.article_headings("ART. 175 - MALATTIA E INFORTUNIO NON SUL LAVORO Il lavoratore")[0][2] == \
+        "MALATTIA E INFORTUNIO NON SUL LAVORO"
+    assert cp.article_headings("come previsto e art. 5 Legge 300 del 1970") == []      # not a line's start
+
+
+C1 = "Nel CCNL Terziario Distribuzione e Servizi Confcommercio, qual è il preavviso di dimissioni per un impiegato di 4° livello?"
+C2 = "Sono commessa in un supermercato: per quanti giorni di malattia mi viene conservato il posto (periodo di comporto)?"
+
+
+def test_commercio_preavviso_and_comporto_clauses_are_found():
+    tc = [{"id": "tc", "kind": cp.TC, "name": "TC"}]
+    rows = _rows(["Art. 50 - Preavviso\nPer i contratti a tempo determinato il preavviso non è dovuto.",
+                  "Art. 235 - Dimissioni\nLe dimissioni vanno date per iscritto con il preavviso dell'articolo seguente.",
+                  "Art. 236 Termini di preavviso\nI termini di preavviso per le dimissioni sono:",
+                  "Quadri e 1° livello: 45 giorni; 2° e 3° livello: 30 giorni; 4° e 5° livello: 20 giorni",
+                  "Art. 237 - Indennità sostitutiva",
+                  "Art. 180 - Malattia\nIl lavoratore deve avvisare il datore di lavoro.",
+                  "Art. 186 (Conservazione del posto) Durante la malattia il lavoratore ha diritto alla conservazione "
+                  "del posto per 180 giorni in un anno solare.",
+                  "Art. 187 - Aspettativa"])
+    topics = cp.topics_of(C1)
+    clauses, _ = cp.select_clauses(rows, tc, cp.topic_keywords(C1, topics), headings=cp.topic_headings(topics),
+                                   question=C1)
+    refs = [cp.clause_reference(c) for c in clauses]
+    assert "Art. 236 - Termini di preavviso" in refs
+    ranked = cp.rank_sections(rows, cp.topic_keywords(C1, topics), cp.topic_headings(topics), C1)
+    assert [r["id"] for r in ranked[:2]] == ["s2", "s1"]     # the terms, the dimissioni; the fixed-term one demoted
+    assert next(r for r in ranked if r["id"] == "s0")["_head"] == 1
+    assert "4° e 5° livello: 20 giorni" in next(c for c in clauses if c["ref"] == "Art. 236")["text"]
+    topics = cp.topics_of(C2)
+    ranked = cp.rank_sections(rows, cp.topic_keywords(C2, topics), cp.topic_headings(topics), C2)
+    assert ranked[0]["text"].startswith("Art. 186 (Conservazione del posto)")
+    clauses, _ = cp.select_clauses(rows, tc, cp.topic_keywords(C2, topics), headings=cp.topic_headings(topics),
+                                   question=C2)
+    assert "Art. 186 - Conservazione del posto" in [cp.clause_reference(c) for c in clauses]
+
+
+def test_the_ccnl_silence_is_never_claimed():
+    fixed = cp.NO_CLAUSE.format(topic=cp.topic_label(["preavviso"]))
+    assert fixed.startswith("Non ho individuato nei testi disponibili la clausola del CCNL sul preavviso;")
+    body = ("**Cosa prevede il CCNL**\nIl CCNL non specifica il preavviso. Le clausole fornite non disciplinano il "
+            "punto.\n**Quadro normativo**\nL'art. 2118 c.c. rinvia al contratto, che la legge non fissa.\n"
+            "**Da verificare**\n- Nessuna clausola del CCNL sul preavviso.\n- il livello.")
+    out, dropped = cp.drop_silence(body, fixed)
+    assert dropped == 3 and fixed in out and "non specifica" not in out and "2118 c.c." in out
+    assert out.index(fixed) < out.index("**Quadro normativo**")
+
+
+def test_no_clause_on_the_topic_gives_the_fixed_sentence_and_the_framework(path, monkeypatch):
+    from src.rag import ai_chat
+    session, calls = path
+    prompts = []
+
+    def fake_chat(messages, max_tokens=None, **_):
+        prompts.append(messages[0].content)
+        calls.append(messages[-1].content)
+        return ("**Cosa prevede il CCNL**\nIl CCNL non prevede termini di preavviso per le dimissioni.\n"
+                "**Quadro normativo**\nL'art. 2118 c.c. impone il preavviso.")
+    monkeypatch.setattr(ai_chat, "_call_chat", fake_chat)
+    out = cp.answer("Nel CCNL Metalmeccanica Industria qual è il preavviso di dimissioni?", _Driver(session), "neo4j",
+                    today=date(2026, 10, 28))
+    fixed = cp.NO_CLAUSE.format(topic="sul preavviso")
+    assert out["ccnl"]["clauses"]["found"] == [] and out["ccnl"]["clauses"]["no_clause"]
+    assert fixed in prompts[0] and "[CLAUSOLA" not in calls[0] and "[LEGGE] art. 2118 c.c." in calls[0]
+    assert fixed in out["answer"] and "non prevede" not in out["answer"] and "2118 c.c." in out["answer"]
+    assert out["ccnl"]["answer"]["silence_dropped"] == 1
+
+
+def test_no_pay_date_from_a_non_pay_document():
+    fund = {**_pay_doc("prev", cp.ACCORDO, "2025-07-04"), "document_subtype": "Accordo Previdenza Integrativa"}
+    assert cp.not_pay_document(fund) and not cp.not_pay_document(_pay_doc("tc", cp.TC, "2021-01-01"))
+    none = {"tables": [], "decorrenza": None, "source": None, "superseded_by": None}
+    body = ("La paga base in vigore dal 04/07/2025 è fissata dall'accordo. La retribuzione segue l'art. 2099 c.c. "
+            "La retribuzione minima decorre dal rinnovo.")
+    out, dropped = cp.drop_pay_dates(body, none, [date(2025, 7, 4)])
+    assert dropped == 2 and out.strip() == "La retribuzione segue l'art. 2099 c.c."
+    some = {"tables": [{}], "decorrenza": date(2024, 3, 1)}
+    out, dropped = cp.drop_pay_dates("Il minimo dal 01/03/2024 è 1.800,00. Il minimo dal 04/07/2025 cambia.", some,
+                                     [date(2025, 7, 4)])
+    assert dropped == 1 and "01/03/2024" in out and "04/07/2025" not in out
+    unreadable = {"superseded_by": {"doc": _pay_doc("r25", cp.RINNOVO, "2025-03-01"), "decorrenza": date(2025, 3, 1)}}
+    assert "01/03/2025" not in cp.pay_line(unreadable) and "né decorrenze" in cp.pay_line(unreadable)

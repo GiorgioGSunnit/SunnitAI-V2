@@ -4,11 +4,12 @@
                per sector: kind, validity, name), and for the key cases (--key-cases, default c1,c2,t1,t2) the
                candidates ccnl_path.identify_contract scores, its choice and ambiguity against the case's key,
                and every sector the key's regex accepts
-  2 clauses    for the clause misses (--clause-cases, default m2,s2,m4,e1,f2): the contract and version used,
+  2 clauses    for the clause misses (--clause-cases, default c1,c2,m2,s2,m4,e1,f2): the contract and version used,
                the topic's keywords and heading phrases, the top sections as ranked now (heading score, lexical
                score, cosine, name, 120 characters), the clauses selected now, and whether the clause exists in
                the chosen documents: the Sections whose text holds each phrase of --phrases (per topic), with
-               their rank
+               their rank, and the lines opening with "Art. N" that hold the phrase with what article_headings
+               reads there (a heading the parser misses shows "NOT PARSED")
   3 framework  for the framework misses (--framework-cases, default m1,m4,e1): each wanted article, the
                primary documents its law resolves to (by number and year, then by title) and whether the
                article was fetched
@@ -38,8 +39,8 @@ KEY_SECTORS_RE = r"terziar|commerc|turism|pubblici esercizi|alberg|distribuzione
 PHRASES = {"prova": ["periodo di prova", "patto di prova", "assunzione in prova"],
            "disciplinare": ["provvedimenti disciplinari", "sanzioni disciplinari", "codice disciplinare",
                             "norme disciplinari"],
-           "preavviso": ["preavviso", "termini di preavviso"],
-           "malattia": ["malattia", "comporto"], "ferie": ["ferie"],
+           "preavviso": ["preavviso", "termini di preavviso", "dimissioni"],
+           "malattia": ["malattia", "comporto", "conservazione del posto"], "ferie": ["ferie"],
            "retribuzione": ["minimi tabellari", "retribuzione tabellare"]}
 
 
@@ -135,6 +136,15 @@ def clause_report(session, cases, ids, cp, embed, top, today):
                 L.append(f"        rank {pos if pos is not None else 'not ranked'}; [{names.get(r['doc'], '')}] "
                          f"{str(r.get('name'))[:40]!r} h{cp.heading_score(r, p['headings'], case['question'])}: "
                          f"{' '.join(text[max(0, at - 30):at + 90].split())}")
+            heading_lines = [(r, m) for r in p["rows"] for m in re.finditer(
+                rf"(?im)^[ \t>*#|]*art(?:icolo|\.)?\s*\d+[^\n]{{0,80}}", r.get("text") or "")
+                if cp._fold(phrase) in cp._fold(m.group(0))]
+            for r, m in heading_lines[:6]:
+                parsed = [h for h in cp.article_headings(r.get("text") or "") if abs(h[0] - m.start()) <= 8]
+                pos = rank_of.get(id(r))
+                L.append(f"        heading line, rank {pos if pos is not None else 'not ranked'}: "
+                         f"{' '.join(m.group(0).split())[:90]!r} -> "
+                         f"{(parsed[0][1] + ' - ' + parsed[0][2]) if parsed else 'NOT PARSED'}")
     return L
 
 
@@ -170,7 +180,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Read-only diagnosis of the CCNL eval's misses.")
     parser.add_argument("--cases", default=os.path.join(ROOT, "tests", "eval_ccnl_cases.json"))
     parser.add_argument("--key-cases", default="c1,c2,t1,t2")
-    parser.add_argument("--clause-cases", default="m2,s2,m4,e1,f2")
+    parser.add_argument("--clause-cases", default="c1,c2,m2,s2,m4,e1,f2")
     parser.add_argument("--framework-cases", default="m1,m4,e1")
     parser.add_argument("--top", type=int, default=10, help="sections shown per clause case (default 10)")
     parser.add_argument("--no-embed", action="store_true", help="lexical and heading scores only, no embedding call")

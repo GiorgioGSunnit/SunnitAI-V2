@@ -531,9 +531,11 @@ TOPICS: Dict[str, Dict[str, Any]] = {
     "preavviso": {"re": r"preavviso|dimission\w*|dimett\w*",
                   "keywords": ["preavviso", "termini di preavviso", "periodo di preavviso", "preavviso di licenziamento",
                                "preavviso di dimissioni", "indennità sostitutiva del preavviso", "indennità di mancato "
-                               "preavviso", "dimissioni"],
+                               "preavviso", "dimissioni", "termini di disdetta", "giorni di calendario"],
                   "headings": ["preavviso", "termini di preavviso", "preavviso di licenziamento e dimissioni",
-                               "risoluzione del rapporto", "dimissioni"],
+                               "preavviso di licenziamento e di dimissioni", "preavviso di dimissioni",
+                               "preavviso di licenziamento", "termini di disdetta", "risoluzione del rapporto",
+                               "dimissioni", "recesso"],
                   "framework": [("2118", "c.c."), ("2119", "c.c.")]},
     "prova": {"re": r"periodo di prova|\bin prova\b|patto di prova|\bla prova\b",
               "keywords": ["periodo di prova", "patto di prova", "assunzione in prova", "durata della prova",
@@ -542,9 +544,12 @@ TOPICS: Dict[str, Dict[str, Any]] = {
               "framework": [("2096", "c.c.")]},
     "malattia": {"re": r"malatti\w*|comporto|infortuni\w*",
                  "keywords": ["malattia", "comporto", "periodo di comporto", "conservazione del posto",
-                              "certificato medico", "infortunio", "assenze per malattia"],
-                 "headings": ["malattia", "malattia e infortunio", "trattamento di malattia", "comporto",
-                              "infortunio"],
+                              "conservazione del posto di lavoro", "superamento del comporto", "certificato medico",
+                              "infortunio", "assenze per malattia", "periodo di conservazione"],
+                 "headings": ["malattia", "malattia e infortunio", "malattia e infortunio non sul lavoro",
+                              "trattamento di malattia", "trattamento economico di malattia", "assenze per malattia",
+                              "comporto", "periodo di comporto", "conservazione del posto",
+                              "conservazione del posto di lavoro", "infortunio"],
                  "framework": [("2110", "c.c.")]},
     "disciplinare": {"re": r"disciplinar\w*|contestazion\w*|sanzion\w*|richiamo|\bmulta\b|sospension\w* dal "
                            r"servizio|provvediment\w*",
@@ -596,6 +601,29 @@ TOPICS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# The topic as the answer names it when no clause on it is found.
+TOPIC_LABELS = {"retribuzione": "la retribuzione", "ferie": "le ferie", "preavviso": "il preavviso",
+                "prova": "il periodo di prova", "malattia": "la malattia e il periodo di comporto",
+                "disciplinare": "i provvedimenti disciplinari", "licenziamento": "il licenziamento",
+                "orario": "l'orario di lavoro", "tempo determinato": "il contratto a tempo determinato",
+                "part-time": "il tempo parziale", "apprendistato": "l'apprendistato",
+                "inquadramento": "l'inquadramento", "tfr": "il trattamento di fine rapporto",
+                "mensilita": "le mensilità aggiuntive", "permessi": "i permessi"}
+
+
+_SU = (("il ", "sul "), ("lo ", "sullo "), ("la ", "sulla "), ("i ", "sui "), ("gli ", "sugli "), ("le ", "sulle "),
+       ("l'", "sull'"))
+
+
+def topic_label(topics: Sequence[str]) -> str:
+    """"sul preavviso", "sulla malattia e il periodo di comporto e le ferie"; "su questo punto" without a topic."""
+    labels = " e ".join(TOPIC_LABELS.get(t, t) for t in topics)
+    for article, contracted in _SU:
+        if labels.startswith(article):
+            return contracted + labels[len(article):]
+    return "su " + (labels or "questo punto")
+
+
 def topic_headings(topics: Sequence[str]) -> List[str]:
     out: List[str] = []
     for name in topics:
@@ -620,7 +648,9 @@ def topic_keywords(text: str, topics: Sequence[str]) -> List[str]:
 
 _HEADING_RE = re.compile(
     r"\b(Art(?:icolo|\.)?)\s*(\d{1,3}(?:\s*-?\s*(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies))?)"
-    r"\b\s*(?:[-–—.:)]\s*|(?=\n))", re.IGNORECASE)
+    r"\b\s*(?:[-–—.:)(]\s*|(?=\n)|(?<=\d)[ \t]+(?=(?-i:[A-ZÀ-Ü])))", re.IGNORECASE)
+# A heading with no separator ("Art. 186 Conservazione del posto") counts only at a line's start.
+_LINE_START_RE = re.compile(r"(?:^|\n)[ \t>*#|]*$")
 _TITLE_STOP = {"Al", "Il", "La", "Lo", "Le", "Gli", "I", "Ai", "Per", "Nel", "Nella", "Nei", "In", "Fermo", "Ferma",
                "Salvo", "Ogni", "Dal", "Dalla", "È", "A", "Fatto", "Fatti", "Con", "Qualora", "Ove", "Tra", "Fra",
                "Sono", "Si", "Ad", "Alla", "Alle", "Agli", "Un", "Una", "Ciascun", "Ciascuna"}
@@ -631,8 +661,18 @@ def _title_after(text: str) -> str:
     that is no acronym, a comma number "1.", a newline or a full stop), at most 12 words."""
     line = (text or "").split("\n", 1)[0]
     words: List[str] = []
-    for i, word in enumerate(line.split()):
+    split = line.split()
+    caps = len(split) > 1 and all(w.strip("()[]«»\"',;.-–—").isupper() for w in split[:2]
+                                  if re.search(r"[A-Za-zÀ-ÿ]", w))
+    for i, word in enumerate(split):
         bare = word.strip("()[]«»\"',;")
+        if caps and i and bare and re.search(r"[A-Za-zÀ-ÿ]", bare):
+            if not bare.isupper():                     # "MALATTIA E INFORTUNIO Il lavoratore": the title ends
+                break
+            words.append(word)
+            if word.endswith((".", ";", ":")) or len(words) >= 12:
+                break
+            continue
         if i and (re.match(r"^\d+[.)]$", word) or (bare[:1].isupper() and not (bare.isupper() and len(bare) <= 6))
                   or bare in _TITLE_STOP):
             break
@@ -641,7 +681,7 @@ def _title_after(text: str) -> str:
         words.append(word)
         if word.endswith((".", ";", ":")) or len(words) >= 12:
             break
-    return " ".join(words).rstrip(".;:,- ").strip()
+    return " ".join(words).strip("()").rstrip(".;:,- )").strip()
 
 
 def article_headings(text: str) -> List[Tuple[int, str, str]]:
@@ -654,6 +694,8 @@ def article_headings(text: str) -> List[Tuple[int, str, str]]:
         prefix = (text or "")[max(0, m.start() - 6):m.start()].lower()
         if re.search(r"(?:dell'|all'|nell'|dall'|sull'|l'|ex)\s*$", prefix):
             continue                                   # "dell'art. 7": a reference, not a heading
+        if not re.search(r"[-–—.:)(\n]", text[m.end(2):m.end()]) and not _LINE_START_RE.search(text[:m.start()]):
+            continue                                   # "... e art. 5 Legge": no separator, not a line's start
         out.append((m.start(), f"Art. {number}", _title_after(text[m.end():m.end() + 160])))
     return out
 
@@ -793,12 +835,23 @@ def heading_match(row: Dict[str, Any], phrases: Sequence[str], question: str = "
         if score and _special(_fold(name + " " + text[:300]), question):
             score = max(0, score - 3)
         if score > best["score"]:
-            best = {"score": score, "via": "name", "anchor": None, "ref": None, "title": None}
+            best = {"score": score, "via": "name", "anchor": None, "ref": None, "title": row.get("name")}
     if not best["score"]:
         opening = _fold(text[:80])
         if any(opening.startswith(p) for p in folded_phrases):
             best = {"score": 1, "via": "opening", "anchor": None, "ref": None, "title": None}
     return best
+
+
+def question_hits(title: Optional[str], question: str) -> int:
+    """How many of the question's content words (by stem) a matched heading's title holds: among the headings
+    on the topic, "Termini di preavviso" before "Preavviso" for a question on the preavviso's terms,
+    "Conservazione del posto" for one on keeping the job during an illness."""
+    if not title or not question:
+        return 0
+    def stems(text):                                   # "conservazione" and "conservato" share "conser"
+        return {w[:6] if len(w) >= 6 else _stem(w) for w in _words(text)}
+    return len(stems(title) & stems(question))
 
 
 def heading_score(row: Dict[str, Any], phrases: Sequence[str], question: str = "") -> int:
@@ -814,6 +867,7 @@ def rank_sections(rows: Sequence[Dict[str, Any]], keywords: Sequence[str],
         r["_lex"] = lexical_score(r.get("text") or "", keywords)
         match = heading_match(r, headings, question)
         r["_head"], r["_via"], r["_anchor"] = match["score"], match["via"], match["anchor"]
+        r["_qhit"] = question_hits(match["title"], question) if match["score"] >= 3 else 0
     by_sim = sorted((r for r in rows if r.get("sim") is not None), key=lambda r: -float(r["sim"]))
     by_lex = sorted((r for r in rows if r["_lex"] > 0), key=lambda r: -r["_lex"])
     sim_rank = {id(r): i for i, r in enumerate(by_sim)}
@@ -825,7 +879,7 @@ def rank_sections(rows: Sequence[Dict[str, Any]], keywords: Sequence[str],
             continue
         r["_rrf"] = (1 / (RRF_K + s) if s is not None else 0) + (1 / (RRF_K + lx) if lx is not None else 0)
         out.append(r)
-    return sorted(out, key=lambda r: (-r["_head"], -r["_rrf"], str(r.get("id"))))
+    return sorted(out, key=lambda r: (-r["_head"], -r["_qhit"], -r["_rrf"], str(r.get("id"))))
 
 
 HEADING_ONLY_CHARS = 150
@@ -1087,11 +1141,18 @@ _SYSTEM_HEAD = (
     "suo riferimento tra parentesi (es. «art. 16 - Diritti e rapporti sindacali», o il titolo della clausola) e "
     "il documento da cui viene. Se un accordo successivo modifica la clausola, indica la regola aggiornata e da "
     "quando vale. NON copiare frasi del contratto: riformula sempre; puoi riportare solo cifre brevi (importi, "
-    "giorni, mesi, percentuali). Se le clausole non rispondono alla domanda, dillo.\n")
+    "giorni, mesi, percentuali). Se le clausole non rispondono al punto, scrivi che nei testi disponibili non hai "
+    "individuato la regola su quel punto: MAI che il CCNL non lo prevede, non lo specifica o non lo disciplina.\n")
+# No clause on the topic in the texts: a fixed sentence, never the CCNL's silence (the text may only be missing).
+NO_CLAUSE = "Non ho individuato nei testi disponibili la clausola del CCNL {topic}; verificare l'articolo corrispondente."
+_SYSTEM_NO_CLAUSE = (
+    "**Cosa prevede il CCNL** - scrivi soltanto questa frase: «{sentence}» Non scrivere mai che il CCNL non prevede, "
+    "non specifica, non disciplina o non regola il tema, né che ne tace: il testo può semplicemente mancare dalla "
+    "banca dati.\n")
 _SYSTEM_PAY = (
     "Importi: usa SOLO le righe delle TABELLE IMPORTI (sono quelle in vigore alla data di riferimento), con livello "
     "e decorrenza; mai calcolarli, stimarli o dedurli, mai prenderli da altre clausole. Se non ci sono TABELLE "
-    "IMPORTI, non indicare importi.\n")
+    "IMPORTI, non indicare importi né date di decorrenza o di vigenza degli importi.\n")
 _SYSTEM_NO_PAY = "Importi solo se scritti nel materiale, con livello e decorrenza: mai calcolarli, stimarli o dedurli.\n"
 _SYSTEM_LAW = (
     "**Quadro normativo** - ciascun articolo di legge fornito che riguarda la domanda, citato con il codice o la "
@@ -1108,10 +1169,15 @@ _SYSTEM_TAIL = (
     "accordi territoriali o aziendali, ciò che il materiale non chiarisce.")
 
 
-def system_prompt(pay: bool, rulings: bool) -> str:
-    """The writer's instructions: the amounts rule of a pay question, the case-law section only with rulings."""
-    return (_SYSTEM_HEAD + (_SYSTEM_PAY if pay else _SYSTEM_NO_PAY) + _SYSTEM_LAW
-            + (_SYSTEM_RULINGS if rulings else "") + _SYSTEM_TAIL)
+def system_prompt(pay: bool, rulings: bool, no_clause: Optional[str] = None) -> str:
+    """The writer's instructions: the amounts rule of a pay question, the case-law section only with rulings,
+    the fixed sentence (no_clause) in place of the CCNL's section when no clause on the topic was found."""
+    head = _SYSTEM_HEAD
+    if no_clause:
+        head = head.split("**Cosa prevede il CCNL**")[0] + _SYSTEM_NO_CLAUSE.format(sentence=no_clause)
+    law = _SYSTEM_LAW + ("Senza clausole, il quadro normativo è la risposta: esponi la disciplina di legge del tema "
+                         "con gli articoli forniti.\n" if no_clause else "")
+    return head + (_SYSTEM_PAY if pay else _SYSTEM_NO_PAY) + law + (_SYSTEM_RULINGS if rulings else "") + _SYSTEM_TAIL
 
 
 SYSTEM = system_prompt(False, True)
@@ -1137,6 +1203,60 @@ def drop_empty_caselaw(body: str) -> Tuple[str, str]:
     if not any(_RULING_REF_RE.search(x) for x in kept):
         return (body[:m.start()].rstrip() + "\n\n" + body[end:].lstrip()).strip(), "section"
     return body[:m.end()] + "".join(kept) + body[end:], "sentences"
+
+
+_SILENCE_SUBJECT = r"\b(?:ccnl|contratt\w*|clausol\w*|accord\w*|testo|disposizion\w*|disciplina contrattuale)\b"
+_SILENCE_RE = re.compile(
+    _SILENCE_SUBJECT + r"(?:(?!\blegg[ei]\b|\bcodic\w*|\bnorm\w*|\bstatuto\b|\bdecret\w*)[^.\n]){0,140}?\bnon\s+(?:(?:lo|la|li|le|ne|vi|si)\s+)?(?:prevede|prevedono|specifica\w*|"
+    r"disciplina|disciplinano|regola|regolano|indica\w*|contien\w*|riporta\w*|stabilisc\w*|menziona\w*|fissa\w*|"
+    r"tratta\w*|chiarisc\w*|precisa\w*|defin\w*|dispon\w*|individua\w*|detta\w*|contempla\w*|affronta\w*|dice|"
+    r"(?:è|e|sono|risulta\w*|viene|vengono)\s+(?:espressamente\s+|esplicitamente\s+)?(?:previst|specificat|disciplinat|"
+    r"indicat|regolat|stabilit|definit|menzionat|trattat|fissat)\w*)"
+    r"|\b(?:ccnl|contratto)\b[^.\n]{0,60}\b(?:tace|è silente|e silente)"
+    r"|\b(?:nessuna|alcuna|assenza di (?:una |alcuna )?)\s*(?:clausola|disposizione|previsione|norma|disciplina)\b"
+    r"[^.\n]{0,60}(?:ccnl|contratt\w*)", re.I)
+
+
+def drop_silence(body: str, sentence: str) -> Tuple[str, int]:
+    """(the answer without the sentences asserting the CCNL says nothing on the topic -- when no clause on it was
+    retrieved its text may only be missing --, with the fixed sentence under the CCNL's heading, or opening the
+    answer when the writer left it out; how many were dropped)."""
+    kept, dropped = [], 0
+    for s in _sentences(body or ""):
+        if sentence[:40] not in s and _SILENCE_RE.search(s):
+            dropped += 1
+            kept.append("\n" if s.endswith("\n") else "")
+            continue
+        kept.append(s)
+    body = re.sub(r"\n{3,}", "\n\n", "".join(kept))
+    if sentence[:40] not in body:
+        m = re.search(r"^\s*\*\*\s*Cosa prevede il CCNL\s*\*\*[^\n]*\n?", body, re.I | re.M)
+        if m:
+            body = body[:m.end()].rstrip("\n") + "\n" + sentence + "\n" + body[m.end():]
+        else:
+            body = f"**Cosa prevede il CCNL**\n{sentence}\n\n{body.lstrip()}"
+    return body, dropped
+
+
+_PAY_SENTENCE_RE = re.compile(r"import\w*|minim[io]\b|minimi|paga|retribu\w*|stipend\w*|tabell\w*|aument\w*", re.I)
+_VALIDITY_RE = re.compile(r"in vigore|decorr\w*|a partire dal|vigent\w*|valid\w* dal", re.I)
+
+
+def drop_pay_dates(body: str, pay: Dict[str, Any], banned: Iterable[date]) -> Tuple[str, int]:
+    """(the answer without a pay sentence dated from a document excluded as non-pay (`banned`: their dates) --
+    or, with no readable pay table, without any pay sentence giving a date or a validity --, how many)."""
+    banned = set(banned) - ({pay["decorrenza"]} if pay.get("decorrenza") else set())
+    no_table = not pay.get("tables")
+    out, dropped = [], 0
+    for s in _sentences(body or ""):
+        if _PAY_SENTENCE_RE.search(s) and not s.lstrip().startswith("**Importi**"):
+            dates = {d for d in (loose_date(m.group(0)) for m in _LOOSE_DATE_RE.finditer(s)) if d}
+            if dates & banned or (no_table and (dates or _VALIDITY_RE.search(s))):
+                dropped += 1
+                out.append("\n" if s.endswith("\n") else "")
+                continue
+        out.append(s)
+    return "".join(out), dropped
 
 
 def _clause_block(i: int, clause: Dict[str, Any], with_rows: bool) -> str:
@@ -1414,7 +1534,13 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
                     clauses = found
                 else:
                     later = None
+        if not strong and later is None and topics:
+            clauses = []                     # cosine alone, nothing on the topic: no clause rather than a wrong one
+        if is_pay:
+            clauses = [c for c in clauses if not not_pay_document(c["doc"])]
         pay = pay_tables(group_ordered(rows)[0], chosen, when) if is_pay else None
+        no_clause = (NO_CLAUSE.format(topic=topic_label(topics))
+                     if topics and not clauses and not (pay is not None and pay["tables"]) else None)
         if pay is not None:
             info["pay"] = {"candidates": pay["candidates"],
                            "source": short_name(pay["source"]) if pay["source"] else None,
@@ -1425,7 +1551,7 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
                            if pay["superseded_by"] else None}
             vlog("ccnl_pay", info["pay"])
         info["clauses"] = {"topics": topics, "keywords": keywords, "sections": len(rows), "order_by": order_used,
-                           "later_text": _doc_log(later) if later else None,
+                           "later_text": _doc_log(later) if later else None, "no_clause": bool(no_clause),
                            "found": [{"doc": short_name(c["doc"]), "ref": clause_reference(c),
                                       "sections": c["span"], "rows": len((c.get("rows") or {}).get("rows") or []),
                                       "text": c["text"][:400]} for c in clauses]}
@@ -1463,10 +1589,11 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
              + (f"ATTENZIONE: le clausole vengono da {short_name(later)}, in vigore dal {_fmt(later.get('from'))}, "
                 f"successivo alla data: presentale come la regola del testo successivo, da verificare per la data.\n"
                 if later is not None else "") + "\n"
-             + ("\n\n".join(material_blocks) or "[nessuna clausola pertinente trovata nel CCNL]")
+             + ("\n\n".join(material_blocks) or f"[nessuna clausola {topic_label(topics)} individuata nei testi "
+                                                   f"disponibili del CCNL]")
              + "\n\n" + ("\n\n".join(law_blocks) or "[nessun articolo di legge reperito]")
              + ("\n\n" + "\n\n".join(ruling_blocks) if ruling_blocks else ""))
-    body = _call_chat([SystemMessage(content=system_prompt(pay is not None, bool(rulings))),
+    body = _call_chat([SystemMessage(content=system_prompt(pay is not None, bool(rulings), no_clause)),
                        HumanMessage(content=human)], max_tokens=1800) if llm else ""
     body = clean(body)
     clause_texts = [c["text"] for c in clauses]
@@ -1485,9 +1612,16 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     amount_texts = [t["text"] for t in pay["tables"]] if pay is not None else clause_texts
     body, amounts = check_amounts(body, "\n".join(amount_texts + law_blocks))
     body, caselaw = drop_empty_caselaw(body)
+    silence = 0
+    if no_clause:
+        body, silence = drop_silence(body, no_clause)
+    pay_dates = 0
+    if pay is not None:
+        body, pay_dates = drop_pay_dates(body, pay, [d["from"] for d in chosen if not_pay_document(d) and d.get("from")])
     final = f"{head}\n\n{body.strip()}".strip()
     info["answer"] = {"verbatim_found": len(copied), "rewritten": rewritten, "verbatim_dropped": len(still),
-                      "amounts_removed": amounts, "caselaw_dropped": caselaw, "chars": len(final)}
+                      "amounts_removed": amounts, "caselaw_dropped": caselaw, "silence_dropped": silence,
+                      "pay_dates_dropped": pay_dates, "chars": len(final)}
     info["outcome"] = "answered"
     vlog("ccnl_path", {k: v for k, v in info.items() if k != "question"}, duration_ms=(time.time() - t0) * 1000)
     ccnl_rows = [{"d": {"id": c["doc"]["id"], "name": c["doc"].get("name"), "document_type": TYPE,
@@ -1544,7 +1678,8 @@ def select_clauses(rows: List[Dict[str, Any]], chosen: Sequence[Dict[str, Any]],
     base_id = chosen[0]["id"] if chosen else None
     rank = {d["id"]: i for i, d in enumerate(chosen)}
     hits = rank_sections(rows, keywords, headings, question)
-    hits.sort(key=lambda r: (-r["_head"], -round(r["_rrf"], 6), -rank.get(r["doc"], 0), str(r.get("id"))))
+    hits.sort(key=lambda r: (-r["_head"], -r["_qhit"], -round(r["_rrf"], 6), -rank.get(r["doc"], 0),
+                             str(r.get("id"))))
     clauses: List[Dict[str, Any]] = []
     taken: Dict[str, List[Tuple[int, int]]] = {}
     counts = {"base": 0, "amendments": 0}
@@ -1580,6 +1715,13 @@ _PAY_WORDS_RE = re.compile(r"minim[io]\b|minimi|paga base|paga oraria|tabellar\w
                            re.I)
 # Agreements about something else than pay, whose tables are contributions or quotas.
 _NOT_PAY_DOC_RE = re.compile(r"previdenz|assistenz|sanitari|welfare|formazion|bilateral|sicurezz|\bfondo\b", re.I)
+
+
+def not_pay_document(doc: Dict[str, Any]) -> bool:
+    """An agreement on pensions, health, welfare, training, safety or bilateral bodies: no pay table, no pay date."""
+    return bool(_NOT_PAY_DOC_RE.search(str(doc.get("document_subtype") or short_name(doc).split(" — ")[-1])))
+
+
 _LOOSE_DATE_RE = re.compile(rf"(\d{{1,2}})(?:°|º)?\s*[/.\s-]\s*(\d{{1,2}}|{'|'.join(_MONTHS)})\s*[/.\s-]\s*((?:19|20)\d{{2}})",
                             re.I)
 MAX_PAY_TABLES = 3
@@ -1613,7 +1755,7 @@ def pay_tables(by_doc: Dict[str, List[Dict[str, Any]]], chosen: Sequence[Dict[st
     candidates = []
     for doc_id, rows in by_doc.items():
         doc = docs.get(doc_id)
-        if doc is None or _NOT_PAY_DOC_RE.search(str(doc.get("document_subtype") or short_name(doc).split(" — ")[-1])):
+        if doc is None or not_pay_document(doc):
             continue
         i = 0
         while i < len(rows):
@@ -1674,9 +1816,10 @@ def pay_line(pay: Dict[str, Any]) -> str:
         return line
     if pay.get("superseded_by"):
         later = pay["superseded_by"]
-        return (f"**Importi**: la tabella in vigore ({short_name(later['doc']).split(' — ')[-1]}, dal "
-                f"{_fmt(later['decorrenza'])}) non è leggibile: non indico importi, da verificare sul testo.")
-    return "**Importi**: nei documenti in vigore alla data non c'è una tabella retributiva leggibile: non indico importi."
+        return (f"**Importi**: la tabella retributiva di {short_name(later['doc']).split(' — ')[-1]} non è leggibile "
+                f"nella banca dati: non indico importi né decorrenze, da verificare sul testo.")
+    return ("**Importi**: nei documenti in vigore alla data non c'è una tabella retributiva leggibile: non indico "
+            "importi né decorrenze.")
 
 
 def pay_block(pay: Dict[str, Any]) -> str:

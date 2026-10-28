@@ -551,6 +551,9 @@ def main(argv=None):
                       help="run tests/eval_ccnl_cases.json through the CCNL path (CCNL_PATH_ENABLED=true unless "
                            "--flag sets it) in this process")
     ccnl.add_argument("--ccnl-cases", default=str(HERE / "eval_ccnl_cases.json"))
+    ccnl.add_argument("--answers", default="", metavar="IDS",
+                      help="print these cases' answers with their ids at the end (e.g. c1,c2,m4,e1,e2); also "
+                           "written to answers.txt")
     args = parser.parse_args(argv)
 
     if args.ccnl:

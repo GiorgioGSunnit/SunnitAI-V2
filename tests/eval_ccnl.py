@@ -15,12 +15,15 @@ Run from the app folder (it writes only under --out):
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --label first
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --debug 3
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --only m2,f2 --debug
+    cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --label round4 --debug 14 --answers c1,c2,m4,e1,e2
 
 --debug [N] (default 3; the first N cases, or the --only ones) prints for each case: the route, the sector
 candidates with their scores and reasons, the date and how it was read, every document of the sector (kind,
 validity) with the base, amendments and dropped ipotesi, the clauses found (order key, sections, reference, the
 first characters), the framework articles wanted / found / missing, the rulings, the answer checks and the
-answer. Also written to debug.txt.
+answer. Also written to debug.txt. Every case also records the answer's sentences claiming the CCNL is silent
+("non prevede / non specifica ...": SILENCE in the summary). --answers IDS prints those cases' answers, with their
+ids, at the end (and writes answers.txt).
 """
 
 import json
@@ -129,11 +132,15 @@ def score_case(case, result):
     expected = [(f["article"], f["law"]) for f in case.get("framework") or []]
     framework = [{"article": f"{a} {law}", "cited": (a, law) in cited} for a, law in expected]
     flagged = "**Ipotesi**" in answer
+    from src.rag.ccnl_path import _SILENCE_RE, NO_CLAUSE
+    fixed = NO_CLAUSE.split("{")[0]
+    silence = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n", answer) if _SILENCE_RE.search(s) and fixed not in s]
     return {"sector": sector, "sector_right": sector_right, "version_right": version_right,
             "clause_found": clause_right, "framework": framework,
             "framework_cited": sum(1 for f in framework if f["cited"]), "framework_expected": len(framework),
             "ambiguity_flagged": flagged, "ambiguity_right": flagged == bool(case.get("ambiguous")),
-            "cited_in_answer": sorted(f"{a} {law}" for a, law in cited)}
+            "cited_in_answer": sorted(f"{a} {law}" for a, law in cited), "silence_claims": silence,
+            "no_clause_sentence": fixed in answer}
 
 
 def run_case(case, events):
@@ -210,6 +217,7 @@ def debug_report(case, record):
                f"{[f['article'] + (' ok' if f['cited'] else ' MISSING') for f in s['framework']]}")
     out.append(f"AMBIGUITY expected {case.get('ambiguous')}, flagged {s['ambiguity_flagged']}: "
                f"{_mark(s['ambiguity_right'])}")
+    out.append(f"NO-CLAUSE SENTENCE {s.get('no_clause_sentence')}; CCNL-SILENCE CLAIMS {s.get('silence_claims')}")
     out.append(f"ANSWER ({len(record['answer'])} chars):")
     out += ["    " + line for line in (record["answer"] or "<empty>").splitlines()]
     return out
@@ -229,7 +237,8 @@ def summary_lines(records, label):
     lines += ["", f"Path ran {t['path_ran']}/{t['cases']}; sector right {t['sector_right']}; version right "
                   f"{t['version_right']}; clause found {t['clause_found']}; framework cited {t['framework_cited']}/"
                   f"{t['framework_expected']}; ambiguity right {t['ambiguity_right']}/{t['cases']} (flagged when "
-                  f"expected {t['ambiguity_flagged_expected']}/{t['ambiguity_expected']})"]
+                  f"expected {t['ambiguity_flagged_expected']}/{t['ambiguity_expected']}); answers claiming the "
+                  f"CCNL's silence {t['silence']}"]
     return lines
 
 
@@ -241,6 +250,7 @@ def totals(records):
             "clause_found": count("clause_found"), "framework_cited": sum(r["score"]["framework_cited"] for r in records),
             "framework_expected": sum(r["score"]["framework_expected"] for r in records),
             "ambiguity_right": count("ambiguity_right"),
+            "silence": sum(1 for r in records if r["score"].get("silence_claims")),
             "ambiguity_expected": sum(1 for r in records if r.get("expected_ambiguous")),
             "ambiguity_flagged_expected": sum(1 for r in records if r.get("expected_ambiguous")
                                               and r["score"]["ambiguity_flagged"])}
@@ -289,5 +299,13 @@ def main(args):
     (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     if debug:
         (run_dir / "debug.txt").write_text("\n".join(debug_lines) + "\n", encoding="utf-8")
+    wanted = [x.strip() for x in (getattr(args, "answers", None) or "").split(",") if x.strip()]
+    if wanted:
+        answers = []
+        for r in records:
+            if r["id"] in wanted:
+                answers += ["", "=" * 100, f"{r['id']}: {r['question']}", "=" * 100, r["answer"] or "<empty>"]
+        (run_dir / "answers.txt").write_text("\n".join(answers) + "\n", encoding="utf-8")
+        print("\n".join(answers))
     print("\n".join(lines))
     print(f"\nWritten to {run_dir}")
