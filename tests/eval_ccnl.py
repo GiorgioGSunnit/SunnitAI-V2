@@ -21,9 +21,10 @@ Run from the app folder (it writes only under --out):
 candidates with their scores and reasons, the date and how it was read, every document of the sector (kind,
 validity) with the base, amendments and dropped ipotesi, the clauses found (order key, sections, reference, the
 first characters), the framework articles wanted / found / missing, the rulings, the answer checks and the
-answer. Also written to debug.txt. Every case also records the answer's sentences claiming the CCNL is silent
-("non prevede / non specifica ...": SILENCE in the summary). --answers IDS prints those cases' answers, with their
-ids, at the end (and writes answers.txt).
+answer. Also written to debug.txt. Every case also records the answer's sentences claiming the CCNL is silent or
+concluding from a missing clause (ccnl_path.absence_claims: "non prevede / non specifica", "in assenza di
+clausole ...", usi / equità applied with no clause found), counted in the summary (target 0). --answers IDS
+prints those cases' answers, with their ids, at the end (and writes answers.txt).
 """
 
 import json
@@ -132,9 +133,11 @@ def score_case(case, result):
     expected = [(f["article"], f["law"]) for f in case.get("framework") or []]
     framework = [{"article": f"{a} {law}", "cited": (a, law) in cited} for a, law in expected]
     flagged = "**Ipotesi**" in answer
-    from src.rag.ccnl_path import _SILENCE_RE, NO_CLAUSE
+    from src.rag.ccnl_path import NO_CLAUSE, absence_claims
     fixed = NO_CLAUSE.split("{")[0]
-    silence = [s.strip() for s in re.split(r"(?<=[.!?])\s+|\n", answer) if _SILENCE_RE.search(s) and fixed not in s]
+    # The body only: the header (contract, version, notes) is the path's own fixed text.
+    body = answer.split("\n\n", 1)[1] if "\n\n" in answer else answer
+    silence = absence_claims(body, bool((info.get("clauses") or {}).get("no_clause")))
     return {"sector": sector, "sector_right": sector_right, "version_right": version_right,
             "clause_found": clause_right, "framework": framework,
             "framework_cited": sum(1 for f in framework if f["cited"]), "framework_expected": len(framework),

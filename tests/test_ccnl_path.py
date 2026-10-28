@@ -654,8 +654,8 @@ def test_the_ccnl_silence_is_never_claimed():
     body = ("**Cosa prevede il CCNL**\nIl CCNL non specifica il preavviso. Le clausole fornite non disciplinano il "
             "punto.\n**Quadro normativo**\nL'art. 2118 c.c. rinvia al contratto, che la legge non fissa.\n"
             "**Da verificare**\n- Nessuna clausola del CCNL sul preavviso.\n- il livello.")
-    out, dropped = cp.drop_silence(body, fixed)
-    assert dropped == 3 and fixed in out and "non specifica" not in out and "2118 c.c." in out
+    out, dropped = cp.drop_absence(body, "sul preavviso", True)
+    assert len(dropped) == 3 and fixed in out and "non specifica" not in out and "2118 c.c." in out
     assert out.index(fixed) < out.index("**Quadro normativo**")
 
 
@@ -693,3 +693,87 @@ def test_no_pay_date_from_a_non_pay_document():
     assert dropped == 1 and "01/03/2024" in out and "04/07/2025" not in out
     unreadable = {"superseded_by": {"doc": _pay_doc("r25", cp.RINNOVO, "2025-03-01"), "decorrenza": date(2025, 3, 1)}}
     assert "01/03/2025" not in cp.pay_line(unreadable) and "né decorrenze" in cp.pay_line(unreadable)
+
+
+# --- fifth round: no conclusion from a missing clause, a pay table named in its Section, an empty base ----------
+
+ROUND4_C1 = """**Cosa prevede il CCNL**
+
+Non ho individuato nei testi disponibili la clausola del CCNL sul preavviso; verificare l'articolo corrispondente.
+
+**Quadro normativo**
+
+L'articolo 2118 c.c. stabilisce che ciascuno dei contraenti può recedere dando il preavviso nei modi stabiliti dagli usi o secondo equità. In mancanza di preavviso, il recedente è tenuto a una indennità.
+
+Il CCNL può migliorare le tutele, ma non può peggiorarle. Pertanto, in assenza di clausole specifiche nel CCNL, si applicano le disposizioni del Codice Civile.
+
+**Risposta pratica**
+
+In assenza di clausole specifiche nel CCNL, il preavviso deve essere determinato secondo le norme del Codice Civile, ovvero in base agli usi o secondo equità.
+Secondo l'articolo 2110 del Codice Civile, il periodo è determinato dalla legge, dagli usi o secondo equità.
+
+**Da verificare**
+
+- Il livello di inquadramento.
+- La mancanza di clausole specifiche sul preavviso nel CCNL.
+- La legge o gli usi del settore che potrebbero determinare il periodo."""
+
+
+def test_no_conclusion_is_drawn_from_a_missing_clause():
+    claims = cp.absence_claims(ROUND4_C1, no_clause=True)
+    assert len(claims) == 5
+    out, dropped = cp.drop_absence(ROUND4_C1, "sul preavviso", True)
+    assert cp.absence_claims(out, True) == [] and len(dropped) == 5
+    assert "usi o secondo equità" in out.split("**Risposta pratica**")[0]        # the law's own words stay
+    assert "In mancanza di preavviso, il recedente" in out
+    practical = out.split("**Risposta pratica**")[1].split("**Da verificare**")[0]
+    assert practical.strip() == "Verificare la regola specifica del CCNL sul preavviso (articolo corrispondente)."
+    assert "Il livello di inquadramento." in out and "assenza" not in out and "mancanza di clausole" not in out
+
+
+def test_claims_with_clauses_found_are_dropped_and_turned_into_a_check():
+    body = ("**Cosa prevede il CCNL**\nIl CCNL riconosce le ferie (Art. 18 - Ferie). Il CCNL non specifica il numero "
+            "di giorni di ferie.\nNel CCNL del 05/02/2021 non sono state trovate clausole specifiche sulle sanzioni. "
+            "Il CCNL non contiene clausole specifiche sulle sanzioni.\n**Quadro normativo**\nL'art. 2109 c.c. (testo "
+            "non disponibile) e l'art. 10 d.lgs. 66/2003, pur non disponibile nel testo, fissano il minimo.\n"
+            "**Da verificare**\n- il livello.")
+    assert len(cp.absence_claims(body, no_clause=False)) == 3
+    out, dropped = cp.drop_absence(body, "sulle ferie", False)
+    assert "Art. 18 - Ferie" in out and "2109 c.c." in out and "non specifica" not in out
+    assert "- Verificare la regola specifica del CCNL sulle ferie (articolo corrispondente)." in out
+    assert cp.drop_absence("**Cosa prevede il CCNL**\nSpettano 26 giorni (Art. 18 - Ferie).", "sulle ferie", False)[1] == []
+
+
+def test_a_pay_table_named_in_its_section_is_a_clause_and_a_table():
+    tc = _pay_doc("tc", cp.TC, "2025-05-01")
+    rows = _rows(["PARTE TERZA - Regolamentazione comune", "Operaio specializzato 1.900,00 Operaio qualificato "
+                  "1.750,00 Operaio comune 1.560,00", "Art. 40 - Altro"])
+    rows[1]["name"] = "Allegato A: Tabella dei minimi di paga base mensile per gli operai e di stipendi"
+    pay = cp.pay_tables({"tc": rows}, [tc], date(2026, 10, 28))
+    assert pay["source"]["id"] == "tc" and len(pay["tables"][0]["rows"]["rows"]) == 3
+    q = "Sono un muratore assunto da un'impresa edile artigiana: qual è la paga base di un operaio qualificato?"
+    topics = cp.topics_of(q)
+    clauses, _ = cp.select_clauses(rows, [tc], cp.topic_keywords(q, topics), pay=True,
+                                   headings=cp.topic_headings(topics), question=q)
+    assert clauses and clauses[0]["_head"] >= 2 and "Tabella dei minimi" in cp.clause_reference(clauses[0])
+
+
+def test_an_empty_base_reads_the_latest_earlier_full_text():
+    docs = [_doc("tc", "Testo Consolidato - X", "2015-04-01", "2027-03-31"), _doc("c19", "CCNL", "2015-04-01",
+            "2019-12-31"), _doc("c11", "CCNL", "2011-01-01", "2014-12-31"), _doc("r22", "Accordo di rinnovo", "2022-12-12")]
+    order = [d["id"] for d in cp.earlier_full_texts(docs, date(2026, 10, 28), "tc")]
+    assert order == ["c19", "c11"]
+
+    class S:
+        def run(self, query, **params):
+            text = "Art. 236 - Termini di preavviso " + "x" * 3000
+            return _Result([{"doc": i, "id": f"{i}-1", "name": "n", "text": text if i == "c19" else ""}
+                            for i in params["ids"]])
+    version = {"base": cp._doc_view(docs[0])}
+    chosen = [version["base"], cp._doc_view(docs[3])]
+    rows = [{"doc": "tc", "id": "tc-1", "name": "n", "text": ""}, {"doc": "r22", "id": "r-1", "name": "n", "text": "y"}]
+    new_chosen, new_rows, text_from, chars = cp.read_base_text(S(), docs, version, chosen, rows, date(2026, 10, 28), None)
+    assert text_from["id"] == "c19" and chars == 0 and [d["id"] for d in new_chosen] == ["c19", "r22"]
+    assert {r["doc"] for r in new_rows} == {"c19", "r22"}
+    full = [{"doc": "tc", "id": "tc-1", "text": "z" * 3000}]
+    assert cp.read_base_text(S(), docs, version, chosen, full, date(2026, 10, 28), None)[2] is None

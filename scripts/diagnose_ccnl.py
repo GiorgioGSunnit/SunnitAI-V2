@@ -89,10 +89,26 @@ def _prepare(session, case, cp, embed, today):
     if embed:
         from src.rag.lookups import _cached_embed_query
         embedding = list(_cached_embed_query(f"{case['question']}\n{' '.join(keywords)}"))
+    docs = cp.sector_documents(session, contract["sector"])
     rows = cp.document_sections(session, [d["id"] for d in chosen], embedding)
     for r in rows:
         r["text"] = cp.clean(r.get("text"))
+    # Every full text of the sector and the chosen documents: sections, with text, characters.
+    stats = []
+    for d in {x["id"]: x for x in chosen + [cp._doc_view(x) for x in docs if cp.doc_kind(x) in cp.BASE_KINDS]}.values():
+        doc_rows = rows if d["id"] in {c["id"] for c in chosen} else [
+            {**r, "text": cp.clean(r.get("text"))} for r in cp.document_sections(session, [d["id"]], None)]
+        mine = [r for r in doc_rows if r["doc"] == d["id"]]
+        stats.append(f"    {cp.short_name(d)[:80]:80} {len(mine):>4} sections, "
+                     f"{sum(1 for r in mine if (r.get('text') or '').strip()):>4} with text, "
+                     f"{cp.text_chars(mine, d['id']):>8} chars{'  (chosen)' if d in chosen else ''}")
+        if d["kind"] in cp.BASE_KINDS:                 # Sections hanging deeper than CONTAINS (not searched)
+            deep = session.run("MATCH (d:Document {id: $id})-[*1..4]->(s:Section) RETURN count(DISTINCT s) AS n, "
+                               "sum(size(coalesce(s.plain_text, ''))) AS chars", id=d["id"]).single()
+            stats.append(f"        within 4 hops of any relation: {deep['n']} sections, {deep['chars']} chars")
+    chosen, rows, text_from, base_chars = cp.read_base_text(session, docs, version, chosen, rows, when, embedding)
     return {"contract": contract, "when": when, "how": how, "version": version, "chosen": chosen,
+            "stats": stats, "text_from": text_from, "base_chars": base_chars,
             "topics": topics, "keywords": keywords, "headings": cp.topic_headings(topics), "rows": rows}
 
 
@@ -110,6 +126,10 @@ def clause_report(session, cases, ids, cp, embed, top, today):
               f"topics {p['topics']}; keywords {p['keywords']}; headings {p['headings']}",
               f"query for the cosine: {case['question']} + the keywords; {len(p['rows'])} sections in the chosen "
               f"documents"]
+        L.append("documents (sections, with text, characters):")
+        L += p["stats"]
+        L.append(f"base text {p['base_chars']} chars; clauses read from "
+                 f"{cp.short_name(p['text_from']) if p['text_from'] else 'the base'}")
         by_doc, order_used = cp.group_ordered(p["rows"])
         L.append(f"order used: {order_used}")
         ranked = cp.rank_sections(p["rows"], p["keywords"], p["headings"], case["question"])

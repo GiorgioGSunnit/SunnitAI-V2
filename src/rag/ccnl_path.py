@@ -521,7 +521,9 @@ TOPICS: Dict[str, Dict[str, Any]] = {
                                   "tabellare", "paga base", "minimo contrattuale", "conglobato", "stipendio base",
                                   "tabella retributiva", "importi mensili"],
                      "headings": ["minimi tabellari", "minimi retributivi", "minimi contrattuali", "tabelle retributive",
-                                  "tabella retributiva", "retribuzione", "trattamento economico", "aumenti retributivi"],
+                                  "tabella retributiva", "retribuzione", "trattamento economico", "aumenti retributivi",
+                                  "minimi di paga base", "paga base", "tabella dei minimi", "minimi di paga",
+                                  "stipendi minimi", "minimi di stipendio"],
                      "pay": True, "framework": [("2099", "c.c."), ("36", "Cost.")]},
     "ferie": {"re": r"\bferie\b",
               "keywords": ["ferie", "periodo feriale", "periodo di ferie", "ferie annuali", "godimento delle ferie",
@@ -864,7 +866,9 @@ def rank_sections(rows: Sequence[Dict[str, Any]], keywords: Sequence[str],
     topic (heading_score) first, then the cosine ranking (rows with a "sim") and the lexical one fused by
     reciprocal rank; a row needs a heading match, a lexical hit or a top-10 cosine."""
     for r in rows:
-        r["_lex"] = lexical_score(r.get("text") or "", keywords)
+        text, name = r.get("text") or "", r.get("name") or ""
+        # A name the text does not open with ("Allegato A: Tabella dei minimi di paga base") counts as its heading.
+        r["_lex"] = lexical_score(text if _fold(name) in _fold(text[:200]) else f"{name}\n{text}", keywords)
         match = heading_match(r, headings, question)
         r["_head"], r["_via"], r["_anchor"] = match["score"], match["via"], match["anchor"]
         r["_qhit"] = question_hits(match["title"], question) if match["score"] >= 3 else 0
@@ -1175,9 +1179,18 @@ def system_prompt(pay: bool, rulings: bool, no_clause: Optional[str] = None) -> 
     head = _SYSTEM_HEAD
     if no_clause:
         head = head.split("**Cosa prevede il CCNL**")[0] + _SYSTEM_NO_CLAUSE.format(sentence=no_clause)
-    law = _SYSTEM_LAW + ("Senza clausole, il quadro normativo è la risposta: esponi la disciplina di legge del tema "
-                         "con gli articoli forniti.\n" if no_clause else "")
-    return head + (_SYSTEM_PAY if pay else _SYSTEM_NO_PAY) + law + (_SYSTEM_RULINGS if rulings else "") + _SYSTEM_TAIL
+    law = _SYSTEM_LAW + ("Senza clausole, esponi la disciplina di legge del tema con gli articoli forniti, come "
+                         "quadro generale e non come regola che sostituisce il CCNL.\n" if no_clause else "")
+    tail = _SYSTEM_TAIL
+    if no_clause:
+        verify = no_clause.split(" la clausola del CCNL ")[-1].split(";")[0]
+        tail = tail.replace(
+            "**Risposta pratica** - la risposta concreta alla domanda.\n",
+            f"**Risposta pratica** - scrivi «{VERIFY_RULE.format(topic=verify)}» e, se il materiale lo dice, il "
+            f"minimo inderogabile di legge con il suo articolo. Non trarre alcuna conclusione dall'assenza della "
+            f"clausola: mai «in assenza di clausole...», «la mancanza di clausole...», «pertanto si applica il codice "
+            f"civile», mai usi o equità come regola applicabile.\n")
+    return head + (_SYSTEM_PAY if pay else _SYSTEM_NO_PAY) + law + (_SYSTEM_RULINGS if rulings else "") + tail
 
 
 SYSTEM = system_prompt(False, True)
@@ -1209,7 +1222,7 @@ _SILENCE_SUBJECT = r"\b(?:ccnl|contratt\w*|clausol\w*|accord\w*|testo|disposizio
 _SILENCE_RE = re.compile(
     _SILENCE_SUBJECT + r"(?:(?!\blegg[ei]\b|\bcodic\w*|\bnorm\w*|\bstatuto\b|\bdecret\w*)[^.\n]){0,140}?\bnon\s+(?:(?:lo|la|li|le|ne|vi|si)\s+)?(?:prevede|prevedono|specifica\w*|"
     r"disciplina|disciplinano|regola|regolano|indica\w*|contien\w*|riporta\w*|stabilisc\w*|menziona\w*|fissa\w*|"
-    r"tratta\w*|chiarisc\w*|precisa\w*|defin\w*|dispon\w*|individua\w*|detta\w*|contempla\w*|affronta\w*|dice|"
+    r"tratta\w*|chiarisc\w*|precisa\w*|defin\w*|dispone|dispongono|individua\w*|detta\w*|contempla\w*|affronta\w*|dice|"
     r"(?:è|e|sono|risulta\w*|viene|vengono)\s+(?:espressamente\s+|esplicitamente\s+)?(?:previst|specificat|disciplinat|"
     r"indicat|regolat|stabilit|definit|menzionat|trattat|fissat)\w*)"
     r"|\b(?:ccnl|contratto)\b[^.\n]{0,60}\b(?:tace|è silente|e silente)"
@@ -1217,25 +1230,96 @@ _SILENCE_RE = re.compile(
     r"[^.\n]{0,60}(?:ccnl|contratt\w*)", re.I)
 
 
-def drop_silence(body: str, sentence: str) -> Tuple[str, int]:
-    """(the answer without the sentences asserting the CCNL says nothing on the topic -- when no clause on it was
-    retrieved its text may only be missing --, with the fixed sentence under the CCNL's heading, or opening the
-    answer when the writer left it out; how many were dropped)."""
-    kept, dropped = [], 0
-    for s in _sentences(body or ""):
-        if sentence[:40] not in s and _SILENCE_RE.search(s):
-            dropped += 1
-            kept.append("\n" if s.endswith("\n") else "")
-            continue
-        kept.append(s)
-    body = re.sub(r"\n{3,}", "\n\n", "".join(kept))
-    if sentence[:40] not in body:
-        m = re.search(r"^\s*\*\*\s*Cosa prevede il CCNL\s*\*\*[^\n]*\n?", body, re.I | re.M)
-        if m:
-            body = body[:m.end()].rstrip("\n") + "\n" + sentence + "\n" + body[m.end():]
-        else:
-            body = f"**Cosa prevede il CCNL**\n{sentence}\n\n{body.lstrip()}"
-    return body, dropped
+# A conclusion drawn from the clause's absence: "in assenza di clausole (specifiche) nel CCNL ...", "la mancanza di
+# clausole ...", "non sono state trovate clausole ... pertanto", "poiché ... non è stata individuata".
+_ABSENCE_RE = re.compile(
+    r"\b(?:assenza|mancanza|carenza)\s+d\w*\s+(?:[^\s.,;]+\s+){0,5}?(?:clausol\w*|ccnl|contratt\w*\s+collettiv\w*|"
+    r"previsio\w*\s+(?:contrattual|specific)\w*|disciplina\s+(?:contrattual|specific)\w*|regol\w*\s+specific\w*)"
+    r"|\bclausol\w*[^.\n]{0,80}?\bnon\s+(?:sono|è|e|risulta\w*)\s+(?:stat\w*\s+)?(?:trovat|individuat|reperit|"
+    r"disponibil|present|fornit)\w*"
+    r"|\bnon\s+(?:sono|è|e)\s+stat\w*\s+(?:trovat|individuat|reperit)\w*\s+(?:[^\s.,;]+\s+){0,3}?clausol\w*"
+    r"|\b(?:ccnl|contratto)\b[^.\n]{0,40}\b(?:silent\w*|lacun\w*)"
+    r"|\bpoich[eé]\b[^.\n]{0,120}?\bnon\s+(?:(?:è|e|sono)\s+)?(?:stat\w*\s+)?(?:individuat|trovat|disponibil|reperit)\w*",
+    re.I)
+# A legal default applied as the answer (usi, equità, "si applicano le norme del codice civile"): framework
+# material only, in its own section.
+_DEFAULT_RULE_RE = re.compile(r"\busi\b|\bequit[àa]\b|si\s+applica\w*\s+(?:le\s+|la\s+)?(?:disposizion|norm|regol|disciplin)\w*"
+                              r"\s+(?:del|di|della|dei)\s+(?:codice|legge|c\.\s?c\.)", re.I)
+_SECTION_HEAD_RE = re.compile(r"^\s*\*\*([^*\n]{3,60})\*\*[^\n]*$", re.M)
+_FRAMEWORK_SECTION_RE = re.compile(r"quadro normativo|giurisprudenza", re.I)
+VERIFY_RULE = "Verificare la regola specifica del CCNL {topic} (articolo corrispondente)."
+
+
+def _sections_of(body: str) -> List[Tuple[str, str, str]]:
+    """[(heading line, heading name, content)], the text before the first heading under ("", "", ...)."""
+    out, last, name = [], 0, ""
+    head = ""
+    for m in _SECTION_HEAD_RE.finditer(body or ""):
+        out.append((head, name, body[last:m.start()]))
+        head, name, last = m.group(0), m.group(1).strip(), m.end()
+    out.append((head, name, (body or "")[last:]))
+    return [x for x in out if x[0] or x[2].strip()]
+
+
+def _protected(sentence: str) -> bool:
+    folded = _fold(sentence)
+    return _fold(NO_CLAUSE.split("{")[0]) in folded or _fold(VERIFY_RULE.split("{")[0]) in folded
+
+
+def absence_claims(body: str, no_clause: bool) -> List[str]:
+    """The answer's sentences that claim the CCNL is silent on the topic or draw a conclusion from a clause's
+    absence -- and, with no clause found (no_clause), those outside the framework and case-law sections applying
+    a legal default (usi, equità, the code's rules) as the answer. The fixed not-found sentence and the
+    verify-the-rule sentence are never claims."""
+    out = []
+    for _, name, content in _sections_of(body):
+        framework = bool(_FRAMEWORK_SECTION_RE.search(name))
+        for s in _sentences(content):
+            if not s.strip() or _protected(s):
+                continue
+            if _SILENCE_RE.search(s) or _ABSENCE_RE.search(s) or (no_clause and not framework
+                                                                    and _DEFAULT_RULE_RE.search(s)):
+                out.append(s.strip())
+    return out
+
+
+def drop_absence(body: str, topic: str, no_clause: bool) -> Tuple[str, List[str]]:
+    """(the answer without absence_claims, [those dropped]). With no clause found (no_clause): the fixed sentence
+    NO_CLAUSE under the CCNL's heading and VERIFY_RULE in the practical answer, added when the writer left them
+    out; with clauses, VERIFY_RULE among the points to check when a claim was dropped. `topic` as topic_label
+    writes it ("sul preavviso")."""
+    claims = set(absence_claims(body, no_clause))
+    fixed, verify = NO_CLAUSE.format(topic=topic), VERIFY_RULE.format(topic=topic)
+    parts, dropped = [], []
+    for head, name, content in _sections_of(body):
+        kept = []
+        for s in _sentences(content):
+            if s.strip() and s.strip() in claims:
+                dropped.append(s.strip())
+                kept.append("\n" if s.endswith("\n") else "")
+            else:
+                kept.append(s)
+        text = re.sub(r"\n{3,}", "\n\n", "".join(kept))
+        if re.sub(r"[\s\-*•]", "", text) == "":
+            text = "\n"
+        parts.append([head, name, text])
+
+    def find(pattern):
+        return next((p for p in parts if re.search(pattern, p[1], re.I)), None)
+
+    def add(pattern, heading, line, bullet=False):
+        section = find(pattern)
+        if section is None:
+            parts.append([f"**{heading}**", heading, f"\n{line}\n"])
+        elif _fold(line[:40]) not in _fold(section[2]):
+            section[2] = "\n" + ("- " if bullet else "") + line + "\n" + section[2].lstrip("\n")
+    if no_clause:
+        add(r"cosa prevede", "Cosa prevede il CCNL", fixed)
+        add(r"risposta pratica", "Risposta pratica", verify)
+    elif dropped:
+        add(r"da verificare", "Da verificare", verify, bullet=True)
+    body = "\n\n".join(((p[0] + "\n") if p[0] else "") + p[2].strip("\n") for p in parts)
+    return re.sub(r"\n{3,}", "\n\n", body).strip(), dropped
 
 
 _PAY_SENTENCE_RE = re.compile(r"import\w*|minim[io]\b|minimi|paga|retribu\w*|stipend\w*|tabell\w*|aument\w*", re.I)
@@ -1509,6 +1593,11 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
         rows = document_sections(session, [d["id"] for d in chosen], embedding)
         for r in rows:
             r["text"] = clean(r.get("text"))
+        # A base with no text in the database (an empty Testo Consolidato): its clauses from the latest other full
+        # text in force at the date or before, said so in the header.
+        chosen, rows, text_from, base_chars = read_base_text(session, docs, version, chosen, rows, when, embedding)
+        info["version"]["base_chars"] = base_chars
+        info["version"]["text_from"] = _doc_log(text_from) if text_from else None
         is_pay = any(TOPICS[t].get("pay") for t in topics)
         clauses, order_used = select_clauses(rows, chosen, keywords, pay=is_pay, headings=topic_headings(topics),
                                              question=question)
@@ -1579,9 +1668,13 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     ruling_blocks = [f"[PRONUNCIA] {_doc_name(r.get('d') or {})}\n"
                      f"{clean((r.get('s') or {}).get('plain_text'))[:900]}" for r in rulings]
     head = header(contract, version, when, how) + (f"\n{pay_line(pay)}" if pay is not None else "")
+    if text_from is not None:
+        head += (f"\nNota: il testo di {short_name(version['base']).split(' — ')[-1]} non è disponibile nella banca "
+                 f"dati; le clausole sono tratte da {short_name(text_from).split(' — ')[-1]} (vigenza dal "
+                 f"{_fmt(text_from.get('from'))}), integrato dagli accordi successivi: verificare sul testo in vigore.")
     if later is not None:
         head += (f"\nNota: il testo integrale del CCNL in vigore al {_fmt(when)} non è nella banca dati (c'è "
-                 f"{short_name(version['base']).split(' — ')[-1]}, che non regola questo punto); la clausola citata è "
+                 f"{short_name(version['base']).split(' — ')[-1]}, dove non ho individuato la clausola); la clausola citata è "
                  f"tratta da {short_name(later).split(' — ')[-1]} (in vigore dal {_fmt(later.get('from'))}), successivo "
                  f"alla data: verificare che la regola fosse già la stessa.")
     human = (f"Domanda: {question}\n\nContratto: CCNL {contract['sector']}; data di riferimento {_fmt(when)}.\n"
@@ -1612,15 +1705,13 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     amount_texts = [t["text"] for t in pay["tables"]] if pay is not None else clause_texts
     body, amounts = check_amounts(body, "\n".join(amount_texts + law_blocks))
     body, caselaw = drop_empty_caselaw(body)
-    silence = 0
-    if no_clause:
-        body, silence = drop_silence(body, no_clause)
+    body, silence = drop_absence(body, topic_label(topics), bool(no_clause))
     pay_dates = 0
     if pay is not None:
         body, pay_dates = drop_pay_dates(body, pay, [d["from"] for d in chosen if not_pay_document(d) and d.get("from")])
     final = f"{head}\n\n{body.strip()}".strip()
     info["answer"] = {"verbatim_found": len(copied), "rewritten": rewritten, "verbatim_dropped": len(still),
-                      "amounts_removed": amounts, "caselaw_dropped": caselaw, "silence_dropped": silence,
+                      "amounts_removed": amounts, "caselaw_dropped": caselaw, "silence_dropped": len(silence), "absence_claims_dropped": silence,
                       "pay_dates_dropped": pay_dates, "chars": len(final)}
     info["outcome"] = "answered"
     vlog("ccnl_path", {k: v for k, v in info.items() if k != "question"}, duration_ms=(time.time() - t0) * 1000)
@@ -1631,6 +1722,38 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     return {"answer": final, "citations": _citations(clauses, framework, rulings),
             "raw_result": ccnl_rows + framework + rulings, "status_messages": [], "ccnl_sector": contract["sector"],
             "ccnl": info, "route": "ccnl"}
+
+
+EMPTY_BASE_CHARS = 2000
+
+
+def text_chars(rows: Sequence[Dict[str, Any]], doc_id: str) -> int:
+    return sum(len((r.get("text") or "").strip()) for r in rows if r.get("doc") == doc_id)
+
+
+def earlier_full_texts(docs: Sequence[Dict[str, Any]], when: date, base_id: str) -> List[Dict[str, Any]]:
+    """The sector's other CCNL / Testo Consolidato texts in force at `when` or before, the latest first: where to
+    read the clauses when the base has no text in the database."""
+    full = [d for d in (_doc_view(x) for x in docs) if d["kind"] in BASE_KINDS and d.get("id") != base_id
+            and d["from"] and d["from"] <= when]
+    return sorted(full, key=lambda d: (d["from"], d["kind"] == CCNL, d.get("id") or ""), reverse=True)
+
+
+def read_base_text(session, docs, version, chosen, rows, when, embedding):
+    """(chosen, rows, the document read in place of the base or None, the base's characters): with a base under
+    EMPTY_BASE_CHARS of text, the first of earlier_full_texts (up to 3 tried) with text takes its place."""
+    base_id = version["base"]["id"]
+    base_chars = text_chars(rows, base_id)
+    if base_chars >= EMPTY_BASE_CHARS:
+        return chosen, rows, None, base_chars
+    for other in earlier_full_texts(docs, when, base_id)[:3]:
+        other_rows = document_sections(session, [other["id"]], embedding)
+        for r in other_rows:
+            r["text"] = clean(r.get("text"))
+        if text_chars(other_rows, other["id"]) >= EMPTY_BASE_CHARS:
+            return ([other] + [d for d in chosen if d["id"] != base_id],
+                    other_rows + [r for r in rows if r["doc"] != base_id], other, base_chars)
+    return chosen, rows, None, base_chars
 
 
 def later_full_text(docs: Sequence[Dict[str, Any]], when: date) -> Optional[Dict[str, Any]]:
@@ -1760,7 +1883,9 @@ def pay_tables(by_doc: Dict[str, List[Dict[str, Any]]], chosen: Sequence[Dict[st
         i = 0
         while i < len(rows):
             text = rows[i].get("text") or ""
-            header = ((rows[i - 1].get("text") or "")[-300:] + "\n" if i else "") + text
+            # The pay words may sit in a Section's name ("Allegato A: Tabella dei minimi di paga base mensile").
+            header = ((f"{rows[i - 1].get('name') or ''}\n{(rows[i - 1].get('text') or '')[-300:]}\n" if i else "")
+                      + f"{rows[i].get('name') or ''}\n{text}")
             parsed = pay_rows(text)
             if not _PAY_WORDS_RE.search(header) or (len(_AMOUNT_RE.findall(text)) < 3 and len(parsed["rows"]) < 2):
                 i += 1
