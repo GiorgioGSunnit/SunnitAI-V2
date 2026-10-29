@@ -10,8 +10,10 @@ _code_after on the 120 characters after the mention), each such mention is sorte
   same act, named before "art. 3 dello stesso decreto", "art. 12 cit."
   code or law named earlier in the sentence  "artt. 2043 c.c. e 2059" (the 2059)
   unknown
-and the precedents the rulings cite ("Cass. Sez. U, n. 18672/2019") are counted by year and matched with our rulings
-(by the number and year in their Italgiure file stem): which years we would need. Each special law and named act
+and the precedents the rulings cite ("Cass. Sez. U, n. 18672/2019", "Sez. 3, n. 12345 del 15/02/2019", "Cass. 7 aprile
+2014, n. 8053") are counted by year and matched with our rulings (by the number and year in their Italgiure file stem):
+which years we would need. A criminal citation's date is usually the hearing's, so a ruling deposited the next year
+is counted as missing (the criminal share we have is a little low). Each special law and named act
 is looked up among our documents: in the database, or not (the list of laws worth acquiring).
 
 Prints counts, law references and document names only, never ruling text (an unknown mention's 30 characters after
@@ -77,15 +79,32 @@ _EARLIER_CODE = re.compile(r"c\.\s?p\.\s?p\.|c\.\s?p\.\s?c\.|c\.\s?c\.|c\.\s?p\.
                            r"codice\s+(?:civile|penale|di\s+procedura)|cost\.(?!\w)|costituzione", re.IGNORECASE)
 _EARLIER_LAW = re.compile(_TYPE + r"\s*(?:n\.?\s*)?\d", re.IGNORECASE)
 _SENTENCE_END = re.compile(r"[.;:]\s+(?=[A-ZÀ-Ý(«\"])|\n")
-_PRECEDENT = re.compile(r"\b(?:cass\b\.?(?:\s*(?:civ|pen|lav|trib)\.?)?|cassazione|sez\.?\s*u(?:n(?:ite)?)?\.?|s\.\s?u\.)"
-                        r"(?P<pre>[^;\n]{0,90}?)\bn\.?\s*(\d{1,6})\s*(?:/|del\s+(?:\d{1,2}\s+\w+\s+)?)\s*((?:19|20)\d{2})\b",
-                        re.IGNORECASE)
+# A Cassation ruling cited, then its number and year in one of three forms. Run 2 (28 Oct) knew only "Cass. ... n. X/Y"
+# and "n. X del Y" after "Cass." or "Sez. U": the criminal form "Sez. 3, n. 12345 del 15/02/2019" (no "Cass", the
+# date as dd/mm/yyyy) and the civil "Cass. 7 aprile 2014, n. 8053" (the date first) were never counted.
+_YEAR = r"(?:19|20)\d{2}"
+_DATE = r"(?:\d{1,2}°?\s+[a-zà-ù]+\s+|\d{1,2}\s*[/.-]\s*\d{1,2}\s*[/.-]\s*)"
+_PRECEDENT = re.compile(
+    r"\b(?P<court>cass\b\.?(?:\s*(?:civ|pen|lav|trib)\.?)?|cassazione|s\.\s?u\.|ss\.\s?uu\.|"
+    r"sez(?:ion[ei]|\.)?\s*(?:un(?:ite)?\b\.?|u\b\.?|\d{1,2}\b|[ivx]{1,4}\b|lav\b|trib\b|f(?:er(?:iale)?)?\b))"
+    r"(?P<pre>[^;\n]{0,90}?)(?:"
+    rf"(?<![\d/])(?:\bn\.?\s*)?(?P<n1>\d{{1,6}})\s*/\s*(?P<y1>{_YEAR})\b"                 # n. 18672/2019, 18672/2019
+    rf"|\bn\.?\s*(?P<n2>\d{{1,6}})\s*,?\s*del(?:l['’]\s*|\s+){_DATE}?(?P<y2>{_YEAR})\b"    # n. 5501 del (15/02/)2020
+    rf"|{_DATE}(?P<y3>{_YEAR})\s*,?\s*n\.?\s*(?P<n3>\d{{1,6}})\b"                        # 7 aprile 2014, n. 8053
+    r")", re.IGNORECASE)
 # "Cass. ... d.P.R. n. 115/2002": a law's number, not a ruling's (run 1 counted n. 115/2002, 103/2017, 546/1992).
-_LAW_BEFORE_NUMBER = re.compile(r"\b(?:d\.?\s?p\.?\s?r\.?|d\.?\s?lgs\.?|d\.?\s?l\.|legge|\bl\.|r\.?\s?d\.?|d\.?\s?m\.?)\s*$",
-                                re.IGNORECASE)
+_LAW_BEFORE_NUMBER = re.compile(
+    r"\b(?:d\.?\s?p\.?\s?r\.?|d\.?\s?lgs\.?|lgs\.|d\.?\s?l\.|legge|\bl\.|r\.?\s?d\.?|d\.?\s?m\.?|"
+    r"decreto(?:[\s-]+(?:legislativo|legge|ministeriale|del\s+presidente\s+della\s+repubblica))?|"
+    r"reg(?:olamento|\.)?(?:\s*\(\s*(?:ue|ce|cee)\s*\))?|direttiva)\s*$", re.IGNORECASE)
 # "... ricorso per cassazione ... (Corte cost. n. 186 del 2000)": the Constitutional Court's, not a Cassation ruling
 # (run 2's 4th most cited "precedent", from the inadmissibility sentence).
 _OTHER_COURT = re.compile(r"\bcost\b|costituzional|\bc\.\s?cost|europea|\bcgue\b|\bcedu\b", re.IGNORECASE)
+# A "Sez." with no "Cass" can be another court's: "Cons. Stato, Sez. IV", "Trib. Milano, sez. II", "Corte conti".
+_OTHER_COURT_BEFORE = re.compile(
+    r"(?:cons(?:iglio|\.)?\s*(?:di\s+)?st(?:ato|\.)|\bt\.?\s?a\.?\s?r\.?\b|corte\s+(?:dei\s+)?conti|c\.\s?conti|"
+    r"corte\s+(?:d['’]\s*)?app(?:ello|\.)|\bapp\.\s|trib(?:unale|\.)\s+[a-z]|comm(?:issione|\.)\s*trib|corte\s+giust|"
+    r"grande\s+sezione|\bcgue\b|\bcedu\b|corte\s+e\.?d\.?u|corte\s+cost|\bc\.\s?cost)[^;\n]{0,30}$", re.IGNORECASE)
 # Our rulings' Italgiure file stems carry their number and year: snpen@s10@a2026@n01234@tS.
 _ITALGIURE = re.compile(r"(snpen|snciv)[@_]s\w\w[@_]a(\d{4})[@_]n0*(\d+)", re.IGNORECASE)
 
@@ -189,15 +208,30 @@ def classify(tail: str, head: str, code_after=None) -> Tuple[str, str]:
     return "unknown", re.sub(r"\d", "#", " ".join((rest if rest.strip() else tail)[:30].lower().split()))
 
 
-_OWN_CASE = re.compile(r"ricors|r\.\s?g\.|iscritt|ruolo", re.IGNORECASE)
+_OWN_CASE = re.compile(r"ricors|r\.\s?g\.|\brgn\b|reg\.\s*gen|iscritt|ruolo", re.IGNORECASE)
+FORMS = {"n1": "n. X/year", "n2": "n. X del (date) year", "n3": "date, n. X"}
 
 
-def precedents(text: str) -> List[Tuple[str, str]]:
+def precedents(text: str, own: Optional[Tuple[str, str]] = None, forms: Optional[Counter] = None) -> List[Tuple[str, str]]:
     """(number, year) of every Cassation ruling the text cites -- not the case's own docket number ("sul ricorso
-    iscritto al n. 15966/2025")."""
-    return [(str(int(m.group(2))), m.group(3)) for m in _PRECEDENT.finditer(_FOOTER.sub(" ", text or ""))
-            if not _OWN_CASE.search(m.group(0)) and not _LAW_BEFORE_NUMBER.search(m.group("pre")[-20:])
-            and not _OTHER_COURT.search(m.group("pre"))]
+    iscritto al n. 15966/2025"), nor the ruling's own (number, year) `own` from its header. `forms` counts the form
+    each one was written in."""
+    text = _FOOTER.sub(" ", text or "")
+    out = []
+    for m in _PRECEDENT.finditer(text):
+        if _OWN_CASE.search(m.group(0)) or _LAW_BEFORE_NUMBER.search(m.group("pre")[-30:]) \
+                or _OTHER_COURT.search(m.group("pre")):
+            continue
+        if m.group("court").lower().startswith("sez") and _OTHER_COURT_BEFORE.search(text[max(0, m.start() - 60):m.start()]):
+            continue
+        key = next(k for k in FORMS if m.group(k))
+        found = (str(int(m.group(key))), m.group("y" + key[1]))
+        if found == own:
+            continue
+        out.append(found)
+        if forms is not None:
+            forms[FORMS[key]] += 1
+    return out
 
 
 def our_ruling(file_and_name: str) -> Optional[Tuple[str, str, str]]:
@@ -323,7 +357,7 @@ def main() -> int:
     missed_codes, boilerplate = Counter(), Counter()
     law_rulings, law_branch = defaultdict(set), defaultdict(Counter)
     linked = bare = 0
-    years, cited_precedents, precedent_rulings = Counter(), Counter(), 0
+    years, cited_precedents, precedent_rulings, forms = Counter(), Counter(), 0, Counter()
     cited_by, have, missing_years = Counter(), Counter(), defaultdict(Counter)
     with driver.session(database=NEO4J_DATABASE) as session:
         rulings = session.run("MATCH (d:Document {document_type:'interpretation'}) RETURN d.id AS id, "
@@ -335,6 +369,7 @@ def main() -> int:
         if args.sample and args.sample < len(rulings):
             rulings = random.Random(28).sample(rulings, args.sample)
         branch = {r["id"]: ("penale" if "snpen" in r["f"] else "civile" if "snciv" in r["f"] else "altro") for r in rulings}
+        own_of = {r["id"]: (our_ruling(r["f"]) or ("", "", ""))[1:] for r in rulings}     # (number, year)
         docs = session.run("MATCH (d:Document) WHERE d.document_type IN ['primary', 'special', 'legislation'] "
                            "RETURN d.id AS id, d.name AS name, d.aliases AS aliases").data()
         ids = [r["id"] for r in rulings]
@@ -350,7 +385,7 @@ def main() -> int:
                 text = rl._PQM_RE.sub(" ; ", " ".join(parts))
                 found_precedent = False
                 b = branch[doc]
-                for number, year in precedents(text):
+                for number, year in precedents(text, own_of.get(doc), forms):
                     years[year] += 1
                     cited_precedents[(number, year)] += 1
                     found_precedent = True
@@ -432,6 +467,7 @@ def main() -> int:
         print(f"'Testo unico' with no name: {named['testo unico (not named)']:,}")
     print(f"\nPrecedents cited: {sum(cited_precedents.values()):,} citations of {len(cited_precedents):,} rulings, in "
           f"{precedent_rulings:,} of the rulings read ({pct(precedent_rulings, len(ids))})")
+    print("  written as: " + ", ".join(f"{f} {n:,}" for f, n in forms.most_common()))
     print("  by year: " + ", ".join(f"{y} {n:,}" for y, n in sorted(years.items(), key=lambda x: -int(x[0]))[:20]))
     decades = Counter(f"{y[:3]}0s" for y in years.elements())
     print("  by decade: " + ", ".join(f"{d} {n:,}" for d, n in sorted(decades.items(), reverse=True)))
@@ -454,7 +490,7 @@ def main() -> int:
                                   "branch": law_branch[law], "document": in_db.get(law)}
                             for law, n in merged.most_common(300)},
                    "our_law_documents": sorted(d["name"] for d in docs if d.get("name")),
-                   "implementing": implementing, "precedent_years": years,
+                   "implementing": implementing, "precedent_years": years, "precedent_forms": forms,
                    "precedents_by_branch": {b: {"cited": cited_by[b], "in_our_database": have[b],
                                                 "missing_by_year": missing_years[b], "ours_by_year": our_years[b]}
                                             for b in ("penale", "civile")},

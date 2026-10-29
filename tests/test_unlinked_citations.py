@@ -96,6 +96,25 @@ def test_a_law_number_is_not_a_precedent():
     assert uc.precedents("Cass., sez. VI, in applicazione della legge n. 103/2017") == []
 
 
+def test_criminal_and_date_first_forms():
+    forms = uc.Counter()
+    text = ("(Sez. 3, n. 12345 del 15/02/2019, Rossi, Rv. 275123); Sez. U, n. 40516 del 21/07/2016, Del Vecchio; "
+            "Cass. pen., Sez. II, 12 marzo 2019, n. 10965; Cass. 7 aprile 2014, n. 8053; Sez. 6-1, n. 77 dell'8 marzo 2018; "
+            "Cass. 18672/2019; Sezioni Unite, n. 500 del 1999")
+    assert uc.precedents(text, forms=forms) == [("12345", "2019"), ("40516", "2016"), ("10965", "2019"),
+                                                ("8053", "2014"), ("77", "2018"), ("18672", "2019"), ("500", "1999")]
+    assert forms == {"n. X del (date) year": 4, "date, n. X": 2, "n. X/year": 1}
+
+
+def test_not_precedents_other_courts_sez_laws_own_number():
+    assert uc.precedents("Cons. Stato, Sez. IV, n. 1234/2019; Trib. Milano, sez. II, n. 55 del 12/03/2020") == []
+    assert uc.precedents("Sez. 1, ai sensi del decreto legislativo n. 231/2001") == []
+    assert uc.precedents("Sez. 1, il regolamento (UE) n. 1215/2012") == []
+    assert uc.precedents("Sez. 5, R.G.N. 12345/2024; Sez. 5, data 15/02/2019") == []
+    header = "CORTE SUPREMA DI CASSAZIONE QUINTA SEZIONE PENALE Sentenza n. 1234/2026, come da Sez. 5, n. 99/2020"
+    assert uc.precedents(header, own=("1234", "2026")) == [("99", "2020")]
+
+
 def test_other_courts_and_the_fund_are_not_cassation_precedents():
     text = ("in favore della Cassa delle ammende, non ravvisandosi assenza di colpa (Corte cost. n. 186 del 13 giugno 2000). "
             "Avverso la sentenza propone ricorso per cassazione, richiamando Corte cost. n. 120/2014; "
