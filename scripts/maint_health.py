@@ -167,20 +167,27 @@ def mem_available_gb(path: str = "/proc/meminfo") -> Optional[float]:
     return None
 
 
+def running_job(ps_lines: Iterable[str], me: int) -> Optional[str]:
+    """In `ps -eo pid=,args=` lines: the first heavy job a Python process is running, "job (pid N)", or None. A job
+    named by something else (a grep, a watcher, an editor) does not count: on be2 one kept every run skipped (29 Oct)."""
+    for line in ps_lines:
+        pid, _, args = line.strip().partition(" ")
+        argv = args.split()
+        if pid == str(me) or not argv or "python" not in os.path.basename(argv[0]) or "maint_health.py" in args:
+            continue
+        for job in HEAVY_JOBS:
+            if any(job in a for a in argv[1:4]):
+                return f"{job} (pid {pid})"
+    return None
+
+
 def busy_job() -> Optional[str]:
     """The first heavy job running now, or None."""
     try:
-        out = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True, timeout=10).stdout
+        out = subprocess.run(["ps", "-eo", "pid=,args="], capture_output=True, text=True, timeout=10).stdout
     except Exception:
         return None
-    me = os.getpid()
-    for line in out.splitlines():
-        if str(me) in line or "maint_health.py" in line:
-            continue
-        for job in HEAVY_JOBS:
-            if job in line:
-                return job
-    return None
+    return running_job(out.splitlines(), os.getpid())
 
 
 def queue_status(queue_dir: str, failed_dir: str) -> dict:

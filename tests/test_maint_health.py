@@ -164,3 +164,16 @@ def test_graph_checks_can_skip_the_heavy_stages():
     assert g["skipped"] == ["detached", "sections"] and g["sections_detached"] == 0
     md, state, line = mh.build_report(g, QUEUE, [], (0, {}), None, None, 1.0)
     assert line.endswith("skipped: detached, sections")
+
+
+def test_only_a_python_process_running_the_job_counts_as_busy():
+    lines = ["  101 grep --color=auto backfill_embeddings_v2",
+             "  102 watch -n 60 ps aux | grep backfill_embeddings_v2",
+             "  103 less /opt/v2tools/backfill_embeddings_v2.py",
+             "  104 /usr/bin/python3 /opt/v2tools/maint_health.py --env /opt/chatbot/.env",
+             "  105 /bin/sh -c cd /opt/v2tools && /opt/chatbot/venv/bin/python link_ruling_citations.py --write"]
+    assert mh.running_job(lines, me=104) is None
+    assert mh.running_job(lines + ["  106 /opt/chatbot/venv/bin/python link_ruling_citations.py --write --out x"],
+                          me=104) == "link_ruling_citations (pid 106)"
+    assert mh.running_job(["  7 python3 -m scripts.backfill_embeddings_v2 --batch 64"], me=1) == \
+        "backfill_embeddings_v2 (pid 7)"
