@@ -420,9 +420,15 @@ def writer_calls(case: Dict[str, Any]) -> List[Dict[str, Any]]:
                 for c in calls]
     # No dumps: the answer's returned sources stand in for the material (a proxy).
     lines = []
-    for cit in case.get("citations") or []:
-        for s in cit.get("sections") or []:
+    for _, cit in as_items(case.get("citations")):
+        if not isinstance(cit, dict):
+            continue
+        for _, s in as_items(cit.get("sections")):
+            if not isinstance(s, dict):
+                continue
             text = s.get("plain_text") or ""
+            if not isinstance(text, str):
+                text = _plain(text)
             number = re.match(r"^(\d+(?:-[a-z]+)?)", str(s.get("name") or ""))
             code = next((abbr for abbr, prefix in _CODE_NAMES.items()
                          if (cit.get("document_name") or "").lower().startswith(prefix.lower())), None)
@@ -628,14 +634,10 @@ class Commi:
                                    doc=doc["id"], num=number).data()
                 if not rows:
                     continue
-                commi = []
-                for r in rows:
-                    m = re.match(rf"^{re.escape(number)}\.(\d+)\.0$", r["name"] or "")
-                    if m and int(m.group(1)) > 0:
-                        commi.append((int(m.group(1)), r["text"] or ""))
-                from src.rag import article_text
-                whole = article_text.choose_text(number, {r["name"]: r["text"] or "" for r in rows})
-                return split_commi(commi, whole)
+                # The commi exactly as COMMA_MATERIAL_ENABLED gives them (src/rag/comma_material.py), so the audit
+                # measures the same units the writer receives.
+                from src.rag import comma_material
+                return comma_material.commi_from_sections(number, {r["name"] or "": r["text"] or "" for r in rows})
         return [], "not found"
 
 
@@ -695,25 +697,73 @@ def audit_provenance(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: 
             "memory_share": (counts["assente"] / len(rule)) if rule else None, "proxy": case["proxy"]}
 
 
+def _plain(value: Any) -> str:
+    """A field's value as one line: a string as is, anything else as compact JSON."""
+    if isinstance(value, str):
+        return " ".join(value.split())
+    return json.dumps(value, ensure_ascii=False, default=str)
+
+
+def as_items(value: Any, prefix: str = "") -> List[Tuple[str, Any]]:
+    """(label, item) for every item of a field whatever its shape: a list gives its items, a dict of typed
+    fields ({"parties": [...], "events": [...], "notes": "..."}) each field's items labelled by its key, a scalar
+    itself; None and empty values nothing."""
+    if value is None or value == "" or value == [] or value == {}:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [(prefix, v) for v in value if v not in (None, "", [], {})]
+    if isinstance(value, dict):
+        out = []
+        for key, v in value.items():
+            label = f"{prefix} {key}".strip()
+            out += as_items(v, label) if isinstance(v, (list, tuple, set)) else (
+                [(label, v)] if v not in (None, "", [], {}) else [])
+        return out
+    return [(prefix, value)]
+
+
+def _field(item: Any, *keys: str) -> Any:
+    """The first of `keys` an item has (a dict), else the item itself (a string, a number)."""
+    if isinstance(item, dict):
+        return next((item[k] for k in keys if item.get(k) not in (None, "", [], {})), None)
+    return item
+
+
 def _extracted(rec: Dict[str, Any], calls: Sequence[Dict[str, Any]] = ()) -> List[str]:
     """What the understanding extracted: the frame's facts, tasks and central issues, the analysis' facts (from
-    its dump's reply), its questions, the institutions with what they resolved to, the typed facts."""
-    items = []
-    frame = rec.get("frame") or {}
+    its dump's reply), its questions, the institutions with what they resolved to, the typed facts and the rules
+    they fired. Every field read in either shape, a list or a dict of typed fields (FACT_SIGNALS' facts are the
+    latter: parties, events, property_history, ...)."""
+    items: List[str] = []
+    frame = rec.get("frame") if isinstance(rec.get("frame"), dict) else {}
     for key in ("facts", "tasks", "central_issue_candidates"):
-        for x in frame.get(key) or []:
-            items.append(f"frame {key}: {x if isinstance(x, str) else json.dumps(x, ensure_ascii=False)}")
+        for label, x in as_items(frame.get(key), key):
+            items.append(f"frame {label}: {_plain(_field(x, 'nome', 'fatto', 'text') or x)}")
     if frame.get("procedural_posture"):
-        items.append(f"frame fase: {frame['procedural_posture']}")
-    analysis = next((parse_json(c["reply"]) for c in calls if c["stage"].startswith("case_analysis")), None)
-    for f in (analysis.get("fatti") or [] if isinstance(analysis, dict) else [])[:30]:
-        items.append(f"fatto: {f.get('fatto') if isinstance(f, dict) else f}")
-    for q in rec.get("questioni") or []:
-        items.append(f"questione: {q.get('titolo')} — istituti {q.get('istituti') or []}; parole {q.get('parole_chiave') or []}")
-    for inst in rec.get("institutions") or []:
-        items.append(f"istituto: {inst.get('nome')} -> {', '.join(a.get('label', '') for a in inst.get('articles') or []) or 'non risolto'}")
-    for f in ((rec.get("fact_signals") or {}).get("facts") or [])[:40]:
-        items.append(f"fatto tipizzato: {f if isinstance(f, str) else json.dumps(f, ensure_ascii=False)}")
+        items.append(f"frame fase: {_plain(frame['procedural_posture'])}")
+    analysis = next((parse_json(c.get("reply")) for c in calls if str(c.get("stage", "")).startswith("case_analysis")),
+                    None)
+    if isinstance(analysis, dict):
+        for label, f in as_items(analysis.get("fatti"), "fatto")[:30]:
+            items.append(f"{label}: {_plain(_field(f, 'fatto', 'testo', 'text') or f)}")
+    for _, q in as_items(rec.get("questioni"))[:20]:
+        if isinstance(q, dict):
+            items.append(f"questione: {_plain(q.get('titolo') or '')} — istituti {_plain(q.get('istituti') or [])}; "
+                         f"parole {_plain(q.get('parole_chiave') or [])}")
+        else:
+            items.append(f"questione: {_plain(q)}")
+    for _, inst in as_items(rec.get("institutions"))[:30]:
+        if not isinstance(inst, dict):
+            items.append(f"istituto: {_plain(inst)}")
+            continue
+        articles = [_field(a, "label") for _, a in as_items(inst.get("articles"))]
+        items.append(f"istituto: {_plain(inst.get('nome') or '')} -> "
+                     f"{', '.join(_plain(a) for a in articles if a) or 'non risolto'}")
+    signals = rec.get("fact_signals") if isinstance(rec.get("fact_signals"), dict) else {}
+    for label, f in as_items(signals.get("facts"))[:40]:
+        items.append(f"fatto tipizzato{' ' + label if label else ''}: {_plain(f)}")
+    for _, rule in as_items(signals.get("fired"))[:10]:
+        items.append(f"regola scattata: {_plain(_field(rule, 'institution', 'id') or rule)}")
     return items[:80]
 
 
@@ -732,7 +782,9 @@ def audit_understanding(case: Dict[str, Any], judge: Judge, analysed: Optional[D
         reply = judge.ask(UNDERSTANDING_SYSTEM, human, max_tokens=300)
         reply = reply if isinstance(reply, dict) else {}
         trigger = str(reply.get("tipo") or "").strip().lower()
-        captured = [int(x) for x in reply.get("catturato_da") or [] if str(x).isdigit() and 0 < int(x) <= len(extracted)]
+        raw = reply.get("catturato_da")
+        raw = re.findall(r"\d+", raw) if isinstance(raw, str) else [x for _, x in as_items(raw)]
+        captured = sorted({int(x) for x in raw if str(x).strip().isdigit() and 0 < int(x) <= len(extracted)})
         lost.append({"article": slot["label"], "stage": slot["stage"], "rubrica": rubrica,
                      "fact": reply.get("fatto") or "", "trigger": trigger if trigger in TRIGGERS else
                      ("altro" if reply else None), "captured": [extracted[i - 1] for i in captured],

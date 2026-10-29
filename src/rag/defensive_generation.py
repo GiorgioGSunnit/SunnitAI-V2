@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import article_text, feature_flags, protected_sources
+from . import article_text, comma_material, feature_flags, protected_sources
 from .ai_chat import _call_chat, embedding_model, parse_json_reply
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
@@ -2432,6 +2432,9 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
     chosen passage, else the matched section), each cut to `chars`."""
     grouped: Dict[str, List[str]] = {}
     protected: set = set()
+    # COMMA_MATERIAL_ENABLED: an article whose row holds its commi is given the commi that serve its issue
+    # (comma_material.passage), within the same budget, instead of its first `chars` characters.
+    by_commi: Dict[str, str] = {}
     for row in rows:
         _s = row.get("s") or {}
         # abstract fallback: special/dottrina books (Commentato, Fiscalita) are
@@ -2439,17 +2442,21 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
         # (same field the ingestion step embeds from — see BE's "abstract-only
         # sections" commit). plain_text-only here silently dropped their text.
         text = row.get("_passage") or " ".join((_s.get("plain_text") or _s.get("abstract") or "").split())
-        if not text:
+        if not text and not (row.get(comma_material.COMMI_KEY) and comma_material.enabled()):
             continue
         label = (f"art. {row['_article'][0]} {row['_article'][1]}" if row.get("_article")
                  else _ruling_label(row))
         grouped.setdefault(label, []).append(text)
         if protected_sources.tag(row):
             protected.add(label)
+        if row.get("_article") and label not in by_commi:
+            commi = comma_material.passage(row, min(chars, row.get("_comma_chars") or chars))
+            if commi:
+                by_commi[label] = commi
     # PROTECTED_PARAPHRASE_ENABLED: a protected passage carries the tag after its label (the label itself
     # unchanged, the citations are matched by it).
     return "\n\n".join(f"[{label}]{' ' + protected_sources.TAG if label in protected else ''}\n"
-                         f"{' '.join(texts)[:chars]}" for label, texts in grouped.items())
+                         f"{by_commi.get(label) or ' '.join(texts)[:chars]}" for label, texts in grouped.items())
 
 
 def _grouped_source_block(article_rows: List[Dict[str, Any]], questioni: List[Dict[str, Any]],
@@ -3102,7 +3109,10 @@ def _refill_order(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _with_text_cut(row: Dict[str, Any], chars: int) -> Dict[str, Any]:
-    """A copy of the row whose text, as _source_block reads it, is cut to chars."""
+    """A copy of the row whose text, as _source_block reads it, is cut to chars (COMMA_MATERIAL_ENABLED, a row
+    holding its commi: the budget only, _source_block chooses the commi within it)."""
+    if row.get(comma_material.COMMI_KEY) and comma_material.enabled():
+        return {**row, "_comma_chars": chars}
     s = row.get("s") or {}
     text = row.get("_passage") or " ".join((s.get("plain_text") or s.get("abstract") or "").split())
     return {**row, "_passage": text[:chars]}
@@ -5443,17 +5453,24 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     ruling_rows = _ruling_fit(facts, request, ruling_rows, analysis)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
     ruling_rows = _with_fit_facts(ruling_rows)
-    if protected_sources.enabled():
-        # PROTECTED_PARAPHRASE_ENABLED: the protected rows marked (doctrine reaches a criminal case as a ruling).
+    if protected_sources.enabled() or comma_material.enabled():
         try:
             with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+                # PROTECTED_PARAPHRASE_ENABLED: the protected rows marked (doctrine reaches a criminal case as a
+                # ruling).
                 protected_sources.mark(article_rows + ruling_rows, session, "strategy")
+                # COMMA_MATERIAL_ENABLED: each article's commi, its focus the analysis question it was found for,
+                # the commi the case names always given.
+                if comma_material.attach(session, article_rows, "strategy"):
+                    comma_material.set_focus(article_rows, comma_material.analysis_focus(article_rows, analysis),
+                                             comma_material.named_commi(_case_text(facts, request)))
         except Exception as exc:
-            logger.warning("protected rows not marked: %s", exc)
+            logger.warning("protected rows / commi not read: %s", exc)
     system = _parere_system(analysis, session_lang)
     articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
                                                   request, principles)
     human = protected_sources.with_rule(human)
+    comma_material.log_material("draft_prompt", articles, article_rows)
     # PLAN_THEN_WRITE_ENABLED: a plan, then the sections from it (plan_then_write.py); None on
     # any failure, and the parere is written in one call as before.
     planned = None

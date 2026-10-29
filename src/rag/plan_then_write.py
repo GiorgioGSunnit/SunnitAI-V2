@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import defensive_generation as dg
-from . import method_candidates, practical_checklist, protected_sources
+from . import comma_material, method_candidates, practical_checklist, protected_sources
 
 logger = logging.getLogger(__name__)
 
@@ -1256,7 +1256,10 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          + no_rulings,
          _plan_text(plan, subordinate=True, weak=True, rulings=False), 500),
     ]
-    return [_with_budget(job) for job in jobs] if rules else jobs
+    jobs = [_with_budget(job) for job in jobs] if rules else jobs
+    for title, _, material_text, _ in jobs:        # COMMA_MATERIAL_ENABLED: the commi each section was given
+        comma_material.log_material(f"section {title}", material_text, article_rows)
+    return jobs
 
 
 def fact_signals_asks(question: str) -> bool:
@@ -2413,6 +2416,11 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if plan is None:
         return None
     case = dg._case_text(facts, request)
+    # COMMA_MATERIAL_ENABLED: each article's commi chosen for the plan issue that places it; a comma the plan
+    # or the case names, read now when the row lacks it (one read, no model call).
+    commi = comma_material.for_plan(plan, article_rows, case)
+    if commi:
+        dg.vlog("comma_material_plan", commi)
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,

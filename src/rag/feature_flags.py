@@ -463,6 +463,16 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 protected_paraphrase / protected_sources_shown), reported by tests/
                                 eval_narrative.py --direct / --ccnl, scripts/diagnose_long.py and scripts/
                                 dryrun_strategy.py. See src/rag/protected_sources.py.
+  COMMA_MATERIAL_ENABLED       false (29 Oct, after scripts/fetch_audit.py on run 0812: granularity the largest
+                                measurable defect): an article reaches the writer as its commi ("N.k.0" Sections,
+                                else its text split), labelled "(co. K)", not as its first N characters: within
+                                the same per-article budget the commi whose words best match the issue it serves
+                                (the analysis question before the plan, the plan issue after), the left-out ones
+                                listed, a comma the case or the plan names always given -- read before the
+                                sections when the row lacks it (one read, no model call). Logged per writer call
+                                as comma_material (which commi of each article were given), comma_material_plan,
+                                comma_material_fetched. Measured by scripts/fetch_audit.py ("comma not given /
+                                beyond the truncation", target near 0). See src/rag/comma_material.py.
 """
 
 import logging

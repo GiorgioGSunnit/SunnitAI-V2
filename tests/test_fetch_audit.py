@@ -246,3 +246,46 @@ def test_understanding_reads_the_lost_stages_from_diagnose_long_itself(tmp_path)
     assert lost == {"art. 61 cp": "LOST_AT_UNDERSTANDING", "art. 2043 cc": "NOT_IN_PLAN"}
     assert out["understanding"]["defects"] == 2
     assert fa.summary([out])["triggers"] == {"date_termini": 2}
+
+
+def test_dict_shaped_fact_signals_and_other_field_shapes_are_read():
+    """Prod, run 0812: FACT_SIGNALS' facts are a dict of typed fields, not a list (KeyError: slice)."""
+    rec = {"frame": {"facts": {"main": ["Tizio vende a Caio"]}, "tasks": "un solo compito",
+                     "central_issue_candidates": [{"nome": "servitù di passaggio", "codice": "c.c."}]},
+           "questioni": [{"titolo": "Servitù", "istituti": ["servitù"]}, "una questione come testo"],
+           "institutions": [{"nome": "usucapione", "articles": [{"label": "1158 c.c."}, "1061 c.c."]}, "possesso"],
+           "fact_signals": {"facts": {"parties": [{"name": "Tizio", "role": "privato"}],
+                                      "events": [{"kind": "vendita", "date": "2010"}],
+                                      "property_history": [{"owner": "Sempronio", "until": "1990"}],
+                                      "notes": "un testo", "money": [], "questions": None},
+                            "fired": [{"id": "usucapione_servitu_apparente", "institution": "usucapione"}]}}
+    calls = [{"stage": "case_analysis_v2", "reply": '{"fatti": {"principali": [{"fatto": "passaggio dal 1995"}]}}'}]
+    items = fa._extracted(rec, calls)
+    joined = "\n".join(items)
+    assert "frame facts main: Tizio vende a Caio" in joined and "frame tasks: un solo compito" in joined
+    assert "frame central_issue_candidates: servitù di passaggio" in joined
+    assert "fatto principali: passaggio dal 1995" in joined
+    assert "questione: una questione come testo" in joined and "istituto: possesso" in joined
+    assert "istituto: usucapione -> 1158 c.c., 1061 c.c." in joined
+    assert 'fatto tipizzato parties: {"name": "Tizio", "role": "privato"}' in joined
+    assert "fatto tipizzato property_history" in joined and "fatto tipizzato notes: un testo" in joined
+    assert not any("money" in i or "questions" in i for i in items)
+    assert "regola scattata: usucapione" in joined
+    # a list shape still works, and nothing at all gives nothing
+    assert fa._extracted({"fact_signals": {"facts": ["un fatto"]}}) == ["fatto tipizzato: un fatto"]
+    assert fa._extracted({"frame": None, "fact_signals": None, "questioni": None}) == []
+
+
+def test_understanding_with_dict_shaped_facts_and_a_string_captured_list(tmp_path):
+    import test_diagnose_long as tdl
+    rec = {**tdl._record(), "fact_signals": {"facts": {"events": [{"kind": "aggressione", "date": "2099-01-01"}]}}}
+    run = tmp_path / "run"
+    (run / "cases").mkdir(parents=True)
+    (run / "cases" / "x1.json").write_text(json.dumps(rec), encoding="utf-8")
+    case = fa.load([str(run)])[0]
+
+    def judge(system, human, max_tokens):
+        return json.dumps({"fatto": "aggressione", "tipo": "gravita_aggravante", "catturato_da": "1, 2"})
+    out = fa.audit_case(case, fa.Judge(None, call=judge), FakeCommi(), tdl.ev, Args)
+    assert [len(x["captured"]) for x in out["understanding"]["lost"]] == [2, 2]
+    assert out["understanding"]["defects"] == 0
