@@ -10,11 +10,16 @@ read-only. Scored per case:
                      filter's own check after each node (source_tier_hits, must be 0)
   RULINGS            the rulings the answer cites: how many CITE an article the answer names, how many only a
                      Cassation-boilerplate one (target 0), how many none
+  PROTECTED          verbatim overlaps with protected sources (src/rag/protected_sources.py): found / rewritten /
+                     dropped by the post-check, remaining in the final answer (target 0), and the protected
+                     excerpts shown in its sources (target 0) -- counted with PROTECTED_PARAPHRASE_ENABLED off too
 
 Run from the app folder (it writes only under --out):
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --direct --label off
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --direct --label on \\
         --flag ROUTER_ENABLED=true --flag PRIMARY_FIRST_ENABLED=true
+    cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --direct --label protected-on \\
+        --flag PROTECTED_PARAPHRASE_ENABLED=true
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --direct --compare-direct \\
         eval_runs/direct-<A>/summary.json eval_runs/direct-<B>/summary.json
 
@@ -73,7 +78,7 @@ def answer_refs(answer, mentions):
 
 
 def run_case(case, ev, events):
-    from src.rag import query_router, source_tiers
+    from src.rag import protected_sources, query_router, source_tiers
     from src.rag.main import NEO4J_DATABASE, driver, run
 
     del events[:]
@@ -107,6 +112,9 @@ def run_case(case, ev, events):
     for kind in types:
         by_type[kind] = by_type.get(kind, 0) + 1
     after = sum((d or {}).get("non_primary_after", 0) for e, d in events if e == "source_tier_hits")
+    protected = protected_sources.run_record(
+        events, answer, list(result.get("raw_result") or []) + list(result.get("special_dottrina_rows") or []),
+        citations)
     return {"id": case["id"], "question": case["question"], "status": status, "seconds": seconds, "route": route,
             "mentioned": mentioned, "cited": cited, "expected": len(scored["expected"]), "scoring": scored,
             "result_keys": sorted(result), "rows": len(rows),
@@ -114,7 +122,7 @@ def run_case(case, ev, events):
             "non_primary_after_filter": after,
             "support": [d for e, d in events if e == "source_tier_support"],
             "rulings": {k: v for k, v in fit.items() if k != "per_ruling"}, "rulings_shared": fit["per_ruling"],
-            "answer": answer, "citations": citations}
+            "protected": protected, "answer": answer, "citations": citations}
 
 
 def debug_report(record, events, node_rows, ev, max_rows=25):
@@ -178,8 +186,14 @@ def summary_lines(records, label):
               f"Rulings cited: {total_rulings}; citing an answer article: "
               f"{sum(r['rulings']['citing_answer_article'] for r in records)}; boilerplate-only: "
               f"{sum(r['rulings']['boilerplate_only'] for r in records)} (target 0); unrelated: "
-              f"{sum(r['rulings']['unrelated'] for r in records)}"]
+              f"{sum(r['rulings']['unrelated'] for r in records)}",
+              _protected_line(records)]
     return lines
+
+
+def _protected_line(records):
+    from src.rag import protected_sources
+    return protected_sources.report_line(protected_sources.sum_records(r.get("protected") for r in records))
 
 
 def totals(records):
@@ -191,14 +205,21 @@ def totals(records):
             "rulings": sum(r["rulings"]["rulings"] for r in records),
             "citing_answer_article": sum(r["rulings"]["citing_answer_article"] for r in records),
             "boilerplate_only": sum(r["rulings"]["boilerplate_only"] for r in records),
-            "unrelated": sum(r["rulings"]["unrelated"] for r in records)}
+            "unrelated": sum(r["rulings"]["unrelated"] for r in records),
+            **{f"protected_{k}": v for k, v in _protected_sum(records).items()}}
+
+
+def _protected_sum(records):
+    from src.rag import protected_sources
+    return protected_sources.sum_records(r.get("protected") for r in records)
 
 
 def compare_direct(old_path, new_path):
     old, new = (json.loads(Path(p).read_text(encoding="utf-8")) for p in (old_path, new_path))
     print(f"{'':28} {'A':>10} {'B':>10}\n{'':28} {old.get('label') or 'A':>10} {new.get('label') or 'B':>10}")
     for key in ("mentioned", "cited", "expected", "rows", "non_primary_hits", "non_primary_after_filter", "rulings",
-                "citing_answer_article", "boilerplate_only", "unrelated"):
+                "citing_answer_article", "boilerplate_only", "unrelated", "protected_found", "protected_rewritten",
+                "protected_dropped", "protected_remaining", "protected_excerpts_shown"):
         print(f"{key:28} {old['totals'].get(key, ''):>10} {new['totals'].get(key, ''):>10}")
     old_cases = {c["id"]: c for c in old["cases"]}
     print("\nper case: MENTIONED A -> B, route A -> B")
@@ -249,14 +270,17 @@ def main(args):
             name = f"{case['id']}" + (f"-r{repeat}" if args.repeat > 1 else "")
             (run_dir / f"{name}.json").write_text(json.dumps(record, ensure_ascii=False, indent=1, default=str),
                                                   encoding="utf-8")
+            pr = record["protected"]
             print(f"{case['id']} r{repeat}: {record['route']}, MENTIONED {record['mentioned']}/{record['expected']}, "
                   f"non-primary {record['non_primary_hits']}, rulings {record['rulings']['rulings']} "
-                  f"({record['rulings']['boilerplate_only']} boilerplate-only), {record['seconds']}s", flush=True)
+                  f"({record['rulings']['boilerplate_only']} boilerplate-only), protected overlaps "
+                  f"{pr['found']}/{pr['rewritten']}/{pr['dropped']}/{pr['remaining']}, excerpts shown "
+                  f"{pr['excerpts_shown']}, {record['seconds']}s", flush=True)
     lines = summary_lines(records, args.label)
     summary = {"label": args.label, "settings": settings, "totals": totals(records),
                "cases": [{k: r[k] for k in ("id", "repeat", "route", "mentioned", "cited", "expected", "rows",
                                              "non_primary_hits",
-                                             "non_primary_after_filter", "rulings")} for r in records]}
+                                             "non_primary_after_filter", "rulings", "protected")} for r in records]}
     (run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     if debug:

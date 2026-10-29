@@ -1548,7 +1548,7 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     import neo4j
     from langchain_core.messages import HumanMessage, SystemMessage
     from .ai_chat import _call_chat
-    from . import source_tiers
+    from . import protected_sources, source_tiers
     t0 = time.time()
     info: Dict[str, Any] = {"question": question}
     with driver.session(database=database, default_access_mode=neo4j.READ_ACCESS) as session:
@@ -1686,21 +1686,31 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
                                                    f"disponibili del CCNL]")
              + "\n\n" + ("\n\n".join(law_blocks) or "[nessun articolo di legge reperito]")
              + ("\n\n" + "\n\n".join(ruling_blocks) if ruling_blocks else ""))
+    protect = protected_sources.enabled()
+    if protect:                              # PROTECTED_PARAPHRASE_ENABLED: the rule for every protected source
+        human += "\n\n" + protected_sources.WRITER_RULE
     body = _call_chat([SystemMessage(content=system_prompt(pay is not None, bool(rulings), no_clause)),
                        HumanMessage(content=human)], max_tokens=1800) if llm else ""
     body = clean(body)
     clause_texts = [c["text"] for c in clauses]
-    copied = verbatim_sentences(body, clause_texts)
-    rewritten = False
-    if copied and llm:
-        listed = "\n".join(f"- {s}" for s in copied)
-        body = clean(_call_chat([SystemMessage(content=_REWRITE_SYSTEM),
-                                 HumanMessage(content=f"FRASI DA RISCRIVERE:\n{listed}\n\nANALISI:\n{body}")],
-                                max_tokens=1800))
-        rewritten = True
-    still = verbatim_sentences(body, clause_texts)
-    if still:
-        body = _drop_sentences(body, still)
+    if protect:
+        # The shared post-check (protected_sources.enforce): 10-word runs and near-duplicates, each flagged
+        # sentence rewritten once on its own (its numbers kept), else dropped.
+        body, protected = protected_sources.enforce(body, texts=clause_texts, stage="ccnl", llm=llm)
+        copied, rewritten, still = [None] * protected["found"], protected["rewritten"] > 0, [None] * protected["dropped"]
+    else:
+        copied = verbatim_sentences(body, clause_texts)
+        rewritten = False
+        if copied and llm:
+            listed = "\n".join(f"- {s}" for s in copied)
+            body = clean(_call_chat([SystemMessage(content=_REWRITE_SYSTEM),
+                                     HumanMessage(content=f"FRASI DA RISCRIVERE:\n{listed}\n\nANALISI:\n{body}")],
+                                    max_tokens=1800))
+            rewritten = True
+        still = verbatim_sentences(body, clause_texts)
+        if still:
+            body = _drop_sentences(body, still)
+        _, protected = protected_sources.enforce(body, texts=clause_texts, stage="ccnl", llm=False)   # counted only
     # A pay question's amounts only from the tables in force; any other question's from its material.
     amount_texts = [t["text"] for t in pay["tables"]] if pay is not None else clause_texts
     body, amounts = check_amounts(body, "\n".join(amount_texts + law_blocks))
@@ -1712,14 +1722,16 @@ def answer(question: str, driver, database: str, today: Optional[date] = None, l
     final = f"{head}\n\n{body.strip()}".strip()
     info["answer"] = {"verbatim_found": len(copied), "rewritten": rewritten, "verbatim_dropped": len(still),
                       "amounts_removed": amounts, "caselaw_dropped": caselaw, "silence_dropped": len(silence), "absence_claims_dropped": silence,
-                      "pay_dates_dropped": pay_dates, "chars": len(final)}
+                      "pay_dates_dropped": pay_dates, "chars": len(final),
+                      "protected": {k: protected.get(k) for k in ("enabled", "found", "rewritten", "dropped",
+                                                                   "remaining", "kinds")}}
     info["outcome"] = "answered"
     vlog("ccnl_path", {k: v for k, v in info.items() if k != "question"}, duration_ms=(time.time() - t0) * 1000)
     ccnl_rows = [{"d": {"id": c["doc"]["id"], "name": c["doc"].get("name"), "document_type": TYPE,
                         "sector": contract["sector"]},
                   "s": {"id": c["hit"], "name": clause_reference(c), "plain_text": ""}, "_source": "ccnl_clause"}
                  for c in clauses]
-    return {"answer": final, "citations": _citations(clauses, framework, rulings),
+    return {"answer": final, "citations": protected_sources.redact(_citations(clauses, framework, rulings), "ccnl"),
             "raw_result": ccnl_rows + framework + rulings, "status_messages": [], "ccnl_sector": contract["sector"],
             "ccnl": info, "route": "ccnl"}
 

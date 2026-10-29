@@ -448,6 +448,21 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 contract is found or on any failure. Logged as ccnl_route,
                                 ccnl_contract, ccnl_version, ccnl_clauses, ccnl_framework, ccnl_path.
                                 Scored by tests/eval_narrative.py --ccnl. See src/rag/ccnl_path.py.
+  PROTECTED_PARAPHRASE_ENABLED false (29 Oct): protected sources are never reproduced, on every answer path (the
+                                chat's synthesis, the strategy writer, the CCNL path, document generation and
+                                analysis). Protected: document_type special and ccnl, the documents named in
+                                PROTECTED_DOCUMENT_NAMES / PROTECTED_DOCUMENTS_FILE (exact names; candidates
+                                from scripts/protected_candidates.py), and any non-primary document whose text
+                                carries a reproduction notice -- each row marked at retrieval. The writer gets
+                                them tagged with a rule (paraphrase, cite by reference, never quote; short
+                                figures as data); every answer is post-checked against the protected texts used
+                                (10+ consecutive words or 3-shingle Jaccard >= 0.5: rewritten once keeping its
+                                numbers, else dropped); notices stripped everywhere; the sources shown (chat
+                                response, saved session, section endpoint) give a protected document's reference
+                                only, primary law keeps its text. Counted with the flag off too (logged
+                                protected_paraphrase / protected_sources_shown), reported by tests/
+                                eval_narrative.py --direct / --ccnl, scripts/diagnose_long.py and scripts/
+                                dryrun_strategy.py. See src/rag/protected_sources.py.
 """
 
 import logging

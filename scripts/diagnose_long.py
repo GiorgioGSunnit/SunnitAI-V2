@@ -32,6 +32,11 @@ Per case it records:
                    whether its stored rubrica fits the line that cites it -- the qualification
                    check's own comparison (_QUALIFICATION_SYSTEM), one extra call per case.
 
+Every case also counts the verbatim overlaps with protected sources (PROTECTED_PARAPHRASE_ENABLED, src/rag/
+protected_sources.py: found / rewritten / dropped / remaining, target 0) and the protected excerpts shown in its
+sources (target 0) -- logged by the post-check with the flag off too, so a live run compares:
+    ... --set PROTECTED_PARAPHRASE_ENABLED=true
+
 Then one report: (A) loss funnel of the expected articles, (B) origins of the articles cited
 without being expected, by channel and by exemption, (C) the 20 most frequent of those,
 (D) per area -- plus the understanding, finding and ranking figures behind them, and a line per case.
@@ -92,7 +97,7 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "FLAGGED_REMOVE_ENABLED", "GRADER_EVIDENCE_ENABLED", "FACT_SIGNALS_ENABLED",
          "GRADER_EXAMPLES_ENABLED", "WRITER_RULES_ENABLED", "FACT_REGIMES_ENABLED", "FACT_MARK_INLINE_ENABLED",
          "STRICT_ARTICLES_ENABLED", "RULING_FIT_ENABLED", "REVIEW_FIXES_ENABLED", "ROUTER_ENABLED",
-         "HYBRID_NARRATIVE_ENABLED", "PRIMARY_FIRST_ENABLED"]
+         "HYBRID_NARRATIVE_ENABLED", "PRIMARY_FIRST_ENABLED", "PROTECTED_PARAPHRASE_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -812,6 +817,11 @@ def run_child(spec_path: str, env_path: str) -> None:
     except Exception as exc:
         record["capture_errors"].append(f"after the run: {type(exc).__name__}: {exc}")
         traceback.print_exc()
+    try:
+        from src.rag import protected_sources
+        record["protected"] = protected_sources.run_record(events, draft, citations=result.get("citations") or [])
+    except Exception as exc:
+        record["capture_errors"].append(f"protected sources: {type(exc).__name__}: {exc}")
     record["feature_flags_seen"] = {"fusion": cap["fusion_raw"] is not None,
                                     "check": feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"),
                                     "plan": feature_flags.enabled("PLAN_THEN_WRITE_ENABLED")}
@@ -1085,7 +1095,19 @@ def analyse_case(rec: dict, ev) -> dict:
     out["invariants"] = _invariants_trace(rec)
     out["evidence"] = _evidence_trace(rec)
     out["tiers"] = rec.get("tiers") or {}
+    out["protected"] = _protected_trace(rec)
     return out
+
+
+def _protected_trace(rec: dict) -> dict:
+    """The case's protected-source figures (run_record in the child); for a run made before them, from its
+    protected_paraphrase events (none: zeros)."""
+    from src.rag import protected_sources
+    if rec.get("protected"):
+        return rec["protected"]
+    events = [e for e in rec.get("events") or [] if isinstance(e, (list, tuple)) and len(e) >= 2]
+    logged = protected_sources.totals(events)
+    return {**{k: logged.get(k, 0) for k in protected_sources.COUNTS}, "excerpts_shown": 0}
 
 
 def _form_trace(rec: dict, K, expected_keys: set) -> dict:
@@ -1413,8 +1435,13 @@ def aggregate(cases: list) -> dict:
             "cited": sum(t.get("rulings_cited", 0) for t in tiers),
             "citing": sum(t.get("rulings_citing_answer_article", 0) for t in tiers),
             "boilerplate_only": sum(t.get("rulings_boilerplate_only", 0) for t in tiers)}
+    from src.rag import protected_sources
+    answered = [c for c in cases if c["ok"]]
+    protected = {**protected_sources.sum_records(c.get("protected") for c in answered),
+                 "cases": [(c["id"], c.get("protected") or {}) for c in answered
+                           if any((c.get("protected") or {}).get(k) for k in protected_sources.COUNTS)]}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
-            "tiers": tier, "live": live, "invariants": inv, "evidence": evidence,
+            "tiers": tier, "live": live, "invariants": inv, "evidence": evidence, "protected": protected,
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1638,6 +1665,13 @@ def render(cases: list, header: list) -> str:
                                                   f"'does not apply' sentences {g['not_apply']}, orphan fragments removed "
                                                   f"{g['orphans']}, " if g["logged"] else "")
              + f"sentences against the client dropped {g['against_client']}.")
+    from src.rag import protected_sources
+    pr = agg["protected"]
+    L += ["", "## Protected sources (PROTECTED_PARAPHRASE_ENABLED)", "", protected_sources.report_line(pr) + ".",
+          "Per case (found / rewritten / dropped / remaining; excerpts shown): "
+          + ("; ".join(f"{cid} {p.get('found', 0)}/{p.get('rewritten', 0)}/{p.get('dropped', 0)}/"
+                       f"{p.get('remaining', 0)}; {p.get('excerpts_shown', 0)}" for cid, p in pr["cases"]) or "none")
+          + "."]
     lv = agg["live"]
     L += ["", "## The live answer's defects (26 Oct; REVIEW_FIXES, RULING_FIT, FLAGGED_REMOVE, FACT_SIGNALS)", "",
           f"Dangling fragments left in the answers: {lv['dangling']}. Evidence lists repeated whole: "
@@ -2020,6 +2054,12 @@ def compare(run_dirs: list, ev) -> str:
         return f"{v['found']} / {v['fixed']} / {v['remaining']}" if v else "n/a"
     rows = [(f"{key} {name}: found / fixed / remaining (target 0)", (lambda a, key=key: inv_cell(a, key)),
              lambda a: "") for key, name in INVARIANTS]
+    rows += [("verbatim overlaps with protected sources: found / rewritten / dropped / remaining (target 0)",
+              lambda a: (f"{(a.get('protected') or {}).get('found', 0)} / {(a.get('protected') or {}).get('rewritten', 0)}"
+                         f" / {(a.get('protected') or {}).get('dropped', 0)} / "
+                         f"{(a.get('protected') or {}).get('remaining', 0)}"), lambda a: ""),
+             ("protected excerpts shown in sources (target 0)",
+              lambda a: (a.get("protected") or {}).get("excerpts_shown", 0), lambda a: "")]
     rows += [("T1/T2 dropped at a cut-off (target 0)",
               lambda a: len(a["evidence"]["dropped"]) if a["evidence"]["logged"] else "n/a", lambda a: ""),
              ("T1/T2 removed by a single judgement (target 0)",

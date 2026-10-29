@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import HTTPException
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from . import protected_sources
 from .ai_chat import _call_chat
 from .template_selection import select_templates
 
@@ -2761,11 +2762,8 @@ def _fill_template_gaps(
         )
 
     if citations:
-        _cit_text = "\n".join(
-            f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:300]}"
-            for c in citations[:5] for s in (c.get('sections') or [])[:2]
-        )
-        system += "\n\nNormativa di riferimento:\n" + _cit_text
+        _cit_text = protected_sources.citation_lines(citations, 300)
+        system = protected_sources.with_rule(system + "\n\nNormativa di riferimento:\n" + _cit_text)
 
     raw = _call_chat(
         [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],
@@ -3150,6 +3148,9 @@ def generate_document(
         header = f"{studio_name}\n{'─' * len(studio_name)}\n\n"
         raw_output = header + raw_output
 
+    # PROTECTED_PARAPHRASE_ENABLED: the document reproduces no protected source among its citations.
+    raw_output, _ = protected_sources.enforce(raw_output, texts=protected_sources.citation_texts(citations),
+                                              stage="document_generation")
     return {"draft": raw_output, "case_details": fields_dict, "doc_type": doc_type}
 
 

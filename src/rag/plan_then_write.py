@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import defensive_generation as dg
-from . import method_candidates, practical_checklist
+from . import method_candidates, practical_checklist, protected_sources
 
 logger = logging.getLogger(__name__)
 
@@ -933,7 +933,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
                         _checks(analysis, article_rows, facts, request), voted, applicable,
                         must_place="graded" if keep_checked and _graded() else keep_checked, groups=groups)
-    messages = [SystemMessage(content=system), HumanMessage(content=human)]
+    messages = [SystemMessage(content=system), HumanMessage(content=protected_sources.with_rule(human))]
     t0 = time.time()
     problems: List[str] = []
     try:
@@ -1185,7 +1185,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
                + (f" Tieni conto delle {_DAMAGES_TITLE}." if damages else ""))
 
     def material(*parts: str) -> str:
-        return "\n\n".join(p for p in parts if p)
+        # PROTECTED_PARAPHRASE_ENABLED: a section given a protected passage gets the rule with it.
+        return protected_sources.with_rule("\n\n".join(p for p in parts if p))
     fixes = _review_fixes()
     questions = explicit_questions(request, facts) if fixes else []
     asked = ("\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)))

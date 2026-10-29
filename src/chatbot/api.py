@@ -32,7 +32,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.encoders import jsonable_encoder
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from .session import (
@@ -67,7 +67,7 @@ from ..rag.document_generation import (
     is_generation_request,
     _call_chat,
 )
-from ..rag import feature_flags
+from ..rag import feature_flags, protected_sources
 from ..rag.answer_processing import _extract_citations
 from ..rag.prompts import legal_consultant_system_prefix, length_instruction
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -251,6 +251,13 @@ class ChatResponse(BaseModel):
         default_factory=list,
         description="Structured citation list: [{document_name, document_id, sections}].",
     )
+
+    # PROTECTED_PARAPHRASE_ENABLED: whatever path built them, a protected document's sources leave as references.
+    @field_validator("citations")
+    @classmethod
+    def _protected_references_only(cls, value):
+        return protected_sources.redact(value, "chat_response") if isinstance(value, list) else value
+
     awaiting_clarification: bool = Field(
         default=False,
         description="True when this turn's answer ends with a clarifying question and the "
@@ -1054,7 +1061,7 @@ def get_section(document_id: str, section_name: str):
                 "MATCH (d:Document {id: $doc_id})-[:CONTAINS]->(s:Section) "
                 # an old answer's link to a Section renamed by scripts/rename_odd_sections.py
                 "WHERE s.name = $section_name OR s.name_before_rename = $section_name "
-                "RETURN d.name AS document_name, s.name AS section_name, "
+                "RETURN d.name AS document_name, d.document_type AS document_type, s.name AS section_name, "
                 "s.abstract AS abstract, s.plain_text AS plain_text "
                 "LIMIT 1",
                 doc_id=decoded_doc_id,
@@ -1066,11 +1073,17 @@ def get_section(document_id: str, section_name: str):
         raise HTTPException(status_code=500, detail=str(e))
     if not row:
         raise HTTPException(status_code=404, detail="Section not found")
+    if protected_sources.enabled() and protected_sources.classify(
+            decoded_doc_id, row["document_type"], row["document_name"], [row["plain_text"], row["abstract"]]):
+        # PROTECTED_PARAPHRASE_ENABLED: a protected document's section is shown by reference only.
+        return {"document_name": row["document_name"],
+                "section_name": protected_sources.redact_section({"name": row["section_name"]})["name"],
+                "abstract": "", "plain_text": "", "protected": True}
     return {
         "document_name": row["document_name"],
         "section_name": row["section_name"],
-        "abstract": row["abstract"] or "",
-        "plain_text": row["plain_text"] or "",
+        "abstract": protected_sources.strip_notices(row["abstract"]) if protected_sources.enabled() else row["abstract"] or "",
+        "plain_text": protected_sources.strip_notices(row["plain_text"]) if protected_sources.enabled() else row["plain_text"] or "",
     }
 
 
@@ -1101,7 +1114,24 @@ def get_session(session_id: str, current_user: dict = Depends(require_user), db:
     session = chatbot.get_session(session_id, user_id=current_user["sub"], db=db)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
-    return session.to_dict()
+    return _protected_session_view(session.to_dict())
+
+
+def _protected_session_view(data: dict) -> dict:
+    """PROTECTED_PARAPHRASE_ENABLED: the saved messages' sources (citations, the sections a clarification
+    re-ranks) as references for a protected document. The saved session keeps them: the re-rank needs the text."""
+    if not protected_sources.enabled():
+        return data
+    messages = []
+    for m in data.get("messages") or []:
+        if isinstance(m, dict) and (m.get("citations") or m.get("pending_sections")):
+            m = {**m}
+            if isinstance(m.get("citations"), list):
+                m["citations"] = protected_sources.redact(m["citations"], "session_history")
+            if isinstance(m.get("pending_sections"), list):
+                m["pending_sections"] = protected_sources.redact_flat(m["pending_sections"])
+        messages.append(m)
+    return {**data, "messages": messages}
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -2874,12 +2904,10 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                                 + "\n\n" + length_instruction(_doc_settings["response_length"])
                             )
                             if _compare_citations:
-                                _citations_text = "\n".join(
-                                    f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:300]}"
-                                    for c in _compare_citations[:5] for s in (c.get('sections') or [])[:2]
-                                )
-                                _compare_system += (
-                                    "\n\nNormativa di riferimento dal corpus legale:\n" + _citations_text
+                                _citations_text = protected_sources.citation_lines(_compare_citations, 300)
+                                _compare_system = protected_sources.with_rule(
+                                    _compare_system + "\n\nNormativa di riferimento dal corpus legale:\n"
+                                    + _citations_text
                                 )
                             _compare_human = (
                                 "\n\n".join(
@@ -2903,6 +2931,12 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                                 )
                             except Exception:
                                 _summary = ""
+                            if _summary and _compare_citations:
+                                # PROTECTED_PARAPHRASE_ENABLED: no sentence copied from a protected source.
+                                _summary, _ = await loop.run_in_executor(None, partial(
+                                    protected_sources.enforce, _summary,
+                                    texts=protected_sources.citation_texts(_compare_citations),
+                                    stage="document_compare"))
 
                             # Chat answer: show only the summary — clause extraction stays server-side
                             _doc_names = " e ".join(f"«{f}»" for f, _ in _doc_extracts)
@@ -3220,12 +3254,10 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                                 + "\n\n" + length_instruction(_doc_settings["response_length"])
                             )
                             if _doc_citations:
-                                _citations_text = "\n".join(
-                                    f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:300]}"
-                                    for c in _doc_citations[:5] for s in (c.get('sections') or [])[:2]
-                                )
-                                _system += (
-                                    "\n\nNormativa di riferimento trovata nel corpus legale "
+                                _citations_text = protected_sources.citation_lines(_doc_citations, 300)
+                                _system = protected_sources.with_rule(
+                                    _system
+                                    + "\n\nNormativa di riferimento trovata nel corpus legale "
                                     "(usa queste fonti per contestualizzare la risposta e cita gli articoli pertinenti):\n"
                                     + _citations_text
                                 )
@@ -3266,6 +3298,12 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                                         "Riprova tra qualche istante."
                                     )
                             else:
+                                if _doc_citations:
+                                    # PROTECTED_PARAPHRASE_ENABLED: no sentence copied from a protected source.
+                                    answer, _ = await loop.run_in_executor(None, partial(
+                                        protected_sources.enforce, answer,
+                                        texts=protected_sources.citation_texts(_doc_citations),
+                                        stage="document_analysis"))
                                 if _was_cut:
                                     answer += _document_cut_note(
                                         _session_lang, _read_chars, len(_text),
