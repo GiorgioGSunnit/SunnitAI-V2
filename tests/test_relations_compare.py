@@ -53,6 +53,7 @@ def test_main_prints_the_totals(tmp_path, capsys):
     text = capsys.readouterr().out
     assert "barca         missing a run (A)" in text
     assert "answer changed for: 1495 cc (gained)" in text
-    assert "A (today)          expected 3: pool 1 (33%), plan 1 (33%), MENTIONED 1 (33%)" in text
+    assert "A (today)           expected 3: pool 1 (33%), plan 1 (33%), MENTIONED 1 (33%)" in text
     assert "B (with relations)  expected 3: pool 2 (67%), plan 2 (67%), MENTIONED 2 (67%)" in text
+    assert "plan 2 articles, 0 not expected; answer names 2, 0 not expected" in text      # B's price line
     assert "relations added 1 articles: 1 of them expected, 1 reached the answer" in text

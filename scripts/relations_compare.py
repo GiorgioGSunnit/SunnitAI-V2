@@ -60,6 +60,10 @@ def trace(record: dict, expected: List[dict], mentions) -> dict:
     added_keys = {label: keys([label]) for label in added}
     expected_keys = set().union(*(w for _, w in wanted_sets(expected))) if expected else set()
     return {"rows": rows, "seconds": record.get("seconds"), "status": record.get("status"),
+            # the price side (29 Oct, the graded check's slots): the plan's size, and what plan and answer hold that
+            # the case does not expect
+            "plan_size": len(plan), "plan_unexpected": len(plan - expected_keys),
+            "named": len(named), "named_unexpected": len(named - expected_keys),
             "added": sorted(added), "added_expected": sorted(l for l, k in added_keys.items() if k & expected_keys),
             "added_in_answer": sorted(l for l, k in added_keys.items() if k & named)}
 
@@ -69,6 +73,7 @@ def main() -> int:
     p.add_argument("--dir", required=True, help="the folder with <case>_A.json and <case>_B.json")
     p.add_argument("--cases", default="tests/eval_narrative_cases.json")
     p.add_argument("--code-folder", default=os.getcwd(), help="the folder holding tests/eval_narrative.py")
+    p.add_argument("--b-label", default="with relations", help="what B adds, for the totals")
     args = p.parse_args()
     ev = eval_module(args.code_folder)
     data = json.load(open(args.cases, encoding="utf-8"))
@@ -76,7 +81,8 @@ def main() -> int:
     expected_of = {c["id"]: c.get("expected") or [] for c in items if isinstance(c, dict)}
     expected_of.update({k: [{"code": "cc", "article": a} for a in v] for k, v in EXTRA.items()})
     names = sorted({m.group(1) for f in os.listdir(args.dir) for m in [re.match(r"(.+)_[AB]\.json$", f)] if m})
-    totals = {cfg: {"pool": 0, "plan": 0, "answer": 0, "n": 0, "seconds": 0.0} for cfg in "AB"}
+    price = ("plan_size", "plan_unexpected", "named", "named_unexpected")
+    totals = {cfg: {"pool": 0, "plan": 0, "answer": 0, "n": 0, "seconds": 0.0, **{k: 0 for k in price}} for cfg in "AB"}
     added_total, added_expected, added_answer = 0, 0, 0
     print("case          expected   pool A>B   plan A>B   ANSWER A>B   related added (expected / in answer)")
     for name in names:
@@ -98,6 +104,8 @@ def main() -> int:
         for cfg in "AB":
             totals[cfg]["n"] += n
             totals[cfg]["seconds"] += float(runs[cfg]["seconds"] or 0)
+            for k in price:
+                totals[cfg][k] += runs[cfg][k]
         b = runs["B"]
         added_total += len(b["added"])
         added_expected += len(b["added_expected"])
@@ -109,12 +117,16 @@ def main() -> int:
         if changed:
             print(f"{'':14}answer changed for: " + ", ".join(f"{l} ({'gained' if g else 'lost'})" for l, g in changed))
     print()
-    for cfg, label in (("A", "A (today)        "), ("B", "B (with relations)")):
+    labels = {"A": "A (today)", "B": f"B ({args.b_label})"}
+    width = max(len(v) for v in labels.values())
+    for cfg in "AB":
         t = totals[cfg]
         n = max(t["n"], 1)
-        print(f"{label}  expected {t['n']}: pool {t['pool']} ({100 * t['pool'] / n:.0f}%), plan {t['plan']} "
+        print(f"{labels[cfg]:{width}}  expected {t['n']}: pool {t['pool']} ({100 * t['pool'] / n:.0f}%), plan {t['plan']} "
               f"({100 * t['plan'] / n:.0f}%), MENTIONED {t['answer']} ({100 * t['answer'] / n:.0f}%); "
               f"time {t['seconds'] / 60:.0f} min")
+        print(f"{'':{width}}  plan {t['plan_size']} articles, {t['plan_unexpected']} not expected; answer names "
+              f"{t['named']}, {t['named_unexpected']} not expected")
     print(f"relations added {added_total} articles: {added_expected} of them expected, {added_answer} reached the answer")
     return 0
 

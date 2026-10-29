@@ -183,6 +183,20 @@ def test_an_evidenced_article_past_the_slots_is_never_removed_as_unchecked(monke
     assert cut["kept_aside"] == [{"article": "7 c.c.", "tier": 2}] and cut["t12_dropped"] == []
 
 
+def test_graded_max_checked_sets_the_slots(monkeypatch, logged):
+    monkeypatch.setattr(dg, "_GRADED_MAX_CHECKED", 2)
+    monkeypatch.setenv("CHECK_PRIORITY_ENABLED", "true")
+    _graded_env(monkeypatch, {})
+    rows = [_row("2", _tier=3, _fused_rank=1), _row("3", _tier=3, _fused_rank=2), _row("4", _tier=3, _fused_rank=3)]
+    monkeypatch.setenv("GRADED_MAX_CHECKED", "3")                   # one more slot: the third is graded, not removed
+    out = {r["_article"][0]: r for r in dg._filter_applicable_articles(CASE, "", rows, {})}
+    assert set(out) == {"2", "3", "4"} and out["4"]["_grade"] == 2
+    assert _events(logged, "case_analysis_applicability")[-1]["max_checked"] == 3
+    for value in ("", "0", "-5", "many"):                            # not a positive number: the default
+        monkeypatch.setenv("GRADED_MAX_CHECKED", value)
+        assert dg._graded_max_checked() == 2
+
+
 def test_untiered_rows_behave_as_before(monkeypatch, logged):
     _graded_env(monkeypatch, {"1062": 0})
     out = dg._filter_applicable_articles(CASE, "", [_row("1062"), _row("1061")], {})

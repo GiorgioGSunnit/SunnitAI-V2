@@ -4164,7 +4164,7 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     # Only the first _APPLICABILITY_MAX_CHECKED, in the pipeline's order: the later ones
     # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
     # A graded call costs about a third of a verdict per article: twice the slots.
-    limit = _GRADED_MAX_CHECKED if graded else _APPLICABILITY_MAX_CHECKED
+    limit = _graded_max_checked() if graded else _APPLICABILITY_MAX_CHECKED
     unchecked = len(texts) - limit
     unchecked_labels = list(texts)[limit:]
     if unchecked > 0:
@@ -4325,7 +4325,21 @@ _GRADED_TEXT_CHARS = 400
 # 45-60 tokens, so a batch of 12 was cut, and a cut array is no list: its 12 articles got no grade.
 _GRADED_TOKENS = (120, 60)
 _GRADED_MAX_CHECKED = 72
+# scripts/plan_loss.py (29 Oct, the 28 Oct runs, 17 civil cases): of the 16 expected articles found but lost before the
+# plan, 11 were past these slots (positions 74-125 of 107-171 candidates), never graded, so never eligible for the
+# plan. GRADED_MAX_CHECKED sets the slots (default _GRADED_MAX_CHECKED) for an A/B; each 36 more cost one round of
+# _APPLICABILITY_WORKERS batches, about 7 seconds.
+GRADED_MAX_CHECKED_ENV = "GRADED_MAX_CHECKED"
 _GRADED_RETRY_BATCH = 6         # the ids still without a grade go once more, this many per call
+
+
+def _graded_max_checked() -> int:
+    """The graded check's slots: GRADED_MAX_CHECKED when a positive number, else _GRADED_MAX_CHECKED."""
+    try:
+        value = int(os.getenv(GRADED_MAX_CHECKED_ENV) or 0)
+    except ValueError:
+        value = 0
+    return value if value > 0 else _GRADED_MAX_CHECKED
 _GRADED_SYSTEM = (
     "Sei un giurista. Ricevi i fatti di un caso, i suoi quesiti e le sue questioni, e alcuni articoli di legge "
     "candidati, ciascuno con un identificativo tra parentesi quadre ([A1], [A2], ...), la sua rubrica e "

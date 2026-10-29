@@ -164,7 +164,8 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 another area, 1 tangential, 2 an issue of the case,
                                 3 its central question) with the issue it serves,
                                 from its rubrica and first 400 characters, for up
-                                to 72 articles (one found by the vote or by two or
+                                to 72 articles (GRADED_MAX_CHECKED sets another
+                                number) (one found by the vote or by two or
                                 more channels: a doubt between 1 and 2 goes to 2);
                                 grade 0 leaves the pool before the prompt. Articles without a grade (skipped, a cut
                                 reply, a failed call) go once more in smaller
