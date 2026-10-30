@@ -1112,7 +1112,29 @@ def analyse_case(rec: dict, ev) -> dict:
     out["grounded"] = _grounded_trace(rec)
     out["fact_issues"] = _fact_issues_trace(rec)
     out["anchored"] = ((rec.get("anchored") or {}).get("totals") or {}) if isinstance(rec.get("anchored"), dict) else {}
+    out["anchored_lost"] = _anchored_lost(rec, K, expected_keys, mentioned_eval | set(mentioned))
     return out
+
+
+ANCHORED_LOSSES = ("removed", "rewritten", "citation dropped")
+
+
+def _anchored_lost(rec: dict, K, expected_keys: set, in_answer: set) -> list:
+    """ANCHORED_WRITING_ENABLED: [(label, how)] for each expected article a removed, rewritten or citation-dropped
+    sentence cited (for a rewrite: not in its new text) that the final answer does not mention."""
+    an = rec.get("anchored") if isinstance(rec.get("anchored"), dict) else {}
+    out = {}
+    for e in an.get("entries") or []:
+        how = e.get("how")
+        if how not in ANCHORED_LOSSES:
+            continue
+        labels = e.get("dropped") if how == "citation dropped" else e.get("cited")
+        new = e.get("new") or ""
+        for label in labels or []:
+            k = K(label)
+            if k in expected_keys and k not in in_answer and not (how == "rewritten" and label.split(" ")[0] in new):
+                out.setdefault(label, how)
+    return sorted(out.items())
 
 
 def _fact_issues_trace(rec: dict) -> dict:
@@ -1491,7 +1513,11 @@ def aggregate(cases: list) -> dict:
         grounded.update(c.get("grounded") or {})
     anchored: Counter = Counter()
     for c in answered:
-        anchored.update(c.get("anchored") or {})
+        anchored.update({k: v for k, v in (c.get("anchored") or {}).items() if isinstance(v, (int, float))})
+    anchored_lost = [(c["id"], label, how) for c in answered for label, how in c.get("anchored_lost") or []]
+    overlap_failures: Counter = Counter()
+    for c in answered:
+        overlap_failures.update((c.get("anchored") or {}).get("overlap_failures") or {})
     fact_issues = {"cases": sum(1 for c in answered if c.get("fact_issues")),
                    "added": sum((c.get("fact_issues") or {}).get("added", 0) for c in answered),
                    "resolved": sum((c.get("fact_issues") or {}).get("resolved", 0) for c in answered),
@@ -1499,6 +1525,7 @@ def aggregate(cases: list) -> dict:
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
             "tiers": tier, "live": live, "invariants": inv, "evidence": evidence, "protected": protected,
             "grounded": dict(grounded), "fact_issues": fact_issues, "anchored": dict(anchored),
+            "anchored_lost": anchored_lost, "overlap_failures": dict(overlap_failures),
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1734,7 +1761,16 @@ def render(cases: list, header: list) -> str:
         L += ["", "## Anchored writing (ANCHORED_WRITING_ENABLED)", "",
               f"Sentences {an.get('sentences', 0)}, anchored {an.get('anchored', 0)}, citing without an anchor "
               f"{an.get('unanchored_citing', 0)}; failing: rewritten from their passages {an.get('rewritten', 0)}, "
-              f"removed {an.get('removed', 0)}."]
+              f"kept (a checked article's {an.get('kept_checked', 0)}, others {an.get('kept_failing', 0)}), "
+              f"removed {an.get('removed', 0)} (case law without a ruling {an.get('removed_case_law', 0)}, no longer "
+              f"a sentence without its citations {an.get('removed_without_citation', 0)}), citations dropped "
+              f"{an.get('citations_dropped', 0)}.",
+              "Overlap of the overlap failures: " + (", ".join(f"{b} {n}" for b, n in sorted(
+                  (agg.get("overlap_failures") or {}).items(), key=lambda x: float(x[0].strip(">=%").split("-")[0])))
+                                                     or "none") + ".",
+              "Expected articles lost with a removed / rewritten / citation-dropped sentence: "
+              + ("; ".join(f"{cid} {label} ({how})" for cid, label, how in agg.get("anchored_lost") or []) or "none")
+              + "."]
     fi = agg.get("fact_issues") or {}
     if fi.get("cases"):
         L += ["", "## Facts -> institutions (FACT_ISSUES_ENABLED)", "",
@@ -2131,9 +2167,13 @@ def compare(run_dirs: list, ev) -> str:
                          f"{(a.get('protected') or {}).get('remaining', 0)}"), lambda a: ""),
              ("protected excerpts shown in sources (target 0)",
               lambda a: (a.get("protected") or {}).get("excerpts_shown", 0), lambda a: ""),
-             ("anchored writing: anchored / failing rewritten / removed",
-              lambda a: (lambda g: f"{g.get('anchored', 0)} / {g.get('rewritten', 0)} / {g.get('removed', 0)}"
+             ("anchored writing: anchored / failing rewritten / kept / removed",
+              lambda a: (lambda g: f"{g.get('anchored', 0)} / {g.get('rewritten', 0)} / "
+                                   f"{g.get('kept_checked', 0) + g.get('kept_failing', 0)} / {g.get('removed', 0)}"
                          if g else "off")(a.get("anchored") or {}), lambda a: ""),
+             ("expected articles lost in removed / rewritten / citation-dropped sentences (anchored writing)",
+              lambda a: (lambda lost: " / ".join(str(sum(h == how for _, _, h in lost)) for how in ANCHORED_LOSSES)
+                         if a.get("anchored") else "off")(a.get("anchored_lost") or []), lambda a: ""),
              ("facts -> institutions: added / resolved to an article",
               lambda a: (lambda f: f"{f['added']} / {f['resolved']}" if f.get("cases") else "off")(
                   a.get("fact_issues") or {}), lambda a: ""),

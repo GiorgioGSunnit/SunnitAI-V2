@@ -79,10 +79,11 @@ def test_check_anchor_citation_and_overlap():
         == "citation not its anchor's"
 
 
-def test_verify_rewrites_once_from_the_passage_else_removes_and_strips_anchors(monkeypatch):
+def test_verify_rewrites_a_checked_article_s_statement_else_keeps_it_and_strips_anchors(monkeypatch):
     events = []
     monkeypatch.setattr(aw, "vlog", lambda event, data=None, **_: events.append((event, data)))
     _, cat = _catalogue([])
+    cat.checked = [("9001", "c.c.")]         # graded 2 or more: never removed
 
     def rewrite(messages, max_tokens, **k):
         human = messages[1].content
@@ -109,13 +110,43 @@ def test_verify_rewrites_once_from_the_passage_else_removes_and_strips_anchors(m
     body = out[0][1]
     assert "[A" not in body and "sessanta giorni dalla scoperta (art. 9001 c.c.)." in body
     assert "a pena di decadenza (art. 9001 c.c.)." in body
-    assert hopeless not in body and nowhere not in body and "Tizio ha scoperto il danno il 3 marzo." in body
+    assert hopeless in body                     # the rewrite still fails: kept, its checked citation with it
+    assert "prescrizione" not in body and "Tizio ha scoperto il danno il 3 marzo." in body
     assert out[1][1] == standard
     log = [d for e, d in events if e == "anchored_writing"][-1]
-    assert log["totals"]["rewritten"] == 1 and log["totals"]["removed"] == 2 and log["totals"]["anchored"] == 2
-    why = {e["sentence"][:12]: (e["why"], e["how"]) for e in log["entries"]}
-    assert why[nowhere[:12]] == ("unanchored citation", "removed")         # no passage of 9999: removed directly
-    assert why[fixable[:12]] == ("overlap", "rewritten")
+    t = log["totals"]
+    assert (t["rewritten"], t["removed"], t["kept_checked"], t["anchored"]) == (1, 1, 1, 2)
+    assert t["removed_without_citation"] == 1 and t["overlap_failures"] == {"0-5%": 1}
+    why = {e["sentence"][:12]: (e["why"], e["action"], e["how"]) for e in log["entries"]}
+    # 9999 is outside the checked material: its citation dropped, "La prescrizione è decennale." no longer reads
+    assert why[nowhere[:12]] == ("unanchored citation", "outside", "removed")
+    assert why[fixable[:12]] == ("overlap", "checked", "rewritten")
+    assert why[hopeless[:12]] == ("unanchored citation", "checked", "kept")
+    assert next(e for e in log["entries"] if e["sentence"] == nowhere)["cited"] == ["9999 c.c."]
+
+
+def test_a_statement_citing_only_outside_the_checked_material_loses_the_citation(monkeypatch):
+    events = []
+    monkeypatch.setattr(aw, "vlog", lambda event, data=None, **_: events.append((event, data)))
+    monkeypatch.setattr(dg, "_chat_json", lambda *a, **k: pytest.fail("no call: nothing to rewrite"))
+    _, cat = _catalogue([])
+    cat.checked = [("9100", "c.p.c.")]
+    sentence = "Il proprietario risponde sempre per colpa grave presunta (art. 9001 c.c.) [A1]."
+    out = aw.verify([("Norme e giurisprudenza", sentence)], cat)
+    assert out[0][1] == "Il proprietario risponde sempre per colpa grave presunta."
+    entry = [d for e, d in events if e == "anchored_writing"][-1]["entries"][0]
+    assert (entry["action"], entry["how"], entry["dropped"]) == ("outside", "citation dropped", ["9001 c.c."])
+
+
+def test_overlap_counts_a_paraphrase_naming_the_rubrica():
+    _, cat = _catalogue([])
+    cat.passages["A1"]["rubrica"] = "Denuncia dei vizi immaginari"
+    paraphrase = "Chi compra deve sempre fare la denuncia dei vizi presto, altrimenti perde ogni tutela [A1]."
+    ratio, rubrica = aw.overlap(paraphrase, [cat.passages["A1"]])
+    assert ratio < aw.MIN_OVERLAP and rubrica
+    assert aw.check(paraphrase, ["A1"], cat) is None
+    assert aw._reads_whole("Il custode risponde del danno.") and not aw._reads_whole("Il custode risponde ai sensi.")
+    assert aw._bucket(0.07) == "5-10%" and aw._bucket(0.3) == ">=25%"
 
 
 def test_sections_get_their_passages_vocabulary_and_rule_only_with_anchors(monkeypatch):
@@ -203,6 +234,7 @@ def test_applications_are_kept_case_law_needs_a_ruling_anchor_of_its_section(mon
     monkeypatch.setattr(aw, "vlog", lambda event, data=None, **_: events.append((event, data)))
     _, cat = _catalogue([])            # A1 = 9001 co. 2 (C2), A2 = the ruling
     cat.section_ids = {"Applicazione al caso": ["A1", "A2"], "Conclusioni": ["A1"]}
+    cat.checked = [("9001", "c.c.")]
     seen = []
 
     def rewrite(messages, max_tokens, **k):
@@ -236,10 +268,11 @@ def test_applications_are_kept_case_law_needs_a_ruling_anchor_of_its_section(mon
     assert "Il guasto si è verificato entro il termine utile (art. 9001 c.c.)." in body       # the call: application
     assert f"natura oggettiva secondo la Cassazione ({REF})." in body
     assert "giurisprudenza ritiene" not in body and "sessanta giorni dalla scoperta (art. 9001 c.c.)." in body
-    assert generic_nothing not in body
+    assert generic_nothing not in body          # case law, no ruling anchor, nothing to restate it from: removed
     assert out[1][1] == ""                      # a ruling passage not given to Conclusioni: removed
     totals = [d for e, d in events if e == "anchored_writing"][-1]["totals"]
     assert totals["citations_dropped"] == 1 and totals["kept_as_application"] == 1 and totals["application"] == 1
+    assert totals["removed_case_law"] == 2
     assert any("[prima il tipo]" in ln for ln in seen) and any("senza giurisprudenza" in ln for ln in seen)
 
 

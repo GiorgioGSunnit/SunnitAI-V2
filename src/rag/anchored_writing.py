@@ -18,19 +18,27 @@ state rules from memory, and the others state rules their texts do not hold. Wit
      in Applicazione al caso, mostly the answer's reasoning on the facts):
      - a statement of the law or of case law in general (classify: "law" / "case_law"; the rewrite call decides the
        sentences code cannot tell) passes when every anchor exists and was given to its section, every article or
-       ruling it cites is its anchors' own, at least MIN_OVERLAP of its content words are in the anchors' passages,
-       and -- case law -- one anchor is a ruling passage of its section; one citing without an anchor fails. A
-       failing statement is rewritten once from its section's passages (case law without a ruling anchor: as the
-       rule of its anchored article) and checked again; still failing, or with nothing to rewrite it from, removed.
+       ruling it cites is its anchors' own, at least MIN_OVERLAP of its content words are in the anchors' passages
+       or RUBRICA_SHARE of an anchored article's rubrica words are in it, and -- case law -- one anchor is a ruling
+       passage of its section; one citing without an anchor fails. A failing statement (aw-on: 165 removals cost
+       MENTIONED 10):
+         citing an article of the checked material (graded 2 or more, named in the case, a tool's or a term's):
+           rewritten from that article's passage and anchored there; the rewrite failing, kept -- never removed;
+         case law without an anchor to a ruling passage of its section: restated as the rule of its anchored
+           article, else removed;
+         every citation outside the checked material: the citations dropped, the sentence kept if it still reads
+           as one, else removed;
+         otherwise rewritten once from its section's passages, else kept.
      - an application of a rule to this case's facts ("application": a party or a fact of the case is its subject)
-       needs no anchor and is never removed; an article it cites that its section's material lacks loses only the
-       citation (drop_citations).
+       needs no anchor and is never removed; an article it cites that neither its section's material nor the
+       checked material holds loses only the citation (drop_citations).
      Then every anchor is stripped.
   4. The procedural section gets its stage's procedure vocabulary (practical_checklist.PROCEDURE_VOCABULARY) and the
      rule to name no procedural institution outside it.
 
 Logged as anchored_writing: the passages, and per section the sentences anchored / citing without an anchor /
-failed (by reason) / rewritten / removed. Off, nothing changes.
+failed (by reason, the overlap failures by their overlap) / rewritten / kept / removed, each entry with the
+articles it cited (diagnose_long: the expected ones lost with it). Off, nothing changes.
 """
 
 import logging
@@ -46,7 +54,9 @@ from .verbose_logger import vlog
 logger = logging.getLogger(__name__)
 
 FLAG = "ANCHORED_WRITING_ENABLED"
-MIN_OVERLAP = 0.25        # share of a sentence's content words that must be in its anchors' passages
+MIN_OVERLAP = 0.15        # share of a sentence's content words that must be in its anchors' passages, or
+RUBRICA_SHARE = 0.5       # the share of an anchored article's rubrica words the sentence must hold instead
+OVERLAP_BUCKETS = (0.05, 0.10, 0.15, 0.25)   # the logged distribution of the overlap failures
 PASSAGE_CHARS = 900
 REWRITE_MARK = "FRASI DA RISCRIVERE:"   # fetch_audit cuts a rewrite call's material here (as grounded_review's)
 
@@ -156,6 +166,7 @@ class Catalogue:
         self.plan_ids: List[str] = []
         self.procedural_ids: List[str] = []
         self.section_ids: Dict[str, List[str]] = {}      # the passages each section was given (its block)
+        self.checked: List[tuple] = []     # the checked material's articles (grounded_review.strict_refs)
         self._by_key: Dict[tuple, str] = {}
 
     def add(self, key: tuple, kind: str, label: str, text: str, **extra) -> Optional[str]:
@@ -188,6 +199,11 @@ class Catalogue:
         return [{"id": p["id"], "label": p["label"], "chars": len(p["text"])} for p in self.passages.values()]
 
 
+def _rubrica(row: Dict[str, Any]) -> str:
+    s = row.get("s") or {}
+    return " ".join(str(s.get("titolo_articolo") or s.get("title") or "").split())
+
+
 def _article_passage(cat: Catalogue, row: Dict[str, Any], comma: Optional[int], focus: str) -> Optional[str]:
     from . import plan_then_write as ptw
     ref = row["_article"]
@@ -196,7 +212,8 @@ def _article_passage(cat: Catalogue, row: Dict[str, Any], comma: Optional[int], 
         return None
     k = comma - 1 if comma and numbered and 1 <= comma <= len(commi) else best_comma(commi, focus)
     label = f"art. {ref[0]} {ptw._code_key(ref[1])}" + (f", co. {k + 1}" if numbered and len(commi) > 1 else "")
-    return cat.add(("article", ref, k), "article", label, commi[k], ref=ref, comma=k + 1 if numbered else None)
+    return cat.add(("article", ref, k), "article", label, commi[k], ref=ref, comma=k + 1 if numbered else None,
+                   rubrica=_rubrica(row))
 
 
 def build(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]],
@@ -239,7 +256,7 @@ def build(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], references: 
         if row is not None:
             commi, _ = _commi(row)
             pid = cat.add(("procedural", ref), "article", f"art. {ref[0]} {ptw._code_key(ref[1])}",
-                          " ".join(commi) or _row_text(row), ref=ref)
+                          " ".join(commi) or _row_text(row), ref=ref, rubrica=_rubrica(row))
             if pid:
                 cat.procedural_ids.append(pid)
     for term in terms:
@@ -315,13 +332,29 @@ def classify(sentence: str, case_text: str = "", names: Optional[set] = None) ->
 
 # --- the check ------------------------------------------------------------------------------------------------------
 
+def overlap(sentence: str, passages: Sequence[Dict[str, Any]]) -> Tuple[float, bool]:
+    """(the share of the sentence's content words in the passages, whether it holds RUBRICA_SHARE of an article
+    passage's rubrica words): a paraphrase of a comma shares few of its words but names its institution."""
+    words = stems(strip_anchors(sentence))         # numbers and code sigle carry no stem
+    if not words:
+        return 1.0, True
+    ratio = len(words & stems(" ".join(p["text"] for p in passages))) / len(words)
+    rubrica = False
+    for p in passages:
+        r = stems(p.get("rubrica") or "")
+        if r and len(r & words) / len(r) >= RUBRICA_SHARE:
+            rubrica = True
+    return ratio, rubrica
+
+
 def check(sentence: str, ids: Sequence[str], cat: Catalogue, documents: Optional[List[Dict[str, Any]]] = None,
           known: Optional[set] = None, allowed: Optional[Sequence[str]] = None,
           case_law: bool = False) -> Optional[str]:
     """Why a statement of the law fails, or None: "unknown anchor", "anchor not given to the section" (not among
     `allowed`, the section's own passages), "case law without a ruling anchor" (case_law and no ruling passage among
     its anchors), "citation not its anchor's", "overlap" (fewer than MIN_OVERLAP of its content words in its anchors'
-    passages), "unanchored citation" (no anchor, cites an article or a ruling)."""
+    passages and less than RUBRICA_SHARE of an anchored article's rubrica words: overlap()), "unanchored citation"
+    (no anchor, cites an article or a ruling)."""
     from . import plan_then_write as ptw
     body = strip_anchors(sentence)
     refs = [r for _, _, rs in ptw._citations(body, documents or [], known) for r in rs]
@@ -343,11 +376,17 @@ def check(sentence: str, ids: Sequence[str], cat: Catalogue, documents: Optional
     for number in rulings:
         if not any(p.get("ruling") and number in _RULING_NUMBER_RE.findall(p["ruling"]) for p in passages):
             return "citation not its anchor's"
-    words = stems(body)            # numbers and code sigle carry no stem
-    if not words:
-        return None
-    shared = words & stems(" ".join(p["text"] for p in passages))
-    return "overlap" if len(shared) / len(words) < MIN_OVERLAP else None
+    ratio, rubrica = overlap(body, passages)
+    return "overlap" if ratio < MIN_OVERLAP and not rubrica else None
+
+
+def _bucket(ratio: float) -> str:
+    low = 0.0
+    for high in OVERLAP_BUCKETS:
+        if ratio < high:
+            return f"{round(low * 100)}-{round(high * 100)}%"
+        low = high
+    return f">={round(low * 100)}%"
 
 
 # --- dropping a citation only (an application citing an article its section lacks) ---------------------------------
@@ -402,7 +441,7 @@ def _anchor_rewrite(cat: Catalogue, items: List[Tuple[str, List[str], str]]) -> 
         raw = dg._chat_json([SystemMessage(content=REWRITE_SYSTEM), HumanMessage(content=human)],
                             max_tokens=200 + 150 * len(items), temperature=0)
     except Exception as exc:
-        logger.warning("anchored writing: rewrite failed, the failing statements are removed: %s", exc)
+        logger.warning("anchored writing: rewrite failed, the failing statements kept or removed by their rule: %s", exc)
         return {}
     out: Dict[int, Dict[str, str]] = {}
     for item in raw if isinstance(raw, list) else []:
@@ -434,17 +473,72 @@ def _source_ids(sentence: str, ids: List[str], cat: Catalogue, documents, known,
 
 
 # --- the verification -------------------------------------------------------------------------------------------------
+# aw-on (fi-off vs aw-on: MENTIONED 71 -> 61, 165 statements removed): the removals took expected articles with them.
+# What a failing statement becomes:
+#   cites an article of the checked material (Catalogue.checked: graded 2 or more, named in the case, a tool's or a
+#     term's)           rewritten from THAT article's passage and anchored there; the rewrite failing, kept as it is --
+#                       never removed, its citation never dropped;
+#   case law without a ruling passage of its section among its anchors   restated as the rule of its anchored
+#                       article, else removed;
+#   every citation outside the checked material     the citations dropped; the sentence kept if it still reads as one
+#                                                   (_reads_whole), else removed;
+#   anything else       rewritten from its passages, else kept.
+# An application never loses the citation of a checked article either.
+
+_DANGLING_END_RE = re.compile(
+    r"(?:\b(?:di|del|della|dello|dei|degli|delle|dell['’]|a|al|alla|ai|agli|all['’]|da|dal|dalla|in|nel|nella|con|per|"
+    r"su|tra|fra|e|o|che|ex|ai\s+sensi|a\s+norma|in\s+base|secondo|previsto|prevista|cui)\s*|[,(:])$", re.IGNORECASE)
+
+
+def _reads_whole(sentence: str) -> bool:
+    """A sentence left after its citations went still reads as one: three content words at least, not ending on a
+    preposition, a conjunction or an open parenthesis."""
+    body = sentence.strip().rstrip(".!?;:").strip()
+    return len(stems(body)) >= 3 and not _DANGLING_END_RE.search(body)
+
+
+def _is_checked(ref: tuple, checked: Sequence[tuple]) -> bool:
+    from . import plan_then_write as ptw
+    return any(ptw._same_ref(ref, c) for c in checked)
+
+
+def _checked_ids(refs: Sequence[tuple], cat: Catalogue, rows: Dict[tuple, Dict[str, Any]], focus: str,
+                 allowed: Optional[Sequence[str]]) -> List[str]:
+    """The passages of the checked articles a statement cites: its section's first, else the catalogue's, else one
+    made now from the article's row (the comma closest to the sentence)."""
+    from . import plan_then_write as ptw
+    out: List[str] = []
+    for ref in refs:
+        mine = cat.of_ref(ref)
+        given = [i for i in mine if allowed is None or i in allowed]
+        if given or mine:
+            out += given or mine
+            continue
+        row = rows.get(ref) or next((r for k, r in rows.items() if ptw._same_ref(k, ref)), None)
+        pid = _article_passage(cat, row, None, focus) if row is not None else None
+        if pid:
+            out.append(pid)
+    return list(dict.fromkeys(out))
+
+
+def _label(ref: tuple) -> str:
+    return f"{ref[0]} {ref[1]}"
+
 
 def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[List[Dict[str, Any]]] = None,
            article_rows: Optional[List[Dict[str, Any]]] = None, exempt: Sequence[str] = (),
            case_text: str = "", materials: Optional[Dict[str, str]] = None) -> List[Tuple[str, str]]:
-    """The sections with every statement of the law or case law checked against its anchors (check), a failing one
-    rewritten once from its passages (case law: as the rule of its article) and checked again, else removed; every
-    application to the facts kept, an article it cites that its section's material (`materials`, by title) lacks
-    losing only its citation; every anchor stripped. Sentences of `exempt` texts (the standard blocks written in code)
-    are not checked."""
+    """The sections with every statement of the law or case law checked against its anchors (check) and a failing
+    one treated by what it cites (the rules above); every application to the facts kept, an article it cites that
+    its section's material (`materials`, by title) lacks -- and that is not checked -- losing only its citation; every
+    anchor stripped. Sentences of `exempt` texts (the standard blocks written in code) are not checked."""
     from . import plan_then_write as ptw
     known = {r["_article"] for r in article_rows or [] if r.get("_article")}
+    rows: Dict[tuple, Dict[str, Any]] = {}
+    for row in article_rows or []:
+        if row.get("_article") and row["_article"] not in rows:
+            rows[row["_article"]] = row
+    checked = list(cat.checked or [])
     exempt_text = " ".join(" ".join(t.split()) for t in exempt)
     names = _names(case_text)
     plans = []
@@ -452,10 +546,11 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
         allowed = cat.section_ids.get(title)
         material_refs = ptw._material_refs((materials or {}).get(title, ""), documents or []) \
             if materials and title in materials else None
-        work = []           # (start, end, sentence, kind, why, src)
+        work = []           # (start, end, sentence, kind, why, action, src, refs, ratio)
         stats = {"section": title, "sentences": 0, "anchored": 0, "law": 0, "case_law": 0, "application": 0,
-                 "unclear": 0, "unanchored_citing": 0, "failed": {}, "rewritten": 0, "removed": 0,
-                 "citations_dropped": 0, "kept_as_application": 0}
+                 "unclear": 0, "unanchored_citing": 0, "failed": {}, "overlap_failures": {}, "rewritten": 0,
+                 "removed": 0, "removed_case_law": 0, "removed_without_citation": 0, "kept_checked": 0,
+                 "kept_failing": 0, "citations_dropped": 0, "kept_as_application": 0}
         for s, e in ptw._sentence_spans(text):
             sentence = text[s:e]
             stats["sentences"] += 1
@@ -465,20 +560,44 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
             stats["anchored"] += bool(ids)
             kind = classify(sentence, case_text, names)
             stats[kind or "unclear"] += 1
+            body = strip_anchors(sentence)
+            refs = [r for _, _, rs in ptw._citations(body, documents or [], known) for r in rs]
             if kind == "application":
-                work.append((s, e, sentence, kind, None, []))
+                work.append((s, e, sentence, kind, None, "application", [], refs, None))
                 continue
             why = check(sentence, ids, cat, documents, known, allowed, case_law=kind == "case_law")
             stats["unanchored_citing"] += why == "unanchored citation"
-            if why:
-                stats["failed"][why] = stats["failed"].get(why, 0) + 1
-                src = _source_ids(sentence, ids, cat, documents, known, allowed, articles_only=kind == "case_law")
-                work.append((s, e, sentence, kind, why, src))
+            if not why:
+                continue
+            stats["failed"][why] = stats["failed"].get(why, 0) + 1
+            ratio = None
+            if why == "overlap":
+                ratio = overlap(body, [cat.passages[i] for i in ids])[0]
+                b = _bucket(ratio)
+                stats["overlap_failures"][b] = stats["overlap_failures"].get(b, 0) + 1
+            on_checked = [r for r in refs if _is_checked(r, checked)]
+            if on_checked:
+                action = "checked"
+                src = _checked_ids(on_checked, cat, rows, body, allowed)
+            elif kind == "case_law" and not [i for i in cat.rulings(ids) if allowed is None or i in allowed]:
+                action = "case_law"
+                src = _source_ids(sentence, ids, cat, documents, known, allowed, articles_only=True)
+            elif refs:
+                action, src = "outside", []
+            else:
+                action = "rewrite"
+                src = _source_ids(sentence, ids, cat, documents, known, allowed)
+            work.append((s, e, sentence, kind, why, action, src, refs, ratio))
         plans.append((title, text, work, stats, material_refs))
 
+    def asks(item) -> bool:
+        return bool(item[4]) and item[5] in ("checked", "case_law", "rewrite") and bool(item[6])
+
     def rewrite(plan):
-        items = [(strip_anchors(sentence).strip(), src, kind or "classify")
-                 for _, _, sentence, kind, why, src in plan[2] if why and (src or kind is None)]
+        items = [(strip_anchors(w[2]).strip(), w[6],
+                  "case_law" if w[3] == "case_law" and w[5] in ("case_law", "checked")
+                  else "classify" if w[3] is None else "law")
+                 for w in plan[2] if asks(w)]
         return _anchor_rewrite(cat, items) if items else {}
     with ThreadPoolExecutor(max_workers=max(1, min(6, len(plans)))) as pool:
         replies = list(pool.map(rewrite, plans))
@@ -487,39 +606,64 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
         changes: Dict[Tuple[int, int], Optional[str]] = {}
         n = 0
         allowed = cat.section_ids.get(title)
-        for s, e, sentence, kind, why, src in work:
+        for w in work:
+            s, e, sentence, kind, why, action, src, refs, ratio = w
+            body = strip_anchors(sentence)
             got = {}
-            if why and (src or kind is None):
+            if asks(w):
                 got = reply.get(n) or {}
                 n += 1
-            if kind == "application" or (kind is None and got.get("tipo") == "applicazione"):
-                # the answer's reasoning: kept; a citation its section's material lacks goes alone
-                body = strip_anchors(sentence)
+            entry = {"section": title, "kind": kind or "law (by the call)", "why": why, "action": action,
+                     "sentence": body[:400], "cited": [_label(r) for r in refs],
+                     **({"overlap": round(ratio, 3)} if ratio is not None else {})}
+            if action == "application" or (kind is None and got.get("tipo") == "applicazione"):
+                # the answer's reasoning: kept; a citation neither its section's material nor the checked one holds
+                # goes alone
                 if material_refs is not None:
-                    cited = [r for _, _, rs in ptw._citations(body, documents or [], known) for r in rs]
-                    drop = [r for r in cited if not any(ptw._same_ref(r, m) for m in material_refs)]
+                    drop = [r for r in refs if not any(ptw._same_ref(r, m) for m in material_refs)
+                            and not _is_checked(r, checked)]
                     if drop:
                         new = drop_citations(body, drop, documents, known)
                         changes[(s, e)] = new
                         stats["citations_dropped"] += len(drop)
-                        entries.append({"section": title, "kind": "application", "how": "citation dropped",
-                                        "sentence": body[:400], "new": new[:400],
-                                        "dropped": [f"{r[0]} {r[1]}" for r in drop]})
+                        entries.append({**entry, "kind": "application", "how": "citation dropped", "new": new[:400],
+                                        "dropped": [_label(r) for r in drop]})
                 if kind is None:
                     stats["kept_as_application"] += 1
                 continue
+            if action == "outside":
+                new = drop_citations(body, refs, documents, known)
+                stats["citations_dropped"] += len(refs)
+                if _reads_whole(new):
+                    how = "citation dropped"
+                    if sentence.rstrip()[-1:] in ".!?;:" and new[-1:] not in ".!?;:":
+                        new += sentence.rstrip()[-1]
+                else:
+                    how, new = "removed", None
+                    stats["removed"] += 1
+                    stats["removed_without_citation"] += 1
+                changes[(s, e)] = new
+                entries.append({**entry, "how": how, "dropped": entry["cited"], **({"new": new[:400]} if new else {})})
+                continue
             new = got.get("frase") or None
-            if new and (check(strip_anchors(new), src, cat, documents, known, allowed) or
-                        (kind == "case_law" and _CASE_LAW_RE.search(new))):
+            if new and (check(strip_anchors(new), src, cat, documents, known, None if action == "checked" else allowed)
+                        or (kind == "case_law" and action in ("case_law", "checked") and _CASE_LAW_RE.search(new))):
                 new = None
-            how = "rewritten" if new else "removed"
-            stats[how] += 1
-            if new and sentence.rstrip()[-1:] in ".!?;:" and new[-1:] not in ".!?;:":
-                new += sentence.rstrip()[-1]
-            changes[(s, e)] = new
-            entries.append({"section": title, "kind": kind or "law (by the call)", "why": why, "how": how,
-                            "sentence": strip_anchors(sentence)[:400], "from": src,
-                            **({"new": new[:400]} if new else {})})
+            if new:
+                how = "rewritten"
+                stats["rewritten"] += 1
+                if sentence.rstrip()[-1:] in ".!?;:" and new[-1:] not in ".!?;:":
+                    new += sentence.rstrip()[-1]
+                changes[(s, e)] = new
+            elif action == "case_law":
+                how = "removed"
+                stats["removed"] += 1
+                stats["removed_case_law"] += 1
+                changes[(s, e)] = None
+            else:        # a checked article's statement, or one with nothing to remove it for: kept as written
+                how = "kept"
+                stats["kept_checked" if action == "checked" else "kept_failing"] += 1
+            entries.append({**entry, "how": how, "from": src, **({"new": new[:400]} if new else {})})
         if changes:
             from . import grounded_review
             text = grounded_review.apply(text, changes)
@@ -528,7 +672,12 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
         out.append((title, strip_anchors(text).strip() or strip_anchors(text)))
         stats_out.append(stats)
     keys = ("sentences", "anchored", "law", "case_law", "application", "unclear", "unanchored_citing", "rewritten",
-            "removed", "citations_dropped", "kept_as_application")
-    vlog("anchored_writing", {"passages": cat.log(), "sections": stats_out, "entries": entries,
-                              "totals": {k: sum(st[k] for st in stats_out) for k in keys}})
+            "removed", "removed_case_law", "removed_without_citation", "kept_checked", "kept_failing",
+            "citations_dropped", "kept_as_application")
+    totals: Dict[str, Any] = {k: sum(st[k] for st in stats_out) for k in keys}
+    totals["overlap_failures"] = {}
+    for st in stats_out:
+        for b, v in st["overlap_failures"].items():
+            totals["overlap_failures"][b] = totals["overlap_failures"].get(b, 0) + v
+    vlog("anchored_writing", {"passages": cat.log(), "sections": stats_out, "entries": entries, "totals": totals})
     return out

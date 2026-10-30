@@ -475,3 +475,35 @@ def test_evidence_rows_and_repeats_in_compare():
     report = dl.write_report(dirs[1], ev)
     body = open(report, encoding="utf-8").read()
     assert "## Repetitions" in body and "## Evidence tiers" in body and "1 cases run" in body
+
+
+def test_expected_articles_lost_with_anchored_writing_s_removed_and_rewritten_sentences():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    new_rec["anchored"] = {"totals": {"sentences": 9, "anchored": 4, "rewritten": 1, "removed": 1, "kept_checked": 2,
+                                      "overlap_failures": {"0-5%": 1}},
+                           "entries": [{"how": "removed", "cited": ["56 c.p."]},
+                                       {"how": "rewritten", "cited": ["61 c.p."], "new": "Ora l'art. 61 c.p. vale."},
+                                       {"how": "rewritten", "cited": ["2043 c.c."], "new": "La regola generale."},
+                                       {"how": "citation dropped", "cited": ["43 c.p.", "584 c.p."],
+                                        "dropped": ["43 c.p."]},
+                                       {"how": "kept", "cited": ["56 c.p."]}]}
+    case = dl.analyse_case(new_rec, ev)
+    # 61 is still in the rewrite, 584 was not dropped and is mentioned anyway
+    assert case["anchored_lost"] == [("2043 c.c.", "rewritten"), ("43 c.p.", "citation dropped"),
+                                     ("56 c.p.", "removed")]
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("live", old_rec), ("candidate", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs, ev)
+    assert "| anchored writing: anchored / failing rewritten / kept / removed | off | 4 / 1 / 2 / 1 |" in text
+    assert "| expected articles lost in removed / rewritten / citation-dropped sentences (anchored writing) | off | " \
+           "1 / 1 / 1 |" in text

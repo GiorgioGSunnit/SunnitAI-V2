@@ -501,12 +501,16 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 quesiti and Conclusioni too, which had only the plan -- gets those passages, the
                                 procedural section its own and its stage's procedure vocabulary; each rule-sentence
                                 ends with its anchor. After the sections, code checks each: the anchor exists, the
-                                article or ruling cited is the anchor's, content-word overlap >= 0.25; a failing
-                                sentence is rewritten once from its passages, else removed; anchors stripped.
-                                Only statements of the law or of case law are checked (case law: anchored to a
-                                ruling passage of its section); an application of a rule to the case's facts is
-                                never removed, an article it cites outside its section's material loses only the
-                                citation. Logged as anchored_writing. See src/rag/anchored_writing.py.
+                                article or ruling cited is the anchor's, content-word overlap >= 0.15 or half the
+                                anchored article's rubrica words. Only statements of the law or of case law are
+                                checked; a failing one citing a checked article (graded >= 2, named, a tool's or
+                                a term's) is rewritten from that article's passage, else kept -- never removed;
+                                case law without a ruling anchor of its section is restated as its article's rule,
+                                else removed; one whose every citation is outside the checked material loses the
+                                citations (removed only if no sentence is left); the rest rewritten, else kept.
+                                An application of a rule to the case's facts is never removed, an article it cites
+                                outside its section's and the checked material loses only the citation. Anchors
+                                stripped. Logged as anchored_writing. See src/rag/anchored_writing.py.
   ROLE_BLOCKS_ENABLED          false (30 Oct, fetch_audit's role mechanism on run 0812): the criminal profile of a
                                 personal harm and the criminal postures' checks follow the client's side -- for
                                 the accused, defences, procedibility, the offended party as parte civile against

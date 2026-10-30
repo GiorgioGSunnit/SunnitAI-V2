@@ -2261,7 +2261,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     sections = _after_checks(plan, sections, jobs, system, questions or [])
     if anchors is not None:
         # ANCHORED_WRITING_ENABLED: each rule-sentence checked against its anchors' passages; failing, rewritten once
-        # from them, else removed; the anchors stripped (anchored_writing.py).
+        # from them, kept or removed by what it cites; the anchors stripped (anchored_writing.py).
         t5 = time.time()
         try:
             verified = anchored_writing.verify(sections, anchors, documents or [], article_rows or [],
@@ -2535,6 +2535,8 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     anchors = anchor_catalogue(plan, analysis, article_rows, references)
+    if anchors is not None:     # a failing statement citing one of these is rewritten from it or kept, never removed
+        anchors.checked = grounded_review.strict_refs(article_rows, named, analysis)
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
                                                  principles, _keep_all(), anchors), lang, named, documents,
                               article_rows, case, coverage=use_of, standard=standard_blocks(analysis),
