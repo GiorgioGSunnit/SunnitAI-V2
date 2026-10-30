@@ -104,7 +104,7 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "STRICT_ARTICLES_ENABLED", "RULING_FIT_ENABLED", "REVIEW_FIXES_ENABLED", "ROUTER_ENABLED",
          "HYBRID_NARRATIVE_ENABLED", "PRIMARY_FIRST_ENABLED", "PROTECTED_PARAPHRASE_ENABLED",
          "COMMA_MATERIAL_ENABLED", "GROUNDED_REVIEW_ENABLED", "ROLE_BLOCKS_ENABLED",
-         "GROUNDED_REVIEW_STRICT_ENABLED", "FACT_ISSUES_ENABLED"]
+         "GROUNDED_REVIEW_STRICT_ENABLED", "FACT_ISSUES_ENABLED", "ANCHORED_WRITING_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -418,7 +418,7 @@ _LLM_STAGES = {
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "_grounded_judge": "grounded_judge", "_grounded_rewrite": "grounded_rewrite",
-    "fact_issues": "fact_issues",
+    "fact_issues": "fact_issues", "_anchor_rewrite": "anchor_rewrite",
     "run_case_analysis_pipeline": "draft",
 }
 _SKIP_FRAMES = {"_chat", "_chat_json", "call_chat"}
@@ -784,6 +784,7 @@ def run_child(spec_path: str, env_path: str) -> None:
               "invariants": last("case_analysis_invariants"),
               "grounded_review": last("grounded_review"),
               "fact_issues": last("case_analysis_fact_issues"),
+              "anchored": last("anchored_writing"),
               "fact_institutions": [d for e, d, _ in events if e == "case_analysis_fact_institution"],
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
@@ -1110,6 +1111,7 @@ def analyse_case(rec: dict, ev) -> dict:
     out["protected"] = _protected_trace(rec)
     out["grounded"] = _grounded_trace(rec)
     out["fact_issues"] = _fact_issues_trace(rec)
+    out["anchored"] = ((rec.get("anchored") or {}).get("totals") or {}) if isinstance(rec.get("anchored"), dict) else {}
     return out
 
 
@@ -1487,13 +1489,16 @@ def aggregate(cases: list) -> dict:
     grounded: Counter = Counter()
     for c in answered:
         grounded.update(c.get("grounded") or {})
+    anchored: Counter = Counter()
+    for c in answered:
+        anchored.update(c.get("anchored") or {})
     fact_issues = {"cases": sum(1 for c in answered if c.get("fact_issues")),
                    "added": sum((c.get("fact_issues") or {}).get("added", 0) for c in answered),
                    "resolved": sum((c.get("fact_issues") or {}).get("resolved", 0) for c in answered),
                    "articles": sum(len((c.get("fact_issues") or {}).get("articles") or []) for c in answered)}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
             "tiers": tier, "live": live, "invariants": inv, "evidence": evidence, "protected": protected,
-            "grounded": dict(grounded), "fact_issues": fact_issues,
+            "grounded": dict(grounded), "fact_issues": fact_issues, "anchored": dict(anchored),
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1724,6 +1729,12 @@ def render(cases: list, header: list) -> str:
           + ("; ".join(f"{cid} {p.get('found', 0)}/{p.get('rewritten', 0)}/{p.get('dropped', 0)}/"
                        f"{p.get('remaining', 0)}; {p.get('excerpts_shown', 0)}" for cid, p in pr["cases"]) or "none")
           + "."]
+    an = agg.get("anchored") or {}
+    if an:
+        L += ["", "## Anchored writing (ANCHORED_WRITING_ENABLED)", "",
+              f"Sentences {an.get('sentences', 0)}, anchored {an.get('anchored', 0)}, citing without an anchor "
+              f"{an.get('unanchored_citing', 0)}; failing: rewritten from their passages {an.get('rewritten', 0)}, "
+              f"removed {an.get('removed', 0)}."]
     fi = agg.get("fact_issues") or {}
     if fi.get("cases"):
         L += ["", "## Facts -> institutions (FACT_ISSUES_ENABLED)", "",
@@ -2120,6 +2131,9 @@ def compare(run_dirs: list, ev) -> str:
                          f"{(a.get('protected') or {}).get('remaining', 0)}"), lambda a: ""),
              ("protected excerpts shown in sources (target 0)",
               lambda a: (a.get("protected") or {}).get("excerpts_shown", 0), lambda a: ""),
+             ("anchored writing: anchored / failing rewritten / removed",
+              lambda a: (lambda g: f"{g.get('anchored', 0)} / {g.get('rewritten', 0)} / {g.get('removed', 0)}"
+                         if g else "off")(a.get("anchored") or {}), lambda a: ""),
              ("facts -> institutions: added / resolved to an article",
               lambda a: (lambda f: f"{f['added']} / {f['resolved']}" if f.get("cases") else "off")(
                   a.get("fact_issues") or {}), lambda a: ""),

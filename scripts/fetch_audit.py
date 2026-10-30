@@ -88,7 +88,7 @@ TRIGGERS = ("gravita_aggravante", "date_termini", "storia_proprieta", "ruolo_qua
 TRIGGER_NAMES = {"gravita_aggravante": "gravity / aggravation", "date_termini": "dates / terms",
                  "storia_proprieta": "ownership / possession history", "ruolo_qualita": "role / quality of a party",
                  "importo_valore": "amount / value", "fase_procedimento": "procedure stage", "altro": "other"}
-WRITER_STAGE_RE = re.compile(r"^(?:section_.+|draft|grounded_rewrite)$")
+WRITER_STAGE_RE = re.compile(r"^(?:section_.+|draft|grounded_rewrite|anchor_rewrite)$")
 # GROUNDED_REVIEW_ENABLED's rewrite call: its material is what precedes the sentences it was asked to rewrite.
 REWRITE_MARK = "\n\nFRASI DA RISCRIVERE:"
 MIN_WORDS = 6
@@ -461,7 +461,7 @@ def writer_calls(case: Dict[str, Any]) -> List[Dict[str, Any]]:
         out = []
         for c in calls:
             material = f"{c['system']}\n\n{c['user']}"
-            if c["stage"] == "grounded_rewrite":
+            if c["stage"] in ("grounded_rewrite", "anchor_rewrite"):
                 material = material.split(REWRITE_MARK, 1)[0]
             elif fetched.get(c["stage"]):
                 material = f"{fetched[c['stage']]}\n\n{material}"
@@ -512,11 +512,44 @@ def sentence_map(case: Dict[str, Any]) -> List[Dict[str, Any]]:
     calls = writer_calls(case)
     union = "\n\n".join(c["material"] for c in calls)
     out = []
-    for s in answer_sentences(case["answer"]):
-        i = assign(s, calls) if calls else None
-        out.append({"sentence": s, "call": i, "stage": calls[i]["stage"] if i is not None else "code",
-                    "material": calls[i]["material"] if i is not None else union})
+    for section, body in answer_sections(case["answer"]):
+        for s in answer_sentences(body):
+            i = assign(s, calls) if calls else None
+            out.append({"sentence": s, "call": i, "stage": calls[i]["stage"] if i is not None else "code",
+                        "material": calls[i]["material"] if i is not None else union, "section": section})
     return out
+
+
+# The parere's sections (plan_then_write.SECTION_TITLES), as the answer heads them ("**3. Norme e giurisprudenza**").
+SECTION_NAMES = ("Risposte ai quesiti", "Inquadramento e questione centrale", "Norme e giurisprudenza",
+                 "Applicazione al caso", "Profili processuali e termini", "Conclusioni")
+_SECTION_HEAD_RE = re.compile(r"(?m)^\s*\*\*\s*\d+\.\s*([^*\n]+?)\s*\*\*\s*$")
+
+
+def answer_sections(answer: str) -> List[Tuple[str, str]]:
+    """(section name, its text) in order: a known section by its heading, any other text before or between them
+    under "(other)" -- the whole answer of a one-call parere or an eval answer."""
+    marks = list(_SECTION_HEAD_RE.finditer(answer or ""))
+    out = []
+    if not marks or marks[0].start() > 0:
+        head = (answer or "")[: marks[0].start() if marks else None]
+        if head.strip():
+            out.append(("(other)", head))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(answer)
+        name = next((n for n in SECTION_NAMES if fold(n) == fold(m.group(1))), "(other)")
+        out.append((name, answer[m.end():end]))
+    return out
+
+
+def section_of(item: Dict[str, Any]) -> str:
+    """A judged sentence's section: its own, else (an audit.json made before sections were kept) from the writer
+    call's stage, else "(unassigned)"."""
+    if item.get("section"):
+        return item["section"]
+    stage = str(item.get("stage") or "")
+    return next((n for n in SECTION_NAMES if stage == "section_" + re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_")[:40]),
+                "(unassigned)")
 
 
 # =================================================================================================
@@ -742,7 +775,8 @@ def audit_provenance(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: 
         verdict = (str(v.get("esito") or "").strip().lower() or None) if kind and kind != "altro" else None
         if verdict not in (None, "supportata", "assente", "contraddetta"):
             verdict = None
-        sentences_out.append({"sentence": item["sentence"], "stage": item["stage"], "kind": kind,
+        sentences_out.append({"sentence": item["sentence"], "stage": item["stage"], "section": item.get("section"),
+                              "kind": kind,
                               "verdict": verdict, "evidence": v.get("prova") or ""})
     rule = [s for s in sentences_out if s["kind"] and s["kind"] != "altro"]
     counts = Counter(s["verdict"] or "unjudged" for s in rule)
@@ -1122,6 +1156,56 @@ def grounded_totals(cases: List[Dict[str, Any]]) -> Dict[str, int]:
     return dict(out)
 
 
+KINDS = ("regola", "istituto", "procedura", "massima")
+KIND_NAMES = {"regola": "rule", "istituto": "institution", "procedura": "procedure", "massima": "holding"}
+
+
+def provenance_by_section(cases: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, int]]]:
+    """{run: {section: {kind: rule-sentences, kind + "_assente": not in material, ...}}} over the judged
+    rule-sentences (proxy answers included, under their own section names)."""
+    out: Dict[str, Dict[str, Dict[str, int]]] = {}
+    for c in cases:
+        for x in c["provenance"]["sentences"]:
+            kind = x.get("kind")
+            if kind not in KINDS:
+                continue
+            cell = out.setdefault(c["run"], {}).setdefault(section_of(x), Counter())
+            cell[kind] += 1
+            cell["all"] += 1
+            if x.get("verdict") == "assente":
+                cell[f"{kind}_assente"] += 1
+                cell["all_assente"] += 1
+            if x.get("verdict") == "contraddetta":
+                cell["all_contraddetta"] += 1
+    return out
+
+
+def provenance_breakdown(cases: List[Dict[str, Any]]) -> List[str]:
+    """The provenance tables by section and by kind of rule-sentence, one per run: "not in material / rule-sentences
+    (share)" per cell."""
+    data = provenance_by_section(cases)
+    if not data:
+        return []
+    L = ["", "### Not in material, by section and kind (not in material / rule-sentences, share)", ""]
+    order = list(SECTION_NAMES) + ["(other)", "(unassigned)"]
+
+    def cell(k, n):
+        return f"{k} / {n} ({_pct(k / n)})" if n else "-"
+    for run, sections in data.items():
+        L += [f"Run {run}:", "", "| section | " + " | ".join(KIND_NAMES[k] for k in KINDS) + " | all | contradicted |",
+              "|---|" + "---:|" * (len(KINDS) + 2)]
+        total: Counter = Counter()
+        for name in sorted(sections, key=lambda n: order.index(n) if n in order else len(order)):
+            row = sections[name]
+            total.update(row)
+            L.append(f"| {name} | " + " | ".join(cell(row[f"{k}_assente"], row[k]) for k in KINDS)
+                     + f" | {cell(row['all_assente'], row['all'])} | {row['all_contraddetta']} |")
+        L.append("| **total** | " + " | ".join(cell(total[f"{k}_assente"], total[k]) for k in KINDS)
+                 + f" | {cell(total['all_assente'], total['all'])} | {total['all_contraddetta']} |")
+        L.append("")
+    return L
+
+
 def _pct(x: Optional[float]) -> str:
     return "-" if x is None else f"{100 * x:.0f}%"
 
@@ -1187,6 +1271,8 @@ def render(cases: List[Dict[str, Any]], meta: Dict[str, Any], max_examples: int 
                  if x["verdict"] in ("assente", "contraddetta")), key=lambda kx: kx[1]["verdict"] != "contraddetta")
     L += [f"- {key} [{x['verdict']}, {x['kind']}, {x['stage']}]: «{_cut(x['sentence'])}»"
           + (f" — material: «{_cut(x['evidence'], 120)}»" if x["evidence"] else "") for key, x in ex[:max_examples]] or ["- none"]
+
+    L += provenance_breakdown(cases)
 
     # --- 3
     L += ["", f"## {TITLES['understanding']}", "",

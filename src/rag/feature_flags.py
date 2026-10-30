@@ -495,6 +495,15 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 issues with their fact; the existing resolver takes them. Logged as
                                 case_analysis_fact_issues and case_analysis_fact_institution. See
                                 src/rag/fact_issues.py.
+  ANCHORED_WRITING_ENABLED     false (30 Oct, fetch_audit's provenance by section): the plan names each issue's
+                                passages (an article's comma, a ruling), numbered [A1]... once the plan is final
+                                (a norm without one gets its best-matching comma); every section -- Risposte ai
+                                quesiti and Conclusioni too, which had only the plan -- gets those passages, the
+                                procedural section its own and its stage's procedure vocabulary; each rule-sentence
+                                ends with its anchor. After the sections, code checks each: the anchor exists, the
+                                article or ruling cited is the anchor's, content-word overlap >= 0.25; a failing
+                                sentence is rewritten once from its passages, else removed; anchors stripped.
+                                Logged as anchored_writing. See src/rag/anchored_writing.py.
   ROLE_BLOCKS_ENABLED          false (30 Oct, fetch_audit's role mechanism on run 0812): the criminal profile of a
                                 personal harm and the criminal postures' checks follow the client's side -- for
                                 the accused, defences, procedibility, the offended party as parte civile against

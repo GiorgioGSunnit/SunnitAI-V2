@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import defensive_generation as dg
-from . import comma_material, grounded_review, method_candidates, practical_checklist, protected_sources
+from . import anchored_writing, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +142,10 @@ def _plan_system(max_issues: int = _MAX_ISSUES) -> str:
     if _review_fixes():
         system = system.replace("- Non aggiungere fatti che il caso non contiene.\n",
                                 _ACQUIRED_RULE + _QUESTIONS_RULE + "- Non aggiungere fatti che il caso non contiene.\n")
+    if anchored_writing.enabled():        # ANCHORED_WRITING_ENABLED: each issue names the passages it rests on
+        system = system.replace("- Non aggiungere fatti che il caso non contiene.\n",
+                                anchored_writing.PLAN_RULE + "- Non aggiungere fatti che il caso non contiene.\n")
+        system = system.replace('"norme": ["art. N codice"], ', '"norme": ["art. N codice"], ' + anchored_writing.PLAN_KEY)
     return system
 
 
@@ -308,7 +312,9 @@ def clean_plan(raw: Any, known: set, references: Dict[str, List[Dict[str, Any]]]
                 pronunce.append(reference)
         issues.append({"titolo": _text(q.get("titolo")) or f"Questione {len(issues) + 1}", "norme": norme,
                        "pronunce": pronunce, "argomento": _text(q.get("argomento")),
-                       "obiezione": _text(q.get("obiezione")), "replica": _text(q.get("replica"))})
+                       "obiezione": _text(q.get("obiezione")), "replica": _text(q.get("replica")),
+                       **({"passi": anchored_writing.parse_passi(q.get("passi"), known, references)}
+                          if anchored_writing.enabled() else {})})
     if not issues:
         return None, removed
     answers = [{"quesito": _text(a.get("quesito")), "risposta": _text(a.get("risposta"))}
@@ -1046,7 +1052,8 @@ def _plan_text(plan: Dict[str, Any], answers: bool = False, issues: str = "title
             if rulings and q.get("pronunce_contrarie"):
                 cited += (f"; pronunce della controparte, solo nell'obiezione con la replica: "
                           f"{', '.join(q['pronunce_contrarie'])}")
-            lines.append(f"{i}. {q['titolo']} (norme: {norms}{cited})")
+            anchors = f"; passi: {', '.join(q['ancore'])}" if q.get("ancore") else ""     # ANCHORED_WRITING_ENABLED
+            lines.append(f"{i}. {q['titolo']} (norme: {norms}{cited}{anchors})")
             if issues == "full":
                 lines += [f"   Argomento: {q['argomento']}"]
                 lines += [f"   Obiezione della controparte: {q['obiezione']}"] if q["obiezione"] else []
@@ -1129,11 +1136,43 @@ def _facts_list(analysis: Dict[str, Any]) -> str:
     return "\n".join(f"- {f.get('fatto', '')}" for f in analysis.get("fatti", []) if f.get("fatto"))
 
 
+def _procedural_refs(plan: Dict[str, Any], analysis: Dict[str, Any]) -> List[tuple]:
+    """The procedural section's own articles: the posture's method list and the procedural tools', not in the plan."""
+    refs = _plan_refs(plan)
+    posture = method_candidates.case_lists(analysis)[1]
+    return [ref for ref in method_candidates.candidate_refs([], posture) + _tool_refs(analysis) if ref not in refs]
+
+
+def _term_sources(analysis: Dict[str, Any]) -> List[Dict[str, str]]:
+    """The legal terms' articles with their text (fact_signals.attach_term_sources), each once: [{"ref", "text"}]."""
+    from . import fact_signals
+    if not fact_signals.regimes_enabled():
+        return []
+    seen: Dict[str, str] = {}
+    for term in (_signals(analysis) or {}).get("terms") or []:
+        for source in term.get("sources") or []:
+            seen.setdefault(source["ref"], source["text"])
+    return [{"ref": ref, "text": text} for ref, text in seen.items()]
+
+
+def anchor_catalogue(plan: Dict[str, Any], analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
+                     references: Dict[str, List[Dict[str, Any]]]) -> Optional["anchored_writing.Catalogue"]:
+    """ANCHORED_WRITING_ENABLED: the passages of the final plan and of the procedural section (anchored_writing.build);
+    None with the flag off."""
+    if not anchored_writing.enabled():
+        return None
+    return anchored_writing.build(plan, article_rows, references, _procedural_refs(plan, analysis),
+                                  _term_sources(analysis))
+
+
 def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[str, Any],
                  article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]],
-                 principles: str, keep_all: bool = False) -> List[Tuple[str, str, str, int]]:
+                 principles: str, keep_all: bool = False,
+                 anchors: Optional["anchored_writing.Catalogue"] = None) -> List[Tuple[str, str, str, int]]:
     """(title, instruction, material, max_tokens) for each section, in order. With keep_all
-    (PLAN_KEEP_APPLICABLE_ENABLED) sections 3 and 4 discuss every article of the plan by name."""
+    (PLAN_KEEP_APPLICABLE_ENABLED) sections 3 and 4 discuss every article of the plan by name. With anchors
+    (ANCHORED_WRITING_ENABLED) every section gets its passages and the anchor rule, the procedural section its
+    stage's procedure vocabulary."""
     party = plan["parte_assistita"] or "la parte assistita"
     case = f"CASO:\n{dg._case_text(facts, request)}"
     frame = analysis.get("frame") or {}
@@ -1149,8 +1188,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     def texts(wanted: List[tuple], chars: int) -> str:
         return _with_headings(_article_texts(article_rows, wanted, chars), headings)
     posture = method_candidates.case_lists(analysis)[1]
-    procedural = [ref for ref in method_candidates.candidate_refs([], posture) + _tool_refs(analysis)
-                  if ref not in refs]
+    procedural = _procedural_refs(plan, analysis)
     rules = _writer_rules()
     qualified, tools = _qualifications(analysis), _tools(analysis)
     damages, roles = _damages(analysis), _roles(analysis)
@@ -1266,10 +1304,32 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          + no_rulings,
          _plan_text(plan, subordinate=True, weak=True, rulings=False), 500),
     ]
+    if anchors is not None:
+        jobs = _with_anchors(jobs, anchors, posture)
     jobs = [_with_budget(job) for job in jobs] if rules else jobs
     for title, _, material_text, _ in jobs:        # COMMA_MATERIAL_ENABLED: the commi each section was given
         comma_material.log_material(f"section {title}", material_text, article_rows)
     return jobs
+
+
+def _with_anchors(jobs: List[Tuple[str, str, str, int]], anchors: "anchored_writing.Catalogue",
+                  posture: str) -> List[Tuple[str, str, str, int]]:
+    """ANCHORED_WRITING_ENABLED: each section's material with its passages (the plan's; for the procedural section the
+    procedural ones too, and its stage's procedure vocabulary with its rule), its instruction with the anchor rule."""
+    out = []
+    for title, instruction, material, tokens in jobs:
+        ids = list(anchors.plan_ids)
+        extra = ""
+        if title == SECTION_TITLES[4]:
+            ids = anchors.procedural_ids + ids
+            vocabulary = practical_checklist.procedure_vocabulary(posture)
+            if vocabulary:
+                extra = f"{practical_checklist.VOCABULARY_TITLE}:\n" + "\n".join(f"- {v}" for v in vocabulary)
+                instruction += " " + practical_checklist.VOCABULARY_RULE
+        block = anchors.block(ids)
+        material = "\n\n".join(p for p in (material, extra, block) if p)
+        out.append((title, instruction + (anchored_writing.ANCHOR_RULE if block else ""), material, tokens + 150))
+    return out
 
 
 def fact_signals_asks(question: str) -> bool:
@@ -2121,7 +2181,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
                    coverage: Optional[Callable[[str], Dict[str, Dict[str, List[str]]]]] = None,
                    standard: Optional[Dict[str, str]] = None,
                    questions: Optional[List[str]] = None,
-                   checked: Optional[List[tuple]] = None) -> Optional[List[tuple]]:
+                   checked: Optional[List[tuple]] = None,
+                   anchors: Optional["anchored_writing.Catalogue"] = None) -> Optional[List[tuple]]:
     """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
     None if one still fails or comes back empty. _discipline(): each section then loses the citations
     its material does not hold (_cite_only_material; named: the articles the case names).
@@ -2195,6 +2256,18 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         logger.warning("plan-then-write: an empty section, the parere is written in one call")
         return None
     sections = _after_checks(plan, sections, jobs, system, questions or [])
+    if anchors is not None:
+        # ANCHORED_WRITING_ENABLED: each rule-sentence checked against its anchors' passages; failing, rewritten once
+        # from them, else removed; the anchors stripped (anchored_writing.py).
+        t5 = time.time()
+        try:
+            verified = anchored_writing.verify(sections, anchors, documents or [], article_rows or [],
+                                               exempt=list((standard or {}).values()))
+            sections = [(title, text or original) for (title, original), (_, text) in zip(sections, verified)]
+        except Exception as exc:
+            logger.warning("anchored writing: check failed, anchors stripped: %s", exc)
+            sections = [(title, anchored_writing.strip_anchors(text)) for title, text in sections]
+        dg.vlog("anchored_writing_llm", duration_ms=(time.time() - t5) * 1000)
     if grounded_review.enabled():
         # GROUNDED_REVIEW_ENABLED: each rule-sentence judged against its own section's material; the ones it does
         # not hold rewritten from it, as pointers, or (filler) dropped (grounded_review.py).
@@ -2457,12 +2530,13 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
         dg.vlog("comma_material_plan", commi)
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
+    anchors = anchor_catalogue(plan, analysis, article_rows, references)
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
-                                                 principles, _keep_all()), lang, named, documents,
+                                                 principles, _keep_all(), anchors), lang, named, documents,
                               article_rows, case, coverage=use_of, standard=standard_blocks(analysis),
                               questions=explicit_questions(request, facts) if _review_fixes() else [],
                               checked=grounded_review.strict_refs(article_rows, named, analysis)
-                              if grounded_review.strict() else None)
+                              if grounded_review.strict() else None, anchors=anchors)
     if sections is None:
         return None
     if use_of is not None:
