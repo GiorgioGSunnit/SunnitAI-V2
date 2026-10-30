@@ -10,12 +10,17 @@
   FRAMEWORK  the expected articles the answer cites with their code or law ("art. 2109 c.c.", "art. 7 l.
              300/1970", "art. 7 dello Statuto dei lavoratori")
   AMBIGUITY  the answer states an assumption ("**Ipotesi**") exactly when the case expects one
+  PROTECTED  verbatim overlaps with the clauses and other protected sources (src/rag/protected_sources.py): found /
+             rewritten / dropped by the post-check, remaining in the final answer (target 0), and the protected
+             excerpts shown in the sources (target 0) -- counted with PROTECTED_PARAPHRASE_ENABLED off too
 
 Run from the app folder (it writes only under --out):
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --label first
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --debug 3
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --only m2,f2 --debug
     cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --label round4 --debug 14 --answers c1,c2,m4,e1,e2
+    cd /opt/chatbot && venv/bin/python tests/eval_narrative.py --ccnl --label protected-on \\
+        --flag PROTECTED_PARAPHRASE_ENABLED=true
 
 --debug [N] (default 3; the first N cases, or the --only ones) prints for each case: the route, the sector
 candidates with their scores and reasons, the date and how it was read, every document of the sector (kind,
@@ -147,6 +152,7 @@ def score_case(case, result):
 
 
 def run_case(case, events):
+    from src.rag import protected_sources
     from src.rag.main import run
     del events[:]
     t0 = time.time()
@@ -159,7 +165,11 @@ def run_case(case, events):
               "seconds": round(time.time() - t0, 1), "route": result.get("route") or "graph",
               "path_ran": bool(result.get("ccnl")), "answer": result.get("answer") or "",
               "citations": result.get("citations") or [], "ccnl": result.get("ccnl") or {},
-              "events": [{"event": e, "data": d} for e, d in events if str(e).startswith("ccnl")]}
+              "events": [{"event": e, "data": d} for e, d in events
+                         if str(e).startswith("ccnl") or str(e).startswith("protected")]}
+    clause_texts = [c.get("text") or "" for c in ((result.get("ccnl") or {}).get("clauses") or {}).get("found") or []]
+    record["protected"] = protected_sources.run_record(events, record["answer"], result.get("raw_result") or [],
+                                                       record["citations"], texts=clause_texts)
     record["score"] = score_case(case, result)
     return record
 
@@ -216,6 +226,7 @@ def debug_report(case, record):
     if info.get("pay"):
         out.append(f"PAY {json.dumps(info['pay'], ensure_ascii=False)}")
     out.append(f"ANSWER CHECKS {json.dumps(info.get('answer') or {}, ensure_ascii=False)}")
+    out.append(f"PROTECTED {json.dumps(record.get('protected') or {}, ensure_ascii=False)}")
     out.append(f"CITED IN THE ANSWER {s['cited_in_answer']}; expected "
                f"{[f['article'] + (' ok' if f['cited'] else ' MISSING') for f in s['framework']]}")
     out.append(f"AMBIGUITY expected {case.get('ambiguous')}, flagged {s['ambiguity_flagged']}: "
@@ -241,8 +252,14 @@ def summary_lines(records, label):
                   f"{t['version_right']}; clause found {t['clause_found']}; framework cited {t['framework_cited']}/"
                   f"{t['framework_expected']}; ambiguity right {t['ambiguity_right']}/{t['cases']} (flagged when "
                   f"expected {t['ambiguity_flagged_expected']}/{t['ambiguity_expected']}); answers claiming the "
-                  f"CCNL's silence {t['silence']}"]
+                  f"CCNL's silence {t['silence']}",
+              _protected_line(records)]
     return lines
+
+
+def _protected_line(records):
+    from src.rag import protected_sources
+    return protected_sources.report_line(protected_sources.sum_records(r.get("protected") for r in records))
 
 
 def totals(records):
@@ -256,7 +273,13 @@ def totals(records):
             "silence": sum(1 for r in records if r["score"].get("silence_claims")),
             "ambiguity_expected": sum(1 for r in records if r.get("expected_ambiguous")),
             "ambiguity_flagged_expected": sum(1 for r in records if r.get("expected_ambiguous")
-                                              and r["score"]["ambiguity_flagged"])}
+                                              and r["score"]["ambiguity_flagged"]),
+            **{f"protected_{k}": v for k, v in _protected_sum(records).items()}}
+
+
+def _protected_sum(records):
+    from src.rag import protected_sources
+    return protected_sources.sum_records(r.get("protected") for r in records)
 
 
 def main(args):
@@ -293,11 +316,13 @@ def main(args):
             print(f"{case['id']} r{repeat}: path {record['path_ran']}, sector {_mark(s['sector_right'])}, version "
                   f"{_mark(s['version_right'])}, clause {_mark(s['clause_found'])}, framework "
                   f"{s['framework_cited']}/{s['framework_expected']}, ambiguity {_mark(s['ambiguity_right'])}, "
-                  f"{record['seconds']}s", flush=True)
+                  f"protected overlaps {record['protected']['found']}/{record['protected']['rewritten']}/"
+                  f"{record['protected']['dropped']}/{record['protected']['remaining']}, excerpts shown "
+                  f"{record['protected']['excerpts_shown']}, {record['seconds']}s", flush=True)
     lines = summary_lines(records, args.label)
     summary = {"label": args.label, "settings": settings, "today": date.today().isoformat(), "totals": totals(records),
-               "cases": [{"id": r["id"], "repeat": r["repeat"], **{k: v for k, v in r["score"].items()
-                                                                   if k != "cited_in_answer"}} for r in records]}
+               "cases": [{"id": r["id"], "repeat": r["repeat"], "protected": r.get("protected"),
+                          **{k: v for k, v in r["score"].items() if k != "cited_in_answer"}} for r in records]}
     (run_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=1), encoding="utf-8")
     (run_dir / "summary.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
     if debug:

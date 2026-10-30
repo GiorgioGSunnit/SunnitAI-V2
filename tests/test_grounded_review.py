@@ -1,0 +1,263 @@
+"""GROUNDED_REVIEW_ENABLED (src/rag/grounded_review.py), ROLE_BLOCKS_ENABLED (fact_signals.fit_to_role, the
+offended party's posture checks) and fetch_audit's role filter, captured-but-lost funnel and grounded-review reading.
+Every article here is invented; no model, no database."""
+import json
+import os
+import sys
+from pathlib import Path
+
+os.environ.setdefault("EMBEDDING_PROVIDER", "openai")
+os.environ.setdefault("EMBEDDING_API_KEY", "test-key")
+os.environ.setdefault("LLM_API_KEY", "test-key")
+os.environ.setdefault("NEO4J_URI", "bolt://localhost:7687")
+os.environ.setdefault("NEO4J_USER", "neo4j")
+os.environ.setdefault("NEO4J_PASSWORD", "test-password")
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
+
+import pytest  # noqa: E402
+
+from src.rag import defensive_generation as dg  # noqa: E402
+from src.rag import fact_signals, practical_checklist  # noqa: E402
+from src.rag import grounded_review as gr  # noqa: E402
+from src.rag import plan_then_write as ptw  # noqa: E402
+
+import fetch_audit as fa  # noqa: E402
+
+MATERIAL = ("CASO:\nTizio è caduto nel cortile di Caio.\n\nTESTI DELLE NORME:\n[art. 9002 c.c.]\nIl custode della cosa "
+            "risponde del danno cagionato dalla cosa, salvo che provi il caso fortuito.")
+SUPPORTED = "Caio risponde del danno cagionato dalla cosa in custodia, salvo il caso fortuito (art. 9002 c.c.)."
+FROM_FETCH = "La domanda si prescrive in cinque anni dal giorno del fatto secondo l'art. 9001 c.c. applicabile."
+INVENTED = "Il danneggiato deve sempre provare la colpa grave del custode secondo l'art. 9002 c.c. vigente."
+MEMORY = "La giurisprudenza ammette comunque un risarcimento forfettario per ogni caduta in un cortile privato."
+FILLER = "Si tratta di una questione certamente delicata e meritevole di grande attenzione da parte di tutti."
+POINTLESS_CITE = "La materia è regolata con grande cura dal legislatore anche all'art. 9005 c.c. qui."
+SECTION = "\n\n".join([SUPPORTED, FROM_FETCH, INVENTED, MEMORY, FILLER, POINTLESS_CITE])
+FETCHED = {("9001", "c.c."): "[art. 9001 c.c.]\nIl diritto al risarcimento si prescrive in cinque anni dal fatto."}
+
+
+def fake_chat_json(messages, max_tokens, **kwargs):
+    system, human = messages[0].content, messages[1].content
+    if system == gr.JUDGE_SYSTEM:
+        lines = [ln for ln in human.split("FRASI:\n", 1)[1].splitlines() if ln.strip()]
+        out = []
+        for ln in lines:
+            n, sentence = ln.split(". ", 1)
+            if sentence == SUPPORTED:
+                out.append({"i": int(n), "tipo": "regola", "esito": "supportata"})
+            elif sentence == FROM_FETCH:
+                ok = "si prescrive in cinque anni" in human.split("FRASI:", 1)[0]
+                out.append({"i": int(n), "tipo": "regola", "esito": "supportata" if ok else "assente"})
+            elif sentence == INVENTED:
+                out.append({"i": int(n), "tipo": "regola", "esito": "contraddetta"})
+            elif sentence in (MEMORY, POINTLESS_CITE):
+                out.append({"i": int(n), "tipo": "massima" if sentence == MEMORY else "regola", "esito": "assente"})
+            elif sentence == FILLER:
+                out.append({"i": int(n), "tipo": "istituto", "esito": "assente"})
+            else:
+                out.append({"i": int(n), "tipo": "altro", "esito": None})
+        return out
+    if system == gr.REWRITE_SYSTEM:
+        assert gr.REWRITE_MARK in human
+        lines = [ln for ln in human.split(gr.REWRITE_MARK + "\n", 1)[1].splitlines() if ln.strip()]
+        out = []
+        for ln in lines:
+            n, sentence = ln.split(". ", 1)
+            if sentence == INVENTED:
+                out.append({"i": int(n), "azione": "riscritta", "frase": "Il custode risponde del danno salvo che "
+                            "provi il caso fortuito (art. 9002 c.c.)"})
+            elif sentence == MEMORY:
+                out.append({"i": int(n), "azione": "rinvio", "frase": "Va verificato se la giurisprudenza ammetta un "
+                            "risarcimento forfettario."})
+            elif sentence == FILLER:
+                out.append({"i": int(n), "azione": "riempitivo", "frase": ""})
+            elif sentence == POINTLESS_CITE:      # a rewriting that loses its citation: the code's pointer instead
+                out.append({"i": int(n), "azione": "riscritta", "frase": "La materia è regolata dal legislatore."})
+        return out
+    raise AssertionError(system[:40])
+
+
+@pytest.fixture
+def logged(monkeypatch):
+    events = []
+    monkeypatch.setattr(gr, "vlog", lambda event, data=None, **_: events.append((event, data)))
+    monkeypatch.setattr(dg, "_chat_json", fake_chat_json)
+    return events
+
+
+def test_the_review_keeps_supported_rewrites_points_and_drops_only_filler(logged):
+    reads = []
+
+    def fetch(refs):
+        reads.append(list(refs))
+        return {r: FETCHED[r] for r in refs if r in FETCHED}
+    jobs = [("Norme e giurisprudenza", "istr", MATERIAL, 900), ("Conclusioni", "istr", "PIANO:\n- nulla", 300)]
+    sections = [("Norme e giurisprudenza", SECTION), ("Conclusioni", "Conviene agire subito.")]
+    out = gr.review(sections, jobs, [], [], fetch=fetch)
+    text = out[0][1]
+    assert SUPPORTED in text and FROM_FETCH in text                      # never touched / kept after the read
+    assert INVENTED not in text and "salvo che provi il caso fortuito (art. 9002 c.c.)." in text
+    assert "Va verificato se la giurisprudenza ammetta un risarcimento forfettario." in text
+    assert FILLER not in text
+    assert "Su questo punto va verificata la disciplina dell'art. 9005 c.c." in text
+    assert out[1] == sections[1]
+    # one read for the whole parere, only of the articles cited and not in the material (9002 is given)
+    assert reads == [[("9001", "c.c."), ("9005", "c.c.")]]
+    log = [d for e, d in logged if e == "grounded_review"][-1]
+    assert log["counts"] == {"rewritten": 1, "pointer": 2, "dropped": 1, "kept": 0, "kept_fetched": 1}
+    assert log["totals"]["rule"] == 6 and log["totals"]["supportata"] == 1 and log["totals"]["contraddetta"] == 1
+    assert log["fetched"] == {"art. 9001 c.c.": FETCHED[("9001", "c.c.")]} and log["not_found"] == ["art. 9005 c.c."]
+    kept = next(e for e in log["entries"] if e["how"] == "kept_fetched")
+    assert kept["fetched"] == ["art. 9001 c.c."] and kept["section"] == "Norme e giurisprudenza"
+    assert gr.totals([["grounded_review", log, None], ["other", {}, None]])["pointer"] == 2
+
+
+def test_a_failed_judge_changes_nothing(monkeypatch):
+    def boom(*a, **k):
+        raise ValueError("no JSON")
+    monkeypatch.setattr(dg, "_chat_json", boom)
+    monkeypatch.setattr(gr, "vlog", lambda *a, **k: None)
+    sections = [("Norme e giurisprudenza", SECTION)]
+    assert gr.review(sections, [("Norme e giurisprudenza", "", MATERIAL, 900)], [], [], fetch=lambda r: {}) == sections
+
+
+def test_choose_never_loses_a_citation_and_never_invents_a_pointer():
+    old = "Il termine è di dieci giorni (art. 9003 c.c.)."
+    refs = [("9003", "c.c.")]
+    assert gr.choose(old, {"azione": "riscritta", "frase": "Il termine è indicato dall'art. 9003 c.c."}, refs) == \
+        ("rewritten", "Il termine è indicato dall'art. 9003 c.c.")
+    assert gr.choose(old, {"azione": "riscritta", "frase": "Il termine è breve."}, refs) == \
+        ("pointer", "Su questo punto va verificata la disciplina dell'art. 9003 c.c.")
+    assert gr.choose(old, {"azione": "riempitivo"}, refs)[0] == "pointer"          # it cites: never dropped
+    assert gr.choose("Una regola detta a memoria senza alcuna fonte.", None, []) == ("kept", None)
+    assert gr.choose("Una frase di puro riempimento senza alcuna fonte.", {"azione": "riempitivo"}, []) == ("dropped", None)
+    assert gr.pointer([("9001", "c.c."), ("9002", "Codice Civile")]) == \
+        "Su questo punto va verificata la disciplina degli artt. 9001 c.c. e 9002 c.c."
+
+
+def test_candidates_skip_short_sentences_and_keep_bullets_and_bold_leads():
+    text = "**Profilo penale**: la querela va proposta nel termine di legge davanti al giudice.\n- Breve.\n" \
+           "- Le prove da acquisire sono i testimoni e le fotografie del cortile."
+    got = [c[2] for c in gr.candidates(text)]
+    assert got == ["la querela va proposta nel termine di legge davanti al giudice.",
+                   "Le prove da acquisire sono i testimoni e le fotografie del cortile."]
+    start, end, sentence = gr.candidates(text)[0]
+    assert text[start:end] == sentence
+
+
+def test_apply_mixes_drops_and_replacements():
+    text = "Prima frase da tenere qui. Seconda frase da togliere. Terza frase da cambiare adesso."
+    a, b = text.index("Seconda"), text.index("Terza")
+    out = gr.apply(text, {(a, b - 1): None, (b, len(text)): "Terza frase nuova e più lunga di prima."})
+    assert out == "Prima frase da tenere qui. Terza frase nuova e più lunga di prima."
+
+
+def test_the_judge_is_fetch_audit_s_own():
+    assert gr.JUDGE_SYSTEM == fa.PROVENANCE_SYSTEM
+
+
+def test_write_sections_runs_the_review_only_with_the_flag(monkeypatch):
+    calls = []
+    monkeypatch.setattr(dg, "_call_chat", lambda messages, max_tokens=None, **k: "Testo della sezione scritto.")
+    monkeypatch.setattr(gr, "review", lambda sections, *a, **k: calls.append(1) or sections)
+    plan = {"parte_assistita": "Caio", "posizione": "convenuto", "questioni": [], "pronunce_contrarie": []}
+    jobs = [("Conclusioni", "istr", "PIANO", 300)]
+    monkeypatch.delenv(gr.FLAG, raising=False)
+    ptw.write_sections(plan, jobs, "it")
+    assert calls == []
+    monkeypatch.setenv(gr.FLAG, "true")
+    ptw.write_sections(plan, jobs, "it")
+    assert calls == [1]
+
+
+# --- ROLE_BLOCKS_ENABLED --------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("party,side", [
+    ("Tizio (imputato di lesioni colpose ai danni della persona offesa)", "accused"),
+    ("I genitori di Sempronio (persona offesa, familiari della vittima)", "victim"),
+    ("Caio (convenuto in giudizio dai familiari della vittima)", "accused"),
+    ("Mevia (attrice, danneggiata)", "victim"),
+    ("la parte assistita", ""),
+])
+def test_client_side_by_the_first_role_word(party, side):
+    assert fact_signals.client_side(party) == side
+
+
+def _signals():
+    return {"tools": [{"id": "profilo_penale", "refs": [["590", "c.p."], ["76", "c.p.p."], ["2947", "c.c."]],
+                       "text": "Profilo penale: valutare la querela e la costituzione di parte civile.",
+                       "why": "lesioni", "matched": ["Tizio ferito"]},
+                      {"id": "accertamento_preventivo", "refs": [["696", "c.p.c."]], "text": "ATP.", "matched": []}]}
+
+
+def test_the_criminal_profile_follows_the_client_s_side(monkeypatch):
+    signals = _signals()
+    assert fact_signals.fit_to_role(signals, "Tizio (imputato)") == ""          # flag off: unchanged
+    assert signals == _signals()
+    monkeypatch.setenv(fact_signals.ROLE_BLOCKS_FLAG, "true")
+    assert fact_signals.fit_to_role(signals, "Tizio (imputato)") == "accused"
+    tool = signals["tools"][0]
+    assert ["589", "c.p."] not in tool["refs"] and ["590", "c.p."] in tool["refs"]      # the harm's offence kept
+    assert ["2044", "c.c."] in tool["refs"] and ["74", "c.p.p."] in tool["refs"] and ["76", "c.p.p."] not in tool["refs"]
+    assert "parte civile contro la parte assistita" in tool["text"] and "2044 c.c." in tool["text"]
+    assert signals["tools"][1]["text"] == "ATP." and signals["side"] == "accused"
+    assert "contro la parte assistita" in ptw._criminal_what({"fact_signals": signals})
+    victim = _signals()
+    assert fact_signals.fit_to_role(victim, "Mevia (persona offesa)") == "victim"
+    assert ["76", "c.p.p."] in victim["tools"][0]["refs"] and ["336", "c.p.p."] in victim["tools"][0]["refs"]
+    assert "querela" in victim["tools"][0]["text"] and "2044" not in victim["tools"][0]["text"]
+    unknown = _signals()
+    assert fact_signals.fit_to_role(unknown, "la parte assistita") == "" and unknown == _signals()
+
+
+def test_an_offended_party_gets_its_own_criminal_posture_checks():
+    defence = practical_checklist.checks_for(["penale"], "indagini_preliminari")
+    victim = practical_checklist.checks_for(["penale"], "indagini_preliminari", "victim")
+    assert any("Riti alternativi" in c for c in defence) and not any("Riti alternativi" in c for c in victim)
+    assert any("Querela" in c for c in victim) and any("opposizione" in c for c in victim)
+    assert practical_checklist.checks_for(["penale"], "indagini_preliminari", "accused") == defence
+    assert practical_checklist.checks_for(["contratti"], "", "victim") == practical_checklist.checks_for(["contratti"], "")
+
+
+# --- fetch_audit ----------------------------------------------------------------------------------------------------
+
+def test_role_flags_on_the_other_side_s_move_or_the_client_s_own_act_are_not_kept():
+    accused = {"party": "Tizio", "position": "imputato"}
+    victim = {"party": "Mevia", "position": "persona offesa"}
+    assert fa.role_flag_filtered(accused, "La persona offesa potrà costituirsi parte civile nel processo.")
+    assert fa.role_pattern_hits(accused, "La persona offesa potrà costituirsi parte civile nel processo.") is None
+    assert fa.role_flag_filtered(victim, "Mevia può proporre querela entro il termine di legge.")
+    # a real contradiction stays: the accused advised the victim's act
+    assert fa.role_flag_filtered(accused, "Tizio deve costituirsi parte civile per il risarcimento.") is None
+    assert fa.role_pattern_hits(accused, "Tizio deve costituirsi parte civile per il risarcimento.")
+
+
+def test_the_funnel_locates_where_a_captured_article_was_lost():
+    resolved_elsewhere = {"stage": "LOST_AT_UNDERSTANDING", "understanding": {}, "in_pool": False, "rank": None}
+    f = fa.funnel(resolved_elsewhere)
+    assert f["lost_at"] == "resolved" and not any(f["steps"].values())
+    not_planned = {"stage": "NOT_IN_PLAN", "in_pool": True, "rank": 4, "check": "applicabile", "in_prompt": True,
+                   "in_plan": False, "channels": ["vector"]}
+    f = fa.funnel(not_planned)
+    assert f["lost_at"] == "in_plan" and f["steps"]["graded"] and f["channels"] == ["vector"]
+    rejected = {"stage": "REJECTED_BY_CHECK", "in_pool": True, "check": "rejected", "in_plan": None}
+    assert fa.funnel(rejected)["lost_at"] == "graded"
+    assert fa.capture_kind(["istituto: Custodia -> art. 2043 c.c."]) == "institution_elsewhere"
+    assert fa.capture_kind(["istituto: Custodia -> non risolto"]) == "institution_unresolved"
+    assert fa.capture_kind(["questione: Responsabilità del custode — istituti []"]) == "issue"
+    assert fa.capture_kind(["fatto: caduta nel cortile"]) == "fact"
+
+
+def test_the_audit_reads_the_grounded_review_s_rewrites_and_reads():
+    log = {"entries": [{"section": "Norme e giurisprudenza", "how": "kept_fetched", "fetched": ["art. 9001 c.c."]}],
+           "fetched": {"art. 9001 c.c.": FETCHED[("9001", "c.c.")]}, "totals": {"rule": 3, "assente": 1},
+           "counts": {"pointer": 1}}
+    stage = fa.section_stage("Norme e giurisprudenza")
+    case = {"proxy": False, "record": {"events": [["grounded_review", log, None]]}, "calls": [
+        {"stage": stage, "system": "S", "user": MATERIAL, "reply": SECTION},
+        {"stage": "grounded_rewrite", "system": gr.REWRITE_SYSTEM, "user": f"MATERIALE:\n{MATERIAL}\n\n"
+         f"{gr.REWRITE_MARK}\n1. {INVENTED}", "reply": json.dumps([{"i": 1, "frase": "Nuova frase dal materiale."}])}]}
+    calls = fa.writer_calls(case)
+    assert [c["stage"] for c in calls] == [stage, "grounded_rewrite"]
+    assert calls[0]["material"].startswith(FETCHED[("9001", "c.c.")])        # read for the section: given to it
+    assert INVENTED not in calls[1]["material"] and MATERIAL in calls[1]["material"]
+    assert fa.grounded_case_totals(case) == {"rule": 3, "assente": 1, "pointer": 1, "fetched": 1, "not_found": 0}

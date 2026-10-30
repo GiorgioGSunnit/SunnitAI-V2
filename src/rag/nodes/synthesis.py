@@ -9,6 +9,7 @@ from typing import Any, Dict, List
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ..ai_chat import _call_chat
+from .. import protected_sources
 from ..article_codes import complete_codes
 from ..article_suffix import SUFFIX, normalize_number
 from ..answer_processing import (
@@ -274,7 +275,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 s["plain_text"] for s in c.get("sections", []) if s.get("plain_text")
             )
             if text:
-                blocks.append(f"[{label} - {c['document_name']}]\n{text}")
+                blocks.append(f"[{label} - {c['document_name']}]{protected_sources.citation_tag(c)}\n{text}")
         return blocks
 
     if is_tiered:
@@ -371,7 +372,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         footer = (synthesis_human_footer(lang) if state.get("is_comparison")
                   else synthesis_human_footer(lang, tone, standing, response_length))
         answer = _call_chat(
-            _with_history(system_prompt, "".join(human_parts) + footer),
+            _with_history(system_prompt, protected_sources.with_rule("".join(human_parts) + footer)),
             max_tokens=answer_tokens,
         )
     else:
@@ -672,7 +673,8 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                 f"Rispondi {_NO_NOTE} solo se nessun estratto lo riguarda."
             )
             dottrina_answer = _call_chat(
-                [SystemMessage(content=dottrina_system), HumanMessage(content=dottrina_human)],
+                [SystemMessage(content=dottrina_system),
+                 HumanMessage(content=protected_sources.with_rule(dottrina_human))],
                 max_tokens=answer_tokens if _dottrina_only else _NOTE_TOKENS[response_length],
                 stop=["Nel contesto", "Puoi precisare", "Vuoi specificare", "Hai ulteriori"],
             )
@@ -707,6 +709,12 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
                     answer = dottrina_answer.strip()
 
     answer = re.sub(r'\n[A-Z][^\n]{0,500}\?[^\n]*$', '', answer.rstrip()).rstrip()
+
+    # PROTECTED_PARAPHRASE_ENABLED: no sentence reproduces a protected source the answer was written from
+    # (counted only, with the flag off); their citations show the reference only.
+    answer, _ = protected_sources.enforce(answer, rows=list(data) + list(special_dottrina_rows),
+                                          stage="chat_synthesis")
+    citations = protected_sources.redact(citations, "chat_synthesis")
 
     # Every article cited carries its code or law ("art. 585 c.p.p."): a bare one gets the code of the
     # retrieved rows when exactly one of them has that article (article_codes.py).

@@ -54,7 +54,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import defensive_generation as dg
-from . import method_candidates, practical_checklist
+from . import comma_material, grounded_review, method_candidates, practical_checklist, protected_sources
 
 logger = logging.getLogger(__name__)
 
@@ -208,11 +208,20 @@ def _checks(analysis: Dict[str, Any], article_rows: Optional[List[Dict[str, Any]
     the case's verified area x posture (method_candidates.case_lists), each only if every article it
     names went through the applicability check."""
     areas, posture = method_candidates.case_lists(analysis)
+    side = _client_side(analysis)
     if not dg.feature_flags.enabled(method_candidates.CHECKLIST_GATED_FLAG):
-        return _by_claim_posture(practical_checklist.checks_for(areas, posture), analysis)
+        return _by_claim_posture(practical_checklist.checks_for(areas, posture, side), analysis)
     through = _through_check(article_rows or [], facts, request)
     return _by_claim_posture(practical_checklist.gated_checks(
-        areas, posture, lambda ref: any(_same_article(ref, t) for t in through)), analysis)
+        areas, posture, lambda ref: any(_same_article(ref, t) for t in through), side), analysis)
+
+
+def _client_side(analysis: Dict[str, Any]) -> str:
+    """ROLE_BLOCKS_ENABLED: "accused" / "victim" / "" for the client (fact_signals.client_side); "" with it off."""
+    from . import fact_signals
+    if not dg.feature_flags.enabled(fact_signals.ROLE_BLOCKS_FLAG):
+        return ""
+    return fact_signals.client_side(dg._stance_party(analysis or {}))
 
 
 _RECEIVED_ITEM, _CLAIMING_ITEM = "Se la parte assistita riceve una pretesa", "Se è la parte assistita a pretendere: "
@@ -933,7 +942,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
                         _checks(analysis, article_rows, facts, request), voted, applicable,
                         must_place="graded" if keep_checked and _graded() else keep_checked, groups=groups)
-    messages = [SystemMessage(content=system), HumanMessage(content=human)]
+    messages = [SystemMessage(content=system), HumanMessage(content=protected_sources.with_rule(human))]
     t0 = time.time()
     problems: List[str] = []
     try:
@@ -1175,7 +1184,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     criminal = _tools(analysis, criminal=True)
     present = {"termini": bool(_terms(analysis)), "strumenti": bool(tools), "profilo_penale": bool(criminal),
                "voci_di_danno": bool(damages)}
-    blocks = ([(title, what) for key, title, what in _SECTION5_BLOCKS if present[key]]
+    blocks = ([(title, _criminal_what(analysis) if key == "profilo_penale" else what)
+               for key, title, what in _SECTION5_BLOCKS if present[key]]
               if _qualifications_or_regimes(analysis) else [])
     regimes = ((f" Tieni conto delle {_QUALIFIED_TITLE} e dei regimi speciali che comportano." if qualified else "")
                + (" Tratta uno per uno, ciascuno in un breve paragrafo aperto dal suo titolo in grassetto, senza "
@@ -1185,7 +1195,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
                + (f" Tieni conto delle {_DAMAGES_TITLE}." if damages else ""))
 
     def material(*parts: str) -> str:
-        return "\n\n".join(p for p in parts if p)
+        # PROTECTED_PARAPHRASE_ENABLED: a section given a protected passage gets the rule with it.
+        return protected_sources.with_rule("\n\n".join(p for p in parts if p))
     fixes = _review_fixes()
     questions = explicit_questions(request, facts) if fixes else []
     asked = ("\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)))
@@ -1255,7 +1266,10 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          + no_rulings,
          _plan_text(plan, subordinate=True, weak=True, rulings=False), 500),
     ]
-    return [_with_budget(job) for job in jobs] if rules else jobs
+    jobs = [_with_budget(job) for job in jobs] if rules else jobs
+    for title, _, material_text, _ in jobs:        # COMMA_MATERIAL_ENABLED: the commi each section was given
+        comma_material.log_material(f"section {title}", material_text, article_rows)
+    return jobs
 
 
 def fact_signals_asks(question: str) -> bool:
@@ -1594,6 +1608,16 @@ _SECTION5_BLOCKS = (
                                          "prescrizione dell'azione civile"),
     ("voci_di_danno", "Voci di danno", "ciascuna delle VOCI DI DANNO DA CONSIDERARE che spettano alla parte assistita"),
 )
+
+
+def _criminal_what(analysis: Dict[str, Any]) -> str:
+    """ROLE_BLOCKS_ENABLED: what the criminal profile's paragraph treats, for the client's side
+    (fact_signals.fit_to_role); the side-free text otherwise."""
+    from . import fact_signals
+    tool = next((t for t in (_signals(analysis) or {}).get("tools") or [] if t.get("id") == fact_signals.CRIMINAL_TOOL), {})
+    return tool.get("what") or next(what for key, _, what in _SECTION5_BLOCKS if key == "profilo_penale")
+
+
 _NUMBER_WORDS = {1: "un|uno|una", 2: "due", 3: "tre", 4: "quattro", 5: "cinque", 6: "sei", 8: "otto", 10: "dieci",
                  12: "dodici", 15: "quindici", 20: "venti", 26: "ventisei", 30: "trenta", 45: "quarantacinque",
                  60: "sessanta", 90: "novanta", 120: "centoventi"}
@@ -2106,7 +2130,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     Then (the live answer of 26 Oct): a sentence citing an adverse ruling (RULING_FIT_ENABLED) as support dropped;
     the fragments left without their norm dropped (drop_dangling, with any of the citation checks); an evidence
     list identical to an earlier one replaced by a reference to it, and the answers written once more when one of
-    the explicit `questions` goes unanswered (REVIEW_FIXES_ENABLED)."""
+    the explicit `questions` goes unanswered (REVIEW_FIXES_ENABLED). Last, GROUNDED_REVIEW_ENABLED: every
+    rule-sentence checked against its section's material (grounded_review.review)."""
     system = _section_system(plan, lang)
 
     def write(job):
@@ -2167,7 +2192,18 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     if any(not text for _, text in sections):
         logger.warning("plan-then-write: an empty section, the parere is written in one call")
         return None
-    return _after_checks(plan, sections, jobs, system, questions or [])
+    sections = _after_checks(plan, sections, jobs, system, questions or [])
+    if grounded_review.enabled():
+        # GROUNDED_REVIEW_ENABLED: each rule-sentence judged against its own section's material; the ones it does
+        # not hold rewritten from it, as pointers, or (filler) dropped (grounded_review.py).
+        t4 = time.time()
+        try:
+            reviewed = grounded_review.review(sections, jobs, documents or [], article_rows or [])
+            sections = [(title, text or original) for (title, original), (_, text) in zip(sections, reviewed)]
+        except Exception as exc:
+            logger.warning("grounded review failed, sections kept: %s", exc)
+        dg.vlog("grounded_review_llm", duration_ms=(time.time() - t4) * 1000)
+    return sections
 
 
 _OBJECTION_RE = re.compile(r"controparte|obiezion|obiett|potrebbe (?:invocare|sostenere|richiamare)|contrari|sfavorevol|"
@@ -2412,6 +2448,11 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if plan is None:
         return None
     case = dg._case_text(facts, request)
+    # COMMA_MATERIAL_ENABLED: each article's commi chosen for the plan issue that places it; a comma the plan
+    # or the case names, read now when the row lacks it (one read, no model call).
+    commi = comma_material.for_plan(plan, article_rows, case)
+    if commi:
+        dg.vlog("comma_material_plan", commi)
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,

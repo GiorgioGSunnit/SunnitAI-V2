@@ -1839,6 +1839,78 @@ def qualifications_block(signals: Optional[Dict[str, Any]]) -> str:
 
 
 CRIMINAL_TOOL = "profilo_penale"
+ROLE_BLOCKS_FLAG = "ROLE_BLOCKS_ENABLED"
+
+# ROLE_BLOCKS_ENABLED (fetch_audit on run 0812): the criminal profile was written for the offended party whatever the
+# client's side, so an accused client was advised to file a querela and become parte civile. The profile by side.
+CRIMINAL_BY_SIDE: Dict[str, Dict[str, Any]] = {
+    "accused": {
+        "refs": [("589", "c.p."), ("590", "c.p."), ("74", "c.p.p."), ("2947", "c.c."), ("2044", "c.c.")],
+        "text": "Profilo penale per la parte assistita, alla quale il fatto può essere addebitato: la morte o le "
+                "lesioni di una persona causate per colpa possono costituire reato (omicidio colposo, art. 589 c.p., "
+                "procedibile d'ufficio; lesioni personali colpose, art. 590 c.p., di regola procedibili a querela "
+                "della persona offesa: verificare se la querela è stata proposta, il suo termine e la possibile "
+                "remissione). Le difese: l'assenza di colpa o del nesso causale, il fatto della vittima o di un "
+                "terzo, la qualificazione del fatto. Nel processo penale la persona offesa o i suoi eredi possono "
+                "costituirsi parte civile contro la parte assistita (art. 74 c.p.p.): la loro domanda di "
+                "risarcimento va contrastata anche lì. L'esposizione civile: il risarcimento chiesto dal "
+                "danneggiato, con la prescrizione più lunga quando il fatto è considerato dalla legge come reato "
+                "(art. 2947, terzo comma, c.c.); se i fatti mostrano che la parte assistita ha agito per "
+                "difendersi, la legittima difesa esclude anche la responsabilità civile (art. 2044 c.c.).",
+        "what": "il reato configurabile con la sua norma, la procedibilità, le difese, la costituzione di parte civile "
+                "della persona offesa contro la parte assistita e la sua esposizione civile"},
+    "victim": {
+        "refs": [("589", "c.p."), ("590", "c.p."), ("336", "c.p.p."), ("76", "c.p.p."), ("2947", "c.c.")],
+        "text": "Profilo penale a tutela della parte assistita, persona offesa o suoi congiunti: la morte o le "
+                "lesioni di una persona causate per colpa possono costituire reato (omicidio colposo, art. 589 c.p., "
+                "procedibile d'ufficio: basta la denuncia; lesioni personali colpose, art. 590 c.p., di regola "
+                "procedibili a querela, da proporre nel termine di legge: art. 336 c.p.p.). Nel processo penale la "
+                "parte assistita può costituirsi parte civile per il risarcimento (art. 76 c.p.p.) e si giova delle "
+                "prove che il procedimento acquisisce (accertamenti, consulenze, testimonianze); l'azione civile ha "
+                "la prescrizione più lunga quando il fatto è considerato dalla legge come reato (art. 2947, terzo "
+                "comma, c.c.).",
+        "what": "il reato configurabile con la sua norma, la procedibilità e la querela, la costituzione di parte "
+                "civile della parte assistita (art. 76 c.p.p.), le prove del procedimento penale e la prescrizione "
+                "dell'azione civile"},
+}
+# The client's side from its name and position, by the first role word in it ("convenuto dai familiari della vittima"
+# is accused, "familiari della vittima" the offended side); in a harm case who is sued is who the fact is charged to.
+_ACCUSED_CRIMINAL = r"imputat|indagat|accusat|querelat|sottopost\w* a (?:procedimento|indagin)"
+_VICTIM_CRIMINAL = r"persona offesa|\boffes[oaie]\b|vittim|parte civile|querelant|denunciant"
+_ACCUSED_CIVIL = r"convenut|resistent|danneggiant|responsabil|autore del (?:fatto|danno|sinistro)"
+_VICTIM_CIVIL = r"danneggiat|\battor[ei]\b|ricorrent|familiar|congiunt|\bered[ei]\b|genitor"
+
+
+def client_side(party: str) -> str:
+    """"accused", "victim" or "" (no role word) from the client's name and position."""
+    text = _low(party)
+    first = []
+    for side, pattern in (("accused", _ACCUSED_CRIMINAL), ("victim", _VICTIM_CRIMINAL), ("accused", _ACCUSED_CIVIL),
+                          ("victim", _VICTIM_CIVIL)):
+        m = re.search(pattern, text)
+        if m:
+            first.append((m.start(), side))
+    return min(first)[1] if first else ""
+
+
+def fit_to_role(signals: Optional[Dict[str, Any]], party: str) -> str:
+    """ROLE_BLOCKS_ENABLED: in place, the criminal profile among the signals' tools written for the client's side
+    (CRIMINAL_BY_SIDE: text and refs, 589/590 c.p. kept as the harm chose them); the side, "" when unknown or the
+    flag is off (the profile then unchanged)."""
+    if not feature_flags.enabled(ROLE_BLOCKS_FLAG) or not signals:
+        return ""
+    side = client_side(party)
+    if not side:
+        return ""
+    for tool in signals.get("tools") or []:
+        if tool.get("id") != CRIMINAL_TOOL:
+            continue
+        offences = [list(r) for r in tool.get("refs") or [] if tuple(r) in (("589", "c.p."), ("590", "c.p."))]
+        fitted = CRIMINAL_BY_SIDE[side]
+        tool.update(text=fitted["text"], side=side, what=fitted["what"],
+                    refs=offences + [list(r) for r in fitted["refs"] if r[0] not in ("589", "590")])
+    signals["side"] = side
+    return side
 
 
 def tools_block(signals: Optional[Dict[str, Any]], criminal: bool = False) -> str:

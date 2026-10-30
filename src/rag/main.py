@@ -28,7 +28,7 @@ from .calculation import (
     route_after_gate,
 )
 from .issue_spotting import issue_spotting
-from . import source_tiers
+from . import protected_sources, source_tiers
 from .graph_nodes import (
     apply_summary_confirmation,
     article_router,
@@ -201,8 +201,10 @@ def build_graph(compile_graph: bool = True):
     # Nodes that need the Neo4j driver are wrapped with partial.
     # PRIMARY_FIRST_ENABLED (source_tiers.py): on a direct question, every node that finds articles keeps
     # only primary (and special) documents' rows; the rulings join at the synthesis, as support.
+    # PROTECTED_PARAPHRASE_ENABLED (protected_sources.py): every node that finds rows marks the protected ones.
     def tiered(fn, stage):
-        return source_tiers.primary_node(fn, stage, driver, NEO4J_DATABASE)
+        return protected_sources.node(source_tiers.primary_node(fn, stage, driver, NEO4J_DATABASE), stage,
+                                      driver, NEO4J_DATABASE)
 
     graph.add_node("decompose_query", partial(decompose_query, driver=driver, database=NEO4J_DATABASE))
     graph.add_node(
@@ -243,7 +245,8 @@ def build_graph(compile_graph: bool = True):
     )
     graph.add_node(
         "dottrina_search",
-        partial(dottrina_search, driver=driver, database=NEO4J_DATABASE),
+        protected_sources.node(partial(dottrina_search, driver=driver, database=NEO4J_DATABASE),
+                               "dottrina_search", driver, NEO4J_DATABASE),
     )
     graph.add_node("generate_cypher_reformulation", generate_cypher_reformulation)
     graph.add_node(

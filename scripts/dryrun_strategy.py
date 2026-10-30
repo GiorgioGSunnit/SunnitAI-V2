@@ -14,7 +14,10 @@ Prints only status, sizes and timings, never the document's or the answer's text
   - the applicability check: articles checked, batches, failed batches, unchecked, duration,
     error -- from its vlog events (the live code logs fewer fields);
   - the draft prompt: estimated tokens, budget, trim step, articles dropped to fit;
-  - the answer's length and citation count, and the total time.
+  - the answer's length and citation count, and the total time;
+  - the verbatim overlaps with protected sources (found / rewritten / dropped / remaining, target 0) and the
+    protected excerpts shown in the sources (target 0): PROTECTED_PARAPHRASE_ENABLED, counted with it off too
+    (--set PROTECTED_PARAPHRASE_ENABLED=true for the run with it on).
 
 The document is an upload (--document-id), a local file read as an upload is (--file:
 .pdf/.docx/.txt), or an eval case's question sent as the chat sends a message with no
@@ -183,6 +186,9 @@ def summarise(events: list, status: str, result, elapsed: float, document_chars:
     if isinstance(result, dict):
         out.append(f"answer: {len(result.get('draft') or '')} characters, "
                    f"{len(result.get('citations') or [])} citations")
+        from src.rag import protected_sources
+        out.append(protected_sources.report_line(protected_sources.run_record(
+            events, result.get("draft") or "", citations=result.get("citations") or [])))
     out += vote_trace(events, (result or {}).get("draft") if isinstance(result, dict) else "")
     return out
 
@@ -300,7 +306,7 @@ def main() -> None:
     events = []
     dg.vlog = lambda event, data=None, *a, **k: events.append((event, data, k.get("duration_ms")))
     # modules that log through their own vlog (fact_signals: its typed facts, saved whole as "facts")
-    for module in ("ruling_cards", "vote_pool", "fact_signals", "source_tiers", "query_router"):
+    for module in ("ruling_cards", "vote_pool", "fact_signals", "source_tiers", "query_router", "protected_sources"):
         try:
             setattr(__import__(f"src.rag.{module}", fromlist=["vlog"]), "vlog", dg.vlog)
         except ImportError:

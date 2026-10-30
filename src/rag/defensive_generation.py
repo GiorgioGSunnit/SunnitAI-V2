@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import article_text, feature_flags
+from . import article_text, comma_material, feature_flags, protected_sources
 from .ai_chat import _call_chat, embedding_model, parse_json_reply
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
@@ -305,12 +305,7 @@ def _generate_legal_reasoning(
 ) -> str:
     """Second focused LLM call for sections 4 and 5 — deep legal reasoning."""
 
-    citations_text = ""
-    if citations:
-        citations_text = "\n".join(
-            f"- {c['document_name']}, {s['name']}: {s.get('plain_text','')[:400]}"
-            for c in citations[:6] for s in (c.get('sections') or [])[:2]
-        )
+    citations_text = protected_sources.citation_lines(citations, 400, docs=6) if citations else ""
 
     system = (
         "Sei un avvocato esperto di diritto italiano con 20 anni di esperienza in contenzioso. "
@@ -375,12 +370,7 @@ def generate_defensive_draft(
     extra_instructions: str = "",
     article_texts: list = None,
 ) -> str:
-    citations_text = ""
-    if citations:
-        citations_text = "\n".join(
-            f"- {c['document_name']}, {s['name']}: {s.get('plain_text', '')[:400]}"
-            for c in citations[:6] for s in (c.get("sections") or [])[:2]
-        )
+    citations_text = protected_sources.citation_lines(citations, 400, docs=6) if citations else ""
 
     system = (
         "Sei un avvocato esperto di diritto italiano con 20 anni di esperienza in contenzioso civile e penale. "
@@ -2441,6 +2431,10 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
     """One labelled block per article (its sections joined) or per ruling (its
     chosen passage, else the matched section), each cut to `chars`."""
     grouped: Dict[str, List[str]] = {}
+    protected: set = set()
+    # COMMA_MATERIAL_ENABLED: an article whose row holds its commi is given the commi that serve its issue
+    # (comma_material.passage), within the same budget, instead of its first `chars` characters.
+    by_commi: Dict[str, str] = {}
     for row in rows:
         _s = row.get("s") or {}
         # abstract fallback: special/dottrina books (Commentato, Fiscalita) are
@@ -2448,12 +2442,21 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
         # (same field the ingestion step embeds from — see BE's "abstract-only
         # sections" commit). plain_text-only here silently dropped their text.
         text = row.get("_passage") or " ".join((_s.get("plain_text") or _s.get("abstract") or "").split())
-        if not text:
+        if not text and not (row.get(comma_material.COMMI_KEY) and comma_material.enabled()):
             continue
         label = (f"art. {row['_article'][0]} {row['_article'][1]}" if row.get("_article")
                  else _ruling_label(row))
         grouped.setdefault(label, []).append(text)
-    return "\n\n".join(f"[{label}]\n{' '.join(texts)[:chars]}" for label, texts in grouped.items())
+        if protected_sources.tag(row):
+            protected.add(label)
+        if row.get("_article") and label not in by_commi:
+            commi = comma_material.passage(row, min(chars, row.get("_comma_chars") or chars))
+            if commi:
+                by_commi[label] = commi
+    # PROTECTED_PARAPHRASE_ENABLED: a protected passage carries the tag after its label (the label itself
+    # unchanged, the citations are matched by it).
+    return "\n\n".join(f"[{label}]{' ' + protected_sources.TAG if label in protected else ''}\n"
+                         f"{by_commi.get(label) or ' '.join(texts)[:chars]}" for label, texts in grouped.items())
 
 
 def _grouped_source_block(article_rows: List[Dict[str, Any]], questioni: List[Dict[str, Any]],
@@ -3106,7 +3109,10 @@ def _refill_order(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _with_text_cut(row: Dict[str, Any], chars: int) -> Dict[str, Any]:
-    """A copy of the row whose text, as _source_block reads it, is cut to chars."""
+    """A copy of the row whose text, as _source_block reads it, is cut to chars (COMMA_MATERIAL_ENABLED, a row
+    holding its commi: the budget only, _source_block chooses the commi within it)."""
+    if row.get(comma_material.COMMI_KEY) and comma_material.enabled():
+        return {**row, "_comma_chars": chars}
     s = row.get("s") or {}
     text = row.get("_passage") or " ".join((s.get("plain_text") or s.get("abstract") or "").split())
     return {**row, "_passage": text[:chars]}
@@ -5275,6 +5281,8 @@ def _regime_rows(session, driver, database: str, analysis: Dict[str, Any]) -> Li
         from .doc_lookup import _fetch_doc_names
         documents = _fetch_doc_names(driver, database)
         fact_signals.attach_term_sources(session, documents, signals)
+        # ROLE_BLOCKS_ENABLED: the criminal profile for the client's side, before its articles are read.
+        fact_signals.fit_to_role(signals, _stance_party(analysis))
         tools = fact_signals.regime_refs(signals)
         rows = _fetch_any(session, documents, list(tools)) if tools else []
     except Exception as exc:
@@ -5288,6 +5296,7 @@ def _regime_rows(session, driver, database: str, analysis: Dict[str, Any]) -> Li
         "tools": [t["id"] for t in signals.get("tools") or []],
         "damages": [d["id"] for d in signals.get("damages") or []],
         "multi_roles": signals.get("multi_roles") or [], "posture": signals.get("posture") or {},
+        "side": signals.get("side") or "",
         "tool_articles": sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in rows if r.get("_article")}),
         "terms": [t.get("text") for t in signals.get("terms") or []],
         "term_refs": {t["id"]: t.get("ref") for t in signals.get("terms") or []}})
@@ -5447,16 +5456,31 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     ruling_rows = _ruling_fit(facts, request, ruling_rows, analysis)
     principles = _extract_principles(facts, analysis, ruling_rows, request)
     ruling_rows = _with_fit_facts(ruling_rows)
+    if protected_sources.enabled() or comma_material.enabled():
+        try:
+            with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+                # PROTECTED_PARAPHRASE_ENABLED: the protected rows marked (doctrine reaches a criminal case as a
+                # ruling).
+                protected_sources.mark(article_rows + ruling_rows, session, "strategy")
+                # COMMA_MATERIAL_ENABLED: each article's commi, its focus the analysis question it was found for,
+                # the commi the case names always given.
+                if comma_material.attach(session, article_rows, "strategy"):
+                    comma_material.set_focus(article_rows, comma_material.analysis_focus(article_rows, analysis),
+                                             comma_material.named_commi(_case_text(facts, request)))
+        except Exception as exc:
+            logger.warning("protected rows / commi not read: %s", exc)
     system = _parere_system(analysis, session_lang)
     articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
                                                   request, principles)
+    human = protected_sources.with_rule(human)
+    comma_material.log_material("draft_prompt", articles, article_rows)
     # PLAN_THEN_WRITE_ENABLED: a plan, then the sections from it (plan_then_write.py); None on
     # any failure, and the parere is written in one call as before.
     planned = None
     if feature_flags.enabled(PLAN_THEN_WRITE_FLAG):
         from . import plan_then_write
         documents_for_plan: List[Dict[str, Any]] = []
-        if plan_then_write._discipline():
+        if plan_then_write._discipline() or plan_then_write.grounded_review.enabled():
             try:
                 from .doc_lookup import _fetch_doc_names
                 documents_for_plan = _fetch_doc_names(driver, NEO4J_DATABASE)
@@ -5479,6 +5503,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             logger.warning("draft prompt over the context, retrying once with a smaller one: %s", str(exc)[:200])
             articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
                                                           request, principles, budget=_DRAFT_INPUT_BUDGET * 7 // 10)
+            human = protected_sources.with_rule(human)
             draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                                max_tokens=_PARERE_TOKENS)
         vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
@@ -5523,6 +5548,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                                                      documents=documents, session=session)
         except Exception as exc:
             logger.warning("answer invariants failed, draft kept: %s", exc)
+    # PROTECTED_PARAPHRASE_ENABLED: no sentence reproduces a protected source of the material (counted only, off).
+    draft, _ = protected_sources.enforce(draft, rows=article_rows + ruling_rows, stage="strategy")
 
     arguments_at = "**4." if planned else "**3."      # where the client's arguments start
     # WRITER_RULES_ENABLED: a parere is complete in itself, no "deep-dive" links under it (the lawyer's review).
@@ -5546,7 +5573,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     _log_rulings_cited(draft, ruling_rows)
     source_rows = (_draft_sources(draft, article_rows, ruling_rows, documents) if citations_only
                    else article_rows + ruling_rows)
-    citations = [c for c in _rows_to_sources(source_rows) if c.get("sections")]
+    citations = protected_sources.redact([c for c in _rows_to_sources(source_rows) if c.get("sections")],
+                                         "strategy")
     vlog("case_analysis_pipeline", {"v2": case_analysis_v2, "pool_fusion": pool_fusion},
         duration_ms=(time.time() - pipeline_t0) * 1000)
     return {"draft": draft, "citations": citations,
@@ -5572,12 +5600,7 @@ def generate_deepdive_analysis(topic: str, chat_history: list, session_lang: str
     except Exception as exc:
         logger.warning("generate_deepdive_analysis: RAG failed: %s", exc)
 
-    citations_text = ""
-    if citations:
-        citations_text = "\n".join(
-            f"- {c['document_name']}, {s['name']}: {s.get('plain_text', '')[:400]}"
-            for c in citations[:5] for s in (c.get("sections") or [])[:2]
-        )
+    citations_text = protected_sources.citation_lines(citations, 400) if citations else ""
 
     original_draft = ""
     for msg in reversed(chat_history):
@@ -5613,10 +5636,12 @@ def generate_deepdive_analysis(topic: str, chat_history: list, session_lang: str
         "Cassazione [DA VERIFICARE]' senza inventare numeri"
     )
 
-    return _call_chat(
+    analysis = _call_chat(
         [
-            SystemMessage(content=system),
+            SystemMessage(content=protected_sources.with_rule(system)),
             HumanMessage(content=f"Approfondisci '{topic}' in relazione al caso descritto nella bozza."),
         ],
         max_tokens=2000,
     )
+    return protected_sources.enforce(analysis, texts=protected_sources.citation_texts(citations),
+                                     stage="deepdive")[0]

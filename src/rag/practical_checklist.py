@@ -184,9 +184,34 @@ AREA_CHECKS: Dict[str, List[str]] = {
 }
 
 
-def checks_for(areas: Iterable[str], posture_type: str = "") -> List[str]:
-    """The posture's checks, then each area's, without repeats."""
-    checks = list(POSTURE_CHECKS.get(posture_type or "", []))
+# ROLE_BLOCKS_ENABLED (fetch_audit on run 0812): POSTURE_CHECKS' criminal postures are the defence's; an offended
+# party (side "victim") gets its own instead -- the riti alternativi, the defence's memorie and appeal are not its acts.
+VICTIM_POSTURE_CHECKS: Dict[str, List[str]] = {
+    "indagini_preliminari": [
+        "Querela, se il reato è procedibile a querela: forma (art. 336 c.p.p.) e termine (art. 124 c.p.); per un "
+        "reato procedibile d'ufficio basta la denuncia.",
+        "Diritti della persona offesa nelle indagini: memorie e indicazione di elementi di prova (art. 90 c.p.p.); "
+        "avviso della richiesta di archiviazione e opposizione (artt. 408 e 410 c.p.p.).",
+        "Incidente probatorio, che la persona offesa può chiedere al pubblico ministero di promuovere (art. 394 "
+        "c.p.p.), quando una prova rischia di disperdersi.",
+        "Costituzione di parte civile per il risarcimento (artt. 74 e 76 c.p.p.), dall'udienza preliminare.",
+    ],
+    "giudizio_penale_primo_grado": [
+        "Costituzione di parte civile entro gli accertamenti sulla costituzione delle parti (artt. 76 e 79 c.p.p.) "
+        "e citazione del responsabile civile (art. 83 c.p.p.).",
+        "Provvisionale sul risarcimento con la sentenza di condanna (art. 539 c.p.p.).",
+    ],
+    "condanna_primo_grado": [
+        "Impugnazione della parte civile ai soli effetti della responsabilità civile (art. 576 c.p.p.).",
+    ],
+}
+
+
+def checks_for(areas: Iterable[str], posture_type: str = "", side: str = "") -> List[str]:
+    """The posture's checks (an offended party's own for a criminal posture: VICTIM_POSTURE_CHECKS), then each
+    area's, without repeats."""
+    own = VICTIM_POSTURE_CHECKS.get(posture_type or "") if side == "victim" else None
+    checks = list(own if own is not None else POSTURE_CHECKS.get(posture_type or "", []))
     for area in areas:
         checks += [c for c in AREA_CHECKS.get(area, []) if c not in checks]
     return checks
@@ -220,14 +245,15 @@ def item_refs(item: str) -> List[Tuple[str, str]]:
     return refs
 
 
-def gated_checks(areas: Iterable[str], posture_type: str, allowed: Callable[[Tuple[str, str]], bool]) -> List[str]:
+def gated_checks(areas: Iterable[str], posture_type: str, allowed: Callable[[Tuple[str, str]], bool],
+                 side: str = "") -> List[str]:
     """checks_for, keeping only the items whose named articles are all allowed (allowed(ref): the
     article went through the applicability check), and the areas' pre-litigation steps only with a
     pre-litigation posture. The posture is method_candidates.case_lists' own: one that does not fit
     the case's areas has already become "" there."""
     pre_litigation = {_MEDIATION_REAL_RIGHTS, _MEDIATION_LEASE, _MEDIATION_SUCCESSION}
     out = []
-    for item in checks_for(areas, posture_type):
+    for item in checks_for(areas, posture_type, side):
         if item in pre_litigation and posture_type != "precontenzioso":
             continue
         if all(allowed(ref) for ref in item_refs(item)):
