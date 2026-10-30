@@ -40,6 +40,21 @@ def test_plan_skips_collisions():
     assert ro._articles(renames) == "1, 3"
 
 
+def test_plan_leaves_an_article_the_document_already_has_under_its_own_name():
+    renames, left = ro.plan(["fine.13.1.0", "altro.13.2.0", "solo.14.0.0", "misure.21-bis.0.0"],
+                            existing={"13.0.0", "21-bis.1.0", "preambolo"})
+    assert renames == [("solo.14.0.0", "14.0.0")]
+    why = "the article is already in the document under its own name"
+    assert sorted(left) == [("altro.13.2.0", why), ("fine.13.1.0", why), ("misure.21-bis.0.0", why)]
+
+
+def test_mixed_articles_are_renamed_ones_next_to_original_pieces():
+    sections = [("3.0.0", "tutti_cittadini.3.0.0"), ("3.1.0", None), ("4.0.0", "lavoro.4.0.0"),
+                ("21-bis.0.0", "misure.21-bis.0.0"), ("21-bis.2", None), ("odd.5.0.0", None), ("preambolo", None)]
+    assert ro.mixed_articles(sections) == ["3", "21-bis"]
+    assert ro.article("21-bis.0.0") == "21-bis" and ro.article("59_3_19") == "59" and ro.article("preambolo") is None
+
+
 def test_the_cypher_pattern_matches_what_the_python_one_does():
     pattern = re.compile(ro.ODD_CYPHER)
     for name in ["tutti_cittadini.3.0.0", "capitolo_1_governo.1", "parte.5.2.X.0", "3.0.0", "21-bis", "preambolo"]:

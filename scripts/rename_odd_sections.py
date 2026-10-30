@@ -9,14 +9,17 @@ The new name drops the leading word: "tutti_cittadini.3.0.0" -> "3.0.0", "tutte_
 left alone, and listed, when
   - the word has digits ("capitolo_1_x.1", "definizioni32.1.1_7", "articolo_2.3.1.0": the number may not be the
     article's), or the rest is not an article's name ("012.0.0", "5.2.ALTRI ELEMENTI...");
-  - the new name is already in the document, or two old names give the same one.
+  - the new name is already in the document, or two old names give the same one;
+  - the document already has the article under its own name ("3.1.0" next to "tutti_cittadini.3.0.0"): renaming
+    would mix two texts in one article, and the article is found by number already (30 Oct).
 The old name is kept in name_before_rename (the API opening a source by name also tries it); --undo puts it back.
 Nothing is deleted.
 
   --doc NAME                  one document, by its exact name: a dry run listing every rename
   --doc NAME --write          rename them
   --doc NAME --undo --write   put the old names back
-  --all                       every primary document: counts only
+  --all                       every primary document: counts only, and the articles already renamed whose
+                              pieces sit next to pieces that always had their own name ("mixed": check them)
 
     cd /opt/chatbot && venv/bin/python /root/rename_odd_sections.py --doc "Costituzione della Repubblica Italiana 2025"
 """
@@ -32,6 +35,13 @@ from typing import Iterable, List, Optional, Set, Tuple
 _ODD = re.compile(r"^([a-z][a-z0-9_]*)\.(.+)$")
 _ARTICLE_NAME = re.compile(r"^[1-9]\d*(?:-[a-z]+)?(?:\.\d+)*(?:_\d+)*$")
 ODD_CYPHER = "^[a-z][a-z0-9_]*[.].+$"
+_ARTICLE = re.compile(r"^(\d+(?:-[a-z]+)?)")
+
+
+def article(name: str) -> Optional[str]:
+    """The article a Section name belongs to: "3.1.0" -> "3", "21-bis.0.0" -> "21-bis", "preambolo" -> None."""
+    m = _ARTICLE.match(name or "")
+    return m.group(1) if m else None
 
 
 def new_name(name: str) -> Tuple[Optional[str], Optional[str]]:
@@ -52,11 +62,12 @@ def _order(name: str) -> tuple:
 
 
 def plan(odd: Iterable[str], existing: Set[str]) -> Tuple[List[Tuple[str, str]], List[Tuple[str, str]]]:
-    """([(old, new)] to rename, [(old, why)] left alone) for one document's odd Section names; `existing` holds its
-    other names (at least those equal to a new name)."""
+    """([(old, new)] to rename, [(old, why)] left alone) for one document's odd Section names; `existing` holds all its
+    other names."""
     odd = sorted({n for n in odd if n}, key=lambda n: (_order(n), n))
     wanted = {old: new_name(old) for old in odd}
     gives = Counter(new for new, _ in wanted.values() if new)
+    present = {article(n) for n in existing} - {None}
     renames, left = [], []
     for old, (new, why) in wanted.items():
         if new is None and why is None:
@@ -65,11 +76,21 @@ def plan(odd: Iterable[str], existing: Set[str]) -> Tuple[List[Tuple[str, str]],
             new, why = None, "the new name is already in the document"
         elif new and gives[new] > 1:
             new, why = None, "two old names give it"
+        elif new and article(new) in present:
+            new, why = None, "the article is already in the document under its own name"
         if new:
             renames.append((old, new))
         else:
             left.append((old, why))
     return renames, left
+
+
+def mixed_articles(sections: Iterable[Tuple[str, Optional[str]]]) -> List[str]:
+    """The articles renamed earlier (name_before_rename set) that also have pieces which always had their own name:
+    two texts may be mixed in them. `sections`: (name, name_before_rename)."""
+    renamed = {article(n) for n, before in sections if before is not None}
+    original = {article(n) for n, before in sections if before is None and n and not _ODD.match(n)}
+    return sorted((renamed & original) - {None}, key=lambda a: (int(re.match(r"\d+", a).group(0)), a))
 
 
 def _articles(renames: List[Tuple[str, str]]) -> str:
@@ -99,22 +120,23 @@ def main() -> int:
     with driver.session(database=NEO4J_DATABASE, default_access_mode=mode) as session:
         if args.all:
             rows = session.run(
-                "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.document_type = 'primary' AND s.name =~ $odd "
-                "RETURN d.id AS id, d.name AS name, collect(DISTINCT s.name) AS odd", odd=ODD_CYPHER).data()
-            wanted = [{"doc": r["id"], "name": new} for r in rows for new, _ in map(new_name, r["odd"]) if new]
-            taken = {(x["doc"], x["name"]) for x in session.run(
-                "UNWIND $items AS it MATCH (d:Document {id: it.doc})-[:CONTAINS]->(s:Section {name: it.name}) "
-                "RETURN DISTINCT it.doc AS doc, it.name AS name", items=wanted).data()}
+                "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.document_type = 'primary' "
+                "WITH d, collect([s.name, s.name_before_rename]) AS secs "
+                "WHERE any(x IN secs WHERE x[0] =~ $odd OR x[1] IS NOT NULL) "
+                "RETURN d.id AS id, d.name AS name, secs", odd=ODD_CYPHER).data()
             out = []
             for r in rows:
-                renames, left = plan(r["odd"], {name for doc, name in taken if doc == r["id"]})
+                names = [n for n, _ in r["secs"] if n]
+                renames, left = plan([n for n in names if _ODD.match(n)], {n for n in names if not _ODD.match(n)})
                 kind = kind_of(r["name"])[0]
-                out.append((len(renames), len(left), r["name"] if kind == "other" else f"({kind})", renames))
-            print(f"{'rename':>6} {'left':>5}  document: the articles renamed")
-            for n, n_left, name, renames in sorted(out, key=lambda x: -x[0]):
-                print(f"{n:>6} {n_left:>5}  {name}: {_articles(renames) or '-'}")
+                out.append((len(renames), len(left), mixed_articles([tuple(x) for x in r["secs"]]),
+                            r["name"] if kind == "other" else f"({kind})", renames))
+            print(f"{'rename':>6} {'left':>5}  document: the articles renamed  [mixed: renamed earlier, check]")
+            for n, n_left, mixed, name, renames in sorted(out, key=lambda x: (-x[0], -len(x[2]))):
+                print(f"{n:>6} {n_left:>5}  {name}: {_articles(renames) or '-'}"
+                      + (f"  [mixed: {', '.join(mixed)}]" if mixed else ""))
             print(f"total: {sum(x[0] for x in out)} to rename, {sum(x[1] for x in out)} left alone, "
-                  f"in {len(out)} documents")
+                  f"{sum(len(x[2]) for x in out)} mixed articles, in {len(out)} documents")
             return 0
 
         docs = session.run("MATCH (d:Document {name: $name}) RETURN d.id AS id, d.document_type AS type",
