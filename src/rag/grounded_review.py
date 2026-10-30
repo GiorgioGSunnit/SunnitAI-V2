@@ -23,12 +23,20 @@ material is the articles of its material that the check graded 2 or more, the ca
 terms offered (strict_refs). A not-supported sentence's citation outside it is never fetched and never pointed to: the
 sentence is rewritten from the material without it, or dropped; pointers only to articles inside it.
 
+GROUNDED_REVIEW_POLICY=abstain (default "rewrite"; second round: rewriting from the material still left rules from
+memory): no fetch and no rewrite. Every law / case-law / procedure sentence (regola, istituto, procedura, massima)
+judged not supported becomes an explicit abstention, written in code: "Non ho trovato nei testi disponibili la
+disciplina di <topic> (<article>): da verificare." -- the topic the cited article's rubrica, else the plan issue
+closest to the sentence; the article kept only when it is in the checked material (strict_refs). Consecutive
+abstentions merge into one line per topic. Supported sentences and applications to the facts are untouched.
+
 Logged as grounded_review: per section the sentences judged and the verdicts, per sentence touched what was done
-(rewritten / pointer / dropped / kept / kept_fetched), the articles read and their text (fetch_audit counts a fetched
-article as given to the section that fetched it). Off, nothing runs.
+(rewritten / pointer / dropped / kept / kept_fetched / abstained), the abstention lines written, the articles read and
+their text (fetch_audit counts a fetched article as given to the section that fetched it). Off, nothing runs.
 """
 
 import logging
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
@@ -50,8 +58,24 @@ REWRITE_MARK = "FRASI DA RISCRIVERE:"   # fetch_audit cuts a rewrite call's mate
 VERDICTS = ("supportata", "assente", "contraddetta")
 
 
+POLICY_VAR = "GROUNDED_REVIEW_POLICY"
+POLICIES = ("rewrite", "abstain")
+ABSTENTION_START = "Non ho trovato nei testi disponibili la disciplina di"
+ABSTAIN_KINDS = ("regola", "istituto", "procedura", "massima")
+
+
 def enabled() -> bool:
     return feature_flags.enabled(FLAG)
+
+
+def policy() -> str:
+    """GROUNDED_REVIEW_POLICY: "rewrite" (the default, and for any other value) or "abstain"."""
+    value = (os.getenv(POLICY_VAR) or "").strip().lower()
+    return value if value in POLICIES else "rewrite"
+
+
+def abstain() -> bool:
+    return enabled() and policy() == "abstain"
 
 
 def strict() -> bool:
@@ -366,18 +390,78 @@ def fetch_blocks(refs: List[tuple], documents: List[Dict[str, Any]], session=Non
 
 # --- the review -----------------------------------------------------------------------------------------------------
 
+# --- GROUNDED_REVIEW_POLICY=abstain ---------------------------------------------------------------------------------
+
+def _lower_first(text: str) -> str:
+    text = " ".join((text or "").split()).strip(" .;:")
+    return text[:1].lower() + text[1:] if text[1:2].islower() else text
+
+
+def topic_of(sentence: str, refs: Sequence[tuple], headings: Dict[tuple, str], topics: Sequence[str] = ()) -> str:
+    """What an abstention is about: the rubrica of the first article the sentence cites that has one, else the plan
+    issue (`topics`) sharing most content words with it, else "questo profilo"."""
+    from . import anchored_writing as aw
+    from . import plan_then_write as ptw
+    for ref in refs:
+        heading = next((h for k, h in headings.items() if ptw._same_ref(k, ref)), "")
+        if heading:
+            return _lower_first(heading)
+    words = aw.stems(sentence)
+    best = max(topics or [], key=lambda t: len(words & aw.stems(t)), default="")
+    return _lower_first(best) if best and words & aw.stems(best) else "questo profilo"
+
+
+def abstention(topic: str, refs: Sequence[tuple]) -> str:
+    """ "Non ho trovato nei testi disponibili la disciplina di <topic> (art. N c.c.): da verificare." """
+    from . import plan_then_write as ptw
+    cited = ", ".join(f"art. {r[0]} {ptw._code_key(r[1])}" for r in dict.fromkeys(refs))
+    return f"{ABSTENTION_START} {topic}" + (f" ({cited})" if cited else "") + ": da verificare."
+
+
+def abstentions(text: str) -> int:
+    """The abstention lines in a text (diagnose_long counts them per answer)."""
+    return (text or "").count(ABSTENTION_START)
+
+
+def _abstain(text: str, items: List[Tuple[int, int, str, str, List[tuple]]]) -> Tuple[str, int]:
+    """(text, lines written): each not-supported sentence (start, end, sentence, topic, refs kept) replaced by its
+    abstention; a run of consecutive ones (nothing but spaces between them) by one line per topic, the run's articles
+    of that topic together."""
+    runs: List[List[Tuple[int, int, str, str, List[tuple]]]] = []
+    for item in sorted(items):
+        if runs and not text[runs[-1][-1][1]:item[0]].strip():
+            runs[-1].append(item)
+        else:
+            runs.append([item])
+    changes: Dict[Tuple[int, int], Optional[str]] = {}
+    lines = 0
+    for run in runs:
+        by_topic: Dict[str, List[tuple]] = {}
+        for _, _, _, topic, refs in run:
+            by_topic.setdefault(topic, []).extend(r for r in refs if r not in by_topic.get(topic, []))
+        written = [abstention(topic, refs) for topic, refs in by_topic.items()]
+        lines += len(written)
+        changes[(run[0][0], run[0][1])] = "\n".join(written)
+        for s, e, _, _, _ in run[1:]:
+            changes[(s, e)] = None
+    return apply(text, changes), lines
+
+
 def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]],
            documents: Optional[List[Dict[str, Any]]] = None, article_rows: Optional[List[Dict[str, Any]]] = None,
            fetch: Optional[Callable[[List[tuple]], Dict[tuple, str]]] = None,
-           checked: Optional[Sequence[tuple]] = None) -> List[Tuple[str, str]]:
+           checked: Optional[Sequence[tuple]] = None, topics: Sequence[str] = ()) -> List[Tuple[str, str]]:
     """The sections with their not-supported rule-sentences rewritten from their material, as pointers, or (filler
     citing nothing) dropped; any failure keeps the section as it was. `fetch` (tests) replaces fetch_blocks.
     checked (GROUNDED_REVIEW_STRICT_ENABLED: strict_refs): a section's checked material is the articles of its
     material that are among them; a citation outside it is never fetched nor pointed to -- the sentence is rewritten
-    from the material without it, or dropped (choose_strict)."""
+    from the material without it, or dropped (choose_strict). GROUNDED_REVIEW_POLICY=abstain: each not-supported
+    law / case-law / procedure sentence replaced by its abstention (_abstain; `topics`: the plan's issue titles),
+    keeping only the articles of `checked`; no fetch, no rewrite."""
     from . import plan_then_write as ptw
     documents = documents or []
-    is_strict = checked is not None
+    abstaining = policy() == "abstain"
+    is_strict = checked is not None and not abstaining
     known = {r["_article"] for r in article_rows or [] if r.get("_article")}
     material_of = {job[0]: job[2] for job in jobs}
     fetch = fetch or (lambda refs: fetch_blocks(refs, documents))
@@ -417,9 +501,33 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
                 flagged.append((i, k, kind, verdict, refs))
         stats.append(counts)
     entries: List[Dict[str, Any]] = []
+    if abstaining:
+        flagged = [f for f in flagged if f[2] in ABSTAIN_KINDS]
     if not flagged:
-        vlog("grounded_review", {**_log(stats, entries, {}, []), "strict": is_strict, "checked": len(checked or ())})
+        vlog("grounded_review", {**_log(stats, entries, {}, []), "strict": is_strict, "checked": len(checked or ()),
+                                 "policy": policy()})
         return sections
+    if abstaining:
+        headings = ptw._headings(article_rows or [])
+        out = list(sections)
+        lines = 0
+        for i in sorted({f[0] for f in flagged}):
+            items = []
+            for _, k, kind, verdict, refs in (f for f in flagged if f[0] == i):
+                s, e, sentence = found[i][k]
+                kept = [r for r in refs if any(ptw._same_ref(r, c) for c in checked or ())]
+                topic = topic_of(sentence, refs, headings, topics)
+                items.append((s, e, sentence, topic, kept))
+                entries.append({"section": sections[i][0], "kind": kind, "verdict": verdict, "how": "abstained",
+                                "sentence": sentence[:400], "topic": topic,
+                                "removed": [_label(r) for r in refs if r not in kept]})
+            text, n = _abstain(sections[i][1], items)
+            lines += n
+            out[i] = (sections[i][0], text or sections[i][1])
+        log = _log(stats, entries, {}, [])
+        log["counts"]["abstentions"] = lines         # lines written; "abstained": the sentences they replace
+        vlog("grounded_review", {**log, "strict": False, "checked": len(checked or ()), "policy": "abstain"})
+        return out
 
     # 2. the articles cited that the section's material does not hold: one read, then judged again with their text
     given = {i: ptw._material_refs(material_of.get(sections[i][0], ""), documents) for i in found}
@@ -510,7 +618,7 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
 
 def _log(stats: List[Dict[str, Any]], entries: List[Dict[str, Any]], fetched: Dict[tuple, str],
          missing: List[tuple]) -> Dict[str, Any]:
-    hows = ("rewritten", "pointer", "dropped", "kept", "kept_fetched")
+    hows = ("rewritten", "pointer", "dropped", "kept", "kept_fetched", "abstained")
     totals = {key: sum(s.get(key, 0) for s in stats) for key in ("sentences", "judged", "rule", "application") + VERDICTS}
     return {"sections": stats, "entries": entries, "totals": totals,
             "counts": {**{h: sum(1 for e in entries if e["how"] == h) for h in hows},

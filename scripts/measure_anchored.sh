@@ -1,25 +1,31 @@
 #!/usr/bin/env bash
-# ANCHORED_WRITING + ROLE_BLOCKS against the live configuration, in one go (run on the server, from the repo):
+# A candidate configuration against the live one, in one go (run on the server, from the repo):
 #
-#   nohup scripts/measure_anchored.sh [TAG] > /dev/null 2>&1 &
+#   nohup scripts/measure_anchored.sh [TAG [--set NAME=VALUE ...]] > /dev/null 2>&1 &
+#   LIVE_RUN=diagnose_long_runs/<an earlier live run> nohup scripts/measure_anchored.sh TAG --set ... &
 #
 #   live       diagnose_long from the live .env, no overrides (FACT_ISSUES, COMMA_MATERIAL, PROTECTED_PARAPHRASE,
-#              CCNL_PATH expected on: checked below, a warning if not)
-#   candidate  the same with ANCHORED_WRITING_ENABLED=true ROLE_BLOCKS_ENABLED=true
+#              CCNL_PATH expected on: checked below, a warning if not); LIVE_RUN: that run, not run again
+#   candidate  the same with the --set overrides after TAG (default: ANCHORED_WRITING_ENABLED=true
+#              ROLE_BLOCKS_ENABLED=true)
 #   then       diagnose_long --compare (headline + loss funnel), fetch_audit --mechanisms provenance,role on both,
 #              and a summary block: MENTIONED, rubrica-incompatible, extra per answer, law / case-law sentences from
-#              memory (%), role flags per 100 judged, expected articles lost in removed / rewritten sentences.
+#              memory (%), role flags per 100 judged, abstentions per answer, expected articles lost in removed /
+#              rewritten sentences.
 #
 # Everything goes to measure_runs/<TAG>/ (log.txt, compare.md, summary.md); DONE (or FAILED) written there last.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 TAG="${1:-aw-$(date +%Y%m%d-%H%M)}"
+shift $(( $# > 0 ? 1 : 0 ))
+SETS=("$@")
+[ ${#SETS[@]} -gt 0 ] || SETS=(--set ANCHORED_WRITING_ENABLED=true --set ROLE_BLOCKS_ENABLED=true)
 PY="${PY:-venv/bin/python}"
 OUT="measure_runs/$TAG"
-LIVE="${TAG}-live"
+LIVE_DIR="${LIVE_RUN:-diagnose_long_runs/${TAG}-live}"
+LIVE="$(basename "$LIVE_DIR")"
 CAND="${TAG}-candidate"
-LIVE_DIR="diagnose_long_runs/$LIVE"
 CAND_DIR="diagnose_long_runs/$CAND"
 AUDIT_DIR="fetch_audit_runs/$TAG"
 mkdir -p "$OUT"
@@ -32,15 +38,21 @@ for flag in FACT_ISSUES_ENABLED COMMA_MATERIAL_ENABLED PROTECTED_PARAPHRASE_ENAB
     grep -Eqi "^\s*${flag}\s*=\s*\"?(true|1|yes|on)\"?\s*$" .env || echo "WARNING: $flag is not on in .env"
 done
 grep -Eq '^\s*CCNL_PATH\s*=\s*\S' .env || echo "WARNING: CCNL_PATH is not set in .env"
-for flag in ANCHORED_WRITING_ENABLED ROLE_BLOCKS_ENABLED; do
-    grep -Eqi "^\s*${flag}\s*=\s*\"?(true|1|yes|on)\"?\s*$" .env && echo "WARNING: $flag is already on in .env: live = candidate"
+echo "candidate overrides: ${SETS[*]}"
+for pair in "${SETS[@]}"; do
+    [ "$pair" = "--set" ] && continue
+    grep -Eqi "^\s*${pair%%=*}\s*=\s*\"?${pair#*=}\"?\s*$" .env && echo "WARNING: ${pair%%=*} is already ${pair#*=} in .env"
 done
 
-echo "== live: $(date)"
-"$PY" scripts/diagnose_long.py --out "$LIVE_DIR"
+if [ -n "${LIVE_RUN:-}" ]; then
+    [ -d "$LIVE_DIR/cases" ] || { echo "LIVE_RUN $LIVE_DIR has no cases/"; false; }
+    echo "== live: reusing $LIVE_DIR"
+else
+    echo "== live: $(date)"
+    "$PY" scripts/diagnose_long.py --out "$LIVE_DIR"
+fi
 echo "== candidate: $(date)"
-"$PY" scripts/diagnose_long.py --out "$CAND_DIR" \
-    --set ANCHORED_WRITING_ENABLED=true --set ROLE_BLOCKS_ENABLED=true
+"$PY" scripts/diagnose_long.py --out "$CAND_DIR" "${SETS[@]}"
 
 echo "== compare: $(date)"
 "$PY" scripts/diagnose_long.py --compare "$LIVE_DIR" "$CAND_DIR" --compare-only > /dev/null
@@ -105,6 +117,7 @@ rows = [("MENTIONED", lambda a, n: f"{a['stage_counts']['MENTIONED']} / {len(a['
         ("case-law sentences from memory", lambda a, n: memory(n, ("massima",))),
         ("all rule-sentences from memory (target <10%)", lambda a, n: memory(n, fa.KINDS)),
         ("role flags per 100 judged", lambda a, n: flags(n)),
+        ("abstentions per answer", lambda a, n: round(a.get("abstentions", 0) / max(1, a.get("answered", 0)), 1)),
         ("expected articles lost in removed / rewritten / citation-dropped sentences", lambda a, n: lost(a))]
 print(f"# Summary: {' vs '.join(names)}\n\n{len(common)} cases in both runs, with an answer key and an answer.\n")
 print("| | " + " | ".join(names) + " |\n|---|" + "---:|" * len(names))

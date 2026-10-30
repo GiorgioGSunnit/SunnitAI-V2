@@ -488,6 +488,11 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 outside the section's checked material (its material's articles graded >= 2, named
                                 in the case, or offered as a tool or term) is never fetched nor pointed to; the
                                 sentence is rewritten from the material without that citation, or dropped.
+  GROUNDED_REVIEW_POLICY       "rewrite" (31 Oct; not a boolean): with GROUNDED_REVIEW_ENABLED, "abstain" replaces
+                                every not-supported law / case-law / procedure sentence with "Non ho trovato nei
+                                testi disponibili la disciplina di <topic> (<article>): da verificare." -- no fetch,
+                                no rewrite; the article kept only inside the checked material; consecutive ones one
+                                line per topic. Supported sentences and applications untouched.
   FACT_ISSUES_ENABLED          false (30 Oct, fetch_audit "captured but lost": 88% of 298 lost at "article
                                 resolved", 258 captured only as a fact): one call after the frame and the typed
                                 facts names, per decisive fact, the institutions it raises (heading words, code,

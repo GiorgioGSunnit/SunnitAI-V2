@@ -2309,7 +2309,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         t4 = time.time()
 
         def grounded(secs):
-            reviewed = grounded_review.review(secs, jobs, documents or [], article_rows or [], checked=checked)
+            reviewed = grounded_review.review(secs, jobs, documents or [], article_rows or [], checked=checked,
+                                              topics=[q.get("titolo") or "" for q in plan.get("questioni") or []])
             return [(title, text or original) for (title, original), (_, text) in zip(secs, reviewed)]
         sections = _step("grounded_review", sections, grounded)
         dg.vlog("grounded_review_llm", duration_ms=(time.time() - t4) * 1000)
@@ -2573,7 +2574,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
                               article_rows, case, coverage=use_of, standard=standard_blocks(analysis),
                               questions=explicit_questions(request, facts) if _review_fixes() else [],
                               checked=grounded_review.strict_refs(article_rows, named, analysis)
-                              if grounded_review.strict() else None, anchors=anchors)
+                              if grounded_review.strict() or grounded_review.abstain() else None, anchors=anchors)
     if sections is None:
         return None
     if use_of is not None:

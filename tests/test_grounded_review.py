@@ -103,7 +103,7 @@ def test_the_review_keeps_supported_rewrites_points_and_drops_only_filler(logged
     # one read for the whole parere, only of the articles cited and not in the material (9002 is given)
     assert reads == [[("9001", "c.c."), ("9005", "c.c.")]]
     log = [d for e, d in logged if e == "grounded_review"][-1]
-    assert log["counts"] == {"rewritten": 1, "pointer": 2, "dropped": 1, "kept": 0, "kept_fetched": 1,
+    assert log["counts"] == {"rewritten": 1, "pointer": 2, "dropped": 1, "kept": 0, "kept_fetched": 1, "abstained": 0,
                              "citations_removed": 0} and not log["strict"]
     assert log["totals"]["rule"] == 6 and log["totals"]["supportata"] == 1 and log["totals"]["contraddetta"] == 1
     assert log["fetched"] == {"art. 9001 c.c.": FETCHED[("9001", "c.c.")]} and log["not_found"] == ["art. 9005 c.c."]
@@ -407,3 +407,47 @@ def test_mechanisms_role_alone_makes_only_role_calls(tmp_path):
     out = fa.audit_case(case, fa.Judge(None, call=judge_call), None, None, A)
     assert set(asked) == {fa.ROLE_SYSTEM} and out["provenance"]["skipped"] == "not run"
     assert "per 100 judged" in fa.render([out], {"runs": ["r"], "judge": "x", "commi": "x", "when": "now"})
+
+
+# --- GROUNDED_REVIEW_POLICY=abstain ---------------------------------------------------------------------------------
+
+def test_abstain_policy_replaces_unsupported_rules_with_one_abstention_per_topic(monkeypatch):
+    events = []
+    monkeypatch.setattr(gr, "vlog", lambda event, data=None, **_: events.append((event, data)))
+    monkeypatch.setenv(gr.FLAG, "true")
+    monkeypatch.setenv(gr.POLICY_VAR, "abstain")
+
+    def judge_only(messages, max_tokens, **k):
+        assert messages[0].content == gr.JUDGE_SYSTEM, "abstain: no rewrite call"
+        return fake_chat_json(messages, max_tokens)
+    monkeypatch.setattr(dg, "_chat_json", judge_only)
+    rows = [{"_article": ("9001", "c.c."), "s": {"titolo_articolo": "Prescrizione immaginaria"}},
+            {"_article": ("9002", "c.c."), "s": {"titolo_articolo": "Danno cagionato da cose in custodia"}}]
+    application = "Caio non ha recintato il cortile e Tizio vi è caduto scendendo dalle scale di sera."
+    text = SECTION + "\n\n" + application
+    out = gr.review([("Norme e giurisprudenza", text)], [("Norme e giurisprudenza", "istr", MATERIAL, 400)], [],
+                    rows, fetch=lambda refs: pytest.fail("abstain: nothing fetched"), checked=[("9002", "c.c.")],
+                    topics=["Caduta nel cortile"])
+    start = gr.ABSTENTION_START
+    assert out[0][1] == (
+        f"{SUPPORTED}\n\n"
+        f"{start} prescrizione immaginaria: da verificare.\n"                         # 9001: outside the checked
+        f"{start} danno cagionato da cose in custodia (art. 9002 c.c.): da verificare.\n"   # 9002: checked, kept
+        f"{start} caduta nel cortile: da verificare.\n"                                # no citation: the plan issue
+        f"{start} questo profilo: da verificare.\n\n"                                  # filler + 9005, merged
+        f"{application}")
+    log = [d for e, d in events if e == "grounded_review"][-1]
+    assert log["policy"] == "abstain" and log["counts"]["abstained"] == 5 and log["counts"]["abstentions"] == 4
+    assert gr.abstentions(out[0][1]) == 4
+
+
+def test_abstain_policy_is_off_by_default_and_reads_only_its_values(monkeypatch):
+    monkeypatch.setenv(gr.FLAG, "true")
+    monkeypatch.delenv(gr.POLICY_VAR, raising=False)
+    assert gr.policy() == "rewrite" and not gr.abstain()
+    monkeypatch.setenv(gr.POLICY_VAR, "whatever")
+    assert gr.policy() == "rewrite"
+    monkeypatch.setenv(gr.POLICY_VAR, "Abstain")
+    assert gr.abstain()
+    assert gr.abstention("termine per ricorrere", [("9029", "c.p.a."), ("9029", "c.p.a.")]) == \
+        f"{gr.ABSTENTION_START} termine per ricorrere (art. 9029 c.p.a.): da verificare."

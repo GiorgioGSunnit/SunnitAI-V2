@@ -507,3 +507,24 @@ def test_expected_articles_lost_with_anchored_writing_s_removed_and_rewritten_se
     assert "| anchored writing: anchored / failing rewritten / kept / removed | off | 4 / 1 / 2 / 1 |" in text
     assert "| expected articles lost in removed / rewritten / citation-dropped sentences (anchored writing) | off | " \
            "1 / 1 / 1 |" in text
+
+
+def test_abstentions_per_answer_in_compare():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    from src.rag import grounded_review
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    line = f"{grounded_review.ABSTENTION_START} custodia: da verificare."
+    new_rec["draft"] = f"{line}\n{line}\nAltro testo."
+    assert dl.analyse_case(new_rec, ev)["abstentions"] == 2
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("live", old_rec), ("abstain", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    assert "| abstentions per answer (GROUNDED_REVIEW_POLICY=abstain) | 0.0 | 2.0 |" in dl.compare(dirs, ev)

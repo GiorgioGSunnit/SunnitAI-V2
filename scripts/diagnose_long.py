@@ -104,7 +104,7 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "STRICT_ARTICLES_ENABLED", "RULING_FIT_ENABLED", "REVIEW_FIXES_ENABLED", "ROUTER_ENABLED",
          "HYBRID_NARRATIVE_ENABLED", "PRIMARY_FIRST_ENABLED", "PROTECTED_PARAPHRASE_ENABLED",
          "COMMA_MATERIAL_ENABLED", "GROUNDED_REVIEW_ENABLED", "ROLE_BLOCKS_ENABLED",
-         "GROUNDED_REVIEW_STRICT_ENABLED", "FACT_ISSUES_ENABLED", "ANCHORED_WRITING_ENABLED"]
+         "GROUNDED_REVIEW_STRICT_ENABLED", "GROUNDED_REVIEW_POLICY", "FACT_ISSUES_ENABLED", "ANCHORED_WRITING_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -1113,6 +1113,8 @@ def analyse_case(rec: dict, ev) -> dict:
     out["fact_issues"] = _fact_issues_trace(rec)
     out["anchored"] = ((rec.get("anchored") or {}).get("totals") or {}) if isinstance(rec.get("anchored"), dict) else {}
     out["anchored_lost"] = _anchored_lost(rec, K, expected_keys, mentioned_eval | set(mentioned))
+    from src.rag import grounded_review
+    out["abstentions"] = grounded_review.abstentions(rec.get("draft") or "")    # GROUNDED_REVIEW_POLICY=abstain
     return out
 
 
@@ -1164,7 +1166,8 @@ def _grounded_line(g: dict) -> str:
             f"supported {g.get('supportata', 0)}, not in material {g.get('assente', 0)}, contradicted "
             f"{g.get('contraddetta', 0)}; kept after reading the cited article {g.get('kept_fetched', 0)}, rewritten "
             f"from the material {g.get('rewritten', 0)}, pointers {g.get('pointer', 0)}, dropped {g.get('dropped', 0)}, "
-            f"kept unchanged {g.get('kept', 0)}; articles read {g.get('fetched', 0)}, not found {g.get('not_found', 0)}")
+            f"kept unchanged {g.get('kept', 0)}, abstained {g.get('abstained', 0)} (in {g.get('abstentions', 0)} "
+            f"abstention lines); articles read {g.get('fetched', 0)}, not found {g.get('not_found', 0)}")
 
 
 def _protected_trace(rec: dict) -> dict:
@@ -1526,6 +1529,7 @@ def aggregate(cases: list) -> dict:
             "tiers": tier, "live": live, "invariants": inv, "evidence": evidence, "protected": protected,
             "grounded": dict(grounded), "fact_issues": fact_issues, "anchored": dict(anchored),
             "anchored_lost": anchored_lost, "overlap_failures": dict(overlap_failures),
+            "abstentions": sum(c.get("abstentions", 0) for c in answered), "answered": len(answered),
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -2194,6 +2198,8 @@ def compare(run_dirs: list, ev) -> str:
                 f"{a['invariants']['guards']['not_apply']} / {a['invariants']['guards']['orphans']} / "
                 f"{a['invariants']['guards']['against_client']}") if a["invariants"]["guards"]["logged"] else
                f"n/a / n/a / n/a / {a['invariants']['guards']['against_client']}", lambda a: "")]
+    rows += [("abstentions per answer (GROUNDED_REVIEW_POLICY=abstain)",
+              lambda a: round(a.get("abstentions", 0) / max(1, a.get("answered", 0)), 1), lambda a: "")]
     rows += [("MENTIONED", lambda a: a["stage_counts"]["MENTIONED"], lambda a: f" / {len(a['slots'])}"),
             ("not expected citations", lambda a: len(a["wrong"]), lambda a: ""),
             ("not expected per answer", lambda a: round(len(a["wrong"]) / max(1, len(common)), 1), lambda a: ""),
