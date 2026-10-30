@@ -14,7 +14,7 @@ import logging
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -612,6 +612,20 @@ _LAW_BEFORE_RE = re.compile(
     r"(d\.\s*lgs\.?|d\.\s*l\.|\bl\.|legge|d\.\s*p\.\s*r\.|\bdpr|reg\.|regolamento|dir\.|direttiva)\s*(?:n\.\s*)?$"
 )
 _UNVERIFIED = " [DA VERIFICARE]"
+
+
+def _safe_step(name: str, draft: str, run: Callable[[str], str]) -> str:
+    """One step on the written answer, fail-safe: its text, or -- on an exception or an empty result -- the draft as
+    it was before it, logged as post_writing_step_failed: a check never fails the whole answer."""
+    try:
+        out = run(draft)
+        if not isinstance(out, str) or not out.strip():
+            raise ValueError("empty answer back")
+        return out
+    except Exception as exc:
+        logger.exception("step %s on the answer failed, the answer as it was: %s", name, exc)
+        vlog("post_writing_step_failed", {"step": name, "error": f"{type(exc).__name__}: {exc}"[:500]})
+        return draft
 
 _ARTICLE_CHARS = 1500
 _MAX_RULINGS = 10
@@ -5515,14 +5529,17 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
         vlog("case_analysis_draft_llm", duration_ms=(time.time() - draft_t0) * 1000)
     # A planned parere had its arguments checked for the client's side before it was written.
     if feature_flags.enabled(CLIENT_STANCE_CHECK_FLAG) and not planned:
-        draft = _check_client_stance(draft, facts, request, analysis, system, human)
+        draft = _safe_step("client_stance", draft,
+                           lambda d: _check_client_stance(d, facts, request, analysis, system, human))
     from . import plan_then_write as _ptw
     writer_rules = _ptw._writer_rules()
     if writer_rules and not planned:
-        draft = _ptw.review_parere(draft, _case_text(facts, request), article_rows, analysis)
+        draft = _safe_step("review_parere", draft,
+                           lambda d: _ptw.review_parere(d, _case_text(facts, request), article_rows, analysis))
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
-    draft = _mark_unverified(draft, found, articles + "\n" + rulings,
-                             wrong_code=feature_flags.enabled(STRATEGY_DRAFT_RULES_FLAG))
+    draft = _safe_step("mark_unverified", draft,
+                       lambda d: _mark_unverified(d, found, articles + "\n" + rulings,
+                                                  wrong_code=feature_flags.enabled(STRATEGY_DRAFT_RULES_FLAG)))
     citations_only = feature_flags.enabled(DRAFT_CITATIONS_ONLY_FLAG)
     qualification = feature_flags.enabled(QUALIFICATION_CHECK_FLAG)
     flagged_remove = feature_flags.enabled(FLAGGED_REMOVE_FLAG)
@@ -5556,15 +5573,16 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             logger.warning("answer invariants failed, draft kept: %s", exc)
     # Every answer: the defects the edits leave (empty brackets, a sentence opening on a cut citation, an unverified
     # note mid-sentence) repaired (text_tidy.py).
-    try:
+    def tidy(d):
         from . import text_tidy
-        draft, tidied = text_tidy.tidy(draft)
+        d, tidied = text_tidy.tidy(d)
         if tidied:
             vlog("answer_tidy", {"entries": tidied, "count": len(tidied)})
-    except Exception as exc:
-        logger.warning("answer tidy failed, draft kept: %s", exc)
+        return d
+    draft = _safe_step("text_tidy", draft, tidy)
     # PROTECTED_PARAPHRASE_ENABLED: no sentence reproduces a protected source of the material (counted only, off).
-    draft, _ = protected_sources.enforce(draft, rows=article_rows + ruling_rows, stage="strategy")
+    draft = _safe_step("protected_sources", draft,
+                       lambda d: protected_sources.enforce(d, rows=article_rows + ruling_rows, stage="strategy")[0])
 
     arguments_at = "**4." if planned else "**3."      # where the client's arguments start
     # WRITER_RULES_ENABLED: a parere is complete in itself, no "deep-dive" links under it (the lawyer's review).

@@ -2177,6 +2177,21 @@ def _writer_log(log: List[Dict[str, Any]]) -> Dict[str, Any]:
             "against_client": sum(1 for e in log if e["kind"] == "against_client")}
 
 
+def _step(name: str, sections: List[Tuple[str, str]],
+          run: Callable[[List[Tuple[str, str]]], Optional[List[Tuple[str, str]]]]) -> List[Tuple[str, str]]:
+    """One step after writing, fail-safe: its sections, or -- on an exception, an empty result or a section lost --
+    the very sections it was given (the same object), logged as post_writing_step_failed."""
+    try:
+        out = run(sections)
+        if out is None or len(out) != len(sections):
+            raise ValueError(f"{len(out) if out is not None else 'no'} sections back for {len(sections)}")
+        return out
+    except Exception as exc:
+        logger.exception("plan-then-write: step %s failed, the sections as they were: %s", name, exc)
+        dg.vlog("post_writing_step_failed", {"step": name, "error": f"{type(exc).__name__}: {exc}"[:500]})
+        return sections
+
+
 def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], lang: str,
                    named: Optional[List[tuple]] = None,
                    documents: Optional[List[Dict[str, Any]]] = None,
@@ -2219,68 +2234,84 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     finally:
         dg.vlog("case_analysis_sections_llm", duration_ms=(time.time() - t0) * 1000)
     sections = [(job[0], _without_heading(text, job[0])) for job, text in zip(jobs, texts)]
+    # every step after writing is fail-safe (_step): an exception keeps the sections as they were before it
     if coverage is not None:
-        sections = _cover_blocks(sections, jobs, system, coverage, standard)
+        sections = _step("cover_blocks", sections, lambda secs: _cover_blocks(secs, jobs, system, coverage, standard))
     writer_log: List[Dict[str, Any]] = []
     if _writer_rules() and all(text for _, text in sections):
-        sections, writer_log = _complete_sections(sections, jobs, system)
+        def complete(secs):
+            done, log = _complete_sections(secs, jobs, system)
+            writer_log.extend(log)
+            return done
+        sections = _step("complete_sections", sections, complete)
     if _discipline() and all(text for _, text in sections):
-        t1 = time.time()
-        with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-            done = list(pool.map(lambda pair: _cite_only_material(pair[0][0], pair[1], pair[0][2], named or [],
-                                                                  documents or []), zip(jobs, (t for _, t in sections))))
-        removed = [entry for _, log in done for entry in log]
-        dg.vlog("case_analysis_citation_discipline", {
-            "removed": removed, "count": sum(len(e["removed"]) for e in removed),
-            "rephrased": sum(1 for e in removed if e["how"] == "rephrased"),
-            "dropped": sum(1 for e in removed if e["how"] == "sentence dropped" and e.get("kind") != "dangling"),
-            "dangling": sum(1 for e in removed if e.get("kind") == "dangling")},
-            duration_ms=(time.time() - t1) * 1000)
-        sections = [(title, text or original) for (title, original), (text, _) in zip(sections, done)]
+        def discipline(secs):
+            t1 = time.time()
+            with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+                done = list(pool.map(lambda pair: _cite_only_material(pair[0][0], pair[1], pair[0][2], named or [],
+                                                                      documents or []), zip(jobs, (t for _, t in secs))))
+            removed = [entry for _, log in done for entry in log]
+            # the dangling fragments dropped with a removal (drop_dangling) carry no "removed" list
+            dg.vlog("case_analysis_citation_discipline", {
+                "removed": removed, "count": sum(len(e.get("removed") or []) for e in removed),
+                "rephrased": sum(1 for e in removed if e.get("how") == "rephrased"),
+                "dropped": sum(1 for e in removed if e.get("how") == "sentence dropped" and e.get("kind") != "dangling"),
+                "dangling": sum(1 for e in removed if e.get("kind") == "dangling")},
+                duration_ms=(time.time() - t1) * 1000)
+            return [(title, text or original) for (title, original), (text, _) in zip(secs, done)]
+        sections = _step("citation_discipline", sections, discipline)
     if _writer_rules() and all(text for _, text in sections):
-        t2 = time.time()
-        with ThreadPoolExecutor(max_workers=len(sections)) as pool:
-            reviewed = list(pool.map(lambda pair: review_section(pair[0], pair[1], case_text, article_rows, documents,
-                                                                 plan.get("parte_assistita") or ""), sections))
-        writer_log += [entry for _, log in reviewed for entry in log]
-        dg.vlog("case_analysis_writer_rules", _writer_log(writer_log), duration_ms=(time.time() - t2) * 1000)
-        sections = [(title, text or original) for (title, original), (text, _) in zip(sections, reviewed)]
+        def review(secs):      # the writer rules' review, the role check (sentences against the client) among them
+            t2 = time.time()
+            with ThreadPoolExecutor(max_workers=len(secs)) as pool:
+                reviewed = list(pool.map(lambda pair: review_section(pair[0], pair[1], case_text, article_rows,
+                                                                     documents, plan.get("parte_assistita") or ""),
+                                         secs))
+            writer_log.extend(entry for _, log in reviewed for entry in log)
+            dg.vlog("case_analysis_writer_rules", _writer_log(writer_log), duration_ms=(time.time() - t2) * 1000)
+            return [(title, text or original) for (title, original), (text, _) in zip(secs, reviewed)]
+        sections = _step("writer_review", sections, review)
     if _review_fixes() and all(text for _, text in sections):
-        t3 = time.time()
-        with ThreadPoolExecutor(max_workers=len(sections)) as pool:
-            fixed = list(pool.map(lambda pair: rewrite_unsupported(pair[0], pair[1], case_text, article_rows),
-                                  sections))
-        entries = [entry for _, log in fixed for entry in log]
-        dg.vlog("case_analysis_unsupported_claims", {
-            "entries": entries, "rewritten": sum(1 for e in entries if e["how"] == "rewritten")},
-            duration_ms=(time.time() - t3) * 1000)
-        sections = [(title, text or original) for (title, original), (text, _) in zip(sections, fixed)]
+        def fixes(secs):
+            t3 = time.time()
+            with ThreadPoolExecutor(max_workers=len(secs)) as pool:
+                fixed = list(pool.map(lambda pair: rewrite_unsupported(pair[0], pair[1], case_text, article_rows),
+                                      secs))
+            entries = [entry for _, log in fixed for entry in log]
+            dg.vlog("case_analysis_unsupported_claims", {
+                "entries": entries, "rewritten": sum(1 for e in entries if e.get("how") == "rewritten")},
+                duration_ms=(time.time() - t3) * 1000)
+            return [(title, text or original) for (title, original), (text, _) in zip(secs, fixed)]
+        sections = _step("unsupported_claims", sections, fixes)
     if any(not text for _, text in sections):
         logger.warning("plan-then-write: an empty section, the parere is written in one call")
         return None
-    sections = _after_checks(plan, sections, jobs, system, questions or [])
+    sections = _step("after_checks", sections, lambda secs: _after_checks(plan, secs, jobs, system, questions or []))
     if anchors is not None:
         # ANCHORED_WRITING_ENABLED: each rule-sentence checked against its anchors' passages; failing, rewritten once
-        # from them, kept or removed by what it cites; the anchors stripped (anchored_writing.py).
+        # from them, kept or removed by what it cites; the anchors stripped (anchored_writing.py). On a failure the
+        # sections as they were, only without their anchors (never shown to a reader).
         t5 = time.time()
-        try:
-            verified = anchored_writing.verify(sections, anchors, documents or [], article_rows or [],
+
+        def anchored(secs):
+            verified = anchored_writing.verify(secs, anchors, documents or [], article_rows or [],
                                                exempt=list((standard or {}).values()), case_text=case_text,
                                                materials={job[0]: job[2] for job in jobs})
-            sections = [(title, text or original) for (title, original), (_, text) in zip(sections, verified)]
-        except Exception as exc:
-            logger.warning("anchored writing: check failed, anchors stripped: %s", exc)
+            return [(title, text or original) for (title, original), (_, text) in zip(secs, verified)]
+        before = sections
+        sections = _step("anchored_writing", sections, anchored)
+        if sections is before:
             sections = [(title, anchored_writing.strip_anchors(text)) for title, text in sections]
         dg.vlog("anchored_writing_llm", duration_ms=(time.time() - t5) * 1000)
     if grounded_review.enabled():
         # GROUNDED_REVIEW_ENABLED: each rule-sentence judged against its own section's material; the ones it does
         # not hold rewritten from it, as pointers, or (filler) dropped (grounded_review.py).
         t4 = time.time()
-        try:
-            reviewed = grounded_review.review(sections, jobs, documents or [], article_rows or [], checked=checked)
-            sections = [(title, text or original) for (title, original), (_, text) in zip(sections, reviewed)]
-        except Exception as exc:
-            logger.warning("grounded review failed, sections kept: %s", exc)
+
+        def grounded(secs):
+            reviewed = grounded_review.review(secs, jobs, documents or [], article_rows or [], checked=checked)
+            return [(title, text or original) for (title, original), (_, text) in zip(secs, reviewed)]
+        sections = _step("grounded_review", sections, grounded)
         dg.vlog("grounded_review_llm", duration_ms=(time.time() - t4) * 1000)
     return sections
 
@@ -2546,8 +2577,11 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if sections is None:
         return None
     if use_of is not None:
-        final = use_of(next((text for title, text in sections if title == SECTION_TITLES[4]), ""))
-        dg.vlog("case_analysis_material_use", {
-            "offered": {b: u["offered"] for b, u in final.items()}, "written": {b: u["written"] for b, u in final.items()},
-            "missing": _missing_blocks(final)})
+        try:          # counted only: never fails the answer
+            final = use_of(next((text for title, text in sections if title == SECTION_TITLES[4]), ""))
+            dg.vlog("case_analysis_material_use", {
+                "offered": {b: u["offered"] for b, u in final.items()},
+                "written": {b: u["written"] for b, u in final.items()}, "missing": _missing_blocks(final)})
+        except Exception as exc:
+            logger.warning("plan-then-write: material use not counted: %s", exc)
     return "\n\n".join(f"**{i}. {title}**\n\n{text}" for i, (title, text) in enumerate(sections, 1))
