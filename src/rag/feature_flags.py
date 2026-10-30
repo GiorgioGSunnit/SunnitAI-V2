@@ -500,6 +500,11 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 issues with their fact; the existing resolver takes them. Logged as
                                 case_analysis_fact_issues and case_analysis_fact_institution. See
                                 src/rag/fact_issues.py.
+  FACT_ISSUES_EVERY_FACT_ENABLED false (31 Oct, live run aw-20261030-1821: 119 lost expected articles had their
+                                trigger captured only as a fact): with FACT_ISSUES_ENABLED, at least one institution
+                                per decisive fact (two at most), the cap scaled with the case (the frame's facts, or
+                                one more per 4000 characters; 8 to 16), each fact's first institution kept before
+                                any fact's second. See src/rag/fact_issues.py.
   ANCHORED_WRITING_ENABLED     false (30 Oct, fetch_audit's provenance by section): the plan names each issue's
                                 passages (an article's comma, a ruling), numbered [A1]... once the plan is final
                                 (a norm without one gets its best-matching comma); every section -- Risposte ai

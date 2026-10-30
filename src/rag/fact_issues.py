@@ -14,6 +14,12 @@ makes each a question, _resolve_institution resolves it (rubrica and title match
 STRICT_ARTICLES' rules and generic-word chapter ranges), and fact_signals.keep_resolved keeps only an article whose
 rubrica shares a word with the institution. Logged as case_analysis_fact_issues (fact -> institutions) and, per
 institution, case_analysis_fact_institution (-> the articles kept / rejected).
+
+FACT_ISSUES_EVERY_FACT_ENABLED (default false; live run aw-20261030-1821: of 142 lost expected articles 85% failed at
+"article resolved", 119 with their trigger captured only as a fact -- no institution named from it): the call names
+at least one institution for EVERY decisive fact (at most two each), the cap scales with the case (cap(): the frame's
+facts, one more per 4000 characters past the first, between MAX_INSTITUTIONS and MAX_WIDE), and the cut keeps each
+fact's first institution before any fact's second (clean(by_fact=True)), so a long case's later facts are not starved.
 """
 
 import json
@@ -30,7 +36,10 @@ from .verbose_logger import vlog
 logger = logging.getLogger(__name__)
 
 FLAG = "FACT_ISSUES_ENABLED"
+EVERY_FACT_FLAG = "FACT_ISSUES_EVERY_FACT_ENABLED"
 MAX_INSTITUTIONS = 8
+MAX_WIDE = 16              # FACT_ISSUES_EVERY_FACT_ENABLED: the cap of a long case, at most
+CHARS_PER_EXTRA = 4000     # one more institution per this many characters of case past the first
 FONTE = "fatto"
 _AREAS = ("penale", "contratti", "responsabilita_civile", "locazione", "successioni", "diritti_reali", "famiglia",
           "consumo", "amministrativo", "lavoro", "tributario", "altro")
@@ -51,8 +60,32 @@ SYSTEM = (
     "\"codice\": \"...\", \"area\": \"...\", \"ruolo_cliente\": \"...\"}]}.")
 
 
+EVERY_FACT_RULE = ("per OGNI fatto decisivo almeno un istituto (al massimo due per fatto), dal fatto più decisivo "
+                   "al meno, al massimo {cap} istituti in tutto")
+_ONE_CAP_RULE = "dal fatto più decisivo al meno, al massimo otto istituti in tutto"
+assert _ONE_CAP_RULE in SYSTEM
+
+
 def enabled() -> bool:
     return feature_flags.enabled(FLAG)
+
+
+def every_fact() -> bool:
+    return enabled() and feature_flags.enabled(EVERY_FACT_FLAG)
+
+
+def cap(case_text: str, frame: Optional[Dict[str, Any]]) -> int:
+    """How many institutions the call may add: MAX_INSTITUTIONS; FACT_ISSUES_EVERY_FACT_ENABLED: one per frame fact
+    or one more per CHARS_PER_EXTRA characters past the first, whichever is more, at most MAX_WIDE."""
+    if not every_fact():
+        return MAX_INSTITUTIONS
+    facts = len([f for f in (frame or {}).get("facts") or [] if f])
+    longer = MAX_INSTITUTIONS + max(0, len(case_text or "") - CHARS_PER_EXTRA) // CHARS_PER_EXTRA
+    return max(MAX_INSTITUTIONS, min(MAX_WIDE, max(facts, longer)))
+
+
+def system_for(limit: int) -> str:
+    return SYSTEM.replace(_ONE_CAP_RULE, EVERY_FACT_RULE.format(cap=limit)) if every_fact() else SYSTEM
 
 
 def _plain(value: Any) -> str:
@@ -75,12 +108,20 @@ def fact_lines(frame: Optional[Dict[str, Any]], signals: Optional[Dict[str, Any]
     return list(dict.fromkeys(lines))[:limit]
 
 
-def clean(raw: Any, have: List[str]) -> List[Dict[str, Any]]:
+def clean(raw: Any, have: List[str], limit: int = MAX_INSTITUTIONS, by_fact: bool = False) -> List[Dict[str, Any]]:
     """The call's institutions as central issues: named, without an article number, not already among `have` (the
-    frame's own names), each once, at most MAX_INSTITUTIONS, in the model's order."""
+    frame's own names), each once, at most `limit`, in the model's order; by_fact: each fact's first institution
+    before any fact's second (then the seconds, in the facts' order)."""
     items = raw.get("istituti") if isinstance(raw, dict) else raw
     seen = {" ".join(h.lower().split()) for h in have if h}
     out = []
+    if by_fact:
+        rounds: Dict[str, List[Any]] = {}
+        for item in items if isinstance(items, list) else []:
+            fact = " ".join(str(item.get("fatto") or "").lower().split()) if isinstance(item, dict) else ""
+            rounds.setdefault(fact, []).append(item)
+        depth = max((len(v) for v in rounds.values()), default=0)
+        items = [group[k] for k in range(depth) for group in rounds.values() if k < len(group)]
     for item in items if isinstance(items, list) else []:
         if not isinstance(item, dict):
             continue
@@ -94,7 +135,7 @@ def clean(raw: Any, have: List[str]) -> List[Dict[str, Any]]:
                     "fatto": " ".join(str(item.get("fatto") or "").split())[:300],
                     "area": area if area in _AREAS else "altro",
                     "ruolo": " ".join(str(item.get("ruolo_cliente") or "").split())[:120]})
-        if len(out) >= MAX_INSTITUTIONS:
+        if len(out) >= limit:
             break
     return out
 
@@ -104,17 +145,18 @@ def fact_issues(case_text: str, frame: Optional[Dict[str, Any]], signals: Option
     from . import defensive_generation as dg
     facts = fact_lines(frame, signals)
     human = f"CASO:\n{case_text[:8000]}\n\nFATTI:\n" + ("\n".join(facts) or "(nessuno estratto: leggili dal caso)")
+    limit = cap(case_text, frame)
     t0 = time.time()
     try:
-        raw = dg._chat_json([SystemMessage(content=SYSTEM), HumanMessage(content=human)], max_tokens=1200,
-                            temperature=0)
+        raw = dg._chat_json([SystemMessage(content=system_for(limit)), HumanMessage(content=human)],
+                            max_tokens=max(1200, 150 * limit), temperature=0)
     except Exception as exc:
         logger.warning("fact issues failed, the frame is kept: %s", exc)
         return []
     finally:
         vlog("case_analysis_fact_issues_llm", duration_ms=(time.time() - t0) * 1000)
     have = [c.get("nome") or "" for c in (frame or {}).get("central_issue_candidates") or [] if isinstance(c, dict)]
-    return clean(raw, have)
+    return clean(raw, have, limit, by_fact=every_fact())
 
 
 def add_to_frame(frame: Optional[Dict[str, Any]], case_text: str,
@@ -124,7 +166,8 @@ def add_to_frame(frame: Optional[Dict[str, Any]], case_text: str,
     if not enabled() or not frame:
         return frame
     added = fact_issues(case_text, frame, signals)
-    vlog("case_analysis_fact_issues", {"institutions": added, "facts_read": len(fact_lines(frame, signals))})
+    vlog("case_analysis_fact_issues", {"institutions": added, "facts_read": len(fact_lines(frame, signals)),
+                                       "cap": cap(case_text, frame), "every_fact": every_fact()})
     if not added:
         return frame
     return {**frame, "central_issue_candidates": list(frame.get("central_issue_candidates") or []) + added}
