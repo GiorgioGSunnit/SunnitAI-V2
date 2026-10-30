@@ -13,7 +13,8 @@ What it counts:
   - Sections detached from any Document (no incoming CONTAINS / PART_OF)
   - articles whose "N.0.0" holds only "In vigore dal ..." while another Section of theirs has the text, per code
   - gaps in the article numbering of the main codes (missing N in 1..max): a NEW gap is a parser regression
-  - rulings without CITES edges, by branch; the CITES linker's unresolved citations, by reason
+  - rulings without CITES edges, by branch; the CITES linker's unresolved citations, by reason, and the articles
+    the rulings cite most that our codes lack (the map of what to load)
   - ruling cards coverage by branch (only if --cards names readable card files: they live on prod today)
   - suspected duplicate Documents (same hash, same name, same name but the year): REPORTED, never touched
   - the ingestion queue (files waiting, failed) and the last run of each night job
@@ -38,7 +39,7 @@ import time
 from collections import Counter, defaultdict
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
-KNOWN_TYPES = {"interpretation", "ccnl", "primary", "special", "legislation"}
+KNOWN_TYPES = {"interpretation", "ccnl", "primary", "special", "legislation", "quarantine"}
 MAIN_CODES = ("Codice Civile", "Codice Penale", "Codice di procedura civile", "Codice di procedura penale",
               "Costituzione")
 HEAVY_JOBS = ("backfill_embeddings_v2", "link_ruling_citations", "exp_ruling_cards", "exp_ruling_links",
@@ -236,6 +237,22 @@ def unresolved_reasons(path: str) -> Tuple[Optional[int], Dict[str, int]]:
     return n, dict(reasons.most_common(8))
 
 
+def missing_articles(path: str, top: int = 40) -> Optional[List[Tuple[str, int]]]:
+    """The citations the linker finds no article for ("410-bis c.p.p."), most cited first; None without the log."""
+    if not os.path.isfile(path):
+        return None
+    counts = Counter()
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if row.get("reason") == "article_not_in_code" and row.get("citation"):
+                counts[row["citation"]] += 1
+    return counts.most_common(top)
+
+
 def closures(path: str) -> Set[str]:
     """The civil rulings step 1 reads as closures ("estinto"): no card by design (exp_ruling_cards.pick)."""
     out = set()
@@ -377,8 +394,10 @@ def previous_state(directory: str, today: str) -> Optional[dict]:
 
 def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optional[int], Dict[str, int]],
                  cards: Optional[Set[str]], prev: Optional[dict], took: float,
-                 by_design: Optional[Set[str]] = None) -> Tuple[str, dict, str]:
-    """by_design: the rulings left without a card on purpose (civil closures, "estinto" in step 1's links)."""
+                 by_design: Optional[Set[str]] = None,
+                 missing: Optional[List[Tuple[str, int]]] = None) -> Tuple[str, dict, str]:
+    """by_design: the rulings left without a card on purpose (civil closures, "estinto" in step 1's links).
+    missing: missing_articles(), the citations with no article in our codes."""
     by_design = by_design or set()
     prev_gaps = (prev or {}).get("gaps", {})
     gaps_new = {code: sorted(set(g_) - set(prev_gaps.get(code, g_))) for code, g_ in g["numbering_gaps_by_code"].items()}
@@ -440,6 +459,11 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
     md += ["", "CITES unresolved citations (linker log): " + ("log not found on this machine" if unresolved[0] is None
                                                              else f"{unresolved[0]:,}")
            + (" -- " + ", ".join(f"{r} {k:,}" for r, k in unresolved[1].items()) if unresolved[1] else "")]
+    if missing is not None:
+        md += ["", "## Articles the rulings cite that our codes lack", "",
+               "Most cited first. The linker finds no such article in the code named: missing from our text, stored "
+               "under another name, or the ruling's own wrong code (\"131-bis c.p.p.\" for c.p.).", ""]
+        md += [f"- {c}: {k:,}" for c, k in missing] or ["- none"]
     md += ["", "## Suspected duplicate documents (REPORTED ONLY, never touched)", ""]
     for reason, groups in g["duplicates"].items():
         md.append(f"- {reason}: {len(groups)}")
@@ -453,7 +477,7 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
                                         if l["found"] else "not found"))
     state = {"date": dt.date.today().isoformat(), "numbers": n, "gaps": g["numbering_gaps_by_code"],
              "date_only_by_doc": g["date_only_by_doc"], "rulings_by_branch": g["rulings_by_branch"],
-             "cards": card_rows, "queue": queue}
+             "cards": card_rows, "queue": queue, "missing_articles": dict(missing or [])}
     return "\n".join(md) + "\n", state, line
 
 
@@ -502,7 +526,8 @@ def main() -> int:
     md, state, line = build_report(g, queue_status(args.queue_dir, args.failed_dir),
                                    log_status([x for x in args.logs.split(",") if x]), unresolved_reasons(args.unresolved),
                                    card_ids([x for x in args.cards.split(",") if x]),
-                                   previous_state(args.dir, today), time.time() - t0, closures(args.links))
+                                   previous_state(args.dir, today), time.time() - t0, closures(args.links),
+                                   missing_articles(args.unresolved))
     for name, content in ((f"health_{today}.md", md), (f"summary_{today}.txt", line + "\n")):
         with open(os.path.join(args.dir, name), "w", encoding="utf-8") as fh:
             fh.write(content)

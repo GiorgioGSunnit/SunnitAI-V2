@@ -116,6 +116,21 @@ def test_build_report_first_night_and_new_gaps(tmp_path):
     assert mh.previous_state(str(tmp_path), "20261026") is None                     # today's own state is not "previous"
 
 
+def test_missing_articles_counts_only_citations_with_no_article(tmp_path):
+    log = tmp_path / "unresolved.jsonl"
+    rows = [{"citation": "410-bis c.p.p.", "reason": "article_not_in_code"}] * 3 + [
+        {"citation": "16 Cost.", "reason": "article_not_in_code"}, {"citation": "5 c.p.a.", "reason": "code_not_on_be2"}]
+    log.write_text("\n".join(json.dumps(r) for r in rows) + "\nnot json\n", encoding="utf-8")
+    assert mh.missing_articles(str(log)) == [("410-bis c.p.p.", 3), ("16 Cost.", 1)]
+    assert mh.missing_articles(str(tmp_path / "none.jsonl")) is None
+    md, state, _ = mh.build_report(GRAPH, QUEUE, [], (5, {"article_not_in_code": 4}), None, None, 1.0,
+                                   missing=mh.missing_articles(str(log)))
+    assert "## Articles the rulings cite that our codes lack" in md and "- 410-bis c.p.p.: 3" in md
+    assert state["missing_articles"] == {"410-bis c.p.p.": 3, "16 Cost.": 1}
+    md, _, _ = mh.build_report(GRAPH, QUEUE, [], (None, {}), None, None, 1.0)
+    assert "cite that our codes lack" not in md                                    # no linker log here: no section
+
+
 class _Session:
     """Fake read session answering each of graph_checks' queries."""
 
