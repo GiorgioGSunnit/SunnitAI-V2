@@ -3890,10 +3890,37 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     central_questions = _central_questions(analysis)
     central_matched: List[tuple] = []
     fact_resolved: List[tuple] = []
+    from . import fact_issues
+    fact_v2 = fact_issues.resolver_v2()
+    if fact_v2:
+        analysis["fact_institutions"] = []
     for index, q in enumerate(analysis.get("questioni", [])):
         for istituto in q.get("istituti") or []:
-            resolved = _resolve_institution(session, documents, istituto, q.get("parole_chiave"))
-            if istituto.get("fonte"):          # FACT_SIGNALS_ENABLED: a fact rule's institution, within its ranges
+            if istituto.get("fonte") == fact_issues.FONTE and fact_v2:
+                # FACT_ISSUES_RESOLVER_V2_ENABLED: a fact's institution by its headings within its code, the core
+                # article and the related ones (fact_resolver.py); its articles are T1 and get their own plan issue.
+                from . import fact_resolver
+                try:
+                    resolved, how = fact_resolver.resolve(session, documents, istituto)
+                except Exception as exc:
+                    logger.warning("fact resolver failed for %r: %s", istituto.get("nome"), exc)
+                    resolved, how = [], {"refused": [{"article": None, "why": f"failed: {exc}"[:200]}]}
+                refs = list(dict.fromkeys(r["_article"] for r in resolved if r.get("_article")))
+                vlog("case_analysis_fact_institution", {
+                    "institution": istituto.get("nome"), "fonte": istituto["fonte"], "resolver": "v2",
+                    **({"fatto": istituto["fatto"]} if istituto.get("fatto") else {}),
+                    "kept": [f"{n} {c}" for n, c in refs],
+                    "rejected": [x["article"] for x in how.get("refused") or [] if x.get("article")],
+                    "candidates": how.get("candidates") or [], "kept_as": how.get("kept") or [],
+                    "refused": how.get("refused") or [], "chapter": how.get("chapter")})
+                fact_resolved += refs
+                if refs:
+                    analysis.setdefault("fact_institutions", []).append(
+                        {"nome": istituto.get("nome"), "fatto": istituto.get("fatto") or "", "refs": refs})
+            else:
+                resolved = _resolve_institution(session, documents, istituto, q.get("parole_chiave"))
+            if istituto.get("fonte") and not (istituto["fonte"] == fact_issues.FONTE and fact_v2):
+                # FACT_SIGNALS_ENABLED: a fact rule's institution, within its ranges
                 from . import fact_signals
                 kept = fact_signals.keep_resolved(istituto, resolved)
                 if not kept and istituto.get("ranges"):       # ANSWER_INVARIANTS_ENABLED, I3: inside the ranges
@@ -3917,6 +3944,11 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 added.append(row)
 
     article_rows = base["article_rows"] + added
+    if fact_v2:            # a fact institution's article another path already held: tagged as reached from the fact
+        of_fact = {ref: f["nome"] for f in analysis.get("fact_institutions") or [] for ref in f["refs"]}
+        for row in article_rows:
+            if row.get("_article") in of_fact:
+                row.setdefault("_fact_institution", of_fact[row["_article"]])
     if added:
         # Broaden only from articles the user's own text names, or that v2
         # itself just resolved via an institution — not every v1 candidate.

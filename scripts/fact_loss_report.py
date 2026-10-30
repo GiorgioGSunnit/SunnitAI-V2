@@ -17,6 +17,11 @@ article among what an institution resolved to), and the outcome:
   not named: cap reached           no institution from that fact, and the model named MAX_INSTITUTIONS
   not named: under the cap         no institution from that fact, fewer than MAX_INSTITUTIONS named
   no FACT_ISSUES log               the flag off or the call failed for that case
+With FACT_ISSUES_RESOLVER_V2_ENABLED (the institution's log says "resolver": "v2") a named one splits instead into:
+  v2: kept, lost later             resolved to it: lost after the resolution (the report's row says where not)
+  v2: refused (<why>)              a candidate, refused (outside the chapter, no specific word shared, beyond the 3)
+  v2: not a candidate, resolved to others / to nothing    not among the top candidates of its code
+and one not named into "not named: generic name dropped" when its fact's generic or Latin name was not renamed.
 """
 
 import argparse
@@ -30,10 +35,16 @@ from collections import Counter
 sys.path.insert(0, os.getcwd())
 from src.rag import fact_issues  # noqa: E402
 
-OUTCOMES = ("rejected by the rubrica filter", "resolved to other articles", "resolved to nothing",
+V2_OUTCOMES = ("v2: kept, lost later", "v2: not a candidate, resolved to others", "v2: not a candidate, resolved to nothing")
+OUTCOMES = V2_OUTCOMES + ("v2: refused", "not named: generic name dropped", "rejected by the rubrica filter", "resolved to other articles", "resolved to nothing",
             "not named: cut by the cap", "not named: dropped as a duplicate / with a number",
             "not named: cap reached", "not named: under the cap", "no FACT_ISSUES log")
-FIX = {"rejected by the rubrica filter": "let the institution resolve within its chapter range",
+FIX = {"v2: kept, lost later": "after the resolution: the plan or the writer",
+       "v2: not a candidate, resolved to others": "the name, or the heading index / full text recall",
+       "v2: not a candidate, resolved to nothing": "the name, or the heading index / full text recall",
+       "v2: refused": "the refusal rule (see its reason)",
+       "not named: generic name dropped": "the naming rule / the retry",
+       "rejected by the rubrica filter": "let the institution resolve within its chapter range",
        "resolved to other articles": "the resolver (rubrica / heading match), not the cap",
        "resolved to nothing": "the resolver: the name does not reach a rubrica",
        "not named: cut by the cap": "raise the cap for long cases",
@@ -98,9 +109,11 @@ def classify(lost, rec, case_dir):
     resolutions = {}
     for e, d, *_ in events:
         if e == "case_analysis_fact_institution" and isinstance(d, dict) and d.get("fonte") == fact_issues.FONTE:
-            r = resolutions.setdefault(d.get("institution"), {"kept": [], "rejected": []})
+            r = resolutions.setdefault(d.get("institution"), {"kept": [], "rejected": [], "refused": [], "v2": False})
             r["kept"] += d.get("kept") or []
             r["rejected"] += d.get("rejected") or []
+            r["refused"] += [x for x in d.get("refused") or [] if isinstance(x, dict)]
+            r["v2"] = r["v2"] or d.get("resolver") == "v2"
     keys = article_keys(lost["article"])
     fact = lost.get("fact") or ""
     mine = [i for i in named if same_fact(fact, i.get("fatto")) or has_article(
@@ -108,13 +121,27 @@ def classify(lost, rec, case_dir):
         keys)]
     detail = {"named": [i.get("nome") for i in named]}
     if mine:
-        res = [resolutions.get(i.get("nome")) or {"kept": [], "rejected": []} for i in mine]
+        res = [resolutions.get(i.get("nome")) or {"kept": [], "rejected": [], "refused": [], "v2": False} for i in mine]
         detail["resolved"] = {i.get("nome"): r for i, r in zip(mine, res)}
+        if any(r.get("v2") for r in res):
+            if any(has_article(r["kept"], keys) for r in res):
+                return "v2: kept, lost later", mine, detail
+            why = next((x.get("why") for r in res for x in r["refused"] if has_article([x.get("article")], keys)), None)
+            if why:
+                detail["why"] = why
+                return "v2: refused", mine, detail
+            return ("v2: not a candidate, resolved to others" if any(r["kept"] for r in res)
+                    else "v2: not a candidate, resolved to nothing"), mine, detail
         if any(has_article(r["rejected"], keys) for r in res):
             return "rejected by the rubrica filter", mine, detail
         if any(r["kept"] for r in res):
             return "resolved to other articles", mine, detail
         return "resolved to nothing", mine, detail
+    for e, d, *_ in events:
+        if e == "case_analysis_fact_issues_names" and isinstance(d, dict):
+            dropped = [g for g in d.get("dropped") or [] if isinstance(g, dict)]
+            if dropped and any(same_fact(fact, g.get("fatto") or g.get("nome")) for g in dropped):
+                return "not named: generic name dropped", [], detail
     raw = raw_institutions(case_dir)
     detail["raw"] = len(raw)
     from_fact = [k for k, i in enumerate(raw) if same_fact(fact, i.get("fatto"))]
@@ -164,6 +191,9 @@ def main():
     for outcome in OUTCOMES:
         if tally[outcome]:
             print(f"| {outcome} | {tally[outcome]} | {100 * tally[outcome] / len(rows):.0f}% | {FIX[outcome]} |")
+    reasons = Counter(detail.get("why") for _, _, outcome, _, detail in rows if outcome == "v2: refused")
+    if reasons:
+        print("\nv2 refusals by reason: " + "; ".join(f"{why} {n}" for why, n in reasons.most_common()) + ".")
     print("\n| case | article | trigger fact | named from it? | outcome | institutions (of that fact, or all named) |"
           "\n|---|---|---|---|---|---|")
     for cid, lost, outcome, mine, detail in rows:

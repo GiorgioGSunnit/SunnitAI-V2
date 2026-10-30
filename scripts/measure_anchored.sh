@@ -109,7 +109,8 @@ def flags(run):
             f"{r.get('failed', 0)})") if r else "-"
 
 
-rows = [("MENTIONED", lambda a, n: f"{a['stage_counts']['MENTIONED']} / {len(a['slots'])}"),
+rows = [("MENTIONED", lambda a, n: f"{a['stage_counts']['MENTIONED']} / {len(a['slots'])} "
+                                  f"({100 * a['stage_counts']['MENTIONED'] / max(1, len(a['slots'])):.0f}%)"),
         ("rubrica-incompatible", lambda a, n: a["fit"]["incompatible"]),
         ("extra (not expected) per answer", lambda a, n: round(len(a["wrong"]) / max(1, len(common)), 1)),
         ("law sentences from memory (rule, institution, procedure)",
@@ -118,6 +119,10 @@ rows = [("MENTIONED", lambda a, n: f"{a['stage_counts']['MENTIONED']} / {len(a['
         ("all rule-sentences from memory (target <10%)", lambda a, n: memory(n, fa.KINDS)),
         ("role flags per 100 judged", lambda a, n: flags(n)),
         ("abstentions per answer", lambda a, n: round(a.get("abstentions", 0) / max(1, a.get("answered", 0)), 1)),
+        ("fact-institution articles placed / reached (expected)",
+         lambda a, n: (lambda f: f"{f.get('placed', 0)} / {f.get('reached', 0)} ({f.get('expected_placed', 0)} / "
+                                 f"{f.get('expected_reached', 0)})" if a.get("fact_placed_logged") else "off")(
+             a.get("fact_placed") or {})),
         ("expected articles lost in removed / rewritten / citation-dropped sentences", lambda a, n: lost(a))]
 print(f"# Summary: {' vs '.join(names)}\n\n{len(common)} cases in both runs, with an answer key and an answer.\n")
 print("| | " + " | ".join(names) + " |\n|---|" + "---:|" * len(names))

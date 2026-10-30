@@ -505,6 +505,15 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 per decisive fact (two at most), the cap scaled with the case (the frame's facts, or
                                 one more per 4000 characters; 8 to 16), each fact's first institution kept before
                                 any fact's second. See src/rag/fact_issues.py.
+  FACT_ISSUES_RESOLVER_V2_ENABLED false (31 Oct, fact_loss_report on the live run: of 119 articles lost at "article
+                                resolved", 106 had an institution named from their fact, 46% resolved to other
+                                articles, 43% to nothing): with FACT_ISSUES_ENABLED, each institution named as
+                                precisely as a code heading (a generic or Latin name renamed once, else dropped);
+                                resolved by fact_resolver.py within its code -- heading index, heading and text full
+                                text, top 5 each; the core article(s) by heading, related ones beside them by text,
+                                at most 3; refused outside its chapter; never through a generic word alone. Its
+                                articles are T1, take no forced slot and get their own plan issue (merged with one
+                                already holding them). Logged per institution: candidates, kept, refused with reason.
   ANCHORED_WRITING_ENABLED     false (30 Oct, fetch_audit's provenance by section): the plan names each issue's
                                 passages (an article's comma, a ruling), numbered [A1]... once the plan is final
                                 (a norm without one gets its best-matching comma); every section -- Risposte ai

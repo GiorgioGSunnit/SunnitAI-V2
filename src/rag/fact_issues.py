@@ -15,6 +15,14 @@ STRICT_ARTICLES' rules and generic-word chapter ranges), and fact_signals.keep_r
 rubrica shares a word with the institution. Logged as case_analysis_fact_issues (fact -> institutions) and, per
 institution, case_analysis_fact_institution (-> the articles kept / rejected).
 
+FACT_ISSUES_RESOLVER_V2_ENABLED (default false; fact_loss_report on the live run: of 119 articles lost at "article
+resolved", 106 had an institution named from their fact, resolved to other articles (46%) or to nothing (43%), named
+generically or in Latin -- "Responsabilità medica", "Risarcimento danni", "Decisione amministrativa", "Dolus
+eventualis", "Diligentia"): the call names each institution as precisely as a code heading, in the code's own Italian
+terms (NAMING_RULE); a name that is generic (generic_name: no specific word, or a generic head with fewer than two
+specific words) or Latin is sent back once to be renamed, and dropped if the new name is still one; the institutions
+then resolve through fact_resolver.resolve (src/rag/fact_resolver.py).
+
 FACT_ISSUES_EVERY_FACT_ENABLED (default false; live run aw-20261030-1821: of 142 lost expected articles 85% failed at
 "article resolved", 119 with their trigger captured only as a fact -- no institution named from it): the call names
 at least one institution for EVERY decisive fact (at most two each), the cap scales with the case (cap(): the frame's
@@ -37,6 +45,7 @@ logger = logging.getLogger(__name__)
 
 FLAG = "FACT_ISSUES_ENABLED"
 EVERY_FACT_FLAG = "FACT_ISSUES_EVERY_FACT_ENABLED"
+RESOLVER_V2_FLAG = "FACT_ISSUES_RESOLVER_V2_ENABLED"
 MAX_INSTITUTIONS = 8
 MAX_WIDE = 16              # FACT_ISSUES_EVERY_FACT_ENABLED: the cap of a long case, at most
 CHARS_PER_EXTRA = 4000     # one more institution per this many characters of case past the first
@@ -66,8 +75,46 @@ _ONE_CAP_RULE = "dal fatto più decisivo al meno, al massimo otto istituti in tu
 assert _ONE_CAP_RULE in SYSTEM
 
 
+NAMING_RULE = (
+    "\nNOMI DEGLI ISTITUTI: ogni nome è un istituto specifico del diritto italiano, preciso come la rubrica di un "
+    "articolo e con i termini del codice o della legge (per esempio \"inadempimento del conduttore\", \"risoluzione "
+    "della locazione per morosità\", \"responsabilità contrattuale della struttura sanitaria\", \"giudizio di "
+    "ottemperanza\", \"garanzia per i vizi della cosa venduta\"). Vietati i nomi generici (\"risarcimento danni\", "
+    "\"responsabilità\", \"responsabilità medica\", \"decisione amministrativa\", \"tutela\") e il latino "
+    "(\"dolus eventualis\", \"diligentia\"): nomina l'istituto preciso che il fatto pone, nella lingua del codice.")
+RETRY_TITLE = "NOMI DA RIFARE"
+# A name opening on one of these needs a specific word after it that is not a broad qualifier (BROAD_QUALIFIERS):
+# "responsabilità del precettore", "responsabilità contrattuale della struttura sanitaria" -- not "responsabilità
+# medica", "decisione amministrativa".
+GENERIC_HEADS = ("risarcimento", "responsabilità", "responsabilita", "danno", "danni", "decisione", "provvedimento",
+                 "tutela", "diritto", "azione", "obbligo", "obbligazione", "violazione", "illecito", "diligenza",
+                 "procedimento", "garanzia", "contratto", "rapporto", "atto")
+BROAD_QUALIFIERS = ("medica medico amministrativa amministrativo civile penale contrattuale extracontrattuale "
+                    "professionale giuridica giuridico legale generale diretta indiretta pubblica pubblico privata "
+                    "privato")
+_LATIN_RE = re.compile(r"\b(?:[a-z]+(?:us|um|ae|entia|antia|alis|ilis|ionis)|in re ipsa|culpa|neminem|laedere|"
+                       r"actio|ex contractu|ex delicto|una tantum)\b", re.IGNORECASE)
+
+
 def enabled() -> bool:
     return feature_flags.enabled(FLAG)
+
+
+def resolver_v2() -> bool:
+    return enabled() and feature_flags.enabled(RESOLVER_V2_FLAG)
+
+
+def generic_name(name: str) -> Optional[str]:
+    """Why a name is not a specific institution ("latin", "generic"), or None."""
+    from . import fact_resolver
+    low = " ".join((name or "").lower().split())
+    if _LATIN_RE.search(low):
+        return "latin"
+    specific = fact_resolver.specific_words(low)
+    head = (re.findall(r"[a-zà-ù]+", low) or [""])[0]
+    if not specific or (head in GENERIC_HEADS and not specific - fact_resolver._stems(BROAD_QUALIFIERS)):
+        return "generic"
+    return None
 
 
 def every_fact() -> bool:
@@ -85,7 +132,8 @@ def cap(case_text: str, frame: Optional[Dict[str, Any]]) -> int:
 
 
 def system_for(limit: int) -> str:
-    return SYSTEM.replace(_ONE_CAP_RULE, EVERY_FACT_RULE.format(cap=limit)) if every_fact() else SYSTEM
+    system = SYSTEM.replace(_ONE_CAP_RULE, EVERY_FACT_RULE.format(cap=limit)) if every_fact() else SYSTEM
+    return system.replace(" Rispondi SOLO", NAMING_RULE + " Rispondi SOLO", 1) if resolver_v2() else system
 
 
 def _plain(value: Any) -> str:
@@ -156,7 +204,62 @@ def fact_issues(case_text: str, frame: Optional[Dict[str, Any]], signals: Option
     finally:
         vlog("case_analysis_fact_issues_llm", duration_ms=(time.time() - t0) * 1000)
     have = [c.get("nome") or "" for c in (frame or {}).get("central_issue_candidates") or [] if isinstance(c, dict)]
+    if resolver_v2():
+        raw = _renamed(raw, human, limit)
     return clean(raw, have, limit, by_fact=every_fact())
+
+
+def _items(raw: Any) -> List[Dict[str, Any]]:
+    items = raw.get("istituti") if isinstance(raw, dict) else raw
+    return [i for i in items if isinstance(i, dict)] if isinstance(items, list) else []
+
+
+def _renamed(raw: Any, human: str, limit: int) -> Dict[str, Any]:
+    """FACT_ISSUES_RESOLVER_V2_ENABLED: the reply with each generic or Latin name (generic_name) sent back once to be
+    renamed, in its place; a name still generic after the retry, or with the retry failing, dropped. Logged as
+    case_analysis_fact_issues_names."""
+    from . import defensive_generation as dg
+    items = _items(raw)
+    bad = [(k, i, generic_name(str(i.get("nome") or ""))) for k, i in enumerate(items)]
+    bad = [(k, i, why) for k, i, why in bad if why]
+    if not bad:
+        return {"istituti": items}
+    listing = "\n".join(f"- {i.get('nome')} (fatto: {i.get('fatto')}): {'in latino' if why == 'latin' else 'generico'}"
+                        for _, i, why in bad)
+    retry = (f"{human}\n\nLa tua risposta:\n{json.dumps({'istituti': items}, ensure_ascii=False)}\n\n{RETRY_TITLE} "
+             f"(generici o in latino):\n{listing}\n\nPer ciascuno di questi fatti nomina l'istituto preciso, con i "
+             "termini della rubrica del codice o della legge. Rispondi SOLO con un oggetto JSON {\"istituti\": [...]} "
+             "con i soli istituti rinominati, nello stesso formato.")
+    renamed: List[Dict[str, Any]] = []
+    try:
+        renamed = _items(dg._chat_json([SystemMessage(content=system_for(limit)), HumanMessage(content=retry)],
+                                       max_tokens=max(600, 150 * len(bad)), temperature=0))
+    except Exception as exc:
+        logger.warning("fact issues: renaming failed, the generic names dropped: %s", exc)
+    good_new = [i for i in renamed if not generic_name(str(i.get("nome") or ""))]
+    left = list(range(len(good_new)))           # the renamed ones not yet placed, in the reply's order
+
+    def take(fact: str) -> Optional[Dict[str, Any]]:
+        same = [n for n in left if " ".join(str(good_new[n].get("fatto") or "").lower().split()) == fact]
+        pick = same[0] if same else (left[0] if left else None)
+        if pick is None:
+            return None
+        left.remove(pick)
+        return good_new[pick]
+    bad_at = {k for k, _, _ in bad}
+    out, dropped = [], []
+    for k, item in enumerate(items):
+        new = item if k not in bad_at else take(" ".join(str(item.get("fatto") or "").lower().split()))
+        if new is not None:
+            out.append(new)
+        else:
+            dropped.append({"nome": item.get("nome"), "fatto": item.get("fatto")})
+    vlog("case_analysis_fact_issues_names", {
+        "generic": [{"nome": i.get("nome"), "fatto": i.get("fatto"), "why": why} for _, i, why in bad],
+        "dropped": dropped,
+        "renamed": [i.get("nome") for i in good_new], "still_generic": [i.get("nome") for i in renamed
+                                                                         if generic_name(str(i.get("nome") or ""))]})
+    return {"istituti": out}
 
 
 def add_to_frame(frame: Optional[Dict[str, Any]], case_text: str,

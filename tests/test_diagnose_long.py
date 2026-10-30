@@ -528,3 +528,26 @@ def test_abstentions_per_answer_in_compare():
             _json.dump(rec, fh)
         dirs.append(_os.path.join(root, name))
     assert "| abstentions per answer (GROUNDED_REVIEW_POLICY=abstain) | 0.0 | 2.0 |" in dl.compare(dirs, ev)
+
+
+def test_fact_institution_articles_placed_and_reached_in_compare():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    new_rec["events"] = list(new_rec.get("events") or []) + [["case_analysis_plan_fact_institutions", {
+        "reached": ["2043 c.c.", "1495 c.c.", "61 c.p."], "placed": ["2043 c.c.", "1495 c.c."],
+        "issues_added": ["Responsabilità del precettore"], "merged_into": {}}]]
+    assert dl.analyse_case(new_rec, ev)["fact_placed"] == {"reached": 3, "placed": 2, "expected_reached": 2,
+                                                          "expected_placed": 1, "issues_added": 1}
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("live", old_rec), ("v2", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    assert ("| fact-institution articles placed / reached (expected: placed / reached; issues added) | off | "
+            "2 / 3 (1 / 2; 1) |") in dl.compare(dirs, ev)

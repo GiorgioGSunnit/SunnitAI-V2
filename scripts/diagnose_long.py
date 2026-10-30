@@ -105,6 +105,7 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "HYBRID_NARRATIVE_ENABLED", "PRIMARY_FIRST_ENABLED", "PROTECTED_PARAPHRASE_ENABLED",
          "COMMA_MATERIAL_ENABLED", "GROUNDED_REVIEW_ENABLED", "ROLE_BLOCKS_ENABLED",
          "GROUNDED_REVIEW_STRICT_ENABLED", "GROUNDED_REVIEW_POLICY", "FACT_ISSUES_ENABLED", "FACT_ISSUES_EVERY_FACT_ENABLED",
+         "FACT_ISSUES_RESOLVER_V2_ENABLED",
          "ANCHORED_WRITING_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
@@ -1116,10 +1117,25 @@ def analyse_case(rec: dict, ev) -> dict:
     out["anchored_lost"] = _anchored_lost(rec, K, expected_keys, mentioned_eval | set(mentioned))
     from src.rag import grounded_review
     out["abstentions"] = grounded_review.abstentions(rec.get("draft") or "")    # GROUNDED_REVIEW_POLICY=abstain
+    out["fact_placed"] = _fact_placed(rec, K, expected_keys)
     return out
 
 
 ANCHORED_LOSSES = ("removed", "rewritten", "citation dropped")
+
+
+def _fact_placed(rec: dict, K, expected_keys: set) -> dict:
+    """FACT_ISSUES_RESOLVER_V2_ENABLED: the articles reached from a fact's institution and those placed in the plan
+    under its issue (case_analysis_plan_fact_institutions), and the expected ones among them; {} without the log."""
+    events = [e for e in rec.get("events") or [] if isinstance(e, (list, tuple)) and len(e) >= 2]
+    logs = [d for e, d, *_ in events if e == "case_analysis_plan_fact_institutions" and isinstance(d, dict)]
+    if not logs:
+        return {}
+    reached, placed = logs[-1].get("reached") or [], logs[-1].get("placed") or []
+    return {"reached": len(reached), "placed": len(placed),
+            "expected_reached": sum(1 for x in reached if K(x) in expected_keys),
+            "expected_placed": sum(1 for x in placed if K(x) in expected_keys),
+            "issues_added": len(logs[-1].get("issues_added") or [])}
 
 
 def _anchored_lost(rec: dict, K, expected_keys: set, in_answer: set) -> list:
@@ -1531,6 +1547,8 @@ def aggregate(cases: list) -> dict:
             "grounded": dict(grounded), "fact_issues": fact_issues, "anchored": dict(anchored),
             "anchored_lost": anchored_lost, "overlap_failures": dict(overlap_failures),
             "abstentions": sum(c.get("abstentions", 0) for c in answered), "answered": len(answered),
+            "fact_placed": dict(sum((Counter(c.get("fact_placed") or {}) for c in answered), Counter())),
+            "fact_placed_logged": any(c.get("fact_placed") for c in answered),
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1776,6 +1794,12 @@ def render(cases: list, header: list) -> str:
               "Expected articles lost with a removed / rewritten / citation-dropped sentence: "
               + ("; ".join(f"{cid} {label} ({how})" for cid, label, how in agg.get("anchored_lost") or []) or "none")
               + "."]
+    fp = agg.get("fact_placed") or {}
+    if agg.get("fact_placed_logged"):
+        L += ["", "## Fact-institution articles (FACT_ISSUES_RESOLVER_V2_ENABLED)", "",
+              f"Reached {fp.get('reached', 0)} ({fp.get('expected_reached', 0)} expected), placed in the plan under "
+              f"their institution's issue {fp.get('placed', 0)} ({fp.get('expected_placed', 0)} expected); "
+              f"issues added {fp.get('issues_added', 0)}."]
     fi = agg.get("fact_issues") or {}
     if fi.get("cases"):
         L += ["", "## Facts -> institutions (FACT_ISSUES_ENABLED)", "",
@@ -2199,6 +2223,10 @@ def compare(run_dirs: list, ev) -> str:
                 f"{a['invariants']['guards']['not_apply']} / {a['invariants']['guards']['orphans']} / "
                 f"{a['invariants']['guards']['against_client']}") if a["invariants"]["guards"]["logged"] else
                f"n/a / n/a / n/a / {a['invariants']['guards']['against_client']}", lambda a: "")]
+    rows += [("fact-institution articles placed / reached (expected: placed / reached; issues added)",
+              lambda a: (lambda f: f"{f.get('placed', 0)} / {f.get('reached', 0)} ({f.get('expected_placed', 0)} / "
+                                   f"{f.get('expected_reached', 0)}; {f.get('issues_added', 0)})"
+                         if a.get("fact_placed_logged") else "off")(a.get("fact_placed") or {}), lambda a: "")]
     rows += [("abstentions per answer (GROUNDED_REVIEW_POLICY=abstain)",
               lambda a: round(a.get("abstentions", 0) / max(1, a.get("answered", 0)), 1), lambda a: "")]
     rows += [("MENTIONED", lambda a: a["stage_counts"]["MENTIONED"], lambda a: f" / {len(a['slots'])}"),

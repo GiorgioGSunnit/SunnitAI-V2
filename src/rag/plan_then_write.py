@@ -389,11 +389,13 @@ def _forced(article_rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
     from . import evidence_tiers
     from .nodes.cypher import CROSSREF_SOURCE
 
+    from . import fact_issues
+    own_issue = fact_issues.resolver_v2()      # a fact institution's articles get their own issue (place_fact_...)
     best: Dict[tuple, tuple] = {}
     why: Dict[tuple, str] = {}
     for index, row in enumerate(article_rows):
         ref, grade = row.get("_article"), row.get("_grade")
-        if not ref or row.get("_demoted"):
+        if not ref or row.get("_demoted") or (own_issue and row.get("_fact_institution")):
             continue
         if row.get("_central"):
             grade, reason = 3, "central issue"
@@ -507,6 +509,50 @@ def _same_article(a: tuple, b: tuple) -> bool:
         return a[1] == b[1]
     x, y = a[1].lower(), b[1].lower()
     return x in y or y in x
+
+
+FACT_ISSUE_ARGUMENT = ("Il fatto «{fatto}» pone {nome}: che cosa prevedono {norme} e come incidono sulla posizione "
+                       "della parte assistita.")
+
+
+def place_fact_institutions(plan: Dict[str, Any], analysis: Dict[str, Any],
+                            article_rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(plan, log), FACT_ISSUES_RESOLVER_V2_ENABLED: the articles each fact's institution reached
+    (analysis["fact_institutions"]) in the plan under that institution's issue -- an existing issue holding one of
+    them, else a new issue of its own, after the others -- outside the forced list's slots (_forced). Only an article
+    with a row in the material is placed. Log: reached, placed, the issues added and merged."""
+    have = {r["_article"] for r in article_rows if r.get("_article")}
+    issues = [{**q, "norme": list(q["norme"])} for q in plan["questioni"]]
+    reached: List[tuple] = []
+    placed: List[tuple] = []
+    added: List[str] = []
+    merged: Dict[str, str] = {}
+    for inst in analysis.get("fact_institutions") or []:
+        refs = [tuple(r) for r in inst.get("refs") or []]
+        reached += [r for r in refs if r not in reached]
+        refs = [r for r in refs if r in have]
+        if not refs:
+            continue
+        home = next((q for q in issues if set(q["norme"]) & set(refs)), None)
+        name = " ".join(str(inst.get("nome") or "").split())
+        if home is None:
+            home = {"titolo": name[:1].upper() + name[1:], "norme": [], "pronunce": [],
+                    "argomento": FACT_ISSUE_ARGUMENT.format(
+                        fatto=inst.get("fatto") or name, nome=name,
+                        norme=", ".join(f"art. {n} {_code_key(c)}" for n, c in refs)),
+                    "obiezione": "", "replica": "", **({"passi": []} if anchored_writing.enabled() else {})}
+            issues.append(home)
+            added.append(home["titolo"])
+        else:
+            merged[name] = home["titolo"]
+        for ref in refs:
+            if ref not in home["norme"]:
+                home["norme"].append(ref)
+            if ref not in placed:
+                placed.append(ref)
+    log = {"reached": [f"{n} {c}" for n, c in reached], "placed": [f"{n} {c}" for n, c in placed],
+           "issues_added": added, "merged_into": merged}
+    return {**plan, "questioni": issues}, log
 
 
 def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Dict[str, Any], List[tuple], List[tuple]]:
@@ -1010,6 +1056,10 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         dg.vlog("case_analysis_plan_applicable", {
             "applicable": [f"{n} {c}" for n, c in applicable], "max_issues": max_issues,
             "placed": [f"{n} {c}" for n, c in placed], "added_to_last_issue": [f"{n} {c}" for n, c in added]})
+    from . import fact_issues
+    if plan and fact_issues.resolver_v2():
+        plan, placed_log = place_fact_institutions(plan, analysis, article_rows)
+        dg.vlog("case_analysis_plan_fact_institutions", placed_log)
     dg.vlog("case_analysis_plan", {
         "issues": len(plan["questioni"]) if plan else 0, "replanned": bool(opposing),
         "opposing": [o["argomento"] for o in opposing],
