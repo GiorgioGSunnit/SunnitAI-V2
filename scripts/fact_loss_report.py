@@ -18,7 +18,8 @@ article among what an institution resolved to), and the outcome:
   not named: under the cap         no institution from that fact, fewer than MAX_INSTITUTIONS named
   no FACT_ISSUES log               the flag off or the call failed for that case
 With FACT_ISSUES_RESOLVER_V2_ENABLED (the institution's log says "resolver": "v2") a named one splits instead into:
-  v2: kept, lost later             resolved to it: lost after the resolution (the report's row says where not)
+  v2: kept, lost later             its core article: lost after the resolution (the report's row says where not)
+  v2: related candidate (T2), lost later   a related / text match: an ordinary candidate, lost at the check or plan
   v2: refused (<why>)              a candidate, refused (outside the chapter, no specific word shared, beyond the 3)
   v2: not a candidate, resolved to others / to nothing    not among the top candidates of its code
 and one not named into "not named: generic name dropped" when its fact's generic or Latin name was not renamed.
@@ -35,11 +36,13 @@ from collections import Counter
 sys.path.insert(0, os.getcwd())
 from src.rag import fact_issues  # noqa: E402
 
-V2_OUTCOMES = ("v2: kept, lost later", "v2: not a candidate, resolved to others", "v2: not a candidate, resolved to nothing")
+V2_OUTCOMES = ("v2: kept, lost later", "v2: related candidate (T2), lost later",
+               "v2: not a candidate, resolved to others", "v2: not a candidate, resolved to nothing")
 OUTCOMES = V2_OUTCOMES + ("v2: refused", "not named: generic name dropped", "rejected by the rubrica filter", "resolved to other articles", "resolved to nothing",
             "not named: cut by the cap", "not named: dropped as a duplicate / with a number",
             "not named: cap reached", "not named: under the cap", "no FACT_ISSUES log")
 FIX = {"v2: kept, lost later": "after the resolution: the plan or the writer",
+       "v2: related candidate (T2), lost later": "the graded check or the plan (a related match is not placed)",
        "v2: not a candidate, resolved to others": "the name, or the heading index / full text recall",
        "v2: not a candidate, resolved to nothing": "the name, or the heading index / full text recall",
        "v2: refused": "the refusal rule (see its reason)",
@@ -111,6 +114,7 @@ def classify(lost, rec, case_dir):
         if e == "case_analysis_fact_institution" and isinstance(d, dict) and d.get("fonte") == fact_issues.FONTE:
             r = resolutions.setdefault(d.get("institution"), {"kept": [], "rejected": [], "refused": [], "v2": False})
             r["kept"] += d.get("kept") or []
+            r.setdefault("core", []).extend(d.get("core") if "core" in d else d.get("kept") or [])
             r["rejected"] += d.get("rejected") or []
             r["refused"] += [x for x in d.get("refused") or [] if isinstance(x, dict)]
             r["v2"] = r["v2"] or d.get("resolver") == "v2"
@@ -124,8 +128,10 @@ def classify(lost, rec, case_dir):
         res = [resolutions.get(i.get("nome")) or {"kept": [], "rejected": [], "refused": [], "v2": False} for i in mine]
         detail["resolved"] = {i.get("nome"): r for i, r in zip(mine, res)}
         if any(r.get("v2") for r in res):
-            if any(has_article(r["kept"], keys) for r in res):
+            if any(has_article(r.get("core") or [], keys) for r in res):
                 return "v2: kept, lost later", mine, detail
+            if any(has_article(r["kept"], keys) for r in res):
+                return "v2: related candidate (T2), lost later", mine, detail
             why = next((x.get("why") for r in res for x in r["refused"] if has_article([x.get("article")], keys)), None)
             if why:
                 detail["why"] = why

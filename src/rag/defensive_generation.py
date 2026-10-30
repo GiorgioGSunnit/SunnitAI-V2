@@ -3905,11 +3905,14 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 except Exception as exc:
                     logger.warning("fact resolver failed for %r: %s", istituto.get("nome"), exc)
                     resolved, how = [], {"refused": [{"article": None, "why": f"failed: {exc}"[:200]}]}
-                refs = list(dict.fromkeys(r["_article"] for r in resolved if r.get("_article")))
+                # only a core article is the institution's (T1, its own plan issue); a related one is a candidate
+                refs = list(dict.fromkeys(r["_article"] for r in resolved if r.get("_fact_institution")))
                 vlog("case_analysis_fact_institution", {
                     "institution": istituto.get("nome"), "fonte": istituto["fonte"], "resolver": "v2",
                     **({"fatto": istituto["fatto"]} if istituto.get("fatto") else {}),
-                    "kept": [f"{n} {c}" for n, c in refs],
+                    "kept": [f"{n} {c}" for n, c in dict.fromkeys(r["_article"] for r in resolved
+                                                                   if r.get("_article"))],
+                    "core": [f"{n} {c}" for n, c in refs],
                     "rejected": [x["article"] for x in how.get("refused") or [] if x.get("article")],
                     "candidates": how.get("candidates") or [], "kept_as": how.get("kept") or [],
                     "refused": how.get("refused") or [], "chapter": how.get("chapter")})

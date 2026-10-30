@@ -79,9 +79,18 @@ NAMING_RULE = (
     "\nNOMI DEGLI ISTITUTI: ogni nome è un istituto specifico del diritto italiano, preciso come la rubrica di un "
     "articolo e con i termini del codice o della legge (per esempio \"inadempimento del conduttore\", \"risoluzione "
     "della locazione per morosità\", \"responsabilità contrattuale della struttura sanitaria\", \"giudizio di "
-    "ottemperanza\", \"garanzia per i vizi della cosa venduta\"). Vietati i nomi generici (\"risarcimento danni\", "
-    "\"responsabilità\", \"responsabilità medica\", \"decisione amministrativa\", \"tutela\") e il latino "
-    "(\"dolus eventualis\", \"diligentia\"): nomina l'istituto preciso che il fatto pone, nella lingua del codice.")
+    "ottemperanza\", \"garanzia per i vizi della cosa venduta\"). Ogni nome dice anche il rapporto giuridico su cui "
+    "l'istituto si fonda -- contrattuale, extracontrattuale, da reato o amministrativo -- e chi ne risponde verso chi: "
+    "\"responsabilità contrattuale della struttura sanitaria verso il paziente\", non \"responsabilità civile "
+    "dell'ente pubblico per lesioni\"; \"responsabilità extracontrattuale del precettore per il danno cagionato "
+    "dall'allievo\". Vietati i nomi generici (\"risarcimento danni\", \"responsabilità\", \"responsabilità medica\", "
+    "\"decisione amministrativa\", \"tutela\") e il latino (\"dolus eventualis\", \"diligentia\"): nomina "
+    "l'istituto preciso che il fatto pone, nella lingua del codice.")
+# A liability names the relationship it rests on (smoke test c1: "Responsabilità civile dell'ente pubblico per lesioni
+# permanenti" resolved to art. 406 c.c., guardianship).
+LIABILITY_HEADS = ("responsabilità", "responsabilita")
+_RELATIONSHIP_RE = re.compile(r"\b(?:contrattual|extracontrattual|precontrattual|aquilian|da\s+reato|penal|"
+                              r"amministrativ|da\s+fatto\s+illecito|da\s+inadempimento|oggettiv)\w*", re.IGNORECASE)
 RETRY_TITLE = "NOMI DA RIFARE"
 # A name opening on one of these needs a specific word after it that is not a broad qualifier (BROAD_QUALIFIERS):
 # "responsabilità del precettore", "responsabilità contrattuale della struttura sanitaria" -- not "responsabilità
@@ -114,6 +123,8 @@ def generic_name(name: str) -> Optional[str]:
     head = (re.findall(r"[a-zà-ù]+", low) or [""])[0]
     if not specific or (head in GENERIC_HEADS and not specific - fact_resolver._stems(BROAD_QUALIFIERS)):
         return "generic"
+    if head in LIABILITY_HEADS and not _RELATIONSHIP_RE.search(low):
+        return "no relationship"
     return None
 
 
@@ -224,10 +235,12 @@ def _renamed(raw: Any, human: str, limit: int) -> Dict[str, Any]:
     bad = [(k, i, why) for k, i, why in bad if why]
     if not bad:
         return {"istituti": items}
-    listing = "\n".join(f"- {i.get('nome')} (fatto: {i.get('fatto')}): {'in latino' if why == 'latin' else 'generico'}"
-                        for _, i, why in bad)
+    said = {"latin": "in latino", "generic": "generico",
+            "no relationship": "senza il rapporto (contrattuale, extracontrattuale, da reato, amministrativo) e chi "
+                               "risponde verso chi"}
+    listing = "\n".join(f"- {i.get('nome')} (fatto: {i.get('fatto')}): {said[why]}" for _, i, why in bad)
     retry = (f"{human}\n\nLa tua risposta:\n{json.dumps({'istituti': items}, ensure_ascii=False)}\n\n{RETRY_TITLE} "
-             f"(generici o in latino):\n{listing}\n\nPer ciascuno di questi fatti nomina l'istituto preciso, con i "
+             f"(generici, in latino o senza il rapporto giuridico):\n{listing}\n\nPer ciascuno di questi fatti nomina l'istituto preciso, con i "
              "termini della rubrica del codice o della legge. Rispondi SOLO con un oggetto JSON {\"istituti\": [...]} "
              "con i soli istituti rinominati, nello stesso formato.")
     renamed: List[Dict[str, Any]] = []

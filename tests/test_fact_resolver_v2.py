@@ -38,6 +38,15 @@ ARTICLES = {
     "2689": ("Usucapione", "Deve essere trascritta la sentenza che accerta l'usucapione."),
     "1158": ("Usucapione dei beni immobili e dei diritti reali immobiliari", "La proprietà dei beni immobili si "
              "acquista in virtù del possesso continuato per venti anni."),
+    # smoke test c1: guardianship, reached by two words of its text (shortened, the words kept)
+    "406": ("Soggetti", "Il ricorso per l'istituzione dell'amministrazione di sostegno può essere proposto anche "
+            "dall'ente che ha in cura la persona con lesioni permanenti."),
+    "2043": ("Risarcimento per fatto illecito", "Qualunque fatto doloso o colposo, che cagiona ad altri un danno "
+             "ingiusto, obbliga colui che ha commesso il fatto a risarcire il danno."),
+    "582": ("Lesione personale", "Chiunque cagiona ad alcuno una lesione personale, dalla quale deriva una malattia "
+            "nel corpo o nella mente, è punito con la reclusione."),
+    "2057": ("Danni permanenti", "Quando il danno alla persona ha carattere permanente la liquidazione può essere fatta "
+             "dal giudice sotto forma di una rendita vitalizia."),
 }
 
 
@@ -73,7 +82,10 @@ def v2(monkeypatch):
     ("Dolus eventualis", "latin"), ("Diligentia", "latin"), ("responsabilità contrattuale", "generic"),
     ("inadempimento del conduttore", None), ("risoluzione della locazione per morosità", None),
     ("responsabilità contrattuale della struttura sanitaria", None), ("giudizio di ottemperanza", None),
-    ("garanzia per i vizi della cosa venduta", None), ("responsabilità del precettore", None),
+    ("garanzia per i vizi della cosa venduta", None), ("responsabilità del precettore", "no relationship"),
+    ("responsabilità extracontrattuale del precettore per il danno cagionato dall'allievo", None),
+    ("responsabilità contrattuale della struttura sanitaria verso il paziente", None),
+    ("Responsabilità civile dell'ente pubblico per lesioni permanenti", "no relationship"),     # smoke test c1
 ])
 def test_generic_and_latin_names(name, why):
     assert fi.generic_name(name) == why
@@ -129,6 +141,32 @@ def test_refused_outside_the_chapter_and_never_through_a_generic_word(v2):
     assert rows == [] and session.queries == [] and "generic institution name" in log["refused"][0]["why"]
     rows, log = fr.resolve(FakeSession(vector=["1490"]), DOCS, {"nome": "garanzia per i vizi", "codice": "c.zz."})
     assert rows == [] and "not resolved to a document" in log["refused"][0]["why"]
+
+
+def test_a_text_match_is_a_t2_candidate_not_the_institution_s_406(v2):
+    name = "Responsabilità civile dell'ente pubblico per lesioni permanenti"
+    assert fr.matching_words(name) == {"ente", "lesio", "perma"}             # "civile", "pubblico": qualifiers
+    rows, log = fr.resolve(FakeSession(vector=["406", "2043"]), DOCS, {"nome": name, "codice": "c.c."})
+    assert [r["_article"] for r in rows] == [("406", "c.c.")]
+    assert [(k["article"], k["as"]) for k in log["kept"]] == [("406 c.c.", "text")]
+    row = rows[0]
+    assert "_fact_institution" not in row and not row.get("_heading_match")   # not T1, no plan issue of its own
+    assert row["_fact_related"] == name and row["_tier"] == evidence_tiers.T2
+    assert evidence_tiers.tier_of(row, set(), set(), set())[0] != evidence_tiers.T1
+    out, placed = ptw.place_fact_institutions({"questioni": []}, {"fact_institutions": []}, rows)
+    assert placed["placed"] == [] and out["questioni"] == []
+
+
+def test_a_heading_sharing_one_specific_word_is_not_the_core(v2):
+    name = "responsabilità extracontrattuale per lesioni permanenti"           # the chapter: 2043-2059 c.c.
+    rows, log = fr.resolve(FakeSession(vector=["2057", "582"]), DOCS, {"nome": name, "codice": "c.c."})
+    assert rows == []
+    refused = {x["article"]: x["why"] for x in log["refused"]}
+    assert refused == {"2057 c.c.": "no core article: heading 1, text 1 of 2 specific word(s)",     # heading and text: "permanent" only
+                       "582 c.c.": "outside the institution's chapter"}
+    rows, _ = fr.resolve(FakeSession(vector=["1490"]), DOCS,
+                         {"nome": "garanzia per i vizi della cosa venduta", "codice": "c.c."})
+    assert rows[0]["_fact_institution"] and rows[0]["_heading_match"]        # three shared: the core
 
 
 # --- 4. tier and plan -------------------------------------------------------------------------------------------------
