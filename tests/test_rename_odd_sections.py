@@ -55,6 +55,13 @@ def test_mixed_articles_are_renamed_ones_next_to_original_pieces():
     assert ro.article("21-bis.0.0") == "21-bis" and ro.article("59_3_19") == "59" and ro.article("preambolo") is None
 
 
+def test_next_article_renames_a_piece_holding_the_next_article():
+    names = ["1405", "1405.0.0", "1405.1406.0", "1407.0.0", "622", "622.623.0", "623.1.0", "3.4.0", "500.510.0",
+             "700.701.1", "800.801.0", "799.801.0", None]
+    # 623 has its own piece, 3.4.0 is a comma, 510 is too far, 700.701.1 is not "A.B.0", two give 801.0.0
+    assert ro.next_article(names) == [("1405.1406.0", "1406.0.0")]
+
+
 def test_the_cypher_pattern_matches_what_the_python_one_does():
     pattern = re.compile(ro.ODD_CYPHER)
     for name in ["tutti_cittadini.3.0.0", "capitolo_1_governo.1", "parte.5.2.X.0", "3.0.0", "21-bis", "preambolo"]:

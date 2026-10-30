@@ -15,9 +15,14 @@ left alone, and listed, when
 The old name is kept in name_before_rename (the API opening a source by name also tries it); --undo puts it back.
 Nothing is deleted.
 
+--next (30 Oct, merged_articles_check.py): the loader stored some articles as a piece of the one before, "1405.1406.0"
+holding art. 1406 c.c. and "622.623.0" art. 623 c.p.; renamed "1406.0.0", "623.0.0" when the second number is one of
+the 3 articles after the first (from 20 up, so a comma's number is not taken) and the document has no Section of it.
+
   --doc NAME                  one document, by its exact name: a dry run listing every rename
   --doc NAME --write          rename them
   --doc NAME --undo --write   put the old names back
+  --doc NAME --next [--write] the Sections named "A.B.0" holding article B (above) instead of "word.N" ones
   --all                       every primary document: counts only, and the articles already renamed whose
                               pieces sit next to pieces that always had their own name ("mixed": check them)
 
@@ -35,6 +40,7 @@ from typing import Iterable, List, Optional, Set, Tuple
 _ODD = re.compile(r"^([a-z][a-z0-9_]*)\.(.+)$")
 _ARTICLE_NAME = re.compile(r"^[1-9]\d*(?:-[a-z]+)?(?:\.\d+)*(?:_\d+)*$")
 ODD_CYPHER = "^[a-z][a-z0-9_]*[.].+$"
+_NEXT = re.compile(r"^(\d+)\.(\d+)\.0$")
 _ARTICLE = re.compile(r"^(\d+(?:-[a-z]+)?)")
 
 
@@ -85,6 +91,20 @@ def plan(odd: Iterable[str], existing: Set[str]) -> Tuple[List[Tuple[str, str]],
     return renames, left
 
 
+def next_article(names: Iterable[str]) -> List[Tuple[str, str]]:
+    """[(old, new)]: "1405.1406.0" -> "1406.0.0" when 1406 is one of the 3 articles after 1405 (from 20 up) and none of
+    `names` (all the document's Section names) belongs to article 1406."""
+    names = [n for n in names if n]
+    present = {article(n) for n in names} - {None}
+    out = []
+    for n in names:
+        m = _NEXT.match(n)
+        if m and int(m.group(1)) >= 20 and 1 <= int(m.group(2)) - int(m.group(1)) <= 3 and m.group(2) not in present:
+            out.append((n, f"{m.group(2)}.0.0"))
+    gives = Counter(new for _, new in out)
+    return sorted(((old, new) for old, new in out if gives[new] == 1), key=lambda x: (_order(x[0]), x[0]))
+
+
 def mixed_articles(sections: Iterable[Tuple[str, Optional[str]]]) -> List[str]:
     """The articles renamed earlier (name_before_rename set) that also have pieces which always had their own name:
     two texts may be mixed in them. `sections`: (name, name_before_rename)."""
@@ -103,10 +123,11 @@ def main() -> int:
     p.add_argument("--doc", metavar="NAME")
     p.add_argument("--all", action="store_true")
     p.add_argument("--undo", action="store_true")
+    p.add_argument("--next", action="store_true")
     p.add_argument("--write", action="store_true")
     args = p.parse_args()
-    if not (args.doc or args.all) or (args.all and (args.write or args.undo)):
-        p.error("--doc NAME [--write] [--undo], or --all (counts only)")
+    if not (args.doc or args.all) or (args.all and (args.write or args.undo or args.next)) or (args.next and args.undo):
+        p.error("--doc NAME [--next] [--write], --doc NAME --undo [--write], or --all (counts only)")
 
     sys.path.insert(0, os.getcwd())
     from dotenv import load_dotenv
@@ -160,8 +181,11 @@ def main() -> int:
                 continue
             names = [r["name"] for r in session.run(
                 "MATCH (d:Document {id: $id})-[:CONTAINS]->(s:Section) RETURN s.name AS name", id=doc["id"]).data()]
-            renames, left = plan([n for n in names if _ODD.match(n or "")],
-                                 {n for n in names if n and not _ODD.match(n)})
+            if args.next:
+                renames, left = next_article(names), []
+            else:
+                renames, left = plan([n for n in names if _ODD.match(n or "")],
+                                     {n for n in names if n and not _ODD.match(n)})
             for old, new in renames:
                 print(f"  {old} -> {new}")
             for old, why in left:
