@@ -644,14 +644,18 @@ def _trim_material(material: str, sentences_: Sequence[str], limit: int) -> str:
 PROVENANCE_SYSTEM = (
     "Sei un revisore legale. Ricevi il MATERIALE che è stato dato a chi ha scritto un parere (testi di norme, "
     "passi di sentenze, elenchi di termini e strumenti) e alcune FRASI di quel parere, numerate. Per ogni frase "
-    "decidi prima il tipo: \"regola\" (enuncia una regola giuridica o il contenuto di una norma), \"istituto\" "
-    "(definisce o qualifica un istituto), \"procedura\" (un passaggio, un termine o un atto processuale), "
-    "\"massima\" (ciò che una sentenza ha deciso o affermato), \"altro\" (fatti del caso, valutazioni, "
-    "consigli pratici senza una regola). Per le frasi non \"altro\" decidi l'esito confrontandole SOLO con il "
-    "MATERIALE, non con ciò che sai: \"supportata\" se il materiale contiene quella regola o quel contenuto (anche "
-    "con altre parole), \"assente\" se il materiale non la contiene (anche se è vera), \"contraddetta\" se il "
-    "materiale dice il contrario. Rispondi SOLO con un array JSON: [{\"i\": numero, \"tipo\": ..., \"esito\": "
-    "\"supportata\"|\"assente\"|\"contraddetta\"|null, \"prova\": \"fino a 15 parole del materiale, o vuoto\"}].")
+    "decidi prima il tipo: \"regola\" (enuncia in generale una regola giuridica o il contenuto di una norma: "
+    "\"l'art. X prevede...\", requisiti, presupposti), \"istituto\" (definisce o qualifica in generale un istituto), "
+    "\"procedura\" (un passaggio, un termine o un atto processuale), \"massima\" (ciò che la giurisprudenza o una "
+    "sentenza afferma in generale: \"la Cassazione ha affermato...\", \"la giurisprudenza ritiene...\"), "
+    "\"applicazione\" (applica una regola o una massima ai fatti di questo caso: il soggetto è una parte o un fatto "
+    "del caso, \"la reazione di Tizio era proporzionata\", \"il ritardo è imputabile al venditore\"), \"altro\" "
+    "(fatti del caso, valutazioni, consigli pratici senza una regola). Per le frasi non \"altro\" decidi l'esito "
+    "confrontandole SOLO con il MATERIALE, non con ciò che sai: \"supportata\" se il materiale contiene quella "
+    "regola o quel contenuto (per un'applicazione: la regola che applica), anche con altre parole, \"assente\" se "
+    "il materiale non la contiene (anche se è vera), \"contraddetta\" se il materiale dice il contrario. Rispondi "
+    "SOLO con un array JSON: [{\"i\": numero, \"tipo\": ..., \"esito\": \"supportata\"|\"assente\"|"
+    "\"contraddetta\"|null, \"prova\": \"fino a 15 parole del materiale, o vuoto\"}].")
 
 UNDERSTANDING_SYSTEM = (
     "Sei un avvocato italiano. Ricevi un CASO, un ARTICOLO che un esperto ritiene rilevante per il caso, e gli "
@@ -778,9 +782,12 @@ def audit_provenance(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: 
         sentences_out.append({"sentence": item["sentence"], "stage": item["stage"], "section": item.get("section"),
                               "kind": kind,
                               "verdict": verdict, "evidence": v.get("prova") or ""})
-    rule = [s for s in sentences_out if s["kind"] and s["kind"] != "altro"]
+    # An application of a rule to the case's facts is the answer's reasoning: judged, reported apart, not a rule-sentence.
+    rule = [s for s in sentences_out if s["kind"] and s["kind"] not in ("altro", "applicazione")]
     counts = Counter(s["verdict"] or "unjudged" for s in rule)
+    applied = Counter(s["verdict"] or "unjudged" for s in sentences_out if s["kind"] == "applicazione")
     return {"sentences": sentences_out, "rule_sentences": len(rule), "counts": dict(counts),
+            "applications": sum(applied.values()), "application_counts": dict(applied),
             "judged": sum(1 for s in sentences_out if s["kind"]), "total": len(sentences_out),
             "memory_share": (counts["assente"] / len(rule)) if rule else None, "proxy": case["proxy"]}
 
@@ -1071,7 +1078,8 @@ def attribute(case_out: Dict[str, Any]) -> None:
     """A provenance defect on a sentence granularity already explains is counted once, as granularity."""
     gran = {c["sentence"] for c in case_out["granularity"]["claims"]
             if c["status"] in ("beyond_truncation", "comma_not_given")}
-    prov = [s for s in case_out["provenance"]["sentences"] if s["verdict"] in ("assente", "contraddetta")]
+    prov = [s for s in case_out["provenance"]["sentences"] if s["verdict"] in ("assente", "contraddetta")
+            and s.get("kind") != "applicazione"]
     case_out["provenance"]["defects_raw"] = len(prov)
     case_out["provenance"]["explained_by_granularity"] = sum(1 for s in prov if s["sentence"] in gran)
     case_out["provenance"]["defects"] = len(prov) - case_out["provenance"]["explained_by_granularity"]
@@ -1093,6 +1101,9 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
     for c in cases:
         prov.update(c["provenance"]["counts"])
     rule = sum(c["provenance"]["rule_sentences"] for c in cases)
+    applied = Counter()
+    for c in cases:
+        applied.update(c["provenance"].get("application_counts") or {})
     triggers = Counter(x["trigger"] or "unjudged" for c in cases for x in c["understanding"]["lost"])
     missed = Counter(x["trigger"] or "unjudged" for c in cases for x in c["understanding"]["lost"]
                      if x["judged"] and not x["captured"])
@@ -1105,7 +1116,7 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"totals": totals, "all": all_defects, "ranked": ranked,
             "share": {m: (totals[m] / all_defects if all_defects else 0.0) for m in MECHANISMS},
             "granularity": dict(gran), "cited": sum(c["granularity"]["cited"] for c in cases),
-            "provenance": dict(prov), "rule_sentences": rule,
+            "provenance": dict(prov), "rule_sentences": rule, "applications": dict(applied),
             "memory_share": (prov["assente"] / rule) if rule else None,
             "contradicted_share": (prov["contraddetta"] / rule) if rule else None,
             "explained_by_granularity": sum(c["provenance"].get("explained_by_granularity", 0) for c in cases),
@@ -1157,7 +1168,8 @@ def grounded_totals(cases: List[Dict[str, Any]]) -> Dict[str, int]:
 
 
 KINDS = ("regola", "istituto", "procedura", "massima")
-KIND_NAMES = {"regola": "rule", "istituto": "institution", "procedura": "procedure", "massima": "holding"}
+KIND_NAMES = {"regola": "rule", "istituto": "institution", "procedura": "procedure",
+              "massima": "case-law statement", "applicazione": "application to the facts"}
 
 
 def provenance_by_section(cases: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, int]]]:
@@ -1167,6 +1179,11 @@ def provenance_by_section(cases: List[Dict[str, Any]]) -> Dict[str, Dict[str, Di
     for c in cases:
         for x in c["provenance"]["sentences"]:
             kind = x.get("kind")
+            if kind == "applicazione":     # reported in its own column, outside "all"
+                cell = out.setdefault(c["run"], {}).setdefault(section_of(x), Counter())
+                cell["applicazione"] += 1
+                cell["applicazione_assente"] += x.get("verdict") == "assente"
+                continue
             if kind not in KINDS:
                 continue
             cell = out.setdefault(c["run"], {}).setdefault(section_of(x), Counter())
@@ -1192,16 +1209,19 @@ def provenance_breakdown(cases: List[Dict[str, Any]]) -> List[str]:
     def cell(k, n):
         return f"{k} / {n} ({_pct(k / n)})" if n else "-"
     for run, sections in data.items():
-        L += [f"Run {run}:", "", "| section | " + " | ".join(KIND_NAMES[k] for k in KINDS) + " | all | contradicted |",
-              "|---|" + "---:|" * (len(KINDS) + 2)]
+        L += [f"Run {run}:", "", "| section | " + " | ".join(KIND_NAMES[k] for k in KINDS)
+              + " | all (the target) | contradicted | application to the facts (apart) |",
+              "|---|" + "---:|" * (len(KINDS) + 3)]
         total: Counter = Counter()
         for name in sorted(sections, key=lambda n: order.index(n) if n in order else len(order)):
             row = sections[name]
             total.update(row)
             L.append(f"| {name} | " + " | ".join(cell(row[f"{k}_assente"], row[k]) for k in KINDS)
-                     + f" | {cell(row['all_assente'], row['all'])} | {row['all_contraddetta']} |")
+                     + f" | {cell(row['all_assente'], row['all'])} | {row['all_contraddetta']} | "
+                     f"{cell(row['applicazione_assente'], row['applicazione'])} |")
         L.append("| **total** | " + " | ".join(cell(total[f"{k}_assente"], total[k]) for k in KINDS)
-                 + f" | {cell(total['all_assente'], total['all'])} | {total['all_contraddetta']} |")
+                 + f" | {cell(total['all_assente'], total['all'])} | {total['all_contraddetta']} | "
+                 f"{cell(total['applicazione_assente'], total['applicazione'])} |")
         L.append("")
     return L
 
@@ -1265,10 +1285,14 @@ def render(cases: List[Dict[str, Any]], meta: Dict[str, Any], max_examples: int 
     L += [f"| **total** | {sum(c['provenance']['total'] for c in cases)} | {s['rule_sentences']} | "
           f"{k.get('supportata', 0)} | {k.get('assente', 0)} | {k.get('contraddetta', 0)} | {k.get('unjudged', 0)} | "
           f"{_pct(s['memory_share'])} |", "",
-          f"Share of rule-sentences written from memory: {_pct(s['memory_share'])}; contradicting the material: "
-          f"{_pct(s['contradicted_share'])}.", "", "Examples (not in material, then contradicted):"]
+          f"Share of rule-sentences (statements of the law or of case law) written from memory: "
+          f"{_pct(s['memory_share'])} (target < 10%); contradicting the material: {_pct(s['contradicted_share'])}.",
+          f"Applications of a rule to the case's facts, apart (not rule-sentences, not in the target): "
+          f"{sum(s['applications'].values())}, of which not in material {s['applications'].get('assente', 0)}, "
+          f"contradicted {s['applications'].get('contraddetta', 0)}.", "", "Examples (not in material, then contradicted):"]
     ex = sorted(((c["key"], x) for c in cases for x in c["provenance"]["sentences"]
-                 if x["verdict"] in ("assente", "contraddetta")), key=lambda kx: kx[1]["verdict"] != "contraddetta")
+                 if x["verdict"] in ("assente", "contraddetta") and x.get("kind") != "applicazione"),
+                key=lambda kx: kx[1]["verdict"] != "contraddetta")
     L += [f"- {key} [{x['verdict']}, {x['kind']}, {x['stage']}]: «{_cut(x['sentence'])}»"
           + (f" — material: «{_cut(x['evidence'], 120)}»" if x["evidence"] else "") for key, x in ex[:max_examples]] or ["- none"]
 

@@ -168,3 +168,98 @@ def test_provenance_breakdown_by_section_and_kind():
     assert "| Risposte ai quesiti | 1 / 1 (100%) | - | 1 / 1 (0%)" not in table
     assert "| Risposte ai quesiti | 1 / 1 (100%) | - | 0 / 1 (0%) | - | 1 / 2 (50%) | 0 |" in table
     assert "| **total** |" in table
+
+
+# --- two kinds of sentence ------------------------------------------------------------------------------------------
+
+CASE = "Tizio ha acquistato una lavatrice da Caio. Dopo tre mesi la lavatrice si è rotta e Tizio ha scritto a Caio."
+
+
+@pytest.mark.parametrize("sentence,kind", [
+    ("La giurisprudenza ritiene che il venditore risponda dei vizi occulti.", "case_law"),
+    ("Secondo la Cassazione il termine decorre dalla scoperta.", "case_law"),
+    ("L'art. 9001 c.c. prevede che il custode risponda del danno.", "law"),
+    ("Ai sensi dell'art. 9001 c.c., il custode risponde salvo il caso fortuito.", "law"),
+    ("I requisiti della garanzia sono la denuncia e il termine.", "law"),
+    ("Caio non ha provato il caso fortuito, quindi risponde del danno (art. 9001 c.c.).", "application"),
+    ("Nel caso di specie il ritardo è imputabile al venditore.", "application"),
+    ("Dopo tre mesi la lavatrice si è rotta e ha scritto subito.", "application"),
+    ("Il termine è breve e va rispettato con attenzione.", None),
+])
+def test_classify_the_two_kinds(sentence, kind):
+    assert aw.classify(sentence, CASE) == kind
+
+
+def test_drop_citations_takes_out_only_the_citation():
+    assert aw.drop_citations("Caio risponde del danno (art. 9005 c.c.).", [("9005", "c.c.")]) == "Caio risponde del danno."
+    assert aw.drop_citations("Caio risponde ai sensi dell'art. 9005 c.c. del danno subito.", [("9005", "c.c.")]) == \
+        "Caio risponde del danno subito."
+    kept = "Caio risponde (artt. 9001 e 9005 c.c.)."
+    assert aw.drop_citations(kept, [("9005", "c.c.")]) == kept          # a run naming a kept article stays
+
+
+def test_applications_are_kept_case_law_needs_a_ruling_anchor_of_its_section(monkeypatch):
+    events = []
+    monkeypatch.setattr(aw, "vlog", lambda event, data=None, **_: events.append((event, data)))
+    _, cat = _catalogue([])            # A1 = 9001 co. 2 (C2), A2 = the ruling
+    cat.section_ids = {"Applicazione al caso": ["A1", "A2"], "Conclusioni": ["A1"]}
+    seen = []
+
+    def rewrite(messages, max_tokens, **k):
+        human = messages[1].content
+        items = [ln for ln in human.split(aw.REWRITE_MARK + "\n", 1)[1].splitlines() if ln.strip()]
+        seen.extend(items)
+        out = []
+        for ln in items:
+            n = int(ln.split(".", 1)[0])
+            if "[prima il tipo]" in ln:
+                out.append({"i": n, "tipo": "applicazione", "frase": ""})
+            elif "senza giurisprudenza" in ln:
+                out.append({"i": n, "tipo": "generale", "frase": "La denuncia del danno deve pervenire entro "
+                                                                 "sessanta giorni dalla scoperta (art. 9001 c.c.)."})
+            else:
+                out.append({"i": n, "tipo": "generale", "frase": ""})
+        return out
+    monkeypatch.setattr(dg, "_chat_json", rewrite)
+    application = "Caio, che non ha provato il caso fortuito, risponde del danno a Tizio (art. 9005 c.c.)."
+    unclear = "Il guasto si è verificato entro il termine utile (art. 9001 c.c.)."
+    ruling_ok = f"La responsabilità del custode ha natura oggettiva secondo la Cassazione ({REF}) [A2]."
+    generic = "La giurisprudenza ritiene che la denuncia vada fatta entro sessanta giorni (art. 9001 c.c.) [A1]."
+    generic_nothing = "La giurisprudenza è costante nel tutelare il consumatore in ogni caso."
+    text = " ".join([application, unclear, ruling_ok, generic, generic_nothing])
+    materials = {"Applicazione al caso": MATERIAL_9001, "Conclusioni": "PIANO"}
+    out = aw.verify([("Applicazione al caso", text),
+                     ("Conclusioni", f"La responsabilità del custode ha natura oggettiva ({REF}) [A2].")],
+                    cat, case_text=CASE, materials=materials)
+    body = out[0][1]
+    assert "Caio, che non ha provato il caso fortuito, risponde del danno a Tizio." in body     # citation only gone
+    assert "Il guasto si è verificato entro il termine utile (art. 9001 c.c.)." in body       # the call: application
+    assert f"natura oggettiva secondo la Cassazione ({REF})." in body
+    assert "giurisprudenza ritiene" not in body and "sessanta giorni dalla scoperta (art. 9001 c.c.)." in body
+    assert generic_nothing not in body
+    assert out[1][1] == ""                      # a ruling passage not given to Conclusioni: removed
+    totals = [d for e, d in events if e == "anchored_writing"][-1]["totals"]
+    assert totals["citations_dropped"] == 1 and totals["kept_as_application"] == 1 and totals["application"] == 1
+    assert any("[prima il tipo]" in ln for ln in seen) and any("senza giurisprudenza" in ln for ln in seen)
+
+
+MATERIAL_9001 = f"TESTI DELLE NORME:\n[art. 9001 c.c.]\n{C1} {C2}"
+
+
+def test_a_section_without_rulings_gets_no_ruling_passage():
+    plan, cat = _catalogue([])
+    analysis = {"frame": {"posture_type": "altro", "areas": []}}
+    ptw.section_jobs(plan, "fatti", "richiesta", analysis, _rows(), {REF: [{"_passage": RULING}]}, "", anchors=cat)
+    assert "A2" in cat.section_ids["Norme e giurisprudenza"] and "A2" not in cat.section_ids["Conclusioni"]
+
+
+def test_fetch_audit_counts_applications_apart():
+    sentences = [{"sentence": f"frase {i}", "section": "Applicazione al caso", "kind": kind, "verdict": verdict}
+                 for i, (kind, verdict) in enumerate([("applicazione", "assente"), ("massima", "assente"),
+                                                      ("regola", "supportata")])]
+    data = fa.provenance_by_section([{"run": "r", "provenance": {"sentences": sentences}}])["r"]["Applicazione al caso"]
+    assert data["all"] == 2 and data["all_assente"] == 1 and data["applicazione_assente"] == 1
+    out = {"granularity": {"claims": []}, "provenance": {"sentences": sentences}, "understanding": {}}
+    fa.attribute(out)
+    assert out["provenance"]["defects"] == 1
+    assert '"applicazione"' in fa.PROVENANCE_SYSTEM

@@ -1326,6 +1326,9 @@ def _with_anchors(jobs: List[Tuple[str, str, str, int]], anchors: "anchored_writ
             if vocabulary:
                 extra = f"{practical_checklist.VOCABULARY_TITLE}:\n" + "\n".join(f"- {v}" for v in vocabulary)
                 instruction += " " + practical_checklist.VOCABULARY_RULE
+        if "non citare pronunce" in instruction:           # a section without rulings gets no ruling passage
+            ids = [i for i in ids if i not in anchors.rulings(ids)]
+        anchors.section_ids[title] = list(dict.fromkeys(ids))
         block = anchors.block(ids)
         material = "\n\n".join(p for p in (material, extra, block) if p)
         out.append((title, instruction + (anchored_writing.ANCHOR_RULE if block else ""), material, tokens + 150))
@@ -2262,7 +2265,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         t5 = time.time()
         try:
             verified = anchored_writing.verify(sections, anchors, documents or [], article_rows or [],
-                                               exempt=list((standard or {}).values()))
+                                               exempt=list((standard or {}).values()), case_text=case_text,
+                                               materials={job[0]: job[2] for job in jobs})
             sections = [(title, text or original) for (title, original), (_, text) in zip(sections, verified)]
         except Exception as exc:
             logger.warning("anchored writing: check failed, anchors stripped: %s", exc)

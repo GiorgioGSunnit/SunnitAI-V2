@@ -64,14 +64,18 @@ def strict() -> bool:
 JUDGE_SYSTEM = (
     "Sei un revisore legale. Ricevi il MATERIALE che è stato dato a chi ha scritto un parere (testi di norme, "
     "passi di sentenze, elenchi di termini e strumenti) e alcune FRASI di quel parere, numerate. Per ogni frase "
-    "decidi prima il tipo: \"regola\" (enuncia una regola giuridica o il contenuto di una norma), \"istituto\" "
-    "(definisce o qualifica un istituto), \"procedura\" (un passaggio, un termine o un atto processuale), "
-    "\"massima\" (ciò che una sentenza ha deciso o affermato), \"altro\" (fatti del caso, valutazioni, "
-    "consigli pratici senza una regola). Per le frasi non \"altro\" decidi l'esito confrontandole SOLO con il "
-    "MATERIALE, non con ciò che sai: \"supportata\" se il materiale contiene quella regola o quel contenuto (anche "
-    "con altre parole), \"assente\" se il materiale non la contiene (anche se è vera), \"contraddetta\" se il "
-    "materiale dice il contrario. Rispondi SOLO con un array JSON: [{\"i\": numero, \"tipo\": ..., \"esito\": "
-    "\"supportata\"|\"assente\"|\"contraddetta\"|null, \"prova\": \"fino a 15 parole del materiale, o vuoto\"}].")
+    "decidi prima il tipo: \"regola\" (enuncia in generale una regola giuridica o il contenuto di una norma: "
+    "\"l'art. X prevede...\", requisiti, presupposti), \"istituto\" (definisce o qualifica in generale un istituto), "
+    "\"procedura\" (un passaggio, un termine o un atto processuale), \"massima\" (ciò che la giurisprudenza o una "
+    "sentenza afferma in generale: \"la Cassazione ha affermato...\", \"la giurisprudenza ritiene...\"), "
+    "\"applicazione\" (applica una regola o una massima ai fatti di questo caso: il soggetto è una parte o un fatto "
+    "del caso, \"la reazione di Tizio era proporzionata\", \"il ritardo è imputabile al venditore\"), \"altro\" "
+    "(fatti del caso, valutazioni, consigli pratici senza una regola). Per le frasi non \"altro\" decidi l'esito "
+    "confrontandole SOLO con il MATERIALE, non con ciò che sai: \"supportata\" se il materiale contiene quella "
+    "regola o quel contenuto (per un'applicazione: la regola che applica), anche con altre parole, \"assente\" se "
+    "il materiale non la contiene (anche se è vera), \"contraddetta\" se il materiale dice il contrario. Rispondi "
+    "SOLO con un array JSON: [{\"i\": numero, \"tipo\": ..., \"esito\": \"supportata\"|\"assente\"|"
+    "\"contraddetta\"|null, \"prova\": \"fino a 15 parole del materiale, o vuoto\"}].")
 
 REWRITE_SYSTEM = (
     "Sei un avvocato italiano e correggi un parere. Ricevi il MATERIALE dato a chi ha scritto una sua sezione (testi "
@@ -401,6 +405,9 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
                   **{v: 0 for v in VERDICTS}}
         for k in range(len(cands)):
             kind, verdict = verdict_of(verdicts[i].get(k))
+            if kind == "applicazione":      # the answer's reasoning on the facts: counted apart, never rewritten
+                counts["application"] = counts.get("application", 0) + 1
+                continue
             if kind and kind != "altro":
                 counts["rule"] += 1
             if verdict:
@@ -504,7 +511,7 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
 def _log(stats: List[Dict[str, Any]], entries: List[Dict[str, Any]], fetched: Dict[tuple, str],
          missing: List[tuple]) -> Dict[str, Any]:
     hows = ("rewritten", "pointer", "dropped", "kept", "kept_fetched")
-    totals = {key: sum(s[key] for s in stats) for key in ("sentences", "judged", "rule") + VERDICTS}
+    totals = {key: sum(s.get(key, 0) for s in stats) for key in ("sentences", "judged", "rule", "application") + VERDICTS}
     return {"sections": stats, "entries": entries, "totals": totals,
             "counts": {**{h: sum(1 for e in entries if e["how"] == h) for h in hows},
                        "citations_removed": sum(len(e.get("removed") or []) for e in entries)},

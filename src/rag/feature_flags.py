@@ -503,7 +503,10 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 ends with its anchor. After the sections, code checks each: the anchor exists, the
                                 article or ruling cited is the anchor's, content-word overlap >= 0.25; a failing
                                 sentence is rewritten once from its passages, else removed; anchors stripped.
-                                Logged as anchored_writing. See src/rag/anchored_writing.py.
+                                Only statements of the law or of case law are checked (case law: anchored to a
+                                ruling passage of its section); an application of a rule to the case's facts is
+                                never removed, an article it cites outside its section's material loses only the
+                                citation. Logged as anchored_writing. See src/rag/anchored_writing.py.
   ROLE_BLOCKS_ENABLED          false (30 Oct, fetch_audit's role mechanism on run 0812): the criminal profile of a
                                 personal harm and the criminal postures' checks follow the client's side -- for
                                 the accused, defences, procedibility, the offended party as parte civile against
