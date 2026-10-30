@@ -7,8 +7,9 @@ CITES jobs. Writes, in --dir (default /var/log/maint):
   state_YYYYMMDD.json    the numbers, so the next night reports what changed (new numbering gaps above all)
 
 What it counts:
-  - Sections without embedding_v2 (by document type, the empty ones apart) and Sections with no text property
-    (neither plain_text nor abstract; tested for presence, never read)
+  - Sections without embedding_v2 that have text to embed, by the 02:00 job's own rule (plain_text or abstract not
+    blank; the text is read only for Sections without the vector), those whose text is blank apart; and Sections with
+    no text property (neither plain_text nor abstract; tested for presence, never read)
   - Documents with no document_type or an unknown one
   - Sections detached from any Document (no incoming CONTAINS / PART_OF)
   - articles whose "N.0.0" holds only "In vigore dal ..." while another Section of theirs has the text, per code
@@ -306,7 +307,8 @@ def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) ->
 
     _progress(t0, f"{len(docs):,} documents read")
     # sections without embedding_v2 / without text, by document type, a batch of documents at a time. The text is
-    # only tested for presence (IS NULL), never read: reading every Section's text made this stage take 20+ minutes.
+    # read only for the few Sections without the vector, else tested for presence (IS NULL): reading every Section's
+    # text made this stage take 20+ minutes.
     no_v2, no_v2_text, empty, sections = Counter(), Counter(), Counter(), Counter()
     ids = [d["id"] for d in docs] if "sections" not in skip else []
     for start in range(0, len(ids), batch):
@@ -319,7 +321,10 @@ def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) ->
                 "WITH d.document_type AS t, s, (s.plain_text IS NULL AND s.abstract IS NULL) AS empty "
                 "RETURN t, count(s) AS n, sum(CASE WHEN empty THEN 1 ELSE 0 END) AS empty, "
                 "sum(CASE WHEN s.embedding_v2 IS NULL THEN 1 ELSE 0 END) AS no_v2, "
-                "sum(CASE WHEN s.embedding_v2 IS NULL AND NOT empty THEN 1 ELSE 0 END) AS no_v2_text",
+                # the 02:00 job's HAS_TEXT (backfill_embeddings_v2.py): a blank text has nothing to embed (30 Oct:
+                # 953 such Sections read as "missing" while the job wrote 0). CASE reads the text only without the vector.
+                "sum(CASE WHEN s.embedding_v2 IS NOT NULL THEN 0 WHEN trim(coalesce(s.plain_text, '')) <> '' "
+                "OR trim(coalesce(s.abstract, '')) <> '' THEN 1 ELSE 0 END) AS no_v2_text",
                 ids=ids[start:start + batch]).data():
             t = r["t"] or "(none)"
             sections[t] += r["n"]
@@ -424,11 +429,12 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
         line += f" · skipped: {', '.join(g['skipped'])}"
     md = [f"# Graph health, {dt.date.today().isoformat()}", "", f"**Summary:** {line}", "",
           f"Read-only. {g['documents']:,} documents. Took {took:.0f}s." + ("" if prev else " First report: no comparison."),
-          "", "## Documents by type", "", "| type | documents | sections | empty | no embedding_v2 (with text) |",
-          "|---|---|---|---|---|"]
+          "", "## Documents by type", "", "| type | documents | sections | empty | no embedding_v2 (with text) | no embedding_v2, blank text |",
+          "|---|---|---|---|---|---|"]
     for t, k in g["docs_by_type"].items():
         md.append(f"| {t} | {k:,} | {g['sections_by_type'].get(t, 0):,} | {g['sections_empty_by_type'].get(t, 0):,} | "
-                  f"{g['sections_no_v2_with_text_by_type'].get(t, 0):,} |")
+                  f"{g['sections_no_v2_with_text_by_type'].get(t, 0):,} | "
+                  f"{g['sections_no_v2_by_type'].get(t, 0) - g['sections_no_v2_with_text_by_type'].get(t, 0):,} |")
     if g["docs_untyped_ids"]:
         md += ["", "Untyped documents (ids; scripts/document_types.py proposes a type): " + "; ".join(g["docs_untyped_ids"])]
     if g["docs_unknown_type"]:

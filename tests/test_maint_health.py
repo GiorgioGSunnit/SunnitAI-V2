@@ -105,6 +105,7 @@ def test_build_report_first_night_and_new_gaps(tmp_path):
     assert "First report: no comparison." in md and "- Codice del Consumo 2026: 205" in md
     assert "| penale | 2 | 1 | 1 | 0 | 1 |" in md and "untyped docs 2" in line and "rulings without card 1" in line
     assert "- Codice di procedura penale 2026: 138" in md and "Untyped documents (ids" in md and "id-a; id-b" in md
+    assert "| primary | 1 | 100 | 1 | 1 | 1 |" in md                    # 2 without the vector: 1 with text, 1 blank
     assert "CITES unresolved citations (linker log): 7 -- not_found 7" in md and "/var/log/x.log: not found" in md
     (tmp_path / "state_20261026.json").write_text(json.dumps(state), encoding="utf-8")
     prev = mh.previous_state(str(tmp_path), "20261027")
