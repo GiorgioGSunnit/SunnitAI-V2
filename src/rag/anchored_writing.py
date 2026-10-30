@@ -108,7 +108,10 @@ def stems(text: str) -> set:
 
 
 def strip_anchors(text: str) -> str:
-    return _STRIP_RE.sub("", text or "")
+    """text without its anchors, and without the brackets an anchor leaves empty ("destinata ([A3])" -> "destinata")."""
+    from . import text_tidy
+    stripped = _STRIP_RE.sub("", text or "")
+    return text_tidy.empty_brackets(stripped) if stripped != (text or "") else stripped
 
 
 def _row_text(row: Dict[str, Any]) -> str:
@@ -395,6 +398,7 @@ _CODE_AFTER_RE = re.compile(
     r"^\s*(?:,?\s*(?:co(?:mma)?\.?|primo|secondo|terzo|quarto)\s*\d*\s*(?:comma)?\s*,?\s*)?(?:del\s+|della\s+|cod\.\s*)?"
     r"(?:c\.\s?p\.\s?c\.|c\.\s?p\.\s?p\.|c\.\s?p\.\s?a\.|c\.\s?d\.\s?s\.|c\.\s?c\.|c\.\s?p\.|cost\.|"
     r"(?:codice|d\.\s?lgs\.|l\.|legge|d\.\s?p\.\s?r\.)[^,.;()]{0,60}?(?=[,.;()]|$))", re.IGNORECASE)
+_COMMA_AFTER_RE = re.compile(r"^\s*,?\s*(?:comma|co\.)\s*\d+(?:-\w+)?(?:\s*(?:e|,)\s*\d+)*", re.IGNORECASE)
 _INTRO_BEFORE_RE = re.compile(
     r"(?:,\s*)?(?:\b(?:ai\s+sensi|a\s+norma|in\s+base|come\s+previsto|come\s+prevede|previst[oaie]|di\s+cui|secondo|"
     r"ex|in\s+forza|per\s+effetto|in\s+applicazione)\s+)?(?:dell?['’]\s*|degli\s+|agli\s+|all['’]\s*|dall['’]\s*|"
@@ -403,15 +407,19 @@ _INTRO_BEFORE_RE = re.compile(
 
 def drop_citations(sentence: str, drop: Sequence[tuple], documents: Optional[List[Dict[str, Any]]] = None,
                    known: Optional[set] = None) -> str:
-    """The sentence without the citations whose every article is among `drop` (with the code after them and the
-    words introducing them, "ai sensi dell'"; a parenthesis left empty goes); a citation also naming a kept article
-    stays."""
+    """The sentence without the citations whose every article is among `drop` (with the code and the comma after
+    them, "c.c., comma 1", "comma 1 del Codice Civile", and the words introducing them, "ai sensi dell'"; a
+    parenthesis left empty goes; a sentence that started with the citation starts again with a capital); a citation
+    also naming a kept article stays."""
     from . import plan_then_write as ptw
+    from . import text_tidy
     spans = []
     for start, end, refs in ptw._citations(sentence, documents or [], known):
         if not refs or not all(any(ptw._same_ref(r, d) for d in drop) for r in refs):
             continue
         m = _CODE_AFTER_RE.match(sentence[end:])
+        end += m.end() if m else 0
+        m = _COMMA_AFTER_RE.match(sentence[end:])
         end += m.end() if m else 0
         intro = _INTRO_BEFORE_RE.search(sentence[:start])
         start = intro.start() if intro else start
@@ -420,7 +428,10 @@ def drop_citations(sentence: str, drop: Sequence[tuple], documents: Optional[Lis
         sentence = sentence[:start] + sentence[end:]
     sentence = re.sub(r"\(\s*[,;]?\s*\)", "", sentence)
     sentence = re.sub(r"\s+([,.;:)])", r"\1", re.sub(r"\(\s+", "(", sentence))
-    return re.sub(r"[ \t]{2,}", " ", re.sub(r",\s*,", ",", sentence)).strip()
+    sentence = re.sub(r"[ \t]{2,}", " ", re.sub(r",\s*,", ",", text_tidy.empty_brackets(sentence))).strip()
+    if spans and min(s for s, _ in spans) == 0 or re.match(r"[,;:]", sentence):
+        sentence = text_tidy.capitalise(re.sub(r"^[\s,;:]+", "", sentence))
+    return sentence
 
 
 # --- the rewrite call -----------------------------------------------------------------------------------------------

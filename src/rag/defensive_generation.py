@@ -5554,6 +5554,15 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                                                      documents=documents, session=session)
         except Exception as exc:
             logger.warning("answer invariants failed, draft kept: %s", exc)
+    # Every answer: the defects the edits leave (empty brackets, a sentence opening on a cut citation, an unverified
+    # note mid-sentence) repaired (text_tidy.py).
+    try:
+        from . import text_tidy
+        draft, tidied = text_tidy.tidy(draft)
+        if tidied:
+            vlog("answer_tidy", {"entries": tidied, "count": len(tidied)})
+    except Exception as exc:
+        logger.warning("answer tidy failed, draft kept: %s", exc)
     # PROTECTED_PARAPHRASE_ENABLED: no sentence reproduces a protected source of the material (counted only, off).
     draft, _ = protected_sources.enforce(draft, rows=article_rows + ruling_rows, stage="strategy")
 
@@ -5567,7 +5576,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
         draft += ("\n\n⚠️ Le sentenze citate provengono dal corpus documentale; i riferimenti segnati «da "
                   "verificare» non sono stati trovati nelle fonti consultate o vanno controllati. Verificare tutto "
                   "prima dell'uso.")
-    elif ruling_rows or _UNVERIFIED.rstrip("]") in draft:
+    elif ruling_rows or _UNVERIFIED.rstrip("]") in draft or "(da verificare)" in draft:
         draft += (
             "\n\n⚠️ Le sentenze citate provengono dal corpus documentale; i riferimenti segnati "
             "[DA VERIFICARE] non sono stati trovati nelle fonti consultate. Verificare tutto prima dell'uso."
