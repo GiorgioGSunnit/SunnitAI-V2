@@ -1452,7 +1452,9 @@ def _frame_block(frame: Optional[Dict[str, Any]]) -> str:
         lines += [f"- {t}" for t in frame["tasks"]]
     if frame.get("central_issue_candidates"):
         lines.append("Questioni centrali candidate:")
-        lines += [f"- {c['nome']} ({c['codice']})" if c.get("codice") else f"- {c['nome']}"
+        lines += [(f"- {c['nome']} ({c['codice']})" if c.get("codice") else f"- {c['nome']}")
+                  + (f" — dal fatto: {c['fatto']}" if c.get("fatto") else "")
+                  + (f"; parte assistita: {c['ruolo']}" if c.get("ruolo") else "")
                   for c in frame["central_issue_candidates"]]
     if frame.get("client_role"):             # FACT_REGIMES_ENABLED
         lines.append(f"Ruolo della parte assistita: {frame['client_role']}")
@@ -1492,8 +1494,8 @@ def _with_central_questions(analysis: Dict[str, Any], frame: Dict[str, Any]) -> 
     named = [i.get("nome") or "" for q in analysis.get("questioni") or [] for i in q.get("istituti") or []]
     added = [{"titolo": f"Questione centrale: {c['nome']}", "categoria": "qualificazione",
               "istituti": [{"nome": c["nome"], "codice": c.get("codice") or "", "numero_indicativo": "",
-                            **{k: c[k] for k in ("fonte", "ranges", "articolo") if c.get(k)}}],
-              "parole_chiave": [], "voce": "questione_centrale"}
+                            **{k: c[k] for k in ("fonte", "ranges", "articolo", "fatto") if c.get(k)}}],
+              "parole_chiave": [], "voce": "questione_centrale", **({"fatto": c["fatto"]} if c.get("fatto") else {})}
              for c in frame.get("central_issue_candidates") or []
              if not any(_same_institution(c["nome"], n) for n in named)]
     # STRICT_ARTICLES_ENABLED: an institution the analysis names itself takes the code table's article and code
@@ -1528,6 +1530,9 @@ def _analyse_case_for_pipeline(facts: str, lang: str, request: str = "") -> Dict
         frame, signals = _frame_and_fact_signals(facts, request)
     else:
         frame = _case_frame(facts, request) if feature_flags.enabled(CASE_FRAME_FLAG) else None
+    # FACT_ISSUES_ENABLED: the institutions the decisive facts raise join the central issues (fact_issues.py).
+    from . import fact_issues
+    frame = fact_issues.add_to_frame(frame, _case_text(facts, request), signals)
     extra = {"frame": frame} if frame else {}
     if not feature_flags.enabled(CASE_ANALYSIS_FLAG):
         analysis = _analyse_case(facts, lang, request, **extra)
@@ -3880,6 +3885,7 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 if not kept and istituto.get("ranges"):       # ANSWER_INVARIANTS_ENABLED, I3: inside the ranges
                     kept = _pick_in_rule_ranges(session, documents, istituto, q.get("parole_chiave"))
                 vlog("case_analysis_fact_institution", {"institution": istituto.get("nome"), "fonte": istituto["fonte"],
+                                                         **({"fatto": istituto["fatto"]} if istituto.get("fatto") else {}),
                                                          "kept": [_label_of(r) for r in kept],
                                                          "rejected": [_label_of(r) for r in resolved if r not in kept]})
                 resolved = kept

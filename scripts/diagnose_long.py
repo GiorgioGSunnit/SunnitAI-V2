@@ -103,7 +103,8 @@ FLAGS = ["CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENABLED", "FUSION_CLEAN_ENAB
          "GRADER_EXAMPLES_ENABLED", "WRITER_RULES_ENABLED", "FACT_REGIMES_ENABLED", "FACT_MARK_INLINE_ENABLED",
          "STRICT_ARTICLES_ENABLED", "RULING_FIT_ENABLED", "REVIEW_FIXES_ENABLED", "ROUTER_ENABLED",
          "HYBRID_NARRATIVE_ENABLED", "PRIMARY_FIRST_ENABLED", "PROTECTED_PARAPHRASE_ENABLED",
-         "COMMA_MATERIAL_ENABLED", "GROUNDED_REVIEW_ENABLED", "ROLE_BLOCKS_ENABLED"]
+         "COMMA_MATERIAL_ENABLED", "GROUNDED_REVIEW_ENABLED", "ROLE_BLOCKS_ENABLED",
+         "GROUNDED_REVIEW_STRICT_ENABLED", "FACT_ISSUES_ENABLED"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -417,6 +418,7 @@ _LLM_STAGES = {
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "_grounded_judge": "grounded_judge", "_grounded_rewrite": "grounded_rewrite",
+    "fact_issues": "fact_issues",
     "run_case_analysis_pipeline": "draft",
 }
 _SKIP_FRAMES = {"_chat", "_chat_json", "call_chat"}
@@ -781,6 +783,8 @@ def run_child(spec_path: str, env_path: str) -> None:
               "material_use": last("case_analysis_material_use"),
               "invariants": last("case_analysis_invariants"),
               "grounded_review": last("grounded_review"),
+              "fact_issues": last("case_analysis_fact_issues"),
+              "fact_institutions": [d for e, d, _ in events if e == "case_analysis_fact_institution"],
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -1105,7 +1109,23 @@ def analyse_case(rec: dict, ev) -> dict:
     out["tiers"] = rec.get("tiers") or {}
     out["protected"] = _protected_trace(rec)
     out["grounded"] = _grounded_trace(rec)
+    out["fact_issues"] = _fact_issues_trace(rec)
     return out
+
+
+def _fact_issues_trace(rec: dict) -> dict:
+    """FACT_ISSUES_ENABLED: the institutions the facts raised, and how many resolved to an article; {} without it."""
+    events = [e for e in rec.get("events") or [] if isinstance(e, (list, tuple)) and len(e) >= 2]
+    logs = [d for e, d, *_ in events if e == "case_analysis_fact_issues" and isinstance(d, dict)]
+    if not logs:
+        return {}
+    added = [i.get("nome") for i in logs[-1].get("institutions") or [] if isinstance(i, dict)]
+    kept = {}
+    for e, d, *_ in events:
+        if e == "case_analysis_fact_institution" and isinstance(d, dict) and d.get("fonte") == "fatto":
+            kept.setdefault(d.get("institution"), []).extend(d.get("kept") or [])
+    return {"added": len(added), "resolved": sum(1 for n in added if kept.get(n)),
+            "articles": sorted({a for arts in kept.values() for a in arts})}
 
 
 def _grounded_trace(rec: dict) -> dict:
@@ -1467,9 +1487,13 @@ def aggregate(cases: list) -> dict:
     grounded: Counter = Counter()
     for c in answered:
         grounded.update(c.get("grounded") or {})
+    fact_issues = {"cases": sum(1 for c in answered if c.get("fact_issues")),
+                   "added": sum((c.get("fact_issues") or {}).get("added", 0) for c in answered),
+                   "resolved": sum((c.get("fact_issues") or {}).get("resolved", 0) for c in answered),
+                   "articles": sum(len((c.get("fact_issues") or {}).get("articles") or []) for c in answered)}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
             "tiers": tier, "live": live, "invariants": inv, "evidence": evidence, "protected": protected,
-            "grounded": dict(grounded),
+            "grounded": dict(grounded), "fact_issues": fact_issues,
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
             "sole": sole, "by_check": by_check, "by_plan": by_plan, "fit": fit, "top": top,
             "unkeyed_labels": unkeyed_labels, "institutions": institutions, "method_counts": method_counts,
@@ -1700,6 +1724,11 @@ def render(cases: list, header: list) -> str:
           + ("; ".join(f"{cid} {p.get('found', 0)}/{p.get('rewritten', 0)}/{p.get('dropped', 0)}/"
                        f"{p.get('remaining', 0)}; {p.get('excerpts_shown', 0)}" for cid, p in pr["cases"]) or "none")
           + "."]
+    fi = agg.get("fact_issues") or {}
+    if fi.get("cases"):
+        L += ["", "## Facts -> institutions (FACT_ISSUES_ENABLED)", "",
+              f"{fi['cases']} cases: {fi['added']} institutions added from the facts, {fi['resolved']} resolved to an "
+              f"article ({fi['articles']} articles in all)."]
     gr = agg.get("grounded") or {}
     if gr:
         L += ["", "## Grounded review (GROUNDED_REVIEW_ENABLED)", "", _grounded_line(gr) + "."]
@@ -2091,6 +2120,9 @@ def compare(run_dirs: list, ev) -> str:
                          f"{(a.get('protected') or {}).get('remaining', 0)}"), lambda a: ""),
              ("protected excerpts shown in sources (target 0)",
               lambda a: (a.get("protected") or {}).get("excerpts_shown", 0), lambda a: ""),
+             ("facts -> institutions: added / resolved to an article",
+              lambda a: (lambda f: f"{f['added']} / {f['resolved']}" if f.get("cases") else "off")(
+                  a.get("fact_issues") or {}), lambda a: ""),
              ("grounded review: rule-sentences / not in material / rewritten / pointers / dropped / kept after a read",
               lambda a: (lambda g: f"{g.get('rule', 0)} / {g.get('assente', 0) + g.get('contraddetta', 0)} / "
                                    f"{g.get('rewritten', 0)} / {g.get('pointer', 0)} / {g.get('dropped', 0)} / "

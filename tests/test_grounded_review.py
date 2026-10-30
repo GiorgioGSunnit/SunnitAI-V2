@@ -103,7 +103,8 @@ def test_the_review_keeps_supported_rewrites_points_and_drops_only_filler(logged
     # one read for the whole parere, only of the articles cited and not in the material (9002 is given)
     assert reads == [[("9001", "c.c."), ("9005", "c.c.")]]
     log = [d for e, d in logged if e == "grounded_review"][-1]
-    assert log["counts"] == {"rewritten": 1, "pointer": 2, "dropped": 1, "kept": 0, "kept_fetched": 1}
+    assert log["counts"] == {"rewritten": 1, "pointer": 2, "dropped": 1, "kept": 0, "kept_fetched": 1,
+                             "citations_removed": 0} and not log["strict"]
     assert log["totals"]["rule"] == 6 and log["totals"]["supportata"] == 1 and log["totals"]["contraddetta"] == 1
     assert log["fetched"] == {"art. 9001 c.c.": FETCHED[("9001", "c.c.")]} and log["not_found"] == ["art. 9005 c.c."]
     kept = next(e for e in log["entries"] if e["how"] == "kept_fetched")
@@ -261,3 +262,148 @@ def test_the_audit_reads_the_grounded_review_s_rewrites_and_reads():
     assert calls[0]["material"].startswith(FETCHED[("9001", "c.c.")])        # read for the section: given to it
     assert INVENTED not in calls[1]["material"] and MATERIAL in calls[1]["material"]
     assert fa.grounded_case_totals(case) == {"rule": 3, "assente": 1, "pointer": 1, "fetched": 1, "not_found": 0}
+
+
+# --- GROUNDED_REVIEW_STRICT_ENABLED ---------------------------------------------------------------------------------
+
+def strict_chat_json(messages, max_tokens, **kwargs):
+    system, human = messages[0].content, messages[1].content
+    if system == gr.JUDGE_SYSTEM:
+        return fake_chat_json(messages, max_tokens)
+    assert system == gr.STRICT_REWRITE_SYSTEM
+    lines = [ln for ln in human.split(gr.REWRITE_MARK + "\n", 1)[1].splitlines() if ln.strip()]
+    out = []
+    for ln in lines:
+        n, sentence = ln.split(". ", 1)
+        if sentence.startswith(INVENTED):
+            out.append({"i": int(n), "azione": "riscritta", "frase": "Il custode risponde del danno salvo che provi "
+                        "il caso fortuito (art. 9002 c.c.)"})
+        elif sentence.startswith(FROM_FETCH):
+            assert "[da togliere: art. 9001 c.c.]" in sentence
+            out.append({"i": int(n), "azione": "rinvio", "frase": "Va verificata la disciplina dell'art. 9001 c.c."})
+        else:
+            out.append({"i": int(n), "azione": "elimina", "frase": ""})
+    return out
+
+
+def test_strict_never_fetches_nor_points_outside_the_checked_material(monkeypatch):
+    events = []
+    monkeypatch.setattr(gr, "vlog", lambda event, data=None, **_: events.append((event, data)))
+    monkeypatch.setattr(dg, "_chat_json", strict_chat_json)
+    reads = []
+    jobs = [("Norme e giurisprudenza", "istr", MATERIAL, 900)]
+    out = gr.review([("Norme e giurisprudenza", SECTION)], jobs, [], [],
+                    fetch=lambda refs: reads.append(refs) or {}, checked=[("9002", "c.c.")])
+    text = out[0][1]
+    assert reads == []                                                   # nothing read
+    assert SUPPORTED in text                                             # supported: untouched
+    assert "salvo che provi il caso fortuito (art. 9002 c.c.)." in text  # rewritten, its in-material citation kept
+    assert "9001" not in text and "9005" not in text                     # outside: never pointed to
+    assert MEMORY not in text and FILLER not in text and FROM_FETCH not in text
+    log = [d for e, d in events if e == "grounded_review"][-1]
+    assert log["strict"] and log["counts"]["kept"] == 0 and log["counts"]["kept_fetched"] == 0
+    assert log["counts"]["citations_removed"] == 2 and log["counts"]["rewritten"] == 1
+    removed = {e["sentence"][:20]: e.get("removed") for e in log["entries"]}
+    assert removed[FROM_FETCH[:20]] == ["art. 9001 c.c."]
+
+
+def test_choose_strict_keeps_inside_citations_and_points_only_inside():
+    good, bad = [("9002", "c.c.")], [("9001", "c.c.")]
+    old = "Il custode risponde sempre (artt. 9001 e 9002 c.c.)."
+    assert gr.choose_strict(old, {"azione": "riscritta", "frase": "Il custode risponde (art. 9002 c.c.)."}, good, bad) \
+        == ("rewritten", "Il custode risponde (art. 9002 c.c.).")
+    # the rewriting keeps the outside citation, or adds a new one: the pointer to the inside article instead
+    assert gr.choose_strict(old, {"azione": "riscritta", "frase": "Risponde (artt. 9001 e 9002 c.c.)."}, good, bad) \
+        == ("pointer", "Su questo punto va verificata la disciplina dell'art. 9002 c.c.")
+    assert gr.choose_strict(old, {"azione": "riscritta", "frase": "Risponde (artt. 9002 e 9009 c.c.)."}, good, bad)[0] \
+        == "pointer"
+    assert gr.choose_strict("Il termine è breve (art. 9001 c.c.).", {"azione": "rinvio", "frase": "Va verificato "
+                            "l'art. 9001 c.c."}, [], bad) == ("dropped", None)
+    assert gr.choose_strict("Una regola detta a memoria senza fonte.", None, [], []) == ("dropped", None)
+
+
+def test_strict_refs_graded_named_tools_and_terms():
+    rows = [{"_article": ("9002", "c.c."), "_grade": 3}, {"_article": ("9003", "c.c."), "_grade": 1},
+            {"_article": ("9004", "c.c."), "_grade": 2}]
+    analysis = {"fact_signals": {"tools": [{"id": "x", "refs": [["696", "c.p.c."]]}],
+                                 "terms": [{"id": "t", "ref": "1495 c.c."}]}}
+    got = gr.strict_refs(rows, [("9010", "c.c.")], analysis)
+    assert ("9002", "c.c.") in got and ("9004", "c.c.") in got and ("9003", "c.c.") not in got
+    assert ("9010", "c.c.") in got and ("696", "c.p.c.") in got and ("1495", "c.c.") in got
+    ungraded = [{"_article": ("9003", "c.c."), "_applicability": "applicabile"}, {"_article": ("9005", "c.c.")}]
+    assert gr.strict_refs(ungraded) == [("9003", "c.c.")]
+
+
+# --- FACT_ISSUES_ENABLED --------------------------------------------------------------------------------------------
+
+from src.rag import fact_issues as fi  # noqa: E402
+
+
+def test_fact_issues_clean_caps_dedupes_and_refuses_numbers():
+    raw = {"istituti": [{"fatto": "infezione dopo l'intervento", "nome": "responsabilità della struttura sanitaria",
+                         "codice": "c.c.", "area": "responsabilita_civile", "ruolo_cliente": "danneggiato"},
+                        {"fatto": "x", "nome": "art. 2236 c.c.", "codice": "c.c."},
+                        {"fatto": "x", "nome": "Garanzia per i vizi", "codice": "c.c.", "area": "boh"},
+                        {"fatto": "x", "nome": "garanzia per i vizi", "codice": "c.c."}]
+           + [{"fatto": "f", "nome": f"istituto numero {w}", "codice": "c.c."} for w in "abcdefghij"]}
+    got = fi.clean(raw, ["Garanzia per i vizi"])
+    assert got[0] == {"nome": "responsabilità della struttura sanitaria", "codice": "c.c.", "fonte": "fatto",
+                      "fatto": "infezione dopo l'intervento", "area": "responsabilita_civile", "ruolo": "danneggiato"}
+    assert len(got) == fi.MAX_INSTITUTIONS and not any("2236" in g["nome"] or "vizi" in g["nome"] for g in got)
+
+
+def test_fact_issues_join_the_central_issues_and_reach_the_resolver_with_their_fact(monkeypatch):
+    events = []
+    monkeypatch.setattr(fi, "vlog", lambda event, data=None, **_: events.append((event, data)))
+    monkeypatch.setattr(dg, "_chat_json", lambda messages, max_tokens, **k: {"istituti": [
+        {"fatto": "la lavatrice si guasta dopo tre mesi", "nome": "difetto di conformità del bene",
+         "codice": "Codice del Consumo", "area": "consumo", "ruolo_cliente": "acquirente consumatore"}]})
+    frame = {"facts": ["Acquisto di una lavatrice", "Guasto dopo tre mesi"], "tasks": ["che fare"],
+             "central_issue_candidates": [{"nome": "compravendita", "codice": "c.c."}]}
+    signals = {"facts": {"events": [{"what": "guasto", "date_iso": "2026-01-01"}], "parties": []}}
+    assert fi.add_to_frame(frame, "caso", signals) is frame                  # flag off: unchanged, no call
+    monkeypatch.setenv(fi.FLAG, "true")
+    got = fi.add_to_frame(frame, "caso", signals)
+    assert [c["nome"] for c in got["central_issue_candidates"]] == ["compravendita", "difetto di conformità del bene"]
+    assert events[-1][0] == "case_analysis_fact_issues" and events[-1][1]["facts_read"] == 3
+    assert "- events: {\"what\": \"guasto\"}" in fi.fact_lines(frame, signals)
+    analysis = dg._with_central_questions({"questioni": []}, got)
+    q = next(q for q in analysis["questioni"] if q["istituti"][0]["nome"] == "difetto di conformità del bene")
+    assert q["istituti"][0]["fonte"] == "fatto" and q["fatto"] == "la lavatrice si guasta dopo tre mesi"
+    block = dg._frame_block(got)
+    assert "dal fatto: la lavatrice si guasta dopo tre mesi; parte assistita: acquirente consumatore" in block
+    # the resolver's rows kept only where the rubrica shares a word with the institution
+    rows = [{"_article": ("129", "Codice del Consumo"), "s": {"titolo_articolo": "Conformità al contratto"}},
+            {"_article": ("33", "Codice del Consumo"), "s": {"titolo_articolo": "Clausole vessatorie"}}]
+    assert fact_signals.keep_resolved(q["istituti"][0], rows) == rows[:1]
+
+
+# --- fetch_audit: ROLE_BLOCKS alone -------------------------------------------------------------------------------
+
+def test_role_counts_per_run_only_over_parsed_replies():
+    replies = iter(['{"parte": "Tizio", "ruolo": "imputato", "contrasti": [{"i": 1, "perche": "x"}]}', "non JSON"])
+    judge = fa.Judge(None, call=lambda system, human, mt: next(replies))
+    sentences = [f"Tizio deve costituirsi parte civile per il risarcimento numero {i}." for i in range(3)]
+    case = {"case_text": "caso", "role": {"party": "Tizio", "position": "imputato"}}
+    r = fa.audit_role(case, [{"sentence": s} for s in sentences], judge, 2)
+    assert r["batches"] == 2 and r["failed_batches"] == 1 and r["judged_sentences"] == 2
+    by = fa.role_by_run([{"run": "rb-on", "role": r}, {"run": "rb-off", "role": {**r, "skipped": "not run"}}])
+    assert list(by) == ["rb-on"] and by["rb-on"]["judge"] == 1 and by["rb-on"]["rate"] == 50.0
+    assert by["rb-on"]["pattern"] == 3
+
+
+def test_mechanisms_role_alone_makes_only_role_calls(tmp_path):
+    asked = []
+
+    def judge_call(system, human, mt):
+        asked.append(system)
+        return '{"parte": "Tizio", "ruolo": "imputato", "contrasti": []}'
+    case = {"key": "r/x", "run": "r", "id": "x", "kind": "eval", "proxy": True, "answer": "Tizio può chiedere il rito "
+            "abbreviato davanti al giudice competente.", "record": {}, "calls": [], "case_text": "caso", "role": {},
+            "citations": []}
+
+    class A:
+        batch, material_chars, mechanisms = 12, 14000, ["role"]
+    out = fa.audit_case(case, fa.Judge(None, call=judge_call), None, None, A)
+    assert set(asked) == {fa.ROLE_SYSTEM} and out["provenance"]["skipped"] == "not run"
+    assert "per 100 judged" in fa.render([out], {"runs": ["r"], "judge": "x", "commi": "x", "when": "now"})

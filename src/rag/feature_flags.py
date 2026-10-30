@@ -483,6 +483,18 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 as a pointer ("va verificata la disciplina dell'art. ...") keeping every
                                 citation; dropped only as filler citing nothing. Supported sentences are never
                                 touched. Logged as grounded_review. See src/rag/grounded_review.py.
+  GROUNDED_REVIEW_STRICT_ENABLED false (30 Oct, gr-off vs gr-on: memory 31% -> 25% only, rubrica-incompatible
+                                45 -> 68, extra citations 9.2 -> 11.0): with GROUNDED_REVIEW_ENABLED, an article
+                                outside the section's checked material (its material's articles graded >= 2, named
+                                in the case, or offered as a tool or term) is never fetched nor pointed to; the
+                                sentence is rewritten from the material without that citation, or dropped.
+  FACT_ISSUES_ENABLED          false (30 Oct, fetch_audit "captured but lost": 88% of 298 lost at "article
+                                resolved", 258 captured only as a fact): one call after the frame and the typed
+                                facts names, per decisive fact, the institutions it raises (heading words, code,
+                                area, the client's role; never a number), at most 8, added to the frame's central
+                                issues with their fact; the existing resolver takes them. Logged as
+                                case_analysis_fact_issues and case_analysis_fact_institution. See
+                                src/rag/fact_issues.py.
   ROLE_BLOCKS_ENABLED          false (30 Oct, fetch_audit's role mechanism on run 0812): the criminal profile of a
                                 personal harm and the criminal postures' checks follow the client's side -- for
                                 the accused, defences, procedibility, the offended party as parte civile against

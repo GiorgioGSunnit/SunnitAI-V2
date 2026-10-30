@@ -17,6 +17,12 @@ claims (397/1497) cited an article the writer was never given. With the flag, af
               by the pointer written in code. Nothing is ever added that the material does not hold, and a
               supported sentence is never touched.
 
+GROUNDED_REVIEW_STRICT_ENABLED (gr-off vs gr-on, 32 cases: from memory 31% -> 25% only, rubrica-incompatible 45 -> 68,
+extra citations 9.2 -> 11.0 -- the review kept or pointed to articles outside the material): a section's checked
+material is the articles of its material that the check graded 2 or more, the case names, or the procedural tools and
+terms offered (strict_refs). A not-supported sentence's citation outside it is never fetched and never pointed to: the
+sentence is rewritten from the material without it, or dropped; pointers only to articles inside it.
+
 Logged as grounded_review: per section the sentences judged and the verdicts, per sentence touched what was done
 (rewritten / pointer / dropped / kept / kept_fetched), the articles read and their text (fetch_audit counts a fetched
 article as given to the section that fetched it). Off, nothing runs.
@@ -35,6 +41,7 @@ from .verbose_logger import vlog
 logger = logging.getLogger(__name__)
 
 FLAG = "GROUNDED_REVIEW_ENABLED"
+STRICT_FLAG = "GROUNDED_REVIEW_STRICT_ENABLED"
 BATCH = 12                 # sentences per judge call
 MATERIAL_CHARS = 14000     # material per call, at most (fetch_audit's --material-chars)
 FETCH_CHARS = 2500         # text of a fetched article
@@ -45,6 +52,12 @@ VERDICTS = ("supportata", "assente", "contraddetta")
 
 def enabled() -> bool:
     return feature_flags.enabled(FLAG)
+
+
+def strict() -> bool:
+    """GROUNDED_REVIEW_STRICT_ENABLED (with GROUNDED_REVIEW_ENABLED): no fetch, no pointer outside the checked
+    material (see review)."""
+    return enabled() and feature_flags.enabled(STRICT_FLAG)
 
 
 # The judge of scripts/fetch_audit.py (PROVENANCE_SYSTEM), word for word: the review and the audit measure the same.
@@ -76,6 +89,73 @@ REWRITE_SYSTEM = (
     "la frase non contengono; non usare ciò che sai. Una frase, della stessa lunghezza o più breve. Rispondi SOLO "
     "con un array JSON: [{\"i\": numero, \"azione\": \"riscritta\"|\"rinvio\"|\"riempitivo\", \"frase\": \"la frase "
     "nuova, vuota per riempitivo\"}].")
+
+
+# GROUNDED_REVIEW_STRICT_ENABLED (gr-off vs gr-on: rubrica-incompatible 45 -> 68, extra citations 9.2 -> 11.0, because
+# the review kept or pointed to articles outside the material): a citation outside the section's checked material is
+# taken out, never fetched, never pointed to.
+STRICT_REWRITE_SYSTEM = (
+    "Sei un avvocato italiano e correggi un parere. Ricevi il MATERIALE dato a chi ha scritto una sua sezione (testi "
+    "di norme, passi di sentenze, termini e strumenti) e alcune FRASI di quella sezione, numerate, che enunciano una "
+    "regola, un istituto, un passaggio processuale o una massima che il MATERIALE non contiene, o contraddice; accanto "
+    "a una frase, tra parentesi quadre, le citazioni da TOGLIERE perché la norma non è nel materiale. Per ogni frase "
+    "scegli una sola azione:\n"
+    "- \"riscritta\": se il MATERIALE sostiene una versione della frase, riscrivila dicendo solo ciò che il MATERIALE "
+    "dice, senza le citazioni da togliere e senza aggiungerne altre, conservando le altre citazioni della frase; se "
+    "il MATERIALE dice il contrario, scrivi ciò che dice il MATERIALE.\n"
+    "- \"rinvio\": solo se la frase cita una norma che NON è da togliere e il MATERIALE non la sostiene: riscrivila "
+    "come un punto da verificare su quella norma (\"Va verificata la disciplina dell'art. ... quanto a ...\").\n"
+    "- \"elimina\": in ogni altro caso, cioè quando il MATERIALE non sostiene la frase.\n"
+    "Non usare ciò che sai. Una frase, della stessa lunghezza o più breve. Rispondi SOLO con un array JSON: "
+    "[{\"i\": numero, \"azione\": \"riscritta\"|\"rinvio\"|\"elimina\", \"frase\": \"la frase nuova, vuota per "
+    "elimina\"}].")
+
+
+def strict_refs(article_rows: List[Dict[str, Any]], named: Sequence[tuple] = (),
+                analysis: Optional[Dict[str, Any]] = None) -> List[tuple]:
+    """The articles a strict review may keep cited: graded 2 or more by the applicability check (without grades, those
+    the check let through: plan_then_write._passed_check), named in the case, and the procedural tools' and the legal
+    terms' own articles (FACT_REGIMES_ENABLED's signals)."""
+    from . import fact_signals
+    from . import plan_then_write as ptw
+    from .nodes.cypher import CROSSREF_SOURCE
+    rows = [r for r in article_rows or [] if r.get("_article")]
+    if any(r.get("_grade") is not None for r in rows):
+        out = [r["_article"] for r in rows if (r.get("_grade") or 0) >= 2]
+    else:
+        out = [r["_article"] for r in rows if ptw._passed_check(r, set(named), CROSSREF_SOURCE)]
+    out += list(named)
+    signals = (analysis or {}).get("fact_signals") or {}
+    out += [tuple(r) for r in fact_signals.tool_refs(signals)]
+    for term in signals.get("terms") or []:
+        if term.get("ref"):
+            out += [r for _, _, rs in ptw._citations(f"art. {term['ref']}", []) for r in rs]
+    return list(dict.fromkeys(tuple(r) for r in out))
+
+
+def _numbers(refs: Sequence[tuple]) -> set:
+    return {str(r[0]) for r in refs}
+
+
+def choose_strict(old: str, reply: Optional[Dict[str, Any]], good: Sequence[tuple], bad: Sequence[tuple],
+                  documents: Optional[List[Dict[str, Any]]] = None) -> Tuple[str, Optional[str]]:
+    """(how, new text) for one not-supported sentence, strict: rewritten (without the citations outside the checked
+    material, keeping the others), pointer (only to articles inside it), else dropped -- never kept, never fetched."""
+    from . import plan_then_write as ptw
+    action = str((reply or {}).get("azione") or "").strip().lower()
+    new = " ".join(str((reply or {}).get("frase") or "").split())
+    cited = {r for _, _, rs in ptw._citations(new, documents or []) for r in rs}
+    outside = any(ptw._same_ref(c, b) for c in cited for b in bad) or any(
+        not any(ptw._same_ref(c, g) for g in good) for c in cited)
+    usable = (bool(new) and _numbers(good) <= ptw._claim_refs(new) and not outside
+              and len(new) <= 2.5 * len(old) + 100)
+    if usable and action == "riscritta":
+        return "rewritten", _closing(old, new)
+    if usable and action == "rinvio" and good:
+        return "pointer", _closing(old, new)
+    if good:
+        return "pointer", _closing(old, pointer(good))
+    return "dropped", None
 
 
 # --- pure helpers ---------------------------------------------------------------------------------------------------
@@ -222,12 +302,17 @@ def _grounded_judge(material: str, sentences: List[str]) -> Dict[int, Dict[str, 
     return _parse_items(raw, len(sentences))
 
 
-def _grounded_rewrite(material: str, sentences: List[str]) -> Dict[int, Dict[str, Any]]:
-    """{index: {"azione", "frase"}} for one section's not-supported sentences; {} on a failure."""
+def _grounded_rewrite(material: str, sentences: List[str],
+                      remove: Optional[List[List[str]]] = None) -> Dict[int, Dict[str, Any]]:
+    """{index: {"azione", "frase"}} for one section's not-supported sentences; {} on a failure. remove (strict): per
+    sentence the citations to take out, shown next to it."""
     from . import defensive_generation as dg
-    human = f"MATERIALE:\n{material}\n\n{REWRITE_MARK}\n" + "\n".join(f"{n}. {s}" for n, s in enumerate(sentences, 1))
+    listed = [f"{n}. {s}" + (f" [da togliere: {', '.join(remove[n - 1])}]" if remove and remove[n - 1] else "")
+              for n, s in enumerate(sentences, 1)]
+    human = f"MATERIALE:\n{material}\n\n{REWRITE_MARK}\n" + "\n".join(listed)
+    system = STRICT_REWRITE_SYSTEM if remove is not None else REWRITE_SYSTEM
     try:
-        raw = dg._chat_json([SystemMessage(content=REWRITE_SYSTEM), HumanMessage(content=human)],
+        raw = dg._chat_json([SystemMessage(content=system), HumanMessage(content=human)],
                             max_tokens=200 + 140 * len(sentences), temperature=0)
     except Exception as exc:
         logger.warning("grounded review: rewrite failed, sentences handled in code: %s", exc)
@@ -279,11 +364,16 @@ def fetch_blocks(refs: List[tuple], documents: List[Dict[str, Any]], session=Non
 
 def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]],
            documents: Optional[List[Dict[str, Any]]] = None, article_rows: Optional[List[Dict[str, Any]]] = None,
-           fetch: Optional[Callable[[List[tuple]], Dict[tuple, str]]] = None) -> List[Tuple[str, str]]:
+           fetch: Optional[Callable[[List[tuple]], Dict[tuple, str]]] = None,
+           checked: Optional[Sequence[tuple]] = None) -> List[Tuple[str, str]]:
     """The sections with their not-supported rule-sentences rewritten from their material, as pointers, or (filler
-    citing nothing) dropped; any failure keeps the section as it was. `fetch` (tests) replaces fetch_blocks."""
+    citing nothing) dropped; any failure keeps the section as it was. `fetch` (tests) replaces fetch_blocks.
+    checked (GROUNDED_REVIEW_STRICT_ENABLED: strict_refs): a section's checked material is the articles of its
+    material that are among them; a citation outside it is never fetched nor pointed to -- the sentence is rewritten
+    from the material without it, or dropped (choose_strict)."""
     from . import plan_then_write as ptw
     documents = documents or []
+    is_strict = checked is not None
     known = {r["_article"] for r in article_rows or [] if r.get("_article")}
     material_of = {job[0]: job[2] for job in jobs}
     fetch = fetch or (lambda refs: fetch_blocks(refs, documents))
@@ -321,7 +411,7 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
         stats.append(counts)
     entries: List[Dict[str, Any]] = []
     if not flagged:
-        vlog("grounded_review", _log(stats, entries, {}, []))
+        vlog("grounded_review", {**_log(stats, entries, {}, []), "strict": is_strict, "checked": len(checked or ())})
         return sections
 
     # 2. the articles cited that the section's material does not hold: one read, then judged again with their text
@@ -329,7 +419,14 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
 
     def not_given(i, refs):
         return [r for r in refs if not any(ptw._same_ref(r, g) for g in given[i])]
-    wanted = list(dict.fromkeys(r for i, _, _, verdict, refs in flagged if verdict == "assente" for r in not_given(i, refs)))
+    inside = {i: [g for g in given[i] if any(ptw._same_ref(g, c) for c in checked or ())] for i in found}
+
+    def split(i, refs):
+        """(the refs inside the section's checked material, the ones outside), strict."""
+        good = [r for r in refs if any(ptw._same_ref(r, g) for g in inside[i])]
+        return good, [r for r in refs if r not in good]
+    wanted = [] if is_strict else list(dict.fromkeys(
+        r for i, _, _, verdict, refs in flagged if verdict == "assente" for r in not_given(i, refs)))
     fetched = fetch(wanted) if wanted else {}
     fetched = {ref: block for ref, block in (fetched or {}).items() if block}
     missing = [r for r in wanted if r not in fetched]
@@ -366,7 +463,8 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
         blocks = "\n\n".join(fetched[r] for r in extra)
         material = trim_material(f"{blocks}\n\n{material_of.get(sections[i][0], '')}".strip(),
                                  [_label(r) for _, _, _, _, refs in items for r in refs])
-        return _grounded_rewrite(material, [found[i][k][2] for _, k, _, _, _ in items])
+        remove = [[_label(r) for r in split(i, refs)[1]] for _, _, _, _, refs in items] if is_strict else None
+        return _grounded_rewrite(material, [found[i][k][2] for _, k, _, _, _ in items], remove)
     order = sorted(todo)
     replies: Dict[int, Dict[int, Dict[str, Any]]] = {}
     if order:
@@ -378,9 +476,16 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
         for m, n in enumerate(todo[i]):
             _, k, kind, verdict, refs = flagged[n]
             s, e, sentence = found[i][k]
-            how, new = choose(sentence, replies.get(i, {}).get(m), refs)
+            if is_strict:
+                good, bad = split(i, refs)
+                how, new = choose_strict(sentence, replies.get(i, {}).get(m), good, bad, documents)
+            else:
+                bad = []
+                how, new = choose(sentence, replies.get(i, {}).get(m), refs)
             entry = {"section": sections[i][0], "kind": kind, "verdict": verdict, "how": how,
                      "sentence": sentence[:400], "fetched": [_label(r) for r in extra_of(i, refs)]}
+            if bad:
+                entry["removed"] = [_label(r) for r in bad]
             if new is not None:
                 entry["new"] = new[:400]
             entries.append(entry)
@@ -391,7 +496,8 @@ def review(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]
         if changes:
             text = apply(sections[i][1], changes)
             out[i] = (sections[i][0], text or sections[i][1])
-    vlog("grounded_review", _log(stats, entries, fetched, missing))
+    vlog("grounded_review", {**_log(stats, entries, fetched, missing), "strict": is_strict,
+                             "checked": len(checked or ())})
     return out
 
 
@@ -400,7 +506,8 @@ def _log(stats: List[Dict[str, Any]], entries: List[Dict[str, Any]], fetched: Di
     hows = ("rewritten", "pointer", "dropped", "kept", "kept_fetched")
     totals = {key: sum(s[key] for s in stats) for key in ("sentences", "judged", "rule") + VERDICTS}
     return {"sections": stats, "entries": entries, "totals": totals,
-            "counts": {h: sum(1 for e in entries if e["how"] == h) for h in hows},
+            "counts": {**{h: sum(1 for e in entries if e["how"] == h) for h in hows},
+                       "citations_removed": sum(len(e.get("removed") or []) for e in entries)},
             "fetched": {_label(ref): block for ref, block in fetched.items()},
             "not_found": [_label(r) for r in missing]}
 

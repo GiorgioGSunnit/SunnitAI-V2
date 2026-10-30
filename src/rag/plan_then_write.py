@@ -2120,7 +2120,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
                    article_rows: Optional[List[Dict[str, Any]]] = None, case_text: str = "",
                    coverage: Optional[Callable[[str], Dict[str, Dict[str, List[str]]]]] = None,
                    standard: Optional[Dict[str, str]] = None,
-                   questions: Optional[List[str]] = None) -> Optional[List[tuple]]:
+                   questions: Optional[List[str]] = None,
+                   checked: Optional[List[tuple]] = None) -> Optional[List[tuple]]:
     """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
     None if one still fails or comes back empty. _discipline(): each section then loses the citations
     its material does not hold (_cite_only_material; named: the articles the case names).
@@ -2131,7 +2132,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     the fragments left without their norm dropped (drop_dangling, with any of the citation checks); an evidence
     list identical to an earlier one replaced by a reference to it, and the answers written once more when one of
     the explicit `questions` goes unanswered (REVIEW_FIXES_ENABLED). Last, GROUNDED_REVIEW_ENABLED: every
-    rule-sentence checked against its section's material (grounded_review.review)."""
+    rule-sentence checked against its section's material (grounded_review.review; `checked`, strict: the articles
+    it may keep cited, grounded_review.strict_refs)."""
     system = _section_system(plan, lang)
 
     def write(job):
@@ -2198,7 +2200,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         # not hold rewritten from it, as pointers, or (filler) dropped (grounded_review.py).
         t4 = time.time()
         try:
-            reviewed = grounded_review.review(sections, jobs, documents or [], article_rows or [])
+            reviewed = grounded_review.review(sections, jobs, documents or [], article_rows or [], checked=checked)
             sections = [(title, text or original) for (title, original), (_, text) in zip(sections, reviewed)]
         except Exception as exc:
             logger.warning("grounded review failed, sections kept: %s", exc)
@@ -2458,7 +2460,9 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
                                                  principles, _keep_all()), lang, named, documents,
                               article_rows, case, coverage=use_of, standard=standard_blocks(analysis),
-                              questions=explicit_questions(request, facts) if _review_fixes() else [])
+                              questions=explicit_questions(request, facts) if _review_fixes() else [],
+                              checked=grounded_review.strict_refs(article_rows, named, analysis)
+                              if grounded_review.strict() else None)
     if sections is None:
         return None
     if use_of is not None:

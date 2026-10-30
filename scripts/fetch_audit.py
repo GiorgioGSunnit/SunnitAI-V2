@@ -51,6 +51,7 @@ Run from the app folder (its .env: the judge is the app's chat model; Neo4j read
     ... --only h3,n2 --batch 12 --parallel 4 --max-examples 10 --out fetch_audit_runs/x
     ... --no-judge        # mechanisms 1 and the role patterns only, no model call
     ... --no-db           # no Neo4j: granularity counts only articles not given and explicit commi
+    ... --mechanisms role diagnose_long_runs/rb-off diagnose_long_runs/rb-on   # ROLE_BLOCKS alone, per run
     ... --report-only fetch_audit_runs/x   # report again from x/audit.json
 
 Several runs are audited together (each case is "<run>/<case>", repeats "h3@r2" kept apart). The judge's replies
@@ -953,14 +954,18 @@ def audit_role(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: Judge,
     role = dict(case.get("role") or {})
     listed = [m["sentence"] for m in mapped]
     flagged: Dict[int, Dict[str, Any]] = {}
+    parsed_sentences, failed_batches, batches_n = 0, 0, 0
     for start in range(0, len(listed), batch):
         chunk = listed[start:start + batch]
+        batches_n += 1
         human = (f"CASO:\n{case['case_text'][:5000]}\n\nPARTE ASSISTITA: "
                  + (f"{role.get('party')} ({role.get('position')})" if role.get("party") else "(da ricavare dal caso)")
                  + "\n\nFRASI:\n" + "\n".join(f"{n}. {s}" for n, s in enumerate(chunk, 1)))
         reply = judge.ask(ROLE_SYSTEM, human, max_tokens=400)
-        if not isinstance(reply, dict):
+        if not isinstance(reply, dict) or not isinstance(reply.get("contrasti", []), list):
+            failed_batches += 1 if judge.enabled else 0
             continue
+        parsed_sentences += len(chunk)
         if not role.get("party") and reply.get("parte"):
             role.update(party=str(reply.get("parte")), position=str(reply.get("ruolo") or ""), **{"from": "judge"})
         role.setdefault("judged_role", reply.get("ruolo"))
@@ -982,6 +987,7 @@ def audit_role(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: Judge,
             flagged.setdefault(i, {"sentence": s, "why": hit, "judge": False})["pattern"] = hit
     items = [flagged[i] for i in sorted(flagged)]
     return {"role": role, "contradictions": items, "sentences": len(listed), "filtered": filtered,
+            "judged_sentences": parsed_sentences, "batches": batches_n, "failed_batches": failed_batches,
             "defects": sum(1 for x in items if x.get("judge") or x.get("pattern"))}
 
 
@@ -997,11 +1003,20 @@ def audit_case(case: Dict[str, Any], judge: Judge, commi: Commi, ev, args) -> Di
     out = {"key": case["key"], "run": case["run"], "id": case["id"], "kind": case["kind"], "proxy": case["proxy"],
            "sentences": len(mapped), "writer_calls": len(writer_calls(case)),
            "unassigned": sum(1 for m in mapped if m["call"] is None)}
-    out["granularity"] = audit_granularity(case, mapped, commi) if not case["proxy"] else \
-        {"claims": [], "counts": {}, "cited": 0, "defects": 0, "proxy": True, "skipped": "no writer material"}
-    out["provenance"] = audit_provenance(case, mapped, judge, args.batch, args.material_chars)
-    out["understanding"] = audit_understanding(case, judge, analysed)
-    out["role"] = audit_role(case, mapped, judge, args.batch)
+    run = set(getattr(args, "mechanisms", None) or MECHANISMS)
+    if "granularity" not in run:
+        out["granularity"] = {"claims": [], "counts": {}, "cited": 0, "defects": 0, "proxy": case["proxy"],
+                              "skipped": "not run"}
+    else:
+        out["granularity"] = audit_granularity(case, mapped, commi) if not case["proxy"] else \
+            {"claims": [], "counts": {}, "cited": 0, "defects": 0, "proxy": True, "skipped": "no writer material"}
+    out["provenance"] = audit_provenance(case, mapped, judge, args.batch, args.material_chars) \
+        if "provenance" in run else {"sentences": [], "rule_sentences": 0, "counts": {}, "judged": 0, "total": 0,
+                                     "memory_share": None, "proxy": case["proxy"], "skipped": "not run"}
+    out["understanding"] = audit_understanding(case, judge, analysed if "understanding" in run else None)
+    out["role"] = audit_role(case, mapped, judge, args.batch) if "role" in run else \
+        {"role": case.get("role") or {}, "contradictions": [], "sentences": 0, "filtered": [], "judged_sentences": 0,
+         "batches": 0, "failed_batches": 0, "defects": 0, "skipped": "not run"}
     out["grounded"] = grounded_case_totals(case)
     attribute(out)
     return out
@@ -1067,6 +1082,36 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
             "grounded": grounded_totals(cases),
             "role_defects": totals["role"], "cases_led": dict(lead), "cases": len(cases),
             "proxy_cases": sum(1 for c in cases if c["proxy"])}
+
+
+def role_by_run(cases: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Per run: answers, sentences, sentences in batches whose judge reply parsed, failed batches, contradictions
+    (the judge's kept flags among parsed sentences, the fixed patterns, either), flags not kept, and the judge's
+    rate per 100 parsed sentences -- the figure to compare runs by (ROLE_BLOCKS_ENABLED on vs off)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for c in cases:
+        r = c["role"]
+        if r.get("skipped"):
+            continue
+        row = out.setdefault(c["run"], {"answers": 0, "sentences": 0, "judged": 0, "batches": 0, "failed": 0,
+                                        "judge": 0, "pattern": 0, "any": 0, "filtered": 0})
+        items = r["contradictions"]
+        row["answers"] += 1
+        row["sentences"] += r["sentences"]
+        row["judged"] += r.get("judged_sentences", r["sentences"])
+        row["batches"] += r.get("batches", 0)
+        row["failed"] += r.get("failed_batches", 0)
+        row["judge"] += sum(1 for x in items if x.get("judge"))
+        row["pattern"] += sum(1 for x in items if x.get("pattern"))
+        row["any"] += r["defects"]
+        row["filtered"] += len(r.get("filtered") or [])
+    for row in out.values():
+        row["rate"] = 100 * row["judge"] / row["judged"] if row["judged"] else None
+    return out
+
+
+def _rate(x: Optional[float]) -> str:
+    return "-" if x is None else f"{x:.1f}"
 
 
 def grounded_totals(cases: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -1196,7 +1241,16 @@ def render(cases: List[Dict[str, Any]], meta: Dict[str, Any], max_examples: int 
                  f"({sum(1 for x in items if x.get('judge'))} / {sum(1 for x in items if x.get('pattern'))}) |")
     L += [f"| **total** | | {sum(c['role']['sentences'] for c in cases)} | {s['totals']['role']} |", "",
           f"Judge flags not kept: {s['role_filtered']} (the other side's objection or move presented as such, or an "
-          f"act of the client's own role).", "", "Examples:"]
+          f"act of the client's own role).", ""]
+    L += ["Per run, over the sentences whose judge reply parsed (a failed or unreadable batch counts in neither "
+          "column; compare runs by the rate):", "",
+          "| run | answers | sentences | judged (parsed) | batches failed | contradicting: judge / pattern / any | "
+          "flags not kept | judge per 100 judged |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for run, r in role_by_run(cases).items():
+        L.append(f"| {run} | {r['answers']} | {r['sentences']} | {r['judged']} | {r['failed']} of {r['batches']} | "
+                 f"{r['judge']} / {r['pattern']} / {r['any']} | {r['filtered']} | "
+                 f"{_rate(r['rate'])} |")
+    L += ["", "Examples:"]
     ex = [(c["key"], x) for c in cases for x in c["role"]["contradictions"]]
     L += [f"- {key}: «{_cut(x['sentence'])}» — {_cut(x['why'], 120)}" for key, x in ex[:max_examples]] or ["- none"]
 
@@ -1251,6 +1305,8 @@ def main(argv=None) -> int:
     parser.add_argument("--parallel", type=int, default=4, help="answers audited at once")
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--no-judge", action="store_true", help="no model call: granularity and role patterns only")
+    parser.add_argument("--mechanisms", help="comma-separated, of " + ", ".join(MECHANISMS) + " (default all): "
+                        "e.g. role alone, to compare ROLE_BLOCKS_ENABLED runs")
     parser.add_argument("--no-db", action="store_true", help="no Neo4j: no commi")
     parser.add_argument("--report-only", metavar="DIR", help="report again from DIR/audit.json")
     args = parser.parse_args(argv)
@@ -1271,6 +1327,11 @@ def main(argv=None) -> int:
     except ImportError:
         pass
     only = {x.strip() for x in args.only.split(",")} if args.only else None
+    if args.mechanisms:
+        args.mechanisms = [m.strip() for m in args.mechanisms.split(",") if m.strip()]
+        unknown = [m for m in args.mechanisms if m not in MECHANISMS]
+        if unknown:
+            parser.error(f"unknown mechanism(s): {', '.join(unknown)}")
     cases = load(args.runs, only)
     if not cases:
         parser.error("no case in those runs")
