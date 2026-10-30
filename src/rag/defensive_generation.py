@@ -5281,6 +5281,8 @@ def _regime_rows(session, driver, database: str, analysis: Dict[str, Any]) -> Li
         from .doc_lookup import _fetch_doc_names
         documents = _fetch_doc_names(driver, database)
         fact_signals.attach_term_sources(session, documents, signals)
+        # ROLE_BLOCKS_ENABLED: the criminal profile for the client's side, before its articles are read.
+        fact_signals.fit_to_role(signals, _stance_party(analysis))
         tools = fact_signals.regime_refs(signals)
         rows = _fetch_any(session, documents, list(tools)) if tools else []
     except Exception as exc:
@@ -5294,6 +5296,7 @@ def _regime_rows(session, driver, database: str, analysis: Dict[str, Any]) -> Li
         "tools": [t["id"] for t in signals.get("tools") or []],
         "damages": [d["id"] for d in signals.get("damages") or []],
         "multi_roles": signals.get("multi_roles") or [], "posture": signals.get("posture") or {},
+        "side": signals.get("side") or "",
         "tool_articles": sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in rows if r.get("_article")}),
         "terms": [t.get("text") for t in signals.get("terms") or []],
         "term_refs": {t["id"]: t.get("ref") for t in signals.get("terms") or []}})
@@ -5477,7 +5480,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     if feature_flags.enabled(PLAN_THEN_WRITE_FLAG):
         from . import plan_then_write
         documents_for_plan: List[Dict[str, Any]] = []
-        if plan_then_write._discipline():
+        if plan_then_write._discipline() or plan_then_write.grounded_review.enabled():
             try:
                 from .doc_lookup import _fetch_doc_names
                 documents_for_plan = _fetch_doc_names(driver, NEO4J_DATABASE)

@@ -24,6 +24,17 @@ their LLM dumps), tests/eval_narrative.py run folders (narrative, --direct, --cc
                   (advising the accused to become parte civile, a remedy reserved to the other side, an argument
                   for the opponent): one judge call per batch, plus a few fixed patterns as a second signal.
 
+  3 also locates the loss of a lost article whose trigger WAS captured: the first step it fails after the
+                  understanding (article resolved or found -> in the pool -> past the applicability check -> in the
+                  draft prompt -> in the plan), and, when it was never resolved, what captured it (an institution
+                  resolved elsewhere or to nothing, an issue, only a fact).
+  4 drops the judge's flags on a sentence that reports the other side's objection or move as such, or advises an
+                  act of the client's own role (counted apart as "not kept"); the fixed patterns skip the former.
+
+A run made with GROUNDED_REVIEW_ENABLED: a sentence its rewrite call wrote is attributed to that call (material: the
+section's, with the articles it read), an article it read for a section counts as given to that section, and its
+own logged counts are reported.
+
 Defects: (1) comma not given / beyond the truncation; (2) not-in-material or contradicted rule-sentences that (1)
 does not already explain (a claim on a comma the writer never had is counted once, as granularity); (3) lost
 expected articles whose trigger fact nothing extracted; (4) role-contradicting sentences. The ranked summary
@@ -76,7 +87,9 @@ TRIGGERS = ("gravita_aggravante", "date_termini", "storia_proprieta", "ruolo_qua
 TRIGGER_NAMES = {"gravita_aggravante": "gravity / aggravation", "date_termini": "dates / terms",
                  "storia_proprieta": "ownership / possession history", "ruolo_qualita": "role / quality of a party",
                  "importo_valore": "amount / value", "fase_procedimento": "procedure stage", "altro": "other"}
-WRITER_STAGE_RE = re.compile(r"^(?:section_.+|draft)$")
+WRITER_STAGE_RE = re.compile(r"^(?:section_.+|draft|grounded_rewrite)$")
+# GROUNDED_REVIEW_ENABLED's rewrite call: its material is what precedes the sentences it was asked to rewrite.
+REWRITE_MARK = "\n\nFRASI DA RISCRIVERE:"
 MIN_WORDS = 6
 
 # Fix directions, printed for the two mechanisms that explain most defects only.
@@ -413,11 +426,46 @@ def load(paths: Sequence[str], only: Optional[set] = None) -> List[Dict[str, Any
 # Writer calls: which call wrote each sentence of the final answer, with what material
 # =================================================================================================
 
+def section_stage(title: str) -> str:
+    """A plan section's dump stage, as diagnose_long._llm_stage names it."""
+    return "section_" + re.sub(r"[^a-z0-9]+", "_", str(title).lower()).strip("_")[:40]
+
+
+def grounded_events(case: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The run's grounded_review logs (GROUNDED_REVIEW_ENABLED), from the record's events."""
+    events = (case.get("record") or {}).get("events") or []
+    return [e[1] for e in events if isinstance(e, (list, tuple)) and len(e) >= 2 and e[0] == "grounded_review"
+            and isinstance(e[1], dict)]
+
+
+def fetched_for_sections(case: Dict[str, Any]) -> Dict[str, str]:
+    """{section stage: the "[art. N code]" blocks the grounded review read for that section's sentences}: an article
+    read for a section counts as given to it."""
+    out: Dict[str, List[str]] = defaultdict(list)
+    for log in grounded_events(case):
+        blocks = log.get("fetched") or {}
+        for entry in log.get("entries") or []:
+            for ref in entry.get("fetched") or []:
+                block = blocks.get(ref)
+                stage = section_stage(entry.get("section") or "")
+                if block and block not in out[stage]:
+                    out[stage].append(block)
+    return {stage: "\n\n".join(blocks) for stage, blocks in out.items()}
+
+
 def writer_calls(case: Dict[str, Any]) -> List[Dict[str, Any]]:
     calls = [c for c in case["calls"] if WRITER_STAGE_RE.match(c["stage"])]
     if calls or not case["proxy"]:
-        return [{"stage": c["stage"], "material": f"{c['system']}\n\n{c['user']}", "reply": c["reply"]}
-                for c in calls]
+        fetched = fetched_for_sections(case)
+        out = []
+        for c in calls:
+            material = f"{c['system']}\n\n{c['user']}"
+            if c["stage"] == "grounded_rewrite":
+                material = material.split(REWRITE_MARK, 1)[0]
+            elif fetched.get(c["stage"]):
+                material = f"{fetched[c['stage']]}\n\n{material}"
+            out.append({"stage": c["stage"], "material": material, "reply": c["reply"]})
+        return out
     # No dumps: the answer's returned sources stand in for the material (a proxy).
     lines = []
     for _, cit in as_items(case.get("citations")):
@@ -585,8 +633,13 @@ ROLE_SYSTEM = (
     "prospettiva contraddice il ruolo della parte assistita: consigli o rimedi che solo un'altra parte può usare "
     "(per esempio costituirsi parte civile per l'imputato, chiedere il patteggiamento per la persona offesa, "
     "eccezioni del convenuto per l'attore), argomenti che giovano alla controparte presentati come propri, "
-    "azioni contro la parte assistita stessa. Un argomento della controparte presentato come tale, da confutare, "
-    "non va elencato. Rispondi SOLO con un oggetto JSON: {\"parte\": \"...\", \"ruolo\": \"attore|convenuto|"
+    "azioni contro la parte assistita stessa. NON vanno elencate: una frase che presenta un'obiezione, una mossa o "
+    "un diritto della controparte come tale (\"la persona offesa potrà costituirsi parte civile\", \"la "
+    "controparte eccepirà la prescrizione\", \"l'accusa sostiene che\"), anche senza replica; un consiglio che "
+    "spetta proprio al ruolo della parte assistita (per la persona offesa o i suoi congiunti: querela, denuncia, "
+    "costituzione di parte civile, risarcimento; per l'imputato o l'indagato: riti alternativi, difese, eccezioni; "
+    "per l'attore: la domanda; per il convenuto: le eccezioni); la descrizione neutra di una norma o di un "
+    "istituto. Nel dubbio non elencare. Rispondi SOLO con un oggetto JSON: {\"parte\": \"...\", \"ruolo\": \"attore|convenuto|"
     "imputato|indagato|persona offesa|parte civile|ricorrente|resistente|altro\", \"contrasti\": [{\"i\": numero, "
     "\"perche\": \"una frase\"}]}.")
 
@@ -767,6 +820,52 @@ def _extracted(rec: Dict[str, Any], calls: Sequence[Dict[str, Any]] = ()) -> Lis
     return items[:80]
 
 
+# A lost article whose trigger fact WAS captured: the first step after the understanding that it fails.
+FUNNEL = ("resolved", "in_pool", "graded", "in_prompt", "in_plan")
+FUNNEL_NAMES = {"resolved": "article resolved / found (issue -> article)", "in_pool": "in the pool",
+                "graded": "passed the applicability check", "in_prompt": "in the draft prompt",
+                "in_plan": "in the plan"}
+CAPTURE_KINDS = {"institution_elsewhere": "an institution captured it, resolved to other articles",
+                 "institution_unresolved": "an institution captured it, resolved to nothing",
+                 "issue": "an issue / central question captured it, no institution",
+                 "fact": "only a fact captured it"}
+
+
+def funnel(slot: Dict[str, Any]) -> Dict[str, Any]:
+    """{"steps": {step: passed}, "lost_at": the first failed step or None, "check", "channels"} of an expected
+    article's diagnose_long slot: resolved (an institution resolved to it, or a channel found it: fusion rank, pool,
+    vote top 20), in the pool, past the applicability check, in the draft prompt, in the plan."""
+    info = slot.get("understanding") or {}
+    vote = slot.get("vote_rank")
+    conditions = {
+        "resolved": bool(info.get("resolved_by_institution") or slot.get("institutions") or slot.get("rank")
+                         or slot.get("in_pool") or (vote is not None and vote <= 20)),
+        "in_pool": bool(slot.get("in_pool")),
+        "graded": slot.get("check") != "rejected",
+        "in_prompt": slot.get("in_prompt") is not False,
+        "in_plan": slot.get("in_plan") is not False,
+    }
+    steps, ok, lost_at = {}, True, None
+    for step in FUNNEL:
+        ok = ok and conditions[step]
+        steps[step] = ok
+        if not ok and lost_at is None:
+            lost_at = step
+    return {"steps": steps, "lost_at": lost_at, "check": slot.get("check"), "channels": slot.get("channels") or []}
+
+
+def capture_kind(captured: Sequence[str]) -> str:
+    """How the understanding held a captured trigger (CAPTURE_KINDS), from the extracted elements that captured it."""
+    insts = [c for c in captured if c.startswith("istituto:")]
+    if any(not c.endswith("non risolto") for c in insts):
+        return "institution_elsewhere"
+    if insts:
+        return "institution_unresolved"
+    if any(c.startswith(("questione:", "frame central_issue", "frame tasks", "regola scattata")) for c in captured):
+        return "issue"
+    return "fact"
+
+
 def audit_understanding(case: Dict[str, Any], judge: Judge, analysed: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not analysed:
         return {"lost": [], "available": False}
@@ -785,10 +884,12 @@ def audit_understanding(case: Dict[str, Any], judge: Judge, analysed: Optional[D
         raw = reply.get("catturato_da")
         raw = re.findall(r"\d+", raw) if isinstance(raw, str) else [x for _, x in as_items(raw)]
         captured = sorted({int(x) for x in raw if str(x).strip().isdigit() and 0 < int(x) <= len(extracted)})
+        held = [extracted[i - 1] for i in captured]
         lost.append({"article": slot["label"], "stage": slot["stage"], "rubrica": rubrica,
                      "fact": reply.get("fatto") or "", "trigger": trigger if trigger in TRIGGERS else
-                     ("altro" if reply else None), "captured": [extracted[i - 1] for i in captured],
-                     "why": reply.get("perche") or "", "judged": bool(reply)})
+                     ("altro" if reply else None), "captured": held,
+                     "why": reply.get("perche") or "", "judged": bool(reply),
+                     "funnel": funnel(slot), "capture_kind": capture_kind(held) if held else None})
     return {"lost": lost, "available": True,
             "defects": sum(1 for x in lost if x["judged"] and not x["captured"])}
 
@@ -801,11 +902,50 @@ _ROLE_PATTERNS = [   # (role words, sentence pattern, why): a second, fixed sign
 ]
 
 
+# A sentence whose subject is the other side, or that reports its move: the other side's act described as such.
+_OTHER_SIDE_RE = re.compile(
+    r"controparte|\bavversari|\bobiezion|\bobiett|\beccepir\w*\s+(?:che|la|il)|l['’]accusa|pubblico ministero|"
+    r"\bil pm\b|persona offesa\s+(?:potr|può|potrebbe|ha|avrà|intend|vorrà)|\b(?:la|le)\s+vittim\w*\s+(?:potr|può|"
+    r"potrebbe)|\b(?:i|gli)\s+(?:familiari|congiunti|eredi)\s+(?:della vittima\s+)?(?:potr|possono|potrebbero)|"
+    r"\bl['’]imputato\s+(?:potr|può|potrebbe)|\bil convenuto\s+(?:potr|può|potrebbe)|\bl['’]attore\s+(?:potr|può|"
+    r"potrebbe)", re.IGNORECASE)
+# The client's own acts by role: a judge flag on a sentence advising one of them is not kept.
+_OWN_ACTS = [
+    (r"persona offesa|parte civile|vittim|querelant|familiar|congiunt|\bered", r"\bquerel|denunci|costitu\w+\s+parte\s+"
+     r"civile|risarciment|opposizione all['’]archiviazione"),
+    (r"imputat|indagat|accusat", r"patteggiament|rito abbreviato|messa alla prova|oblazione|\bdifes|memori|"
+     r"proscioglimento|assoluzion|attenuant|tenuità"),
+    (r"attore|ricorrente|creditore", r"atto di citazione|domanda giudiziale|ricorso|risarciment|decreto ingiuntivo"),
+    (r"convenut|resistente", r"eccepir|eccezion|chiamata in causa|domanda riconvenzionale"),
+]
+
+
+def _who(role: Dict[str, str]) -> str:
+    return f"{role.get('party', '')} {role.get('position', '')} {role.get('judged_role') or ''}".lower()
+
+
 def role_pattern_hits(role: Dict[str, str], sentence: str) -> Optional[str]:
-    who = f"{role.get('party', '')} {role.get('position', '')}".lower()
+    """The fixed pattern a sentence hits against the client's role, unless it reports the other side's move."""
+    who = _who(role)
+    if _OTHER_SIDE_RE.search(sentence):
+        return None
     for words, pattern, why in _ROLE_PATTERNS:
         if re.search(words, who) and re.search(pattern, sentence, re.IGNORECASE):
             return why
+    return None
+
+
+def role_flag_filtered(role: Dict[str, str], sentence: str) -> Optional[str]:
+    """Why a judge's role flag on the sentence is not kept, or None: it reports the other side's objection or move,
+    or advises an act of the client's own role (and no fixed pattern says otherwise)."""
+    if _OTHER_SIDE_RE.search(sentence):
+        return "the other side's move, as such"
+    who = _who(role)
+    if role_pattern_hits(role, sentence):
+        return None
+    for words, acts in _OWN_ACTS:
+        if re.search(words, who) and re.search(acts, sentence, re.IGNORECASE):
+            return "an act of the client's own role"
     return None
 
 
@@ -831,12 +971,17 @@ def audit_role(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: Judge,
                 continue
             if 0 <= n < len(chunk):
                 flagged[start + n] = {"sentence": chunk[n], "why": item.get("perche") or "", "judge": True}
+    filtered = []
+    for i in list(flagged):
+        why = role_flag_filtered(role, flagged[i]["sentence"])
+        if why:
+            filtered.append({**flagged.pop(i), "filtered": why})
     for i, s in enumerate(listed):
         hit = role_pattern_hits(role, s)
         if hit:
             flagged.setdefault(i, {"sentence": s, "why": hit, "judge": False})["pattern"] = hit
     items = [flagged[i] for i in sorted(flagged)]
-    return {"role": role, "contradictions": items, "sentences": len(listed),
+    return {"role": role, "contradictions": items, "sentences": len(listed), "filtered": filtered,
             "defects": sum(1 for x in items if x.get("judge") or x.get("pattern"))}
 
 
@@ -857,8 +1002,20 @@ def audit_case(case: Dict[str, Any], judge: Judge, commi: Commi, ev, args) -> Di
     out["provenance"] = audit_provenance(case, mapped, judge, args.batch, args.material_chars)
     out["understanding"] = audit_understanding(case, judge, analysed)
     out["role"] = audit_role(case, mapped, judge, args.batch)
+    out["grounded"] = grounded_case_totals(case)
     attribute(out)
     return out
+
+
+def grounded_case_totals(case: Dict[str, Any]) -> Dict[str, int]:
+    """The case's grounded_review counts (summed over its logs), {} for a run without the review."""
+    out: Counter = Counter()
+    for log in grounded_events(case):
+        out.update({k: int(v or 0) for k, v in list((log.get("totals") or {}).items())
+                    + list((log.get("counts") or {}).items())})
+        out["fetched"] += len(log.get("fetched") or {})
+        out["not_found"] += len(log.get("not_found") or [])
+    return dict(out)
 
 
 def attribute(case_out: Dict[str, Any]) -> None:
@@ -890,6 +1047,10 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
     triggers = Counter(x["trigger"] or "unjudged" for c in cases for x in c["understanding"]["lost"])
     missed = Counter(x["trigger"] or "unjudged" for c in cases for x in c["understanding"]["lost"]
                      if x["judged"] and not x["captured"])
+    held = [x for c in cases for x in c["understanding"]["lost"] if x["captured"]]
+    lost_at = Counter((x.get("funnel") or {}).get("lost_at") or "none" for x in held)
+    kinds = Counter(x.get("capture_kind") or "fact" for x in held
+                    if (x.get("funnel") or {}).get("lost_at") == "resolved")
     lead = Counter(max(MECHANISMS, key=lambda m: c[m].get("defects", 0)) for c in cases
                    if any(c[m].get("defects", 0) for m in MECHANISMS))
     return {"totals": totals, "all": all_defects, "ranked": ranked,
@@ -901,8 +1062,19 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
             "explained_by_granularity": sum(c["provenance"].get("explained_by_granularity", 0) for c in cases),
             "triggers": dict(triggers), "triggers_missed": dict(missed),
             "lost": sum(len(c["understanding"]["lost"]) for c in cases),
+            "captured_lost": len(held), "captured_lost_at": dict(lost_at), "unresolved_capture": dict(kinds),
+            "role_filtered": sum(len(c["role"].get("filtered") or []) for c in cases),
+            "grounded": grounded_totals(cases),
             "role_defects": totals["role"], "cases_led": dict(lead), "cases": len(cases),
             "proxy_cases": sum(1 for c in cases if c["proxy"])}
+
+
+def grounded_totals(cases: List[Dict[str, Any]]) -> Dict[str, int]:
+    """GROUNDED_REVIEW_ENABLED's own counts over the cases (audit_case keeps them per case)."""
+    out: Counter = Counter()
+    for c in cases:
+        out.update(c.get("grounded") or {})
+    return dict(out)
 
 
 def _pct(x: Optional[float]) -> str:
@@ -989,6 +1161,24 @@ def render(cases: List[Dict[str, Any]], meta: Dict[str, Any], max_examples: int 
     for t in TRIGGERS + ("unjudged",):
         if s["triggers"].get(t):
             L.append(f"| {TRIGGER_NAMES.get(t, t)} | {s['triggers'][t]} | {s['triggers_missed'].get(t, 0)} |")
+    if s["captured_lost"]:
+        L += ["", f"### Captured but lost: the first step each of the {s['captured_lost']} fails", "",
+              "| step | lost there | share |", "|---|---:|---:|"]
+        for step in FUNNEL + ("none",):
+            n = s["captured_lost_at"].get(step, 0)
+            if n:
+                L.append(f"| {FUNNEL_NAMES.get(step, 'passed every step (lost in the writing)')} | {n} | "
+                         f"{_pct(n / s['captured_lost'])} |")
+        if s["unresolved_capture"]:
+            L += ["", "Not resolved, by what captured the trigger:", "", "| captured by | lost |", "|---|---:|"]
+            for kind, n in sorted(s["unresolved_capture"].items(), key=lambda kv: -kv[1]):
+                L.append(f"| {CAPTURE_KINDS.get(kind, kind)} | {n} |")
+        L += ["", "Examples (captured, then lost):"]
+        ex = [(c["key"], x) for c in cases for x in c["understanding"]["lost"] if x["captured"]]
+        L += [f"- {key}: {x['article']} lost at «{FUNNEL_NAMES.get((x.get('funnel') or {}).get('lost_at'), '-')}» "
+              f"(check: {(x.get('funnel') or {}).get('check') or '-'}; channels: "
+              f"{', '.join((x.get('funnel') or {}).get('channels') or []) or 'none'}); captured by «{_cut(x['captured'][0], 140)}»"
+              for key, x in ex[:max_examples]]
     L += ["", "Examples (trigger not captured):"]
     ex = [(c["key"], x) for c in cases for x in c["understanding"]["lost"] if x["judged"] and not x["captured"]]
     L += [f"- {key}: {x['article']} ({x['stage']}; {TRIGGER_NAMES.get(x['trigger'], x['trigger'])}): fact «{_cut(x['fact'], 160)}»"
@@ -1004,9 +1194,22 @@ def render(cases: List[Dict[str, Any]], meta: Dict[str, Any], max_examples: int 
         items = r["contradictions"]
         L.append(f"| {c['key']} | {_cut(who, 70)} | {r['sentences']} | {r['defects']} "
                  f"({sum(1 for x in items if x.get('judge'))} / {sum(1 for x in items if x.get('pattern'))}) |")
-    L += [f"| **total** | | {sum(c['role']['sentences'] for c in cases)} | {s['totals']['role']} |", "", "Examples:"]
+    L += [f"| **total** | | {sum(c['role']['sentences'] for c in cases)} | {s['totals']['role']} |", "",
+          f"Judge flags not kept: {s['role_filtered']} (the other side's objection or move presented as such, or an "
+          f"act of the client's own role).", "", "Examples:"]
     ex = [(c["key"], x) for c in cases for x in c["role"]["contradictions"]]
     L += [f"- {key}: «{_cut(x['sentence'])}» — {_cut(x['why'], 120)}" for key, x in ex[:max_examples]] or ["- none"]
+
+    # --- GROUNDED_REVIEW_ENABLED
+    g = s.get("grounded") or {}
+    if g:
+        L += ["", "## Grounded review (GROUNDED_REVIEW_ENABLED, as logged by the run)", "",
+              f"Sentences judged {g.get('judged', 0)} of {g.get('sentences', 0)}; rule-sentences {g.get('rule', 0)}: "
+              f"supported {g.get('supportata', 0)}, not in material {g.get('assente', 0)}, contradicted "
+              f"{g.get('contraddetta', 0)}. Done: kept after reading the cited article {g.get('kept_fetched', 0)}, "
+              f"rewritten from the material {g.get('rewritten', 0)}, pointers {g.get('pointer', 0)}, dropped "
+              f"{g.get('dropped', 0)}, kept unchanged {g.get('kept', 0)}. Articles read {g.get('fetched', 0)}, not "
+              f"found {g.get('not_found', 0)}."]
 
     # --- fixes
     top = [m for m in s["ranked"] if s["totals"][m]][:2]
