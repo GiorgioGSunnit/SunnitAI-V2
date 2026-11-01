@@ -1,7 +1,9 @@
 """Multilingual cross-encoders against the Qwen graded check, offline, on one diagnose_long run's saved data.
 
 bge-reranker-v2-m3 by default; jina-reranker-v2 only with --models bge,jina (its licence is non-commercial and its
-modelling code comes from the Hub). No model of ours runs, no answer is written, Neo4j is only read, and nothing in src/
+modelling code comes from the Hub); qwen3rr, the Qwen3-Reranker-8B production serves, with --models bge,qwen3rr: by HTTP
+at RERANKER_URL, with RERANKER_MODEL and LLM_API_KEY from --env, its query in production's own "Instruct: ... Query: ..."
+form (src/rag/reranker.py), its documents the same as bge's, one request at a time. No model of ours runs, no answer is written, Neo4j is only read, and nothing in src/
 is called but pure helpers (the area's codes, article_text.py). Per case of the run:
 
   candidates  what the check received (check.input, else the pool), each once by its eval key
@@ -35,7 +37,8 @@ report from them. Report: <run>/rerank_bench_<date-time>.md (and .json).
     cd /opt/chatbot && nice -n 19 /opt/rerank_bench/venv/bin/python scripts/rerank_bench.py \\
         diagnose_long_runs/rv2-20261031-0834-candidate [--models bge,jina] [--device cpu] [--batch 16] [--threads 4]
 
-Needs the Neo4j settings of --env (default ./.env), unless --no-fetch or --report-only.
+Needs the Neo4j settings of --env (default ./.env), unless --no-fetch or --report-only. A model already scored on the
+same texts is not run again: --models bge,qwen3rr after a bge run only calls qwen3rr, and reports both.
 """
 
 import argparse
@@ -47,6 +50,8 @@ import re
 import statistics
 import sys
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime
 
 MODELS = {
@@ -54,7 +59,12 @@ MODELS = {
     # Its modelling code comes from the Hub and runs here: pinned to the commit tested, which needs transformers<5.
     "jina": {"name": "jinaai/jina-reranker-v2-base-multilingual", "max_length": 1024, "remote_code": True,
              "revision": "9cfeff2df7d40d1b78e75e5e9cebec92a99813c9"},
+    "qwen3rr": {"name": "qwen3-reranker-8b", "http": "http://185.199.24.32:8002/v1/rerank", "max_length": None},
 }
+# src/rag/reranker.py's query, word for word: the model is served and used with this instruction.
+QWEN_QUERY = "Instruct: Given a legal query in Italian, retrieve the most relevant legal document sections\nQuery: {}"
+HTTP_TIMEOUT = 180
+HTTP_TRIES = 4
 MODES = ("whole", "issues")
 MAX_ISSUES = 10                  # defensive_generation._GRADED_MAX_ISSUES
 UNRELATED_GRADES = (0, 1)
@@ -249,8 +259,6 @@ def fetch_texts(cases: list, path: str, args) -> dict:
     if args.no_fetch or args.report_only:
         return apply_texts(cases, None, cache, args.doc_chars)
     import neo4j
-    from dotenv import load_dotenv
-    load_dotenv(args.env)
     uri, database = os.getenv("NEO4J_URI"), os.getenv("NEO4J_DATABASE", "neo4j")
     if not uri:
         sys.exit(f"NEO4J_URI is not set ({args.env}): give --env, or --no-fetch to score the saved fallbacks")
@@ -394,6 +402,65 @@ class Scorer:
         return len(self.model.tokenizer(text, truncation=False)["input_ids"])
 
 
+class HttpScorer:
+    """The production reranker, through its /v1/rerank: predict([(query, document)]) -> [score], one request at a time,
+    `batch` documents each. A failure after the retries stops the run: its case is not saved, so a rerun takes it up."""
+    max_length = None
+
+    def __init__(self, short: str, batch: int):
+        self.url = os.getenv("RERANKER_URL") or MODELS[short]["http"]
+        self.model = os.getenv("RERANKER_MODEL") or MODELS[short]["name"]
+        self.key = os.getenv("LLM_API_KEY") or ""
+        self.batch = batch
+        if not self.key:
+            sys.exit("LLM_API_KEY is not set: give --env the chatbot's .env")
+        print(f"{short}: {self.model} at {self.url}", flush=True)
+
+    def _post(self, query: str, documents: list) -> list:
+        body = json.dumps({"model": self.model, "query": QWEN_QUERY.format(query), "documents": documents}).encode()
+        request = urllib.request.Request(self.url, data=body, method="POST", headers={
+            "Authorization": f"Bearer {self.key}", "Content-Type": "application/json"})
+        for attempt in range(1, HTTP_TRIES + 1):
+            try:
+                with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as reply:
+                    results = json.load(reply).get("results") or []
+                scores = {r["index"]: float(r["relevance_score"]) for r in results}
+                if set(scores) != set(range(len(documents))):
+                    raise ValueError(f"{len(scores)} scores for {len(documents)} documents")
+                return [scores[i] for i in range(len(documents))]
+            except urllib.error.HTTPError as exc:
+                detail = exc.read(300).decode("utf-8", "replace")
+                if exc.code < 500 and exc.code != 429:      # a request the server refuses is not retried
+                    sys.exit(f"reranker refused the request: HTTP {exc.code}: {detail}")
+                problem = f"HTTP {exc.code}: {detail}"
+            except (urllib.error.URLError, TimeoutError, ValueError, KeyError) as exc:
+                problem = f"{type(exc).__name__}: {exc}"
+            print(f"  reranker try {attempt}/{HTTP_TRIES} failed: {problem}", file=sys.stderr, flush=True)
+            if attempt < HTTP_TRIES:
+                time.sleep(5 * attempt)
+        sys.exit(f"reranker failed {HTTP_TRIES} times: {problem}")
+
+    def predict(self, pairs: list) -> list:
+        out = []
+        i = 0
+        while i < len(pairs):
+            j = i
+            while j < len(pairs) and j - i < self.batch and pairs[j][0] == pairs[i][0]:
+                j += 1
+            out += self._post(pairs[i][0], [doc for _, doc in pairs[i:j]])
+            i = j
+        return out
+
+    def tokens(self, text: str) -> int:
+        return 0                     # no tokenizer here, and the server's window is its own
+
+
+def make_scorer(short: str, args):
+    if MODELS[short].get("http"):
+        return HttpScorer(short, args.batch)
+    return Scorer(short, args.device, args.batch, args.threads)
+
+
 def score_case(scorer, case: dict) -> dict:
     """{"whole": {label: score}, "issues": {label: score}, seconds per mode, pairs, the queries' tokens}."""
     docs = [(c["label"], c["doc"]) for c in case["candidates"]]
@@ -443,8 +510,8 @@ def score_all(cases: list, models: list, scores_dir: str, args) -> dict:
                 if args.report_only:
                     continue
                 if scorer is None:
-                    print(f"{short}: loading {MODELS[short]['name']} on {args.device}", flush=True)
-                    scorer = Scorer(short, args.device, args.batch, args.threads)
+                    print(f"{short}: loading {MODELS[short]['name']}", flush=True)
+                    scorer = make_scorer(short, args)
                 saved = {**score_case(scorer, case), "inputs": inputs_hash(case)}
                 with open(path + ".tmp", "w", encoding="utf-8") as fh:
                     json.dump(saved, fh, ensure_ascii=False)
@@ -516,8 +583,9 @@ def render(run_dir: str, cases: list, skipped: list, table: dict, ranked: dict, 
                           f"{statistics.median(times):.1f}s | {max(times):.1f}s | "
                           f"{100 * sum(times) / max(1, sum(docs)):.1f}s |")
         over = sum(1 for r in rows if r.get("max_length") and r.get("query_tokens", 0) > r["max_length"] * 0.8)
-        tokens.append(f"{short}: {over} of {len(rows)} cases with a case text over 80% of the model's window "
-                      f"({rows[0].get('max_length')} tokens), its end cut in the whole query")
+        if rows[0].get("max_length"):
+            tokens.append(f"{short}: {over} of {len(rows)} cases with a case text over 80% of the model's "
+                          f"window ({rows[0].get('max_length')} tokens), its end cut in the whole query")
     L += [""] + timing
     if tokens:
         L += ["", "; ".join(tokens) + ". In a case where the request closes the text, that is the part lost."]
@@ -545,8 +613,8 @@ def render(run_dir: str, cases: list, skipped: list, table: dict, ranked: dict, 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("run", help="a diagnose_long run folder, made with --dump-llm (the default)")
-    parser.add_argument("--models", default="bge", help="comma-separated: bge, jina (default bge; jina is opt-in: "
-                                                            "non-commercial licence, remote code)")
+    parser.add_argument("--models", default="bge", help="comma-separated: bge, qwen3rr, jina (default bge; jina is "
+                                                            "opt-in: non-commercial licence, remote code)")
     parser.add_argument("--device", default="cpu", help="cpu, cuda, mps")
     parser.add_argument("--batch", type=int, default=16)
     parser.add_argument("--threads", type=int, default=4, help="CPU threads (0: torch's default, all of them)")
@@ -556,11 +624,17 @@ def main() -> None:
     parser.add_argument("--examples", type=int, default=10)
     parser.add_argument("--report-only", action="store_true", help="no model, no database: from the saved scores")
     parser.add_argument("--no-fetch", action="store_true", help="no Neo4j: the texts saved in the run only")
-    parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"), help="the Neo4j settings")
+    parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"), help="the Neo4j and reranker settings")
     args = parser.parse_args()
 
     sys.path.insert(0, os.getcwd())
     dl, gb = _load("diagnose_long"), _load("grader_bench")
+    if not args.report_only:
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(args.env)
+        except ImportError:           # the settings may be in the environment; what is missing is said where it is used
+            pass
     models = [m.strip() for m in args.models.split(",") if m.strip()]
     unknown = [m for m in models if m not in MODELS]
     if unknown:

@@ -1,9 +1,15 @@
 """scripts/rerank_bench.py on a synthetic saved run: no model, no database."""
 
 import importlib.util
+import io
 import json
 import sys
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from threading import Thread
+from types import SimpleNamespace
+
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -259,3 +265,42 @@ def test_the_whole_run_resumes_and_reports(tmp_path, monkeypatch):
     assert "## Query: whole" in report and "## Query: issues" in report and "| bge+pin whole |" in report
     assert "### jina issues" in report and "graded call 1" in report and "Trovato da" not in report
     assert "1 of 1 cases with a case text over 80%" in report
+
+
+def test_the_production_reranker_is_called_as_production_calls_it(monkeypatch):
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            seen.append((self.headers["Authorization"], body))
+            results = [{"index": i, "relevance_score": 100 * len(seen) + i} for i in reversed(range(len(body["documents"])))]
+            reply = json.dumps({"results": results}).encode()
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(reply)
+
+        def log_message(self, *args):
+            pass
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("RERANKER_URL", f"http://127.0.0.1:{server.server_port}/v1/rerank")
+    monkeypatch.setenv("RERANKER_MODEL", "qwen3-reranker-8b")
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    scorer = rb.make_scorer("qwen3rr", SimpleNamespace(batch=2, device="cpu", threads=1))
+    pairs = [("q1", "a"), ("q1", "b"), ("q1", "c"), ("q2", "d")]
+    assert scorer.predict(pairs) == [100, 101, 200, 300]          # by index, split by batch and by query
+    server.shutdown()
+    assert [b["documents"] for _, b in seen] == [["a", "b"], ["c"], ["d"]]
+    assert seen[0][0] == "Bearer k" and seen[0][1]["model"] == "qwen3-reranker-8b"
+    assert seen[0][1]["query"].startswith("Instruct: Given a legal query in Italian") and seen[0][1]["query"].endswith(
+        "Query: q1")
+
+
+def test_a_short_reply_is_retried_then_stops_the_run(monkeypatch):
+    monkeypatch.setenv("LLM_API_KEY", "k")
+    monkeypatch.setattr(rb.time, "sleep", lambda s: None)
+    monkeypatch.setattr(rb.urllib.request, "urlopen", lambda *a, **k: io.BytesIO(b'{"results": []}'))
+    scorer = rb.HttpScorer("qwen3rr", 4)
+    with pytest.raises(SystemExit, match="failed 4 times"):
+        scorer.predict([("q", "a")])
