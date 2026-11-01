@@ -123,10 +123,15 @@ def _commi(row: Dict[str, Any]) -> Tuple[List[str], bool]:
     """(the article's commi, numbered): COMMA_MATERIAL's when the row holds them, else its text split; numbered False
     for a sentence split (its parts are not commi)."""
     from . import comma_material
-    if row.get(comma_material.COMMI_KEY):
-        return list(row[comma_material.COMMI_KEY]), row.get(comma_material.FROM_KEY) != "sentences"
-    parts, how = comma_material.split_commi(_row_text(row))
+    parts, how = _parts_of(row)
     return parts, how not in ("sentences", "none")
+
+
+def _parts_of(row: Dict[str, Any]) -> Tuple[List[str], Optional[str]]:
+    from . import comma_material
+    if row.get(comma_material.COMMI_KEY):
+        return list(row[comma_material.COMMI_KEY]), row.get(comma_material.FROM_KEY)
+    return comma_material.split_commi(_row_text(row))
 
 
 def best_comma(commi: Sequence[str], focus: str) -> int:
@@ -213,9 +218,11 @@ def _article_passage(cat: Catalogue, row: Dict[str, Any], comma: Optional[int], 
     commi, numbered = _commi(row)
     if not commi:
         return None
-    k = comma - 1 if comma and numbered and 1 <= comma <= len(commi) else best_comma(commi, focus)
-    label = f"art. {ref[0]} {ptw._code_key(ref[1])}" + (f", co. {k + 1}" if numbered and len(commi) > 1 else "")
-    return cat.add(("article", ref, k), "article", label, commi[k], ref=ref, comma=k + 1 if numbered else None,
+    from . import comma_material
+    numbers = comma_material.comma_numbers(commi, _parts_of(row)[1])       # a list item is no comma of its own
+    k = numbers.index(comma) if comma and numbered and comma in numbers else best_comma(commi, focus)
+    label = f"art. {ref[0]} {ptw._code_key(ref[1])}" + (f", co. {numbers[k]}" if numbered and len(set(numbers)) > 1 else "")
+    return cat.add(("article", ref, k), "article", label, commi[k], ref=ref, comma=numbers[k] if numbered else None,
                    rubrica=_rubrica(row))
 
 

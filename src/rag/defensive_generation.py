@@ -1865,8 +1865,7 @@ def _dedupe_sections(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
     """The text of each article, read from its code by number: per document, the canonical row carrying the
-    article's real text (article_text.article_rows -- "N.0.0" unless it holds only its date in force, else the
-    bare "N", else the commi joined), else its dot fragments. Duplicates sharing a Section name are resolved
+    article's whole text (article_text.article_rows), else its dot fragments. Duplicates sharing a Section name are resolved
     by _section_quality, not left to Neo4j's unspecified order."""
     rows = []
     for num, abbr in refs:
@@ -1880,8 +1879,9 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
             raw = session.run(
                 "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
                 "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
-                "AND (s.name = $n OR s.name STARTS WITH $n + '.') "
-                "RETURN d, s ORDER BY s.name LIMIT 80",
+                "AND (s.name = $n OR s.name STARTS WITH $n + '.' OR s.name STARTS WITH $n + '_') "
+                "OPTIONAL MATCH (s)-[:NEXT]->(after:Section) "
+                "RETURN d, s, after.name AS next ORDER BY s.name LIMIT 300",
                 prefix=prefix, n=spelling,
             ).data()
             by_doc: Dict[Any, List[Dict[str, Any]]] = {}
@@ -2454,6 +2454,7 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
     # COMMA_MATERIAL_ENABLED: an article whose row holds its commi is given the commi that serve its issue
     # (comma_material.passage), within the same budget, instead of its first `chars` characters.
     by_commi: Dict[str, str] = {}
+    trimmable: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         _s = row.get("s") or {}
         # abstract fallback: special/dottrina books (Commentato, Fiscalita) are
@@ -2466,6 +2467,8 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
         label = (f"art. {row['_article'][0]} {row['_article'][1]}" if row.get("_article")
                  else _ruling_label(row))
         grouped.setdefault(label, []).append(text)
+        if row.get("_article") and label not in trimmable:
+            trimmable[label] = row
         if protected_sources.tag(row):
             protected.add(label)
         if row.get("_article") and label not in by_commi:
@@ -2474,8 +2477,11 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
                 by_commi[label] = commi
     # PROTECTED_PARAPHRASE_ENABLED: a protected passage carries the tag after its label (the label itself
     # unchanged, the citations are matched by it).
+    def body(label, texts):
+        text = " ".join(texts)
+        return (comma_material.trim_row(text, chars, trimmable[label]) if label in trimmable else text[:chars])
     return "\n\n".join(f"[{label}]{' ' + protected_sources.TAG if label in protected else ''}\n"
-                         f"{by_commi.get(label) or ' '.join(texts)[:chars]}" for label, texts in grouped.items())
+                         f"{by_commi.get(label) or body(label, texts)}" for label, texts in grouped.items())
 
 
 def _grouped_source_block(article_rows: List[Dict[str, Any]], questioni: List[Dict[str, Any]],
@@ -3134,7 +3140,7 @@ def _with_text_cut(row: Dict[str, Any], chars: int) -> Dict[str, Any]:
         return {**row, "_comma_chars": chars}
     s = row.get("s") or {}
     text = row.get("_passage") or " ".join((s.get("plain_text") or s.get("abstract") or "").split())
-    return {**row, "_passage": text[:chars]}
+    return {**row, "_passage": comma_material.trim_row(text, chars, row) if row.get("_article") else text[:chars]}
 
 
 # (ruling passage chars, rulings kept or None for all, chars of other articles
@@ -4119,7 +4125,9 @@ def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[
             for r in rows
         ).strip()
         if text:
-            texts[f"{article[0]} {article[1]}"] = text[:_ARTICLE_CHARS]
+            texts[f"{article[0]} {article[1]}"] = comma_material.trim(
+                text, _ARTICLE_CHARS, rows[0].get(comma_material.FOCUS_KEY) or _case_text(facts, request),
+                rows[0].get(comma_material.NAMED_KEY) or ())
     return to_check, texts
 
 
@@ -4239,11 +4247,13 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         issues = _graded_issues(analysis)
         verdicts, ungraded = _graded_verdicts(
             _graded_case(facts, request, analysis, issues),
-            _graded_texts(texts, to_check, _evidence_context(facts, request, analysis)),
+            _graded_texts(texts, to_check, _evidence_context(facts, request, analysis),
+                          _graded_focus(to_check, facts, request, analysis)),
             _graded_system(evidence=True, issues=bool(issues), examples=feature_flags.enabled(GRADER_EXAMPLES_FLAG)),
             issues)
     elif graded:
-        verdicts, ungraded = _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(texts, to_check))
+        verdicts, ungraded = _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(texts, to_check, None,
+                                                                                         _graded_focus(to_check, facts, request, analysis)))
     else:
         verdicts = _applicability_verdicts(facts, request, texts)
     if verdicts is None:
@@ -4378,7 +4388,7 @@ CHECK_PRIORITY_FLAG = "CHECK_PRIORITY_ENABLED"
 
 # CHECK_GRADED_ENABLED (diagnose_long, 26 Oct, F1-F5 on: 75% of the 685 articles cited without being
 # expected had been judged "applicabile" -- the yes/no check let almost everything through). A grade of
-# relevance instead, from the rubrica and the first _GRADED_TEXT_CHARS of the text, with the case's
+# relevance instead, from the rubrica and an excerpt of the text (_graded_texts), with the case's
 # questions and issues in view; grade 0 leaves the pool before the prompt, PLAN_KEEP_CHECKED keeps 2-3.
 CHECK_GRADED_FLAG = "CHECK_GRADED_ENABLED"
 _GRADED_TEXT_CHARS = 400
@@ -4537,22 +4547,37 @@ def _grade(verdict: Optional[Dict[str, Any]]) -> Optional[int]:
     return int(match.group(1)) if match else None
 
 
+def _graded_focus(to_check: Dict[tuple, List[Dict[str, Any]]], facts: str, request: str,
+                  analysis: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """{label: what an article's excerpt is chosen for}: the analysis question it was found for, else the case. Grading
+    comes before the rows have a focus."""
+    rows = [r for group in to_check.values() for r in group]
+    found = comma_material.analysis_focus(rows, analysis or {})
+    case = _case_text(facts, request)
+    return {f"{a[0]} {a[1]}": found.get((str(a[0]), a[1])) or case for a in to_check}
+
+
 def _graded_texts(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]]],
-                  evidence: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
-    """Each article as the graded check reads it: its rubrica and the first _GRADED_TEXT_CHARS of its text;
-    one the vote or two or more channels found is marked "Trovato da: più fonti" (run 1302: 15 central
+                  evidence: Optional[Dict[str, Any]] = None, focus: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Each article as the graded check reads it: its rubrica and, within _GRADED_TEXT_CHARS, its opening and the commi
+    and list items closest to the issue (comma_material.trim, the writer's selection); one the vote or two or more channels found is marked "Trovato da: più fonti" (run 1302: 15 central
     articles graded 1, h7 319-321 c.p., c1 1218 c.c., n5 252 TUEL -- for these, a doubt between 1 and 2
     goes to 2)."""
     rows_of = {f"{a[0]} {a[1]}": rows for a, rows in to_check.items()}
+
+    def excerpt(label: str, text: str) -> str:
+        whole = " ".join(" ".join(str((r.get("s") or {}).get("plain_text") or (r.get("s") or {}).get("abstract") or "").split())
+                         for r in rows_of.get(label, [])).strip()
+        return comma_material.trim(whole or text, _GRADED_TEXT_CHARS, (focus or {}).get(label, ""))
 
     def entry(label: str, text: str) -> str:
         rows = rows_of.get(label, [])
         if evidence is not None:
             return (f"Rubrica: {_rows_heading(rows) or '-'}\n" + "".join(f"{line}\n" for line in _evidence_lines(rows, evidence))
-                    + f"Testo: {text[:_GRADED_TEXT_CHARS]}")
+                    + f"Testo: {excerpt(label, text)}")
         several = any(r.get("_vote") or r.get("_multi_signal") for r in rows)
         return (f"Rubrica: {_rows_heading(rows) or '-'}\n" + ("Trovato da: più fonti\n" if several else "")
-                + f"Testo: {text[:_GRADED_TEXT_CHARS]}")
+                + f"Testo: {excerpt(label, text)}")
     return {label: entry(label, text) for label, text in texts.items()}
 
 
@@ -5184,7 +5209,7 @@ def _second_opinion(case_text: str, refs: List[tuple], rows_by_ref: Dict[tuple, 
         try:
             reply = _chat_json([SystemMessage(content=_SECOND_OPINION_SYSTEM),
                                 HumanMessage(content=f"CASO:\n{(case_text or '')[:3000]}\n\nARTICOLO: art. {ref[0]} "
-                                                     f"{ref[1]}\n{text[:_SECOND_OPINION_CHARS]}")],
+                                                     f"{ref[1]}\n{comma_material.trim(text, _SECOND_OPINION_CHARS, case_text)}")],
                                max_tokens=200, temperature=0)
         except Exception as exc:
             return ref, None, f"failed: {type(exc).__name__}"
@@ -5519,11 +5544,12 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 protected_sources.mark(article_rows + ruling_rows, session, "strategy")
                 # COMMA_MATERIAL_ENABLED: each article's commi, its focus the analysis question it was found for,
                 # the commi the case names always given.
-                if comma_material.attach(session, article_rows, "strategy"):
-                    comma_material.set_focus(article_rows, comma_material.analysis_focus(article_rows, analysis),
-                                             comma_material.named_commi(_case_text(facts, request)))
+                comma_material.attach(session, article_rows, "strategy")
         except Exception as exc:
             logger.warning("protected rows / commi not read: %s", exc)
+    # Each article's focus, the analysis question it was found for: what an over-budget article keeps (comma_material.trim).
+    comma_material.set_focus(article_rows, comma_material.analysis_focus(article_rows, analysis),
+                             comma_material.named_commi(_case_text(facts, request)))
     system = _parere_system(analysis, session_lang)
     articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
                                                   request, principles)

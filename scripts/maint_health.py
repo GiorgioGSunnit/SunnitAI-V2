@@ -82,7 +82,7 @@ def date_only_articles(sections: List[Tuple[str, int, bool]]) -> List[str]:
 
 def short_first_pieces(sections: List[Tuple[str, int, bool]]) -> List[str]:
     """The articles whose N.0.0 is short (under 60 chars) but NOT a date in force, while another Section of theirs has
-    the text (60+ chars): the shared read rule (article_text.choose_text) takes such an N.0.0 as the text."""
+    the text (60+ chars)."""
     short_zero, has_text = set(), set()
     for name, length, date_only in sections:
         art = article_of(name)

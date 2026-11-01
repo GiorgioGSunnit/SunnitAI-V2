@@ -1,5 +1,5 @@
-"""One article text for every path (src/rag/article_text.py): "N.0.0" only if it holds more than its date
-in force, else the bare "N" without its date, else the commi "N.k.0" in order (the boat case, 26 Oct)."""
+"""One article text for every path (src/rag/article_text.py). Rows here have no type: the rule's fallback, N.0.0 then the
+pieces. The "Articolo" Sections' rule is in test_article_text_whole.py."""
 import os
 
 os.environ.setdefault("EMBEDDING_PROVIDER", "openai")
@@ -44,7 +44,7 @@ class FakeSession:
                 if name == item["num"] or name.startswith(item["num"] + "."):
                     rows.append({"doc": item["doc"], "num": item["num"],
                                  "d": {"id": item["doc"], "name": "Codice del Consumo 2026"},
-                                 "s": {"name": name, "plain_text": text}})
+                                 "s": {"name": name, "plain_text": text, "type": "Articolo" if name == "709" else "Comma"}})
         return type("Result", (), {"data": lambda self_: rows})()
 
 
@@ -61,11 +61,12 @@ def test_in_force_only():
 
 
 def test_choose_text_follows_the_order_zero_zero_bare_commi():
-    assert article_text.choose_text("7", {"7.0.0": "Testo vero.", "7": "Altro"}) == "Testo vero."
+    assert article_text.choose_text("7", {"7.0.0": "Testo vero.", "7": "Altro"}) == "Testo vero.\nAltro"
     assert article_text.choose_text("7", {"7.0.0": "In vigore dal 1 gennaio 2020", "7": "In vigore dal 1 "
                                           "gennaio 2020 Testo nudo."}) == "Testo nudo."
     assert article_text.choose_text("7", {"7.0.0": "In vigore dal 1 gennaio 2020", "7.2.0": "b", "7.10.0": "c",
                                           "7.1.0": "a", "7.1": "frammento", "70.1.0": "altro"}) == "a\nb\nc"
+    assert article_text.choose_text("7", {"7.0.0": "Testo vero.", "7": "Testo vero."}) == "Testo vero."
     assert article_text.choose_text("7", {"7.0.0": "In vigore dal 1 gennaio 2020"}) == ""
 
 
@@ -82,9 +83,10 @@ def test_fetch_article_without_a_bare_section_joins_the_commi_in_order():
                                           "se.\nSi presume che un prodotto sia sicuro quando è conforme alle norme.")
 
 
-def test_fetch_article_keeps_real_zero_zero_text_and_never_another_article():
+def test_fetch_article_joins_real_zero_zero_text_and_never_another_article():
     rows = article_text.fetch_article(FakeSession(), "consumo", "1490")
-    assert rows[0]["s"]["plain_text"] == "Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi."
+    assert rows[0]["s"]["plain_text"] == ("Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi.\n"
+                                          "Il patto con cui si esclude o si limita la garanzia non ha effetto.")
     rows = article_text.fetch_article(FakeSession(), "consumo", "14")
     assert [r["s"]["name"] for r in rows] == ["14"] and rows[0]["s"]["plain_text"] == "Il bare text."
 
@@ -109,20 +111,21 @@ def test_fill_texts_gives_a_date_only_row_the_bare_section_without_its_date():
     assert filled == ["Codice del Consumo 2026 135-octiesdecies.0.0"]
 
 
-def test_fill_texts_strips_a_leading_date_without_a_query():
+def test_fill_texts_strips_a_leading_date():
     session = FakeSession()
     rows = [_row("14", "In vigore dal 2 maggio 2020 Il bare text.")]
     assert article_text.fill_texts(session, rows) == ["Codice del Consumo 2026 14"]
-    assert rows[0]["s"]["plain_text"] == "Il bare text." and session.calls == []
+    assert rows[0]["s"]["plain_text"] == "Il bare text."
 
 
 def test_fill_texts_leaves_real_text_and_articles_with_nothing_else():
     session = FakeSession()
     rows = [_row("1490.0.0", "Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi"),
             _row("9.0.0", "In vigore dal 1 gennaio 2006")]
-    assert article_text.fill_texts(session, rows) == []
+    assert article_text.fill_texts(session, rows) == ["Codice del Consumo 2026 1490.0.0"]       # its other comma joined
+    assert rows[0]["s"]["plain_text"].endswith("non ha effetto.")
     assert rows[1]["s"]["plain_text"] == "In vigore dal 1 gennaio 2006"
-    assert session.calls[0]["items"] == [{"doc": "consumo", "num": "9"}]          # one query, the dated row only
+    assert len(session.calls) == 1 and len(session.calls[0]["items"]) == 2        # one query for all of them
 
 
 def test_fill_from_rows_uses_the_rows_already_read():
@@ -158,11 +161,10 @@ def test_a_short_first_piece_gives_way_to_the_fuller_text():
     assert article_text.choose_text("2948", {"2948.0.0": "Si prescrivono in cinque anni:",
                                              "2948.1.0": "le annualità delle rendite perpetue o vitalizie;",
                                              "2948.2.0": "il capitale nominale dei titoli di Stato emessi al portatore;"}) \
-        == "le annualità delle rendite perpetue o vitalizie;\nil capitale nominale dei titoli di Stato emessi al portatore;"
+        == ("Si prescrivono in cinque anni:\nle annualità delle rendite perpetue o vitalizie;\n"
+            "il capitale nominale dei titoli di Stato emessi al portatore;")
     # nothing fuller: the short piece stays (an article "Abrogato.")
     assert article_text.choose_text("559", {"559.0.0": "Abrogato.", "559": "Abrogato."}) == "Abrogato."
-    assert article_text.short_first("709.0.0", "709", "all'estero")
-    assert not article_text.short_first("709", "709", "all'estero")
 
 
 def test_a_repeated_date_line_is_a_date_line():
@@ -179,6 +181,6 @@ def test_fill_texts_looks_up_a_short_first_piece():
                 _row("1490.0.0", "Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi.", doc="cpp")]
         filled = article_text.fill_texts(FakeSession(), rows)
         assert rows[0]["s"]["plain_text"].startswith("1. Le sentenze penali straniere")
-        assert filled == ["Codice del Consumo 2026 709.0.0"]                    # the long first piece untouched
+        assert filled == ["Codice del Consumo 2026 709.0.0"]                    # the one with nothing more to read
     finally:
         SECTIONS.pop("cpp")

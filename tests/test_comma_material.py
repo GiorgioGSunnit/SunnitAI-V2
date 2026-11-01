@@ -69,9 +69,12 @@ class _Session:
 
 # --- the commi ----------------------------------------------------------------------------------------------
 
-def test_commi_come_from_the_comma_sections_in_order_without_the_date_line():
+def test_parts_come_from_the_whole_text_without_the_date_line_a_flat_one_has_no_commi_to_number():
     commi, how = cm.commi_from_sections("9001", SECTIONS)
-    assert (commi, how) == ([C1, C2, C3, C4], "sections")
+    assert (commi, how) == ([C1, C2, C3, C4], "sentences") and cm.comma_numbers(commi, how) == [None] * 4
+    without_bare = {k: v for k, v in SECTIONS.items() if k != "9001"}
+    commi, how = cm.commi_from_sections("9001", without_bare)
+    assert (commi, how) == ([C1, C2, C3, C4], "lines") and cm.comma_numbers(commi, how) == [1, 2, 3, 4]
 
 
 def test_without_comma_sections_the_text_is_split_by_lines_numbers_or_sentences():
@@ -117,10 +120,12 @@ def test_passage_labels_the_commi_and_lists_the_left_out(on):
 
 # --- through the strategy's material ------------------------------------------------------------------------
 
-def test_flag_off_the_block_is_the_prefix_as_before(off):
-    row = _row(_commi=[C1, C2, C3, C4], _commi_from="sections", _focus="denuncia tardiva")
-    assert dg._source_block([row], 150) == f"[art. 9001 c.c.]\n{' '.join([C1, C2, C3, C4])[:150]}"
-    assert dg._with_text_cut(row, 150)["_passage"] == " ".join([C1, C2, C3, C4])[:150]
+def test_flag_off_an_article_over_budget_is_still_not_cut_by_prefix(off):
+    row = _row(_commi=[C1, C2, C3, C4], _commi_from="sections", _focus="denuncia tardiva sessanta giorni")
+    block = dg._source_block([row], len(C1) + len(C3) + 30)
+    assert C1 in block and C3 in block and "[…]" in block
+    assert "(co." not in block                                          # no flag, no comma labels
+    assert "[…]" in dg._with_text_cut(row, len(C1) + len(C3) + 30)["_passage"]
 
 
 def test_flag_on_the_block_and_the_trim_give_the_commi_of_the_issue(on):
@@ -130,15 +135,15 @@ def test_flag_on_the_block_and_the_trim_give_the_commi_of_the_issue(on):
     cut = dg._with_text_cut(row, len(C3) + 30)
     assert "_passage" not in cut and dg._source_block([cut], 1500) == (
         f"[art. 9001 c.c.]\n(co. 3) {C3} [commi non riportati: 1, 2, 4]")
-    # a row without commi keeps its prefix cut
-    assert dg._source_block([_row()], 100) == f"[art. 9001 c.c.]\n{' '.join([C1, C2, C3, C4])[:100]}"
+    # a row without commi is not cut by prefix either
+    assert "[…]" in dg._source_block([_row()], 100)
 
 
 def test_attach_reads_every_article_in_one_query_and_does_nothing_off(on, monkeypatch):
     session = _Session({("LEGAL_DOC::cc", "9001"): SECTIONS})
     rows = [_row(), _row(), {"d": {"id": "LEGAL_DOC::x"}, "s": {}, "_article": ("1", "c.p.")}, {"d": {}, "s": {}}]
     assert cm.attach(session, rows) == 2 and session.queries == 1
-    assert rows[0][cm.COMMI_KEY] == [C1, C2, C3, C4] and rows[0][cm.FROM_KEY] == "sections"
+    assert rows[0][cm.COMMI_KEY] == [C1, C2, C3, C4] and rows[0][cm.FROM_KEY] == "sentences"
     assert cm.COMMI_KEY not in rows[2]
     monkeypatch.setenv(cm.FLAG, "false")
     fresh = [_row()]

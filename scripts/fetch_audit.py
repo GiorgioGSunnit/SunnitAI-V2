@@ -721,14 +721,16 @@ class Commi:
                                "'primary' RETURN d.id AS id LIMIT 5", name=prefix or code).data()
             for doc in docs:
                 rows = session.run("MATCH (d:Document {id: $doc})-[:CONTAINS]->(s:Section) WHERE s.name = $num OR "
-                                   "s.name STARTS WITH $num + '.' RETURN s.name AS name, s.plain_text AS text",
+                                   "s.name STARTS WITH $num + '.' OR s.name STARTS WITH $num + '_' "
+                                   "RETURN s.name AS name, s.plain_text AS text, s.type AS type",
                                    doc=doc["id"], num=number).data()
                 if not rows:
                     continue
                 # The commi exactly as COMMA_MATERIAL_ENABLED gives them (src/rag/comma_material.py), so the audit
                 # measures the same units the writer receives.
                 from src.rag import comma_material
-                return comma_material.commi_from_sections(number, {r["name"] or "": r["text"] or "" for r in rows})
+                return comma_material.commi_from_sections(number, {r["name"] or "": r["text"] or "" for r in rows},
+                                                          {r["name"] or "": r["type"] or "" for r in rows})
         return [], "not found"
 
 
