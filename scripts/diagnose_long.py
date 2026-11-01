@@ -498,9 +498,13 @@ def _dump_llm(dg, dump_dir: str, t_start: float) -> None:
                     f"prompt estimate: {total} tokens ({', '.join(sizes)}; defensive_generation._estimate_tokens)",
                     f"started: +{started - t_start:.1f}s", f"duration: {time.time() - started:.1f}s",
                     f"status: {'ERROR ' + error if error else 'ok'}",
+                    f"finish_reason: {getattr(getattr(ai_chat, 'last_reply', None), 'finish_reason', None)}",
                     "note: max_tokens is what the caller asked; _call_chat lowers it itself on a context overflow"]
             body = "\n".join(head) + "\n\n" + "\n\n".join(parts) + "\n\n===== REPLY =====\n" + (
                 reply if isinstance(reply, str) else "(no reply)") + "\n"
+            raw_reply = getattr(getattr(ai_chat, "last_reply", None), "raw", None)
+            if isinstance(reply, str) and raw_reply and raw_reply.strip() != reply:
+                body += "\n===== RAW REPLY =====\n" + raw_reply + "\n"
             try:
                 with open(os.path.join(dump_dir, f"{number:02d}_{stage}.txt"), "w", encoding="utf-8") as fh:
                     fh.write(body)
