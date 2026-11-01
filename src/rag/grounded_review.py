@@ -382,7 +382,7 @@ def fetch_blocks(refs: List[tuple], documents: List[Dict[str, Any]], session=Non
     for ref in refs:
         mine = [r for r in rows if r.get("_article") and ptw._same_ref(r["_article"], ref)]
         if mine:
-            block = dg._source_block(mine, FETCH_CHARS)
+            block = dg._source_block(mine, FETCH_CHARS, official=True)
             if block.strip():
                 out[ref] = block
     return out

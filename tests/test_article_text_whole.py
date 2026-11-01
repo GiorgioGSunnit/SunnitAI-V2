@@ -1,6 +1,8 @@
 """The whole article, from the Section shapes of scripts/article_sections.py on prod (1 Nov)."""
 import os
 
+import pytest
+
 os.environ.setdefault("EMBEDDING_PROVIDER", "openai")
 os.environ.setdefault("EMBEDDING_API_KEY", "test-key")
 os.environ.setdefault("LLM_API_KEY", "test-key")
@@ -202,3 +204,42 @@ def test_the_grader_reads_the_opening_and_the_items_of_the_issue():
     got = dg._graded_texts({"61 c.p.": text[:1500]}, rows, None, focus)["61 c.p."]
     assert "Testo: Aggravano il reato" in got and "crudeltà" in got and "[…]" in got
     assert len(got.split("Testo: ")[1]) <= dg._GRADED_TEXT_CHARS + 20
+
+
+@pytest.mark.parametrize("note", [
+    "Al reato previsto in questo articolo si applica la disposizione dell'art. 4.",
+    "La condanna per il delitto importa la pena accessoria.", "Nel presente articolo la pena è stata aumentata.",
+    "Per l'aumento della pena vedi l'art. 2.", "La multa risulta così aumentata.",
+    "Il precedente comma che recitava: «x» è venuto meno.", "La Corte Costituzionale con sentenza 1/1990 ha detto altro."])
+def test_comment_notes_go_with_a_first_use_marker(note):
+    assert AT.strip_notes(f"Chiunque è punito con la multa. (1) {note}") == "Chiunque è punito con la multa."
+
+
+def test_a_tail_of_marked_sentences_is_notes_when_the_marker_was_used():
+    body = "Chiunque cagiona una lesione è punito (1). Si procede a querela (2)."
+    assert AT.strip_notes(f"{body} (1) Tale disciplina si applica ai minori. (2) Questa regola vale anche altrove.") == body
+    assert AT.strip_notes("Chiunque cagiona una lesione è punito. (1) Tale disciplina si applica ai minori.", (),
+                          "Lesione personale (1) (2)") == "Chiunque cagiona una lesione è punito."
+
+
+def test_a_marked_sentence_is_real_at_a_first_use_or_with_a_comma_after_it():
+    text = "[Soggetto a stupefacenti.] (2) Nel caso di morte di più persone si applica la pena (3)."
+    assert AT.strip_notes(text) == text
+    numbered = "1. Il giudice provvede (1). (1) Tale regola vale sempre. 2. Il secondo comma vero."
+    assert AT.strip_notes(numbered) == "1. Il giudice provvede (1). (1) Tale regola vale sempre. 2. Il secondo comma vero."
+
+
+def test_page_numbers_go():
+    assert AT.strip_page_numbers("stabilisce a quale di essi i figli sono affidati, determina i 37 tempi e le modalità") \
+        == "stabilisce a quale di essi i figli sono affidati, determina i tempi e le modalità"
+    assert AT.strip_page_numbers("il giudice provvede.\n176\nI direttori generali") == "il giudice provvede.\n\nI direttori generali"
+    assert AT.strip_page_numbers("il giudice provvede alla nomina. 37 Il curatore riferisce") \
+        == "il giudice provvede alla nomina. Il curatore riferisce"
+
+
+@pytest.mark.parametrize("text", [
+    "entro 30 giorni dalla notifica", "ai sensi del comma 2 dell'articolo", "articolo 43 del codice", "L. 69 sulla materia",
+    "dal 5 ottobre scorso", "euro 309 a euro 1.549", "da 3 a 5 persone", "n. 46 del 2006", "almeno 8 componenti eletti",
+    "i 3 figli minori", "hanno superato gli anni 14 devono essere sentiti", "del giudice. 1 Sulla richiesta", "le 12 mensilità dovute", "Il D.Lgs. 36 Il giudice", "livello\n1\n2\n3\nfine"])
+def test_a_number_of_the_law_stays(text):
+    assert AT.strip_page_numbers(text) == text

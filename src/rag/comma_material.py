@@ -105,10 +105,10 @@ def comma_numbers(parts: Sequence[str], how: Optional[str]) -> List[Optional[int
 
 
 def commi_from_sections(number: str, texts: Dict[str, str], kinds: Optional[Dict[str, str]] = None,
-                        following: Optional[Dict[str, str]] = None) -> Tuple[List[str], str]:
+                        following: Optional[Dict[str, str]] = None, rubrica: str = "") -> Tuple[List[str], str]:
     """(the parts, how) of article `number` from its Sections: article_text's whole text, split (article_parts)."""
     from . import article_text
-    return article_parts(article_text.choose_text(number, texts, kinds, following))
+    return article_parts(article_text.choose_text(number, texts, kinds, following, rubrica))
 
 
 def _read(session, items: Sequence[Tuple[str, str]]) -> Dict[Tuple[str, str], Tuple[List[str], str]]:

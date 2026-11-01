@@ -473,6 +473,11 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 as comma_material (which commi of each article were given), comma_material_plan,
                                 comma_material_fetched. Measured by scripts/fetch_audit.py ("comma not given /
                                 beyond the truncation", target near 0). See src/rag/comma_material.py.
+  ARTICLE_CARDS_ENABLED        false: the writer reads an article's card (ARTICLE_CARDS_FILE, default data/
+                                article_cards.jsonl, from scripts/article_cards_bulk.py): instead of the text for an
+                                article over its budget, beside a short text for the others. Only cards with no check
+                                raised and made from this very text; the reviews still read the official text. See
+                                src/rag/article_cards.py.
   GROUNDED_REVIEW_ENABLED      false (30 Oct, after scripts/fetch_audit.py on run 0812, judged: 28% of the
                                 rule-sentences not in the writer's material, 27% of the cited claims on an
                                 article never given): after the sections, each section's rule / institution /

@@ -103,12 +103,12 @@ def test_the_article_is_read_with_the_shared_function_and_its_date():
 def test_reasoning_is_left_out_and_the_code_flags_what_it_can_see():
     assert ac.clean_reply("<think>penso\n</think>\n**Regola principale:** x") == "**Regola principale:** x"
     assert ac.clean_reply("ragiono\n</think>\ncarta") == "carta"
-    card = "\n".join(f"**{h}:** nessuno" for h in ac.HEADINGS[:4]) + " entro 30 giorni e art. 2044"
+    card = "\n".join(f"**{h}:** nessuno" for h in ac.HEADINGS[:5]) + " entro 30 giorni e art. 2044"
     article = {"number": "2043", "code": "c.c.", "rubrica": "", "text": "entro 8 giorni"}
     assert ac.checks(card, article) == ["voci mancanti: Articoli collegati", "numeri non presenti nel testo: 30, 2044"]
 
 
-def test_a_card_is_saved_once_and_b_asks_for_thinking(tmp_path, monkeypatch):
+def test_a_card_is_saved_once_and_b_has_thinking_off(tmp_path, monkeypatch):
     seen = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -129,14 +129,14 @@ def test_a_card_is_saved_once_and_b_asks_for_thinking(tmp_path, monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "k")
     monkeypatch.setenv("LLM_MODEL", "qwen25")
     assert list(ac.endpoints(SimpleNamespace(with_b=False))) == ["A"]     # by default Qwen2.5 alone, no thinking
-    ends = ac.endpoints(SimpleNamespace(with_b=True, b_url=None, b_model="qwen3-32b-awq"))
+    ends = ac.endpoints(SimpleNamespace(with_b=True, b_url=None, b_model="qwen3-32b-awq", b_thinking=False))
     assert ends["B"]["url"].endswith(":8010/v1") and ends["A"]["model"] == "qwen25"
     ends["B"]["url"] = ends["A"]["url"]
     article = {"number": "2043", "code": "c.c.", "rubrica": "R", "text": "testo"}
     for _ in range(2):
         got = ac.card(ends["B"], "B", article, str(tmp_path))
     assert got["text"] == "**Regola principale:** r" and len(seen) == 1
-    assert seen[0][0] == "/v1/chat/completions" and seen[0][1]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert seen[0][0] == "/v1/chat/completions" and seen[0][1]["chat_template_kwargs"] == {"enable_thinking": False}
     assert seen[0][1]["temperature"] == 0 and "chat_template_kwargs" not in {**ends["A"]}
     failed = ac.card(ends["A"], "A", {**article, "text": "cut"}, str(tmp_path))
     server.shutdown()
@@ -148,7 +148,7 @@ def test_endpoints_refuse_a_base_url_without_a_port(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "k")
     monkeypatch.setenv("LLM_MODEL", "m")
     with pytest.raises(SystemExit, match="--b-url"):
-        ac.endpoints(SimpleNamespace(with_b=True, b_url=None, b_model="b"))
+        ac.endpoints(SimpleNamespace(with_b=True, b_url=None, b_model="b", b_thinking=False))
 
 
 def test_the_export_holds_text_and_both_cards_in_order():
@@ -162,3 +162,17 @@ def test_the_export_holds_text_and_both_cards_in_order():
     only_a = ac.render([{**item, "cards": {"A": item["cards"]["A"]}}], [], {"A": "qwen25"}, [])
     assert "Scheda B" not in only_a
     assert "a\n\n**Termini:** b" in text and "solo in frammenti" in text and "Da controllare: voci mancanti" in text and "c.p.: solo 1" in text
+
+
+def test_the_card_asks_for_penalties_every_comma_and_every_item():
+    assert ac.HEADINGS.index("Pene") < ac.HEADINGS.index("Termini")
+    assert "OGNI comma" in ac.SYSTEM and "ogni voce di un elenco" in ac.SYSTEM and "mai quelli di una nota" in ac.SYSTEM
+    assert "**Pene:**" in ac.SYSTEM
+
+
+def test_the_same_articles_come_back_from_an_earlier_export(tmp_path):
+    export = tmp_path / "article_cards.md"
+    export.write_text("| # | articolo | rubrica | perché |\n|---:|---|---|---|\n| 1 | art. 61 c.p. | R | x |\n"
+                      "| 2 | art. 337-ter c.c. | - | y |\n| 3 | art. 113 c.p.c. | - | z |\n", encoding="utf-8")
+    assert ac.articles_from(str(export)) == "61 c.p.,337-ter c.c.,113 c.p.c."
+    assert ac.articles_from(None) == ""

@@ -11,7 +11,7 @@ others are partial copies: "N.0.0" a list's opening line or only its date in for
      particolari (1) (6) Chiunque...": the end of a rubrica);
   2. with none: N.0.0, then the bare N, N_j and N.k.0 pieces in NEXT order (else in name order), a piece another holds
      left out. N.k, N.k_j, N.k.2019 are notes and duplicates: never read;
-  3. their editorial notes removed as blocks (strip_notes); markers alone left: "(abrogato)" if repealed, else the text
+  3. PDF page numbers and editorial notes removed, these as blocks (strip_page_numbers, strip_notes); markers alone left: "(abrogato)" if repealed, else the text
      as it stood.
 The row returned keeps the canonical Section ("N.0.0", else "N") with that text in plain_text. An article with neither
 keeps its dot fragments ("N.1", "N.2"), the first 3.
@@ -31,7 +31,7 @@ _CHUNK_RE = re.compile(r"^(.*)_(\d+)$")
 # costituzionale". A bare "(2)" proves nothing: art. 589 has "...psicotrope.] (2) Nel caso di morte", real text.
 _NOTE_HEAD = (r"(?:(?:Comma|Commi|Articolo|Articoli|Numero|Numeri|Lettera|Lettere|Rubrica|Periodo|Capo|Sezione|Titolo|Libro|"
               r"Alinea|Paragrafo|Intestazione|Denominazione|La\s+punteggiatura)\s+(?:[a-zà-ü]+\s+){0,3}?(?:modificat|aggiunt|inserit|abrogat|sostituit|soppress|rinumerat|"
-              r"introdott|dichiarat|corrett)|[Ll][ae]\s+parol[ae]\s*[:«\"“]|Le\s+originarie\s+parole|La\s+Corte\s+cost|"
+              r"introdott|dichiarat|corrett)|[Ll][ae]\s+parol[ae]\s*[:«\"“]|Le\s+originarie\s+parole|La\s+Corte\s+[Cc]ost|"
               r"I\s+(?:Capi|Titoli|Commi|Numeri|Articoli)\b[^.]{0,60}?stat[ie]\b|"
               r"Il\s+previgente\s+(?:Capo|Titolo|Libro|Sezione|comma|articolo|testo)|"
               r"(?:(?:Successivamente|Infine),\s+)?(?:[Ii]l\s+presente|[Qq]uesto|[Tt]ale|[Ll]a\s+presente|[Qq]uesta)\s+"
@@ -40,7 +40,65 @@ _NOTE_HEAD = (r"(?:(?:Comma|Commi|Articolo|Articoli|Numero|Numeri|Lettera|Letter
               r"A\s+norma\s+dell|Vedi\b)")
 # After a "(n)", any subject of an amendment: "(2) La misura è stata così modificata dall'art.".
 _NOTE_ACT = r"[A-ZÀ-Ü][^.\n]{0,120}?(?:(?:è|sono)\s+stat[oaie]\s+)?così\s+\w+\s+dal|[A-ZÀ-Ü][^.\n]{0,120}?(?:è|sono)\s+stat[oaie]\s+\w+\s+dal"
-_NOTE_RE = re.compile(rf"(?:(?<=\s)|^)\((\d{{1,3}})\)\s+(?={_NOTE_HEAD}|{_NOTE_ACT})|^(?={_NOTE_HEAD})", re.MULTILINE)
+# Only after a "(n)": comments on the article rather than amendments (card review 2: 582 c.p., 640 c.p.).
+_NOTE_COMMENT = (r"Al\s+reato\s+previsto|La\s+condanna\s+per\s+il\s+delitto|Nel\s+presente\s+articolo|"
+                 r"Per\s+l['’]aumento\s+della\s+pena|[A-ZÀ-Ü][^.\n]{0,40}?\s+risulta\s+così|Il\s+precedente\s+comma")
+_NOTE_RE = re.compile(rf"(?:(?<=\s)|^)\((\d{{1,3}})\)\s+(?={_NOTE_HEAD}|{_NOTE_ACT}|{_NOTE_COMMENT})|^(?={_NOTE_HEAD})", re.MULTILINE)
+# Any "(n) Sentence": a note only if its marker was already used and nothing real follows (_next_note).
+_MARKED_RE = re.compile(r"(?:(?<=\s)|^)\((\d{1,3})\)\s+(?=[A-ZÀ-Ü])", re.MULTILINE)
+_MARKER_RE = re.compile(r"\((\d{1,3})\)")
+
+# A PDF page number left in the text ("determina i 37 tempi": page 37 fell inside the sentence). A number in a law is
+# far likelier to be real, so one goes only with neither side able to take it: never after a word that governs a number
+# ("comma 2", "L. 69") nor before a unit, a month or a function word ("30 giorni", "5 ottobre", "12 del"). Some page
+# numbers stay, by design: article_text_compare.py lists every one removed. Measured on the PDFs: tests.
+_NUMBER_BEFORE = frozenset(
+    "art artt articolo articoli comma commi n nn numero numeri lett lettera lettere l legge leggi d dl lgs d.lgs d.l d.p.r "
+    "d.m r.d r.d.l dpr decreto legislativo sentenza uff g.u euro lire entro oltre almeno fino sino per di da a al ai dal dai "
+    "del dei degli dagli sui su tra fra e o ed od meno più circa pari il la lo l' le gli un una ogni nel nei allegato "
+    "tabella pag pagina punto paragrafo capo titolo libro sez sezione cap parte anni anno mesi mese giorni giorno ore".split())
+_NUMBER_AFTER = frozenset(
+    "giorni giorno mesi mese anni anno ore ora minuti settimane settimana gennaio febbraio marzo aprile maggio giugno luglio "
+    "agosto settembre ottobre novembre dicembre euro lire per percento volte bis ter quater quinquies sexies septies octies "
+    "novies decies e o ed od a ad al alla allo ai alle del della dello dei delle degli di da dal dalla dai dalle con che non "
+    "è sono ha hanno si può possono il la lo i le gli un una uno comma commi articolo articoli art lettera lettere ovvero "
+    "oppure ma se in nel nella su sul sulla persone membri metri chilometri ettari grammi litri unità dipendenti lavoratori "
+    "soci componenti giudici testimoni parti figli anche quando come c.p c.p.p c.c c.p.c".split())
+_PAGE_CANDIDATE_RE = re.compile(r"(?<=\s)\d{1,3}(?=\s)")
+_PAGE_LINE_RE = re.compile(r"(?m)^[ \t]*\d{1,3}[ \t]*$")
+
+
+def _is_page_number(text: str, match: re.Match) -> bool:
+    before, after = text[max(0, match.start() - 60):match.start()].split()[-1:], text[match.end():match.end() + 60].split()[:1]
+    if not before or not after:
+        return False
+    word, following = before[0], after[0].strip(",.;:)»”").lower()
+    bare = re.split(r"['’]", word.strip("(«“,.;:").lower())[-1]
+    if bare in _NUMBER_BEFORE or re.search(r"\d", word) or re.search(r"\d", following):
+        return False
+    if word[-1] in ".;:" and after[0][0].isupper():            # between two sentences; under 10, a comma without its dot
+        return len(bare) > 3 and int(match.group()) >= 10
+    return (word[-1].isalpha() and after[0][0].islower() and len(following) > 2 and following.isalpha()
+            and following not in _NUMBER_AFTER)
+
+
+def page_numbers(text: Optional[str]) -> List[Tuple[int, int]]:
+    """(start, end) of each page number in the text: alone on a line (a column of numbers is a table), or inside it."""
+    text = text or ""
+    lines = list(_PAGE_LINE_RE.finditer(text))
+    found = [(m.start(), m.end()) for i, m in enumerate(lines)
+             if not (i and lines[i - 1].end() + 1 == m.start()) and not (i + 1 < len(lines) and m.end() + 1 == lines[i + 1].start())]
+    found += [(m.start(), m.end()) for m in _PAGE_CANDIDATE_RE.finditer(text) if _is_page_number(text, m)
+              and not any(a <= m.start() < b for a, b in found)]
+    return sorted(found)
+
+
+def strip_page_numbers(text: Optional[str]) -> str:
+    text = text or ""
+    for start, end in reversed(page_numbers(text)):
+        tail = text[end:].lstrip(" \t") if text[start - 1:start] in (" ", "\t", "\n") else text[end:]
+        text = text[:start] + tail
+    return re.sub(r"\n{3,}", "\n\n", text)
 _ABROGATED_NOTE_RE = re.compile(r"[^.]{0,90}?\babrogat", re.IGNORECASE)
 # Nothing but markers: "(1)", "(…) (1) (1)". What is left of an article whose whole body was a note.
 _MARKERS_ONLY_RE = re.compile(r"^(?:\(\d{1,3}\)|\((?:…|\.\.\.)\)|[\s\[\].,;:])*$")
@@ -103,23 +161,36 @@ def _note_end(text: str, start: int, kept: str, anchors: Sequence[str]) -> int:
     return min(found, default=len(text))
 
 
-def strip_notes(text: Optional[str], anchors: Sequence[str] = ()) -> str:
+def _next_note(text: str, pos: int, anchors: Sequence[str], kept: str, rubrica: str) -> Optional[re.Match]:
+    """The next note from `pos`: one that opens like a note, or before it a "(n) Sentence" that starts the tail of the
+    text: its marker already used (in the text or the rubrica, where 582 c.p. has its (1)) and no real comma after it.
+    "...psicotrope.] (2) Nel caso di morte", art. 589 c.p., is that marker's first use: real text."""
+    note = _NOTE_RE.search(text, pos)
+    used = set(_MARKER_RE.findall(rubrica or ""))
+    for match in _MARKED_RE.finditer(text, pos, note.start() if note else len(text)):
+        if (match.group(1) in used or f"({match.group(1)})" in text[:match.start()]) \
+                and _note_end(text, match.start(), kept + text[pos:match.start()], anchors) == len(text):
+            return match
+    return note
+
+
+def strip_notes(text: Optional[str], anchors: Sequence[str] = (), rubrica: str = "") -> str:
     """The text without its editorial notes, removed as blocks: what follows a note survives when it is known to be real
     (`anchors`, the openings of the article's commi; the next comma number). A note saying a comma or number was repealed
     turns its inline marker into "(abrogato)"; a leading "(n)" goes with its note; a text left with markers alone becomes
     "(abrogato)" when a note repealed it. Never empty when the text was not: otherwise it stays as it is."""
-    return _clean(text, anchors) or (text or "").strip()
+    return _clean(text, anchors, rubrica) or (text or "").strip()
 
 
-def _clean(text: Optional[str], anchors: Sequence[str] = ()) -> str:
-    """strip_notes, "" when nothing of the article is left and no note repealed it."""
-    text = text or ""
+def _clean(text: Optional[str], anchors: Sequence[str] = (), rubrica: str = "") -> str:
+    """strip_notes and strip_page_numbers, "" when nothing of the article is left and no note repealed it."""
+    text = strip_page_numbers(text)
     out: List[str] = []
     pos = 0
     abrogated: List[str] = []
     removed = False
     while True:
-        match = _NOTE_RE.search(text, pos)
+        match = _next_note(text, pos, anchors, "".join(out), rubrica)
         if not match:
             out.append(text[pos:])
             break
@@ -221,24 +292,24 @@ def _pieces(number: str, texts: Dict[str, str], following: Dict[str, str]) -> Li
 
 
 def choose_text(number: str, texts: Dict[str, str], kinds: Optional[Dict[str, str]] = None,
-                following: Optional[Dict[str, str]] = None) -> str:
-    """The article's whole text from its Sections' {name: plain_text}, {name: type} and {name: the name NEXT leads to}, by
-    the rule in the module's docstring; "" when none holds more than a date."""
+                following: Optional[Dict[str, str]] = None, rubrica: str = "") -> str:
+    """The article's whole text from its Sections' {name: plain_text}, {name: type}, {name: the name NEXT leads to} and
+    rubrica, by the rule in the module's docstring; "" when none holds more than a date."""
     kinds, following = kinds or {}, following or {}
     pieces = _pieces(number, texts, following)
     anchors = [strip_in_force(texts[n]) for n in pieces if n != f"{number}.0.0" and n != number and "_" not in n]
-    zero = strip_notes(strip_in_force(texts.get(f"{number}.0.0")))
+    zero = strip_notes(strip_in_force(texts.get(f"{number}.0.0")), (), rubrica)
     groups = _chunk_groups(number, texts, kinds)
     has_zero = bool(zero) and not in_force_only(zero)
     opening = _words_re(zero if has_zero else (anchors[0] if anchors else ""))
     matched = [t if has_zero else g for g, t in ((g, _from_opening(g, opening)) for g in groups) if t]  # a comma may be a
     # list item: only N.0.0 proves what comes before it is not the article
-    whole = _clean(max(matched, key=len), anchors) if matched else ""
+    whole = _clean(max(matched, key=len), anchors, rubrica) if matched else ""
     if not whole and not matched and groups and (len(zero) < 60 or not opening):
-        whole = _clean(max(groups, key=len), anchors)
+        whole = _clean(max(groups, key=len), anchors, rubrica)
     if whole:
         return whole
-    parts = [_clean(strip_in_force(texts[n]), anchors) for n in pieces]
+    parts = [_clean(strip_in_force(texts[n]), anchors, rubrica) for n in pieces]
     flat = [" ".join(p.split()) for p in parts]
     kept = []
     for i, part in enumerate(parts):
@@ -274,7 +345,8 @@ def _fields(best: Dict[str, Dict[str, Any]]) -> tuple:
     sections = {name: row.get("s") or {} for name, row in best.items()}
     return ({n: s.get("plain_text") or "" for n, s in sections.items()},
             {n: s.get("type") or "" for n, s in sections.items()},
-            {n: row["next"] for n, row in best.items() if row.get("next")})
+            {n: row["next"] for n, row in best.items() if row.get("next")},
+            next((s.get("titolo_articolo") for s in sections.values() if (s.get("titolo_articolo") or "").strip()), ""))
 
 
 def article_rows(number: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

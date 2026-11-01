@@ -71,7 +71,7 @@ def distribution(lengths: list) -> str:
 
 def compare(session, old, new, trim, split, wanted=ARTICLES) -> list:
     L = ["# article_text: before and after", ""]
-    tables, reviewed, oversize, checks = [], [], [], []
+    tables, reviewed, oversize, checks, pages, shrunk = [], [], [], [], [], []
     for code, prefix in CODE_PREFIXES.items():
         docs = [d for d in session.run("MATCH (d:Document) WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
                                        "RETURN d.id AS id, d.name AS name ORDER BY d.name", prefix=prefix).data()
@@ -81,6 +81,11 @@ def compare(session, old, new, trim, split, wanted=ARTICLES) -> list:
                 "MATCH (d:Document {id: $doc})-[:CONTAINS]->(s:Section) OPTIONAL MATCH (s)-[:NEXT]->(after:Section) "
                 "RETURN s {.name, .type, .plain_text, .titolo_articolo} AS s, after.name AS next", doc=doc["id"]).data()]
             before, after, count = [], [], Counter()
+            for row in rows:
+                if row["s"].get("type") == "Articolo":
+                    text = row["s"].get("plain_text") or ""
+                    for start, end in new.page_numbers(text):
+                        pages.append(f"{doc['name'][:18]} {row['s'].get('name')}: …{flat(text[max(0, start - 45):end + 35])}…")
             for number, mine in by_article(rows).items():
                 was, now = read(old, number, mine, True), read(new, number, mine, False)
                 before.append(len(was))
@@ -93,6 +98,8 @@ def compare(session, old, new, trim, split, wanted=ARTICLES) -> list:
                 count["colon_after"] += now.rstrip().endswith(":")
                 count["split_" + split(now)[1]] += 1
                 ref = f"{number} {code}"
+                if len(now) < len(was):
+                    shrunk.append((len(was) - len(now), ref, flat(now)[-70:]))
                 if len(now) > BUDGET:
                     oversize.append((len(now), ref, now))
                 if not now and was:
@@ -128,6 +135,11 @@ def compare(session, old, new, trim, split, wanted=ARTICLES) -> list:
     for _, ref, was, now in sorted(reviewed):
         L += ["", f"### art. {ref}", "", f"Before: {len(was):,} characters, {ends(was)}", "",
               f"After: {len(now):,} characters, {ends(now)}", "", f"> {flat(now)}"]
+    L += ["", f"## Page numbers removed ({len(pages):,}): each should be a page, not a number of the law", ""]
+    L += [f"- {p}" for p in pages[:150]] + ([f"- and {len(pages) - 150:,} more"] if len(pages) > 150 else [])
+    shrunk.sort(key=lambda x: -x[0])
+    L += ["", f"## Shortened most ({len(shrunk):,} articles): what was cut should all be notes", ""]
+    L += [f"- art. {ref}: {delta:,} fewer characters, now ends: …{tail}" for delta, ref, tail in shrunk[:40]]
     L += ["", f"## To look at ({len(checks):,})", ""] + [f"- {c}" for c in checks[:300]]
     if len(checks) > 300:
         L.append(f"- and {len(checks) - 300:,} more")

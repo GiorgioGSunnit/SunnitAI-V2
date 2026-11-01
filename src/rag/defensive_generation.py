@@ -18,7 +18,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import article_text, comma_material, feature_flags, protected_sources
+from . import article_cards, article_text, comma_material, feature_flags, protected_sources
 from .ai_chat import _call_chat, embedding_model, last_reply, parse_json_reply
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
@@ -2452,15 +2452,17 @@ def _ruling_label(row: Dict[str, Any]) -> str:
     return re.sub(r"^\s*\[[A-Z]+\]\s*", "", (row.get("d") or {}).get("name") or "")
 
 
-def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
+def _source_block(rows: List[Dict[str, Any]], chars: int, official: bool = False) -> str:
     """One labelled block per article (its sections joined) or per ruling (its
-    chosen passage, else the matched section), each cut to `chars`."""
+    chosen passage, else the matched section), each cut to `chars`. official: never an
+    ARTICLE_CARDS_ENABLED card, for whatever judges an answer against the law."""
     grouped: Dict[str, List[str]] = {}
     protected: set = set()
     # COMMA_MATERIAL_ENABLED: an article whose row holds its commi is given the commi that serve its issue
     # (comma_material.passage), within the same budget, instead of its first `chars` characters.
     by_commi: Dict[str, str] = {}
     trimmable: Dict[str, Dict[str, Any]] = {}
+    cards: Dict[str, str] = {}
     for row in rows:
         _s = row.get("s") or {}
         # abstract fallback: special/dottrina books (Commentato, Fiscalita) are
@@ -2477,17 +2479,24 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
             trimmable[label] = row
         if protected_sources.tag(row):
             protected.add(label)
+        if row.get("_article") and not official and label not in cards:
+            card = article_cards.material(row, chars)
+            if card:
+                cards[label] = card
         if row.get("_article") and label not in by_commi:
             commi = comma_material.passage(row, min(chars, row.get("_comma_chars") or chars))
             if commi:
                 by_commi[label] = commi
     # PROTECTED_PARAPHRASE_ENABLED: a protected passage carries the tag after its label (the label itself
     # unchanged, the citations are matched by it).
+    if cards:
+        vlog("article_cards_given", {"articles": sorted(cards), "of": sum(1 for label in grouped if label in trimmable)})
+
     def body(label, texts):
         text = " ".join(texts)
         return (comma_material.trim_row(text, chars, trimmable[label]) if label in trimmable else text[:chars])
     return "\n\n".join(f"[{label}]{' ' + protected_sources.TAG if label in protected else ''}\n"
-                         f"{by_commi.get(label) or body(label, texts)}" for label, texts in grouped.items())
+                         f"{cards.get(label) or by_commi.get(label) or body(label, texts)}" for label, texts in grouped.items())
 
 
 def _grouped_source_block(article_rows: List[Dict[str, Any]], questioni: List[Dict[str, Any]],
