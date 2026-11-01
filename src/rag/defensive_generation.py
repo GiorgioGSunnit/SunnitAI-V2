@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import article_text, comma_material, feature_flags, protected_sources
-from .ai_chat import _call_chat, embedding_model, parse_json_reply
+from .ai_chat import _call_chat, embedding_model, last_reply, parse_json_reply
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
 
@@ -74,10 +74,16 @@ def _chat_json(messages, max_tokens, **chat_kwargs):
     exception, never the reply that didn't parse. Both failures are logged
     here, with the raw reply, so the next one is diagnosable without
     needing to reproduce it live."""
+    last_reply.finish_reason = None
     raw = _chat(messages, max_tokens=max_tokens, **chat_kwargs)
+    cut = getattr(last_reply, "finish_reason", None) == "length"
+    if cut:
+        logger.warning("_chat_json: reply cut at %s tokens: any JSON read from it may be a fragment", max_tokens)
     try:
         return parse_json_reply(raw)
     except ValueError as exc:
+        if cut:      # a stricter instruction cannot make it shorter
+            raise
         logger.info("_chat_json: first reply had no parseable JSON (%s); retrying with a stricter "
                     "instruction. raw reply: %r", exc, raw[:300])
     retried = [SystemMessage(content=messages[0].content + _JSON_RETRY_SUFFIX), *messages[1:]]

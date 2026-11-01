@@ -53,12 +53,15 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from .ai_chat import last_reply
 from . import defensive_generation as dg
 from . import anchored_writing, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources
 
 logger = logging.getLogger(__name__)
 
-_PLAN_TOKENS = 2000
+_PLAN_TOKENS = 4000       # run model-qwen3: plans of ~6,000 characters cut at 2000, before their issues
+_PLAN_CONCISE = ("\n\nLa risposta precedente è stata troncata: rispondi di nuovo con lo stesso JSON, più conciso, ogni campo "
+                 "al massimo in una frase.")
 _MAX_ISSUES = 5
 KEEP_APPLICABLE_FLAG = "PLAN_KEEP_APPLICABLE_ENABLED"
 # PLAN_KEEP_CHECKED_ENABLED (diagnose_long, 25 Oct: 34 of the 60 expected articles lost were in the
@@ -125,14 +128,45 @@ _PLAN_SYSTEM = (
     "meno grave, una riduzione, un rito o un rimedio più favorevole.\n"
     "- Non aggiungere fatti che il caso non contiene.\n\n"
     "Rispondi SOLO con un oggetto JSON:\n"
-    '{"parte_assistita": "...", "posizione": "...", "obiettivo": "che cosa vuole ottenere", '
+    '{"questioni": [{"titolo": "...", "norme": ["art. N codice"], "pronunce": ["riferimento"], '
+    '"argomento": "...", "obiezione": "...", "replica": "..."}], '
+    '"parte_assistita": "...", "posizione": "...", "obiettivo": "che cosa vuole ottenere", '
     '"questione_centrale": "una frase", '
     '"risposte": [{"quesito": "...", "risposta": "risposta diretta in una o due frasi"}], '
-    '"questioni": [{"titolo": "...", "norme": ["art. N codice"], "pronunce": ["riferimento"], '
-    '"argomento": "...", "obiezione": "...", "replica": "..."}], '
     '"subordinate": ["..."], "punti_deboli": ["..."]}\n'
-    "Le questioni, da due a cinque, in ordine di forza per la parte assistita."
+    "Le questioni per prime, da due a cinque, in ordine di forza per la parte assistita. Sii conciso: ogni campo "
+    "al massimo in due frasi, senza ripetere i fatti."
 )
+
+def _fell_back(step: str, error: Any, **detail) -> None:
+    """Why this parere goes back to one call: the exact step and error, for plan_fallback_report.py."""
+    dg.vlog("plan_then_write_fallback", {"step": step, "error": f"{error}"[:500], **detail})
+
+
+def _plan_json(messages: List[Any]) -> Any:
+    """One plan call, its finish_reason logged. A reply cut at the token limit is never read: the JSON found in it would
+    be a fragment. It is asked once more, shorter; cut again, ValueError."""
+    def once(sent):
+        last_reply.finish_reason = None
+        value, error = None, None
+        try:
+            value = dg._chat_json(sent, max_tokens=_PLAN_TOKENS, temperature=0)
+        except ValueError as exc:
+            error = exc
+        finish = getattr(last_reply, "finish_reason", None)
+        dg.vlog("case_analysis_plan_call", {"finish_reason": finish, "parsed": error is None, "concise": sent is not messages})
+        return value, error, finish
+
+    value, error, finish = once(messages)
+    if finish == "length":
+        logger.warning("plan-then-write: plan cut at %d tokens, asked once more, shorter", _PLAN_TOKENS)
+        value, error, finish = once([SystemMessage(content=f"{messages[0].content}{_PLAN_CONCISE}"), *messages[1:]])
+        if finish == "length":
+            raise ValueError(f"plan cut at {_PLAN_TOKENS} tokens twice")
+    if error:
+        raise error
+    return value
+
 
 def _plan_system(max_issues: int = _MAX_ISSUES) -> str:
     system = _PLAN_SYSTEM.replace("da due a cinque", f"da due a {_ISSUE_COUNT_WORDS.get(max_issues, max_issues)}")
@@ -998,7 +1032,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     t0 = time.time()
     problems: List[str] = []
     try:
-        raw = dg._chat_json(messages, max_tokens=_PLAN_TOKENS, temperature=0)
+        raw = _plan_json(messages)
         plan, removed = clean_plan(raw, known, references, max_issues)
         opposing = dg._opposing_arguments(facts, request, analysis, _arguments_text(plan)) if plan else []
         if opposing:
@@ -1008,21 +1042,20 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
                      f"{listing}\n\nRifai il piano: ogni argomento deve escludere, ridurre o contrastare la "
                      "responsabilità o la pretesa contro la parte assistita, o sostenerne la pretesa; un fatto "
                      "che favorisce la controparte va trattato come obiezione da superare.")
-            raw = dg._chat_json([SystemMessage(content=system), HumanMessage(content=retry)],
-                                max_tokens=_PLAN_TOKENS, temperature=0)
+            raw = _plan_json([SystemMessage(content=system), HumanMessage(content=retry)])
             plan, removed = clean_plan(raw, known, references, max_issues)
         problems = _plan_problems(plan, analysis, explicit_questions(request, facts)) if plan and _review_fixes() else []
         if problems:
             listing = "\n".join(f"- {p}" for p in problems)
             again = (f"{human}\n\nIl tuo piano:\n{json.dumps(raw, ensure_ascii=False)}\n\nUna revisione ha trovato:\n"
                      f"{listing}\n\nRifai il piano correggendo questi punti, con le stesse regole.")
-            raw_again = dg._chat_json([SystemMessage(content=system), HumanMessage(content=again)],
-                                      max_tokens=_PLAN_TOKENS, temperature=0)
+            raw_again = _plan_json([SystemMessage(content=system), HumanMessage(content=again)])
             plan_again, removed_again = clean_plan(raw_again, known, references, max_issues)
             if plan_again:
                 plan, removed, raw = plan_again, removed_again, raw_again
     except Exception as exc:
         logger.warning("plan-then-write: no plan, the parere is written in one call: %s", exc)
+        _fell_back("plan call", exc)
         return None
     finally:
         dg.vlog("case_analysis_plan_llm", duration_ms=(time.time() - t0) * 1000)
@@ -1069,6 +1102,7 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         "voted_offered": [f"{n} {c}" for n, c in voted], **({"review_fixes": fixes} if fixes else {})})
     if plan is None:
         logger.warning("plan-then-write: the plan has no usable issue, the parere is written in one call")
+        _fell_back("plan without a usable issue", "no argued issue left", removed=removed)
         return None
     if not plan["parte_assistita"]:
         plan["parte_assistita"] = str(analysis.get("parte_assistita") or "").strip()
@@ -2268,11 +2302,24 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     def write(job):
         title, instruction, material, max_tokens = job
         messages = [SystemMessage(content=f"{system}\n\n{instruction}"), HumanMessage(content=material)]
+
+        def once():
+            last_reply.finish_reason = None
+            text = dg._call_chat(messages, max_tokens=max_tokens)
+            finish = getattr(last_reply, "finish_reason", None)
+            dg.vlog("case_analysis_section_call", {"section": title, "finish_reason": finish, "chars": len(text or ""),
+                                                   "max_tokens": max_tokens})
+            if not (text or "").strip():
+                raise ValueError(f"empty reply (finish_reason={finish})")
+            return text
         try:
-            return dg._call_chat(messages, max_tokens=max_tokens)
+            return once()
         except Exception as exc:
             logger.warning("plan-then-write: section %r failed, trying once more: %s", title, exc)
-            return dg._call_chat(messages, max_tokens=max_tokens)
+            try:
+                return once()
+            except Exception as again:
+                raise ValueError(f"section {title!r}: {again}") from again
 
     t0 = time.time()
     try:
@@ -2280,6 +2327,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
             texts = list(pool.map(write, jobs))
     except Exception as exc:
         logger.warning("plan-then-write: a section failed twice, the parere is written in one call: %s", exc)
+        _fell_back("section call", exc)
         return None
     finally:
         dg.vlog("case_analysis_sections_llm", duration_ms=(time.time() - t0) * 1000)
@@ -2335,6 +2383,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         sections = _step("unsupported_claims", sections, fixes)
     if any(not text for _, text in sections):
         logger.warning("plan-then-write: an empty section, the parere is written in one call")
+        _fell_back("empty section after the checks", "a step left a section without text",
+                   sections=[title for title, text in sections if not text])
         return None
     sections = _step("after_checks", sections, lambda secs: _after_checks(plan, secs, jobs, system, questions or []))
     if anchors is not None:
