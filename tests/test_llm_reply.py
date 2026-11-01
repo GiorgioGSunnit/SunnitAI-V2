@@ -12,7 +12,7 @@ for key, value in (("NEO4J_URI", "bolt://localhost:7687"), ("NEO4J_USER", "neo4j
     os.environ.setdefault(key, value)
 
 from src.rag import ai_chat  # noqa: E402
-from src.rag.llm_reply import clean_json_text, parse_json_reply, strip_think  # noqa: E402
+from src.rag.llm_reply import clean_json_text, parse_json_reply, salvage_json, strip_think  # noqa: E402
 import src.rag.defensive_generation as dg  # noqa: E402
 
 PLAN = '{"parte_assistita": "Tizio", "questioni": [{"titolo": "Rapina", "norme": ["art. 628 c.p."]}]}'
@@ -163,34 +163,129 @@ def _replies(monkeypatch, *replies):
 def test_the_issues_come_first_and_a_plan_has_room():
     system = ptw._plan_system()
     assert system.index('"questioni"') < system.index('"parte_assistita"') and "Sii conciso" in system
-    assert ptw._PLAN_TOKENS == 4000
+    assert ptw._PLAN_TOKENS == 6000
     assert '"norme": ["art. N codice"], ' in system
 
 
-def test_a_cut_plan_is_never_read_and_asked_once_more_shorter(monkeypatch):
+def _issue(i):
+    long = "parola " * 55
+    return {"titolo": f"Questione {i}", "norme": ["art. 1061 c.c."], "pronunce": [], "argomento": f"arg {i} {long}",
+            "obiezione": long, "replica": long}
+
+
+def _qwen3_plan(issues=4):
+    """A Qwen3-length plan, the issues first, cut in the middle of the next one."""
+    text = json.dumps({"questioni": [_issue(i) for i in range(issues + 1)], "parte_assistita": "Leonardo"}, ensure_ascii=False)
+    return text[:text.index('"Questione ' + str(issues)) + 400]
+
+
+def test_salvage_keeps_complete_items_and_leaves_out_the_one_cut():
+    value = salvage_json(_qwen3_plan(4))
+    assert [q["titolo"] for q in value["questioni"]][:4] == [f"Questione {i}" for i in range(4)]
+    assert ptw._argued_issues(value) == 4
+    with pytest.raises(ValueError):
+        salvage_json('{"a": "x')
+    assert salvage_json('<think></think>[{"a": 1}, {"b": 2}, {"c"') == [{"a": 1}, {"b": 2}]
+
+
+def test_a_cut_plan_keeps_its_complete_issues_without_another_call(monkeypatch):
     events = []
     monkeypatch.setattr(dg, "vlog", lambda name, data=None, **k: events.append((name, data)))
-    seen = _replies(monkeypatch, ('{"a": 1, "questioni": [{"titolo": "t', "length"), (PLAN, "stop"))
-    assert ptw._plan_json(MESSAGES) == VALUE
-    assert len(seen) == 2 and "più conciso" in seen[1][0][0].content and seen[0][1]["max_tokens"] == 4000
-    assert [d["finish_reason"] for n, d in events if n == "case_analysis_plan_call"] == ["length", "stop"]
+    seen = _replies(monkeypatch, (_qwen3_plan(4), "length"))
+    raw = ptw._plan_json(MESSAGES)
+    plan, _ = ptw.clean_plan({**raw, "questioni": [{**q, "norme": []} for q in raw["questioni"]]}, set(), {})
+    assert len(seen) == 1 and len(plan["questioni"]) == 4 and seen[0][1]["max_tokens"] == ptw._PLAN_TOKENS
+    assert ("llm_reply_cut", {"call": "_plan_json", "max_tokens": ptw._PLAN_TOKENS, "salvaged": True}) in events
+    assert [d["finish_reason"] for n, d in events if n == "case_analysis_plan_call"] == ["length"]
 
 
-def test_a_fragment_from_a_cut_plan_is_not_taken_for_the_plan(monkeypatch):
-    seen = _replies(monkeypatch, ('{"risposte": [{"quesito": "q"}], "questioni": [{"titolo": "tagl', "length"), (PLAN, "stop"))
+def test_a_plan_cut_before_a_second_issue_is_asked_again_with_hard_caps(monkeypatch):
+    seen = _replies(monkeypatch, (_qwen3_plan(1), "length"), (PLAN, "stop"))
     assert ptw._plan_json(MESSAGES) == VALUE and len(seen) == 2
+    assert all(word in seen[1][0][0].content for word in ("più conciso", "al massimo 5", "60 parole", "ripetizione dei fatti"))
 
 
-def test_a_plan_cut_twice_fails_after_one_retry(monkeypatch):
+def test_cut_twice_the_issues_either_reply_completed(monkeypatch):
+    seen = _replies(monkeypatch, (_qwen3_plan(1), "length"), ('{"questioni": [{"titolo": "t', "length"))
+    assert ptw._argued_issues(ptw._plan_json(MESSAGES)) == 1 and len(seen) == 2
+    _replies(monkeypatch, ('{"a": "x', "length"), (_qwen3_plan(3), "length"))
+    assert ptw._argued_issues(ptw._plan_json(MESSAGES)) == 3
+
+
+def test_only_a_plan_with_nothing_complete_fails(monkeypatch):
     seen = _replies(monkeypatch, ('{"a": "x', "length"), ('{"a": "x', "length"))
     with pytest.raises(ValueError, match="twice"):
         ptw._plan_json(MESSAGES)
-    assert len(seen) == 2                    # the stricter-JSON retry cannot shorten a reply
+    assert len(seen) == 2
 
 
 def test_a_plan_that_finishes_takes_one_call(monkeypatch):
     seen = _replies(monkeypatch, (PLAN, "stop"))
     assert ptw._plan_json(MESSAGES) == VALUE and len(seen) == 1
+
+
+def test_any_cut_json_call_is_retried_compact_and_logged_by_name(monkeypatch, caplog):
+    def _analyse_case_v2_like():
+        return dg._chat_json(MESSAGES, max_tokens=3000)
+    seen = _replies(monkeypatch, ('{"questioni": [{"titolo": "a"}, {"titolo": "b', "length"), ('{"questioni": []}', "stop"))
+    assert _analyse_case_v2_like() == {"questioni": []}
+    assert "troncata" in seen[1][0][0].content and "_analyse_case_v2_like cut at 3000" in caplog.text
+    _replies(monkeypatch, ('{"questioni": [{"titolo": "a"}, {"titolo": "b', "length"), ('{"questioni": [{"tit', "length"))
+    assert _analyse_case_v2_like() == {"questioni": [{"titolo": "a"}]}
+
+
+def _qwen3_facts(events=30):
+    """fact extraction's reply at Qwen3's length: cut inside an event, its parties complete."""
+    item = {"chi": "Leonardo", "cosa": "passaggio attraverso il fondo del padre, " + "parola " * 40, "quando": "2010"}
+    text = json.dumps({"parti": [{"nome": "Leonardo", "ruolo": "attore"}], "eventi": [item] * events, "beni": []}, ensure_ascii=False)
+    return text[:-300]
+
+
+def test_a_cut_fact_extraction_is_asked_again_compact_and_keeps_what_was_complete(monkeypatch, caplog):
+    from src.rag import fact_signals as fs
+    monkeypatch.setattr(fs, "validate_facts", lambda value, case: value if isinstance(value, dict) and value.get("eventi") else None)
+    events, seen = [], []
+    monkeypatch.setattr(fs, "vlog", lambda name, data=None, **k: events.append((name, data)))
+
+    def replying(*replies):
+        queue = list(replies)
+
+        def fake(messages, **kwargs):
+            seen.append(messages)
+            text, finish = queue.pop(0)
+            ai_chat.last_reply.finish_reason = finish
+            return text
+        monkeypatch.setattr(fs, "_call_chat", fake)
+    replying((_qwen3_facts(), "length"), ('{"eventi": [{"chi": "tutti"}]}', "stop"))
+    assert fs.extract_facts("caso")[0] == {"eventi": [{"chi": "tutti"}]}
+    assert "troncata" in seen[1][0].content and "fact extraction: reply cut at" in caplog.text
+    assert events[0][0] == "llm_reply_cut" and events[0][1]["call"] == "extract_facts"
+    replying((_qwen3_facts(), "length"), (_qwen3_facts(), "length"))
+    facts, problem = fs.extract_facts("caso")
+    assert len(facts["eventi"]) > 20 and problem == ""
+    replying(('{"a": "x', "length"), ('{"a": "x', "length"))
+    assert fs.extract_facts("caso")[0] is None
+
+
+def test_every_call_logs_its_finish_reason_and_who_made_it(monkeypatch, caplog):
+    events = []
+    monkeypatch.setattr(ai_chat, "vlog", lambda name, data=None, **k: events.append((name, data)))
+    monkeypatch.setattr(ai_chat, "chat_model", _Model("Testo tagliato", "length"))
+
+    def the_caller():
+        return ai_chat._call_chat([])
+    the_caller()
+    assert ("llm_call", {"call": "the_caller", "finish_reason": "length", "chars": 14}) in events
+    assert "cut at its token limit: the_caller" in caplog.text
+
+
+def test_the_limits_audit_reads_the_dumps(tmp_path):
+    _case(tmp_path, "a", [], [("plan", PLAN, "ok", "length")])
+    path = next((tmp_path / "cases" / "a" / "llm").glob("*.txt"))
+    path.write_text(path.read_text(encoding="utf-8").replace("max_tokens: 2000\n", "max_tokens: 2000\nprompt estimate: 15000 tokens (x)\n"), encoding="utf-8")
+    text = "\n".join(_report_module().limits(str(tmp_path), 20000))
+    row = next(line for line in text.splitlines() if line.startswith("plan"))
+    assert row.split()[:4] == ["plan", "1", "2000", "15000"] and row.split()[4] == "5000" and row.split()[-1] == "1"
 
 
 def test_an_empty_section_is_tried_again_and_a_second_says_where(monkeypatch):

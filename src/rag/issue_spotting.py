@@ -88,7 +88,7 @@ def _article(value) -> Optional[str]:
 def spot_issues(text: str) -> List[Dict[str, str]]:
     """[{institution, article, code}] proposed by the model; [] on any failure."""
     try:
-        raw = _call_chat([SystemMessage(content=_SPOT_SYSTEM), HumanMessage(content=text[:6000])], max_tokens=600)
+        raw = _call_chat([SystemMessage(content=_SPOT_SYSTEM), HumanMessage(content=text[:6000])], max_tokens=1000)
         proposals = parse_json_reply(raw)
     except Exception as exc:
         logger.warning("issue spotting: proposal call failed: %s", exc)

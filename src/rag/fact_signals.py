@@ -37,7 +37,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
-from .ai_chat import _call_chat, parse_json_reply
+from .ai_chat import _call_chat, last_reply, parse_json_reply
+from .llm_reply import salvage_json
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -55,7 +56,7 @@ RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fact_sign
 TODAY_ENV = "FACT_SIGNALS_TODAY"
 MAX_CENTRAL = 6                         # institutions the fired rules add as central issues, in the rules' order
 _CASE_CHARS = 12000
-_EXTRACT_TOKENS = 3500                  # run 1415's longest cases (n2, n9) came back cut at 1800
+_EXTRACT_TOKENS = 5000                  # run 1415's longest cases (n2, n9) came back cut at 1800
 
 
 def enabled() -> bool:
@@ -196,6 +197,8 @@ _EXTRACT_REGIMES = (
     "può cambiare o andare perduto: riparazioni, smaltimento, lavori), urgenza (un evento o una scadenza "
     "imminente)}; lista vuota se il testo non ne riferisce.\n"
 )
+_COMPACT_SUFFIX = ("\n\nLa risposta precedente è stata troncata: rispondi di nuovo con lo stesso JSON, completo, più compatto: "
+                   "valori brevi, nessuna ripetizione, senza omettere chiavi.")
 _RETRY_SUFFIX = ("\n\nLa risposta precedente non era un JSON valido con quelle chiavi. Rispondi SOLO con l'oggetto "
                  "JSON, dal primo carattere.")
 
@@ -437,20 +440,34 @@ def extract_facts(case_text: str, raw_replies: Optional[List[str]] = None) -> Tu
     base = _EXTRACT_SYSTEM.replace("Sii conciso:", _EXTRACT_REGIMES.lstrip("\n") + "Sii conciso:") \
         if regimes_enabled() else _EXTRACT_SYSTEM
     system, problem = base, ""
+    salvaged = None
     for attempt in (1, 2):
+        last_reply.finish_reason = None
+        cut = False
         try:
             raw = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                              max_tokens=_EXTRACT_TOKENS, temperature=0)
             if raw_replies is not None:
                 raw_replies.append(raw)
+            cut = getattr(last_reply, "finish_reason", None) == "length"
             facts = validate_facts(_parse_or_repair(raw), case_text)
         except Exception as exc:
             facts, problem = None, f"{type(exc).__name__}: {str(exc)[:160]}"
+        if cut:
+            # what follows the cut is lost, and a rule may need it: the complete items are kept, and it is asked once
+            # more, compact
+            logger.warning("fact extraction: reply cut at %d tokens (attempt %d), %s", _EXTRACT_TOKENS, attempt,
+                           "complete items kept" if facts is not None else "nothing complete")
+            vlog("llm_reply_cut", {"call": "extract_facts", "max_tokens": _EXTRACT_TOKENS, "attempt": attempt,
+                                   "salvaged": facts is not None})
+            salvaged = facts if facts is not None else salvaged
+            system = base + _COMPACT_SUFFIX
+            continue
         if facts is not None:
             return facts, ""
         problem = problem or "reply is not a JSON object with the schema's keys"
         system = base + _RETRY_SUFFIX
-    return None, problem
+    return (salvaged, "") if salvaged is not None else (None, problem or "reply cut at the token limit twice")
 
 
 def _parse_or_repair(raw: str) -> Any:
@@ -464,43 +481,11 @@ def _parse_or_repair(raw: str) -> Any:
     if isinstance(value, dict) and set(value) & set(SCHEMA):
         return value
     try:
-        return _repaired(raw)
+        return salvage_json(raw)
     except ValueError:
         if value is None:
             raise
         return value
-
-
-def _repaired(raw: str) -> Any:
-    text = raw or ""
-    start = text.find("{")
-    if start < 0:
-        raise ValueError("no JSON object in the reply")
-    stack, in_string, escape, safe = [], False, False, None
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch in "{[":
-            stack.append("}" if ch == "{" else "]")
-        elif ch in "}]":
-            if stack:
-                stack.pop()
-            safe = (i + 1, list(stack))
-            if not stack:
-                break
-    if not safe:
-        raise ValueError("the reply is cut before any complete value")
-    end, still_open = safe
-    return json.loads(text[start:end] + "".join(reversed(still_open)))
 
 
 # --- 2. dates and terms ----------------------------------------------------------------------------

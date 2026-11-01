@@ -9,6 +9,7 @@ Configuration via environment variables (see .env.example).
 
 import logging
 import re
+import sys
 import threading
 import os
 from typing import List, Optional, Union
@@ -168,8 +169,17 @@ def _overflow_sizes(error_text: str, messages) -> Optional[tuple]:
     return None
 
 
+_PLUMBING = {"_caller", "_reply_text", "_call_chat", "_chat", "_chat_json", "_cut_json", "call_chat", "once"}
 # The last reply on this thread as it arrived, for diagnose_long's dumps: _call_chat returns it cleaned.
 last_reply = threading.local()
+
+
+def _caller() -> str:
+    """The function that asked for this reply, past the plumbing, for the logs."""
+    frame = sys._getframe(1)
+    while frame is not None and frame.f_code.co_name in _PLUMBING:
+        frame = frame.f_back
+    return frame.f_code.co_name if frame is not None else "?"
 
 
 def _reply_text(response) -> str:
@@ -177,6 +187,10 @@ def _reply_text(response) -> str:
     raw = response.content or ""
     finish = (getattr(response, "response_metadata", None) or {}).get("finish_reason")
     last_reply.raw, last_reply.finish_reason = raw, finish
+    call = _caller()
+    vlog("llm_call", {"call": call, "finish_reason": finish, "chars": len(raw)})
+    if finish == "length":
+        logger.warning("model reply cut at its token limit: %s (%d characters)", call, len(raw))
     text = strip_think(raw)
     if text != raw.strip():
         logger.info("model reply: reasoning removed (%d characters of %d)", len(raw) - len(text), len(raw))

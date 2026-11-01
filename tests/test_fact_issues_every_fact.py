@@ -47,7 +47,7 @@ def test_every_fact_named_first_and_the_cap_scales_with_the_case(monkeypatch):
     monkeypatch.setattr(dg, "_chat_json", lambda messages, max_tokens, **k: seen.update(
         system=messages[0].content, max_tokens=max_tokens) or _reply(12, 1))
     added = fi.fact_issues("x" * 3000, {"facts": [f"fatto {i}" for i in range(12)]}, None)
-    assert len(added) == 12 and "al massimo 12" in seen["system"] and seen["max_tokens"] == 1800
+    assert len(added) == 12 and "al massimo 12" in seen["system"] and seen["max_tokens"] == 2760
 
 
 def test_the_loss_report_tells_named_from_never_named():

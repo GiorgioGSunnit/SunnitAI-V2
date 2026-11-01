@@ -13,6 +13,7 @@ import inspect
 import logging
 import os
 import re
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -20,6 +21,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import article_cards, article_text, comma_material, feature_flags, protected_sources
 from .ai_chat import _call_chat, embedding_model, last_reply, parse_json_reply
+from .llm_reply import salvage_json
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
 
@@ -58,7 +60,42 @@ _JSON_RETRY_SUFFIX = (
 )
 
 
-def _chat_json(messages, max_tokens, **chat_kwargs):
+_JSON_COMPACT_SUFFIX = ("\n\nLa risposta precedente è stata troncata: rispondi di nuovo con lo stesso JSON, completo, più "
+                        "compatto: valori brevi, nessuna ripetizione dei fatti, senza omettere chiavi.")
+
+
+def _cut_json(messages, max_tokens, raw, compact, enough, chat_kwargs):
+    """A reply cut at the token limit is never parsed for a fragment. Its complete items, if `enough` of them; else asked
+    once more, compact; cut again, the complete items of whichever reply has some. ValueError with none."""
+    call = sys._getframe(2).f_code.co_name
+
+    def salvaged(text):
+        try:
+            return salvage_json(text)
+        except ValueError:
+            return None
+    first = salvaged(raw)
+    vlog("llm_reply_cut", {"call": call, "max_tokens": max_tokens, "salvaged": first is not None})
+    logger.warning("_chat_json: %s cut at %s tokens, %d characters", call, max_tokens, len(raw or ""))
+    if first is not None and enough is not None and enough(first):
+        return first
+    last_reply.finish_reason = None
+    again = _chat([SystemMessage(content=messages[0].content + compact), *messages[1:]], max_tokens=max_tokens, **chat_kwargs)
+    if getattr(last_reply, "finish_reason", None) != "length":
+        try:
+            return parse_json_reply(again)
+        except ValueError:
+            pass
+    second = salvaged(again)
+    best = second if second is not None else first
+    vlog("llm_reply_cut", {"call": call, "max_tokens": max_tokens, "salvaged": best is not None, "retried": True})
+    if best is None:
+        raise ValueError(f"{call}: reply cut at {max_tokens} tokens twice, nothing complete in it")
+    logger.warning("_chat_json: %s cut twice, its complete items kept", call)
+    return best
+
+
+def _chat_json(messages, max_tokens, compact=_JSON_COMPACT_SUFFIX, enough=None, **chat_kwargs):
     """_chat() + parse_json_reply, with one retry -- the same system message
     plus a stricter closing instruction -- if the first reply has no
     parseable JSON at all. parse_json_reply already tolerates code fences
@@ -73,17 +110,17 @@ def _chat_json(messages, max_tokens, **chat_kwargs):
     be kept") with nothing to show WHY -- the warning logged only the
     exception, never the reply that didn't parse. Both failures are logged
     here, with the raw reply, so the next one is diagnosable without
-    needing to reproduce it live."""
+    needing to reproduce it live.
+
+    A reply cut at the token limit goes to _cut_json: `compact` is its retry's instruction, `enough(value)` says the
+    complete items salvaged need no retry."""
     last_reply.finish_reason = None
     raw = _chat(messages, max_tokens=max_tokens, **chat_kwargs)
-    cut = getattr(last_reply, "finish_reason", None) == "length"
-    if cut:
-        logger.warning("_chat_json: reply cut at %s tokens: any JSON read from it may be a fragment", max_tokens)
+    if getattr(last_reply, "finish_reason", None) == "length":
+        return _cut_json(messages, max_tokens, raw, compact, enough, chat_kwargs)
     try:
         return parse_json_reply(raw)
     except ValueError as exc:
-        if cut:      # a stricter instruction cannot make it shorter
-            raise
         logger.info("_chat_json: first reply had no parseable JSON (%s); retrying with a stricter "
                     "instruction. raw reply: %r", exc, raw[:300])
     retried = [SystemMessage(content=messages[0].content + _JSON_RETRY_SUFFIX), *messages[1:]]
@@ -964,7 +1001,7 @@ def _analyse_case(facts: str, lang: str, request: str = "",
     try:
         parsed = _chat_json([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
                             HumanMessage(content=_case_text(facts, request) + _frame_block(frame))],
-                           max_tokens=1500, temperature=0)
+                           max_tokens=2500, temperature=0)
     except Exception as exc:
         logger.warning("case analysis failed: %s", exc)
         return empty
@@ -1017,7 +1054,7 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "",
     try:
         parsed = _chat_json([SystemMessage(content=system),
                             HumanMessage(content=_case_text(facts, request) + _frame_block(frame))],
-                           max_tokens=2200 if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG) else 1800,
+                           max_tokens=3500 if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG) else 3000,
                            temperature=0)
     except Exception as exc:
         logger.warning("case analysis (v2) failed: %s", exc)
@@ -1215,7 +1252,7 @@ def _structured_facts(facts: str, request: str,
     try:
         parsed = _chat_json([SystemMessage(content=_STRUCTURED_FACTS_SYSTEM),
                              HumanMessage(content=numbered + _frame_block(frame))],
-                            max_tokens=1800, temperature=0)
+                            max_tokens=3000, temperature=0)
     except Exception as exc:
         logger.warning("structured analysis, facts: failed: %s", exc)
         return None
@@ -1244,7 +1281,7 @@ def _structured_grid(extracted: Dict[str, Any], grid: List[tuple],
     t0 = time.time()
     try:
         parsed = _chat_json([SystemMessage(content=_STRUCTURED_GRID_SYSTEM), HumanMessage(content=human)],
-                            max_tokens=1800, temperature=0)
+                            max_tokens=3000, temperature=0)
     except Exception as exc:
         logger.warning("structured analysis, grid: failed: %s", exc)
         return None
@@ -1364,7 +1401,7 @@ def _case_frame(facts: str, request: str) -> Optional[Dict[str, Any]]:
     try:
         parsed = _chat_json([SystemMessage(content=_CASE_FRAME_SYSTEM),
                              HumanMessage(content=_case_text(facts, request))],
-                            max_tokens=1500, temperature=0)
+                            max_tokens=2500, temperature=0)
     except Exception as exc:
         logger.warning("case frame failed: %s", exc)
         return None
@@ -2743,7 +2780,7 @@ def _extract_principles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
                           HumanMessage(content=f"CASO:\n{_case_text(facts, request)[:3000]}\n\n"
                                                f"QUESTIONI:\n{issues or '(non indicate)'}\n\n"
                                                f"PASSI DELLE PRONUNCE:\n{passages}")],
-                         max_tokens=1200)
+                         max_tokens=2000)
     except Exception as exc:
         logger.warning("principles extraction failed: %s", exc)
         return ""
@@ -2838,7 +2875,7 @@ def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]],
         verdicts = _chat_json([SystemMessage(content=_RULING_FIT_SYSTEM + _RULING_FIT_DIRECTION),
                                HumanMessage(content=f"CASO:\n{case[:3000]}\n\nPOSIZIONE DELLA PARTE ASSISTITA: {party}"
                                                     f"\n\nPASSI DELLE PRONUNCE:\n{passages}")],
-                              max_tokens=200 + 170 * len(ruling_rows), temperature=0)
+                              max_tokens=300 + 250 * len(ruling_rows), temperature=0)
     except Exception as exc:
         logger.warning("ruling fit check failed, rulings kept: %s", exc)
         return ruling_rows
@@ -3594,7 +3631,7 @@ def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
 
 def _fusion_distill_bullets(case_text: str) -> List[Dict[str, str]]:
     parsed = _chat_json([SystemMessage(content=_FUSION_DISTILL_SYSTEM), HumanMessage(content=case_text[:6000])],
-                        max_tokens=700, temperature=0)
+                        max_tokens=1200, temperature=0)
     if not isinstance(parsed, list):
         return []
     return [{"categoria": str(b.get("categoria") or ""), "testo": str(b.get("testo") or "").strip()}
@@ -4409,7 +4446,7 @@ CHECK_GRADED_FLAG = "CHECK_GRADED_ENABLED"
 _GRADED_TEXT_CHARS = 400
 # Reply max_tokens: base, per article. Run 1206 (60 + 45 per article): a compact entry in Italian runs
 # 45-60 tokens, so a batch of 12 was cut, and a cut array is no list: its 12 articles got no grade.
-_GRADED_TOKENS = (120, 60)
+_GRADED_TOKENS = (200, 100)
 _GRADED_MAX_CHECKED = 72
 # scripts/plan_loss.py (29 Oct, the 28 Oct runs, 17 civil cases): of the 16 expected articles found but lost before the
 # plan, 11 were past these slots (positions 74-125 of 107-171 candidates), never graded, so never eligible for the

@@ -59,9 +59,10 @@ from . import anchored_writing, comma_material, grounded_review, method_candidat
 
 logger = logging.getLogger(__name__)
 
-_PLAN_TOKENS = 4000       # run model-qwen3: plans of ~6,000 characters cut at 2000, before their issues
-_PLAN_CONCISE = ("\n\nLa risposta precedente è stata troncata: rispondi di nuovo con lo stesso JSON, più conciso, ogni campo "
-                 "al massimo in una frase.")
+_PLAN_TOKENS = 6000       # Leonardo on Qwen3: cut at 4000 twice. _call_chat lowers it if the context has less room
+_PLAN_MIN_ISSUES = 2      # a cut plan with these complete needs no retry
+_PLAN_CAPS = ("\n\nLa risposta precedente è stata troncata: rispondi di nuovo con lo stesso JSON, più conciso: al massimo 5 "
+              "questioni, ogni campo al massimo 60 parole, nessuna ripetizione dei fatti.")
 _MAX_ISSUES = 5
 KEEP_APPLICABLE_FLAG = "PLAN_KEEP_APPLICABLE_ENABLED"
 # PLAN_KEEP_CHECKED_ENABLED (diagnose_long, 25 Oct: 34 of the 60 expected articles lost were in the
@@ -143,29 +144,22 @@ def _fell_back(step: str, error: Any, **detail) -> None:
     dg.vlog("plan_then_write_fallback", {"step": step, "error": f"{error}"[:500], **detail})
 
 
-def _plan_json(messages: List[Any]) -> Any:
-    """One plan call, its finish_reason logged. A reply cut at the token limit is never read: the JSON found in it would
-    be a fragment. It is asked once more, shorter; cut again, ValueError."""
-    def once(sent):
-        last_reply.finish_reason = None
-        value, error = None, None
-        try:
-            value = dg._chat_json(sent, max_tokens=_PLAN_TOKENS, temperature=0)
-        except ValueError as exc:
-            error = exc
-        finish = getattr(last_reply, "finish_reason", None)
-        dg.vlog("case_analysis_plan_call", {"finish_reason": finish, "parsed": error is None, "concise": sent is not messages})
-        return value, error, finish
+def _argued_issues(raw: Any) -> int:
+    """How many complete issues a salvaged plan holds (clean_plan keeps an issue only with its argument)."""
+    issues = raw.get("questioni") if isinstance(raw, dict) else None
+    return sum(1 for q in issues if isinstance(q, dict) and _text(q.get("argomento"))) if isinstance(issues, list) else 0
 
-    value, error, finish = once(messages)
-    if finish == "length":
-        logger.warning("plan-then-write: plan cut at %d tokens, asked once more, shorter", _PLAN_TOKENS)
-        value, error, finish = once([SystemMessage(content=f"{messages[0].content}{_PLAN_CONCISE}"), *messages[1:]])
-        if finish == "length":
-            raise ValueError(f"plan cut at {_PLAN_TOKENS} tokens twice")
-    if error:
-        raise error
-    return value
+
+def _plan_json(messages: List[Any]) -> Any:
+    """One plan call, its finish_reason logged. A plan is never lost to its length: the issues come first, so a cut reply
+    still has complete ones, kept when there are _PLAN_MIN_ISSUES; else it is asked once more with hard caps, and cut again,
+    whatever issues either reply completed (dg._cut_json). ValueError only with none: clean_plan then finds no plan."""
+    last_reply.finish_reason = None
+    try:
+        return dg._chat_json(messages, max_tokens=_PLAN_TOKENS, temperature=0, compact=_PLAN_CAPS,
+                             enough=lambda raw: _argued_issues(raw) >= _PLAN_MIN_ISSUES)
+    finally:
+        dg.vlog("case_analysis_plan_call", {"finish_reason": getattr(last_reply, "finish_reason", None)})
 
 
 def _plan_system(max_issues: int = _MAX_ISSUES) -> str:
@@ -742,7 +736,7 @@ def _issue_check(issue: Dict[str, Any], article_rows: List[Dict[str, Any]], head
     system = _PLAN_CHECK_SYSTEM.replace('Nel dubbio: pertinente', _PLAN_CHECK_DIRECTION + 'Nel dubbio: pertinente') \
         if _writer_rules() else _PLAN_CHECK_SYSTEM
     return dg._chat_json([SystemMessage(content=system), HumanMessage(content=human)],
-                         max_tokens=150 + 120 * len(issue["norme"]), temperature=0)
+                         max_tokens=250 + 180 * len(issue["norme"]), temperature=0)
 
 
 def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], headings: Dict[tuple, str],
@@ -2086,7 +2080,7 @@ def _review_call(title: str, text: str, spans: List[Tuple[int, int]], case_text:
         f"CASO:\n{(case_text or '')[:12000]}\n\nSEZIONE «{title}»:\n{listing}"
     try:
         raw = dg._chat_json([SystemMessage(content=_REVIEW_SYSTEM), HumanMessage(content=human)],
-                            max_tokens=120 + 40 * min(len(numbered), 30), temperature=0)
+                            max_tokens=200 + 60 * min(len(numbered), 30), temperature=0)
     except Exception as exc:
         logger.warning("writer rules: review of %r failed: %s", title, exc)
         return None
@@ -2616,7 +2610,7 @@ def rewrite_unsupported(title: str, text: str, case_text: str,
     try:
         verdicts = dg._chat_json([SystemMessage(content=_UNSUPPORTED_SYSTEM),
                                   HumanMessage(content=f"CASO:\n{case_text[:3000]}\n\nFRASI DEL PARERE:\n{numbered}")],
-                                 max_tokens=200 + 160 * len(spans), temperature=0)
+                                 max_tokens=300 + 240 * len(spans), temperature=0)
     except Exception as exc:
         logger.warning("review fixes: claims of %r not checked: %s", title, exc)
         return text, []

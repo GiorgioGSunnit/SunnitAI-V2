@@ -208,7 +208,7 @@ def fact_issues(case_text: str, frame: Optional[Dict[str, Any]], signals: Option
     t0 = time.time()
     try:
         raw = dg._chat_json([SystemMessage(content=system_for(limit)), HumanMessage(content=human)],
-                            max_tokens=max(1200, 150 * limit), temperature=0)
+                            max_tokens=max(2000, 230 * limit), temperature=0)
     except Exception as exc:
         logger.warning("fact issues failed, the frame is kept: %s", exc)
         return []
@@ -246,7 +246,7 @@ def _renamed(raw: Any, human: str, limit: int) -> Dict[str, Any]:
     renamed: List[Dict[str, Any]] = []
     try:
         renamed = _items(dg._chat_json([SystemMessage(content=system_for(limit)), HumanMessage(content=retry)],
-                                       max_tokens=max(600, 150 * len(bad)), temperature=0))
+                                       max_tokens=max(1000, 230 * len(bad)), temperature=0))
     except Exception as exc:
         logger.warning("fact issues: renaming failed, the generic names dropped: %s", exc)
     good_new = [i for i in renamed if not generic_name(str(i.get("nome") or ""))]

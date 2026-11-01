@@ -457,7 +457,7 @@ def _anchor_rewrite(cat: Catalogue, items: List[Tuple[str, List[str], str]]) -> 
                          for n, (s, a, how) in enumerate(items, 1)))
     try:
         raw = dg._chat_json([SystemMessage(content=REWRITE_SYSTEM), HumanMessage(content=human)],
-                            max_tokens=200 + 150 * len(items), temperature=0)
+                            max_tokens=300 + 230 * len(items), temperature=0)
     except Exception as exc:
         logger.warning("anchored writing: rewrite failed, the failing statements kept or removed by their rule: %s", exc)
         return {}

@@ -58,3 +58,39 @@ def parse_json_reply(raw: Optional[str]) -> Any:
     if size:
         return best
     raise ValueError("no JSON value in the model's reply")
+
+
+def salvage_json(raw: Optional[str]) -> Any:
+    """What a reply cut short holds, from its outermost value: read up to its last complete object or list, the open
+    brackets closed, so an item cut in the middle is left out. parse_json_reply would return one complete item from
+    inside. ValueError when nothing is complete."""
+    text = clean_json_text(raw)
+    starts = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+    if not starts:
+        raise ValueError("no JSON value in the reply")
+    start = min(starts)
+    stack, in_string, escape, safe = [], False, False, None
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]":
+            if stack:
+                stack.pop()
+            safe = (i + 1, list(stack))
+            if not stack:
+                break
+    if not safe:
+        raise ValueError("the reply is cut before any complete value")
+    end, still_open = safe
+    return json.loads(text[start:end] + "".join(reversed(still_open)))

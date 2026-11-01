@@ -195,13 +195,40 @@ def report(folder: str, new_parse=None) -> list:
     return L
 
 
+def limits(folder: str, context: int) -> list:
+    """Per stage, from the dumps: the audit of each call's limit against what it really used."""
+    stages = {}
+    for path in glob.glob(os.path.join(folder, "cases", "*", "llm", "*.txt")):
+        name = stage_of(path)
+        name = "section_*" if name.startswith("section_") else name
+        with open(path, encoding="utf-8") as fh:
+            fields, reply = dump_parts(fh.read())
+        prompt = re.match(r"(\d+)", fields.get("prompt estimate") or "")
+        row = stages.setdefault(name, {"calls": 0, "limit": 0, "prompt": 0, "reply": 0, "cut": 0})
+        row["calls"] += 1
+        row["limit"] = max(row["limit"], int(fields["max_tokens"]) if str(fields.get("max_tokens")).isdigit() else 0)
+        row["prompt"] = max(row["prompt"], int(prompt.group(1)) if prompt else 0)
+        row["reply"] = max(row["reply"], len(reply) // 4)
+        row["cut"] += fields.get("finish_reason") == "length"
+    L = [f"{'stage':<28}{'calls':>6}{'limit':>7}{'prompt':>8}{'room':>7}{'reply':>7}{'used':>6}{'cut':>5}   (largest of each; tokens, "
+         f"reply ~chars/4; room = {context:,} - prompt)"]
+    for name, row in sorted(stages.items(), key=lambda kv: -kv[1]["reply"]):
+        used = f"{row['reply'] * 100 // row['limit']}%" if row["limit"] else "-"
+        L.append(f"{name:<28}{row['calls']:>6}{row['limit']:>7}{row['prompt']:>8}{context - row['prompt']:>7}{row['reply']:>7}{used:>6}{row['cut']:>5}")
+    return L
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("run", help="the run folder, e.g. diagnose_long_runs/model-qwen3")
     parser.add_argument("--llm-reply", help="the new src/rag/llm_reply.py, to see whether it reads what today's cannot")
+    parser.add_argument("--limits", action="store_true", help="first, per stage: limit, prompt, room in the context, reply size")
+    parser.add_argument("--context", type=int, default=20000)
     args = parser.parse_args()
     if not glob.glob(os.path.join(args.run, "cases", "*.json")):
         sys.exit(f"no cases/*.json under {args.run}")
+    if args.limits:
+        print("\n".join(limits(args.run, args.context)) + "\n")
     print("\n".join(report(args.run, load_parser(args.llm_reply) if args.llm_reply else None)))
 
 
