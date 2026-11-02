@@ -51,6 +51,7 @@ Run from the app folder (its .env: the judge is the app's chat model; Neo4j read
     ... --only h3,n2 --batch 12 --parallel 4 --max-examples 10 --out fetch_audit_runs/x
     ... --no-judge        # mechanisms 1 and the role patterns only, no model call
     ... --no-db           # no Neo4j: granularity counts only articles not given and explicit commi
+    ... --mechanisms role diagnose_long_runs/rb-off diagnose_long_runs/rb-on   # ROLE_BLOCKS alone, per run
     ... --report-only fetch_audit_runs/x   # report again from x/audit.json
 
 Several runs are audited together (each case is "<run>/<case>", repeats "h3@r2" kept apart). The judge's replies
@@ -87,7 +88,7 @@ TRIGGERS = ("gravita_aggravante", "date_termini", "storia_proprieta", "ruolo_qua
 TRIGGER_NAMES = {"gravita_aggravante": "gravity / aggravation", "date_termini": "dates / terms",
                  "storia_proprieta": "ownership / possession history", "ruolo_qualita": "role / quality of a party",
                  "importo_valore": "amount / value", "fase_procedimento": "procedure stage", "altro": "other"}
-WRITER_STAGE_RE = re.compile(r"^(?:section_.+|draft|grounded_rewrite)$")
+WRITER_STAGE_RE = re.compile(r"^(?:section_.+|draft|grounded_rewrite|anchor_rewrite)$")
 # GROUNDED_REVIEW_ENABLED's rewrite call: its material is what precedes the sentences it was asked to rewrite.
 REWRITE_MARK = "\n\nFRASI DA RISCRIVERE:"
 MIN_WORDS = 6
@@ -460,7 +461,7 @@ def writer_calls(case: Dict[str, Any]) -> List[Dict[str, Any]]:
         out = []
         for c in calls:
             material = f"{c['system']}\n\n{c['user']}"
-            if c["stage"] == "grounded_rewrite":
+            if c["stage"] in ("grounded_rewrite", "anchor_rewrite"):
                 material = material.split(REWRITE_MARK, 1)[0]
             elif fetched.get(c["stage"]):
                 material = f"{fetched[c['stage']]}\n\n{material}"
@@ -511,11 +512,44 @@ def sentence_map(case: Dict[str, Any]) -> List[Dict[str, Any]]:
     calls = writer_calls(case)
     union = "\n\n".join(c["material"] for c in calls)
     out = []
-    for s in answer_sentences(case["answer"]):
-        i = assign(s, calls) if calls else None
-        out.append({"sentence": s, "call": i, "stage": calls[i]["stage"] if i is not None else "code",
-                    "material": calls[i]["material"] if i is not None else union})
+    for section, body in answer_sections(case["answer"]):
+        for s in answer_sentences(body):
+            i = assign(s, calls) if calls else None
+            out.append({"sentence": s, "call": i, "stage": calls[i]["stage"] if i is not None else "code",
+                        "material": calls[i]["material"] if i is not None else union, "section": section})
     return out
+
+
+# The parere's sections (plan_then_write.SECTION_TITLES), as the answer heads them ("**3. Norme e giurisprudenza**").
+SECTION_NAMES = ("Risposte ai quesiti", "Inquadramento e questione centrale", "Norme e giurisprudenza",
+                 "Applicazione al caso", "Profili processuali e termini", "Conclusioni")
+_SECTION_HEAD_RE = re.compile(r"(?m)^\s*\*\*\s*\d+\.\s*([^*\n]+?)\s*\*\*\s*$")
+
+
+def answer_sections(answer: str) -> List[Tuple[str, str]]:
+    """(section name, its text) in order: a known section by its heading, any other text before or between them
+    under "(other)" -- the whole answer of a one-call parere or an eval answer."""
+    marks = list(_SECTION_HEAD_RE.finditer(answer or ""))
+    out = []
+    if not marks or marks[0].start() > 0:
+        head = (answer or "")[: marks[0].start() if marks else None]
+        if head.strip():
+            out.append(("(other)", head))
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(answer)
+        name = next((n for n in SECTION_NAMES if fold(n) == fold(m.group(1))), "(other)")
+        out.append((name, answer[m.end():end]))
+    return out
+
+
+def section_of(item: Dict[str, Any]) -> str:
+    """A judged sentence's section: its own, else (an audit.json made before sections were kept) from the writer
+    call's stage, else "(unassigned)"."""
+    if item.get("section"):
+        return item["section"]
+    stage = str(item.get("stage") or "")
+    return next((n for n in SECTION_NAMES if stage == "section_" + re.sub(r"[^a-z0-9]+", "_", n.lower()).strip("_")[:40]),
+                "(unassigned)")
 
 
 # =================================================================================================
@@ -610,14 +644,18 @@ def _trim_material(material: str, sentences_: Sequence[str], limit: int) -> str:
 PROVENANCE_SYSTEM = (
     "Sei un revisore legale. Ricevi il MATERIALE che è stato dato a chi ha scritto un parere (testi di norme, "
     "passi di sentenze, elenchi di termini e strumenti) e alcune FRASI di quel parere, numerate. Per ogni frase "
-    "decidi prima il tipo: \"regola\" (enuncia una regola giuridica o il contenuto di una norma), \"istituto\" "
-    "(definisce o qualifica un istituto), \"procedura\" (un passaggio, un termine o un atto processuale), "
-    "\"massima\" (ciò che una sentenza ha deciso o affermato), \"altro\" (fatti del caso, valutazioni, "
-    "consigli pratici senza una regola). Per le frasi non \"altro\" decidi l'esito confrontandole SOLO con il "
-    "MATERIALE, non con ciò che sai: \"supportata\" se il materiale contiene quella regola o quel contenuto (anche "
-    "con altre parole), \"assente\" se il materiale non la contiene (anche se è vera), \"contraddetta\" se il "
-    "materiale dice il contrario. Rispondi SOLO con un array JSON: [{\"i\": numero, \"tipo\": ..., \"esito\": "
-    "\"supportata\"|\"assente\"|\"contraddetta\"|null, \"prova\": \"fino a 15 parole del materiale, o vuoto\"}].")
+    "decidi prima il tipo: \"regola\" (enuncia in generale una regola giuridica o il contenuto di una norma: "
+    "\"l'art. X prevede...\", requisiti, presupposti), \"istituto\" (definisce o qualifica in generale un istituto), "
+    "\"procedura\" (un passaggio, un termine o un atto processuale), \"massima\" (ciò che la giurisprudenza o una "
+    "sentenza afferma in generale: \"la Cassazione ha affermato...\", \"la giurisprudenza ritiene...\"), "
+    "\"applicazione\" (applica una regola o una massima ai fatti di questo caso: il soggetto è una parte o un fatto "
+    "del caso, \"la reazione di Tizio era proporzionata\", \"il ritardo è imputabile al venditore\"), \"altro\" "
+    "(fatti del caso, valutazioni, consigli pratici senza una regola). Per le frasi non \"altro\" decidi l'esito "
+    "confrontandole SOLO con il MATERIALE, non con ciò che sai: \"supportata\" se il materiale contiene quella "
+    "regola o quel contenuto (per un'applicazione: la regola che applica), anche con altre parole, \"assente\" se "
+    "il materiale non la contiene (anche se è vera), \"contraddetta\" se il materiale dice il contrario. Rispondi "
+    "SOLO con un array JSON: [{\"i\": numero, \"tipo\": ..., \"esito\": \"supportata\"|\"assente\"|"
+    "\"contraddetta\"|null, \"prova\": \"fino a 15 parole del materiale, o vuoto\"}].")
 
 UNDERSTANDING_SYSTEM = (
     "Sei un avvocato italiano. Ricevi un CASO, un ARTICOLO che un esperto ritiene rilevante per il caso, e gli "
@@ -683,14 +721,16 @@ class Commi:
                                "'primary' RETURN d.id AS id LIMIT 5", name=prefix or code).data()
             for doc in docs:
                 rows = session.run("MATCH (d:Document {id: $doc})-[:CONTAINS]->(s:Section) WHERE s.name = $num OR "
-                                   "s.name STARTS WITH $num + '.' RETURN s.name AS name, s.plain_text AS text",
+                                   "s.name STARTS WITH $num + '.' OR s.name STARTS WITH $num + '_' "
+                                   "RETURN s.name AS name, s.plain_text AS text, s.type AS type",
                                    doc=doc["id"], num=number).data()
                 if not rows:
                     continue
                 # The commi exactly as COMMA_MATERIAL_ENABLED gives them (src/rag/comma_material.py), so the audit
                 # measures the same units the writer receives.
                 from src.rag import comma_material
-                return comma_material.commi_from_sections(number, {r["name"] or "": r["text"] or "" for r in rows})
+                return comma_material.commi_from_sections(number, {r["name"] or "": r["text"] or "" for r in rows},
+                                                          {r["name"] or "": r["type"] or "" for r in rows})
         return [], "not found"
 
 
@@ -741,11 +781,15 @@ def audit_provenance(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: 
         verdict = (str(v.get("esito") or "").strip().lower() or None) if kind and kind != "altro" else None
         if verdict not in (None, "supportata", "assente", "contraddetta"):
             verdict = None
-        sentences_out.append({"sentence": item["sentence"], "stage": item["stage"], "kind": kind,
+        sentences_out.append({"sentence": item["sentence"], "stage": item["stage"], "section": item.get("section"),
+                              "kind": kind,
                               "verdict": verdict, "evidence": v.get("prova") or ""})
-    rule = [s for s in sentences_out if s["kind"] and s["kind"] != "altro"]
+    # An application of a rule to the case's facts is the answer's reasoning: judged, reported apart, not a rule-sentence.
+    rule = [s for s in sentences_out if s["kind"] and s["kind"] not in ("altro", "applicazione")]
     counts = Counter(s["verdict"] or "unjudged" for s in rule)
+    applied = Counter(s["verdict"] or "unjudged" for s in sentences_out if s["kind"] == "applicazione")
     return {"sentences": sentences_out, "rule_sentences": len(rule), "counts": dict(counts),
+            "applications": sum(applied.values()), "application_counts": dict(applied),
             "judged": sum(1 for s in sentences_out if s["kind"]), "total": len(sentences_out),
             "memory_share": (counts["assente"] / len(rule)) if rule else None, "proxy": case["proxy"]}
 
@@ -953,14 +997,18 @@ def audit_role(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: Judge,
     role = dict(case.get("role") or {})
     listed = [m["sentence"] for m in mapped]
     flagged: Dict[int, Dict[str, Any]] = {}
+    parsed_sentences, failed_batches, batches_n = 0, 0, 0
     for start in range(0, len(listed), batch):
         chunk = listed[start:start + batch]
+        batches_n += 1
         human = (f"CASO:\n{case['case_text'][:5000]}\n\nPARTE ASSISTITA: "
                  + (f"{role.get('party')} ({role.get('position')})" if role.get("party") else "(da ricavare dal caso)")
                  + "\n\nFRASI:\n" + "\n".join(f"{n}. {s}" for n, s in enumerate(chunk, 1)))
         reply = judge.ask(ROLE_SYSTEM, human, max_tokens=400)
-        if not isinstance(reply, dict):
+        if not isinstance(reply, dict) or not isinstance(reply.get("contrasti", []), list):
+            failed_batches += 1 if judge.enabled else 0
             continue
+        parsed_sentences += len(chunk)
         if not role.get("party") and reply.get("parte"):
             role.update(party=str(reply.get("parte")), position=str(reply.get("ruolo") or ""), **{"from": "judge"})
         role.setdefault("judged_role", reply.get("ruolo"))
@@ -982,6 +1030,7 @@ def audit_role(case: Dict[str, Any], mapped: List[Dict[str, Any]], judge: Judge,
             flagged.setdefault(i, {"sentence": s, "why": hit, "judge": False})["pattern"] = hit
     items = [flagged[i] for i in sorted(flagged)]
     return {"role": role, "contradictions": items, "sentences": len(listed), "filtered": filtered,
+            "judged_sentences": parsed_sentences, "batches": batches_n, "failed_batches": failed_batches,
             "defects": sum(1 for x in items if x.get("judge") or x.get("pattern"))}
 
 
@@ -997,11 +1046,20 @@ def audit_case(case: Dict[str, Any], judge: Judge, commi: Commi, ev, args) -> Di
     out = {"key": case["key"], "run": case["run"], "id": case["id"], "kind": case["kind"], "proxy": case["proxy"],
            "sentences": len(mapped), "writer_calls": len(writer_calls(case)),
            "unassigned": sum(1 for m in mapped if m["call"] is None)}
-    out["granularity"] = audit_granularity(case, mapped, commi) if not case["proxy"] else \
-        {"claims": [], "counts": {}, "cited": 0, "defects": 0, "proxy": True, "skipped": "no writer material"}
-    out["provenance"] = audit_provenance(case, mapped, judge, args.batch, args.material_chars)
-    out["understanding"] = audit_understanding(case, judge, analysed)
-    out["role"] = audit_role(case, mapped, judge, args.batch)
+    run = set(getattr(args, "mechanisms", None) or MECHANISMS)
+    if "granularity" not in run:
+        out["granularity"] = {"claims": [], "counts": {}, "cited": 0, "defects": 0, "proxy": case["proxy"],
+                              "skipped": "not run"}
+    else:
+        out["granularity"] = audit_granularity(case, mapped, commi) if not case["proxy"] else \
+            {"claims": [], "counts": {}, "cited": 0, "defects": 0, "proxy": True, "skipped": "no writer material"}
+    out["provenance"] = audit_provenance(case, mapped, judge, args.batch, args.material_chars) \
+        if "provenance" in run else {"sentences": [], "rule_sentences": 0, "counts": {}, "judged": 0, "total": 0,
+                                     "memory_share": None, "proxy": case["proxy"], "skipped": "not run"}
+    out["understanding"] = audit_understanding(case, judge, analysed if "understanding" in run else None)
+    out["role"] = audit_role(case, mapped, judge, args.batch) if "role" in run else \
+        {"role": case.get("role") or {}, "contradictions": [], "sentences": 0, "filtered": [], "judged_sentences": 0,
+         "batches": 0, "failed_batches": 0, "defects": 0, "skipped": "not run"}
     out["grounded"] = grounded_case_totals(case)
     attribute(out)
     return out
@@ -1022,7 +1080,8 @@ def attribute(case_out: Dict[str, Any]) -> None:
     """A provenance defect on a sentence granularity already explains is counted once, as granularity."""
     gran = {c["sentence"] for c in case_out["granularity"]["claims"]
             if c["status"] in ("beyond_truncation", "comma_not_given")}
-    prov = [s for s in case_out["provenance"]["sentences"] if s["verdict"] in ("assente", "contraddetta")]
+    prov = [s for s in case_out["provenance"]["sentences"] if s["verdict"] in ("assente", "contraddetta")
+            and s.get("kind") != "applicazione"]
     case_out["provenance"]["defects_raw"] = len(prov)
     case_out["provenance"]["explained_by_granularity"] = sum(1 for s in prov if s["sentence"] in gran)
     case_out["provenance"]["defects"] = len(prov) - case_out["provenance"]["explained_by_granularity"]
@@ -1044,6 +1103,9 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
     for c in cases:
         prov.update(c["provenance"]["counts"])
     rule = sum(c["provenance"]["rule_sentences"] for c in cases)
+    applied = Counter()
+    for c in cases:
+        applied.update(c["provenance"].get("application_counts") or {})
     triggers = Counter(x["trigger"] or "unjudged" for c in cases for x in c["understanding"]["lost"])
     missed = Counter(x["trigger"] or "unjudged" for c in cases for x in c["understanding"]["lost"]
                      if x["judged"] and not x["captured"])
@@ -1056,7 +1118,7 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"totals": totals, "all": all_defects, "ranked": ranked,
             "share": {m: (totals[m] / all_defects if all_defects else 0.0) for m in MECHANISMS},
             "granularity": dict(gran), "cited": sum(c["granularity"]["cited"] for c in cases),
-            "provenance": dict(prov), "rule_sentences": rule,
+            "provenance": dict(prov), "rule_sentences": rule, "applications": dict(applied),
             "memory_share": (prov["assente"] / rule) if rule else None,
             "contradicted_share": (prov["contraddetta"] / rule) if rule else None,
             "explained_by_granularity": sum(c["provenance"].get("explained_by_granularity", 0) for c in cases),
@@ -1069,12 +1131,101 @@ def summary(cases: List[Dict[str, Any]]) -> Dict[str, Any]:
             "proxy_cases": sum(1 for c in cases if c["proxy"])}
 
 
+def role_by_run(cases: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Per run: answers, sentences, sentences in batches whose judge reply parsed, failed batches, contradictions
+    (the judge's kept flags among parsed sentences, the fixed patterns, either), flags not kept, and the judge's
+    rate per 100 parsed sentences -- the figure to compare runs by (ROLE_BLOCKS_ENABLED on vs off)."""
+    out: Dict[str, Dict[str, Any]] = {}
+    for c in cases:
+        r = c["role"]
+        if r.get("skipped"):
+            continue
+        row = out.setdefault(c["run"], {"answers": 0, "sentences": 0, "judged": 0, "batches": 0, "failed": 0,
+                                        "judge": 0, "pattern": 0, "any": 0, "filtered": 0})
+        items = r["contradictions"]
+        row["answers"] += 1
+        row["sentences"] += r["sentences"]
+        row["judged"] += r.get("judged_sentences", r["sentences"])
+        row["batches"] += r.get("batches", 0)
+        row["failed"] += r.get("failed_batches", 0)
+        row["judge"] += sum(1 for x in items if x.get("judge"))
+        row["pattern"] += sum(1 for x in items if x.get("pattern"))
+        row["any"] += r["defects"]
+        row["filtered"] += len(r.get("filtered") or [])
+    for row in out.values():
+        row["rate"] = 100 * row["judge"] / row["judged"] if row["judged"] else None
+    return out
+
+
+def _rate(x: Optional[float]) -> str:
+    return "-" if x is None else f"{x:.1f}"
+
+
 def grounded_totals(cases: List[Dict[str, Any]]) -> Dict[str, int]:
     """GROUNDED_REVIEW_ENABLED's own counts over the cases (audit_case keeps them per case)."""
     out: Counter = Counter()
     for c in cases:
         out.update(c.get("grounded") or {})
     return dict(out)
+
+
+KINDS = ("regola", "istituto", "procedura", "massima")
+KIND_NAMES = {"regola": "rule", "istituto": "institution", "procedura": "procedure",
+              "massima": "case-law statement", "applicazione": "application to the facts"}
+
+
+def provenance_by_section(cases: List[Dict[str, Any]]) -> Dict[str, Dict[str, Dict[str, int]]]:
+    """{run: {section: {kind: rule-sentences, kind + "_assente": not in material, ...}}} over the judged
+    rule-sentences (proxy answers included, under their own section names)."""
+    out: Dict[str, Dict[str, Dict[str, int]]] = {}
+    for c in cases:
+        for x in c["provenance"]["sentences"]:
+            kind = x.get("kind")
+            if kind == "applicazione":     # reported in its own column, outside "all"
+                cell = out.setdefault(c["run"], {}).setdefault(section_of(x), Counter())
+                cell["applicazione"] += 1
+                cell["applicazione_assente"] += x.get("verdict") == "assente"
+                continue
+            if kind not in KINDS:
+                continue
+            cell = out.setdefault(c["run"], {}).setdefault(section_of(x), Counter())
+            cell[kind] += 1
+            cell["all"] += 1
+            if x.get("verdict") == "assente":
+                cell[f"{kind}_assente"] += 1
+                cell["all_assente"] += 1
+            if x.get("verdict") == "contraddetta":
+                cell["all_contraddetta"] += 1
+    return out
+
+
+def provenance_breakdown(cases: List[Dict[str, Any]]) -> List[str]:
+    """The provenance tables by section and by kind of rule-sentence, one per run: "not in material / rule-sentences
+    (share)" per cell."""
+    data = provenance_by_section(cases)
+    if not data:
+        return []
+    L = ["", "### Not in material, by section and kind (not in material / rule-sentences, share)", ""]
+    order = list(SECTION_NAMES) + ["(other)", "(unassigned)"]
+
+    def cell(k, n):
+        return f"{k} / {n} ({_pct(k / n)})" if n else "-"
+    for run, sections in data.items():
+        L += [f"Run {run}:", "", "| section | " + " | ".join(KIND_NAMES[k] for k in KINDS)
+              + " | all (the target) | contradicted | application to the facts (apart) |",
+              "|---|" + "---:|" * (len(KINDS) + 3)]
+        total: Counter = Counter()
+        for name in sorted(sections, key=lambda n: order.index(n) if n in order else len(order)):
+            row = sections[name]
+            total.update(row)
+            L.append(f"| {name} | " + " | ".join(cell(row[f"{k}_assente"], row[k]) for k in KINDS)
+                     + f" | {cell(row['all_assente'], row['all'])} | {row['all_contraddetta']} | "
+                     f"{cell(row['applicazione_assente'], row['applicazione'])} |")
+        L.append("| **total** | " + " | ".join(cell(total[f"{k}_assente"], total[k]) for k in KINDS)
+                 + f" | {cell(total['all_assente'], total['all'])} | {total['all_contraddetta']} | "
+                 f"{cell(total['applicazione_assente'], total['applicazione'])} |")
+        L.append("")
+    return L
 
 
 def _pct(x: Optional[float]) -> str:
@@ -1136,12 +1287,18 @@ def render(cases: List[Dict[str, Any]], meta: Dict[str, Any], max_examples: int 
     L += [f"| **total** | {sum(c['provenance']['total'] for c in cases)} | {s['rule_sentences']} | "
           f"{k.get('supportata', 0)} | {k.get('assente', 0)} | {k.get('contraddetta', 0)} | {k.get('unjudged', 0)} | "
           f"{_pct(s['memory_share'])} |", "",
-          f"Share of rule-sentences written from memory: {_pct(s['memory_share'])}; contradicting the material: "
-          f"{_pct(s['contradicted_share'])}.", "", "Examples (not in material, then contradicted):"]
+          f"Share of rule-sentences (statements of the law or of case law) written from memory: "
+          f"{_pct(s['memory_share'])} (target < 10%); contradicting the material: {_pct(s['contradicted_share'])}.",
+          f"Applications of a rule to the case's facts, apart (not rule-sentences, not in the target): "
+          f"{sum(s['applications'].values())}, of which not in material {s['applications'].get('assente', 0)}, "
+          f"contradicted {s['applications'].get('contraddetta', 0)}.", "", "Examples (not in material, then contradicted):"]
     ex = sorted(((c["key"], x) for c in cases for x in c["provenance"]["sentences"]
-                 if x["verdict"] in ("assente", "contraddetta")), key=lambda kx: kx[1]["verdict"] != "contraddetta")
+                 if x["verdict"] in ("assente", "contraddetta") and x.get("kind") != "applicazione"),
+                key=lambda kx: kx[1]["verdict"] != "contraddetta")
     L += [f"- {key} [{x['verdict']}, {x['kind']}, {x['stage']}]: «{_cut(x['sentence'])}»"
           + (f" — material: «{_cut(x['evidence'], 120)}»" if x["evidence"] else "") for key, x in ex[:max_examples]] or ["- none"]
+
+    L += provenance_breakdown(cases)
 
     # --- 3
     L += ["", f"## {TITLES['understanding']}", "",
@@ -1196,7 +1353,16 @@ def render(cases: List[Dict[str, Any]], meta: Dict[str, Any], max_examples: int 
                  f"({sum(1 for x in items if x.get('judge'))} / {sum(1 for x in items if x.get('pattern'))}) |")
     L += [f"| **total** | | {sum(c['role']['sentences'] for c in cases)} | {s['totals']['role']} |", "",
           f"Judge flags not kept: {s['role_filtered']} (the other side's objection or move presented as such, or an "
-          f"act of the client's own role).", "", "Examples:"]
+          f"act of the client's own role).", ""]
+    L += ["Per run, over the sentences whose judge reply parsed (a failed or unreadable batch counts in neither "
+          "column; compare runs by the rate):", "",
+          "| run | answers | sentences | judged (parsed) | batches failed | contradicting: judge / pattern / any | "
+          "flags not kept | judge per 100 judged |", "|---|---:|---:|---:|---:|---:|---:|---:|"]
+    for run, r in role_by_run(cases).items():
+        L.append(f"| {run} | {r['answers']} | {r['sentences']} | {r['judged']} | {r['failed']} of {r['batches']} | "
+                 f"{r['judge']} / {r['pattern']} / {r['any']} | {r['filtered']} | "
+                 f"{_rate(r['rate'])} |")
+    L += ["", "Examples:"]
     ex = [(c["key"], x) for c in cases for x in c["role"]["contradictions"]]
     L += [f"- {key}: «{_cut(x['sentence'])}» — {_cut(x['why'], 120)}" for key, x in ex[:max_examples]] or ["- none"]
 
@@ -1251,6 +1417,8 @@ def main(argv=None) -> int:
     parser.add_argument("--parallel", type=int, default=4, help="answers audited at once")
     parser.add_argument("--max-examples", type=int, default=10)
     parser.add_argument("--no-judge", action="store_true", help="no model call: granularity and role patterns only")
+    parser.add_argument("--mechanisms", help="comma-separated, of " + ", ".join(MECHANISMS) + " (default all): "
+                        "e.g. role alone, to compare ROLE_BLOCKS_ENABLED runs")
     parser.add_argument("--no-db", action="store_true", help="no Neo4j: no commi")
     parser.add_argument("--report-only", metavar="DIR", help="report again from DIR/audit.json")
     args = parser.parse_args(argv)
@@ -1271,6 +1439,11 @@ def main(argv=None) -> int:
     except ImportError:
         pass
     only = {x.strip() for x in args.only.split(",")} if args.only else None
+    if args.mechanisms:
+        args.mechanisms = [m.strip() for m in args.mechanisms.split(",") if m.strip()]
+        unknown = [m for m in args.mechanisms if m not in MECHANISMS]
+        if unknown:
+            parser.error(f"unknown mechanism(s): {', '.join(unknown)}")
     cases = load(args.runs, only)
     if not cases:
         parser.error("no case in those runs")

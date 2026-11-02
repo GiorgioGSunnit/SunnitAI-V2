@@ -45,6 +45,7 @@ import unicodedata
 from collections import Counter
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from .llm_reply import parse_json_reply
 from . import feature_flags
 from .verbose_logger import vlog
 
@@ -472,9 +473,11 @@ def _rewrite(found: List[str]) -> List[Optional[str]]:
     reply = _call_chat([SystemMessage(content=_REWRITE_SYSTEM),
                         HumanMessage(content=json.dumps(found, ensure_ascii=False))],
                        max_tokens=min(4000, 200 + 120 * len(found)), temperature=0.3)
-    text = re.sub(r"```(?:json)?\s*", "", reply or "").strip().rstrip("`").strip()
-    start, end = text.find("["), text.rfind("]")
-    parsed = json.loads(text[start:end + 1]) if start != -1 and end > start else []
+    try:
+        parsed = parse_json_reply(reply)
+    except ValueError:
+        parsed = []
+    parsed = parsed if isinstance(parsed, list) else []
     out = [p if isinstance(p, str) and p.strip() else None for p in parsed][:len(found)]
     return out + [None] * (len(found) - len(out))
 

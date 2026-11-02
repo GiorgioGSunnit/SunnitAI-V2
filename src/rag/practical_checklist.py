@@ -259,3 +259,89 @@ def gated_checks(areas: Iterable[str], posture_type: str, allowed: Callable[[Tup
         if all(allowed(ref) for ref in item_refs(item)):
             out.append(item)
     return out
+
+
+# --- ANCHORED_WRITING_ENABLED: the procedural institutions of each stage ---------------------------------------------
+# fetch_audit's provenance by section: the procedural section names institutions of another stage or another
+# procedure from memory. Its vocabulary per posture_type (the frame's own), criminal and civil (and administrative);
+# the procedural section names no procedural institution outside it, its VERIFICHE and its procedural texts.
+# DRAFT, pending the lawyer's validation, like the lists above.
+PROCEDURE_VOCABULARY: Dict[str, List[str]] = {
+    "precontenzioso": [
+        "diffida e costituzione in mora", "negoziazione assistita", "mediazione obbligatoria", "transazione",
+        "accertamento tecnico preventivo", "consulenza tecnica preventiva ai fini della composizione della lite",
+        "provvedimento d'urgenza", "sequestro conservativo", "sequestro giudiziario", "ricorso per decreto ingiuntivo",
+        "atto di citazione", "procedimento semplificato di cognizione", "intimazione di sfratto e convalida",
+        "denuncia di nuova opera o di danno temuto", "azioni possessorie (reintegrazione, manutenzione)",
+    ],
+    "giudizio_civile_primo_grado": [
+        "comparsa di costituzione e risposta", "domanda riconvenzionale", "chiamata in causa del terzo",
+        "eccezioni di merito e di rito (prescrizione, decadenza, incompetenza, difetto di legittimazione)",
+        "memorie integrative", "prova testimoniale", "consulenza tecnica d'ufficio", "ordine di esibizione",
+        "interrogatorio formale", "giuramento", "provvedimenti cautelari in corso di causa",
+        "ordinanza di accoglimento o di rigetto in corso di causa", "conciliazione giudiziale",
+        "precisazione delle conclusioni", "sentenza", "opposizione a decreto ingiuntivo",
+    ],
+    "sentenza_civile_primo_grado": [
+        "appello", "termine breve e termine lungo per impugnare", "appello incidentale",
+        "sospensione dell'efficacia esecutiva della sentenza", "acquiescenza", "correzione dell'errore materiale",
+        "revocazione", "esecuzione della sentenza",
+    ],
+    "sentenza_civile_appello": [
+        "ricorso per cassazione", "motivi di ricorso", "controricorso", "ricorso incidentale",
+        "sospensione dell'esecuzione della sentenza d'appello", "revocazione", "giudizio di rinvio",
+    ],
+    "esecuzione_civile": [
+        "titolo esecutivo", "precetto", "pignoramento mobiliare, immobiliare e presso terzi",
+        "opposizione all'esecuzione", "opposizione agli atti esecutivi", "opposizione di terzo all'esecuzione",
+        "sospensione dell'esecuzione", "conversione del pignoramento", "intervento dei creditori",
+        "distribuzione del ricavato",
+    ],
+    "indagini_preliminari": [
+        "denuncia", "querela e sua remissione", "informazione di garanzia", "nomina del difensore",
+        "elezione di domicilio", "interrogatorio", "investigazioni difensive", "memorie e richieste della difesa",
+        "avviso di conclusione delle indagini", "richiesta di archiviazione e opposizione",
+        "incidente probatorio", "misure cautelari e riesame", "sequestro e riesame", "richiesta di rinvio a giudizio",
+        "udienza preliminare", "giudizio abbreviato", "applicazione della pena su richiesta",
+        "sospensione del procedimento con messa alla prova", "oblazione", "costituzione di parte civile",
+        "diritti e facoltà della persona offesa",
+    ],
+    "giudizio_penale_primo_grado": [
+        "questioni preliminari", "costituzione di parte civile", "citazione del responsabile civile",
+        "riti alternativi nei termini previsti", "lista dei testimoni", "istruzione dibattimentale",
+        "esame e controesame", "perizia e consulenza tecnica", "proscioglimento immediato",
+        "sentenza di assoluzione o di condanna", "provvisionale", "sospensione condizionale della pena",
+        "particolare tenuità del fatto", "circostanze attenuanti", "remissione di querela",
+    ],
+    "condanna_primo_grado": [
+        "appello", "termine per l'appello", "motivi specifici", "motivi nuovi", "rinnovazione dell'istruzione",
+        "concordato in appello", "divieto di reformatio in peius", "impugnazione della parte civile",
+        "prescrizione del reato", "improcedibilità per superamento dei termini del giudizio di impugnazione",
+        "sospensione dell'esecuzione della pena",
+    ],
+    "sentenza_penale_appello": [
+        "ricorso per cassazione", "motivi di ricorso", "inammissibilità", "motivi nuovi", "revisione",
+        "rescissione del giudicato", "incidente di esecuzione",
+    ],
+    "provvedimento_amministrativo": [
+        "ricorso al tribunale amministrativo regionale", "notifica al controinteressato", "motivi aggiunti",
+        "domanda cautelare", "ricorso straordinario al Presidente della Repubblica", "accesso agli atti",
+        "autotutela", "azione di risarcimento", "appello al Consiglio di Stato",
+    ],
+    "silenzio_amministrazione": [
+        "diffida a provvedere", "azione avverso il silenzio", "nomina del commissario ad acta", "accesso agli atti",
+        "azione di risarcimento del danno da ritardo",
+    ],
+    "giudicato_amministrativo_non_eseguito": [
+        "ricorso per l'ottemperanza", "nomina del commissario ad acta", "penalità di mora",
+        "azione di risarcimento",
+    ],
+}
+VOCABULARY_TITLE = "ISTITUTI PROCESSUALI DI QUESTA FASE"
+VOCABULARY_RULE = ("Nomina solo gli istituti processuali di ISTITUTI PROCESSUALI DI QUESTA FASE, delle VERIFICHE e dei "
+                   "TESTI DELLE NORME PROCESSUALI: nessun altro rito, atto, termine o rimedio.")
+
+
+def procedure_vocabulary(posture_type: str) -> List[str]:
+    """The procedural institutions of the stage (PROCEDURE_VOCABULARY), [] for "altro" or an unknown one."""
+    return list(PROCEDURE_VOCABULARY.get(posture_type or "", []))

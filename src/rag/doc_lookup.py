@@ -1,7 +1,6 @@
 """Document-name lookup, query classification and reference extraction helpers."""
 
 import difflib
-import json
 import logging
 import os
 import re
@@ -10,6 +9,7 @@ from typing import List, Set
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import _call_chat
+from .llm_reply import parse_json_reply
 from .utils import _ALL_SCHEMA_LABELS, _parse_json_list, _strict_filter_relations
 
 logger = logging.getLogger(__name__)
@@ -383,11 +383,7 @@ def _classify_query_intent(
             timeout=_INTENT_CLASSIFIER_TIMEOUT,
         )
         raw = response.choices[0].message.content.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:].strip()
-        result = json.loads(raw)
+        result = parse_json_reply(raw)
 
         doc_a_id = _resolve_doc_name(result.get("doc_a", ""), docs)
         doc_b_id = _resolve_doc_name(result.get("doc_b", ""), docs)

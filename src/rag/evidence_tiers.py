@@ -3,7 +3,8 @@ carried on each row as _tier / _tier_why; every rule below acts only on rows tha
 the step it changes, so a run without the fusion pool behaves as before.
 
   T1  named in the request or the case; resolved from a fired fact rule (or a procedural tool / regime the facts call
-      for); found by an exact heading match of one of the analysis' institutions.
+      for) or from a fact's institution (FACT_ISSUES_RESOLVER_V2_ENABLED); found by an exact heading match of one of
+      the analysis' institutions.
   T2  applied by MIN_RULINGS or more of the top similar rulings of the case's area (the vote or the map), or found by
       two or more independent channels.
   T3  one channel only.
@@ -79,6 +80,8 @@ def tier_of(row: Dict[str, Any], named: set, fact_refs: set, exact_refs: set) ->
     ref = row.get("_article")
     if ref in named:
         return T1, "named in the case"
+    if row.get("_fact_institution"):           # FACT_ISSUES_RESOLVER_V2_ENABLED: reached from a fact's institution
+        return T1, "fact institution"
     if ref in fact_refs or row.get("_regime"):
         return T1, "fact rule"
     if ref in exact_refs or row.get("_heading_exact"):

@@ -420,8 +420,9 @@ def test_an_answer_and_its_sources_go_to_a_docx(tmp_path):
     text = "\n".join(p.text for p in Document(out).paragraphs)
     for part in ("Risposta 1", "Che cosa può fare Tizio?", "1. Risposte ai quesiti", "Tizio può agire ex art. 1051 c.c.",
                  "prova del passaggio", "Fonti citate", "Norme", "Codice Civile 2026", "Art. 1051 — Passaggio coattivo",
-                 "Giurisprudenza", "Il fondo intercluso ha diritto..."):
+                 "Giurisprudenza", "Cass. civ., sez. II, n. 1/2026"):
         assert part in text
+    assert "Il fondo intercluso ha diritto..." not in text                       # a ruling's reference, never its passage
     assert "Configurazione" not in text                                          # blind
     docx_script.build(record, out, "Risposta", "", ["FACT_SIGNALS_ENABLED=true"])
     assert "FACT_SIGNALS_ENABLED=true" in "\n".join(p.text for p in Document(out).paragraphs)

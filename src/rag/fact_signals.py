@@ -37,7 +37,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import feature_flags
-from .ai_chat import _call_chat, parse_json_reply
+from .ai_chat import _call_chat, last_reply, parse_json_reply
+from . import article_text
+from .llm_reply import salvage_json
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -55,7 +57,7 @@ RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fact_sign
 TODAY_ENV = "FACT_SIGNALS_TODAY"
 MAX_CENTRAL = 6                         # institutions the fired rules add as central issues, in the rules' order
 _CASE_CHARS = 12000
-_EXTRACT_TOKENS = 3500                  # run 1415's longest cases (n2, n9) came back cut at 1800
+_EXTRACT_TOKENS = 5000                  # run 1415's longest cases (n2, n9) came back cut at 1800
 
 
 def enabled() -> bool:
@@ -112,7 +114,7 @@ EVENT_KINDS = ("vendita", "divisione", "successione", "donazione", "consegna", "
 TRANSFER_KINDS = ("compravendita", "donazione", "successione", "divisione", "usucapione", "costituzione", "altro")
 _TRANSFER_SYNONYMS = ((r"vend|compr|acquist", "compravendita"), (r"don", "donazione"),
                       (r"succe|eredit|testament", "successione"), (r"divis|frazion|separa|lottizz", "divisione"),
-                      (r"usucap", "usucapione"))
+                      (r"usucap", "usucapione"), (r"alien", "compravendita"))
 
 SCHEMA: Dict[str, Any] = {
     "parties": [{"name": "", "role": "", "age": ""}],
@@ -156,7 +158,8 @@ _EXTRACT_SYSTEM = (
     "scritte), period (il periodo come scritto, per esempio \"all'inizio del 1900\", \"fino al 1950\"), together_with "
     "(gli altri beni che lo stesso proprietario aveva insieme a questo in quel periodo, o vuoto), how_acquired e "
     "ended_by (come lo ha acquistato e come ha smesso di esserne proprietario, tra: " + ", ".join(TRANSFER_KINDS)
-    + ")}.\n"
+    + "; ended_by è obbligatorio quando una voce successiva mostra quel bene diviso, frazionato o passato ad altri: "
+    "per un bene unico poi in mano a proprietari diversi, «divisione»)}.\n"
     "- possession: chi possiede o usa un bene o un passaggio {who, asset, since e until (da quando e fino a quando, "
     "come scritto), how (come scritto: pacifico, continuo, pubblico, violento, clandestino, con tolleranza...), use "
     "(che uso: passaggio, coltivazione, abitazione, parcheggio...), still_ongoing (sì/no)}; \"con tolleranza\" o "
@@ -196,6 +199,8 @@ _EXTRACT_REGIMES = (
     "può cambiare o andare perduto: riparazioni, smaltimento, lavori), urgenza (un evento o una scadenza "
     "imminente)}; lista vuota se il testo non ne riferisce.\n"
 )
+_COMPACT_SUFFIX = ("\n\nLa risposta precedente è stata troncata: rispondi di nuovo con lo stesso JSON, completo, più compatto: "
+                   "valori brevi, nessuna ripetizione, senza omettere chiavi.")
 _RETRY_SUFFIX = ("\n\nLa risposta precedente non era un JSON valido con quelle chiavi. Rispondi SOLO con l'oggetto "
                  "JSON, dal primo carattere.")
 
@@ -248,6 +253,8 @@ def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> 
     for item in out.get("property_history") or []:
         for field in ("how_acquired", "ended_by"):
             item[field] = _enum(item.get(field, ""), TRANSFER_KINDS, _TRANSFER_SYNONYMS)
+    out["split_into_parts"] = splits(out.get("property_history") or [])
+    _infer_transfers(out.get("property_history") or [])
     for key, field in (("events", "date"), ("proceedings", "date"), ("possession", "since"), ("possession", "until"),
                        ("works_or_signs", "existing_since"), ("property_history", "from"), ("property_history", "to"),
                        ("property_history", "period")):
@@ -287,6 +294,65 @@ def _sentences_of(text: str) -> List[str]:
     return [x.strip() for x in re.split(r"(?<=[.;!?])\s+|\n+", text or "") if x.strip()]
 
 
+# Words that name any plot: two assets sharing only these are not shown to be the same land.
+_ASSET_GENERIC = frozenset("terreno terreni fondo fondi podere poderi particella particelle appezzamento appezzamenti lotto "
+                           "lotti immobile immobili proprieta proprietà bene beni parte parti area aree confinante "
+                           "confinanti della delle dello degli".split())
+SEQUENCE_DEDUCED = "dedotto dalla sequenza dei proprietari"
+
+
+def _asset_words(text: Any) -> set:
+    return {w[:7] for w in re.findall(r"[a-zà-ù0-9]+", _low(text)) if w not in _ASSET_GENERIC
+            and w not in ("di", "del", "dei", "e", "ed", "il", "la", "lo", "i", "le", "a", "al", "o", "su", "in", "con")}
+
+
+def _named_in(owner: str, text: str) -> bool:
+    return bool(owner) and re.search(rf"\b{re.escape(owner)}\b", text) is not None
+
+
+def _parts_of(entry: Dict[str, Any], later: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], bool]:
+    """(the later entries holding this asset or a part of it, whether it was split): other owners whose asset it names,
+    shares its own words with, or lists in together_with. Split: two named owners, two distinct parts, or an owner holding
+    only a part. The same asset passing on, from one owner to the next, is no split however long the chain."""
+    owner = _low(entry.get("owner"))
+    text = f"{_low(entry.get('asset'))} {_low(entry.get('together_with'))}"
+    words = _asset_words(entry.get("asset")) | _asset_words(entry.get("together_with"))
+    parts = [h for h in later if _low(h.get("owner")) not in ("", owner)
+             and (_named_in(_low(h.get("owner")), text) or words & _asset_words(h.get("asset")))]
+    named = {_low(h.get("owner")) for h in parts if _named_in(_low(h.get("owner")), text)}
+    assets = {frozenset(_asset_words(h.get("asset"))) for h in parts} - {frozenset()}
+    return parts, len(named) >= 2 or len(assets) >= 2 or any(a < words for a in assets)
+
+
+def splits(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The assets one owner held and others later held in parts, by the sequence alone: whatever ended_by says, which is a
+    word the model may vary from one run to the next (art. 1062 c.c. covers division and alienation in parts alike)."""
+    out = []
+    for i, entry in enumerate(history):
+        owner = str(entry.get("owner") or "").strip()
+        parts, split = _parts_of(entry, history[i + 1:])
+        if owner and split:
+            out.append({"asset": entry.get("asset") or "", "owner": owner, "how": SEQUENCE_DEDUCED,
+                        "parts": ", ".join(dict.fromkeys(str(h.get("owner")).strip() for h in parts))})
+    return out
+
+
+def _infer_transfers(history: List[Dict[str, Any]]) -> None:
+    """A field the model left empty, from the sequence, in place, for the terms and dates reading it: "divisione" for a
+    split, the parts' how_acquired too; "altro" for an asset passing whole, the sequence not saying how. Never over a
+    field the model filled in. ended_by_how says it was deduced."""
+    for i, entry in enumerate(history):
+        if not _low(entry.get("owner")) or _low(entry.get("ended_by")):
+            continue
+        parts, split = _parts_of(entry, history[i + 1:])
+        if not parts:
+            continue
+        entry["ended_by"], entry["ended_by_how"] = "divisione" if split else "altro", SEQUENCE_DEDUCED
+        for later in parts if split else ():
+            if not _low(later.get("how_acquired")):
+                later["how_acquired"], later["how_acquired_how"] = "divisione", SEQUENCE_DEDUCED
+
+
 def _work_since(out: Dict[str, Any], case_text: str) -> None:
     """A work with no existing_since: the date of a sentence saying the work already existed then ("la strada
     esisteva già all'inizio del 1900"); else, for a work that existed before the separation, the date the common
@@ -300,8 +366,10 @@ def _work_since(out: Dict[str, Any], case_text: str) -> None:
             r"[a-zà-ù]{4,}", _low(x))} for d in [_written_date(x)] if d), "")
         how = "il testo: esisteva già"
         if not written and _yes(work.get("before_separation")):
+            split_assets = {(s["asset"], s["owner"]) for s in out.get("split_into_parts") or []}
             written = next((h.get(f) for h in out.get("property_history") or [] for f in ("to", "period")
-                            if h.get(f) and parse_date(h[f]) and (_low(h.get("together_with"))
+                            if h.get(f) and parse_date(h[f]) and ((h.get("asset"), h.get("owner")) in split_assets
+                                                                  or _low(h.get("together_with"))
                                                                   or h.get("ended_by") in ("divisione", "compravendita"))), "")
             how = "la fine della proprietà comune (esisteva già alla divisione o vendita)"
         if written:
@@ -437,20 +505,34 @@ def extract_facts(case_text: str, raw_replies: Optional[List[str]] = None) -> Tu
     base = _EXTRACT_SYSTEM.replace("Sii conciso:", _EXTRACT_REGIMES.lstrip("\n") + "Sii conciso:") \
         if regimes_enabled() else _EXTRACT_SYSTEM
     system, problem = base, ""
+    salvaged = None
     for attempt in (1, 2):
+        last_reply.finish_reason = None
+        cut = False
         try:
             raw = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                              max_tokens=_EXTRACT_TOKENS, temperature=0)
             if raw_replies is not None:
                 raw_replies.append(raw)
+            cut = getattr(last_reply, "finish_reason", None) == "length"
             facts = validate_facts(_parse_or_repair(raw), case_text)
         except Exception as exc:
             facts, problem = None, f"{type(exc).__name__}: {str(exc)[:160]}"
+        if cut:
+            # what follows the cut is lost, and a rule may need it: the complete items are kept, and it is asked once
+            # more, compact
+            logger.warning("fact extraction: reply cut at %d tokens (attempt %d), %s", _EXTRACT_TOKENS, attempt,
+                           "complete items kept" if facts is not None else "nothing complete")
+            vlog("llm_reply_cut", {"call": "extract_facts", "max_tokens": _EXTRACT_TOKENS, "attempt": attempt,
+                                   "salvaged": facts is not None})
+            salvaged = facts if facts is not None else salvaged
+            system = base + _COMPACT_SUFFIX
+            continue
         if facts is not None:
             return facts, ""
         problem = problem or "reply is not a JSON object with the schema's keys"
         system = base + _RETRY_SUFFIX
-    return None, problem
+    return (salvaged, "") if salvaged is not None else (None, problem or "reply cut at the token limit twice")
 
 
 def _parse_or_repair(raw: str) -> Any:
@@ -464,43 +546,11 @@ def _parse_or_repair(raw: str) -> Any:
     if isinstance(value, dict) and set(value) & set(SCHEMA):
         return value
     try:
-        return _repaired(raw)
+        return salvage_json(raw)
     except ValueError:
         if value is None:
             raise
         return value
-
-
-def _repaired(raw: str) -> Any:
-    text = raw or ""
-    start = text.find("{")
-    if start < 0:
-        raise ValueError("no JSON object in the reply")
-    stack, in_string, escape, safe = [], False, False, None
-    for i in range(start, len(text)):
-        ch = text[i]
-        if in_string:
-            if escape:
-                escape = False
-            elif ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-            continue
-        if ch == '"':
-            in_string = True
-        elif ch in "{[":
-            stack.append("}" if ch == "{" else "]")
-        elif ch in "}]":
-            if stack:
-                stack.pop()
-            safe = (i + 1, list(stack))
-            if not stack:
-                break
-    if not safe:
-        raise ValueError("the reply is cut before any complete value")
-    end, still_open = safe
-    return json.loads(text[start:end] + "".join(reversed(still_open)))
 
 
 # --- 2. dates and terms ----------------------------------------------------------------------------
@@ -583,6 +633,15 @@ def latest_fact(facts: Optional[Dict[str, Any]]) -> Optional[Tuple[str, Tuple[dt
     items = [(i[1], i[0], i[2]) for i in _events(facts or {}, r".") + starts] \
         + [(i[1], i[3], i[4]) for i in starts if i[3]]
     return max(items, key=lambda x: x[1][0], default=None)
+
+
+_NON_OWNER_RE = r"a non domino|non (?:era|fosse|è) (?:il |la )?(?:\w+ )?proprietari|non proprietari|da chi non (?:era|fosse)"
+
+
+def _title_from_non_owner(facts: Dict[str, Any]) -> bool:
+    """Art. 1159 c.c. needs a title from one who was not the owner, transcribed: an ordinary purchase is neither."""
+    text = _texts(facts, ("events", "contracts", "property_history", "possession"))
+    return bool(re.search(_NON_OWNER_RE, text) and re.search(r"trascri", text))
 
 
 def _status_to_now(facts, start, years=0, months=0, days=0) -> Tuple[str, str, str]:
@@ -713,8 +772,7 @@ TERMS: List[Term] = [
          since="di possesso continuato"),
     Term("usucapione_abbreviata", "usucapione abbreviata (solo con titolo idoneo trascritto e buona fede)",
          "art. 1159 c.c.", "", "", years=10, word="decennio di possesso",
-         applies=lambda f: any(re.search(r"trascri|rogito|atto pubblico|compravendit|donazion", _low(p.get("how_acquired")))
-                               for p in f.get("property_history") or []),
+         applies=lambda f: _title_from_non_owner(f),
          start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))],
          since="dalla trascrizione del titolo"),
     Term("usucapione_mobili", "usucapione di beni mobili (10 anni in buona fede; 20 altrimenti)", "art. 1161 c.c.",
@@ -1049,7 +1107,28 @@ def _p_work(facts, terms, arg):
     return False
 
 
+# What ended an ownership, or began the next, when the parts end with different owners.
+_SEPARATING = frozenset(("divisione", "vendita", "compravendita", "alienazione", "donazione", "successione"))
+
+
+def _stated_separation(history: List[Dict[str, Any]]) -> bool:
+    """The model states a transfer and the asset ends with two different owners, the assets too generic for the sequence
+    to link ("fondo"), though not two plots each named as its own. An owner who passed it on is not where it ended."""
+    for i, entry in enumerate(history):
+        owner, words = _low(entry.get("owner")), _asset_words(entry.get("asset"))
+        later = [h for h in history[i + 1:] if _low(h.get("owner")) not in ("", owner)
+                 and (not words or not _asset_words(h.get("asset")) or words & _asset_words(h.get("asset")))]
+        stated = _low(entry.get("ended_by")) in _SEPARATING or any(_low(h.get("how_acquired")) in _SEPARATING for h in later)
+        ended_with = {_low(h.get("owner")) for h in later if _low(h.get("ended_by")) not in _SEPARATING}
+        if owner and stated and len(ended_with) >= 2:
+            return True
+    return False
+
+
 def _p_common_owner(facts, terms, arg):
+    history = facts.get("property_history") or []
+    if facts.get("split_into_parts") or splits(history) or _stated_separation(history):
+        return True
     by_owner: Dict[str, set] = {}
     for p in facts.get("property_history") or []:
         owner = _low(p.get("owner"))
@@ -1162,6 +1241,9 @@ def load_rules(path: str = RULES_FILE) -> List[Dict[str, Any]]:
         for lo_hi in rule["ranges"]:
             if not (isinstance(lo_hi, list) and len(lo_hi) == 2 and all(isinstance(n, int) for n in lo_hi)):
                 raise ValueError(f"rule {rule['id']!r}: a range is [first, last] article number")
+        for ref in rule.get("requires") or []:
+            if not re.fullmatch(r"\d+(?:-[a-z]+)? \S.*", str(ref)):
+                raise ValueError(f"rule {rule['id']!r}: requires {ref!r}: \"N code\", as \"1079 c.c.\"")
         if rule["id"] in seen:
             raise ValueError(f"rule {rule['id']!r} twice")
         seen.add(rule["id"])
@@ -1226,6 +1308,7 @@ def fire_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
             fired.append({"id": rule["id"], "area": rule["area"], "institutions": _institutions(rule),
                           "codice": rule["codice"], "ranges": rule.get("ranges") or [], "why": rule["why"],
                           "status": rule["status"], "acquired_right": bool(rule.get("acquired_right")),
+                          "requires": [tuple(r.split(" ", 1)) for r in rule.get("requires") or []],
                           "matched": why_fired(rule, facts, terms)})
     return fired
 
@@ -1298,9 +1381,12 @@ def _evidence(condition: Dict[str, Any], facts: Dict[str, Any], terms: List[Dict
                          + (f", prima della divisione {w.get('before_separation')}" if w.get("before_separation") else "")
                          for w in facts.get("works_or_signs") or [])[:200]
     if name == "common_previous_owner":
+        found = facts.get("split_into_parts") or splits(facts.get("property_history") or [])
+        if found:
+            return "; ".join(f"unico proprietario {s['owner']}, poi alienato in parti (dedotto dalla sequenza)" for s in found)[:200]
         return "; ".join(f"{p.get('asset')} di {p.get('owner')}" + (f" {p.get('period')}" if p.get("period") else "")
                          + (f" insieme a {p.get('together_with')}" if p.get("together_with") else "")
-                         + (f", finita per {p.get('ended_by')}" if p.get("ended_by") else "")
+                         + (f", finita per {p.get('ended_by')}" + (" (dedotto)" if p.get("ended_by_how") else "") if p.get("ended_by") else "")
                          for p in facts.get("property_history") or [])[:200]
     if name == "landlocked":
         if not facts.get("access"):
@@ -1350,7 +1436,7 @@ def keep_resolved(istituto: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[
     for row in rows:
         number = (row.get("_article") or ("",))[0]
         s = row.get("s") or {}
-        rubrica = " ".join(str(s.get("titolo_articolo") or s.get("title") or "").split())
+        rubrica = article_text.heading(s)
         if ranges and not _in_ranges(number, ranges):
             continue
         if not words & _stems(rubrica):
@@ -1413,6 +1499,11 @@ def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
                     "tools": procedural_tools(facts, areas, request), "damages": damage_heads(facts),
                     "multi_roles": multiple_roles(facts)})
     vlog("case_analysis_fact_signals", {**out, "central": all_central(out)})
+    if facts:
+        vlog("fact_rules", {"rules": [
+            f"{'FIRED' if r['fired'] else 'not fired'} {r['id']}" + (f" ({r['skipped']})" if r["skipped"] else "") + ": "
+            + "; ".join(f"{'sì' if c['matched'] else 'NO'} {c['text']}" + (f" — «{c['fact']}»" if c["fact"] else "")
+                        for c in r["conditions"]) for r in explain_rules(facts, terms, areas=areas)]})
     return out
 
 

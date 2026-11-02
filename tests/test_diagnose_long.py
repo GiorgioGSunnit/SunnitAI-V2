@@ -475,3 +475,103 @@ def test_evidence_rows_and_repeats_in_compare():
     report = dl.write_report(dirs[1], ev)
     body = open(report, encoding="utf-8").read()
     assert "## Repetitions" in body and "## Evidence tiers" in body and "1 cases run" in body
+
+
+def test_expected_articles_lost_with_anchored_writing_s_removed_and_rewritten_sentences():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    new_rec["anchored"] = {"totals": {"sentences": 9, "anchored": 4, "rewritten": 1, "removed": 1, "kept_checked": 2,
+                                      "overlap_failures": {"0-5%": 1}},
+                           "entries": [{"how": "removed", "cited": ["56 c.p."]},
+                                       {"how": "rewritten", "cited": ["61 c.p."], "new": "Ora l'art. 61 c.p. vale."},
+                                       {"how": "rewritten", "cited": ["2043 c.c."], "new": "La regola generale."},
+                                       {"how": "citation dropped", "cited": ["43 c.p.", "584 c.p."],
+                                        "dropped": ["43 c.p."]},
+                                       {"how": "kept", "cited": ["56 c.p."]}]}
+    case = dl.analyse_case(new_rec, ev)
+    # 61 is still in the rewrite, 584 was not dropped and is mentioned anyway
+    assert case["anchored_lost"] == [("2043 c.c.", "rewritten"), ("43 c.p.", "citation dropped"),
+                                     ("56 c.p.", "removed")]
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("live", old_rec), ("candidate", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    text = dl.compare(dirs, ev)
+    assert "| anchored writing: anchored / failing rewritten / kept / removed | off | 4 / 1 / 2 / 1 |" in text
+    assert "| expected articles lost in removed / rewritten / citation-dropped sentences (anchored writing) | off | " \
+           "1 / 1 / 1 |" in text
+
+
+def test_abstentions_per_answer_in_compare():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    from src.rag import grounded_review
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    line = f"{grounded_review.ABSTENTION_START} custodia: da verificare."
+    new_rec["draft"] = f"{line}\n{line}\nAltro testo."
+    assert dl.analyse_case(new_rec, ev)["abstentions"] == 2
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("live", old_rec), ("abstain", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    assert "| abstentions per answer (GROUNDED_REVIEW_POLICY=abstain) | 0.0 | 2.0 |" in dl.compare(dirs, ev)
+
+
+def test_fact_institution_articles_placed_and_reached_in_compare():
+    import copy
+    import json as _json
+    import os as _os
+    import tempfile
+    old_rec = _record()
+    new_rec = copy.deepcopy(old_rec)
+    new_rec["events"] = list(new_rec.get("events") or []) + [["case_analysis_plan_fact_institutions", {
+        "reached": ["2043 c.c.", "1495 c.c.", "61 c.p."], "placed": ["2043 c.c.", "1495 c.c."],
+        "issues_added": ["Responsabilità del precettore"], "merged_into": {}}]]
+    assert dl.analyse_case(new_rec, ev)["fact_placed"] == {"reached": 3, "placed": 2, "expected_reached": 2,
+                                                          "expected_placed": 1, "issues_added": 1}
+    root = tempfile.mkdtemp()
+    dirs = []
+    for name, rec in (("live", old_rec), ("v2", new_rec)):
+        _os.makedirs(_os.path.join(root, name, "cases"))
+        with open(_os.path.join(root, name, "cases", "x1.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        dirs.append(_os.path.join(root, name))
+    assert ("| fact-institution articles placed / reached (expected: placed / reached; issues added) | off | "
+            "2 / 3 (1 / 2; 1) |") in dl.compare(dirs, ev)
+
+
+def test_the_report_shows_closure_cover_grading_and_foreign_acts():
+    rec = {**_record(),
+           "closure": {"verified": ["2059 c.c."], "counts": {"verified": 1, "not found": 2, "incompatible": 1}, "remaining": 0,
+                       "resolved": {"explicit": 9, "nearest": 2}, "citations_removed": 2, "sentences_dropped": 1},
+           "plan_cover": {"missing": ["1382 c.c.", "252 TUEL"], "inserted": 1,
+                          "entries": [{"article": "1382 c.c.", "issue": "Penale", "how": "inserted", "sentence": "La penale."},
+                                      {"article": "252 TUEL", "how": "refused", "why": "cites a ruling"}]},
+           "check_result": {"unchecked_labels": ["9 c.c."], "max_checked": 72},
+           "answer": {"mentioned": ["584 c.p.", "643 Sicurezza Urbana 2026"], "mentioned_eval": [["584", "cp"]]}}
+    case = dl.analyse_case(rec, ev)
+    assert case["closure"]["verified"] == ["2059 c.c."] and case["closure"]["not_found"] == 2
+    assert case["plan_cover"]["inserted"] == 1 and case["grade_slots"]["unchecked"] == 1
+    assert case["foreign_acts"] == ["643 Sicurezza Urbana 2026"]
+    report = dl.render([case], [])
+    assert "1 verified and made material; removed: 2 not found, 1 incompatible" in report
+    assert "Plan articles no section cited: 2, 1 written in; refused:" in report and "252 TUEL (cites a ruling)" in report
+    assert "Articles left ungraded past the limit: 1." in report and "643 Sicurezza Urbana 2026" in report
+    assert "explicit 9, nearest 2" in report
+
+
+def test_the_capture_sees_the_closure_s_log():
+    assert "src.rag.citation_closure" in dl._PREIMPORT      # a module imported later would log past the capture

@@ -9,13 +9,17 @@ Configuration via environment variables (see .env.example).
 
 import logging
 import re
+import sys
+import threading
 import os
 from typing import List, Optional, Union
 
 from dotenv import load_dotenv
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from .llm_reply import parse_json_reply, strip_think  # noqa: F401  (parse_json_reply: imported from here by the pipeline)
 from .models import DocumentEntities
+from .verbose_logger import vlog
 
 load_dotenv()
 
@@ -165,6 +169,39 @@ def _overflow_sizes(error_text: str, messages) -> Optional[tuple]:
     return None
 
 
+_PLUMBING = {"_caller", "_reply_text", "_call_chat", "_chat", "_chat_json", "_cut_json", "call_chat", "once"}
+# The last reply on this thread as it arrived, for diagnose_long's dumps: _call_chat returns it cleaned.
+last_reply = threading.local()
+
+
+def _caller() -> str:
+    """The function that asked for this reply, past the plumbing, for the logs."""
+    frame = sys._getframe(1)
+    while frame is not None and frame.f_code.co_name in _PLUMBING:
+        frame = frame.f_back
+    return frame.f_code.co_name if frame is not None else "?"
+
+
+def _reply_text(response, max_tokens: Optional[int] = None) -> str:
+    """The reply without its reasoning. A reply that held some is logged, and so is one that came back empty. max_tokens:
+    what the call really had, which an overflow may have lowered below what its caller asked."""
+    raw = response.content or ""
+    finish = (getattr(response, "response_metadata", None) or {}).get("finish_reason")
+    last_reply.raw, last_reply.finish_reason, last_reply.max_tokens = raw, finish, max_tokens
+    call = _caller()
+    vlog("llm_call", {"call": call, "finish_reason": finish, "chars": len(raw), "max_tokens": max_tokens})
+    if finish == "length":
+        logger.warning("model reply cut at its token limit: %s (%d characters, max_tokens %s)", call, len(raw), max_tokens)
+    text = strip_think(raw)
+    if text != raw.strip():
+        logger.info("model reply: reasoning removed (%d characters of %d)", len(raw) - len(text), len(raw))
+        vlog("llm_reply_think_stripped", {"removed": len(raw) - len(text), "kept": len(text)})
+    if not text:
+        logger.warning("model reply empty after removing its reasoning (finish_reason=%s, %d characters raw)",
+                       finish, len(raw))
+    return text
+
+
 def _call_chat(
     messages: List[Union[SystemMessage, HumanMessage]],
     max_tokens: Optional[int] = None,
@@ -214,29 +251,7 @@ def _call_chat(
         )
         bind_kwargs["max_tokens"] = room
         response = chat_model.bind(**bind_kwargs).invoke(messages)
-    return response.content.strip()
-
-
-def parse_json_reply(raw: Optional[str]):
-    """The first JSON array or object in a model reply, ignoring code fences
-    and any text before or after it. A strict json.loads failed on production
-    (16 Oct, "Extra data"): the model wrote the list asked for and then more
-    text, and the strategy pipeline lost its article choice. Raises ValueError
-    when the reply holds no JSON."""
-    import json
-    text = re.sub(r"```(?:json)?\s*", "", raw or "").strip().rstrip("`").strip()
-    try:
-        return json.loads(text)
-    except ValueError:
-        pass
-    decoder = json.JSONDecoder()
-    for i, char in enumerate(text):
-        if char in "[{":
-            try:
-                return decoder.raw_decode(text, i)[0]
-            except ValueError:
-                continue
-    raise ValueError("no JSON value in the model's reply")
+    return _reply_text(response, bind_kwargs.get("max_tokens"))
 
 
 def _call_chat_with_tools(
@@ -258,4 +273,7 @@ def _call_chat_with_tools(
         model = chat_model.bind_tools(tools, tool_choice=tool_choice)
     if max_tokens is not None:
         model = model.bind(max_tokens=max_tokens)
-    return model.invoke(messages)
+    response = model.invoke(messages)
+    if isinstance(response.content, str):
+        response.content = strip_think(response.content)
+    return response

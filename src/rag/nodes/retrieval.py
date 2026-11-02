@@ -16,7 +16,7 @@ from ...preprocessing.schema.schema import (
 )
 from ..ai_chat import _call_chat, structured_entities_model
 from ..article_suffix import SUFFIX, canonical_suffix
-from ..article_text import fetch_article, fill_from_rows
+from ..article_text import canonical_only, fetch_article, fill_from_rows
 from ..answer_processing import _visibility_filter
 from .cypher import CROSSREF_SOURCE
 from ..cypher_logger import log_cypher_event, log_cypher_multiline
@@ -30,6 +30,7 @@ from ..doc_lookup import (
     _is_legal_query,
 )
 from ..formatting import _enrich_with_source_metadata, _node_to_dict, _session_lang
+from ..llm_reply import parse_json_reply
 from ..language import language_display_name
 from ..lookup_indexes import CONTEXT_NODE_LIMIT, CONTEXT_VECTOR_INDEXES, FULLTEXT_INDEXES
 from ..lookups import (
@@ -580,9 +581,9 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 [SystemMessage(content=_multi_system), HumanMessage(content=query)],
                 max_tokens=80,
             ).strip()
-            _multi_clean = _multi_raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             try:
-                _multi_results = json.loads(_multi_clean) if _multi_clean.startswith("[") else []
+                _multi_results = parse_json_reply(_multi_raw)
+                _multi_results = _multi_results if isinstance(_multi_results, list) else []
             except Exception:
                 _multi_results = []
 
@@ -625,7 +626,7 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     with driver.session(database=database) as _vs:
                         _exists = _vs.run(
                             "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                            "WHERE (s.name = $num OR s.name STARTS WITH $num + '.') "
+                            "WHERE (s.name = $num OR s.name STARTS WITH $num + '.' OR s.name STARTS WITH $num + '_') "
                             "AND ($doc = '' OR d.name = $doc) "
                             "RETURN count(s) AS cnt",
                             num=_num, doc=_scope_doc,
@@ -697,10 +698,12 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 # Primary search: exact match or standard sub-node prefix
                 records = session.run(
                     "MATCH (d:Document)-[:CONTAINS]->(s:Section)\n"
-                    "WHERE (s.name = $article_number OR s.name STARTS WITH $article_number + '.')\n"
+                    "WHERE (s.name = $article_number OR s.name STARTS WITH $article_number + '.'\n"
+                    "       OR s.name STARTS WITH $article_number + '_')\n"
                     "AND ($law_hint = '' OR d.id = $law_hint)\n"
                     f"AND {_visibility_filter()}\n"
-                    "RETURN d, s LIMIT 15",
+                    "OPTIONAL MATCH (s)-[:NEXT]->(after:Section)\n"
+                    "RETURN d, s, after.name AS next LIMIT 300",
                     article_ref=article_ref,
                     article_number=article_number,
                     law_hint=_article_law_hint,
@@ -741,12 +744,12 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                     data = primary_data
                 else:
                     data = [record.data() for record in records]
-                data = [{k: _node_to_dict(v) for k, v in row.items()} for row in data]
+                data = [{k: (v if k == "next" else _node_to_dict(v)) for k, v in row.items()} for row in data]
                 for row in data:
                     row["_source"] = "bm25"
-                # An amended article's "N.0.0" holds only its date in force:
-                # the article's text by the rule every path shares.
+                # The article's whole text by the rule every path shares, on one row per document.
                 fill_from_rows(article_number, data)
+                data = canonical_only(article_number, data)
 
                 # Merge fragment nodes: same article name + same document → one row
                 # This fixes ingestion splits where one article became N Section nodes

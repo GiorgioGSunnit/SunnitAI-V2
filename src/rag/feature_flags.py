@@ -159,13 +159,23 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 material lacks and the case does not name (the
                                 sentence rewritten without it, or dropped:
                                 _cite_only_material). See plan_then_write.
+  CITATION_CLOSURE_ENABLED     false: after writing, every article cited outside the
+                                case's material is read by number and checked
+                                against its sentence: compatible, it becomes
+                                material and a source; not found, incompatible,
+                                outside the case's areas or unresolved, the
+                                citation goes. See citation_closure.py.
+  PLAN_ARTICLES_COVER_ENABLED  false: after writing, a plan article graded 2 or more
+                                that no section cites gets one or two sentences
+                                from its text in its issue's section, through the
+                                same checks. See plan_then_write.cover_plan_articles.
   CHECK_GRADED_ENABLED         false (acts with APPLICABILITY_CHECK_ENABLED): the
                                 check grades each article 0-3 (0 unrelated or
                                 another area, 1 tangential, 2 an issue of the case,
                                 3 its central question) with the issue it serves,
-                                from its rubrica and first 400 characters, for up
-                                to 72 articles (GRADED_MAX_CHECKED sets another
-                                number) (one found by the vote or by two or
+                                from its rubrica and first 400 characters, for
+                                every article (GRADED_MAX_CHECKED sets a limit,
+                                for an A/B) (one found by the vote or by two or
                                 more channels: a doubt between 1 and 2 goes to 2);
                                 grade 0 leaves the pool before the prompt. Articles without a grade (skipped, a cut
                                 reply, a failed call) go once more in smaller
@@ -473,6 +483,11 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 as comma_material (which commi of each article were given), comma_material_plan,
                                 comma_material_fetched. Measured by scripts/fetch_audit.py ("comma not given /
                                 beyond the truncation", target near 0). See src/rag/comma_material.py.
+  ARTICLE_CARDS_ENABLED        false: the writer reads an article's card (ARTICLE_CARDS_FILE, default data/
+                                article_cards.jsonl, from scripts/article_cards_bulk.py): instead of the text for an
+                                article over its budget, beside a short text for the others. Only cards with no check
+                                raised and made from this very text; the reviews still read the official text. See
+                                src/rag/article_cards.py.
   GROUNDED_REVIEW_ENABLED      false (30 Oct, after scripts/fetch_audit.py on run 0812, judged: 28% of the
                                 rule-sentences not in the writer's material, 27% of the cited claims on an
                                 article never given): after the sections, each section's rule / institution /
@@ -483,6 +498,56 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 as a pointer ("va verificata la disciplina dell'art. ...") keeping every
                                 citation; dropped only as filler citing nothing. Supported sentences are never
                                 touched. Logged as grounded_review. See src/rag/grounded_review.py.
+  GROUNDED_REVIEW_STRICT_ENABLED false (30 Oct, gr-off vs gr-on: memory 31% -> 25% only, rubrica-incompatible
+                                45 -> 68, extra citations 9.2 -> 11.0): with GROUNDED_REVIEW_ENABLED, an article
+                                outside the section's checked material (its material's articles graded >= 2, named
+                                in the case, or offered as a tool or term) is never fetched nor pointed to; the
+                                sentence is rewritten from the material without that citation, or dropped.
+  GROUNDED_REVIEW_POLICY       "rewrite" (31 Oct; not a boolean): with GROUNDED_REVIEW_ENABLED, "abstain" replaces
+                                every not-supported law / case-law / procedure sentence with "Non ho trovato nei
+                                testi disponibili la disciplina di <topic> (<article>): da verificare." -- no fetch,
+                                no rewrite; the article kept only inside the checked material; consecutive ones one
+                                line per topic. Supported sentences and applications untouched.
+  FACT_ISSUES_ENABLED          false (30 Oct, fetch_audit "captured but lost": 88% of 298 lost at "article
+                                resolved", 258 captured only as a fact): one call after the frame and the typed
+                                facts names, per decisive fact, the institutions it raises (heading words, code,
+                                area, the client's role; never a number), at most 8, added to the frame's central
+                                issues with their fact; the existing resolver takes them. Logged as
+                                case_analysis_fact_issues and case_analysis_fact_institution. See
+                                src/rag/fact_issues.py.
+  FACT_ISSUES_EVERY_FACT_ENABLED false (31 Oct, live run aw-20261030-1821: 119 lost expected articles had their
+                                trigger captured only as a fact): with FACT_ISSUES_ENABLED, at least one institution
+                                per decisive fact (two at most), the cap scaled with the case (the frame's facts, or
+                                one more per 4000 characters; 8 to 16), each fact's first institution kept before
+                                any fact's second. See src/rag/fact_issues.py.
+  FACT_ISSUES_RESOLVER_V2_ENABLED false (31 Oct, fact_loss_report on the live run: of 119 articles lost at "article
+                                resolved", 106 had an institution named from their fact, 46% resolved to other
+                                articles, 43% to nothing): with FACT_ISSUES_ENABLED, each institution named as
+                                precisely as a code heading, a liability with its relationship (contractual /
+                                extra-contractual / criminal / administrative, who to whom); a generic, Latin or
+                                relationship-less name renamed once, else dropped. Resolved by fact_resolver.py
+                                within its code -- heading index, heading and text full text, top 5 each; the core
+                                article(s) by heading (half the specific words, two at least), related ones beside
+                                them by text, at most 3; refused outside its chapter; never through a generic word.
+                                Only a core article is T1, takes no forced slot and gets its institution's plan
+                                issue (merged with one already holding it); a related or text match is an ordinary
+                                T2 candidate. Logged per institution: candidates, kept, core, refused with reason.
+  ANCHORED_WRITING_ENABLED     false (30 Oct, fetch_audit's provenance by section): the plan names each issue's
+                                passages (an article's comma, a ruling), numbered [A1]... once the plan is final
+                                (a norm without one gets its best-matching comma); every section -- Risposte ai
+                                quesiti and Conclusioni too, which had only the plan -- gets those passages, the
+                                procedural section its own and its stage's procedure vocabulary; each rule-sentence
+                                ends with its anchor. After the sections, code checks each: the anchor exists, the
+                                article or ruling cited is the anchor's, content-word overlap >= 0.15 or half the
+                                anchored article's rubrica words. Only statements of the law or of case law are
+                                checked; a failing one citing a checked article (graded >= 2, named, a tool's or
+                                a term's) is rewritten from that article's passage, else kept -- never removed;
+                                case law without a ruling anchor of its section is restated as its article's rule,
+                                else removed; one whose every citation is outside the checked material loses the
+                                citations (removed only if no sentence is left); the rest rewritten, else kept.
+                                An application of a rule to the case's facts is never removed, an article it cites
+                                outside its section's and the checked material loses only the citation. Anchors
+                                stripped. Logged as anchored_writing. See src/rag/anchored_writing.py.
   ROLE_BLOCKS_ENABLED          false (30 Oct, fetch_audit's role mechanism on run 0812): the criminal profile of a
                                 personal harm and the criminal postures' checks follow the client's side -- for
                                 the accused, defences, procedibility, the offended party as parte civile against

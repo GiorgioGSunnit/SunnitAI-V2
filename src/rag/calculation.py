@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import requests
 
+from .llm_reply import parse_json_reply
 from . import label_anchoring, normalization
 
 logger = logging.getLogger(__name__)
@@ -1144,7 +1145,7 @@ def _classify_sector_llm(query: str, sectors: List[str]) -> Optional[str]:
             [SystemMessage(content=system_prompt), HumanMessage(content=str(query or ""))],
             max_tokens=100,
         )
-        data = json.loads(raw)
+        data = parse_json_reply(raw)
         sector = data.get("sector") if isinstance(data, dict) else None
         return sector if sector in candidates else None
     except Exception as exc:
@@ -1278,7 +1279,7 @@ def _extract_ccnl_value(
             [SystemMessage(content=system_prompt), HumanMessage(content=excerpt)],
             max_tokens=200,
         )
-        data = json.loads(raw)
+        data = parse_json_reply(raw)
         if not isinstance(data, dict):
             return None
         value = data.get("value")
