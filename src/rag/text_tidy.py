@@ -17,12 +17,12 @@ from typing import Any, Dict, List, Tuple
 EMPTY_BRACKETS_RE = re.compile(r"[ \t]*(?:\([\s,;:.]*\)|\[[\s,;:.]*\])")
 # A sentence ending where its clause was cut: "... ha luogo quando consta mediante."
 _CUT_END_RE = re.compile(r"\b(?:mediante|quando|qualora|che|di|del|della|dello|dei|delle|degli|con|per|tra|fra|da|dal|dalla|in|"
-                         r"su|a|al|alla|e|o|ma|se|il|lo|la|i|gli|le|un|uno|una)\s*[.;][»”\"]?\s*$", re.IGNORECASE)
+                         r"su|a|al|alla|e|o|ma|se|il|lo|la|i|gli|le|un|uno|una|sono)\s*[.;][»”\"]?\s*$", re.IGNORECASE)
 # The generic text of an issue a step added: an instruction to the writer, never a sentence of the answer.
 _TEMPLATE_RE = re.compile(r"che cosa prevedono\b.*\bcome incidono sulla posizione|^\W*Il fatto «[^»]*» pone\b|"
                           r"da esaminare una per una", re.IGNORECASE | re.DOTALL)
 # "...dopo la notificazione., Leonardo può": a stop left before the comma when what stood between them went.
-_STOP_COMMA_RE = re.compile(r"\b([a-zà-ù]{4,})\.,(?=\s)")
+_STOP_COMMA_RE = re.compile(r"\b([a-zà-ù]{4,}|dal|del|dei|che|per|con|tra|fra)\.,(?=\s)")
 # "...art. 2043 c.c., co. 1., è giustificato": a comma's number closed by a stop in the middle of a sentence.
 _COMMA_NUMBER_STOP_RE = re.compile(r"(\b(?:co\.|comma|commi)\s*\d+(?:-[a-z]+)?)\.(?=,|\s+(?-i:[a-zà-ù]))", re.IGNORECASE)
 _ABBREVIATIONS = {"lett", "cost", "sent", "proc", "cass", "ordin", "sez", "pagg"}
@@ -77,7 +77,7 @@ def empty_brackets(text: str) -> str:
 
 def stop_comma(text: str) -> str:
     """"notificazione., Leonardo" -> "notificazione, Leonardo"; an abbreviation's ("lett., ") stays."""
-    text = _COMMA_NUMBER_STOP_RE.sub(r"\1", text or "")
+    text = re.sub(r"([:;]),(?=\s)", r"\1", _COMMA_NUMBER_STOP_RE.sub(r"\1", text or ""))      # "Mediazione obbligatoria:,"
     return _STOP_COMMA_RE.sub(lambda m: m.group(0) if m.group(1).lower() in _ABBREVIATIONS else f"{m.group(1)},", text)
 
 
@@ -160,6 +160,105 @@ def comma_words_cited(sentence: str, parts: List[str]) -> bool:
     return False
 
 
+_MIN_LEFT_WORDS = 7
+_ARTICLE_CITED_RE = re.compile(r"\bartt?\.\s*\d|\barticol[oi]\s+\d", re.IGNORECASE)
+# Where a citation stood and went: ".,", or a subject lost ("Gli artt. 700 e 614-bis c.p.c. permettono ..." -> "Permettono ...").
+_CITATION_SUBJECT_RE = re.compile(r"^\W*(?:(?:l['’]\s*|gli\s+|il\s+)?(?:artt?\.|articol[oi]\b))", re.IGNORECASE)
+
+
+def comma_words_left(sentence: str, parts: List[str]) -> bool:
+    """Is this sentence carrying an article's words in place of its citation, no citation left? Seven words or more of a
+    comma (or of a section title cut off), up to a comma of the sentence and a clause that goes on: "Qualunque fatto doloso
+    o colposo che cagiona ad altri un danno ingiusto, è fondata". A quotation is a quotation, and stays."""
+    if _ARTICLE_CITED_RE.search(sentence) or re.search("[«“\"]", sentence):
+        return False
+    bodies = [f" {' '.join(_opening_words(p))} " for p in parts]
+    for m in re.finditer(r"\.?,\s+\S", sentence):
+        head, after = _words(sentence[:m.start()]), _words(sentence[m.end() - 1:])[:1]
+        run = " ".join(head[-_MIN_LEFT_WORDS:])
+        if len(head) >= _MIN_LEFT_WORDS and any(f" {run} " in body and f" {run} {' '.join(after)} " not in body for body in bodies):
+            return True                       # the words stop where the comma goes on: a clause of the writer's follows
+    return False
+
+
+def breaks_without_citation(old: str, new: str) -> bool:
+    """Taking the citation out left no sentence: a stop before a comma, or the citation was its subject."""
+    return bool(re.search(r"[a-zà-ù]{2,}\.,\s", new)) or bool(re.search(r"\b(?:co\.|comma)\s*\d+\.,\s", old)) or (bool(_CITATION_SUBJECT_RE.match(old)) and not _ARTICLE_CITED_RE.search(new))
+
+
+# v42: given whole commi, the writer pastes them. Twelve words in a row from an article, outside «...», are a copy.
+COPY_WORDS = 12
+_MAX_COPIES = 40
+_COPY_LEAD_WORDS = 2       # what a whole sentence may hold besides the copy ("Infatti, ...")
+
+
+def _copy_index(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, ...], Tuple[str, str]]:
+    """{twelve words of an article: the article}."""
+    out: Dict[Tuple[str, ...], Tuple[str, str]] = {}
+    for row in rows or []:
+        words = _words((row.get("s") or {}).get("plain_text"))
+        if row.get("_article"):
+            for i in range(len(words) - COPY_WORDS + 1):
+                out.setdefault(tuple(words[i:i + COPY_WORDS]), tuple(row["_article"]))
+    return out
+
+
+def _in_quotes(text: str, at: int) -> bool:
+    return text.count("«", 0, at) > text.count("»", 0, at) or text.count("“", 0, at) > text.count("”", 0, at)
+
+
+def _first_copy(text: str, index: Dict[Tuple[str, ...], Tuple[str, str]]) -> Any:
+    """(start, end, article) of the first run of copied words outside quotation marks, or None."""
+    found = list(re.finditer(r"\w+", text))
+    words = [m.group(0).lower() for m in found]
+    i = 0
+    while i + COPY_WORDS <= len(words):
+        ref = index.get(tuple(words[i:i + COPY_WORDS]))
+        if not ref or _in_quotes(text, found[i].start()):
+            i += 1
+            continue
+        j = i + COPY_WORDS
+        while j < len(words) and tuple(words[j - COPY_WORDS + 1:j + 1]) in index:
+            j += 1
+        return found[i].start(), found[j - 1].end(), ref
+    return None
+
+
+def _without_copy(text: str, start: int, end: int, ref: Tuple[str, str]) -> Tuple[str, str]:
+    """(text, what was done) with one copy dealt with: taken out of its brackets; a whole sentence, or one ending in it after
+    the citation of that same article, put in «...»; else its sentence dropped."""
+    from . import plan_then_write as ptw
+    opening, closing = text.rfind("(", 0, start), text.find(")", end)
+    if opening > text.rfind(")", 0, start) and closing >= 0 and "\n" not in text[opening:closing]:
+        cut = end + len(re.match(r"[\s.;,:]*", text[end:]).group(0))
+        return (text[:start].rstrip() if cut == closing else text[:start]) + text[cut:], "copy out of its brackets"
+    a, b = next(((x, y) for x, y in ptw._sentence_spans(text) if x <= start < y), (start, end))
+    b = max(b, end + len(re.match(r"[\s.;,:)]*?(?=\s|$)", text[end:]).group(0)))
+    lead, tail = text[a:start], text[end:b]
+    quote = f"«{text[start:end]}»"
+    cites = any(ptw._same_ref(r, ref) for _, _, refs in ptw._citations(lead, [], {ref}) for r in refs)
+    if len(_words(lead)) + len(_words(tail)) <= _COPY_LEAD_WORDS:
+        cited = re.match(r"\s*\(art", text[b:]) is not None
+        new = quote if cited else f"{quote} (art. {ref[0]} {ref[1]})."
+        return text[:start] + new + text[b:], "a whole comma quoted"
+    if not _words(tail) and cites:
+        return text[:start] + quote + "." + text[b:], "a copy after its citation quoted"
+    return ptw._drop_spans(text, [(a, b)]), "a copy inside a sentence: sentence dropped"
+
+
+def without_copies(text: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): no run of COPY_WORDS words of an article left outside «...» (_without_copy)."""
+    index = _copy_index(rows)
+    log: List[Dict[str, Any]] = []
+    for _ in range(_MAX_COPIES):
+        copy = _first_copy(text, index) if index else None
+        if not copy:
+            break
+        log.append({"kind": "", "article": f"{copy[2][0]} {copy[2][1]}", "sentence": text[copy[0]:copy[1]][:300]})
+        text, log[-1]["kind"] = _without_copy(text, *copy)
+    return empty_brackets(text) if log else text, log
+
+
 def _parts_by_article(rows: List[Dict[str, Any]]) -> Dict[Tuple[str, str], Tuple[List[str], str]]:
     from . import comma_material
     out: Dict[Tuple[str, str], Tuple[List[str], str]] = {}
@@ -202,10 +301,11 @@ def against_articles(text: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[D
         return f"{m.group(2)} {m.group(3)} {m.group(4)}"
     text = _COMMA_OF_RE.sub(named, _COMMA_CITED_RE.sub(cited, text or ""))
     every_part = [p for found, _ in parts.values() for p in found]
+    every_part += [t for t in (str((r.get("s") or {}).get("title") or "") for r in rows or []) if t]
     openings = [w for w in (_words(p) for p in every_part) if len(w) >= 8]
     drops = {}
     for s, e in ptw._sentence_spans(text):
-        if comma_words_cited(text[s:e].strip(), every_part):
+        if comma_words_cited(text[s:e].strip(), every_part) or comma_words_left(text[s:e].strip(), every_part):
             drops[(s, e)] = None
             log.append({"kind": "comma words with a citation", "sentence": text[s:e].strip()[:300]})
             continue
@@ -213,7 +313,91 @@ def against_articles(text: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[D
         if len(words) >= 5 and any(w[:len(words)] == words and len(words) < 0.8 * len(w) for w in openings):
             drops[(s, e)] = None
             log.append({"kind": "comma opening as a sentence", "sentence": text[s:e].strip()[:300]})
-    return (grounded_review.apply(text, drops) if drops else text), log
+    text = grounded_review.apply(text, drops) if drops else text
+    text, copies = without_copies(text, rows)
+    return text, log + copies
+
+
+# The norms section (§3): each paragraph opens with its article. PO feedback on Leonardo: when a check drops a paragraph's
+# first sentence the next is left headless ("esclude che le servitù non apparenti...", "Ai sensi del comma 1, ...").
+_NORMS_SECTION_RE = re.compile(r"(?ms)^(\*\*3\.\s+Norme e giurisprudenza\*\*[ \t]*\n)(.*?)(?=^\*\*\d+\.\s|\Z)")
+_ARTICLE_NAMED_RE = re.compile(r"\bartt?\.\s*\d|\barticol[oi]\s+\d", re.IGNORECASE)
+_RULING_NAMED_RE = re.compile(r"\bcass\b|cassazione|\bsez\.|sentenz|ordinanz|giurisprudenz|pronunc|\b\d{1,6}/\d{4}\b", re.IGNORECASE)
+_COMMA_LEAD_RE = re.compile(r"^((?:ai sensi del|al|il|nel)\s+(?:comma\s+\S+?|(?:primo|secondo|terzo|quarto)\s+comma))(,?)\s+", re.IGNORECASE)
+_BARE_VERB_RE = re.compile(r"^(?:esclude|prevede|stabilisce|dispone|richiede|disciplina|consente|riconosce|attribuisce|impone|"
+                           r"regola|sancisce|precisa|aggiunge|vieta|presume)\b", re.IGNORECASE)
+_MIN_SHARED_STEMS = 3
+_MIN_SHARE = 0.3
+
+
+def _paragraph_article(paragraph: str, rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The row of the article a paragraph is about: the first it cites, else the plan's article sharing most words with
+    it, the best alone; {} when none does."""
+    from . import plan_then_write as ptw
+    with_ref = [r for r in rows if r.get("_article") and (r.get("s") or {}).get("plain_text")]
+    known = {r["_article"] for r in with_ref}
+    for _, _, refs in ptw._citations(paragraph, [], known):
+        found = next((r for r in with_ref if ptw._same_ref(r["_article"], refs[0])), None)
+        if found:
+            return found
+    own = _stems(paragraph)
+    scored = sorted(((len(own & _stems(r["s"]["plain_text"])), id(r)) for r in [r for r in with_ref if r.get("_in_plan")] or with_ref),
+                    reverse=True)
+    top = scored[0][0] if scored else 0
+    if top < _MIN_SHARED_STEMS or top < _MIN_SHARE * len(own) or sum(1 for n, _ in scored if n == top) > 1:
+        return {}
+    return next(r for r in with_ref if id(r) == scored[0][1])
+
+
+def _with_article(paragraph: str, row: Dict[str, Any]) -> str:
+    from . import article_text, plan_then_write as ptw
+    number, code = row["_article"]
+    rubrica = article_text.heading(row.get("s"))
+    label = f"art. {number} {ptw._code_key(code)}" + (f" ({rubrica})" if rubrica else "")
+    lead = _COMMA_LEAD_RE.match(paragraph)
+    if lead:
+        return f"{lead.group(1)} dell'{label}{lead.group(2)} {paragraph[lead.end():]}"
+    if _BARE_VERB_RE.match(paragraph) or paragraph[:1].islower():
+        return f"L'{label} {paragraph[0].lower()}{paragraph[1:]}"
+    return f"L'{label}: {paragraph}"
+
+
+def headed_norms(text: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): every paragraph of the norms section opening with its article's reference (_with_article); a paragraph
+    of a ruling, a heading or a list item is left alone; one that matches no article joins the paragraph before it."""
+    from . import plan_then_write as ptw
+    match = _NORMS_SECTION_RE.search(text or "")
+    if not match:
+        return text, []
+    log: List[Dict[str, Any]] = []
+    out: List[str] = []
+    for paragraph in re.split(r"\n\s*\n", match.group(2).strip()):
+        spans = ptw._sentence_spans(paragraph)
+        first = paragraph[spans[0][0]:spans[0][1]] if spans else paragraph
+        heading = ptw._HEADING_LINE_RE.match(paragraph)
+        if not spans or (heading and not heading.group(2).strip()) or _LIST_RE.match(paragraph).group(0) \
+                or _ARTICLE_NAMED_RE.search(first) or _RULING_NAMED_RE.search(first) or (out and _is_article_heading(out[-1])):
+            out.append(paragraph)
+            continue
+        row = _paragraph_article(paragraph, rows)
+        if row:
+            out.append(_with_article(paragraph, row))
+            log.append({"kind": "paragraph given its article", "sentence": first[:300], "now": out[-1][:300]})
+        elif out:
+            out[-1] = f"{out[-1]} {paragraph}"
+            log.append({"kind": "headless paragraph joined to the one before", "sentence": first[:300]})
+        else:
+            out.append(paragraph)
+    if not log:
+        return text, []
+    body = "\n\n".join(out)
+    return text[:match.start(2)] + "\n" + body + "\n\n" + text[match.end(2):].lstrip("\n"), log
+
+
+def _is_article_heading(paragraph: str) -> bool:
+    from . import plan_then_write as ptw
+    heading = ptw._HEADING_LINE_RE.match(paragraph)
+    return bool(heading and not heading.group(2).strip() and _ARTICLE_NAMED_RE.search(paragraph))
 
 
 def lead_fragment(sentence: str) -> str:

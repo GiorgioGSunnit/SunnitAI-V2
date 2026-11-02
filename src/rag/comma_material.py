@@ -34,6 +34,7 @@ FLAG = "COMMA_MATERIAL_ENABLED"
 COMMI_KEY, FROM_KEY, FOCUS_KEY, NAMED_KEY = "_commi", "_commi_from", "_focus", "_named_commi"
 # A text split part shorter than this joins the one before it (a list's "a)" line, a stray footer).
 MIN_PART = 40
+SHORT_ARTICLE = 1200      # an article this short reaches the writer whole, every comma
 
 
 def enabled() -> bool:
@@ -70,13 +71,39 @@ def _unique(parts: List[str]) -> List[str]:
     return out
 
 
+# v41 (art. 1067 c.c.: 'total': 4, 'from': 'lines'): a line of the PDF is no comma. One ends only after . ; : (or a note's
+# "(n)"), and the next must open like one, not with a lower-case word or a bare number ("dell'art.\n1051 c.c.").
+_LINE_END_RE = re.compile(r"(?:[.;:][»”\"'’)\]]*|\(abrogato\))$", re.IGNORECASE)
+_NOTE_MARK_RE = re.compile(r"\(\d{1,3}\)$")
+_NOTE_HEAD_RE = re.compile(r"^\(\d{1,3}\)\s")
+
+
+def unwrap(text: Optional[str]) -> List[str]:
+    """The text's real paragraphs: its lines with the PDF's wrapped ones joined back. A line opens a new paragraph after a
+    line ending a clause, or when it is a numbered or lettered item or a note; never in the middle of a sentence."""
+    out: List[str] = []
+    for line in (p.strip() for p in re.split(r"\n+", text or "")):
+        if not line:
+            continue
+        before = out[-1] if out else ""
+        ended = bool(_LINE_END_RE.search(before)) and not (line[0].islower() or line[0].isdigit())
+        if not out or _ITEM_RE.match(line) or _COMMA_HEAD_RE.match(line) or _NOTE_HEAD_RE.match(line) or ended \
+                or _NOTE_MARK_RE.search(before):
+            out.append(line)
+        elif before.endswith("-"):
+            out[-1] = before[:-1] + line
+        else:
+            out[-1] = f"{before} {line}"
+    return out
+
+
 def split_commi(text: Optional[str]) -> Tuple[List[str], str]:
-    """(the parts of an article's text, how): its lines when it has several, else its numbered paragraphs
-    ("1. ... 2. ..."), else its sentences ("sentences": not real commi, never labelled with a number)."""
+    """(the parts of an article's text, how): its paragraphs when it has several (unwrap, never its PDF lines), else its
+    numbered paragraphs ("1. ... 2. ..."), else its sentences ("sentences": not real commi, never labelled with a number)."""
     text = (text or "").strip()
     if not text:
         return [], "none"
-    lines = _unique(_merge_short([p.strip() for p in re.split(r"\n+", text) if p.strip()]))
+    lines = _unique(_merge_short(unwrap(text)))
     if len(lines) > 1:
         return lines, "lines"
     flat = " ".join(text.split())
@@ -281,6 +308,8 @@ def trim(text: str, chars: int, focus: str = "", named: Iterable[int] = ()) -> s
 
 
 def trim_row(text: str, chars: int, row: Dict[str, Any]) -> str:
+    if len(text or "") <= SHORT_ARTICLE and not row.get("_comma_chars"):
+        return (text or "").strip()
     return trim(text, chars, row.get(FOCUS_KEY) or "", row.get(NAMED_KEY) or ())
 
 
@@ -293,6 +322,9 @@ def passage(row: Dict[str, Any], chars: int) -> Optional[str]:
         return None
     how = row.get(FROM_KEY)
     numbers = comma_numbers(commi, how)
+    whole = sum(len(c) + 9 for c in commi)
+    if whole <= SHORT_ARTICLE and not row.get("_comma_chars"):      # not when the prompt itself had to shrink the row
+        chars = max(chars, whole)
     chosen = select(commi, chars, row.get(FOCUS_KEY) or "", _keep(commi, how, row.get(NAMED_KEY) or (), chars))
     out, last = [], 0
     for k, t in chosen:

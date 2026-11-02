@@ -31,6 +31,7 @@ import datetime as dt
 import json
 import logging
 import os
+import copy
 import re
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -122,7 +123,7 @@ SCHEMA: Dict[str, Any] = {
     "property_history": [{"asset": "", "owner": "", "from": "", "to": "", "period": "", "together_with": "",
                           "how_acquired": "", "ended_by": ""}],
     "possession": [{"who": "", "asset": "", "since": "", "until": "", "how": "", "use": "", "still_ongoing": ""}],
-    "works_or_signs": [{"what": "", "visible": "", "existing_since": "", "before_separation": "", "serves": ""}],
+    "works_or_signs": [{"what": "", "visible": "", "existing_since": "", "before_separation": "", "serves": "", "crosses": ""}],
     "events": [{"date": "", "what": "", "who": "", "kind": ""}],
     "access": [{"asset": "", "landlocked": "", "how_reached": ""}],
     "injuries": [{"who": "", "days_to_heal": "", "permanent": ""}],
@@ -169,7 +170,8 @@ _EXTRACT_SYSTEM = (
     "interrati o nascosti), existing_since (da quando, come scritto: anche \"esisteva già all'inizio del 1900\" dà "
     "\"all'inizio del 1900\"), before_separation (sì se esisteva già quando i "
     "beni sono stati divisi o venduti, \"esisteva già\", \"c'era già\"; no se è stata fatta dopo; vuoto se il testo "
-    "non lo dice), serves (il bene che l'opera serve)}.\n"
+    "non lo dice), serves (il bene che l'opera serve), crosses (i fondi che l'opera attraversa, con i loro proprietari "
+    "se il testo li dice)}.\n"
     "- access: per ogni bene di cui il testo dice come si raggiunge {asset, landlocked (sì se il testo lo dice "
     "intercluso, senza accesso alla via pubblica o raggiungibile solo attraverso fondi altrui; no se ha un accesso "
     "suo), how_reached (come scritto)}.\n"
@@ -763,10 +765,37 @@ _WORKS_DONE = r"ultimat|consegn|complet|fine dei lavori|terminat|collaud"
 _MOVABLE = r"\bauto|veicol|\bmoto|gioiell|quadr|orolog|bicicl|barca|opera d'arte|arred"
 
 
+_WAY = r"passagg|transit|sentier|strad|viottol|varco|cancell|accesso"
+
+
+def _right_of_way(facts: Dict[str, Any]) -> bool:
+    """A right exercised over a way: the facts say servitude, someone uses a way, or a way was closed. A road accident
+    names a road and no more."""
+    if "servit" in _texts(facts, ("possession", "works_or_signs", "events")):
+        return True
+    if any(re.search(_WAY, f"{_low(p.get('use'))} {_low(p.get('asset'))}") for p in facts.get("possession") or []):
+        return True
+    closed = any(_typed_kind(e) in _OBSTRUCTIONS for e in facts.get("events") or []) or bool(re.search(_SPOGLIO, _texts(facts, ("events",))))
+    return closed and bool(re.search(_WAY, _texts(facts, ("works_or_signs", "events", "access"))))
+
+
+def _last_use(facts: Dict[str, Any]) -> List[tuple]:
+    """The latest date the right was used: a possession's end, else the closure that stopped it."""
+    items = [(*e, None, "") for e in _events(facts, _SPOGLIO, _OBSTRUCTIONS + ("uso/passaggio",))]
+    for p in facts.get("possession") or []:
+        parsed = parse_date(p.get("until") or "")
+        if parsed:
+            items.append(((parsed[0], parsed[1]), f"ultimo uso ({p.get('use') or 'passaggio'})", p.get("until"), None, ""))
+    return sorted(items, key=lambda item: item[0][1], reverse=True)[:1]
+
+
 TERMS: List[Term] = [
     Term("possessoria", "azione possessoria (spoglio o turbativa)", "artt. 1168 e 1170 c.c.", _SPOGLIO, _ACTION,
          years=1, word="termine annuale", since="dallo spoglio o dalla turbativa",
          start_kinds=("spoglio", "turbativa", "chiusura/ostruzione accesso"), end_kinds=("azione giudiziaria",)),
+    Term("non_uso_servitu", "estinzione della servitù per non uso (non è il termine dell'usucapione)", "art. 1073 c.c.", "", _ACTION, years=20,
+         word="ventennio di non uso", start_items=_last_use, applies=_right_of_way, since="dall'ultimo uso",
+         end_kinds=("azione giudiziaria",)),
     Term("usucapione_ordinaria", "usucapione ordinaria di beni immobili", "art. 1158 c.c.", "", "", years=20,
          word="ventennio di possesso", start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))],
          since="di possesso continuato"),
@@ -923,6 +952,11 @@ def _term_trace(term: Term, facts: Dict[str, Any], families: set, undated: bool)
             why.append(f"nessun atto che lo interrompa: fino a {end_what} {end_written}".rstrip())
     trace["entry"] = _term_entry(term.id, term.label, term.ref, term.word or f"termine di {term.length()}",
                                  term.length(), status, start, end_what, end_written)
+    if term.id == "non_uso_servitu":
+        expiry = start[0][1].year + term.years
+        trace["entry"].update(expires=str(expiry), text=(
+            f"estinzione per non uso: {expiry} ({term.years} anni dall'ultimo uso, {_short(start[2])})"
+            + (", già decorso" if status == "DECORSO" else "") + "; non è il termine dell'usucapione"))
     why.append(f"stato: {status}")
     return trace
 
@@ -982,6 +1016,83 @@ def _term_entry(id, label, ref, word, length, status, start, end_what, end_writt
             f"{end_written})".replace(" )", ")") + (f"; {note}" if note and status == "INCERTO" else ""))
     return {"id": id, "label": label, "ref": ref, "length": length, "status": status,
             "from": {"what": start[1], "date": start[2]}, "to": {"what": end_what, "date": end_written}, "text": text}
+
+
+# The real actions: no prescription, whatever the dates. An entry of the same shape, with no length.
+NO_PRESCRIPTION_STATUS = "non soggetta a prescrizione"
+NO_PRESCRIPTION: Tuple[Tuple[str, str, str], ...] = (
+    ("azione_confessoria", "azione confessoria", "art. 1079 c.c."),
+    ("azione_negatoria", "azione negatoria", "art. 949 c.c."),
+    ("azione_rivendicazione", "azione di rivendicazione", "art. 948 c.c."),
+)
+_REAL_ACTION = r"confessori|negatori|rivendic|servit"
+
+
+def _non_use_for_a_servitude(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]], fired: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """A fired servitude rule settles that there is a right to lose, whatever words the facts use for the way."""
+    if not facts or not _claims_servitude(fired) or any(t["id"] == "non_uso_servitu" for t in terms):
+        return []
+    term = copy.copy(next(t for t in TERMS if t.id == "non_uso_servitu"))
+    term.applies = None
+    entry = _term_trace(term, facts, set(), True)["entry"]
+    return [entry] if entry else []
+
+
+def _claims_servitude(fired: List[Dict[str, Any]]) -> bool:
+    return any(r.get("acquired_right") and "servit" in " ".join(r.get("institutions") or []).lower() for r in fired)
+
+
+def no_prescription_terms(facts: Optional[Dict[str, Any]], fired: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The real actions' entries, when a rule on real rights fired or the facts speak of one. Who claims a servitude has the
+    confessoria alone: the negatoria and the rivendicazione are the owner's, against a right someone else claims."""
+    if not facts or not (any(r.get("area") == "diritti_reali" for r in fired) or re.search(_REAL_ACTION, _texts(facts))):
+        return []
+    wanted = ("azione_confessoria",) if _claims_servitude(fired) else ("azione_negatoria", "azione_rivendicazione")
+    if re.search("confessori", _texts(facts)):
+        wanted += ("azione_confessoria",)
+    return [{"id": id, "label": label, "ref": ref, "length": "", "status": NO_PRESCRIPTION_STATUS, "from": {"what": "", "date": ""},
+             "to": {"what": "", "date": ""}, "text": f"{label}: {NO_PRESCRIPTION_STATUS}"} for id, label, ref in NO_PRESCRIPTION
+            if id in wanted]
+
+
+# Art. 5, comma 1, d.lgs. 28/2010: the subjects where mediation is a condition of the action. (name, the word that
+# finds it in the article's text, the rule areas or ids that make it the case's subject, words in the contracts or
+# requests.) With the article's text in the corpus only the subjects it holds count.
+MEDIATION_REF = "art. 5 d.lgs. 28/2010"
+_MEDIATION_SUBJECTS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
+    ("diritti reali", "diritti reali", ("diritti_reali",), r"servit|usucapi|rivendic"),
+    ("condominio", "condominio", ("condominio_parti_comuni",), r"condomin"),
+    ("divisione", "divisione", (), r"scioglimento della comunione|domanda di divisione"),
+    ("successioni ereditarie", "successioni", ("successioni",), r"successione ereditaria|eredit"),
+    ("patti di famiglia", "patti di famiglia", (), r"patto di famiglia"),
+    ("locazione", "locazione", ("locazione",), r"locazion"),
+    ("comodato", "comodato", (), r"comodato"),
+    ("affitto di aziende", "affitto di aziende", (), r"affitto d\w* aziend"),
+    ("responsabilità medica e sanitaria", "responsabilità medica", ("responsabilita_sanitaria_civile",), r"responsabilità (?:medica|sanitaria)"),
+    ("contratti assicurativi, bancari e finanziari", "contratti assicurativi", (), r"assicurativ|bancari|finanziari|polizza|mutuo"),
+    ("associazione in partecipazione", "associazione in partecipazione", (), r"associazione in partecipazione"),
+    ("consorzio", "consorzio", (), r"consorzio"),
+    ("franchising", "franchising", (), r"franchising"),
+    ("contratto d'opera", "opera", (), r"contratto d'opera"),
+    ("contratto di rete", "rete", (), r"contratto di rete"),
+    ("somministrazione", "somministrazione", (), r"somministrazione"),
+    ("società di persone", "società di persone", (), r"società di persone|\bs\.?n\.?c\b|\bs\.?a\.?s\b"),
+    ("subfornitura", "subfornitura", (), r"subfornitura"),
+)
+
+
+def mediation(facts: Optional[Dict[str, Any]], fired: List[Dict[str, Any]], article: str = "") -> Optional[Dict[str, Any]]:
+    """{"required", "subject", "text"}: is mediation a condition of the action here? None with no facts."""
+    if not facts:
+        return None
+    marks = {str(r.get("area")) for r in fired} | {str(r.get("id")) for r in fired}
+    text, low = _texts(facts, ("contracts", "requests")), _low(article)
+    for name, word, rules, pattern in _MEDIATION_SUBJECTS:
+        if (marks & set(rules) or re.search(pattern, text)) and (not low or word in low):
+            return {"required": True, "subject": name,
+                    "text": f"Mediazione obbligatoria ({MEDIATION_REF}): la materia è {name}, il suo esperimento è condizione "
+                            "di procedibilità della domanda."}
+    return {"required": False, "subject": "", "text": ""}
 
 
 # --- 3. rules --------------------------------------------------------------------------------------
@@ -1236,7 +1347,7 @@ def load_rules(path: str = RULES_FILE) -> List[Dict[str, Any]]:
         missing = [k for k in ("id", "area", "when", "institution", "codice", "why", "status") if k not in rule]
         if missing:
             raise ValueError(f"rule {rule.get('id')!r}: missing {', '.join(missing)}")
-        if not rule.get("ranges"):
+        if not rule.get("ranges") and _institutions(rule):
             raise ValueError(f"rule {rule['id']!r}: no ranges (the article numbers its institutions may resolve to)")
         for lo_hi in rule["ranges"]:
             if not (isinstance(lo_hi, list) and len(lo_hi) == 2 and all(isinstance(n, int) for n in lo_hi)):
@@ -1244,6 +1355,11 @@ def load_rules(path: str = RULES_FILE) -> List[Dict[str, Any]]:
         for ref in rule.get("requires") or []:
             if not re.fullmatch(r"\d+(?:-[a-z]+)? \S.*", str(ref)):
                 raise ValueError(f"rule {rule['id']!r}: requires {ref!r}: \"N code\", as \"1079 c.c.\"")
+        for tool in rule.get("tools") or []:
+            if tool.get("id") not in {t["id"] for t in PROCEDURAL_TOOLS} or not tool.get("why"):
+                raise ValueError(f"rule {rule['id']!r}: a tool is {{id of PROCEDURAL_TOOLS, why}}: {tool!r}")
+        if rule.get("conclusion") and not rule.get("conclusion_subject"):
+            raise ValueError(f"rule {rule['id']!r}: a conclusion needs its conclusion_subject")
         if rule["id"] in seen:
             raise ValueError(f"rule {rule['id']!r} twice")
         seen.add(rule["id"])
@@ -1309,8 +1425,106 @@ def fire_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
                           "codice": rule["codice"], "ranges": rule.get("ranges") or [], "why": rule["why"],
                           "status": rule["status"], "acquired_right": bool(rule.get("acquired_right")),
                           "requires": [tuple(r.split(" ", 1)) for r in rule.get("requires") or []],
+                          "conclusion": str(rule.get("conclusion") or "").replace("{altro_contraente}", other_contractor(facts)),
+                          "conclusion_subject": rule.get("conclusion_subject") or "",
+                          "conclusion_unless": rule.get("conclusion_unless") or "", "tools": rule.get("tools") or [],
+                          "excludes": [tuple(r.split(" ", 1)) for r in rule.get("conclusion_excludes") or []],
                           "matched": why_fired(rule, facts, terms)})
     return fired
+
+
+def _clients(facts: Dict[str, Any]) -> set:
+    names = {_low(p.get("name")) for p in facts.get("parties") or [] if "cliente" in _low(p.get("role"))}
+    side = _low(facts.get("client_side"))
+    return {n for n in names if n} | ({side} if side else set())
+
+
+def _is_client(name: str, clients: set) -> bool:
+    low = _low(name)
+    return any(low and (low in c or c in low) for c in clients)
+
+
+def _the_split(facts: Dict[str, Any]) -> Dict[str, Any]:
+    """The split that made the land what it is: the earliest of the sequence, never a later sale of one of its parts."""
+    return next(iter(facts.get("split_into_parts") or []), {})
+
+
+def other_contractor(facts: Dict[str, Any]) -> str:
+    """Who art. 1054 c.c. calls "l'altro contraente", from the property sequence: in the split that caused the interclusion,
+    the seller of a sale, the sharers of a division other than the client's own part."""
+    split, clients = _the_split(facts), _clients(facts)
+    owner, history = str(split.get("owner") or ""), facts.get("property_history") or []
+    if not owner:
+        return "l'altro contraente è chi ha alienato o condiviso il fondo, da individuare dai titoli"
+    entry = next((h for h in history if _low(h.get("owner")) == _low(owner)), {})
+    if _low(entry.get("ended_by")) == "compravendita":
+        return f"l'altro contraente è {owner}, che ha alienato il fondo poi frazionato"
+    mine = [_asset_words(h.get("asset")) for h in history if _is_client(str(h.get("owner") or ""), clients)]
+    held = {_low(h.get("owner")) for h in history if _asset_words(h.get("asset")) in mine}      # the client's own part, by whoever held it
+    others = [n.strip() for n in str(split.get("parts") or "").split(",") if n.strip() and not _is_client(n, clients) and _low(n) not in held]
+    who = f"l'altro contraente è {', '.join(others)}, condividente" if others else "l'altro contraente è chi ha avuto l'altra parte"
+    return f"{who} nella divisione del fondo di {owner}"
+
+
+_OBSTRUCTIONS = ("spoglio", "turbativa", "chiusura/ostruzione accesso")
+
+
+def _names(text: Any) -> List[str]:
+    """The proper names in a field ("Domitilla e Tizio"), none for "il vicino"."""
+    return [n.strip() for n in re.split(r",|;|\be\b", str(text or "")) if re.match(r"\s*[A-ZÀ-Ü]", n)]
+
+
+def parties_to_sue(facts: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """[{name, why}], from the facts alone: who did the act obstructing the right, then every present owner of the land
+    the contested work crosses (the work's own field, else the owners named where the work, the possession or the access
+    are described). Never the client. [] with no such act."""
+    if not facts:
+        return []
+    clients = _clients(facts)
+    out: Dict[str, str] = {}
+    acts = [e for e in facts.get("events") or [] if _typed_kind(e) in _OBSTRUCTIONS]
+    for event in acts:
+        for name in _names(event.get("who")):
+            out.setdefault(name, f"autore dell'atto: {_clean_text(event.get('what'))}")
+    if not acts:
+        return []
+    history = facts.get("property_history") or []
+    crossed = " ".join(str(w.get("crosses") or "") for w in facts.get("works_or_signs") or [])
+    around = " ".join(str(x.get(k) or "") for key, keys in (("works_or_signs", ("what", "crosses")), ("possession", ("asset",)),
+                                                            ("access", ("how_reached",))) for x in facts.get(key) or [] for k in keys)
+    words = _asset_words(crossed or around)
+    for i, entry in enumerate(history):
+        owner = str(entry.get("owner") or "").strip()
+        if not owner or _parts_of(entry, history[i + 1:])[0]:
+            continue                                # not its present owner: the land passed on
+        if words & _asset_words(entry.get("asset")) or _named_in(_low(owner), _low(crossed or around)):
+            out.setdefault(owner, f"proprietario del fondo attraversato ({entry.get('asset') or 'fondo'})")
+    return [{"name": n, "why": w} for n, w in out.items() if not _is_client(n, clients)]
+
+
+def parties_block(signals: Optional[Dict[str, Any]]) -> str:
+    return "\n".join(f"- {p['name']}: {p['why']}" for p in (signals or {}).get("defendants") or [])
+
+
+def conclusions_block(signals: Optional[Dict[str, Any]]) -> str:
+    lines = [f"- {r['conclusion']}" for r in (signals or {}).get("fired") or [] if r.get("conclusion")]
+    mediated = (signals or {}).get("mediation") or {}
+    return "\n".join(lines + ([f"- {mediated['text']}"] if mediated.get("required") else []))
+
+
+def rule_tools(tools: List[Dict[str, Any]], fired: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The tools with those the fired rules list: always there, with the rule's reason."""
+    out = list(tools)
+    for rule in fired:
+        for wanted in rule.get("tools") or []:
+            table = next(t for t in PROCEDURAL_TOOLS if t["id"] == wanted["id"])
+            have = next((t for t in out if t["id"] == wanted["id"]), None)
+            if have:
+                have["matched"] = list(dict.fromkeys([wanted["why"]] + list(have.get("matched") or [])))
+            else:
+                out.append({"id": table["id"], "refs": [list(r) for r in table["refs"]], "text": table["text"],
+                            "why": wanted["why"], "matched": [wanted["why"]]})
+    return out
 
 
 def explain_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
@@ -1493,10 +1707,12 @@ def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
         except Exception as exc:
             logger.warning("fact signals: rules not applied: %s", exc)
             problem = problem or f"rules: {exc}"
-    out = {"facts": facts, "terms": terms, "fired": fired, "problem": problem, "areas": list(areas or [])}
+    terms = terms + _non_use_for_a_servitude(facts, terms, fired) + no_prescription_terms(facts, fired)
+    out = {"facts": facts, "terms": terms, "fired": fired, "problem": problem, "areas": list(areas or []),
+           "defendants": parties_to_sue(facts), "mediation": mediation(facts, fired)}
     if regimes:
         out.update({"qualifications": qualifications, "regimes": regime_issues(facts, qualifications, areas),
-                    "tools": procedural_tools(facts, areas, request), "damages": damage_heads(facts),
+                    "tools": rule_tools(procedural_tools(facts, areas, request), fired), "damages": damage_heads(facts),
                     "multi_roles": multiple_roles(facts)})
     vlog("case_analysis_fact_signals", {**out, "central": all_central(out)})
     if facts:
@@ -2054,6 +2270,12 @@ def attach_term_sources(session, documents: List[Dict[str, Any]], signals: Optio
                                for r in rows if r.get("_article") and _section_text(r)]
         except Exception as exc:
             logger.warning("fact regimes: no text for the term %s: %s", term.get("id"), exc)
+    try:
+        rows = dg._fetch_any(session, documents, [("5", "d.lgs. 28/2010")]) if (signals or {}).get("facts") else []
+        if rows:
+            signals["mediation"] = mediation(signals["facts"], signals.get("fired") or [], _section_text(rows[0]))
+    except Exception as exc:
+        logger.warning("fact regimes: art. 5 d.lgs. 28/2010 not read, the table's list stands: %s", exc)
 
 
 def _section_text(row: Dict[str, Any]) -> str:

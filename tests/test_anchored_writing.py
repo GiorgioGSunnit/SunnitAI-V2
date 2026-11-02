@@ -21,6 +21,15 @@ from src.rag import plan_then_write as ptw  # noqa: E402
 from src.rag import practical_checklist  # noqa: E402
 
 import fetch_audit as fa  # noqa: E402
+from src.rag import comma_material as comma_material_module  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _budgets_apply(monkeypatch):
+    """These invented articles are short: the budget and the single comma are what is tested here, not the whole-article rule."""
+    monkeypatch.setattr(comma_material_module, "SHORT_ARTICLE", 0)
+
+
 
 C1 = "Il custode immaginario risponde dei danni cagionati dalle cose che ha in custodia, salvo il caso fortuito."
 C2 = "La denuncia del danno deve pervenire entro sessanta giorni dalla scoperta, a pena di decadenza dal diritto."

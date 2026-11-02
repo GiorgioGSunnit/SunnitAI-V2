@@ -264,7 +264,8 @@ def split_commi(rows: List[Tuple[str, str]], whole: str = "") -> Tuple[List[str]
     text = (whole or "").strip()
     if not text:
         return [], "none"
-    parts = [p.strip() for p in re.split(r"\n+|(?<=[.;:])\s+(?=\d{1,2}\.\s+[A-ZÀ-Ü])", text) if p.strip()]
+    from src.rag.comma_material import unwrap          # the app's own reading: a PDF line is no comma
+    parts = [p.strip() for line in unwrap(text) for p in re.split(r"(?<=[.;:])\s+(?=\d{1,2}\.\s+[A-ZÀ-Ü])", line) if p.strip()]
     if len(parts) > 1:
         return parts, "paragraphs"
     return sentences(text) or [text], "sentences"

@@ -133,14 +133,15 @@ def _apply(text: str, drops: Dict[Tuple[int, int], List[tuple]], documents: List
            ) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log): each span without its citations (anchored_writing.drop_citations), kept when it stands and cites none
     of them any more (a run naming a kept article too stays whole), else dropped."""
-    from . import anchored_writing
+    from . import anchored_writing, text_tidy
     from . import plan_then_write as ptw
     log, gone, offset = [], [], 0
     for (s, e), refs in sorted(drops.items()):
         s, e = s + offset, e + offset
         old = text[s:e]
         new = anchored_writing.drop_citations(old, refs, documents, set(refs))
-        kept = new != old.strip() and stands(new) and not ptw._citing(new, refs, documents, set(refs))
+        kept = new != old.strip() and stands(new) and not ptw._citing(new, refs, documents, set(refs)) \
+            and not text_tidy.breaks_without_citation(old, new)
         log.append({"refs": [f"{n} {c}".strip() for n, c in refs], "how": "citation removed" if kept else "sentence dropped",
                     "sentence": " ".join(old.split())[:300], "now": new[:300] if kept else ""})
         if kept:

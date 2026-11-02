@@ -158,7 +158,7 @@ def test_answer_docx_writes_the_log_when_verbose():
 def test_the_rule_requires_its_articles():
     rules = {r["id"]: r for r in fs.load_rules()}
     for rule in ("destinazione_padre_famiglia", "usucapione_servitu_apparente"):
-        assert rules[rule]["requires"] == ["1079 c.c.", "1067 c.c.", "2043 c.c."]
+        assert {"1079 c.c.", "1067 c.c.", "2043 c.c."} <= set(rules[rule]["requires"])
 
 
 def test_a_required_article_retrieval_missed_is_read_and_only_that(monkeypatch):

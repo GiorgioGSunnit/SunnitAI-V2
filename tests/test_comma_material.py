@@ -16,6 +16,15 @@ import pytest  # noqa: E402
 
 from src.rag import comma_material as cm  # noqa: E402
 from src.rag import defensive_generation as dg  # noqa: E402
+from src.rag import comma_material as comma_material_module  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _budgets_apply(monkeypatch):
+    """These invented articles are short: the budget and the single comma are what is tested here, not the whole-article rule."""
+    monkeypatch.setattr(comma_material_module, "SHORT_ARTICLE", 0)
+
+
 
 # Art. 9001 c.c. (invented): four commi; the third, on the late notice, is the one the issue needs.
 C1 = "Il custode immaginario risponde dei danni cagionati dalle cose che ha in custodia, salvo il caso fortuito."
@@ -85,7 +94,7 @@ def test_without_comma_sections_the_text_is_split_by_lines_numbers_or_sentences(
     assert how == "sentences" and parts == [C1, C4]
     assert cm.split_commi("") == ([], "none")
     # a short fragment joins the part before it
-    assert cm.split_commi(f"{C1}\na) breve\n{C4}")[0] == [f"{C1} a) breve", C4]
+    assert cm.split_commi(f"{C1}\na) breve;\n{C4}")[0] == [f"{C1} a) breve;", C4]
 
 
 def test_named_commi_in_every_form():

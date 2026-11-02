@@ -150,6 +150,7 @@ FIXTURES = {
                                       ev("Tizio propone ricorso possessorio", "2018")]),
     "possessoria_in_termine": F(events=[ev("Caio chiude il cancello", "1 settembre 2026")]),
     "fondo_intercluso": F(events=[ev("il fondo di Tizio è intercluso")]),
+    "ostruzione_in_corso": F(events=[{"what": "Mevio chiude il cancello", "date": "", "who": "Mevio", "kind": "chiusura/ostruzione accesso"}]),
     "immissioni": F(events=[ev("odori e fumi dal ristorante vicino")]),
     "distanze_vedute": F(events=[ev("Caio costruisce un muro a un metro dal confine")]),
     "condominio_parti_comuni": F(events=[ev("l'assemblea del condominio vieta l'uso del cortile")]),

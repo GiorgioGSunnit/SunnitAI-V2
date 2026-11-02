@@ -275,10 +275,9 @@ def test_an_article_already_cited_or_graded_low_gets_no_call(monkeypatch, quiet)
     assert ptw.cover_plan_articles(plan_of("1218", "1382", "1383"), SECTIONS, rows, [], "Il caso.") == SECTIONS
 
 
-def test_an_article_never_sent_to_the_grader_is_covered(monkeypatch, quiet):
-    reply(monkeypatch, "La servitù si difende con l'azione dell'art. 1079 c.c., come regola generale del caso.")
-    out = ptw.cover_plan_articles(plan_of("1079"), SECTIONS, [row("1079", None)], [], "Il caso.")
-    assert "1079" in out[1][1]
+def test_an_article_never_sent_to_the_grader_is_not_covered(monkeypatch, quiet):
+    monkeypatch.setattr(dg, "_call_chat", lambda *a, **k: pytest.fail("called"))
+    assert ptw.cover_plan_articles(plan_of("1079"), SECTIONS, [row("1079", None)], [], "Il caso.") == SECTIONS
 
 
 @pytest.mark.parametrize("text, why", [

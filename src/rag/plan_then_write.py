@@ -48,7 +48,7 @@ import re
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -728,6 +728,8 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"{_QUESTIONS_TITLE}:\n{questions}\n\n" if questions else "")
             + (f"{_ACQUIRED_TITLE}:\n{acquired}\n\n" if acquired else "")
+            + (f"{_CONCLUSIONS_TITLE}:\n{_conclusions(analysis)}\n{_CONCLUSIONS_RULE}\n\n" if _conclusions(analysis) else "")
+            + (f"{_DEFENDANTS_TITLE}:\n{_defendants(analysis)}\n{_DEFENDANTS_RULE}\n\n" if _defendants(analysis) else "")
             + (f"{_QUALIFIED_TITLE}:\n{qualified}\n{_QUALIFIED_RULE}\n\n" if qualified else "")
             + (f"{_ROLES_TITLE}:\n{roles}\n\n" if roles else "")
             + (f"{_DAMAGES_TITLE}:\n{damages}\n{_DAMAGES_RULE}\n\n" if damages else "")
@@ -1327,6 +1329,8 @@ def _section_system(plan: Dict[str, Any], lang: str) -> str:
         "- Non aggiungere fatti, date, importi o atti che il caso non contiene: se un dato manca, indica che cosa "
         "va verificato.\n"
         + (_WRITER_RULES.format(party=party) if rules else "") +
+        "- Parafrasa le norme con parole tue: il testo di una norma si riporta solo tra «…», mai fuori dalle virgolette né "
+        "dentro una parentesi.\n"
         "- Prosa argomentata in paragrafi; elenchi puntati solo per prove da acquisire e attività da compiere.\n"
         f"- Scrivi in {language_display_name(lang)}."
     )
@@ -1365,6 +1369,11 @@ _WRITER_RULES = (
     "- I TERMINI CALCOLATI sono l'unica fonte: nessuna sezione dice soddisfatto un termine che risulta non verificabile "
     "o incerto, né il contrario.\n"
     "- Il parere è completo in sé: non rimandare ad approfondimenti successivi.\n"
+    "- Una norma si nomina sempre con numero e codice: mai le parole del suo testo o della sua rubrica al posto del numero.\n"
+    "- Tratta solo gli strumenti che servono: nessuna riga su uno strumento, un'azione o un adempimento che non si applica "
+    "(né «non pertinente», né «non necessario», né «non praticabile»). Sulla mediazione scrivi solo ciò che è tra le "
+    "CONCLUSIONI DI DIRITTO; se lì non c'è, non dire che è obbligatoria.\n"
+    "- Un'azione il cui termine è decorso compare una sola volta, tra i Termini, come preclusa; mai tra gli strumenti.\n"
 )
 
 
@@ -1450,8 +1459,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
                   f"{party} e quelli che la controparte può usare contro {party}, ciascuno con il perché in poche "
                   "parole. Non elencare né etichettare uno per uno i fatti del caso." if _review_fixes() else
                   f"ogni fatto del caso valutato dal punto di vista di {party}: {labels}")
-    norms = ("Per le norme del PIANO su cui si fondano gli argomenti: che cosa stabilisce ciascuna, citando il testo "
-             "fornito, e, solo se la norma stessa pone una presunzione o ripartisce l'onere della prova, quella "
+    norms = ("Per le norme del PIANO su cui si fondano gli argomenti: che cosa stabilisce ciascuna, con parole tue "
+             "(il testo solo tra «…»), e, solo se la norma stessa pone una presunzione o ripartisce l'onere della prova, quella "
              "regola con le sue parole" if rules else
              "Per ogni norma del PIANO: che cosa stabilisce, citando il testo fornito, e come si ripartisce l'onere "
              "della prova")
@@ -1467,6 +1476,9 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
                   if blocks else ""))
     applied = ((f" Per ogni parte di {_ROLES_TITLE}, la responsabilità per ciascun ruolo." if roles else "")
                + (f" Tieni conto delle {_DAMAGES_TITLE}." if damages else ""))
+
+    fixed = block(_CONCLUSIONS_TITLE, f"{_conclusions(analysis)}\n{_CONCLUSIONS_RULE}" if _conclusions(analysis) else "")
+    to_sue = block(_DEFENDANTS_TITLE, f"{_defendants(analysis)}\n{_DEFENDANTS_RULE}" if _defendants(analysis) else "")
 
     def material(*parts: str) -> str:
         # PROTECTED_PARAPHRASE_ENABLED: a section given a protected passage gets the rule with it.
@@ -1489,7 +1501,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "posto, a partire dalle risposte del PIANO quando ci sono, altrimenti dalle sue questioni; se la "
          "questione centrale non è tra i quesiti, rispondi prima a essa. Ogni risposta in due-quattro frasi, con "
          "la norma su cui si fonda." + one_each + scoped + no_rulings,
-         material(case, block("QUESITI", tasks), block(_QUESTIONS_TITLE, asked),
+         material(case, fixed, block("QUESITI", tasks), block(_QUESTIONS_TITLE, asked),
                   block(_TOOLS_TITLE, tools if questions and any(fact_signals_asks(q) for q in questions) else ""),
                   _plan_text(plan, answers=True, rulings=False), scope), 600 + 150 * max(0, len(questions) - 1)),
         (SECTION_TITLES[1],
@@ -1497,7 +1509,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "principale e quelle alternative o subordinate, e perché), la questione centrale e perché decide "
          f"l'esito; poi {facts_part} Non illustrare le "
          "norme nel dettaglio (sezione 3) né sviluppare gli argomenti (sezione 4)." + scoped + no_rulings,
-         material(case, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
+         material(case, fixed, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
                   _plan_text(plan, rulings=False), scope,
                   block("TESTI DELLE NORME", texts(refs, per_article(8000, 700)))), 1000),
         (SECTION_TITLES[2],
@@ -1505,7 +1517,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "afferma, con il suo riferimento, e che cosa comporta per questo caso, senza svolgere gli argomenti "
          "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti."
          + every + scoped + adverse,
-         material(case, _plan_text(plan), scope,
+         material(case, fixed, _plan_text(plan), scope,
                   block("TESTI DELLE NORME", texts(refs, per_article(15000, dg._ARTICLE_CHARS))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 1200)),
                   block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1600 if keep_all else 1200),
@@ -1515,7 +1527,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "acquisire; l'obiezione più forte della controparte e la replica. Poi le tesi subordinate del PIANO. "
          "Prosa, senza ripetere per ogni questione lo stesso schema a voci; tra virgolette solo frasi dei testi e "
          "dei passi forniti." + every_issue + scoped + applied + adverse + evidence,
-         material(case, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
+         material(case, fixed, to_sue, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
                   block(_ROLES_TITLE, roles), block(_DAMAGES_TITLE, damages),
                   _plan_text(plan, issues="full", subordinate=True), scope,
                   block("TESTI DELLE NORME", texts(refs, per_article(9000, 600))),
@@ -1527,7 +1539,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "se i fatti del caso le rendono pertinenti, dicendo perché, e solo quelle che la legge consente a "
          f"{party} nella sua posizione; un termine che dipende da una data che il caso non indica è una verifica "
          "da fare." + (f" {_terms_rule()}" if _terms(analysis) else "") + regimes + no_rulings,
-         material(case, block("FASE", frame.get("procedural_posture") or ""), block(_QUALIFIED_TITLE, qualified),
+         material(case, fixed, to_sue, block("FASE", frame.get("procedural_posture") or ""), block(_QUALIFIED_TITLE, qualified),
                   block(_TERMS_TITLE, _terms(analysis)), block(_TERM_TEXTS_TITLE, _term_texts(analysis)),
                   _plan_text(plan, issues="", subordinate=True, rulings=False),
                   block(_TOOLS_TITLE, tools), block(_CRIMINAL_TITLE, criminal), block(_DAMAGES_TITLE, damages),
@@ -1538,7 +1550,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "SEZIONE: Conclusioni. In due o tre paragrafi: gli argomenti in ordine di forza, come nel PIANO; una "
          f"stima motivata del rischio, tenendo conto dei punti deboli; la condotta consigliata a {party}."
          + no_rulings,
-         _plan_text(plan, subordinate=True, weak=True, rulings=False), 500),
+         material(fixed, _plan_text(plan, subordinate=True, weak=True, rulings=False)), 500),
     ]
     if anchors is not None:
         jobs = _with_anchors(jobs, anchors, posture)
@@ -1945,7 +1957,7 @@ def drop_dangling(text: str, title: str = "") -> Tuple[str, List[Dict[str, Any]]
 _TERMS_TITLE = "TERMINI CALCOLATI DALLE DATE DEL CASO"
 _TERMS_RULE = ("Sono fatti, calcolati dalle date del caso: un'azione il cui termine è DECORSO non va proposta come "
                "praticabile (indicala come preclusa e proponi le alternative); un termine INCERTO va indicato come "
-               "verifica da fare.")
+               "verifica da fare; un'azione non soggetta a prescrizione non ha termine.")
 
 
 # FACT_REGIMES_ENABLED: every applicable term with its article, also when the case gives no dates (DA VERIFICARE).
@@ -1953,7 +1965,7 @@ _TERMS_RULE_REGIMES = ("Indica sempre ciascuno di questi termini con la sua dura
                        "tra parentesi quadre, anche quando il caso non dà le date: un termine DA VERIFICARE o "
                        "INCERTO è una verifica da fare (quale data accertare); un'azione il cui termine è DECORSO non "
                        "va proposta come praticabile (indicala come preclusa e proponi le alternative). Nessun altro "
-                       "termine che non sia qui o nei testi forniti.")
+                       "termine che non sia qui o nei testi forniti; un'azione non soggetta a prescrizione non ha termine.")
 _TERM_TEXTS_TITLE = "TESTI DELLE NORME SUI TERMINI"
 _QUALIFIED_TITLE = "QUALIFICHE DELLE PARTI"
 _QUALIFIED_RULE = ("Sono dedotte dai fatti: considera i regimi speciali che comportano (per il consumatore, la "
@@ -1964,6 +1976,22 @@ _TOOLS_RULE = "Valutali per la fase del caso: i fatti indicati accanto li rendon
 
 def _signals(analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return (analysis or {}).get("fact_signals")
+
+
+_CONCLUSIONS_TITLE = "CONCLUSIONI DI DIRITTO ACCERTATE DAI FATTI"
+_CONCLUSIONS_RULE = "Sono punti fermi come il testo delle norme: riportali dove servono e non scrivere mai il contrario."
+_DEFENDANTS_TITLE = "PARTI DA CONVENIRE"
+_DEFENDANTS_RULE = "Sono ricavate dai fatti: indicale tutte per nome, mai come «eventuali» proprietari o terzi."
+
+
+def _conclusions(analysis: Dict[str, Any]) -> str:
+    from . import fact_signals
+    return fact_signals.conclusions_block(_signals(analysis))
+
+
+def _defendants(analysis: Dict[str, Any]) -> str:
+    from . import fact_signals
+    return fact_signals.parties_block(_signals(analysis))
 
 
 def _qualifications_or_regimes(analysis: Dict[str, Any]) -> bool:
@@ -2064,7 +2092,8 @@ def material_use(analysis: Dict[str, Any], text: str) -> Dict[str, Dict[str, Lis
     terms = signals.get("terms") or []
     if terms:
         out["termini"] = {"offered": [t["id"] for t in terms],
-                          "written": [t["id"] for t in terms if _length_written(t.get("length", ""), text)]}
+                          "written": [t["id"] for t in terms if _length_written(t.get("length", ""), text) or (
+                              not t.get("length") and any(_cited_number(n, text) for n in re.findall(r"\d+", t.get("ref") or "")))]}
     tools = [t for t in signals.get("tools") or [] if t["id"] != fact_signals.CRIMINAL_TOOL]
     if tools:
         out["strumenti"] = {"offered": [t["id"] for t in tools],
@@ -2357,6 +2386,10 @@ _DAMAGE_MEASURE_RE = re.compile(r"misur|quantific|liquid|conseguenz\w* immediat|
                                 re.IGNORECASE)
 _DAMAGE_BASIS_RE = re.compile(r"\b(?:2043|2056|1218|1079)\b")
 _SATISFIED_RE = re.compile(r"soddisfatt|maturat|compiut|decors|integrat|raggiunt|perfezionat|superat", re.IGNORECASE)
+# v42: an acquisition stated as done, for a term the dates leave open. Not "giurisprudenza consolidata".
+_ACQUIRED_DONE_RE = re.compile(r"\b(?:acquisit[aoie]|acquisizione|consolidat[aoie]|confermat[aoie]|confermando|perfezionat[aoie]|maturat[aoie])\b",
+                               re.IGNORECASE)
+_SETTLED_LAW_RE = re.compile(r"giurisprudenz|orientament|principio|cassazione", re.IGNORECASE)
 _UNSETTLED_RE = re.compile(r"non verificabil|da verificare|incert", re.IGNORECASE)
 _UNSETTLED_STATUS = ("NON VERIFICABILE", "INCERTO", "DA VERIFICARE")
 _POSSESSORY_RE = re.compile(r"reintegr|manutenzion|possessori", re.IGNORECASE)
@@ -2367,18 +2400,28 @@ _FROM_USE_RE = re.compile(r"(?:dall|con l|per l|mediante l)['’]uso|uso (?:vent
 
 def statement_context(analysis: Dict[str, Any]) -> Dict[str, Any]:
     """What _wrong_statement checks a sentence against: {} without typed facts."""
+    from . import answer_invariants, fact_signals
     signals = _signals(analysis) or {}
     if not signals.get("facts"):
         return {}
     return {"servitude": any(re.search(r"servit", a, re.IGNORECASE) for a in acquired_rights(analysis)),
             "contract": bool(signals["facts"].get("contracts")),
-            "terms": [{k: t.get(k) for k in ("id", "ref", "length", "status")} for t in signals.get("terms") or []]}
+            "terms": [{k: t.get(k) for k in ("id", "ref", "length", "status", "from")} for t in signals.get("terms") or []],
+            "mediation": (signals.get("mediation") or {}).get("required"),
+            "split_owner": str(fact_signals._the_split(signals["facts"]).get("owner") or ""),
+            "conclusions": [{k: r.get(k) for k in ("id", "conclusion_subject", "conclusion_unless")}
+                            for r in signals.get("fired") or [] if r.get("conclusion")],
+            "defendants": bool(signals.get("defendants")),
+            "excluded": [tuple(x) for r in signals.get("fired") or [] for x in r.get("excludes") or []],
+            "case_durations": sorted(answer_invariants.durations(fact_signals._texts(signals["facts"])))}
 
 
 def _term_marker(term: Dict[str, Any]) -> Optional[re.Pattern]:
     """How a sentence names a term: its article, or, for a twenty years' term, those words."""
     numbers = re.findall(r"\b\d{3,4}\b", str(term.get("ref") or ""))
-    words = list(numbers) + (["ventenn\\w*", "vent['’]anni", "venti anni", "20 anni"] if re.search(r"20|vent", str(term.get("length"))) else [])
+    twenty = re.search(r"20|vent", str(term.get("length"))) and term.get("id") != "non_uso_servitu"   # usucapione's words, not its
+    words = list(numbers) + (["ventenn\\w*", "vent['’]anni", "venti anni", "20 anni"] if twenty else [])
+    words += ["usucapi\\w*"] if str(term.get("id") or "").startswith("usucapione") else []
     return re.compile(r"\b(?:" + "|".join(words) + r")", re.IGNORECASE) if words else None
 
 
@@ -2389,11 +2432,97 @@ def _term_conflict(sentence: str, terms: List[Dict[str, Any]]) -> str:
         if not marker or not marker.search(sentence):
             continue
         settled = _SATISFIED_RE.search(sentence) and not _DENIED_RE.search(sentence)
-        if term.get("status") in _UNSETTLED_STATUS and settled and not _UNSETTLED_RE.search(sentence):
+        done = _ACQUIRED_DONE_RE.search(sentence) and not _DENIED_RE.search(sentence) and not _SETTLED_LAW_RE.search(sentence) \
+            and not _CONDITION_RE.search(sentence)
+        if term.get("status") in _UNSETTLED_STATUS and (settled or done) and not _UNSETTLED_RE.search(sentence):
             return f"the computed term {term.get('id')} is {term.get('status')}"
         if term.get("status") == "DECORSO" and _UNSETTLED_RE.search(sentence):
             return f"the computed term {term.get('id')} has run"
     return ""
+
+
+# Terms the case's actions have by name: a sentence giving such an action another term goes ("confessoria ... 10 anni").
+_ACTION_NAMES = {"azione_confessoria": r"confessori", "azione_negatoria": r"negatori", "azione_rivendicazione": r"rivendic",
+                 "possessoria": r"possessori|reintegrazion|manutenzion", "non_uso_servitu": r"non uso"}
+_STATES_TERM_RE = re.compile(r"prescri|decad|\btermine\b|\bentro\b|estingu", re.IGNORECASE)
+_NO_TERM_RE = re.compile(r"\bnon\s+(?:si\s+|è\s+|sono\s+)?(?:prescriv|soggett|soggiac)|imprescrittibil", re.IGNORECASE)
+
+
+def _other_term(sentence: str, terms: List[Dict[str, Any]], in_case: Sequence[tuple]) -> str:
+    """A duration stated for an action with a computed entry, found neither among the computed terms nor in the case."""
+    from . import answer_invariants
+    if not _STATES_TERM_RE.search(sentence) or _NO_TERM_RE.search(sentence):
+        return ""
+    allowed = {tuple(d) for d in in_case} | {d for t in terms for d in answer_invariants.durations(str(t.get("length") or ""))}
+    stray = answer_invariants.durations(sentence) - allowed
+    named = next((t["id"] for t in terms if t.get("id") in _ACTION_NAMES
+                  and re.search(_ACTION_NAMES[t["id"]], sentence, re.IGNORECASE)), "")
+    return f"a term the computed terms do not give for {named}" if stray and named else ""
+
+
+_DENIES_RE = re.compile(r"\bnon\s+(?:è\s+|sono\s+|risulta\s+)?(?:applicabil|invocabil|configurabil|maturat|sussist|ricorr|"
+                        r"oper[ai]\b|si\s+applica|spett|può\s+(?:operare|applicarsi|invocarsi))|\binapplicabil|"
+                        r"(?<!non è )(?<!non sono )\besclus[aoie]\b|\bsi\s+esclude\b|\bda\s+escludere\b|\bprecluso\b|\bpreclusa\b",
+                        re.IGNORECASE)
+_THE_OTHER_SIDE_RE = re.compile(r"controparte|obiezion|tesi avversaria|potrebbe(?:ro)?\s+(?:sostenere|obiettare|eccepire)",
+                                re.IGNORECASE)
+
+
+def _denied_conclusion(sentence: str, conclusions: List[Dict[str, Any]]) -> str:
+    """A fired rule's conclusion denied as a plain statement: an objection or a condition is not a denial."""
+    if not _DENIES_RE.search(sentence) or _THE_OTHER_SIDE_RE.search(sentence) or _CONDITION_RE.search(sentence):
+        return ""
+    for rule in conclusions:
+        unless = rule.get("conclusion_unless")
+        if re.search(rule["conclusion_subject"], sentence, re.IGNORECASE) and not (unless and re.search(unless, sentence, re.IGNORECASE)):
+            return f"denies the conclusion of rule {rule.get('id')}"
+    return ""
+
+
+_MEDIATION_DENIED_RE = re.compile(r"\bnon\s+(?:è\s+|sarà\s+|risulta\s+|appare\s+)?(?:necessari|obbligatori|richiest|dovut|occorre|serve|"
+                                  r"condizione)|\bfacoltativ|\besclus[aoie]\b|\bsuperflu", re.IGNORECASE)
+_MEDIATION_MANDATORY_RE = re.compile(r"obbligatori|condizione di procedibilit", re.IGNORECASE)
+_TOOL_NAMES_RE = re.compile(r"sfratt|decreto ingiuntivo|ingiunzion|sequestr|diffida|pignorament|accertamento tecnico|"
+                            r"provvedimento d['’]urgenza|azione possessoria|denuncia di nuova opera|denuncia di danno temuto|licenza",
+                            re.IGNORECASE)
+_TOOL_NOT_USED_RE = re.compile(r"\bnon\s+(?:è\s+|sono\s+|risulta\s+|risultano\s+|appare\s+|appaiono\s+)?(?:pertinent|praticabil|"
+                               r"necessari|applicabil|utilizzabil|esperibil|opportun|utili?\b|rilevant|percorribil)|\bsuperflu|\binutil|"
+                               r"\birrilevant", re.IGNORECASE)
+_NON_USE_NAMED_RE = re.compile(r"non\s+uso|estinzion|estingu|\b1073\b", re.IGNORECASE)
+_TWENTY_RE = re.compile(r"ventenn|vent['’]anni|venti anni|20 anni", re.IGNORECASE)
+_ALIENATION_OF_RE = re.compile(r"alienazion\w*\s+(?:del\s+(?:fondo|terreno|podere)\s+)?(?:di|da parte di)\s+([A-ZÀ-Ü]\w+)")
+
+
+def _non_use_as_usucapione(sentence: str, terms: List[Dict[str, Any]]) -> str:
+    """The non-use term's date used as if it started another twenty years: it only extinguishes the servitude."""
+    term = next((t for t in terms if t.get("id") == "non_uso_servitu"), None)
+    year = re.search(r"\d{4}", str(((term or {}).get("from") or {}).get("date") or ""))
+    if year and year.group(0) in sentence and _TWENTY_RE.search(sentence) and not _NON_USE_NAMED_RE.search(sentence):
+        return "the 20 years from the last use are the servitude's extinction by non-use, not usucapione"
+    return ""
+
+
+def _case_statement(sentence: str, context: Dict[str, Any]) -> str:
+    """What the computed facts forbid: mediation against its computed answer, a tool written only to say it does not
+    apply, art. 1054 c.c. tied to another sale than the split of the land."""
+    if "mediazion" in sentence.lower():
+        required = context.get("mediation")
+        if required and _MEDIATION_DENIED_RE.search(sentence):
+            return "mediation is a condition of the action here (art. 5 d.lgs. 28/2010)"
+        if required is False and _MEDIATION_MANDATORY_RE.search(sentence):
+            return "the case's subject is not among those of art. 5 d.lgs. 28/2010"
+    if _TOOL_NAMES_RE.search(sentence) and _TOOL_NOT_USED_RE.search(sentence) and not _THE_OTHER_SIDE_RE.search(sentence):
+        return "a line on a tool that does not apply"
+    owner = context.get("split_owner")
+    if owner and re.search(r"\b1054\b|altro contraente", sentence, re.IGNORECASE):
+        named = _ALIENATION_OF_RE.search(sentence)
+        if named and named.group(1) != owner:
+            return f"art. 1054 c.c. goes with the split of {owner}'s land"
+    return ""
+
+
+_MAYBE_PARTIES_RE = re.compile(r"\beventual\w+\s+(?:altr\w+\s+)?(?:com?proprietar|proprietar|confinant|contitolar|litisconsort|"
+                               r"terz|convenut|soggett|parti)", re.IGNORECASE)
 
 
 def _wrong_statement(sentence: str, context: Optional[Dict[str, Any]] = None) -> str:
@@ -2404,9 +2533,13 @@ def _wrong_statement(sentence: str, context: Optional[Dict[str, Any]] = None) ->
     Denied, they are right."""
     context = context or {}
     terms = context.get("terms") or []
-    conflict = _term_conflict(sentence, terms)
+    conflict = _term_conflict(sentence, terms) or _other_term(sentence, terms, context.get("case_durations") or []) \
+        or _denied_conclusion(sentence, context.get("conclusions") or []) or _non_use_as_usucapione(sentence, terms) \
+        or _case_statement(sentence, context)
     if conflict:
         return conflict
+    if context.get("defendants") and _MAYBE_PARTIES_RE.search(sentence):
+        return "the parties to sue are named in the facts"
     if _DENIED_RE.search(sentence):
         return ""
     if re.search(r"\b1062\b|padre di famiglia", sentence, re.IGNORECASE) and _FROM_USE_RE.search(sentence):
@@ -2613,6 +2746,9 @@ def review_parere(draft: str, case_text: str, article_rows: List[Dict[str, Any]]
     return text or draft
 
 
+_guarded_step = None      # set below: _step, which write_sections wraps with the trace
+
+
 def _writer_log(log: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {"entries": log, "cut": sum(1 for e in log if e["kind"] == "cut"),
             "non_application": sum(1 for e in log if e["kind"] == "non_application"),
@@ -2620,6 +2756,19 @@ def _writer_log(log: List[Dict[str, Any]]) -> Dict[str, Any]:
             "facts_flagged": sum(1 for e in log if e["kind"] == "fact_not_in_case"),
             "facts_filtered": dict(Counter(e["why"] for e in log if e["kind"] == "fact_flag_filtered")),
             "against_client": sum(1 for e in log if e["kind"] == "against_client")}
+
+
+def _trace_comma_words(step: str, sections: List[Tuple[str, str]], rows: List[Dict[str, Any]]) -> None:
+    """Logged as comma_words_trace: the sentences that carry a comma's words around or instead of a citation after each step,
+    so a run shows the step they first appear in."""
+    from . import text_tidy
+    parts = [p for found, _ in text_tidy._parts_by_article(rows).values() for p in found]
+    if not parts:
+        return
+    found = [text[s:e].strip()[:200] for _, text in sections for s, e in _sentence_spans(text)
+             if text_tidy.comma_words_cited(text[s:e].strip(), parts) or text_tidy.comma_words_left(text[s:e].strip(), parts)]
+    if found:
+        dg.vlog("comma_words_trace", {"step": step, "count": len(found), "sentences": found[:10]})
 
 
 def _step(name: str, sections: List[Tuple[str, str]],
@@ -2635,6 +2784,9 @@ def _step(name: str, sections: List[Tuple[str, str]],
         logger.exception("plan-then-write: step %s failed, the sections as they were: %s", name, exc)
         dg.vlog("post_writing_step_failed", {"step": name, "error": f"{type(exc).__name__}: {exc}"[:500]})
         return sections
+
+
+_guarded_step = _step
 
 
 def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], lang: str,
@@ -2660,6 +2812,11 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     rule-sentence checked against its section's material (grounded_review.review; `checked`, strict: the articles
     it may keep cited, grounded_review.strict_refs)."""
     system = _section_system(plan, lang)
+
+    def _step(name, secs, run):       # each step, and what it leaves of an article's words in place of its citation
+        done = _guarded_step(name, secs, run)
+        _trace_comma_words(name, done, article_rows or [])
+        return done
 
     def write(job):
         title, instruction, material, max_tokens = job
@@ -2694,6 +2851,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     finally:
         dg.vlog("case_analysis_sections_llm", duration_ms=(time.time() - t0) * 1000)
     sections = [(job[0], _without_heading(text, job[0])) for job, text in zip(jobs, texts)]
+    _trace_comma_words("written", sections, article_rows or [])
     # every step after writing is fail-safe (_step): an exception keeps the sections as they were before it
     if coverage is not None:
         sections = _step("cover_blocks", sections, lambda secs: _cover_blocks(secs, jobs, system, coverage, standard))
@@ -3025,24 +3183,27 @@ def covering() -> bool:
 
 
 def _worth_covering(rows: List[Dict[str, Any]]) -> bool:
-    """Graded 2 or more, or never sent to the grader; never a marginal or ungraded one."""
-    grades = [r.get("_grade") for r in rows if isinstance(r.get("_grade"), int)]
-    if grades:
-        return max(grades) >= 2
-    return not any(r.get("_applicability") in ("marginale", "non valutato") for r in rows)
+    """Graded 2 or more: never one with no grade (v42: 2160, 1052 and 1038 c.c. written into a servitude case)."""
+    return any(isinstance(r.get("_grade"), int) and r["_grade"] >= 2 for r in rows)
 
 
 def _omitted(plan: Dict[str, Any], sections: List[Tuple[str, str]], article_rows: List[Dict[str, Any]],
-             documents: List[Dict[str, Any]]) -> List[Tuple[tuple, Dict[str, Any], Dict[str, Any]]]:
-    """[(article, its issue, its row)] of the plan's articles worth covering that no section cites."""
+             documents: List[Dict[str, Any]], excluded: Sequence[tuple] = ()) -> List[Tuple[tuple, Dict[str, Any], Dict[str, Any]]]:
+    """[(article, its issue, its row)] of the plan's articles worth covering that no section cites and no fired rule's
+    conclusion excludes."""
     known = {r["_article"] for r in article_rows if r.get("_article")}
     cited = [r for _, text in sections for _, _, refs in _citations(text, documents, known) for r in refs]
     out = []
     for ref in _plan_refs(plan):
         rows = [r for r in article_rows if r.get("_article") and _same_ref(r["_article"], ref)]
-        if rows and not any(_same_ref(ref, c) for c in cited) and _worth_covering(rows):
+        if rows and not any(_same_ref(ref, c) for c in cited) and _worth_covering(rows) \
+                and not any(_same_ref(ref, tuple(x)) for x in excluded):
             out.append((ref, next(q for q in plan["questioni"] if ref in q["norme"]), rows[0]))
     return out
+
+
+_NOT_CONNECTED_RE = re.compile(r"\bnon\s+(?:si\s+)?(?:ricollega|riguarda|attiene|disciplina|concerne|rileva|incide)\b|\bestrane[aoie]\b|"
+                               r"\bnon\s+(?:è|sono)\s+(?:direttamente|strettamente)\b|\bsolo\s+indirettamente\b", re.IGNORECASE)
 
 
 def _cover_refusal(text: str, ref: tuple, documents: List[Dict[str, Any]], article_rows: List[Dict[str, Any]]) -> str:
@@ -3054,12 +3215,12 @@ def _cover_refusal(text: str, ref: tuple, documents: List[Dict[str, Any]], artic
         return "cites another article, or not this one"
     if dg._decision_numbers(text):
         return "cites a ruling"
-    if _NOT_APPLY_RE.search(text) or _NOT_RELEVANT_RE.search(text):
+    if _NOT_APPLY_RE.search(text) or _NOT_RELEVANT_RE.search(text) or _NOT_CONNECTED_RE.search(text):
         return "says it does not apply"
     from . import comma_material, text_tidy
     rows = [r for r in article_rows if r.get("_article") and _same_ref(r["_article"], ref)]
     parts = [p for r in rows for p in comma_material.article_parts((r.get("s") or {}).get("plain_text"))[0]]
-    if text_tidy.comma_words_cited(text, parts):
+    if text_tidy.comma_words_cited(text, parts) or text_tidy.comma_words_left(text, parts):
         return "copies the comma's words"
     return ""
 
@@ -3096,7 +3257,7 @@ def _cover_one(ref: tuple, issue: Dict[str, Any], row: Dict[str, Any], plan: Dic
         text, _ = review_section(title, text, case_text, article_rows, documents, plan.get("parte_assistita") or "", context)
     if _review_fixes():
         text, _ = rewrite_unsupported(title, text, case_text, article_rows)
-    why = _cover_refusal(text, ref, documents, article_rows) if text else "dropped by the review"
+    why = (_cover_refusal(text, ref, documents, article_rows) or _wrong_statement(text, context)) if text else "dropped by the review"
     if why:
         return {**entry, "why": why, "sentence": text[:300]}
     if grounded_review.enabled():
@@ -3134,7 +3295,7 @@ def cover_plan_articles(plan: Dict[str, Any], sections: List[Tuple[str, str]], a
     """The sections with one or two sentences for each plan article omitted, in the issue's place in "Applicazione al
     caso". Logged as case_analysis_plan_articles, every insertion and refusal."""
     t0 = time.time()
-    missing = _omitted(plan, sections, article_rows, documents)
+    missing = _omitted(plan, sections, article_rows, documents, (context or {}).get("excluded") or ())
     if not missing:
         dg.vlog("case_analysis_plan_articles", {"missing": [], "inserted": 0, "entries": []})
         return sections
@@ -3156,6 +3317,68 @@ def cover_plan_articles(plan: Dict[str, Any], sections: List[Tuple[str, str]], a
     return out
 
 
+def for_the_plan(plan: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """(plan, analysis) as the sections read them: who claims a right on another's land has no negatoria (art. 949 c.c. is
+    the owner's), and of the actions with no prescription only those the plan uses are listed."""
+    from . import fact_signals
+    signals = _signals(analysis)
+    if not signals:
+        return plan, analysis
+    if statement_context(analysis).get("servitude"):
+        plan = {**plan, "questioni": [{**q, "norme": [r for r in q["norme"] if not (r[0] == "949" and _code_key(r[1]) == "c.c.")]}
+                                      for q in plan["questioni"]]}
+    used = " ".join(f"{q.get('titolo') or ''} {q.get('argomento') or ''} {' '.join(n for n, _ in q['norme'])}" for q in plan["questioni"])
+
+    def listed(term):
+        if term.get("status") != fact_signals.NO_PRESCRIPTION_STATUS:
+            return True
+        number = re.search(r"\d+", term.get("ref") or "")
+        return bool(re.search(_ACTION_NAMES[term["id"]], used, re.IGNORECASE)) or bool(number and re.search(rf"\b{number.group(0)}\b", used))
+    return plan, {**analysis, "fact_signals": {**signals, "terms": [t for t in signals.get("terms") or [] if listed(t)]}}
+
+
+_PRECLUDED_TOOLS_HEAD_RE = re.compile(r"^\W*strumenti processuali\b", re.IGNORECASE)
+
+
+def _precluded_in_tools(text: str, terms: List[Dict[str, Any]]) -> List[Tuple[int, int]]:
+    """The sentences under the "Strumenti processuali" lead naming an action whose computed term has run."""
+    names = [_ACTION_NAMES[t["id"]] for t in terms if t.get("status") == "DECORSO" and t.get("id") in _ACTION_NAMES]
+    if not names:
+        return []
+    out, pos = [], 0
+    inside = False
+    for paragraph in re.split(r"(\n\s*\n)", text):
+        if paragraph.strip() and not paragraph.isspace():
+            if paragraph.lstrip().startswith(("**", "#")):
+                inside = bool(_PRECLUDED_TOOLS_HEAD_RE.match(paragraph))
+            if inside:
+                out += [(pos + s, pos + e) for s, e in _sentence_spans(paragraph)
+                        if any(re.search(n, paragraph[s:e], re.IGNORECASE) for n in names)]
+        pos += len(paragraph)
+    return out
+
+
+def final_checks(sections: List[Tuple[str, str]], article_rows: List[Dict[str, Any]],
+                 context: Optional[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """The checks written in code, on the sections as the last model step left them, before plan cover can write a lost
+    article back: an article's words around or instead of a citation (text_tidy.against_articles), the statements the
+    writer must never make (_wrong_statement: the rewrites after the review may bring one back), an action already
+    time-barred among the tools. Logged as case_analysis_final_checks."""
+    from . import text_tidy
+    out, entries = [], []
+    terms = (context or {}).get("terms") or []
+    for title, text in sections:
+        text, log = text_tidy.against_articles(text, article_rows)
+        entries += [{**e, "section": title} for e in log]
+        drops = [(s, e) for s, e in _sentence_spans(text) if _wrong_statement(text[s:e], context)]
+        entries += [{"section": title, "kind": _wrong_statement(text[s:e], context), "sentence": text[s:e].strip()[:300]} for s, e in drops]
+        tools = [span for span in _precluded_in_tools(text, terms) if span not in drops]
+        entries += [{"section": title, "kind": "a time-barred action among the tools", "sentence": text[s:e].strip()[:300]} for s, e in tools]
+        out.append((title, (_drop_spans(text, drops + tools) if drops or tools else text) or text))
+    dg.vlog("case_analysis_final_checks", {"entries": entries, "count": len(entries)})
+    return out
+
+
 def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
                  ruling_rows: List[Dict[str, Any]], articles: str, rulings: str, principles: str,
                  lang: str = "it", documents: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
@@ -3171,6 +3394,11 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if plan is None:
         return None
     case = dg._case_text(facts, request)
+    plan, analysis = for_the_plan(plan, analysis)
+    in_plan = _plan_refs(plan)
+    for row in article_rows:             # text_tidy.headed_norms: the articles a paragraph of the norms section may be about
+        if row.get("_article") in in_plan:
+            row["_in_plan"] = True
     # COMMA_MATERIAL_ENABLED: each article's commi chosen for the plan issue that places it; a comma the plan
     # or the case names, read now when the row lacks it (one read, no model call).
     commi = comma_material.for_plan(plan, article_rows, case)
@@ -3190,9 +3418,11 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
                               context=statement_context(analysis))
     if sections is None:
         return None
+    context = statement_context(analysis)
+    sections = _step("final_checks", sections, lambda secs: final_checks(secs, article_rows, context))
     if covering():
         sections = _step("cover_plan_articles", sections, lambda secs: cover_plan_articles(
-            plan, secs, article_rows, documents or [], case, statement_context(analysis)))
+            plan, secs, article_rows, documents or [], case, context))
     if use_of is not None:
         try:          # counted only: never fails the answer
             final = use_of(next((text for title, text in sections if title == SECTION_TITLES[4]), ""))

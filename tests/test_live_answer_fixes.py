@@ -163,7 +163,7 @@ def test_flag_off_no_rule_no_retry(monkeypatch, logged):
 # --- 2. fact-rule ranges are mandatory; a generic rubrica word stays in its chapter -------------------------------
 
 def test_every_rule_has_ranges_and_one_without_is_refused(tmp_path):
-    assert all(rule["ranges"] for rule in fs.load_rules())
+    assert all(rule["ranges"] for rule in fs.load_rules() if rule["institution"])
     bad = tmp_path / "bad.yaml"
     bad.write_text("- {id: x, area: civile, when: [{fact: {pattern: 'a'}}], institution: usucapione, codice: c.c., "
                    "why: y, status: experiment}\n", encoding="utf-8")

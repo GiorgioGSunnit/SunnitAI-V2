@@ -5731,6 +5731,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
         d, repaired = text_tidy.against_articles(d, article_rows)
         d, tidied = text_tidy.tidy(d)
         tidied = repaired + tidied
+        if planned:
+            d, headed = text_tidy.headed_norms(d, article_rows)
+            tidied += headed
         if tidied:
             vlog("answer_tidy", {"entries": tidied, "count": len(tidied)})
         return d

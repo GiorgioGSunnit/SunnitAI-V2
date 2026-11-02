@@ -11,7 +11,12 @@
 # (h1-h11, n1-n9). A rule fires only within the case's areas (its "families" when given); its
 # institution resolves only within its ranges of article numbers, to an article whose rubrica shares a word
 # with it (fact_signals.keep_resolved). status: experiment -- approved by the lawyer for the experiment (27 Oct); review with
-# scripts/export_fact_rules.py. Patterns are regular expressions over the extracted facts, in lower case.
+# scripts/export_fact_rules.py. conclusion (optional): the legal statement the rule establishes, given to the writer
+# as fixed text ({altro_contraente}: from the facts), with conclusion_subject, a pattern naming it: a sentence denying
+# it is dropped, unless it matches conclusion_unless; conclusion_excludes: the articles that contradict it, never written
+# in by plan cover. tools (optional): [{id: of PROCEDURAL_TOOLS, why}], in Strumenti
+# processuali whenever the rule fires; a rule that only brings tools has institution: [] and ranges: [].
+# Patterns are regular expressions over the extracted facts, in lower case.
 # No rule covers an institution chosen after seeing a held-out case's expected articles (27 Oct: corruption,
 # fraud and robbery-after-theft rules removed for that reason). Removed 28 Oct, the pipeline finds them anyway:
 # danno non patrimoniale, inadempimento e mora, danno da cose in custodia.
@@ -26,8 +31,10 @@
   institution: servitù per destinazione del padre di famiglia
   codice: c.c.
   ranges: [[1027,1099]]
-  requires: ["1079 c.c.", "1067 c.c.", "2043 c.c."]
+  requires: ["1061 c.c.", "1062 c.c.", "1079 c.c.", "1067 c.c.", "2043 c.c."]
   why: "Due fondi di un unico proprietario, separati con un'opera visibile al servizio dell'uno sull'altro, fanno sorgere la servitù senza titolo."
+  conclusion: "La servitù è apparente (art. 1061 c.c.: opera visibile e permanente esistente alla separazione) e si è costituita per destinazione del padre di famiglia (art. 1062 c.c.) alla separazione dei fondi, non per effetto dell'uso."
+  conclusion_subject: "destinazione del padre|\\b1062\\b"
   acquired_right: true
   status: experiment
 
@@ -39,8 +46,11 @@
   institution: usucapione di servitù apparente
   codice: c.c.
   ranges: [[1158,1167],[1061,1061]]
-  requires: ["1079 c.c.", "1067 c.c.", "2043 c.c."]
+  requires: ["1061 c.c.", "1158 c.c.", "1079 c.c.", "1067 c.c.", "2043 c.c."]
   why: "Un'opera visibile e permanente usata da oltre vent'anni permette di usucapire la servitù apparente."
+  conclusion: "La servitù apparente è acquistabile per usucapione ventennale (artt. 1061 e 1158 c.c.); il termine è quello dei termini calcolati."
+  conclusion_subject: "usucapi"
+  conclusion_unless: "abbreviat|\\b1159\\b"
   acquired_right: true
   status: experiment
 
@@ -92,7 +102,26 @@
   institution: [passaggio coattivo, indennità per il passaggio coattivo]
   codice: c.c.
   ranges: [[1051,1055]]
+  requires: ["1051 c.c.", "1053 c.c.", "1054 c.c."]
   why: "Il fondo circondato da fondi altrui senza uscita sulla via pubblica ha diritto al passaggio coattivo, contro indennità."
+  conclusion: "Se un diritto di passaggio è già acquisito, il passaggio coattivo (art. 1051 c.c.) si chiede solo in via subordinata. È dovuta l'indennità (art. 1053 c.c.), ma nessuna indennità è dovuta se l'interclusione deriva da alienazione o divisione (art. 1054 c.c.): {altro_contraente}."
+  conclusion_subject: "passaggio coattiv|\\b1051\\b"
+  conclusion_unless: "subordinat|acquisit"
+  conclusion_excludes: ["1052 c.c.", "1038 c.c."]
+  status: experiment
+
+- id: ostruzione_in_corso
+  area: diritti_reali
+  when:
+    - event: {kind: [spoglio, turbativa, chiusura/ostruzione accesso], label: "un atto che ostacola l'esercizio del diritto"}
+    - not: {fact: {pattern: 'riapert|riaprì|rimoss|ripristinat|cessat[oa] la chiusura', label: "l'ostacolo rimosso"}}
+  institution: []
+  codice: c.c.
+  ranges: []
+  why: "L'ostacolo all'esercizio del diritto è ancora in atto: servono la tutela d'urgenza e la prova dello stato dei luoghi."
+  tools:
+    - {id: provvedimento_urgenza, why: "l'ostacolo all'esercizio del diritto è ancora in atto"}
+    - {id: accertamento_preventivo, why: "lo stato dei luoghi va documentato prima che cambi"}
   status: experiment
 
 - id: immissioni

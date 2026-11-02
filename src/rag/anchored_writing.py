@@ -133,7 +133,7 @@ def _parts_of(row: Dict[str, Any]) -> Tuple[List[str], Optional[str]]:
     from . import comma_material
     if row.get(comma_material.COMMI_KEY):
         return list(row[comma_material.COMMI_KEY]), row.get(comma_material.FROM_KEY)
-    return comma_material.article_parts(_row_text(row))
+    return comma_material.article_parts(row.get("_passage") or (row.get("s") or {}).get("plain_text") or _row_text(row))     # its lines kept
 
 
 def best_comma(commi: Sequence[str], focus: str) -> int:
@@ -179,8 +179,9 @@ class Catalogue:
         self.checked: List[tuple] = []     # the checked material's articles (grounded_review.strict_refs)
         self._by_key: Dict[tuple, str] = {}
 
-    def add(self, key: tuple, kind: str, label: str, text: str, **extra) -> Optional[str]:
-        text = article_text.clause_cut(" ".join((text or "").split()), PASSAGE_CHARS)
+    def add(self, key: tuple, kind: str, label: str, text: str, whole: bool = False, **extra) -> Optional[str]:
+        text = " ".join((text or "").split())
+        text = text if whole else article_text.clause_cut(text, PASSAGE_CHARS)
         if not text:
             return None
         if key in self._by_key:
@@ -222,10 +223,18 @@ def _article_passage(cat: Catalogue, row: Dict[str, Any], comma: Optional[int], 
         return None
     from . import comma_material
     numbers = comma_material.comma_numbers(commi, _parts_of(row)[1])       # a list item is no comma of its own
+    name = f"art. {ref[0]} {ptw._code_key(ref[1])}"
+    several = numbered and len(set(numbers)) > 1
+    if several and len(" ".join(commi)) <= comma_material.SHORT_ARTICLE:      # a short article: every comma, with its number
+        text = " ".join((f"(co. {n}) " if i == 0 or numbers[i - 1] != n else "") + comma_material._COMMA_HEAD_RE.sub("", part, count=1)
+                        for i, (n, part) in enumerate(zip(numbers, commi)))
+        return cat.add(("article", ref), "article", name, text, whole=True, ref=ref, comma=None, rubrica=_rubrica(row))
     k = numbers.index(comma) if comma and numbered and comma in numbers else best_comma(commi, focus)
-    label = f"art. {ref[0]} {ptw._code_key(ref[1])}" + (f", co. {numbers[k]}" if numbered and len(set(numbers)) > 1 else "")
-    return cat.add(("article", ref, k), "article", label, commi[k], ref=ref, comma=numbers[k] if numbered else None,
-                   rubrica=_rubrica(row))
+    if not numbered:
+        return cat.add(("article", ref, k), "article", name, commi[k], ref=ref, comma=None, rubrica=_rubrica(row))
+    text = " ".join(part for n, part in zip(numbers, commi) if n == numbers[k])      # a comma whole, its list items with it
+    return cat.add(("article", ref, numbers[k]), "article", f"{name}, co. {numbers[k]}" if several else name, text, whole=True,
+                   ref=ref, comma=numbers[k], rubrica=_rubrica(row))
 
 
 def build(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]],
@@ -645,17 +654,19 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
                             and not _is_checked(r, checked)]
                     if drop:
                         new = drop_citations(body, drop, documents, known)
-                        changes[(s, e)] = new
+                        whole = _reads_whole(new) and not text_tidy.breaks_without_citation(body, new)
+                        changes[(s, e)] = new if whole else None     # never a sentence left leaning on nothing
                         stats["citations_dropped"] += len(drop)
-                        entries.append({**entry, "kind": "application", "how": "citation dropped", "new": new[:400],
-                                        "dropped": [_label(r) for r in drop]})
+                        stats["removed"] += not whole
+                        entries.append({**entry, "kind": "application", "how": "citation dropped" if whole else "removed",
+                                        "new": new[:400] if whole else "", "dropped": [_label(r) for r in drop]})
                 if kind is None:
                     stats["kept_as_application"] += 1
                 continue
             if action == "outside":
                 new = drop_citations(body, refs, documents, known)
                 stats["citations_dropped"] += len(refs)
-                if _reads_whole(new):
+                if _reads_whole(new) and not text_tidy.breaks_without_citation(body, new):
                     how = "citation dropped"
                     if sentence.rstrip()[-1:] in ".!?;:" and new[-1:] not in ".!?;:":
                         new += sentence.rstrip()[-1]

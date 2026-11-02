@@ -181,6 +181,7 @@ def test_a_leading_marker_goes_with_its_note_a_recital_keeps_its_own():
 
 def test_commi_come_from_the_whole_text_and_co_labels_only_real_commi(monkeypatch):
     monkeypatch.setattr(comma_material, "enabled", lambda: True)
+    monkeypatch.setattr(comma_material, "SHORT_ARTICLE", 0)
     whole = ("Aggravano il reato quando non ne sono elementi costitutivi le circostanze seguenti: 1) i motivi abietti; "
              "2) la crudeltà verso le persone.")
     parts, how = comma_material.commi_from_sections("61", {"61": (whole), "61.1.0": "i motivi abietti;"}, {"61": "Articolo"})
