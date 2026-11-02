@@ -322,3 +322,28 @@ def test_card_report():
     assert lines[0].startswith("Cards: 2  (failed: 1")
     assert any("same 1 / 2" in line for line in lines)
     assert any("Still to card: 100" in line and "0.2 h" in line for line in lines)
+
+
+def test_ask_turns_the_reasoning_off_unless_asked(monkeypatch):
+    import sys
+    import types
+    seen = []
+
+    class Reply:
+        content = "<think>\n\n</think>\n" + '{"esito": "rigetto"}'
+
+    class Model:
+        def bind(self, **kw):
+            seen.append(kw)
+            return self
+
+        def invoke(self, messages):
+            return Reply()
+
+    monkeypatch.setitem(sys.modules, "src.rag.ai_chat", types.SimpleNamespace(chat_model=Model()))
+    assert rc._ask([], max_tokens=700) == '{"esito": "rigetto"}'
+    assert seen[-1]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+    assert seen[-1]["max_tokens"] == 700
+    monkeypatch.setattr(rc, "THINKING", True)
+    rc._ask([], max_tokens=700)
+    assert "extra_body" not in seen[-1]
