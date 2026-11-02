@@ -399,7 +399,7 @@ def test_graded_check_keeps_by_grade_and_removes_grade_zero(monkeypatch, logged)
     assert kept["1140"]["_grade"] == 1 and kept["1140"]["_applicability"] == "marginale"
     assert kept["948"]["_grade"] == 2 and kept["948"]["_grade_issue"] == "usucapione"
     human = model.humans[0]
-    text = ("La proprietà dei beni immobili " + "x" * 2000)[:400]
+    text = "La proprietà dei beni immobili […]"                                  # never inside a word
     assert (f"Rubrica: Usucapione dei beni immobili e dei diritti reali immobiliari\nTrovato da: più fonti\n"
             f"Testo: {text}\n\n") in human                                           # multi-signal (T1)
     assert "[A1] 1140 c.c.\nRubrica: -\nTesto:" in human                            # one channel: no mark

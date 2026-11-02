@@ -35,11 +35,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from . import article_text
 from . import feature_flags
 
 logger = logging.getLogger(__name__)
 
 FLAG = "ANSWER_INVARIANTS_ENABLED"
+CLOSURE_KEY = "_closure"    # citation_closure.ROW_KEY
 
 
 def enabled() -> bool:
@@ -292,10 +294,11 @@ def allowed_refs(article_rows: List[Dict[str, Any]], named: List[tuple], signals
                  procedural: List[tuple]) -> List[tuple]:
     """I1's checked material: articles graded 2-3 (every article of the checked pool when nothing was graded) or of
     evidence tier T1/T2 (evidence_tiers: never dropped, a demoted one still the writer's), the user's own, the
-    offered procedural tools, the articles of the computed terms."""
+    offered procedural tools, the articles of the computed terms, the articles CITATION_CLOSURE_ENABLED verified."""
     graded = any(r.get("_grade") is not None for r in article_rows)
     rows = [r["_article"] for r in article_rows if r.get("_article")
-            and (not graded or (isinstance(r.get("_grade"), int) and r["_grade"] >= 2) or r.get("_tier") in (1, 2))]
+            and (not graded or (isinstance(r.get("_grade"), int) and r["_grade"] >= 2) or r.get("_tier") in (1, 2)
+                 or r.get(CLOSURE_KEY))]
     tools = [tuple(ref) for t in (signals or {}).get("tools") or [] for ref in t.get("refs") or []]
     terms = []
     for t in (signals or {}).get("terms") or []:
@@ -336,24 +339,10 @@ def _clause_without(sentence: str, number: str) -> str:
     return ""
 
 
-def i2_consistency(text: str, rows_by_ref: Dict[tuple, Dict[str, Any]], protected: set,
-                   documents: List[Dict[str, Any]], known: set, chat_json: Callable) -> Tuple[str, Dict]:
-    """Every citation in every sentence against its article's rubrica and opening text."""
+def judge(items: List[Dict[str, Any]], chat_json: Callable) -> Tuple[Dict[int, str], set]:
+    """({item index: why}, the indexes answered): each {"ref", "heading", "opening", "sentence"} against the article, by the
+    qualification check, _I2_BATCH per call; a rubrica worded differently is no mismatch; a failed call answers nothing."""
     from . import defensive_generation as dg
-    from . import plan_then_write as ptw
-    items = []
-    for s, e in ptw._sentence_spans(text):
-        sentence = text[s:e]
-        for cs, ce, refs in ptw._citations(sentence, documents, known):
-            for ref in refs:
-                row = next((r for k, r in rows_by_ref.items() if ptw._same_ref(k, ref)), None)
-                heading = ((row or {}).get("s") or {}).get("titolo_articolo") or ((row or {}).get("s") or {}).get("title")
-                if row and heading:
-                    items.append({"span": (s, e), "cite": (cs, ce), "ref": ref, "heading": heading.strip(),
-                                  "opening": " ".join(str((row.get("s") or {}).get("plain_text") or "").split())[:300],
-                                  "sentence": " ".join(sentence.split())})
-    if not items:
-        return text, _counts(0, 0, 0, [])
     system = dg._QUALIFICATION_SYSTEM_TYPED.replace(" Nel dubbio è compatibile.",
                                                      dg._QUALIFICATION_DIRECTION + " Nel dubbio è compatibile.")
 
@@ -370,14 +359,38 @@ def i2_consistency(text: str, rows_by_ref: Dict[tuple, Dict[str, Any]], protecte
             return []
     with ThreadPoolExecutor(max_workers=4) as pool:
         replies = list(pool.map(batch, range(0, len(items), _I2_BATCH)))
-    bad: Dict[int, Dict[str, Any]] = {}
+    bad: Dict[int, str] = {}
+    answered = set()
     for reply in replies:
         for v in reply if isinstance(reply, list) else []:
             m = re.search(r"A(\d+)", str((v or {}).get("articolo") or "")) if isinstance(v, dict) else None
-            if m and v.get("compatibile") is False and str(v.get("tipo") or "") != "formulazione":
-                k = int(m.group(1))
-                if 0 <= k < len(items):
-                    bad[k] = {**items[k], "why": str(v.get("perche") or "")[:200]}
+            k = int(m.group(1)) if m else -1
+            if 0 <= k < len(items) and isinstance(v.get("compatibile"), bool):
+                answered.add(k)
+                if v["compatibile"] is False and str(v.get("tipo") or "") != "formulazione":
+                    bad[k] = str(v.get("perche") or "")[:200]
+    return bad, answered
+
+
+def i2_consistency(text: str, rows_by_ref: Dict[tuple, Dict[str, Any]], protected: set,
+                   documents: List[Dict[str, Any]], known: set, chat_json: Callable) -> Tuple[str, Dict]:
+    """Every citation in every sentence against its article's rubrica and opening text."""
+    from . import plan_then_write as ptw
+    items = []
+    for s, e in ptw._sentence_spans(text):
+        sentence = text[s:e]
+        for cs, ce, refs in ptw._citations(sentence, documents, known):
+            for ref in refs:
+                row = next((r for k, r in rows_by_ref.items() if ptw._same_ref(k, ref)), None)
+                heading = article_text.heading((row or {}).get("s"))
+                if row and heading and not row.get(CLOSURE_KEY):    # already judged, on its whole text
+                    items.append({"span": (s, e), "cite": (cs, ce), "ref": ref, "heading": heading.strip(),
+                                  "opening": article_text.clause_cut(" ".join(str((row.get("s") or {}).get("plain_text") or "").split()), 300),
+                                  "sentence": " ".join(sentence.split())})
+    if not items:
+        return text, _counts(0, 0, 0, [])
+    judged, _ = judge(items, chat_json)
+    bad = {k: {**items[k], "why": why} for k, why in judged.items()}
     entries, drop, replace, marks = [], [], {}, 0
     for it in bad.values():
         span, ref = it["span"], it["ref"]

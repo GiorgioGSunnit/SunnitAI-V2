@@ -551,3 +551,27 @@ def test_fact_institution_articles_placed_and_reached_in_compare():
         dirs.append(_os.path.join(root, name))
     assert ("| fact-institution articles placed / reached (expected: placed / reached; issues added) | off | "
             "2 / 3 (1 / 2; 1) |") in dl.compare(dirs, ev)
+
+
+def test_the_report_shows_closure_cover_grading_and_foreign_acts():
+    rec = {**_record(),
+           "closure": {"verified": ["2059 c.c."], "counts": {"verified": 1, "not found": 2, "incompatible": 1}, "remaining": 0,
+                       "resolved": {"explicit": 9, "nearest": 2}, "citations_removed": 2, "sentences_dropped": 1},
+           "plan_cover": {"missing": ["1382 c.c.", "252 TUEL"], "inserted": 1,
+                          "entries": [{"article": "1382 c.c.", "issue": "Penale", "how": "inserted", "sentence": "La penale."},
+                                      {"article": "252 TUEL", "how": "refused", "why": "cites a ruling"}]},
+           "check_result": {"unchecked_labels": ["9 c.c."], "max_checked": 72},
+           "answer": {"mentioned": ["584 c.p.", "643 Sicurezza Urbana 2026"], "mentioned_eval": [["584", "cp"]]}}
+    case = dl.analyse_case(rec, ev)
+    assert case["closure"]["verified"] == ["2059 c.c."] and case["closure"]["not_found"] == 2
+    assert case["plan_cover"]["inserted"] == 1 and case["grade_slots"]["unchecked"] == 1
+    assert case["foreign_acts"] == ["643 Sicurezza Urbana 2026"]
+    report = dl.render([case], [])
+    assert "1 verified and made material; removed: 2 not found, 1 incompatible" in report
+    assert "Plan articles no section cited: 2, 1 written in; refused:" in report and "252 TUEL (cites a ruling)" in report
+    assert "Articles left ungraded past the limit: 1." in report and "643 Sicurezza Urbana 2026" in report
+    assert "explicit 9, nearest 2" in report
+
+
+def test_the_capture_sees_the_closure_s_log():
+    assert "src.rag.citation_closure" in dl._PREIMPORT      # a module imported later would log past the capture

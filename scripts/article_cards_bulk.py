@@ -1,4 +1,4 @@
-"""Article cards in bulk: Qwen3 without thinking, into a JSONL file. Read-only on Neo4j; run from the app folder:
+"""Article cards in bulk: the live model without thinking, into a JSONL file. Read-only on Neo4j; run from the app folder:
 
     venv/bin/python scripts/article_cards_bulk.py --dry-run                                # the order, no model call
     nohup venv/bin/python scripts/article_cards_bulk.py --doc "Codice del Consumo 2026" --max-per-hour 600 \
@@ -328,8 +328,8 @@ def main() -> None:
     parser.add_argument("--sample", type=int, default=0)
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--out", default=os.path.join("data", "article_cards_sample.md"))
-    parser.add_argument("--url", help="Qwen3's base URL (default: LLM_BASE_URL on port 8010)")
-    parser.add_argument("--model", default="qwen3-32b-awq")
+    parser.add_argument("--url", help="the model's base URL (default: LLM_BASE_URL)")
+    parser.add_argument("--model", help="default: LLM_MODEL")
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
     args = parser.parse_args()
     sys.path.insert(0, os.getcwd())
@@ -385,12 +385,12 @@ def main() -> None:
         print("\n".join(summary(list(have.values()))))
         return
     base, key = os.getenv("LLM_BASE_URL") or "", os.getenv("LLM_API_KEY") or ""
-    url = args.url or (re.sub(r":\d+(?=/|$)", ":8010", base, count=1) if re.search(r":\d+(?:/|$)", base) else "")
-    if not url or not key:
-        sys.exit("LLM_API_KEY must be set, and LLM_BASE_URL have a port to change to 8010, or give --url")
-    endpoint = {"url": url, "key": key, "model": args.model, "max_tokens": ac.A_TOKENS,
+    url, model = args.url or base, args.model or os.getenv("LLM_MODEL") or ""
+    if not url or not key or not model:
+        sys.exit("LLM_BASE_URL (or --url), LLM_MODEL (or --model) and LLM_API_KEY must be set")
+    endpoint = {"url": url, "key": key, "model": model, "max_tokens": ac.A_TOKENS,
                 "extra": {"chat_template_kwargs": {"enable_thinking": False}}}
-    print(f"{args.model} at {url}, {args.concurrency} at once" +
+    print(f"{model} at {url}, {args.concurrency} at once" +
           (f", at most {args.max_per_hour} an hour" if args.max_per_hour else ""), flush=True)
     outcome = run(items, endpoint, args.file, have, args.concurrency, Throttle(args.max_per_hour), args.force)
     compact(args.file, have)

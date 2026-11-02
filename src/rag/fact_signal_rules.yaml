@@ -5,7 +5,8 @@
 # institution up -- never an article), ranges (MANDATORY: the article numbers its institutions may resolve to;
 # usucapione -> 1158-1167 and 1061 c.c., never art. 2689, the transcription of the judgment), why (one line),
 # status; acquired_right: true when the rule shows a right ALREADY acquired (the plan argues its recognition first,
-# a constitutive remedy only as subordinate).
+# a constitutive remedy only as subordinate); requires: the articles the rule needs ("1079 c.c."), read by number
+# when it fires if retrieval missed them, and T1.
 # Rules are GENERAL patterns from legal knowledge and the tuning cases, never from the held-out texts
 # (h1-h11, n1-n9). A rule fires only within the case's areas (its "families" when given); its
 # institution resolves only within its ranges of article numbers, to an article whose rubrica shares a word
@@ -25,6 +26,7 @@
   institution: servitù per destinazione del padre di famiglia
   codice: c.c.
   ranges: [[1027,1099]]
+  requires: ["1079 c.c.", "1067 c.c.", "2043 c.c."]
   why: "Due fondi di un unico proprietario, separati con un'opera visibile al servizio dell'uno sull'altro, fanno sorgere la servitù senza titolo."
   acquired_right: true
   status: experiment
@@ -37,6 +39,7 @@
   institution: usucapione di servitù apparente
   codice: c.c.
   ranges: [[1158,1167],[1061,1061]]
+  requires: ["1079 c.c.", "1067 c.c.", "2043 c.c."]
   why: "Un'opera visibile e permanente usata da oltre vent'anni permette di usucapire la servitù apparente."
   acquired_right: true
   status: experiment

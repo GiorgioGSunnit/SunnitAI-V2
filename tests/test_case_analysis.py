@@ -486,6 +486,14 @@ def test_the_parere_is_written_from_the_retrieved_law(pipeline):
         "Codice Civile 2026", "Ordinanza sul ricorso iscritto al n. 23908/2022 R.G."]
 
 
+def test_citation_closure_runs_on_the_answer_and_leaves_nothing_unverified(pipeline, monkeypatch):
+    """CITATION_CLOSURE_ENABLED: the articles outside the material, not in the corpus here, go instead of being marked."""
+    monkeypatch.setenv("CITATION_CLOSURE_ENABLED", "true")
+    draft = DG.run_case_analysis_pipeline(CASE, "it")["draft"]
+    assert "art. 2051 c.c." in draft and "2044" not in draft and "articolo 50" not in draft
+    assert "art. 2051 c.c. [DA VERIFICARE" not in draft
+
+
 def test_writer_rules_no_deep_dive_links_and_the_one_call_draft_reviewed(pipeline, monkeypatch):
     """WRITER_RULES_ENABLED (the lawyer's blind review, 26 Oct): a parere is complete in itself."""
     monkeypatch.setenv("WRITER_RULES_ENABLED", "true")

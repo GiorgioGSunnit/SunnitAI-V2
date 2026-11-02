@@ -275,7 +275,7 @@ def test_every_call_logs_its_finish_reason_and_who_made_it(monkeypatch, caplog):
     def the_caller():
         return ai_chat._call_chat([])
     the_caller()
-    assert ("llm_call", {"call": "the_caller", "finish_reason": "length", "chars": 14}) in events
+    assert ("llm_call", {"call": "the_caller", "finish_reason": "length", "chars": 14, "max_tokens": None}) in events
     assert "cut at its token limit: the_caller" in caplog.text
 
 

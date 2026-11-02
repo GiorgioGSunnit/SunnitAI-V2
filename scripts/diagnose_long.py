@@ -130,8 +130,8 @@ _GENERIC_RUBRICA = re.compile(
     r"^\s*(?:disposizion\w*\s+(?:general|comun|final|transitor|preliminar)|definizion|oggetto\b|ambito\b"
     r"|campo di applicazione|finalit|principi\w*\s+general|norme general|abrogazion|entrata in vigore|rinvi)",
     re.IGNORECASE)
-_PREIMPORT = ("src.rag.plan_then_write", "src.rag.vote_pool", "src.rag.ruling_cards", "src.rag.method_candidates",
-              "src.rag.issue_spotting", "src.rag.doc_lookup", "src.rag.nodes.retrieval", "src.rag.nodes.cypher")
+_PREIMPORT = ("src.rag.plan_then_write", "src.rag.citation_closure", "src.rag.vote_pool", "src.rag.ruling_cards",
+              "src.rag.method_candidates", "src.rag.issue_spotting", "src.rag.doc_lookup", "src.rag.nodes.retrieval", "src.rag.nodes.cypher")
 
 
 def _lab(ref) -> str:
@@ -208,7 +208,7 @@ def _rubrica(row) -> tuple:
 def _checked_slots(dg) -> int:
     """How many articles the applicability check sends to the model in this process's settings."""
     if dg.feature_flags.enabled(getattr(dg, "CHECK_GRADED_FLAG", "CHECK_GRADED_ENABLED")):
-        return getattr(dg, "_GRADED_MAX_CHECKED", dg._APPLICABILITY_MAX_CHECKED)
+        return dg._graded_max_checked() or 10 ** 9      # 0: every article
     return dg._APPLICABILITY_MAX_CHECKED
 
 
@@ -227,8 +227,11 @@ def _instrument(dg) -> dict:
            "prompt_labels": None}
     events = cap["events"]
 
+    from src.rag import verbose_logger
+
     def vlog(event, data=None, duration_ms=None, **_):
         events.append([event, _plain(data), duration_ms])
+        verbose_logger.trace(event, data, duration_ms)     # into logs/<id>.log: the capture must not swallow the trace
     for name, module in list(sys.modules.items()):
         if name.startswith("src.rag") and callable(getattr(module, "vlog", None)):
             module.vlog = vlog
@@ -420,7 +423,8 @@ _LLM_STAGES = {
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "_grounded_judge": "grounded_judge", "_grounded_rewrite": "grounded_rewrite",
-    "fact_issues": "fact_issues", "_anchor_rewrite": "anchor_rewrite",
+    "fact_issues": "fact_issues", "_anchor_rewrite": "anchor_rewrite", "close": "citation_closure",
+    "_cover_one": "plan_cover",
     "run_case_analysis_pipeline": "draft",
 }
 _SKIP_FRAMES = {"_chat", "_chat_json", "call_chat"}
@@ -791,6 +795,8 @@ def run_child(spec_path: str, env_path: str) -> None:
               "grounded_review": last("grounded_review"),
               "fact_issues": last("case_analysis_fact_issues"),
               "anchored": last("anchored_writing"),
+              "closure": last("case_analysis_citation_closure"),
+              "plan_cover": last("case_analysis_plan_articles"),
               "fact_institutions": [d for e, d, _ in events if e == "case_analysis_fact_institution"],
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
@@ -1116,6 +1122,12 @@ def analyse_case(rec: dict, ev) -> dict:
     out["tiers"] = rec.get("tiers") or {}
     out["protected"] = _protected_trace(rec)
     out["grounded"] = _grounded_trace(rec)
+    out["closure"] = _closure_trace(rec)
+    out["plan_cover"] = _plan_cover_trace(rec)
+    pool_codes = {str(row.get("label") or "").partition(" ")[2] for row in rec.get("pool") or []}
+    out["foreign_acts"] = [label for label in (rec.get("answer") or {}).get("mentioned") or []
+                           if label.partition(" ")[2] not in pool_codes | set(_SIX_CODES)]
+    out["grade_slots"] = {"max_checked": check_result.get("max_checked"), "unchecked": len(check_result.get("unchecked_labels") or [])}
     out["fact_issues"] = _fact_issues_trace(rec)
     out["anchored"] = ((rec.get("anchored") or {}).get("totals") or {}) if isinstance(rec.get("anchored"), dict) else {}
     out["anchored_lost"] = _anchored_lost(rec, K, expected_keys, mentioned_eval | set(mentioned))
@@ -1180,6 +1192,29 @@ def _grounded_trace(rec: dict) -> dict:
     from src.rag import grounded_review
     events = [e for e in rec.get("events") or [] if isinstance(e, (list, tuple)) and len(e) >= 2]
     return grounded_review.totals(events)
+
+
+_SIX_CODES = ("c.c.", "c.p.c.", "c.p.", "c.p.p.", "c.p.a.", "c.d.s.")
+
+
+def _closure_trace(rec: dict) -> dict:
+    """CITATION_CLOSURE_ENABLED: what happened to the citations outside the material, from case_analysis_citation_closure."""
+    c = rec.get("closure") or {}
+    counts = c.get("counts") or {}
+    return {"ran": bool(c), "verified": list(c.get("verified") or []), "by_area": c.get("by_area") or {},
+            "resolved": c.get("resolved") or {}, "not_found": counts.get("not found", 0), "incompatible": counts.get("incompatible", 0),
+            "no_verdict": counts.get("no verdict", 0), "outside_scope": counts.get("outside the case's material and areas", 0),
+            "unresolved": counts.get("unresolved", 0), "citations_removed": c.get("citations_removed", 0),
+            "sentences_dropped": c.get("sentences_dropped", 0), "remaining": c.get("remaining", 0),
+            "remaining_refs": c.get("remaining_refs") or []}
+
+
+def _plan_cover_trace(rec: dict) -> dict:
+    """PLAN_ARTICLES_COVER_ENABLED: the plan articles omitted, and each insertion or refusal."""
+    p = rec.get("plan_cover") or {}
+    return {"ran": bool(p), "missing": list(p.get("missing") or []), "inserted": p.get("inserted", 0),
+            "entries": [{k: e.get(k) for k in ("article", "issue", "how", "why", "section", "sentence") if e.get(k)}
+                        for e in p.get("entries") or []]}
 
 
 def _grounded_line(g: dict) -> str:
@@ -1535,6 +1570,20 @@ def aggregate(cases: list) -> dict:
     grounded: Counter = Counter()
     for c in answered:
         grounded.update(c.get("grounded") or {})
+    closure: Counter = Counter()
+    for c in answered:
+        closure.update({k: v if isinstance(v, int) else len(v) for k, v in (c.get("closure") or {}).items()
+                        if k in ("verified", "not_found", "incompatible", "no_verdict", "outside_scope", "unresolved",
+                                 "citations_removed", "sentences_dropped", "remaining")})
+    plan_cover = {"missing": sum(len((c.get("plan_cover") or {}).get("missing") or []) for c in answered),
+                  "inserted": sum((c.get("plan_cover") or {}).get("inserted", 0) for c in answered),
+                  "refused": [(c["id"], e.get("article"), e.get("why")) for c in answered
+                              for e in (c.get("plan_cover") or {}).get("entries") or [] if e.get("how") == "refused"]}
+    unchecked = sum((c.get("grade_slots") or {}).get("unchecked") or 0 for c in answered)
+    foreign_acts = [(c["id"], label) for c in answered for label in c.get("foreign_acts") or []]
+    resolved: Counter = Counter()
+    for c in answered:
+        resolved.update((c.get("closure") or {}).get("resolved") or {})
     anchored: Counter = Counter()
     for c in answered:
         anchored.update({k: v for k, v in (c.get("anchored") or {}).items() if isinstance(v, (int, float))})
@@ -1548,7 +1597,9 @@ def aggregate(cases: list) -> dict:
                    "articles": sum(len((c.get("fact_issues") or {}).get("articles") or []) for c in answered)}
     return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
             "tiers": tier, "live": live, "invariants": inv, "evidence": evidence, "protected": protected,
-            "grounded": dict(grounded), "fact_issues": fact_issues, "anchored": dict(anchored),
+            "grounded": dict(grounded), "closure": dict(closure), "plan_cover": plan_cover, "unchecked": unchecked,
+            "foreign_acts": foreign_acts, "resolved": dict(resolved),
+            "fact_issues": fact_issues, "anchored": dict(anchored),
             "anchored_lost": anchored_lost, "overlap_failures": dict(overlap_failures),
             "abstentions": sum(c.get("abstentions", 0) for c in answered), "answered": len(answered),
             "fact_placed": dict(sum((Counter(c.get("fact_placed") or {}) for c in answered), Counter())),
@@ -1812,6 +1863,20 @@ def render(cases: list, header: list) -> str:
     gr = agg.get("grounded") or {}
     if gr:
         L += ["", "## Grounded review (GROUNDED_REVIEW_ENABLED)", "", _grounded_line(gr) + "."]
+    cl, pc = agg.get("closure") or {}, agg.get("plan_cover") or {}
+    L += ["", "## Citations and plan articles after writing (CITATION_CLOSURE, PLAN_ARTICLES_COVER)", "",
+          f"Outside the material: {cl.get('verified', 0)} verified and made material; removed: {cl.get('not_found', 0)} not "
+          f"found, {cl.get('incompatible', 0)} incompatible, {cl.get('no_verdict', 0)} without a verdict, "
+          f"{cl.get('outside_scope', 0)} outside the case's areas, {cl.get('unresolved', 0)} unresolved "
+          f"({cl.get('citations_removed', 0)} citations taken out of their sentence, {cl.get('sentences_dropped', 0)} "
+          f"sentences dropped). Unverified left: {cl.get('remaining', 0)}.",
+          f"Plan articles no section cited: {pc.get('missing', 0)}, {pc.get('inserted', 0)} written in; refused: "
+          + ("; ".join(f"{cid} {article} ({why})" for cid, article, why in pc.get("refused") or []) or "none") + ".",
+          f"Articles left ungraded past the limit: {agg.get('unchecked', 0)}.",
+          "How the cited numbers were resolved: " + (", ".join(f"{k} {v}" for k, v in sorted((agg.get("resolved") or {}).items()))
+                                                    or "not logged") + ".",
+          "Cited under an act outside the case's pool: "
+          + ("; ".join(f"{cid} {label}" for cid, label in agg.get("foreign_acts") or []) or "none") + "."]
     lv = agg["live"]
     L += ["", "## The live answer's defects (26 Oct; REVIEW_FIXES, RULING_FIT, FLAGGED_REMOVE, FACT_SIGNALS)", "",
           f"Dangling fragments left in the answers: {lv['dangling']}. Evidence lists repeated whole: "

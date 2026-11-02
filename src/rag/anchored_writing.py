@@ -48,6 +48,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from . import article_text
 from . import feature_flags
 from .verbose_logger import vlog
 
@@ -69,8 +70,8 @@ BLOCK_TITLE = "PASSI CON ANCORA"
 ANCHOR_RULE = (
     " Ogni frase che enuncia una regola, un istituto, un passaggio processuale o ciò che una pronuncia afferma termina "
     "con l'ancora del passo di PASSI CON ANCORA su cui si fonda, tra parentesi quadre ([A3], o [A3, A5]): cita la "
-    "norma o la pronuncia di quel passo e ne riprende il contenuto. Una regola che nessun passo sostiene non si "
-    "scrive.")
+    "norma o la pronuncia di quel passo e ne riprende il contenuto, in una frase tua con soggetto e verbo: mai le "
+    "parole iniziali del comma seguite da «ai sensi dell'art.». Una regola che nessun passo sostiene non si scrive.")
 PLAN_RULE = (
     "- Per ogni questione indica in \"passi\" i commi delle sue norme e le pronunce su cui si fonda l'argomento: "
     "l'identificativo della norma con il comma (\"art. 2051 c.c. co. 1\") o il riferimento della pronuncia.\n")
@@ -87,7 +88,9 @@ REWRITE_SYSTEM = (
     "Riscrivi ogni frase \"generale\" dicendo solo ciò che i suoi passi dicono, con le loro parole o "
     "parafrasandoli, citando la norma o la pronuncia di quei passi (numero e codice, o riferimento) e nessun'altra, "
     "nello stesso punto del ragionamento; una frase segnata [come regola della norma, senza giurisprudenza] diventa "
-    "la regola della norma del suo passo, senza nominare la giurisprudenza né una pronuncia. Se i passi non "
+    "la regola della norma del suo passo, senza nominare la giurisprudenza né una pronuncia. Ogni frase è completa, con "
+    "soggetto e verbo: non copiare l'inizio di un comma seguito da «ai sensi dell'art.», e non ripetere l'etichetta del "
+    "passo. Se i passi non "
     "sostengono la frase, o non ce ne sono, la frase è vuota. Non usare ciò che sai. Rispondi SOLO con un array "
     "JSON: [{\"i\": numero, \"tipo\": \"generale\"|\"applicazione\", \"frase\": \"la frase riscritta, o vuota\"}].")
 
@@ -122,7 +125,6 @@ def _row_text(row: Dict[str, Any]) -> str:
 def _commi(row: Dict[str, Any]) -> Tuple[List[str], bool]:
     """(the article's commi, numbered): COMMA_MATERIAL's when the row holds them, else its text split; numbered False
     for a sentence split (its parts are not commi)."""
-    from . import comma_material
     parts, how = _parts_of(row)
     return parts, how not in ("sentences", "none")
 
@@ -131,7 +133,7 @@ def _parts_of(row: Dict[str, Any]) -> Tuple[List[str], Optional[str]]:
     from . import comma_material
     if row.get(comma_material.COMMI_KEY):
         return list(row[comma_material.COMMI_KEY]), row.get(comma_material.FROM_KEY)
-    return comma_material.split_commi(_row_text(row))
+    return comma_material.article_parts(_row_text(row))
 
 
 def best_comma(commi: Sequence[str], focus: str) -> int:
@@ -178,7 +180,7 @@ class Catalogue:
         self._by_key: Dict[tuple, str] = {}
 
     def add(self, key: tuple, kind: str, label: str, text: str, **extra) -> Optional[str]:
-        text = " ".join((text or "").split())[:PASSAGE_CHARS]
+        text = article_text.clause_cut(" ".join((text or "").split()), PASSAGE_CHARS)
         if not text:
             return None
         if key in self._by_key:
@@ -209,7 +211,7 @@ class Catalogue:
 
 def _rubrica(row: Dict[str, Any]) -> str:
     s = row.get("s") or {}
-    return " ".join(str(s.get("titolo_articolo") or s.get("title") or "").split())
+    return article_text.heading(s)
 
 
 def _article_passage(cat: Catalogue, row: Dict[str, Any], comma: Optional[int], focus: str) -> Optional[str]:
@@ -434,7 +436,7 @@ def drop_citations(sentence: str, drop: Sequence[tuple], documents: Optional[Lis
     for start, end in sorted(spans, reverse=True):
         sentence = sentence[:start] + sentence[end:]
     sentence = re.sub(r"\(\s*[,;]?\s*\)", "", sentence)
-    sentence = re.sub(r"\s+([,.;:)])", r"\1", re.sub(r"\(\s+", "(", sentence))
+    sentence = text_tidy.stop_comma(re.sub(r"\s+([,.;:)])", r"\1", re.sub(r"\(\s+", "(", sentence)))
     sentence = re.sub(r"[ \t]{2,}", " ", re.sub(r",\s*,", ",", text_tidy.empty_brackets(sentence))).strip()
     if spans and min(s for s, _ in spans) == 0 or re.match(r"[,;:]", sentence):
         sentence = text_tidy.capitalise(re.sub(r"^[\s,;:]+", "", sentence))
@@ -551,6 +553,7 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
     its section's material (`materials`, by title) lacks -- and that is not checked -- losing only its citation; every
     anchor stripped. Sentences of `exempt` texts (the standard blocks written in code) are not checked."""
     from . import plan_then_write as ptw
+    from . import text_tidy
     known = {r["_article"] for r in article_rows or [] if r.get("_article")}
     rows: Dict[tuple, Dict[str, Any]] = {}
     for row in article_rows or []:
@@ -664,6 +667,8 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
                 entries.append({**entry, "how": how, "dropped": entry["cited"], **({"new": new[:400]} if new else {})})
                 continue
             new = got.get("frase") or None
+            if new and text_tidy.comma_words_cited(strip_anchors(new), [cat.passages[i]["text"] for i in src if i in cat.passages]):
+                new = None
             if new and (check(strip_anchors(new), src, cat, documents, known, None if action == "checked" else allowed)
                         or (kind == "case_law" and action in ("case_law", "checked") and _CASE_LAW_RE.search(new))):
                 new = None

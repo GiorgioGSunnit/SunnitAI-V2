@@ -57,6 +57,7 @@ _ABBREVIATIONS = [
     (r"^c\.?\s*c\.?$|^cod\.?\s*civ\.?$", "codice civile"),
     (r"^c\.?\s*d\.?\s*s\.?$", "codice della strada"),
     (r"^cod\.?\s*cons\.?$|^c\.?\s*cons\.?$", "codice del consumo"),
+    (r"^cost\.?$", "costituzione"),
 ]
 # Not codes or laws: commentaries, collective agreements and books (round 8,
 # 19 Oct: "Manuale di diritto processuale penale" turned up in a resolved
@@ -104,23 +105,31 @@ def spot_issues(text: str) -> List[Dict[str, str]]:
     return out[:MAX_PROPOSALS]
 
 
+def _phrase(code: str) -> str:
+    """A code or law name as the words document names use."""
+    for pattern, words in _ABBREVIATIONS:
+        if re.match(pattern, code.strip(), re.IGNORECASE):
+            return words
+    return _norm(code)
+
+
+def _searchable(document: Dict[str, Any]) -> str:
+    return _norm(" ".join([document["name"]] + list(document.get("aliases") or [])))
+
+
 def resolve_code(code: str, documents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The document a code or law name refers to, from the real document names
-    (and their aliases); None when nothing matches clearly.
+    (and their aliases); None when nothing matches clearly. The phrase matches
+    whole words: "l" is not "Legge sul divorzio" (v37: art. 21-nonies "L. 241/1990"),
+    "cod" not "Codice antimafia", "si" not "Sicurezza Urbana".
 
     "c.p." / "codice penale" -> the document whose name contains "codice
     penale" (not "codice di procedura penale", not a commentary); "legge
     392/1978" / "L. n. 392 del 1978" -> a document naming both 392 and 1978.
     """
-    phrase = _norm(code)
-    for pattern, words in _ABBREVIATIONS:
-        if re.match(pattern, code.strip(), re.IGNORECASE):
-            phrase = words
-            break
+    phrase = _phrase(code)
     laws = [d for d in documents if d.get("name") and not _NOT_A_LAW.search(d["name"])]
-
-    def searchable(d):
-        return _norm(" ".join([d["name"]] + list(d.get("aliases") or [])))
+    searchable = _searchable
 
     number = re.search(r"\b(\d{1,4})\s*(?:/|del\s+|del\b|,\s*)\s*((?:19|20)\d{2})\b", phrase)
     if number:   # a law's number and year; if no name carries them, try the words
@@ -129,7 +138,7 @@ def resolve_code(code: str, documents: List[Dict[str, Any]]) -> Optional[Dict[st
         if hits:
             return min(hits, key=lambda d: len(d["name"]))
 
-    hits = [d for d in laws if phrase and phrase in searchable(d)]
+    hits = [d for d in laws if phrase and f" {phrase} " in f" {searchable(d)} "]
     if hits:
         starts = [d for d in hits if _norm(d["name"]).startswith(phrase)]
         return min(starts or hits, key=lambda d: len(d["name"]))
@@ -141,6 +150,40 @@ def resolve_code(code: str, documents: List[Dict[str, Any]]) -> Optional[Dict[st
     if best < max(2, round(0.75 * len(words))):
         return None
     return min((d for s, d in scored if s == best), key=lambda d: len(d["name"]))
+
+
+# Words that name no act: "art. 927 del codice", "art. 3 della legge".
+_GENERIC_ACT_WORDS = {"codice", "legge", "leggi", "decreto", "legislativo", "testo", "unico", "norme", "norma",
+                      "disposizioni", "disciplina", "generale", "generali", "sul", "sulla", "sui", "sulle",
+                      "per", "con", "nel", "nella", "dal", "dalla", "alla", "allo"}
+
+
+def _content_words(text: str) -> set:
+    return {w for w in text.split() if w.isalpha() and len(w) > 2 and w not in _STOP and w not in _GENERIC_ACT_WORDS}
+
+
+def names_document(code: str, document: Dict[str, Any]) -> bool:
+    """Do these words, read after an article number, really name the document? Its law number and year; or every
+    word of the phrase in it and either two such words or the document's whole name ("legge sul divorzio", "codice
+    antimafia"). "codice", "legge sul" and "sicurezza" name nothing."""
+    phrase, searchable = _phrase(code), f" {_searchable(document)} "
+    number = re.search(r"\b(\d{1,4})\s*(?:/|del\s+|del\b|,\s*)\s*((?:19|20)\d{2})\b", phrase)
+    if number:
+        return f" {number.group(1)} " in searchable.replace("/", " ") and f" {number.group(2)} " in searchable.replace("/", " ")
+    words = _content_words(phrase)
+    if not words or not all(f" {w} " in searchable for w in words):
+        return False
+    return len(words) >= 2 or _content_words(_norm(document["name"])) <= words \
+        or any(_norm(a) == phrase for a in document.get("aliases") or [])
+
+
+def cited_document(code: str, documents: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The document these words really name (names_document): resolve_code's, else the shortest law they name; or None."""
+    doc = resolve_code(code, documents)
+    if doc and names_document(code, doc):
+        return doc
+    named = [d for d in documents if d.get("name") and not _NOT_A_LAW.search(d["name"]) and names_document(code, d)]
+    return min(named, key=lambda d: len(d["name"])) if named else None
 
 
 def fetch_article(session, doc_id: str, number: str, visibility: str = "", **params) -> List[Dict[str, Any]]:

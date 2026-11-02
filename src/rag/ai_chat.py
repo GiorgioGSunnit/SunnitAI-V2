@@ -182,15 +182,16 @@ def _caller() -> str:
     return frame.f_code.co_name if frame is not None else "?"
 
 
-def _reply_text(response) -> str:
-    """The reply without its reasoning. A reply that held some is logged, and so is one that came back empty."""
+def _reply_text(response, max_tokens: Optional[int] = None) -> str:
+    """The reply without its reasoning. A reply that held some is logged, and so is one that came back empty. max_tokens:
+    what the call really had, which an overflow may have lowered below what its caller asked."""
     raw = response.content or ""
     finish = (getattr(response, "response_metadata", None) or {}).get("finish_reason")
-    last_reply.raw, last_reply.finish_reason = raw, finish
+    last_reply.raw, last_reply.finish_reason, last_reply.max_tokens = raw, finish, max_tokens
     call = _caller()
-    vlog("llm_call", {"call": call, "finish_reason": finish, "chars": len(raw)})
+    vlog("llm_call", {"call": call, "finish_reason": finish, "chars": len(raw), "max_tokens": max_tokens})
     if finish == "length":
-        logger.warning("model reply cut at its token limit: %s (%d characters)", call, len(raw))
+        logger.warning("model reply cut at its token limit: %s (%d characters, max_tokens %s)", call, len(raw), max_tokens)
     text = strip_think(raw)
     if text != raw.strip():
         logger.info("model reply: reasoning removed (%d characters of %d)", len(raw) - len(text), len(raw))
@@ -250,7 +251,7 @@ def _call_chat(
         )
         bind_kwargs["max_tokens"] = room
         response = chat_model.bind(**bind_kwargs).invoke(messages)
-    return _reply_text(response)
+    return _reply_text(response, bind_kwargs.get("max_tokens"))
 
 
 def _call_chat_with_tools(

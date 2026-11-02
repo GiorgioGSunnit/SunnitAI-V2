@@ -25,7 +25,7 @@ import logging
 import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
-from . import feature_flags
+from . import article_text, feature_flags
 from .verbose_logger import vlog
 
 logger = logging.getLogger(__name__)
@@ -59,20 +59,31 @@ def _merge_short(parts: List[str]) -> List[str]:
     return out
 
 
+def _unique(parts: List[str]) -> List[str]:
+    """A paragraph the corpus repeats counts once: art. 614-bis c.p.c. holds one twice, and its "comma 11" does not exist."""
+    seen, out = set(), []
+    for part in parts:
+        key = " ".join(part.lower().split())
+        if key not in seen:
+            seen.add(key)
+            out.append(part)
+    return out
+
+
 def split_commi(text: Optional[str]) -> Tuple[List[str], str]:
     """(the parts of an article's text, how): its lines when it has several, else its numbered paragraphs
     ("1. ... 2. ..."), else its sentences ("sentences": not real commi, never labelled with a number)."""
     text = (text or "").strip()
     if not text:
         return [], "none"
-    lines = _merge_short([p.strip() for p in re.split(r"\n+", text) if p.strip()])
+    lines = _unique(_merge_short([p.strip() for p in re.split(r"\n+", text) if p.strip()]))
     if len(lines) > 1:
         return lines, "lines"
     flat = " ".join(text.split())
-    numbered = _merge_short([p.strip() for p in _NUMBERED_RE.split(flat) if p.strip()])
+    numbered = _unique(_merge_short([p.strip() for p in _NUMBERED_RE.split(flat) if p.strip()]))
     if len(numbered) > 1:
         return numbered, "numbered"
-    return _merge_short([p.strip() for p in _SENTENCE_RE.split(flat) if p.strip()]) or [flat], "sentences"
+    return _unique(_merge_short([p.strip() for p in _SENTENCE_RE.split(flat) if p.strip()])) or [flat], "sentences"
 
 
 def article_parts(text: Optional[str]) -> Tuple[List[str], str]:
@@ -231,7 +242,7 @@ def select(commi: Sequence[str], chars: int, focus: str = "", named: Iterable[in
             used += cost
         elif k in named_ks or not chosen:
             room = max(80, chars - used - 9)
-            chosen[k] = text[:room].rstrip() + " […]"
+            chosen[k] = article_text.clause_cut(text, room)
             used += room + 9
         if used >= chars:
             break
@@ -255,7 +266,7 @@ def trim(text: str, chars: int, focus: str = "", named: Iterable[int] = ()) -> s
         return text
     parts, how = article_parts(text)
     if len(parts) < 2:
-        return text[:chars]               # one unbroken sentence: nothing to choose among
+        return article_text.clause_cut(text, chars)    # one unbroken sentence: nothing to choose among
     chosen = select(parts, chars, focus, _keep(parts, how, named, chars))
     out: List[str] = []
     last = 0
