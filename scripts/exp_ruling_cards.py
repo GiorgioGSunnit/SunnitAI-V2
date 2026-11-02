@@ -57,6 +57,12 @@ from langchain_core.messages import HumanMessage, SystemMessage  # noqa: E402
 
 import src.rag.defensive_generation as dg  # noqa: E402
 
+try:
+    from src.rag.llm_reply import strip_think as _strip_think  # noqa: E402
+except ImportError:     # an app from before Qwen3 (1 Nov)
+    def _strip_think(text):
+        return (text or "").strip()
+
 # v2 (22 Oct): "più parti" only for different kinds of parties -- the trial's model used it for
 # several defendants, and "who appealed" agreed with step 1 in 9 of 14.
 # v3 (23 Oct, after the 2,476 criminal cards): keywords as short phrases ("legittima difesa", not
@@ -64,6 +70,11 @@ import src.rag.defensive_generation as dg  # noqa: E402
 # detenzione, condanna, sentenza. civ-v1: the civil card, sides as the parties' roles.
 PROMPT_VERSIONS = {"penale": "cards-v3", "civile": "cards-civ-v1"}
 CALL_TIMEOUT = 120       # seconds per model call (the criminal run's slowest ruling took 38)
+# Qwen3 (the production model since 2 Nov) reasons before it answers, and the reasoning counts against max_tokens: a
+# 700-token card would be cut inside it. The card is asked without reasoning, as scripts/article_cards_bulk.py does
+# (other models' chat templates ignore enable_thinking). --thinking keeps the model's default, to compare.
+THINKING = False
+_NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
 MAX_CHARS = 40000        # about 13k tokens: with the prompt and the answer, inside the model's 20k
 HEAD_CHARS = 8000        # a longer ruling is read as its opening + its last part (reasons, P.Q.M.)
 QUOTE_CHARS = 300
@@ -635,14 +646,16 @@ def _deadline(stop_at: str):
 
 def _ask(messages, max_tokens: int) -> str:
     """One model call at temperature 0, given up after CALL_TIMEOUT seconds (the openai client
-    takes `timeout` per request; LangChain passes bound kwargs through to it). Falls back to the
-    app's _chat, without the limit, if this client does not accept it."""
+    takes `timeout` per request; LangChain passes bound kwargs through to it), without reasoning
+    unless THINKING, any that comes back removed. Falls back to the app's _chat, without the
+    limit, if this client does not accept it."""
     from src.rag.ai_chat import chat_model
+    extra = {} if THINKING else {"extra_body": _NO_THINKING}
     try:
-        reply = chat_model.bind(max_tokens=max_tokens, temperature=0, timeout=CALL_TIMEOUT).invoke(messages)
+        reply = chat_model.bind(max_tokens=max_tokens, temperature=0, timeout=CALL_TIMEOUT, **extra).invoke(messages)
     except TypeError:
         return dg._chat(messages, max_tokens=max_tokens, temperature=0)
-    return (reply.content or "").strip()
+    return _strip_think(reply.content or "")
 
 
 def _card(link: dict, text: str) -> dict:
@@ -678,7 +691,8 @@ def _card(link: dict, text: str) -> dict:
     date, date_from_ruling = clean_date(link.get("date"), text)
     ref = {"court": court, "number": number, "date": date, "branch": link["branch"],
            "type": (italgiure or {}).get("type")}
-    card = {"id": link["id"], "prompt_version": PROMPT_VERSIONS[branch], "riferimento": reference_of(ref, sezione, city),
+    card = {"id": link["id"], "prompt_version": PROMPT_VERSIONS[branch], "modello": os.getenv("LLM_MODEL") or "",
+            "riferimento": reference_of(ref, sezione, city),
             "riferimento_completo": reference_complete(court, city, number, date),
             "riferimento_dal_testo": bool((number and not has_number) or date_from_ruling),
             "court": court, "citta": city, "sezione": sezione,
@@ -717,7 +731,10 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=1, help="parallel model calls (1 by day, 3 at night)")
     parser.add_argument("--stop-at", help="HH:MM server time: take no new rulings after it")
     parser.add_argument("--report", action="store_true", help="only print the report on the cards so far")
+    parser.add_argument("--thinking", action="store_true", help="let the model reason first (Qwen3's default): to compare")
     args = parser.parse_args()
+    global THINKING
+    THINKING = args.thinking
 
     links = [json.loads(line) for line in open(args.links, encoding="utf-8")]
     cards = _latest(args.out)
