@@ -691,7 +691,8 @@ def _card(link: dict, text: str) -> dict:
     date, date_from_ruling = clean_date(link.get("date"), text)
     ref = {"court": court, "number": number, "date": date, "branch": link["branch"],
            "type": (italgiure or {}).get("type")}
-    card = {"id": link["id"], "prompt_version": PROMPT_VERSIONS[branch], "riferimento": reference_of(ref, sezione, city),
+    card = {"id": link["id"], "prompt_version": PROMPT_VERSIONS[branch], "modello": os.getenv("LLM_MODEL") or "",
+            "riferimento": reference_of(ref, sezione, city),
             "riferimento_completo": reference_complete(court, city, number, date),
             "riferimento_dal_testo": bool((number and not has_number) or date_from_ruling),
             "court": court, "citta": city, "sezione": sezione,

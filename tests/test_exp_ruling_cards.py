@@ -185,9 +185,11 @@ def test_card_asks_again_for_a_quote_not_in_the_ruling(monkeypatch):
                                 "citazione": "la morte deve essere prevedibile in concreto per l'agente"}),
                     "«senza che rilevi la sua prevedibilità in concreto»"])
     monkeypatch.setattr(rc, "_ask", lambda messages, **kw: next(replies))
+    monkeypatch.setenv("LLM_MODEL", "qwen3-32b-awq")
     link = {"id": "d1", "court": "Tribunale", "number": None, "date": None, "branch": "penale",
             "articles": ARTICLES, "favours": "?", "outcome": "rigettato", "appellant": "imputato"}
     card = rc._card(link, text)
+    assert card["modello"] == "qwen3-32b-awq"
     assert card["citazione_verificata"] and card["citazione_ritentata"]
     assert card["citazione"] == "senza che rilevi la sua prevedibilità in concreto"
     assert card["riferimento"] == "Trib. Milano, Sez. I, n. 1234/2021, 12/03/2021"
