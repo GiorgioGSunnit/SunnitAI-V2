@@ -11,13 +11,13 @@ Read-only on Neo4j; nothing in the chatbot changes or reads the cards. Run from 
              reads) and most often expected (tests/eval_narrative_cases.json). A sentence citing two articles counts
              for both. A code short of articles leaves its slots to the others, and the report says so; an article with
              no text in the corpus is passed over. --articles "2043 c.c.,43 c.p." chooses by hand. --audit defaults to
-             the newest fetch_audit_runs/*/audit.json.
+             the newest fetch_audit_runs/*/audit.json. --articles-from <earlier article_cards.md> repeats its articles.
 2 TEXT       article_text.fetch_article, the pipeline's own reading, from the code's primary document (the fullest copy).
              The Versione line is written here, from the "In vigore dal ..." the article's Sections hold, never by the
              model; without one it says so.
 3 CARDS      temperature 0, from the text only, in a fixed format; "Articoli collegati" lists only what the text names.
              A = LLM_MODEL at LLM_BASE_URL, no thinking. With --with-b also B = --b-model (qwen3-32b-awq) at the same
-             address on port 8010 (--b-url), thinking on (chat_template_kwargs enable_thinking), its reasoning left out.
+             address on port 8010 (--b-url), no thinking either unless --b-thinking, its reasoning left out.
 4 EXPORT     <out>/article_cards.md: the selection, then per article the official text, its card(s), and what the code
              checked: a heading missing, a number in the card that the text does not hold (a term in words written in
              figures is flagged too: it is a prompt to look, not a verdict).
@@ -45,8 +45,8 @@ CODE_PREFIXES = {"c.c.": "Codice Civile", "c.p.c.": "Codice di procedura civile"
                  "c.p.p.": "Codice di procedura penale"}      # defensive_generation._CODE_PREFIXES
 QUOTA = {"c.c.": 9, "c.p.": 8, "c.p.c.": 4, "c.p.p.": 4}
 WEIGHT = {"contraddetta": 3, "assente": 1, "lost": 3}
-HEADINGS = ("Regola principale", "Presupposti/condizioni", "Eccezioni e limiti", "Termini", "Articoli collegati")
-A_TOKENS, B_TOKENS = 1200, 8000       # B reasons first, within the same limit
+HEADINGS = ("Regola principale", "Presupposti/condizioni", "Eccezioni e limiti", "Pene", "Termini", "Articoli collegati")
+A_TOKENS, THINKING_TOKENS = 4000, 8000       # review3: 61 c.p., 309 c.p.p. cut at 2000; with thinking, B reasons within its limit
 TRIES = 3
 TIMEOUT = 600
 
@@ -56,13 +56,21 @@ SYSTEM = (
     "giurisprudenza, interpretazioni, esempi, termini, importi o altri articoli che il testo non contiene. Riporta "
     "fedelmente condizioni, eccezioni, numeri e termini; se il testo non dice una cosa, non dirla. Scrivi in italiano, "
     "in modo breve e preciso.\n"
-    "Rispondi SOLO con queste cinque voci, in quest'ordine, ciascuna col suo titolo esatto in grassetto seguito da due "
+    "Non tralasciare nulla: ogni comma va coperto e ogni voce di un elenco (lettere a), b)...; numeri 1), 2)...) va "
+    "riportata, in forma compatta, una per una, anche se sono molte.\n"
+    "Il testo tra parentesi quadre [ ] o segnato «(abrogato)» non è più in vigore: non presentarlo mai come regola o "
+    "condizione vigente; indica quel comma o quella voce solo come «abrogato».\n"
+    "Conserva la numerazione ufficiale di commi e voci così come è nel testo (3-bis, 11-quater, lett. c)): non "
+    "rinumerare mai.\n"
+    "Rispondi SOLO con queste sei voci, in quest'ordine, ciascuna col suo titolo esatto in grassetto seguito da due "
     "punti:\n"
-    "**Regola principale:** la regola che l'articolo pone.\n"
-    "**Presupposti/condizioni:** ciò che serve perché la regola si applichi, in elenco.\n"
+    "**Regola principale:** una riga breve per OGNI comma dell'articolo, nell'ordine del testo, nessuno escluso.\n"
+    "**Presupposti/condizioni:** ciò che serve perché la regola si applichi, in elenco; ogni voce enumerata del testo "
+    "ha la sua riga.\n"
     "**Eccezioni e limiti:** eccezioni, limiti e deroghe che il testo prevede.\n"
-    "**Termini:** termini e scadenze che il testo indica, ciascuno col suo decorso.\n"
-    "**Articoli collegati:** solo gli articoli o le leggi che il testo nomina.\n"
+    "**Pene:** le pene e le sanzioni, con le forme aggravate e attenuate e i loro importi e durate.\n"
+    "**Termini:** termini e scadenze che il testo indica, ciascuno col suo decorso; non le durate delle pene.\n"
+    "**Articoli collegati:** solo gli articoli o le leggi che il testo dell'articolo nomina, mai quelli di una nota.\n"
     "Per una voce vuota scrivi \"Nessuno nel testo.\"; non scrivere altro, né una riga sulla versione.")
 
 
@@ -295,7 +303,7 @@ def label_of(key: tuple) -> str:
 
 
 def render(items: list, notes: list, names: dict, audits: list) -> str:
-    models = f"Scheda A: {names['A']}." + (f" Scheda B: {names['B']} (ragionamento attivo)." if "B" in names else "")
+    models = f"Scheda A: {names['A']}." + (f" Scheda B: {names['B']}." if "B" in names else "")
     L = ["# Schede articolo: prototipo per la revisione", "",
          f"Generate il {datetime.now().strftime('%d/%m/%Y %H:%M')}. {models} Temperatura 0, dal solo testo dell'articolo.",
          f"Audit usati: {', '.join(audits) or 'nessuno'}.", "",
@@ -341,9 +349,20 @@ def endpoints(args) -> dict:
     b_url = args.b_url or (re.sub(r":\d+(?=/|$)", ":8010", base, count=1) if re.search(r":\d+(?:/|$)", base) else "")
     if not b_url or b_url == base:
         sys.exit(f"LLM_BASE_URL has no port to change to 8010: give --b-url ({base})")
-    ends["B"] = {"url": b_url, "key": key, "model": args.b_model, "max_tokens": B_TOKENS,
-                 "extra": {"chat_template_kwargs": {"enable_thinking": True}}}
+    ends["B"] = {"url": b_url, "key": key, "model": args.b_model, "max_tokens": THINKING_TOKENS if args.b_thinking else A_TOKENS,
+                 "extra": {"chat_template_kwargs": {"enable_thinking": bool(args.b_thinking)}}}
     return ends
+
+
+def articles_from(path: str) -> str:
+    """"2043 c.c.,43 c.p." from the selection table of an earlier export; "" without a path."""
+    if not path:
+        return ""
+    with open(path, encoding="utf-8") as fh:
+        found = re.findall(r"^\| \d+ \| art\. (\S+) (c\.[a-z.]+) \|", fh.read(), re.MULTILINE)
+    if not found:
+        sys.exit(f"--articles-from: no articles in {path}")
+    return ",".join(f"{number} {code}" for number, code in found)
 
 
 def parse_quota(text: str) -> dict:
@@ -362,7 +381,9 @@ def main() -> None:
                                                                      "the newest under fetch_audit_runs/)")
     parser.add_argument("--articles", help='by hand instead: "2043 c.c.,43 c.p."')
     parser.add_argument("--quota", default=",".join(f"{c}={n}" for c, n in QUOTA.items()))
-    parser.add_argument("--with-b", action="store_true", help="also a second card from Qwen3, with thinking")
+    parser.add_argument("--articles-from", help="the articles of an earlier article_cards.md, in its order")
+    parser.add_argument("--with-b", action="store_true", help="also a second card from Qwen3")
+    parser.add_argument("--b-thinking", action="store_true", help="B with thinking on")
     parser.add_argument("--b-url", help="Qwen3's base URL (default: LLM_BASE_URL on port 8010)")
     parser.add_argument("--b-model", default="qwen3-32b-awq")
     parser.add_argument("--select-only", action="store_true", help="the list and the reasons, no LLM call")
@@ -398,10 +419,11 @@ def main() -> None:
                 if ref not in read:
                     read[ref] = read_article(session, ref[0], ref[1])
                 return bool(read[ref])
-            if args.articles:
+            by_hand = args.articles or articles_from(args.articles_from)
+            if by_hand:
                 abbr_key = {v: k for k, v in CODES.items()}
                 keys = []
-                for part in args.articles.split(","):
+                for part in by_hand.split(","):
                     number, _, code = part.strip().partition(" ")
                     if code not in abbr_key or not has_text((number, code)):
                         sys.exit(f"--articles: {part.strip()!r} not found")
@@ -413,7 +435,7 @@ def main() -> None:
             for key in keys:
                 entry = table.get(key) or {"counts": Counter(), "example": ""}
                 article = read[(key[0], CODES[key[1]])]
-                items.append({"key": key, "article": article, "why": reason(entry) if not args.articles or table.get(key)
+                items.append({"key": key, "article": article, "why": reason(entry) if not by_hand or table.get(key)
                               else "scelto a mano", "example": entry["example"]})
     print(f"{len(items)} articoli:")
     for i, item in enumerate(items, 1):

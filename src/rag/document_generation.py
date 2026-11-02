@@ -14,6 +14,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from . import protected_sources
 from .ai_chat import _call_chat
+from .llm_reply import clean_json_text, parse_json_reply
 from .template_selection import select_templates
 
 try:
@@ -256,10 +257,9 @@ def extract_document_fields(user_message: str, doc_type: str, lang: str) -> Dict
         max_tokens=400,
     )
 
-    text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
     try:
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+        parsed = parse_json_reply(raw)
+    except ValueError:
         logger.warning("extract_document_fields: JSON parse failed, retrying for doc_type=%r, raw=%r", doc_type, raw[:200])
         retry_response = _call_chat(
             [
@@ -268,10 +268,9 @@ def extract_document_fields(user_message: str, doc_type: str, lang: str) -> Dict
             ],
             max_tokens=400,
         )
-        clean_retry = re.sub(r"```(?:json)?\s*", "", retry_response).strip().rstrip("`").strip()
         try:
-            parsed = json.loads(clean_retry)
-        except (json.JSONDecodeError, ValueError):
+            parsed = parse_json_reply(retry_response)
+        except ValueError:
             logger.error("extract_document_fields: retry also failed for doc_type=%r", doc_type)
             parsed = {}
 
@@ -1938,8 +1937,7 @@ def _llm_rank_candidates(message: str, candidates: List[Dict[str, Any]]) -> List
             [SystemMessage(content=system), HumanMessage(content=message)],
             max_tokens=200,
         ).strip()
-        json_match = re.search(r"\[.*\]", raw, re.DOTALL)
-        indices = json.loads(json_match.group(0) if json_match else raw)
+        indices = parse_json_reply(raw)
         if not isinstance(indices, list):
             raise ValueError(f"LLM ranking response is not a JSON array: {raw!r}")
     except Exception as e:
@@ -2376,10 +2374,9 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
         max_tokens=_FIELD_EXTRACTION_TOKENS,
     )
 
-    text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
     try:
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+        parsed = parse_json_reply(raw)
+    except ValueError:
         logger.warning("extract_system_template_fields: JSON parse failed for label=%r, raw=%r", label, raw[:200])
         retry_response = _call_chat(
             [
@@ -2388,10 +2385,9 @@ def extract_system_template_fields(user_message: str, entry: Dict[str, Any], lan
             ],
             max_tokens=_FIELD_EXTRACTION_TOKENS,
         )
-        clean_retry = re.sub(r"```(?:json)?\s*", "", retry_response).strip().rstrip("`").strip()
         try:
-            parsed = json.loads(clean_retry)
-        except (json.JSONDecodeError, ValueError):
+            parsed = parse_json_reply(retry_response)
+        except ValueError:
             logger.error("extract_system_template_fields: retry also failed for label=%r", label)
             parsed = {}
 
@@ -2769,7 +2765,7 @@ def _fill_template_gaps(
         [SystemMessage(content=system), HumanMessage(content="\n\n".join(human_parts))],
         max_tokens=8000,
     )
-    text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
+    text = clean_json_text(raw)
 
     def _build(parsed: Dict) -> "FillMap":
         """Split the model's object into the fill map and the _inferred list.
@@ -2788,19 +2784,11 @@ def _fill_template_gaps(
 
     # Attempt 1: clean parse
     try:
-        return _build(json.loads(text))
-    except (json.JSONDecodeError, ValueError, AttributeError):
+        return _build(parse_json_reply(text))
+    except (ValueError, AttributeError):
         pass
 
-    # Attempt 2: extract the outermost {...} block (handles extra prose around JSON)
-    m = re.search(r'\{[\s\S]*\}', text)
-    if m:
-        try:
-            return _build(json.loads(m.group(0)))
-        except (json.JSONDecodeError, ValueError, AttributeError):
-            pass
-
-    # Attempt 3: recover individual "key": "value" pairs from a truncated response.
+    # Attempt 2: recover individual "key": "value" pairs from a truncated response.
     # The _inferred key is not numeric so it is skipped here — the fills matter more
     # than the advisory list when the response was cut short.
     pairs = re.findall(r'"(\d+)"\s*:\s*"((?:[^"\\]|\\.)*)"', text)

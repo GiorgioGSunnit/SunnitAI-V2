@@ -323,7 +323,7 @@ def _grounded_judge(material: str, sentences: List[str]) -> Dict[int, Dict[str, 
     human = f"MATERIALE:\n{material}\n\nFRASI:\n" + "\n".join(f"{n}. {s}" for n, s in enumerate(sentences, 1))
     try:
         raw = dg._chat_json([SystemMessage(content=JUDGE_SYSTEM), HumanMessage(content=human)],
-                            max_tokens=120 + 70 * len(sentences), temperature=0)
+                            max_tokens=200 + 110 * len(sentences), temperature=0)
     except Exception as exc:
         logger.warning("grounded review: judge failed, batch kept: %s", exc)
         return {}
@@ -341,7 +341,7 @@ def _grounded_rewrite(material: str, sentences: List[str],
     system = STRICT_REWRITE_SYSTEM if remove is not None else REWRITE_SYSTEM
     try:
         raw = dg._chat_json([SystemMessage(content=system), HumanMessage(content=human)],
-                            max_tokens=200 + 140 * len(sentences), temperature=0)
+                            max_tokens=300 + 220 * len(sentences), temperature=0)
     except Exception as exc:
         logger.warning("grounded review: rewrite failed, sentences handled in code: %s", exc)
         return {}
@@ -382,7 +382,7 @@ def fetch_blocks(refs: List[tuple], documents: List[Dict[str, Any]], session=Non
     for ref in refs:
         mine = [r for r in rows if r.get("_article") and ptw._same_ref(r["_article"], ref)]
         if mine:
-            block = dg._source_block(mine, FETCH_CHARS)
+            block = dg._source_block(mine, FETCH_CHARS, official=True)
             if block.strip():
                 out[ref] = block
     return out

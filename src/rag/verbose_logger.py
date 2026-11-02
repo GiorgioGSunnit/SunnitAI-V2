@@ -8,13 +8,27 @@ VERBOSE = os.getenv("VERBOSE_LOGGING", "false").lower() == "true"
 logger = logging.getLogger("sunnitai.verbose")
 # Printed whole, as JSON, instead of cut to 100 characters: the typed facts of a case (fact_signals), which a
 # dry run cannot be read without (27 Oct).
-FULL_KEYS = {"facts"}
+FULL_KEYS = {"facts", "rules", "issues"}
+
+
+# What traces a run: scripts/diagnose_long.py's case logs carry these whatever VERBOSE_LOGGING says.
+TRACE_EVENTS = {"fact_rules", "case_analysis_plan_final", "case_analysis_plan_call", "case_analysis_plan_remake",
+                "llm_reply_cut", "plan_then_write_fallback"}
+
+
+def trace(event: str, data: dict = None, duration_ms: float = None):
+    """For a path that captures vlog in place of printing it: the event printed all the same, if verbose or a trace."""
+    if VERBOSE or event in TRACE_EVENTS:
+        _emit(event, data, duration_ms)
 
 
 def vlog(event: str, data: dict = None, duration_ms: float = None):
     """Log verbose event if VERBOSE_LOGGING=true."""
-    if not VERBOSE:
-        return
+    if VERBOSE:
+        _emit(event, data, duration_ms)
+
+
+def _emit(event: str, data: dict = None, duration_ms: float = None):
     parts = [f"[VERBOSE:{event}]"]
     if duration_ms is not None:
         parts.append(f"duration={duration_ms:.1f}ms")

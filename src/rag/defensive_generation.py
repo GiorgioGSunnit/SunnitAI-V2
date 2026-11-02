@@ -13,13 +13,15 @@ import inspect
 import logging
 import os
 import re
+import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from . import article_text, comma_material, feature_flags, protected_sources
-from .ai_chat import _call_chat, embedding_model, parse_json_reply
+from . import article_cards, article_text, comma_material, feature_flags, protected_sources
+from .ai_chat import _call_chat, embedding_model, last_reply, parse_json_reply
+from .llm_reply import salvage_json
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import vlog
 
@@ -58,7 +60,44 @@ _JSON_RETRY_SUFFIX = (
 )
 
 
-def _chat_json(messages, max_tokens, **chat_kwargs):
+_JSON_COMPACT_SUFFIX = ("\n\nLa risposta precedente è stata troncata: rispondi di nuovo con lo stesso JSON, completo, più "
+                        "compatto: valori brevi, nessuna ripetizione dei fatti, senza omettere chiavi.")
+
+
+def _cut_json(messages, max_tokens, raw, compact, enough, chat_kwargs):
+    """A reply cut at the token limit is never parsed for a fragment. Its complete items, if `enough` of them; else asked
+    once more, compact; cut again, the complete items of whichever reply has some. ValueError with none."""
+    call = sys._getframe(2).f_code.co_name
+
+    def salvaged(text):
+        try:
+            return salvage_json(text)
+        except ValueError:
+            return None
+    first = salvaged(raw)
+    vlog("llm_reply_cut", {"call": call, "max_tokens": max_tokens, "salvaged": first is not None})
+    logger.warning("_chat_json: %s cut at %s tokens, %d characters", call, max_tokens, len(raw or ""))
+    if first is not None and enough is not None and enough(first):
+        last_reply.salvaged = True
+        return first
+    last_reply.finish_reason = None
+    again = _chat([SystemMessage(content=messages[0].content + compact), *messages[1:]], max_tokens=max_tokens, **chat_kwargs)
+    if getattr(last_reply, "finish_reason", None) != "length":
+        try:
+            return parse_json_reply(again)
+        except ValueError:
+            pass
+    second = salvaged(again)
+    best = second if second is not None else first
+    vlog("llm_reply_cut", {"call": call, "max_tokens": max_tokens, "salvaged": best is not None, "retried": True})
+    if best is None:
+        raise ValueError(f"{call}: reply cut at {max_tokens} tokens twice, nothing complete in it")
+    logger.warning("_chat_json: %s cut twice, its complete items kept", call)
+    last_reply.salvaged = True
+    return best
+
+
+def _chat_json(messages, max_tokens, compact=_JSON_COMPACT_SUFFIX, enough=None, **chat_kwargs):
     """_chat() + parse_json_reply, with one retry -- the same system message
     plus a stricter closing instruction -- if the first reply has no
     parseable JSON at all. parse_json_reply already tolerates code fences
@@ -73,8 +112,14 @@ def _chat_json(messages, max_tokens, **chat_kwargs):
     be kept") with nothing to show WHY -- the warning logged only the
     exception, never the reply that didn't parse. Both failures are logged
     here, with the raw reply, so the next one is diagnosable without
-    needing to reproduce it live."""
+    needing to reproduce it live.
+
+    A reply cut at the token limit goes to _cut_json: `compact` is its retry's instruction, `enough(value)` says the
+    complete items salvaged need no retry."""
+    last_reply.finish_reason, last_reply.salvaged = None, False
     raw = _chat(messages, max_tokens=max_tokens, **chat_kwargs)
+    if getattr(last_reply, "finish_reason", None) == "length":
+        return _cut_json(messages, max_tokens, raw, compact, enough, chat_kwargs)
     try:
         return parse_json_reply(raw)
     except ValueError as exc:
@@ -419,7 +464,7 @@ def generate_defensive_draft(
 
     if article_texts:
         article_text_block = "\n".join(
-            f"- {c['document_name']}, {s['name']}:\n  \"{s.get('plain_text', '')[:600]}\""
+            f"- {c['document_name']}, {s['name']}:\n  \"{article_text.clause_cut(s.get('plain_text', ''), 600)}\""
             for c in article_texts[:5] for s in (c.get("sections") or [])[:2]
             if s.get("plain_text")
         )
@@ -958,7 +1003,7 @@ def _analyse_case(facts: str, lang: str, request: str = "",
     try:
         parsed = _chat_json([SystemMessage(content=_CASE_ANALYSIS_SYSTEM),
                             HumanMessage(content=_case_text(facts, request) + _frame_block(frame))],
-                           max_tokens=1500, temperature=0)
+                           max_tokens=2500, temperature=0)
     except Exception as exc:
         logger.warning("case analysis failed: %s", exc)
         return empty
@@ -1011,7 +1056,7 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "",
     try:
         parsed = _chat_json([SystemMessage(content=system),
                             HumanMessage(content=_case_text(facts, request) + _frame_block(frame))],
-                           max_tokens=2200 if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG) else 1800,
+                           max_tokens=3500 if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG) else 3000,
                            temperature=0)
     except Exception as exc:
         logger.warning("case analysis (v2) failed: %s", exc)
@@ -1209,7 +1254,7 @@ def _structured_facts(facts: str, request: str,
     try:
         parsed = _chat_json([SystemMessage(content=_STRUCTURED_FACTS_SYSTEM),
                              HumanMessage(content=numbered + _frame_block(frame))],
-                            max_tokens=1800, temperature=0)
+                            max_tokens=3000, temperature=0)
     except Exception as exc:
         logger.warning("structured analysis, facts: failed: %s", exc)
         return None
@@ -1238,7 +1283,7 @@ def _structured_grid(extracted: Dict[str, Any], grid: List[tuple],
     t0 = time.time()
     try:
         parsed = _chat_json([SystemMessage(content=_STRUCTURED_GRID_SYSTEM), HumanMessage(content=human)],
-                            max_tokens=1800, temperature=0)
+                            max_tokens=3000, temperature=0)
     except Exception as exc:
         logger.warning("structured analysis, grid: failed: %s", exc)
         return None
@@ -1358,7 +1403,7 @@ def _case_frame(facts: str, request: str) -> Optional[Dict[str, Any]]:
     try:
         parsed = _chat_json([SystemMessage(content=_CASE_FRAME_SYSTEM),
                              HumanMessage(content=_case_text(facts, request))],
-                            max_tokens=1500, temperature=0)
+                            max_tokens=2500, temperature=0)
     except Exception as exc:
         logger.warning("case frame failed: %s", exc)
         return None
@@ -2056,7 +2101,7 @@ def _rows_heading(rows: List[Dict[str, Any]]) -> str:
     """The article's rubrica: titolo_articolo, else title, of its first row that has one."""
     for row in rows or []:
         s = row.get("s") or {}
-        heading = " ".join(str(s.get("titolo_articolo") or s.get("title") or "").split())
+        heading = article_text.heading(s)
         if heading:
             return heading
     return ""
@@ -2446,15 +2491,17 @@ def _ruling_label(row: Dict[str, Any]) -> str:
     return re.sub(r"^\s*\[[A-Z]+\]\s*", "", (row.get("d") or {}).get("name") or "")
 
 
-def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
+def _source_block(rows: List[Dict[str, Any]], chars: int, official: bool = False) -> str:
     """One labelled block per article (its sections joined) or per ruling (its
-    chosen passage, else the matched section), each cut to `chars`."""
+    chosen passage, else the matched section), each cut to `chars`. official: never an
+    ARTICLE_CARDS_ENABLED card, for whatever judges an answer against the law."""
     grouped: Dict[str, List[str]] = {}
     protected: set = set()
     # COMMA_MATERIAL_ENABLED: an article whose row holds its commi is given the commi that serve its issue
     # (comma_material.passage), within the same budget, instead of its first `chars` characters.
     by_commi: Dict[str, str] = {}
     trimmable: Dict[str, Dict[str, Any]] = {}
+    cards: Dict[str, str] = {}
     for row in rows:
         _s = row.get("s") or {}
         # abstract fallback: special/dottrina books (Commentato, Fiscalita) are
@@ -2471,17 +2518,24 @@ def _source_block(rows: List[Dict[str, Any]], chars: int) -> str:
             trimmable[label] = row
         if protected_sources.tag(row):
             protected.add(label)
+        if row.get("_article") and not official and label not in cards:
+            card = article_cards.material(row, chars)
+            if card:
+                cards[label] = card
         if row.get("_article") and label not in by_commi:
             commi = comma_material.passage(row, min(chars, row.get("_comma_chars") or chars))
             if commi:
                 by_commi[label] = commi
     # PROTECTED_PARAPHRASE_ENABLED: a protected passage carries the tag after its label (the label itself
     # unchanged, the citations are matched by it).
+    if cards:
+        vlog("article_cards_given", {"articles": sorted(cards), "of": sum(1 for label in grouped if label in trimmable)})
+
     def body(label, texts):
         text = " ".join(texts)
         return (comma_material.trim_row(text, chars, trimmable[label]) if label in trimmable else text[:chars])
     return "\n\n".join(f"[{label}]{' ' + protected_sources.TAG if label in protected else ''}\n"
-                         f"{by_commi.get(label) or body(label, texts)}" for label, texts in grouped.items())
+                         f"{cards.get(label) or by_commi.get(label) or body(label, texts)}" for label, texts in grouped.items())
 
 
 def _grouped_source_block(article_rows: List[Dict[str, Any]], questioni: List[Dict[str, Any]],
@@ -2728,7 +2782,7 @@ def _extract_principles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
                           HumanMessage(content=f"CASO:\n{_case_text(facts, request)[:3000]}\n\n"
                                                f"QUESTIONI:\n{issues or '(non indicate)'}\n\n"
                                                f"PASSI DELLE PRONUNCE:\n{passages}")],
-                         max_tokens=1200)
+                         max_tokens=2000)
     except Exception as exc:
         logger.warning("principles extraction failed: %s", exc)
         return ""
@@ -2823,7 +2877,7 @@ def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]],
         verdicts = _chat_json([SystemMessage(content=_RULING_FIT_SYSTEM + _RULING_FIT_DIRECTION),
                                HumanMessage(content=f"CASO:\n{case[:3000]}\n\nPOSIZIONE DELLA PARTE ASSISTITA: {party}"
                                                     f"\n\nPASSI DELLE PRONUNCE:\n{passages}")],
-                              max_tokens=200 + 170 * len(ruling_rows), temperature=0)
+                              max_tokens=300 + 250 * len(ruling_rows), temperature=0)
     except Exception as exc:
         logger.warning("ruling fit check failed, rulings kept: %s", exc)
         return ruling_rows
@@ -3579,11 +3633,30 @@ def _fusion_merge_by_hits(*ref_lists: List[tuple]) -> List[tuple]:
 
 def _fusion_distill_bullets(case_text: str) -> List[Dict[str, str]]:
     parsed = _chat_json([SystemMessage(content=_FUSION_DISTILL_SYSTEM), HumanMessage(content=case_text[:6000])],
-                        max_tokens=700, temperature=0)
+                        max_tokens=1200, temperature=0)
     if not isinstance(parsed, list):
         return []
     return [{"categoria": str(b.get("categoria") or ""), "testo": str(b.get("testo") or "").strip()}
             for b in parsed if isinstance(b, dict) and str(b.get("testo") or "").strip()][:8]
+
+
+def _rule_argument(analysis: Dict[str, Any], istituto: Dict[str, Any]) -> str:
+    """A fired rule's reason and the facts that met it, for the plan issue its institution gets: what the writer argues."""
+    name = str(istituto.get("nome") or "")
+    for rule in ((analysis.get("fact_signals") or {}).get("fired") or []):
+        if name in (rule.get("institutions") or []):
+            matched = "; ".join(str(m) for m in rule.get("matched") or [])
+            return f"{rule.get('why') or name}" + (f" Nel caso: {matched}." if matched else "")
+    return ""
+
+
+def _required_rows(session, analysis: Dict[str, Any], held: set) -> List[Dict[str, Any]]:
+    """The rows of the articles the fired rules require and retrieval missed; analysis["rule_required"] lists them all."""
+    refs = list(dict.fromkeys(tuple(ref) for rule in (analysis.get("fact_signals") or {}).get("fired") or []
+                              for ref in rule.get("requires") or []))
+    analysis["rule_required"] = refs
+    missing = [ref for ref in refs if ref not in held]
+    return _fetch_articles(session, missing) if missing else []
 
 
 def _select_articles_fusion(session, driver, database: str, facts: str, request: str,
@@ -3900,6 +3973,7 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     fact_v2 = fact_issues.resolver_v2()
     if fact_v2:
         analysis["fact_institutions"] = []
+    analysis["rule_institutions"] = []
     for index, q in enumerate(analysis.get("questioni", [])):
         for istituto in q.get("istituti") or []:
             if istituto.get("fonte") == fact_issues.FONTE and fact_v2:
@@ -3941,6 +4015,10 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 resolved = kept
                 if str(istituto["fonte"]).startswith("regola"):
                     fact_resolved += [r["_article"] for r in kept if r.get("_article")]
+                    refs = list(dict.fromkeys(r["_article"] for r in kept if r.get("_article")))
+                    if refs:              # a fired rule's articles get their place in the plan (place_rule_institutions)
+                        analysis["rule_institutions"].append({"nome": istituto.get("nome"), "fatto": istituto.get("fatto") or "",
+                                                              "refs": refs, "argomento": _rule_argument(analysis, istituto)})
             for row in resolved:
                 if index in central_questions and row.get("_article"):
                     central_matched.append(row["_article"])
@@ -3952,6 +4030,15 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 row["_source"] = CASE_ANALYSIS_SOURCE
                 added.append(row)
 
+    # A fired rule's required articles (fact_signal_rules.yaml, requires): read by number if the searches missed them.
+    required = _required_rows(session, analysis, {r.get("_article") for r in base["article_rows"] + added})
+    fact_resolved += [tuple(ref) for ref in analysis["rule_required"]]
+    for row in required:
+        key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
+        if key not in have:
+            have.add(key)
+            row["_source"] = CASE_ANALYSIS_SOURCE
+            added.append(row)
     article_rows = base["article_rows"] + added
     if fact_v2:            # a fact institution's article another path already held: tagged as reached from the fact
         of_fact = {ref: f["nome"] for f in analysis.get("fact_institutions") or [] for ref in f["refs"]}
@@ -4211,8 +4298,8 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     reply or missing verdict, the rows are kept -- except, with CHECK_PRIORITY_ENABLED,
     the articles left without a verdict while the check ran, and, with
     CHECKLIST_GATED_ENABLED, the method lists' candidates without one.
-    CHECK_GRADED_ENABLED: a relevance grade instead of the verdict (_GRADED_SYSTEM), for up to
-    _GRADED_MAX_CHECKED articles; grade 0 is removed, 1 stays as "marginale", 2 and 3 are "applicabile";
+    CHECK_GRADED_ENABLED: a relevance grade instead of the verdict (_GRADED_SYSTEM), for every article
+    (GRADED_MAX_CHECKED sets a limit, for an A/B); grade 0 is removed, 1 stays as "marginale", 2 and 3 are "applicabile";
     each kept row carries _grade. An article still without a grade after the retry (_graded_verdicts)
     stays as "non valutato": never removed, never counted as passing the check."""
     from . import method_candidates
@@ -4233,7 +4320,7 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     # Only the first _APPLICABILITY_MAX_CHECKED, in the pipeline's order: the later ones
     # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
     # A graded call costs about a third of a verdict per article: twice the slots.
-    limit = _graded_max_checked() if graded else _APPLICABILITY_MAX_CHECKED
+    limit = (_graded_max_checked() or len(texts)) if graded else _APPLICABILITY_MAX_CHECKED
     unchecked = len(texts) - limit
     unchecked_labels = list(texts)[limit:]
     if unchecked > 0:
@@ -4394,8 +4481,8 @@ CHECK_GRADED_FLAG = "CHECK_GRADED_ENABLED"
 _GRADED_TEXT_CHARS = 400
 # Reply max_tokens: base, per article. Run 1206 (60 + 45 per article): a compact entry in Italian runs
 # 45-60 tokens, so a batch of 12 was cut, and a cut array is no list: its 12 articles got no grade.
-_GRADED_TOKENS = (120, 60)
-_GRADED_MAX_CHECKED = 72
+_GRADED_TOKENS = (200, 100)
+_GRADED_MAX_CHECKED = 0          # no limit: v37 lost 2043 (l3) and 1256 (h2) past the former 72 slots
 # scripts/plan_loss.py (29 Oct, the 28 Oct runs, 17 civil cases): of the 16 expected articles found but lost before the
 # plan, 11 were past these slots (positions 74-125 of 107-171 candidates), never graded, so never eligible for the
 # plan. GRADED_MAX_CHECKED sets the slots (default _GRADED_MAX_CHECKED) for an A/B; each 36 more cost one round of
@@ -4405,7 +4492,7 @@ _GRADED_RETRY_BATCH = 6         # the ids still without a grade go once more, th
 
 
 def _graded_max_checked() -> int:
-    """The graded check's slots: GRADED_MAX_CHECKED when a positive number, else _GRADED_MAX_CHECKED."""
+    """The graded check's slots: GRADED_MAX_CHECKED when a positive number, else _GRADED_MAX_CHECKED; 0, every article."""
     try:
         value = int(os.getenv(GRADED_MAX_CHECKED_ENV) or 0)
     except ValueError:
@@ -4822,8 +4909,8 @@ _DECISION_NUMBER_RES = (
 def _code_after(tail: str, documents: List[Dict[str, Any]]) -> Optional[str]:
     """The code a citation's tail names: a sigla or a code in full, else the
     name of one of `documents` (the retrieved non-standard laws) resolved the
-    way issue spotting resolves a code -- or None."""
-    from .issue_spotting import resolve_code
+    words really naming it (issue_spotting.cited_document) -- or None."""
+    from .issue_spotting import cited_document
 
     rest = tail[_CODE_LEAD_RE.match(tail).end():]
     for pattern, abbr in _CODE_SPELLINGS:
@@ -4836,31 +4923,19 @@ def _code_after(tail: str, documents: List[Dict[str, Any]]) -> Optional[str]:
     if documents:
         words = re.split(r"[\n;:()\[\]]", rest)[0].split()[:8]
         for n in range(len(words), 0, -1):
-            doc = resolve_code(" ".join(words[:n]), documents)
+            doc = cited_document(" ".join(words[:n]), documents)
             if doc:
                 return doc["name"]
     return None
 
 
 def _cited_articles(draft: str, known: set, documents: List[Dict[str, Any]]) -> List[tuple]:
-    """Every (number, code) the draft cites, in order, deduplicated. A number
-    with no code is attributed to the one known article with that number, if
-    there is exactly one."""
-    refs: List[tuple] = []
-    for m in _ARTICLE_RUN_RE.finditer(draft):
-        code = _code_after(draft[m.end():m.end() + 120], documents)
-        for n in _RUN_NUMBER_RE.findall(m.group(1)):
-            number = _article_num(n)
-            if code:
-                ref = (number, code)
-            else:
-                same = [k for k in known if k[0] == number]
-                if len(same) != 1:
-                    continue
-                ref = same[0]
-            if ref not in refs:
-                refs.append(ref)
-    return refs
+    """Every (number, code) the draft cites, in order, deduplicated, each number
+    read by plan_then_write.read_citations (its code, the nearest in its sentence
+    or quote, else the one known article with that number)."""
+    from . import plan_then_write
+    return list(dict.fromkeys(ref for _, _, _, refs, _ in plan_then_write.read_citations(draft, documents, known)
+                              for ref in refs if ref))
 
 
 def _decision_numbers(text: str) -> set:
@@ -5062,6 +5137,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     direction = plan_then_write._writer_rules()
 
     trusted = set(method_candidates.candidate_refs(*method_candidates.case_lists(analysis)))
+    trusted |= {r["_article"] for r in article_rows if r.get("_closure")}    # judged on their whole text after writing
     known = {r["_article"] for r in article_rows if r.get("_article")}
     cited = [ref for ref in _cited_articles(draft, known, documents) if ref not in trusted]
     if not cited:
@@ -5080,13 +5156,13 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
             logger.warning("qualification check: heading fetch failed: %s", exc)
     for ref in cited:
         s = (rows_by_ref.get(ref) or {}).get("s") or {}
-        heading = (s.get("titolo_articolo") or s.get("title") or "").strip()
+        heading = article_text.heading(s)
         context = _citation_context(draft, ref, documents if remove or direction else None)
         if heading and context:
             headings[f"{ref[0]} {ref[1]}"] = (heading, context, ref)
     if not headings:
         return draft
-    opening = {label: " ".join(str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())[:300]
+    opening = {label: article_text.clause_cut(" ".join(str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split()), 300)
                for label, (_, _, ref) in headings.items()} if direction else {}
     human = "\n\n".join(f"[{label}]\nRubrica: {heading}" + (f"\nTesto: {opening[label]}" if opening.get(label) else "")
                         + f"\nFrase: {context}" for label, (heading, context, _) in headings.items())
@@ -5561,7 +5637,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     if feature_flags.enabled(PLAN_THEN_WRITE_FLAG):
         from . import plan_then_write
         documents_for_plan: List[Dict[str, Any]] = []
-        if plan_then_write._discipline() or plan_then_write.grounded_review.enabled():
+        if plan_then_write._discipline() or plan_then_write.grounded_review.enabled() or plan_then_write.covering():
             try:
                 from .doc_lookup import _fetch_doc_names
                 documents_for_plan = _fetch_doc_names(driver, NEO4J_DATABASE)
@@ -5597,6 +5673,22 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     if writer_rules and not planned:
         draft = _safe_step("review_parere", draft,
                            lambda d: _ptw.review_parere(d, _case_text(facts, request), article_rows, analysis))
+    # CITATION_CLOSURE_ENABLED: every article cited outside the material read, checked and verified, or its citation
+    # gone (citation_closure.py).
+    from . import citation_closure
+
+    def closed(d):
+        nonlocal article_rows
+        from .doc_lookup import _fetch_doc_names
+        names = _fetch_doc_names(driver, NEO4J_DATABASE)
+        with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+            d, verified, _ = citation_closure.close(d, analysis=analysis, article_rows=article_rows, documents=names,
+                                                    session=session, case_text=_case_text(facts, request))
+        article_rows = article_rows + verified
+        return d
+
+    if citation_closure.enabled():
+        draft = _safe_step("citation_closure", draft, closed)
     found = sorted({row["_article"] for row in article_rows if row.get("_article")})
     draft = _safe_step("mark_unverified", draft,
                        lambda d: _mark_unverified(d, found, articles + "\n" + rulings,
@@ -5636,7 +5728,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # note mid-sentence) repaired (text_tidy.py).
     def tidy(d):
         from . import text_tidy
+        d, repaired = text_tidy.against_articles(d, article_rows)
         d, tidied = text_tidy.tidy(d)
+        tidied = repaired + tidied
         if tidied:
             vlog("answer_tidy", {"entries": tidied, "count": len(tidied)})
         return d
@@ -5669,6 +5763,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                    else article_rows + ruling_rows)
     citations = protected_sources.redact([c for c in _rows_to_sources(source_rows) if c.get("sections")],
                                          "strategy")
+    references = {(r.get("d") or {}).get("id"): _ruling_reference(r) for r in ruling_rows}
+    citations = [{**c, "reference": references[c.get("document_id")]} if references.get(c.get("document_id")) else c
+                 for c in citations]
     vlog("case_analysis_pipeline", {"v2": case_analysis_v2, "pool_fusion": pool_fusion},
         duration_ms=(time.time() - pipeline_t0) * 1000)
     return {"draft": draft, "citations": citations,

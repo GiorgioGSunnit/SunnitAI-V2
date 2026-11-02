@@ -30,6 +30,7 @@ from ..doc_lookup import (
     _is_legal_query,
 )
 from ..formatting import _enrich_with_source_metadata, _node_to_dict, _session_lang
+from ..llm_reply import parse_json_reply
 from ..language import language_display_name
 from ..lookup_indexes import CONTEXT_NODE_LIMIT, CONTEXT_VECTOR_INDEXES, FULLTEXT_INDEXES
 from ..lookups import (
@@ -580,9 +581,9 @@ def article_router(state: Dict[str, Any], driver, database: str) -> Dict[str, An
                 [SystemMessage(content=_multi_system), HumanMessage(content=query)],
                 max_tokens=80,
             ).strip()
-            _multi_clean = _multi_raw.strip().lstrip("```json").lstrip("```").rstrip("```").strip()
             try:
-                _multi_results = json.loads(_multi_clean) if _multi_clean.startswith("[") else []
+                _multi_results = parse_json_reply(_multi_raw)
+                _multi_results = _multi_results if isinstance(_multi_results, list) else []
             except Exception:
                 _multi_results = []
 

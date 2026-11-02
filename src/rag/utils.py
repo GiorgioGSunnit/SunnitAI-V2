@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from .llm_reply import clean_json_text
 from ..preprocessing.schema.schema import entities as schema_entities
 from ..preprocessing.schema.schema import relations as schema_relations
 
@@ -129,7 +130,7 @@ def _parse_json_list(response: str) -> List[str]:
     if not response:
         return []
     # Strip markdown fences (```json ... ``` or ``` ... ```)
-    text = re.sub(r"```(?:json)?\s*", "", response).strip().rstrip("`").strip()
+    text = clean_json_text(response)
     # Extract the first [...] block — the LLM may add prose before/after
     match = re.search(r"\[.*?\]", text, re.DOTALL)
     if match:

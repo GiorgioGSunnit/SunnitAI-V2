@@ -159,13 +159,23 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 material lacks and the case does not name (the
                                 sentence rewritten without it, or dropped:
                                 _cite_only_material). See plan_then_write.
+  CITATION_CLOSURE_ENABLED     false: after writing, every article cited outside the
+                                case's material is read by number and checked
+                                against its sentence: compatible, it becomes
+                                material and a source; not found, incompatible,
+                                outside the case's areas or unresolved, the
+                                citation goes. See citation_closure.py.
+  PLAN_ARTICLES_COVER_ENABLED  false: after writing, a plan article graded 2 or more
+                                that no section cites gets one or two sentences
+                                from its text in its issue's section, through the
+                                same checks. See plan_then_write.cover_plan_articles.
   CHECK_GRADED_ENABLED         false (acts with APPLICABILITY_CHECK_ENABLED): the
                                 check grades each article 0-3 (0 unrelated or
                                 another area, 1 tangential, 2 an issue of the case,
                                 3 its central question) with the issue it serves,
-                                from its rubrica and first 400 characters, for up
-                                to 72 articles (GRADED_MAX_CHECKED sets another
-                                number) (one found by the vote or by two or
+                                from its rubrica and first 400 characters, for
+                                every article (GRADED_MAX_CHECKED sets a limit,
+                                for an A/B) (one found by the vote or by two or
                                 more channels: a doubt between 1 and 2 goes to 2);
                                 grade 0 leaves the pool before the prompt. Articles without a grade (skipped, a cut
                                 reply, a failed call) go once more in smaller
@@ -473,6 +483,11 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 as comma_material (which commi of each article were given), comma_material_plan,
                                 comma_material_fetched. Measured by scripts/fetch_audit.py ("comma not given /
                                 beyond the truncation", target near 0). See src/rag/comma_material.py.
+  ARTICLE_CARDS_ENABLED        false: the writer reads an article's card (ARTICLE_CARDS_FILE, default data/
+                                article_cards.jsonl, from scripts/article_cards_bulk.py): instead of the text for an
+                                article over its budget, beside a short text for the others. Only cards with no check
+                                raised and made from this very text; the reviews still read the official text. See
+                                src/rag/article_cards.py.
   GROUNDED_REVIEW_ENABLED      false (30 Oct, after scripts/fetch_audit.py on run 0812, judged: 28% of the
                                 rule-sentences not in the writer's material, 27% of the cited claims on an
                                 article never given): after the sections, each section's rule / institution /

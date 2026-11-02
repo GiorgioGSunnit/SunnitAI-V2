@@ -1,5 +1,6 @@
 """Pure formatting and conversion helpers shared by the RAG graph nodes."""
 
+from .article_text import clause_cut
 import json
 from typing import Any, Dict, List, Set
 
@@ -160,7 +161,7 @@ def _summarize_for_synthesis(
                     abstract = (props.get("abstract") or props.get("description") or "")[:200]
                     if abstract:
                         summary_props["abstract"] = abstract
-                    plain_text = (props.get("plain_text") or props.get("text") or "")[:150]
+                    plain_text = clause_cut(props.get("plain_text") or props.get("text") or "", 150)
                     if plain_text:
                         summary_props["plain_text"] = plain_text
 
@@ -213,7 +214,7 @@ def _summarize_for_synthesis(
                     abstract = (value.get("abstract") or value.get("description") or "")[:200]
                     if abstract:
                         flat_props["abstract"] = abstract
-                    plain_text = (value.get("plain_text") or value.get("text") or "")[:150]
+                    plain_text = clause_cut(value.get("plain_text") or value.get("text") or "", 150)
                     if plain_text:
                         flat_props["plain_text"] = plain_text
                 if flat_props:

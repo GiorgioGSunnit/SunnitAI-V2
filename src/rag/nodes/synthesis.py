@@ -22,6 +22,7 @@ from ..answer_processing import (
 from .cypher import CROSSREF_SOURCE
 from ..cypher_logger import log_cypher_event
 from ..formatting import _session_lang, _summarize_for_synthesis
+from ..llm_reply import parse_json_reply
 from ..prompts import (
     setting_level,
     synthesis_empty_system,
@@ -894,8 +895,7 @@ def rerank_from_clarification(state: Dict[str, Any]) -> Dict[str, Any]:
             [SystemMessage(content=system), HumanMessage(content=human)],
             max_tokens=200,
         )
-        text = re.sub(r"```(?:json)?\s*", "", raw).strip().rstrip("`").strip()
-        indices = json.loads(text)
+        indices = parse_json_reply(raw)
         if not isinstance(indices, list):
             raise ValueError("LLM did not return a JSON array")
     except Exception as e:

@@ -277,6 +277,27 @@ def _document_text(document_id: str) -> str:
     return extract_text_from_file(row.storage_path)
 
 
+def capture_vlog(dg, events: list) -> None:
+    """The pipeline's vlog events into `events`, in every module logging through its own vlog (fact_signals: its typed
+    facts, saved whole as "facts"), and still printed under VERBOSE_LOGGING=true: without that, answer_docx's log had none
+    of them. Nothing printed otherwise: a dry run shows no case text."""
+    from src.rag import verbose_logger
+    printed = verbose_logger.vlog
+
+    def captured(event, data=None, *a, **k):
+        events.append((event, data, k.get("duration_ms")))
+        printed(event, data, k.get("duration_ms"))
+    dg.vlog = captured
+    for module in ("ruling_cards", "vote_pool", "fact_signals", "source_tiers", "query_router", "protected_sources", "ai_chat",
+                   "comma_material", "plan_then_write", "anchored_writing", "grounded_review", "fact_issues"):
+        try:
+            found = __import__(f"src.rag.{module}", fromlist=["vlog"])
+            if callable(getattr(found, "vlog", None)):
+                found.vlog = captured
+        except ImportError:
+            pass
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     source = parser.add_mutually_exclusive_group(required=True)
@@ -304,13 +325,7 @@ def main() -> None:
     print(f"code: {os.path.abspath(dg.__file__)}", file=sys.stderr)
 
     events = []
-    dg.vlog = lambda event, data=None, *a, **k: events.append((event, data, k.get("duration_ms")))
-    # modules that log through their own vlog (fact_signals: its typed facts, saved whole as "facts")
-    for module in ("ruling_cards", "vote_pool", "fact_signals", "source_tiers", "query_router", "protected_sources"):
-        try:
-            setattr(__import__(f"src.rag.{module}", fromlist=["vlog"]), "vlog", dg.vlog)
-        except ImportError:
-            pass
+    capture_vlog(dg, events)
 
     request = args.request
     if args.case:

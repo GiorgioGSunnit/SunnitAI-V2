@@ -8,6 +8,8 @@ rulings the app shows under the answer (document, section, text) -- to a Word fi
     ... --case h3                                                                     (an eval case)
     ... --from-json saved.json                                                        (a dryrun --save, no run)
 
+With VERBOSE_LOGGING=true in the environment, dryrun_strategy's whole log goes to <out>.log.
+
 --blind leaves the flag set out of the file and strips the "Vuoi approfondire" line and any deep-dive link, so
 the two answers of an A/B differ only in what they argue (scripts/ab_answers.py); --label is the title.
 """
@@ -47,6 +49,11 @@ def run_dryrun(args) -> dict:
         for item in args.set:
             cmd += ["--set", item]
         done = subprocess.run(cmd, cwd=os.getcwd(), capture_output=True, text=True)
+        if os.getenv("VERBOSE_LOGGING", "").strip().lower() == "true":      # dryrun_strategy's log, to trace the steps
+            path = f"{args.out}.log"
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(done.stdout + ("\n--- stderr ---\n" + done.stderr if done.stderr else ""))
+            print(f"Log: {path}")
         if not os.path.isfile(saved):
             sys.exit(f"dryrun_strategy wrote nothing (exit {done.returncode}):\n{done.stdout[-2000:]}\n{done.stderr[-2000:]}")
         with open(saved, encoding="utf-8") as fh:
@@ -83,34 +90,31 @@ def add_answer(doc, answer: str) -> None:
             _runs(doc.add_paragraph(), line.strip())
 
 
-def _section_label(section: dict, ruling: bool) -> str:
+def _section_label(section: dict) -> str:
     name, title = str(section.get("name") or ""), str(section.get("title") or "").strip()
-    if ruling:
-        return title or name
     number = name.split(".")[0] if re.match(r"\d", name) else name
     return f"Art. {number}" + (f" — {title}" if title else "")
 
 
 def add_sources(doc, citations: list, chars: int = 3000) -> None:
-    """The cited sources as the app lists them under the answer: norms, then rulings; each document with
-    its sections (label and text)."""
+    """The cited sources: the norms, each document with its sections (label and text); the rulings by their reference
+    line alone ("Cass. civ., sez. II, ord. n. 123/2026"), never their passages."""
     rulings = [c for c in citations or [] if (c.get("document_type") or "") == "interpretation"]
     norms = [c for c in citations or [] if c not in rulings]
     doc.add_heading("Fonti citate", level=1)
-    for title, group, ruling in (("Norme", norms, False), ("Giurisprudenza", rulings, True)):
-        if not group:
-            continue
-        doc.add_heading(title, level=2)
-        for c in group:
-            p = doc.add_paragraph()
-            p.add_run(str(c.get("document_name") or c.get("document_id") or "")).bold = True
-            for section in c.get("sections") or []:
-                label = _section_label(section, ruling)
-                if label:
-                    doc.add_paragraph().add_run(label).italic = True
-                text = " ".join(str(section.get("plain_text") or "").split())
-                if text:
-                    doc.add_paragraph(text[:chars] + ("…" if len(text) > chars else ""))
+    if norms:
+        doc.add_heading("Norme", level=2)
+    for c in norms:
+        doc.add_paragraph().add_run(str(c.get("document_name") or c.get("document_id") or "")).bold = True
+        for section in c.get("sections") or []:
+            doc.add_paragraph().add_run(_section_label(section)).italic = True
+            text = " ".join(str(section.get("plain_text") or "").split())
+            if text:
+                doc.add_paragraph(text[:chars] + ("…" if len(text) > chars else ""))
+    if rulings:
+        doc.add_heading("Giurisprudenza", level=2)
+    for c in rulings:
+        doc.add_paragraph(str(c.get("reference") or c.get("document_name") or c.get("document_id") or ""))
 
 
 def build(record: dict, out: str, label: str = "Risposta", question: str = "", settings=None,
