@@ -19,7 +19,9 @@ six codes and the Constitution.
 """
 
 import logging
+import math
 import time
+from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from . import feature_flags
@@ -185,9 +187,27 @@ def refs_of(rows: Iterable[Dict[str, Any]]) -> List[tuple]:
     return out
 
 
+# Every citing row is read (no cut before the ranking); this bound only guards against a runaway query.
+_MAX_CITING_ROWS = 50000
+_RULINGS_TOTAL: Dict[str, int] = {}
+
+
+def _rulings_total(session) -> int:
+    """How many rulings the graph holds, counted once per process: the N of the rarity weight."""
+    if "n" not in _RULINGS_TOTAL:
+        rows = session.run("MATCH (d:Document {document_type: 'interpretation'}) RETURN count(d) AS n").data()
+        _RULINGS_TOTAL["n"] = int(rows[0]["n"]) if rows else 0
+    return _RULINGS_TOTAL["n"]
+
+
 def citing_rulings(session, refs: Iterable[tuple], limit: int = 300) -> Dict[str, set]:
     """{ruling document id: the refs among `refs` its Sections CITE}, Cassation boilerplate excluded, read from
-    each article's own Section in a primary document of its code."""
+    each article's own Section in a primary document of its code; at most `limit` rulings, best first: by the sum
+    of their shared articles' weights, log(rulings / rulings citing the article) as the vote's IDF, so a ruling
+    citing the case's specific article comes before one citing only a common one, and one sharing several
+    before one sharing a single article. Until 3 Nov the query kept its first 300 rows in no order: 76 articles
+    have more than 300 citing rulings (133 c.p. 2,361, 81 c.p. 1,312, 62-bis c.p. 995; cites_popularity.py), so
+    a common article could fill the cut and the rulings citing the case's specific articles were never read."""
     prefixes = _code_prefixes()
     wanted = [{"article": str(a), "code": c, "prefix": prefixes[c]} for a, c in dict.fromkeys(refs)
               if c in prefixes and (str(a), c) not in boilerplate()]
@@ -199,12 +219,22 @@ def citing_rulings(session, refs: Iterable[tuple], limit: int = 300) -> Dict[str
         "AND pd.name STARTS WITH ref.prefix AND (t.name = ref.article + '.0.0' OR t.name = ref.article "
         "OR t.name STARTS WITH ref.article + '.') "
         "MATCH (d:Document)-[:CONTAINS]->(:Section)-[c:CITES]->(t) WHERE d.document_type = 'interpretation' "
-        "RETURN DISTINCT d.id AS ruling, ref.article AS article, ref.code AS code LIMIT $limit",
-        refs=wanted, limit=limit).data()
-    out: Dict[str, set] = {}
+        "RETURN DISTINCT d.id AS ruling, ref.article AS article, ref.code AS code LIMIT $max_rows",
+        refs=wanted, max_rows=_MAX_CITING_ROWS).data()
+    cites: Dict[str, set] = {}
     for r in rows:
-        out.setdefault(r["ruling"], set()).add((r["article"], r["code"]))
-    return out
+        cites.setdefault(r["ruling"], set()).add((r["article"], r["code"]))
+    if not cites:
+        return {}
+    citing = Counter(ref for shared in cites.values() for ref in shared)
+    try:
+        total = max(_rulings_total(session), len(cites))
+    except Exception as exc:
+        logger.warning("source tiers: counting the rulings failed, the citing ones stand for all: %s", exc)
+        total = len(cites)
+    weight = {ref: math.log((total + 1) / n) for ref, n in citing.items()}
+    ranked = sorted(cites, key=lambda r: (-sum(weight[ref] for ref in cites[r]), r))
+    return {r: cites[r] for r in ranked[:limit]}
 
 
 def ruling_citations(session, ruling_ids: Sequence[str]) -> Dict[str, set]:
@@ -250,8 +280,8 @@ def support_rulings(session, article_refs: Sequence[tuple], text: str, k: int,
         info["citing"] = len(cites)
         if not cites:
             return []
-        if len(cites) > 150:     # the most-sharing ones are scored
-            cites = dict(sorted(cites.items(), key=lambda kv: (-len(kv[1]), kv[0]))[:150])
+        if len(cites) > 150:     # the first ones are scored: citing_rulings ranks by the shared articles' rarity
+            cites = dict(list(cites.items())[:150])
         sims = rank_by_similarity(session, list(cites), text)
         scored = []
         for ruling, refs in cites.items():
