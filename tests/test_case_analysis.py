@@ -400,6 +400,14 @@ class _Session:
                             {"id": "LEGAL_DOC::o1", "name": "2_3", "text": RULING}])
         if "any(p IN $prefixes" in query:                   # keyword search in the codes
             return _Result([{"doc": "Codice Civile 2026", "sec": "2051.0.0", "score": 8.0}])
+        if "UNWIND $prefixes AS p" in query:                # a code's primary documents by name prefix
+            return _Result([{"prefix": p, "id": "LEGAL_DOC::cc"} for p in params["prefixes"] if p == "Codice Civile"])
+        if "UNWIND $items AS it" in query:                  # their Sections by id (article_text._sections)
+            return _Result([{"doc": it["doc"], "num": it["num"],
+                             "d": {"id": "LEGAL_DOC::cc", "name": "Codice Civile 2026", "document_type": "primary"},
+                             "s": {"id": "DOCUMENT_SECTION::cc::2051", "name": "2051.0.0", "plain_text": ART_2051},
+                             "next": None}
+                            for it in params["items"] if (it["doc"], it["num"]) == ("LEGAL_DOC::cc", "2051")])
         if "STARTS WITH $prefix" in query:
             if params["prefix"] == "Codice Civile" and params["n"] == "2051":
                 return _Result([{"d": {"id": "LEGAL_DOC::cc", "name": "Codice Civile 2026", "document_type": "primary"},

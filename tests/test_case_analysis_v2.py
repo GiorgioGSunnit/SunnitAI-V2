@@ -135,7 +135,7 @@ def test_analyse_case_v2_handles_a_non_dict_fatti_strutturati(monkeypatch):
 def test_fetch_any_uses_the_fast_path_for_a_standard_code(monkeypatch):
     calls = []
 
-    def fake_fetch_articles(session, refs):
+    def fake_fetch_articles(session, refs, store=None):
         calls.append(refs)
         return [{"d": {"name": "Codice Penale 2026"}, "s": {"name": "584.0.0"}, "_article": refs[0]}]
 
@@ -147,14 +147,15 @@ def test_fetch_any_uses_the_fast_path_for_a_standard_code(monkeypatch):
 
 def test_fetch_any_resolves_a_non_standard_law_by_document_name(monkeypatch):
     documents = [{"id": "doc1", "name": "Codice del Consumo", "aliases": []}]
-    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs: [])
+    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs, store=None: [])
 
     import src.rag.issue_spotting as issue_spotting
     monkeypatch.setattr(issue_spotting, "resolve_code",
                         lambda name, docs: documents[0] if "consumo" in name.lower() else None)
-    monkeypatch.setattr(issue_spotting, "fetch_article",
-                        lambda session, doc_id, number, *a, **k:
-                        [{"d": {"id": doc_id, "name": "Codice del Consumo"}, "s": {"name": f"{number}.0.0"}}])
+    monkeypatch.setattr(dg.article_text, "fetch_many",
+                        lambda session, items, store=None:
+                        {(doc_id, number): [{"d": {"id": doc_id, "name": "Codice del Consumo"},
+                                             "s": {"name": f"{number}.0.0"}}] for doc_id, number in items})
 
     rows = dg._fetch_any(object(), documents, [("128", "Codice del Consumo")])
     assert len(rows) == 1
@@ -162,7 +163,7 @@ def test_fetch_any_resolves_a_non_standard_law_by_document_name(monkeypatch):
 
 
 def test_fetch_any_skips_a_law_that_does_not_resolve(monkeypatch):
-    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs: [])
+    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs, store=None: [])
     monkeypatch.setattr(issue_spotting, "resolve_code", lambda name, docs: None)
     rows = dg._fetch_any(object(), [], [("5", "l. 999/1900")])
     assert rows == []

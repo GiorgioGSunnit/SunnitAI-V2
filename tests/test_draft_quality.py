@@ -128,7 +128,7 @@ def test_an_article_whose_heading_does_not_fit_its_use_is_flagged(monkeypatch):
     draft = ("#### 3. Attenuante\n- **Norma:** Art. 609 bis c.p. [DA VERIFICARE]\n"
              "#### 1. Consapevolezza\n- **Norma:** Art. 117 c.p.\n- **Norma:** Art. 110 c.p.")
     rows = [_article("117", "c.p.", doc="Codice Penale 2026", heading="Mutamento del titolo del reato per taluno dei concorrenti")]
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [
         _article(n, c, doc="Codice Penale 2026", heading="Violenza sessuale") for n, c in refs])
     sent = {}
 

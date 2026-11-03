@@ -127,10 +127,13 @@ def test_every_lookup_sees_the_chunks():
 
         def run(self, query, **params):
             self.queries.append(query)
-            return type("R", (), {"data": lambda s: []})()
+            # _fetch_articles finds the code's documents first, then reads their Sections by id
+            found = [{"prefix": p, "id": "doc"} for p in params.get("prefixes") or []]
+            return type("R", (), {"data": lambda s: found})()
     AT.fetch_article(Session(), "doc", "61")
     dg._fetch_articles(Session(), [("61", "c.p.")])
-    assert all("+ '_'" in q and "NEXT" in q for q in Session.queries)
+    sections = [q for q in Session.queries if "Section" in q]
+    assert len(sections) == 2 and all("+ '_'" in q and "NEXT" in q for q in sections)
     retrieval = open(os.path.join(os.path.dirname(__file__), "..", "src", "rag", "nodes", "retrieval.py"), encoding="utf-8").read()
     assert "STARTS WITH $num + '_'" in retrieval and "STARTS WITH $article_number + '_'" in retrieval
     assert "RETURN d, s LIMIT 15\",\n                    article_ref" not in retrieval.split("Fallback: prefixed")[0]

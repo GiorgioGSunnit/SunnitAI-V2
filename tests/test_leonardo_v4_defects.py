@@ -121,7 +121,7 @@ def test_a_rule_s_articles_are_exempt_from_the_cap_and_need_no_grade(monkeypatch
 
 
 def test_the_rule_s_required_articles_are_fact_rule_tier(monkeypatch):
-    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs: [{"_article": r} for r in refs])
+    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs, store=None: [{"_article": r} for r in refs])
     analysis = {"fact_signals": {"fired": [{"requires": [("1067", "c.c.")]}]}}
     dg._required_rows(None, analysis, set())
     assert analysis["rule_required"] == [("1067", "c.c.")]

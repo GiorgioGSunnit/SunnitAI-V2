@@ -3381,10 +3381,12 @@ def final_checks(sections: List[Tuple[str, str]], article_rows: List[Dict[str, A
 
 def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
                  ruling_rows: List[Dict[str, Any]], articles: str, rulings: str, principles: str,
-                 lang: str = "it", documents: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                 lang: str = "it", documents: Optional[List[Dict[str, Any]]] = None,
+                 store: Optional["article_text.ArticleStore"] = None) -> Optional[str]:
     """The parere from a plan, section by section, or None (the caller writes it in one call).
     `articles` and `rulings` are the draft prompt's own blocks (_fit_parere_prompt); `documents` (the
-    corpus' names) let _discipline() read a citation of a law by its name."""
+    corpus' names) let _discipline() read a citation of a law by its name; `store`, the request's
+    article rows already read (article_text.ArticleStore), spares the commi a second read."""
     references: Dict[str, List[Dict[str, Any]]] = {}
     for row in ruling_rows:
         reference = dg._ruling_reference(row)
@@ -3401,7 +3403,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
             row["_in_plan"] = True
     # COMMA_MATERIAL_ENABLED: each article's commi chosen for the plan issue that places it; a comma the plan
     # or the case names, read now when the row lacks it (one read, no model call).
-    commi = comma_material.for_plan(plan, article_rows, case)
+    commi = comma_material.for_plan(plan, article_rows, case, store=store)
     if commi:
         dg.vlog("comma_material_plan", commi)
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))

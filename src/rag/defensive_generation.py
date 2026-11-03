@@ -1908,27 +1908,33 @@ def _dedupe_sections(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return [best[key] for key in order]
 
 
-def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
+_CODE_ROWS_LIMIT = 300      # an article's rows across a code's documents, in Section name order, as the query had
+
+
+def _fetch_articles(session, refs: List[tuple], store: Optional[article_text.ArticleStore] = None) -> List[Dict[str, Any]]:
     """The text of each article, read from its code by number: per document, the canonical row carrying the
     article's whole text (article_text.article_rows), else its dot fragments. Duplicates sharing a Section name are resolved
-    by _section_quality, not left to Neo4j's unspecified order."""
+    by _section_quality, not left to Neo4j's unspecified order.
+
+    One read for all of them (the request's store, when given, keeps them for fill_texts and the commi): the code's
+    primary documents by its name prefix, then every spelling of every number in those documents by id. Per article,
+    as the query per article and spelling did: its rows across the code's documents in Section name order, the first
+    _CODE_ROWS_LIMIT, grouped by document in that order; the first spelling with rows wins; at most 6 rows."""
+    store = store or article_text.ArticleStore()
+    wanted = [(num, abbr, _CODE_PREFIXES[abbr]) for num, abbr in refs if _CODE_PREFIXES.get(abbr)]
+    if not wanted:
+        return []
+    docs_of = store.prefix_docs(session, [prefix for _, _, prefix in wanted])
+    # The canonical spelling, then legacy ones ("21-novies") of Sections
+    # ingested before the BE normalised suffixes (article_suffix.py).
+    grouped = store.sections(session, [(doc, spelling) for num, _, prefix in wanted for spelling in number_variants(num)
+                                       for doc in docs_of[prefix]])
     rows = []
-    for num, abbr in refs:
-        prefix = _CODE_PREFIXES.get(abbr)
-        if not prefix:
-            continue
+    for num, abbr, prefix in wanted:
         found = []
-        # The canonical spelling, then legacy ones ("21-novies") of Sections
-        # ingested before the BE normalised suffixes (article_suffix.py).
         for spelling in number_variants(num):
-            raw = session.run(
-                "MATCH (d:Document)-[:CONTAINS]->(s:Section) "
-                "WHERE d.document_type = 'primary' AND d.name STARTS WITH $prefix "
-                "AND (s.name = $n OR s.name STARTS WITH $n + '.' OR s.name STARTS WITH $n + '_') "
-                "OPTIONAL MATCH (s)-[:NEXT]->(after:Section) "
-                "RETURN d, s, after.name AS next ORDER BY s.name LIMIT 300",
-                prefix=prefix, n=spelling,
-            ).data()
+            raw = sorted((article_text.copy_row(r) for doc in docs_of[prefix] for r in grouped.get((doc, spelling), [])),
+                         key=lambda r: str((r.get("s") or {}).get("name") or ""))[:_CODE_ROWS_LIMIT]
             by_doc: Dict[Any, List[Dict[str, Any]]] = {}
             for row in raw:
                 by_doc.setdefault((row.get("d") or {}).get("id"), []).append(row)
@@ -1942,26 +1948,26 @@ def _fetch_articles(session, refs: List[tuple]) -> List[Dict[str, Any]]:
 
 
 # CASE_ANALYSIS_ENABLED: article resolution beyond the six traditional codes.
-def _fetch_any(session, documents: List[Dict[str, Any]], refs: List[tuple]) -> List[Dict[str, Any]]:
+def _fetch_any(session, documents: List[Dict[str, Any]], refs: List[tuple],
+               store: Optional[article_text.ArticleStore] = None) -> List[Dict[str, Any]]:
     """Article rows for refs naming any document: the six traditional codes
     by the existing fast path (_fetch_articles, an index-friendly prefix
     match), anything else resolved against the real document names — same
     mechanism issue_spotting.py uses for a model-proposed law outside those
-    six (Codice del Consumo, a numbered law)."""
-    from .issue_spotting import resolve_code, fetch_article
+    six (Codice del Consumo, a numbered law). The others are read at once, every spelling of every number
+    (article_text.fetch_many: per article, as fetch_article, the first spelling with rows wins)."""
+    from .issue_spotting import resolve_code
 
+    store = store or article_text.ArticleStore()
     standard = [r for r in refs if r[1] in _CODE_PREFIXES]
-    rows = _fetch_articles(session, standard)
-    for number, name in refs:
-        if name in _CODE_PREFIXES:
-            continue
-        doc = resolve_code(name, documents)
-        if not doc:
-            continue
-        found = fetch_article(session, doc["id"], number)
-        for row in found:
+    rows = _fetch_articles(session, standard, store)
+    others = [(number, doc) for number, name in refs if name not in _CODE_PREFIXES
+              for doc in [resolve_code(name, documents)] if doc]
+    found = article_text.fetch_many(session, [(doc["id"], number) for number, doc in others], store)
+    for number, doc in others:
+        for row in (article_text.copy_row(r) for r in found[(doc["id"], number)]):
             row["_article"] = (number, doc["name"])
-        rows.extend(found)
+            rows.append(row)
     return rows
 
 
@@ -3303,7 +3309,7 @@ def _is_context_overflow(exc: Exception) -> bool:
 
 
 def _select_articles(session, driver, database: str, facts: str, request: str,
-                     analysis: Dict[str, Any]) -> Dict[str, Any]:
+                     analysis: Dict[str, Any], store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
     """The articles a parere is written from, and how they were picked:
     rulings on the questions and on similar facts, the candidates (articles
     the user's text names, articles the rulings agree on, code search,
@@ -3329,7 +3335,7 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
     case = _case_text(facts, request)
     keep, candidates = _candidate_articles(case, analysis, similar + first_rulings,
                                            _search_code_articles(session, analysis), counts, similar_counts)
-    candidate_rows = _fetch_articles(session, keep + candidates)
+    candidate_rows = _fetch_articles(session, keep + candidates, store)
     chosen = _choose_articles(case, [r for r in candidate_rows if r["_article"] not in keep])
     if chosen is None:   # the choice failed: what the rulings cite, and the damages backbone
         backbone = set(_cited_by_rulings(similar + first_rulings)) | set(_CIVIL_DAMAGES_NORMS)
@@ -3650,17 +3656,18 @@ def _rule_argument(analysis: Dict[str, Any], istituto: Dict[str, Any]) -> str:
     return ""
 
 
-def _required_rows(session, analysis: Dict[str, Any], held: set) -> List[Dict[str, Any]]:
+def _required_rows(session, analysis: Dict[str, Any], held: set,
+                   store: Optional[article_text.ArticleStore] = None) -> List[Dict[str, Any]]:
     """The rows of the articles the fired rules require and retrieval missed; analysis["rule_required"] lists them all."""
     refs = list(dict.fromkeys(tuple(ref) for rule in (analysis.get("fact_signals") or {}).get("fired") or []
                               for ref in rule.get("requires") or []))
     analysis["rule_required"] = refs
     missing = [ref for ref in refs if ref not in held]
-    return _fetch_articles(session, missing) if missing else []
+    return _fetch_articles(session, missing, store) if missing else []
 
 
 def _select_articles_fusion(session, driver, database: str, facts: str, request: str,
-                            analysis: Dict[str, Any]) -> Dict[str, Any]:
+                            analysis: Dict[str, Any], store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
     """Candidate pool = CURRENT (_select_articles_v2's own full "selected":
     v1's code-search + _choose_articles union institution-resolved) union
     BASELINE (vector + fulltext search on the case text itself) union
@@ -3716,7 +3723,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     from .doc_lookup import _fetch_doc_names
     from .nodes.retrieval import broaden_article_context
 
-    v2 = _select_articles_v2(session, driver, database, facts, request, analysis)
+    v2 = _select_articles_v2(session, driver, database, facts, request, analysis, store=store)
     keep, named = v2["keep"], v2["named"]
     institutions_resolved = v2.get("institutions_resolved") or []
     heading_matched = set(v2.get("heading_matched") or [])
@@ -3846,7 +3853,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         vlog("case_pool_vote_cut", {"mode": ":".join(str(p) for p in how), "added": [f"{n} {c}" for n, c in added],
                                     "tagged": sorted(f"{n} {c}" for n, c in vote_tagged)})
 
-    candidate_rows = _fetch_any(session, documents, selected)
+    candidate_rows = _fetch_any(session, documents, selected, store)
     if hybrid and (map_channel or map_rulings):
         fetched = {row.get("_article") for row in candidate_rows}
         vlog("hybrid_hypotheses_fetched", {"not_in_primary_corpus": [f"{n} {c}" for n, c in map_channel + map_rulings
@@ -3931,7 +3938,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
 
 
 def _select_articles_v2(session, driver, database: str, facts: str, request: str,
-                        analysis: Dict[str, Any]) -> Dict[str, Any]:
+                        analysis: Dict[str, Any], store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
     """v1's full selection (_select_articles — the user's own citations,
     ruling agreement, code search, the model's own choice among candidates,
     cross-reference broadening, issue spotting) UNION institution-resolved
@@ -3956,7 +3963,7 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     from .doc_lookup import _fetch_doc_names
     from .nodes.retrieval import broaden_article_context
 
-    base = _select_articles(session, driver, database, facts, request, analysis)
+    base = _select_articles(session, driver, database, facts, request, analysis, store=store)
     documents = _fetch_doc_names(driver, database)
     named_in_case = set(_refs_in(_case_text(facts, request)))
 
@@ -4031,7 +4038,7 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 added.append(row)
 
     # A fired rule's required articles (fact_signal_rules.yaml, requires): read by number if the searches missed them.
-    required = _required_rows(session, analysis, {r.get("_article") for r in base["article_rows"] + added})
+    required = _required_rows(session, analysis, {r.get("_article") for r in base["article_rows"] + added}, store)
     fact_resolved += [tuple(ref) for ref in analysis["rule_required"]]
     for row in required:
         key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
@@ -5389,7 +5396,7 @@ METHOD_CANDIDATES_SOURCE = "method_candidates"
 
 
 def _add_method_candidates(session, driver, database: str, analysis: Dict[str, Any],
-                           picked: Dict[str, Any]) -> Dict[str, Any]:
+                           picked: Dict[str, Any], store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
     """picked with the area and posture candidates that are not already among
     its article rows appended to "article_rows" and "selected"; unchanged with
     the flag off, without the applicability check, or on any failure."""
@@ -5410,7 +5417,7 @@ def _add_method_candidates(session, driver, database: str, analysis: Dict[str, A
     if not wanted:
         return picked
     try:
-        rows = _fetch_any(session, _fetch_doc_names(driver, database), wanted)
+        rows = _fetch_any(session, _fetch_doc_names(driver, database), wanted, store)
     except Exception as exc:
         logger.warning("method candidates: fetch failed, nothing added: %s", exc)
         return picked
@@ -5425,7 +5432,8 @@ def _add_method_candidates(session, driver, database: str, analysis: Dict[str, A
             "method_candidates": added}
 
 
-def _regime_rows(session, driver, database: str, analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _regime_rows(session, driver, database: str, analysis: Dict[str, Any],
+                 store: Optional[article_text.ArticleStore] = None) -> List[Dict[str, Any]]:
     """FACT_REGIMES_ENABLED: the article rows of the procedural tools the facts call for (fact_signals.
     procedural_tools), tagged _procedural_tool; and, in place, each legal term's article and text
     (fact_signals.attach_term_sources). [] with the flag off, without signals, or on any failure."""
@@ -5440,7 +5448,7 @@ def _regime_rows(session, driver, database: str, analysis: Dict[str, Any]) -> Li
         # ROLE_BLOCKS_ENABLED: the criminal profile for the client's side, before its articles are read.
         fact_signals.fit_to_role(signals, _stance_party(analysis))
         tools = fact_signals.regime_refs(signals)
-        rows = _fetch_any(session, documents, list(tools)) if tools else []
+        rows = _fetch_any(session, documents, list(tools), store) if tools else []
     except Exception as exc:
         logger.warning("fact regimes: tools and terms not read: %s", exc)
         return []
@@ -5534,14 +5542,17 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     hybrid = source_tiers.hybrid_enabled(route["route"])
     vlog("case_analysis_route", {"route": route["route"], "reasons": route.get("reasons"), "hybrid": hybrid})
     article_rows, ruling_rows, candidates, selected, regime_rows = [], [], [], [], []
+    # The request's article rows, each read once: selection, fill_texts and the commi (before and after the plan)
+    # share them (article_text.ArticleStore).
+    store = article_text.ArticleStore()
     retrieval_t0 = time.time()
     try:
         with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
             select_fn = _select_articles_fusion if pool_fusion else (
                 _select_articles_v2 if case_analysis_v2 else _select_articles)
-            picked = select_fn(session, driver, NEO4J_DATABASE, facts, request, analysis)
-            picked = _add_method_candidates(session, driver, NEO4J_DATABASE, analysis, picked)
-            regime_rows = _regime_rows(session, driver, NEO4J_DATABASE, analysis)
+            picked = select_fn(session, driver, NEO4J_DATABASE, facts, request, analysis, store=store)
+            picked = _add_method_candidates(session, driver, NEO4J_DATABASE, analysis, picked, store=store)
+            regime_rows = _regime_rows(session, driver, NEO4J_DATABASE, analysis, store=store)
             if picked.get("tiers"):          # evidence tiers: the method candidates and the procedural tools too
                 from . import evidence_tiers
                 for row in regime_rows:
@@ -5559,7 +5570,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 regime_rows = source_tiers.keep_types(session, regime_rows, source_tiers.AUTHORITY_TYPES,
                                                       "authority_regimes")
             try:
-                filled = article_text.fill_texts(session, article_rows + regime_rows)
+                filled = article_text.fill_texts(session, article_rows + regime_rows, store)
                 if filled:
                     vlog("case_analysis_in_force_only_filled", {"sections": filled})
             except Exception as exc:
@@ -5620,7 +5631,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 protected_sources.mark(article_rows + ruling_rows, session, "strategy")
                 # COMMA_MATERIAL_ENABLED: each article's commi, its focus the analysis question it was found for,
                 # the commi the case names always given.
-                comma_material.attach(session, article_rows, "strategy")
+                comma_material.attach(session, article_rows, "strategy", store=store)
         except Exception as exc:
             logger.warning("protected rows / commi not read: %s", exc)
     # Each article's focus, the analysis question it was found for: what an over-budget article keeps (comma_material.trim).
@@ -5644,7 +5655,9 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             except Exception as exc:
                 logger.warning("plan-then-write: no document names, citations read by code only: %s", exc)
         planned = plan_then_write.write_parere(facts, request, analysis, article_rows, ruling_rows,
-                                               articles, rulings, principles, session_lang, documents_for_plan)
+                                               articles, rulings, principles, session_lang, documents_for_plan,
+                                               store=store)
+    vlog("case_analysis_article_store", store.stats())
     if planned:
         draft = planned
     else:

@@ -123,7 +123,7 @@ def fusion_env(monkeypatch):
     import src.rag.doc_lookup as doc_lookup
     monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
 
-    def fake_fetch_any(session, documents, refs):
+    def fake_fetch_any(session, documents, refs, store=None):
         return [{"d": {"id": "doc"}, "s": {"name": f"{n}.0.0", "plain_text": f"testo {n}"}, "_article": (n, c)}
                 for n, c in refs]
     monkeypatch.setattr(dg, "_fetch_any", fake_fetch_any)
