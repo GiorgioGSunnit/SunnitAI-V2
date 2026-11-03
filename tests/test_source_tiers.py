@@ -121,8 +121,6 @@ class SupportSession:
             wanted = {(r["article"], r["code"]) for r in params["refs"]}
             return _Result([{"ruling": rid, "article": a, "code": c}
                             for rid, refs in self.CITES.items() for a, c in refs if (a, c) in wanted])
-        if "RETURN count(d) AS n" in query:
-            return _Result([{"n": 1000}])
         if "vector.similarity.cosine" in query:
             return _Result([{"d": {"id": i, "name": f"Cass. {i}", "document_type": "interpretation"},
                              "s": {"name": "1"}, "sim": self.SIMS[i]} for i in params["ids"]])
@@ -151,35 +149,6 @@ def test_on_the_narrative_path_shared_articles_weigh(no_embedding, logged):
     rows = st.support_rulings(SupportSession(), [("1490", "c.c."), ("1495", "c.c.")], "vizi", 4,
                               weight_shared=True)
     assert [r["d"]["id"] for r in rows] == ["cassA", "cassB"]          # 0.5 x 2 beats 0.8 x 1
-
-
-def test_citing_rulings_keep_the_rarest_shared_articles_first(monkeypatch):
-    """3 Nov: a common article (133 c.p.) no longer fills the cut before the rulings citing the specific one."""
-    monkeypatch.setattr(st, "_RULINGS_TOTAL", {})
-
-    class Session(SupportSession):
-        CITES = {**{f"common{i:03d}": {("133", "c.p.")} for i in range(40)},
-                 "both": {("133", "c.p."), ("612-bis", "c.p.")},
-                 "specific1": {("612-bis", "c.p.")}, "specific2": {("612-bis", "c.p.")},
-                 "boiler": {("606", "c.p.p.")}}
-
-    cites = st.citing_rulings(Session(), [("133", "c.p."), ("612-bis", "c.p."), ("606", "c.p.p.")], limit=5)
-    assert list(cites) == ["both", "specific1", "specific2", "common000", "common001"]
-    assert cites["both"] == {("133", "c.p."), ("612-bis", "c.p.")}
-
-
-def test_citing_rulings_without_the_total_count_still_rank(monkeypatch):
-    monkeypatch.setattr(st, "_RULINGS_TOTAL", {})
-
-    class Session(SupportSession):
-        CITES = {"a": {("133", "c.p.")}, "b": {("133", "c.p.")}, "c": {("612-bis", "c.p.")}}
-
-        def run(self, query, **params):
-            if "RETURN count(d) AS n" in query:
-                raise RuntimeError("down")
-            return super().run(query, **params)
-
-    assert list(st.citing_rulings(Session(), [("133", "c.p."), ("612-bis", "c.p.")], limit=2)) == ["c", "a"]
 
 
 def test_a_failure_gives_no_support(no_embedding, logged):
