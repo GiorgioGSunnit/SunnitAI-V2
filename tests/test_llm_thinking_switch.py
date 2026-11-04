@@ -85,3 +85,12 @@ def test_call_chat_sends_the_switch(monkeypatch):
     assert ai_chat._call_chat(MESSAGES, max_tokens=250) == "Buongiorno."
     assert sent["extra_body"] == NO_THINKING
     assert 250 in (sent.get("max_tokens"), sent.get("max_completion_tokens"))
+
+
+def test_the_startup_notice_is_printed_so_the_journal_shows_it(capsys):
+    """uvicorn leaves the root logger unconfigured, so only a print reaches journalctl (the 4 Nov deploy check
+    counted 0 lines from the INFO version)."""
+    assert ai_chat._announce_thinking("false") == "LLM_THINKING=false: the chat model is asked not to reason before answering"
+    assert "LLM_THINKING=false" in capsys.readouterr().out
+    assert ai_chat._announce_thinking(None) is None
+    assert capsys.readouterr().out == ""

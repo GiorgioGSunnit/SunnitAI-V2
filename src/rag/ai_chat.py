@@ -56,8 +56,21 @@ _chat_kwargs = {
     "max_tokens": 1500,
     **_thinking_kwargs(os.getenv("LLM_THINKING")),
 }
-if "extra_body" in _chat_kwargs:
-    logger.info("LLM_THINKING=%s: the chat model is asked not to reason before answering", os.getenv("LLM_THINKING"))
+
+
+def _announce_thinking(setting: Optional[str]) -> Optional[str]:
+    """The startup notice for a thinking switch that is off, printed as well as logged: the service runs under
+    uvicorn, which leaves the root logger unconfigured, so an INFO line never reaches the journal (4 Nov: the deploy
+    check counted 0). The verbose logger prints for the same reason."""
+    if not _thinking_kwargs(setting):
+        return None
+    notice = f"LLM_THINKING={setting.strip()}: the chat model is asked not to reason before answering"
+    logger.info(notice)
+    print(notice, flush=True)
+    return notice
+
+
+_announce_thinking(os.getenv("LLM_THINKING"))
 
 _llm_base_url = os.getenv("LLM_BASE_URL")
 if _llm_base_url:
