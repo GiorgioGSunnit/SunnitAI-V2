@@ -979,18 +979,15 @@ def _debug_check_sync() -> dict:
     except OSError as e:
         checks["cypher_log_writable"] = f"error: {e}"
 
-    # Check Neo4j
+    # Check Neo4j, through the app's own driver (rag/main.py): never a driver of its own per call
     try:
-        from neo4j import GraphDatabase
         uri = os.getenv("NEO4J_URI")
         user = os.getenv("NEO4J_USER")
         pwd = os.getenv("NEO4J_PASSWORD")
         checks["neo4j_config"] = {"uri": uri, "user": user, "password_set": bool(pwd)}
-        driver = GraphDatabase.driver(uri, auth=(user, pwd))
-        with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j")) as session:
+        with neo4j_driver.session(database=NEO4J_DATABASE) as session:
             result = session.run("RETURN 1 AS n").single()
             checks["neo4j"] = "ok" if result else "query returned nothing"
-        driver.close()
     except Exception as e:
         checks["neo4j"] = f"error: {e}"
 

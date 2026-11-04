@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import time
+import traceback
 
 DEFAULT_REQUEST = "Delinea una strategia difensiva per il cliente sulla base del documento allegato."
 
@@ -262,6 +263,32 @@ def saved_run(code: str, request: str, status: str, elapsed: float, lines: list,
             "draft": result.get("draft"), "answer": result.get("draft"), "citations": result.get("citations")}
 
 
+def material_row(row: dict) -> dict:
+    """The deterministic part of an article row: which article of which document, its Section, the text chosen and
+    the commi split (scripts/run_material.py compares them across runs)."""
+    d, s = row.get("d") or {}, row.get("s") or {}
+    article = row.get("_article")
+    return {"doc": d.get("id"), "doc_name": d.get("name"), "article": list(article) if article else None,
+            "section": s.get("name"), "text": s.get("plain_text"), "commi": row.get("_commi"),
+            "commi_from": row.get("_commi_from")}
+
+
+def capture_material(dg, material: dict) -> None:
+    """--save: the article rows as the draft prompt is built from them (after fill_texts and the commi), and the
+    procedural tools' rows as _regime_rows returns them, into `material`. The calls themselves unchanged."""
+    fit, regimes = dg._fit_parere_prompt, dg._regime_rows
+
+    def fit_and_keep(system, facts, analysis, article_rows, *args, **kwargs):
+        material.setdefault("article_rows", [material_row(r) for r in article_rows])
+        return fit(system, facts, analysis, article_rows, *args, **kwargs)
+
+    def regimes_and_keep(*args, **kwargs):
+        rows = regimes(*args, **kwargs)
+        material["regime_rows"] = [material_row(r) for r in rows]
+        return rows
+    dg._fit_parere_prompt, dg._regime_rows = fit_and_keep, regimes_and_keep
+
+
 def _document_text(document_id: str) -> str:
     from src.db.base import SessionLocal
     from src.db.models import UserDocument
@@ -326,6 +353,9 @@ def main() -> None:
 
     events = []
     capture_vlog(dg, events)
+    material: dict = {}
+    if args.save:
+        capture_material(dg, material)
 
     request = args.request
     if args.case:
@@ -342,12 +372,14 @@ def main() -> None:
     else:
         text = _document_text(args.document_id)
     t0 = time.time()
-    result = None
+    result, failure = None, ""
     try:
         result = dg.run_defensive_pipeline(text, request, args.lang)
         status = "ok"
     except Exception as exc:
         status = f"ERROR {type(exc).__name__}: {str(exc)[:160]}"
+        failure = traceback.format_exc()           # the whole traceback, not only str(exc)
+        print(failure, file=sys.stderr)
     elapsed = time.time() - t0
     lines = summarise(events, status, result, elapsed, len(text))
     if args.case:
@@ -357,6 +389,9 @@ def main() -> None:
     if args.save:
         record = saved_run(os.path.abspath(dg.__file__), request, status, elapsed, lines, events, result)
         record["settings"] = args.set
+        record["material"] = material
+        if failure:
+            record["traceback"] = failure
         with open(args.save, "w", encoding="utf-8") as fh:
             json.dump(record, fh, ensure_ascii=False, indent=1, default=str)
         print(f"\nSaved to {args.save}, the answer included. Nothing else was written.")

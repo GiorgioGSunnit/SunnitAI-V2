@@ -86,21 +86,31 @@ def test_the_material_corrects_a_near_code_it_does_not_hold():
 # --- 2: citations outside the material ------------------------------------------------------------------------------
 
 class Session:
-    """The corpus' texts by (number, code), through the real _fetch_articles query shape."""
+    """The corpus' texts by (number, code), through the real _fetch_articles query shapes: a code's documents by its
+    name prefix (one document per code, its id the code), then their Sections by id."""
 
     def __init__(self, texts):
         self.texts = texts
         self.asked = []
 
-    def run(self, query, prefix=None, n=None, **_):
-        self.asked.append(n)
-        code = next(c for c, name in dg._CODE_PREFIXES.items() if name == prefix)
-        text = self.texts.get((n, code))
+    def run(self, query, prefixes=None, items=None, **_):
+        if prefixes is not None:
+            rows = [{"prefix": p, "id": c} for p in prefixes for c, name in dg._CODE_PREFIXES.items() if name == p]
+        else:
+            rows = []
+            for it in items:
+                code, n = it["doc"], it["num"]
+                self.asked.append(n)
+                text = self.texts.get((n, code))
+                if text:
+                    rows.append({"doc": code, "num": n, "d": {"id": code, "name": dg._CODE_PREFIXES[code],
+                                                              "document_type": "primary"},
+                                 "s": {"name": f"{n}.0.0", "plain_text": text, "titolo_articolo": f"Rubrica {n}"},
+                                 "next": None})
 
         class Result:
             def data(self):
-                return [{"d": {"id": code, "name": prefix, "document_type": "primary"},
-                         "s": {"name": f"{n}.0.0", "plain_text": text, "titolo_articolo": f"Rubrica {n}"}, "next": None}] if text else []
+                return rows
         return Result()
 
 

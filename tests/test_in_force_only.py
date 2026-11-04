@@ -139,11 +139,17 @@ def test_fill_from_rows_uses_the_rows_already_read():
 def test_fetch_articles_by_code_prefix_takes_the_shared_rule():
     class PrefixSession:
         def run(self, query, **params):
-            assert "d.name STARTS WITH $prefix" in query and "s.name = $n OR" in query
-            data = [{"d": {"id": "cc", "name": "Codice Civile"}, "s": {"name": n, "plain_text": t}}
-                    for n, t in [("1495.0.0", "In vigore dal 1 gennaio 2022"), ("1495.1.0", "Il compratore decade."),
-                                 ("1495.2.0", "La denunzia non è necessaria.")]
-                    if n == params["n"] or n.startswith(params["n"] + ".")]
+            if "prefixes" in params:          # the code's primary documents by its name prefix
+                assert "d.name STARTS WITH p" in query and "d.document_type = 'primary'" in query
+                data = [{"prefix": p, "id": "cc"} for p in params["prefixes"]]
+            else:                             # then their Sections by id, every spelling at once
+                assert "it.doc" in query and "s.name = it.num OR" in query
+                data = [{"doc": it["doc"], "num": it["num"], "d": {"id": "cc", "name": "Codice Civile"},
+                         "s": {"name": n, "plain_text": t}}
+                        for it in params["items"]
+                        for n, t in [("1495.0.0", "In vigore dal 1 gennaio 2022"), ("1495.1.0", "Il compratore decade."),
+                                     ("1495.2.0", "La denunzia non è necessaria.")]
+                        if n == it["num"] or n.startswith(it["num"] + ".")]
             return type("Result", (), {"data": lambda self_: data})()
 
     rows = dg._fetch_articles(PrefixSession(), [("1495", "c.c.")])

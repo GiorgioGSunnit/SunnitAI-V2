@@ -55,6 +55,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from .ai_chat import last_reply
 from . import defensive_generation as dg
 from . import anchored_writing, article_text, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources
+from .verbose_logger import exception_data
+
+
+def _log_exception(stage: str, exc: BaseException, **detail: Any) -> None:
+    """Every exception caught here, logged with its full traceback (pipeline_exception), whatever VERBOSE_LOGGING says."""
+    dg.vlog("pipeline_exception", exception_data(f"plan_then_write.{stage}", exc, **detail))
+
 
 logger = logging.getLogger(__name__)
 
@@ -171,6 +178,7 @@ def _remade(system: str, human: str, plan: Optional[Dict[str, Any]], removed: di
         new_raw = _plan_json([SystemMessage(content=system), HumanMessage(content=human)])
         new_plan, new_removed = clean_plan(new_raw, known, references, max_issues)
     except Exception as exc:
+        _log_exception("_remade", exc)
         logger.warning("plan-then-write: plan not remade, the first kept: %s", exc)
         dg.vlog("case_analysis_plan_remake", {"kept": "first", "why": str(exc)[:200]})
         return plan, removed, raw
@@ -656,6 +664,114 @@ def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Di
     return plan, placed, added
 
 
+# PLAN_RULE_INCLUDE (v45, the NOT_IN_PLAN stage of diagnose_long): after the plan's own steps, an article of the
+# prompt material that no issue holds and no fired rule excludes goes into the plan by rule, no call: graded 3 always,
+# graded 2 only when one or more of the retrieval signals frame, distill and institution found it (never another search
+# alone, never a regime candidate alone). v46: a row the check exempts by its rubrica (_heading_match) or as a cross-
+# reference carries no grade and counts as a grade 2 (unless GRADE_ALL_PROMPT graded it). It goes under the issue whose title and argument share the most words with the
+# issue the grader named for it (else its rubrica), else under a last "Ulteriori norme applicabili" issue, and is
+# tagged plan_source "rule" (plan["plan_source"]): the writer may use it, _omitted never forces a paragraph for it. One
+# check_plan removed (off-topic, or of an issue contradicting it) is never added back: skipped, check_plan_removed.
+RULE_INCLUDE_FLAG = "PLAN_RULE_INCLUDE"
+RULE_INCLUDE_TITLE = "Ulteriori norme applicabili"
+RULE_INCLUDE_SIGNALS = ("frame", "distill", "institution")
+RULE_SOURCE = "rule"
+
+
+def _retrieval_signals(rows: List[Dict[str, Any]]) -> List[str]:
+    """Every retrieval signal an article's rows carry: the fusion's searches (_signals), the institution resolution
+    (_institution), a regime candidate (_regime_candidate)."""
+    out = [name for r in rows for name in r.get("_signals") or []]
+    out += ["institution" for r in rows if r.get("_institution")]
+    out += ["regime_candidate" for r in rows if r.get("_regime_candidate")]
+    return list(dict.fromkeys(out))
+
+
+def rule_inserted(plan: Dict[str, Any]) -> set:
+    """The plan's articles PLAN_RULE_INCLUDE put there (plan_source "rule")."""
+    return {ref for q in plan.get("questioni") or [] for ref in q["norme"]
+            if (plan.get("plan_source") or {}).get(f"{ref[0]} {ref[1]}") == RULE_SOURCE}
+
+
+def rule_include() -> bool:
+    return dg.feature_flags.enabled(RULE_INCLUDE_FLAG)
+
+
+def include_by_rule(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], articles: str,
+                    headings: Dict[tuple, str], issue_of: Dict[tuple, str],
+                    excluded: Sequence[tuple] = (), check_removed: Sequence[tuple] = ()
+                    ) -> Tuple[Dict[str, Any], List[Dict[str, str]], List[Dict[str, str]]]:
+    """(plan, inserted, skipped): the plan with every row of the prompt material (`articles`, the draft prompt's block)
+    absent from its issues and excluded by no fired rule that PLAN_RULE_INCLUDE's rule admits (grade 3; grade 2 with one
+    or more of RULE_INCLUDE_SIGNALS; an ungraded row exempt by heading or as a cross-reference counts as grade 2, its
+    entry carrying "exempt"), in one issue each, tagged plan_source "rule"; inserted, one entry per article with
+    where it went, its grade, its signals and why. In the pipeline's order, the best grade of the article's rows
+    counting. One among check_removed (the articles check_plan took out) stays out, in skipped ("check_plan_removed"),
+    and so does a grade 2 without the signals."""
+    from .nodes.cypher import CROSSREF_SOURCE
+
+    held = {ref for q in plan["questioni"] for ref in q["norme"]}
+    grades: Dict[tuple, int] = {}
+    rows_of: Dict[tuple, List[Dict[str, Any]]] = {}
+    for row in article_rows:
+        ref, grade = row.get("_article"), row.get("_grade")
+        if ref:
+            rows_of.setdefault(ref, []).append(row)
+        if ref and isinstance(grade, int) and grade >= 2 and f"[art. {ref[0]} {ref[1]}]" in articles:
+            grades[ref] = max(grade, grades.get(ref, 0))
+    exempt: Dict[tuple, str] = {}       # ungraded rows the check exempts: a grade 2
+    for ref, rows in rows_of.items():
+        if any(isinstance(r.get("_grade"), int) for r in rows) or f"[art. {ref[0]} {ref[1]}]" not in articles:
+            continue
+        why = ("heading" if any(r.get("_heading_match") for r in rows) else
+               "crossref" if any(r.get("_source") == CROSSREF_SOURCE for r in rows) else "")
+        if why:
+            exempt[ref], grades[ref] = why, 2
+    signals = {ref: _retrieval_signals(rows_of.get(ref, [])) for ref in grades}
+    wanted = [ref for ref in grades if ref not in held and not any(_same_ref(ref, tuple(x)) for x in excluded)]
+    skipped: List[Dict[str, Any]] = []
+    admitted = []
+    for ref in wanted:
+        entry = {"article": f"{ref[0]} {ref[1]}", "grade": str(grades[ref]), "signals": signals[ref],
+                 **({"exempt": exempt[ref]} if ref in exempt else {})}
+        strong = [name for name in signals[ref] if name in RULE_INCLUDE_SIGNALS]
+        if any(_same_ref(ref, tuple(x)) for x in check_removed):
+            skipped.append({**entry, "reason": "check_plan_removed"})
+        elif grades[ref] == 2 and not strong:
+            skipped.append({**entry, "reason": "grade 2 without any of " + "/".join(RULE_INCLUDE_SIGNALS)})
+        else:
+            admitted.append(ref)
+    wanted = admitted
+    if not wanted:
+        return plan, [], skipped
+    issues = [{**q, "norme": list(q["norme"])} for q in plan["questioni"]]
+    inserted: List[Dict[str, str]] = []
+    rest: List[tuple] = []
+    for ref in wanted:
+        words = _title_stems(issue_of.get(ref) or headings.get(ref, ""))
+        best = max(issues, key=lambda q: len(words & _title_stems(f"{q['titolo']} {q['argomento']}")), default=None)
+        shared = words & _title_stems(f"{best['titolo']} {best['argomento']}") if best else set()
+        entry = {"article": f"{ref[0]} {ref[1]}", "grade": str(grades[ref]), "signals": signals[ref],
+                 **({"exempt": exempt[ref]} if ref in exempt else {}),
+                 "matched_on": "grader issue" if issue_of.get(ref) else "rubrica"}
+        if shared:
+            best["norme"].append(ref)
+            inserted.append({**entry, "issue": best["titolo"],
+                             "reason": f"grade {grades[ref]}, shares {', '.join(sorted(shared))} with the issue"})
+        else:
+            rest.append(ref)
+            inserted.append({**entry, "issue": RULE_INCLUDE_TITLE,
+                             "reason": f"grade {grades[ref]}, no issue shares a word with "
+                                       f"«{issue_of.get(ref) or headings.get(ref, '') or '-'}»"})
+    if rest:
+        issues.append({"titolo": RULE_INCLUDE_TITLE, "norme": rest, "pronunce": [],
+                       "argomento": "Le altre norme che il materiale giudica pertinenti ai fatti del caso, da esaminare "
+                                    "una per una: che cosa prevedono e come incidono sulla posizione della parte assistita.",
+                       "obiezione": "", "replica": ""})
+    source = {**(plan.get("plan_source") or {}), **{e["article"]: RULE_SOURCE for e in inserted}}
+    return {**plan, "questioni": issues, "plan_source": source}, inserted, skipped
+
+
 def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tuple, str],
                    max_issues: int, issue_of: Optional[Dict[tuple, str]] = None,
                    catch_all: bool = True, reasons: Optional[Dict[tuple, str]] = None
@@ -825,6 +941,7 @@ def check_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], heading
         try:
             return _issue_check(issue, article_rows, headings)
         except Exception as exc:
+            _log_exception("run", exc)
             logger.warning("plan-then-write: plan check failed for %r, issue kept: %s", issue["titolo"], exc)
             return None
 
@@ -1181,14 +1298,18 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
                      f"{listing}\n\nRifai il piano correggendo questi punti, con le stesse regole.")
             plan, removed, raw = _remade(system, again, plan, removed, raw, known, references, max_issues)
     except Exception as exc:
+        _log_exception("make_plan", exc)
         logger.warning("plan-then-write: no plan, the parere is written in one call: %s", exc)
         _fell_back("plan call", exc)
         return None
     finally:
         dg.vlog("case_analysis_plan_llm", duration_ms=(time.time() - t0) * 1000)
     checked: Dict[str, List[str]] = {"off_topic": [], "contradicted": [], "kept_by_heading": [], "kept_by_vote": []}
+    check_removed: set = set()
     if plan:
+        before = set(_plan_refs(plan))
         plan, checked = check_plan(plan, article_rows, headings, applicable if keep_all or keep_checked else None)
+        check_removed = before - (set(_plan_refs(plan)) if plan else set())     # off-topic, or of a contradicted issue
     fixes: Dict[str, Any] = {}
     if plan:
         plan, rule_log = place_rule_institutions(plan, analysis, article_rows)
@@ -1226,6 +1347,13 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         dg.vlog("case_analysis_plan_fact_institutions", placed_log)
         if placed_log["issues_added"] and _review_fixes():         # a new issue may be a recognition or a remedy
             plan, _ = order_for_acquired(plan, acquired_rights(analysis), _rule_refs(analysis))
+    if plan and rule_include():
+        try:            # logged and skipped on any failure: the plan as it was
+            plan, included, skipped = include_by_rule(plan, article_rows, articles, headings, issue_of,
+                                                      statement_context(analysis).get("excluded") or (), check_removed)
+            dg.vlog("case_analysis_plan_rule_include", {"inserted": included, "count": len(included), "skipped": skipped})
+        except Exception as exc:
+            _log_exception("make_plan.include_by_rule", exc)
     dg.vlog("case_analysis_plan", {
         "issues": len(plan["questioni"]) if plan else 0, "replanned": bool(opposing),
         "opposing": [o["argomento"] for o in opposing],
@@ -1986,7 +2114,7 @@ _DEFENDANTS_RULE = "Sono ricavate dai fatti: indicale tutte per nome, mai come �
 
 def _conclusions(analysis: Dict[str, Any]) -> str:
     from . import fact_signals
-    return fact_signals.conclusions_block(_signals(analysis))
+    return fact_signals.conclusions_block(_signals(analysis), analysis)
 
 
 def _defendants(analysis: Dict[str, Any]) -> str:
@@ -2576,6 +2704,7 @@ def _review_call(title: str, text: str, spans: List[Tuple[int, int]], case_text:
         raw = dg._chat_json([SystemMessage(content=_REVIEW_SYSTEM), HumanMessage(content=human)],
                             max_tokens=200 + 60 * min(len(numbered), 30), temperature=0)
     except Exception as exc:
+        _log_exception("_review_call", exc)
         logger.warning("writer rules: review of %r failed: %s", title, exc)
         return None
     out = []
@@ -2693,6 +2822,7 @@ def _cover_blocks(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, st
                                   "ciascun blocco, uno per uno."),
             HumanMessage(content=material)], max_tokens=max_tokens), title)
     except Exception as exc:
+        _log_exception("_cover_blocks", exc)
         logger.warning("plan-then-write: procedural section not rewritten for its blocks: %s", exc)
         return _with_standard_blocks(sections, i, coverage, standard)
 
@@ -2719,6 +2849,7 @@ def _complete_sections(sections: List[Tuple[str, str]], jobs: List[Tuple[str, st
             return _without_heading(dg._call_chat([SystemMessage(content=f"{system}\n\n{instruction}"),
                                                    HumanMessage(content=material)], max_tokens=max_tokens * 3 // 2), title)
         except Exception as exc:
+            _log_exception("again", exc)
             logger.warning("writer rules: section %r cut, rewriting failed: %s", title, exc)
             return ""
     with ThreadPoolExecutor(max_workers=len(cut)) as pool:
@@ -2740,6 +2871,7 @@ def review_parere(draft: str, case_text: str, article_rows: List[Dict[str, Any]]
         text, log = review_section("parere", draft, case_text, article_rows, [], dg._stance_party(analysis),
                                    statement_context(analysis))
     except Exception as exc:
+        _log_exception("review_parere", exc)
         logger.warning("writer rules: review of the one-call parere failed, draft kept: %s", exc)
         return draft
     dg.vlog("case_analysis_writer_rules", _writer_log(log))
@@ -2781,6 +2913,7 @@ def _step(name: str, sections: List[Tuple[str, str]],
             raise ValueError(f"{len(out) if out is not None else 'no'} sections back for {len(sections)}")
         return out
     except Exception as exc:
+        _log_exception("_step", exc)
         logger.exception("plan-then-write: step %s failed, the sections as they were: %s", name, exc)
         dg.vlog("post_writing_step_failed", {"step": name, "error": f"{type(exc).__name__}: {exc}"[:500]})
         return sections
@@ -2834,10 +2967,12 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         try:
             return once()
         except Exception as exc:
+            _log_exception("write", exc)
             logger.warning("plan-then-write: section %r failed, trying once more: %s", title, exc)
             try:
                 return once()
             except Exception as again:
+                _log_exception("write", again)
                 raise ValueError(f"section {title!r}: {again}") from again
 
     t0 = time.time()
@@ -2845,6 +2980,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
             texts = list(pool.map(write, jobs))
     except Exception as exc:
+        _log_exception("write_sections", exc)
         logger.warning("plan-then-write: a section failed twice, the parere is written in one call: %s", exc)
         _fell_back("section call", exc)
         return None
@@ -3017,6 +3153,7 @@ def _cover_questions(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str,
                                   + " | ".join(missing) + ". Rispondi a ciascun quesito, uno per uno."),
             HumanMessage(content=material)], max_tokens=max_tokens), title)
     except Exception as exc:
+        _log_exception("_cover_questions", exc)
         logger.warning("review fixes: answers not rewritten for the questions: %s", exc)
         return sections, log
     still = [q for q in questions if not _answers(q, again or "")]
@@ -3139,6 +3276,7 @@ def rewrite_unsupported(title: str, text: str, case_text: str,
                                   HumanMessage(content=f"CASO:\n{case_text[:3000]}\n\nFRASI DEL PARERE:\n{numbered}")],
                                  max_tokens=300 + 240 * len(spans), temperature=0)
     except Exception as exc:
+        _log_exception("rewrite_unsupported", exc)
         logger.warning("review fixes: claims of %r not checked: %s", title, exc)
         return text, []
     replace: Dict[int, str] = {}
@@ -3188,18 +3326,41 @@ def _worth_covering(rows: List[Dict[str, Any]]) -> bool:
 
 
 def _omitted(plan: Dict[str, Any], sections: List[Tuple[str, str]], article_rows: List[Dict[str, Any]],
-             documents: List[Dict[str, Any]], excluded: Sequence[tuple] = ()) -> List[Tuple[tuple, Dict[str, Any], Dict[str, Any]]]:
+             documents: List[Dict[str, Any]], excluded: Sequence[tuple] = (),
+             conclusions: Sequence[str] = ()) -> List[Tuple[tuple, Dict[str, Any], Dict[str, Any]]]:
     """[(article, its issue, its row)] of the plan's articles worth covering that no section cites and no fired rule's
-    conclusion excludes."""
+    conclusion excludes; then (PARTIES_ENFORCED) each article a line of the conclusions block cites that no section
+    cites, whatever its grade, the line as its issue (its row {} when none was read: _cover_one refuses, "no text")."""
     known = {r["_article"] for r in article_rows if r.get("_article")}
     cited = [r for _, text in sections for _, _, refs in _citations(text, documents, known) for r in refs]
     out = []
+    by_rule = rule_inserted(plan)        # PLAN_RULE_INCLUDE: the writer may use them, no paragraph is forced
     for ref in _plan_refs(plan):
+        if ref in by_rule:
+            continue
         rows = [r for r in article_rows if r.get("_article") and _same_ref(r["_article"], ref)]
         if rows and not any(_same_ref(ref, c) for c in cited) and _worth_covering(rows) \
                 and not any(_same_ref(ref, tuple(x)) for x in excluded):
             out.append((ref, next(q for q in plan["questioni"] if ref in q["norme"]), rows[0]))
+    held = _plan_refs(plan)
+    for line in conclusions:
+        for _, _, refs in _citations(line, documents, known):
+            for ref in refs:
+                if any(_same_ref(ref, c) for c in cited + held + [o[0] for o in out]) \
+                        or any(_same_ref(ref, tuple(x)) for x in excluded):
+                    continue
+                rows = [r for r in article_rows if r.get("_article") and _same_ref(r["_article"], ref)]
+                out.append((ref, {"titolo": _CONCLUSIONS_TITLE.capitalize(), "argomento": line, "conclusione": True},
+                            rows[0] if rows else {}))
     return out
+
+
+def conclusion_lines(analysis: Dict[str, Any]) -> List[str]:
+    """PARTIES_ENFORCED: the conclusions block's lines, for the coverage check (_omitted); [] with the flag off."""
+    from . import fact_signals
+    if not dg.feature_flags.enabled(fact_signals.PARTIES_ENFORCED_FLAG):
+        return []
+    return [line[2:] if line.startswith("- ") else line for line in _conclusions(analysis).split("\n") if line.strip()]
 
 
 _NOT_CONNECTED_RE = re.compile(r"\bnon\s+(?:si\s+)?(?:ricollega|riguarda|attiene|disciplina|concerne|rileva|incide)\b|\bestrane[aoie]\b|"
@@ -3243,6 +3404,7 @@ def _cover_one(ref: tuple, issue: Dict[str, Any], row: Dict[str, Any], plan: Dic
     try:
         reply = dg._call_chat([SystemMessage(content=_COVER_SYSTEM), HumanMessage(content=human)], max_tokens=_COVER_TOKENS)
     except Exception as exc:
+        _log_exception("_cover_one", exc)
         return {**entry, "why": f"call failed: {type(exc).__name__}"}
     text = " ".join((reply or "").split())
     spans = _sentence_spans(text)[:2]
@@ -3291,11 +3453,12 @@ def _insert_for_issue(section: str, title: str, sentence: str) -> str:
 
 def cover_plan_articles(plan: Dict[str, Any], sections: List[Tuple[str, str]], article_rows: List[Dict[str, Any]],
                         documents: List[Dict[str, Any]], case_text: str,
-                        context: Optional[Dict[str, Any]] = None) -> List[Tuple[str, str]]:
+                        context: Optional[Dict[str, Any]] = None,
+                        conclusions: Sequence[str] = ()) -> List[Tuple[str, str]]:
     """The sections with one or two sentences for each plan article omitted, in the issue's place in "Applicazione al
     caso". Logged as case_analysis_plan_articles, every insertion and refusal."""
     t0 = time.time()
-    missing = _omitted(plan, sections, article_rows, documents, (context or {}).get("excluded") or ())
+    missing = _omitted(plan, sections, article_rows, documents, (context or {}).get("excluded") or (), conclusions)
     if not missing:
         dg.vlog("case_analysis_plan_articles", {"missing": [], "inserted": 0, "entries": []})
         return sections
@@ -3381,10 +3544,12 @@ def final_checks(sections: List[Tuple[str, str]], article_rows: List[Dict[str, A
 
 def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
                  ruling_rows: List[Dict[str, Any]], articles: str, rulings: str, principles: str,
-                 lang: str = "it", documents: Optional[List[Dict[str, Any]]] = None) -> Optional[str]:
+                 lang: str = "it", documents: Optional[List[Dict[str, Any]]] = None,
+                 store: Optional["article_text.ArticleStore"] = None) -> Optional[str]:
     """The parere from a plan, section by section, or None (the caller writes it in one call).
     `articles` and `rulings` are the draft prompt's own blocks (_fit_parere_prompt); `documents` (the
-    corpus' names) let _discipline() read a citation of a law by its name."""
+    corpus' names) let _discipline() read a citation of a law by its name; `store`, the request's
+    article rows already read (article_text.ArticleStore), spares the commi a second read."""
     references: Dict[str, List[Dict[str, Any]]] = {}
     for row in ruling_rows:
         reference = dg._ruling_reference(row)
@@ -3401,7 +3566,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
             row["_in_plan"] = True
     # COMMA_MATERIAL_ENABLED: each article's commi chosen for the plan issue that places it; a comma the plan
     # or the case names, read now when the row lacks it (one read, no model call).
-    commi = comma_material.for_plan(plan, article_rows, case)
+    commi = comma_material.for_plan(plan, article_rows, case, store=store)
     if commi:
         dg.vlog("comma_material_plan", commi)
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
@@ -3422,7 +3587,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     sections = _step("final_checks", sections, lambda secs: final_checks(secs, article_rows, context))
     if covering():
         sections = _step("cover_plan_articles", sections, lambda secs: cover_plan_articles(
-            plan, secs, article_rows, documents or [], case, context))
+            plan, secs, article_rows, documents or [], case, context, conclusion_lines(analysis)))
     if use_of is not None:
         try:          # counted only: never fails the answer
             final = use_of(next((text for title, text in sections if title == SECTION_TITLES[4]), ""))
@@ -3430,5 +3595,6 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
                 "offered": {b: u["offered"] for b, u in final.items()},
                 "written": {b: u["written"] for b, u in final.items()}, "missing": _missing_blocks(final)})
         except Exception as exc:
+            _log_exception("write_parere", exc)
             logger.warning("plan-then-write: material use not counted: %s", exc)
     return "\n\n".join(f"**{i}. {title}**\n\n{text}" for i, (title, text) in enumerate(sections, 1))

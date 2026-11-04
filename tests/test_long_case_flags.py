@@ -624,7 +624,7 @@ def test_method_candidates_follow_the_verified_lists(monkeypatch, logged):
     monkeypatch.setenv("METHOD_CANDIDATES_ENABLED", "true")
     monkeypatch.setenv("APPLICABILITY_CHECK_ENABLED", "true")
     monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [_row(n, c, "x") for n, c in refs])
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [_row(n, c, "x") for n, c in refs])
     analysis = _analysis(["penale"], "precontenzioso")           # a criminal case called civil pre-litigation
 
     def added():
@@ -678,7 +678,7 @@ def _h3_rows():
 
 def test_flagged_citations_go_unless_the_pipeline_has_its_own_evidence(monkeypatch, logged):
     monkeypatch.setenv("FLAGGED_REMOVE_ENABLED", "true")
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [
         _row("600-bis", "c.p.", "Chiunque recluta o induce alla prostituzione...", "Prostituzione minorile"),
         _row("1384", "c.c.", "La penale può essere diminuita...", "Riduzione della penale")])
     model = Qualification({"1054 c.c.": "formulazione"}, rewrite='[{"i": 1, "frase": ""}, {"i": 2, "frase": ""}]')
@@ -698,7 +698,7 @@ def test_flagged_citations_go_unless_the_pipeline_has_its_own_evidence(monkeypat
 
 
 def test_flagged_citations_are_only_marked_without_the_flag(monkeypatch, logged):
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [])
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [])
     monkeypatch.setattr(dg, "_call_chat", Qualification({}))
     out = dg._check_qualifications(H3_DRAFT, {}, _h3_rows(), None, [])
     assert "Art. 757 c.c. [DA VERIFICARE: l'art. 757 c.c. riguarda «Retroattività della divisione»]" in out
@@ -855,7 +855,7 @@ def test_strict_articles_a_protected_flagged_article_gets_a_second_opinion(monke
     nothing in the case" removes it. Named in the case: never asked. Invented case."""
     monkeypatch.setenv("FLAGGED_REMOVE_ENABLED", "true")
     monkeypatch.setenv("STRICT_ARTICLES_ENABLED", "true")
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [])
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [])
     asked = []
 
     def model(messages, max_tokens=None, temperature=None, **kwargs):

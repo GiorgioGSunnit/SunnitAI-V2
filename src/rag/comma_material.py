@@ -26,7 +26,13 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from . import article_text, feature_flags
-from .verbose_logger import vlog
+from .verbose_logger import exception_data, vlog
+
+
+def _log_exception(stage: str, exc: BaseException, **detail: Any) -> None:
+    """Every exception caught here, logged with its full traceback (pipeline_exception), whatever VERBOSE_LOGGING says."""
+    vlog("pipeline_exception", exception_data(f"comma_material.{stage}", exc, **detail))
+
 
 logger = logging.getLogger(__name__)
 
@@ -149,12 +155,13 @@ def commi_from_sections(number: str, texts: Dict[str, str], kinds: Optional[Dict
     return article_parts(article_text.choose_text(number, texts, kinds, following, rubrica))
 
 
-def _read(session, items: Sequence[Tuple[str, str]]) -> Dict[Tuple[str, str], Tuple[List[str], str]]:
-    """{(doc id, number): (commi, how)} for every item, in one query (every spelling of a suffix tried)."""
+def _read(session, items: Sequence[Tuple[str, str]], store=None) -> Dict[Tuple[str, str], Tuple[List[str], str]]:
+    """{(doc id, number): (commi, how)} for every item, in one query (every spelling of a suffix tried; with a store
+    (article_text.ArticleStore), only for the articles it has not read)."""
     from . import article_text
     from .article_suffix import number_variants
     wanted = {(doc, spelling): (doc, number) for doc, number in items for spelling in number_variants(number)}
-    grouped = article_text._sections(session, list(wanted))
+    grouped = store.sections(session, list(wanted)) if store is not None else article_text._sections(session, list(wanted))
     out: Dict[Tuple[str, str], Tuple[List[str], str]] = {}
     for (doc, spelling), rows in grouped.items():
         key = wanted[(doc, spelling)]
@@ -173,7 +180,7 @@ def _item(row: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     return d["id"], str(row["_article"][0])
 
 
-def attach(session, rows: Iterable[Dict[str, Any]], stage: str = "") -> int:
+def attach(session, rows: Iterable[Dict[str, Any]], stage: str = "", store=None) -> int:
     """Each article row's commi read and attached (row["_commi"], row["_commi_from"]); the rows holding them
     already are skipped. How many rows got them. Nothing with the flag off or no session."""
     if not enabled() or session is None:
@@ -182,8 +189,9 @@ def attach(session, rows: Iterable[Dict[str, Any]], stage: str = "") -> int:
     if not rows:
         return 0
     try:
-        found = _read(session, sorted({_item(r) for r in rows}))
+        found = _read(session, sorted({_item(r) for r in rows}), store)
     except Exception as exc:
+        _log_exception("attach", exc)
         logger.warning("comma material: commi not read (%s), prefix cut kept: %s", stage, exc)
         return 0
     n = 0
@@ -398,7 +406,7 @@ def plan_text(plan: Dict[str, Any]) -> str:
 
 
 def ensure(rows: List[Dict[str, Any]], named: Dict[Tuple[str, str], Set[int]], session=None,
-           stage: str = "") -> List[str]:
+           stage: str = "", store=None) -> List[str]:
     """Every named comma available to its article's row: a row without its commi, or holding fewer than the
     comma named, is read again (one query for all; the app's driver when no session is given). The refs read
     ("1384 c.c. co. 2"), logged as comma_material_fetched."""
@@ -421,10 +429,11 @@ def ensure(rows: List[Dict[str, Any]], named: Dict[Tuple[str, str], Set[int]], s
             import neo4j
             from .main import NEO4J_DATABASE, driver
             with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as own:
-                found = _read(own, sorted({_item(r) for r in missing}))
+                found = _read(own, sorted({_item(r) for r in missing}), store)
         else:
-            found = _read(session, sorted({_item(r) for r in missing}))
+            found = _read(session, sorted({_item(r) for r in missing}), store)
     except Exception as exc:
+        _log_exception("ensure", exc)
         logger.warning("comma material: named commi not read (%s): %s", stage, exc)
         return []
     for row in missing:
@@ -438,14 +447,14 @@ def ensure(rows: List[Dict[str, Any]], named: Dict[Tuple[str, str], Set[int]], s
     return fetched
 
 
-def for_plan(plan: Dict[str, Any], rows: List[Dict[str, Any]], case_text: str, session=None) -> Dict[str, Any]:
+def for_plan(plan: Dict[str, Any], rows: List[Dict[str, Any]], case_text: str, session=None, store=None) -> Dict[str, Any]:
     """After the plan: the focus of each article its plan issue, the commi the plan or the case names marked
     and read when missing (ensure)."""
     if not enabled() or not plan:
         return {}
     named = named_commi(f"{case_text}\n{plan_text(plan)}")
     set_focus(rows, plan_focus(plan), named)
-    fetched = ensure(rows, named, session, "plan")
+    fetched = ensure(rows, named, session, "plan", store)
     return {"named": {f"{n} {c}": sorted(ks) for (n, c), ks in named.items()}, "fetched": fetched}
 
 

@@ -410,12 +410,34 @@ def article_rows(number: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return [best[name] for name in fragments[:3]]
 
 
+# The properties of a Section and of its Document that any reader of these rows uses (article_text, comma_material,
+# issue_spotting, fact_resolver, defensive_generation's lookups and citations, answer_processing, source_tiers,
+# protected_sources, formatting): returned by name, so a row never carries the vectors (embedding, heading_embedding,
+# embedding_v2, vettore) or embedding_text. A property the node lacks is left out of the row, as with the whole node.
+SECTION_FIELDS = ("id", "name", "type", "title", "titolo_articolo", "abstract", "plain_text", "text", "document_id",
+                  "description")
+DOCUMENT_FIELDS = ("id", "name", "document_type", "document_title", "document_id", "file_name", "document_subtype",
+                   "aliases", "valid_from", "valid_until", "description")
+
+
+def projection(var: str, fields: Sequence[str]) -> str:
+    """A Cypher map projection of `fields` of `var`: "s {.id, .name, ...}"."""
+    return f"{var} {{{', '.join('.' + f for f in fields)}}}"
+
+
+def present(props: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """A projected map without the properties the node lacks (a projection gives them as null)."""
+    return {k: v for k, v in (props or {}).items() if v is not None}
+
+
+SECTION_MAP, DOCUMENT_MAP = projection("s", SECTION_FIELDS), projection("d", DOCUMENT_FIELDS)
+
 _SECTIONS_QUERY = (
     "UNWIND $items AS it "
     "MATCH (d:Document {id: it.doc})-[:CONTAINS]->(s:Section) "
     "WHERE (s.name = it.num OR s.name STARTS WITH it.num + '.' OR s.name STARTS WITH it.num + '_') {visibility}"
     "OPTIONAL MATCH (s)-[:NEXT]->(after:Section) "
-    "RETURN it.doc AS doc, it.num AS num, d, s, after.name AS next")
+    f"RETURN it.doc AS doc, it.num AS num, {DOCUMENT_MAP} AS d, {SECTION_MAP} AS s, after.name AS next")
 
 
 def _sections(session, items: List[Tuple[str, str]], visibility: str = "", **params) -> Dict[tuple, List[Dict]]:
@@ -426,8 +448,79 @@ def _sections(session, items: List[Tuple[str, str]], visibility: str = "", **par
     found = session.run(query, items=[{"doc": doc, "num": num} for doc, num in items], **params).data()
     grouped: Dict[tuple, List[Dict]] = {}
     for row in found:
-        grouped.setdefault((row["doc"], row["num"]), []).append({"d": row["d"], "s": row["s"], "next": row.get("next")})
+        grouped.setdefault((row["doc"], row["num"]), []).append(
+            {"d": present(row["d"]), "s": present(row["s"]), "next": row.get("next")})
     return grouped
+
+
+def copy_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    """A row of its own: callers tag and rewrite rows (_article, s.plain_text), never the store's."""
+    return {**row, "d": dict(row.get("d") or {}), "s": dict(row.get("s") or {})}
+
+
+_PREFIX_DOCS_QUERY = ("UNWIND $prefixes AS p MATCH (d:Document) WHERE d.document_type = 'primary' AND d.name STARTS WITH p "
+                      "RETURN p AS prefix, d.id AS id")
+
+
+class ArticleStore:
+    """One request's Section rows, by (document id, article number as spelt): each read once, with _sections' query
+    and rows (every Section matched, in the order it returned them), then handed out as copies. Also the primary
+    documents of each code name prefix (defensive_generation._fetch_articles). A query with a visibility filter is
+    never cached: its rows are not those of the plain query."""
+
+    def __init__(self):
+        self._rows: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+        self._prefix_docs: Dict[str, List[str]] = {}
+        self.queries = self.asked = self.read = 0
+
+    def sections(self, session, items: Iterable[Tuple[str, str]]) -> Dict[tuple, List[Dict]]:
+        """As _sections(session, items), from the store; one query for the items not read yet."""
+        items = list(dict.fromkeys(items))
+        missing = [item for item in items if item not in self._rows]
+        self.asked += len(items)
+        if missing:
+            found = _sections(session, missing)
+            self.queries += 1
+            self.read += len(missing)
+            for item in missing:
+                self._rows[item] = found.get(item, [])
+        return {item: [copy_row(r) for r in self._rows[item]] for item in items if self._rows[item]}
+
+    def prefix_docs(self, session, prefixes: Iterable[str]) -> Dict[str, List[str]]:
+        """{prefix: the ids of the primary documents whose name starts with it}, one query for those not read. In the
+        order the query returns them, never re-sorted: rows of two documents with the same Section name keep the order
+        the documents come in (the former query's ORDER BY s.name left ties in that order too)."""
+        prefixes = list(dict.fromkeys(prefixes))
+        missing = [p for p in prefixes if p not in self._prefix_docs]
+        if missing:
+            found = session.run(_PREFIX_DOCS_QUERY, prefixes=missing).data()
+            self.queries += 1
+            for p in missing:
+                self._prefix_docs[p] = list(dict.fromkeys(r["id"] for r in found if r["prefix"] == p and r.get("id")))
+        return {p: list(self._prefix_docs[p]) for p in prefixes}
+
+    def stats(self) -> Dict[str, int]:
+        return {"queries": self.queries, "articles_asked": self.asked, "articles_read": self.read}
+
+
+def fetch_many(session, items: Sequence[Tuple[str, str]], store: Optional[ArticleStore] = None
+               ) -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
+    """{(doc_id, number): fetch_article's rows} for every item, every spelling of every number read at once: per item,
+    as fetch_article, the first spelling with rows wins."""
+    from .article_suffix import number_variants
+
+    store = store or ArticleStore()
+    spellings = {item: number_variants(item[1]) for item in dict.fromkeys(items)}
+    grouped = store.sections(session, [(doc, s) for (doc, _), variants in spellings.items() for s in variants])
+    out: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for (doc, number), variants in spellings.items():
+        out[(doc, number)] = []
+        for spelling in variants:
+            rows = article_rows(spelling, grouped.get((doc, spelling), []))
+            if rows:
+                out[(doc, number)] = rows
+                break
+    return out
 
 
 def fetch_article(session, doc_id: str, number: str, visibility: str = "", **params) -> List[Dict[str, Any]]:
@@ -444,9 +537,10 @@ def fetch_article(session, doc_id: str, number: str, visibility: str = "", **par
     return []
 
 
-def fill_texts(session, rows: List[Dict[str, Any]]) -> List[str]:
+def fill_texts(session, rows: List[Dict[str, Any]], store: Optional[ArticleStore] = None) -> List[str]:
     """In place, for rows other paths found (searches, votes, tables): a row of an article's canonical Section gets the
-    article's whole text by the same rule. Returns the sections changed, "doc_name name". One query for all of them."""
+    article's whole text by the same rule. Returns the sections changed, "doc_name name". One query for all of them
+    (with a store, only for the articles it has not read)."""
     stubs = []
     for row in rows:
         s, d = row.get("s") or {}, row.get("d") or {}
@@ -455,7 +549,8 @@ def fill_texts(session, rows: List[Dict[str, Any]]) -> List[str]:
             stubs.append((row, d["id"], number))
     if not stubs:
         return []
-    grouped = _sections(session, sorted({(doc, num) for _, doc, num in stubs}))
+    wanted = sorted({(doc, num) for _, doc, num in stubs})
+    grouped = store.sections(session, wanted) if store is not None else _sections(session, wanted)
     filled = []
     for row, doc, num in stubs:
         text = choose_text(num, *_fields(_best_by_name(grouped.get((doc, num), []))))

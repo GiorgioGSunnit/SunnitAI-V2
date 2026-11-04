@@ -160,7 +160,7 @@ def fusion_env(monkeypatch):
     monkeypatch.setattr(dg, "_fusion_distill_bullets", lambda case: [])
     import src.rag.doc_lookup as doc_lookup
     monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [
         {"d": {"id": "doc"}, "s": {"name": f"{n}.0.0", "plain_text": "t"}, "_article": (n, c)} for n, c in refs])
     import src.rag.nodes.retrieval as retrieval_module
     monkeypatch.setattr(retrieval_module, "broaden_article_context",
@@ -222,7 +222,7 @@ def _picked(rows):
 def test_method_candidates_need_both_flags_and_are_never_exempt(monkeypatch):
     import src.rag.doc_lookup as doc_lookup
     monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [
         {"d": {"id": "doc"}, "s": {"name": f"{n}.0.0", "plain_text": "testo"}, "_article": (n, c)}
         for n, c in refs if n != "114"])
     analysis = {"area": "amministrativo",

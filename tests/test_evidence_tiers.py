@@ -90,7 +90,7 @@ def test_the_fusion_cap_never_cuts_a_fact_rule_or_a_well_voted_article(monkeypat
     monkeypatch.setattr(dg, "_fusion_distill_bullets", lambda case: [])
     monkeypatch.setattr(dg, "_fusion_text_search", lambda *a, **k: many)
     monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
-    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs: [
+    monkeypatch.setattr(dg, "_fetch_any", lambda session, documents, refs, store=None: [
         {"d": {"id": "doc"}, "s": {"name": f"{n}.0.0", "plain_text": "t"}, "_article": (n, c)} for n, c in refs])
     monkeypatch.setattr(retrieval_module, "broaden_article_context", lambda state, d, db: {"raw_result": state["raw_result"]})
 

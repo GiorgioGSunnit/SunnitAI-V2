@@ -555,6 +555,41 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 querela, the parte civile (art. 76 c.p.p.) and the offended party's rights in the
                                 proceedings. Unknown side: unchanged. See fact_signals.fit_to_role and
                                 practical_checklist.VICTIM_POSTURE_CHECKS.
+  PLAN_RULE_INCLUDE            false (v45, diagnose_long's NOT_IN_PLAN stage; acts with PLAN_THEN_WRITE_ENABLED): after
+                                the plan's own steps, an article of the draft prompt's material that no plan issue
+                                holds, no fired rule excludes and check_plan did not remove is added by rule, no call:
+                                grade 3 always, grade 2 only when one of frame/distill/institution found it (v46; an
+                                ungraded row exempt by heading or as a cross-reference counts as grade 2). Under the
+                                issue sharing most words with the grader's issue for it (else its rubrica), else under
+                                a last "Ulteriori norme applicabili" issue; tagged plan_source "rule", never forced into
+                                a paragraph by PLAN_ARTICLES_COVER. Logged as case_analysis_plan_rule_include (inserted
+                                and skipped, with grade and signals). See plan_then_write.include_by_rule.
+  RUBRICA_TEXT_CHECK           false (v45): the qualification check's [DA VERIFICARE: l'art. N riguarda «rubrica»]
+                                stamp is not added when the key terms of the clause citing the article (or their
+                                negation, same stem) occur in the article's text (defensive_generation._text_covers);
+                                logged as not_stamped in case_analysis_qualification.
+  TERM_EXPIRY_TEXT             false (v45): the non-use term of a servitude written with its end, "estinzione per non
+                                uso: non decorso, scade nel 2036 (...)" ("già decorso, scaduto nel ..." when run), not
+                                the bare year the writer read as its start ("decorre nel 2036").
+  GRADE_ALL_PROMPT             false (v45; acts with CHECK_GRADED_ENABLED): the graded check grades the articles that
+                                will reach the draft prompt instead of its first slots, in rounds (the prompt
+                                estimated without rulings and principles, its ungraded articles graded), at most 120
+                                per case. Logged as case_analysis_grade_prompt.
+  GRADER_FIXED_ORDER           false (v45): the graded check's batches by article id (code, number, suffix), whatever
+                                the retrieval order; the prompt's text unchanged.
+  REGIME_CANDIDATES            false (v45, a draft pending the lawyer's validation): the articles of
+                                fact_signals.REGIME_CANDIDATES whose triggers are in the case's issues or institutions,
+                                within its areas' families, added to the pool over its cap and graded like any row;
+                                no conclusion text comes with them. Logged as case_analysis_regime_candidates. With
+                                FACT_REGIMES_ENABLED, a civil case's regime also brings its procedural tools
+                                (PROCEDURAL_TOOLS keyed "regime": 2653 c.c., 21 c.p.c., and 102 c.p.c. when the
+                                PARTIES_ENFORCED line names two or more), their text the articles' own rubrica.
+  PARTIES_ENFORCED             false (v45): with more than one party to sue (fact_signals.parties_to_sue), the
+                                conclusions block names them all with art. 102 c.p.c. and what was found for each --
+                                on a real action on land (regime azione_reale_immobiliare), the author of the act and,
+                                to be weighed, the other owners whose land is on the path (real_action_defendants);
+                                with PLAN_ARTICLES_COVER_ENABLED, an article a conclusions line cites that no section
+                                cites is covered like an omitted plan article.
 """
 
 import logging

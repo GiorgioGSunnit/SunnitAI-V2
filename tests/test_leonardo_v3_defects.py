@@ -163,7 +163,7 @@ def test_the_rule_requires_its_articles():
 
 def test_a_required_article_retrieval_missed_is_read_and_only_that(monkeypatch):
     asked = []
-    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs: asked.extend(refs) or [{"_article": r} for r in refs])
+    monkeypatch.setattr(dg, "_fetch_articles", lambda session, refs, store=None: asked.extend(refs) or [{"_article": r} for r in refs])
     analysis = {"fact_signals": {"fired": [{"requires": [("1079", "c.c."), ("1067", "c.c."), ("2043", "c.c.")]},
                                            {"requires": [("1079", "c.c.")]}, {"id": "other"}]}}
     rows = dg._required_rows(None, analysis, {("2043", "c.c.")})
