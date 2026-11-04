@@ -87,6 +87,21 @@ def test_stages_channels_and_wrong_articles():
     assert {t["label"]: t["check"] for t in case["pool_traces"]}["43 c.p."] == "rejected"
 
 
+def test_unexpected_rows_carry_plan_source_and_the_regime_candidate_channel():
+    rec = _record()
+    rec["pool"] = rec["pool"] + [{"label": "1079 c.c.", "sources": ["regime_candidate"], "rubrica": "Accertamento"}]
+    rec["regime_source"] = "regime_candidate"
+    rec["plan"] = {**rec["plan"], "norme": rec["plan"]["norme"] + ["1079 c.c."]}
+    rec["plan_rule_include"] = {"inserted": [{"article": "1079 c.c.", "grade": "3", "issue": "Ulteriori norme"}]}
+    rec["answer"] = {"mentioned": rec["answer"]["mentioned"] + ["1079 c.c."],
+                     "mentioned_eval": rec["answer"]["mentioned_eval"] + [["1079", "cc"]]}
+    case = dl.analyse_case(rec, ev)
+    rows = {u["label"]: u for u in case["unexpected"]}
+    assert rows["1079 c.c."]["channels"] == ["regime_candidate"] and rows["1079 c.c."]["plan_source"] == "rule"
+    assert rows["81 c.p."]["plan_source"] == "plan"
+    assert dl.analyse_case(_record(), ev)["unexpected"][0]["plan_source"] == "plan"    # no rule log: the plan's own
+
+
 def test_report_sections():
     case = dl.analyse_case(_record(), ev)
     unkeyed = dl.analyse_case({**_record(), "id": "leonardo", "kind": "file", "expected": None,

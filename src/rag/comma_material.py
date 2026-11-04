@@ -26,7 +26,13 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from . import article_text, feature_flags
-from .verbose_logger import vlog
+from .verbose_logger import exception_data, vlog
+
+
+def _log_exception(stage: str, exc: BaseException, **detail: Any) -> None:
+    """Every exception caught here, logged with its full traceback (pipeline_exception), whatever VERBOSE_LOGGING says."""
+    vlog("pipeline_exception", exception_data(f"comma_material.{stage}", exc, **detail))
+
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +191,7 @@ def attach(session, rows: Iterable[Dict[str, Any]], stage: str = "", store=None)
     try:
         found = _read(session, sorted({_item(r) for r in rows}), store)
     except Exception as exc:
+        _log_exception("attach", exc)
         logger.warning("comma material: commi not read (%s), prefix cut kept: %s", stage, exc)
         return 0
     n = 0
@@ -426,6 +433,7 @@ def ensure(rows: List[Dict[str, Any]], named: Dict[Tuple[str, str], Set[int]], s
         else:
             found = _read(session, sorted({_item(r) for r in missing}), store)
     except Exception as exc:
+        _log_exception("ensure", exc)
         logger.warning("comma material: named commi not read (%s): %s", stage, exc)
         return []
     for row in missing:

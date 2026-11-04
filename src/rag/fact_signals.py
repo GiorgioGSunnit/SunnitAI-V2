@@ -41,7 +41,13 @@ from . import feature_flags
 from .ai_chat import _call_chat, last_reply, parse_json_reply
 from . import article_text
 from .llm_reply import salvage_json
-from .verbose_logger import vlog
+from .verbose_logger import exception_data, vlog
+
+
+def _log_exception(stage: str, exc: BaseException, **detail: Any) -> None:
+    """Every exception caught here, logged with its full traceback (pipeline_exception), whatever VERBOSE_LOGGING says."""
+    vlog("pipeline_exception", exception_data(f"fact_signals.{stage}", exc, **detail))
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,8 @@ FACT_SIGNALS_FLAG = "FACT_SIGNALS_ENABLED"
 # even when the case gives no dates, and the procedural tools the facts call for (PROCEDURAL_TOOLS). Runs the
 # extraction also with FACT_SIGNALS_ENABLED off; the rules of fact_signal_rules.yaml fire only with it on.
 REGIMES_FLAG = "FACT_REGIMES_ENABLED"
+# TERM_EXPIRY_TEXT (v45): the non-use term's year written as its end ("non decorso, scade nel 2036").
+TERM_EXPIRY_TEXT_FLAG = "TERM_EXPIRY_TEXT"
 RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fact_signal_rules.yaml")
 # YYYY-MM-DD: the case's present for a case that states none (tests, benches). Never the real today: an exam
 # case set years ago would have every term "DECORSO" (fact bench, run 1415).
@@ -519,6 +527,7 @@ def extract_facts(case_text: str, raw_replies: Optional[List[str]] = None) -> Tu
             cut = getattr(last_reply, "finish_reason", None) == "length"
             facts = validate_facts(_parse_or_repair(raw), case_text)
         except Exception as exc:
+            _log_exception("extract_facts", exc)
             facts, problem = None, f"{type(exc).__name__}: {str(exc)[:160]}"
         if cut:
             # what follows the cut is lost, and a rule may need it: the complete items are kept, and it is asked once
@@ -954,9 +963,16 @@ def _term_trace(term: Term, facts: Dict[str, Any], families: set, undated: bool)
                                  term.length(), status, start, end_what, end_written)
     if term.id == "non_uso_servitu":
         expiry = start[0][1].year + term.years
-        trace["entry"].update(expires=str(expiry), text=(
-            f"estinzione per non uso: {expiry} ({term.years} anni dall'ultimo uso, {_short(start[2])})"
-            + (", già decorso" if status == "DECORSO" else "") + "; non è il termine dell'usucapione"))
+        if feature_flags.enabled(TERM_EXPIRY_TEXT_FLAG):
+            # the year said as the term's end, never as its start ("decorre nel 2036", open item 2)
+            when = {"NON DECORSO": f"non decorso, scade nel {expiry}",
+                    "DECORSO": f"già decorso, scaduto nel {expiry}"}.get(status, f"scade nel {expiry}")
+            text = (f"estinzione per non uso: {when} ({term.years} anni dall'ultimo uso, {_short(start[2])}); "
+                    "non è il termine dell'usucapione")
+        else:
+            text = (f"estinzione per non uso: {expiry} ({term.years} anni dall'ultimo uso, {_short(start[2])})"
+                    + (", già decorso" if status == "DECORSO" else "") + "; non è il termine dell'usucapione")
+        trace["entry"].update(expires=str(expiry), text=text)
     why.append(f"stato: {status}")
     return trace
 
@@ -1418,6 +1434,7 @@ def fire_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
         try:
             ok = all(holds(c, facts, terms) for c in rule["when"])
         except Exception as exc:
+            _log_exception("fire_rules", exc)
             logger.warning("fact signals: rule %s failed: %s", rule.get("id"), exc)
             ok = False
         if ok:
@@ -1506,10 +1523,140 @@ def parties_block(signals: Optional[Dict[str, Any]]) -> str:
     return "\n".join(f"- {p['name']}: {p['why']}" for p in (signals or {}).get("defendants") or [])
 
 
-def conclusions_block(signals: Optional[Dict[str, Any]]) -> str:
+# PARTIES_ENFORCED (v45): with more than one party to sue, the conclusions block names them all, with what parties_to_sue
+# found for each -- no conclusion of its own beyond that.
+PARTIES_ENFORCED_FLAG = "PARTIES_ENFORCED"
+
+
+REAL_ACTION_REGIME = "azione_reale_immobiliare"
+_PATH_KEYS = ("works_or_signs", "access", "possession", "events")
+
+
+_PREVIOUS_ROLE = r"precedent|originari|dante causa|\bex\b|già proprietari|antecedent|avente causa"
+_PAST_OWNERSHIP = r"appartenev|apparteneva|era di propriet|erano di propriet|un tempo|in origine|originariamente"
+
+
+def _items_naming(facts: Dict[str, Any], name: str, keys: Tuple[str, ...]) -> List[str]:
+    """Each item of facts' keys naming name, its values joined, lower case."""
+    low = _low(name)
+    out = []
+    for key in keys:
+        items = facts.get(key)
+        if not isinstance(items, list):          # a flag or a string of the facts ("_regimes": true), not a list of facts
+            continue
+        for item in items:
+            text = " ".join(_low(v) for k, v in item.items() if not k.endswith("_iso") and v) if isinstance(item, dict) \
+                else _low(item)
+            if _named_in(low, text):
+                out.append(text)
+    return out
+
+
+def _previous_owner(facts: Dict[str, Any], name: str, history: List[Dict[str, Any]]) -> bool:
+    """name is in the facts only as a previous owner in the chain of title: every property_history entry of its own
+    passed on (a later owner holds the asset or a part of it, or the entry ended), none it still holds; or its role,
+    or every fact naming it, puts its ownership in the past ("appartenevano a Mevio")."""
+    low = _low(name)
+    own = [(i, e) for i, e in enumerate(history) if _low(e.get("owner")) == low]
+    others = {_low(e.get("owner")) for e in history if _low(e.get("owner")) not in ("", low)}
+
+    def passed_on(i: int, entry: Dict[str, Any]) -> bool:
+        ended = _low(entry.get("ended_by")) and _low(entry.get("ended_by_how")) != SEQUENCE_DEDUCED
+        # its asset is another owner's land by name ("terreni di Leonardo e Sempronio", Mevio's), wherever in the
+        # history -- not land described by its neighbour ("terreno tra due fondi di Leonardo", Annibale's)
+        whose = re.match(r"(?:(?:il|i|la|le|lo|gli|l')\s*)?[\wà-ù]+\s+(?:di|del|della|dei|degli)\s+(.+)$", _low(entry.get("asset")))
+        named = bool(whose) and any(_named_in(o, whose.group(1)) for o in others)
+        return bool(_parts_of(entry, history[i + 1:])[0] or ended or _low(entry.get("to")) or named)
+    if own and all(passed_on(i, e) for i, e in own):
+        return True
+    roles = " ".join(_low(p.get("role")) for p in facts.get("parties") or [] if _low(p.get("name")) == low)
+    if re.search(_PREVIOUS_ROLE, roles):
+        return True
+    named = _items_naming(facts, name, tuple(k for k, v in facts.items() if isinstance(v, list) and k != "parties"))
+    return bool(named) and all(re.search(_PAST_OWNERSHIP, t) for t in named)
+
+
+def real_action_defendants(facts: Optional[Dict[str, Any]]) -> Tuple[List[str], List[str], str]:
+    """(authors, owners, how) for a real action on land: who did the act obstructing the right (as parties_to_sue),
+    then every other party with role proprietario -- not the client, never one in the facts only as a previous owner in
+    the chain of title (_previous_owner: who sold, who held the land before) -- whose land the facts place on the path
+    or the servitude: a fact naming it with the path, the way or the client's land (how "path"). One the facts place
+    nowhere is kept as well; only one they describe elsewhere, off the path, is left out. None placed: every one of
+    them (how "all proprietari")."""
+    if not facts:
+        return [], [], ""
+    clients = _clients(facts)
+    authors: List[str] = []
+    for event in facts.get("events") or []:
+        if _typed_kind(event) in _OBSTRUCTIONS:
+            authors += [n for n in _names(event.get("who")) if not _is_client(n, clients) and n not in authors]
+    history = facts.get("property_history") or []
+    owners: List[str] = []
+    for party in facts.get("parties") or []:
+        name = str(party.get("name") or "").strip()
+        if not name or "proprietari" not in _low(party.get("role")) or _is_client(name, clients) or name in authors \
+                or name in owners or _previous_owner(facts, name, history):
+            continue
+        owners.append(name)
+    client_words = [c for c in clients if c]
+    placed, unplaced, elsewhere = [], [], []
+    for name in owners:
+        near = _items_naming(facts, name, _PATH_KEYS)
+        titled = _items_naming(facts, name, ("property_history",))
+        on_path = [t for t in near + titled if re.search(_WAY, t) or any(_named_in(c, t) for c in client_words)]
+        if on_path or _items_naming(facts, name, ("access",)):     # how the client's land is reached names it
+            placed.append(name)
+        elif near:
+            elsewhere.append(name)          # described where the facts tell of the works, the access or the events: off the path
+        else:
+            unplaced.append(name)
+    kept = [n for n in owners if n in placed or n in unplaced]
+    return authors, kept if placed else owners, "path" if placed else "all proprietari" if owners else ""
+
+
+def _real_action(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]]) -> bool:
+    """The regime azione_reale_immobiliare (REGIME_CANDIDATES' matching) fires on the case."""
+    if analysis is None:
+        return False
+    areas = (analysis.get("frame") or {}).get("areas") or (signals or {}).get("areas") or []
+    return any(r["id"] == REAL_ACTION_REGIME for r in regime_candidates(analysis, areas))
+
+
+def parties_line(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]] = None) -> str:
+    """With PARTIES_ENFORCED: on a real action on land (_real_action), "Parti da convenire: <authors>; da valutare la
+    chiamata di <owners> quali proprietari dei fondi interessati (litisconsorzio necessario ex art. 102 c.p.c. se ...)"
+    from real_action_defendants, with two or more of them; otherwise, with more than one party to sue, "Parti da
+    convenire in giudizio: X, Y, Z (litisconsorzio necessario ex art. 102 c.p.c. se ...)". Else ""."""
+    if not feature_flags.enabled(PARTIES_ENFORCED_FLAG):
+        return ""
+    if _real_action(signals, analysis):
+        authors, owners, _ = real_action_defendants((signals or {}).get("facts"))
+        if len(authors) + len(owners) < 2:
+            return ""
+        line = "Parti da convenire: " + (", ".join(authors) + ("; " if owners else "") if authors else "")
+        if owners:
+            line += (f"da valutare la chiamata di {', '.join(owners)} quali proprietari dei fondi interessati "
+                     "(litisconsorzio necessario ex art. 102 c.p.c. se la decisione non può pronunciarsi che in "
+                     "confronto di tutte)")
+        return line
+    parties = (signals or {}).get("defendants") or []
+    if len(parties) < 2:
+        return ""
+    basis = "; ".join(f"{p['name']}: {p['why']}" for p in parties)
+    return (f"Parti da convenire in giudizio: {', '.join(p['name'] for p in parties)} (litisconsorzio necessario ex "
+            f"art. 102 c.p.c. se la decisione non può pronunciarsi che in confronto di tutte; {basis})")
+
+
+def conclusions_block(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]] = None) -> str:
     lines = [f"- {r['conclusion']}" for r in (signals or {}).get("fired") or [] if r.get("conclusion")]
     mediated = (signals or {}).get("mediation") or {}
-    return "\n".join(lines + ([f"- {mediated['text']}"] if mediated.get("required") else []))
+    try:            # PARTIES_ENFORCED: logged and left out on any failure, the block as before
+        parties = parties_line(signals, analysis)
+    except Exception as exc:
+        _log_exception("conclusions_block.parties_line", exc)
+        parties = ""
+    return "\n".join(lines + ([f"- {mediated['text']}"] if mediated.get("required") else [])
+                     + ([f"- {parties}"] if parties else []))
 
 
 def rule_tools(tools: List[Dict[str, Any]], fired: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -1544,6 +1691,7 @@ def explain_rules(facts: Optional[Dict[str, Any]], terms: List[Dict[str, Any]],
                 ok = holds(condition, facts or {}, terms)
                 fact = _evidence(condition, facts or {}, terms)
             except Exception as exc:
+                _log_exception("explain_rules", exc)
                 ok, fact = False, f"errore: {exc}"
             item["conditions"].append({"text": describe([condition]), "matched": ok, "fact": fact})
         item["fired"] = not item["skipped"] and all(c["matched"] for c in item["conditions"])
@@ -1705,6 +1853,7 @@ def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
         try:
             fired = fire_rules(facts, terms, areas=areas)
         except Exception as exc:
+            _log_exception("signals_from", exc)
             logger.warning("fact signals: rules not applied: %s", exc)
             problem = problem or f"rules: {exc}"
     terms = terms + _non_use_for_a_servitude(facts, terms, fired) + no_prescription_terms(facts, fired)
@@ -1939,6 +2088,115 @@ def regime_issues(facts: Optional[Dict[str, Any]], qualifications: List[Dict[str
     return out
 
 
+# REGIME_CANDIDATES (v45, a draft for the lawyer to validate): the articles a regime of the case's issues calls for, as
+# candidates only -- read like any article, in the pool over and above its cap, graded like every other row; no
+# conclusion and no fixed statement come with them. A regime applies, as regime_issues, within the families of the
+# case's areas, when one of its "triggers" is in the name of one of the case's issues or institutions
+# (regime_candidates).
+REGIME_CANDIDATES_FLAG = "REGIME_CANDIDATES"
+_L241 = "Legge sul Procedimento Amministrativo 2026"        # method_candidates.L241: the document by its own name
+REGIME_CANDIDATES: List[Dict[str, Any]] = [
+    {"id": "azione_reale_immobiliare", "families": ["civile"], "draft_pending_lawyer": True,
+     "triggers": [r"servit\w*", r"usucapi\w*", r"(?:azione )?confessori\w*", r"(?:azione )?negatori\w*", r"rivendic\w*",
+                  r"passaggio coattivo"],
+     "refs": [("1079", "c.c."), ("948", "c.c."), ("949", "c.c.")]},      # 2653 c.c., 21 and 102 c.p.c.: its tools
+    {"id": "responsabilita_contrattuale", "families": ["civile"], "draft_pending_lawyer": True,
+     "triggers": [r"inadempi\w*", r"responsabilit\w* contrattual\w*", r"contatto sociale"],
+     "refs": [("1218", "c.c."), ("1176", "c.c."), ("1223", "c.c."), ("1225", "c.c."), ("2236", "c.c.")]},
+    {"id": "impossibilita_sopravvenuta", "families": ["civile"], "draft_pending_lawyer": True,
+     "triggers": [r"impossibilit\w* sopravvenut\w*"],
+     "refs": [("1256", "c.c."), ("1463", "c.c.")]},
+    {"id": "procedimento_amministrativo", "families": ["amministrativo"], "draft_pending_lawyer": True,
+     "triggers": [r"provvediment\w*", r"annullament\w*", r"autotutela", r"silenzio"],
+     "refs": [("3", _L241), ("7", _L241), ("10-bis", _L241), ("21-octies", _L241), ("21-nonies", _L241),
+              ("21-septies", _L241), ("29", "c.p.a."), ("31", "c.p.a.")]},
+    {"id": "ottemperanza", "families": ["amministrativo"], "draft_pending_lawyer": True,
+     "triggers": [r"ottemperanz\w*"],
+     "refs": [("112", "c.p.a."), ("114", "c.p.a.")]},
+]
+
+
+def real_action_name(signals: Optional[Dict[str, Any]], regime: Dict[str, Any]) -> str:
+    """The real action of the case: "azione confessoria" when the client claims a servitude (a fired rule) or the
+    issues name the confessoria alone, "azione negatoria" when they name the negatoria alone, else both."""
+    words = " ".join(_low(t) for t, _ in regime.get("matched") or [])
+    confessoria = "confessori" in words or _claims_servitude((signals or {}).get("fired") or [])
+    negatoria = "negatori" in words
+    if confessoria != negatoria:
+        return "azione confessoria" if confessoria else "azione negatoria"
+    return "azione confessoria/negatoria"
+
+
+def regime_tools(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """REGIME_CANDIDATES: the PROCEDURAL_TOOLS keyed to a regime that fires on the case (regime_candidates), in civil
+    cases only, shaped as procedural_tools' ({id, refs, text, why, matched, regime}); matched, the triggers and the
+    issues they are in -- for litisconsorzio, the names of the PARTIES_ENFORCED line, which must hold two or more."""
+    if not regime_candidates_enabled() or analysis is None:
+        return []
+    areas = (analysis.get("frame") or {}).get("areas") or (signals or {}).get("areas") or []
+    families = {family(a) for a in areas} - {""}
+    if families and "civile" not in families:
+        return []
+    fired = {r["id"]: r for r in regime_candidates(analysis, areas)}
+    out = []
+    for tool in PROCEDURAL_TOOLS:
+        regime = fired.get(tool.get("regime") or "")
+        if not regime:
+            continue
+        matched = [f"{term} («{name}»)" for term, name in regime["matched"][:3]]
+        if tool["id"] == "trascrizione_domanda":
+            # the computed fact: the action whose demand is transcribed, never the servitude itself
+            matched = [f"trascrizione della domanda giudiziale ({real_action_name(signals, regime)}) ai sensi "
+                       "dell'art. 2653, n. 1, c.c."]
+        if tool.get("parties"):
+            if not parties_line(signals, analysis) or tool["regime"] != REAL_ACTION_REGIME:
+                continue
+            authors, owners, _ = real_action_defendants((signals or {}).get("facts"))
+            matched = [f"parti da convenire: {', '.join(authors)}" if authors else "",
+                       f"da valutare: {', '.join(owners)}" if owners else ""]
+            matched = [m for m in matched if m]
+        out.append({"id": tool["id"], "refs": [list(r) for r in tool["refs"]], "text": tool["text"],
+                    "why": tool["why"], "matched": matched, "regime": tool["regime"]})
+    return out
+
+
+def regime_candidates_enabled() -> bool:
+    return feature_flags.enabled(REGIME_CANDIDATES_FLAG)
+
+
+def case_issue_names(analysis: Optional[Dict[str, Any]]) -> List[str]:
+    """The names of the case's issues and institutions: the frame's questions and central issues, the analysis' issues
+    and their institutions, the fired rules' institutions and the qualifications' regimes."""
+    analysis = analysis or {}
+    frame, signals = analysis.get("frame") or {}, analysis.get("fact_signals") or {}
+    names = [str(t) for t in frame.get("tasks") or []]
+    names += [str(c.get("nome")) for c in frame.get("central_issue_candidates") or [] if isinstance(c, dict)]
+    for q in analysis.get("questioni") or []:
+        if isinstance(q, dict):
+            names.append(str(q.get("titolo") or ""))
+            names += [str(i.get("nome")) for i in q.get("istituti") or [] if isinstance(i, dict)]
+    names += [str(n) for r in signals.get("fired") or [] for n in r.get("institutions") or []]
+    names += [str(r.get("nome")) for r in signals.get("regimes") or []]
+    return [n for n in (" ".join(x.split()) for x in names) if n and n != "None"]
+
+
+def regime_candidates(analysis: Optional[Dict[str, Any]], areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """[{id, refs, matched: [(trigger, the issue it is in)], draft_pending_lawyer}] of the REGIME_CANDIDATES the case's
+    issues and institutions call for, within the families of its areas (none known: every family)."""
+    families = {family(a) for a in areas or []} - {""}
+    names = case_issue_names(analysis)
+    out = []
+    for regime in REGIME_CANDIDATES:
+        if families and not set(regime["families"]) & families:
+            continue
+        matched = [(m.group(0), name) for name in names for t in regime["triggers"]
+                   for m in [re.search(rf"\b{t}", _low(name))] if m]
+        if matched:
+            out.append({"id": regime["id"], "refs": [tuple(r) for r in regime["refs"]],
+                        "matched": list(dict.fromkeys(matched)), "draft_pending_lawyer": regime["draft_pending_lawyer"]})
+    return out
+
+
 _DEFECTS = _DEFECT + r"|non conform|danneggi|rott|allag|incendi|crollo"
 _LOSABLE = r"\bprov|dispers|perd|ripar|ripristin|smalt|demol|modific|alter|cancell|deterior|sostitu"
 _URGENT = (r"pericol|sicurezz|incolumit|rischio di (?:crollo|caduta|incendio|allagamento)|crollo|urgen|imminent|"
@@ -1974,6 +2232,20 @@ PROCEDURAL_TOOLS: List[Dict[str, Any]] = [
              "fissa la somma dovuta dall'obbligato per ogni violazione o inosservanza successiva o per ogni ritardo "
              "nell'esecuzione del provvedimento; la richiesta va fatta con la domanda di condanna.",
      "why": "la richiesta di una sanzione o di una penalità per chi non adempie o non rispetta l'ordine del giudice"},
+]
+
+# REGIME_CANDIDATES (v45, a draft pending the lawyer's validation): the procedural tools of a regime of the case's
+# issues (regime_tools), civil cases only. Each tool's text is its article's own rubrica, read from the corpus with the
+# other tools' rows (defensive_generation._regime_rows); "text" here is only what stands in when it was not read.
+# litisconsorzio only with the PARTIES_ENFORCED line naming two or more parties, those names as its facts.
+PROCEDURAL_TOOLS += [
+    {"id": "trascrizione_domanda", "regime": "azione_reale_immobiliare", "refs": [("2653", "c.c.")],
+     "text": "Trascrizione della domanda giudiziale (art. 2653 c.c.).", "why": "un'azione reale su un immobile"},
+    {"id": "competenza_territoriale", "regime": "azione_reale_immobiliare", "refs": [("21", "c.p.c.")],
+     "text": "Foro per le cause relative a diritti reali su immobili (art. 21 c.p.c.).",
+     "why": "un'azione reale su un immobile"},
+    {"id": "litisconsorzio", "regime": "azione_reale_immobiliare", "refs": [("102", "c.p.c.")], "parties": True,
+     "text": "Litisconsorzio necessario (art. 102 c.p.c.).", "why": "più parti da convenire"},
 ]
 
 # A request for a sanction or a penalty against who does not comply (FACT_REGIMES_ENABLED: art. 614-bis c.p.c.).
@@ -2269,12 +2541,14 @@ def attach_term_sources(session, documents: List[Dict[str, Any]], signals: Optio
             term["sources"] = [{"ref": f"art. {r['_article'][0]} {r['_article'][1]}", "text": _section_text(r)[:chars]}
                                for r in rows if r.get("_article") and _section_text(r)]
         except Exception as exc:
+            _log_exception("attach_term_sources", exc)
             logger.warning("fact regimes: no text for the term %s: %s", term.get("id"), exc)
     try:
         rows = dg._fetch_any(session, documents, [("5", "d.lgs. 28/2010")]) if (signals or {}).get("facts") else []
         if rows:
             signals["mediation"] = mediation(signals["facts"], signals.get("fired") or [], _section_text(rows[0]))
     except Exception as exc:
+        _log_exception("attach_term_sources", exc)
         logger.warning("fact regimes: art. 5 d.lgs. 28/2010 not read, the table's list stands: %s", exc)
 
 

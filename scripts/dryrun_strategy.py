@@ -35,6 +35,7 @@ import json
 import os
 import sys
 import time
+import traceback
 
 DEFAULT_REQUEST = "Delinea una strategia difensiva per il cliente sulla base del documento allegato."
 
@@ -371,12 +372,14 @@ def main() -> None:
     else:
         text = _document_text(args.document_id)
     t0 = time.time()
-    result = None
+    result, failure = None, ""
     try:
         result = dg.run_defensive_pipeline(text, request, args.lang)
         status = "ok"
     except Exception as exc:
         status = f"ERROR {type(exc).__name__}: {str(exc)[:160]}"
+        failure = traceback.format_exc()           # the whole traceback, not only str(exc)
+        print(failure, file=sys.stderr)
     elapsed = time.time() - t0
     lines = summarise(events, status, result, elapsed, len(text))
     if args.case:
@@ -387,6 +390,8 @@ def main() -> None:
         record = saved_run(os.path.abspath(dg.__file__), request, status, elapsed, lines, events, result)
         record["settings"] = args.set
         record["material"] = material
+        if failure:
+            record["traceback"] = failure
         with open(args.save, "w", encoding="utf-8") as fh:
             json.dump(record, fh, ensure_ascii=False, indent=1, default=str)
         print(f"\nSaved to {args.save}, the answer included. Nothing else was written.")

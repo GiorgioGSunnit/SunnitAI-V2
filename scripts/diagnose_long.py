@@ -122,7 +122,7 @@ STAGE_MEANING = {
     "MENTIONED": "MENTIONED with its code (tests/eval_narrative.py's primary score)",
 }
 CHANNELS = ["user_text", "institution", "fulltext", "vector", "distill", "frame", "vote", "method_list",
-            "crossref", "rulings_agree", "v1_choice", "issue_spotting"]
+            "crossref", "regime_candidate", "rulings_agree", "v1_choice", "issue_spotting"]
 VOTE_FOUND_TOP = 20     # vote_pool.TAG_TOP: a voted article below this is not "found"
 
 _EVAL_TO_ABBR = {"cp": "c.p.", "cc": "c.c.", "cpc": "c.p.c.", "cpp": "c.p.p.", "cpa": "c.p.a."}
@@ -366,6 +366,7 @@ def _instrument(dg) -> dict:
         cap["pool_rows"] = list(rows.values())
         cap["method_candidates"] = _labs(result.get("method_candidates") or [])
         cap["crossref_source"] = CROSSREF_SOURCE
+        cap["regime_source"] = getattr(dg, "REGIME_CANDIDATE_SOURCE", "regime_candidate")
 
     def on_check(result, args, kwargs, ctx):
         facts, request, rows = args[:3]
@@ -408,6 +409,7 @@ def _instrument(dg) -> dict:
     wrap(vote_pool, "ruling_vote", on_vote)
     wrap(dg, "_select_articles_fusion", on_fusion, phase="fusion")
     wrap(dg, "_add_method_candidates", on_method)
+    wrap(dg, "_add_regime_candidates", on_method)      # REGIME_CANDIDATES: the pool as the check gets it
     wrap(dg, "_filter_applicable_articles", on_check)
     wrap(dg, "_fit_parere_prompt", on_prompt)
     return cap
@@ -777,11 +779,12 @@ def run_child(spec_path: str, env_path: str) -> None:
                   "cut": last("case_pool_vote_cut"), "voted": _labs(cap["voted"][:100]),
                   "voted_total": len(cap["voted"])},
               "pool": pool_rows, "method_candidates": cap["method_candidates"],
-              "crossref_source": cap.get("crossref_source"),
+              "crossref_source": cap.get("crossref_source"), "regime_source": cap.get("regime_source"),
               "check": cap["check"], "check_result": last("case_analysis_applicability", "verdicts"),
               "check_calls": [d for e, d, _ in events if e == "case_analysis_applicability" and "batches" in (d or {})],
               "prompt": {"labels": cap["prompt_labels"], "tokens": last("case_analysis_prompt_tokens")},
               "plan": last("case_analysis_plan"), "plan_applicable": last("case_analysis_plan_applicable"),
+              "plan_rule_include": last("case_analysis_plan_rule_include"),
               "qualification": last("case_analysis_qualification"),
               "discipline": last("case_analysis_citation_discipline"),
               "flagged_removed": last("case_analysis_flagged_removed"),
@@ -941,12 +944,15 @@ def analyse_case(rec: dict, ev) -> dict:
     for k in keys(rec.get("method_candidates")):
         channels[k].add("method_list")
     crossref_source = rec.get("crossref_source") or "crossref"
+    regime_source = rec.get("regime_source") or "regime_candidate"
     pool = {}
     for row in rec.get("pool") or []:
         k = K(row["label"])
         pool.setdefault(k, row)
         if crossref_source in (row.get("sources") or []):
             channels[k].add("crossref")
+        if regime_source in (row.get("sources") or []):      # REGIME_CANDIDATES: _add_regime_candidates' rows
+            channels[k].add("regime_candidate")
     for k in keys(fusion.get("spotted") or v1.get("spotted")):
         channels[k].add("issue_spotting")
 
@@ -982,6 +988,9 @@ def analyse_case(rec: dict, ev) -> dict:
             plan_notes[K(_plan_label(entry))].append(note)
     for label in (rec.get("plan_applicable") or {}).get("added_to_last_issue") or []:
         plan_notes[K(label)].append("added_to_last_issue")
+    # PLAN_RULE_INCLUDE: the articles the rule put in the plan (plan_then_write.RULE_SOURCE), else the plan's own
+    plan_source = {K(e["article"]): "rule" for e in (rec.get("plan_rule_include") or {}).get("inserted") or []
+                   if isinstance(e, dict) and e.get("article")}
     for label in ((plan or {}).get("removed") or {}).get("norme") or []:
         if isinstance(label, str):
             plan_notes[K(_plan_label(label))].append("removed_unknown")
@@ -1038,6 +1047,7 @@ def analyse_case(rec: dict, ev) -> dict:
                 "in_pool": k in pool, "check": check_status(k), "dropped": dropped.get(k),
                 "in_prompt": None if in_prompt is None else k in in_prompt,
                 "in_plan": (k in plan_norme) if plan_on else None, "plan_notes": plan_notes.get(k, []),
+                "plan_source": plan_source.get(k) or ("plan" if plan_on and k in plan_norme else None),
                 "mentioned": k in mentioned_eval or k in set(mentioned),
                 "marked_unverified": k in unverified, "flagged_by_qualification": k in qualification_flagged,
                 "rubrica": (pool.get(k) or {}).get("rubrica", "")}

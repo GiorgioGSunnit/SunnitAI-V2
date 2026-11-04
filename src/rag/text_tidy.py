@@ -224,6 +224,17 @@ def _first_copy(text: str, index: Dict[Tuple[str, ...], Tuple[str, str]]) -> Any
     return None
 
 
+_CLOSING_PUNCTUATION_RE = re.compile(r"[\s.;,:)]*?(?=\s|$)")
+
+
+def _closing_punctuation(text: str, end: int) -> int:
+    """How many characters of punctuation close what ends at end, up to the next space or the end of the text; 0 when the
+    text goes on with a letter or a digit ("art. 102 c.p.c. se la decisione...", "(art. 2653, n. 1, c.c.)"), where the
+    pattern matches nothing (v45d: AttributeError in final_checks and text_tidy)."""
+    m = _CLOSING_PUNCTUATION_RE.match(text, end)
+    return len(m.group(0)) if m else 0
+
+
 def _without_copy(text: str, start: int, end: int, ref: Tuple[str, str]) -> Tuple[str, str]:
     """(text, what was done) with one copy dealt with: taken out of its brackets; a whole sentence, or one ending in it after
     the citation of that same article, put in «...»; else its sentence dropped."""
@@ -233,7 +244,7 @@ def _without_copy(text: str, start: int, end: int, ref: Tuple[str, str]) -> Tupl
         cut = end + len(re.match(r"[\s.;,:]*", text[end:]).group(0))
         return (text[:start].rstrip() if cut == closing else text[:start]) + text[cut:], "copy out of its brackets"
     a, b = next(((x, y) for x, y in ptw._sentence_spans(text) if x <= start < y), (start, end))
-    b = max(b, end + len(re.match(r"[\s.;,:)]*?(?=\s|$)", text[end:]).group(0)))
+    b = max(b, end + _closing_punctuation(text, end))
     lead, tail = text[a:start], text[end:b]
     quote = f"«{text[start:end]}»"
     cites = any(ptw._same_ref(r, ref) for _, _, refs in ptw._citations(lead, [], {ref}) for r in refs)

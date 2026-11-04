@@ -23,7 +23,14 @@ from . import article_cards, article_text, comma_material, feature_flags, protec
 from .ai_chat import _call_chat, embedding_model, last_reply, parse_json_reply
 from .llm_reply import salvage_json
 from .article_suffix import SUFFIX, normalize_number, number_variants
-from .verbose_logger import vlog
+from .verbose_logger import exception_data, vlog
+
+
+def _log_exception(stage: str, exc: BaseException, **detail: Any) -> None:
+    """Every exception the pipeline catches, logged with its full traceback whatever VERBOSE_LOGGING says
+    (pipeline_exception): the run goes on as each handler decides."""
+    vlog("pipeline_exception", exception_data(f"defensive_generation.{stage}", exc, **detail))
+
 
 logger = logging.getLogger(__name__)
 
@@ -176,12 +183,14 @@ def classify_proceeding(text: str, lang: str = "it") -> dict:
             max_tokens=600,
         )
     except Exception as exc:
+        _log_exception("classify_proceeding", exc)
         logger.warning("classify_proceeding: LLM call failed: %s", exc)
         return _safe_defaults()
 
     try:
         parsed = parse_json_reply(raw)
     except Exception as exc:
+        _log_exception("classify_proceeding", exc)
         logger.warning("classify_proceeding: JSON parse failed: %s", exc)
         return _safe_defaults()
 
@@ -323,6 +332,7 @@ def _extract_deepdive_topics(draft: str, proceeding: dict) -> list:
         if isinstance(topics, list):
             return [t for t in topics if isinstance(t, str) and _found_in(t, draft)][:3]
     except Exception as exc:
+        _log_exception("_extract_deepdive_topics", exc)
         logger.warning("_extract_deepdive_topics failed: %s", exc)
     return []
 
@@ -507,6 +517,7 @@ def generate_defensive_draft(
         if _split_marker in draft:
             draft = _sections_1_3 + "\n\n" + _sections_4_5
     except Exception as _exc:
+        _log_exception("generate_defensive_draft", _exc)
         logger.warning("generate_defensive_draft: second LLM call failed, using first draft: %s", _exc)
 
     topics = _extract_deepdive_topics(draft, proceeding)
@@ -560,6 +571,7 @@ def run_defensive_pipeline(
             r1 = rag_run(query1, session_language=session_lang, skip_calculation=True)
             citations = _extract_citations(r1.get("raw_result", []))
         except Exception as exc:
+            _log_exception("run_defensive_pipeline", exc)
             logger.warning("run_defensive_pipeline: RAG query 1 failed: %s", exc)
 
     # RAG query 3: fetch actual text of articles cited by opposing party
@@ -575,12 +587,14 @@ def run_defensive_pipeline(
                     _extract_citations(r3.get("raw_result", [])),
                 )
             except Exception as exc:
+                _log_exception("run_defensive_pipeline", exc)
                 logger.warning("run_defensive_pipeline: RAG article lookup failed for %s: %s", article_ref, exc)
 
     try:
         r2 = rag_run(user_message, session_language=session_lang, skip_calculation=True)
         citations = _merge_citations(citations, _extract_citations(r2.get("raw_result", [])))
     except Exception as exc:
+        _log_exception("run_defensive_pipeline", exc)
         logger.warning("run_defensive_pipeline: RAG query 2 failed: %s", exc)
 
     draft = generate_defensive_draft(
@@ -668,6 +682,7 @@ def _safe_step(name: str, draft: str, run: Callable[[str], str]) -> str:
             raise ValueError("empty answer back")
         return out
     except Exception as exc:
+        _log_exception("_safe_step", exc)
         logger.exception("step %s on the answer failed, the answer as it was: %s", name, exc)
         vlog("post_writing_step_failed", {"step": name, "error": f"{type(exc).__name__}: {exc}"[:500]})
         return draft
@@ -822,6 +837,7 @@ def _heading_index_match(session, doc_id: str, term: str) -> Optional[str]:
             index=_HEADING_VECTOR_INDEX, k=_HEADING_INDEX_K, embedding=embedding, doc_id=doc_id,
         ).data()
     except Exception as exc:
+        _log_exception("_heading_index_match", exc)
         logger.info("heading index unavailable, skipping: %s", exc)
         return None
     needed = max(1, (len(stems) + 1) // 2)
@@ -1005,6 +1021,7 @@ def _analyse_case(facts: str, lang: str, request: str = "",
                             HumanMessage(content=_case_text(facts, request) + _frame_block(frame))],
                            max_tokens=2500, temperature=0)
     except Exception as exc:
+        _log_exception("_analyse_case", exc)
         logger.warning("case analysis failed: %s", exc)
         return empty
     if not isinstance(parsed, dict):
@@ -1059,6 +1076,7 @@ def _analyse_case_v2(facts: str, lang: str, request: str = "",
                            max_tokens=3500 if feature_flags.enabled(ISSUE_CHECKLISTS_FLAG) else 3000,
                            temperature=0)
     except Exception as exc:
+        _log_exception("_analyse_case_v2", exc)
         logger.warning("case analysis (v2) failed: %s", exc)
         return empty
     finally:
@@ -1256,6 +1274,7 @@ def _structured_facts(facts: str, request: str,
                              HumanMessage(content=numbered + _frame_block(frame))],
                             max_tokens=3000, temperature=0)
     except Exception as exc:
+        _log_exception("_structured_facts", exc)
         logger.warning("structured analysis, facts: failed: %s", exc)
         return None
     finally:
@@ -1285,6 +1304,7 @@ def _structured_grid(extracted: Dict[str, Any], grid: List[tuple],
         parsed = _chat_json([SystemMessage(content=_STRUCTURED_GRID_SYSTEM), HumanMessage(content=human)],
                             max_tokens=3000, temperature=0)
     except Exception as exc:
+        _log_exception("_structured_grid", exc)
         logger.warning("structured analysis, grid: failed: %s", exc)
         return None
     finally:
@@ -1405,6 +1425,7 @@ def _case_frame(facts: str, request: str) -> Optional[Dict[str, Any]]:
                              HumanMessage(content=_case_text(facts, request))],
                             max_tokens=2500, temperature=0)
     except Exception as exc:
+        _log_exception("_case_frame", exc)
         logger.warning("case frame failed: %s", exc)
         return None
     finally:
@@ -1622,6 +1643,7 @@ def _frame_and_fact_signals(facts: str, request: str) -> tuple:
         try:
             return fact_signals.extract_facts(_case_text(facts, request))
         except Exception as exc:
+            _log_exception("read_facts", exc)
             logger.warning("fact signals failed, the case is read without them: %s", exc)
             return None
     with ThreadPoolExecutor(max_workers=2) as pool:
@@ -1634,6 +1656,7 @@ def _frame_and_fact_signals(facts: str, request: str) -> tuple:
             signals = fact_signals.signals_from(read[0], read[1], (frame or {}).get("areas") or [],
                                                 request=request)
         except Exception as exc:
+            _log_exception("_frame_and_fact_signals", exc)
             logger.warning("fact signals: rules not applied: %s", exc)
     if signals is not None and fact_signals.regimes_enabled():
         signals["posture"] = fact_signals.claim_posture(_case_text(facts, request), signals.get("facts"))
@@ -1810,6 +1833,7 @@ def _search_code_articles(session, analysis: Dict[str, Any]) -> List[tuple]:
                 t=terms, prefixes=_CODE_SEARCH_PREFIXES.get(analysis.get("area"), _ALL_CODE_PREFIXES),
             ).data()
         except Exception as exc:
+            _log_exception("_search_code_articles", exc)
             logger.warning("code search failed for %r: %s", terms, exc)
             continue
         taken = 0
@@ -1842,6 +1866,7 @@ def _choose_articles(facts: str, candidate_rows: List[Dict[str, Any]]) -> Option
                             HumanMessage(content=f"CASO:\n{facts[:6000]}\n\nARTICOLI CANDIDATI:\n{listing}")],
                            max_tokens=200, temperature=0)
     except Exception as exc:
+        _log_exception("_choose_articles", exc)
         logger.warning("article choice failed: %s", exc)
         return None
     finally:
@@ -2014,6 +2039,7 @@ def _issue_article_refs(session, doc_id: Optional[str], parole_chiave: List[str]
             t=terms, doc_id=doc_id,
         ).data()
     except Exception as exc:
+        _log_exception("_issue_article_refs", exc)
         logger.warning("issue search failed for %r: %s", terms, exc)
         return []
     needed = max(1, (len(stems) + 1) // 2)
@@ -2372,6 +2398,7 @@ def _pick_in_rule_ranges(session, documents: List[Dict[str, Any]], istituto: Dic
         number = answer_invariants.pick_in_chapter(session, doc["id"], istituto.get("nome") or "",
                                                    istituto["ranges"], parole_chiave)
     except Exception as exc:
+        _log_exception("_pick_in_rule_ranges", exc)
         logger.warning("I3: no pick inside the rule's ranges: %s", exc)
         return []
     vlog("case_analysis_institution_range", {"institution": istituto.get("nome"), "refused": [],
@@ -2407,6 +2434,7 @@ def _search_case_law(session, analysis: Dict[str, Any], numbers: Optional[List[s
                 t=terms, types=doc_types,
             ).data()
         except Exception as exc:
+            _log_exception("_search_case_law", exc)
             logger.warning("case-law search failed for %r: %s", terms, exc)
             continue
         taken = 0
@@ -2443,6 +2471,7 @@ def _search_similar_facts(session, analysis: Dict[str, Any], exclude_docs: set) 
             t=terms, types=doc_types,
         ).data()
     except Exception as exc:
+        _log_exception("_search_similar_facts", exc)
         logger.warning("similar-facts search failed for %r: %s", terms, exc)
         return []
     rows, seen = [], set(exclude_docs)
@@ -2711,6 +2740,7 @@ def _ruling_passages(session, ruling_rows: List[Dict[str, Any]], selected: List[
     try:
         sections = _ruling_sections(session, [(r.get("d") or {}).get("id") for r in ruling_rows])
     except Exception as exc:
+        _log_exception("_ruling_passages", exc)
         logger.warning("reading the rulings failed: %s", exc)
         sections = {}
     terms = _passage_terms(analysis)
@@ -2790,6 +2820,7 @@ def _extract_principles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
                                                f"PASSI DELLE PRONUNCE:\n{passages}")],
                          max_tokens=2000)
     except Exception as exc:
+        _log_exception("_extract_principles", exc)
         logger.warning("principles extraction failed: %s", exc)
         return ""
     lines = []
@@ -2885,6 +2916,7 @@ def _ruling_fit(facts: str, request: str, ruling_rows: List[Dict[str, Any]],
                                                     f"\n\nPASSI DELLE PRONUNCE:\n{passages}")],
                               max_tokens=300 + 250 * len(ruling_rows), temperature=0)
     except Exception as exc:
+        _log_exception("_ruling_fit", exc)
         logger.warning("ruling fit check failed, rulings kept: %s", exc)
         return ruling_rows
     finally:
@@ -3218,7 +3250,7 @@ _PROMPT_TRIM_STEPS = (
 
 def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
                        ruling_rows: List[Dict[str, Any]], request: str = "", principles: str = "",
-                       budget: int = _DRAFT_INPUT_BUDGET) -> tuple:
+                       budget: int = _DRAFT_INPUT_BUDGET, left: Optional[List[tuple]] = None) -> tuple:
     """(articles, rulings, human) for the draft call, trimmed step by step
     until the estimated prompt fits `budget`: the ruling passages first, then
     the text of the other articles, then those articles themselves, then the
@@ -3227,7 +3259,8 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
     articles were all left out, the room still free goes back to them, one at
     a time and short (_refill_order). The case text and the instructions are
     never cut. A prompt that already fits is exactly the one built before
-    this existed."""
+    this existed. With `left` (GRADE_ALL_PROMPT's estimate), the articles left out are added to it and nothing is
+    logged."""
     named = set(_refs_in(_case_text(facts, request)))
     questioni = analysis.get("questioni", [])
     for step, (ruling_chars, max_rulings, other_chars, kept_chars) in enumerate(_PROMPT_TRIM_STEPS):
@@ -3289,6 +3322,9 @@ def _fit_parere_prompt(system: str, facts: str, analysis: Dict[str, Any], articl
             have.add(row["_article"])
             refilled += 1
         left_out = [a for a in left_out if a not in have]
+    if left is not None:
+        left.extend(a for a in left_out if a)
+        return articles, rulings, human
     sizes = {"total": total, "budget": budget, "step": step, "instructions": _estimate_tokens(system),
              "case": _estimate_tokens(_case_text(facts, request)), "articles": _estimate_tokens(articles),
              "rulings": _estimate_tokens(rulings), "principles": _estimate_tokens(principles),
@@ -3382,6 +3418,7 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
             from .issue_spotting import spotted_rows
             spotted = spotted_rows(session, _fetch_doc_names(driver, database), case, article_rows)
         except Exception as exc:
+            _log_exception("_select_articles", exc)
             logger.warning("issue spotting in the parere failed, nothing added: %s", exc)
         article_rows = article_rows + spotted
     return {"first_rulings": first_rulings, "similar": similar, "keep": keep,
@@ -3482,6 +3519,7 @@ def _fusion_vector_search(session, text: str, index: str, k: int) -> List[tuple]
     try:
         embedding = list(embedding_model.embed_query(text))
     except Exception as exc:
+        _log_exception("_fusion_vector_search", exc)
         logger.warning("fusion: embedding failed: %s", exc)
         return []
     try:
@@ -3493,6 +3531,7 @@ def _fusion_vector_search(session, text: str, index: str, k: int) -> List[tuple]
             index=index, k=k, embedding=embedding,
         ).data()
     except Exception as exc:
+        _log_exception("_fusion_vector_search", exc)
         logger.warning("fusion: vector search on index %r failed (does it exist?): %s", index, exc)
         return []
     seen, refs = set(), []
@@ -3517,6 +3556,7 @@ def _fusion_fulltext_search(session, text: str, k: int) -> List[tuple]:
             q=q, k=k,
         ).data()
     except Exception as exc:
+        _log_exception("_fusion_fulltext_search", exc)
         logger.warning("fusion: fulltext search failed: %s", exc)
         return []
     seen, refs = set(), []
@@ -3562,6 +3602,7 @@ def _fusion_clean_searches(session, text: str, index: str, k: int) -> tuple:
             index=index, fetch=3 * k * _CLEAN_OVERFETCH, limit=3 * k, embedding=embedding,
         ).data()
     except Exception as exc:
+        _log_exception("_fusion_clean_searches", exc)
         logger.warning("fusion clean: vector search on index %r failed: %s", index, exc)
     fulltext = []
     q = _sanitize_fulltext_query(text)
@@ -3574,6 +3615,7 @@ def _fusion_clean_searches(session, text: str, index: str, k: int) -> tuple:
                 q=q, fetch=3 * k * _CLEAN_OVERFETCH, limit=3 * k,
             ).data()
         except Exception as exc:
+            _log_exception("_fusion_clean_searches", exc)
             logger.warning("fusion clean: fulltext search failed: %s", exc)
     return _clean_refs(vector, k), _clean_refs(fulltext, k)
 
@@ -3753,6 +3795,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     try:
         bullets = _fusion_distill_bullets(case)
     except Exception as exc:
+        _log_exception("_select_articles_fusion", exc)
         logger.warning("fusion: distill bullets failed: %s", exc)
         bullets = []
     vlog("case_pool_fusion_distill_llm", duration_ms=(time.time() - t0) * 1000)
@@ -3862,6 +3905,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     signal_names = ["current", "baseline", "distill"] + (["frame"] if frame_refs else []) \
         + (["issues"] if issue_refs else [])
     signal_sets = [set(refs) for refs in signals]
+    resolved_set = set(institutions_resolved)
     for row in candidate_rows:
         ref = row.get("_article")
         if ref in fused_rank:
@@ -3878,6 +3922,8 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
             # re-fetched by ref, not reused from v2's own rows) -- re-applied
             # by ref so the applicability exemption still reaches it.
             row["_heading_match"] = True
+        if ref in resolved_set:
+            row["_institution"] = True                # resolved for an institution (PLAN_RULE_INCLUDE's signals)
         if ref in central_matched:
             row["_central"] = True                    # resolved for a central issue (_central_questions)
         if ref in map_channel or ref in map_rulings:
@@ -3990,6 +4036,7 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 try:
                     resolved, how = fact_resolver.resolve(session, documents, istituto)
                 except Exception as exc:
+                    _log_exception("_select_articles_v2", exc)
                     logger.warning("fact resolver failed for %r: %s", istituto.get("nome"), exc)
                     resolved, how = [], {"refused": [{"article": None, "why": f"failed: {exc}"[:200]}]}
                 # only a core article is the institution's (T1, its own plan issue); a related one is a candidate
@@ -4240,6 +4287,7 @@ def _applicability_batch(case: str, texts: Dict[str, str]) -> tuple:
         verdicts = _chat_json([SystemMessage(content=_APPLICABILITY_SYSTEM), HumanMessage(content=human)],
                               max_tokens=max_tokens, temperature=0)
     except Exception as exc:
+        _log_exception("_applicability_batch", exc)
         logger.warning("applicability check failed for a batch of %d articles, keeping them: %s", len(texts), exc)
         return None, str(exc)[:160]
     return (verdicts, "") if isinstance(verdicts, list) else (None, "reply is not a JSON list")
@@ -4299,7 +4347,7 @@ def _drops_article(verdict: Optional[Dict[str, Any]], article_text: str = "") ->
 
 
 def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dict[str, Any]],
-                                analysis: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+                                analysis: Optional[Dict[str, Any]] = None, session_lang: str = "it") -> List[Dict[str, Any]]:
     """The article rows without those the model shows to be incompatible with
     the facts, in their original order. Fails open: on any error, unparseable
     reply or missing verdict, the rows are kept -- except, with CHECK_PRIORITY_ENABLED,
@@ -4308,7 +4356,9 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     CHECK_GRADED_ENABLED: a relevance grade instead of the verdict (_GRADED_SYSTEM), for every article
     (GRADED_MAX_CHECKED sets a limit, for an A/B); grade 0 is removed, 1 stays as "marginale", 2 and 3 are "applicabile";
     each kept row carries _grade. An article still without a grade after the retry (_graded_verdicts)
-    stays as "non valutato": never removed, never counted as passing the check."""
+    stays as "non valutato": never removed, never counted as passing the check.
+    GRADE_ALL_PROMPT (with CHECK_GRADED_ENABLED): instead of the first slots, the articles that will reach the draft
+    prompt (_grade_prompt_rows), at most _GRADE_ALL_PROMPT_CAP."""
     from . import method_candidates
 
     priority = feature_flags.enabled(CHECK_PRIORITY_FLAG)
@@ -4327,29 +4377,40 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     # Only the first _APPLICABILITY_MAX_CHECKED, in the pipeline's order: the later ones
     # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
     # A graded call costs about a third of a verdict per article: twice the slots.
-    limit = (_graded_max_checked() or len(texts)) if graded else _APPLICABILITY_MAX_CHECKED
-    unchecked = len(texts) - limit
-    unchecked_labels = list(texts)[limit:]
-    if unchecked > 0:
-        texts = dict(list(texts.items())[:limit])
     by_label = {f"{a[0]} {a[1]}": a for a in to_check}
-    past_limit = [r for label in unchecked_labels for r in to_check.get(by_label.get(label), [])[:1]]
+
+    def grade_these(chosen: Dict[str, str]) -> tuple:
+        if feature_flags.enabled(GRADER_EVIDENCE_FLAG):
+            issues = _graded_issues(analysis)
+            return _graded_verdicts(
+                _graded_case(facts, request, analysis, issues),
+                _graded_texts(chosen, to_check, _evidence_context(facts, request, analysis),
+                              _graded_focus(to_check, facts, request, analysis)),
+                _graded_system(evidence=True, issues=bool(issues), examples=feature_flags.enabled(GRADER_EXAMPLES_FLAG)),
+                issues)
+        return _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(chosen, to_check, None,
+                                                                                      _graded_focus(to_check, facts, request, analysis)))
     ungraded: List[str] = []
-    if not texts:
-        verdicts = {}
-    elif graded and feature_flags.enabled(GRADER_EVIDENCE_FLAG):
-        issues = _graded_issues(analysis)
-        verdicts, ungraded = _graded_verdicts(
-            _graded_case(facts, request, analysis, issues),
-            _graded_texts(texts, to_check, _evidence_context(facts, request, analysis),
-                          _graded_focus(to_check, facts, request, analysis)),
-            _graded_system(evidence=True, issues=bool(issues), examples=feature_flags.enabled(GRADER_EXAMPLES_FLAG)),
-            issues)
-    elif graded:
-        verdicts, ungraded = _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(texts, to_check, None,
-                                                                                         _graded_focus(to_check, facts, request, analysis)))
+    if graded and feature_flags.enabled(GRADE_ALL_PROMPT_FLAG) and texts:
+        limit = f"prompt (cap {_GRADE_ALL_PROMPT_CAP})"
+        chosen, verdicts, ungraded = _grade_prompt_rows(texts, by_label, article_rows, grade_these, facts, request,
+                                                        analysis or {}, session_lang)
+        unchecked_labels = [label for label in texts if label not in chosen]
+        unchecked = len(unchecked_labels)
+        texts = chosen
     else:
-        verdicts = _applicability_verdicts(facts, request, texts)
+        limit = (_graded_max_checked() or len(texts)) if graded else _APPLICABILITY_MAX_CHECKED
+        unchecked = len(texts) - limit
+        unchecked_labels = list(texts)[limit:]
+        if unchecked > 0:
+            texts = dict(list(texts.items())[:limit])
+        if not texts:
+            verdicts = {}
+        elif graded:
+            verdicts, ungraded = grade_these(texts)
+        else:
+            verdicts = _applicability_verdicts(facts, request, texts)
+    past_limit = [r for label in unchecked_labels for r in to_check.get(by_label.get(label), [])[:1]]
     if verdicts is None:
         # Every batch failed: kept as before; the method lists' candidates are not (CHECKLIST_GATED).
         return _without_unjudged(article_rows, to_check, {}, set(), method_only=True) if gated else article_rows
@@ -4474,6 +4535,59 @@ def _tier_order(texts: Dict[str, str], to_check: Dict[tuple, List[Dict[str, Any]
     return {label: texts[label] for label in sorted(texts, key=lambda label: key.get(label, (9,)))}
 
 
+# GRADE_ALL_PROMPT (v45): the graded check grades the articles that will reach the draft prompt instead of the first
+# slots of its order (v37: 14 of the 64 articles of an average prompt came from past the 72 slots, never graded, so
+# never eligible for the plan). Which ones reach it depends on the grades (a grade 0 leaves, its room goes to others),
+# so in rounds: the prompt as _fit_parere_prompt would build it from the rows as graded so far (without the rulings and
+# the principles, which come later: an estimate that errs towards more articles), its ungraded articles graded, until
+# none is left, at most _GRADE_ALL_PROMPT_ROUNDS rounds and _GRADE_ALL_PROMPT_CAP articles in all.
+GRADE_ALL_PROMPT_FLAG = "GRADE_ALL_PROMPT"
+_GRADE_ALL_PROMPT_CAP = 120
+_GRADE_ALL_PROMPT_ROUNDS = 4
+
+
+def _prompt_reach(article_rows: List[Dict[str, Any]], grades: Dict[tuple, int], facts: str, request: str,
+                  analysis: Dict[str, Any], session_lang: str) -> set:
+    """The articles the draft prompt would hold with these grades: grade 0 gone, the others tagged as the check tags
+    them (the refill order reads them)."""
+    rows = []
+    for row in article_rows:
+        grade = grades.get(row.get("_article"))
+        if grade == 0:
+            continue
+        rows.append(row if grade is None else
+                    {**row, "_grade": grade, "_applicability": "applicabile" if grade >= 2 else "marginale"})
+    left: List[tuple] = []
+    _fit_parere_prompt(_parere_system(analysis, session_lang), facts, analysis, rows, [], request, "", left=left)
+    return {r["_article"] for r in rows if r.get("_article")} - set(left)
+
+
+def _grade_prompt_rows(texts: Dict[str, str], by_label: Dict[str, tuple], article_rows: List[Dict[str, Any]],
+                       grade_these, facts: str, request: str, analysis: Dict[str, Any], session_lang: str) -> tuple:
+    """({label: text} graded, {key: verdict}, [labels left ungraded]) for GRADE_ALL_PROMPT, in the check's order."""
+    graded: Dict[str, str] = {}
+    verdicts: Dict[str, Dict[str, Any]] = {}
+    ungraded: List[str] = []
+    rounds = []
+    for _ in range(_GRADE_ALL_PROMPT_ROUNDS):
+        grades = {by_label[label]: _grade(verdicts.get(_applicability_key(label))) for label in graded}
+        reach = _prompt_reach(article_rows, {a: g for a, g in grades.items() if g is not None}, facts, request,
+                              analysis, session_lang)
+        wanted = [label for label in texts if label not in graded and by_label.get(label) in reach]
+        wanted = wanted[:max(0, _GRADE_ALL_PROMPT_CAP - len(graded))]
+        if not wanted:
+            break
+        chosen = {label: texts[label] for label in wanted}
+        got, missing = grade_these(chosen)
+        verdicts.update(got)
+        ungraded += missing
+        graded.update(chosen)
+        rounds.append(len(wanted))
+    vlog("case_analysis_grade_prompt", {"candidates": len(texts), "graded": len(graded), "rounds": rounds,
+                                        "cap": _GRADE_ALL_PROMPT_CAP, "ungraded": ungraded})
+    return graded, verdicts, ungraded
+
+
 # CHECK_PRIORITY_ENABLED (diagnose_long, 25 Oct: half of the pool past the 36 checked slots, and
 # kept unchecked): the slots go first to the voted articles, then to those several signals found,
 # then the rest in the pipeline's order, the method lists last (_check_rank); an article left
@@ -4544,6 +4658,7 @@ def _graded_batch(case: str, texts: Dict[str, str], retry: bool = False, system:
         raw = _chat([SystemMessage(content=system), HumanMessage(content=human)],
                     max_tokens=_GRADED_TOKENS[0] + _GRADED_TOKENS[1] * len(ids), temperature=0)
     except Exception as exc:
+        _log_exception("_graded_batch", exc)
         logger.warning("graded check failed for a batch of %d articles: %s", len(ids), exc)
         return {}, f"error: {str(exc)[:160]}"
     read = _graded_reply(raw, ids, issues)
@@ -4597,6 +4712,18 @@ def _json_objects(raw: str) -> List[Dict[str, Any]]:
     return found
 
 
+# GRADER_FIXED_ORDER (v45): the same articles make the same batches on every run -- sorted by code, then article
+# number and suffix (evidence_tiers.ref_key) before batching; the prompt's text is unchanged.
+GRADER_FIXED_ORDER_FLAG = "GRADER_FIXED_ORDER"
+
+
+def _label_key(label: str) -> tuple:
+    """A graded label ("614-bis c.p.c.") in evidence_tiers.ref_key's order: code, number, suffix."""
+    from . import evidence_tiers
+    number, _, code = str(label).partition(" ")
+    return evidence_tiers.ref_key((number, code))
+
+
 def _graded_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYSTEM,
                      issues: Optional[List[str]] = None) -> tuple:
     """({label key: verdict}, [labels left without a grade]) for the graded check: _APPLICABILITY_BATCH
@@ -4613,7 +4740,8 @@ def _graded_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYS
             return list(pool.map(lambda group: _graded_batch(case, group, retry, system, issues), groups))
 
     t0 = time.time()
-    labels = list(texts)
+    # GRADER_FIXED_ORDER: the batches by article id, whatever order retrieval gave them.
+    labels = sorted(texts, key=_label_key) if feature_flags.enabled(GRADER_FIXED_ORDER_FLAG) else list(texts)
     got: Dict[str, Dict[str, Any]] = {}
     first = run(labels, _APPLICABILITY_BATCH, False)
     for read, _ in first:
@@ -5024,6 +5152,7 @@ def _opposing_arguments(facts: str, request: str, analysis: Dict[str, Any], sect
         parsed = _chat_json([SystemMessage(content=_STANCE_SYSTEM), HumanMessage(content=human)],
                             max_tokens=900, temperature=0)
     except Exception as exc:
+        _log_exception("_opposing_arguments", exc)
         logger.warning("client stance check failed: %s", exc)
         return []
     finally:
@@ -5060,6 +5189,7 @@ def _check_client_stance(draft: str, facts: str, request: str, analysis: Dict[st
     try:
         new_section = _call_chat([SystemMessage(content=system), HumanMessage(content=rewrite)], max_tokens=2000)
     except Exception as exc:
+        _log_exception("_check_client_stance", exc)
         logger.warning("client stance rewrite failed, draft kept: %s", exc)
         return draft
     new_section = (new_section or "").strip()
@@ -5129,6 +5259,42 @@ def _citation_context(draft: str, ref: tuple, documents: Optional[List[Dict[str,
     return draft[start:end if end != -1 else len(draft)].strip()[:400]
 
 
+# RUBRICA_TEXT_CHECK (v45): the rubrica stamp against the article's text: the [DA VERIFICARE: l'art. N riguarda
+# «rubrica»] mark judged the heading alone, so art. 1061 c.c. ("Servitù non apparenti"), cited for an apparent
+# servitude, was stamped though its text defines both. When the key terms of the clause citing the article -- or their
+# negation, the stem is the same ("apparente" / "non apparenti") -- occur in the article's text, no stamp.
+_STAMP_STOP = frozenset(
+    "della delle dello degli dalla dalle dallo dagli nella nelle nello negli sulla sulle sullo sugli quale quali quando "
+    "anche perché perche essere stato stata stati state questo questa questi queste quello quella quelli quelle secondo "
+    "ovvero oppure infatti dunque quindi presente articolo articoli comma commi codice norma norme prevede dispone "
+    "stabilisce disciplina sensi senso ancora tutto tutti tutte altro altra altri altre essa esso loro molto sempre "
+    "proprio propria tratta cioè".split())
+_STAMP_MIN_TERMS = 2
+RUBRICA_TEXT_CHECK_FLAG = "RUBRICA_TEXT_CHECK"
+
+
+def _stamp_stems(text: str, names: bool = True) -> set:
+    """The content stems (five letters) of text; without names, the capitalised words left out (the case's parties)."""
+    words = re.findall(r"[^\W\d_]+", text or "")
+    return {w.lower()[:5] for w in words if len(w) >= 5 and w.lower() not in _STAMP_STOP and (names or not w[0].isupper())}
+
+
+def _citing_clause(context: str, ref: tuple) -> str:
+    """The clause of context (between ";", ":" or sentence ends) holding ref's number; context when not found."""
+    for clause in re.split(r"[;:]|(?<=[a-zà-ù\)])\.\s+(?=[A-ZÀ-Ü])", context or ""):
+        if re.search(rf"(?<![\w-]){re.escape(str(ref[0]))}(?![\w-])", clause):
+            return clause
+    return context or ""
+
+
+def _text_covers(context: str, ref: tuple, article: str) -> List[str]:
+    """The key terms of the clause citing ref found in the article's text, when they cover it (at least
+    _STAMP_MIN_TERMS and two thirds of them), else []."""
+    key = _stamp_stems(_citing_clause(context, ref), names=False)
+    found = sorted(key & _stamp_stems(article))
+    return found if len(key) >= _STAMP_MIN_TERMS and len(found) * 3 >= len(key) * 2 else []
+
+
 def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
                           session, documents: List[Dict[str, Any]], case_text: str = "") -> str:
     """The draft with each cited article whose real heading does not fit the use
@@ -5160,6 +5326,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
             for row in _fetch_any(session, documents, missing):
                 rows_by_ref.setdefault(row.get("_article"), row)
         except Exception as exc:
+            _log_exception("_check_qualifications", exc)
             logger.warning("qualification check: heading fetch failed: %s", exc)
     for ref in cited:
         s = (rows_by_ref.get(ref) or {}).get("s") or {}
@@ -5181,6 +5348,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         verdicts = _chat_json([SystemMessage(content=system), HumanMessage(content=human)],
                               max_tokens=max(600, (110 if remove or direction else 90) * len(headings)), temperature=0)
     except Exception as exc:
+        _log_exception("_check_qualifications", exc)
         logger.warning("qualification check failed, draft kept: %s", exc)
         return draft
     finally:
@@ -5198,6 +5366,17 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     deferred: List[tuple] = []
     from . import evidence_tiers
     tier_of = evidence_tiers.tiers_by_ref(article_rows)
+    by_text = feature_flags.enabled(RUBRICA_TEXT_CHECK_FLAG)
+    not_stamped: Dict[str, List[str]] = {}
+
+    def stamp(draft: str, ref: tuple, heading: str) -> str:
+        label = f"{ref[0]} {ref[1]}"
+        found = _text_covers(headings[label][1], ref, " ".join(
+            str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())) if by_text else []
+        if found:
+            not_stamped[label] = found
+            return draft
+        return _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
     removals: List[Dict[str, Any]] = []
     for v in verdicts:
         if not isinstance(v, dict) or v.get("compatibile") is not False:
@@ -5238,7 +5417,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                 if str(v.get("tipo") or "").strip().lower() == "formulazione":
                     note_dropped.append(label)
                     continue
-            draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
+            draft = stamp(draft, ref, heading)
     governs = _second_opinion(case_text, [ref for ref, *_ in deferred], rows_by_ref) if deferred else {}
     for ref, heading, why, kind in deferred:
         label = f"{ref[0]} {ref[1]}"
@@ -5254,8 +5433,10 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         if kind == "formulazione":
             note_dropped.append(label)
             continue
-        draft = _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
+        draft = stamp(draft, ref, heading)
     log = {"checked": sorted(headings), "flagged": flagged}
+    if not_stamped:
+        log["not_stamped"] = not_stamped        # the article's text holds the clause's key terms
     if deferred:
         log["second_opinion"] = {f"{n} {c}": governs.get((n, c)) for (n, c), *_ in deferred}
     if direction:
@@ -5295,6 +5476,7 @@ def _second_opinion(case_text: str, refs: List[tuple], rows_by_ref: Dict[tuple, 
                                                      f"{ref[1]}\n{comma_material.trim(text, _SECOND_OPINION_CHARS, case_text)}")],
                                max_tokens=200, temperature=0)
         except Exception as exc:
+            _log_exception("ask", exc)
             return ref, None, f"failed: {type(exc).__name__}"
         if not isinstance(reply, dict) or not isinstance(reply.get("disciplina"), bool):
             return ref, None, "unreadable"
@@ -5356,6 +5538,7 @@ def _citation_hygiene(draft: str, session, documents: List[Dict[str, Any]], arti
             "MATCH (d:Document) WHERE d.name IN $names RETURN d.name AS name, "
             "collect(DISTINCT d.document_type) AS types", names=names).data()}
     except Exception as exc:
+        _log_exception("_citation_hygiene", exc)
         logger.warning("citation hygiene: document types not read, draft kept: %s", exc)
         return draft
     named = _named_refs(case_text, documents)
@@ -5419,6 +5602,7 @@ def _add_method_candidates(session, driver, database: str, analysis: Dict[str, A
     try:
         rows = _fetch_any(session, _fetch_doc_names(driver, database), wanted, store)
     except Exception as exc:
+        _log_exception("_add_method_candidates", exc)
         logger.warning("method candidates: fetch failed, nothing added: %s", exc)
         return picked
     for row in rows:
@@ -5430,6 +5614,64 @@ def _add_method_candidates(session, driver, database: str, analysis: Dict[str, A
     return {**picked, "article_rows": list(picked.get("article_rows") or []) + rows,
             "selected": list(picked.get("selected") or []) + [r for r in added if r not in picked.get("selected", [])],
             "method_candidates": added}
+
+
+REGIME_CANDIDATE_SOURCE = "regime_candidate"
+
+
+def _add_regime_candidates(session, driver, database: str, analysis: Dict[str, Any], picked: Dict[str, Any],
+                           store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
+    """REGIME_CANDIDATES: picked with the articles of the regimes the case's issues call for (fact_signals.
+    regime_candidates) that are not already among its rows, appended over and above the cap, tagged
+    REGIME_CANDIDATE_SOURCE and _regime_candidate; never exempt from the check. Unchanged with the flag off, with no
+    regime, or on any failure."""
+    from . import fact_signals
+    if not fact_signals.regime_candidates_enabled():
+        return picked
+    try:
+        return _with_regime_candidates(session, driver, database, analysis, picked, store)
+    except Exception as exc:         # logged and skipped: the pool as it was
+        _log_exception("_add_regime_candidates", exc)
+        return picked
+
+
+def _with_regime_candidates(session, driver, database: str, analysis: Dict[str, Any], picked: Dict[str, Any],
+                            store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
+    """_add_regime_candidates' body."""
+    from . import fact_signals
+    areas = (analysis.get("frame") or {}).get("areas") or (analysis.get("fact_signals") or {}).get("areas") or []
+    regimes = fact_signals.regime_candidates(analysis, areas)
+    have = {r.get("_article") for r in picked.get("article_rows") or [] if r.get("_article")}
+    wanted: Dict[tuple, str] = {}
+    for regime in regimes:
+        for ref in regime["refs"]:
+            if ref not in have:
+                wanted.setdefault(ref, regime["id"])
+    rows: List[Dict[str, Any]] = []
+    if wanted:
+        try:
+            from .doc_lookup import _fetch_doc_names
+            rows = _fetch_any(session, _fetch_doc_names(driver, database), list(wanted), store)
+        except Exception as exc:
+            _log_exception("_with_regime_candidates", exc)
+            logger.warning("regime candidates: fetch failed, nothing added: %s", exc)
+            rows = []
+    for row in rows:
+        row["_source"] = REGIME_CANDIDATE_SOURCE
+        row["_regime_candidate"] = wanted.get(row.get("_article"), True)
+        row["_draft_pending_lawyer"] = True
+    added = list(dict.fromkeys(r["_article"] for r in rows if r.get("_article")))
+    vlog("case_analysis_regime_candidates", {
+        "areas": areas, "regimes": [{"id": r["id"], "matched": [f"{t} «{name}»" for t, name in r["matched"]],
+                                     "refs": [f"{n} {c}" for n, c in r["refs"]]} for r in regimes],
+        "already_in_pool": sorted({f"{n} {c}" for r in regimes for n, c in r["refs"] if (n, c) in have}),
+        "added": [f"{n} {c}" for n, c in added],
+        "not_found": [f"{n} {c}" for n, c in wanted if (n, c) not in added]})
+    if not rows:
+        return picked
+    return {**picked, "article_rows": list(picked.get("article_rows") or []) + rows,
+            "selected": list(picked.get("selected") or []) + [r for r in added if r not in picked.get("selected", [])],
+            "regime_candidates": added}
 
 
 def _regime_rows(session, driver, database: str, analysis: Dict[str, Any],
@@ -5447,9 +5689,25 @@ def _regime_rows(session, driver, database: str, analysis: Dict[str, Any],
         fact_signals.attach_term_sources(session, documents, signals)
         # ROLE_BLOCKS_ENABLED: the criminal profile for the client's side, before its articles are read.
         fact_signals.fit_to_role(signals, _stance_party(analysis))
+        # REGIME_CANDIDATES: the tools of the regimes the case's issues call for, read like the others; on any
+        # failure logged and left out, the other tools kept.
+        keyed: List[Dict[str, Any]] = []
+        try:
+            have = {t["id"] for t in signals.get("tools") or []}
+            keyed = [t for t in fact_signals.regime_tools(signals, analysis) if t["id"] not in have]
+        except Exception as exc:
+            _log_exception("_regime_rows.regime_tools", exc)
+            keyed = []
+        if keyed:
+            signals["tools"] = list(signals.get("tools") or []) + keyed
         tools = fact_signals.regime_refs(signals)
         rows = _fetch_any(session, documents, list(tools), store) if tools else []
+        try:
+            _rubrica_texts(keyed, rows)
+        except Exception as exc:
+            _log_exception("_regime_rows.rubrica_texts", exc)
     except Exception as exc:
+        _log_exception("_regime_rows", exc)
         logger.warning("fact regimes: tools and terms not read: %s", exc)
         return []
     for row in rows:
@@ -5465,6 +5723,20 @@ def _regime_rows(session, driver, database: str, analysis: Dict[str, Any],
         "terms": [t.get("text") for t in signals.get("terms") or []],
         "term_refs": {t["id"]: t.get("ref") for t in signals.get("terms") or []}})
     return rows
+
+
+def _rubrica_texts(tools: List[Dict[str, Any]], rows: List[Dict[str, Any]]) -> None:
+    """A regime tool's text, in place: its article's own rubrica as read, "<rubrica> (art. N code)."; not read, the
+    table's text stays."""
+    heading_of = {}
+    for row in rows:
+        heading = article_text.heading(row.get("s"))
+        if row.get("_article") and heading:
+            heading_of.setdefault(tuple(row["_article"]), heading)
+    for tool in tools:
+        parts = [f"{heading_of[tuple(r)]} (art. {r[0]} {r[1]})" for r in tool["refs"] if tuple(r) in heading_of]
+        if parts:
+            tool["text"] = "; ".join(parts) + "."
 
 
 def _with_regime_rows(article_rows: List[Dict[str, Any]], regime_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -5499,6 +5771,7 @@ def _support_rulings(facts: str, request: str, article_rows: List[Dict[str, Any]
                                                    weight_shared=True, stage="narrative")
             rows = _ruling_passages(session, support, refs, analysis)
     except Exception as exc:
+        _log_exception("_support_rulings", exc)
         logger.warning("hybrid: support rulings failed, none given: %s", exc)
         return []
     store = ruling_cards.store()
@@ -5525,8 +5798,18 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     """A reasoned parere on a case: facts described in the message, or an
     uploaded document (`facts`) with the user's message as `request`.
 
-    Returns {"draft": str, "citations": list} like run_defensive_pipeline.
+    Returns {"draft": str, "citations": list} like run_defensive_pipeline. An exception that escapes it is logged
+    with its full traceback (pipeline_exception), then raised as before.
     """
+    try:
+        return _case_analysis_pipeline(facts, session_lang, request)
+    except Exception as exc:
+        _log_exception("run_case_analysis_pipeline", exc)
+        raise
+
+
+def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str = "") -> dict:
+    """run_case_analysis_pipeline's body."""
     import neo4j
     from .main import driver, NEO4J_DATABASE
 
@@ -5552,6 +5835,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 _select_articles_v2 if case_analysis_v2 else _select_articles)
             picked = select_fn(session, driver, NEO4J_DATABASE, facts, request, analysis, store=store)
             picked = _add_method_candidates(session, driver, NEO4J_DATABASE, analysis, picked, store=store)
+            picked = _add_regime_candidates(session, driver, NEO4J_DATABASE, analysis, picked, store=store)
             regime_rows = _regime_rows(session, driver, NEO4J_DATABASE, analysis, store=store)
             if picked.get("tiers"):          # evidence tiers: the method candidates and the procedural tools too
                 from . import evidence_tiers
@@ -5574,6 +5858,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 if filled:
                     vlog("case_analysis_in_force_only_filled", {"sections": filled})
             except Exception as exc:
+                _log_exception("_case_analysis_pipeline", exc)
                 logger.warning("articles holding only their date in force not filled: %s", exc)
             # HYBRID_NARRATIVE_ENABLED: the rulings come after the applicability check, from the articles it
             # kept (_support_rulings), not from searches of their own.
@@ -5599,6 +5884,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                         "kept": len(ruling_rows),
                         "cards_kept": sum((r.get("d") or {}).get("id") in carded for r in ruling_rows)})
     except Exception as exc:
+        _log_exception("_case_analysis_pipeline", exc)
         logger.warning("case analysis retrieval failed: %s", exc)
     vlog("case_analysis_retrieval", {"v2": case_analysis_v2, "pool_fusion": pool_fusion,
                                      "articles": len(article_rows), "rulings": len(ruling_rows),
@@ -5610,7 +5896,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     # APPLICABILITY_CHECK_ENABLED. Runs after article_rows/ruling_rows are
     # final, before both the citations and the draft prompt use them.
     if feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
-        article_rows = _filter_applicable_articles(facts, request, article_rows, analysis)
+        article_rows = _filter_applicable_articles(facts, request, article_rows, analysis, session_lang=session_lang)
     if regime_rows:
         article_rows = _with_regime_rows(article_rows, regime_rows)
     voted_kept = sorted({f"{r['_article'][0]} {r['_article'][1]}" for r in article_rows
@@ -5633,6 +5919,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 # the commi the case names always given.
                 comma_material.attach(session, article_rows, "strategy", store=store)
         except Exception as exc:
+            _log_exception("_case_analysis_pipeline", exc)
             logger.warning("protected rows / commi not read: %s", exc)
     # Each article's focus, the analysis question it was found for: what an over-budget article keeps (comma_material.trim).
     comma_material.set_focus(article_rows, comma_material.analysis_focus(article_rows, analysis),
@@ -5653,6 +5940,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                 from .doc_lookup import _fetch_doc_names
                 documents_for_plan = _fetch_doc_names(driver, NEO4J_DATABASE)
             except Exception as exc:
+                _log_exception("_case_analysis_pipeline", exc)
                 logger.warning("plan-then-write: no document names, citations read by code only: %s", exc)
         planned = plan_then_write.write_parere(facts, request, analysis, article_rows, ruling_rows,
                                                articles, rulings, principles, session_lang, documents_for_plan,
@@ -5666,6 +5954,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
             draft = _call_chat([SystemMessage(content=system), HumanMessage(content=human)],
                                max_tokens=_PARERE_TOKENS)
         except Exception as exc:
+            _log_exception("_case_analysis_pipeline", exc)
             # The estimate was still too low for this text: once more, smaller,
             # rather than an error for a size problem.
             if not _is_context_overflow(exc):
@@ -5722,6 +6011,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                         draft = _check_qualifications(draft, analysis, article_rows, session, documents,
                                                       _case_text(facts, request))
         except Exception as exc:
+            _log_exception("_case_analysis_pipeline", exc)
             logger.warning("draft checks after the draft failed, draft kept: %s", exc)
     # ANSWER_INVARIANTS_ENABLED: the general checks on the written answer (answer_invariants.py).
     from . import answer_invariants
@@ -5736,6 +6026,7 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
                                                      article_rows=article_rows, ruling_rows=ruling_rows,
                                                      documents=documents, session=session)
         except Exception as exc:
+            _log_exception("_case_analysis_pipeline", exc)
             logger.warning("answer invariants failed, draft kept: %s", exc)
     # Every answer: the defects the edits leave (empty brackets, a sentence opening on a cut citation, an unverified
     # note mid-sentence) repaired (text_tidy.py).
@@ -5805,6 +6096,7 @@ def generate_deepdive_analysis(topic: str, chat_history: list, session_lang: str
         r = rag_run(topic, session_language=session_lang, skip_calculation=True)
         citations = _extract_citations(r.get("raw_result", []))
     except Exception as exc:
+        _log_exception("generate_deepdive_analysis", exc)
         logger.warning("generate_deepdive_analysis: RAG failed: %s", exc)
 
     citations_text = protected_sources.citation_lines(citations, 400) if citations else ""

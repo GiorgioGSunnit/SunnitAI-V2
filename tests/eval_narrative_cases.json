@@ -421,6 +421,21 @@
         {
           "code": "cc",
           "article": "1079"
+        },
+        {
+          "code": "cc",
+          "article": "1061",
+          "status": "draft — pending lawyer validation"
+        },
+        {
+          "code": "cpc",
+          "article": "102",
+          "status": "draft — pending lawyer validation"
+        },
+        {
+          "code": "cc",
+          "article": "2653",
+          "status": "draft — pending lawyer validation"
         }
       ]
     },

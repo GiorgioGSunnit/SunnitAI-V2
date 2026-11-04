@@ -10,13 +10,18 @@ out of the stable-miss logic. Prints, in markdown:
   2  the stable misses by loss mechanism, with the slot fields of that mechanism, one row per run
   3  per mechanism, the count of stable misses and the distinct values of the fields that explain them
   4  the unexpected norms mentioned in every complete run for the same case with grade >= 2
+  5  the flaky norms' non-MENTIONED cells by stage
+  6  per run (partial ones too), the unexpected norms the qualification check found rubrica-incompatible
+     (fit.compatibile false), with channels, grade, plan_source and whether the norm is a regime candidate or a
+     procedural tool; then the diff between MISUSE_RUNS
 
 A stable miss's mechanism is the one of the most runs (ties: the earliest in STAGE order). Nothing is written.
 
-  python scripts/miss_analysis.py [DIR]
+  python scripts/miss_analysis.py [DIR] [--misuse-runs A B]
 """
 
 import argparse
+import ast
 import glob
 import importlib.util
 import json
@@ -46,6 +51,65 @@ MECHANISMS = [
 EXPLAINING = {"never in pool": ["stage", "in_corpus"], "in pool, not in prompt": ["stage", "cap", "check", "dropped"],
               "in prompt, not in plan": ["check", "plan_notes"],
               "in plan, not mentioned": ["plan_notes", "marked_unverified", "flagged_by_qualification", "check"]}
+
+
+# Table 6: the runs whose misused norms are diffed; the tables fact_signals' regime candidates and tools come from.
+MISUSE_RUNS = ("v45-candidate", "v37-cards-off")
+FACT_SIGNALS = os.path.join(_HERE, os.pardir, "src", "rag", "fact_signals.py")
+REGIME_SOURCE = "regime_candidate"       # defensive_generation.REGIME_CANDIDATE_SOURCE: a channel once diagnose_long has it
+
+
+def _ref_tables(path=FACT_SIGNALS):
+    """{"regime": {label: [ids]}, "tool": {label: [ids]}} from fact_signals.REGIME_CANDIDATES and PROCEDURAL_TOOLS,
+    read from the source (no import: it needs the app's dependencies); {} for both if the file is missing."""
+    out = {"regime": defaultdict(list), "tool": defaultdict(list)}
+    try:
+        tree = ast.parse(open(path, encoding="utf-8").read())
+    except OSError:
+        return out
+    names = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            names.update({t.id: node.value.value for t in node.targets if isinstance(t, ast.Name)})
+    kinds = {"REGIME_CANDIDATES": "regime", "PROCEDURAL_TOOLS": "tool"}
+    for node in tree.body:
+        target = getattr(node, "target", None) or (node.targets[0] if isinstance(node, ast.Assign) else None)
+        if not isinstance(target, ast.Name) or target.id not in kinds or not isinstance(node.value, ast.List):
+            continue
+        for item in node.value.elts:
+            if not isinstance(item, ast.Dict):
+                continue
+            entry = {k.value: v for k, v in zip(item.keys, item.values) if isinstance(k, ast.Constant)}
+            ident = entry["id"].value if isinstance(entry.get("id"), ast.Constant) else "?"
+            for ref in getattr(entry.get("refs"), "elts", []):
+                parts = [p.value if isinstance(p, ast.Constant) else names.get(getattr(p, "id", ""), "?")
+                         for p in ref.elts]
+                out[kinds[target.id]][_key(f"{parts[0]} {parts[1]}")].append(ident)
+    return out
+
+
+def _key(label):
+    return " ".join(str(label).lower().replace(".", " ").split())
+
+
+def misused(case):
+    """The case's unexpected norms the qualification check found incompatible with their rubrica."""
+    return [u for u in case.get("unexpected") or [] if (u.get("fit") or {}).get("compatibile") is False]
+
+
+def provenance(u, tables):
+    """Whether u is a regime candidate or a procedural tool: by the regime_candidate channel when the run has it,
+    else by its article being in the table (marked "table only")."""
+    out = []
+    regimes = tables["regime"].get(_key(u["label"]))
+    if REGIME_SOURCE in (u.get("channels") or []):
+        out.append("regime candidate" + (f" ({', '.join(regimes)})" if regimes else ""))
+    elif regimes:
+        out.append(f"regime table only ({', '.join(regimes)})")
+    tools = tables["tool"].get(_key(u["label"]))
+    if tools:
+        out.append(f"procedural tool ({', '.join(tools)})")
+    return "; ".join(out) or "no"
 
 
 def mechanism_of(stage):
@@ -97,6 +161,8 @@ def load_runs(root):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("dir", nargs="?", default="diagnose_reports")
+    parser.add_argument("--misuse-runs", nargs=2, default=list(MISUSE_RUNS), metavar=("A", "B"),
+                        help="table 6's diff: misused in A not in B, and vice versa")
     args = parser.parse_args()
     runs = load_runs(args.dir)
     if not runs:
@@ -199,6 +265,52 @@ def main():
         print(table(["case", "norm", "run", "check"] + extra,
                     [[cid, label, r, field(slot, "check")] + [field(slot, f) for f in extra]
                      for cid, label, r, slot in by_stage[s]]))
+
+    misuse_table(runs, args.misuse_runs)
+
+
+def misuse_table(runs, pair):
+    tables = _ref_tables()
+    order = {cid: i for i, cid in enumerate(CASE_IDS)}
+    print("\n## 6. Unexpected norms flagged rubrica-incompatible (fit.compatibile false)\n")
+    print("plan_source: the row's plan_source if the report has one, else \"rule\" when its plan_notes say so, else –. "
+          "regime / tool: \"regime table only\" means the article is in fact_signals.REGIME_CANDIDATES but the run "
+          f"shows no {REGIME_SOURCE} channel.\n")
+    for r in runs:
+        rows = [[cid, u["label"], u.get("channels") or [], u.get("check"),
+                 u.get("plan_source") or ("rule" if "rule" in (u.get("plan_notes") or []) else "–"),
+                 provenance(u, tables), (u.get("fit") or {}).get("perche")]
+                for cid in sorted(runs[r], key=order.get) for u in misused(runs[r][cid])]
+        print(f"### {r} ({len(rows)} in {len({row[0] for row in rows})} cases)\n")
+        print(table(["case", "norm", "channels", "grade", "plan_source", "regime / tool", "why (check)"], rows)
+              if rows else "(none)")
+        print()
+    a, b = pair
+    if a not in runs or b not in runs:
+        print(f"(diff skipped: {', '.join(x for x in pair if x not in runs)} not under DIR)")
+        return
+
+    def status(run, cid, label):
+        case = runs[run].get(cid)
+        if case is None:
+            return "case not in run"
+        if any(s["label"] == label for s in case.get("slots") or []):
+            return "expected norm"
+        u = next((u for u in case.get("unexpected") or [] if u["label"] == label), None)
+        if u is None:
+            return "not unexpected (absent)"
+        verdict = (u.get("fit") or {}).get("compatibile")
+        return f"unexpected, {'compatible' if verdict else 'unchecked'}, {u.get('check')}"
+
+    for one, other in ((a, b), (b, a)):
+        theirs = {(cid, u["label"]) for cid, case in runs[other].items() for u in misused(case)}
+        rows = [[cid, u["label"], u.get("channels") or [], u.get("check"), provenance(u, tables), status(other, cid, u["label"])]
+                for cid in sorted(runs[one], key=order.get) for u in misused(runs[one][cid])
+                if (cid, u["label"]) not in theirs]
+        print(f"### Misused in {one}, not in {other} ({len(rows)})\n")
+        print(table(["case", "norm", f"channels ({one})", f"grade ({one})", "regime / tool", f"in {other}"], rows)
+              if rows else "(none)")
+        print()
 
 
 if __name__ == "__main__":

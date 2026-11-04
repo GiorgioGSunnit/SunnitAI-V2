@@ -521,7 +521,7 @@ def test_the_applicability_check_runs_only_when_enabled(pipeline, monkeypatch):
     """Round 3, item 3: 6db1125 ran it unconditionally; on production it dropped
     the alternative charges. Off by default, so the next deploy turns it off."""
     calls = []
-    monkeypatch.setattr(DG, "_filter_applicable_articles", lambda facts, request, rows, analysis=None: calls.append(rows) or rows)
+    monkeypatch.setattr(DG, "_filter_applicable_articles", lambda facts, request, rows, analysis=None, session_lang="it": calls.append(rows) or rows)
     monkeypatch.delenv("APPLICABILITY_CHECK_ENABLED", raising=False)
     DG.run_case_analysis_pipeline(CASE, "it")
     assert calls == []
