@@ -19,6 +19,8 @@ What it counts:
   - ruling cards coverage by branch (only if --cards names readable card files: they live on prod today)
   - suspected duplicate Documents (same hash, same name, same name but the year): REPORTED, never touched
   - the ingestion queue (files waiting, failed) and the last run of each night job
+  - the upload batches handed to the queue (feed_queue.sh's manifest: fed per batch and today, files still staged)
+    and the rulings in the graph by year of decision (from the Italgiure file name), with the night's change
 
 Safeguards: read-only session; skipped (with a summary line saying why) when MemAvailable < --min-gb or another heavy
 job is running; documents read in batches with a pause; prints counts and document names only, no section text.
@@ -48,6 +50,8 @@ HEAVY_JOBS = ("backfill_embeddings_v2", "link_ruling_citations", "exp_ruling_car
 IN_FORCE = re.compile(r"^\s*in vigore dal\s+\d{1,2}\s+\w+\s+\d{4}\.?\s*$", re.IGNORECASE)
 ARTICLE_NAME = re.compile(r"^(\d+)(?:-([a-z]+))?$", re.IGNORECASE)
 ITALGIURE = re.compile(r"(snpen|snciv)[@_]s\w\w[@_]a\d{4}[@_]n\d+[@_]t[a-z]", re.IGNORECASE)
+ITALGIURE_YEAR = re.compile(r"[@_]a((?:19|20)\d{2})[@_]n", re.IGNORECASE)
+MANIFEST_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(\S+)\s+(\S.*)$")
 YEAR_SUFFIX = re.compile(r"^(?P<prefix>.*\S)\s+(?:19|20)\d{2}$")
 
 
@@ -135,6 +139,33 @@ def branch_of(file_name: str, name: str) -> str:
     return ("penale" if m.group(1).lower() == "snpen" else "civile") if m else "unknown"
 
 
+def year_of(file_name: str, name: str) -> Optional[str]:
+    """The year of decision in an Italgiure file name (snpen@s10@a2025@n00001@tS): None when not Italgiure."""
+    m = ITALGIURE_YEAR.search(file_name or "") or ITALGIURE_YEAR.search(name or "")
+    return m.group(1) if m else None
+
+
+def batch_status(manifest: str, staging: str, today: str) -> dict:
+    """What feed_queue.sh recorded: per batch, the files handed to the queue in all and today, first and last day;
+    and the files still staged (PDFs in `staging`, None when the folder is not here). Lines: 'YYYY-MM-DD batch file'."""
+    batches: Dict[str, dict] = {}
+    found = os.path.isfile(manifest)
+    if found:
+        with open(manifest, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                m = MANIFEST_LINE.match(line.strip())
+                if not m:
+                    continue
+                day, batch = m.group(1), m.group(2)
+                b = batches.setdefault(batch, {"fed": 0, "fed_today": 0, "first": day, "last": day})
+                b["fed"] += 1
+                b["fed_today"] += day == today
+                b["first"], b["last"] = min(b["first"], day), max(b["last"], day)
+    staged = (len(glob.glob(os.path.join(staging, "*.pdf"))) if staging and os.path.isdir(staging) else None)
+    return {"found": found, "batches": batches, "staging_left": staged,
+            "fed_today": sum(b["fed_today"] for b in batches.values())}
+
+
 def summary_line(n: dict, prev: Optional[dict]) -> str:
     """The morning line; '(+N)' against the previous night where it means something."""
     def delta(key):
@@ -153,6 +184,16 @@ def summary_line(n: dict, prev: Optional[dict]) -> str:
              f"suspected duplicates {n['duplicates']:,} (not touched)"]
     if n.get("rulings_without_card") is not None:
         parts.insert(7, f"rulings without card {n['rulings_without_card']:,}{delta('rulings_without_card')}")
+    if n.get("fed_today"):
+        parts.append(f"fed to the queue today {n['fed_today']:,}")
+    years = n.get("rulings_by_year") or {}
+    if years:
+        prev_years = (prev or {}).get("rulings_by_year") or {}
+
+        def ydelta(y):
+            d = years[y] - prev_years.get(y, 0)
+            return f" (+{d:,})" if prev_years and d > 0 else ""
+        parts.append("rulings " + ", ".join(f"{y} {k:,}{ydelta(y)}" for y, k in sorted(years.items(), reverse=True)))
     return " · ".join(parts)
 
 
@@ -380,6 +421,7 @@ def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) ->
     out["rulings_by_branch"] = {b: {"rulings": v[0], "without_cites": v[1]} for b, v in by_branch.items()}
     out["ruling_ids_by_branch"] = {b: [d["id"] for d in rulings if branch_of(d["file"], d["name"]) == b]
                                    for b in by_branch}
+    out["rulings_by_year"] = dict(sorted(Counter(year_of(d["file"], d["name"]) or "unknown" for d in rulings).items()))
     out["duplicates"] = suspected_duplicates(docs)
     _progress(t0, "rulings and duplicates done")
     return out
@@ -400,10 +442,12 @@ def previous_state(directory: str, today: str) -> Optional[dict]:
 def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optional[int], Dict[str, int]],
                  cards: Optional[Set[str]], prev: Optional[dict], took: float,
                  by_design: Optional[Set[str]] = None,
-                 missing: Optional[List[Tuple[str, int]]] = None) -> Tuple[str, dict, str]:
+                 missing: Optional[List[Tuple[str, int]]] = None,
+                 batches: Optional[dict] = None) -> Tuple[str, dict, str]:
     """by_design: the rulings left without a card on purpose (civil closures, "estinto" in step 1's links).
-    missing: missing_articles(), the citations with no article in our codes."""
+    missing: missing_articles(), the citations with no article in our codes. batches: batch_status()."""
     by_design = by_design or set()
+    batches = batches or {"found": False, "batches": {}, "staging_left": None, "fed_today": 0}
     prev_gaps = (prev or {}).get("gaps", {})
     gaps_new = {code: sorted(set(g_) - set(prev_gaps.get(code, g_))) for code, g_ in g["numbering_gaps_by_code"].items()}
     n = {"sections_no_v2_with_text": sum(g["sections_no_v2_with_text_by_type"].values()),
@@ -416,7 +460,9 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
          "rulings_without_cites": sum(v["without_cites"] for v in g["rulings_by_branch"].values()),
          "queue_waiting": queue["waiting"], "queue_failed": queue["failed"],
          "duplicates": sum(len(v) for v in g["duplicates"].values()),
-         "rulings_without_card": None}
+         "rulings_without_card": None,
+         "fed_today": batches["fed_today"],
+         "rulings_by_year": {y: k for y, k in (g.get("rulings_by_year") or {}).items() if y != "unknown"}}
     card_rows = {}
     if cards is not None:
         for b, ids in g["ruling_ids_by_branch"].items():
@@ -481,9 +527,23 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
     for l in logs:
         md.append(f"- {l['log']}: " + (f"written {l['hours_since_write']} h ago; last line: {l['last_line']}"
                                         if l["found"] else "not found"))
+    md += ["", "## Upload batches and rulings by year", ""]
+    if batches["found"]:
+        md += ["| batch | files handed to the queue | today | first day | last day |", "|---|---|---|---|---|"]
+        md += [f"| {b} | {v['fed']:,} | {v['fed_today']:,} | {v['first']} | {v['last']} |"
+               for b, v in sorted(batches["batches"].items())]
+        if batches["staging_left"] is not None:
+            md += ["", f"Files still staged for the feeder: {batches['staging_left']:,}"]
+    else:
+        md.append("No upload manifest here (feed_queue.sh writes it when a batch is handed to the queue).")
+    prev_years = ((prev or {}).get("numbers") or {}).get("rulings_by_year") or {}
+    md += ["", "| year of decision | rulings | change since the last report |", "|---|---|---|"]
+    md += [f"| {y} | {k:,} | {(k - prev_years[y]):+,} |" if y in prev_years else f"| {y} | {k:,} | |"
+           for y, k in sorted((g.get("rulings_by_year") or {}).items(), reverse=True)] or ["| none | 0 | |"]
     state = {"date": dt.date.today().isoformat(), "numbers": n, "gaps": g["numbering_gaps_by_code"],
              "date_only_by_doc": g["date_only_by_doc"], "rulings_by_branch": g["rulings_by_branch"],
-             "cards": card_rows, "queue": queue, "missing_articles": dict(missing or [])}
+             "cards": card_rows, "queue": queue, "missing_articles": dict(missing or []),
+             "batches": batches["batches"]}
     return "\n".join(md) + "\n", state, line
 
 
@@ -501,6 +561,9 @@ def main() -> int:
     p.add_argument("--cards", default="", help="comma-separated card files (optional)")
     p.add_argument("--links", default="/root/ruling_cards/ruling_links.jsonl",
                    help="step 1's links: the civil closures ('estinto') are left without a card by design")
+    p.add_argument("--manifest", default="/var/log/maint/upload_batches.txt",
+                   help="feed_queue.sh's manifest: one 'date batch file' line per file handed to the queue")
+    p.add_argument("--staging", default="/home/sunnit/pdf2025", help="the feeder's staging folder (files still to hand over)")
     p.add_argument("--force", action="store_true", help="run even if memory is low or a heavy job is running")
     p.add_argument("--skip", default="", help="heavy stages to leave out: sections,detached")
     args = p.parse_args()
@@ -533,7 +596,8 @@ def main() -> int:
                                    log_status([x for x in args.logs.split(",") if x]), unresolved_reasons(args.unresolved),
                                    card_ids([x for x in args.cards.split(",") if x]),
                                    previous_state(args.dir, today), time.time() - t0, closures(args.links),
-                                   missing_articles(args.unresolved))
+                                   missing_articles(args.unresolved),
+                                   batch_status(args.manifest, args.staging, dt.date.today().isoformat()))
     for name, content in ((f"health_{today}.md", md), (f"summary_{today}.txt", line + "\n")):
         with open(os.path.join(args.dir, name), "w", encoding="utf-8") as fh:
             fh.write(content)
