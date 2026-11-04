@@ -54,3 +54,12 @@ def test_cites_lines_group_by_article_with_how_and_rule():
     lines = tr.cites_lines(rows)
     assert lines[0] == "art. 612-bis c.p. (Codice Penale 2026): 3 links, how explicit 3; rule plain 2, past_lists 1"
     assert lines[1].startswith("art. 380 c.p.p. (Codice di procedura penale 2026): 1 link, ")
+
+
+def test_names_are_printed_without_the_parties():
+    assert tr.safe_name("Sentenza della Corte di Cassazione sul ricorso proposto da Mario Rossi") ==         "Sentenza della Corte di Cassazione [...]"
+    assert tr.safe_name("Ordinanza Civile Sez. 3 Num. 10586 Anno 2026") == "Ordinanza Civile Sez. 3 Num. 10586 Anno 2026"
+    assert tr.safe_name("Sentenza nei confronti di Tizio Caio") == "Sentenza [...]" and tr.safe_name(None) == ""
+    assert tr.branch_of({"file_name": "snpen@s10@a2026@n14172@tS.clean.pdf"}) == "penale"
+    assert tr.branch_of({"name": "[CIVILE] snciv s10 a2026 n00016 tO.clean"}) == "civile" and tr.branch_of({}) == "?"
+

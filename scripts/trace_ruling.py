@@ -49,6 +49,21 @@ def year_of(doc: dict) -> Optional[str]:
     return m.group(1) if m else None
 
 
+PARTY_MARKERS = re.compile(r"\s+(?:sul ricorso |)(?:propost[oa] d[aiel]|ricorrente|nei confronti|contro|a carico d[i'])\b.*$",
+                           re.IGNORECASE)
+
+
+def safe_name(name: Optional[str]) -> str:
+    """A document name without the parties: the ingest names a ruling 'Sentenza ... sul ricorso proposto da <party>',
+    and no name is ever printed by this tool."""
+    return PARTY_MARKERS.sub(" [...]", str(name or "").strip())[:80]
+
+
+def branch_of(doc: dict) -> str:
+    blob = (str(doc.get("file_name") or "") + " " + str(doc.get("name") or "")).lower()
+    return "penale" if "snpen" in blob or "[penale]" in blob else "civile" if "snciv" in blob or "[civile]" in blob else "?"
+
+
 def stem_of(file_value: str) -> str:
     """The file name without folder, .pdf and .clean, separators unified to '@' for matching."""
     stem = os.path.basename(file_value.strip())
@@ -134,6 +149,8 @@ def find_documents(session, args) -> List[dict]:
     rows = [r for r in rows if number_matches(r.get("document_number"), number)]
     if year:
         rows = [r for r in rows if year_of(r) in (year, None)]
+    if args.branch:
+        rows = [r for r in rows if branch_of(r) == args.branch]
     return rows[:10]
 
 
@@ -151,6 +168,7 @@ def main() -> int:
     which.add_argument("--number", help="the ruling's number and year, e.g. 14172/2026")
     which.add_argument("--id", help="the document id (LEGAL_DOC::...)")
     which.add_argument("--file", help="the Italgiure file name, e.g. snpen@s10@a2025@n00001@tS")
+    p.add_argument("--branch", choices=("penale", "civile"), help="with --number: only this branch")
     p.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
     p.add_argument("--cards", default=DEFAULT_CARDS, help="comma-separated card files")
     p.add_argument("--links", default=DEFAULT_LINKS, help="step 1's link file")
@@ -167,9 +185,10 @@ def main() -> int:
                 print("no ruling found")
                 return 1
             if len(docs) > 1:
-                print(f"{len(docs)} rulings match; rerun with --id:")
+                print(f"{len(docs)} rulings match; rerun with --id (or --branch penale/civile):")
                 for d in docs:
-                    print(f"  {d['id']}  n. {d.get('document_number')}  {d.get('date_enacted')}  {d.get('name')}")
+                    print(f"  {d['id']}  {branch_of(d)}  n. {d.get('document_number')}  {d.get('date_enacted')}  "
+                          f"{safe_name(d.get('name'))}")
                 return 1
             d = docs[0]
             cites = cites_of(session, d["id"])
@@ -177,8 +196,9 @@ def main() -> int:
         driver.close()
 
     print("== document")
-    for key in ("id", "name", "file_name", "document_number", "date_enacted", "document_type", "status", "hash", "sections"):
+    for key in ("id", "file_name", "document_number", "date_enacted", "document_type", "status", "hash", "sections"):
         print(f"  {key}: {d.get(key)}")
+    print(f"  name: {safe_name(d.get('name'))}   branch: {branch_of(d)}")
     print(f"  properties: {', '.join(sorted(d.get('keys') or []))}")
     print(f"\n== article links (CITES): {sum(r['n'] for r in cites)} edges, {len(cites_lines(cites))} articles")
     for line in cites_lines(cites)[:40]:
