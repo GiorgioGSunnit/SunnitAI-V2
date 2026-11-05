@@ -164,6 +164,7 @@ def test_graph_checks_on_a_fake_graph():
     assert g["sections_no_v2_with_text_by_type"] == {"primary": 1} and g["sections_detached"] == 4
     assert g["date_only_by_doc"] == {"Codice Civile 2026": 1} and g["numbering_gaps_by_code"] == {"Codice Civile 2026": [2]}
     assert g["rulings_by_branch"] == {"penale": {"rulings": 1, "without_cites": 0}, "civile": {"rulings": 1, "without_cites": 1}}
+    assert g["rulings_by_year"] == {"2026": 2}
 
 
 def test_graph_checks_can_skip_the_heavy_stages():
@@ -193,3 +194,61 @@ def test_only_a_python_process_running_the_job_counts_as_busy():
                           me=104) == "link_ruling_citations (pid 106)"
     assert mh.running_job(["  7 python3 -m scripts.backfill_embeddings_v2 --batch 64"], me=1) == \
         "backfill_embeddings_v2 (pid 7)"
+
+
+def test_year_of_reads_the_italgiure_file_name():
+    assert mh.year_of("snpen@s10@a2025@n00001@tS.clean.pdf", "") == "2025"
+    assert mh.year_of("", "[CIVILE] snciv s10 a2026 n00016 tO.clean") is None     # spaces: not the file name form
+    assert mh.year_of("snciv_s30_a2026_n00001_tO.pdf", "") == "2026"
+    assert mh.year_of("contratto.pdf", "Contratto di appalto") is None
+
+
+def test_batch_status_counts_per_batch_and_today(tmp_path):
+    manifest = tmp_path / "upload_batches.txt"
+    manifest.write_text("2026-11-04 pdf2025 snpen@s10@a2025@n00002@tS.clean.pdf\n"
+                        "2026-11-04 pdf2025 snpen@s10@a2025@n00003@tS.clean.pdf\n"
+                        "2026-11-05 pdf2025 snpen@s10@a2025@n00005@tS.clean.pdf\n"
+                        "2026-11-05 civ2025 snciv_s10_a2025_n00001_tO.pdf\n"
+                        "garbage line\n", encoding="utf-8")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "a.pdf").write_bytes(b"x")
+    (staging / "a.name").write_bytes(b"x")
+    b = mh.batch_status(str(manifest), str(staging), "2026-11-05")
+    assert b["found"] and b["fed_today"] == 2 and b["staging_left"] == 1
+    assert b["batches"]["pdf2025"] == {"fed": 3, "fed_today": 1, "first": "2026-11-04", "last": "2026-11-05"}
+    assert b["batches"]["civ2025"]["fed"] == 1
+    none = mh.batch_status(str(tmp_path / "missing.txt"), str(tmp_path / "nowhere"), "2026-11-05")
+    assert none == {"found": False, "batches": {}, "staging_left": None, "fed_today": 0}
+
+
+def test_report_shows_batches_and_rulings_by_year_with_the_nights_change():
+    g = {**GRAPH, "rulings_by_year": {"2026": 3, "2025": 2}}
+    batches = {"found": True, "fed_today": 60, "staging_left": 4947,
+               "batches": {"pdf2025": {"fed": 360, "fed_today": 60, "first": "2026-11-04", "last": "2026-11-05"}}}
+    prev = {"numbers": {"rulings_by_year": {"2026": 3, "2025": 1}}}
+    md, state, line = mh.build_report(g, QUEUE, [], (0, {}), None, prev, 1.0, batches=batches)
+    assert "| pdf2025 | 360 | 60 | 2026-11-04 | 2026-11-05 |" in md and "still staged for the feeder: 4,947" in md
+    assert "| 2025 | 2 | +1 |" in md and "| 2026 | 3 | +0 |" in md
+    assert line.endswith("fed to the queue today 60 · rulings 2026 3, 2025 2 (+1)")
+    assert state["batches"] == batches["batches"] and state["numbers"]["rulings_by_year"] == {"2026": 3, "2025": 2}
+    md, _, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0)      # no manifest, no years: still fine
+    assert "No upload manifest here" in md and "fed to the queue" not in line
+
+
+def test_queue_status_counts_documents_not_their_sidecars(tmp_path):
+    queue, failed = tmp_path / "upload", tmp_path / "failed"
+    (queue / "sub").mkdir(parents=True)
+    failed.mkdir()
+    (queue / "snpen@s10@a2025@n00001@tS.clean.pdf").write_bytes(b"x")
+    (queue / "snpen@s10@a2025@n00001@tS.clean.name").write_bytes(b"x")
+    (queue / "sub" / "snciv_s10_a2025_n00001_tO.pdf").write_bytes(b"x")
+    for stem in ("snpen@s10@a2025@n00007@tS.clean", "snpen@s10@a2025@n00009@tS.clean"):
+        (failed / f"{stem}.pdf").write_bytes(b"x")
+        (failed / f"{stem}.name").write_bytes(b"x")
+    (failed / "altro.docx").write_bytes(b"x")
+    q = mh.queue_status(str(queue), str(failed))
+    assert q["waiting"] == 2 and q["by_kind"] == {"penale": 1, "civile": 1} and q["failed"] == 3
+    assert mh.queue_status(str(tmp_path / "none"), str(tmp_path / "none")) == {
+        "waiting": 0, "by_kind": {}, "failed": 0, "service": q["service"], "queue_dir_found": False}
+

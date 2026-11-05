@@ -32,13 +32,45 @@ logger = logging.getLogger(__name__)
 
 from langchain_openai import ChatOpenAI
 
+# Qwen3 (the production model since 2 Nov) reasons before it answers, and the reasoning counts against max_tokens:
+# vLLM strips it from the reply, so a section can come back cut with no reasoning in sight. Prod, 2-4 Nov: 3 writer
+# sections, 1 rewrite, 1 chat answer and 4 session titles cut in 8 chat requests. LLM_THINKING=false asks the chat
+# template not to reason (enable_thinking=False, as scripts/exp_ruling_cards.py does for the cards: 20/20 complete,
+# other models' templates ignore it). Unset keeps the model's default: the field is vLLM's, OpenAI's API rejects it.
+_NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
+_OFF = {"false", "0", "no", "off"}
+
+
+def _thinking_kwargs(setting: Optional[str]) -> dict:
+    """ChatOpenAI kwargs for the LLM_THINKING setting: the no-reasoning body when it says no, else nothing."""
+    if (setting or "").strip().lower() in _OFF:
+        return {"extra_body": _NO_THINKING}
+    return {}
+
+
 _chat_kwargs = {
     "model": os.getenv("LLM_MODEL", os.getenv("OPENAI_MODEL", "nemotron-2-30B-A3B")),
     "temperature": 0,
     "api_key": os.getenv("LLM_API_KEY", os.getenv("OPENAI_API_KEY")),
     "request_timeout": 240,
     "max_tokens": 1500,
+    **_thinking_kwargs(os.getenv("LLM_THINKING")),
 }
+
+
+def _announce_thinking(setting: Optional[str]) -> Optional[str]:
+    """The startup notice for a thinking switch that is off, printed as well as logged: the service runs under
+    uvicorn, which leaves the root logger unconfigured, so an INFO line never reaches the journal (4 Nov: the deploy
+    check counted 0). The verbose logger prints for the same reason."""
+    if not _thinking_kwargs(setting):
+        return None
+    notice = f"LLM_THINKING={setting.strip()}: the chat model is asked not to reason before answering"
+    logger.info(notice)
+    print(notice, flush=True)
+    return notice
+
+
+_announce_thinking(os.getenv("LLM_THINKING"))
 
 _llm_base_url = os.getenv("LLM_BASE_URL")
 if _llm_base_url:
