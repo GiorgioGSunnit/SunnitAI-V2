@@ -5381,29 +5381,43 @@ _LAW_DOCUMENT_TYPES = {"primary", "legislation"}
 _CCNL_CASE_RE = re.compile(r"\bc\.?\s*c\.?\s*n\.?\s*l\.?(?!\w)|contratt\w*\s+collettiv", re.IGNORECASE)
 
 
+_CONTEXT_SHORT = 60
+_QUOTED_RE = re.compile(r"«[^«»]*»")
+
+
 def _citation_context(draft: str, ref: tuple, documents: Optional[List[Dict[str, Any]]] = None) -> str:
-    """The line of the draft where it first cites ref (any suffix spelling), cut to 400 chars. With
-    documents (FLAGGED_REMOVE_ENABLED, and scripts/diagnose_long.py): the sentence that cites ref itself,
-    by number and code (a line citing 2053 c.c. is not 1982's, "658 Codice Civile" is not 658 c.p.c.),
-    its whole line when the sentence is under 120 characters."""
+    """The sentence of the draft where it first cites ref, with the sentence before it when the citing one is
+    under _CONTEXT_SHORT characters; "" when the draft does not cite it. Used by the qualification check (and its
+    stamp) and by scripts/diagnose_long.py's rubrica fits. With documents (FLAGGED_REMOVE_ENABLED, the writer's
+    rules, diagnose_long): the citation of ref itself, by number and code (a line citing 2053 c.c. is not 1982's,
+    "658 Codice Civile" is not 658 c.p.c.); without, by its number (any suffix spelling). A number inside quoted
+    text («…», another article's words: "L'art. 629 c.p. punisce «chiunque, mediante le condotte di cui agli
+    articoli 615-ter, …»") is not a citation of that article. v52: the whole line cut to 400 characters was judged
+    when the sentence was under 120 (v51: 17 of 35 rubrica-incompatible verdicts on a text not citing the article,
+    the citation past the cut; six 629 c.p. quotation numbers judged as 629's)."""
+    from . import plan_then_write as ptw
+    quoted = [(m.start(), m.end()) for m in _QUOTED_RE.finditer(draft or "")]
+
+    def outside(start: int) -> bool:
+        return not any(a < start < b for a, b in quoted)
+
+    def sentence(start: int, end: int) -> str:
+        s, e = ptw._sentence_span(draft, start, end)
+        if e - s < _CONTEXT_SHORT:
+            s = max((a for a, b in ptw._sentence_spans(draft) if b <= s), default=s)
+        return " ".join(draft[s:e].split())
+
     if documents is not None:
-        from . import plan_then_write as ptw
         for known in (None, {ref}):        # by its code first; a bare number only if no line names the code
             for start, end, refs in ptw._citations(draft, documents, known):
-                if any(ptw._same_ref(r, ref) for r in refs):
-                    s, e = ptw._sentence_span(draft, start, end)
-                    if e - s >= 120:
-                        return draft[s:e].strip()[:400]
-                    a, b = draft.rfind("\n", 0, start) + 1, draft.find("\n", end)
-                    return draft[a:b if b != -1 else len(draft)].strip()[:400]
+                if any(ptw._same_ref(r, ref) for r in refs) and outside(start):
+                    return sentence(start, end)
         return ""
     number = re.escape(ref[0]).replace(r"\-", r"\s*-?\s*")
-    m = re.search(rf"\b(?:artt?\.?|articol[oi])\s*(?:[\d\s,e-]*?)\b{number}\b", draft, re.IGNORECASE)
-    if not m:
-        return ""
-    start = draft.rfind("\n", 0, m.start()) + 1
-    end = draft.find("\n", m.end())
-    return draft[start:end if end != -1 else len(draft)].strip()[:400]
+    for m in re.finditer(rf"\b(?:artt?\.?|articol[oi])\s*(?:[\d\s,e-]*?)\b{number}\b", draft or "", re.IGNORECASE):
+        if outside(m.start()):
+            return sentence(m.start(), m.end())
+    return ""
 
 
 # RUBRICA_TEXT_CHECK (v45): the rubrica stamp against the article's text: the [DA VERIFICARE: l'art. N riguarda
@@ -5415,7 +5429,7 @@ _STAMP_STOP = frozenset(
     "anche perché perche essere stato stata stati state questo questa questi queste quello quella quelli quelle secondo "
     "ovvero oppure infatti dunque quindi presente articolo articoli comma commi codice norma norme prevede dispone "
     "stabilisce disciplina sensi senso ancora tutto tutti tutte altro altra altri altre essa esso loro molto sempre "
-    "proprio propria tratta cioè".split())
+    "proprio propria tratta cioè seguito".split())
 _STAMP_MIN_TERMS = 2
 RUBRICA_TEXT_CHECK_FLAG = "RUBRICA_TEXT_CHECK"
 
@@ -5447,6 +5461,29 @@ def _citing_clause(context: str, ref: tuple) -> str:
         end = min((m.start() for m in cites[own + 1:] if m.group(1) != number), default=len(clause))
         return clause[start:end].strip(" ,") or clause
     return context or ""
+
+
+_OPENS_WITH_RE = re.compile(r"^\W*(?:(?:l['’]\s*|il\s+|gli\s+|lo\s+)?)$", re.IGNORECASE)
+_STAMP_AFTER_RE = re.compile(r"^\s*(?:\[DA VERIFICARE[^\]]*\]|\(da verificare[^)]*\))\s*", re.IGNORECASE)
+
+
+def _opening_clause(draft: str, ref: tuple) -> str:
+    """v51 (Leonardo v50: "L'art. 1073 c.c. prevede l'estinzione per prescrizione della servitù, quando non se ne usa
+    per venti anni." stamped -- under 120 characters, the sentence's whole line was judged, the norms section's one
+    paragraph cut to its first 400 characters, where 1073 is not): in the first sentence opening with ref's citation,
+    the clause after it (a mark after the citation, and from the next article's citation on, left out); "" when no
+    sentence opens with it."""
+    from . import plan_then_write as ptw
+    for s, e in ptw._sentence_spans(draft or ""):
+        sentence = draft[s:e]
+        m = _CITED_ARTICLE_RE.search(sentence)
+        if not m or not _OPENS_WITH_RE.match(sentence[:m.start()]) \
+                or not ptw._same_ref((_article_num(m.group(1)), _code_of(m.group(2))), ref):
+            continue
+        rest = _STAMP_AFTER_RE.sub("", sentence[m.end():])
+        other = _CITED_ARTICLE_RE.search(rest)
+        return (rest[:other.start()] if other else rest).strip(" ,.;:")
+    return ""
 
 
 def _text_covers(context: str, ref: tuple, article: str) -> List[str]:
@@ -5535,7 +5572,8 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         label = f"{ref[0]} {ref[1]}"
         # the article's words: its rubrica too (v48, Leonardo v46: "il fondo è intercluso" against «Interclusione ...»);
         # never against an inverse situation ("direzione"): the mirror article shares the clause's words by being one
-        found = _text_covers(headings[label][1], ref, f"{heading} " + " ".join(
+        # v51: a sentence opening with the citation is judged on the clause after it
+        found = _text_covers(_opening_clause(draft, ref) or headings[label][1], ref, f"{heading} " + " ".join(
             str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())) \
             if by_text and kind != "direzione" else []
         if found:
@@ -6319,6 +6357,9 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
             vlog("answer_tidy", {"entries": tidied, "count": len(tidied)})
             from . import citation_ledger
             citation_ledger.record_entries("answer_tidy", tidied)
+        # v51, no flag: within each section, a sentence an earlier one already says goes (repetition_guard)
+        from . import repetition_guard
+        d, _ = repetition_guard.guard_answer(d, "answer")
         return d
     draft = _safe_step("text_tidy", draft, tidy)
     # PROTECTED_PARAPHRASE_ENABLED: no sentence reproduces a protected source of the material (counted only, off).

@@ -54,7 +54,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import last_reply
 from . import defensive_generation as dg
-from . import ai_chat, anchored_writing, article_text, citation_ledger, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources, role_fit, section_fit
+from . import ai_chat, anchored_writing, article_text, citation_ledger, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources, repetition_guard, role_fit, section_fit
 from .verbose_logger import exception_data
 
 
@@ -1920,6 +1920,10 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     tasks = "\n".join(f"- {t}" for t in frame.get("tasks") or []) or request.strip()
     facts_list = _facts_list(analysis)
     refs = _plan_refs(plan)
+    norme_refs = _norme_refs(plan)       # NORME_SCOPE: section 3's own articles
+    norme_only = (" Tratta solo le norme indicate nel PIANO di questa sezione: le altre norme del caso sono "
+                  "discusse nell'applicazione al caso e nei profili processuali, qui non vanno elencate."
+                  if plan.get(NORME_SCOPE_KEY) is not None else "")
     headings = _headings(article_rows)
     # Article text per section within a fixed total, so that a plan naming many articles still
     # leaves each call well inside the context with the case text (up to ~5,000 tokens).
@@ -2016,9 +2020,9 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          f"SEZIONE: Norme e giurisprudenza. {norms}; per ogni pronuncia del PIANO: il principio che "
          "afferma, con il suo riferimento, e che cosa comporta per questo caso, senza svolgere gli argomenti "
          "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti."
-         + every + scoped + adverse,
-         material(case, fixed, _plan_text(plan), scope,
-                  block("TESTI DELLE NORME", texts(refs, per_article(15000, dg._ARTICLE_CHARS))),
+         + every + scoped + adverse + norme_only,
+         material(case, fixed, _plan_text(_scoped_plan(plan)), scope,
+                  block("TESTI DELLE NORME", texts(norme_refs, per_article(15000, dg._ARTICLE_CHARS))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 1200)),
                   block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1600 if keep_all else 1200),
         (SECTION_TITLES[3],
@@ -2709,7 +2713,64 @@ NORME_SPLIT_SHARE = 0.6
 
 
 def norme_split(plan: Dict[str, Any]) -> bool:
-    return dg.feature_flags.enabled(NORME_SPLIT_FLAG) and len(_plan_refs(plan)) > NORME_SPLIT_MIN
+    return dg.feature_flags.enabled(NORME_SPLIT_FLAG) and len(_norme_refs(plan)) > NORME_SPLIT_MIN
+
+
+# NORME_SCOPE (v51, Leonardo v50: "Norme e giurisprudenza" enumerated 13 articles, 843 / 1059 / 1027 among them, one
+# sentence each): the section writes only the questioni's primary norms -- graded 3, named by the user, a regime
+# candidate's -- at most NORME_SCOPE_MAX, the user's first, then grade 3, then the regime's, each in the plan's order.
+# The plan's other articles stay in the plan for "Applicazione al caso" and the procedural section, never listed in
+# section 3. None of them primary: section 3 keeps every plan article. Logged per case as case_analysis_norme_scope.
+NORME_SCOPE_FLAG = "NORME_SCOPE"
+NORME_SCOPE_MAX = 8
+NORME_SCOPE_KEY = "norme_scope"
+
+
+def norme_scope_enabled() -> bool:
+    return dg.feature_flags.enabled(NORME_SCOPE_FLAG)
+
+
+def norme_scope(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], named: Sequence[tuple],
+                most: int = NORME_SCOPE_MAX) -> Tuple[List[tuple], Dict[str, Any]]:
+    """(the section 3 articles, log): the plan's primary norms by NORME_SCOPE's rule."""
+    rows_of: Dict[tuple, List[Dict[str, Any]]] = {}
+    for row in article_rows:
+        if row.get("_article"):
+            rows_of.setdefault(tuple(row["_article"]), []).append(row)
+
+    def why(ref) -> str:
+        rows = rows_of.get(tuple(ref)) or []
+        if any(_same_ref(ref, n) for n in named):
+            return "named"
+        if any(r.get("_grade") == 3 for r in rows):
+            return "grade 3"
+        if any(r.get("_regime_candidate") for r in rows):
+            return "regime"
+        return ""
+    refs = _plan_refs(plan)
+    reasons = {ref: why(ref) for ref in refs}
+    order = ("named", "grade 3", "regime")
+    ranked = sorted((r for r in refs if reasons[r]), key=lambda r: (order.index(reasons[r]), refs.index(r)))
+    scope = [r for r in refs if r in ranked[:most]]          # back in the plan's order
+    label = lambda r: f"{r[0]} {r[1]}"
+    return scope, {"scope": [label(r) for r in scope], "why": {label(r): reasons[r] for r in scope},
+                   "cut": [label(r) for r in ranked[most:]], "others": [label(r) for r in refs if r not in scope],
+                   "max": most}
+
+
+def _norme_refs(plan: Dict[str, Any]) -> List[tuple]:
+    """Section 3's articles: the NORME_SCOPE set when the plan has one, else all the plan's."""
+    if plan.get(NORME_SCOPE_KEY) is not None:
+        return [tuple(r) for r in plan[NORME_SCOPE_KEY]]
+    return _plan_refs(plan)
+
+
+def _scoped_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
+    """The plan as section 3 reads it: each questione with only its NORME_SCOPE norms."""
+    if plan.get(NORME_SCOPE_KEY) is None:
+        return plan
+    keep = set(_norme_refs(plan))
+    return {**plan, "questioni": [{**q, "norme": [r for r in q["norme"] if tuple(r) in keep]} for q in plan["questioni"]]}
 
 
 WRITER_LOOP_FLAG = "WRITER_LOOP_GUARD"
@@ -3121,6 +3182,83 @@ def _case_statement(sentence: str, context: Dict[str, Any]) -> str:
     return ""
 
 
+# USUCAPIONE_CONDITIONAL (v51, Leonardo v50: "la servitù di passaggio, acquisita per destinazione del padre di famiglia
+# e per uso continuo e pacifico" in sections 1, 4 and 6, with "inizio del possesso da accertare" among the computed
+# terms): when a computed term leaves the possession's start unknown, a writer sentence asserting the acquisition by
+# usucapione or a matured possession -- "acquisita", "maturata", "compiuto", "oltre / superiore a venti anni",
+# "ventennale compiuto", next to usucapione, continuous use or possession -- is rewritten to the conditional form:
+# "acquisita" -> "acquisibile", "già" out, "oltre venti anni" -> "venti anni", and after its usucapione words
+# CONDITIONAL_CLAUSE. A denied, conditional, unsettled or counterparty's sentence, or one on the non-use term, is left
+# as written. Applied after writing (write_sections) and in final_checks; logged as case_analysis_usucapione_conditional.
+USUCAPIONE_CONDITIONAL_FLAG = "USUCAPIONE_CONDITIONAL"
+CONDITIONAL_CLAUSE = " (se il possesso ventennale risulta compiuto: l'inizio del possesso è da accertare)"
+_USUCAPIONE_WORDS_RE = re.compile(r"usucapion\w*(?:\s+(?:ordinaria|ventennale|abbreviata))?|"
+                                  r"uso\s+continu\w*(?:\s+e\s+pacific\w*)?|"
+                                  r"possesso\s+(?:continu\w*|ventennale|pacific\w*)(?:\s+e\s+(?:pacific|continu)\w*)?",
+                                  re.IGNORECASE)
+_ASSERTED_RE = re.compile(r"\b(?:acquisit|acquistat|maturat|compiut)[aoie]\b|"
+                          r"\b(?:oltre|superiore\s+a|più\s+di|piu\s+di)\s+(?:vent['’]anni|venti\s+anni|20\s+anni|un\s+ventennio|"
+                          r"il\s+ventennio)|\bventennale\s+compiut", re.IGNORECASE)
+_NOT_ASSERTED_RE = re.compile(r"\bnon\s+(?:è\s+|sono\s+|risulta\s+|risultano\s+|può\s+dirsi\s+)?(?:ancora\s+)?(?:stat[aoie]\s+)?"
+                              r"(?:acquisit|acquistat|maturat|compiut)|\bacquisibil|\bacquistabil", re.IGNORECASE)
+_MORE_THAN_TWENTY_RE = re.compile(r"\b(?:oltre|superiore\s+a|più\s+di|piu\s+di)\s+(?=vent['’]anni|venti\s+anni|20\s+anni)",
+                                  re.IGNORECASE)
+
+
+def usucapione_asserted(sentence: str, context: Optional[Dict[str, Any]]) -> str:
+    """USUCAPIONE_CONDITIONAL: why the sentence asserts an acquisition by usucapione the computed terms leave open, or
+    "" (the flag off, no term with an unknown start, or a sentence that does not assert it)."""
+    if not dg.feature_flags.enabled(USUCAPIONE_CONDITIONAL_FLAG):
+        return ""
+    if not any(t.get("start_unknown") for t in (context or {}).get("terms") or []):
+        return ""
+    if not _USUCAPIONE_WORDS_RE.search(sentence) or not _ASSERTED_RE.search(sentence) \
+            or _NOT_ASSERTED_RE.search(sentence) or _UNSETTLED_RE.search(sentence) or _CONDITION_RE.search(sentence) \
+            or _THE_OTHER_SIDE_RE.search(sentence) or _NON_USE_NAMED_RE.search(sentence):
+        return ""
+    return "usucapione asserted with the possession's start unknown"
+
+
+def conditional_form(sentence: str) -> str:
+    """The sentence asserting usucapione in the conditional form (USUCAPIONE_CONDITIONAL)."""
+    out = re.sub(r"\bgià\s+(?=(?:stat[aoie]\s+)?(?:acquisit|acquistat|maturat|compiut))", "", sentence, flags=re.IGNORECASE)
+    out = re.sub(r"\b(?:stat[aoie]\s+)?(acquisit|acquistat)([aoie])\b",
+                 lambda m: ("acquisibil" if m.group(1).lower() == "acquisit" else "acquistabil")
+                 + ("i" if m.group(2).lower() in "ie" else "e"), out, flags=re.IGNORECASE)
+    out = _MORE_THAN_TWENTY_RE.sub("", out)
+    m = _USUCAPIONE_WORDS_RE.search(out)
+    return out[:m.end()] + CONDITIONAL_CLAUSE + out[m.end():] if m else out
+
+
+def usucapione_conditional(title: str, text: str, context: Optional[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): each sentence usucapione_asserted flags rewritten to conditional_form."""
+    if not dg.feature_flags.enabled(USUCAPIONE_CONDITIONAL_FLAG):
+        return text, []
+    changes, log = {}, []
+    for s, e in _sentence_spans(text or ""):
+        sentence = text[s:e]
+        why = usucapione_asserted(sentence, context)
+        if why:
+            new = conditional_form(sentence)
+            changes[(s, e)] = new
+            log.append({"section": title, "kind": why, "how": "made conditional", "sentence": sentence.strip()[:300],
+                        "now": new.strip()[:300]})
+    return (grounded_review.apply(text, changes) or text) if changes else text, log
+
+
+def usucapione_sections(sections: List[Tuple[str, str]], context: Optional[Dict[str, Any]],
+                        stage: str) -> List[Tuple[str, str]]:
+    """usucapione_conditional on each section, logged once."""
+    out, log = [], []
+    for title, text in sections:
+        new, entries = usucapione_conditional(title, text, context)
+        out.append((title, new))
+        log += entries
+    if log:
+        dg.vlog("case_analysis_usucapione_conditional", {"stage": stage, "entries": log, "count": len(log)})
+    return out
+
+
 _MAYBE_PARTIES_RE = re.compile(r"\beventual\w+\s+(?:altr\w+\s+)?(?:com?proprietar|proprietar|confinant|contitolar|litisconsort|"
                                r"terz|convenut|soggett|parti)", re.IGNORECASE)
 
@@ -3527,7 +3665,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     def _norme_halves(title, instruction, material, max_tokens):
         """NORME_SPLIT: the section in two concurrent calls over disjoint halves of the plan's articles (the rulings
         with the first); a half cut at its length trimmed to its last sentence, never written again."""
-        refs = _plan_refs(plan)
+        refs = _norme_refs(plan)
         first, second = refs[:(len(refs) + 1) // 2], refs[(len(refs) + 1) // 2:]
         materials = section_fit.halves(material, first, second, anchors)
         tokens = max(400, int(max_tokens * NORME_SPLIT_SHARE))
@@ -3568,6 +3706,10 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     if refitted:
         jobs = [(t, i, refitted.get(t, m), k) for t, i, m, k in jobs]
     sections = [(job[0], _without_heading(text, job[0])) for job, text in zip(jobs, texts)]
+    # v51, no flag: within a section, a sentence an earlier one already says goes (repetition_guard)
+    sections = _step("repetition_guard", sections, lambda secs: repetition_guard.guard_sections(secs, "written")[0])
+    if dg.feature_flags.enabled(USUCAPIONE_CONDITIONAL_FLAG):
+        sections = _step("usucapione_conditional", sections, lambda secs: usucapione_sections(secs, context, "written"))
     _trace_comma_words("written", sections, article_rows or [])
     looped = {entry["section"] for entry in loops} | trimmed
     # every step after writing is fail-safe (_step): an exception keeps the sections as they were before it
@@ -4240,6 +4382,8 @@ def final_checks(sections: List[Tuple[str, str]], article_rows: List[Dict[str, A
     for title, text in sections:
         text, log = text_tidy.against_articles(text, article_rows, "final_checks")
         entries += [{**e, "section": title} for e in log]
+        text, made = usucapione_conditional(title, text, context)      # USUCAPIONE_CONDITIONAL: the rewrites' too
+        entries += made
         drops = [(s, e) for s, e in _sentence_spans(text) if _wrong_statement(text[s:e], context)]
         tools = [span for span in _precluded_in_tools(text, terms) if span not in drops]
         trims: Dict[Tuple[int, int], str] = {}
@@ -4271,6 +4415,24 @@ def final_checks(sections: List[Tuple[str, str]], article_rows: List[Dict[str, A
     return out
 
 
+# TOOL_CITES_PROTECTED (v51, Leonardo v50: "La trascrizione è necessaria per garantire la stabilità del diritto e la sua
+# opposibilità." -- the trascrizione tool's sentence without its art. 2653, n. 1, c.c.): the articles of the procedural
+# tools (the criminal profile's included) and of the computed terms get the plan articles' protection
+# (citation_ledger.protect): a sentence citing one is trimmed or kept, never dropped, by answer_tidy, final_checks and
+# anchored_writing. Heads of damage are not tools.
+TOOL_CITES_PROTECTED_FLAG = "TOOL_CITES_PROTECTED"
+
+
+def protected_tool_refs(analysis: Dict[str, Any]) -> List[tuple]:
+    """TOOL_CITES_PROTECTED: the tools' and the terms' articles; [] with the flag off."""
+    if not dg.feature_flags.enabled(TOOL_CITES_PROTECTED_FLAG):
+        return []
+    from . import citation_closure
+    signals = _signals(analysis) or {}
+    tools = [tuple(r) for t in signals.get("tools") or [] for r in t.get("refs") or []]
+    return list(dict.fromkeys(tools + citation_closure.term_refs(signals)))
+
+
 def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
                  ruling_rows: List[Dict[str, Any]], articles: str, rulings: str, principles: str,
                  lang: str = "it", documents: Optional[List[Dict[str, Any]]] = None,
@@ -4290,7 +4452,9 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     case = dg._case_text(facts, request)
     plan, analysis = for_the_plan(plan, analysis)
     in_plan = _plan_refs(plan)
-    citation_ledger.protect(in_plan)     # v49: a sentence citing one is never dropped by tidy / final checks / anchors
+    # v49: a sentence citing one is never dropped by tidy / final checks / anchors; TOOL_CITES_PROTECTED (v51): nor one
+    # citing a procedural tool's or a computed term's article
+    citation_ledger.protect(in_plan + [r for r in protected_tool_refs(analysis) if r not in in_plan])
     for row in article_rows:             # text_tidy.headed_norms: the articles a paragraph of the norms section may be about
         if row.get("_article") in in_plan:
             row["_in_plan"] = True
@@ -4300,6 +4464,16 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if commi:
         dg.vlog("comma_material_plan", commi)
     named = list(dict.fromkeys(dg._refs_in(case) + dg._cited_articles(case, set(), documents or [])))
+    if norme_scope_enabled():            # NORME_SCOPE: section 3 writes the primary norms only
+        try:
+            scope, scope_log = norme_scope(plan, article_rows, named)
+            if scope:                    # no primary norm: section 3 keeps the plan's, as without the flag
+                plan = {**plan, NORME_SCOPE_KEY: scope}
+            else:
+                scope_log["fallback"] = "no primary norm: every plan article"
+            dg.vlog("case_analysis_norme_scope", scope_log)
+        except Exception as exc:
+            _log_exception("norme_scope", exc)
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     anchors = anchor_catalogue(plan, analysis, article_rows, references)
     if anchors is not None:     # a failing statement citing one of these is rewritten from it or kept, never removed
@@ -4319,6 +4493,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if covering():
         sections = _step("cover_plan_articles", sections, lambda secs: cover_plan_articles(
             plan, secs, article_rows, documents or [], case, context, conclusion_lines(analysis)))
+    sections = _step("repetition_guard", sections, lambda secs: repetition_guard.guard_sections(secs, "rewritten")[0])
     if use_of is not None:
         try:          # counted only: never fails the answer
             final = use_of(next((text for title, text in sections if title == SECTION_TITLES[4]), ""))

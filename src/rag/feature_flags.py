@@ -615,6 +615,22 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 citing articles) not counted. Never removed: the user's articles, heading matches,
                                 cross-references, regime candidates, procedural tools, rows the frame or distill channel
                                 found. Gated rows are not brought back by EDGE_EXPAND. Logged with the area gate.
+  NORME_SCOPE                  false (v51; acts with PLAN_THEN_WRITE_ENABLED): "Norme e giurisprudenza" writes only the
+                                questioni's primary norms -- graded 3, named by the user, a regime candidate's -- at most
+                                8 (the user's first, then grade 3, then the regime's); the plan's other articles stay
+                                for "Applicazione al caso" and the procedural section, never listed in section 3. No
+                                primary norm: every plan article, as before. NORME_SPLIT halves the scoped set. Logged
+                                as case_analysis_norme_scope. See plan_then_write.norme_scope.
+  TOOL_CITES_PROTECTED         false (v51): a sentence citing a procedural tool's article (the criminal profile's
+                                included) or a computed term's (2653, 696, 21 c.p.c., 102 c.p.c., 1158...) gets the plan
+                                articles' protection: trimmed or kept, never dropped, by answer_tidy, final_checks and
+                                anchored_writing. See plan_then_write.protected_tool_refs.
+  USUCAPIONE_CONDITIONAL       false (v51): with a computed term leaving the possession's start unknown, a writer
+                                sentence asserting the acquisition by usucapione or a matured possession ("acquisita",
+                                "maturata", "oltre / superiore a venti anni", "ventennale compiuto", next to usucapione,
+                                continuous use or possession) is rewritten to the conditional form after writing and in
+                                final_checks ("acquisibile ... (se il possesso ventennale risulta compiuto: l'inizio del
+                                possesso è da accertare)"). Logged as case_analysis_usucapione_conditional.
   CLOSURE_MATERIAL_ONLY        false (v50; acts with CITATION_CLOSURE_ENABLED): the closure's material is the pool's
                                 rows, the procedural tools (the criminal profile's included), the computed terms, the
                                 posture's procedural list and the case's own articles; any other citation -- a head of
@@ -653,7 +669,10 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 negation, same stem) occur in the article's text (defensive_generation._text_covers);
                                 logged as not_stamped in case_analysis_qualification. v48: the clause is only the part
                                 of it after another article's citation (and before the next), and the article's words
-                                include its rubrica (Leonardo v46: art. 1054 c.c. judged on art. 1051's clause).
+                                include its rubrica (Leonardo v46: art. 1054 c.c. judged on art. 1051's clause). v51:
+                                a sentence opening with the citation is judged on the clause after it
+                                (_opening_clause; Leonardo v50: 1073 and 1054 c.c., under 120 characters, were judged
+                                on the norms paragraph's first 400 characters); "seguito" ("in seguito a") is no key term.
   TERM_EXPIRY_TEXT             false (v45): the non-use term of a servitude written with its end, "estinzione per non
                                 uso: non decorso, scade nel 2036 (...)" ("già decorso, scaduto nel ..." when run), not
                                 the bare year the writer read as its start ("decorre nel 2036").
@@ -680,7 +699,8 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
   PARTIES_ENFORCED             false (v45): with more than one party to sue (fact_signals.parties_to_sue), the
                                 conclusions block names them all with art. 102 c.p.c. and what was found for each --
                                 on a real action on land (regime azione_reale_immobiliare), the author of the act and,
-                                to be weighed, the other owners whose land is on the path (real_action_defendants);
+                                to be weighed, every other current owner (real_action_defendants; v51: never a
+                                previous owner in the chain of title, no filter by where the facts place the land);
                                 with PLAN_ARTICLES_COVER_ENABLED, an article a conclusions line cites that no section
                                 cites is covered like an omitted plan article.
 """

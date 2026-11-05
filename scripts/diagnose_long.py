@@ -109,7 +109,7 @@ FLAGS = ["ARTICLE_CARDS_ENABLED", "CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENA
          "GROUNDED_REVIEW_STRICT_ENABLED", "GROUNDED_REVIEW_POLICY", "FACT_ISSUES_ENABLED", "FACT_ISSUES_EVERY_FACT_ENABLED",
          "FACT_ISSUES_RESOLVER_V2_ENABLED",
          "ANCHORED_WRITING_ENABLED", "EDGE_EXPAND", "PLAN_CAP", "POOL_GATE_AREA", "POOL_GATE_LINK",
-         "CLOSURE_MATERIAL_ONLY"]
+         "CLOSURE_MATERIAL_ONLY", "NORME_SCOPE", "TOOL_CITES_PROTECTED", "USUCAPIONE_CONDITIONAL"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "GATED_OUT", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -902,6 +902,9 @@ def run_child(spec_path: str, env_path: str) -> None:
               "plan_retry": [d for e, d, _ in events if e == "case_analysis_plan_retry"],      # v49
               "edge_expand": last("case_analysis_edge_expand"), "edge_reach": last("case_analysis_edge_reach"),
               "pool_gates": last("case_analysis_pool_gates"),            # POOL_GATE_AREA / _LINK (v50)
+              "norme_scope": last("case_analysis_norme_scope"),          # NORME_SCOPE (v51): section 3's articles
+              "repeats": [d for e, d, _ in events if e == "case_analysis_repetition_guard"],     # v51
+              "usucapione_conditional": [d for e, d, _ in events if e == "case_analysis_usucapione_conditional"],
               "citation_removed": [d for e, d, _ in events if e == "citation_removed"],
               "qualification": last("case_analysis_qualification"),
               "discipline": last("case_analysis_citation_discipline"),
@@ -1233,6 +1236,10 @@ def analyse_case(rec: dict, ev) -> dict:
            "plan_cap": {**{k: v for k, v in (rec.get("plan_cap") or {}).items() if k in ("before", "after", "cap")},
                         **({"available": [e["article"] for e in (rec.get("plan_cap") or {}).get("available") or []]}
                            if rec.get("plan_cap") else {})}}
+    scoped = rec.get("norme_scope") or {}            # NORME_SCOPE (v51)
+    out["norme_scope"] = {k: scoped.get(k) for k in ("scope", "why", "cut", "others", "fallback") if k in scoped}
+    out["repeats_dropped"] = sum(d.get("count", 0) for d in rec.get("repeats") or [])
+    out["usucapione_conditional"] = sum(d.get("count", 0) for d in rec.get("usucapione_conditional") or [])
     out["pool_gates"] = ({**{g: len(gates.get(g) or []) for g in ("area", "link")},
                           "dedup_rows": (gates.get("dedup") or {}).get("rows", 0), "lookup": gates.get("lookup")}
                          if gates else {})

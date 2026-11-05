@@ -1590,7 +1590,6 @@ PARTIES_ENFORCED_FLAG = "PARTIES_ENFORCED"
 
 
 REAL_ACTION_REGIME = "azione_reale_immobiliare"
-_PATH_KEYS = ("works_or_signs", "access", "possession", "events")
 
 
 _PREVIOUS_ROLE = r"precedent|originari|dante causa|\bex\b|già proprietari|antecedent|avente causa"
@@ -1639,11 +1638,11 @@ def _previous_owner(facts: Dict[str, Any], name: str, history: List[Dict[str, An
 
 def real_action_defendants(facts: Optional[Dict[str, Any]]) -> Tuple[List[str], List[str], str]:
     """(authors, owners, how) for a real action on land: who did the act obstructing the right (as parties_to_sue),
-    then every other party with role proprietario -- not the client, never one in the facts only as a previous owner in
-    the chain of title (_previous_owner: who sold, who held the land before) -- whose land the facts place on the path
-    or the servitude: a fact naming it with the path, the way or the client's land (how "path"). One the facts place
-    nowhere is kept as well; only one they describe elsewhere, off the path, is left out. None placed: every one of
-    them (how "all proprietari")."""
+    then every current owner other than the client -- a party with role proprietario, or the owner of a
+    property_history entry -- never one in the facts only as a previous owner in the chain of title (_previous_owner:
+    who sold, who held the land before). v51 (Leonardo v50: Annibale, whose land lies between two of Leonardo's, left
+    out of the answer): no filter by where the facts place the owner's land -- the works, the access, the path -- the
+    litisconsorzio is weighed for each of them (how "current owners")."""
     if not facts:
         return [], [], ""
     clients = _clients(facts)
@@ -1652,27 +1651,16 @@ def real_action_defendants(facts: Optional[Dict[str, Any]]) -> Tuple[List[str], 
         if _typed_kind(event) in _OBSTRUCTIONS:
             authors += [n for n in _names(event.get("who")) if not _is_client(n, clients) and n not in authors]
     history = facts.get("property_history") or []
+    candidates = [str(p.get("name") or "").strip() for p in facts.get("parties") or []
+                  if "proprietari" in _low(p.get("role"))]
+    candidates += [str(e.get("owner") or "").strip() for e in history]
     owners: List[str] = []
-    for party in facts.get("parties") or []:
-        name = str(party.get("name") or "").strip()
-        if not name or "proprietari" not in _low(party.get("role")) or _is_client(name, clients) or name in authors \
-                or name in owners or _previous_owner(facts, name, history):
+    for name in candidates:
+        if not name or _is_client(name, clients) or name in authors or name in owners \
+                or _previous_owner(facts, name, history):
             continue
         owners.append(name)
-    client_words = [c for c in clients if c]
-    placed, unplaced, elsewhere = [], [], []
-    for name in owners:
-        near = _items_naming(facts, name, _PATH_KEYS)
-        titled = _items_naming(facts, name, ("property_history",))
-        on_path = [t for t in near + titled if re.search(_WAY, t) or any(_named_in(c, t) for c in client_words)]
-        if on_path or _items_naming(facts, name, ("access",)):     # how the client's land is reached names it
-            placed.append(name)
-        elif near:
-            elsewhere.append(name)          # described where the facts tell of the works, the access or the events: off the path
-        else:
-            unplaced.append(name)
-    kept = [n for n in owners if n in placed or n in unplaced]
-    return authors, kept if placed else owners, "path" if placed else "all proprietari" if owners else ""
+    return authors, owners, "current owners" if owners else ""
 
 
 def _real_action(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]]) -> bool:

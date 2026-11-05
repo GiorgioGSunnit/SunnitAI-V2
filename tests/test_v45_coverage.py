@@ -525,10 +525,10 @@ LEONARDO = {"parties": [{"name": "Leonardo", "role": "cliente, proprietario"}, {
 REAL = {"frame": {"areas": ["civile"]}, "questioni": [{"titolo": "Servitù di passaggio"}]}
 
 
-def test_the_real_action_names_the_author_and_the_owners_on_the_path(monkeypatch):
+def test_the_real_action_names_the_author_and_every_current_owner(monkeypatch):
     authors, owners, how = fs.real_action_defendants(LEONARDO)
     # never Mevio (owner in 1900, in the chain of title only), never Sempronio (sold); Annibale between Leonardo's land
-    assert (authors, owners, how) == (["Domitilla"], ["Tizio", "Caio", "Annibale"], "path")
+    assert (authors, owners, how) == (["Domitilla"], ["Tizio", "Caio", "Annibale"], "current owners")
     signals = {"facts": LEONARDO, "defendants": SIGNALS["defendants"]}
     monkeypatch.setenv("PARTIES_ENFORCED", "true")
     assert fs.parties_line(signals, REAL) == (
@@ -543,13 +543,15 @@ def test_no_owner_on_the_path_every_other_owner_is_named():
     facts = {**LEONARDO, "access": [{"asset": "fondo", "landlocked": "sì", "how_reached": "una strada sterrata"}],
              "property_history": LEONARDO["property_history"][:4]}
     authors, owners, how = fs.real_action_defendants(facts)
-    assert authors == ["Domitilla"] and owners == ["Tizio", "Caio", "Annibale"] and how == "all proprietari"
+    assert authors == ["Domitilla"] and owners == ["Tizio", "Caio", "Annibale"] and how == "current owners"
 
 
-def test_an_owner_the_facts_place_off_the_path_is_left_out():
+def test_an_owner_the_facts_place_off_the_path_is_named_too():
+    """v51: no filter by where the facts place the land; an owner only in property_history counts as well."""
     facts = {**LEONARDO, "parties": LEONARDO["parties"] + [{"name": "Bruto", "role": "proprietario"}],
-             "works_or_signs": [{"what": "un capannone di Bruto", "crosses": ""}]}
-    assert fs.real_action_defendants(facts)[1] == ["Tizio", "Caio", "Annibale"]
+             "works_or_signs": [{"what": "un capannone di Bruto", "crosses": ""}],
+             "property_history": LEONARDO["property_history"] + [{"owner": "Livia", "asset": "un bosco"}]}
+    assert fs.real_action_defendants(facts)[1] == ["Tizio", "Caio", "Annibale", "Bruto", "Livia"]
 
 
 @pytest.mark.parametrize("mevio", [
@@ -584,7 +586,8 @@ def test_the_real_action_brings_its_tools_and_102_only_with_the_parties_line(mon
     claimed = {**signals, "fired": [{"acquired_right": True, "institutions": ["servitù di passaggio"]}]}
     assert fs.regime_tools(claimed, REAL)[0]["matched"] == [
         "trascrizione della domanda giudiziale (azione confessoria) ai sensi dell'art. 2653, n. 1, c.c."]
-    one = {**LEONARDO, "parties": LEONARDO["parties"][:1] + LEONARDO["parties"][4:5]}  # Domitilla alone: one name
+    one = {**LEONARDO, "parties": LEONARDO["parties"][:1] + LEONARDO["parties"][4:5],   # Domitilla alone: one name
+           "property_history": [e for e in LEONARDO["property_history"] if e["owner"] in ("Leonardo", "Domitilla")]}
     assert "litisconsorzio" not in {t["id"] for t in fs.regime_tools({**signals, "facts": one}, REAL)}
     criminal = {"frame": {"areas": ["penale"]}, "questioni": [{"titolo": "Servitù di passaggio"}]}
     assert fs.regime_tools(signals, criminal) == []                                    # civil cases only
@@ -668,6 +671,7 @@ def real_case(monkeypatch, events):
 def test_the_real_facts_give_the_parties_and_the_tools(monkeypatch, real_case, events):
     authors, owners, _ = fs.real_action_defendants(real_case["fact_signals"]["facts"])
     assert (authors, owners) == (["Domitilla"], ["Tizio", "Caio", "Annibale"])           # never Mevio, never Sempronio
+    assert "Annibale" in fs.parties_line(real_case["fact_signals"], real_case)           # v51: on the real fixture
     from src.rag import doc_lookup
     monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
     monkeypatch.setattr(fs, "attach_term_sources", lambda *a, **k: None)
