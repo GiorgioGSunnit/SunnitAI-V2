@@ -231,6 +231,104 @@ def test_a_verified_article_passes_the_invariants_and_the_second_reading():
     assert counts["found"] == 0 and "2059" in text
 
 
+# v49: an article the material holds only as an offered tool / list / term, with no article row, is never left bare
+OFFERED = {**ANALYSIS, "fact_signals": {"tools": [{"id": "provvedimento_urgenza", "refs": [("700", "c.p.c.")]}]}}
+
+
+def test_an_offered_tool_with_no_row_is_read_and_joins_the_material_with_no_check_call():
+    session = Session({("700", "c.p.c."): "Fuori dei casi regolati nelle precedenti sezioni..."})
+    text, rows, log = cc.close("Il cliente può chiedere un provvedimento d'urgenza ai sensi dell'art. 700 c.p.c. subito.",
+                               analysis=OFFERED, article_rows=[ROW], documents=DOCUMENTS, session=session,
+                               case_text="Il caso.", chat_json=lambda *a, **k: pytest.fail("no check call"))
+    assert "700 c.p.c." in text and rows[0]["_article"] == ("700", "c.p.c.") and rows[0][cc.OFFERED_KEY]
+    assert log["offered_rows"] == ["700 c.p.c."] and log["counts"]["offered: row added"] == 1
+
+
+def test_an_offered_tool_not_found_loses_its_citation():
+    text, rows, log = cc.close("Il cliente può chiedere un provvedimento d'urgenza ai sensi dell'art. 700 c.p.c. subito.",
+                               analysis=OFFERED, article_rows=[ROW], documents=DOCUMENTS, session=Session({}),
+                               case_text="Il caso.", chat_json=judge())
+    assert "700" not in text and rows == [] and log["counts"]["offered, not found"] == 1
+
+
+def test_an_article_with_its_row_is_not_read_again():
+    session = Session({})
+    close("Il danno si risarcisce ai sensi dell'art. 2043 c.c. per intero.", session)
+    assert session.asked == []
+
+
+# v50: the offered articles had their rows already (_with_regime_rows), so the v49 branch never ran; a term's ref is
+# "art. N code"; CLOSURE_MATERIAL_ONLY removes what is neither the pool, an offered article nor the case's own
+TOOL_ROW = {"_article": ("700", "c.p.c."), "_source": "procedural_tool", "_procedural_tool": "provvedimento_urgenza",
+            "s": {"name": "700.0.0", "plain_text": "Fuori dei casi regolati..."}}
+DAMAGE_ROW = {"_article": ("1917", "c.c."), "_source": "procedural_tool", "_procedural_tool": "danni_morte",
+              "s": {"name": "1917.0.0", "plain_text": "Nell'assicurazione della responsabilità civile..."}}
+SIGNALS = {"tools": [{"id": "provvedimento_urgenza", "refs": [("700", "c.p.c.")]}],
+           "damages": [{"id": "danni_morte", "refs": [("1917", "c.c.")]}],
+           "terms": [{"id": "querela", "ref": "art. 124 c.p."}, {"id": "garanzia", "ref": "artt. 1667 e 1669 c.c."}]}
+PENAL = {"frame": {"areas": ["penale", "responsabilita_civile"]}, "area": "penale", "fact_signals": SIGNALS}
+
+
+def closed(draft, session, rows=(ROW, TOOL_ROW, DAMAGE_ROW), chat=None, case="Il caso."):
+    return cc.close(draft, analysis=PENAL, article_rows=list(rows), documents=DOCUMENTS, session=session,
+                    case_text=case, chat_json=chat or (lambda *a, **k: pytest.fail("no check call")))
+
+
+def test_each_material_article_is_told_by_where_it_comes_from():
+    origin = cc.provenance(PENAL, [ROW, TOOL_ROW, DAMAGE_ROW], [("5", "c.c.")])
+    assert origin[("2043", "c.c.")] == "pool" and origin[("700", "c.p.c.")] == "tool"
+    assert origin[("1917", "c.c.")] == "damages" and origin[("5", "c.c.")] == "named"
+    assert origin[("124", "c.p.")] == origin[("1667", "c.c.")] == origin[("1669", "c.c.")] == "term"
+
+
+def test_an_offered_tool_with_its_row_is_kept_and_logged_with_no_read():
+    session = Session({})
+    text, rows, log = closed("Il cliente può chiedere un provvedimento d'urgenza ai sensi dell'art. 700 c.p.c. subito.",
+                             session)
+    assert "700 c.p.c." in text and rows == [] and session.asked == []
+    assert log["offered_present"] == ["700 c.p.c."] and log["counts"]["offered: row present"] == 1
+
+
+def test_a_term_s_article_is_material_read_with_no_check_call():
+    session = Session({("124", "c.p."): "Salvo che la legge disponga altrimenti, il diritto di querela..."})
+    text, rows, log = closed("La querela va proposta entro tre mesi ai sensi dell'art. 124 c.p. dalla notizia.", session)
+    assert "124 c.p." in text and rows[0]["_article"] == ("124", "c.p.") and log["offered_rows"] == ["124 c.p."]
+    assert ("124", "c.p.") in cc.material_refs(PENAL, [ROW], [])
+
+
+def test_a_damage_s_row_stays_material_with_the_flag_off():
+    text, rows, log = closed("Il danneggiato agisce verso l'assicuratore ai sensi dell'art. 1917 c.c. in via diretta.",
+                             Session({}))
+    assert "1917 c.c." in text and rows == [] and log["counts"] == {} and log["material_only"] is False
+
+
+def test_material_only_removes_a_damage_s_article_and_one_read_in_a_ruling_with_no_read(monkeypatch):
+    monkeypatch.setenv(cc.MATERIAL_ONLY_FLAG, "true")
+    events = []
+    monkeypatch.setattr(dg, "vlog", lambda name, data=None, **_: events.append((name, data)))
+    session = Session({("2059", "c.c."): "Il danno non patrimoniale..."})
+    text, rows, log = closed("Il danneggiato agisce verso l'assicuratore ai sensi dell'art. 1917 c.c. in via diretta. "
+                             "Spetta anche il danno non patrimoniale ai sensi dell'art. 2059 c.c. ai familiari.", session)
+    assert "1917" not in text and "2059" not in text and rows == [] and session.asked == []
+    assert log["counts"][cc.NOT_IN_MATERIAL] == 2 and log["verified"] == [] and log["remaining"] == 0
+    removed = [d for name, d in events if name == "citation_removed"]
+    assert {e["article"] for e in removed} == {"1917 c.c.", "2059 c.c."}
+    assert all(e["dropped"] and e["reason"].endswith(": not in material") for e in removed)
+
+
+def test_material_only_keeps_the_pool_the_offered_and_the_case_s_own(monkeypatch):
+    monkeypatch.setenv(cc.MATERIAL_ONLY_FLAG, "true")
+    draft = ("Il danno si risarcisce ai sensi dell'art. 2043 c.c. per intero. Il cliente chiede un provvedimento "
+             "d'urgenza ai sensi dell'art. 700 c.p.c. subito. La clausola richiama l'art. 1341 c.c. per iscritto.")
+    text, _, log = closed(draft, Session({}), case="Il contratto richiama l'art. 1341 c.c.")
+    assert all(n in text for n in ("2043 c.c.", "700 c.p.c.", "1341 c.c.")) and log["remaining"] == 0
+
+
+def test_the_material_only_flag_is_off_by_default(monkeypatch):
+    monkeypatch.delenv(cc.MATERIAL_ONLY_FLAG, raising=False)
+    assert not cc.material_only()
+
+
 def test_closure_is_off_by_default(monkeypatch):
     monkeypatch.delenv("CITATION_CLOSURE_ENABLED", raising=False)
     assert not cc.enabled() and not feature_flags.enabled("PLAN_ARTICLES_COVER_ENABLED")

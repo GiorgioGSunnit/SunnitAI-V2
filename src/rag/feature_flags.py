@@ -282,7 +282,11 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 with no claim received gets a claimant frame and no
                                 "respond to a claim" checklist item. See
                                 fact_signals.qualify_parties, procedural_tools,
-                                claim_posture.
+                                claim_posture. v48: art. 696-bis c.p.c. only with a damages or credit claim among the
+                                facts (696 alone for the state of places); a possession's start for usucapione never a
+                                sale's, a contact's or a closure's date, and none left: "inizio del possesso da
+                                accertare", the writer told the ventennio is not matured and a sentence saying "oltre
+                                vent'anni" flagged (plan_then_write._case_statement).
   STRICT_ARTICLES_ENABLED      false (the lawyer's review, 26 Oct): an institution's
                                 article found by one of the issue's keywords, not by its
                                 own name or number, or by full text, counts only if its
@@ -357,6 +361,10 @@ The five below came from scripts/diagnose_long.py's run of 25 Oct (33 long cases
                                 an evidence list identical to an earlier one replaced by
                                 a reference. See order_for_acquired, explicit_questions,
                                 merge_duplicate_issues, dedupe_evidence.
+                                v48: the plan's main remedy article (its first outside the subordinate issues and the
+                                rule rows whose text lists 3+ remedies, split on "può" / "oltre": 1079 c.c.) has every
+                                remedy in the plan's answers and in the writer's material, to address each; logged as
+                                case_analysis_plan_remedies.
 
   ANSWER_INVARIANTS_ENABLED    false (27 Oct): one general layer of checks on every strategy
                                 answer after its sections are written, each logged found /
@@ -559,15 +567,93 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 the plan's own steps, an article of the draft prompt's material that no plan issue
                                 holds, no fired rule excludes and check_plan did not remove is added by rule, no call:
                                 grade 3 always, grade 2 only when one of frame/distill/institution found it (v46; an
-                                ungraded row exempt by heading or as a cross-reference counts as grade 2). Under the
+                                ungraded row exempt by heading or as a cross-reference counts as grade 2; grade 1 when two
+                                distinct signals of frame/distill/institution/ruling_applied found it; grade 0 never). Under the
                                 issue sharing most words with the grader's issue for it (else its rubrica), else under
                                 a last "Ulteriori norme applicabili" issue; tagged plan_source "rule", never forced into
                                 a paragraph by PLAN_ARTICLES_COVER. Logged as case_analysis_plan_rule_include (inserted
-                                and skipped, with grade and signals). See plan_then_write.include_by_rule.
+                                and skipped, with grade and signals). See plan_then_write.include_by_rule. v48: grade 1
+                                at most 4 per case, most signals first, within 4,000 added tokens (the rest skipped,
+                                "grade-1 cap").
+  PLAN_PATCH_REDO              false (v46; acts with REVIEW_FIXES_ENABLED): when the plan review's only problems are
+                                explicit questions without their answer, those answers are asked for alone (one call, 600
+                                max_tokens) and added to the plan, no full plan redo; any other problem, or an answer not
+                                given, the full redo as before. Logged as case_analysis_plan_patch. v48: the stance
+                                check's opposing arguments go into the plan as made as objections with the client's
+                                reply (one call, 800 max_tokens), no full _plan_json redo; a failed call or an argument
+                                left without its issue, the redo as before. Full redo only for structural problems.
+  EDGE_EXPAND                  false (v48; needs scripts/article_links.py --write's Unit and REFERS_TO graph): once the
+                                prompt is fitted, a few one-hop neighbours of its articles and of the grade-3 rows,
+                                anchors in order of grade then signal count; per anchor the 2 same-Sezione articles
+                                nearest by number, the 2 articles it cites and the 2 citing it with the fewest inbound
+                                REFERS_TO in the corpus; until 60 rows per case are sent to the check (new ones, and
+                                rows it never graded), graded like any row, then the prompt fitted again. Channels
+                                edge:sezione / edge:refers_to / edge:cited_by, signal "edge" plus "edge:2+ anchors" when
+                                two anchors reach it (PLAN_RULE_INCLUDE counts them). Logged as case_analysis_edge_expand
+                                (with ranks, where the cap stopped and the grading calls) and case_analysis_edge_reach
+                                (prompt, plan, answer). Policy measured by scripts/edge_policy.py.
+  PLAN_CAP                     false (v49; acts with PLAN_THEN_WRITE_ENABLED): the plan the writer reads holds at most
+                                12 substantive articles (PLAN_CAP_MAX overrides; a procedural code's articles stay,
+                                uncounted): those the user named always, then grade 3, grade 2 with two or more
+                                retrieval signals, the rule insertions, the plan's others, each tier by signal count.
+                                The rest leave the issues and stay in the material tagged available, for the citation
+                                closure only: no writer's prompt names them (v50; v49 listed them in sections 3 and 4).
+                                Logged as case_analysis_plan_cap (kept / available with tier, grade, signals). See
+                                plan_then_write.cap_plan.
+  POOL_GATE_AREA               false (v50): before the applicability check, a main code's candidate (c.c., c.p.c., c.p.,
+                                c.p.p., c.p.a.) the case's areas do not allow goes unless the user names the article or
+                                two channels found it. Areas: the frame's (else the analysis' own), each by
+                                pool_gates.AREA_CODES -- penale c.p./c.p.p., amministrativo c.p.a., lavoro, tributario
+                                and the civil areas c.c./c.p.c., "altro" nothing of its own; unknown or uncertain
+                                (FRAME_SANITY): no gate. Laws outside the five codes (l. 300/1970, d.lgs. 81/2015, CCNL)
+                                always pass. With either POOL_GATE flag, dedup first: one document's rows per (code,
+                                article), a Section repeating a kept one's text merged. Logged as
+                                case_analysis_pool_gates. Measured by scripts/pool_gates_sim.py. See pool_gates.py.
+  POOL_GATE_LINK               false (v50; needs scripts/article_links.py --write's graph): before the check, a
+                                single-channel row goes when no row found by two channels (or named) is in its Capo (a
+                                Titolo without Capi: the Titolo) or linked to it by REFERS_TO, links through a hub (100+
+                                citing articles) not counted. Never removed: the user's articles, heading matches,
+                                cross-references, regime candidates, procedural tools, rows the frame or distill channel
+                                found. Gated rows are not brought back by EDGE_EXPAND. Logged with the area gate.
+  CLOSURE_MATERIAL_ONLY        false (v50; acts with CITATION_CLOSURE_ENABLED): the closure's material is the pool's
+                                rows, the procedural tools (the criminal profile's included), the computed terms, the
+                                posture's procedural list and the case's own articles; any other citation -- a head of
+                                damage's article with no other source, an article read in a ruling -- is removed with no
+                                read and no check call, logged "not in material" (closure and ledger), never verified.
+  NORME_SPLIT                  false (v48; acts with PLAN_THEN_WRITE_ENABLED): with more than 8 plan articles, "Norme e
+                                giurisprudenza" written in two concurrent calls over disjoint halves of them (the
+                                rulings with the first), each within 0.6 of the tokens and words; a half cut at its
+                                length trimmed to its last sentence, never rewritten. Logged as case_analysis_norme_split.
+  ROLE_FIT                     false (v48; acts with PLAN_THEN_WRITE_ENABLED): after the plan, one concurrent call per
+                                substantive plan article graded >= 2 asking whom it works for (cliente / controparte /
+                                entrambi), from client_side, the parties' roles and the client's positions; one answered
+                                "controparte" stays in the material tagged "norma della controparte", presented only as
+                                the counterparty's argument with the client's reply. Logged as case_analysis_role_fit.
+                                An article without its text is not asked. ROLE_FIT=shadow: the same calls and log,
+                                nothing tagged, no writer rule; each answer with its agreement with the role conditions
+                                (diagnose_long: also with the eval's forbidden_cited). See role_fit.py.
+  WRITER_LOOP_GUARD            false (v46): a section reply, or a rewrite of one, that says one block again and again (an
+                                8-word run 3+ times, two successive equal gaps holding the same words) is cut where the
+                                block first comes back, trimmed to its last sentence, repeated sentences kept once; a looped
+                                section is never rewritten at 1.5x tokens. Logged as case_analysis_writer_loops.
+  ANCHOR_REWRITE_CAP           false (v46; acts with ANCHORED_WRITING_ENABLED): a section's failing sentences rewritten in
+                                calls of at most 2,500 max_tokens (9 sentences), 4 at once, each with its own passages.
+  GRADER_VOTE                  false (v46; acts with CHECK_GRADED_ENABLED): each article graded alone, three calls (at
+                                most 8 at once), in a fixed order; applicable when two or more votes give >= 2 (the grade
+                                kept is the second highest vote; a lone vote counts at most 1). GRADER_VOTE_TEMPERATURE
+                                (default 0) for the votes, GRADER_VOTE_WORKERS (default 8) the calls at once. Every vote logged. Three calls per article. See
+                                defensive_generation._voted_verdicts; scripts/grader_bench.py's v_vote replays it.
+  GROUNDED_EXCLUSION           false (v46): a sentence saying article A does not apply is accepted by plan cover and by the
+                                writer review when A is in the plan with grade >= 2, the ground is another plan article B
+                                it cites (then allowed in a cover sentence) or a fired fact rule excluding A, and it
+                                cites nothing else; every other such sentence refused or dropped as before. Logged as
+                                grounded_exclusion_accepted. See plan_then_write.grounded_exclusion.
   RUBRICA_TEXT_CHECK           false (v45): the qualification check's [DA VERIFICARE: l'art. N riguarda «rubrica»]
                                 stamp is not added when the key terms of the clause citing the article (or their
                                 negation, same stem) occur in the article's text (defensive_generation._text_covers);
-                                logged as not_stamped in case_analysis_qualification.
+                                logged as not_stamped in case_analysis_qualification. v48: the clause is only the part
+                                of it after another article's citation (and before the next), and the article's words
+                                include its rubrica (Leonardo v46: art. 1054 c.c. judged on art. 1051's clause).
   TERM_EXPIRY_TEXT             false (v45): the non-use term of a servitude written with its end, "estinzione per non
                                 uso: non decorso, scade nel 2036 (...)" ("già decorso, scaduto nel ..." when run), not
                                 the bare year the writer read as its start ("decorre nel 2036").
@@ -577,7 +663,14 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 per case. Logged as case_analysis_grade_prompt.
   GRADER_FIXED_ORDER           false (v45): the graded check's batches by article id (code, number, suffix), whatever
                                 the retrieval order; the prompt's text unchanged.
-  REGIME_CANDIDATES            false (v45, a draft pending the lawyer's validation): the articles of
+  REGIME_CANDIDATES            false (v45, a draft pending the lawyer's validation; v48: every entry and every
+                                procedural tool with a client_role condition -- 949 c.c. only for the owner resisting a
+                                claimed servitude, 948 c.c. only for who claims ownership; usucapione's 1146 and 1167
+                                c.c., passaggio coattivo's 1053 c.c. and art. 1051's last comma; a failing one not added,
+                                logged as role_excluded; an action's institution -- negatoria, rivendicazione,
+                                confessoria, possessoria -- resolved to the action's own article is the client's only
+                                when the client's role is the action's, else that article is tagged "norma della
+                                controparte" deterministically, no call: case_analysis_action_gate): the articles of
                                 fact_signals.REGIME_CANDIDATES whose triggers are in the case's issues or institutions,
                                 within its areas' families, added to the pool over its cap and graded like any row;
                                 no conclusion text comes with them. Logged as case_analysis_regime_candidates. With

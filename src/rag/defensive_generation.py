@@ -1723,14 +1723,57 @@ def _article_num(raw: str) -> str:
     return normalize_number(raw.lower().split(".")[0])
 
 
+# A list of articles under one "artt." (v46): "artt. 55 e 52 c.p.", "artt. 55, 52 e 59 c.p.", "artt. 55 c.p. e 52 c.p.",
+# "artt. 1176, comma 2, e 1218 c.c.". Each item a number, its comma, its code if it has one; an item without a code takes
+# the next coded item's. Read only with two or more numbers that all get a code: a single citation, or a list ending in
+# bare numbers ("art. 2043 c.c., 5 anni"), is read as before.
+_LIST_CODES = "|".join(p for p, _ in _CODE_SPELLINGS)
+_LIST_ITEM = (_ARTICLE_NUM + r"(?:\s*,?\s*(?:co\.|comma|commi)\s*\d+(?:\s*,?\s*(?:lett\.|lettera|n\.)\s*\w+)?)?"
+              r"(?:\s*,?\s*(?:del\s+)?(" + _LIST_CODES + r"))?")
+_LIST_SEP = r"(?:\s*,\s*(?:e|ed)\s+|\s*,\s*|\s+(?:e|ed)\s+)"
+_LIST_ITEM_RE = re.compile(_LIST_ITEM, re.IGNORECASE)
+_LIST_SEP_RE = re.compile(_LIST_SEP, re.IGNORECASE)
+_LIST_HEAD_RE = re.compile(r"\b(?:artt?\.?|articol[oi])\s*(?=\d)", re.IGNORECASE)
+
+
+def _article_lists(text: str) -> List[Tuple[int, int, List[tuple]]]:
+    """(start, end, [(number, code), ...]) of each list of two or more articles all with a code (_LIST_ITEM)."""
+    out = []
+    for head in _LIST_HEAD_RE.finditer(text or ""):
+        pos, items = head.end(), []
+        while True:
+            m = _LIST_ITEM_RE.match(text, pos)
+            if not m:
+                break
+            items.append((m.group(1), _code_of(m.group(2)) if m.group(2) else None, m.end()))
+            sep = _LIST_SEP_RE.match(text, m.end())
+            if not sep or not re.match(r"\d", text[sep.end():sep.end() + 1]):
+                break
+            pos = sep.end()
+        while items and items[-1][1] is None:       # bare numbers at the end: no code to give them
+            items.pop()
+        if len(items) < 2:
+            continue
+        refs, code = [], None
+        for number, own, _ in reversed(items):
+            code = own or code
+            refs.append((_article_num(number), code))
+        out.append((head.start(), items[-1][2], list(reversed(refs))))
+    return out
+
+
 def _refs_in(text: str) -> List[tuple]:
-    """(article number, code) for every article cited in a text, in order, repeats kept."""
-    refs = []
+    """(article number, code) for every article cited in a text, in order, repeats kept; every article of a list
+    (_article_lists) counts."""
+    lists = _article_lists(text or "")
+    found = [(start, ref) for start, _, refs in lists for ref in refs]
     for m in _CITED_ARTICLE_RE.finditer(text or ""):
+        if any(s <= m.start() < e for s, e, _ in lists):
+            continue
         code = _code_of(m.group(2))
         if code:
-            refs.append((_article_num(m.group(1)), code))
-    return refs
+            found.append((m.start(), (_article_num(m.group(1)), code)))
+    return [ref for _, ref in sorted(found, key=lambda x: x[0])]
 
 
 def _norm_refs(analysis: Dict[str, Any]) -> List[tuple]:
@@ -4073,7 +4116,13 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                     if refs:              # a fired rule's articles get their place in the plan (place_rule_institutions)
                         analysis["rule_institutions"].append({"nome": istituto.get("nome"), "fatto": istituto.get("fatto") or "",
                                                               "refs": refs, "argomento": _rule_argument(analysis, istituto)})
+            # REGIME_CANDIDATES (v48): an action's institution resolved to the action's own article -- negatoria,
+            # rivendicazione, confessoria, possessoria -- is the client's only when the client's role is the action's;
+            # otherwise the article is the counterparty's, tagged adverse (analysis["action_gate"]), no call
+            gated = _action_gate(analysis, istituto.get("nome"), resolved)
             for row in resolved:
+                if row.get("_article") in gated:
+                    row["_role_adverse"] = gated[row["_article"]]
                 if index in central_questions and row.get("_article"):
                     central_matched.append(row["_article"])
                 key = ((row.get("d") or {}).get("id"), (row.get("s") or {}).get("name"))
@@ -4564,27 +4613,54 @@ def _prompt_reach(article_rows: List[Dict[str, Any]], grades: Dict[tuple, int], 
 
 def _grade_prompt_rows(texts: Dict[str, str], by_label: Dict[str, tuple], article_rows: List[Dict[str, Any]],
                        grade_these, facts: str, request: str, analysis: Dict[str, Any], session_lang: str) -> tuple:
-    """({label: text} graded, {key: verdict}, [labels left ungraded]) for GRADE_ALL_PROMPT, in the check's order."""
+    """({label: text} graded, {key: verdict}, [labels left ungraded]) for GRADE_ALL_PROMPT, in the check's order.
+    After the rounds, a final one (v46): the estimate with every grade so far, its ungraded articles graded (h1, v45: the
+    fourth round's grade 0 freed room, and eleven articles reached the prompt ungraded). What the estimate after it still
+    admits ungraded (the cap reached, or room freed again) is logged, with each one's place and fusion rank."""
     graded: Dict[str, str] = {}
     verdicts: Dict[str, Dict[str, Any]] = {}
     ungraded: List[str] = []
     rounds = []
-    for _ in range(_GRADE_ALL_PROMPT_ROUNDS):
+
+    def admitted() -> List[str]:
         grades = {by_label[label]: _grade(verdicts.get(_applicability_key(label))) for label in graded}
         reach = _prompt_reach(article_rows, {a: g for a, g in grades.items() if g is not None}, facts, request,
                               analysis, session_lang)
-        wanted = [label for label in texts if label not in graded and by_label.get(label) in reach]
-        wanted = wanted[:max(0, _GRADE_ALL_PROMPT_CAP - len(graded))]
-        if not wanted:
-            break
+        return [label for label in texts if label not in graded and by_label.get(label) in reach]
+
+    def grade(wanted: List[str]) -> None:
         chosen = {label: texts[label] for label in wanted}
         got, missing = grade_these(chosen)
         verdicts.update(got)
-        ungraded += missing
+        ungraded.extend(missing)
         graded.update(chosen)
+
+    for _ in range(_GRADE_ALL_PROMPT_ROUNDS):
+        wanted = admitted()[:max(0, _GRADE_ALL_PROMPT_CAP - len(graded))]
+        if not wanted:
+            break
+        grade(wanted)
         rounds.append(len(wanted))
-    vlog("case_analysis_grade_prompt", {"candidates": len(texts), "graded": len(graded), "rounds": rounds,
-                                        "cap": _GRADE_ALL_PROMPT_CAP, "ungraded": ungraded})
+    final = 0
+    if len(rounds) == _GRADE_ALL_PROMPT_ROUNDS:        # the rounds ran out: the estimate may admit more
+        wanted = admitted()[:max(0, _GRADE_ALL_PROMPT_CAP - len(graded))]
+        if wanted:
+            grade(wanted)
+            final = len(wanted)
+    left = admitted() if rounds else []
+    order = {label: i for i, label in enumerate(texts, 1)}
+
+    def fused_rank(label):
+        ranks = [r.get("_fused_rank") for r in article_rows if r.get("_article") == by_label.get(label)
+                 and r.get("_fused_rank")]
+        return min(ranks) if ranks else None
+    vlog("case_analysis_grade_prompt", {
+        "candidates": len(texts), "graded": len(graded), "rounds": rounds, "final_round": final,
+        "cap": _GRADE_ALL_PROMPT_CAP, "ungraded": ungraded,
+        "left_in_reach": [{"article": label, "check_order": order[label], "fused_rank": fused_rank(label)}
+                          for label in left],
+        **({"left_because": "cap" if len(graded) >= _GRADE_ALL_PROMPT_CAP else "room freed by the final round"}
+           if left else {})})
     return graded, verdicts, ungraded
 
 
@@ -4641,7 +4717,7 @@ _GRADED_SYSTEM = (
 
 
 def _graded_batch(case: str, texts: Dict[str, str], retry: bool = False, system: str = _GRADED_SYSTEM,
-                  issues: Optional[List[str]] = None) -> tuple:
+                  issues: Optional[List[str]] = None, temperature: float = 0) -> tuple:
     """({label: verdict} for the articles one graded call returned a grade for, problem). Each article
     is sent under a short id (A1, A2, ...) to echo back, and the reply is read object by object
     (_graded_reply), so a reply cut short still gives the grades it holds. problem is "" when every
@@ -4656,7 +4732,7 @@ def _graded_batch(case: str, texts: Dict[str, str], retry: bool = False, system:
     )
     try:
         raw = _chat([SystemMessage(content=system), HumanMessage(content=human)],
-                    max_tokens=_GRADED_TOKENS[0] + _GRADED_TOKENS[1] * len(ids), temperature=0)
+                    max_tokens=_GRADED_TOKENS[0] + _GRADED_TOKENS[1] * len(ids), temperature=temperature)
     except Exception as exc:
         _log_exception("_graded_batch", exc)
         logger.warning("graded check failed for a batch of %d articles: %s", len(ids), exc)
@@ -4732,6 +4808,9 @@ def _graded_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYS
     fails as a whole: an article that still has no grade is returned among the ungraded."""
     from concurrent.futures import ThreadPoolExecutor
 
+    if feature_flags.enabled(GRADER_VOTE_FLAG):
+        return _voted_verdicts(case, texts, system, issues)
+
     def run(labels: List[str], size: int, retry: bool) -> List[tuple]:
         groups = [{label: texts[label] for label in labels[i:i + size]} for i in range(0, len(labels), size)]
         if len(groups) == 1:
@@ -4760,6 +4839,74 @@ def _graded_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYS
     if problems:
         log["error"] = problems[0]
     vlog("case_analysis_applicability", log, duration_ms=(time.time() - t0) * 1000)
+    return {_applicability_key(label): v for label, v in got.items()}, ungraded
+
+
+# GRADER_VOTE (v46: grades move between runs of the same prompt -- scripts/grader_bench.py's v0 against the saved ones):
+# each article graded alone, in one call of its own, _GRADER_VOTES times, the calls _GRADER_VOTE_WORKERS at once; the
+# articles in a fixed order (evidence_tiers.ref_key's), so no neighbour in a batch sways a grade. Applicable when two or
+# more votes give 2 or more: the grade kept is the second highest of the votes (with three, the median; with two, the
+# lower), so it is >= 2 exactly then; a lone vote counts at most 1 (marginale, kept, never applicable); no vote, ungraded.
+# GRADER_VOTE_TEMPERATURE (default 0) sets the votes' temperature; GRADER_VOTE_WORKERS (default 8) the calls at once. Every vote's grade logged (case_analysis_applicability,
+# "votes"). Three calls per article in place of one per _APPLICABILITY_BATCH.
+GRADER_VOTE_FLAG = "GRADER_VOTE"
+_GRADER_VOTES = 3
+_GRADER_VOTE_WORKERS = 8
+
+
+def _grader_vote_workers() -> int:
+    try:
+        return max(1, int(os.getenv("GRADER_VOTE_WORKERS") or _GRADER_VOTE_WORKERS))
+    except ValueError:
+        return _GRADER_VOTE_WORKERS
+
+
+def _grader_vote_temperature() -> float:
+    try:
+        return float(os.getenv("GRADER_VOTE_TEMPERATURE") or 0)
+    except ValueError:
+        return 0.0
+
+
+def _voted_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYSTEM,
+                    issues: Optional[List[str]] = None) -> tuple:
+    """({label key: verdict with "votes"}, [labels without any vote]): _graded_verdicts under GRADER_VOTE."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    t0 = time.time()
+    labels = sorted(texts, key=_label_key)
+    jobs = [(label, k) for label in labels for k in range(_GRADER_VOTES)]
+    temperature = _grader_vote_temperature()
+
+    def vote(job):
+        label = job[0]
+        read, problem = _graded_batch(case, {label: texts[label]}, False, system, issues, temperature=temperature)
+        return read.get(label), problem
+    if not jobs:
+        return {}, []
+    with ThreadPoolExecutor(max_workers=min(_grader_vote_workers(), len(jobs))) as pool:
+        results = list(pool.map(vote, jobs))
+    votes: Dict[str, List[Optional[int]]] = {label: [] for label in labels}
+    answers: Dict[str, List[Dict[str, Any]]] = {label: [] for label in labels}
+    for (label, _), (verdict, _) in zip(jobs, results):
+        votes[label].append(_grade(verdict) if verdict else None)
+        if verdict and _grade(verdict) is not None:
+            answers[label].append(verdict)
+    got: Dict[str, Dict[str, Any]] = {}
+    ungraded: List[str] = []
+    for label in labels:
+        given = sorted((g for g in votes[label] if g is not None), reverse=True)
+        if not given:
+            ungraded.append(label)
+            continue
+        grade = given[1] if len(given) >= 2 else min(given[0], 1)
+        source = next((v for v in answers[label] if _grade(v) == grade), answers[label][0])
+        got[label] = {**source, "grade": grade, "votes": votes[label]}
+    vlog("case_analysis_applicability", {
+        "checked": len(labels), "batches": len(jobs), "vote": _GRADER_VOTES, "temperature": temperature,
+        "failed_batches": sum(1 for verdict, _ in results if not verdict), "votes": votes, "ungraded": ungraded,
+        "split": sorted(label for label in labels if len({g for g in votes[label] if g is not None}) > 1)},
+        duration_ms=(time.time() - t0) * 1000)
     return {_applicability_key(label): v for label, v in got.items()}, ungraded
 
 
@@ -5279,11 +5426,26 @@ def _stamp_stems(text: str, names: bool = True) -> set:
     return {w.lower()[:5] for w in words if len(w) >= 5 and w.lower() not in _STAMP_STOP and (names or not w[0].isupper())}
 
 
+_CITED_NUMBER_RE = re.compile(r"\bartt?\.\s*(\d+(?:-[a-z]+)?)(?:\s*,?\s*(?:co\.|comma)\s*\d+)?"
+                              r"(?:\s*c\.\s?[a-z]{1,3}\.(?:\s?[a-z]{1,3}\.)?)?", re.IGNORECASE)
+
+
 def _citing_clause(context: str, ref: tuple) -> str:
-    """The clause of context (between ";", ":" or sentence ends) holding ref's number; context when not found."""
+    """The clause of context (between ";", ":" or sentence ends) holding ref's number, and of it only the part after
+    another article's citation before ref's and before one after it (v48, Leonardo v46: "il passaggio coattivo ai sensi
+    dell'art. 1051 c.c., in quanto il fondo è intercluso, e non è dovuta alcuna indennità in base all'art. 1054 c.c."
+    judged art. 1054 on art. 1051's words); context when not found."""
+    number = str(ref[0])
     for clause in re.split(r"[;:]|(?<=[a-zà-ù\)])\.\s+(?=[A-ZÀ-Ü])", context or ""):
-        if re.search(rf"(?<![\w-]){re.escape(str(ref[0]))}(?![\w-])", clause):
+        if not re.search(rf"(?<![\w-]){re.escape(number)}(?![\w-])", clause):
+            continue
+        cites = list(_CITED_NUMBER_RE.finditer(clause))
+        own = next((i for i, m in enumerate(cites) if m.group(1) == number), None)
+        if own is None:
             return clause
+        start = max((m.end() for m in cites[:own] if m.group(1) != number), default=0)
+        end = min((m.start() for m in cites[own + 1:] if m.group(1) != number), default=len(clause))
+        return clause[start:end].strip(" ,") or clause
     return context or ""
 
 
@@ -5369,15 +5531,24 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     by_text = feature_flags.enabled(RUBRICA_TEXT_CHECK_FLAG)
     not_stamped: Dict[str, List[str]] = {}
 
-    def stamp(draft: str, ref: tuple, heading: str) -> str:
+    def stamp(draft: str, ref: tuple, heading: str, kind: str = "") -> str:
         label = f"{ref[0]} {ref[1]}"
-        found = _text_covers(headings[label][1], ref, " ".join(
-            str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())) if by_text else []
+        # the article's words: its rubrica too (v48, Leonardo v46: "il fondo è intercluso" against «Interclusione ...»);
+        # never against an inverse situation ("direzione"): the mirror article shares the clause's words by being one
+        found = _text_covers(headings[label][1], ref, f"{heading} " + " ".join(
+            str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())) \
+            if by_text and kind != "direzione" else []
         if found:
             not_stamped[label] = found
             return draft
         return _flag_citation(draft, ref, f" [DA VERIFICARE: l'art. {ref[0]} {ref[1]} riguarda «{heading}»]")
     removals: List[Dict[str, Any]] = []
+    full_reason: Dict[str, str] = {}      # v49: the ledger's reason in full, per removed article
+
+    def why_full(label: str, why: str, v: Dict[str, Any]) -> None:
+        said = " ".join(str(v.get("perche") or "").split())
+        kind = str(v.get("tipo") or "").strip().lower()
+        full_reason[label] = f"{why}" + (f" ({kind})" if kind else "") + (f": {said}" if said else "")
     for v in verdicts:
         if not isinstance(v, dict) or v.get("compatibile") is not False:
             continue
@@ -5395,6 +5566,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                     _protection(ref, {n: "" for n in named}) is None and not evidenced:
                 inverse.append(label)
                 to_remove.append(ref)          # the inverse situation: removed even when protected
+                why_full(label, "inverse situation", v)
                 removals.append({"article": label, "tier": tier_of.get(ref), "how": "removed", "judgements": 1,
                                  "verified_fact": False, "why": "inverse situation"})
                 continue
@@ -5404,6 +5576,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                     why = f"evidence tier T{tier_of[ref]}"
                 if why is None:
                     to_remove.append(ref)
+                    why_full(label, "qualification mismatch", v)
                     removals.append({"article": label, "tier": tier_of.get(ref), "how": "removed", "judgements": 1,
                                      "verified_fact": False, "why": "qualification mismatch"})
                     continue
@@ -5412,12 +5585,13 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
                                      "verified_fact": False, "why": "qualification mismatch, no second opinion"})
                 if second_opinion and why not in _SECOND_OPINION_EXEMPT:
                     deferred.append((ref, heading, why, str(v.get("tipo") or "").strip().lower()))
+                    why_full(label, "qualification mismatch and second opinion", v)
                     continue
                 kept[label] = why
                 if str(v.get("tipo") or "").strip().lower() == "formulazione":
                     note_dropped.append(label)
                     continue
-            draft = stamp(draft, ref, heading)
+            draft = stamp(draft, ref, heading, str(v.get("tipo") or "").strip().lower())
     governs = _second_opinion(case_text, [ref for ref, *_ in deferred], rows_by_ref) if deferred else {}
     for ref, heading, why, kind in deferred:
         label = f"{ref[0]} {ref[1]}"
@@ -5433,7 +5607,7 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         if kind == "formulazione":
             note_dropped.append(label)
             continue
-        draft = stamp(draft, ref, heading)
+        draft = stamp(draft, ref, heading, kind)
     log = {"checked": sorted(headings), "flagged": flagged}
     if not_stamped:
         log["not_stamped"] = not_stamped        # the article's text holds the clause's key terms
@@ -5444,7 +5618,15 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
     if remove or to_remove:
         draft, removal = plan_then_write.remove_citations(draft, to_remove, documents, known)
         log.update({"removed": [f"{n} {c}" for n, c in to_remove], "kept": kept, "note_dropped": note_dropped})
+        # v49: each dropped sentence carries the check's reason in full for the articles it cites
+        from . import citation_ledger
+        for e in removal:
+            keys = {citation_ledger._key(c) for c in citation_ledger.cited(str(e.get("in") or e.get("sentence") or ""))}
+            said = [f"{a}: {r}" for a, r in full_reason.items() if citation_ledger._key(a) in keys]
+            if said:
+                e["why"] = "; ".join(said)
         vlog("case_analysis_flagged_removed", {"removed": removal, "count": len(to_remove)})
+        citation_ledger.record_entries("qualification", removal)
     vlog("case_analysis_qualification", log)
     if tier_of:
         vlog("evidence_removal", {"stage": "qualification check", "entries": removals})
@@ -5635,13 +5817,42 @@ def _add_regime_candidates(session, driver, database: str, analysis: Dict[str, A
         return picked
 
 
+def _action_gate(analysis: Dict[str, Any], institution: Any, rows: List[Dict[str, Any]]) -> Dict[tuple, str]:
+    """REGIME_CANDIDATES: {ref: why} of the rows an action's institution resolved to whose action does not fit the
+    client's role (fact_signals.action_gate); each logged as case_analysis_action_gate, the adverse ones kept in
+    analysis["action_gate"] for the plan. {} with the flag off."""
+    from . import fact_signals
+    if not fact_signals.regime_candidates_enabled() or not rows:
+        return {}
+    signals = analysis.get("fact_signals") or {}
+    roles = fact_signals.client_roles(signals.get("facts"), signals.get("fired") or [])
+    out: Dict[tuple, str] = {}
+    for row in rows:
+        ref = row.get("_article")
+        verdict = fact_signals.action_gate(str(institution or ""), ref, roles) if ref else None
+        if verdict is None:
+            continue
+        vlog("case_analysis_action_gate", verdict)
+        if not verdict["fits"]:
+            out[tuple(ref)] = verdict["reason"]
+            gate = analysis.setdefault("action_gate", {})
+            gate[f"{ref[0]} {ref[1]}"] = verdict["reason"]
+    return out
+
+
 def _with_regime_candidates(session, driver, database: str, analysis: Dict[str, Any], picked: Dict[str, Any],
                             store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
     """_add_regime_candidates' body."""
     from . import fact_signals
     areas = (analysis.get("frame") or {}).get("areas") or (analysis.get("fact_signals") or {}).get("areas") or []
-    regimes = fact_signals.regime_candidates(analysis, areas)
+    role_excluded: List[Dict[str, Any]] = []
+    regimes = fact_signals.regime_candidates(analysis, areas, log=role_excluded)
     have = {r.get("_article") for r in picked.get("article_rows") or [] if r.get("_article")}
+    commi = {label: v for regime in regimes for label, v in (regime.get("commi") or {}).items()}
+    for row in picked.get("article_rows") or []:        # a comma the material must hold, also on a row already there
+        ref = row.get("_article")
+        if ref and commi.get(f"{ref[0]} {ref[1]}"):
+            row["_regime_comma"] = commi[f"{ref[0]} {ref[1]}"]
     wanted: Dict[tuple, str] = {}
     for regime in regimes:
         for ref in regime["refs"]:
@@ -5660,13 +5871,19 @@ def _with_regime_candidates(session, driver, database: str, analysis: Dict[str, 
         row["_source"] = REGIME_CANDIDATE_SOURCE
         row["_regime_candidate"] = wanted.get(row.get("_article"), True)
         row["_draft_pending_lawyer"] = True
+        ref = row.get("_article")
+        if ref and commi.get(f"{ref[0]} {ref[1]}"):
+            row["_regime_comma"] = commi[f"{ref[0]} {ref[1]}"]
     added = list(dict.fromkeys(r["_article"] for r in rows if r.get("_article")))
     vlog("case_analysis_regime_candidates", {
         "areas": areas, "regimes": [{"id": r["id"], "matched": [f"{t} «{name}»" for t, name in r["matched"]],
                                      "refs": [f"{n} {c}" for n, c in r["refs"]]} for r in regimes],
         "already_in_pool": sorted({f"{n} {c}" for r in regimes for n, c in r["refs"] if (n, c) in have}),
         "added": [f"{n} {c}" for n, c in added],
-        "not_found": [f"{n} {c}" for n, c in wanted if (n, c) not in added]})
+        "not_found": [f"{n} {c}" for n, c in wanted if (n, c) not in added],
+        "client_roles": sorted(fact_signals.client_roles((analysis.get("fact_signals") or {}).get("facts"),
+                                                         (analysis.get("fact_signals") or {}).get("fired") or [])),
+        "role_excluded": role_excluded})
     if not rows:
         return picked
     return {**picked, "article_rows": list(picked.get("article_rows") or []) + rows,
@@ -5794,6 +6011,42 @@ def _log_rulings_cited(draft: str, ruling_rows: List[Dict[str, Any]]) -> None:
         for r in ruling_rows]})
 
 
+_CHECK_ROWS = _filter_applicable_articles      # EDGE_EXPAND's grading of its new rows (_edge_expand)
+
+
+def _edge_expand(facts: str, request: str, article_rows: List[Dict[str, Any]], before_check: List[Dict[str, Any]],
+                 analysis: Dict[str, Any], session_lang: str, store, prompt: str) -> List[Dict[str, Any]]:
+    """EDGE_EXPAND: the rows with the neighbours of the articles in the fitted prompt and of the grade-3 rows
+    (edge_expand.expand), the new ones read, their texts and commi attached, and graded by the applicability check like
+    any row; the very same list when nothing was tagged or added, or on any failure."""
+    from . import edge_expand
+    from .doc_lookup import _fetch_doc_names
+    from .main import driver, NEO4J_DATABASE
+    import neo4j
+
+    def grade(rows):
+        if not feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
+            return rows
+        # the check itself, by a name no tracer wraps (diagnose_long captures the case's own check call)
+        return _CHECK_ROWS(facts, request, rows, analysis, session_lang=session_lang)
+    try:
+        with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+            rows, new = edge_expand.expand(session, _fetch_doc_names(driver, NEO4J_DATABASE), article_rows,
+                                           before_check, prompt, grade, store)
+            if new:
+                article_text.fill_texts(session, new, store)
+                if protected_sources.enabled():
+                    protected_sources.mark(new, session, "strategy")
+                if comma_material.enabled():
+                    comma_material.attach(session, new, "strategy", store=store)
+            tagged = any(r.get("_edge_channels") for r in rows)
+            return rows if new or tagged else article_rows
+    except Exception as exc:
+        _log_exception("_edge_expand", exc)
+        logger.warning("edge expansion failed, rows as they were: %s", exc)
+        return article_rows
+
+
 def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: str = "") -> dict:
     """A reasoned parere on a case: facts described in the message, or an
     uploaded document (`facts`) with the user's message as `request`.
@@ -5801,6 +6054,8 @@ def run_case_analysis_pipeline(facts: str, session_lang: str = "it", request: st
     Returns {"draft": str, "citations": list} like run_defensive_pipeline. An exception that escapes it is logged
     with its full traceback (pipeline_exception), then raised as before.
     """
+    from . import citation_ledger
+    citation_ledger.protect(())          # v49: no plan yet in this case (plan_then_write.write_parere sets it)
     try:
         return _case_analysis_pipeline(facts, session_lang, request)
     except Exception as exc:
@@ -5825,6 +6080,7 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
     hybrid = source_tiers.hybrid_enabled(route["route"])
     vlog("case_analysis_route", {"route": route["route"], "reasons": route.get("reasons"), "hybrid": hybrid})
     article_rows, ruling_rows, candidates, selected, regime_rows = [], [], [], [], []
+    gated_rows: List[Dict[str, Any]] = []      # POOL_GATE_*: the rows gated out, never brought back by EDGE_EXPAND
     # The request's article rows, each read once: selection, fill_texts and the commi (before and after the plan)
     # share them (article_text.ArticleStore).
     store = article_text.ArticleStore()
@@ -5853,6 +6109,15 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
                                                        "authority")
                 regime_rows = source_tiers.keep_types(session, regime_rows, source_tiers.AUTHORITY_TYPES,
                                                       "authority_regimes")
+            from . import pool_gates
+            if pool_gates.enabled():
+                # POOL_GATE_AREA / POOL_GATE_LINK: one row set per article, the main codes outside the case's areas,
+                # the single-channel rows with no link to a stronger one -- before the texts are read and graded
+                try:
+                    article_rows, gated_rows = pool_gates.apply(session, article_rows, analysis,
+                                                                _case_text(facts, request))
+                except Exception as exc:
+                    _log_exception("pool_gates", exc)
             try:
                 filled = article_text.fill_texts(session, article_rows + regime_rows, store)
                 if filled:
@@ -5895,6 +6160,7 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
     # Per-article applicability (round 3, item 3): off unless
     # APPLICABILITY_CHECK_ENABLED. Runs after article_rows/ruling_rows are
     # final, before both the citations and the draft prompt use them.
+    before_check = list(article_rows) + gated_rows
     if feature_flags.enabled("APPLICABILITY_CHECK_ENABLED"):
         article_rows = _filter_applicable_articles(facts, request, article_rows, analysis, session_lang=session_lang)
     if regime_rows:
@@ -5927,6 +6193,17 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
     system = _parere_system(analysis, session_lang)
     articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
                                                   request, principles)
+    from . import edge_expand
+    if edge_expand.enabled():
+        # EDGE_EXPAND: the neighbours of the articles that reached the prompt (and of the grade-3 rows), then the
+        # prompt fitted again with them
+        expanded = _edge_expand(facts, request, article_rows, before_check, analysis, session_lang, store, articles)
+        if expanded is not article_rows:
+            article_rows = expanded
+            comma_material.set_focus(article_rows, comma_material.analysis_focus(article_rows, analysis),
+                                     comma_material.named_commi(_case_text(facts, request)))
+            articles, rulings, human = _fit_parere_prompt(system, facts, analysis, article_rows, ruling_rows,
+                                                          request, principles)
     human = protected_sources.with_rule(human)
     comma_material.log_material("draft_prompt", articles, article_rows)
     # PLAN_THEN_WRITE_ENABLED: a plan, then the sections from it (plan_then_write.py); None on
@@ -6032,7 +6309,7 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
     # note mid-sentence) repaired (text_tidy.py).
     def tidy(d):
         from . import text_tidy
-        d, repaired = text_tidy.against_articles(d, article_rows)
+        d, repaired = text_tidy.against_articles(d, article_rows, "answer_tidy")
         d, tidied = text_tidy.tidy(d)
         tidied = repaired + tidied
         if planned:
@@ -6040,6 +6317,8 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
             tidied += headed
         if tidied:
             vlog("answer_tidy", {"entries": tidied, "count": len(tidied)})
+            from . import citation_ledger
+            citation_ledger.record_entries("answer_tidy", tidied)
         return d
     draft = _safe_step("text_tidy", draft, tidy)
     # PROTECTED_PARAPHRASE_ENABLED: no sentence reproduces a protected source of the material (counted only, off).
@@ -6073,6 +6352,12 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
     references = {(r.get("d") or {}).get("id"): _ruling_reference(r) for r in ruling_rows}
     citations = [{**c, "reference": references[c.get("document_id")]} if references.get(c.get("document_id")) else c
                  for c in citations]
+    from . import edge_expand
+    if edge_expand.enabled():           # EDGE_EXPAND: how many neighbours reached the prompt, the plan, the answer
+        try:
+            edge_expand.log_reach(article_rows, articles, draft)
+        except Exception as exc:
+            _log_exception("edge_expand.log_reach", exc)
     vlog("case_analysis_pipeline", {"v2": case_analysis_v2, "pool_fusion": pool_fusion},
         duration_ms=(time.time() - pipeline_t0) * 1000)
     return {"draft": draft, "citations": citations,

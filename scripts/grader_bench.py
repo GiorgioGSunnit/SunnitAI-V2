@@ -15,11 +15,18 @@ Versions (defensive_generation._graded_system):
   v1     + the evidence per article (searches, similar rulings applying it, area) and its rule
   v2     + the grade per numbered issue of the case = GRADER_EVIDENCE_ENABLED
   v3     + the worked examples = GRADER_EVIDENCE_ENABLED with GRADER_EXAMPLES_ENABLED
+  v_vote v0's prompt under GRADER_VOTE: each article alone, three votes, the second highest kept
+         (defensive_generation._voted_verdicts; GRADER_VOTE_TEMPERATURE from --env); each vote in the .json
+  v_bin  the same material, a yes/no question instead of a grade (BINARY_SYSTEM): "si applica al caso?", and the
+         article's clause that applies, quoted word for word from its text; a "sì" whose quote is not in the text
+         counts as "no" (quote_in_text). Yes is recorded as grade 2, no as 0, so it is compared on the line of 2 only
 
     cd /opt/chatbot && venv/bin/python scripts/grader_bench.py <run folder> [--variants v0,v3] [--only c1,h3]
 
 Report: <run>/grader_bench_<date-time>.md (and .json): per version, the grades of the expected and
-the other articles, the share graded 2 or more, the expected ones graded 1 or less with the reason.
+the other articles, the share graded 2 or more, the expected ones graded 1 or less with the reason;
+per version, its flips against the grades the run saved (any change, and across the line of 2); for
+v_vote, how many articles' votes split.
 """
 
 import argparse
@@ -38,7 +45,19 @@ VARIANTS = {
     "v1": {"evidence": True, "issues": False, "examples": False},
     "v2": {"evidence": True, "issues": True, "examples": False},
     "v3": {"evidence": True, "issues": True, "examples": True},
+    "v_vote": {"evidence": False, "issues": False, "examples": False, "vote": True},
+    "v_bin": {"evidence": False, "issues": False, "examples": False, "binary": True},
 }
+BINARY_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati i fatti di un caso e alcuni articoli di legge, ciascuno con la sua rubrica "
+    "e il suo testo reale. Per ciascun articolo rispondi a una sola domanda: si applica al caso? Rispondi «sì» solo se "
+    "una disposizione del testo dell'articolo si applica ai fatti del caso, e riporta quella disposizione copiandola "
+    "parola per parola dal Testo, senza cambiare, aggiungere o togliere nulla. Se non si applica, rispondi «no» e lascia "
+    "vuota la clausola. Rispondi solo con un array JSON, un oggetto per articolo, nell'ordine dato: "
+    "{\"a\": \"A1\", \"applica\": \"sì\" o \"no\", \"clausola\": \"la disposizione copiata dal Testo\"}.")
+BINARY_BATCH = 12
+BINARY_TOKENS = (200, 160)        # max_tokens: base, per article (its quote)
+PROMPT_KEYS = ("evidence", "issues", "examples")
 GRADES = (0, 1, 2, 3, None)
 
 
@@ -76,6 +95,55 @@ def graded_inputs(llm_dir: str, dump_parts) -> dict:
             text = body.split("Testo: ", 1)[1].strip() if "Testo: " in body else ""
             out.setdefault(label.strip(), ("" if rubrica == "-" else rubrica, text))
     return out
+
+
+def _plain_words(text: str) -> str:
+    """Text compared for the quote: typographic quotes and apostrophes as plain ones, spaces collapsed, lower case."""
+    text = (text or "").replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"').replace("«", "").replace("»", "")
+    return " ".join(text.split()).lower().strip(" .;,:\"'")
+
+
+def quote_in_text(quote: str, text: str) -> bool:
+    """A non-empty quote found in the article's text, as a substring (_plain_words on both)."""
+    q = _plain_words(quote)
+    return bool(q) and q in _plain_words(text)
+
+
+def binary_verdicts(dg, case: str, texts: dict, articles: dict) -> dict:
+    """{label: {"grade": 2 or 0, "applies", "said", "quote", "quote_in_text"}} for v_bin: BINARY_BATCH articles per call,
+    three calls at once, as the graded check sends them (`texts`, dg._graded_texts); `articles` the text each quote must be
+    in. An article the reply leaves out has no grade."""
+    from concurrent.futures import ThreadPoolExecutor
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    labels = list(texts)
+    groups = [labels[i:i + BINARY_BATCH] for i in range(0, len(labels), BINARY_BATCH)]
+
+    def ask(group):
+        ids = {f"A{i}": label for i, label in enumerate(group, 1)}
+        human = (f"Fatti del caso:\n{case}\n\nArticoli, {len(ids)}: un oggetto per ciascuno degli identificativi "
+                 f"{', '.join(ids)}.\n\n" + "\n\n".join(f"[{key}] {label}\n{texts[label]}" for key, label in ids.items()))
+        try:
+            raw = dg._chat([SystemMessage(content=BINARY_SYSTEM), HumanMessage(content=human)],
+                           max_tokens=BINARY_TOKENS[0] + BINARY_TOKENS[1] * len(ids), temperature=0)
+        except Exception as exc:
+            print(f"v_bin call failed: {exc}", flush=True)
+            return {}
+        out = {}
+        for item in dg._json_objects(raw):
+            key = re.match(r"\[?\s*(A\d+)\b", str(item.get("a") or item.get("id") or ""), re.IGNORECASE)
+            label = ids.get(key.group(1).upper()) if key else None
+            said = str(item.get("applica") or item.get("risposta") or "").strip().lower()
+            if not label or label in out or said not in ("sì", "si", "no"):
+                continue
+            quote = " ".join(str(item.get("clausola") or "").split())
+            found = quote_in_text(quote, articles.get(label, ""))
+            applies = said != "no" and found
+            out[label] = {"grade": 2 if applies else 0, "applies": applies, "said": "sì" if said != "no" else "no",
+                          "quote": quote[:400], "quote_in_text": found, "issue": "", "reason": quote[:200]}
+        return out
+    with ThreadPoolExecutor(max_workers=max(1, min(3, len(groups)))) as pool:
+        return {k: v for part in pool.map(ask, groups) for k, v in part.items()}
 
 
 def pool_tags(rec: dict, dg) -> dict:
@@ -117,6 +185,29 @@ def summarise(results: list) -> dict:
     return out
 
 
+def flip_counts(results: list, version: str) -> dict:
+    """How a version's grades differ from the run's own: over the articles both graded, those graded otherwise, those
+    on the other side of 2 (applicable or not), how many of these expected; for v_vote, the articles whose votes split."""
+    both = [r for r in results if r["grades"].get("saved", {}).get("grade") is not None
+            and r["grades"].get(version, {}).get("grade") is not None]
+    if not both:
+        return {}
+    binary = any("applies" in r["grades"][version] for r in both)
+    crossed = [r for r in both if (r["grades"]["saved"]["grade"] >= 2) != (r["grades"][version]["grade"] >= 2)]
+    # a yes/no answer has no grade to differ by: it changes only across the line of 2
+    changed = crossed if binary else [r for r in both if r["grades"]["saved"]["grade"] != r["grades"][version]["grade"]]
+    voted = [r for r in results if "votes" in r["grades"].get(version, {})]
+    return {"n": len(both), "changed": len(changed), "changed_pct": 100 * len(changed) / len(both),
+            "quote_missing": sum(1 for r in both if r["grades"][version].get("said") == "sì"
+                                 and not r["grades"][version].get("quote_in_text")) if binary else None,
+            "to_yes": sum(1 for r in crossed if r["grades"][version]["grade"] >= 2),
+            "to_no": sum(1 for r in crossed if r["grades"][version]["grade"] < 2),
+            "crossed": len(crossed), "crossed_pct": 100 * len(crossed) / len(both),
+            "crossed_expected": sum(1 for r in crossed if r["expected"]),
+            "split": sum(1 for r in voted if len({g for g in r["grades"][version]["votes"] if g is not None}) > 1)
+            if voted else None}
+
+
 def render(run_dir: str, results: list, versions: list, seconds: float, skipped: list) -> str:
     summary = summarise(results)
     cases = sorted({r["case"] for r in results})
@@ -144,6 +235,19 @@ def render(run_dir: str, results: list, versions: list, seconds: float, skipped:
                        and (r["grades"][v]["grade"] or 0) <= 1 < (r["grades"][base]["grade"] or 0))
         L.append(f"\n{v} vs {base}: expected up to >= 2: {up[True]}, down: {down[True]}; others up: {up[False]}, "
                  f"down: {down[False]}.")
+    L += ["", "## Flips against the grades the run saved", "",
+          "v_bin answers yes/no (yes = 2, no = 0): it is compared on the line of 2 only, so its \"changed\" is its "
+          "\"across\". \"sì, quote not in the text\": yes answers counted as no.", "",
+          "| version | articles | changed | across the line of 2 (to >= 2 / to < 2) | of them expected | votes split | "
+          "sì, quote not in the text |",
+          "|---|---:|---:|---:|---:|---:|---:|"]
+    for v in versions:
+        flips = flip_counts(results, v)
+        if flips:
+            L.append(f"| {v} | {flips['n']} | {flips['changed']} ({flips['changed_pct']:.0f}%) | {flips['crossed']} "
+                     f"({flips['crossed_pct']:.0f}%; {flips['to_yes']} / {flips['to_no']}) | {flips['crossed_expected']} | "
+                     + (str(flips["split"]) if flips["split"] is not None else "-") + " | "
+                     + (str(flips["quote_missing"]) if flips["quote_missing"] is not None else "-") + " |")
     for v in ["saved"] + versions:
         low = [r for r in results if r["expected"] and v in r["grades"] and (r["grades"][v]["grade"] or 0) <= 1]
         if not low:
@@ -196,15 +300,22 @@ def bench_case(rec: dict, inputs: dict, versions: list, dg, ev_key, cases_by_id:
                for label in texts]
     for version in versions:
         flags = VARIANTS[version]
+        if flags.get("binary"):
+            got = binary_verdicts(dg, dg._graded_case(facts, request, analysis), dg._graded_texts(texts, to_check, None),
+                                  {label: inputs[label][1] for label in texts})
+            for item in results:
+                item["grades"][version] = got.get(item["label"]) or {"grade": None, "issue": "", "reason": ""}
+            continue
         issues = dg._graded_issues(analysis) if flags["issues"] else None
-        verdicts, _ = dg._graded_verdicts(
+        grade = dg._voted_verdicts if flags.get("vote") else dg._graded_verdicts
+        verdicts, _ = grade(
             dg._graded_case(facts, request, analysis, issues),
             dg._graded_texts(texts, to_check, context if flags["evidence"] else None),
-            dg._graded_system(**flags), issues)
+            dg._graded_system(**{k: flags[k] for k in PROMPT_KEYS}), issues)
         for item in results:
             v = verdicts.get(dg._applicability_key(item["label"])) or {}
             item["grades"][version] = {"grade": dg._grade(v), "issue": v.get("issue") or "",
-                                       "reason": v.get("reason") or ""}
+                                       "reason": v.get("reason") or "", **({"votes": v["votes"]} if "votes" in v else {})}
     return results
 
 

@@ -54,7 +54,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import last_reply
 from . import defensive_generation as dg
-from . import anchored_writing, article_text, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources
+from . import ai_chat, anchored_writing, article_text, citation_ledger, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources, role_fit, section_fit
 from .verbose_logger import exception_data
 
 
@@ -668,22 +668,45 @@ def _with_other_norms(plan: Dict[str, Any], applicable: List[tuple]) -> Tuple[Di
 # prompt material that no issue holds and no fired rule excludes goes into the plan by rule, no call: graded 3 always,
 # graded 2 only when one or more of the retrieval signals frame, distill and institution found it (never another search
 # alone, never a regime candidate alone). v46: a row the check exempts by its rubrica (_heading_match) or as a cross-
-# reference carries no grade and counts as a grade 2 (unless GRADE_ALL_PROMPT graded it). It goes under the issue whose title and argument share the most words with the
+# reference carries no grade and counts as a grade 2 (unless GRADE_ALL_PROMPT graded it); graded 1, when two or more
+# distinct signals among frame, distill, institution and ruling_applied found it (RULE_INCLUDE_GRADE1_SIGNALS: similar
+# rulings apply it -- voted, a confirmed map hypothesis, or evidence_tiers.MIN_RULINGS rulings); graded 0, never. It goes under the issue whose title and argument share the most words with the
 # issue the grader named for it (else its rubrica), else under a last "Ulteriori norme applicabili" issue, and is
 # tagged plan_source "rule" (plan["plan_source"]): the writer may use it, _omitted never forces a paragraph for it. One
 # check_plan removed (off-topic, or of an issue contradicting it) is never added back: skipped, check_plan_removed.
 RULE_INCLUDE_FLAG = "PLAN_RULE_INCLUDE"
 RULE_INCLUDE_TITLE = "Ulteriori norme applicabili"
 RULE_INCLUDE_SIGNALS = ("frame", "distill", "institution")
+RULE_INCLUDE_GRADE1_SIGNALS = RULE_INCLUDE_SIGNALS + ("ruling_applied",)
+
+
+def _include_signals(grade1: bool = False) -> Tuple[str, ...]:
+    """The signals PLAN_RULE_INCLUDE counts; with EDGE_EXPAND, its "edge" one too (v48)."""
+    from . import edge_expand
+    base = RULE_INCLUDE_GRADE1_SIGNALS if grade1 else RULE_INCLUDE_SIGNALS
+    return base + ((edge_expand.SIGNAL, edge_expand.SIGNAL_ANCHORS) if edge_expand.enabled() else ())
 RULE_SOURCE = "rule"
+RULE_INCLUDE_GRADE1_MAX = 4
+RULE_INCLUDE_GRADE1_TOKENS = 4000
+
+
+def _added_tokens(rows: List[Dict[str, Any]]) -> int:
+    """What an article inserted by rule adds to a section prompt, estimated: its text as TESTI DELLE NORME gives it plus
+    its passage, each at most its cap."""
+    text = max((" ".join(str((r.get("s") or {}).get("plain_text") or "").split()) for r in rows), key=len, default="")
+    return dg._estimate_tokens(text[:dg._ARTICLE_CHARS]) + dg._estimate_tokens(text[:anchored_writing.PASSAGE_CAP])
 
 
 def _retrieval_signals(rows: List[Dict[str, Any]]) -> List[str]:
     """Every retrieval signal an article's rows carry: the fusion's searches (_signals), the institution resolution
-    (_institution), a regime candidate (_regime_candidate)."""
+    (_institution), a regime candidate (_regime_candidate), similar rulings applying it (ruling_applied: _vote, _map,
+    or evidence_tiers.MIN_RULINGS rulings in _vote_stats)."""
+    from . import evidence_tiers
     out = [name for r in rows for name in r.get("_signals") or []]
     out += ["institution" for r in rows if r.get("_institution")]
     out += ["regime_candidate" for r in rows if r.get("_regime_candidate")]
+    out += ["ruling_applied" for r in rows if r.get("_vote") or r.get("_map")
+            or int((r.get("_vote_stats") or {}).get("rulings") or 0) >= evidence_tiers.MIN_RULINGS]
     return list(dict.fromkeys(out))
 
 
@@ -703,8 +726,8 @@ def include_by_rule(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], ar
                     ) -> Tuple[Dict[str, Any], List[Dict[str, str]], List[Dict[str, str]]]:
     """(plan, inserted, skipped): the plan with every row of the prompt material (`articles`, the draft prompt's block)
     absent from its issues and excluded by no fired rule that PLAN_RULE_INCLUDE's rule admits (grade 3; grade 2 with one
-    or more of RULE_INCLUDE_SIGNALS; an ungraded row exempt by heading or as a cross-reference counts as grade 2, its
-    entry carrying "exempt"), in one issue each, tagged plan_source "rule"; inserted, one entry per article with
+    or more of RULE_INCLUDE_SIGNALS; grade 1 with two or more of RULE_INCLUDE_GRADE1_SIGNALS; an ungraded row exempt by
+    heading or as a cross-reference counts as grade 2, its entry carrying "exempt"), in one issue each, tagged plan_source "rule"; inserted, one entry per article with
     where it went, its grade, its signals and why. In the pipeline's order, the best grade of the article's rows
     counting. One among check_removed (the articles check_plan took out) stays out, in skipped ("check_plan_removed"),
     and so does a grade 2 without the signals."""
@@ -717,7 +740,7 @@ def include_by_rule(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], ar
         ref, grade = row.get("_article"), row.get("_grade")
         if ref:
             rows_of.setdefault(ref, []).append(row)
-        if ref and isinstance(grade, int) and grade >= 2 and f"[art. {ref[0]} {ref[1]}]" in articles:
+        if ref and isinstance(grade, int) and grade >= 1 and f"[art. {ref[0]} {ref[1]}]" in articles:
             grades[ref] = max(grade, grades.get(ref, 0))
     exempt: Dict[tuple, str] = {}       # ungraded rows the check exempts: a grade 2
     for ref, rows in rows_of.items():
@@ -734,14 +757,30 @@ def include_by_rule(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], ar
     for ref in wanted:
         entry = {"article": f"{ref[0]} {ref[1]}", "grade": str(grades[ref]), "signals": signals[ref],
                  **({"exempt": exempt[ref]} if ref in exempt else {})}
-        strong = [name for name in signals[ref] if name in RULE_INCLUDE_SIGNALS]
+        strong = [name for name in signals[ref] if name in _include_signals()]
         if any(_same_ref(ref, tuple(x)) for x in check_removed):
             skipped.append({**entry, "reason": "check_plan_removed"})
         elif grades[ref] == 2 and not strong:
-            skipped.append({**entry, "reason": "grade 2 without any of " + "/".join(RULE_INCLUDE_SIGNALS)})
+            skipped.append({**entry, "reason": "grade 2 without any of " + "/".join(_include_signals())})
+        elif grades[ref] == 1 and len({n for n in signals[ref] if n in _include_signals(True)}) < 2:
+            skipped.append({**entry, "reason": "grade 1 without two of " + "/".join(_include_signals(True))})
         else:
             admitted.append(ref)
-    wanted = admitted
+    # v48: grade 1 at most RULE_INCLUDE_GRADE1_MAX per case, most signals first, within RULE_INCLUDE_GRADE1_TOKENS of
+    # added prompt (v47: 13 grade-1 rows in h1, l3, n3, the section prompts over the context)
+    ones = sorted((ref for ref in admitted if grades[ref] == 1 and ref not in exempt),
+                  key=lambda ref: -len({n for n in signals[ref] if n in _include_signals(True)}))
+    spent, kept_ones = 0, set()
+    for ref in ones:
+        cost = _added_tokens(rows_of.get(ref, []))
+        if len(kept_ones) < RULE_INCLUDE_GRADE1_MAX and spent + cost <= RULE_INCLUDE_GRADE1_TOKENS:
+            kept_ones.add(ref)
+            spent += cost
+        else:
+            skipped.append({"article": f"{ref[0]} {ref[1]}", "grade": "1", "signals": signals[ref], "tokens": cost,
+                            "reason": f"grade-1 cap: {RULE_INCLUDE_GRADE1_MAX} per case within "
+                                      f"{RULE_INCLUDE_GRADE1_TOKENS} added tokens"})
+    wanted = [ref for ref in admitted if grades[ref] != 1 or ref in exempt or ref in kept_ones]
     if not wanted:
         return plan, [], skipped
     issues = [{**q, "norme": list(q["norme"])} for q in plan["questioni"]]
@@ -770,6 +809,83 @@ def include_by_rule(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], ar
                        "obiezione": "", "replica": ""})
     source = {**(plan.get("plan_source") or {}), **{e["article"]: RULE_SOURCE for e in inserted}}
     return {**plan, "questioni": issues, "plan_source": source}, inserted, skipped
+
+
+PLAN_CAP_FLAG = "PLAN_CAP"
+PLAN_CAP_MAX = 12          # substantive articles in the plan the writer reads (env PLAN_CAP_MAX overrides)
+AVAILABLE_KEY = "_plan_available"
+
+
+def plan_cap_max() -> int:
+    import os
+    try:
+        return max(1, int(os.getenv("PLAN_CAP_MAX") or PLAN_CAP_MAX))
+    except ValueError:
+        return PLAN_CAP_MAX
+
+
+def _cap_tier(ref: tuple, grade: Optional[int], signals: List[str], named: bool, by_rule: bool) -> int:
+    """PLAN_CAP's order: 0 named by the user (always in), 1 grade 3, 2 grade 2 with two or more signals, 3 a rule
+    insertion, 4 the plan's other articles."""
+    if named:
+        return 0
+    if grade == 3:
+        return 1
+    if grade == 2 and len(signals) >= 2:
+        return 2
+    return 3 if by_rule else 4
+
+
+def cap_plan(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], named: Sequence[tuple],
+             cap: int = PLAN_CAP_MAX) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """PLAN_CAP (v49): (plan, log) with at most `cap` substantive articles (a procedural code's stay, uncounted): the
+    articles the user named always, then grade 3, grade 2 with two or more retrieval signals, the rule insertions, the
+    plan's others -- each tier by signal count, then grade, then the plan's order. The rest leave the plan's issues
+    and stay in the material tagged available (AVAILABLE_KEY, plan["disponibili"]) for the citation closure only: no
+    writer's prompt names them (v50; v49 listed them in sections 3 and 4). An ungraded row exempt by heading or as a
+    cross-reference counts as grade 2."""
+    from .nodes.cypher import CROSSREF_SOURCE
+    refs = _plan_refs(plan)
+    substantive = [r for r in refs if not role_fit.PROCEDURAL_CODES.search(str(r[1]))]
+    rows_of: Dict[tuple, List[Dict[str, Any]]] = {}
+    for row in article_rows:
+        if row.get("_article"):
+            rows_of.setdefault(tuple(row["_article"]), []).append(row)
+    by_rule = rule_inserted(plan)
+
+    def grade(ref) -> Optional[int]:
+        rows = rows_of.get(tuple(ref)) or []
+        grades = [r["_grade"] for r in rows if isinstance(r.get("_grade"), int)]
+        if grades:
+            return max(grades)
+        return 2 if any(r.get("_heading_match") or r.get("_source") == CROSSREF_SOURCE for r in rows) else None
+    info = {}
+    for i, ref in enumerate(substantive):
+        signals = _retrieval_signals(rows_of.get(tuple(ref)) or [])
+        is_named = any(_same_ref(ref, n) for n in named)
+        info[ref] = {"tier": _cap_tier(ref, grade(ref), signals, is_named, ref in by_rule), "grade": grade(ref),
+                     "signals": signals, "order": i}
+    ranked = sorted(substantive, key=lambda r: (info[r]["tier"], -len(info[r]["signals"]), -(info[r]["grade"] or 0),
+                                                info[r]["order"]))
+    keep = [r for r in ranked if info[r]["tier"] == 0]
+    keep += [r for r in ranked if info[r]["tier"] > 0][:max(0, cap - len(keep))]
+    available = [r for r in ranked if r not in keep]
+
+    def entry(r):
+        return {"article": f"{r[0]} {r[1]}", "tier": info[r]["tier"], "grade": info[r]["grade"],
+                "signals": info[r]["signals"]}
+    log = {"before": len(substantive), "after": len(keep), "cap": cap, "procedural": len(refs) - len(substantive),
+           "kept": [entry(r) for r in keep], "available": [entry(r) for r in available]}
+    if not available:
+        return plan, log
+    out = {**plan, "questioni": [{**q, "norme": [r for r in q["norme"] if r not in available]} for q in plan["questioni"]],
+           "disponibili": [f"{n} {c}" for n, c in available]}
+    out["plan_source"] = {k: v for k, v in (plan.get("plan_source") or {}).items()
+                          if k not in out["disponibili"]}
+    for ref in available:
+        for row in rows_of.get(tuple(ref)) or []:
+            row[AVAILABLE_KEY] = True
+    return out, log
 
 
 def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tuple, str],
@@ -1112,6 +1228,207 @@ def _plan_problems(plan: Dict[str, Any], analysis: Dict[str, Any], questions: Li
     return problems
 
 
+# PLAN_PATCH_REDO (v46, c1: a whole second _plan_json call, 6,000 max_tokens and 29 s, for one explicit question without
+# its answer): when every problem _plan_problems finds is a question with no answer in "risposte", only those answers are
+# asked for (one call, _PATCH_TOKENS), from the case and the plan as made, and added to its "risposte"; an answer that
+# does not come back, or a failed call, leaves the full redo as before. Any other problem (an issue missing, the central
+# question, a question no issue treats) is structural: the full redo. Logged as case_analysis_plan_patch.
+PLAN_PATCH_FLAG = "PLAN_PATCH_REDO"
+_PATCH_TOKENS = 600
+_PATCH_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati il CASO, il PIANO di un parere già deciso (parte assistita, questione "
+    "centrale, questioni con le loro norme) e alcuni QUESITI del cliente che il piano non ha ancora risposto. Per "
+    "ciascun quesito scrivi la risposta diretta in una o due frasi, coerente con il PIANO e con le sue norme, senza "
+    "aggiungere fatti che il CASO non contiene e senza citare norme che il PIANO non ha. Rispondi solo con un array "
+    "JSON: [{\"quesito\": \"il quesito ripreso\", \"risposta\": \"...\"}].")
+
+
+def _unanswered(plan: Dict[str, Any], questions: List[str]) -> List[str]:
+    """The explicit questions with no answer in the plan's "risposte" (_plan_problems' first kind)."""
+    return [q for q in questions if not any(_answers(q, f"{a['quesito']} {a['risposta']}") for a in plan["risposte"])]
+
+
+def _patch_answers(plan: Dict[str, Any], questions: List[str], facts: str, request: str,
+                   analysis: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """(plan, whether every question now has its answer): PLAN_PATCH_REDO's one call."""
+    t0 = time.time()
+    brief = "\n".join(
+        [f"Parte assistita: {plan.get('parte_assistita') or '-'}", f"Questione centrale: {plan.get('questione_centrale') or '-'}"]
+        + [f"{k}. {q['titolo']} (norme: {', '.join(f'art. {n} {c}' for n, c in q['norme']) or '-'}): {q['argomento']}"
+           for k, q in enumerate(plan["questioni"], 1)])
+    human = (f"CASO:\n{dg._case_text(facts, request)[:6000]}\n\nPIANO:\n{brief}\n\nQUESITI:\n"
+             + "\n".join(f"{k}. {q}" for k, q in enumerate(questions, 1)))
+    added: List[Dict[str, str]] = []
+    try:
+        raw = dg._chat_json([SystemMessage(content=_PATCH_SYSTEM), HumanMessage(content=human)],
+                            max_tokens=_PATCH_TOKENS, temperature=0)
+        items = [x for x in raw if isinstance(x, dict)] if isinstance(raw, list) else []
+        for k, question in enumerate(questions):
+            reply = next((x for x in items if _answers(question, str(x.get("quesito") or ""))), None) \
+                or (items[k] if k < len(items) and not str(items[k].get("quesito") or "").strip() else None)
+            answer = " ".join(str((reply or {}).get("risposta") or "").split())
+            if answer:
+                added.append({"quesito": question, "risposta": answer})
+    except Exception as exc:
+        _log_exception("_patch_answers", exc)
+    patched = {**plan, "risposte": list(plan["risposte"]) + added}
+    complete = not _unanswered(patched, questions)
+    dg.vlog("case_analysis_plan_patch", {"kind": "answers", "questions": questions, "answered": [a["quesito"] for a in added],
+                                         "complete": complete, "then": "kept" if complete else "full redo"},
+            duration_ms=(time.time() - t0) * 1000)
+    return (patched, True) if complete else (plan, False)
+
+
+# REVIEW_FIXES_ENABLED, v48 (the PO's yellow on Leonardo: art. 1079 c.c. gives the confessoria, the end of the
+# obstacles, the rimessione in pristino and damages; the answer used two): the plan's main remedy article -- its first
+# article, outside the subordinate issues and the rule-inserted rows, whose text lists three or more remedies, split on
+# "può" / "oltre" -- has each remedy in the plan's "risposte" (a missing one added to the answer citing it, else to the
+# first) and in the writer's material with the rule to address each (REMEDIES_TITLE). Logged as
+# case_analysis_plan_remedies.
+REMEDIES_TITLE = "RIMEDI DELLA NORMA PRINCIPALE"
+REMEDIES_RULE = "Tratta ciascuno di questi rimedi, uno per uno, con la sua norma: nessuno va omesso."
+_REMEDY_SPLIT_RE = re.compile(r"(?<!\bnon )\b(?:può|possono|oltre)\b", re.IGNORECASE)
+_REMEDY_LEAD_RE = re.compile(r"^(?:\s|anche|altresì|inoltre|chiedere|domandare|ottenere|il|la|lo|i|gli|le|l['’])+", re.IGNORECASE)
+_REMEDY_MIN = 3
+
+
+def remedies_of(text: str) -> List[str]:
+    """The remedies an article's text lists ("può farne riconoscere ... e può far cessare ... Può anche chiedere la
+    rimessione ..., oltre il risarcimento dei danni"): the part after each "può" / "oltre", to its first clause end."""
+    parts = _REMEDY_SPLIT_RE.split(" ".join((text or "").split()))[1:]
+    out = []
+    for part in parts:
+        head = re.split(r"[.;:]|,\s|\s+e\s+(?=può\b)|\s+contro\s+chi\b", part.strip(), maxsplit=1)[0]
+        head = re.sub(r"(?:\s+e)+$", "", _REMEDY_LEAD_RE.sub("", head).strip(" ,"))
+        if len(head.split()) >= 2 and head.lower() not in (x.lower() for x in out):
+            out.append(head)
+    return out
+
+
+def main_remedies(plan: Dict[str, Any], article_rows: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """{"article", "ref", "remedies"} of the plan's main remedy article, or None."""
+    texts = {}
+    for row in article_rows or []:
+        ref = row.get("_article")
+        if ref and ref not in texts:
+            texts[ref] = " ".join(str((row.get("s") or {}).get("plain_text") or "").split())
+    by_rule = rule_inserted(plan)
+    for q in plan.get("questioni") or []:
+        if str(q.get("titolo") or "").lower().startswith("in via subordinata"):
+            continue
+        for ref in q["norme"]:
+            if ref in by_rule:
+                continue
+            text = texts.get(ref) or next((t for k, t in texts.items() if _same_ref(k, ref)), "")
+            found = remedies_of(text)
+            if len(found) >= _REMEDY_MIN:
+                return {"article": f"art. {ref[0]} {_code_key(ref[1])}", "ref": ref, "remedies": found}
+    return None
+
+
+_REMEDY_VERBS = {"farne", "farla", "farlo", "farli", "chiedere", "domandare", "ottenere", "agire"}
+
+
+def _remedy_named(remedy: str, text: str) -> bool:
+    """The remedy's head word (its first content word past a bare verb: riconoscere, cessare, rimessione, risarcimento)
+    is in the text, by its stem."""
+    words = [w for w in re.findall(r"[a-zà-ù]{5,}", remedy.lower()) if w not in _REMEDY_VERBS]
+    have = {w[:6] for w in re.findall(r"[a-zà-ù]{5,}", (text or "").lower())}
+    return bool(words) and words[0][:6] in have
+
+
+def enumerate_remedies(plan: Dict[str, Any], article_rows: List[Dict[str, Any]]) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """(plan, log): the main remedy article's remedies all in the plan's answers, the plan carrying them ("rimedi")."""
+    found = main_remedies(plan, article_rows)
+    if not found:
+        return plan, None
+    answers = [dict(a) for a in plan.get("risposte") or []]
+    said = " ".join(f"{a.get('quesito', '')} {a.get('risposta', '')}" for a in answers)
+    missing = [r for r in found["remedies"] if not _remedy_named(r, said)]
+    target = None
+    if missing and answers:
+        number = found["ref"][0]
+        target = next((a for a in answers if re.search(rf"\b{re.escape(number)}\b", a.get("risposta") or "")), answers[0])
+        target["risposta"] = (f"{target.get('risposta', '').rstrip()} I rimedi dell'{found['article']}: "
+                              + "; ".join(found["remedies"]) + ".").strip()
+    log = {"article": found["article"], "remedies": found["remedies"], "missing": missing,
+           "added_to": (f"risposta {answers.index(target) + 1}" + (f" ({target['quesito'][:60]})" if target.get("quesito") else ""))
+           if target else None}
+    dg.vlog("case_analysis_plan_remedies", log)
+    return {**plan, "risposte": answers, "rimedi": {"article": found["article"], "remedies": found["remedies"]}}, log
+
+
+def _remedies_block(plan: Dict[str, Any]) -> str:
+    r = plan.get("rimedi") or {}
+    if not r.get("remedies"):
+        return ""
+    return (f"{REMEDIES_TITLE}:\n- {r['article']}: " + "; ".join(r["remedies"]) + f".\n{REMEDIES_RULE}")
+
+
+# PLAN_PATCH_REDO, v48 (14 of 32 v47 cases: a second whole _plan_json call, 6,000 max_tokens, for the stance check's
+# opposing arguments): each opposing argument goes into the plan as made as the objection of the issue it belongs to,
+# with the client's reply, and the issue's own argument restated for the client when it was the opposing one -- one call
+# of _OPPOSING_TOKENS. A failed call, or an argument left without its issue, objection and reply: the full redo as before.
+_OPPOSING_TOKENS = 800
+_OPPOSING_SYSTEM = (
+    "Sei un avvocato italiano. Ti vengono dati il CASO, il PIANO di un parere già deciso, con le sue questioni numerate, "
+    "e alcuni ARGOMENTI che una revisione ha trovato favorevoli alla controparte, non alla parte assistita. Per ciascun "
+    "argomento indica la questione del PIANO a cui appartiene e riformulalo come obiezione della controparte, con la "
+    "replica della parte assistita; se l'argomento della questione era proprio quello, riscrivilo a favore della parte "
+    "assistita, altrimenti lascialo vuoto. Non aggiungere fatti che il CASO non contiene e non citare norme che il "
+    "PIANO non ha. Rispondi solo con un array JSON: [{\"argomento_contrario\": \"ripreso\", \"questione\": numero, "
+    "\"obiezione\": \"...\", \"replica\": \"...\", \"argomento\": \"... o vuoto\"}].")
+
+
+def _patch_opposing(plan: Dict[str, Any], opposing: List[Dict[str, str]], facts: str, request: str,
+                    analysis: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
+    """(plan, whether every opposing argument now sits in an issue as its objection with a reply)."""
+    t0 = time.time()
+    issues = plan["questioni"]
+    brief = "\n".join(
+        [f"Parte assistita: {plan.get('parte_assistita') or '-'}", f"Questione centrale: {plan.get('questione_centrale') or '-'}"]
+        + [f"{k}. {q['titolo']}: {q.get('argomento') or '-'} (obiezione: {q.get('obiezione') or '-'}; replica: "
+           f"{q.get('replica') or '-'})" for k, q in enumerate(issues, 1)])
+    human = (f"CASO:\n{dg._case_text(facts, request)[:6000]}\n\nPIANO:\n{brief}\n\nARGOMENTI:\n"
+             + "\n".join(f"{k}. {o['argomento']}: {o.get('perche') or ''}" for k, o in enumerate(opposing, 1)))
+    placed: List[Dict[str, Any]] = []
+    try:
+        raw = dg._chat_json([SystemMessage(content=_OPPOSING_SYSTEM), HumanMessage(content=human)],
+                            max_tokens=_OPPOSING_TOKENS, temperature=0)
+        for item in raw if isinstance(raw, list) else []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                k = int(str(item.get("questione")).strip()) - 1
+            except ValueError:
+                continue
+            objection, reply = _text(item.get("obiezione")), _text(item.get("replica"))
+            if 0 <= k < len(issues) and objection and reply:
+                placed.append({"issue": k, "obiezione": objection, "replica": reply,
+                               "argomento": _text(item.get("argomento")),
+                               "opposing": _text(item.get("argomento_contrario"))})
+    except Exception as exc:
+        _log_exception("_patch_opposing", exc)
+    complete = bool(placed) and len(placed) >= len(opposing)
+    out = plan
+    if complete:
+        new = [dict(q) for q in issues]
+        for p in placed:
+            q = new[p["issue"]]
+            q["obiezione"] = "; ".join(x for x in (q.get("obiezione"), p["obiezione"]) if x)
+            q["replica"] = "; ".join(x for x in (q.get("replica"), p["replica"]) if x)
+            if p["argomento"]:
+                q["argomento"] = p["argomento"]
+        out = {**plan, "questioni": new}
+    dg.vlog("case_analysis_plan_patch", {"kind": "opposing", "opposing": [o["argomento"] for o in opposing],
+                                         "placed": [{"issue": issues[p["issue"]]["titolo"], **{k: v for k, v in p.items()
+                                                                                              if k != "issue"}}
+                                                    for p in placed],
+                                         "complete": complete, "then": "kept" if complete else "full redo"},
+            duration_ms=(time.time() - t0) * 1000)
+    return out, complete
+
+
 def _title_stems(title: str) -> set:
     return {w[:5] for w in re.findall(r"\w{4,}", (title or "").lower()) if w not in _HEADING_STOP}
 
@@ -1257,10 +1574,16 @@ def _arguments_text(plan: Dict[str, Any]) -> str:
     return "3. Argomenti\n" + "\n".join(f"#### {q['titolo']}\n{q['argomento']}" for q in plan["questioni"])
 
 
+PLAN_RETRY_EVENT = "case_analysis_plan_retry"
+
+
 def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str, principles: str,
-              article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+              article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]],
+              _retry: bool = True) -> Optional[Dict[str, Any]]:
     """The cleaned plan, made once more if its arguments favour the other side, then checked
-    (check_plan); None on failure."""
+    (check_plan); None on failure. v49 (v48 sempronio_no_hint: no plan, the parere in one call): a plan left without a
+    usable issue is made once more from the same inputs (_plan_json again, then every step after it) before falling
+    back to one call; logged as case_analysis_plan_retry with its outcome. A failed plan call is not retried."""
     known = {r["_article"] for r in article_rows if r.get("_article")}
     headings = _headings(article_rows)
     voted = [ref for ref in _voted(article_rows) if f"[art. {ref[0]} {ref[1]}]" in articles]
@@ -1283,7 +1606,11 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         raw = _plan_json(messages)
         plan, removed = clean_plan(raw, known, references, max_issues)
         opposing = dg._opposing_arguments(facts, request, analysis, _arguments_text(plan)) if plan else []
-        if opposing:
+        patched_opposing = False
+        if opposing and dg.feature_flags.enabled(PLAN_PATCH_FLAG):
+            # PLAN_PATCH_REDO (v48): the opposing arguments become objections of the plan as made, one short call
+            plan, patched_opposing = _patch_opposing(plan, opposing, facts, request, analysis)
+        if opposing and not patched_opposing:
             listing = "\n".join(f"- {o['argomento']}: {o['perche']}" for o in opposing)
             retry = (f"{human}\n\nIl tuo primo piano:\n{_plan_brief(raw)}\n\nUna revisione ha "
                      f"trovato che questi argomenti giovano alla controparte, non a {dg._stance_party(analysis)}:\n"
@@ -1292,6 +1619,12 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
                      "che favorisce la controparte va trattato come obiezione da superare.")
             plan, removed, raw = _remade(system, retry, plan, removed, raw, known, references, max_issues)
         problems = _plan_problems(plan, analysis, explicit_questions(request, facts)) if plan and _review_fixes() else []
+        unanswered = _unanswered(plan, explicit_questions(request, facts)) if problems else []
+        if problems and dg.feature_flags.enabled(PLAN_PATCH_FLAG) and len(unanswered) == len(problems):
+            # PLAN_PATCH_REDO: only answers missing -- asked for alone and put in the plan, no full redo
+            plan, patched = _patch_answers(plan, unanswered, facts, request, analysis)
+            if patched:
+                problems = []
         if problems:
             listing = "\n".join(f"- {p}" for p in problems)
             again = (f"{human}\n\nIl tuo piano:\n{_plan_brief(raw)}\n\nUna revisione ha trovato:\n"
@@ -1354,6 +1687,12 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
             dg.vlog("case_analysis_plan_rule_include", {"inserted": included, "count": len(included), "skipped": skipped})
         except Exception as exc:
             _log_exception("make_plan.include_by_rule", exc)
+    if plan and dg.feature_flags.enabled(PLAN_CAP_FLAG):
+        try:            # PLAN_CAP (v49): at most PLAN_CAP_MAX substantive articles; the rest available, by name
+            plan, cap_log = cap_plan(plan, article_rows, dg._refs_in(dg._case_text(facts, request)), plan_cap_max())
+            dg.vlog("case_analysis_plan_cap", cap_log)
+        except Exception as exc:
+            _log_exception("make_plan.cap_plan", exc)
     dg.vlog("case_analysis_plan", {
         "issues": len(plan["questioni"]) if plan else 0, "replanned": bool(opposing),
         "opposing": [o["argomento"] for o in opposing],
@@ -1366,12 +1705,40 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         dg.vlog("case_analysis_plan_final", {
             "central": plan.get("questione_centrale"), "issues": [
                 {"titolo": q["titolo"], "norme": [f"{n} {c}" for n, c in q["norme"]]} for q in plan["questioni"]], **single})
+    if plan is None and _retry:
+        logger.warning("plan-then-write: the plan has no usable issue, made once more from the same inputs")
+        t1 = time.time()
+        again = make_plan(facts, request, analysis, articles, rulings, principles, article_rows, references, _retry=False)
+        dg.vlog(PLAN_RETRY_EVENT, {"why": "plan without a usable issue", "removed": removed,
+                                   "outcome": "plan" if again else "no plan",
+                                   "issues": len(again["questioni"]) if again else 0},
+                duration_ms=(time.time() - t1) * 1000)
+        return again
     if plan is None:
         logger.warning("plan-then-write: the plan has no usable issue, the parere is written in one call")
-        _fell_back("plan without a usable issue", "no argued issue left", removed=removed)
+        _fell_back("plan without a usable issue", "no argued issue left, after one retry", removed=removed)
         return None
     if not plan["parte_assistita"]:
         plan["parte_assistita"] = str(analysis.get("parte_assistita") or "").strip()
+    if _review_fixes():
+        try:            # v48: every remedy of the main remedy article in the answers
+            plan, _ = enumerate_remedies(plan, article_rows)
+        except Exception as exc:
+            _log_exception("enumerate_remedies", exc)
+    gated = [ref for ref in _plan_refs(plan) if f"{ref[0]} {ref[1]}" in (analysis.get("action_gate") or {})]
+    if gated:           # REGIME_CANDIDATES: an action's article resolved for a client not in the action's role
+        plan = {**plan, "norme_contrarie": list(dict.fromkeys(list(plan.get("norme_contrarie") or [])
+                                                              + [f"{n} {c}" for n, c in gated]))}
+        dg.vlog("case_analysis_action_gate_plan", {"adverse": [f"{n} {c}" for n, c in gated]})
+    from . import edge_expand
+    if edge_expand.enabled():
+        edge_expand.note_plan(plan)         # EDGE_EXPAND's reach log
+    if role_fit.mode() != "off":
+        try:            # ROLE_FIT: whom each substantive article works for; the counterparty's tagged adverse (shadow: logged)
+            plan, _ = role_fit.check(plan, article_rows, dg._case_text(facts, request), analysis.get("fact_signals"),
+                                     shadow=role_fit.mode() == "shadow")
+        except Exception as exc:
+            _log_exception("role_fit", exc)
     return plan
 
 
@@ -1397,7 +1764,8 @@ def _plan_text(plan: Dict[str, Any], answers: bool = False, issues: str = "title
     if issues:
         lines.append("Questioni, in ordine di forza:")
         for i, q in enumerate(plan["questioni"], 1):
-            norms = ", ".join(f"art. {n} {c}" for n, c in q["norme"]) or "-"
+            norms = ", ".join(f"art. {n} {c}" + (f" ({role_fit.ADVERSE_MARK})" if role_fit.is_adverse(plan, (n, c)) else "")
+                              for n, c in q["norme"]) or "-"
             cited = f"; pronunce: {', '.join(q['pronunce']) or '-'}" if rulings else ""
             if rulings and q.get("pronunce_contrarie"):
                 cited += (f"; pronunce della controparte, solo nell'obiezione con la replica: "
@@ -1620,6 +1988,10 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     adverse = (f" Una pronuncia tra quelle «della controparte» si presenta solo come argomento della controparte, "
                f"seguito dalla replica di {party}; mai a sostegno di {party}."
                if any(q.get("pronunce_contrarie") for q in plan["questioni"]) else "")
+    # ROLE_FIT: a norm marked as the counterparty's
+    adverse += (f" Una norma segnata «{role_fit.ADVERSE_MARK}» si presenta solo come argomento della controparte, "
+                f"seguito dalla replica di {party}; mai a sostegno di {party}." if plan.get("norme_contrarie") else "")
+    remedies = _remedies_block(plan)          # REVIEW_FIXES_ENABLED: the main remedy article's remedies, each
     evidence = (" Le prove da acquisire di una questione che coincidono con quelle di una questione precedente non si "
                 "ripetono: si rinvia a quella." if fixes else "")
 
@@ -1631,7 +2003,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "la norma su cui si fonda." + one_each + scoped + no_rulings,
          material(case, fixed, block("QUESITI", tasks), block(_QUESTIONS_TITLE, asked),
                   block(_TOOLS_TITLE, tools if questions and any(fact_signals_asks(q) for q in questions) else ""),
-                  _plan_text(plan, answers=True, rulings=False), scope), 600 + 150 * max(0, len(questions) - 1)),
+                  _plan_text(plan, answers=True, rulings=False), scope, remedies), 600 + 150 * max(0, len(questions) - 1)),
         (SECTION_TITLES[1],
          "SEZIONE: Inquadramento e questione centrale. La qualificazione giuridica della vicenda (la norma "
          "principale e quelle alternative o subordinate, e perché), la questione centrale e perché decide "
@@ -1657,7 +2029,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "dei passi forniti." + every_issue + scoped + applied + adverse + evidence,
          material(case, fixed, to_sue, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
                   block(_ROLES_TITLE, roles), block(_DAMAGES_TITLE, damages),
-                  _plan_text(plan, issues="full", subordinate=True), scope,
+                  _plan_text(plan, issues="full", subordinate=True), scope, remedies,
                   block("TESTI DELLE NORME", texts(refs, per_article(9000, 600))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 600))), 2200 if keep_all else 1800),
         (SECTION_TITLES[4],
@@ -1669,7 +2041,7 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "da fare." + (f" {_terms_rule()}" if _terms(analysis) else "") + regimes + no_rulings,
          material(case, fixed, to_sue, block("FASE", frame.get("procedural_posture") or ""), block(_QUALIFIED_TITLE, qualified),
                   block(_TERMS_TITLE, _terms(analysis)), block(_TERM_TEXTS_TITLE, _term_texts(analysis)),
-                  _plan_text(plan, issues="", subordinate=True, rulings=False),
+                  _plan_text(plan, issues="", subordinate=True, rulings=False), remedies,
                   block(_TOOLS_TITLE, tools), block(_CRIMINAL_TITLE, criminal), block(_DAMAGES_TITLE, damages),
                   block("VERIFICHE PER QUESTA FASE E MATERIA",
                         "\n".join(f"- {c}" for c in _checks(analysis, article_rows, facts, request))),
@@ -1847,7 +2219,12 @@ def read_citations(text: str, documents: List[Dict[str, Any]], known: Optional[s
                                                                       if m.group(0).lower() == name))
                  for m in _CODE_MENTION_RE.finditer(text or "")]
     out = []
+    lists = {start: (end, refs) for start, end, refs in dg._article_lists(text or "")}
     for m, kind, code in runs:
+        if m.start() in lists:      # "artt. 55 c.p. e 52 c.p.", "artt. 1176, comma 2, e 1218 c.c.": each its own code
+            end, refs = lists[m.start()]
+            out.append((m.start(), end, [n for n, _ in refs], list(refs), ["explicit"] * len(refs)))
+            continue
         numbers = [dg._article_num(n) for n in dg._RUN_NUMBER_RE.findall(m.group(1))]
         near = _near_code(text, m.start(), m.end(), explicit) if kind == "bare" else None
         refs: List[Optional[tuple]] = []
@@ -2093,7 +2470,10 @@ _TERMS_RULE_REGIMES = ("Indica sempre ciascuno di questi termini con la sua dura
                        "tra parentesi quadre, anche quando il caso non dà le date: un termine DA VERIFICARE o "
                        "INCERTO è una verifica da fare (quale data accertare); un'azione il cui termine è DECORSO non "
                        "va proposta come praticabile (indicala come preclusa e proponi le alternative). Nessun altro "
-                       "termine che non sia qui o nei testi forniti; un'azione non soggetta a prescrizione non ha termine.")
+                       "termine che non sia qui o nei testi forniti; un'azione non soggetta a prescrizione non ha termine. "
+                       "Un termine con «inizio del possesso da accertare» non è maturato: non scrivere mai che il possesso "
+                       "dura da oltre vent'anni né che l'usucapione è compiuta; indicalo come verifica da fare (quando è "
+                       "iniziato il possesso).")
 _TERM_TEXTS_TITLE = "TESTI DELLE NORME SUI TERMINI"
 _QUALIFIED_TITLE = "QUALIFICHE DELLE PARTI"
 _QUALIFIED_RULE = ("Sono dedotte dai fatti: considera i regimi speciali che comportano (per il consumatore, la "
@@ -2295,10 +2675,14 @@ _CUT_TAIL_RE = re.compile(r"(?:[,;(\-–]|\b(?:e|o|ed|od|di|del|della|dei|delle|
 _LIST_ITEM_RE = re.compile(r"^\s*(?:[-•*]|\d+[.)])\s+")
 
 
+_RULE_TAIL_RE = re.compile(r"(?:\n[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*)+$|^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$")
+
+
 def _looks_cut(text: str) -> bool:
     """The section stops mid-sentence (its token budget ran out): the last line does not end a sentence, and is
-    not a short list item or a heading."""
-    body = (text or "").rstrip()
+    not a short list item or a heading. A trailing rule line ("---") is no cut (v47: the one-call parere puts one after
+    every section, 21 sections counted cut)."""
+    body = _RULE_TAIL_RE.sub("", (text or "").rstrip()).rstrip()
     if not body or body[-1] in ".!?»”\")]:":
         return False
     last = body.split("\n")[-1].strip()
@@ -2307,6 +2691,82 @@ def _looks_cut(text: str) -> bool:
     if _LIST_ITEM_RE.match(last) and len(last) < 200 and not _CUT_TAIL_RE.search(last):
         return False
     return True
+
+
+# WRITER_LOOP_GUARD (v46: c1's and p1's "Norme e giurisprudenza" repeated one sentence on art. 52 c.p. until its tokens ran
+# out; _complete_sections then wrote it again at 1.5x the tokens, c1's looping again, 45 s, still cut): a reply where a
+# run of _LOOP_NGRAM words comes back _LOOP_REPEATS times or more is cut where the run first comes back, trimmed to its
+# last whole sentence, its sentences said twice kept once; the section is marked looped, and _complete_sections keeps it
+# as it is. On every section call and every rewrite of one (_complete_sections, _cover_blocks). Logged per section as
+# case_analysis_writer_loops.
+# NORME_SPLIT (v48, h3 v47: "Norme e giurisprudenza" over 23 articles cut at 2,275 tokens, then rewritten at 1.5x): a
+# plan with more than NORME_SPLIT_MIN articles has the section written in two concurrent calls over disjoint halves of
+# them, each within NORME_SPLIT_SHARE of the tokens and words; a half cut at its length is trimmed to its last sentence,
+# never written again. Logged as case_analysis_norme_split.
+NORME_SPLIT_FLAG = "NORME_SPLIT"
+NORME_SPLIT_MIN = 8
+NORME_SPLIT_SHARE = 0.6
+
+
+def norme_split(plan: Dict[str, Any]) -> bool:
+    return dg.feature_flags.enabled(NORME_SPLIT_FLAG) and len(_plan_refs(plan)) > NORME_SPLIT_MIN
+
+
+WRITER_LOOP_FLAG = "WRITER_LOOP_GUARD"
+_LOOP_NGRAM = 8
+_LOOP_REPEATS = 3
+
+
+def _loop_guard() -> bool:
+    return dg.feature_flags.enabled(WRITER_LOOP_FLAG)
+
+
+def find_loop(text: str) -> Optional[Dict[str, Any]]:
+    """{"at": where the looping block first comes back, "ngram", "count", "period"}, or None. A loop: a run of
+    _LOOP_NGRAM words found _LOOP_REPEATS times or more (not overlapping) where two successive gaps between its
+    occurrences are equal and the words of the two blocks the same -- the reply saying one block again and again. A
+    formula the writer reuses with other words in between ("Questa norma, applicabile al caso di Tizio, potrebbe ...",
+    one per article; c1's and p1's "Applicazione al caso") is no loop."""
+    words = [(m.group(0).lower(), m.start()) for m in re.finditer(r"\w+", text or "")]
+    tokens = [w for w, _ in words]
+    seen: Dict[Tuple[str, ...], List[int]] = {}
+    for i in range(len(tokens) - _LOOP_NGRAM + 1):
+        gram = tuple(tokens[i:i + _LOOP_NGRAM])
+        at = seen.setdefault(gram, [])
+        if not at or i - at[-1] >= _LOOP_NGRAM:
+            at.append(i)
+    best = None
+    for gram, at in seen.items():
+        if len(at) < _LOOP_REPEATS:
+            continue
+        for a, b, c in zip(at, at[1:], at[2:]):
+            if b - a == c - b and tokens[a:b] == tokens[b:c]:
+                if best is None or b < best[0]:
+                    best = (b, gram, len(at), b - a)
+                break
+    if best is None:
+        return None
+    b, gram, count, period = best
+    return {"at": words[b][1], "ngram": " ".join(gram), "count": count, "period": period}
+
+
+def unloop(text: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """(text, the loop or None): with WRITER_LOOP_GUARD, a looping reply cut where it first repeats, trimmed to its last
+    whole sentence, each sentence said twice kept once (find_loop)."""
+    if not _loop_guard():
+        return text, None
+    loop = find_loop(text)
+    if loop is None:
+        return text, None
+    kept = _trim_to_sentence(text[:loop["at"]].rstrip())
+    seen, drops = set(), []
+    for s, e in _sentence_spans(kept):
+        key = " ".join(re.findall(r"\w+", kept[s:e].lower()))
+        if key in seen:
+            drops.append((s, e))
+        seen.add(key)
+    kept = _drop_spans(kept, drops) if drops else kept
+    return kept, {**loop, "chars_before": len(text or ""), "chars_after": len(kept), "repeated_sentences": len(drops)}
 
 
 def _trim_to_sentence(text: str) -> str:
@@ -2534,13 +2994,16 @@ def statement_context(analysis: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     return {"servitude": any(re.search(r"servit", a, re.IGNORECASE) for a in acquired_rights(analysis)),
             "contract": bool(signals["facts"].get("contracts")),
-            "terms": [{k: t.get(k) for k in ("id", "ref", "length", "status", "from")} for t in signals.get("terms") or []],
+            "terms": [{k: t.get(k) for k in ("id", "ref", "length", "status", "from", "start_unknown")}
+                      for t in signals.get("terms") or []],
             "mediation": (signals.get("mediation") or {}).get("required"),
             "split_owner": str(fact_signals._the_split(signals["facts"]).get("owner") or ""),
             "conclusions": [{k: r.get(k) for k in ("id", "conclusion_subject", "conclusion_unless")}
                             for r in signals.get("fired") or [] if r.get("conclusion")],
             "defendants": bool(signals.get("defendants")),
             "excluded": [tuple(x) for r in signals.get("fired") or [] for x in r.get("excludes") or []],
+            "excluded_by": [{"rule": r.get("id"), "article": tuple(x)} for r in signals.get("fired") or []
+                            for x in r.get("excludes") or []],
             "case_durations": sorted(answer_invariants.durations(fact_signals._texts(signals["facts"])))}
 
 
@@ -2618,6 +3081,11 @@ _TOOL_NOT_USED_RE = re.compile(r"\bnon\s+(?:è\s+|sono\s+|risulta\s+|risultano\s
                                r"\birrilevant", re.IGNORECASE)
 _NON_USE_NAMED_RE = re.compile(r"non\s+uso|estinzion|estingu|\b1073\b", re.IGNORECASE)
 _TWENTY_RE = re.compile(r"ventenn|vent['’]anni|venti anni|20 anni", re.IGNORECASE)
+# v48 (the PO's red on Leonardo: "usata ... per oltre vent'anni" with no start of the possession in the facts)
+_TWENTY_RUN_RE = re.compile(r"(?:oltre|più di|piu di|da almeno|ben)\s+(?:vent['’]anni|venti anni|20 anni|un ventennio)|"
+                            r"(?:ventennio|vent['’]anni|venti anni)\s+(?:è\s+|sono\s+|risulta\s+)?(?:già\s+)?"
+                            r"(?:maturat|compiut|decors|trascors|integrat)|usucapion\w*\s+(?:è\s+|risulta\s+)?(?:già\s+)?"
+                            r"(?:maturat|compiut|intervenut|perfezionat)", re.IGNORECASE)
 _ALIENATION_OF_RE = re.compile(r"alienazion\w*\s+(?:del\s+(?:fondo|terreno|podere)\s+)?(?:di|da parte di)\s+([A-ZÀ-Ü]\w+)")
 
 
@@ -2641,6 +3109,10 @@ def _case_statement(sentence: str, context: Dict[str, Any]) -> str:
             return "the case's subject is not among those of art. 5 d.lgs. 28/2010"
     if _TOOL_NAMES_RE.search(sentence) and _TOOL_NOT_USED_RE.search(sentence) and not _THE_OTHER_SIDE_RE.search(sentence):
         return "a line on a tool that does not apply"
+    if any(t.get("start_unknown") for t in context.get("terms") or []) and _TWENTY_RUN_RE.search(sentence) \
+            and not _NON_USE_NAMED_RE.search(sentence) and not _UNSETTLED_RE.search(sentence) \
+            and not _THE_OTHER_SIDE_RE.search(sentence) and not _CONDITION_RE.search(sentence):
+        return "the computed term leaves the possession's start unknown: no twenty years can be said to have run"
     owner = context.get("split_owner")
     if owner and re.search(r"\b1054\b|altro contraente", sentence, re.IGNORECASE):
         named = _ALIENATION_OF_RE.search(sentence)
@@ -2674,7 +3146,7 @@ def _wrong_statement(sentence: str, context: Optional[Dict[str, Any]] = None) ->
         return "art. 1062 c.c.: the servitude arises from the separation, not from use"
     if re.search(r"\b1223\b", sentence) and not _DAMAGE_BASIS_RE.search(sentence) and not _DAMAGE_MEASURE_RE.search(sentence):
         return "art. 1223 c.c. measures damages, it does not found them"
-    if context.get("servitude") and _NEGATORIA_RE.search(sentence):
+    if context.get("servitude") and _NEGATORIA_RE.search(sentence) and not _THE_OTHER_SIDE_RE.search(sentence):
         return "the holder of a right on another's land acts in confessoria (art. 1079 c.c.)"
     if context.get("contract") is False and re.search(r"\binadempiment", sentence, re.IGNORECASE):
         return "a breach with no contract in the facts"
@@ -2717,13 +3189,15 @@ def _review_call(title: str, text: str, spans: List[Tuple[int, int]], case_text:
 
 def review_section(title: str, text: str, case_text: str, article_rows: Optional[List[Dict[str, Any]]] = None,
                    documents: Optional[List[Dict[str, Any]]] = None, party: str = "",
-                   context: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]]]:
+                   context: Optional[Dict[str, Any]] = None,
+                   plan: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log), WRITER_RULES_ENABLED: dropped, each sentence citing an article only to say it does not apply
     (the review call, and _NOT_APPLY_RE in the sentence; without the call, only a remark on relevance,
     _NOT_RELEVANT_RE) and each burden template whose norm allocates nothing (_burden_templates); flagged with
     _FACT_MARK (only with FACT_MARK_INLINE_ENABLED; otherwise logged), each sentence the review finds asserting a
     party's conduct, knowledge or intent the case does not hold, unless _fact_flag_excluded; dropped, each
-    sentence proposing an action against the client (party) or a co-client."""
+    sentence proposing an action against the client (party) or a co-client. GROUNDED_EXCLUSION (with the plan): a
+    sentence excluding an article on a ground grounded_exclusion accepts is not dropped as a non-application."""
     rows, documents = article_rows or [], documents or []
     known = {r["_article"] for r in rows if r.get("_article")}
     spans = _sentence_spans(text)
@@ -2733,13 +3207,20 @@ def review_section(title: str, text: str, case_text: str, article_rows: Optional
     drop: Dict[int, Tuple[str, str]] = {}
     mark: Dict[int, str] = {}
     filtered: List[Dict[str, Any]] = []
+    def grounded(k):
+        # the span alone, or with the one before it: the splitter ends a sentence at "575 c.p. (Omicidio) ..."
+        if not plan:
+            return False
+        whole = [text[spans[k][0]:spans[k][1]]] + ([text[spans[k - 1][0]:spans[k][1]]] if k else [])
+        return any(grounded_exclusion(w, plan, rows, context, documents, where=title) is not None for w in whole)
     for k, (s, e) in enumerate(spans):
         sentence = text[s:e]
-        if flags is None and _cites(sentence) and _NOT_RELEVANT_RE.search(sentence):
+        if flags is None and _cites(sentence) and _NOT_RELEVANT_RE.search(sentence) and not grounded(k):
             drop[k] = ("non_application", "a remark on relevance (no review call)")
     for flag in flags or []:
         k, sentence = flag["i"], text[spans[flag["i"]][0]:spans[flag["i"]][1]]
-        if flag["tipo"] == "non_applicabile" and _cites(sentence) and _NOT_APPLY_RE.search(sentence):
+        if flag["tipo"] == "non_applicabile" and _cites(sentence) and _NOT_APPLY_RE.search(sentence) \
+                and not grounded(k):
             drop[k] = ("non_application", flag["perche"])
         elif flag["tipo"] == "fatto_non_nel_caso":
             excluded = _fact_flag_excluded(sentence, case_text)
@@ -2802,7 +3283,8 @@ def _with_standard_blocks(sections: List[Tuple[str, str]], i: int,
 
 def _cover_blocks(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]], system: str,
                   coverage: Callable[[str], Dict[str, Dict[str, List[str]]]],
-                  standard: Optional[Dict[str, str]] = None) -> List[Tuple[str, str]]:
+                  standard: Optional[Dict[str, str]] = None,
+                  loops: Optional[List[Dict[str, Any]]] = None) -> List[Tuple[str, str]]:
     """The procedural section written once more when it leaves out a block of its material (_missing_blocks); the
     version that writes more items of the blocks is kept. A block still missing then gets its standard text
     (standard_blocks, REVIEW_FIXES_ENABLED)."""
@@ -2817,10 +3299,13 @@ def _cover_blocks(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, st
     lacking = "; ".join(f"{block}: " + ", ".join(sorted(set(u["offered"]) - set(u["written"])))
                         for block, u in use.items() if block in missing)
     try:
-        again = _without_heading(dg._call_chat([
+        again, loop = unloop(dg._call_chat([
             SystemMessage(content=f"{system}\n\n{instruction} La stesura precedente ometteva: {lacking}. Tratta "
                                   "ciascun blocco, uno per uno."),
-            HumanMessage(content=material)], max_tokens=max_tokens), title)
+            HumanMessage(content=material)], max_tokens=max_tokens))
+        if loop and loops is not None:
+            loops.append({"section": title, "call": "rewrite (blocks)", **{k: v for k, v in loop.items() if k != "at"}})
+        again = _without_heading(again, title)
     except Exception as exc:
         _log_exception("_cover_blocks", exc)
         logger.warning("plan-then-write: procedural section not rewritten for its blocks: %s", exc)
@@ -2836,25 +3321,37 @@ def _cover_blocks(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, st
 
 
 def _complete_sections(sections: List[Tuple[str, str]], jobs: List[Tuple[str, str, str, int]],
-                       system: str) -> Tuple[List[Tuple[str, str]], List[Dict[str, Any]]]:
+                       system: str, looped: Sequence[str] = (),
+                       loops: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Tuple[str, str]], List[Dict[str, Any]]]:
     """WRITER_RULES_ENABLED: a section cut short (_looks_cut) written once more with half again its tokens; still
-    cut, trimmed to its last complete sentence."""
-    cut = [i for i, (_, text) in enumerate(sections) if _looks_cut(text)]
+    cut, trimmed to its last complete sentence. WRITER_LOOP_GUARD: a looped section (`looped`, by title) is never
+    written again, only trimmed; a rewrite that loops is cut like a section (unloop), into `loops`."""
+    cut = [i for i, (title, text) in enumerate(sections) if _looks_cut(text) and title not in looped]
+    log: List[Dict[str, Any]] = []
+    out = list(sections)
+    for i, (title, text) in enumerate(sections):
+        if title in looped and _looks_cut(text):
+            out[i] = (title, _trim_to_sentence(text))
+            log.append({"section": title, "kind": "cut", "how": "looped: trimmed, not rewritten", "sentence": text[-160:]})
+    sections = out
     if not cut:
-        return sections, []
+        return sections, log
 
     def again(i):
         title, instruction, material, max_tokens = jobs[i]
         try:
-            return _without_heading(dg._call_chat([SystemMessage(content=f"{system}\n\n{instruction}"),
-                                                   HumanMessage(content=material)], max_tokens=max_tokens * 3 // 2), title)
+            text, loop = unloop(dg._call_chat([SystemMessage(content=f"{system}\n\n{instruction}"),
+                                               HumanMessage(content=material)], max_tokens=max_tokens * 3 // 2))
+            if loop and loops is not None:
+                loops.append({"section": title, "call": "rewrite (cut)", **{k: v for k, v in loop.items() if k != "at"}})
+            return _without_heading(text, title)
         except Exception as exc:
             _log_exception("again", exc)
             logger.warning("writer rules: section %r cut, rewriting failed: %s", title, exc)
             return ""
     with ThreadPoolExecutor(max_workers=len(cut)) as pool:
         redone = dict(zip(cut, pool.map(again, cut)))
-    out, log = list(sections), []
+    out = list(sections)
     for i, text in redone.items():
         title, old = sections[i]
         if text and not _looks_cut(text):
@@ -2862,6 +3359,12 @@ def _complete_sections(sections: List[Tuple[str, str]], jobs: List[Tuple[str, st
         else:
             out[i], how = (title, _trim_to_sentence(text or old)), "trimmed to the last sentence"
         log.append({"section": title, "kind": "cut", "how": how, "sentence": old[-160:]})
+        # the citation ledger: each article the cut section cited that its new version no longer does
+        new = out[i][1]
+        lost = [a for a in citation_ledger.cited(old) if a not in citation_ledger.cited(new)]
+        for a in lost:
+            first = next((old[s:e] for s, e in _sentence_spans(old) if a in citation_ledger.cited(old[s:e])), old)
+            citation_ledger.record("complete_sections", first, f"cut: {how}", now=new, only=[a])
     return out, log
 
 
@@ -2951,29 +3454,105 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         _trace_comma_words(name, done, article_rows or [])
         return done
 
-    def write(job):
-        title, instruction, material, max_tokens = job
-        messages = [SystemMessage(content=f"{system}\n\n{instruction}"), HumanMessage(content=material)]
+    loops: List[Dict[str, Any]] = []        # WRITER_LOOP_GUARD: the sections whose reply looped
+    # v48: every section's material within the model's context before its call (section_fit.fit); impossible, the
+    # parere is written in one call
+    rule_refs = sorted(rule_inserted(plan))
+    fit_logs: List[Dict[str, Any]] = []
+    try:
+        fitted = []
+        for title, instruction, material, max_tokens in jobs:
+            material, fit_log = section_fit.fit(title, f"{system}\n\n{instruction}", material, max_tokens, plan,
+                                                rule_refs, anchors)
+            fit_logs.append(fit_log)
+            fitted.append((title, instruction, material, max_tokens))
+        jobs = fitted
+    except section_fit.SectionTooLarge as exc:
+        _log_exception("section_fit", exc)
+        dg.vlog("case_analysis_section_fit", {"sections": fit_logs, "impossible": str(exc)})
+        _fell_back("section fit", exc)
+        return None
+    if any(log["dropped"] for log in fit_logs):
+        dg.vlog("case_analysis_section_fit", {"sections": [log for log in fit_logs if log["dropped"]]})
+    refitted: Dict[str, str] = {}           # the sections refitted after a context-length error
+    trimmed: set = set()                    # NORME_SPLIT: a half cut at its length, trimmed, never rewritten
 
-        def once():
+    def call(title, instruction, material, max_tokens, half: str = ""):
+        """One section call; on a context-length error the material refitted (section_fit.refit) and the call made
+        once more, never with the identical prompt."""
+        def once(material):
+            messages = [SystemMessage(content=f"{system}\n\n{instruction}"), HumanMessage(content=material)]
             last_reply.finish_reason = None
             text = dg._call_chat(messages, max_tokens=max_tokens)
             finish = getattr(last_reply, "finish_reason", None)
             dg.vlog("case_analysis_section_call", {"section": title, "finish_reason": finish, "chars": len(text or ""),
-                                                   "max_tokens": max_tokens})
+                                                   "max_tokens": max_tokens, **({"half": half} if half else {})})
             if not (text or "").strip():
                 raise ValueError(f"empty reply (finish_reason={finish})")
-            return text
+            text, loop = unloop(text)
+            if loop:
+                loops.append({"section": title, "call": "section" + (f" {half}" if half else ""),
+                              **{k: v for k, v in loop.items() if k != "at"}})
+            return text, finish
         try:
-            return once()
+            return once(material)
         except Exception as exc:
             _log_exception("write", exc)
-            logger.warning("plan-then-write: section %r failed, trying once more: %s", title, exc)
+            sizes = ai_chat._overflow_sizes(str(exc), [SystemMessage(content=f"{system}\n\n{instruction}"),
+                                                       HumanMessage(content=material)])
+            if sizes:
+                try:
+                    material, log = section_fit.refit(title, f"{system}\n\n{instruction}", material, max_tokens, plan,
+                                                      sizes, rule_refs, anchors)
+                except section_fit.SectionTooLarge as none:
+                    raise ValueError(f"section {title!r}: context exceeded, nothing left to drop ({none})") from exc
+                dg.vlog("case_analysis_section_fit", {"sections": [{**log, **({"half": half} if half else {})}]})
+                if not half:
+                    refitted[title] = material
+                logger.warning("plan-then-write: section %r over the context, refitted and tried once more", title)
+            else:
+                logger.warning("plan-then-write: section %r failed, trying once more: %s", title, exc)
             try:
-                return once()
+                return once(material)
             except Exception as again:
                 _log_exception("write", again)
                 raise ValueError(f"section {title!r}: {again}") from again
+
+    def write(job):
+        title, instruction, material, max_tokens = job
+        if title == SECTION_TITLES[2] and norme_split(plan):
+            return _norme_halves(title, instruction, material, max_tokens)
+        return call(title, instruction, material, max_tokens)[0]
+
+    def _norme_halves(title, instruction, material, max_tokens):
+        """NORME_SPLIT: the section in two concurrent calls over disjoint halves of the plan's articles (the rulings
+        with the first); a half cut at its length trimmed to its last sentence, never written again."""
+        refs = _plan_refs(plan)
+        first, second = refs[:(len(refs) + 1) // 2], refs[(len(refs) + 1) // 2:]
+        materials = section_fit.halves(material, first, second, anchors)
+        tokens = max(400, int(max_tokens * NORME_SPLIT_SHARE))
+
+        def _norme_half(k):
+            own = (first, second)[k]
+            words = re.sub(r"Al massimo (\d+) parole",
+                           lambda m: f"Al massimo {int(int(m.group(1)) * NORME_SPLIT_SHARE)} parole", instruction)
+            ask = (f"{words} In questa parte della sezione tratta SOLO queste norme del PIANO, una per una: "
+                   + ", ".join(f"art. {n} {_code_key(c)}" for n, c in own)
+                   + "; le altre norme del PIANO sono trattate in un'altra parte: non nominarle."
+                   + ("" if k == 0 else " Non citare pronunce. Non scrivere un'introduzione: comincia dalla prima norma."))
+            text, finish = call(title, ask, materials[k], tokens, half=f"{k + 1}/2")
+            cut = finish == "length"
+            if cut:
+                text = _trim_to_sentence(text)
+            return {"text": text, "finish_reason": finish, "trimmed": cut, "articles": [f"{n} {c}" for n, c in own],
+                    "chars": len(text)}
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            done = list(pool.map(_norme_half, (0, 1)))
+        if any(d["trimmed"] for d in done):
+            trimmed.add(title)
+        dg.vlog("case_analysis_norme_split", {"halves": [{k: v for k, v in d.items() if k != "text"} for d in done],
+                                              "max_tokens": tokens})
+        return "\n\n".join(d["text"].strip() for d in done if d["text"].strip())
 
     t0 = time.time()
     try:
@@ -2986,18 +3565,24 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         return None
     finally:
         dg.vlog("case_analysis_sections_llm", duration_ms=(time.time() - t0) * 1000)
+    if refitted:
+        jobs = [(t, i, refitted.get(t, m), k) for t, i, m, k in jobs]
     sections = [(job[0], _without_heading(text, job[0])) for job, text in zip(jobs, texts)]
     _trace_comma_words("written", sections, article_rows or [])
+    looped = {entry["section"] for entry in loops} | trimmed
     # every step after writing is fail-safe (_step): an exception keeps the sections as they were before it
     if coverage is not None:
-        sections = _step("cover_blocks", sections, lambda secs: _cover_blocks(secs, jobs, system, coverage, standard))
+        sections = _step("cover_blocks", sections,
+                         lambda secs: _cover_blocks(secs, jobs, system, coverage, standard, loops=loops))
     writer_log: List[Dict[str, Any]] = []
     if _writer_rules() and all(text for _, text in sections):
         def complete(secs):
-            done, log = _complete_sections(secs, jobs, system)
+            done, log = _complete_sections(secs, jobs, system, looped=looped, loops=loops)
             writer_log.extend(log)
             return done
         sections = _step("complete_sections", sections, complete)
+    if loops:
+        dg.vlog("case_analysis_writer_loops", {"loops": loops, "sections": sorted({e["section"] for e in loops})})
     if _discipline() and all(text for _, text in sections):
         def discipline(secs):
             t1 = time.time()
@@ -3012,6 +3597,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
                 "dropped": sum(1 for e in removed if e.get("how") == "sentence dropped" and e.get("kind") != "dangling"),
                 "dangling": sum(1 for e in removed if e.get("kind") == "dangling")},
                 duration_ms=(time.time() - t1) * 1000)
+            citation_ledger.record_entries("discipline", removed)
             return [(title, text or original) for (title, original), (text, _) in zip(secs, done)]
         sections = _step("citation_discipline", sections, discipline)
     if _writer_rules() and all(text for _, text in sections):
@@ -3020,10 +3606,11 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
             with ThreadPoolExecutor(max_workers=len(secs)) as pool:
                 reviewed = list(pool.map(lambda pair: review_section(pair[0], pair[1], case_text, article_rows,
                                                                      documents, plan.get("parte_assistita") or "",
-                                                                     context),
+                                                                     context, plan=plan),
                                          secs))
             writer_log.extend(entry for _, log in reviewed for entry in log)
             dg.vlog("case_analysis_writer_rules", _writer_log(writer_log), duration_ms=(time.time() - t2) * 1000)
+            citation_ledger.record_entries("writer_review", [e for _, log in reviewed for e in log])
             return [(title, text or original) for (title, original), (text, _) in zip(secs, reviewed)]
         sections = _step("writer_review", sections, review)
     if _review_fixes() and all(text for _, text in sections):
@@ -3300,6 +3887,8 @@ def rewrite_unsupported(title: str, text: str, case_text: str,
     for k in sorted(replace, reverse=True):
         s, e = spans[k]
         text = text[:s] + replace[k] + text[e:]
+    citation_ledger.record_entries("rewrite_unsupported", [{**x, "now": x["rewritten"]} for x in log
+                                                           if x.get("how") == "rewritten"])
     return text, log
 
 
@@ -3367,16 +3956,99 @@ _NOT_CONNECTED_RE = re.compile(r"\bnon\s+(?:si\s+)?(?:ricollega|riguarda|attiene
                                r"\bnon\s+(?:è|sono)\s+(?:direttamente|strettamente)\b|\bsolo\s+indirettamente\b", re.IGNORECASE)
 
 
-def _cover_refusal(text: str, ref: tuple, documents: List[Dict[str, Any]], article_rows: List[Dict[str, Any]]) -> str:
-    """Why these sentences cannot go in, "" when they can: they must cite the article and nothing else."""
+# GROUNDED_EXCLUSION (v46, p1 in v45: plan cover's "L'art. 575 c.p. ... non si applica ... ai sensi dell'art. 55 c.p."
+# refused for citing 55): excluding an article on a ground is an argument, not a remark on relevance. A sentence saying
+# article A does not apply is accepted, by plan cover and by the writer review, when A is in the plan with grade 2 or more,
+# the ground is another article B of the plan the sentence cites, or a fired fact rule whose conclusion excludes A, and
+# the sentence cites nothing but A and B. Every other "does not apply" sentence is refused (cover) or dropped (review) as
+# before. Logged as grounded_exclusion_accepted.
+GROUNDED_EXCLUSION_FLAG = "GROUNDED_EXCLUSION"
+# "cites nothing but A and B" read strictly: every number before a code sigla, and every number of an "artt." list, which
+# read_citations and _refs_in miss after the first ("degli artt. 55 c.p. e 52 c.p.", "artt. 55 e 52 c.p.").
+_SIGLA = r"c\.\s?p\.\s?p\.|c\.\s?p\.\s?c\.|c\.\s?p\.\s?a\.|c\.\s?p\.|c\.\s?c\."
+_NUMBER_SIGLA_RE = re.compile(r"\b(\d+(?:-[a-z]+)?)\s*,?\s*(" + _SIGLA + r")", re.IGNORECASE)
+_ARTT_LIST_RE = re.compile(r"\bartt\.\s*((?:\d+(?:-[a-z]+)?(?:\s*(?:" + _SIGLA + r"))?\s*(?:,|\be\b|\bed\b)\s*)+"
+                           r"\d+(?:-[a-z]+)?)\s*(" + _SIGLA + r")", re.IGNORECASE)
+
+
+def _strict_refs(sentence: str) -> List[tuple]:
+    text = sentence or ""
+    out = [(m.group(1), m.group(2)) for m in _NUMBER_SIGLA_RE.finditer(text)      # not "comma 2, c.p.", "n. 1, c.c."
+           if not re.search(r"\b(?:comma|co\.|n\.|nn\.|lett\.|numero)\s*$", text[:m.start()], re.IGNORECASE)]
+    for m in _ARTT_LIST_RE.finditer(text):
+        out += [(n, m.group(2)) for n in re.findall(r"\b\d+(?:-[a-z]+)?\b", m.group(1))]
+    return out
+
+
+def grounded_exclusion(sentence: str, plan: Optional[Dict[str, Any]], article_rows: List[Dict[str, Any]],
+                       context: Optional[Dict[str, Any]], documents: Optional[List[Dict[str, Any]]] = None,
+                       excluded: Optional[tuple] = None, where: str = "plan cover") -> Optional[Dict[str, Any]]:
+    """{"A", "B", "B_ref", "rule", "grade"} when GROUNDED_EXCLUSION accepts the sentence's exclusion of an article (A:
+    `excluded` when given, else the first article the sentence cites that qualifies), else None."""
+    if not dg.feature_flags.enabled(GROUNDED_EXCLUSION_FLAG) or not plan:
+        return None
+    if not (_NOT_APPLY_RE.search(sentence or "") or _NOT_RELEVANT_RE.search(sentence or "")
+            or _NOT_CONNECTED_RE.search(sentence or "")):
+        return None
+    rows = article_rows or []
+    known = {r["_article"] for r in rows if r.get("_article")}
+    refs = [r for _, _, _, rs, _ in read_citations(sentence, documents or [], known) for r in rs]
+    if not refs or any(r is None for r in refs):
+        return None
+    distinct: List[tuple] = []
+    for r in refs + _strict_refs(sentence):
+        if not any(_same_ref(r, d) for d in distinct):
+            distinct.append(r)
+    if len(distinct) > 2:
+        return None
+    planned = [tuple(r) for q in plan.get("questioni") or [] for r in q.get("norme") or []]
+
+    def in_plan(r):
+        return any(_same_ref(r, p) for p in planned)
+
+    def grade(r):
+        grades = [row["_grade"] for row in rows if row.get("_article") and _same_ref(row["_article"], r)
+                  and isinstance(row.get("_grade"), int)]
+        return max(grades) if grades else None
+    candidates = [d for d in distinct if excluded is None or _same_ref(d, excluded)]
+    for a in candidates:
+        g = grade(a)
+        if not in_plan(a) or (g or 0) < 2:
+            continue
+        others = [d for d in distinct if not _same_ref(d, a)]
+        accepted = None
+        if others:
+            if in_plan(others[0]):
+                accepted = {"B": f"{others[0][0]} {others[0][1]}", "B_ref": others[0], "rule": None}
+        else:
+            rule = next((x.get("rule") for x in (context or {}).get("excluded_by") or []
+                         if _same_ref(tuple(x.get("article") or ("", "")), a)), None)
+            if rule:
+                accepted = {"B": None, "B_ref": None, "rule": rule}
+        if accepted:
+            out = {"A": f"{a[0]} {a[1]}", "grade": g, **accepted}
+            dg.vlog("grounded_exclusion_accepted", {**{k: v for k, v in out.items() if k != "B_ref"}, "where": where,
+                                                    "sentence": " ".join(sentence.split())[:200]})
+            return out
+    return None
+
+
+def _cover_refusal(text: str, ref: tuple, documents: List[Dict[str, Any]], article_rows: List[Dict[str, Any]],
+                   plan: Optional[Dict[str, Any]] = None, context: Optional[Dict[str, Any]] = None) -> str:
+    """Why these sentences cannot go in, "" when they can: they must cite the article and, besides it, only the plan's
+    articles (v49: 320 c.p. explained through 318 and 319, both in the plan), and not say it does not apply -- unless
+    GROUNDED_EXCLUSION accepts them (grounded_exclusion: the article excluded on a ground, the ground's article B then
+    allowed too)."""
     known = {r["_article"] for r in article_rows if r.get("_article")}
+    grounded = grounded_exclusion(text, plan, article_rows, context, documents, excluded=ref) if plan else None
+    allowed = [ref] + ([grounded["B_ref"]] if grounded and grounded.get("B_ref") else []) + (_plan_refs(plan) if plan else [])
     refs = [r for _, _, rs in _citations(text, documents, known) for r in rs]
-    if not refs or not all(_same_ref(r, ref) for r in refs) or any(r is None for _, _, _, rs, _ in
-                                                                   read_citations(text, documents, known) for r in rs):
+    if not refs or not any(_same_ref(r, ref) for r in refs) or not all(any(_same_ref(r, a) for a in allowed) for r in refs) \
+            or any(r is None for _, _, _, rs, _ in read_citations(text, documents, known) for r in rs):
         return "cites another article, or not this one"
     if dg._decision_numbers(text):
         return "cites a ruling"
-    if _NOT_APPLY_RE.search(text) or _NOT_RELEVANT_RE.search(text) or _NOT_CONNECTED_RE.search(text):
+    if not grounded and (_NOT_APPLY_RE.search(text) or _NOT_RELEVANT_RE.search(text) or _NOT_CONNECTED_RE.search(text)):
         return "says it does not apply"
     from . import comma_material, text_tidy
     rows = [r for r in article_rows if r.get("_article") and _same_ref(r["_article"], ref)]
@@ -3411,17 +4083,31 @@ def _cover_one(ref: tuple, issue: Dict[str, Any], row: Dict[str, Any], plan: Dic
     text = text[:spans[-1][1]].strip() if spans else ""
     if not text or _looks_cut(text):
         return {**entry, "why": "empty or cut reply", "sentence": text[:300]}
-    why = _cover_refusal(text, ref, documents, article_rows)
+    why = _cover_refusal(text, ref, documents, article_rows, plan, context)
     if why:
         return {**entry, "why": why, "sentence": text[:300]}
     title = SECTION_TITLES[3]
+    reply = text
     if _writer_rules():
-        text, _ = review_section(title, text, case_text, article_rows, documents, plan.get("parte_assistita") or "", context)
+        text, review = review_section(title, text, case_text, article_rows, documents, plan.get("parte_assistita") or "",
+                                      context, plan=plan)
+        # v46: a flag acts on the insertion as on a writer sentence. What would drop a writer sentence refuses it, with
+        # the review's reason; a fact the case does not hold is marked when FACT_MARK_INLINE_ENABLED marks a writer's,
+        # else (a writer's is only logged) the insertion is refused: it is optional text, not a sentence of the section.
+        dropped = [e for e in review if e.get("how") == "sentence dropped"]
+        if dropped:
+            return {**entry, "why": f"dropped by the review: {dropped[0]['kind']}: {dropped[0].get('why') or ''}".strip(),
+                    "sentence": reply[:300]}
+        logged = [e for e in review if e.get("kind") == "fact_not_in_case" and e.get("how") == "logged"]
+        if logged:
+            return {**entry, "why": f"review flag: fatto_non_nel_caso: {logged[0].get('why') or ''}".strip(),
+                    "sentence": reply[:300]}
     if _review_fixes():
         text, _ = rewrite_unsupported(title, text, case_text, article_rows)
-    why = (_cover_refusal(text, ref, documents, article_rows) or _wrong_statement(text, context)) if text else "dropped by the review"
+    why = (_cover_refusal(text, ref, documents, article_rows, plan, context) or _wrong_statement(text, context)) \
+        if text else "dropped by the review"
     if why:
-        return {**entry, "why": why, "sentence": text[:300]}
+        return {**entry, "why": why, "sentence": (text or reply)[:300]}
     if grounded_review.enabled():
         judged = grounded_review._grounded_judge(f"[{label}]\n{source}", [text])
         if grounded_review.verdict_of(judged.get(0))[1] in ("assente", "contraddetta", None):
@@ -3521,6 +4207,27 @@ def _precluded_in_tools(text: str, terms: List[Dict[str, Any]]) -> List[Tuple[in
     return out
 
 
+_CLAUSE_SPLIT_RE = re.compile(r"(?<=[,;:])\s+")
+
+
+def trim_clause(sentence: str, bad) -> str:
+    """The sentence without the clauses (split at , ; :) `bad` finds, when what is left still cites a plan article,
+    reads as a sentence and is no longer bad; "" else (v49: a plan article's sentence trimmed, not dropped)."""
+    parts = _CLAUSE_SPLIT_RE.split(sentence.strip())
+    if len(parts) < 2:
+        return ""
+    kept = [p for p in parts if not bad(p)]
+    if not kept or len(kept) == len(parts):
+        return ""
+    out = " ".join(kept).rstrip(" ,;:")
+    out = out[0].upper() + out[1:] if out else out
+    if out and out[-1] not in ".!?":
+        out += "."
+    from . import text_tidy
+    return out if citation_ledger.plan_cited(out) and not bad(out) and not text_tidy.unreadable(out) \
+        and len(re.findall(r"\w{3,}", out)) >= 5 else ""
+
+
 def final_checks(sections: List[Tuple[str, str]], article_rows: List[Dict[str, Any]],
                  context: Optional[Dict[str, Any]]) -> List[Tuple[str, str]]:
     """The checks written in code, on the sections as the last model step left them, before plan cover can write a lost
@@ -3531,14 +4238,36 @@ def final_checks(sections: List[Tuple[str, str]], article_rows: List[Dict[str, A
     out, entries = [], []
     terms = (context or {}).get("terms") or []
     for title, text in sections:
-        text, log = text_tidy.against_articles(text, article_rows)
+        text, log = text_tidy.against_articles(text, article_rows, "final_checks")
         entries += [{**e, "section": title} for e in log]
         drops = [(s, e) for s, e in _sentence_spans(text) if _wrong_statement(text[s:e], context)]
-        entries += [{"section": title, "kind": _wrong_statement(text[s:e], context), "sentence": text[s:e].strip()[:300]} for s, e in drops]
         tools = [span for span in _precluded_in_tools(text, terms) if span not in drops]
-        entries += [{"section": title, "kind": "a time-barred action among the tools", "sentence": text[s:e].strip()[:300]} for s, e in tools]
-        out.append((title, (_drop_spans(text, drops + tools) if drops or tools else text) or text))
+        trims: Dict[Tuple[int, int], str] = {}
+        for s, e in drops + tools:         # v49: a plan article's sentence loses the offending clause, never itself
+            sentence = text[s:e]
+            kind = _wrong_statement(sentence, context) or "a time-barred action among the tools"
+            if not citation_ledger.plan_cited(sentence):
+                entries.append({"section": title, "kind": kind, "sentence": sentence.strip()[:300]})
+                continue
+            bad = (lambda c: bool(_wrong_statement(c, context))) if (s, e) in drops else \
+                (lambda c: bool(_precluded_in_tools(f"**Strumenti processuali**\n\n{c}", terms)))
+            trimmed = trim_clause(sentence, bad)
+            if trimmed:
+                trims[(s, e)] = trimmed
+                entries.append({"section": title, "kind": f"{kind}: clause trimmed", "sentence": sentence.strip()[:300],
+                                "now": trimmed[:300]})
+                citation_ledger.kept("final_checks", sentence, kind, trimmed)
+            else:           # nothing to trim it to: dropped, the reason logged in full
+                entries.append({"section": title, "kind": kind, "sentence": sentence.strip()[:300],
+                                "why": "a plan article's sentence: no clause to trim it to"})
+        dropped = [span for span in drops + tools if span not in trims]
+        if trims:
+            text = grounded_review.apply(text, {**trims, **{span: None for span in dropped}}) or text
+        elif dropped:
+            text = _drop_spans(text, dropped) or text
+        out.append((title, text))
     dg.vlog("case_analysis_final_checks", {"entries": entries, "count": len(entries)})
+    citation_ledger.record_entries("final_checks", entries)
     return out
 
 
@@ -3561,6 +4290,7 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     case = dg._case_text(facts, request)
     plan, analysis = for_the_plan(plan, analysis)
     in_plan = _plan_refs(plan)
+    citation_ledger.protect(in_plan)     # v49: a sentence citing one is never dropped by tidy / final checks / anchors
     for row in article_rows:             # text_tidy.headed_norms: the articles a paragraph of the norms section may be about
         if row.get("_article") in in_plan:
             row["_in_plan"] = True
@@ -3573,7 +4303,8 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     use_of = (lambda text: material_use(analysis, text)) if material_use(analysis, "") else None
     anchors = anchor_catalogue(plan, analysis, article_rows, references)
     if anchors is not None:     # a failing statement citing one of these is rewritten from it or kept, never removed
-        anchors.checked = grounded_review.strict_refs(article_rows, named, analysis)
+        # v49: the plan's articles too (h2 v48: 1382 c.c., exempt by heading, removed as an unanchored citation)
+        anchors.checked = list(dict.fromkeys(list(grounded_review.strict_refs(article_rows, named, analysis)) + in_plan))
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
                                                  principles, _keep_all(), anchors), lang, named, documents,
                               article_rows, case, coverage=use_of, standard=standard_blocks(analysis),

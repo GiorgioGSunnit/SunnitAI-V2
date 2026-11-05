@@ -9,6 +9,10 @@ tidy() takes the empty brackets out, cuts a leading fragment (punctuation, "comm
 code) and capitalises what remains -- the sentence dropped when nothing readable is left (fewer than three content
 words) -- and moves a mid-sentence unverified note to the end of its sentence as "(da verificare)": the warning is
 never deleted. Logged by the caller (defensive_generation: answer_tidy).
+
+v49, protected citations: a sentence citing an article of the final plan (citation_ledger.plan_cited) is never dropped
+here -- a cut clause is trimmed away (the part citing the article kept), a copied run of the article's words is quoted
+«...» in place, anything else kept as written -- and the ledger logs it kept (citation_ledger.kept).
 """
 
 import re
@@ -235,9 +239,13 @@ def _closing_punctuation(text: str, end: int) -> int:
     return len(m.group(0)) if m else 0
 
 
-def _without_copy(text: str, start: int, end: int, ref: Tuple[str, str]) -> Tuple[str, str]:
+_QUOTED_IN_PLACE = "a copy inside a plan article's sentence: quoted in place"
+
+
+def _without_copy(text: str, start: int, end: int, ref: Tuple[str, str], protected: bool = False) -> Tuple[str, str]:
     """(text, what was done) with one copy dealt with: taken out of its brackets; a whole sentence, or one ending in it after
-    the citation of that same article, put in «...»; else its sentence dropped."""
+    the citation of that same article, put in «...»; else its sentence dropped -- protected (a plan article's sentence,
+    v49), the run quoted in place instead."""
     from . import plan_then_write as ptw
     opening, closing = text.rfind("(", 0, start), text.find(")", end)
     if opening > text.rfind(")", 0, start) and closing >= 0 and "\n" not in text[opening:closing]:
@@ -254,19 +262,34 @@ def _without_copy(text: str, start: int, end: int, ref: Tuple[str, str]) -> Tupl
         return text[:start] + new + text[b:], "a whole comma quoted"
     if not _words(tail) and cites:
         return text[:start] + quote + "." + text[b:], "a copy after its citation quoted"
+    if protected:
+        return text[:start] + quote + text[end:], _QUOTED_IN_PLACE
     return ptw._drop_spans(text, [(a, b)]), "a copy inside a sentence: sentence dropped"
 
 
-def without_copies(text: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
-    """(text, log): no run of COPY_WORDS words of an article left outside «...» (_without_copy)."""
+def without_copies(text: str, rows: List[Dict[str, Any]], pass_name: str = "answer_tidy"
+                   ) -> Tuple[str, List[Dict[str, Any]]]:
+    """(text, log): no run of COPY_WORDS words of an article left outside «...» (_without_copy); a plan article's
+    sentence never dropped -- its run quoted in place (v49)."""
+    from . import citation_ledger
+    from . import plan_then_write as ptw
     index = _copy_index(rows)
     log: List[Dict[str, Any]] = []
     for _ in range(_MAX_COPIES):
         copy = _first_copy(text, index) if index else None
         if not copy:
             break
-        log.append({"kind": "", "article": f"{copy[2][0]} {copy[2][1]}", "sentence": text[copy[0]:copy[1]][:300]})
-        text, log[-1]["kind"] = _without_copy(text, *copy)
+        # the whole sentence, and what is left of it, for the citation ledger ("sentence" is the copied run only)
+        a, b = next(((x, y) for x, y in ptw._sentence_spans(text) if x <= copy[0] < y), (copy[0], copy[1]))
+        log.append({"kind": "", "article": f"{copy[2][0]} {copy[2][1]}", "sentence": text[copy[0]:copy[1]][:300],
+                    "in": text[a:b].strip()[:600]})
+        whole = text[a:b]
+        text, log[-1]["kind"] = _without_copy(text, *copy, protected=bool(citation_ledger.plan_cited(whole)))
+        if log[-1]["kind"] == _QUOTED_IN_PLACE:
+            citation_ledger.kept(pass_name, whole, "a copy inside a sentence",
+                                 next((text[x:y] for x, y in ptw._sentence_spans(text) if x <= a < y), None))
+        if "dropped" not in log[-1]["kind"]:
+            log[-1]["now"] = next((text[x:y].strip()[:600] for x, y in ptw._sentence_spans(text) if x <= a < y), "")
     return empty_brackets(text) if log else text, log
 
 
@@ -286,12 +309,14 @@ def _last_comma(parts: List[str], how: str) -> int:
     return max(numbers) if numbers else len(parts)
 
 
-def against_articles(text: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[Dict[str, Any]]]:
+def against_articles(text: str, rows: List[Dict[str, Any]], pass_name: str = "answer_tidy"
+                     ) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log), against the articles' own text. A comma number past the article's last comma goes ("art. 1051 c.c.,
     comma 10" -> "art. 1051 c.c."). A sentence that is only the start of a comma, a citation after it, goes: a clause
     with no main verb ("Qualunque fatto doloso o colposo che cagiona ad altri un danno ingiusto (art. 2043 c.c., co. 1)."),
-    written by the model from a passage, its punctuation gone, so read by its words."""
-    from . import grounded_review, plan_then_write as ptw
+    written by the model from a passage, its punctuation gone, so read by its words. v49: a plan article's sentence is
+    kept (its copied run quoted, without_copies), logged kept under pass_name."""
+    from . import citation_ledger, grounded_review, plan_then_write as ptw
     parts = _parts_by_article(rows)
     log: List[Dict[str, Any]] = []
 
@@ -316,16 +341,20 @@ def against_articles(text: str, rows: List[Dict[str, Any]]) -> Tuple[str, List[D
     openings = [w for w in (_words(p) for p in every_part) if len(w) >= 8]
     drops = {}
     for s, e in ptw._sentence_spans(text):
+        kind = ""
         if comma_words_cited(text[s:e].strip(), every_part) or comma_words_left(text[s:e].strip(), every_part):
+            kind = "comma words with a citation"
+        else:
+            words = _words(_TRAILING_CITATION_RE.sub("", text[s:e]))
+            if len(words) >= 5 and any(w[:len(words)] == words and len(words) < 0.8 * len(w) for w in openings):
+                kind = "comma opening as a sentence"
+        if kind and citation_ledger.plan_cited(text[s:e]):
+            citation_ledger.kept(pass_name, text[s:e].strip(), kind)          # v49: a plan article's sentence stays
+        elif kind:
             drops[(s, e)] = None
-            log.append({"kind": "comma words with a citation", "sentence": text[s:e].strip()[:300]})
-            continue
-        words = _words(_TRAILING_CITATION_RE.sub("", text[s:e]))
-        if len(words) >= 5 and any(w[:len(words)] == words and len(words) < 0.8 * len(w) for w in openings):
-            drops[(s, e)] = None
-            log.append({"kind": "comma opening as a sentence", "sentence": text[s:e].strip()[:300]})
+            log.append({"kind": kind, "sentence": text[s:e].strip()[:300]})
     text = grounded_review.apply(text, drops) if drops else text
-    text, copies = without_copies(text, rows)
+    text, copies = without_copies(text, rows, pass_name)
     return text, log + copies
 
 
@@ -447,9 +476,33 @@ def move_notes(sentence: str) -> str:
     return f"{core} {_SHORT_NOTE}{punct}" + sentence[len(tail):]
 
 
+def trim_unreadable(sentence: str, why: str) -> str:
+    """A plan article's sentence unreadable() would drop, trimmed so it reads (v49): a cut clause pasted in -- the part
+    citing the plan article, capitalised; a clause cut at its end -- back to its last comma, semicolon or colon; "" when
+    no trimmed part still cites a plan article and reads."""
+    from . import citation_ledger
+    if why == "cut clause inside a sentence":
+        joins = [m for m in _BROKEN_JOIN_RE.finditer(sentence) if m.group(1) not in _SHORT_FORMS]
+        cuts = [0] + [m.end(1) + 1 for m in joins] + [len(sentence)]
+        for a, b in zip(cuts, cuts[1:]):
+            part = capitalise(sentence[a:b].strip())
+            if part and part[-1] not in ".!?;:":
+                part += "."
+            if citation_ledger.plan_cited(part) and not unreadable(part):
+                return part
+        return ""
+    if why == "cut clause":
+        body = _TRAILING_CITATION_RE.sub("", sentence.rstrip())
+        stop = max(body.rfind(","), body.rfind(";"), body.rfind(":"))
+        part = body[:stop].rstrip() + "." if stop > 0 else ""
+        return part if part and citation_ledger.plan_cited(part) and not unreadable(part) else ""
+    return ""
+
+
 def tidy(text: str) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log): every sentence's mid-sentence notes moved, empty brackets taken out, a leading fragment cut or the
-    sentence dropped (see the module docstring)."""
+    sentence dropped (see the module docstring); a plan article's sentence never dropped (v49: trimmed or kept)."""
+    from . import citation_ledger
     from . import plan_then_write as ptw
     log: List[Dict[str, Any]] = []
 
@@ -473,6 +526,9 @@ def tidy(text: str) -> Tuple[str, List[Dict[str, Any]]]:
         if cleaned != new:
             log.append({"kind": "empty brackets", "sentence": new[:300], "now": cleaned[:300]})
         fixed = lead_fragment(cleaned)
+        if not fixed and cleaned.strip() and citation_ledger.plan_cited(cleaned):
+            citation_ledger.kept("answer_tidy", cleaned, "fragment")       # v49: a plan article's sentence stays
+            fixed = cleaned
         if fixed != cleaned:
             log.append({"kind": "fragment dropped" if not fixed else "fragment repaired", "sentence": cleaned[:300],
                         **({"now": fixed[:300]} if fixed else {})})
@@ -481,7 +537,14 @@ def tidy(text: str) -> Tuple[str, List[Dict[str, Any]]]:
             log.append({"kind": "condition repeating its clause", "sentence": fixed[:300], "now": shorter[:300]})
             fixed = shorter
         why = unreadable(fixed) if fixed else ""
-        if why:
+        if why and citation_ledger.plan_cited(fixed):
+            # v49: a plan article's sentence is trimmed so it reads, else kept as written; never dropped
+            trimmed = trim_unreadable(fixed, why)
+            citation_ledger.kept("answer_tidy", fixed, why, trimmed or None)
+            if trimmed:
+                log.append({"kind": f"{why}: trimmed", "sentence": fixed[:300], "now": trimmed[:300]})
+                fixed = trimmed
+        elif why:
             log.append({"kind": why, "sentence": fixed[:300]})
             fixed = ""
         if fixed != old:
