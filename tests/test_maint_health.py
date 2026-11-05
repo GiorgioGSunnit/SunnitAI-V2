@@ -252,3 +252,54 @@ def test_queue_status_counts_documents_not_their_sidecars(tmp_path):
     assert mh.queue_status(str(tmp_path / "none"), str(tmp_path / "none")) == {
         "waiting": 0, "by_kind": {}, "failed": 0, "service": q["service"], "queue_dir_found": False}
 
+
+class _Out:
+    def __init__(self, stdout="", returncode=0, stderr=""):
+        self.stdout, self.returncode, self.stderr = stdout, returncode, stderr
+
+
+JOURNAL = """2026-11-05T13:14:38+0100 be2 python3[1]: 2026-11-05 13:14:38,250 INFO —   [4/4] done 2.3s — 65 nodes, 85 rels
+2026-11-05T13:15:55+0100 be2 python3[1]: 2026-11-05 13:15:55,377 WARNING — Chunk 4/6 structured attempt 1/2 timed out after 15s
+2026-11-05T13:15:56+0100 be2 python3[1]: 2026-11-05 13:15:56,000 WARNING — Chunk 4/6 structured attempt 2/2 failed: fallback to plain text
+2026-11-05T13:15:57+0100 be2 python3[1]: 2026-11-05 13:15:57,885 INFO —   [1/4] done 18.0s
+2026-11-05T13:16:07+0100 be2 python3[1]: 2026-11-05 13:16:07,118 INFO —   [4/4] done 2.1s — 16 nodes, 16 rels
+2026-11-05T11:00:01+0100 be2 python3[1]: 2026-11-05 11:00:01,000 ERROR — LLM call failed: 404 The model `qwen2.5-32b-awq` does not exist
+2026-11-05T11:00:02+0100 be2 python3[1]: 2026-11-05 11:00:02,000 ERROR — LLM call failed: 404 The model `qwen2.5-32b-awq` does not exist
+2026-11-05T11:00:03+0100 be2 python3[1]: 2026-11-05 11:00:03,000 WARNING — Moved to failed: snciv@sL0@a2026@n00001@tO.clean.pdf
+"""
+
+
+def test_ingest_journal_counts_documents_written_and_the_model_the_server_lacks():
+    calls = []
+
+    def runner(cmd, **kw):
+        calls.append(cmd)
+        return _Out(JOURNAL)
+    j = mh.ingest_journal("24 hours ago", runner)
+    assert calls[0][:4] == ["journalctl", "-u", "sunnitai-ingest", "--since"] and "24 hours ago" in calls[0]
+    assert j["found"] and j["written"] == 2 and j["last_written"] == "2026-11-05T13:16:07"
+    assert j["errors"] == 2 and j["model_missing"] == {"qwen2.5-32b-awq": 2}
+    assert j["chunk_timeouts"] == 1 and j["chunk_fallbacks"] == 1 and j["moved_to_failed"] == 1
+    assert mh.ingest_journal(runner=lambda *a, **k: _Out("", 1, "No journal files were found.")) == {
+        "found": False, "why": "No journal files were found."}
+
+    def no_journalctl(*a, **k):
+        raise FileNotFoundError("journalctl")
+    assert mh.ingest_journal(runner=no_journalctl) == {"found": False, "why": "FileNotFoundError"}
+
+
+def test_report_flags_the_missing_model_in_the_summary_and_the_page():
+    ingest = mh.ingest_journal(runner=lambda *a, **k: _Out(JOURNAL))
+    md, state, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0, ingest=ingest)
+    assert "queue 2 waiting / 0 failed · ingest 24 h: 2 written, 2 LLM model errors · suspected duplicates" in line
+    assert "- ingest journal (last 24 hours ago): 2 documents written, last at 2026-11-05T13:16:07; errors 2; " \
+           "chunk analyses timed out 1, fell back to plain text 1; moved to failed 1" in md
+    assert "**LLM model not found: qwen2.5-32b-awq (2 calls)**" in md and state["ingest"] == ingest
+    md, _, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0)             # journal not read: still fine
+    assert "ingest journal: not readable here (not read)" in md and "ingest 24 h" not in line
+    md, _, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0,
+                                  ingest={"found": True, "since": "24 hours ago", "written": 0, "last_written": None,
+                                          "errors": 0, "model_missing": {}, "chunk_timeouts": 0, "chunk_fallbacks": 0,
+                                          "moved_to_failed": 0})
+    assert "ingest 24 h: 0 written, 0 LLM model errors" in line and "LLM model not found" not in md
+

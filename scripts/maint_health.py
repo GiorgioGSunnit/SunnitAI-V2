@@ -40,7 +40,7 @@ import subprocess
 import sys
 import time
 from collections import Counter, defaultdict
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 KNOWN_TYPES = {"interpretation", "ccnl", "primary", "special", "legislation", "quarantine"}
 MAIN_CODES = ("Codice Civile", "Codice Penale", "Codice di procedura civile", "Codice di procedura penale",
@@ -182,6 +182,8 @@ def summary_line(n: dict, prev: Optional[dict]) -> str:
              f"rulings without CITES {n['rulings_without_cites']:,}{delta('rulings_without_cites')}",
              f"queue {n['queue_waiting']:,} waiting / {n['queue_failed']:,} failed",
              f"suspected duplicates {n['duplicates']:,} (not touched)"]
+    if n.get("ingest_written") is not None:
+        parts.insert(8, f"ingest 24 h: {n['ingest_written']:,} written, {n['ingest_model_errors']:,} LLM model errors")
     if n.get("rulings_without_card") is not None:
         parts.insert(7, f"rulings without card {n['rulings_without_card']:,}{delta('rulings_without_card')}")
     if n.get("fed_today"):
@@ -246,6 +248,45 @@ def queue_status(queue_dir: str, failed_dir: str) -> dict:
     return {"waiting": len(files), "by_kind": dict(kinds),
             "failed": sum(1 for f in failed if os.path.isfile(f) and not f.lower().endswith(".name")),
             "service": service, "queue_dir_found": os.path.isdir(queue_dir)}
+
+
+MODEL_MISSING = re.compile(r"The model `([^`]+)` does not exist")
+JOURNAL_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
+
+
+def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.run) -> dict:
+    """What the ingest service did lately, from its journal: documents written, LLM calls that failed because the
+    server no longer serves the model named in its .env (every file of 2-5 Nov 2026 went through that way, unseen),
+    chunk analyses that timed out or fell back to plain text, files moved to the failed folder. Counts only."""
+    try:
+        out = runner(["journalctl", "-u", "sunnitai-ingest", "--since", since, "--no-pager", "-o", "short-iso"],
+                     capture_output=True, text=True, timeout=60)
+    except Exception as exc:                                   # no journalctl here (Windows, a container)
+        return {"found": False, "why": type(exc).__name__}
+    if out.returncode != 0:
+        return {"found": False, "why": (out.stderr or "").strip()[:120] or f"exit {out.returncode}"}
+    written = errors = timeouts = fallbacks = failed = 0
+    models, last = Counter(), None
+    for line in out.stdout.splitlines():
+        if "[4/4] done" in line:
+            written += 1
+            m = JOURNAL_TIME.match(line)
+            last = m.group(1) if m else last
+        if re.search(r"\bERROR\b", line):
+            errors += 1
+        m = MODEL_MISSING.search(line)
+        if m:
+            models[m.group(1)] += 1
+        if "structured attempt" in line:
+            if "timed out" in line:
+                timeouts += 1
+            elif "failed" in line:
+                fallbacks += 1
+        if "Moved to failed" in line:
+            failed += 1
+    return {"found": True, "since": since, "written": written, "last_written": last, "errors": errors,
+            "model_missing": dict(models), "chunk_timeouts": timeouts, "chunk_fallbacks": fallbacks,
+            "moved_to_failed": failed}
 
 
 def log_status(paths: List[str]) -> List[dict]:
@@ -445,10 +486,12 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
                  cards: Optional[Set[str]], prev: Optional[dict], took: float,
                  by_design: Optional[Set[str]] = None,
                  missing: Optional[List[Tuple[str, int]]] = None,
-                 batches: Optional[dict] = None) -> Tuple[str, dict, str]:
+                 batches: Optional[dict] = None, ingest: Optional[dict] = None) -> Tuple[str, dict, str]:
     """by_design: the rulings left without a card on purpose (civil closures, "estinto" in step 1's links).
-    missing: missing_articles(), the citations with no article in our codes. batches: batch_status()."""
+    missing: missing_articles(), the citations with no article in our codes. batches: batch_status().
+    ingest: ingest_journal(), the ingest service's last 24 hours."""
     by_design = by_design or set()
+    ingest = ingest or {"found": False, "why": "not read"}
     batches = batches or {"found": False, "batches": {}, "staging_left": None, "fed_today": 0}
     prev_gaps = (prev or {}).get("gaps", {})
     gaps_new = {code: sorted(set(g_) - set(prev_gaps.get(code, g_))) for code, g_ in g["numbering_gaps_by_code"].items()}
@@ -464,6 +507,8 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
          "duplicates": sum(len(v) for v in g["duplicates"].values()),
          "rulings_without_card": None,
          "fed_today": batches["fed_today"],
+         "ingest_written": ingest["written"] if ingest["found"] else None,
+         "ingest_model_errors": sum(ingest["model_missing"].values()) if ingest["found"] else None,
          "rulings_by_year": {y: k for y, k in (g.get("rulings_by_year") or {}).items() if y != "unknown"}}
     card_rows = {}
     if cards is not None:
@@ -526,6 +571,17 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
            f"- queue: {queue['waiting']:,} files waiting " + (str(queue['by_kind']) if queue['by_kind'] else "")
            + f"; failed {queue['failed']:,}; service sunnitai-ingest {queue['service']}"
            + ("" if queue["queue_dir_found"] else " (queue folder not found on this machine)")]
+    if ingest["found"]:
+        md.append(f"- ingest journal (last {ingest['since']}): {ingest['written']:,} documents written"
+                  + (f", last at {ingest['last_written']}" if ingest["last_written"] else "")
+                  + f"; errors {ingest['errors']:,}; chunk analyses timed out {ingest['chunk_timeouts']:,}, "
+                  f"fell back to plain text {ingest['chunk_fallbacks']:,}; moved to failed {ingest['moved_to_failed']:,}")
+        if ingest["model_missing"]:
+            md.append("- **LLM model not found: " + ", ".join(f"{m} ({k:,} calls)" for m, k in ingest["model_missing"].items())
+                      + "** -- the ingest's .env names a model the server no longer serves: every document since then "
+                      "was stored without its analysis (LLM_MODEL / LLM_FALLBACK_MODEL in /opt/sunnitai-be/.env)")
+    else:
+        md.append(f"- ingest journal: not readable here ({ingest.get('why', '?')})")
     for l in logs:
         md.append(f"- {l['log']}: " + (f"written {l['hours_since_write']} h ago; last line: {l['last_line']}"
                                         if l["found"] else "not found"))
@@ -545,7 +601,7 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
     state = {"date": dt.date.today().isoformat(), "numbers": n, "gaps": g["numbering_gaps_by_code"],
              "date_only_by_doc": g["date_only_by_doc"], "rulings_by_branch": g["rulings_by_branch"],
              "cards": card_rows, "queue": queue, "missing_articles": dict(missing or []),
-             "batches": batches["batches"]}
+             "batches": batches["batches"], "ingest": ingest}
     return "\n".join(md) + "\n", state, line
 
 
@@ -599,7 +655,8 @@ def main() -> int:
                                    card_ids([x for x in args.cards.split(",") if x]),
                                    previous_state(args.dir, today), time.time() - t0, closures(args.links),
                                    missing_articles(args.unresolved),
-                                   batch_status(args.manifest, args.staging, dt.date.today().isoformat()))
+                                   batch_status(args.manifest, args.staging, dt.date.today().isoformat()),
+                                   ingest_journal())
     for name, content in ((f"health_{today}.md", md), (f"summary_{today}.txt", line + "\n")):
         with open(os.path.join(args.dir, name), "w", encoding="utf-8") as fh:
             fh.write(content)
