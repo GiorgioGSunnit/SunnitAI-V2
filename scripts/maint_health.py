@@ -242,7 +242,9 @@ def queue_status(queue_dir: str, failed_dir: str) -> dict:
                                  timeout=10).stdout.strip() or "unknown"
     except Exception:
         service = "unknown"
-    return {"waiting": len(files), "by_kind": dict(kinds), "failed": sum(1 for f in failed if os.path.isfile(f)),
+    # a failed ruling sits there with its .name sidecar: count the documents, as the feeder does, not both files
+    return {"waiting": len(files), "by_kind": dict(kinds),
+            "failed": sum(1 for f in failed if os.path.isfile(f) and not f.lower().endswith(".name")),
             "service": service, "queue_dir_found": os.path.isdir(queue_dir)}
 
 

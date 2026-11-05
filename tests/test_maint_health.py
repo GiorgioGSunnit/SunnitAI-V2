@@ -235,3 +235,20 @@ def test_report_shows_batches_and_rulings_by_year_with_the_nights_change():
     md, _, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0)      # no manifest, no years: still fine
     assert "No upload manifest here" in md and "fed to the queue" not in line
 
+
+def test_queue_status_counts_documents_not_their_sidecars(tmp_path):
+    queue, failed = tmp_path / "upload", tmp_path / "failed"
+    (queue / "sub").mkdir(parents=True)
+    failed.mkdir()
+    (queue / "snpen@s10@a2025@n00001@tS.clean.pdf").write_bytes(b"x")
+    (queue / "snpen@s10@a2025@n00001@tS.clean.name").write_bytes(b"x")
+    (queue / "sub" / "snciv_s10_a2025_n00001_tO.pdf").write_bytes(b"x")
+    for stem in ("snpen@s10@a2025@n00007@tS.clean", "snpen@s10@a2025@n00009@tS.clean"):
+        (failed / f"{stem}.pdf").write_bytes(b"x")
+        (failed / f"{stem}.name").write_bytes(b"x")
+    (failed / "altro.docx").write_bytes(b"x")
+    q = mh.queue_status(str(queue), str(failed))
+    assert q["waiting"] == 2 and q["by_kind"] == {"penale": 1, "civile": 1} and q["failed"] == 3
+    assert mh.queue_status(str(tmp_path / "none"), str(tmp_path / "none")) == {
+        "waiting": 0, "by_kind": {}, "failed": 0, "service": q["service"], "queue_dir_found": False}
+
