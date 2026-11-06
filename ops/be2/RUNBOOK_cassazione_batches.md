@@ -54,21 +54,42 @@ md5sum /opt/v2tools/maint_feed.py ~/maint_feed.py /opt/v2tools/maint_health.py ~
 Verify: the next 05:30 report has a "disk:" line and "service sunnitai-ingest active" in the night-jobs section.
 Rollback: restore the health `.bak`; the feeder file is inert until its crontab line exists.
 
-## 3. Second ingest worker (this week; it idles until Monday)
+## 3a. Lever 3: three edits in the ingest (6 Nov, `ops/be2/patch_ingest_lever3.py`)
 
+The script checks both files against the 6 Nov copy's checksums, backs them up with a dated suffix, and refuses
+if anything differs. Edits: first chunk attempt 60 s instead of 15 (the retry 120), the per-document chunk burst
+becomes the setting `ANALISI_CHUNK_CONCURRENCY` (default 50, unchanged today), the 5 s sleep per file becomes 0.5 s.
 ```
-# on be2, as root
-ls -ld /opt/sunnitai-be/document_upload                           # owner and mode to copy
+scp ops/be2/patch_ingest_lever3.py sunnit@185.199.24.31:~/
+# be2: queue must be empty (ls /opt/sunnitai-be/document_upload | grep -c pdf -> 0)
+sudo python3 ~/patch_ingest_lever3.py
+sudo /opt/sunnitai-be/venv/bin/python3 -m py_compile /opt/sunnitai-be/batch_ingest.py /opt/sunnitai-be/src/be/src/lex_package/analisi_parallel.py && echo compiles
+sudo systemctl restart sunnitai-ingest && sleep 3 && systemctl is-active sunnitai-ingest && journalctl -u sunnitai-ingest -n 2 --no-pager
+```
+Verify: "active" and the journal's last line says "Batch ingest daemon starting — watching /opt/sunnitai-be/document_upload".
+On Monday's first files: no "timed out after 15s" lines any more (`journalctl -u sunnitai-ingest --since "1 hour ago" | grep -c "timed out"`).
+Rollback: `sudo python3 ~/patch_ingest_lever3.py --undo && sudo systemctl restart sunnitai-ingest`.
+
+## 3b. Lever 2: second ingest worker (it idles until Monday)
+
+The unit is derived from the existing one, so User, WorkingDirectory and Restart are copied, not guessed; the
+only differences are the description and a second EnvironmentFile read after .env.
+```
+scp ops/be2/env.worker2 sunnit@185.199.24.31:~/
+# be2
 sudo mkdir -p /opt/sunnitai-be/document_upload_2 && sudo chown --reference=/opt/sunnitai-be/document_upload /opt/sunnitai-be/document_upload_2 && sudo chmod --reference=/opt/sunnitai-be/document_upload /opt/sunnitai-be/document_upload_2
 sudo cp ~/env.worker2 /opt/sunnitai-be/.env.worker2 && sudo chown --reference=/opt/sunnitai-be/.env /opt/sunnitai-be/.env.worker2 && sudo chmod 600 /opt/sunnitai-be/.env.worker2
-systemctl cat sunnitai-ingest | grep -vE "^#"                      # compare User/Group/WorkingDirectory/After with the new unit
-sudo cp ~/sunnitai-ingest-2.service /etc/systemd/system/ && sudo systemctl daemon-reload
-sudo systemctl enable --now sunnitai-ingest-2
-systemctl status sunnitai-ingest-2 --no-pager | head -5; journalctl -u sunnitai-ingest-2 -n 3 --no-pager
+sudo touch /var/log/sunnitai-ingest-2.log && sudo chown --reference=/var/log/sunnitai-ingest.log /var/log/sunnitai-ingest-2.log
+UNIT=$(systemctl show -p FragmentPath --value sunnitai-ingest); echo "$UNIT"
+sudo cp "$UNIT" /etc/systemd/system/sunnitai-ingest-2.service
+sudo sed -i -e 's/^Description=.*/Description=SunnitAI batch ingest, worker 2 (queue document_upload_2)/' -e '/^EnvironmentFile=\/opt\/sunnitai-be\/\.env$/a EnvironmentFile=/opt/sunnitai-be/.env.worker2' /etc/systemd/system/sunnitai-ingest-2.service
+systemctl cat sunnitai-ingest-2 | grep -vE "^#"                    # two EnvironmentFile lines, .env first
+sudo systemctl daemon-reload && sudo systemctl enable --now sunnitai-ingest-2 && sleep 3
+systemctl is-active sunnitai-ingest-2; journalctl -u sunnitai-ingest-2 -n 2 --no-pager
 ```
-Verify: the journal's first line says "watching /opt/sunnitai-be/document_upload_2" (not the first queue).
+Verify: the journal's last line says "watching /opt/sunnitai-be/document_upload_2" (not the first queue).
 If it says the first queue, stop it at once (`sudo systemctl disable --now sunnitai-ingest-2`): the override file
-was not read.
+was not read. Both workers now idle, polling empty folders every 30 s, until the feeder fills them.
 
 ## 4. Monday: the batch lands
 
