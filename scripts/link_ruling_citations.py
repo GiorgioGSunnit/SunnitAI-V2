@@ -22,9 +22,17 @@ footer ("art. 606, comma 1, lett. b) ed e), cod. proc. pen."); the edges only th
 finds carry rule "past_lists": the summary counts them, --undo --only-past-lists --write
 deletes just them.
 
+Incremental nights (6 Nov 2026, for the 35k batches): with --write every ruling read gets
+Document.cites_linked_at = the pass's time, and --new-only reads only the rulings without
+that stamp, so a night costs the new rulings, not the whole graph (45k = 17 min; 400k would
+be 3 h). The first --write pass after this change stamps everything; --undo also clears the
+stamps, so the next full pass re-links all. Rulings whose sections are not there yet are
+not stamped and are read again the next night.
+
 Run on be2 from the app folder, with exp_ruling_links.py next to this file:
     cd /opt/chatbot && venv/bin/python /tmp/link_ruling_citations.py            # dry run
     ... --write
+    ... --write --new-only                                                   # the nightly line
     ... --undo --write
 Only counts are printed, never ruling text. --out gets one JSON line per unresolved
 citation (ruling id, section id, citation, reason).
@@ -48,6 +56,14 @@ CREATED_BY = "link_ruling_citations"
 # Edges only the 29 Oct rule finds (the code past a list, an ordinal or a page footer: exp_ruling_links.code_of_run)
 # carry rule: PAST_LISTS, so the dry run counts them and --undo --only-past-lists removes just them.
 PAST_LISTS = "past_lists"
+STAMP = "cites_linked_at"   # Document property set by --write: this ruling's sections were read for citations
+
+
+def ruling_query(new_only: bool, limit: int = 0) -> str:
+    """The rulings a pass reads: every interpretation Document, or with new_only only those not yet stamped."""
+    return ("MATCH (d:Document {document_type: 'interpretation'})"
+            + (f" WHERE d.{STAMP} IS NULL" if new_only else "")
+            + " RETURN d.id AS id ORDER BY id" + (" LIMIT $n" if limit else ""))
 CODE_PREFIXES = {**_CODE_PREFIXES, "Cost.": "Costituzione"}
 
 
@@ -99,6 +115,8 @@ def main() -> None:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--write", action="store_true", help="create the edges (default: dry run)")
     p.add_argument("--undo", action="store_true", help=f"delete the CITES edges created_by '{CREATED_BY}' (with --write)")
+    p.add_argument("--new-only", action="store_true",
+                   help=f"read only the rulings without Document.{STAMP} (set by every --write pass)")
     p.add_argument("--only-past-lists", action="store_true",
                    help=f"with --undo: only the edges with rule '{PAST_LISTS}' (the 29 Oct rule's)")
     p.add_argument("--batch", type=int, default=50, help="rulings per read")
@@ -132,6 +150,16 @@ def main() -> None:
                 time.sleep(0.2)
             print(f"Deleted {total:,} CITES edges created by {CREATED_BY}"
                   + (f" with rule {PAST_LISTS}." if args.only_past_lists else "."))
+            if not args.only_past_lists:
+                cleared = 0
+                while True:
+                    n = session.run(f"MATCH (d:Document) WHERE d.{STAMP} IS NOT NULL WITH d LIMIT $n "
+                                    f"REMOVE d.{STAMP} RETURN count(*) AS c", n=args.tx_edges).single()["c"]
+                    cleared += n
+                    if not n:
+                        break
+                    time.sleep(0.2)
+                print(f"Cleared {STAMP} on {cleared:,} rulings: the next --write pass reads them all again.")
             return
 
         codes = Codes(session)
@@ -140,12 +168,12 @@ def main() -> None:
             listing = "; ".join(f"{name} [{doc_id}] {len(names):,} sections" for doc_id, name, names in docs)
             print(f"  {code:7} {listing or 'NONE'}")
 
-        query = "MATCH (d:Document {document_type: 'interpretation'}) RETURN d.id AS id ORDER BY id"
-        ids = [r["id"] for r in session.run(query + (" LIMIT $n" if args.limit else ""), n=args.limit)]
-        print(f"\nReading {len(ids):,} rulings, {args.batch} per query"
-              + ("" if args.write else " (dry run: nothing is written)"), file=sys.stderr)
+        ids = [r["id"] for r in session.run(ruling_query(args.new_only, args.limit), n=args.limit)]
+        print(f"\nReading {len(ids):,} rulings" + (f" without {STAMP}" if args.new_only else "")
+              + f", {args.batch} per query" + ("" if args.write else " (dry run: nothing is written)"),
+              file=sys.stderr)
 
-        sections = no_text = bare = written = 0
+        sections = no_text = bare = written = stamped = 0
         rulings_citing, rulings_linked = set(), set()
         how, reasons, per_code, per_code_ok = Counter(), Counter(), Counter(), Counter()
         top_ok, top_missing, past_lists = Counter(), Counter(), Counter()
@@ -193,6 +221,12 @@ def main() -> None:
                             "UNWIND $rows AS row MATCH (a:Section {id: row.a}) MATCH (b:Section {id: row.b}) "
                             "MERGE (a)-[r:CITES]->(b) SET r += row.props RETURN count(r) AS c",
                             rows=part).single()["c"], edges[i:i + args.tx_edges])
+                    # stamp the rulings whose sections were read (a ruling still being written has none yet)
+                    read_docs = sorted({row["doc"] for row in rows})
+                    if read_docs:
+                        stamped += (getattr(session, "execute_write", None) or session.write_transaction)(lambda tx, docs: tx.run(
+                            f"MATCH (d:Document) WHERE d.id IN $ids SET d.{STAMP} = datetime() RETURN count(d) AS c",
+                            ids=docs).single()["c"], read_docs)
                 done = min(start + args.batch, len(ids))
                 print(f"  {done:,}/{len(ids):,} rulings, {time.time() - t0:.0f}s", file=sys.stderr)
 
@@ -214,7 +248,7 @@ def main() -> None:
     for c, n in top_missing.most_common(args.top):
         print(f"  {n:>7,}  {c}")
     if args.write:
-        print(f"CITES edges written (MERGE): {written:,}")
+        print(f"CITES edges written (MERGE): {written:,}; rulings stamped {STAMP}: {stamped:,}")
     print(f"Each unresolved citation: {args.out}")
 
 
