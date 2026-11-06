@@ -249,8 +249,10 @@ def test_queue_status_counts_documents_not_their_sidecars(tmp_path):
     (failed / "altro.docx").write_bytes(b"x")
     q = mh.queue_status(str(queue), str(failed))
     assert q["waiting"] == 2 and q["by_kind"] == {"penale": 1, "civile": 1} and q["failed"] == 3
-    assert mh.queue_status(str(tmp_path / "none"), str(tmp_path / "none")) == {
+    none = mh.queue_status(str(tmp_path / "none"), str(tmp_path / "none"))
+    assert {k: none[k] for k in ("waiting", "by_kind", "failed", "service", "queue_dir_found")} == {
         "waiting": 0, "by_kind": {}, "failed": 0, "service": q["service"], "queue_dir_found": False}
+    assert none["per_queue"] == {"none": None} and none["services"] == {"sunnitai-ingest": q["service"]}
 
 
 class _Out:
@@ -291,7 +293,9 @@ def test_ingest_journal_counts_documents_written_and_the_model_the_server_lacks(
 def test_report_flags_the_missing_model_in_the_summary_and_the_page():
     ingest = mh.ingest_journal(runner=lambda *a, **k: _Out(JOURNAL))
     md, state, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0, ingest=ingest)
-    assert "queue 2 waiting / 0 failed · ingest 24 h: 2 written, 2 LLM model errors · suspected duplicates" in line
+    assert ("queue 2 waiting / 0 failed · ingest 24 h: 2 written, 2 LLM model errors, 1 chunk fallbacks · "
+            "suspected duplicates") in line
+    assert "**1 chunk analyses fell back to plain text**" in md
     assert "- ingest journal (last 24 hours ago): 2 documents written, last at 2026-11-05T13:16:07; errors 2; " \
            "chunk analyses timed out 1, fell back to plain text 1; moved to failed 1" in md
     assert "**LLM model not found: qwen2.5-32b-awq (2 calls)**" in md and state["ingest"] == ingest
@@ -303,3 +307,70 @@ def test_report_flags_the_missing_model_in_the_summary_and_the_page():
                                           "moved_to_failed": 0})
     assert "ingest 24 h: 0 written, 0 LLM model errors" in line and "LLM model not found" not in md
 
+
+
+def test_queue_status_counts_several_queue_folders(tmp_path):
+    q1, q2 = tmp_path / "document_upload", tmp_path / "document_upload_2"
+    q1.mkdir(), q2.mkdir()
+    for folder, names in ((q1, ("snpen_a.pdf", "snpen_b.pdf")), (q2, ("snciv_c.pdf",))):
+        for n in names:
+            (folder / n).write_bytes(b"x")
+    q = mh.queue_status(f"{q1},{q2}", str(tmp_path / "failed"), units=("sunnitai-ingest", "sunnitai-ingest-2"))
+    assert q["waiting"] == 3 and q["per_queue"] == {"document_upload": 2, "document_upload_2": 1}
+    assert set(q["services"]) == {"sunnitai-ingest", "sunnitai-ingest-2"} and q["queue_dir_found"]
+
+
+def test_ingest_journal_reads_every_unit_it_is_given():
+    seen = {}
+
+    def runner(cmd, **kw):
+        seen["cmd"] = cmd
+        return _Out(JOURNAL)
+    j = mh.ingest_journal(runner=runner, units=("sunnitai-ingest", "sunnitai-ingest-2"))
+    assert seen["cmd"][:5] == ["journalctl", "-u", "sunnitai-ingest", "-u", "sunnitai-ingest-2"]
+    assert j["found"] and j["written"] == 2 and j["chunk_fallbacks"] == 1
+
+
+def test_feeder_state_reads_the_feeder_json_or_says_it_is_missing(tmp_path):
+    assert mh.feeder_state(str(tmp_path / "none.json")) == {"found": False}
+    (tmp_path / "bad.json").write_text("{not json", encoding="utf-8")
+    assert mh.feeder_state(str(tmp_path / "bad.json")) == {"found": False, "why": "JSONDecodeError"}
+    (tmp_path / "feed_state.json").write_text(
+        '{"time": "2026-11-10T08:00:00Z", "batch": "cass_batch1", "paused": false, "fed": 40, "left": 34960, '
+        '"queues": {"/opt/sunnitai-be/document_upload": 100}, "already_fed": 2, "failed": 11}', encoding="utf-8")
+    st = mh.feeder_state(str(tmp_path / "feed_state.json"))
+    assert st["found"] and st["left"] == 34960 and st["fed"] == 40 and st["already_fed"] == 2
+
+
+def test_disk_status_gives_free_space_and_the_store_size(tmp_path):
+    assert mh.disk_status(str(tmp_path / "none")) == {"found": False}
+    d = mh.disk_status(str(tmp_path), runner=lambda cmd, **kw: _Out("103000000000\t/var/lib/neo4j/data\n"))
+    assert d["found"] and d["free_gb"] > 0 and d["total_gb"] >= d["free_gb"] and d["store_gb"] == 103.0
+    d = mh.disk_status(str(tmp_path), runner=lambda cmd, **kw: (_ for _ in ()).throw(TimeoutError()))
+    assert d["found"] and d["store_gb"] is None                               # du too slow: free space still there
+
+
+def test_report_shows_disk_feeder_and_flags_a_stalled_ingest_and_a_full_disk():
+    g = GRAPH
+    queue = {"waiting": 150, "by_kind": {"penale": 150}, "failed": 0, "service": "active", "queue_dir_found": True,
+             "per_queue": {"document_upload": 100, "document_upload_2": 50},
+             "services": {"sunnitai-ingest": "active", "sunnitai-ingest-2": "failed"}}
+    ingest = {"found": True, "since": "24 hours ago", "written": 0, "last_written": None, "errors": 0,
+              "model_missing": {}, "chunk_timeouts": 0, "chunk_fallbacks": 0, "moved_to_failed": 0}
+    feeder = {"found": True, "time": "2026-11-10T08:00:00Z", "batch": "cass_batch1", "paused": True, "fed": 0,
+              "left": 34960, "queues": {}, "already_fed": 0, "failed": 11}
+    disk = {"found": True, "free_gb": 31.5, "total_gb": 334.0, "store_gb": 140.2}
+    md, state, line = mh.build_report(g, queue, [], (None, {}), None, None, 1.0, ingest=ingest, feeder=feeder,
+                                      disk=disk, min_free_gb=40)
+    assert "ingest 24 h: 0 written, 0 LLM model errors, 0 chunk fallbacks · disk free 32 GB (store 140 GB)" in line
+    assert line.endswith("feeder: 34,960 left PAUSED")
+    assert "(document_upload 100, document_upload_2 50); failed 0; service sunnitai-ingest active, service sunnitai-ingest-2 failed" in md
+    assert "**nothing written in the last 24 hours ago while 150 files wait**" in md
+    assert "**disk below 40 GB free**" in md
+    assert "- feeder (maint_feed.py, last run 2026-11-10T08:00:00Z, batch cass_batch1): PAUSED; fed 0 at that run, 34960 left" in md
+    assert state["feeder"]["left"] == 34960 and state["disk"]["free_gb"] == 31.5
+    # a healthy night: no bold flags
+    ingest["written"], disk["free_gb"], feeder["paused"] = 1400, 160.0, False
+    md, _, line = mh.build_report(g, queue, [], (None, {}), None, None, 1.0, ingest=ingest, feeder=feeder, disk=disk)
+    assert "**" not in md.split("## Ingestion queue")[1].split("## Upload batches")[0]
+    assert line.endswith("feeder: 34,960 left")

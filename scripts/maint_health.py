@@ -36,6 +36,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -183,7 +184,12 @@ def summary_line(n: dict, prev: Optional[dict]) -> str:
              f"queue {n['queue_waiting']:,} waiting / {n['queue_failed']:,} failed",
              f"suspected duplicates {n['duplicates']:,} (not touched)"]
     if n.get("ingest_written") is not None:
-        parts.insert(8, f"ingest 24 h: {n['ingest_written']:,} written, {n['ingest_model_errors']:,} LLM model errors")
+        parts.insert(8, f"ingest 24 h: {n['ingest_written']:,} written, {n['ingest_model_errors']:,} LLM model errors, "
+                        f"{n['ingest_fallbacks']:,} chunk fallbacks")
+    if n.get("disk_free_gb") is not None:
+        parts.insert(9, f"disk free {n['disk_free_gb']:.0f} GB" + (f" (store {n['store_gb']:.0f} GB)" if n.get("store_gb") else ""))
+    if n.get("feeder_left") is not None:
+        parts.append(f"feeder: {n['feeder_left']:,} left" + (" PAUSED" if n.get("feeder_paused") else ""))
     if n.get("rulings_without_card") is not None:
         parts.insert(7, f"rulings without card {n['rulings_without_card']:,}{delta('rulings_without_card')}")
     if n.get("fed_today"):
@@ -235,31 +241,73 @@ def busy_job() -> Optional[str]:
     return running_job(out.splitlines(), os.getpid())
 
 
-def queue_status(queue_dir: str, failed_dir: str) -> dict:
-    files = glob.glob(os.path.join(queue_dir, "**", "*.pdf"), recursive=True) if os.path.isdir(queue_dir) else []
+def queue_status(queue_dir: str, failed_dir: str, units: Iterable[str] = ("sunnitai-ingest",)) -> dict:
+    """The ingest queues (comma-separated folders, one per ingest instance since the 35k batches), the failed
+    folder, and each ingest unit's state."""
+    dirs = [d for d in queue_dir.split(",") if d]
+    files, per_queue = [], {}
+    for d in dirs:
+        found = glob.glob(os.path.join(d, "**", "*.pdf"), recursive=True) if os.path.isdir(d) else []
+        per_queue[os.path.basename(d.rstrip("/")) or d] = len(found) if os.path.isdir(d) else None
+        files += found
     failed = glob.glob(os.path.join(failed_dir, "**", "*"), recursive=True) if os.path.isdir(failed_dir) else []
     kinds = Counter("penale" if "snpen" in f else "civile" if "snciv" in f else "other" for f in files)
-    try:
-        service = subprocess.run(["systemctl", "is-active", "sunnitai-ingest"], capture_output=True, text=True,
-                                 timeout=10).stdout.strip() or "unknown"
-    except Exception:
-        service = "unknown"
+    services = {}
+    for unit in units:
+        try:
+            services[unit] = subprocess.run(["systemctl", "is-active", unit], capture_output=True, text=True,
+                                            timeout=10).stdout.strip() or "unknown"
+        except Exception:
+            services[unit] = "unknown"
     # a failed ruling sits there with its .name sidecar: count the documents, as the feeder does, not both files
-    return {"waiting": len(files), "by_kind": dict(kinds),
+    return {"waiting": len(files), "by_kind": dict(kinds), "per_queue": per_queue,
             "failed": sum(1 for f in failed if os.path.isfile(f) and not f.lower().endswith(".name")),
-            "service": service, "queue_dir_found": os.path.isdir(queue_dir)}
+            "service": services.get("sunnitai-ingest", "unknown"), "services": services,
+            "queue_dir_found": os.path.isdir(dirs[0]) if dirs else False}
+
+
+def feeder_state(path: str) -> dict:
+    """What maint_feed.py wrote at its last run (JSON): fed, left, queues, paused, time."""
+    if not os.path.isfile(path):
+        return {"found": False}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            st = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return {"found": False, "why": type(exc).__name__}
+    st["found"] = True
+    return st
+
+
+def disk_status(data_dir: str, runner: Callable = subprocess.run) -> dict:
+    """Free space on the disk holding the Neo4j data folder, and the folder's size (du, up to five minutes)."""
+    if not os.path.isdir(data_dir):
+        return {"found": False}
+    total, used, free = shutil.disk_usage(data_dir)
+    out = {"found": True, "free_gb": round(free / 1e9, 1), "total_gb": round(total / 1e9, 1), "store_gb": None}
+    try:
+        r = runner(["du", "-sb", data_dir], capture_output=True, text=True, timeout=300)
+        if r.returncode == 0 and r.stdout.strip():
+            out["store_gb"] = round(int(r.stdout.split()[0]) / 1e9, 1)
+    except Exception:
+        pass
+    return out
 
 
 MODEL_MISSING = re.compile(r"The model `([^`]+)` does not exist")
 JOURNAL_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
 
 
-def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.run) -> dict:
+def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.run,
+                   units: Iterable[str] = ("sunnitai-ingest",)) -> dict:
     """What the ingest service did lately, from its journal: documents written, LLM calls that failed because the
     server no longer serves the model named in its .env (every file of 2-5 Nov 2026 went through that way, unseen),
     chunk analyses that timed out or fell back to plain text, files moved to the failed folder. Counts only."""
     try:
-        out = runner(["journalctl", "-u", "sunnitai-ingest", "--since", since, "--no-pager", "-o", "short-iso"],
+        cmd = ["journalctl"]
+        for unit in units:                                      # an unknown unit adds nothing, no error
+            cmd += ["-u", unit]
+        out = runner(cmd + ["--since", since, "--no-pager", "-o", "short-iso"],
                      capture_output=True, text=True, timeout=60)
     except Exception as exc:                                   # no journalctl here (Windows, a container)
         return {"found": False, "why": type(exc).__name__}
@@ -486,12 +534,15 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
                  cards: Optional[Set[str]], prev: Optional[dict], took: float,
                  by_design: Optional[Set[str]] = None,
                  missing: Optional[List[Tuple[str, int]]] = None,
-                 batches: Optional[dict] = None, ingest: Optional[dict] = None) -> Tuple[str, dict, str]:
+                 batches: Optional[dict] = None, ingest: Optional[dict] = None, feeder: Optional[dict] = None,
+                 disk: Optional[dict] = None, min_free_gb: float = 40.0) -> Tuple[str, dict, str]:
     """by_design: the rulings left without a card on purpose (civil closures, "estinto" in step 1's links).
     missing: missing_articles(), the citations with no article in our codes. batches: batch_status().
-    ingest: ingest_journal(), the ingest service's last 24 hours."""
+    ingest: ingest_journal(), the ingest service's last 24 hours. feeder: feeder_state(). disk: disk_status()."""
     by_design = by_design or set()
     ingest = ingest or {"found": False, "why": "not read"}
+    feeder = feeder or {"found": False}
+    disk = disk or {"found": False}
     batches = batches or {"found": False, "batches": {}, "staging_left": None, "fed_today": 0}
     prev_gaps = (prev or {}).get("gaps", {})
     gaps_new = {code: sorted(set(g_) - set(prev_gaps.get(code, g_))) for code, g_ in g["numbering_gaps_by_code"].items()}
@@ -509,6 +560,10 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
          "fed_today": batches["fed_today"],
          "ingest_written": ingest["written"] if ingest["found"] else None,
          "ingest_model_errors": sum(ingest["model_missing"].values()) if ingest["found"] else None,
+         "ingest_fallbacks": ingest["chunk_fallbacks"] if ingest["found"] else None,
+         "disk_free_gb": disk.get("free_gb"), "store_gb": disk.get("store_gb"),
+         "feeder_left": feeder.get("left") if feeder["found"] else None,
+         "feeder_paused": bool(feeder.get("paused")) if feeder["found"] else None,
          "rulings_by_year": {y: k for y, k in (g.get("rulings_by_year") or {}).items() if y != "unknown"}}
     card_rows = {}
     if cards is not None:
@@ -567,10 +622,33 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
     for reason, groups in g["duplicates"].items():
         md.append(f"- {reason}: {len(groups)}")
         md += [f"  - {' | '.join(names[:4])}" for names in groups[:15]]
+    per_queue = queue.get("per_queue") or {}
+    services = queue.get("services") or {"sunnitai-ingest": queue["service"]}
     md += ["", "## Ingestion queue and night jobs", "",
            f"- queue: {queue['waiting']:,} files waiting " + (str(queue['by_kind']) if queue['by_kind'] else "")
-           + f"; failed {queue['failed']:,}; service sunnitai-ingest {queue['service']}"
+           + (" (" + ", ".join(f"{q} {'missing' if k is None else k}" for q, k in per_queue.items()) + ")"
+              if len(per_queue) > 1 else "")
+           + f"; failed {queue['failed']:,}; " + ", ".join(f"service {u} {st}" for u, st in services.items())
            + ("" if queue["queue_dir_found"] else " (queue folder not found on this machine)")]
+    if ingest["found"] and ingest["chunk_fallbacks"]:
+        md.append(f"- **{ingest['chunk_fallbacks']:,} chunk analyses fell back to plain text** -- the LLM server did not "
+                  "answer within the ingest's 15 s + 60 s; those sections were stored without their analysis. With two "
+                  "ingest workers or the cards running alongside, this is the number that says the GPU is oversubscribed.")
+    if ingest["found"] and not ingest["written"] and queue["waiting"]:
+        md.append(f"- **nothing written in the last {ingest['since']} while {queue['waiting']:,} files wait** -- "
+                  "the ingest is stalled: check the service and its journal")
+    if disk["found"]:
+        md.append(f"- disk: {disk['free_gb']:.0f} GB free of {disk['total_gb']:.0f}"
+                  + (f"; Neo4j data folder {disk['store_gb']:.0f} GB" if disk.get("store_gb") else ""))
+        if disk["free_gb"] < min_free_gb:
+            md.append(f"- **disk below {min_free_gb:.0f} GB free** -- pause the feeder (touch /var/log/maint/feed.pause) "
+                      "before Neo4j runs out of room")
+    if feeder["found"]:
+        md.append(f"- feeder (maint_feed.py, last run {feeder.get('time', '?')}, batch {feeder.get('batch', '?')}): "
+                  + ("PAUSED; " if feeder.get("paused") else "")
+                  + f"fed {feeder.get('fed', 0):,} at that run, {feeder.get('left', '?')} left in staging"
+                  + (f", {feeder['already_fed']:,} already-fed files set aside" if feeder.get("already_fed") else "")
+                  + (f" -- {feeder['error']}" if feeder.get("error") else ""))
     if ingest["found"]:
         md.append(f"- ingest journal (last {ingest['since']}): {ingest['written']:,} documents written"
                   + (f", last at {ingest['last_written']}" if ingest["last_written"] else "")
@@ -601,7 +679,7 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
     state = {"date": dt.date.today().isoformat(), "numbers": n, "gaps": g["numbering_gaps_by_code"],
              "date_only_by_doc": g["date_only_by_doc"], "rulings_by_branch": g["rulings_by_branch"],
              "cards": card_rows, "queue": queue, "missing_articles": dict(missing or []),
-             "batches": batches["batches"], "ingest": ingest}
+             "batches": batches["batches"], "ingest": ingest, "feeder": feeder, "disk": disk}
     return "\n".join(md) + "\n", state, line
 
 
@@ -612,7 +690,12 @@ def main() -> int:
     p.add_argument("--min-gb", type=float, default=2.0, help="skip when MemAvailable is below this")
     p.add_argument("--batch", type=int, default=300, help="documents per query")
     p.add_argument("--pause", type=float, default=0.3, help="seconds between queries")
-    p.add_argument("--queue-dir", default="/opt/sunnitai-be/document_upload")
+    p.add_argument("--queue-dir", default="/opt/sunnitai-be/document_upload",
+                   help="comma-separated queue folders, one per ingest instance")
+    p.add_argument("--units", default="sunnitai-ingest,sunnitai-ingest-2", help="ingest service units to read")
+    p.add_argument("--feed-state", default="/var/log/maint/feed_state.json", help="maint_feed.py's state file")
+    p.add_argument("--data-dir", default="/var/lib/neo4j/data", help="Neo4j data folder, for disk free / store size")
+    p.add_argument("--min-free-gb", type=float, default=40.0, help="flag the report when the disk has less free")
     p.add_argument("--failed-dir", default="/opt/sunnitai-be/document_failed")
     p.add_argument("--logs", default="/var/log/backfill_v2_nightly.log,/var/log/link_rulings_nightly.log")
     p.add_argument("--unresolved", default="/var/log/ruling_citations_unresolved.jsonl")
@@ -650,13 +733,15 @@ def main() -> int:
             g = graph_checks(session, args.batch, args.pause, [x for x in args.skip.split(",") if x])
     finally:
         driver.close()
-    md, state, line = build_report(g, queue_status(args.queue_dir, args.failed_dir),
+    units = [u for u in args.units.split(",") if u]
+    md, state, line = build_report(g, queue_status(args.queue_dir, args.failed_dir, units),
                                    log_status([x for x in args.logs.split(",") if x]), unresolved_reasons(args.unresolved),
                                    card_ids([x for x in args.cards.split(",") if x]),
                                    previous_state(args.dir, today), time.time() - t0, closures(args.links),
                                    missing_articles(args.unresolved),
                                    batch_status(args.manifest, args.staging, dt.date.today().isoformat()),
-                                   ingest_journal())
+                                   ingest_journal(units=units), feeder_state(args.feed_state),
+                                   disk_status(args.data_dir), args.min_free_gb)
     for name, content in ((f"health_{today}.md", md), (f"summary_{today}.txt", line + "\n")):
         with open(os.path.join(args.dir, name), "w", encoding="utf-8") as fh:
             fh.write(content)
