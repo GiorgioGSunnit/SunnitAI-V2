@@ -27,12 +27,13 @@ import re
 import statistics
 import sys
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from typing import Dict, List, Optional
 
 QUERY_INSTRUCTION = ("Instruct: Given a legal question in Italian, retrieve the passages of laws, rulings and "
                      "commentary that answer it\nQuery: ")                       # src/rag/embedding_config.py
 YEAR_2025 = re.compile(r"[@_]a2025[@_]n", re.IGNORECASE)
+SEZIONE = re.compile(r"[@_]s(\d{2})[@_]", re.IGNORECASE)   # court section in the Italgiure file name (s70 = settima)
 QUERIES = ("facts+issues", "argument", "quote")
 
 
@@ -103,6 +104,8 @@ def main() -> int:
     p.add_argument("--k", type=int, default=30, help="results per query, the app's k for sections")
     p.add_argument("--floor", type=float, default=0.55, help="the app's minimum score for sections")
     p.add_argument("--seed", type=int, default=6)
+    p.add_argument("--no-match-sections", dest="match_sections", action="store_false",
+                   help="sample each group freely instead of with the same court-section mix")
     p.add_argument("--out", default="/tmp/self_retrieval_check.json")
     args = p.parse_args()
 
@@ -123,15 +126,34 @@ def main() -> int:
             sys.exit(f"vector index {args.index} not found here; vector indexes: {names}")
         docs = s.run("MATCH (d:Document {document_type: 'interpretation'}) "
                      "WHERE d.file_name =~ '(?i).*[@_]a2025[@_]n.*' "
-                     "RETURN d.id AS id, d.document_number IS NOT NULL AS analysed").data()
+                     "RETURN d.id AS id, d.file_name AS file, d.document_number IS NOT NULL AS analysed").data()
+        sez_of = {d["id"]: (SEZIONE.search(d["file"] or "").group(1) if SEZIONE.search(d["file"] or "") else "?")
+                  for d in docs}
         groups = {"analysis": [d["id"] for d in docs if d["analysed"]],
                   "no_analysis": [d["id"] for d in docs if not d["analysed"]]}
         print("2025 rulings in the graph: " + ", ".join(f"{g} {len(ids):,}" for g, ids in groups.items()))
         rng = random.Random(args.seed)
-        for group, ids in groups.items():
-            with_card = [i for i in ids if i in cards and len(card_queries(cards[i])) == 3]
-            sample = rng.sample(with_card, min(args.per_group, len(with_card)))
-            print(f"\n{group}: {len(with_card):,} with a complete card, sampling {len(sample)}")
+        complete = {g: [i for i in ids if i in cards and len(card_queries(cards[i])) == 3] for g, ids in groups.items()}
+        for g, ids in complete.items():
+            mix = Counter(sez_of[i] for i in ids)
+            print(f"  {g}: {len(ids):,} with a complete card; by court section "
+                  + ", ".join(f"s{k} {n:,}" for k, n in sorted(mix.items())))
+        samples = {}
+        if args.match_sections:
+            # the same court-section mix in both groups, taken from the smaller group's sample
+            small = min(complete, key=lambda g: len(complete[g]))
+            want = Counter(sez_of[i] for i in rng.sample(complete[small], min(args.per_group, len(complete[small]))))
+            for g, ids in complete.items():
+                by_sez = defaultdict(list)
+                for i in ids:
+                    by_sez[sez_of[i]].append(i)
+                samples[g] = [i for sez, n in want.items() for i in rng.sample(by_sez[sez], min(n, len(by_sez[sez])))]
+            print("  samples matched on court section: " + ", ".join(f"s{k} {n}" for k, n in sorted(want.items())))
+        else:
+            samples = {g: rng.sample(ids, min(args.per_group, len(ids))) for g, ids in complete.items()}
+        for group, sample in samples.items():
+            with_card = complete[group]
+            print(f"\n{group}: sampling {len(sample)}")
             shape = s.run("MATCH (d:Document)-[:CONTAINS]->(x:Section) WHERE d.id IN $ids "
                           "WITH d, count(x) AS n, avg(size(coalesce(x.plain_text, ''))) AS chars "
                           "RETURN avg(n) AS sections, avg(chars) AS chars, min(n) AS min_n, max(n) AS max_n",
@@ -156,7 +178,8 @@ def main() -> int:
                 ranks[q].append(r)
                 scores[q].append(rows[r - 1]["score"] if r else None)
             print(f"  {len(texts)} index queries in {time.time() - t0:.0f}s")
-            result["groups"][group] = {"in_graph": len(ids), "with_card": len(with_card), "sampled": len(sample),
+            result["groups"][group] = {"in_graph": len(groups[group]), "with_card": len(with_card), "sampled": len(sample),
+                                       "sections_mix": dict(Counter(sez_of[i] for i in sample)),
                                        "sections_per_ruling": shape["sections"], "chars_per_section": shape["chars"],
                                        "queries": {q: summarise(ranks[q], scores[q], args.k, args.floor) for q in QUERIES}}
     driver.close()
