@@ -1,0 +1,25 @@
+# Second ingest worker on be2: the same daemon (batch_ingest.py) watching its own queue folder, so two files are
+# never claimed by two processes (the daemon's lock is check-then-create, safe only inside one folder; it also
+# scans its folder recursively, so the second queue is a sibling folder, never a subfolder).
+# The second EnvironmentFile is read after .env and overrides only the two settings in it.
+#
+# BEFORE INSTALLING: compare with `systemctl cat sunnitai-ingest` and copy its User=, Group=, WorkingDirectory=,
+# Restart=, After= lines exactly; the lines below are the ones seen on 6 Nov 2026 plus sensible defaults.
+#   sudo cp sunnitai-ingest-2.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now sunnitai-ingest-2
+#   systemctl status sunnitai-ingest-2 --no-pager; journalctl -u sunnitai-ingest-2 -n 5 --no-pager
+# Stop for good:  sudo systemctl disable --now sunnitai-ingest-2   (files left in document_upload_2 go back to staging)
+
+[Unit]
+Description=SunnitAI batch ingest, worker 2 (queue /opt/sunnitai-be/document_upload_2)
+After=network.target
+
+[Service]
+EnvironmentFile=/opt/sunnitai-be/.env
+EnvironmentFile=/opt/sunnitai-be/.env.worker2
+ExecStart=/opt/sunnitai-be/venv/bin/python3 /opt/sunnitai-be/batch_ingest.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
