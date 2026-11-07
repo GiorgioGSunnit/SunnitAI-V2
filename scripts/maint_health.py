@@ -184,7 +184,8 @@ def summary_line(n: dict, prev: Optional[dict]) -> str:
              f"queue {n['queue_waiting']:,} waiting / {n['queue_failed']:,} failed",
              f"suspected duplicates {n['duplicates']:,} (not touched)"]
     if n.get("ingest_written") is not None:
-        parts.insert(8, f"ingest 24 h: {n['ingest_written']:,} written, {n['ingest_model_errors']:,} LLM model errors, "
+        cheap = f" ({n['ingest_no_analysis']:,} without analysis)" if n.get("ingest_no_analysis") else ""
+        parts.insert(8, f"ingest 24 h: {n['ingest_written']:,} written{cheap}, {n['ingest_model_errors']:,} LLM model errors, "
                         f"{n['ingest_fallbacks']:,} chunk fallbacks")
     if n.get("disk_free_gb") is not None:
         parts.insert(9, f"disk free {n['disk_free_gb']:.0f} GB" + (f" (store {n['store_gb']:.0f} GB)" if n.get("store_gb") else ""))
@@ -315,13 +316,15 @@ def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.ru
         return {"found": False, "why": type(exc).__name__}
     if out.returncode != 0:
         return {"found": False, "why": (out.stderr or "").strip()[:120] or f"exit {out.returncode}"}
-    written = errors = timeouts = fallbacks = failed = 0
+    written = errors = timeouts = fallbacks = failed = no_analysis = 0
     models, last = Counter(), None
     for line in out.stdout.splitlines():
         if "[4/4] done" in line:
             written += 1
             m = JOURNAL_TIME.match(line)
             last = m.group(1) if m else last
+        if "[SKIP ANALYSIS] INGEST_SKIP_ANALYSIS set" in line:      # the cheap path, one line per document
+            no_analysis += 1
         if re.search(r"\bERROR\b", line):
             errors += 1
         m = MODEL_MISSING.search(line)
@@ -336,7 +339,7 @@ def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.ru
             failed += 1
     return {"found": True, "since": since, "written": written, "last_written": last, "errors": errors,
             "model_missing": dict(models), "chunk_timeouts": timeouts, "chunk_fallbacks": fallbacks,
-            "moved_to_failed": failed}
+            "moved_to_failed": failed, "no_analysis": no_analysis}
 
 
 def log_status(paths: List[str]) -> List[dict]:
@@ -563,6 +566,7 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
          "ingest_written": ingest["written"] if ingest["found"] else None,
          "ingest_model_errors": sum(ingest["model_missing"].values()) if ingest["found"] else None,
          "ingest_fallbacks": ingest["chunk_fallbacks"] if ingest["found"] else None,
+         "ingest_no_analysis": ingest.get("no_analysis", 0) if ingest["found"] else None,
          "disk_free_gb": disk.get("free_gb"), "store_gb": disk.get("store_gb"),
          "feeder_left": feeder.get("left") if feeder["found"] else None,
          "feeder_paused": bool(feeder.get("paused")) if feeder["found"] else None,
@@ -656,6 +660,7 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
                   + " -- maint_feed.py has not run yet, or its crontab line is missing")
     if ingest["found"]:
         md.append(f"- ingest journal (last {ingest['since']}): {ingest['written']:,} documents written"
+                  + (f" ({ingest['no_analysis']:,} without analysis: INGEST_SKIP_ANALYSIS)" if ingest.get("no_analysis") else "")
                   + (f", last at {ingest['last_written']}" if ingest["last_written"] else "")
                   + f"; errors {ingest['errors']:,}; chunk analyses timed out {ingest['chunk_timeouts']:,}, "
                   f"fell back to plain text {ingest['chunk_fallbacks']:,}; moved to failed {ingest['moved_to_failed']:,}")

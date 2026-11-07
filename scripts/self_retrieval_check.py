@@ -12,7 +12,9 @@ own card, and records the rank of the ruling's first section in the result.
   - argument:     the card's argomento_decisivo (the legal reasoning)
   - quote:        the card's citazione (a verbatim sentence: both groups should hit; a sanity check of the text)
 
-Groups: 2025 rulings (file name carries a2025) with document_number set (analysis) vs NULL (no analysis).
+Groups: the rulings of one batch (--batch NAME: the file names the feeder's manifest lists under that batch;
+default: the 2025 batch by file-name pattern) with document_number set (analysis) vs NULL (no analysis: the cheap
+path, INGEST_SKIP_ANALYSIS, leaves it NULL). Both groups are sampled with the same court-section mix.
 Output: per group and query, hit@10, hit@30, share of hits above the app's 0.55 floor, median rank; sections per
 ruling and chars per section; JSON to --out. Counts only, no ruling text is printed.
 
@@ -20,6 +22,8 @@ ruling and chars per section; JSON to --out. Counts only, no ruling text is prin
     cd /opt/chatbot && sudo venv/bin/python -I /home/sunnit/self_retrieval_check.py --cards /home/sunnit/cards_pen_v3.jsonl
 Runs in a few minutes: 2 x 200 rulings x 3 queries = 1,200 embedding calls (batched) and 1,200 index queries.
     python3 -I self_retrieval_check.py --report /tmp/self_retrieval_check.json     # the table of a saved run
+    # the first Cassazione batch, worker 1 (analysis) against worker 2 (cheap path), penal and civil cards:
+    ... --batch cass_batch1 --cards /home/sunnit/cards_pen_v3.jsonl,/home/sunnit/cards_civ_v1.jsonl
 """
 import argparse
 import json
@@ -36,6 +40,7 @@ QUERY_INSTRUCTION = ("Instruct: Given a legal question in Italian, retrieve the 
                      "commentary that answer it\nQuery: ")                       # src/rag/embedding_config.py
 YEAR_2025 = re.compile(r"[@_]a2025[@_]n", re.IGNORECASE)
 SEZIONE = re.compile(r"[@_]s(\d{2})[@_]", re.IGNORECASE)   # court section in the Italgiure file name (s70 = settima)
+MANIFEST_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(\S+)\s+(\S.*)$")   # maint_feed.py: "YYYY-MM-DD batch file"
 QUERIES = ("facts+issues", "argument", "quote")
 
 
@@ -63,19 +68,32 @@ def card_queries(card: dict) -> Dict[str, str]:
     return {k: v for k, v in out.items() if v}
 
 
-def latest_cards(path: str) -> Dict[str, dict]:
-    """One card per ruling id: the last good one in the file (a retried card follows a failed one)."""
+def latest_cards(paths: str) -> Dict[str, dict]:
+    """One card per ruling id from one or more comma-separated card files: the last good one wins (a retried card
+    follows a failed one)."""
     cards: Dict[str, dict] = {}
-    with open(path, encoding="utf-8") as fh:
-        for line in fh:
-            try:
-                row = json.loads(line)
-            except ValueError:
-                continue
-            rid = row.get("id")
-            if rid and not row.get("errore"):
-                cards[rid] = row
+    for path in [p.strip() for p in paths.split(",") if p.strip()]:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                rid = row.get("id")
+                if rid and not row.get("errore"):
+                    cards[rid] = row
     return cards
+
+
+def batch_files(manifest: str, batch: str) -> List[str]:
+    """The file names the feeder handed to the queue under this batch name."""
+    names = []
+    with open(manifest, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            m = MANIFEST_LINE.match(line.strip())
+            if m and m.group(2) == batch:
+                names.append(m.group(3).strip())
+    return names
 
 
 def rank_of(rows: List[dict], doc_id: str) -> Optional[int]:
@@ -114,7 +132,9 @@ def print_report(result: dict) -> None:
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--cards", help="cards_pen_v3.jsonl copied from prod (/root/ruling_cards)")
+    p.add_argument("--cards", help="card files copied from prod (/root/ruling_cards), comma-separated")
+    p.add_argument("--batch", help="rulings of this batch (the feeder's manifest) instead of the 2025 file-name pattern")
+    p.add_argument("--manifest", default="/var/log/maint/upload_batches.txt", help="maint_feed.py's manifest")
     p.add_argument("--report", metavar="JSON", help="print the table of a saved --out file; no database, no cards")
     p.add_argument("--env", default="/opt/v2tools/health.env", help="NEO4J_URI / USER / PASSWORD / DATABASE")
     p.add_argument("--embed-env", default="/opt/sunnitai-be/.env",
@@ -148,19 +168,27 @@ def main() -> int:
     cards = latest_cards(args.cards)
     print(f"cards: {len(cards):,} rulings with a card")
     driver = GraphDatabase.driver(env["NEO4J_URI"], auth=(env["NEO4J_USER"], env["NEO4J_PASSWORD"]))
-    result = {"index": args.index, "k": args.k, "floor": args.floor, "per_group": args.per_group, "groups": {}}
+    result = {"index": args.index, "k": args.k, "floor": args.floor, "per_group": args.per_group,
+              "batch": args.batch or "2025", "groups": {}}
     with driver.session(database=env.get("NEO4J_DATABASE", "neo4j"), default_access_mode=READ_ACCESS) as s:
         names = [r["name"] for r in s.run("SHOW INDEXES YIELD name, type WHERE type = 'VECTOR' RETURN name")]
         if args.index not in names:
             sys.exit(f"vector index {args.index} not found here; vector indexes: {names}")
-        docs = s.run("MATCH (d:Document {document_type: 'interpretation'}) "
-                     "WHERE d.file_name =~ '(?i).*[@_]a2025[@_]n.*' "
-                     "RETURN d.id AS id, d.file_name AS file, d.document_number IS NOT NULL AS analysed").data()
+        if args.batch:
+            names = batch_files(args.manifest, args.batch)
+            print(f"batch {args.batch}: {len(names):,} files in the manifest")
+            docs = s.run("MATCH (d:Document {document_type: 'interpretation'}) WHERE d.file_name IN $names "
+                         "RETURN d.id AS id, d.file_name AS file, d.document_number IS NOT NULL AS analysed",
+                         names=names).data()
+        else:
+            docs = s.run("MATCH (d:Document {document_type: 'interpretation'}) "
+                         "WHERE d.file_name =~ '(?i).*[@_]a2025[@_]n.*' "
+                         "RETURN d.id AS id, d.file_name AS file, d.document_number IS NOT NULL AS analysed").data()
         sez_of = {d["id"]: (SEZIONE.search(d["file"] or "").group(1) if SEZIONE.search(d["file"] or "") else "?")
                   for d in docs}
         groups = {"analysis": [d["id"] for d in docs if d["analysed"]],
                   "no_analysis": [d["id"] for d in docs if not d["analysed"]]}
-        print("2025 rulings in the graph: " + ", ".join(f"{g} {len(ids):,}" for g, ids in groups.items()))
+        print(f"{args.batch or '2025'} rulings in the graph: " + ", ".join(f"{g} {len(ids):,}" for g, ids in groups.items()))
         rng = random.Random(args.seed)
         complete = {g: [i for i in ids if i in cards and len(card_queries(cards[i])) == 3] for g, ids in groups.items()}
         for g, ids in complete.items():

@@ -107,10 +107,50 @@ Equal within noise (a 200-ruling run had shown an 8-point gap the other way: sam
 8.5 in both groups; 1,009 vs 830 chars per section. The app reads nothing the analysis produces (no reference to
 `document_number` or the analysis fields in `src/`); the cards and the linker ran on both groups. Limit: only
 section-7 orders could be compared; long sentences of the other sections have no no-analysis sample in the graph.
-If the PM wants the cheap path: a switch in the ingest (skip the model calls, take the existing fallback, keep
-document_type 'interpretation') set in `.env.worker2` only, so worker 2 runs cheap and worker 1 full on the same
-batch; the script compares both the morning after the first cards. Status 7 Nov: linker step 1 done (full pass
-10:00 CET, 453,070 edges, 45,646 stamped, `--new-only` on the nightly line).
+Status 7 Nov: linker step 1 done (full pass 10:00 CET, 453,070 edges, 45,646 stamped, `--new-only` on the nightly line).
+
+### 3c.1 The switch (prepared 7 Nov, `ops/be2/patch_ingest_lever4.py`, rehearsed on the post-lever-3 copy; NOT applied)
+
+`INGEST_SKIP_ANALYSIS=1` in a worker's environment file turns off the four model calls per file: the chunk analysis
+(~50 calls), the title/number/date extraction (1), and post-processing's short-section abstract and section title
+(up to one per section). The file is still parsed, split, embedded and typed 'interpretation' from its sidecar name.
+What the cheap path leaves out, for the PM: the model's one-sentence "requirement" per section (the section
+abstract becomes the first 200 words of the text instead), the model's 3-8 word section titles that the answer's
+source list shows, and the ruling number on the Document node (nothing in the chatbot reads it). Set it in
+`.env.worker2` only: worker 2 runs cheap, worker 1 full, on the same batch.
+```
+scp ops/be2/patch_ingest_lever4.py sunnit@185.199.24.31:~/
+sudo python3 ~/patch_ingest_lever4.py --check                     # three OK lines, "ready to apply"; else stop
+sudo python3 ~/patch_ingest_lever4.py                             # backups *.bak_lever4_<date>
+sudo /opt/sunnitai-be/venv/bin/python3 -m py_compile /opt/sunnitai-be/src/be/src/lex_package/analisi_parallel.py /opt/sunnitai-be/src/be/src/lex_package/utils/flatten.py /opt/sunnitai-be/src/be/src/lex_package/utils/post_process.py && echo compiles
+echo 'INGEST_SKIP_ANALYSIS=1' | sudo tee -a /opt/sunnitai-be/.env.worker2
+sudo systemctl restart sunnitai-ingest-2 && sleep 3 && systemctl is-active sunnitai-ingest-2
+```
+Worker 1 is not restarted: without the variable the edits are inert, so it may be restarted any time later.
+Verify on worker 2's first file: `journalctl -u sunnitai-ingest-2 --since "1 hour ago" | grep -c "SKIP ANALYSIS"`
+gives 2 per file (chunks + metadata), and no "structured attempt" lines at all for that unit. The morning summary
+then reads "ingest 24 h: N written (M without analysis)".
+Off: delete the line from `.env.worker2`, restart worker 2. Rollback of the code: `sudo python3 ~/patch_ingest_lever4.py --undo`
+(restart both workers afterwards).
+
+### 3c.2 The comparison on the batch (the morning after the first cards)
+
+Both workers take files from the same feeder, so the two halves have the same mix. After the night's cards:
+```
+cd /opt/chatbot && sudo venv/bin/python -I /home/sunnit/self_retrieval_check.py --batch cass_batch1 --cards /home/sunnit/cards_pen_v3.jsonl,/home/sunnit/cards_civ_v1.jsonl --per-group 400
+```
+(`scripts/self_retrieval_check.py` of 7 Nov; the card files copied from prod's /root/ruling_cards that morning.)
+The groups are the batch's rulings with and without a ruling number, i.e. worker 1 and worker 2. Same reading
+rule as before: within 3 points on facts+issues the cheap path stays on; 5 or more, turn it off (above).
+
+### 3c.3 Found while building it: error strings as abstracts in the 2025 batch
+
+The 4,700 no-analysis rulings of 2-5 Nov got the module's last-resort "requirement", the literal
+"[Errore analisi comma]", as their section abstract (the post-processing only replaces abstracts under 20
+characters; this one is 22). The chatbot returns the abstract in the section view and searches it for keywords.
+`scripts/fix_error_abstracts.py` counts them (default) and with `--write` replaces each by flatten's own
+no-analysis abstract (title + first 200 words), keeping the old value as `abstract_before_fix` (`--undo`).
+Count first; the write is a decision for the user.
 
 ## 4. Monday: the batch lands
 
