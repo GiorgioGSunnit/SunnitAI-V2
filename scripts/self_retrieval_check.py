@@ -19,9 +19,11 @@ ruling and chars per section; JSON to --out. Counts only, no ruling text is prin
     scp scripts/self_retrieval_check.py sunnit@185.199.24.31:~/ ; scp C:\\tplstage\\cards_6nov\\cards_pen_v3.jsonl sunnit@185.199.24.31:~/
     cd /opt/chatbot && sudo venv/bin/python -I /home/sunnit/self_retrieval_check.py --cards /home/sunnit/cards_pen_v3.jsonl
 Runs in a few minutes: 2 x 200 rulings x 3 queries = 1,200 embedding calls (batched) and 1,200 index queries.
+    python3 -I self_retrieval_check.py --report /tmp/self_retrieval_check.json     # the table of a saved run
 """
 import argparse
 import json
+import logging
 import random
 import re
 import statistics
@@ -93,9 +95,27 @@ def summarise(ranks: List[Optional[int]], scores: List[Optional[float]], k: int,
             "median_rank_of_hits": statistics.median(hits) if hits else None}
 
 
+def print_report(result: dict) -> None:
+    """The shape lines and the table, from a fresh result or a saved --out file."""
+    k = result["k"]
+    for group, g in result["groups"].items():
+        mix = ", ".join(f"s{sez} {n}" for sez, n in sorted(g.get("sections_mix", {}).items()))
+        print(f"{group}: {g['in_graph']:,} in the graph, {g['with_card']:,} with a complete card, {g['sampled']} sampled"
+              f" ({mix}); sections per ruling {g['sections_per_ruling']:.1f}, {g['chars_per_section']:,.0f} chars per section")
+    print("\n== Self-retrieval: rank of the ruling's own section among the top %d ==" % k)
+    print(f"{'group':<12} {'query':<13} {'rulings':>7} {'hit@10':>7} {'hit@' + str(k):>7} {'>=floor':>8} {'med.rank':>8}")
+    pct = lambda x: f"{100 * x:.0f}%" if x is not None else "-"  # noqa: E731
+    for group, g in result["groups"].items():
+        for q, m in g["queries"].items():
+            med = m["median_rank_of_hits"]
+            print(f"{group:<12} {q:<13} {m['rulings']:>7} {pct(m['hit@10']):>7} {pct(m[f'hit@{k}']):>7} "
+                  f"{pct(m['hit_above_floor']):>8} {med if med is not None else '-':>8}")
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--cards", required=True, help="cards_pen_v3.jsonl copied from prod (/root/ruling_cards)")
+    p.add_argument("--cards", help="cards_pen_v3.jsonl copied from prod (/root/ruling_cards)")
+    p.add_argument("--report", metavar="JSON", help="print the table of a saved --out file; no database, no cards")
     p.add_argument("--env", default="/opt/v2tools/health.env", help="NEO4J_URI / USER / PASSWORD / DATABASE")
     p.add_argument("--embed-env", default="/opt/sunnitai-be/.env",
                    help="LLM_EMBEDDING_BASE_URL / LLM_EMBEDDING_MODEL / LLM_EMBEDDING_API_KEY (the ingest's)")
@@ -108,6 +128,15 @@ def main() -> int:
                    help="sample each group freely instead of with the same court-section mix")
     p.add_argument("--out", default="/tmp/self_retrieval_check.json")
     args = p.parse_args()
+    if args.report:
+        with open(args.report, encoding="utf-8") as fh:
+            print_report(json.load(fh))
+        return 0
+    if not args.cards:
+        p.error("--cards is required (or --report JSON)")
+    # the server answers every vector query with a deprecation notice (queryNodes -> SEARCH) that the driver logs
+    # as a warning: one line per query, thousands per run
+    logging.getLogger("neo4j").setLevel(logging.ERROR)
 
     env = load_env(args.env)
     emb = load_env(args.embed_env)
@@ -187,13 +216,8 @@ def main() -> int:
                                        "queries": {q: summarise(ranks[q], scores[q], args.k, args.floor) for q in QUERIES}}
     driver.close()
 
-    print("\n== Self-retrieval: rank of the ruling's own section among the top %d ==" % args.k)
-    print(f"{'group':<12} {'query':<13} {'rulings':>7} {'hit@10':>7} {'hit@' + str(args.k):>7} {'>=floor':>8} {'med.rank':>8}")
-    for group, g in result["groups"].items():
-        for q, m in g["queries"].items():
-            pct = lambda x: f"{100 * x:.0f}%" if x is not None else "-"  # noqa: E731
-            print(f"{group:<12} {q:<13} {m['rulings']:>7} {pct(m['hit@10']):>7} {pct(m[f'hit@{args.k}']):>7} "
-                  f"{pct(m['hit_above_floor']):>8} {m['median_rank_of_hits'] if m['median_rank_of_hits'] is not None else '-':>8}")
+    print()
+    print_report(result)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(result, fh, ensure_ascii=False, indent=1)
     print(f"\njson: {args.out}")
