@@ -344,8 +344,8 @@ def test_feeder_state_reads_the_feeder_json_or_says_it_is_missing(tmp_path):
 
 def test_disk_status_gives_free_space_and_the_store_size(tmp_path):
     assert mh.disk_status(str(tmp_path / "none")) == {"found": False}
-    d = mh.disk_status(str(tmp_path), runner=lambda cmd, **kw: _Out("103000000000\t/var/lib/neo4j/data\n"))
-    assert d["found"] and d["free_gb"] > 0 and d["total_gb"] >= d["free_gb"] and d["store_gb"] == 103.0
+    d = mh.disk_status(str(tmp_path), runner=lambda cmd, **kw: _Out(f"{103 * 2 ** 30}\t/var/lib/neo4j/data\n"))
+    assert d["found"] and d["free_gb"] > 0 and d["total_gb"] >= d["free_gb"] and d["store_gb"] == 103.0   # GiB, as du -sh
     d = mh.disk_status(str(tmp_path), runner=lambda cmd, **kw: (_ for _ in ()).throw(TimeoutError()))
     assert d["found"] and d["store_gb"] is None                               # du too slow: free space still there
 
@@ -369,6 +369,9 @@ def test_report_shows_disk_feeder_and_flags_a_stalled_ingest_and_a_full_disk():
     assert "**disk below 40 GB free**" in md
     assert "- feeder (maint_feed.py, last run 2026-11-10T08:00:00Z, batch cass_batch1): PAUSED; fed 0 at that run, 34960 left" in md
     assert state["feeder"]["left"] == 34960 and state["disk"]["free_gb"] == 31.5
+    md_no_feeder, _, line_no_feeder = mh.build_report(g, queue, [], (None, {}), None, None, 1.0, ingest=ingest,
+                                                      feeder={"found": False}, disk=disk, min_free_gb=40)
+    assert "- feeder: no state file -- maint_feed.py has not run yet" in md_no_feeder and "feeder:" not in line_no_feeder
     # a healthy night: no bold flags
     ingest["written"], disk["free_gb"], feeder["paused"] = 1400, 160.0, False
     md, _, line = mh.build_report(g, queue, [], (None, {}), None, None, 1.0, ingest=ingest, feeder=feeder, disk=disk)

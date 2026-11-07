@@ -280,15 +280,17 @@ def feeder_state(path: str) -> dict:
 
 
 def disk_status(data_dir: str, runner: Callable = subprocess.run) -> dict:
-    """Free space on the disk holding the Neo4j data folder, and the folder's size (du, up to five minutes)."""
+    """Free space on the disk holding the Neo4j data folder, and the folder's size (du, up to five minutes).
+    Figures in GiB, the unit df -h and du -sh print, so the report matches what is read on the server."""
     if not os.path.isdir(data_dir):
         return {"found": False}
+    gib = 2 ** 30
     total, used, free = shutil.disk_usage(data_dir)
-    out = {"found": True, "free_gb": round(free / 1e9, 1), "total_gb": round(total / 1e9, 1), "store_gb": None}
+    out = {"found": True, "free_gb": round(free / gib, 1), "total_gb": round(total / gib, 1), "store_gb": None}
     try:
         r = runner(["du", "-sb", data_dir], capture_output=True, text=True, timeout=300)
         if r.returncode == 0 and r.stdout.strip():
-            out["store_gb"] = round(int(r.stdout.split()[0]) / 1e9, 1)
+            out["store_gb"] = round(int(r.stdout.split()[0]) / gib, 1)
     except Exception:
         pass
     return out
@@ -649,6 +651,9 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
                   + f"fed {feeder.get('fed', 0):,} at that run, {feeder.get('left', '?')} left in staging"
                   + (f", {feeder['already_fed']:,} already-fed files set aside" if feeder.get("already_fed") else "")
                   + (f" -- {feeder['error']}" if feeder.get("error") else ""))
+    else:
+        md.append("- feeder: no state file" + (f" ({feeder['why']})" if feeder.get("why") else "")
+                  + " -- maint_feed.py has not run yet, or its crontab line is missing")
     if ingest["found"]:
         md.append(f"- ingest journal (last {ingest['since']}): {ingest['written']:,} documents written"
                   + (f", last at {ingest['last_written']}" if ingest["last_written"] else "")
