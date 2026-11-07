@@ -140,14 +140,17 @@ def main() -> int:
                   + ", ".join(f"s{k} {n:,}" for k, n in sorted(mix.items())))
         samples = {}
         if args.match_sections:
-            # the same court-section mix in both groups, taken from the smaller group's sample
+            # the same court-section mix in both groups: the smaller group's sample sets the count per section,
+            # capped by what every group holds in that section, so both samples end up the same size
             small = min(complete, key=lambda g: len(complete[g]))
             want = Counter(sez_of[i] for i in rng.sample(complete[small], min(args.per_group, len(complete[small]))))
+            by_sez = {g: defaultdict(list) for g in complete}
             for g, ids in complete.items():
-                by_sez = defaultdict(list)
                 for i in ids:
-                    by_sez[sez_of[i]].append(i)
-                samples[g] = [i for sez, n in want.items() for i in rng.sample(by_sez[sez], min(n, len(by_sez[sez])))]
+                    by_sez[g][sez_of[i]].append(i)
+            want = Counter({sez: min([n] + [len(by_sez[g][sez]) for g in complete]) for sez, n in want.items()})
+            for g in complete:
+                samples[g] = [i for sez, n in want.items() for i in rng.sample(by_sez[g][sez], n)]
             print("  samples matched on court section: " + ", ".join(f"s{k} {n}" for k, n in sorted(want.items())))
         else:
             samples = {g: rng.sample(ids, min(args.per_group, len(ids))) for g, ids in complete.items()}
