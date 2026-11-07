@@ -52,6 +52,7 @@ md5sum /opt/v2tools/maint_feed.py ~/maint_feed.py /opt/v2tools/maint_health.py ~
 # the health report's crontab line (05:30 CET) gets the second queue and the staging folder, see crontab_lines.txt
 ```
 Verify: the next 05:30 report has a "disk:" line and "service sunnitai-ingest active" in the night-jobs section.
+Done 7 Nov (checksums equal; test run to /tmp/maint_test fine: both queues, both services, disk 175 GB free).
 Rollback: restore the health `.bak`; the feeder file is inert until its crontab line exists.
 
 ## 3a. Lever 3: three edits in the ingest (6 Nov, `ops/be2/patch_ingest_lever3.py`)
@@ -134,8 +135,9 @@ batch; the script compares both the morning after the first cards. Status 7 Nov:
    (`sudo systemctl disable --now sunnitai-ingest-2`, move its queue's files back to staging), continue at one
    worker, and give Flavio the numbers (his code: Semaphore(50) per document and the 15 s / 60 s timeouts in
    `lex_package/analisi_parallel.py`).
-4. The crontab lines from `crontab_lines.txt`: the feeder (replacing the old feed_queue.sh line), the pause and
-   resume lines; on prod the cards line with `--stop-at 22:30`.
+4. The crontab: the install block at the end of `crontab_lines.txt` (dump, rewrite the copy, diff, install;
+   rehearsed 7 Nov): the feeder replaces the hourly feed_queue.sh line, the health line gets both queues and the
+   staging folder, the pause and resume lines are appended. On prod the cards line gets `--stop-at 22:30`.
 5. Day one, afternoon: trace three new rulings (`scripts/trace_ruling.py`, names masked): number and date
    present, sections by the ruling's structure, one CITES set after the next linker pass.
 
