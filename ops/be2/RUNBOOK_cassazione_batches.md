@@ -91,6 +91,26 @@ Verify: the journal's last line says "watching /opt/sunnitai-be/document_upload_
 If it says the first queue, stop it at once (`sudo systemctl disable --now sunnitai-ingest-2`): the override file
 was not read. Both workers now idle, polling empty folders every 30 s, until the feeder fills them.
 
+## 3c. Lever 4 (skip the model analysis): measured 7 Nov, not built
+
+Self-retrieval on the 2025 batch (`scripts/self_retrieval_check.py`, app query, k 30, index section_embeddings_v2),
+480 rulings per group, same court section in both groups (all section 7, the only section the analysis ran on):
+
+| query (from the ruling's card) | with analysis | without | 
+|---|---|---|
+| facts + issues, hit@10 / hit@30 | 69% / 77% | 71% / 78% |
+| decisive argument | 15% / 25% | 20% / 25% |
+| verbatim quote | 23% / 30% | 27% / 34% |
+
+Equal within noise (a 200-ruling run had shown an 8-point gap the other way: sampling noise). Sections per ruling
+8.5 in both groups; 1,009 vs 830 chars per section. The app reads nothing the analysis produces (no reference to
+`document_number` or the analysis fields in `src/`); the cards and the linker ran on both groups. Limit: only
+section-7 orders could be compared; long sentences of the other sections have no no-analysis sample in the graph.
+If the PM wants the cheap path: a switch in the ingest (skip the model calls, take the existing fallback, keep
+document_type 'interpretation') set in `.env.worker2` only, so worker 2 runs cheap and worker 1 full on the same
+batch; the script compares both the morning after the first cards. Status 7 Nov: linker step 1 done (full pass
+10:00 CET, 453,070 edges, 45,646 stamped, `--new-only` on the nightly line).
+
 ## 4. Monday: the batch lands
 
 1. The batch goes to `/home/sunnit/cass_batch1`, flat (PDF + `.name` sidecar per file, as the 2025 batch). Names
