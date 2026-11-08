@@ -143,14 +143,25 @@ cd /opt/chatbot && sudo venv/bin/python -I /home/sunnit/self_retrieval_check.py 
 The groups are the batch's rulings with and without a ruling number, i.e. worker 1 and worker 2. Same reading
 rule as before: within 3 points on facts+issues the cheap path stays on; 5 or more, turn it off (above).
 
-### 3c.3 Found while building it: error strings as abstracts in the 2025 batch
+### 3c.3 Found while building it: error strings as abstracts (counted 8 Nov: 37,510 sections, 5,993 rulings)
 
-The 4,700 no-analysis rulings of 2-5 Nov got the module's last-resort "requirement", the literal
-"[Errore analisi comma]", as their section abstract (the post-processing only replaces abstracts under 20
-characters; this one is 22). The chatbot returns the abstract in the section view and searches it for keywords.
-`scripts/fix_error_abstracts.py` counts them (default) and with `--write` replaces each by flatten's own
-no-analysis abstract (title + first 200 words), keeping the old value as `abstract_before_fix` (`--undo`).
-Count first; the write is a decision for the user.
+A chunk whose model call fails twice (structured, then plain text: the 404 of 2-5 Nov, a chunk timeout, any
+error) gets the module's last-resort "requirement", the literal "[Errore analisi comma]". flatten.py joins the
+chunk requirements of a section with "; " into the abstract, so the string is there alone when every chunk
+failed (the 2025 no-analysis rulings) or mixed with real summaries when one chunk of several failed (rulings of
+other batches too, hence 5,993 rulings, not 4,700). The post-processing only replaces abstracts under 20
+characters; this one is 22. The document description (first 500 words of the section abstracts) carries it as
+well. The chatbot returns the abstract in the section view, searches abstracts and descriptions for keywords,
+and the nightly job embeds abstract + plain_text.
+
+`scripts/fix_error_abstracts.py` counts (default: sections, rulings, descriptions) and with `--write` rebuilds
+each abstract by flatten's own rule: the good fragments joined with "; " (first 200 words of the text when none
+is left), the core text kept, the title in front; then rebuilds the descriptions along NEXT. Old values stay as
+`abstract_before_fix` / `description_before_fix` (`--undo`; `--purge-backups` once checked). `--reembed` also
+parks `embedding_v2` so the 02:00 backfill re-embeds the fixed sections; until then they are out of vector
+search, so evening only, or start the backfill by hand. Not needed for retrieval (the measured no-analysis
+group carried the string in its vectors and retrieved like the other). The write is the user's decision; it
+is a plain Neo4j write, so not while the cards run (22:00 CET) and not during a backfill.
 
 ## 4. Monday: the batch lands
 
