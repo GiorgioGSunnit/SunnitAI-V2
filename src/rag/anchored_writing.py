@@ -59,6 +59,11 @@ MIN_OVERLAP = 0.15        # share of a sentence's content words that must be in 
 RUBRICA_SHARE = 0.5       # the share of an anchored article's rubrica words the sentence must hold instead
 OVERLAP_BUCKETS = (0.05, 0.10, 0.15, 0.25)   # the logged distribution of the overlap failures
 PASSAGE_CHARS = 900
+# v48 (v47's l3, n7, h1: one comma of art. 229 Codice degli Appalti, "Entrata in vigore", held the annexes after it,
+# 108k characters in every section's prompt, which then could not be sent): a passage given whole -- a comma with its
+# list items, a short article -- at most PASSAGE_CAP characters, from the cited comma's start, cut where a clause ends
+# and marked "[…]". Logged as passage_capped.
+PASSAGE_CAP = 2500
 REWRITE_MARK = "FRASI DA RISCRIVERE:"   # fetch_audit cuts a rewrite call's material here (as grounded_review's)
 
 ANCHOR_RE = re.compile(r"\[\s*(A\d+(?:\s*[,;]\s*A\d+)*)\s*\]")
@@ -181,7 +186,7 @@ class Catalogue:
 
     def add(self, key: tuple, kind: str, label: str, text: str, whole: bool = False, **extra) -> Optional[str]:
         text = " ".join((text or "").split())
-        text = text if whole else article_text.clause_cut(text, PASSAGE_CHARS)
+        text = capped(text, label) if whole else article_text.clause_cut(text, PASSAGE_CHARS)
         if not text:
             return None
         if key in self._by_key:
@@ -208,6 +213,18 @@ class Catalogue:
 
     def log(self) -> List[Dict[str, Any]]:
         return [{"id": p["id"], "label": p["label"], "chars": len(p["text"])} for p in self.passages.values()]
+
+
+def capped(text: str, label: str = "") -> str:
+    """text within PASSAGE_CAP characters (article_text.clause_cut, "[…]" marked; never past the cap), logged as
+    passage_capped when cut."""
+    if len(text) <= PASSAGE_CAP:
+        return text
+    cut = article_text.clause_cut(text, PASSAGE_CAP)
+    if len(cut) > PASSAGE_CAP + 2:          # clause_cut may run on to the next clause end: no further than the cap
+        cut = text[:PASSAGE_CAP].rsplit(" ", 1)[0].rstrip(" ,;:") + " […]"
+    vlog("passage_capped", {"label": label, "chars": len(text), "kept": len(cut)})
+    return cut
 
 
 def _rubrica(row: Dict[str, Any]) -> str:
@@ -264,6 +281,13 @@ def build(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], references: 
                 pid = _article_passage(cat, row, comma, focus)
                 if pid:
                     ids.append(pid)
+            if row.get("_regime_comma") == "last":     # REGIME_CANDIDATES: the article's last comma too (1051's exemption)
+                commi, numbered = _commi(row)
+                if numbered and commi:
+                    numbers = comma_material.comma_numbers(commi, _parts_of(row)[1])
+                    pid = _article_passage(cat, row, numbers[-1], focus)
+                    if pid and pid not in ids:
+                        ids.append(pid)
         for reference in list(q.get("pronunce") or []) + list(q.get("pronunce_contrarie") or []):
             hits = references.get(reference) or []
             if hits:
@@ -454,10 +478,32 @@ def drop_citations(sentence: str, drop: Sequence[tuple], documents: Optional[Lis
 
 # --- the rewrite call -----------------------------------------------------------------------------------------------
 
+# ANCHOR_REWRITE_CAP (v46, c1: one section's 58 failing sentences in one call of 13,640 max_tokens, 65 s): a section's
+# failing sentences in calls of at most ANCHOR_REWRITE_MAX_TOKENS, each with only its own sentences' passages, the calls
+# _ANCHOR_REWRITE_WORKERS at once; a failed call loses only its own sentences (kept or removed by their rule).
+ANCHOR_REWRITE_CAP_FLAG = "ANCHOR_REWRITE_CAP"
+ANCHOR_REWRITE_MAX_TOKENS = 2500
+_REWRITE_TOKENS = (300, 230)          # max_tokens: base, per sentence
+_ANCHOR_REWRITE_WORKERS = 4
+
+
 def _anchor_rewrite(cat: Catalogue, items: List[Tuple[str, List[str], str]]) -> Dict[int, Dict[str, str]]:
     """{index: {"tipo", "frase"}} for one section's failing sentences: (sentence, its passages, how: "classify" (code
     could not tell its kind), "law", or "case_law" (rewritten as the rule of its article, no case law)); {} on a
-    failure."""
+    failure. ANCHOR_REWRITE_CAP: in parts (_anchor_rewrite_call each), the indexes those of `items`."""
+    size = max(1, (ANCHOR_REWRITE_MAX_TOKENS - _REWRITE_TOKENS[0]) // _REWRITE_TOKENS[1])
+    if not feature_flags.enabled(ANCHOR_REWRITE_CAP_FLAG) or len(items) <= size:
+        return _anchor_rewrite_call(cat, items)
+    parts = [items[i:i + size] for i in range(0, len(items), size)]
+    with ThreadPoolExecutor(max_workers=min(_ANCHOR_REWRITE_WORKERS, len(parts))) as pool:
+        replies = list(pool.map(lambda part: _anchor_rewrite_call(cat, part), parts))
+    vlog("anchored_writing_rewrite_split", {"sentences": len(items), "calls": len(parts),
+                                            "max_tokens": [_REWRITE_TOKENS[0] + _REWRITE_TOKENS[1] * len(p) for p in parts]})
+    return {start + k: v for start, reply in zip(range(0, len(items), size), replies) for k, v in reply.items()}
+
+
+def _anchor_rewrite_call(cat: Catalogue, items: List[Tuple[str, List[str], str]]) -> Dict[int, Dict[str, str]]:
+    """_anchor_rewrite in one call."""
     from . import defensive_generation as dg
     ids = list(dict.fromkeys(i for _, anchors, _ in items for i in anchors))
     notes = {"case_law": " [come regola della norma, senza giurisprudenza]", "law": "", "classify": " [prima il tipo]"}
@@ -468,7 +514,7 @@ def _anchor_rewrite(cat: Catalogue, items: List[Tuple[str, List[str], str]]) -> 
                          for n, (s, a, how) in enumerate(items, 1)))
     try:
         raw = dg._chat_json([SystemMessage(content=REWRITE_SYSTEM), HumanMessage(content=human)],
-                            max_tokens=300 + 230 * len(items), temperature=0)
+                            max_tokens=_REWRITE_TOKENS[0] + _REWRITE_TOKENS[1] * len(items), temperature=0)
     except Exception as exc:
         logger.warning("anchored writing: rewrite failed, the failing statements kept or removed by their rule: %s", exc)
         return {}
@@ -697,6 +743,8 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
             else:        # a checked article's statement, or one with nothing to remove it for: kept as written
                 how = "kept"
                 stats["kept_checked" if action == "checked" else "kept_failing"] += 1
+                from . import citation_ledger
+                citation_ledger.kept("anchored_writing", body, f"{kind or 'law'} {why}")     # v49: logged when a plan article's
             entries.append({**entry, "how": how, "from": src, **({"new": new[:400]} if new else {})})
         if changes:
             from . import grounded_review
@@ -714,4 +762,7 @@ def verify(sections: List[Tuple[str, str]], cat: Catalogue, documents: Optional[
         for b, v in st["overlap_failures"].items():
             totals["overlap_failures"][b] = totals["overlap_failures"].get(b, 0) + v
     vlog("anchored_writing", {"passages": cat.log(), "sections": stats_out, "entries": entries, "totals": totals})
+    from . import citation_ledger
+    citation_ledger.record_entries("anchored_writing", [
+        {**e, "now": e.get("new") or ""} for e in entries if isinstance(e, dict) and e.get("how") in ("rewritten", "removed")])
     return out

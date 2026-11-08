@@ -33,7 +33,7 @@ import logging
 import os
 import copy
 import re
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -751,6 +751,59 @@ def _possession_starts(facts):
     return out
 
 
+# FACT_REGIMES_ENABLED, v48 (the PO's red on Leonardo: the ventennio counted from 2003, Sempronio's sale to Domitilla; in
+# v47 from 2016, Domitilla's gate): the start of a possession for usucapione is never a sale's or a transfer's date, the
+# date someone turned to a lawyer or a court, or a closure's; a possession that is itself a closure is none. No start
+# left with a possession in the facts: the term says "inizio del possesso da accertare" (_undated_entry, start_unknown).
+_NOT_A_START_KINDS = ("vendita", "divisione", "successione", "donazione", "diffida", "azione giudiziaria", "notifica",
+                      "spoglio", "turbativa", "chiusura/ostruzione accesso")
+_CONTACT_RE = r"avvocat|legale|consulen|parere|diffid|citazion|ricors|causa\b|giudizi"
+_CLOSURE_USE_RE = r"chiusur|cancell|sbarr|ostru|impedi|recinz|lucchett"
+START_UNKNOWN = "inizio del possesso da accertare"
+
+
+def _not_start_years(facts: Dict[str, Any]) -> set:
+    """The years of the facts' sales and transfers, contacts with a lawyer or a court, and closures."""
+    years: set = set()
+    for e in facts.get("events") or []:
+        if _typed_kind(e) in _NOT_A_START_KINDS or re.search(_CONTACT_RE + "|" + _SPOGLIO, _low(e.get("what"))) \
+                or re.search(r"vend|acquist|cession|donazion|eredit", _low(e.get("what"))):
+            years.update(re.findall(r"\b(1[89]\d\d|20\d\d)\b", str(e.get("date") or "")))
+    for h in facts.get("property_history") or []:
+        for k in ("from", "to"):
+            years.update(re.findall(r"\b(1[89]\d\d|20\d\d)\b", str(h.get(k) or "")))
+    for c in facts.get("contracts") or []:
+        years.update(re.findall(r"\b(1[89]\d\d|20\d\d)\b", str(c.get("date") or "")))
+    return years
+
+
+def _usucapione_starts(facts: Dict[str, Any], movable: bool = False) -> List[tuple]:
+    """_possession_starts of immovables (movable: of movables); FACT_REGIMES_ENABLED (facts with "_regimes"): none
+    from a sale, a contact or a closure date, none of a possession that is a closure."""
+    starts = [s for s in _possession_starts(facts) if bool(re.search(_MOVABLE, _low(s[1]))) == movable]
+    if not facts.get("_regimes"):
+        return starts
+    banned = _not_start_years(facts)
+    closures = {_low(p.get("since")) for p in facts.get("possession") or [] if re.search(_CLOSURE_USE_RE, _low(p.get("use")))}
+    return [s for s in starts if not (set(re.findall(r"\b(1[89]\d\d|20\d\d)\b", str(s[2]))) & banned)
+            and _low(s[2]) not in closures]
+
+
+_DURATION_RE = r"\b(?:da|per)\s+(?:più di |oltre |almeno |circa |ben )?(?:\d+|un|due|tre|dieci|venti|trenta|quaranta|cinquanta)\s+anni"
+
+
+def _duration_stated(facts: Dict[str, Any]) -> bool:
+    """A possession whose length the facts state without a date ("da più di 30 anni"): its start is not unknown."""
+    return any(re.search(_DURATION_RE, _low(p.get("since")) + " " + _low(p.get("how"))) for p in facts.get("possession") or [])
+
+
+def _possession_without_start(facts: Dict[str, Any], movable: bool = False) -> bool:
+    """A possession in the facts, not a closure, whose start the facts do not give (or gave only as a sale, a contact or
+    a closure date)."""
+    return any(bool(re.search(_MOVABLE, _low(p.get("asset")))) == movable and not re.search(_CLOSURE_USE_RE, _low(p.get("use")))
+               for p in facts.get("possession") or [])
+
+
 _SPOGLIO = (r"spogli|turbativ|molest|impedi|sbarr|chiu[ds]\w* (?:il |l'|la |lo )?(?:passaggio|accesso|cancello|strada|varco)"
             r"|recinz|lucchett|occupa")
 _ACTION = r"\bazion|ricors|citazion|reintegr|manutenzion|domanda giudiziale|causa\b"
@@ -806,16 +859,16 @@ TERMS: List[Term] = [
          word="ventennio di non uso", start_items=_last_use, applies=_right_of_way, since="dall'ultimo uso",
          end_kinds=("azione giudiziaria",)),
     Term("usucapione_ordinaria", "usucapione ordinaria di beni immobili", "art. 1158 c.c.", "", "", years=20,
-         word="ventennio di possesso", start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))],
+         word="ventennio di possesso", start_items=lambda f: _usucapione_starts(f),
          since="di possesso continuato"),
     Term("usucapione_abbreviata", "usucapione abbreviata (solo con titolo idoneo trascritto e buona fede)",
          "art. 1159 c.c.", "", "", years=10, word="decennio di possesso",
          applies=lambda f: _title_from_non_owner(f),
-         start_items=lambda f: [s for s in _possession_starts(f) if not re.search(_MOVABLE, _low(s[1]))],
+         start_items=lambda f: _usucapione_starts(f),
          since="dalla trascrizione del titolo"),
     Term("usucapione_mobili", "usucapione di beni mobili (10 anni in buona fede; 20 altrimenti)", "art. 1161 c.c.",
          "", "", years=10, word="decennio di possesso",
-         start_items=lambda f: [s for s in _possession_starts(f) if re.search(_MOVABLE, _low(s[1]))],
+         start_items=lambda f: _usucapione_starts(f, movable=True),
          since="di possesso continuato"),
     Term("prescrizione_circolazione", "prescrizione del risarcimento da circolazione di veicoli", "art. 2947 c.c.",
          _ROAD, _INTERRUPT, years=2, applies=lambda f: not f.get("contracts"), since="dal fatto",
@@ -938,9 +991,11 @@ def _term_trace(term: Term, facts: Dict[str, Any], families: set, undated: bool)
         why.append(f"inizio ({_how(term, facts, term.start_kinds, term.start)}): "
                    + ("; ".join(f"«{x[1]}» {x[2]}" for x in starts) or "nessun fatto datato"))
     if not starts:
-        if undated and (not families or term.family in families) and _mentioned(facts, term):
-            trace["entry"] = _undated_entry(term)
-            why.append("fatto citato senza data: DA VERIFICARE")
+        possessed = term.id.startswith("usucapione") and _possession_without_start(facts, term.id == "usucapione_mobili")
+        if undated and (not families or term.family in families) and (_mentioned(facts, term) or possessed):
+            unknown = bool(term.start_items) and not _duration_stated(facts)
+            trace["entry"] = _undated_entry(term, start_unknown=unknown)
+            why.append("fatto citato senza data: DA VERIFICARE" + (f" ({START_UNKNOWN})" if unknown else ""))
         elif undated and families and term.family not in families:
             why.append(f"materia {term.family} fuori dalle aree del caso")
         return trace
@@ -1019,12 +1074,18 @@ def _mentioned(facts: Dict[str, Any], term: Term) -> bool:
                                                                              "works_or_signs", "injuries", "risks"))))
 
 
-def _undated_entry(term: Term) -> Dict[str, Any]:
+def _undated_entry(term: Term, start_unknown: bool = False) -> Dict[str, Any]:
     word = term.word or f"termine di {term.length()}"
-    text = (f"{term.label}: {word} {term.since}".rstrip() + " — DA VERIFICARE: il caso non indica le date da cui "
-            "decorre")
+    if start_unknown:          # a possession's term: its start is what the case leaves open
+        text = (f"{term.label}: {word} — DA VERIFICARE, {START_UNKNOWN}: il caso non indica quando il possesso è "
+                "iniziato (non lo è una vendita, un contatto con l'avvocato o una chiusura), il termine non può dirsi "
+                "maturato")
+    else:
+        text = (f"{term.label}: {word} {term.since}".rstrip() + " — DA VERIFICARE: il caso non indica le date da cui "
+                "decorre")
     return {"id": term.id, "label": term.label, "ref": term.ref, "length": term.length(), "status": "DA VERIFICARE",
-            "from": {"what": term.since, "date": ""}, "to": {"what": "", "date": ""}, "text": text, "undated": True}
+            "from": {"what": START_UNKNOWN if start_unknown else term.since, "date": ""}, "to": {"what": "", "date": ""},
+            "text": text, "undated": True, **({"start_unknown": True} if start_unknown else {})}
 
 
 def _term_entry(id, label, ref, word, length, status, start, end_what, end_written, note=""):
@@ -1529,7 +1590,6 @@ PARTIES_ENFORCED_FLAG = "PARTIES_ENFORCED"
 
 
 REAL_ACTION_REGIME = "azione_reale_immobiliare"
-_PATH_KEYS = ("works_or_signs", "access", "possession", "events")
 
 
 _PREVIOUS_ROLE = r"precedent|originari|dante causa|\bex\b|già proprietari|antecedent|avente causa"
@@ -1578,11 +1638,11 @@ def _previous_owner(facts: Dict[str, Any], name: str, history: List[Dict[str, An
 
 def real_action_defendants(facts: Optional[Dict[str, Any]]) -> Tuple[List[str], List[str], str]:
     """(authors, owners, how) for a real action on land: who did the act obstructing the right (as parties_to_sue),
-    then every other party with role proprietario -- not the client, never one in the facts only as a previous owner in
-    the chain of title (_previous_owner: who sold, who held the land before) -- whose land the facts place on the path
-    or the servitude: a fact naming it with the path, the way or the client's land (how "path"). One the facts place
-    nowhere is kept as well; only one they describe elsewhere, off the path, is left out. None placed: every one of
-    them (how "all proprietari")."""
+    then every current owner other than the client -- a party with role proprietario, or the owner of a
+    property_history entry -- never one in the facts only as a previous owner in the chain of title (_previous_owner:
+    who sold, who held the land before). v51 (Leonardo v50: Annibale, whose land lies between two of Leonardo's, left
+    out of the answer): no filter by where the facts place the owner's land -- the works, the access, the path -- the
+    litisconsorzio is weighed for each of them (how "current owners")."""
     if not facts:
         return [], [], ""
     clients = _clients(facts)
@@ -1591,27 +1651,16 @@ def real_action_defendants(facts: Optional[Dict[str, Any]]) -> Tuple[List[str], 
         if _typed_kind(event) in _OBSTRUCTIONS:
             authors += [n for n in _names(event.get("who")) if not _is_client(n, clients) and n not in authors]
     history = facts.get("property_history") or []
+    candidates = [str(p.get("name") or "").strip() for p in facts.get("parties") or []
+                  if "proprietari" in _low(p.get("role"))]
+    candidates += [str(e.get("owner") or "").strip() for e in history]
     owners: List[str] = []
-    for party in facts.get("parties") or []:
-        name = str(party.get("name") or "").strip()
-        if not name or "proprietari" not in _low(party.get("role")) or _is_client(name, clients) or name in authors \
-                or name in owners or _previous_owner(facts, name, history):
+    for name in candidates:
+        if not name or _is_client(name, clients) or name in authors or name in owners \
+                or _previous_owner(facts, name, history):
             continue
         owners.append(name)
-    client_words = [c for c in clients if c]
-    placed, unplaced, elsewhere = [], [], []
-    for name in owners:
-        near = _items_naming(facts, name, _PATH_KEYS)
-        titled = _items_naming(facts, name, ("property_history",))
-        on_path = [t for t in near + titled if re.search(_WAY, t) or any(_named_in(c, t) for c in client_words)]
-        if on_path or _items_naming(facts, name, ("access",)):     # how the client's land is reached names it
-            placed.append(name)
-        elif near:
-            elsewhere.append(name)          # described where the facts tell of the works, the access or the events: off the path
-        else:
-            unplaced.append(name)
-    kept = [n for n in owners if n in placed or n in unplaced]
-    return authors, kept if placed else owners, "path" if placed else "all proprietari" if owners else ""
+    return authors, owners, "current owners" if owners else ""
 
 
 def _real_action(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]]) -> bool:
@@ -1659,8 +1708,10 @@ def conclusions_block(signals: Optional[Dict[str, Any]], analysis: Optional[Dict
                      + ([f"- {parties}"] if parties else []))
 
 
-def rule_tools(tools: List[Dict[str, Any]], fired: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """The tools with those the fired rules list: always there, with the rule's reason."""
+def rule_tools(tools: List[Dict[str, Any]], fired: List[Dict[str, Any]],
+               facts: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """The tools with those the fired rules list: always there, with the rule's reason. With the facts, the
+    accertamento preventivo cites art. 696-bis c.p.c. only for a damages or credit claim (procedural_tools)."""
     out = list(tools)
     for rule in fired:
         for wanted in rule.get("tools") or []:
@@ -1671,6 +1722,11 @@ def rule_tools(tools: List[Dict[str, Any]], fired: List[Dict[str, Any]]) -> List
             else:
                 out.append({"id": table["id"], "refs": [list(r) for r in table["refs"]], "text": table["text"],
                             "why": wanted["why"], "matched": [wanted["why"]]})
+    if facts is not None and not _credit_claim(facts):
+        for t in out:
+            if t["id"] == "accertamento_preventivo" and any(r[0] == "696-bis" for r in t["refs"]):
+                t["refs"] = [r for r in t["refs"] if r[0] != "696-bis"]
+                t["text"] = next(x["text_places"] for x in PROCEDURAL_TOOLS if x["id"] == "accertamento_preventivo")
     return out
 
 
@@ -1861,7 +1917,7 @@ def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
            "defendants": parties_to_sue(facts), "mediation": mediation(facts, fired)}
     if regimes:
         out.update({"qualifications": qualifications, "regimes": regime_issues(facts, qualifications, areas),
-                    "tools": rule_tools(procedural_tools(facts, areas, request), fired), "damages": damage_heads(facts),
+                    "tools": rule_tools(procedural_tools(facts, areas, request), fired, facts), "damages": damage_heads(facts),
                     "multi_roles": multiple_roles(facts)})
     vlog("case_analysis_fact_signals", {**out, "central": all_central(out)})
     if facts:
@@ -2095,22 +2151,44 @@ def regime_issues(facts: Optional[Dict[str, Any]], qualifications: List[Dict[str
 # (regime_candidates).
 REGIME_CANDIDATES_FLAG = "REGIME_CANDIDATES"
 _L241 = "Legge sul Procedimento Amministrativo 2026"        # method_candidates.L241: the document by its own name
+#
+# v48 (the PO's red on Leonardo: art. 949 c.c., the owner's negatoria, argued for the client who claims the servitude):
+# every entry, and every tool of PROCEDURAL_TOOLS, has a "client_role" -- the client's position it is for, one of
+# CLIENT_ROLES or a list of them (any of) -- and a regime's article may have its own in "ref_roles"; an entry or an
+# article whose condition fails on the case's facts (client_roles) is not added, logged with its role. "ref_commi": the
+# comma of an article the material must hold ("last": its last comma, anchored_writing.build).
+CLIENT_ROLES = ("any", "claims_servitude", "resists_servitude", "claims_ownership", "possessor", "landlocked_owner")
 REGIME_CANDIDATES: List[Dict[str, Any]] = [
-    {"id": "azione_reale_immobiliare", "families": ["civile"], "draft_pending_lawyer": True,
+    {"id": "azione_reale_immobiliare", "families": ["civile"], "draft_pending_lawyer": True, "client_role": "any",
      "triggers": [r"servit\w*", r"usucapi\w*", r"(?:azione )?confessori\w*", r"(?:azione )?negatori\w*", r"rivendic\w*",
                   r"passaggio coattivo"],
-     "refs": [("1079", "c.c."), ("948", "c.c."), ("949", "c.c.")]},      # 2653 c.c., 21 and 102 c.p.c.: its tools
-    {"id": "responsabilita_contrattuale", "families": ["civile"], "draft_pending_lawyer": True,
+     "refs": [("1079", "c.c."), ("948", "c.c."), ("949", "c.c.")],      # 2653 c.c., 21 and 102 c.p.c.: its tools
+     # the negatoria only for the owner resisting a claimed servitude, the rivendicazione only for who claims ownership
+     "ref_roles": {("949", "c.c."): "resists_servitude", ("948", "c.c."): "claims_ownership"}},
+    # v48: the possession's own articles (accessione e successione nel possesso, interruzione per perdita)
+    {"id": "usucapione", "families": ["civile"], "draft_pending_lawyer": True, "client_role": "any",
+     "triggers": [r"usucapi\w*"],
+     "refs": [("1146", "c.c."), ("1167", "c.c.")],
+     "ref_roles": {("1146", "c.c."): "possessor",
+                   ("1167", "c.c."): ["possessor", "claims_ownership", "resists_servitude"]}},
+    # v48: the indemnity and the exemption of houses, courtyards, gardens and threshing floors (art. 1051, last comma)
+    {"id": "passaggio_coattivo", "families": ["civile"], "draft_pending_lawyer": True, "client_role": "any",
+     "triggers": [r"passaggio coattivo", r"interclus\w*"],
+     "refs": [("1053", "c.c."), ("1051", "c.c.")],
+     "ref_roles": {("1053", "c.c."): ["landlocked_owner", "resists_servitude"],
+                   ("1051", "c.c."): ["landlocked_owner", "resists_servitude"]},
+     "ref_commi": {("1051", "c.c."): "last"}},
+    {"id": "responsabilita_contrattuale", "families": ["civile"], "draft_pending_lawyer": True, "client_role": "any",
      "triggers": [r"inadempi\w*", r"responsabilit\w* contrattual\w*", r"contatto sociale"],
      "refs": [("1218", "c.c."), ("1176", "c.c."), ("1223", "c.c."), ("1225", "c.c."), ("2236", "c.c.")]},
-    {"id": "impossibilita_sopravvenuta", "families": ["civile"], "draft_pending_lawyer": True,
+    {"id": "impossibilita_sopravvenuta", "families": ["civile"], "draft_pending_lawyer": True, "client_role": "any",
      "triggers": [r"impossibilit\w* sopravvenut\w*"],
      "refs": [("1256", "c.c."), ("1463", "c.c.")]},
-    {"id": "procedimento_amministrativo", "families": ["amministrativo"], "draft_pending_lawyer": True,
+    {"id": "procedimento_amministrativo", "families": ["amministrativo"], "draft_pending_lawyer": True, "client_role": "any",
      "triggers": [r"provvediment\w*", r"annullament\w*", r"autotutela", r"silenzio"],
      "refs": [("3", _L241), ("7", _L241), ("10-bis", _L241), ("21-octies", _L241), ("21-nonies", _L241),
               ("21-septies", _L241), ("29", "c.p.a."), ("31", "c.p.a.")]},
-    {"id": "ottemperanza", "families": ["amministrativo"], "draft_pending_lawyer": True,
+    {"id": "ottemperanza", "families": ["amministrativo"], "draft_pending_lawyer": True, "client_role": "any",
      "triggers": [r"ottemperanz\w*"],
      "refs": [("112", "c.p.a."), ("114", "c.p.a.")]},
 ]
@@ -2139,9 +2217,10 @@ def regime_tools(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str,
         return []
     fired = {r["id"]: r for r in regime_candidates(analysis, areas)}
     out = []
+    roles = client_roles((signals or {}).get("facts"), (signals or {}).get("fired") or [])
     for tool in PROCEDURAL_TOOLS:
         regime = fired.get(tool.get("regime") or "")
-        if not regime:
+        if not regime or not role_fits(tool.get("client_role", "any"), roles):
             continue
         matched = [f"{term} («{name}»)" for term, name in regime["matched"][:3]]
         if tool["id"] == "trascrizione_domanda":
@@ -2180,21 +2259,121 @@ def case_issue_names(analysis: Optional[Dict[str, Any]]) -> List[str]:
     return [n for n in (" ".join(x.split()) for x in names) if n and n != "None"]
 
 
-def regime_candidates(analysis: Optional[Dict[str, Any]], areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """[{id, refs, matched: [(trigger, the issue it is in)], draft_pending_lawyer}] of the REGIME_CANDIDATES the case's
-    issues and institutions call for, within the families of its areas (none known: every family)."""
+def regime_candidates(analysis: Optional[Dict[str, Any]], areas: Optional[List[str]] = None,
+                      log: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """[{id, refs, matched: [(trigger, the issue it is in)], draft_pending_lawyer, commi}] of the REGIME_CANDIDATES the
+    case's issues and institutions call for, within the families of its areas (none known: every family); an entry or
+    an article whose client_role the client's roles (client_roles) do not meet left out, into `log`."""
     families = {family(a) for a in areas or []} - {""}
     names = case_issue_names(analysis)
+    signals = (analysis or {}).get("fact_signals") or {}
+    roles = client_roles(signals.get("facts"), signals.get("fired") or [])
+    excluded: List[Dict[str, Any]] = []
     out = []
     for regime in REGIME_CANDIDATES:
         if families and not set(regime["families"]) & families:
             continue
         matched = [(m.group(0), name) for name in names for t in regime["triggers"]
                    for m in [re.search(rf"\b{t}", _low(name))] if m]
-        if matched:
-            out.append({"id": regime["id"], "refs": [tuple(r) for r in regime["refs"]],
-                        "matched": list(dict.fromkeys(matched)), "draft_pending_lawyer": regime["draft_pending_lawyer"]})
+        if not matched:
+            continue
+        if not role_fits(regime.get("client_role", "any"), roles):
+            excluded.append({"regime": regime["id"], "role": regime.get("client_role"), "roles": sorted(roles)})
+            continue
+        refs, left = [], []
+        for r in regime["refs"]:
+            want = (regime.get("ref_roles") or {}).get(tuple(r), "any")
+            (refs if role_fits(want, roles) else left).append(tuple(r))
+        for r in left:
+            excluded.append({"regime": regime["id"], "article": f"{r[0]} {r[1]}",
+                             "role": (regime.get("ref_roles") or {}).get(r), "roles": sorted(roles)})
+        if refs:
+            out.append({"id": regime["id"], "refs": refs, "matched": list(dict.fromkeys(matched)),
+                        "draft_pending_lawyer": regime["draft_pending_lawyer"],
+                        "commi": {f"{n} {c}": v for (n, c), v in (regime.get("ref_commi") or {}).items() if (n, c) in refs}})
+    if excluded and log is not None:
+        log.extend(excluded)
     return out
+
+
+# REGIME_CANDIDATES (v48): the actions whose own article an institution may resolve to, and the client's role each is for
+# -- the negatoria and the rivendicazione the owner's of the burdened land, the confessoria who claims the servitude, the
+# possessory actions the possessor's. Another client's: the article is the counterparty's (action_gate).
+ACTION_ARTICLES = {("949", "c.c."): "negatoria", ("948", "c.c."): "rivendicazione", ("1079", "c.c."): "confessoria",
+                   ("1168", "c.c."): "possessoria", ("1170", "c.c."): "possessoria"}
+ACTION_WORDS = {"negatoria": r"negatori", "rivendicazione": r"rivendic", "confessoria": r"confessori",
+                "possessoria": r"possessori|reintegra|manutenzion|spogli"}
+ACTION_ROLES = {"negatoria": ["resists_servitude", "claims_ownership"],
+                "rivendicazione": ["resists_servitude", "claims_ownership"],
+                "confessoria": ["claims_servitude"], "possessoria": ["possessor"]}
+
+
+def action_gate(institution: str, ref: Any, roles: set) -> Optional[Dict[str, Any]]:
+    """For an institution naming an action resolved to that action's article: {"institution", "article", "action",
+    "roles", "fits", "reason"}; None for any other institution or article."""
+    action = ACTION_ARTICLES.get(tuple(ref) if ref else ())
+    if not action or not re.search(ACTION_WORDS[action], _low(institution)):
+        return None
+    fits = role_fits(ACTION_ROLES[action], roles)
+    return {"institution": institution, "article": f"{ref[0]} {ref[1]}", "action": action,
+            "roles": sorted(set(roles) - {"any"}), "fits": fits,
+            "reason": (f"azione {action}: per il cliente" if fits else
+                       f"azione {action}: spetta a chi " + " o ".join(ACTION_ROLES[action]) + ", non al cliente")}
+
+
+def deterministic_side(ref: Any, roles: set) -> Optional[str]:
+    """Whose an article is by the role conditions alone, "cliente" or "controparte": an action's article
+    (ACTION_ARTICLES) by its action's roles, a regime candidate with its own role (ref_roles) by that; None for any
+    other article (ROLE_FIT's shadow agreement)."""
+    ref = tuple(ref)
+    action = ACTION_ARTICLES.get(ref)
+    if action:
+        return "cliente" if role_fits(ACTION_ROLES[action], roles) else "controparte"
+    for regime in REGIME_CANDIDATES:
+        want = (regime.get("ref_roles") or {}).get(ref)
+        if want is not None:
+            return "cliente" if role_fits(want, roles) else "controparte"
+    return None
+
+
+def role_fits(condition: Any, roles: set) -> bool:
+    """A client_role condition (a CLIENT_ROLES name or a list of them, any of) against the client's roles."""
+    wanted = condition if isinstance(condition, (list, tuple)) else [condition or "any"]
+    return "any" in wanted or bool(set(wanted) & set(roles))
+
+
+_RESISTS_RE = (r"negatori|neg\w* (?:l['’]esistenza|la servit|il diritto)|contest\w* (?:la servit|il (?:diritto di )?passagg)|"
+               r"pretes\w* (?:servit|diritto di passaggio)|vant\w* (?:una |la )?servit|nessun diritto di passaggio")
+_OWNERSHIP_RE = (r"rivendic|restitu\w*|riottener\w*|rilascio (?:del|della|dell['’])|accertament\w* della propriet|"
+                 r"riconosciment\w* della propriet")
+
+
+def client_roles(facts: Optional[Dict[str, Any]], fired: Sequence[Dict[str, Any]] = ()) -> set:
+    """The client's positions (CLIENT_ROLES) the facts show: claims_servitude (a fired rule acquiring a servitude, or a
+    possession of a way by the client), resists_servitude (the client contests a right someone claims, and claims none),
+    claims_ownership (asks for the thing back or for its ownership, or possesses another's), possessor (a possession
+    by the client), landlocked_owner (the client owns a plot without access)."""
+    roles = {"any"}
+    if not facts:
+        return roles
+    clients = _clients(facts)
+    mine = [p for p in facts.get("possession") or [] if _is_client(str(p.get("who") or ""), clients)]
+    words = _low(" ".join(str(r) for r in facts.get("requests") or [])) + " " + _texts(facts, ("events", "proceedings"))
+    if mine:
+        roles.add("possessor")
+    if _claims_servitude(list(fired)) or any(re.search(_WAY, f"{_low(p.get('use'))} {_low(p.get('asset'))}") for p in mine):
+        roles.add("claims_servitude")
+    if "claims_servitude" not in roles and re.search(_RESISTS_RE, words):
+        roles.add("resists_servitude")
+    owned = any(_is_client(str(h.get("owner") or ""), clients) for h in facts.get("property_history") or [])
+    if re.search(_OWNERSHIP_RE, words) or (mine and not owned and any(
+            "propriet" in _low(p.get("use")) or re.search(r"usucap", _low(p.get("how"))) for p in mine)):
+        roles.add("claims_ownership")
+    client_owner = any(_is_client(str(p.get("name") or ""), clients) and "propriet" in _low(p.get("role"))
+                       for p in facts.get("parties") or [])
+    if client_owner and _p_landlocked(facts, [], {}):
+        roles.add("landlocked_owner")
+    return roles
 
 
 _DEFECTS = _DEFECT + r"|non conform|danneggi|rott|allag|incendi|crollo"
@@ -2205,17 +2384,21 @@ _URGENT = (r"pericol|sicurezz|incolumit|rischio di (?:crollo|caduta|incendio|all
 # The procedural tools the facts call for, with the articles they rest on (a code table, like
 # practical_checklist.py): offered to the plan and to the procedural section with their texts.
 PROCEDURAL_TOOLS: List[Dict[str, Any]] = [
-    {"id": "accertamento_preventivo", "refs": [("696", "c.p.c."), ("696-bis", "c.p.c.")],
+    # v48: art. 696 c.p.c. for the state of places or things; art. 696-bis c.p.c. only with a damages or credit claim
+    # among the computed facts (procedural_tools; Leonardo: 696-bis offered to fix a gate, no damages claimed)
+    {"id": "accertamento_preventivo", "refs": [("696", "c.p.c."), ("696-bis", "c.p.c.")], "client_role": "any",
      "text": "Accertamento tecnico preventivo (art. 696 c.p.c.), per fissare lo stato dei luoghi, della cosa o dei "
              "danni prima che cambi, o consulenza tecnica preventiva ai fini della composizione della lite (art. "
              "696-bis c.p.c.), che accerta anche le cause e l'entità dei danni e tenta la conciliazione.",
+     "text_places": "Accertamento tecnico preventivo (art. 696 c.p.c.), per fissare lo stato dei luoghi o della cosa "
+                    "prima che cambi.",
      "why": "difetti, danni a cose o una prova che può andare perduta"},
-    {"id": "provvedimento_urgenza", "refs": [("700", "c.p.c.")],
+    {"id": "provvedimento_urgenza", "refs": [("700", "c.p.c.")], "client_role": "any",
      "text": "Provvedimento d'urgenza (art. 700 c.p.c.), se nel tempo necessario per la causa il diritto è "
              "minacciato da un pregiudizio imminente e irreparabile e nessun altro provvedimento cautelare lo tutela.",
      "why": "un pericolo per la sicurezza, un danno che si aggrava o un'urgenza"},
     # The criminal route of a personal harm caused by negligence, also when the frame's area is only civil.
-    {"id": "profilo_penale", "refs": [("589", "c.p."), ("590", "c.p."), ("76", "c.p.p."), ("2947", "c.c.")],
+    {"id": "profilo_penale", "refs": [("589", "c.p."), ("590", "c.p."), ("76", "c.p.p."), ("2947", "c.c.")], "client_role": "any",
      "text": "Profilo penale: la morte o le lesioni di una persona causate per colpa possono costituire reato "
              "(omicidio colposo, art. 589 c.p., procedibile d'ufficio; lesioni personali colpose, art. 590 c.p., "
              "di regola procedibili a querela): valutare la denuncia o la querela e i suoi termini, la costituzione "
@@ -2225,7 +2408,7 @@ PROCEDURAL_TOOLS: List[Dict[str, Any]] = [
      "why": "la morte o lesioni di una persona causate per colpa"},
     # The live answer of 26 Oct: asked whether "una richiesta anche sanzionatoria" was possible against the neighbour
     # who locked the road, the answer offered only damages. The tool for a sum per violation or day of delay.
-    {"id": "misure_coercitive", "refs": [("614-bis", "c.p.c.")],
+    {"id": "misure_coercitive", "refs": [("614-bis", "c.p.c.")], "client_role": "any",
      "text": "Misure di coercizione indiretta (art. 614-bis c.p.c.): con il provvedimento di condanna all'adempimento "
              "di obblighi diversi dal pagamento di somme di denaro (rimuovere un ostacolo, consentire un passaggio, "
              "astenersi da una condotta) il giudice, su richiesta di parte e salvo che sia manifestamente iniquo, "
@@ -2239,12 +2422,12 @@ PROCEDURAL_TOOLS: List[Dict[str, Any]] = [
 # other tools' rows (defensive_generation._regime_rows); "text" here is only what stands in when it was not read.
 # litisconsorzio only with the PARTIES_ENFORCED line naming two or more parties, those names as its facts.
 PROCEDURAL_TOOLS += [
-    {"id": "trascrizione_domanda", "regime": "azione_reale_immobiliare", "refs": [("2653", "c.c.")],
+    {"id": "trascrizione_domanda", "regime": "azione_reale_immobiliare", "refs": [("2653", "c.c.")], "client_role": "any",
      "text": "Trascrizione della domanda giudiziale (art. 2653 c.c.).", "why": "un'azione reale su un immobile"},
-    {"id": "competenza_territoriale", "regime": "azione_reale_immobiliare", "refs": [("21", "c.p.c.")],
+    {"id": "competenza_territoriale", "regime": "azione_reale_immobiliare", "refs": [("21", "c.p.c.")], "client_role": "any",
      "text": "Foro per le cause relative a diritti reali su immobili (art. 21 c.p.c.).",
      "why": "un'azione reale su un immobile"},
-    {"id": "litisconsorzio", "regime": "azione_reale_immobiliare", "refs": [("102", "c.p.c.")], "parties": True,
+    {"id": "litisconsorzio", "regime": "azione_reale_immobiliare", "refs": [("102", "c.p.c.")], "parties": True, "client_role": "any",
      "text": "Litisconsorzio necessario (art. 102 c.p.c.).", "why": "più parti da convenire"},
 ]
 
@@ -2295,16 +2478,31 @@ def procedural_tools(facts: Optional[Dict[str, Any]], areas: Optional[List[str]]
     if sanction or (request and asks_sanction(request)):
         found["misure_coercitive"] = [sanction or " ".join(request.split())[:140]]
     out = []
+    roles = client_roles(facts)
     for t in PROCEDURAL_TOOLS:
-        if t["id"] not in found:
+        if t["id"] not in found or not role_fits(t.get("client_role", "any"), roles):
             continue
         refs = [list(r) for r in t["refs"]]
+        text = t["text"]
+        if t["id"] == "accertamento_preventivo" and not _credit_claim(facts):
+            refs, text = [r for r in refs if r[0] != "696-bis"], t["text_places"]
         if t["id"] == "profilo_penale":         # the offence the harm fits: death, injury, or both
             death = _death(facts)
             drop = ([["590", "c.p."]] if death and not _injured(facts) else []) + ([] if death else [["589", "c.p."]])
             refs = [r for r in refs if r not in drop]
-        out.append({"id": t["id"], "refs": refs, "text": t["text"], "why": t["why"], "matched": found[t["id"]]})
+        out.append({"id": t["id"], "refs": refs, "text": text, "why": t["why"], "matched": found[t["id"]]})
     return out
+
+
+_CREDIT_RE = r"risarc|danni\b|danno\b|credit|pagament|somm[ae]\b|indennizz|rimbors|corrispettiv|inadempi"
+
+
+def _credit_claim(facts: Dict[str, Any]) -> bool:
+    """A damages or credit claim among the computed facts: a damage head, money, an injury, a contract, or a request
+    for one."""
+    if damage_heads(facts) or facts.get("money") or facts.get("injuries") or facts.get("contracts"):
+        return True             # a contract: its inexact performance is a credit (art. 696-bis c.p.c.)
+    return any(re.search(_CREDIT_RE, _low(r)) for r in facts.get("requests") or [])
 
 
 _DEATH_RE = r"\bmort[eoi]\b|\bdeced|\bdecess|perso la vita|\bannegat|\bucciso|privo di vita|\bsenza vita"

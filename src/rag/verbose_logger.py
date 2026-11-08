@@ -17,7 +17,10 @@ ALWAYS_EVENTS = {"pipeline_exception"}
 
 # What traces a run: scripts/diagnose_long.py's case logs carry these whatever VERBOSE_LOGGING says.
 TRACE_EVENTS = {"fact_rules", "case_analysis_plan_final", "case_analysis_plan_call", "case_analysis_plan_remake",
-                "llm_reply_cut", "plan_then_write_fallback", "pipeline_exception"}
+                "llm_reply_cut", "plan_then_write_fallback", "pipeline_exception", "citation_removed",
+                "grounded_exclusion_accepted", "case_analysis_section_fit", "case_analysis_norme_split",
+                "case_analysis_role_fit", "passage_capped", "case_analysis_norme_scope",       # v51
+                "case_analysis_repetition_guard", "case_analysis_usucapione_conditional"}
 
 
 def trace(event: str, data: dict = None, duration_ms: float = None):

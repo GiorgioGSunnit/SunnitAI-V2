@@ -519,6 +519,10 @@ def test_procedural_tools_follow_the_facts():
     tools = fs.procedural_tools(facts, ["contratti"])
     assert [t["id"] for t in tools] == ["accertamento_preventivo"]
     assert tools[0]["refs"] == [["696", "c.p.c."], ["696-bis", "c.p.c."]] and "difetti" in tools[0]["matched"][0]
+    # v48: art. 696 c.p.c. alone for the state of a place, with no damages or credit claim among the facts
+    gate = F(events=[ev("il cancello è stato danneggiato e la prova può andare perduta")])
+    places = fs.procedural_tools(gate, ["diritti_reali"])
+    assert places and places[0]["refs"] == [["696", "c.p.c."]] and "696-bis" not in places[0]["text"]
     gas = F(events=[ev("la caldaia installata dalla ditta perde gas")],
             risks=[{"what": "fuga di gas in casa", "kind": "sicurezza"}])
     assert [t["id"] for t in fs.procedural_tools(gas, [])] == ["provvedimento_urgenza"]

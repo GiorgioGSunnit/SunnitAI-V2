@@ -51,19 +51,21 @@ def _plan():
          "pronunce": [], "obiezione": "", "replica": ""}]}
 
 
-def test_every_graded_prompt_row_absent_from_the_plan_goes_in_by_rule():
+def test_every_graded_prompt_row_absent_from_the_plan_goes_in_by_rule(monkeypatch):
+    monkeypatch.delenv("EDGE_EXPAND", raising=False)        # its signal would join the reasons (test_edge_expand.py)
     rows = [row("1062", grade=3), row("1079", grade=2, issue="tutela della servitù di passaggio",
                                           _signals=["current", "frame", "distill"]),
             row("1170", grade=3, heading="Azione di manutenzione"),        # grade 3: whatever found it
             row("1061", grade=2, heading="Servitù non apparenti", _signals=["distill"], _institution=True),
-            row("2043", grade=1),                                          # grade 1: never
+            row("2043", grade=1),                                          # grade 1 without two signals
             row("1027", grade=3),                                          # not in the prompt's material
             row("1052", grade=3)]                                          # excluded by a fired rule
     articles = " ".join(f"[art. {n} c.c.]" for n in ("1062", "1079", "1170", "1061", "2043", "1052"))
     headings = ptw._headings(rows)
     issue_of = {r["_article"]: r.get("_grade_issue") or "" for r in rows}
     plan, inserted, skipped = ptw.include_by_rule(_plan(), rows, articles, headings, issue_of, [("1052", "c.c.")])
-    assert skipped == []
+    assert [(e["article"], e["reason"]) for e in skipped] == [
+        ("2043 c.c.", "grade 1 without two of frame/distill/institution/ruling_applied")]
     assert {e["article"]: e["signals"] for e in inserted}["1061 c.c."] == ["distill", "institution"]
     assert ptw.rule_inserted(plan) == {("1079", "c.c."), ("1170", "c.c."), ("1061", "c.c.")}
     where = {e["article"]: e["issue"] for e in inserted}
@@ -109,7 +111,8 @@ def test_make_plan_passes_what_check_plan_removed(monkeypatch, events):
     assert log["skipped"] == [{"article": "1061 c.c.", "grade": "3", "signals": [], "reason": "check_plan_removed"}]
 
 
-def test_a_grade_2_needs_one_of_frame_distill_institution():
+def test_a_grade_2_needs_one_of_frame_distill_institution(monkeypatch):
+    monkeypatch.delenv("EDGE_EXPAND", raising=False)
     rows = [row("1062", grade=3),
             row("1079", grade=2, _signals=["current", "baseline"]),                    # other searches only
             row("2653", grade=2, _regime_candidate="azione_reale_immobiliare"),        # a regime candidate alone
@@ -139,7 +142,9 @@ def test_an_exempt_heading_or_crossref_row_counts_as_grade_2():
     plan, inserted, skipped = ptw.include_by_rule(_plan(), rows, articles, ptw._headings(rows), {}, ())
     assert {e["article"]: (e["grade"], e["exempt"]) for e in inserted} == {
         "1170 c.c.": ("2", "heading"), "1063 c.c.": ("2", "crossref")}
-    assert {e["article"]: e["exempt"] for e in skipped} == {"444 c.p.p.": "crossref", "1169 c.c.": "heading"}
+    assert {e["article"]: e.get("exempt") for e in skipped} == {"444 c.p.p.": "crossref", "1169 c.c.": "heading",
+                                                               "1173 c.c.": None}     # graded 1: its own grade's rule
+    assert next(e for e in skipped if e["article"] == "1173 c.c.")["grade"] == "1"
     assert ptw.rule_inserted(plan) == {("1170", "c.c."), ("1063", "c.c.")}
     missing = ptw._omitted(plan, [("A", "Testo senza citazioni.")], rows, [])      # unforced
     assert [m[0] for m in missing] == [("1062", "c.c.")]
@@ -150,6 +155,29 @@ def test_an_exempt_row_check_plan_removed_stays_out():
     plan, inserted, skipped = ptw.include_by_rule(_plan(), rows, "[art. 1062 c.c.] [art. 1170 c.c.]", {}, {}, (),
                                                   [("1170", "c.c.")])
     assert inserted == [] and [(e["article"], e["reason"]) for e in skipped] == [("1170 c.c.", "check_plan_removed")]
+
+
+def test_a_grade_1_needs_two_distinct_signals_and_a_grade_0_never_goes_in(events, monkeypatch):
+    monkeypatch.delenv("EDGE_EXPAND", raising=False)
+    rows = [row("1062", grade=3),
+            row("1079", grade=1, _signals=["frame", "distill"]),                         # two searches
+            row("1061", grade=1, _signals=["frame"], _vote=True),                         # a search, voted by rulings
+            row("1158", grade=1, _institution=True, _vote_stats={"rulings": 3}),          # applied by 3 similar rulings
+            row("1051", grade=1, _signals=["distill"], _map=True),                        # a confirmed map hypothesis
+            row("1027", grade=1, _signals=["frame", "frame", "current"]),                 # one distinct strong signal
+            row("2653", grade=1, _signals=["frame"], _regime_candidate="x"),              # a regime candidate: not one
+            row("1102", grade=1, _institution=True, _vote_stats={"rulings": 2}),          # 2 rulings: not applied
+            row("1170", grade=0, _signals=["frame", "distill"], _institution=True)]       # grade 0: never
+    articles = " ".join(f"[art. {n} c.c.]" for n in ("1062", "1079", "1061", "1158", "1051", "1027", "2653", "1102", "1170"))
+    plan, inserted, skipped = ptw.include_by_rule(_plan(), rows, articles, ptw._headings(rows), {}, ())
+    assert {e["article"]: (e["grade"], e["signals"]) for e in inserted} == {
+        "1079 c.c.": ("1", ["frame", "distill"]), "1061 c.c.": ("1", ["frame", "ruling_applied"]),
+        "1158 c.c.": ("1", ["institution", "ruling_applied"]), "1051 c.c.": ("1", ["distill", "ruling_applied"])}
+    assert {e["article"] for e in skipped} == {"1027 c.c.", "2653 c.c.", "1102 c.c."}
+    assert all(e["reason"] == "grade 1 without two of frame/distill/institution/ruling_applied" for e in skipped)
+    assert "1170 c.c." not in {e["article"] for e in inserted + skipped}
+    assert ptw.rule_inserted(plan) == {("1079", "c.c."), ("1061", "c.c."), ("1158", "c.c."), ("1051", "c.c.")}
+    assert [m[0] for m in ptw._omitted(plan, [("A", "Testo senza citazioni.")], rows, [])] == [("1062", "c.c.")]
 
 
 def test_a_rule_inserted_article_is_never_forced_into_a_paragraph():
@@ -203,6 +231,52 @@ def test_the_rounds_stop_at_the_cap(monkeypatch, events):
     by_label = {f"{n} c.c.": (str(n), "c.c.") for n in range(1, 11)}
     graded, _, _ = dg._grade_prompt_rows(texts, by_label, rows, lambda c: ({}, list(c)), "f", "r", {}, "it")
     assert list(graded) == ["1 c.c.", "2 c.c.", "3 c.c."]
+
+
+def test_a_final_round_grades_what_the_last_estimate_admits(monkeypatch, events):
+    # h1's shape: every round's grade 0 frees room, so the four rounds end with articles in reach ungraded
+    monkeypatch.setattr(dg, "_fit_parere_prompt", _budget(2))
+    rows = [row(str(n), _fused_rank=100 + n) for n in range(1, 13)]
+    texts = {f"{n} c.c.": "t" for n in range(1, 13)}
+    by_label = {f"{n} c.c.": (str(n), "c.c.") for n in range(1, 13)}
+    asked = []
+
+    def grade_these(chosen):
+        asked.append(list(chosen))
+        return {dg._applicability_key(label): {"grade": 0} for label in chosen}, []
+    graded, _, _ = dg._grade_prompt_rows(texts, by_label, rows, grade_these, "f", "r", {}, "it")
+    log = next(d for n, d in events if n == "case_analysis_grade_prompt")
+    assert log["rounds"] == [2, 2, 2, 2] and log["final_round"] == 2      # 9 and 10, which round 4's grade 0 let in
+    assert asked[-1] == ["9 c.c.", "10 c.c."] and {"9 c.c.", "10 c.c."} <= set(graded)
+    # their grade 0 frees room again: 11 and 12 are in reach, left ungraded, logged with place and fusion rank
+    assert log["left_in_reach"] == [{"article": "11 c.c.", "check_order": 11, "fused_rank": 111},
+                                    {"article": "12 c.c.", "check_order": 12, "fused_rank": 112}]
+    assert log["left_because"] == "room freed by the final round"
+
+
+def test_rows_left_in_reach_at_the_cap_are_logged_with_their_ranks(monkeypatch, events):
+    monkeypatch.setattr(dg, "_fit_parere_prompt", _budget(10))
+    monkeypatch.setattr(dg, "_GRADE_ALL_PROMPT_CAP", 3)
+    rows = [row(str(n), _fused_rank=n) for n in range(1, 6)]
+    texts = {f"{n} c.c.": "t" for n in range(1, 6)}
+    by_label = {f"{n} c.c.": (str(n), "c.c.") for n in range(1, 6)}
+    dg._grade_prompt_rows(texts, by_label, rows, lambda c: ({dg._applicability_key(k): {"grade": 2} for k in c}, []),
+                          "f", "r", {}, "it")
+    log = next(d for n, d in events if n == "case_analysis_grade_prompt")
+    assert log["final_round"] == 0 and log["left_because"] == "cap"
+    assert [(e["article"], e["check_order"], e["fused_rank"]) for e in log["left_in_reach"]] == [
+        ("4 c.c.", 4, 4), ("5 c.c.", 5, 5)]
+
+
+def test_nothing_left_when_the_rounds_converge(monkeypatch, events):
+    monkeypatch.setattr(dg, "_fit_parere_prompt", _budget(4))
+    rows = [row(str(n)) for n in range(1, 11)]
+    texts = {f"{n} c.c.": "t" for n in range(1, 11)}
+    by_label = {f"{n} c.c.": (str(n), "c.c.") for n in range(1, 11)}
+    dg._grade_prompt_rows(texts, by_label, rows, lambda c: ({dg._applicability_key(k): {"grade": 2} for k in c}, []),
+                          "f", "r", {}, "it")
+    log = next(d for n, d in events if n == "case_analysis_grade_prompt")
+    assert log["rounds"] == [4] and log["final_round"] == 0 and log["left_in_reach"] == [] and "left_because" not in log
 
 
 def _grading_model(zero=()):
@@ -277,19 +351,40 @@ def test_without_the_flag_the_order_is_retrieval_s(monkeypatch, events):
 
 # --- D. REGIME_CANDIDATES --------------------------------------------------------------------------------------------
 
-def _servitude_case():
-    return {"frame": {"areas": ["civile"], "tasks": ["Come tutelare il passaggio"],
+def _servitude_case(requests=()):
+    """v48: with requests, the client's typed facts (client_roles reads them)."""
+    case = {"frame": {"areas": ["civile"], "tasks": ["Come tutelare il passaggio"],
                       "central_issue_candidates": [{"nome": "Servitù di passaggio per destinazione del padre di famiglia"}]},
             "questioni": [{"titolo": "Acquisto per usucapione", "istituti": [{"nome": "azione confessoria"}]}]}
+    if requests:
+        case["fact_signals"] = {"facts": {"parties": [{"name": "Sempronio", "role": "cliente, proprietario"}],
+                                          "client_side": "Sempronio", "requests": list(requests)}, "fired": []}
+    return case
 
 
 def test_the_regimes_the_case_issues_call_for():
-    found = {r["id"]: r for r in fs.regime_candidates(_servitude_case(), ["civile"])}
+    excluded = []
+    found = {r["id"]: r for r in fs.regime_candidates(_servitude_case(), ["civile"], log=excluded)}
     assert set(found) == {"azione_reale_immobiliare"}
     terms = {t for t, _ in found["azione_reale_immobiliare"]["matched"]}
     assert {"servitù", "usucapione", "azione confessoria"} <= terms
-    assert found["azione_reale_immobiliare"]["refs"] == [("1079", "c.c."), ("948", "c.c."), ("949", "c.c.")]
+    # v48: no facts showing the client's position: neither the negatoria nor the rivendicazione
+    assert found["azione_reale_immobiliare"]["refs"] == [("1079", "c.c.")]
+    assert {e.get("article") for e in excluded} >= {"948 c.c.", "949 c.c.", "1146 c.c.", "1167 c.c."}
     assert all(r["draft_pending_lawyer"] for r in fs.REGIME_CANDIDATES)
+    assert all(r.get("client_role") for r in fs.REGIME_CANDIDATES) and all(t.get("client_role") for t in fs.PROCEDURAL_TOOLS)
+
+
+def test_the_negatoria_only_for_the_owner_resisting_and_the_rivendicazione_only_for_who_claims_ownership():
+    resists = fs.regime_candidates(_servitude_case(["Il vicino vanta una servitù di passaggio: Sempronio la contesta"]),
+                                   ["civile"])
+    assert ("949", "c.c.") in resists[0]["refs"] and ("948", "c.c.") not in resists[0]["refs"]
+    owner = fs.regime_candidates(_servitude_case(["Ottenere la restituzione della stanza posseduta da Tizio"]), ["civile"])
+    assert ("948", "c.c.") in owner[0]["refs"] and ("949", "c.c.") not in owner[0]["refs"]
+    claims = _servitude_case(["far valere il diritto di passaggio"])
+    claims["fact_signals"]["fired"] = [{"acquired_right": True, "institutions": ["servitù per destinazione del padre di famiglia"]}]
+    refs = fs.regime_candidates(claims, ["civile"])[0]["refs"]
+    assert ("949", "c.c.") not in refs and ("948", "c.c.") not in refs and ("1079", "c.c.") in refs
 
 
 def test_a_regime_of_another_family_is_not_called():
@@ -314,11 +409,13 @@ def test_the_candidates_enter_the_pool_once_and_are_graded(monkeypatch, events):
         return [row(n, c) for n, c in refs if n != "949"]
     monkeypatch.setattr(dg, "_fetch_any", fetch)
     picked = {"article_rows": [row("1079")], "selected": [("1079", "c.c.")]}
-    out = dg._add_regime_candidates(None, None, "db", _servitude_case(), picked)
+    case = _servitude_case(["Sempronio contesta la servitù e chiede la restituzione del fondo"])     # both roles (v48)
+    out = dg._add_regime_candidates(None, None, "db", case, picked)
     assert ("1079", "c.c.") not in asked                      # already in the pool
     added = [r for r in out["article_rows"] if r.get("_source") == dg.REGIME_CANDIDATE_SOURCE]
-    assert {r["_article"] for r in added} == {("948", "c.c.")}
-    assert all(r["_regime_candidate"] == "azione_reale_immobiliare" and r["_draft_pending_lawyer"] for r in added)
+    assert {r["_article"] for r in added} == {("948", "c.c."), ("1167", "c.c.")}      # 1167: usucapione's (v48)
+    assert all(r["_regime_candidate"] in ("azione_reale_immobiliare", "usucapione") and r["_draft_pending_lawyer"]
+               for r in added)
     log = next(d for n, d in events if n == "case_analysis_regime_candidates")
     assert log["not_found"] == ["949 c.c."] and log["already_in_pool"] == ["1079 c.c."]
     to_check, _ = dg._applicability_candidates("Fatti.", "", out["article_rows"])
@@ -428,10 +525,10 @@ LEONARDO = {"parties": [{"name": "Leonardo", "role": "cliente, proprietario"}, {
 REAL = {"frame": {"areas": ["civile"]}, "questioni": [{"titolo": "Servitù di passaggio"}]}
 
 
-def test_the_real_action_names_the_author_and_the_owners_on_the_path(monkeypatch):
+def test_the_real_action_names_the_author_and_every_current_owner(monkeypatch):
     authors, owners, how = fs.real_action_defendants(LEONARDO)
     # never Mevio (owner in 1900, in the chain of title only), never Sempronio (sold); Annibale between Leonardo's land
-    assert (authors, owners, how) == (["Domitilla"], ["Tizio", "Caio", "Annibale"], "path")
+    assert (authors, owners, how) == (["Domitilla"], ["Tizio", "Caio", "Annibale"], "current owners")
     signals = {"facts": LEONARDO, "defendants": SIGNALS["defendants"]}
     monkeypatch.setenv("PARTIES_ENFORCED", "true")
     assert fs.parties_line(signals, REAL) == (
@@ -446,13 +543,15 @@ def test_no_owner_on_the_path_every_other_owner_is_named():
     facts = {**LEONARDO, "access": [{"asset": "fondo", "landlocked": "sì", "how_reached": "una strada sterrata"}],
              "property_history": LEONARDO["property_history"][:4]}
     authors, owners, how = fs.real_action_defendants(facts)
-    assert authors == ["Domitilla"] and owners == ["Tizio", "Caio", "Annibale"] and how == "all proprietari"
+    assert authors == ["Domitilla"] and owners == ["Tizio", "Caio", "Annibale"] and how == "current owners"
 
 
-def test_an_owner_the_facts_place_off_the_path_is_left_out():
+def test_an_owner_the_facts_place_off_the_path_is_named_too():
+    """v51: no filter by where the facts place the land; an owner only in property_history counts as well."""
     facts = {**LEONARDO, "parties": LEONARDO["parties"] + [{"name": "Bruto", "role": "proprietario"}],
-             "works_or_signs": [{"what": "un capannone di Bruto", "crosses": ""}]}
-    assert fs.real_action_defendants(facts)[1] == ["Tizio", "Caio", "Annibale"]
+             "works_or_signs": [{"what": "un capannone di Bruto", "crosses": ""}],
+             "property_history": LEONARDO["property_history"] + [{"owner": "Livia", "asset": "un bosco"}]}
+    assert fs.real_action_defendants(facts)[1] == ["Tizio", "Caio", "Annibale", "Bruto", "Livia"]
 
 
 @pytest.mark.parametrize("mevio", [
@@ -487,7 +586,8 @@ def test_the_real_action_brings_its_tools_and_102_only_with_the_parties_line(mon
     claimed = {**signals, "fired": [{"acquired_right": True, "institutions": ["servitù di passaggio"]}]}
     assert fs.regime_tools(claimed, REAL)[0]["matched"] == [
         "trascrizione della domanda giudiziale (azione confessoria) ai sensi dell'art. 2653, n. 1, c.c."]
-    one = {**LEONARDO, "parties": LEONARDO["parties"][:1] + LEONARDO["parties"][4:5]}  # Domitilla alone: one name
+    one = {**LEONARDO, "parties": LEONARDO["parties"][:1] + LEONARDO["parties"][4:5],   # Domitilla alone: one name
+           "property_history": [e for e in LEONARDO["property_history"] if e["owner"] in ("Leonardo", "Domitilla")]}
     assert "litisconsorzio" not in {t["id"] for t in fs.regime_tools({**signals, "facts": one}, REAL)}
     criminal = {"frame": {"areas": ["penale"]}, "questioni": [{"titolo": "Servitù di passaggio"}]}
     assert fs.regime_tools(signals, criminal) == []                                    # civil cases only
@@ -571,6 +671,7 @@ def real_case(monkeypatch, events):
 def test_the_real_facts_give_the_parties_and_the_tools(monkeypatch, real_case, events):
     authors, owners, _ = fs.real_action_defendants(real_case["fact_signals"]["facts"])
     assert (authors, owners) == (["Domitilla"], ["Tizio", "Caio", "Annibale"])           # never Mevio, never Sempronio
+    assert "Annibale" in fs.parties_line(real_case["fact_signals"], real_case)           # v51: on the real fixture
     from src.rag import doc_lookup
     monkeypatch.setattr(doc_lookup, "_fetch_doc_names", lambda driver, database: [])
     monkeypatch.setattr(fs, "attach_term_sources", lambda *a, **k: None)
@@ -586,6 +687,7 @@ def test_the_real_facts_give_the_parties_and_the_tools(monkeypatch, real_case, e
 
 
 def test_the_plan_step_runs_on_the_real_facts(monkeypatch, real_case, events):
+    monkeypatch.delenv("ROLE_FIT", raising=False)          # its calls are not stubbed here (tests/test_v48.py has them)
     raw = {"questioni": [{"titolo": "Usucapione di servitù apparente", "argomento": "La servitù di passaggio apparente.",
                           "norme": ["art. 1061 c.c.", "art. 1158 c.c."]}]}
     monkeypatch.setattr(ptw, "_plan_json", lambda messages: raw)

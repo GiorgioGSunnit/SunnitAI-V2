@@ -437,7 +437,26 @@
           "article": "2653",
           "status": "draft — pending lawyer validation"
         }
-      ]
+      ],
+      "forbidden_cited": [
+        {
+          "code": "cc",
+          "article": "949",
+          "why": "the negatoria is the owner's action against a claimed servitude; Leonardo claims the servitude (azione confessoria, art. 1079 c.c.)",
+          "status": "draft — pending lawyer validation"
+        }
+      ],
+      "must_name": [
+        "Tizio",
+        "Caio",
+        "Annibale"
+      ],
+      "must_state": [
+        "rimessione (?:delle cose )?in pristino",
+        "risarcimento",
+        "trascrizione della domanda"
+      ],
+      "checks_status": "draft — pending lawyer validation"
     },
     {
       "id": "h4",

@@ -14,6 +14,8 @@ out of the stable-miss logic. Prints, in markdown:
   6  per run (partial ones too), the unexpected norms the qualification check found rubrica-incompatible
      (fit.compatibile false), with channels, grade, plan_source and whether the norm is a regime candidate or a
      procedural tool; then the diff between MISUSE_RUNS
+  7  per run (partial ones too) and case, the wall seconds, the LLM calls and their seconds (report.json's "llm"; a
+     run made before v48 has them read off its cases/<id>/llm dumps when they are there), with each run's means
 
 A stable miss's mechanism is the one of the most runs (ties: the earliest in STAGE order). Nothing is written.
 
@@ -43,7 +45,7 @@ CASE_IDS, STAGES = _case_ids()
 MECHANISMS = [
     ("never in pool", {"LOST_AT_UNDERSTANDING", "NOT_IN_POOL"},
      ["channels", "hits", "rank", "in_corpus", "resolved_by_institution", "named_by"]),
-    ("in pool, not in prompt", {"BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT"}, ["cap", "check", "dropped", "rank"]),
+    ("in pool, not in prompt", {"BELOW_CAP", "GATED_OUT", "REJECTED_BY_CHECK", "NOT_IN_PROMPT"}, ["cap", "check", "dropped", "rank"]),
     ("in prompt, not in plan", {"NOT_IN_PLAN"}, ["plan_notes", "check"]),
     ("in plan, not mentioned", {"NOT_WRITTEN"}, ["plan_notes", "marked_unverified", "flagged_by_qualification"]),
 ]
@@ -148,14 +150,64 @@ def table(header, rows):
     return "\n".join(out)
 
 
+RUN_DIRS = {}       # run name -> its folder (table 7 reads the dumps next to report.json)
+
+
 def load_runs(root):
     runs = {}
     for path in sorted(glob.glob(os.path.join(root, "**", "report.json"), recursive=True)):
         name = os.path.relpath(os.path.dirname(path), root)
+        if os.path.basename(os.path.dirname(os.path.dirname(path))) == "cases":
+            continue                    # a case's own dump folder, not a run
         with open(path, encoding="utf-8") as fh:
             cases = json.load(fh)
-        runs[name] = {c["id"]: c for c in cases if c.get("id") in CASE_IDS}
+        if not isinstance(cases, list):
+            continue
+        RUN_DIRS[name] = os.path.dirname(path)
+        runs[name] = {c["id"]: c for c in cases if isinstance(c, dict) and c.get("id") in CASE_IDS}
     return runs
+
+
+def _llm_of(run, cid, case):
+    """A case's {"calls", "seconds"}: report.json's "llm", else read off its dumps, else {}."""
+    if case.get("llm"):
+        return case["llm"]
+    folder = os.path.join(RUN_DIRS.get(run, ""), "cases", cid, "llm")
+    if not os.path.isdir(folder):
+        return {}
+    calls, seconds = 0, 0.0
+    for name in os.listdir(folder):
+        if name.endswith(".txt"):
+            calls += 1
+            with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as fh:
+                m = re.search(r"^duration: ([\d.]+)s", fh.read(2000), re.M)
+            seconds += float(m.group(1)) if m else 0.0
+    return {"calls": calls, "seconds": round(seconds, 1)}
+
+
+def timing_table(runs):
+    print("\n## 7. Wall seconds, LLM calls and LLM call-seconds per case\n")
+    names = list(runs)
+    rows, sums = [], {r: [0.0, 0, 0.0, 0, 0] for r in names}
+    for cid in CASE_IDS:
+        cells = [cid]
+        for r in names:
+            case = runs[r].get(cid)
+            if not case:
+                cells.append("–")
+                continue
+            llm = _llm_of(r, cid, case)
+            sums[r][0] += case.get("seconds") or 0
+            sums[r][3] += 1
+            if llm:
+                sums[r][1] += llm.get("calls") or 0
+                sums[r][2] += llm.get("seconds") or 0
+                sums[r][4] += 1
+            cells.append(f"{case.get('seconds') or 0:.0f}s" + (f" / {llm['calls']} / {llm['seconds']:.0f}s" if llm else " / – / –"))
+        rows.append(cells)
+    rows.append(["mean"] + [(f"{s[0] / s[3]:.0f}s" if s[3] else "–")
+                            + (f" / {s[1] / s[4]:.1f} / {s[2] / s[4]:.0f}s" if s[4] else " / – / –") for s in sums.values()])
+    print(table(["case"] + [f"{r}: wall / calls / LLM s" for r in names], rows))
 
 
 def main():
@@ -267,6 +319,7 @@ def main():
                      for cid, label, r, slot in by_stage[s]]))
 
     misuse_table(runs, args.misuse_runs)
+    timing_table(runs)
 
 
 def misuse_table(runs, pair):

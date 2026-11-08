@@ -164,18 +164,111 @@ def _code_before(text):
     return None
 
 
+# v49: the answer's lists and bare numbers read as the pipeline's citation reader reads them
+# (defensive_generation._article_lists, plan_then_write.read_citations): a list under one "artt." whose items carry
+# their own code or a comma ("artt. 581 c.p. e 582 c.p.", "artt. 1176, comma 2, e 1218 c.c."), an item without a code
+# taking the next coded item's; a list, or a citation inside a quotation, with no code after or before it, the code of
+# the nearest explicit citation in its sentence or quotation ("l'art. 584 c.p. punisce «... dagli artt. 581 e 582 ...»").
+# A lone bare "art. 43" in prose stays bare (NAMED-BARE), as before.
+_LIST_HEAD = re.compile(r"\b(?:artt?\.?|articol[oi])\s*(?=\d)", re.I)
+_LIST_NUMBER = re.compile(rf"({_NUMBER})(?:\s*,?\s*(?:co\.|comma|commi)\s*\d+(?:\s*,?\s*(?:lett\.|lettera|n\.)\s*\w+)?)?",
+                          re.I)
+_LIST_SEP = re.compile(r"(?:\s*,\s*(?:e|ed)\s+|\s*,\s*|\s+(?:e|ed)\s+)", re.I)
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-ZÀ-Ü«“\"*#-])|\n\s*\n")
+_SIX = ("cpp", "cpc", "cpa", "cp", "cc")
+
+
+def _number_key(raw):
+    m = _MENTION_NUM.match(raw.strip())
+    return f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m and m.group(2) else (m.group(1) if m else raw.strip())
+
+
+def _code_right_after(text):
+    """(code key, length) of a code written right after an item: ", c.p.", " del codice civile"; (None, 0) else."""
+    for key in _CODE_ORDER:
+        m = re.match(rf"\s*,?\s*(?:del\s+)?(?:{CODES[key][1]})", text, re.I)
+        if m:
+            return key, m.end()
+    return None, 0
+
+
+def _lists(answer):
+    """[(start, end, [(number, code key)])] of the lists of two or more articles that all get a code."""
+    out = []
+    for head in _LIST_HEAD.finditer(answer):
+        pos, items = head.end(), []
+        while True:
+            m = _LIST_NUMBER.match(answer, pos)
+            if not m:
+                break
+            code, length = _code_right_after(answer[m.end():m.end() + 60])
+            items.append((_number_key(m.group(1)), code, m.end() + length))
+            sep = _LIST_SEP.match(answer, items[-1][2])
+            if not sep or not re.match(r"\d", answer[sep.end():sep.end() + 1]):
+                break
+            pos = sep.end()
+        while items and items[-1][1] is None:
+            items.pop()
+        if len(items) < 2:
+            continue
+        refs, code = [], None
+        for number, own, _ in reversed(items):
+            code = own or code
+            refs.append((number, code))
+        out.append((head.start(), items[-1][2], list(reversed(refs))))
+    return out
+
+
+def _sentence_bounds(answer, at):
+    starts = [0] + [m.end() for m in _SENTENCE_END.finditer(answer)]
+    low = max(s for s in starts if s <= at)
+    high = min([s for s in starts if s > at] + [len(answer)])
+    return low, high
+
+
+def _near_code(answer, start, end, explicit):
+    """The code of the explicit citation nearest to a bare run, in its sentence or the quotation holding it."""
+    low, high = _sentence_bounds(answer, start)
+    opening = answer.rfind("«", 0, start)
+    if opening > answer.rfind("»", 0, start):
+        closing = answer.find("»", end)
+        low = min(low, _sentence_bounds(answer, opening)[0])
+        high = max(high, _sentence_bounds(answer, closing if closing >= 0 else end)[1])
+    near = [(max(a - end, start - b, 0), code) for a, b, code in explicit
+            if a < high and b > low and not (a >= start and b <= end)]
+    return min(near, key=lambda x: x[0])[1] if near else None
+
+
 def mentions(answer):
-    """(article, code key or None) for every article the answer names: the code just after it, else the
-    one just before."""
-    found = []
-    for run in _MENTION_RUN.finditer(answer or ""):
-        prefix = re.match(r"\b(?:artt?\.?|articol[oi])\s*", run.group(0), re.I).end()
+    """(article, code key or None) for every article the answer names: a list's items each with its own code or the
+    next item's (_lists); else the code just after the run, else the one just before, else -- a list or a quoted
+    citation -- the nearest explicit citation's in its sentence or quotation (_near_code), as the pipeline reads them."""
+    answer = answer or ""
+    lists = _lists(answer)
+    runs, explicit = [], []
+    for run in _MENTION_RUN.finditer(answer):
+        if any(s <= run.start() < e for s, e, _ in lists):
+            continue
         code = (_code_in_text(answer[run.end():run.end() + 60])
                 or _code_before(answer[max(0, run.start() - 50):run.start()]))
-        for m in _MENTION_NUM.finditer(run.group(0)[prefix:]):
-            number = f"{m.group(1)}-{canonical_suffix(m.group(2))}" if m.group(2) else m.group(1)
-            if (number, code) not in found:
-                found.append((number, code))
+        runs.append((run, code))
+        if code:
+            explicit.append((run.start(), run.end(), code))
+    explicit += [(s, e, refs[-1][1]) for s, e, refs in lists]
+    for key in _SIX:
+        explicit += [(m.start(), m.end(), key) for m in re.finditer(CODES[key][0], answer, re.I)]
+    found, items = [], [(s, refs) for s, _, refs in lists]
+    for run, code in runs:
+        prefix = re.match(r"\b(?:artt?\.?|articol[oi])\s*", run.group(0), re.I).end()
+        numbers = list(_MENTION_NUM.finditer(run.group(0)[prefix:]))
+        quoted = answer.rfind("«", 0, run.start()) > answer.rfind("»", 0, run.start())
+        if not code and (len(numbers) > 1 or quoted):         # a lone bare "art. 43" in prose stays bare (NAMED-BARE)
+            code = _near_code(answer, run.start(), run.end(), explicit)
+        items.append((run.start(), [(_number_key(m.group(0)), code) for m in numbers]))
+    for _, refs in sorted(items, key=lambda x: x[0]):
+        for ref in refs:
+            if ref not in found:
+                found.append(ref)
     return found
 
 
@@ -198,6 +291,26 @@ def _articles(item):
 
 def _label(item):
     return item.get("label") or f"art. {item['article']} {item['code']}"
+
+
+def checks(case, answer, cited_keys=None):
+    """The case's answer checks (v48): forbidden_cited (cited_keys: (article, code) cited, default the articles the
+    answer names with their code), forbidden_named, must_name (names the answer must hold, a regex each, as written)
+    and must_state (phrases it must state, a regex each, case-insensitive). {"forbidden_cited", "forbidden_named",
+    "must_name_missing", "must_state_missing", "failures", "status"} -- status the checks' own ("draft — pending lawyer
+    validation" when the case marks them so)."""
+    keys = set(cited_keys) if cited_keys is not None else {(a, c) for a, c in mentions(answer) if c}
+    text = answer or ""
+    out = {"forbidden_cited": [f"art. {f['article']} {f['code']}" for f in case.get("forbidden_cited", [])
+                               if (str(f["article"]).lower(), f["code"]) in keys],
+           "forbidden_named": [f["pattern"] for f in case.get("forbidden_named", []) if re.search(f["pattern"], text, re.I)],
+           "must_name_missing": [n for n in case.get("must_name", []) if not re.search(rf"\b{n}\b", text)],
+           "must_state_missing": [p for p in case.get("must_state", []) if not re.search(p, text, re.I)],
+           "status": case.get("checks_status", "")}
+    out["failures"] = ([f"FAIL cited {x}" for x in out["forbidden_cited"]] + [f"FLAG named /{x}/" for x in out["forbidden_named"]]
+                       + [f"MISS name /{x}/" for x in out["must_name_missing"]]
+                       + [f"MISS statement /{x}/" for x in out["must_state_missing"]])
+    return out
 
 
 def score(case, answer, citations):
@@ -236,6 +349,8 @@ def score(case, answer, citations):
         for f in case.get("forbidden_named", [])
         if re.search(f["pattern"], answer or "", re.I)
     ]
+    extra = checks(case, answer, cited_keys)          # must_name / must_state (v48)
+    failures += [f for f in extra["failures"] if f.startswith("MISS")]
     docs = [
         {"expected": d.get("label") or d["doc"],
          "status": "CITED" if any(re.search(d["doc"], (c.get("document_name") or ""), re.I)

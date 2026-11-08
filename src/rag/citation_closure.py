@@ -14,6 +14,24 @@ Compatible, the article becomes verified material: its row joins article_rows (_
 sources and no later step marks or removes it. Not found, incompatible, without a verdict, outside the scope or unresolved:
 the citation goes, its sentence kept when it stands without it, else dropped. An article verified in one sentence and
 incompatible in another stays only in the first. Logged as case_analysis_citation_closure; `remaining` is 0 by design.
+
+v49 (v48: 14 of the 22 citations with no row in the case's material left bare -- 696 / 700 c.p.c., 76 c.p.p., 124 c.p.,
+2946 / 2947 c.c.): an article the material holds only as an offered procedural tool, a procedural list's or a computed
+term's (material_refs), with no article row, was taken as material and never read. Now it is read too, with no check
+call (the pipeline offered it for this case's facts): found, its row joins article_rows like a verified one
+(OFFERED_KEY, logged "offered: row added"); not found, the citation goes ("offered, not found"). An article the case
+names keeps its citation whatever the read finds.
+
+v50 (v49: "read as offered material" 0 of 24 citations from outside the pool): the offered articles had their rows
+already -- _with_regime_rows adds the procedural tools' and the heads of damage's rows to article_rows after the check,
+before writing -- so the v49 branch, for material with no row, never ran, and the log said nothing of them. Each
+material article is now told by where it comes from (provenance): "pool" (a row of the retrieval pool), "tool" (a
+procedural tool's, the criminal profile's included), "term" (a computed term's), "procedural" (the posture's procedural
+list), "named" (the case's own), "damages" (only a head of damage's row). A cited tool, term or procedural article is
+offered material: with its row it is kept ("offered: row present"), without one it is read as in v49; either way it is
+in offered_rows. With CLOSURE_MATERIAL_ONLY (default false) the material is the pool, the tools, terms and procedural
+lists and the case's own only: any other citation -- a head of damage's article with no other source, an article read
+in a ruling -- is removed with no read and no check call ("not in material", in the ledger too), never verified.
 """
 
 import logging
@@ -28,8 +46,12 @@ from .verbose_logger import vlog
 logger = logging.getLogger(__name__)
 
 FLAG = "CITATION_CLOSURE_ENABLED"
+MATERIAL_ONLY_FLAG = "CLOSURE_MATERIAL_ONLY"
+NOT_IN_MATERIAL = "not in material"
+OFFERED_KINDS = ("tool", "term", "procedural")
 CLOSURE_SOURCE = "citation_closure"
 ROW_KEY = "_closure"
+OFFERED_KEY = "_closure_offered"     # v49: an offered article (tool, procedural list, term) read, with no check call
 TEXT_CHARS = 1500            # of the article read, for the check
 MIN_WORDS = 6                # a sentence left shorter does not stand alone
 _AREA_CODES = {"penale": ("c.p.", "c.p.p.", "c.c."), "amministrativo": ("c.p.a.", "c.c."), "civile": ("c.c.", "c.p.c.")}
@@ -39,6 +61,48 @@ _TAIL_RE = re.compile(r"(?:\b(?:e|o|ed|od|di|del|della|dei|delle|che|il|la|le|un
 
 def enabled() -> bool:
     return feature_flags.enabled(FLAG)
+
+
+def material_only() -> bool:
+    return feature_flags.enabled(MATERIAL_ONLY_FLAG)
+
+
+def provenance(analysis: Dict[str, Any], article_rows: List[Dict[str, Any]], named: List[tuple]) -> Dict[tuple, str]:
+    """{article: where the material has it from}, the first that holds: pool, named, tool, term, procedural, damages
+    (a row _with_regime_rows appended for a head of damage only). Closure's own rows are not material."""
+    from . import method_candidates
+    signals = (analysis or {}).get("fact_signals") or {}
+    out: Dict[tuple, str] = {}
+    appended = []
+    for r in article_rows:
+        if not r.get("_article") or r.get(ROW_KEY):
+            continue
+        if r.get("_source") == "procedural_tool":
+            appended.append(tuple(r["_article"]))
+        else:
+            out.setdefault(tuple(r["_article"]), "pool")
+    for ref in named:
+        out.setdefault(tuple(ref), "named")
+    for t in signals.get("tools") or []:
+        for ref in t.get("refs") or []:
+            out.setdefault(tuple(ref), "tool")
+    for ref in term_refs(signals):
+        out.setdefault(ref, "term")
+    for ref in method_candidates.candidate_refs([], method_candidates.case_lists(analysis)[1]):
+        out.setdefault(tuple(ref), "procedural")
+    for ref in appended:
+        out.setdefault(ref, "damages")
+    return out
+
+
+def term_refs(signals: Optional[Dict[str, Any]]) -> List[tuple]:
+    """The computed terms' articles: their ref ("art. 124 c.p.", "artt. 1667 e 1669 c.c.") and their sources' refs."""
+    from . import defensive_generation as dg
+    out: List[tuple] = []
+    for t in (signals or {}).get("terms") or []:
+        texts = [str(t.get("ref") or "")] + [str(x.get("ref") or "") for x in t.get("sources") or [] if isinstance(x, dict)]
+        out += [tuple(r) for text in texts for r in dg._refs_in(text)]
+    return list(dict.fromkeys(out))
 
 
 def _areas(analysis: Dict[str, Any]) -> List[str]:
@@ -61,8 +125,10 @@ def material_refs(analysis: Dict[str, Any], article_rows: List[Dict[str, Any]], 
     from . import answer_invariants, method_candidates
     procedural = method_candidates.candidate_refs([], method_candidates.case_lists(analysis)[1])
     rows = [r["_article"] for r in article_rows if r.get("_article")]
-    extra = answer_invariants.allowed_refs([], named, (analysis or {}).get("fact_signals") or {}, procedural)
-    return list(dict.fromkeys([tuple(r) for r in rows] + extra))
+    signals = (analysis or {}).get("fact_signals") or {}
+    extra = answer_invariants.allowed_refs([], named, signals, procedural)
+    # v50: a term's ref is "art. N code" (attach_term_sources), which allowed_refs' "N code" never read
+    return list(dict.fromkeys([tuple(r) for r in rows] + extra + term_refs(signals)))
 
 
 def scope_codes(analysis: Dict[str, Any], material: List[tuple]) -> Set[str]:
@@ -129,21 +195,23 @@ def _span_of(spans: List[Tuple[int, int]], at: int) -> Optional[Tuple[int, int]]
     return next(((s, e) for s, e in spans if s <= at < e), None)
 
 
-def _apply(text: str, drops: Dict[Tuple[int, int], List[tuple]], documents: List[Dict[str, Any]]
-           ) -> Tuple[str, List[Dict[str, Any]]]:
+def _apply(text: str, drops: Dict[Tuple[int, int], List[tuple]], documents: List[Dict[str, Any]],
+           why: Optional[Dict[Tuple[Tuple[int, int], tuple], str]] = None) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log): each span without its citations (anchored_writing.drop_citations), kept when it stands and cites none
     of them any more (a run naming a kept article too stays whole), else dropped."""
     from . import anchored_writing, text_tidy
     from . import plan_then_write as ptw
     log, gone, offset = [], [], 0
     for (s, e), refs in sorted(drops.items()):
+        reasons = [x for x in dict.fromkeys((why or {}).get(((s, e), r)) for r in refs) if x]
         s, e = s + offset, e + offset
         old = text[s:e]
         new = anchored_writing.drop_citations(old, refs, documents, set(refs))
         kept = new != old.strip() and stands(new) and not ptw._citing(new, refs, documents, set(refs)) \
             and not text_tidy.breaks_without_citation(old, new)
         log.append({"refs": [f"{n} {c}".strip() for n, c in refs], "how": "citation removed" if kept else "sentence dropped",
-                    "sentence": " ".join(old.split())[:300], "now": new[:300] if kept else ""})
+                    "sentence": " ".join(old.split())[:300], "now": new[:300] if kept else "",
+                    **({"why": "; ".join(reasons)} if reasons else {})})
         if kept:
             lead = len(old) - len(old.lstrip())
             new = old[:lead] + new + old[len(old.rstrip()):]
@@ -177,7 +245,10 @@ def close(draft: str, *, analysis: Dict[str, Any], article_rows: List[Dict[str, 
     t0 = time.time()
     chat_json = chat_json or dg._chat_json
     named = dg._named_refs(case_text, documents)
-    material = material_refs(analysis, article_rows, named)
+    origin = provenance(analysis, article_rows, named)
+    strict = material_only()
+    material = [r for r, kind in origin.items() if kind != "damages"] if strict \
+        else material_refs(analysis, article_rows, named)
     known = set(material)
     scope = scope_codes(analysis, material)
     by_area = _in_areas(_unresolved_numbers(ptw.read_citations(draft, documents, known)), analysis, known, session, documents)
@@ -186,14 +257,23 @@ def close(draft: str, *, analysis: Dict[str, Any], article_rows: List[Dict[str, 
     spans = ptw._sentence_spans(draft)
     drops: Dict[Tuple[int, int], List[tuple]] = {}
     citing: Dict[tuple, List[Tuple[int, int]]] = {}
+    # v49: material with no article row (an offered tool, a procedural list's or a term's article): read, never bare
+    have_rows = [tuple(r["_article"]) for r in article_rows if r.get("_article")]
+    offered: Dict[tuple, List[Tuple[int, int]]] = {}
+    present: Dict[tuple, List[Tuple[int, int]]] = {}     # v50: offered material with its row already
     outcomes: Counter = Counter()
     entries: List[Dict[str, Any]] = []
+    reasons: Dict[Tuple[Tuple[int, int], tuple], str] = {}
+
+    def kind_of(ref):
+        return next((k for r, k in origin.items() if ptw._same_ref(ref, r)), "")
 
     def drop(span, ref, why, label):
         if span:
             drops.setdefault(span, [])
             if ref not in drops[span]:
                 drops[span].append(ref)
+            reasons.setdefault((span, ref), why)
         outcomes[why] += 1
         entries.append({"ref": label, "how": "removed", "why": why, "sentence": " ".join(draft[span[0]:span[1]].split())[:300] if span else ""})
 
@@ -205,12 +285,39 @@ def close(draft: str, *, analysis: Dict[str, Any], article_rows: List[Dict[str, 
             elif ref is None:
                 drop(span, (number, ""), "unresolved", number)
             elif not any(ptw._same_ref(ref, m) for m in material):
-                if _in_scope(ref, scope):
+                if strict:
+                    drop(span, ref, NOT_IN_MATERIAL, f"{ref[0]} {ref[1]}")
+                elif _in_scope(ref, scope):
                     if span and span not in citing.setdefault(ref, []):
                         citing[ref].append(span)
                 else:
                     drop(span, ref, "outside the case's material and areas", f"{ref[0]} {ref[1]}")
-    rows = _read(session, documents, list(citing)) if citing else {}
+            elif not any(ptw._same_ref(ref, r) for r in have_rows):
+                if span and span not in offered.setdefault(ref, []):
+                    offered[ref].append(span)
+            elif kind_of(ref) in OFFERED_KINDS:
+                if span and span not in present.setdefault(ref, []):
+                    present[ref].append(span)
+    for ref, where in present.items():
+        outcomes["offered: row present"] += 1
+        entries.append({"ref": f"{ref[0]} {ref[1]}", "how": "offered: row present", "kind": kind_of(ref),
+                        "sentence": " ".join(draft[where[0][0]:where[0][1]].split())[:300] if where else ""})
+    rows = _read(session, documents, list(citing) + list(offered)) if citing or offered else {}
+    offered_rows: Dict[tuple, Dict[str, Any]] = {}
+    for ref, where in offered.items():
+        row = next((r for k, r in rows.items() if ptw._same_ref(k, ref)), None)
+        label = f"{ref[0]} {ref[1]}"
+        if row is not None:
+            offered_rows[ref] = {**row, "_article": ref, "_source": CLOSURE_SOURCE, ROW_KEY: True, OFFERED_KEY: True,
+                                 "_applicability": "applicabile"}
+            outcomes["offered: row added"] += 1
+            entries.append({"ref": label, "how": "offered: row added",
+                            "sentence": " ".join(draft[where[0][0]:where[0][1]].split())[:300] if where else ""})
+        elif any(ptw._same_ref(ref, n) for n in named):
+            outcomes["the case's own, not found"] += 1
+        else:
+            for span in where:
+                drop(span, ref, "offered, not found", label)
     items: List[Dict[str, Any]] = []
     for ref, where in citing.items():
         row = next((r for k, r in rows.items() if ptw._same_ref(k, ref)), None)
@@ -235,7 +342,8 @@ def close(draft: str, *, analysis: Dict[str, Any], article_rows: List[Dict[str, 
             verified[ref] = {**row, "_article": ref, "_source": CLOSURE_SOURCE, ROW_KEY: True, "_applicability": "applicabile"}
             outcomes["verified"] += 1
             entries.append({"ref": label, "how": "verified", "sentence": item["sentence"][:300]})
-    text, removal = _apply(draft, drops, documents)
+    verified.update({ref: row for ref, row in offered_rows.items() if ref not in verified})
+    text, removal = _apply(draft, drops, documents, reasons)
     text = _clear_marks(text, list(verified))
     if drops:
         text, dangling = ptw.drop_dangling(text, "answer")
@@ -246,10 +354,15 @@ def close(draft: str, *, analysis: Dict[str, Any], article_rows: List[Dict[str, 
             and (r is None or not any(ptw._same_ref(r, a) for a in allowed))]
     resolved = Counter(how for *_, hows in reading for how in hows)
     resolved.update({"area": len(by_area)})
-    log = {"resolved": dict(resolved), "verified": sorted({e["ref"] for e in entries if e["how"] == "verified"}), "counts": dict(outcomes),
+    log = {"resolved": dict(resolved), "verified": sorted({e["ref"] for e in entries if e["how"] == "verified"}),
+           "offered_rows": sorted(f"{r[0]} {r[1]}" for r in offered_rows),
+           "offered_present": sorted(f"{r[0]} {r[1]}" for r in present), "material_only": strict,
+           "provenance": {f"{r[0]} {r[1]}": k for r, k in origin.items() if k != "pool"}, "counts": dict(outcomes),
            "by_area": {n: f"{r[0]} {r[1]}" for n, r in by_area.items()}, "entries": entries[:60], "removal": removal[:60],
            "sentences_dropped": sum(1 for e in removal if e.get("how") == "sentence dropped"),
            "citations_removed": sum(1 for e in removal if e.get("how") == "citation removed"),
            "remaining": len(left), "remaining_refs": [f"{r[0]} {r[1]}" if r else "unresolved" for r in left][:20]}
     vlog("case_analysis_citation_closure", log, duration_ms=(time.time() - t0) * 1000)
+    from . import citation_ledger
+    citation_ledger.record_entries("closure", removal)
     return text, list(verified.values()), log

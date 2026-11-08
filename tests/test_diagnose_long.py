@@ -3,6 +3,8 @@
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 HERE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location("diagnose_long", HERE.parent / "scripts" / "diagnose_long.py")
 dl = importlib.util.module_from_spec(_spec)
@@ -85,6 +87,46 @@ def test_stages_channels_and_wrong_articles():
     assert wrong["check"] == "applicabile" and wrong["plan_notes"] == ["kept_as_applicable"]
     assert wrong["fit"]["compatibile"] is False
     assert {t["label"]: t["check"] for t in case["pool_traces"]}["43 c.p."] == "rejected"
+
+
+def test_an_expected_article_gated_out_before_the_check_is_at_its_own_stage():
+    """POOL_GATE_AREA / POOL_GATE_LINK (v50): the gate's articles are GATED_OUT, their trace says by which gate; the report counts them."""
+    rec = _record()
+    rec["pool_gates"] = {"area": ["2043 c.c."], "link": ["81 c.p."], "dedup": {"rows": 2, "articles": ["584 c.p."]},
+                         "lookup": "graph"}
+    rec["check"] = {**rec["check"], "input": [l for l in rec["check"]["input"] if l not in ("2043 c.c.", "81 c.p.")]}
+    case = dl.analyse_case(rec, ev)
+    stages = {s["label"]: s["stage"] for s in case["slots"]}
+    assert stages["art. 2043 cc"] == "GATED_OUT" and stages["art. 43 cp"] == "REJECTED_BY_CHECK"
+    checks = {t["label"]: t["check"] for t in case["pool_traces"]}
+    assert checks["2043 c.c."] == "gated: area" and checks["81 c.p."] == "gated: link"
+    assert case["pool_gates"] == {"area": 1, "link": 1, "dedup_rows": 2, "lookup": "graph"}
+    assert "POOL_GATE_AREA / POOL_GATE_LINK (before the check): 1 articles out by area, 1 by link, 2 duplicate rows merged, in 1 cases." \
+        in dl.render([case], [])
+    assert "POOL_GATE_AREA / POOL_GATE_LINK (before the check): off." in dl.render([dl.analyse_case(_record(), ev)], [])
+
+
+def test_a_cited_article_with_no_pool_row_is_told_offered_damage_or_outside():
+    """v50: a tool's, a term's, a regime tool's (tool_articles) or the case's own article is offered material, not
+    "outside the material"; a head of damage's only is counted apart; the closure's provenance wins when logged."""
+    rec = _record()
+    cited = ["700 c.p.c.", "124 c.p.", "21 c.p.c.", "1917 c.c.", "1158 c.c.", "336 c.p.p."]
+    rec["answer"] = {"mentioned": rec["answer"]["mentioned"] + cited,
+                     "mentioned_eval": rec["answer"]["mentioned_eval"] + [l.split(" ", 1)[0:1] + [
+                         {"c.p.c.": "cpc", "c.p.": "cp", "c.c.": "cc", "c.p.p.": "cpp"}[l.split(" ", 1)[1]]] for l in cited]}
+    rec["fact_signals"] = {"tools": [{"id": "provvedimento_urgenza", "refs": [["700", "c.p.c."]]}],
+                           "damages": [{"id": "danni_morte", "refs": [["1917", "c.c."]]}],
+                           "terms": [{"id": "querela", "ref": "art. 124 c.p."}]}
+    rec["fact_regimes"] = {"tool_articles": ["700 c.p.c.", "21 c.p.c.", "1917 c.c."]}
+    rec["closure"] = {"provenance": {"1158 c.c.": "term"}}
+    case = dl.analyse_case(rec, ev)
+    kinds = {u["label"]: u["material"] for u in case["unexpected"]}
+    assert kinds == {"81 c.p.": "", "700 c.p.c.": "tool", "124 c.p.": "term", "21 c.p.c.": "tool",
+                     "1917 c.c.": "damages", "1158 c.c.": "term", "336 c.p.p.": ""}
+    o = dl.outside_material([case])
+    assert o == {"no_row": 6, "offered": 4, "damages": ["x1 1917 c.c."], "outside": ["x1 336 c.p.p."]}
+    assert ("Cited with no pool row: 6; offered material (tools, terms, procedural lists, the case's own) 4; a head of "
+            "damage's only 1 (x1 1917 c.c.); outside the material 1 (x1 336 c.p.p.).") in dl.render([case], [])
 
 
 def test_unexpected_rows_carry_plan_source_and_the_regime_candidate_channel():
@@ -590,3 +632,58 @@ def test_the_report_shows_closure_cover_grading_and_foreign_acts():
 
 def test_the_capture_sees_the_closure_s_log():
     assert "src.rag.citation_closure" in dl._PREIMPORT      # a module imported later would log past the capture
+
+
+# --- v49: a run folder with input specs beside the records -------------------------------------------------------------
+
+def _run_folder(root, name, records, inputs="both"):
+    import json as _json
+    import os as _os
+    cases = _os.path.join(root, name, "cases")
+    _os.makedirs(cases)
+    for rec in records:
+        with open(_os.path.join(cases, f"{rec['id']}.json"), "w", encoding="utf-8") as fh:
+            _json.dump(rec, fh)
+        spec = {"id": rec["id"], "question": "Il caso.", "expected": rec["expected"], "out": _os.path.join(cases, f"{rec['id']}.json")}
+        if inputs in ("both", "old"):          # runs before v49: cases/<id>.input.json
+            with open(_os.path.join(cases, f"{rec['id']}.input.json"), "w", encoding="utf-8") as fh:
+                _json.dump(spec, fh)
+        if inputs in ("both", "new"):          # since v49: cases/<id>/input.json
+            _os.makedirs(_os.path.join(cases, rec["id"]), exist_ok=True)
+            with open(_os.path.join(cases, rec["id"], dl.INPUT_NAME), "w", encoding="utf-8") as fh:
+                _json.dump(spec, fh)
+    return _os.path.join(root, name)
+
+
+def test_input_specs_are_never_read_as_cases_and_the_run_scores_its_cases(capsys):
+    import json as _json
+    import os as _os
+    import tempfile
+    root = tempfile.mkdtemp()
+    run = _run_folder(root, "v49-candidate", [_record()])
+    # an input spec under a plain <id>.json name, as a broken run might leave it
+    with open(_os.path.join(run, "cases", "stray.json"), "w", encoding="utf-8") as fh:
+        _json.dump({"id": "stray", "question": "x", "expected": [], "out": "elsewhere"}, fh)
+    paths, skipped = dl.case_files(_os.path.join(run, "cases"))
+    assert [_os.path.basename(p) for p in paths] == ["x1.json"]
+    assert skipped == {"x1.input.json": "input spec", "stray.json": "input spec"}
+    records, cases = dl._load_cases(run, ev)
+    assert [r["id"] for r in records] == ["x1"] and cases[0]["keyed"] and cases[0]["ok"]
+    report = dl.rescore(run, ev)
+    out = capsys.readouterr().out
+    assert "1 case records read, 2 files skipped (input spec 2)" in out and "Scored (answer key and an answer): 1 of 1" in out
+    assert _os.path.isfile(report) and [c["id"] for c in _json.load(open(_os.path.join(run, "report.json")))] == ["x1"]
+
+
+def test_compare_names_a_run_with_nothing_to_score_instead_of_crashing():
+    import copy
+    import tempfile
+    root = tempfile.mkdtemp()
+    good = _run_folder(root, "v48-candidate", [_record()], inputs="old")
+    failed = copy.deepcopy(_record())
+    failed["draft"] = ""
+    empty = _run_folder(root, "v49-candidate", [failed], inputs="new")
+    with pytest.raises(SystemExit) as stop:
+        dl.compare([good, empty], ev)
+    assert "v49-candidate (1 case records, none with an answer key and an answer)" in str(stop.value)
+    assert "--rescore" in str(stop.value)

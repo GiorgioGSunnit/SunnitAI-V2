@@ -392,3 +392,20 @@ def test_a_nonies_section_is_cited_as_nonies():
     case = {"expected": [{"code": "l241", "article": "21-nonies"}]}
     citations = [{"document_name": "Legge sul Procedimento Amministrativo 2026", "sections": [{"name": "21-nonies.0.0"}]}]
     assert ev.score(case, "", citations)["expected"][0]["status"] == "CITED"
+
+
+# v49: lists read as the pipeline's citation reader reads them (defensive_generation._article_lists, read_citations)
+@pytest.mark.parametrize("answer, expected", [
+    ("Si applicano gli artt. 581 e 582 c.p.", [("581", "cp"), ("582", "cp")]),
+    ("Si applicano gli artt. 581 c.p. e 582 c.p.", [("581", "cp"), ("582", "cp")]),
+    ("Rilevano gli artt. 1176, comma 2, e 1218 c.c.", [("1176", "cc"), ("1218", "cc")]),
+    ("Rilevano gli artt. 55, 52 e 59 c.p.", [("55", "cp"), ("52", "cp"), ("59", "cp")]),
+    ("L'art. 584 c.p. punisce chi «con atti diretti a commettere uno dei delitti preveduti dagli artt. 581 e 582, "
+     "cagiona la morte di un uomo»", [("584", "cp"), ("581", "cp"), ("582", "cp")]),
+])
+def test_article_lists_are_read_as_the_pipeline_reads_them(answer, expected):
+    assert ev.mentions(answer) == expected
+
+
+def test_a_lone_bare_article_in_prose_stays_bare():
+    assert ("43", None) in ev.mentions("Si veda l'art. 1453 c.c. e l'art. 43.")

@@ -56,6 +56,7 @@ Run from the app folder, with its venv and live .env:
     ... --only h3,n2              # some cases only
     ... --out /root/diag          # default: ./diagnose_long_runs/<date-time>
     ... --report-only DIR         # rebuild DIR/report.md from DIR/cases/*.json, no run
+    ... --rescore DIR [--compare OLD ...]   # the same, printing what was read and why a case scores or not
     ... --compare 20261025-0940 20261026-1010   # after the run: tables A and B, those runs and this one
     ... --compare OLD NEW --compare-only        # runs already made, no new run
 
@@ -67,7 +68,8 @@ order), through a wrapper of ai_chat._call_chat set in the child only. cases/<id
 the draft/plan prompt's articles and rulings as placed there, each article with its provenance.
 
 Writes only files under --out: cases/<id>.json (the capture and the answer's text: test cases
-and the PO's test document, never a user's upload), cases/<id>/material.txt, cases/<id>/llm/,
+and the PO's test document, never a user's upload), cases/<id>/input.json (the case's input spec; v49, was
+cases/<id>.input.json), cases/<id>/material.txt, cases/<id>/llm/,
 logs/<id>.log, report.md, report.json, and
 vote_idf.json when the vote is on without VOTE_POOL_IDF_FILE (the counts every process would
 otherwise make for itself, made once). Every Neo4j session is read-only; nothing else is written.
@@ -106,15 +108,17 @@ FLAGS = ["ARTICLE_CARDS_ENABLED", "CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENA
          "COMMA_MATERIAL_ENABLED", "GROUNDED_REVIEW_ENABLED", "ROLE_BLOCKS_ENABLED",
          "GROUNDED_REVIEW_STRICT_ENABLED", "GROUNDED_REVIEW_POLICY", "FACT_ISSUES_ENABLED", "FACT_ISSUES_EVERY_FACT_ENABLED",
          "FACT_ISSUES_RESOLVER_V2_ENABLED",
-         "ANCHORED_WRITING_ENABLED"]
+         "ANCHORED_WRITING_ENABLED", "EDGE_EXPAND", "PLAN_CAP", "POOL_GATE_AREA", "POOL_GATE_LINK",
+         "CLOSURE_MATERIAL_ONLY", "NORME_SCOPE", "TOOL_CITES_PROTECTED", "USUCAPIONE_CONDITIONAL"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
-STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
+STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "GATED_OUT", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
           "NOT_IN_PLAN", "NOT_WRITTEN", "MENTIONED"]
 STAGE_MEANING = {
     "LOST_AT_UNDERSTANDING": "no channel found it, and nothing in the frame/analysis names it",
     "NOT_IN_POOL": "named by the understanding, but no channel found it",
     "BELOW_CAP": "found (fusion ranking, or the vote's top 20), cut before the pool",
+    "GATED_OUT": "in the pool, removed by POOL_GATE_AREA / POOL_GATE_LINK before the check",
     "REJECTED_BY_CHECK": "in the pool, dropped by the applicability check",
     "NOT_IN_PROMPT": "past the check, left out of the draft prompt by its trimming",
     "NOT_IN_PLAN": "in the prompt, not in the plan (PLAN_THEN_WRITE on)",
@@ -122,7 +126,8 @@ STAGE_MEANING = {
     "MENTIONED": "MENTIONED with its code (tests/eval_narrative.py's primary score)",
 }
 CHANNELS = ["user_text", "institution", "fulltext", "vector", "distill", "frame", "vote", "method_list",
-            "crossref", "regime_candidate", "rulings_agree", "v1_choice", "issue_spotting"]
+            "crossref", "regime_candidate", "rulings_agree", "v1_choice", "issue_spotting",
+            "edge:sezione", "edge:refers_to", "edge:cited_by"]          # EDGE_EXPAND (v48)
 VOTE_FOUND_TOP = 20     # vote_pool.TAG_TOP: a voted article below this is not "found"
 
 _EVAL_TO_ABBR = {"cp": "c.p.", "cc": "c.c.", "cpc": "c.p.c.", "cpp": "c.p.p.", "cpa": "c.p.a."}
@@ -167,6 +172,58 @@ def _eval_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+_EVAL_CASES: dict = {}
+
+
+def _eval_case(case_id) -> dict:
+    """The eval case of this id from tests/eval_narrative_cases.json (read once), {} when none."""
+    if not _EVAL_CASES:
+        path = os.path.join(os.getcwd(), "tests", "eval_narrative_cases.json")
+        try:
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            items = data.get("cases", data) if isinstance(data, dict) else data
+            _EVAL_CASES.update({c["id"]: c for c in items if isinstance(c, dict) and c.get("id")})
+        except (OSError, ValueError):
+            _EVAL_CASES["_none"] = {}
+    return _EVAL_CASES.get(case_id) or {}
+
+
+_EVAL_CODES = {"cc": "c.c.", "cp": "c.p.", "cpc": "c.p.c.", "cpp": "c.p.p.", "cpa": "c.p.a."}
+
+
+def role_fit_trace(rec: dict) -> dict:
+    """ROLE_FIT (on or shadow): the last case_analysis_role_fit -- asked, adverse, agreement with the role conditions --
+    and each article of the eval case's forbidden_cited with ROLE_FIT's answer for it ("not asked" when it was not);
+    the action gate's adverse articles (REGIME_CANDIDATES). {} when neither ran."""
+    events = rec.get("events") or []
+    logs = [e[1] for e in events if e and e[0] == "case_analysis_role_fit" and isinstance(e[1], dict)]
+    gate = [e[1] for e in events if e and e[0] == "case_analysis_action_gate" and isinstance(e[1], dict)]
+    if not logs and not gate:
+        return {}
+    out = {"gate_adverse": sorted({g["article"] for g in gate if not g.get("fits")})}
+    if logs:
+        log = logs[-1]
+        answers = {" ".join(str(a["article"]).split()): a.get("answer") for a in log.get("articles") or []}
+        case = _eval_case(rec.get("id"))
+        forbidden = [f"{f['article']} {_EVAL_CODES.get(f['code'], f['code'])}" for f in case.get("forbidden_cited") or []]
+        out.update({"mode": log.get("mode"), "asked": len(answers), "adverse": log.get("adverse") or [],
+                    "agreement": log.get("agreement") or {},
+                    "forbidden": [{"article": f, "answer": answers.get(f, "not asked")} for f in forbidden]})
+    return out
+
+
+def case_checks(rec: dict, ev) -> dict:
+    """The eval case's answer checks on the draft (eval_narrative.checks: forbidden cited / named, must name / state),
+    {} for a case without any or an eval module without checks()."""
+    if not hasattr(ev, "checks"):
+        return {}
+    case = _eval_case(rec.get("id"))
+    if not any(case.get(k) for k in ("forbidden_cited", "forbidden_named", "must_name", "must_state")):
+        return {}
+    return ev.checks(case, rec.get("draft") or "")
 
 
 def _read_only_neo4j():
@@ -425,7 +482,9 @@ _LLM_STAGES = {
     "_extract_principles": "principles", "_issue_check": "plan_check", "_opposing_arguments": "stance",
     "_check_client_stance": "stance_rewrite", "make_plan": "plan", "_check_qualifications": "qualification",
     "_rubrica_fits": "rubrica_fit", "_grounded_judge": "grounded_judge", "_grounded_rewrite": "grounded_rewrite",
-    "fact_issues": "fact_issues", "_anchor_rewrite": "anchor_rewrite", "close": "citation_closure",
+    "fact_issues": "fact_issues", "_anchor_rewrite": "anchor_rewrite", "_anchor_rewrite_call": "anchor_rewrite",
+    "_patch_answers": "plan_patch", "_patch_opposing": "plan_patch", "_norme_half": "section_norme_half",
+    "_role_fit_one": "role_fit", "close": "citation_closure",
     "_cover_one": "plan_cover",
     "run_case_analysis_pipeline": "draft",
 }
@@ -457,6 +516,55 @@ def _llm_stage(frame) -> str:
             return stage
         frame = frame.f_back
     return f"other_{nearest or 'unknown'}"
+
+
+def _count_llm(dg) -> dict:
+    """Every chat call of this process counted, with its seconds and errors (v48: the PO's table as numbers), through a
+    wrapper of ai_chat._call_chat and of each module's own imported name for it; the call itself unchanged."""
+    import threading
+    from src.rag import ai_chat
+
+    real = ai_chat._call_chat
+    stats, lock = {"calls": 0, "seconds": 0.0, "errors": 0}, threading.Lock()
+
+    def call_chat(messages, *args, **kwargs):
+        started, failed = time.time(), False
+        try:
+            return real(messages, *args, **kwargs)
+        except BaseException:
+            failed = True
+            raise
+        finally:
+            with lock:
+                stats["calls"] += 1
+                stats["seconds"] += time.time() - started
+                stats["errors"] += int(failed)
+
+    ai_chat._call_chat = call_chat
+    for name, module in list(sys.modules.items()):
+        if name.startswith("src.rag") and getattr(module, "_call_chat", None) is real:
+            module._call_chat = call_chat
+    return stats
+
+
+def llm_from_dumps(dump_dir: str) -> dict:
+    """{"calls", "seconds", "errors"} read off a case's llm/NN_*.txt dumps (runs made before _count_llm); {} without."""
+    if not os.path.isdir(dump_dir):
+        return {}
+    calls, seconds, errors = 0, 0.0, 0
+    for name in os.listdir(dump_dir):
+        if not name.endswith(".txt"):
+            continue
+        calls += 1
+        try:
+            with open(os.path.join(dump_dir, name), encoding="utf-8") as fh:
+                head = fh.read(2000)
+        except OSError:
+            continue
+        m = re.search(r"^duration: ([\d.]+)s", head, re.M)
+        seconds += float(m.group(1)) if m else 0.0
+        errors += bool(re.search(r"^status: ERROR", head, re.M))
+    return {"calls": calls, "seconds": round(seconds, 1), "errors": errors, "from": "dumps"}
 
 
 def _dump_llm(dg, dump_dir: str, t_start: float) -> None:
@@ -729,6 +837,7 @@ def run_child(spec_path: str, env_path: str) -> None:
     cap = _instrument(dg)
     case_dir = os.path.join(os.path.dirname(spec["out"]), spec["id"])
     os.makedirs(case_dir, exist_ok=True)
+    llm_stats = _count_llm(dg)
     if spec.get("dump_llm", True):
         _dump_llm(dg, os.path.join(case_dir, "llm"), time.time())
     from src.rag import vote_pool
@@ -767,6 +876,8 @@ def run_child(spec_path: str, env_path: str) -> None:
     rows_by_ref = {}
     record = {"id": spec["id"], "kind": "file" if spec.get("file") else "eval", "file": spec.get("file"),
               "request": request, "text_chars": len(text), "status": status, "seconds": round(elapsed, 1),
+              "llm": {"calls": llm_stats["calls"], "seconds": round(llm_stats["seconds"], 1),
+                      "errors": llm_stats["errors"]},
               "code": os.path.abspath(dg.__file__),
               "flags": {f: os.getenv(f) for f in FLAGS}, "expected": spec.get("expected"),
               "frame": analysis.get("frame"), "area": analysis.get("area"),
@@ -785,6 +896,16 @@ def run_child(spec_path: str, env_path: str) -> None:
               "prompt": {"labels": cap["prompt_labels"], "tokens": last("case_analysis_prompt_tokens")},
               "plan": last("case_analysis_plan"), "plan_applicable": last("case_analysis_plan_applicable"),
               "plan_rule_include": last("case_analysis_plan_rule_include"),
+              "plan_cap": last("case_analysis_plan_cap"),           # PLAN_CAP (v49)
+              # v49: why plan-then-write went back to one call (v48 sempronio_no_hint: no plan, 26 calls)
+              "plan_fallback": [d for e, d, _ in events if e == "plan_then_write_fallback"],
+              "plan_retry": [d for e, d, _ in events if e == "case_analysis_plan_retry"],      # v49
+              "edge_expand": last("case_analysis_edge_expand"), "edge_reach": last("case_analysis_edge_reach"),
+              "pool_gates": last("case_analysis_pool_gates"),            # POOL_GATE_AREA / _LINK (v50)
+              "norme_scope": last("case_analysis_norme_scope"),          # NORME_SCOPE (v51): section 3's articles
+              "repeats": [d for e, d, _ in events if e == "case_analysis_repetition_guard"],     # v51
+              "usucapione_conditional": [d for e, d, _ in events if e == "case_analysis_usucapione_conditional"],
+              "citation_removed": [d for e, d, _ in events if e == "citation_removed"],
               "qualification": last("case_analysis_qualification"),
               "discipline": last("case_analysis_citation_discipline"),
               "flagged_removed": last("case_analysis_flagged_removed"),
@@ -955,6 +1076,17 @@ def analyse_case(rec: dict, ev) -> dict:
             channels[k].add("regime_candidate")
     for k in keys(fusion.get("spotted") or v1.get("spotted")):
         channels[k].add("issue_spotting")
+    # EDGE_EXPAND: the anchors' neighbours, tagged in the pool or added after the check (graded there)
+    edge = rec.get("edge_expand") or {}
+    edge_added = {}
+    for entry in (edge.get("tagged") or []) + (edge.get("added") or []):
+        for channel in entry.get("channels") or []:
+            channels[K(entry["article"])].add(channel)
+    for entry in edge.get("added") or []:
+        edge_added[K(entry["article"])] = entry.get("grade")
+    # POOL_GATE_AREA / POOL_GATE_LINK: the articles gated out before the check, by gate
+    gates = rec.get("pool_gates") or {}
+    gated = {K(label): gate for gate in ("area", "link") for label in gates.get(gate) or []}
 
     fused = [K(label) for label in fusion.get("fused") or v2.get("selected") or v1.get("selected") or []]
     fused_rank = {}
@@ -999,8 +1131,17 @@ def analyse_case(rec: dict, ev) -> dict:
     mentioned = [K(label) for label in answer.get("mentioned") or []]
     unverified = keys(answer.get("marked_unverified"))
     qualification_flagged = keys((rec.get("qualification") or {}).get("flagged"))
+    # the citation ledger: per article, the last post-draft pass that dropped a sentence citing it
+    removed_by = {}
+    for e in rec.get("citation_removed") or []:
+        if isinstance(e, dict) and e.get("dropped") and e.get("article"):
+            removed_by[K(e["article"])] = {k: e.get(k) for k in ("pass", "reason", "sentence")}
 
     def check_status(k):
+        if k in edge_added:
+            return f"grade {edge_added[k]} (edge)" if edge_added[k] is not None else "kept (edge, ungraded)"
+        if k in gated:
+            return f"gated: {gated[k]}"
         if check is None:
             return "check off" if not flags.get("check") else "no check run"
         if k not in keys(check.get("input")):
@@ -1044,7 +1185,7 @@ def analyse_case(rec: dict, ev) -> dict:
                 "details": details.get(k, []), "institutions": institution_of.get(k, []),
                 "signals": signals_of.get(k, []), "hits": hits.get(k, 0),
                 "rank": fused_rank.get(k), "vote_rank": vote_rank.get(k), "cap": cap_status(k),
-                "in_pool": k in pool, "check": check_status(k), "dropped": dropped.get(k),
+                "in_pool": k in pool or k in edge_added, "check": check_status(k), "dropped": dropped.get(k),
                 "in_prompt": None if in_prompt is None else k in in_prompt,
                 "in_plan": (k in plan_norme) if plan_on else None, "plan_notes": plan_notes.get(k, []),
                 "plan_source": plan_source.get(k) or ("plan" if plan_on and k in plan_norme else None),
@@ -1064,6 +1205,8 @@ def analyse_case(rec: dict, ev) -> dict:
             return "NOT_IN_POOL", t
         if k not in pool:
             return "BELOW_CAP", t
+        if k in gated:
+            return "GATED_OUT", t
         if t["check"] == "rejected":
             return "REJECTED_BY_CHECK", t
         if t["in_prompt"] is False:
@@ -1075,6 +1218,7 @@ def analyse_case(rec: dict, ev) -> dict:
     frame = rec.get("frame") or {}
     areas = frame.get("areas") or ([rec["area"]] if rec.get("area") else [])
     out = {"id": rec["id"], "kind": rec.get("kind"), "status": rec.get("status"), "seconds": rec.get("seconds"),
+           "llm": rec.get("llm") or {}, "checks": case_checks(rec, ev), "role_fit": role_fit_trace(rec),
            "areas": areas, "area": areas[0] if areas else "?", "posture": frame.get("posture_type") or "",
            "tasks": frame.get("tasks") or [], "central": [c.get("nome") for c in frame.get("central_issue_candidates") or []],
            "keyed": bool(rec.get("expected")), "ok": bool(rec.get("draft")), "slots": [], "unexpected": [],
@@ -1082,7 +1226,23 @@ def analyse_case(rec: dict, ev) -> dict:
            "vote_rulings": ((rec.get("vote") or {}).get("info") or {}).get("rulings"),
            "pool_size": len(pool), "fused_size": len(fused), "prompt_size": len(in_prompt or ()),
            "plan_size": len(plan_norme) if plan_on else None, "mentioned_size": len(set(mentioned)),
-           "capture_errors": rec.get("capture_errors") or [], "check_summary": {}}
+           "capture_errors": rec.get("capture_errors") or [], "check_summary": {},
+           "plan_fallback": rec.get("plan_fallback") or [], "plan_retry": rec.get("plan_retry") or [],
+           # v49: written in one call although plan-then-write was on (None: it was off); a run made before the
+           # fallback was captured counts a case with no plan ("inferred")
+           "one_call": (None if not flags.get("plan") else bool(rec["plan_fallback"]) if "plan_fallback" in rec
+                        else not plan_on),
+           "one_call_inferred": bool(flags.get("plan")) and "plan_fallback" not in rec,
+           "plan_cap": {**{k: v for k, v in (rec.get("plan_cap") or {}).items() if k in ("before", "after", "cap")},
+                        **({"available": [e["article"] for e in (rec.get("plan_cap") or {}).get("available") or []]}
+                           if rec.get("plan_cap") else {})}}
+    scoped = rec.get("norme_scope") or {}            # NORME_SCOPE (v51)
+    out["norme_scope"] = {k: scoped.get(k) for k in ("scope", "why", "cut", "others", "fallback") if k in scoped}
+    out["repeats_dropped"] = sum(d.get("count", 0) for d in rec.get("repeats") or [])
+    out["usucapione_conditional"] = sum(d.get("count", 0) for d in rec.get("usucapione_conditional") or [])
+    out["pool_gates"] = ({**{g: len(gates.get(g) or []) for g in ("area", "link")},
+                          "dedup_rows": (gates.get("dedup") or {}).get("rows", 0), "lookup": gates.get("lookup")}
+                         if gates else {})
     out["pool_traces"] = [trace(k) for k in pool]      # report.json: every pool article, with its verdict
     for t in out["pool_traces"]:
         out["check_summary"][t["check"]] = out["check_summary"].get(t["check"], 0) + 1
@@ -1100,9 +1260,16 @@ def analyse_case(rec: dict, ev) -> dict:
                 best = (name, t, alt_infos.get(k) or {})
         name, t, alt = best
         out["slots"].append({**t, "label": _item_label(item), "pool_label": t["label"],
+                             "removed_by": removed_by.get(K(t["label"])),
                              "stage": name, "from_memory": name == "MENTIONED" and not t["in_prompt"],
                              "understanding": alt, "in_expected_rubrica": alt.get("rubrica", "")})
     fits = rec.get("fits") or {}
+    # v50: a cited article with no pool row is still material when offered (a tool, a term, a procedural list) or the
+    # case's own; the closure logs each one's kind (provenance), a run before it is read from its fact signals
+    material_kind = {K(label): kind for label, kind in _signal_material(
+        rec.get("fact_signals"), (rec.get("fact_regimes") or {}).get("tool_articles"))}
+    material_kind.update({K(label): kind for label, kind in ((rec.get("closure") or {}).get("provenance") or {}).items()})
+    material_kind.update({k: "named" for k in named})
     for k in dict.fromkeys(mentioned):
         if k in expected_keys:
             continue
@@ -1110,7 +1277,8 @@ def analyse_case(rec: dict, ev) -> dict:
         fit = next((v for label, v in fits.items() if ekey(label) == k), None) or {}
         origin = t["channels"] or (["not_retrieved"] if not t["in_pool"] else ["other"])
         out["unexpected"].append({**t, "origin": origin, "fit": fit,
-                                  "rubrica": t["rubrica"] or fit.get("rubrica", "")})
+                                  "rubrica": t["rubrica"] or fit.get("rubrica", ""),
+                                  "material": "" if t["in_pool"] else material_kind.get(k, "")})
     # PLAN_KEEP_CHECKED + CHECK_GRADED: the citations taken out of the sections (not in their material)
     entries = (rec.get("discipline") or {}).get("removed") or []
     taken = [label for e in entries for label in e.get("removed") or []]
@@ -1207,6 +1375,51 @@ def _grounded_trace(rec: dict) -> dict:
 _SIX_CODES = ("c.c.", "c.p.c.", "c.p.", "c.p.p.", "c.p.a.", "c.d.s.")
 
 
+OFFERED_KINDS = ("tool", "term", "procedural", "named")
+_TERM_REF_RE = re.compile(r"\bartt?\.\s*(\d+(?:-[a-z]+)?(?:\s*(?:,|e)\s*\d+(?:-[a-z]+)?)*)\s+([^,;()]+?)\s*$", re.IGNORECASE)
+
+
+def _signal_material(signals, tool_articles=()) -> list:
+    """[(label, kind)] of the fact signals' offered articles -- tools, then terms, then heads of damage, then the other
+    articles _regime_rows read (tool_articles: the regime tools and the criminal profile fitted to the side, added
+    after the signals were captured) -- for a run whose closure log has no provenance (before v50)."""
+    out = []
+    for kind, items in (("tool", "tools"), ("damages", "damages")):
+        out += [(f"{r[0]} {r[1]}", kind) for item in (signals or {}).get(items) or [] for r in item.get("refs") or []
+                if isinstance(r, (list, tuple)) and len(r) == 2]
+        if kind == "tool":
+            for t in (signals or {}).get("terms") or []:
+                for text in [str(t.get("ref") or "")] + [str(x.get("ref") or "") for x in t.get("sources") or []
+                                                         if isinstance(x, dict)]:
+                    m = _TERM_REF_RE.search(text)
+                    if m:
+                        out += [(f"{n} {m.group(2)}", "term") for n in re.split(r"\s*(?:,|\be\b)\s*", m.group(1)) if n]
+    out += [(label, "tool") for label in tool_articles or []]
+    seen, kept = set(), []
+    for label, kind in out:          # the first kind holds: a tool's article is not a head of damage
+        if label not in seen:
+            seen.add(label)
+            kept.append((label, kind))
+    return kept
+
+
+def outside_material(cases: list) -> dict:
+    """The cited articles with no pool row: offered material (tools, terms, procedural lists, the case's own), a head
+    of damage's only, outside the material."""
+    rows = [(c["id"], u) for c in cases for u in c.get("unexpected") or [] if not u.get("in_pool")]
+    return {"no_row": len(rows), "offered": sum(1 for _, u in rows if u.get("material") in OFFERED_KINDS),
+            "damages": [f"{cid} {u['label']}" for cid, u in rows if u.get("material") == "damages"],
+            "outside": [f"{cid} {u['label']}" for cid, u in rows if u.get("material") not in OFFERED_KINDS + ("damages",)]}
+
+
+def _outside_line(o: dict) -> str:
+    return (f"Cited with no pool row: {o.get('no_row', 0)}; offered material (tools, terms, procedural lists, the case's "
+            f"own) {o.get('offered', 0)}; a head of damage's only {len(o.get('damages') or [])}"
+            + (f" ({', '.join(o['damages'])})" if o.get("damages") else "")
+            + f"; outside the material {len(o.get('outside') or [])}"
+            + (f" ({', '.join(o['outside'])})" if o.get("outside") else "") + ".")
+
+
 def _closure_trace(rec: dict) -> dict:
     """CITATION_CLOSURE_ENABLED: what happened to the citations outside the material, from case_analysis_citation_closure."""
     c = rec.get("closure") or {}
@@ -1216,7 +1429,9 @@ def _closure_trace(rec: dict) -> dict:
             "no_verdict": counts.get("no verdict", 0), "outside_scope": counts.get("outside the case's material and areas", 0),
             "unresolved": counts.get("unresolved", 0), "citations_removed": c.get("citations_removed", 0),
             "sentences_dropped": c.get("sentences_dropped", 0), "remaining": c.get("remaining", 0),
-            "remaining_refs": c.get("remaining_refs") or []}
+            "remaining_refs": c.get("remaining_refs") or [], "offered_rows": list(c.get("offered_rows") or []),
+            "offered_present": list(c.get("offered_present") or []),
+            "not_in_material": counts.get("not in material", 0)}
 
 
 def _plan_cover_trace(rec: dict) -> dict:
@@ -1584,7 +1799,8 @@ def aggregate(cases: list) -> dict:
     for c in answered:
         closure.update({k: v if isinstance(v, int) else len(v) for k, v in (c.get("closure") or {}).items()
                         if k in ("verified", "not_found", "incompatible", "no_verdict", "outside_scope", "unresolved",
-                                 "citations_removed", "sentences_dropped", "remaining")})
+                                 "citations_removed", "sentences_dropped", "remaining", "offered_rows",
+                                 "offered_present", "not_in_material")})
     plan_cover = {"missing": sum(len((c.get("plan_cover") or {}).get("missing") or []) for c in answered),
                   "inserted": sum((c.get("plan_cover") or {}).get("inserted", 0) for c in answered),
                   "refused": [(c["id"], e.get("article"), e.get("why")) for c in answered
@@ -1605,13 +1821,36 @@ def aggregate(cases: list) -> dict:
                    "added": sum((c.get("fact_issues") or {}).get("added", 0) for c in answered),
                    "resolved": sum((c.get("fact_issues") or {}).get("resolved", 0) for c in answered),
                    "articles": sum(len((c.get("fact_issues") or {}).get("articles") or []) for c in answered)}
-    return {"keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
+    timing = {"cases": len(answered), "wall": sum(c.get("seconds") or 0 for c in answered),
+              "llm_cases": sum(1 for c in answered if (c.get("llm") or {}).get("calls") is not None and c.get("llm")),
+              "calls": sum((c.get("llm") or {}).get("calls") or 0 for c in answered),
+              "llm_seconds": sum((c.get("llm") or {}).get("seconds") or 0 for c in answered),
+              "llm_errors": sum((c.get("llm") or {}).get("errors") or 0 for c in answered)}
+    checks = {"cases": sum(1 for c in answered if c.get("checks")),
+              "failed": sum(len((c.get("checks") or {}).get("failures") or []) for c in answered)}
+    fits = [c["role_fit"] for c in answered if (c.get("role_fit") or {}).get("mode")]
+    role = {"cases": len(fits), "asked": sum(f["asked"] for f in fits),
+            "compared": sum((f.get("agreement") or {}).get("compared", 0) for f in fits),
+            "agree": sum((f.get("agreement") or {}).get("agree", 0) for f in fits),
+            "forbidden": sum(1 for f in fits for x in f["forbidden"] if x["answer"] != "not asked"),
+            "forbidden_adverse": sum(1 for f in fits for x in f["forbidden"] if x["answer"] == "controparte"),
+            "gate": sum(len((c.get("role_fit") or {}).get("gate_adverse") or []) for c in answered)}
+    planned = [c for c in answered if c.get("one_call") is not None]
+    fallbacks = {"cases": len(planned), "one_call": sum(1 for c in planned if c["one_call"]),
+                 "inferred": any(c.get("one_call_inferred") for c in planned),
+                 "steps": Counter(str(f.get("step")) for c in planned for f in c.get("plan_fallback") or []),
+                 "retried": sum(1 for c in planned if c.get("plan_retry")),
+                 "retry_ok": sum(1 for c in planned if any(r.get("outcome") == "plan" for r in c.get("plan_retry") or []))}
+    return {"timing": timing, "checks": checks, "role_fit": role, "fallbacks": fallbacks,
+            "keyed": keyed, "slots": slots, "stage_counts": stage_counts, "wrong": wrong, "any_channel": any_channel,
             "tiers": tier, "live": live, "invariants": inv, "evidence": evidence, "protected": protected,
             "grounded": dict(grounded), "closure": dict(closure), "plan_cover": plan_cover, "unchecked": unchecked,
             "foreign_acts": foreign_acts, "resolved": dict(resolved),
             "fact_issues": fact_issues, "anchored": dict(anchored),
             "anchored_lost": anchored_lost, "overlap_failures": dict(overlap_failures),
             "abstentions": sum(c.get("abstentions", 0) for c in answered), "answered": len(answered),
+            "pool_gates": [c["pool_gates"] for c in answered if c.get("pool_gates")],      # POOL_GATE_* (v50)
+            "outside_material": outside_material(answered),                                 # v50
             "fact_placed": dict(sum((Counter(c.get("fact_placed") or {}) for c in answered), Counter())),
             "fact_placed_logged": any(c.get("fact_placed") for c in answered),
             "discipline": discipline, "after_draft": after, "fact_signals": facts, "form": form,
@@ -1874,15 +2113,25 @@ def render(cases: list, header: list) -> str:
     if gr:
         L += ["", "## Grounded review (GROUNDED_REVIEW_ENABLED)", "", _grounded_line(gr) + "."]
     cl, pc = agg.get("closure") or {}, agg.get("plan_cover") or {}
+    gated = agg.get("pool_gates") or []
     L += ["", "## Citations and plan articles after writing (CITATION_CLOSURE, PLAN_ARTICLES_COVER)", "",
           f"Outside the material: {cl.get('verified', 0)} verified and made material; removed: {cl.get('not_found', 0)} not "
           f"found, {cl.get('incompatible', 0)} incompatible, {cl.get('no_verdict', 0)} without a verdict, "
           f"{cl.get('outside_scope', 0)} outside the case's areas, {cl.get('unresolved', 0)} unresolved "
           f"({cl.get('citations_removed', 0)} citations taken out of their sentence, {cl.get('sentences_dropped', 0)} "
-          f"sentences dropped). Unverified left: {cl.get('remaining', 0)}.",
+          f"sentences dropped). Unverified left: {cl.get('remaining', 0)}. Of the verified, read as offered material "
+          f"with no row (v49): {cl.get('offered_rows', 0)}; offered material cited with its row (v50): "
+          f"{cl.get('offered_present', 0)}; removed as not in material (CLOSURE_MATERIAL_ONLY): "
+          f"{cl.get('not_in_material', 0)}.",
+          _outside_line(agg.get("outside_material") or {}),
           f"Plan articles no section cited: {pc.get('missing', 0)}, {pc.get('inserted', 0)} written in; refused: "
           + ("; ".join(f"{cid} {article} ({why})" for cid, article, why in pc.get("refused") or []) or "none") + ".",
           f"Articles left ungraded past the limit: {agg.get('unchecked', 0)}.",
+          "POOL_GATE_AREA / POOL_GATE_LINK (before the check): " + (
+              f"{sum(g.get('area', 0) for g in gated)} articles out by area, {sum(g.get('link', 0) for g in gated)} by "
+              f"link, {sum(g.get('dedup_rows', 0) for g in gated)} duplicate rows merged, in {len(gated)} cases"
+              + (f"; link lookup failed in {sum(1 for g in gated if str(g.get('lookup')).startswith('failed'))}"
+                 if any(str(g.get('lookup')).startswith('failed') for g in gated) else "") if gated else "off") + ".",
           "How the cited numbers were resolved: " + (", ".join(f"{k} {v}" for k, v in sorted((agg.get("resolved") or {}).items()))
                                                     or "not logged") + ".",
           "Cited under an act outside the case's pool: "
@@ -1956,14 +2205,37 @@ def render(cases: list, header: list) -> str:
 
     # --- per case
     L += ["", "## Per case", "",
-          "| case | areas / posture | expected: stage | pool / prompt / plan / cited | not expected (origin) | time |",
-          "|---|---|---|---|---|---:|"]
+          "| case | areas / posture | expected: stage | pool / prompt / plan / cited | not expected (origin) | time | LLM calls / s |",
+          "|---|---|---|---|---|---:|---:|"]
     for c in cases:
         exp = "; ".join(f"{s['label'].replace('art. ', '')}: {s['stage']}" for s in c["slots"]) or "(no key)"
         unexp = ", ".join(f"{u['label']} ({'+'.join(u['origin'])})" for u in c["unexpected"]) or "-"
         L.append(f"| {c['id']} | {'/'.join(c['areas']) or '-'} / {c['posture'] or '-'} | {exp} | {c['pool_size']} / "
                  f"{c['prompt_size']} / {c['plan_size'] if c['plan_size'] is not None else '-'} / {c['mentioned_size']} | "
-                 f"{unexp} | {c['seconds'] or 0:.0f}s |")
+                 f"{unexp} | {c['seconds'] or 0:.0f}s | " + (f"{c['llm'].get('calls')} / {c['llm'].get('seconds', 0):.0f}s"
+                                                            if c.get("llm") else "-") + " |")
+    fitted = [c for c in cases if c.get("role_fit")]
+    if fitted:
+        L += ["", "## ROLE_FIT and the action gate", "",
+              "| case | mode | asked | adverse (ROLE_FIT) | agree with role conditions | eval-forbidden: answer | action gate adverse |",
+              "|---|---|---:|---|---:|---|---|"]
+        for c in fitted:
+            r = c["role_fit"]
+            agreement = r.get("agreement") or {}
+            L.append(f"| {c['id']} | {r.get('mode') or '-'} | {r.get('asked', '-')} | {', '.join(r.get('adverse') or []) or '-'} | "
+                     + (f"{agreement.get('agree', 0)} of {agreement.get('compared', 0)}" if r.get("mode") else "-") + " | "
+                     + (", ".join(f"{x['article']}: {x['answer']}" for x in r.get("forbidden") or []) or "-") + " | "
+                     + (", ".join(r.get("gate_adverse") or []) or "-") + " |")
+    checked = [c for c in cases if c.get("checks")]
+    if checked:
+        L += ["", "## Case checks (forbidden cited / named, must name, must state)", "",
+              "| case | forbidden cited | forbidden named | must name: missing | must state: missing | status |",
+              "|---|---|---|---|---|---|"]
+        for c in checked:
+            k = c["checks"]
+            L.append(f"| {c['id']} | {', '.join(k['forbidden_cited']) or '-'} | {', '.join(k['forbidden_named']) or '-'} | "
+                     f"{', '.join(k['must_name_missing']) or '-'} | {', '.join(k['must_state_missing']) or '-'} | "
+                     f"{k.get('status') or '-'} |")
 
     # --- unkeyed
     for c in cases:
@@ -2127,16 +2399,48 @@ def audit_grades(run_dir: str, ev) -> str:
     return "\n".join(L) + "\n"
 
 
+INPUT_NAME = "input.json"          # v49: a case's input spec, cases/<id>/input.json (was cases/<id>.input.json)
+
+
+def case_files(cases_dir: str) -> tuple:
+    """([paths of the case records], {skipped file: why}) of a run's cases/ folder: only cases/<id>.json -- never an
+    input spec (cases/<id>.input.json of runs before v49, cases/<id>/input.json since), a file that is not a JSON
+    object with an id, nor anything in a case's own folder."""
+    found, skipped = [], {}
+    for name in sorted(os.listdir(cases_dir)):
+        path = os.path.join(cases_dir, name)
+        if not name.endswith(".json") or not os.path.isfile(path):
+            continue
+        if name.endswith(".input.json"):
+            skipped[name] = "input spec"
+            continue
+        try:
+            with open(path, encoding="utf-8") as fh:
+                record = json.load(fh)
+        except (OSError, ValueError) as exc:
+            skipped[name] = f"unreadable: {type(exc).__name__}"
+            continue
+        if not isinstance(record, dict) or not record.get("id"):
+            skipped[name] = "no case id"
+        elif "out" in record and "status" not in record:       # an input spec under another name
+            skipped[name] = "input spec"
+        else:
+            found.append(path)
+    return found, skipped
+
+
 def _load_cases(out_dir: str, ev) -> tuple:
-    """(records, analysed cases) of a run folder, in the cases' usual order."""
+    """(records, analysed cases) of a run folder, in the cases' usual order (case_files: never an input spec)."""
     records = []
     cases_dir = os.path.join(out_dir, "cases")
-    for name in sorted(os.listdir(cases_dir)):
-        if name.endswith(".json") and not name.endswith(".input.json"):
-            with open(os.path.join(cases_dir, name), encoding="utf-8") as fh:
-                records.append(json.load(fh))
+    for path in case_files(cases_dir)[0]:
+        with open(path, encoding="utf-8") as fh:
+            records.append(json.load(fh))
     order = {cid: i for i, cid in enumerate(TUNING_IDS + HELDOUT_IDS)}
     records.sort(key=lambda r: (r.get("kind") == "file", order.get(r["id"], 999), r["id"]))
+    for r in records:           # a run made before _count_llm: the calls read off its dumps
+        if not r.get("llm"):
+            r["llm"] = llm_from_dumps(os.path.join(cases_dir, r["id"], "llm"))
     return records, [analyse_case(r, ev) for r in records]
 
 
@@ -2160,6 +2464,25 @@ def write_report(out_dir: str, ev) -> str:
     with open(os.path.join(out_dir, "report.json"), "w", encoding="utf-8") as fh:
         json.dump(cases, fh, ensure_ascii=False, indent=1, default=str)
     return os.path.join(out_dir, "report.md")
+
+
+def rescore(run_dir: str, ev) -> str:
+    """--rescore: report.json and report.md rebuilt from an existing cases/ folder, nothing run; prints what was read
+    and why cases count or not (a run scoring 0 cases says whether its records are missing or have no answer)."""
+    cases_dir = os.path.join(run_dir, "cases")
+    if not os.path.isdir(cases_dir):
+        sys.exit(f"--rescore: no cases/ folder in {run_dir}")
+    paths, skipped = case_files(cases_dir)
+    path = write_report(run_dir, ev)
+    with open(os.path.join(run_dir, "report.json"), encoding="utf-8") as fh:
+        cases = json.load(fh)
+    scored = [c for c in cases if c["keyed"] and c["ok"]]
+    print(f"{run_dir}: {len(paths)} case records read, {len(skipped)} files skipped "
+          f"({', '.join(f'{w} {n}' for w, n in Counter(skipped.values()).most_common()) or 'none'}).")
+    print(f"Scored (answer key and an answer): {len(scored)} of {len(cases)}"
+          + (f"; no answer: {', '.join(c['id'] for c in cases if not c['ok'])}" if any(not c["ok"] for c in cases) else "")
+          + (f"; statuses: {dict(Counter(str(c.get('status')) for c in cases))}" if cases else "") + ".")
+    return path
 
 
 def _run_dir(name: str) -> str:
@@ -2242,6 +2565,15 @@ def _side_by_side(title: str, counters: list, totals: list, names: list, order=N
     return rows
 
 
+def _fallback_cell(f: dict) -> str:
+    """The compare table's one-call fallbacks: "n of cases (steps); retried / saved", "off" without plan-then-write."""
+    if not f.get("cases"):
+        return "off"
+    steps = ", ".join(f"{k} {v}" for k, v in f["steps"].most_common()) if f.get("steps") else ""
+    return (f"{f['one_call']} of {f['cases']}" + (f" ({steps})" if steps else "")
+            + (" (inferred: no plan)" if f.get("inferred") else f"; {f['retried']} / {f['retry_ok']}"))
+
+
 def compare(run_dirs: list, ev) -> str:
     """Tables A (loss funnel) and B (where the articles cited without being expected come from) of
     several runs side by side, the last one the newest, over the cases every run has with an answer key
@@ -2249,6 +2581,12 @@ def compare(run_dirs: list, ev) -> str:
     loaded = [_load_cases(d, ev) for d in run_dirs]
     names = [os.path.basename(os.path.normpath(d)) for d in run_dirs]
     runs = [_by_repeat(cases) for _, cases in loaded]          # per run: [{case id: case} per repetition]
+    empty = [f"{n} ({len(cases)} case records, none with an answer key and an answer)"
+             for n, run, (_, cases) in zip([os.path.basename(os.path.normpath(d)) for d in run_dirs], runs, loaded)
+             if not run]
+    if empty:
+        raise SystemExit("--compare: nothing to compare in " + "; ".join(empty)
+                         + " -- rebuild its report with --rescore to see why")
     common = [cid for cid in (runs[-1][0] if runs[-1] else {}) if all(cid in r for run in runs for r in run)]
     left_out = sorted(set().union(*(set(r) for run in runs for r in run)) - set(common))
     aggs_by_run = [[aggregate([r[c] for c in common]) for r in run] for run in runs]
@@ -2267,7 +2605,27 @@ def compare(run_dirs: list, ev) -> str:
     def inv_cell(a, key):
         v = a["invariants"][key]
         return f"{v['found']} / {v['fixed']} / {v['remaining']}" if v else "n/a"
-    rows = [(f"{key} {name}: found / fixed / remaining (target 0)", (lambda a, key=key: inv_cell(a, key)),
+    def per_case(a, key):
+        t = a["timing"]
+        n = t["cases"] if key == "wall" else t["llm_cases"]
+        return _fmt(t[key] / n) if n else "n/a"
+    rows = [("wall seconds per case", lambda a: per_case(a, "wall"), lambda a: ""),
+            ("LLM calls per case", lambda a: per_case(a, "calls"), lambda a: ""),
+            ("LLM call-seconds per case (summed over concurrent calls)", lambda a: per_case(a, "llm_seconds"),
+             lambda a: ""),
+            ("failed LLM calls", lambda a: a["timing"]["llm_errors"] if a["timing"]["llm_cases"] else "n/a", lambda a: ""),
+            ("one-call fallbacks (plan-then-write on, parere in one call); plans retried / saved by the retry",
+             lambda a: _fallback_cell(a.get("fallbacks") or {}), lambda a: ""),
+            ("case checks failed (forbidden cited / named, must name / state)",
+             lambda a: a["checks"]["failed"] if a["checks"]["cases"] else "n/a", lambda a: ""),
+            ("ROLE_FIT: articles asked / answers agreeing with the role conditions (of those they decide)",
+             lambda a: (f"{a['role_fit']['asked']} / {a['role_fit']['agree']} of {a['role_fit']['compared']}"
+                        if a["role_fit"]["cases"] else "off"), lambda a: ""),
+            ("ROLE_FIT: eval-forbidden articles answered controparte / asked",
+             lambda a: (f"{a['role_fit']['forbidden_adverse']} / {a['role_fit']['forbidden']}"
+                        if a["role_fit"]["cases"] else "off"), lambda a: ""),
+            ("action gate: articles tagged adverse (REGIME_CANDIDATES)", lambda a: a["role_fit"]["gate"], lambda a: "")]
+    rows += [(f"{key} {name}: found / fixed / remaining (target 0)", (lambda a, key=key: inv_cell(a, key)),
              lambda a: "") for key, name in INVARIANTS]
     rows += [("verbatim overlaps with protected sources: found / rewritten / dropped / remaining (target 0)",
               lambda a: (f"{(a.get('protected') or {}).get('found', 0)} / {(a.get('protected') or {}).get('rewritten', 0)}"
@@ -2453,6 +2811,9 @@ def main() -> None:
     parser.add_argument("--set", action="append", default=[], metavar="NAME=VALUE",
                         help="a switch for this run only, over the .env")
     parser.add_argument("--report-only", metavar="DIR", help="rebuild DIR/report.md from DIR/cases, no run")
+    parser.add_argument("--rescore", metavar="RUNDIR",
+                        help="no run: rebuild RUNDIR/report.json and report.md from RUNDIR/cases (only cases/<id>.json "
+                             "records, never input specs), printing what was read; with --compare, the compare too")
     parser.add_argument("--compare", nargs="+", metavar="RUN",
                         help="earlier runs (a folder, or its name under ./diagnose_long_runs) whose tables A and B "
                              "are printed side by side with this run's, or with --report-only's DIR")
@@ -2486,6 +2847,12 @@ def main() -> None:
         if not args.compare or len(args.compare) < 2:
             parser.error("--compare-only needs two runs or more in --compare")
         _print_compare([_run_dir(r) for r in args.compare], ev)
+        return
+    if args.rescore:
+        run_dir = os.path.abspath(args.rescore)
+        print(f"Report: {rescore(run_dir, ev)}")
+        if args.compare:
+            _print_compare([_run_dir(r) for r in args.compare] + [run_dir], ev)
         return
     if args.report_only:
         print(f"Report: {write_report(args.report_only, ev)}")
@@ -2541,7 +2908,8 @@ def main() -> None:
     for spec in specs:
         spec.update(lang=args.lang, settings=settings, dump_llm=args.dump_llm,
                     out=os.path.join(out_dir, "cases", f"{spec['id']}.json"))
-        with open(os.path.join(out_dir, "cases", f"{spec['id']}.input.json"), "w", encoding="utf-8") as fh:
+        os.makedirs(os.path.join(out_dir, "cases", spec["id"]), exist_ok=True)
+        with open(os.path.join(out_dir, "cases", spec["id"], INPUT_NAME), "w", encoding="utf-8") as fh:
             json.dump(spec, fh, ensure_ascii=False)
 
     parallel = max(1, min(args.parallel, MAX_PARALLEL))
@@ -2554,7 +2922,7 @@ def main() -> None:
         with open(log_path, "w", encoding="utf-8") as log:
             try:
                 code = subprocess.run([sys.executable, os.path.abspath(__file__), "--child",
-                                       os.path.join(out_dir, "cases", f"{spec['id']}.input.json"), "--env", args.env],
+                                       os.path.join(out_dir, "cases", spec["id"], INPUT_NAME), "--env", args.env],
                                       cwd=os.getcwd(), stdout=log, stderr=subprocess.STDOUT,
                                       timeout=args.timeout).returncode
             except subprocess.TimeoutExpired:
