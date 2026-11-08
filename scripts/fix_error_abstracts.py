@@ -4,24 +4,26 @@ rebuild the abstract the way the ingest (flatten.py) builds it when a chunk has 
 Background (7 Nov 2026): the analysis module's last resort for a chunk whose model call fails twice (structured,
 then plain text: a 404 on the model name, a chunk timeout, any error) is a result whose "requirement" is the
 literal "[Errore analisi comma]". flatten.py joins the chunk requirements of a section with "; " and makes the
-abstract from them, so the string ends up in the abstract: alone ("<title> - [Errore analisi comma]") when every
-chunk failed, mixed with real summaries ("<title> - <summary>; [Errore analisi comma] Testo significativo: ...")
-when one chunk of several failed. The post-processing only replaces abstracts shorter than 20 characters. The
-document's description is the first 500 words of its section abstracts, so it carries the string too. The chatbot
-returns s.abstract for a section view, searches abstracts and descriptions for keywords, and the nightly embedding
-job embeds abstract + plain_text.
+abstract from them ("<title> - <requirements> Testo significativo: <core text>"), so the string ends up in the
+abstract: alone when every chunk failed, mixed with real summaries when one chunk of several failed. The
+post-processing then strips "Testo significativo:" and "0 " from every abstract, so the stored shape differs from
+flatten's: the core text follows the error string with a bare space, and a title with a zero no longer matches
+the node's titolo_articolo. It replaces only abstracts under 20 characters. The document description (first 500
+words of the section abstracts at flatten time) carries the string too. The chatbot returns s.abstract in the
+section view, searches abstracts and descriptions for keywords, and the nightly job embeds abstract + plain_text.
 
-Count on 8 Nov 2026: 37,510 sections in 5,993 rulings (the 2025 batch of 2-5 Nov without a served model, plus
-rulings of other batches with single failed chunks).
+Count on 8 Nov 2026: 37,510 sections in 5,993 rulings; 5,992 descriptions.
 
-The fix follows flatten.py's rule for a section: requirement = the good fragments joined with "; ", or the first
-200 words of plain_text when none is left; then " Testo significativo: <core text>" when the abstract had one;
-then the article title in front ("titolo - ") when it is not already in the text; trimmed to 200 words. The
-description of every document whose description carries the string is rebuilt from its section abstracts in
-reading order (NEXT), trimmed to 500 words. Nothing is printed but counts.
+The fix removes the error fragments wherever they sit (with their "; " joiners). When nothing of the analysis is
+left but the title, the abstract becomes flatten's no-analysis abstract: the first 200 words of the text with the
+node's title in front. Otherwise what is left is kept, trimmed to 200 words. Then the description of every
+document with a fixed section, or whose description carries the string, is rebuilt from its section abstracts
+in reading order (NEXT), trimmed to 500 words. Nothing is printed but counts and masked shapes (every word
+replaced by w: no text, no names).
 
     cd /opt/chatbot && sudo venv/bin/python -I /home/sunnit/fix_error_abstracts.py            # count only
-    cd /opt/chatbot && sudo venv/bin/python -I /home/sunnit/fix_error_abstracts.py --write    # fix, in batches
+    ... --shapes             # read-only: the shapes of a sample of error abstracts, and what the fix would do
+    ... --write              # fix, in batches
     ... --write --reembed    # also park each fixed section's vector (embedding_v2_before_fix) and clear
                              # embedding_v2, so the 02:00 backfill re-embeds it from the new text. Until that job
                              # runs, those sections are absent from vector search: run the fix in the evening,
@@ -30,16 +32,20 @@ reading order (NEXT), trimmed to 500 words. Nothing is printed but counts.
     ... --undo               # put back abstracts, descriptions and parked vectors
     ... --purge-backups      # after checking the result: remove the *_before_fix properties
 The old values stay on the nodes as abstract_before_fix / description_before_fix / embedding_v2_before_fix until
---purge-backups, so --undo restores everything.
+--purge-backups (a rerun keeps the first backup), so --undo restores everything.
 """
 import argparse
+import re
 import sys
 import time
-from typing import Dict, List, Optional, Tuple
+from collections import Counter
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 ERROR = "[Errore analisi comma]"
 FILTER = "[Content filter"
-CORE_MARK = " Testo significativo: "
+ERR_RE = re.compile(r"\[Errore analisi comma\]|\[Content filter[^\]]*\]")
+ERR_WITH_JOINER_BEFORE = re.compile(r"\s*;\s*(?:\[Errore analisi comma\]|\[Content filter[^\]]*\])")
+ERR_WITH_JOINER_AFTER = re.compile(r"(?:\[Errore analisi comma\]|\[Content filter[^\]]*\])\s*;\s*")
 
 
 def load_env(path: str) -> Dict[str, str]:
@@ -59,35 +65,44 @@ def trim_words(text: str, max_words: int = 200) -> str:
     return " ".join(words[:max_words])
 
 
-def is_error(fragment: str) -> bool:
-    return fragment == ERROR or fragment.startswith(FILTER)
+def strip_errors(text: str) -> str:
+    """The abstract without its error fragments: "a; [ERR]; b" -> "a; b", "[ERR] core" -> "core", "T - [ERR]" -> "T -"."""
+    text = ERR_WITH_JOINER_BEFORE.sub("", text or "")
+    text = ERR_WITH_JOINER_AFTER.sub("", text)
+    text = ERR_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text.strip("; ").strip()
 
 
 def rebuild_abstract(abstract: str, plain_text: str, titolo: str) -> Tuple[str, bool]:
-    """The abstract flatten.py would have built had the failed chunks produced nothing: (new abstract, pure).
-    pure = True when nothing of the analysis survives (every fragment was an error string and there is no core
-    text): the abstract then becomes the first 200 words of the text, as for a section without analysis."""
+    """(new abstract, pure). pure = nothing of the analysis is left but the title: the abstract then becomes the
+    first 200 words of the text with the title in front, as flatten.py does for a section without analysis."""
     titolo = (titolo or "").strip()
-    body = abstract or ""
-    if titolo and body.startswith(f"{titolo} - "):
-        body = body[len(titolo) + 3:]
-    core = ""
-    if CORE_MARK in body:
-        body, core = body.split(CORE_MARK, 1)
-        core = core.strip()
-    fragments = [f.strip() for f in body.split("; ")]
-    good = [f for f in fragments if f and not is_error(f)]
-    requirement = "; ".join(good)
-    pure = not good and not core
-    new = requirement if requirement else trim_words(plain_text, 200)
-    if core:
-        new = f"{new}{CORE_MARK}{core}".strip()
-    if titolo and titolo not in new:
-        new = f"{titolo} - {new}"
-    new = trim_words(new, 200)
+    body = strip_errors(abstract)
+    rest = body
+    if titolo and rest.startswith(titolo):
+        rest = rest[len(titolo):].strip()
+    if rest.startswith("-"):
+        rest = rest[1:].strip()
+    pure = rest == "" or body.endswith("-")       # "T -": a title (matching the node's or not) and nothing after it
+    if pure:
+        new = trim_words(plain_text, 200)
+        if titolo and titolo not in new:
+            new = f"{titolo} - {new}"
+        new = trim_words(new, 200)
+    else:
+        new = trim_words(body, 200)
     if not new.strip():
-        new = "(sezione senza testo)"           # never leave the error string, never write an empty abstract
+        new = "(sezione senza testo)"               # never leave the error string, never write an empty abstract
     return new, pure
+
+
+def shape(text: str, width: int = 90) -> str:
+    """A masked outline: error strings as §, every run of words as W<n>. No word of the text survives."""
+    t = ERR_RE.sub("§", text or "")
+    t = re.sub(r"\w+", "w", t)
+    t = re.sub(r"w(?: w)+", lambda m: f"W{m.group(0).count('w')}", t)
+    return t[:width]
 
 
 def chain_order(rows: List[dict]) -> List[dict]:
@@ -110,6 +125,18 @@ def chain_order(rows: List[dict]) -> List[dict]:
     return ordered
 
 
+def chain_health(rows: List[dict]) -> str:
+    """'single' (one head, every section on the chain), 'no_next', 'multi_head' or 'partial' (pieces off the chain)."""
+    targets = {r["next"] for r in rows if r.get("next")}
+    on_chain = [r for r in rows if r.get("next") or r["eid"] in targets]
+    if not on_chain:
+        return "no_next"
+    heads = [r for r in on_chain if r["eid"] not in targets]
+    if len(heads) != 1:
+        return "multi_head"
+    return "single" if len(on_chain) == len(rows) else "partial"
+
+
 def rebuild_description(rows: List[dict]) -> str:
     return trim_words(" ".join((r.get("abstract") or "") for r in chain_order(rows)), 500)
 
@@ -123,9 +150,14 @@ COUNT_DOCS = (
     "MATCH (d:Document) WHERE d.description CONTAINS $needle "
     "RETURN count(d) AS documents, count(CASE WHEN d.document_type = 'interpretation' THEN 1 END) AS rulings"
 )
+COUNT_BACKUPS = (
+    "MATCH (s:Section) WHERE s.abstract_before_fix IS NOT NULL "
+    "RETURN count(s) AS n, count(CASE WHEN s.abstract CONTAINS $needle THEN 1 END) AS still"
+)
 PICK_SECTIONS = (
-    "MATCH (s:Section) WHERE s.abstract CONTAINS $needle "
-    "RETURN elementId(s) AS eid, s.abstract AS abstract, s.plain_text AS text, s.titolo_articolo AS titolo LIMIT $n"
+    "MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE s.abstract CONTAINS $needle "
+    "RETURN elementId(s) AS eid, elementId(d) AS did, s.abstract AS abstract, s.plain_text AS text, "
+    "s.titolo_articolo AS titolo LIMIT $n"
 )
 WRITE_SECTIONS = (
     "UNWIND $rows AS row MATCH (s:Section) WHERE elementId(s) = row.eid "
@@ -136,6 +168,7 @@ PARK_VECTORS = (
     "SET s.embedding_v2_before_fix = s.embedding_v2 REMOVE s.embedding_v2 RETURN count(s) AS n"
 )
 PICK_DOCS = "MATCH (d:Document) WHERE d.description CONTAINS $needle RETURN elementId(d) AS eid LIMIT $n"
+DOCS_WITH_BACKUP = "MATCH (d:Document) WHERE d.description_before_fix IS NOT NULL RETURN elementId(d) AS eid LIMIT $n"
 DOC_SECTIONS = (
     "MATCH (d:Document) WHERE elementId(d) = $did MATCH (d)-[:CONTAINS]->(s:Section) "
     "OPTIONAL MATCH (s)-[:NEXT]->(nx:Section) "
@@ -184,46 +217,115 @@ def counts(session) -> None:
               f"({r['rulings']:,} rulings)")
     r = session.run(COUNT_DOCS, needle=ERROR).single()
     print(f"document descriptions with the error string: {r['documents']:,} documents ({r['rulings']:,} rulings)")
+    r = session.run(COUNT_BACKUPS, needle=ERROR).single()
+    if r["n"]:
+        print(f"sections already holding a backup (abstract_before_fix): {r['n']:,}, of which {r['still']:,} still "
+              f"carry the error string")
 
 
-def fix_sections(session, args) -> Tuple[int, int, int]:
+def shapes(session, sample: int) -> None:
+    """Read-only: what the error abstracts look like (masked) and what the fix would make of them."""
+    rows = session.run(PICK_SECTIONS, needle=ERROR, n=sample).data()
+    n = len(rows)
+    print(f"sample: {n:,} sections with the error string")
+    if not n:
+        return
+    c = Counter()
+    before, after, unresolved = Counter(), Counter(), Counter()
+    for r in rows:
+        a, titolo = r["abstract"] or "", (r["titolo"] or "").strip()
+        c["title empty"] += not titolo
+        c["abstract starts with the node's title"] += bool(titolo) and a.startswith(titolo)
+        c["abstract starts with 'title - '"] += bool(titolo) and a.startswith(f"{titolo} - ")
+        c["error string at the end"] += a.rstrip().endswith(ERROR)
+        c["text after the last error string"] += not a.rstrip().endswith(ERROR)
+        c["'; ' joiner present"] += "; " in a
+        c["several error strings"] += a.count(ERROR) > 1
+        new, pure = rebuild_abstract(a, r["text"] or "", titolo)
+        c["fix: nothing left but the title -> first 200 words"] += pure
+        c["fix: good fragments kept"] += not pure
+        c["fix: still carries the error (would not be written)"] += bool(ERR_RE.search(new))
+        before[shape(a)] += 1
+        after[shape(new)] += 1
+        if ERR_RE.search(new):
+            unresolved[shape(a)] += 1
+    for k, v in c.items():
+        print(f"  {v:>6,}  {k}")
+    print("most common shapes before (W<n> = n words, § = error string):")
+    for s, v in before.most_common(12):
+        print(f"  {v:>6,}  {s}")
+    print("most common shapes after the fix:")
+    for s, v in after.most_common(8):
+        print(f"  {v:>6,}  {s}")
+    if unresolved:
+        print("shapes the fix would NOT resolve:")
+        for s, v in unresolved.most_common(8):
+            print(f"  {v:>6,}  {s}")
+    docs = [r["eid"] for r in session.run(DOCS_WITH_BACKUP, n=300)]
+    if docs:
+        health = Counter(chain_health(session.run(DOC_SECTIONS, did=did).data()) for did in docs)
+        print(f"NEXT chain of {len(docs):,} documents with a rebuilt description: "
+              + ", ".join(f"{k} {v:,}" for k, v in health.most_common()))
+
+
+def fix_sections(session, args) -> Tuple[int, int, Set[str]]:
     done = pure_n = parked = 0
-    seen = set()
+    unresolved = Counter()
+    seen: Set[str] = set()
+    dids: Set[str] = set()
     t0 = time.time()
     while True:
         rows = session.run(PICK_SECTIONS, needle=ERROR, n=args.batch).data()
-        if not rows or all(r["eid"] in seen for r in rows):      # nothing left, or a batch that did not change
+        fresh = [r for r in rows if r["eid"] not in seen]
+        if not fresh:                                           # nothing left, or only sections this run could not fix
             break
-        seen.update(r["eid"] for r in rows)
+        seen.update(r["eid"] for r in fresh)
         payload = []
-        for r in rows:
+        for r in fresh:
             new, pure = rebuild_abstract(r["abstract"] or "", r["text"] or "", r["titolo"] or "")
+            if ERR_RE.search(new):                              # must not happen: never write the string back
+                unresolved[shape(r["abstract"] or "")] += 1
+                continue
             pure_n += pure
             payload.append({"eid": r["eid"], "abstract": new})
-        session.run(WRITE_SECTIONS, rows=payload).consume()
-        if args.reembed:
-            parked += session.run(PARK_VECTORS, eids=[p["eid"] for p in payload]).single()["n"]
-        done += len(payload)
+            dids.add(r["did"])
+        if payload:
+            session.run(WRITE_SECTIONS, rows=payload).consume()
+            if args.reembed:
+                parked += session.run(PARK_VECTORS, eids=[p["eid"] for p in payload]).single()["n"]
+            done += len(payload)
         if done % 5000 < args.batch:
             print(f"  {done:,} sections fixed ({time.time() - t0:.0f}s)")
         time.sleep(args.pause)
     print(f"fixed {done:,} section abstracts ({pure_n:,} had nothing left of the analysis, "
           f"{done - pure_n:,} kept their good fragments) in {time.time() - t0:.0f}s"
           + (f"; {parked:,} vectors parked for the nightly re-embedding" if args.reembed else ""))
-    return done, pure_n, parked
+    if unresolved:
+        print(f"NOT fixed: {sum(unresolved.values()):,} sections whose rebuilt abstract would still carry the string; "
+              "their masked shapes:")
+        for s, v in unresolved.most_common(8):
+            print(f"  {v:>6,}  {s}")
+    return done, pure_n, dids
 
 
-def fix_descriptions(session, args) -> int:
-    done = 0
-    seen = set()
-    t0 = time.time()
+def fix_descriptions(session, args, dids: Iterable[str]) -> int:
+    """Rebuild the description of every document with a fixed section, and of every document whose description
+    still carries the string (the first-500-words window may have moved past a fixed section)."""
+    todo: Set[str] = set(dids)
+    seen: Set[str] = set()
     while True:
-        eids = [r["eid"] for r in session.run(PICK_DOCS, needle=ERROR, n=args.batch)]
-        if not eids or all(e in seen for e in eids):
+        more = {r["eid"] for r in session.run(PICK_DOCS, needle=ERROR, n=args.batch)} - seen
+        if not more:
             break
-        seen.update(eids)
+        todo |= more
+        seen |= more
+    todo_list = sorted(todo)
+    done = 0
+    t0 = time.time()
+    for start in range(0, len(todo_list), args.batch):
+        chunk = todo_list[start:start + args.batch]
         payload = [{"eid": did, "description": rebuild_description(session.run(DOC_SECTIONS, did=did).data())}
-                   for did in eids]
+                   for did in chunk]
         session.run(WRITE_DOCS, rows=payload).consume()
         done += len(payload)
         time.sleep(args.pause)
@@ -234,6 +336,8 @@ def fix_descriptions(session, args) -> int:
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--env", default="/opt/v2tools/health.env", help="NEO4J_URI / USER / PASSWORD / DATABASE")
+    p.add_argument("--shapes", action="store_true", help="read-only: masked shapes of a sample and the fix's effect")
+    p.add_argument("--sample", type=int, default=3000, help="sections in the --shapes sample")
     p.add_argument("--write", action="store_true", help="fix the abstracts and descriptions (default: count only)")
     p.add_argument("--reembed", action="store_true",
                    help="with --write: park embedding_v2 of each fixed section so the nightly backfill re-embeds it")
@@ -258,11 +362,14 @@ def main() -> int:
                 print(f"removed {prop} from {run_batches(s, query, args.batch, args.pause):,} nodes")
             return 0
         counts(s)
-        if not args.write:
-            print("count only; --write rebuilds them (old values kept as *_before_fix; --undo restores)")
+        if args.shapes:
+            shapes(s, args.sample)
             return 0
-        fix_sections(s, args)
-        fix_descriptions(s, args)
+        if not args.write:
+            print("count only; --shapes shows the sample, --write rebuilds (old values kept as *_before_fix; --undo restores)")
+            return 0
+        _, _, dids = fix_sections(s, args)
+        fix_descriptions(s, args, dids)
         print("after the fix:")
         counts(s)
     driver.close()

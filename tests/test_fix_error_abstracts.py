@@ -1,4 +1,5 @@
-"""fix_error_abstracts.py: the rebuilt abstract follows flatten.py's rule; the description follows NEXT."""
+"""fix_error_abstracts.py: the error fragments go wherever they sit (the stored abstracts are post-processed, so the
+"Testo significativo:" marker is gone and a title may differ from the node's); the description follows NEXT."""
 import importlib.util
 from pathlib import Path
 
@@ -21,17 +22,33 @@ def test_several_failed_chunks_are_still_pure():
     assert pure and new == f"Titolo - {TEXT}"
 
 
-def test_mixed_abstract_keeps_the_good_fragments_and_the_core_text():
-    old = f"Titolo - Il motivo è generico; {ERR}; La pena è congrua Testo significativo: motivo generico"
-    new, pure = fx.rebuild_abstract(old, TEXT, "Titolo")
-    assert not pure
-    assert new == "Titolo - Il motivo è generico; La pena è congrua Testo significativo: motivo generico"
+def test_title_mangled_by_the_post_processing_is_still_pure_and_gets_the_node_title():
+    # flatten wrote "Motivo 10 - [ERR]"; post-processing's replace("0 ", "") left "Motivo 1- [ERR]"
+    new, pure = fx.rebuild_abstract(f"Motivo 1- {ERR}", TEXT, "Motivo 10")
+    assert pure and new == f"Motivo 10 - {TEXT}"
 
 
-def test_core_text_alone_is_kept_over_the_text():
-    old = f"Titolo - {ERR} Testo significativo: la frase centrale"
+def test_mixed_abstract_keeps_the_good_fragments_and_the_core_text_without_marker():
+    # as stored after post-processing: no "Testo significativo:", the core text follows the error string
+    old = f"Titolo - Il motivo è generico; {ERR} motivo generico e inammissibile"
     new, pure = fx.rebuild_abstract(old, TEXT, "Titolo")
-    assert not pure and new == f"Titolo - {TEXT} Testo significativo: la frase centrale"
+    assert not pure and new == "Titolo - Il motivo è generico motivo generico e inammissibile"
+
+
+def test_error_in_the_middle_keeps_the_joiner_between_the_good_fragments():
+    new, pure = fx.rebuild_abstract(f"T - primo; {ERR}; secondo", TEXT, "T")
+    assert not pure and new == "T - primo; secondo"
+
+
+def test_error_first_then_good_fragment():
+    new, pure = fx.rebuild_abstract(f"T - {ERR}; secondo", TEXT, "T")
+    assert not pure and new == "T - secondo"
+
+
+def test_flatten_shape_with_marker_still_works():
+    old = f"Titolo - Il motivo è generico; {ERR} Testo significativo: motivo generico"
+    new, pure = fx.rebuild_abstract(old, TEXT, "Titolo")
+    assert not pure and new == "Titolo - Il motivo è generico Testo significativo: motivo generico"
 
 
 def test_no_title_and_empty_text():
@@ -55,6 +72,17 @@ def test_content_filter_fragment_counts_as_error():
     assert pure and new == TEXT
 
 
+def test_result_never_carries_the_string():
+    for old in (ERR, f"T - {ERR}", f"{ERR}; {ERR}", f"a; {ERR} b", f"{ERR} b", f"T - a; {ERR}"):
+        new, _ = fx.rebuild_abstract(old, TEXT, "T")
+        assert not fx.ERR_RE.search(new)
+
+
+def test_shape_masks_every_word():
+    s = fx.shape(f"Motivi della decisione - Il ricorso di Mario Rossi è inammissibile; {ERR} testo")
+    assert s == "W3 - W7; § w" and "Rossi" not in s
+
+
 def test_description_follows_next_and_leaves_split_pieces_out():
     rows = [
         {"eid": "b", "name": "2", "abstract": "second", "next": "c"},
@@ -63,10 +91,13 @@ def test_description_follows_next_and_leaves_split_pieces_out():
         {"eid": "x", "name": "2_1", "abstract": "split piece", "next": None},
     ]
     assert fx.rebuild_description(rows) == "first second third"
+    assert fx.chain_health(rows) == "partial"
+    assert fx.chain_health(rows[:3]) == "single"
 
 
 def test_description_of_a_single_section_document():
-    assert fx.rebuild_description([{"eid": "a", "name": "1", "abstract": "only", "next": None}]) == "only"
+    rows = [{"eid": "a", "name": "1", "abstract": "only", "next": None}]
+    assert fx.rebuild_description(rows) == "only" and fx.chain_health(rows) == "no_next"
 
 
 def test_description_is_trimmed_to_500_words():

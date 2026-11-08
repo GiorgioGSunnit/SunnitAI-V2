@@ -163,6 +163,16 @@ search, so evening only, or start the backfill by hand. Not needed for retrieval
 group carried the string in its vectors and retrieved like the other). The write is the user's decision; it
 is a plain Neo4j write, so not while the cards run (22:00 CET) and not during a backfill.
 
+First write, 8 Nov afternoon: stopped by its own guard after 1,000 sections (11 fixed, 989 rewritten with the
+string still inside) and 3,500 descriptions. Cause: the post-processing strips "Testo significativo:" and "0 "
+from every abstract after flatten builds it, so the stored shape is "<title> - <good>; [Errore analisi comma]
+<core text>" and the title may no longer match titolo_articolo; the first rule split on "; " and kept the
+error-plus-core-text fragment as good. The rule is now shape-independent (error fragments removed wherever they
+sit; title-only leftovers -> first 200 words). `--shapes` is the read-only check to run before `--write`: masked
+shapes (W<n> = n words, § = the string) of a 3,000-section sample, what the fix would do with each, and the
+NEXT-chain health of the documents already rebuilt. The first run's backups are kept (coalesce), so a rerun
+leaves the original as the restore point.
+
 ## 4. Monday: the batch lands
 
 1. The batch goes to `/home/sunnit/cass_batch1`, flat (PDF + `.name` sidecar per file, as the 2025 batch). Names
