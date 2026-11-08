@@ -73,6 +73,7 @@ def test_branch_of():
 
 NUMBERS = {"sections_no_v2_with_text": 10, "sections_empty": 3, "docs_untyped": 2, "sections_detached": 0,
            "date_only_articles": 1100, "numbering_gaps": 40, "numbering_gaps_new": 0, "rulings_without_cites": 4254,
+           "sections_error_abstracts": 0,
            "queue_waiting": 13000, "queue_failed": 5, "duplicates": 1, "rulings_without_card": None}
 
 
@@ -83,7 +84,9 @@ def test_summary_line_with_deltas_and_cards():
     prev = {**NUMBERS, "sections_no_v2_with_text": 4, "rulings_without_cites": 4300}
     line = mh.summary_line({**NUMBERS, "rulings_without_card": 5939}, {**prev, "rulings_without_card": 6000})
     assert "v2 missing 10 (+6)" in line and "rulings without CITES 4,254 (-46)" in line
-    assert "rulings without card 5,939 (-61)" in line
+    assert "rulings without card 5,939 (-61)" in line and "error abstracts 0 · queue" in line
+    line = mh.summary_line({**NUMBERS, "sections_error_abstracts": 120}, {**NUMBERS, "sections_error_abstracts": 0})
+    assert "error abstracts 120 (+120)" in line
 
 
 GRAPH = {"documents": 6, "docs_by_type": {"interpretation": 3, "primary": 1, "(none)": 2},
@@ -153,6 +156,8 @@ class _Session:
                     {"name": "3.1.0", "n": 200, "head": "Testo"}]
         elif "[:CITES]" in query:
             data = [{"id": "r1"}]
+        elif "Errore analisi comma" in query:
+            return type("R", (), {"single": lambda self_: {"n": 7}})()
         else:
             raise AssertionError(query)
         return type("R", (), {"data": lambda self_: data})()
@@ -164,7 +169,7 @@ def test_graph_checks_on_a_fake_graph():
     assert g["sections_no_v2_with_text_by_type"] == {"primary": 1} and g["sections_detached"] == 4
     assert g["date_only_by_doc"] == {"Codice Civile 2026": 1} and g["numbering_gaps_by_code"] == {"Codice Civile 2026": [2]}
     assert g["rulings_by_branch"] == {"penale": {"rulings": 1, "without_cites": 0}, "civile": {"rulings": 1, "without_cites": 1}}
-    assert g["rulings_by_year"] == {"2026": 2}
+    assert g["rulings_by_year"] == {"2026": 2} and g["sections_error_abstracts"] == 7
 
 
 def test_graph_checks_can_skip_the_heavy_stages():

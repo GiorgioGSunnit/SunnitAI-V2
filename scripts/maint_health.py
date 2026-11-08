@@ -181,14 +181,15 @@ def summary_line(n: dict, prev: Optional[dict]) -> str:
              f"date-only articles {n['date_only_articles']:,}",
              f"numbering gaps {n['numbering_gaps']:,} (new {n['numbering_gaps_new']:,})",
              f"rulings without CITES {n['rulings_without_cites']:,}{delta('rulings_without_cites')}",
+             f"error abstracts {n.get('sections_error_abstracts', 0):,}{delta('sections_error_abstracts')}",
              f"queue {n['queue_waiting']:,} waiting / {n['queue_failed']:,} failed",
              f"suspected duplicates {n['duplicates']:,} (not touched)"]
     if n.get("ingest_written") is not None:
         cheap = f" ({n['ingest_no_analysis']:,} without analysis)" if n.get("ingest_no_analysis") else ""
-        parts.insert(8, f"ingest 24 h: {n['ingest_written']:,} written{cheap}, {n['ingest_model_errors']:,} LLM model errors, "
+        parts.insert(9, f"ingest 24 h: {n['ingest_written']:,} written{cheap}, {n['ingest_model_errors']:,} LLM model errors, "
                         f"{n['ingest_fallbacks']:,} chunk fallbacks")
     if n.get("disk_free_gb") is not None:
-        parts.insert(9, f"disk free {n['disk_free_gb']:.0f} GB" + (f" (store {n['store_gb']:.0f} GB)" if n.get("store_gb") else ""))
+        parts.insert(10, f"disk free {n['disk_free_gb']:.0f} GB" + (f" (store {n['store_gb']:.0f} GB)" if n.get("store_gb") else ""))
     if n.get("feeder_left") is not None:
         parts.append(f"feeder: {n['feeder_left']:,} left" + (" PAUSED" if n.get("feeder_paused") else ""))
     if n.get("rulings_without_card") is not None:
@@ -518,6 +519,10 @@ def graph_checks(session, batch: int, pause: float, skip: Iterable[str] = ()) ->
     out["ruling_ids_by_branch"] = {b: [d["id"] for d in rulings if branch_of(d["file"], d["name"]) == b]
                                    for b in by_branch}
     out["rulings_by_year"] = dict(sorted(Counter(year_of(d["file"], d["name"]) or "unknown" for d in rulings).items()))
+    # section abstracts that are the ingest's error string: a chunk whose model call failed twice (missing model,
+    # chunk timeout). Any batch can write new ones; scripts/fix_error_abstracts.py rebuilds them (8 Nov 2026: 37,510).
+    out["sections_error_abstracts"] = session.run(
+        "MATCH (s:Section) WHERE s.abstract CONTAINS '[Errore analisi comma]' RETURN count(s) AS n").single()["n"]
     out["duplicates"] = suspected_duplicates(docs)
     _progress(t0, "rulings and duplicates done")
     return out
@@ -559,6 +564,7 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
          "numbering_gaps": sum(len(v) for v in g["numbering_gaps_by_code"].values()),
          "numbering_gaps_new": sum(len(v) for v in gaps_new.values()),
          "rulings_without_cites": sum(v["without_cites"] for v in g["rulings_by_branch"].values()),
+         "sections_error_abstracts": g.get("sections_error_abstracts", 0),
          "queue_waiting": queue["waiting"], "queue_failed": queue["failed"],
          "duplicates": sum(len(v) for v in g["duplicates"].values()),
          "rulings_without_card": None,
@@ -616,6 +622,10 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
                      if cards is not None else ""))
     if cards is None:
         md += ["", "Ruling cards: no card file readable here (they live on prod in /root/ruling_cards today)."]
+    md += ["", f"Section abstracts that are the ingest's error string \"[Errore analisi comma]\": "
+               f"{g.get('sections_error_abstracts', 0):,}"
+               + (" -- a chunk whose model call failed twice; rebuild with scripts/fix_error_abstracts.py "
+                  "(count first, then --write)" if g.get("sections_error_abstracts") else "")]
     md += ["", "CITES unresolved citations (linker log): " + ("log not found on this machine" if unresolved[0] is None
                                                              else f"{unresolved[0]:,}")
            + (" -- " + ", ".join(f"{r} {k:,}" for r, k in unresolved[1].items()) if unresolved[1] else "")]
