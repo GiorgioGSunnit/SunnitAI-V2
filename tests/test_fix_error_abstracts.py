@@ -1,5 +1,6 @@
 """fix_error_abstracts.py: the error fragments go wherever they sit (the stored abstracts are post-processed, so the
-"Testo significativo:" marker is gone and a title may differ from the node's); the description follows NEXT."""
+"Testo significativo:" marker is gone and a heading may differ from the node's title); the heading an abstract
+carried stays in front; the description follows one complete NEXT chain, else natural name order."""
 import importlib.util
 from pathlib import Path
 
@@ -22,7 +23,18 @@ def test_several_failed_chunks_are_still_pure():
     assert pure and new == f"Titolo - {TEXT}"
 
 
-def test_title_mangled_by_the_post_processing_is_still_pure_and_gets_the_node_title():
+def test_heading_without_a_node_title_is_kept():
+    # the rulings: titolo_articolo empty, the abstract carries "Ritenuto in fatto - 1.2 - [ERR]"
+    new, pure = fx.rebuild_abstract(f"Ritenuto in fatto - 1.2 - {ERR}", TEXT, "")
+    assert pure and new == f"Ritenuto in fatto - 1.2 - {TEXT}"
+
+
+def test_heading_already_in_the_text_is_not_repeated():
+    new, pure = fx.rebuild_abstract(f"Fatto - {ERR}", "Fatto e diritto: il ricorso è inammissibile.", "")
+    assert pure and new == "Fatto e diritto: il ricorso è inammissibile."
+
+
+def test_title_mangled_by_the_post_processing_gets_the_node_title():
     # flatten wrote "Motivo 10 - [ERR]"; post-processing's replace("0 ", "") left "Motivo 1- [ERR]"
     new, pure = fx.rebuild_abstract(f"Motivo 1- {ERR}", TEXT, "Motivo 10")
     assert pure and new == f"Motivo 10 - {TEXT}"
@@ -51,14 +63,9 @@ def test_flatten_shape_with_marker_still_works():
     assert not pure and new == "Titolo - Il motivo è generico Testo significativo: motivo generico"
 
 
-def test_no_title_and_empty_text():
+def test_no_heading_and_empty_text():
     assert fx.rebuild_abstract(ERR, TEXT, "") == (TEXT, True)
     assert fx.rebuild_abstract(ERR, "   ", "") == ("(sezione senza testo)", True)
-
-
-def test_title_already_in_the_text_is_not_added_twice():
-    new, _ = fx.rebuild_abstract(f"Fatto - {ERR}", "Fatto e diritto: il ricorso è inammissibile.", "Fatto")
-    assert new == "Fatto e diritto: il ricorso è inammissibile."
 
 
 def test_long_text_is_trimmed_to_200_words():
@@ -73,7 +80,7 @@ def test_content_filter_fragment_counts_as_error():
 
 
 def test_result_never_carries_the_string():
-    for old in (ERR, f"T - {ERR}", f"{ERR}; {ERR}", f"a; {ERR} b", f"{ERR} b", f"T - a; {ERR}"):
+    for old in (ERR, f"T - {ERR}", f"{ERR}; {ERR}", f"a; {ERR} b", f"{ERR} b", f"T - a; {ERR}", f"A - B - {ERR}; {ERR}"):
         new, _ = fx.rebuild_abstract(old, TEXT, "T")
         assert not fx.ERR_RE.search(new)
 
@@ -83,16 +90,34 @@ def test_shape_masks_every_word():
     assert s == "W3 - W7; § w" and "Rossi" not in s
 
 
-def test_description_follows_next_and_leaves_split_pieces_out():
+def test_description_follows_one_complete_chain_and_leaves_split_pieces_out():
     rows = [
         {"eid": "b", "name": "2", "abstract": "second", "next": "c"},
         {"eid": "a", "name": "1", "abstract": "first", "next": "b"},
         {"eid": "c", "name": "3", "abstract": "third", "next": None},
         {"eid": "x", "name": "2_1", "abstract": "split piece", "next": None},
     ]
+    assert fx.chain_health(rows) == "single"
     assert fx.rebuild_description(rows) == "first second third"
-    assert fx.chain_health(rows) == "partial"
-    assert fx.chain_health(rows[:3]) == "single"
+
+
+def test_broken_chain_falls_back_to_natural_name_order():
+    rows = [
+        {"eid": "j", "name": "10", "abstract": "tenth", "next": None},
+        {"eid": "b", "name": "2", "abstract": "second", "next": None},
+        {"eid": "a", "name": "1", "abstract": "first", "next": "b"},
+        {"eid": "i", "name": "9", "abstract": "ninth", "next": "j"},
+    ]
+    assert fx.chain_health(rows) == "multi_head"
+    assert fx.rebuild_description(rows) == "first second ninth tenth"
+
+
+def test_fan_out_and_external_next_are_reported_and_fall_back():
+    fan = [{"eid": "a", "name": "1", "abstract": "a", "next": "b"}, {"eid": "a", "name": "1", "abstract": "a", "next": "c"},
+           {"eid": "b", "name": "2", "abstract": "b", "next": None}, {"eid": "c", "name": "3", "abstract": "c", "next": None}]
+    assert fx.chain_health(fan) == "fan_out" and fx.rebuild_description(fan) == "a b c"
+    ext = [{"eid": "a", "name": "1", "abstract": "a", "next": "zzz"}, {"eid": "b", "name": "2", "abstract": "b", "next": None}]
+    assert fx.chain_health(ext) == "external" and fx.rebuild_description(ext) == "a b"
 
 
 def test_description_of_a_single_section_document():
@@ -104,3 +129,7 @@ def test_description_is_trimmed_to_500_words():
     rows = [{"eid": "a", "name": "1", "abstract": " ".join(["w"] * 400), "next": "b"},
             {"eid": "b", "name": "2", "abstract": " ".join(["v"] * 400), "next": None}]
     assert len(fx.rebuild_description(rows).split()) == 500
+
+
+def test_natural_name_key():
+    assert sorted(["10", "2", "1.10", "1.2", "1"], key=fx.name_key) == ["1", "1.2", "1.10", "2", "10"]

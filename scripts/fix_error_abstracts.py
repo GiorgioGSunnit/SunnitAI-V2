@@ -84,11 +84,15 @@ def rebuild_abstract(abstract: str, plain_text: str, titolo: str) -> Tuple[str, 
         rest = rest[len(titolo):].strip()
     if rest.startswith("-"):
         rest = rest[1:].strip()
-    pure = rest == "" or body.endswith("-")       # "T -": a title (matching the node's or not) and nothing after it
+    pure = rest == "" or body.endswith("-")       # "T -": a heading (the node's title or not) and nothing after it
     if pure:
+        # the heading the abstract already carried stays in front (flatten puts the title there; the
+        # post-processing adds the section name for short sections): the node's title when it has one, else
+        # whatever stood before the error string
+        heading = titolo or body.rstrip("- ").strip()
         new = trim_words(plain_text, 200)
-        if titolo and titolo not in new:
-            new = f"{titolo} - {new}"
+        if heading and heading not in new:
+            new = f"{heading} - {new}"
         new = trim_words(new, 200)
     else:
         new = trim_words(body, 200)
@@ -105,36 +109,68 @@ def shape(text: str, width: int = 90) -> str:
     return t[:width]
 
 
-def chain_order(rows: List[dict]) -> List[dict]:
-    """The document's sections in reading order: along NEXT from the head(s); sections off the chain (the split
-    pieces name_i, which flatten.py keeps out of the description) are left out, unless the document has no chain
-    at all (a single section), in which case every section is used in name order."""
-    by_eid = {r["eid"]: r for r in rows}
-    targets = {r["next"] for r in rows if r.get("next")}
-    on_chain = [r for r in rows if r.get("next") or r["eid"] in targets]
-    if not on_chain:
-        return sorted(rows, key=lambda r: r.get("name") or "")
-    heads = sorted((r for r in on_chain if r["eid"] not in targets), key=lambda r: r.get("name") or "")
+SPLIT_PIECE = re.compile(r"^(.*)_\d+$")           # flatten's name_i pieces of a section over MAX_SECTION_CHARS
+
+
+def name_key(name: str):
+    """Natural order of section names: 2 before 10, 1.2 before 1.10 (the app's own rule for a broken chain)."""
+    return [int(p) if p.isdigit() else p.lower() for p in re.split(r"(\d+)", name or "")]
+
+
+def main_sections(rows: List[dict]) -> List[dict]:
+    """Without the split pieces name_i whose base section is present (flatten keeps them out of the description)."""
+    names = {r.get("name") for r in rows}
+    out = []
+    for r in rows:
+        m = SPLIT_PIECE.match(r.get("name") or "")
+        if m and m.group(1) in names:
+            continue
+        out.append(r)
+    return out
+
+
+def chain_walk(rows: List[dict]) -> Tuple[List[dict], str]:
+    """Follow NEXT from the single head: (sections in chain order, health). health = 'single' when one head leads
+    through every main section; 'no_next' (no NEXT at all), 'multi_head', 'fan_out' (a section with two NEXT),
+    'external' (a NEXT pointing outside the document) or 'partial' (one head, but sections off the chain)."""
+    main = main_sections(rows)
+    by_eid: Dict[str, dict] = {}
+    out_degree: Counter = Counter()
+    for r in main:
+        by_eid[r["eid"]] = r
+        if r.get("next"):
+            out_degree[r["eid"]] += 1
+    targets = {r["next"] for r in main if r.get("next")}
+    if not targets:
+        return [], "no_next"
+    if any(n > 1 for n in out_degree.values()):
+        return [], "fan_out"
+    if any(t not in by_eid for t in targets):
+        return [], "external"
+    heads = [r for r in by_eid.values() if r["eid"] not in targets]
+    if len(heads) != 1:
+        return [], "multi_head"
     ordered, seen = [], set()
-    for head in heads:
-        cur: Optional[dict] = head
-        while cur and cur["eid"] not in seen:
-            seen.add(cur["eid"])
-            ordered.append(cur)
-            cur = by_eid.get(cur.get("next") or "")
-    return ordered
+    cur: Optional[dict] = heads[0]
+    while cur and cur["eid"] not in seen:
+        seen.add(cur["eid"])
+        ordered.append(cur)
+        cur = by_eid.get(cur.get("next") or "")
+    return ordered, ("single" if len(ordered) == len(by_eid) else "partial")
+
+
+def chain_order(rows: List[dict]) -> List[dict]:
+    """The document's main sections in reading order: along NEXT when one chain links them all, else in natural
+    name order (the app's rule in article_text._reading_order)."""
+    ordered, health = chain_walk(rows)
+    if health == "single":
+        return ordered
+    unique = {r["eid"]: r for r in main_sections(rows)}          # a section with two NEXT came as two rows
+    return sorted(unique.values(), key=lambda r: name_key(r.get("name") or ""))
 
 
 def chain_health(rows: List[dict]) -> str:
-    """'single' (one head, every section on the chain), 'no_next', 'multi_head' or 'partial' (pieces off the chain)."""
-    targets = {r["next"] for r in rows if r.get("next")}
-    on_chain = [r for r in rows if r.get("next") or r["eid"] in targets]
-    if not on_chain:
-        return "no_next"
-    heads = [r for r in on_chain if r["eid"] not in targets]
-    if len(heads) != 1:
-        return "multi_head"
-    return "single" if len(on_chain) == len(rows) else "partial"
+    return chain_walk(rows)[1]
 
 
 def rebuild_description(rows: List[dict]) -> str:
@@ -262,10 +298,25 @@ def shapes(session, sample: int) -> None:
         for s, v in unresolved.most_common(8):
             print(f"  {v:>6,}  {s}")
     docs = [r["eid"] for r in session.run(DOCS_WITH_BACKUP, n=300)]
+    if not docs:
+        docs = sorted({r["did"] for r in rows})[:300]
     if docs:
-        health = Counter(chain_health(session.run(DOC_SECTIONS, did=did).data()) for did in docs)
-        print(f"NEXT chain of {len(docs):,} documents with a rebuilt description: "
+        health, heads_hist, sizes = Counter(), Counter(), Counter()
+        for did in docs:
+            drows = session.run(DOC_SECTIONS, did=did).data()
+            health[chain_health(drows)] += 1
+            main = main_sections(drows)
+            targets = {r["next"] for r in main if r.get("next")}
+            heads = sum(1 for r in main if r["eid"] not in targets)
+            heads_hist["1" if heads == 1 else "2" if heads == 2 else "3-5" if heads <= 5 else ">5"] += 1
+            sizes["sections"] += len(drows)
+            sizes["main sections"] += len(main)
+            sizes["NEXT edges"] += sum(1 for r in main if r.get("next"))
+        print(f"NEXT chain of {len(docs):,} documents (ones rebuilt by the first write when present): "
               + ", ".join(f"{k} {v:,}" for k, v in health.most_common()))
+        print("  heads per document: " + ", ".join(f"{k}: {v:,}" for k, v in sorted(heads_hist.items())))
+        print("  totals: " + ", ".join(f"{k} {v:,}" for k, v in sizes.items()))
+        print("  description order: the chain when one head links every main section, else natural name order")
 
 
 def fix_sections(session, args) -> Tuple[int, int, Set[str]]:
