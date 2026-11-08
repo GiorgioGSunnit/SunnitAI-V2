@@ -173,6 +173,15 @@ shapes (W<n> = n words, § = the string) of a 3,000-section sample, what the fix
 NEXT-chain health of the documents already rebuilt. The first run's backups are kept (coalesce), so a rerun
 leaves the original as the restore point.
 
+DONE 8 Nov, second write: 37,499 section abstracts (every one had nothing left of the analysis; the heading the
+abstract carried was kept in front) and 5,993 descriptions rebuilt in about two minutes; every count 0 after.
+Backups stay on the nodes (abstract_before_fix 37,510, description_before_fix 5,993) until `--purge-backups`.
+Vectors were not re-embedded. maint_health now counts "error abstracts" every night (summary part + page line),
+so a recurrence from Monday's batch (a chunk failing twice under the 60 s attempt) is visible; rerun the fix
+script when the count grows. Seen on the way, for Flavio: the rulings' NEXT chains are not single chains (a
+section with two NEXT in 244 of 300 sampled documents, typically 3-5 heads), and the split pieces name_i are a
+quarter of the rulings' sections; the app's reading-order fallback (name order) already covers it.
+
 ## 4. Monday: the batch lands
 
 1. The batch goes to `/home/sunnit/cass_batch1`, flat (PDF + `.name` sidecar per file, as the 2025 batch). Names
