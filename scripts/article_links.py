@@ -4,6 +4,8 @@ graph.
     cd /root/v38 && venv/bin/python scripts/article_links.py --env .env.v45 --census [--only "Codice Civile"] [--codes c.c.,c.p.c.]
     cd /root/v38 && venv/bin/python scripts/article_links.py --env .env.v45 --dry-run OUTDIR [--codes ...]
     cd /root/v38 && venv/bin/python scripts/article_links.py --env .env.v45 --write OUTDIR [--codes ...]
+    ... --dry-run OUTDIR --compare OLD/refers_to.csv     # what changed against a previous dry run (changes.csv)
+    ... --write OUTDIR --prune                           # the stale edges deleted first, then the merge
 
 Target: every Document with document_type = 'primary', the six codes first (Codice Civile, c.p.c., c.p., c.p.p., c.p.a.,
 Codice della strada), then the others by name; --only NAME (repeatable) keeps the documents whose name starts with it,
@@ -42,6 +44,16 @@ An article is placed when it has at least one unit; unplaced, with why: before t
 unit), a heading-only Section, or a Section name with no article number. The ingestion repo's build_heading_index.py is
 not reachable from here (SunnitAI-V2's scripts/build_heading_index.py only embeds rubricas), so the markers are parsed
 here, on the line-start keywords lex_package/parsing_utils uses (parser_regolamento.py, parser_banca.py).
+
+v53 (2044 c.c. pointed to c.c. 52, 55 and 7: "articolo 52, commi secondo, terzo e quarto, del codice penale", "art. 7,
+comma 1, L. 26 aprile 2019, n. 36"): after an article's number its comma clause ("comma 1", "commi secondo, terzo e
+quarto", "secondo comma", "lettera b)", "n. 3") and the line breaks are skipped before the code or act is read
+(qualifier); an act that is not one of the codes read is "other act", unresolved, never the reference's own code. Every
+reference, and every REFERS_TO edge (e.resolution), says how its target was read: explicit_code (a code named, its own
+included: "del presente codice", "c.c."), same_code (nothing named) or relative ("articolo precedente"). --dry-run also
+counts the stale edges (this source's, from the documents read, whose (from, to) the new rows no longer hold;
+stale_edges.csv, read-only); --write --prune deletes them by id before the merge; --compare OLD_CSV lists the
+references whose target changed or that no longer resolve (changes.csv, 20 printed).
 
 Cross-references, by pattern: "articoli N, M e K" (list), "articolo N" (word), "art. N" (abbreviation), "articolo
 precedente / seguente / successivo" (relative), "del presente codice" (on a reference it follows), and a reference
@@ -93,8 +105,22 @@ _OTHER_CODES = [("c.p.c.", r"codice di procedura civile|c\.\s?p\.\s?c\.|cod\.\s*
                 ("c.d.s.", r"codice della strada|c\.\s?d\.\s?s\."),
                 ("c.c.", r"codice civile|c\.\s?c\.(?!\w)|cod\.\s*civ"),
                 ("c.p.", r"codice penale|c\.\s?p\.(?![\w.])|cod\.\s*pen")]
-_OTHER_ACT_RE = re.compile(r"\b(?:legge|l\.\s*n?\.?\s*\d|d\.\s?lgs|decreto|d\.\s?p\.\s?r|r\.\s?d\.|regolamento|disp(?:osizioni)?\.?\s+"
-                           r"(?:att|di attuazione)|costituzione|trattato|direttiva)", re.IGNORECASE)
+_OTHER_ACT_RE = re.compile(r"\b(?:legge|l\.\s*n?\.?\s*\d|d\.\s?lgs|decreto|d\.\s?p\.\s?r|d\.\s?l\.|r\.\s?d\.|t\.\s?u\.|testo unico|"
+                           r"regolamento|disp(?:osizioni)?\.?\s+(?:att|di attuazione)|costituzione|trattato|direttiva)",
+                           re.IGNORECASE)
+# v53 (2044 c.c.: "articolo 52, commi secondo, terzo e quarto, del codice penale" read as 52 c.c.): the comma clause between
+# an article's number and its code or act -- "comma 1", "commi secondo, terzo e quarto", "secondo comma", "lettera b)",
+# "n. 3" -- skipped token by token; only a run holding one of its keywords counts as a clause
+_ORDINAL_WORDS = (r"(?:prim|second|terz|quart|quint|sest|settim|ottav|non|decim|undicesim|dodicesim|ultim|penultim)[oia]"
+                  r"(?:[\s-]*(?:bis|ter|quater))?")
+_CLAUSE_KEY = r"comma|commi|co\.|lett(?:era|ere|\.)|periodo|periodi|alinea|numer[oi]|nn?\."
+_CLAUSE_TOKEN_RE = re.compile(
+    rf"\s*(?:(?P<key>(?:{_CLAUSE_KEY})(?!\w))|,|\b(?:e|ed)\b|\b{_ORDINAL_WORDS}\b|\b\d+(?:[\s-]*(?:bis|ter|quater|quinquies|"
+    rf"sexies))?\b|\b[a-z]\)|\b(?:del|al|nel)\s+(?=(?:comma|commi)\b))", re.IGNORECASE)
+_PREPOSITION_RE = re.compile(r"\s*,?\s*(?:(?:del(?:l[aoe'’]|gli|lo)?|dei|delle)\s*)?(?:(?:citat|predett|suddett|richiamat)\w*\s+)?",
+                             re.IGNORECASE)
+_SAME_CODE_RE = re.compile(r"(?:presente|medesim\w*|stess\w*)\s+codice\b", re.IGNORECASE)
+RESOLUTIONS = ("explicit_code", "same_code", "relative")
 
 QUERY_DOCS = "MATCH (d:Document) WHERE d.document_type = 'primary' RETURN d.id AS id, d.name AS name ORDER BY d.name"
 QUERY_SECTIONS = ("MATCH (d:Document {id: $doc})-[:CONTAINS]->(s:Section) "
@@ -391,17 +417,41 @@ def place(walk: List[Dict[str, Any]], runs: Optional[List[int]] = None, names: O
 
 # --- the cross-references ---------------------------------------------------------------------------------------------
 
-def _other_code(after: str, own: str) -> Optional[str]:
-    """The code or act a reference names right after it (within 60 characters, before a stop): a code label, "other
-    act", or None (its own code)."""
-    window = re.split(r"[;.](?:\s|$)", after[:60])[0] if after else ""
-    window = re.sub(r"^\s*,?\s*(?:comma|co\.)\s*\w+\s*,?", "", window, flags=re.IGNORECASE)
+def skip_clause(after: str) -> str:
+    """after without the comma clause it opens with ("commi secondo, terzo e quarto, del codice penale" -> "del codice
+    penale"): its tokens consumed while they are commas, "e", ordinals, numbers, letters "b)" or the clause's keywords
+    (_CLAUSE_KEY); none of the keywords among them, nothing is skipped."""
+    pos, keyed = 0, False
+    while True:
+        m = _CLAUSE_TOKEN_RE.match(after, pos)
+        if not m or m.end() == pos:
+            break
+        keyed = keyed or bool(m.group("key"))
+        pos = m.end()
+    return after[pos:] if keyed else after
+
+
+def qualifier(after: str, own: str) -> Tuple[Optional[str], str]:
+    """(the code or act a reference names right after its number, how): its comma clause and the line breaks skipped
+    (skip_clause), then a code -- (None, "explicit_code") when it is the reference's own, as "del presente codice" --, an
+    act ("other act": not one of the codes read, unresolved, never the reference's own code), or (None, "same_code")
+    when nothing names one."""
+    text = skip_clause(" ".join((after or "")[:300].split()))
+    lead = _PREPOSITION_RE.match(text)
+    rest = text[lead.end():] if lead else text
     for code, pattern in _OTHER_CODES:
-        if re.match(rf"\s*,?\s*(?:del(?:l[ao])?\s+|dello\s+)?(?:{pattern})", window, re.IGNORECASE):
-            return None if code == own else code
-    if re.match(r"\s*,?\s*(?:del(?:l[aoe'’]|gli)?\s*|dei\s+)", window) and _OTHER_ACT_RE.search(window[:40]):
-        return "other act"
-    return None
+        if re.match(rf"(?:{pattern})", rest, re.IGNORECASE):
+            return (None if code == own else code), "explicit_code"
+    if _SAME_CODE_RE.match(rest):
+        return None, "explicit_code"
+    if _OTHER_ACT_RE.match(rest):
+        return "other act", "explicit_code"
+    return None, "same_code"
+
+
+def _other_code(after: str, own: str) -> Optional[str]:
+    """The code or act a reference names right after it (qualifier): a code label, "other act", or None (its own)."""
+    return qualifier(after, own)[0]
 
 
 def _heading_at(text: str, m) -> bool:
@@ -424,8 +474,9 @@ def references(text: str, own: str) -> List[Dict[str, Any]]:
         if _heading_at(text, m):
             continue                    # an article's own heading the loader left in the text ("... TITOLO I Art. 1173")
         after = text[m.end():]
-        to = _other_code(after, own)
+        to, how = qualifier(after, own)
         entry = {"pattern": "other code" if to else kind, "kind": kind, "matched": " ".join(m.group(0).split()),
+                 "resolution": "relative" if kind == "relative" else how,
                  "numbers": [] if kind == "relative" else [" ".join(n.split()).lower().replace(" ", "-")
                                                           for n in _NUMBERS_RE.findall(m.group(0))],
                  "to_code": to or own, "this_code": bool(_THIS_CODE_RE.match(after))}
@@ -631,7 +682,12 @@ WRITE_HAS_ARTICLE = ("UNWIND $rows AS r MATCH (u:Unit {code: r.code, level: r.le
                      "MATCH (s:Section) WHERE elementId(s) = r.section MERGE (u)-[:HAS_ARTICLE]->(s)")
 WRITE_REFERS_TO = ("UNWIND $rows AS r MATCH (a:Section) WHERE elementId(a) = r.from MATCH (b:Section) WHERE elementId(b) = r.to "
                    "MERGE (a)-[e:REFERS_TO {pattern: r.pattern, text: r.text, source: $source}]->(b) "
-                   "ON CREATE SET e.computed_at = $computed_at")
+                   "ON CREATE SET e.computed_at = $computed_at SET e.resolution = r.resolution")
+# v53: before the corrected edges are merged, the stale ones go -- an edge of this source from a Section of the documents
+# read whose (from, to) the new rows no longer hold. Found read-only (also by --dry-run), deleted by id in batches.
+FIND_STALE = ("MATCH (d:Document)-[:CONTAINS]->(a:Section)-[e:REFERS_TO {source: $source}]->(b:Section) WHERE d.id IN $docs "
+              "RETURN elementId(e) AS edge, elementId(a) AS from, elementId(b) AS to, e.pattern AS pattern, e.text AS text")
+DELETE_STALE = "UNWIND $edges AS id MATCH ()-[e:REFERS_TO {source: $source}]->() WHERE elementId(e) = id DELETE e"
 
 
 def graph_rows(results: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
@@ -662,7 +718,7 @@ def graph_rows(results: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]
             if ref["resolved"] and ref.get("to_id") and ref["from_id"] != ref["to_id"]:
                 key = (ref["from_id"], ref["to_id"], ref["pattern"], ref["matched"])
                 refers.setdefault(key, {"from": ref["from_id"], "to": ref["to_id"], "pattern": ref["pattern"],
-                                        "text": ref["matched"]})
+                                        "text": ref["matched"], "resolution": ref.get("resolution", "same_code")})
     return {"units": list(units.values()), "child_of": list(child.values()), "has_article": list(has.values()),
             "refers_to": list(refers.values())}
 
@@ -685,6 +741,62 @@ def write_graph(session, rows: Dict[str, List[Dict[str, Any]]], computed_at: str
     return summary
 
 
+def stale_edges(session, doc_ids: List[str], rows: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """The graph's REFERS_TO edges of this source from the documents' Sections whose (from, to) the new rows do not hold
+    (read-only)."""
+    keep = {(r["from"], r["to"]) for r in rows["refers_to"]}
+    found = session.run(FIND_STALE, docs=list(doc_ids), source=SOURCE).data()
+    return [e for e in found if (e["from"], e["to"]) not in keep]
+
+
+def delete_stale(session, edges: List[Dict[str, Any]]) -> int:
+    """The stale edges deleted by element id, in sequential batches of BATCH; how many the server deleted."""
+    ids, deleted = [e["edge"] for e in edges], 0
+    for start in range(0, len(ids), BATCH):
+        counters = session.run(DELETE_STALE, edges=ids[start:start + BATCH], source=SOURCE).consume().counters
+        deleted += getattr(counters, "relationships_deleted", 0)
+    return deleted
+
+
+def compare(results: List[Dict[str, Any]], old_csv: str, outdir: str) -> Dict[str, Any]:
+    """Against a previous dry run's refers_to.csv: per (from article, matched text), the targets that changed and the ones
+    no longer resolved; written to changes.csv, {"changed", "unresolved", "new", "samples"}."""
+    read = {r["code"] for r in results}
+    old: Dict[Tuple[str, str], set] = defaultdict(set)
+    with open(old_csv, encoding="utf-8") as fh:
+        for row in csv.DictReader(fh):          # only the references from the codes read now (--codes)
+            if re.sub(r"\s*\[.*\]$", "", row["from article"]).partition(" ")[2] in read:
+                old[(row["from article"], row["matched text"])].add(row["to article"])
+    new: Dict[Tuple[str, str], set] = defaultdict(set)
+    how: Dict[Tuple[str, str], str] = {}
+    for r in results:
+        for ref in r["references"]:
+            key = (art_code(ref.get("from_label", ref["from"]), r["code"]), ref["matched"])
+            how[key] = ref.get("resolution", "")
+            if ref["resolved"]:
+                new[key].add(art_code(ref.get("to_label", ref["to_article"]), ref["to_code"]))
+            else:
+                new.setdefault(key, set())
+    rows = []
+    for key, targets in old.items():
+        now = new.get(key, set())
+        for target in sorted(targets - now):
+            kind = "changed target" if now - targets else "now unresolved"
+            rows.append({"kind": kind, "from": key[0], "matched": key[1], "old": target,
+                         "new": "; ".join(sorted(now - targets)) or "-", "resolution": how.get(key, "")})
+    added = sum(len(t - old.get(k, set())) for k, t in new.items())
+    path = os.path.join(outdir, "changes.csv")
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        w = csv.writer(fh, lineterminator="\n")
+        w.writerow(["kind", "from article", "matched text", "old target", "new target", "resolution"])
+        for row in rows:
+            w.writerow([row["kind"], row["from"], row["matched"], row["old"], row["new"], row["resolution"]])
+    step = max(1, len(rows) // SAMPLE)
+    return {"changed": sum(r["kind"] == "changed target" for r in rows),
+            "unresolved": sum(r["kind"] == "now unresolved" for r in rows), "new": added,
+            "samples": rows[::step][:SAMPLE], "path": path}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
@@ -695,6 +807,12 @@ def main() -> None:
     parser.add_argument("--only", action="append", default=[], metavar="NAME",
                         help="documents whose name starts with NAME (repeatable)")
     parser.add_argument("--codes", default="", help='code labels or name prefixes, comma-separated: "c.c.,c.p.c."')
+    parser.add_argument("--compare", metavar="OLD_REFERS_CSV",
+                        help="with --dry-run: the references whose target changed or that no longer resolve, against a "
+                             "previous dry run's refers_to.csv (changes.csv, 20 samples printed)")
+    parser.add_argument("--prune", action="store_true",
+                        help="with --write: first delete this source's REFERS_TO edges from the documents read whose "
+                             "(from, to) the new rows no longer hold, then merge (--dry-run always counts them)")
     args = parser.parse_args()
     from dotenv import load_dotenv
     load_dotenv(args.env)
@@ -718,8 +836,30 @@ def main() -> None:
             if outdir:
                 paths = write_csvs(results, outdir)
                 print("Files: " + ", ".join(os.path.abspath(p) for p in paths.values()))
+            rows = graph_rows(results)
+            if args.compare and args.dry_run:
+                diff = compare(results, args.compare, outdir)
+                print(f"\n## Against {args.compare}\n\n- target changed: {diff['changed']}\n- no longer resolved: "
+                      f"{diff['unresolved']}\n- new (from, matched text, target): {diff['new']}\n- all in {diff['path']}\n")
+                print("| kind | from | matched | old target | new target | resolution |\n|---|---|---|---|---|---|")
+                for row in diff["samples"]:
+                    print(f"| {row['kind']} | {row['from']} | {row['matched']} | {row['old']} | {row['new']} | "
+                          f"{row['resolution']} |")
+            stale = stale_edges(session, [d["id"] for d in docs], rows)
+            by_how = Counter(r["resolution"] for r in rows["refers_to"])
+            print(f"\n## Edges\n\n- new REFERS_TO rows: {len(rows['refers_to'])} ("
+                  + ", ".join(f"{k} {by_how.get(k, 0)}" for k in RESOLUTIONS) + ")"
+                  + f"\n- stale edges in the graph (source {SOURCE}, (from, to) not in the new rows): {len(stale)}")
+            if outdir:
+                with open(os.path.join(outdir, "stale_edges.csv"), "w", newline="", encoding="utf-8") as fh:
+                    w = csv.writer(fh, lineterminator="\n")
+                    w.writerow(["edge", "from", "to", "pattern", "text"])
+                    for e in stale:
+                        w.writerow([e["edge"], e["from"], e["to"], e["pattern"], e["text"]])
+            if args.write and args.prune:
+                print(f"- deleted: {delete_stale(session, stale)} stale edges (before the merge)")
             if args.write:
-                summary = write_graph(session, graph_rows(results), dt.datetime.now(dt.timezone.utc).isoformat())
+                summary = write_graph(session, rows, dt.datetime.now(dt.timezone.utc).isoformat())
                 print("\n## Written (MERGE: created / already present)\n")
                 for kind, n in summary.items():
                     print(f"- {kind}: {n['rows']} rows, {n['created']} created, {n['present']} already present")

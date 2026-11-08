@@ -703,6 +703,51 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 previous owner in the chain of title, no filter by where the facts place the land);
                                 with PLAN_ARTICLES_COVER_ENABLED, an article a conclusions line cites that no section
                                 cites is covered like an omitted plan article.
+  RULE_QUOTE                   false (v53; acts with PLAN_THEN_WRITE_ENABLED): per plan article, the commi that work for
+                                the client by keyword rules over their text (fondo servente/dominante, chi chiede/chi
+                                concede, proprietario/possessore/titolare, debitore/creditore, imputato/persona offesa)
+                                matched to the client's roles and the other side's -- none naming a role: every comma --
+                                and their requisites (split on quando/se/purché/salvo che/qualora and enumerations, a
+                                numbered list only with 2-8, else the comma whole), given to sections 3 and 4 as REGOLE
+                                DELLE NORME DEL PIANO with the rule (quote the comma with "co. N" or stay within it; each
+                                requisite "provato" / "da provare"; none added). After writing, a rule sentence (a plan
+                                article cited, prevede/stabilisce/dispone/esclude/vieta/richiede/precisa/sancisce/
+                                consente/riconosce/impone, no party named; not "ai sensi") that neither quotes its
+                                comma nor shares 50% of its content words with it is
+                                replaced by the comma's quotation, the next sentence kept; a quotation cited with
+                                another comma's number gets its own. Logged as case_analysis_rule_quote (each article
+                                and rejected sentence) and case_analysis_rule_quote_material. See rule_quote.py.
+  RENDER_COMPUTED              false (v53; acts with PLAN_THEN_WRITE_ENABLED): "Profili processuali e termini" is
+                                rendered from the computed block by template (mediazione first, termini, strumenti with
+                                their articles and "Nel caso", parti da convenire, competenza, trascrizione, then the
+                                criminal profile and the heads of damage), never written by the model; sections 1, 4 and
+                                6 get it as read-only context; restored after the answer's last edits. The articles the
+                                action gate tags adverse leave the plan's remedies (issue norms, rimedi) for the
+                                objections block (OBIEZIONI DELLA CONTROPARTE, sections 3 and 4); a sentence citing one
+                                outside an objection or a reply is dropped. Nothing computed: the model writes the
+                                section as before. Logged as case_analysis_render_computed, case_analysis_gated_objections,
+                                case_analysis_gated_as_support. See render_computed.py.
+  TOPIC_STEP                   false (v53): after retrieval, 3-6 topics from the analysis' questioni, the fired regimes
+                                and the frame's central issues, each with a lawyer's title, at most 8 anchor articles
+                                (multi-signal or regime-candidate rows whose rubrica shares its words; a regime's own)
+                                and the computed facts it touches; topics sharing more than half their anchors merged.
+                                Logged only (case_analysis_topics, analysis["topics"]). scripts/diagnose_long.py
+                                --topics-only scores their recall with no plan or writing. See topic_step.py.
+  INTERACTIVE_FLOW             false (v54, phase 2): a narrative case with no document (route "narrative") answered in
+                                rounds: round 1 the topics (topic_step), the facts as computed and at most 5 questions
+                                on the unknown fact fields that change a term or a requisite; the reply read (numbers,
+                                "procedi", "tutti"; else one bounded JSON call), the facts recomputed; round 2 the frame
+                                to confirm; then the answer on the chosen topic (its articles and the rendered computed
+                                block only). The analysis is kept in the session's anchors (24 h, versioned); follow-ups
+                                read no corpus. Off, or a "direct" route, or any failure: the single-shot pipeline,
+                                unchanged. The API reply carries `interaction`. See interactive_flow.py;
+                                scripts/diagnose_long.py --interactive-sim benchmarks it.
+  TOPIC_TABLES                 false (v55, drafts pending the lawyer): topic_step reads topic_tables.TABLES -- criminal
+                                (rapina, furto, truffa, corruzione, concorso, tentativo, lesioni, 416-bis, misure
+                                cautelari, prescrizione del reato) and administrative (l. 241/1990, ricorso al TAR,
+                                ottemperanza, appalti, TUEL 252) institutions, triggered by the case's issue names within
+                                its family: anchors and question families only, never a conclusion. Off: topic_step as
+                                before. See topic_tables.py.
 """
 
 import logging

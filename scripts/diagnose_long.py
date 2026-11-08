@@ -60,6 +60,13 @@ Run from the app folder, with its venv and live .env:
     ... --compare 20261025-0940 20261026-1010   # after the run: tables A and B, those runs and this one
     ... --compare OLD NEW --compare-only        # runs already made, no new run
 
+--topics-only (v53, TOPIC_STEP): each case runs the facts, the frame and retrieval only -- stopped where the pool's texts
+are read, before the applicability check: no check, plan or writing -- and its topics are built (topic_step.build) and
+scored: the share of its expected norms among the union of the topics' articles, and among the first three topics'.
+Writes cases/<id>.json (the topics, their recall, the frame's issues, the pool) and topics.md (the table and every
+case's topics verbatim):
+    ... --topics-only --only h3,p1
+
 --dump-llm (on by default; --no-dump-llm to skip) saves every chat call of a case -- frame, analysis,
 distill, v1's choice, issue spotting, applicability batches, principles, plan, plan stance, plan check,
 each section, stance, qualification, rubrica-fit -- with the exact messages, the raw reply, max_tokens,
@@ -87,6 +94,7 @@ import traceback
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from typing import Optional
 
 DEFAULT_REQUEST = "Delinea una strategia difensiva per il cliente sulla base del documento allegato."
 TUNING_IDS = ["sempronio", "sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4"]
@@ -109,7 +117,8 @@ FLAGS = ["ARTICLE_CARDS_ENABLED", "CASE_ANALYSIS_ENABLED", "CASE_POOL_FUSION_ENA
          "GROUNDED_REVIEW_STRICT_ENABLED", "GROUNDED_REVIEW_POLICY", "FACT_ISSUES_ENABLED", "FACT_ISSUES_EVERY_FACT_ENABLED",
          "FACT_ISSUES_RESOLVER_V2_ENABLED",
          "ANCHORED_WRITING_ENABLED", "EDGE_EXPAND", "PLAN_CAP", "POOL_GATE_AREA", "POOL_GATE_LINK",
-         "CLOSURE_MATERIAL_ONLY", "NORME_SCOPE", "TOOL_CITES_PROTECTED", "USUCAPIONE_CONDITIONAL"]
+         "CLOSURE_MATERIAL_ONLY", "NORME_SCOPE", "TOOL_CITES_PROTECTED", "USUCAPIONE_CONDITIONAL",
+         "RULE_QUOTE", "RENDER_COMPUTED", "TOPIC_STEP"]
 
 # Furthest stage first-to-last; an expected article's stage is the first one it fails.
 STAGES = ["LOST_AT_UNDERSTANDING", "NOT_IN_POOL", "BELOW_CAP", "GATED_OUT", "REJECTED_BY_CHECK", "NOT_IN_PROMPT",
@@ -815,6 +824,343 @@ def _tier_record(events: list, session, mentioned: list) -> dict:
             "rulings_shared": fit["per_ruling"]}
 
 
+class _RetrievalDone(BaseException):
+    """--topics-only: raised where the pool's texts are read (article_text.fill_texts, after the pool gates), before the
+    applicability check; a BaseException, so no step's `except Exception` keeps the run going."""
+
+
+def _stop_after_retrieval(dg, cap: dict) -> None:
+    """--topics-only: the analysis kept from _add_regime_candidates (the pipeline's own object), and the run stopped at
+    its first pool text read, with the rows read (the pool after the gates, and the procedural tools' rows)."""
+    from src.rag import article_text
+    wrapped_regimes, real_fill = dg._add_regime_candidates, article_text.fill_texts
+
+    def regimes(session, driver, database, analysis, *args, **kwargs):
+        cap["analysis_ref"] = analysis
+        return wrapped_regimes(session, driver, database, analysis, *args, **kwargs)
+
+    def fill(session, rows, *args, **kwargs):
+        if cap.get("analysis_ref") is not None and cap.get("topic_rows") is None:
+            cap["topic_rows"] = list(rows)
+            raise _RetrievalDone()
+        return real_fill(session, rows, *args, **kwargs)
+    dg._add_regime_candidates = regimes
+    article_text.fill_texts = fill
+
+
+def topic_recall(topics: list, expected: list, ev) -> dict:
+    """topic_step.recall over the eval's keys: each expected item with its alternatives."""
+    from src.rag import topic_step
+    ekey = _ekey_fn(ev)
+    items = [[(str(a).lower(), item["code"]) for a in item.get("any_of") or [item["article"]]] for item in expected or []]
+    return topic_step.recall(topics, items, ekey)
+
+
+def _save_topics(spec: dict, cap: dict, ev, status: str, elapsed: float, llm_stats: dict, log) -> None:
+    """--topics-only: the case's topics and their recall, written as cases/<id>.json."""
+    from src.rag import topic_step
+    analysis = cap.get("analysis_ref") or {}
+    rows = cap.get("topic_rows") or []
+    topics, error = [], ""
+    if rows or analysis:
+        try:
+            import neo4j
+            from src.rag.doc_lookup import _fetch_doc_names
+            from src.rag.main import NEO4J_DATABASE, driver
+            with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+                links = topic_step.GraphLinks(session, _fetch_doc_names(driver, NEO4J_DATABASE))
+                topics = topic_step.build(analysis, rows, links, spec.get("question") or spec.get("request") or "")
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            traceback.print_exc()
+    if cap.get("topic_rows") is None and status.startswith("ok"):
+        status = "stopped before retrieval ended"
+    record = {"id": spec["id"], "kind": "topics", "status": status, "seconds": round(elapsed, 1),
+              "llm": {"calls": llm_stats["calls"], "seconds": round(llm_stats["seconds"], 1), "errors": llm_stats["errors"]},
+              "flags": {f: os.getenv(f) for f in FLAGS}, "expected": spec.get("expected"),
+              "frame_central": [c.get("nome") for c in (analysis.get("frame") or {}).get("central_issue_candidates") or []
+                                if isinstance(c, dict)],
+              "questioni": [q.get("titolo") for q in analysis.get("questioni") or [] if isinstance(q, dict)],
+              "pool": sorted({_lab(r["_article"]) for r in rows if r.get("_article")}),
+              "two_signal": sorted({_lab(r["_article"]) for r in rows if r.get("_article") and r.get("_multi_signal")}),
+              "topics": topics, "topic_error": error,
+              "recall": topic_recall(topics, spec.get("expected") or [], ev) if spec.get("expected") else None,
+              "capture_errors": cap["errors"]}
+    with open(spec["out"], "w", encoding="utf-8") as fh:
+        json.dump(record, fh, ensure_ascii=False, indent=1, default=str)
+    log(f"saved {spec['out']} ({len(topics)} topics)")
+
+
+def topics_text(topics: list) -> str:
+    """A case's topics as listed in topics.md: title, anchors, facts."""
+    out = []
+    for i, t in enumerate(topics, 1):
+        out.append(f"{i}. {t['title']}  [{t['source']}; anchor {t['anchor']} by {t['how']}"
+                   + (f": «{t['rubrica']}»" if t.get("rubrica") else "") + "]"
+                   + (f"  (merged: {'; '.join(t['merged'])})" if t.get("merged") else ""))
+        out.append(f"   articles: {', '.join(t['articles'])}")
+        out += [f"   - {f}" for f in t.get("facts") or []]
+    return "\n".join(out) or "(no topic)"
+
+
+def write_topics_report(run_dir: str) -> str:
+    """topics.md from cases/*.json of a --topics-only run: per case its recall (all topics, first three) and its topics."""
+    cases_dir = os.path.join(run_dir, "cases")
+    records = []
+    for name in sorted(os.listdir(cases_dir)):
+        if name.endswith(".json"):
+            with open(os.path.join(cases_dir, name), encoding="utf-8") as fh:
+                r = json.load(fh)
+            if r.get("kind") == "topics":
+                records.append(r)
+    lines = ["# Topic recall (--topics-only)", "",
+             "| case | status | topics | expected | in topics | in top 3 | missing |", "|---|---|---|---|---|---|---|"]
+    total = {"expected": 0, "in_topics": 0, "in_top3": 0}
+    for r in records:
+        rc = r.get("recall") or {}
+        for k in total:
+            total[k] += rc.get(k) or 0
+        missing = ", ".join("/".join(f"{a} {c}" for a, c in alts) for alts in rc.get("missing") or [])
+        lines.append(f"| {r['id']} | {r['status']} | {len(r.get('topics') or [])} | {rc.get('expected', '-')} | "
+                     f"{rc.get('in_topics', '-')} ({rc.get('share', '-')}) | {rc.get('in_top3', '-')} "
+                     f"({rc.get('share_top3', '-')}) | {missing or '-'} |")
+    if total["expected"]:
+        lines.append(f"| **all** | | | {total['expected']} | {total['in_topics']} "
+                     f"({total['in_topics'] / total['expected']:.3f}) | {total['in_top3']} "
+                     f"({total['in_top3'] / total['expected']:.3f}) | |")
+    for r in records:
+        lines += ["", f"## {r['id']}", "", "```", topics_text(r.get("topics") or []), "```"]
+    path = os.path.join(run_dir, "topics.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path
+
+
+# --- --interactive-sim (INTERACTIVE_FLOW, phase 2) -------------------------------------------------------------------
+
+SIM_MAX_TOPICS = 3
+
+
+def oracle_topics(topics: list, expected: list, ev) -> dict:
+    """The simulated user's choice: the topic(s) whose anchor articles (topic_step's first TOPIC_ARTICLES) cover the
+    most expected norms -- every topic tied at the best, at most SIM_MAX_TOPICS; none covering any, the first.
+    {"chosen": [1-based], "covered": {n: [expected labels]}, "why"}."""
+    from src.rag import interactive_flow
+    ekey = _ekey_fn(ev)
+    covered = {}
+    for n, t in enumerate(topics or [], 1):
+        keys = {ekey(f"{a} {c}") for a, c in interactive_flow._topic_refs(t)}
+        covered[n] = [_item_label(item) for item in expected or []
+                      if any((str(a).lower(), item["code"]) in keys for a in item.get("any_of") or [item["article"]])]
+    best = max((len(v) for v in covered.values()), default=0)
+    if not best:
+        return {"chosen": [1] if topics else [], "covered": covered, "why": "no topic covers an expected norm: the first"}
+    chosen = [n for n, v in covered.items() if len(v) == best][:SIM_MAX_TOPICS]
+    return {"chosen": chosen, "covered": covered, "why": f"most expected norms among the anchors ({best})"}
+
+
+def mentioned_score(ev, case: dict, answer: str, citations=None) -> dict:
+    """The existing scorer (tests/eval_narrative.score) on an answer: {"expected", "mentioned", "cited", "share",
+    "missing", "failures"}."""
+    scored = ev.score(case, answer or "", citations or [])
+    items = [e for e in scored["expected"] if "mentioned" in e]
+    hit = [e for e in items if e["mentioned"] or e["cited"]]
+    return {"expected": len(items), "mentioned": len(hit), "cited": sum(1 for e in items if e["cited"]),
+            "share": round(len(hit) / len(items), 3) if items else None,
+            "missing": [e["expected"] for e in items if not (e["mentioned"] or e["cited"])],
+            "failures": scored.get("failures") or []}
+
+
+def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict, log) -> None:
+    """--interactive-sim: round 1, the oracle's topic choice as the user's message (no question answered), then
+    "procedi"; the answer scored, each round timed; cases/<id>.json of kind "interactive"."""
+    from src.rag import interactive_flow
+    case = _eval_case(spec["id"]) or {"expected": spec.get("expected") or []}
+    record = {"id": spec["id"], "kind": "interactive", "status": "ok", "expected": spec.get("expected"),
+              "flags": {f: os.getenv(f) for f in FLAGS + ["INTERACTIVE_FLOW"]}, "rounds": [], "errors": []}
+    t0 = time.time()
+    state = None
+    try:
+        reply, field, state = interactive_flow.start(text, spec.get("lang") or "it", request)
+        record["rounds"].append({"round": 1, "message": "(case)", "seconds": round(time.time() - t0, 1),
+                                 "reply": reply, "interaction": field})
+        topics = state.get("topics") or []
+        record["topics"] = topics
+        record["questions"] = [q["text"] for q in state.get("questions") or []]
+        record["topic_recall"] = topic_recall(topics, spec.get("expected") or [], ev) if spec.get("expected") else None
+        oracle = oracle_topics(topics, spec.get("expected") or [], ev)
+        record["oracle"] = oracle
+        log(f"round 1: {len(topics)} topics, {len(record['questions'])} questions; oracle {oracle['chosen']} ({oracle['why']})")
+        answer, citations = "", []
+        for message in ([", ".join(map(str, oracle["chosen"]))] if oracle["chosen"] else []) + ["procedi"]:
+            t1 = time.time()
+            turn = interactive_flow.follow_up(message, state)
+            if turn is None:
+                record["errors"].append(f"{message!r}: not held by the interaction")
+                break
+            state = turn["state"]
+            record["rounds"].append({"round": turn["interaction"].get("round"), "message": message, "kind": turn["kind"],
+                                     "seconds": round(time.time() - t1, 1), "reply": turn["answer"],
+                                     "interaction": turn["interaction"]})
+            if turn["kind"] == "answer":
+                answer, citations = turn["answer"], turn.get("citations") or []
+        record["answer"] = answer
+        record["score"] = mentioned_score(ev, case, answer, citations)
+        record["rendered"] = state.get("rendered") if state else ""
+        if answer:
+            try:
+                record.update(answer_extras(answer, spec.get("expected") or [], ev))
+            except Exception as exc:
+                record["errors"].append(f"extras/misused: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
+    except Exception as exc:
+        record["status"] = f"ERROR {type(exc).__name__}: {str(exc)[:200]}"
+        record["errors"].append(traceback.format_exc())
+        traceback.print_exc()
+    record["seconds"] = round(time.time() - t0, 1)
+    record["seconds_by_round"] = {f"{r.get('kind') or 'round1'}": r["seconds"] for r in record["rounds"]}
+    record["llm"] = {"calls": llm_stats["calls"], "seconds": round(llm_stats["seconds"], 1), "errors": llm_stats["errors"]}
+    with open(spec["out"], "w", encoding="utf-8") as fh:
+        json.dump(record, fh, ensure_ascii=False, indent=1, default=str)
+    log(f"saved {spec['out']} ({record['status']}, {record['seconds']}s)")
+
+
+def extras_of(answer: str, expected: list, ev) -> list:
+    """The articles the answer names with their code that are not in the answer key (each once), as the eval reads
+    them (ev.mentions)."""
+    keys = {(str(a).lower(), item["code"]) for item in expected or [] for a in item.get("any_of") or [item["article"]]}
+    return [f"art. {a} {c}" for a, c in dict.fromkeys(ev.mentions(answer or "")) if c and (a, c) not in keys]
+
+
+def answer_extras(answer: str, expected: list, ev) -> dict:
+    """{"extras": the cited articles not expected, "misused": those of the cited ones whose stored rubrica the
+    qualification check finds incompatible with the sentence citing them (_rubrica_fits, as the main report's
+    "rubrica-incompatible"), "fits": the verdicts}. Reads the corpus and calls the model once per 25 articles."""
+    import neo4j
+    import src.rag.defensive_generation as dg
+    from src.rag.doc_lookup import _fetch_doc_names
+    from src.rag.main import NEO4J_DATABASE, driver
+    documents = _fetch_doc_names(driver, NEO4J_DATABASE)
+    with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+        cited = dg._cited_articles(answer, set(), documents)
+        rows_by_ref = {}
+        for row in dg._fetch_any(session, documents, list(dict.fromkeys(cited))):
+            if row.get("_article"):
+                rows_by_ref.setdefault(row["_article"], row)
+    fits = _rubrica_fits(dg, answer, cited, rows_by_ref, documents)
+    return {"extras": extras_of(answer, expected, ev), "cited": _labs(cited),
+            "misused": [label for label, v in fits.items() if v.get("compatibile") is False],
+            "fits": {label: {k: v[k] for k in ("rubrica", "compatibile", "perche")} for label, v in fits.items()}}
+
+
+def _v52_scores(run_dir: str, ev) -> dict:
+    """{case id: mentioned_score} of an earlier (single-shot) run's drafts, by the same scorer."""
+    out = {}
+    cases_dir = os.path.join(run_dir, "cases")
+    for name in sorted(os.listdir(cases_dir)) if os.path.isdir(cases_dir) else []:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(cases_dir, name), encoding="utf-8") as fh:
+                r = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if r.get("kind") in ("eval", None) and r.get("draft") is not None:
+            case = _eval_case(r["id"]) or {"expected": r.get("expected") or []}
+            fits = r.get("fits") or {}
+            out[r["id"]] = {**mentioned_score(ev, case, r.get("draft") or ""), "seconds": r.get("seconds"),
+                            "extras": len(extras_of(r.get("draft") or "", r.get("expected") or [], ev)),
+                            "misused": sum(1 for v in fits.values() if isinstance(v, dict) and v.get("compatibile") is False)}
+    return out
+
+
+def write_interactive_report(run_dir: str, ev, baseline: Optional[str] = None) -> str:
+    """interactive.md from cases/*.json of an --interactive-sim run: per case the oracle's choice, the questions asked,
+    the seconds per round, topic recall and the answer's MENTIONED score, with the baseline run's (v52) beside it."""
+    cases_dir = os.path.join(run_dir, "cases")
+    records = []
+    for name in sorted(os.listdir(cases_dir)):
+        if name.endswith(".json"):
+            with open(os.path.join(cases_dir, name), encoding="utf-8") as fh:
+                r = json.load(fh)
+            if r.get("kind") == "interactive":
+                records.append(r)
+    base = _v52_scores(baseline, ev) if baseline else {}
+    name = os.path.basename(os.path.normpath(baseline)) if baseline else "baseline"
+    lines = ["# Interactive flow, simulated (--interactive-sim)", "",
+             f"Oracle user: the topic(s) whose anchors cover the most expected norms, no question answered, then "
+             f"«procedi». Score: MENTIONED (tests/eval_narrative.score) on the topic answer with its rendered block"
+             + (f"; beside it the same score on {name}'s single-shot drafts." if base else "."), "",
+             f"| case | status | topics | chosen | questions | round 1 s | round 2 s | answer s | topic recall (top 3) | "
+             f"mentioned | extras | misused | {name} mentioned | {name} extras | {name} misused | {name} s |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+    tot = {"exp": 0, "hit": 0, "bexp": 0, "bhit": 0, "rec": 0, "rec3": 0, "rexp": 0, "q": 0, "s1": 0.0, "s2": 0.0,
+           "sa": 0.0, "bs": 0.0, "n": 0, "nb": 0, "x": 0, "m": 0, "nm": 0, "bx": 0, "bm": 0}
+    for r in records:
+        sc, rc, b = r.get("score") or {}, r.get("topic_recall") or {}, base.get(r["id"]) or {}
+        secs = r.get("seconds_by_round") or {}
+        tot["n"] += 1
+        tot["exp"] += sc.get("expected") or 0
+        tot["hit"] += sc.get("mentioned") or 0
+        tot["rec"] += rc.get("in_topics") or 0
+        tot["rec3"] += rc.get("in_top3") or 0
+        tot["rexp"] += rc.get("expected") or 0
+        tot["q"] += len(r.get("questions") or [])
+        tot["s1"] += secs.get("round1") or 0
+        tot["s2"] += secs.get("round2") or 0
+        tot["sa"] += secs.get("answer") or 0
+        extras = r.get("extras")
+        if extras is None and r.get("answer"):          # a run before the extras were recorded: from its answer
+            extras = extras_of(r["answer"], r.get("expected") or [], ev)
+        misused = r.get("misused")
+        tot["x"] += len(extras or [])
+        if misused is not None:
+            tot["m"] += len(misused)
+            tot["nm"] += 1
+        if b:
+            tot["bx"] += b.get("extras") or 0
+            tot["bm"] += b.get("misused") or 0
+        if b:
+            tot["nb"] += 1
+            tot["bexp"] += b.get("expected") or 0
+            tot["bhit"] += b.get("mentioned") or 0
+            tot["bs"] += b.get("seconds") or 0
+        lines.append(f"| {r['id']} | {r['status']} | {len(r.get('topics') or [])} | "
+                     f"{', '.join(map(str, (r.get('oracle') or {}).get('chosen') or [])) or '-'} | "
+                     f"{len(r.get('questions') or [])} | {secs.get('round1', '-')} | {secs.get('round2', '-')} | "
+                     f"{secs.get('answer', '-')} | {rc.get('in_topics', '-')}/{rc.get('expected', '-')} "
+                     f"({rc.get('in_top3', '-')}) | {sc.get('mentioned', '-')}/{sc.get('expected', '-')} | "
+                     f"{len(extras or [])} | {len(misused) if misused is not None else '-'} | "
+                     + (f"{b.get('mentioned')}/{b.get('expected')} | {b.get('extras', '-')} | {b.get('misused', '-')} | "
+                        f"{b.get('seconds', '-')} |" if b else "- | - | - | - |"))
+    if tot["n"]:
+        n = tot["n"]
+        lines.append(f"| **all** | | | | {tot['q']} ({tot['q'] / n:.1f}/case) | {tot['s1'] / n:.0f} avg | "
+                     f"{tot['s2'] / n:.0f} avg | {tot['sa'] / n:.0f} avg | {tot['rec']}/{tot['rexp']} ({tot['rec3']}) | "
+                     f"{tot['hit']}/{tot['exp']} ({tot['hit'] / max(1, tot['exp']):.3f}) | "
+                     f"{tot['x']} ({tot['x'] / n:.1f}/answer) | "
+                     + (f"{tot['m']} ({tot['m'] / max(1, tot['nm']):.1f}/answer)" if tot["nm"] else "-") + " | "
+                     + (f"{tot['bhit']}/{tot['bexp']} ({tot['bhit'] / max(1, tot['bexp']):.3f}) | "
+                        f"{tot['bx']} ({tot['bx'] / max(1, tot['nb']):.1f}/answer) | "
+                        f"{tot['bm']} ({tot['bm'] / max(1, tot['nb']):.1f}/answer) | "
+                        f"{tot['bs'] / max(1, tot['nb']):.0f} avg |" if tot["nb"] else "- | - | - | - |"))
+    for r in records:
+        lines += ["", f"## {r['id']}", "", f"Extras: {', '.join(extras_of(r.get('answer') or '', r.get('expected') or [], ev)) or '-'}; "
+                  f"misused: {', '.join(r.get('misused') or []) or '-'}", "",
+                  f"Oracle: {(r.get('oracle') or {}).get('why', '-')}; covered: "
+                  + "; ".join(f"{k}: {', '.join(v) or '-'}" for k, v in ((r.get("oracle") or {}).get("covered") or {}).items()),
+                  "", "Missing in the answer: " + (", ".join((r.get("score") or {}).get("missing") or []) or "-")]
+        if r.get("errors"):
+            lines += ["", "Errors:", "```", "\n".join(e[-1500:] for e in r["errors"]), "```"]
+        for turn in r.get("rounds") or []:
+            lines += ["", f"### round {turn.get('round')} ({turn.get('kind') or 'round1'}, {turn['seconds']}s) — "
+                          f"user: {turn['message']}", "", turn.get("reply") or ""]
+    path = os.path.join(run_dir, "interactive.md")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    return path
+
+
 def run_child(spec_path: str, env_path: str) -> None:
     spec = json.load(open(spec_path, encoding="utf-8"))
 
@@ -853,16 +1199,26 @@ def run_child(spec_path: str, env_path: str) -> None:
         text = message = spec["question"]
     request = "" if text.strip() == message.strip() else message   # run_defensive_pipeline's own rule
 
+    if spec.get("interactive_sim"):
+        run_interactive_sim(spec, text, request, ev, llm_stats, log)
+        return
+    if spec.get("topics_only"):
+        _stop_after_retrieval(dg, cap)
     t0 = time.time()
     result, status = None, "ok"
     try:
         result = dg.run_case_analysis_pipeline(text, spec.get("lang") or "it", request=request)
+    except _RetrievalDone:
+        status = "ok (topics only)"
     except Exception as exc:
         status = f"ERROR {type(exc).__name__}: {str(exc)[:200]}"
         traceback.print_exc()
     elapsed = time.time() - t0
     log(f"{status}, {elapsed:.0f}s")
 
+    if spec.get("topics_only"):
+        _save_topics(spec, cap, ev, status, time.time() - t0, llm_stats, log)
+        return
     result = result if isinstance(result, dict) else {}
     draft = result.get("draft") or ""
     analysis = result.get("analysis") or {}
@@ -922,6 +1278,12 @@ def run_child(spec_path: str, env_path: str) -> None:
               "closure": last("case_analysis_citation_closure"),
               "plan_cover": last("case_analysis_plan_articles"),
               "fact_institutions": [d for e, d, _ in events if e == "case_analysis_fact_institution"],
+              "rule_quote": last("case_analysis_rule_quote"),                       # RULE_QUOTE (v53)
+              "rule_quote_material": last("case_analysis_rule_quote_material"),
+              "render_computed": last("case_analysis_render_computed"),             # RENDER_COMPUTED (v53)
+              "gated_objections": last("case_analysis_gated_objections"),
+              "gated_as_support": last("case_analysis_gated_as_support"),
+              "topics": last("case_analysis_topics"),                               # TOPIC_STEP (v53)
               "draft": draft, "capture_errors": cap["errors"], "events": events}
 
     case_text = dg._case_text(text, request)
@@ -2828,6 +3190,12 @@ def main() -> None:
     parser.add_argument("--repeat", type=int, default=1, metavar="N",
                         help="run each case N times (ids <id>@r1..@rN); the report and --compare give each headline "
                              "row and funnel stage as mean (min–max)")
+    parser.add_argument("--topics-only", action="store_true",
+                        help="facts, frame and retrieval only, then the topics (topic_step) and their recall: no "
+                             "applicability check, plan or writing; writes topics.md")
+    parser.add_argument("--interactive-sim", action="store_true",
+                        help="INTERACTIVE_FLOW, simulated: round 1, the oracle's topic choice, \"procedi\", the answer "
+                             "scored; writes interactive.md (with --compare RUN, RUN's single-shot drafts beside it)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -2906,7 +3274,10 @@ def main() -> None:
     if args.repeat > 1:
         specs = [{**spec, "id": f"{spec['id']}@r{k}"} for spec in specs for k in range(1, args.repeat + 1)]
     for spec in specs:
-        spec.update(lang=args.lang, settings=settings, dump_llm=args.dump_llm,
+        if args.interactive_sim:
+            settings.setdefault("INTERACTIVE_FLOW", "true")
+        spec.update(lang=args.lang, settings=settings, dump_llm=args.dump_llm, topics_only=args.topics_only,
+                    interactive_sim=args.interactive_sim,
                     out=os.path.join(out_dir, "cases", f"{spec['id']}.json"))
         os.makedirs(os.path.join(out_dir, "cases", spec["id"]), exist_ok=True)
         with open(os.path.join(out_dir, "cases", spec["id"], INPUT_NAME), "w", encoding="utf-8") as fh:
@@ -2934,6 +3305,16 @@ def main() -> None:
         list(pool.map(run, specs))
 
     print(f"\nAll cases in {time.time() - t0:.0f}s.")
+    if args.interactive_sim:
+        path = write_interactive_report(out_dir, ev, _run_dir(args.compare[-1]) if args.compare else None)
+        print(open(path, encoding="utf-8").read().split("\n## ")[0])
+        print(f"Report: {path}\nNothing was written to the database.")
+        return
+    if args.topics_only:
+        path = write_topics_report(out_dir)
+        print(open(path, encoding="utf-8").read())
+        print(f"Report: {path}\nNothing was written to the database.")
+        return
     print(f"Report: {write_report(out_dir, ev)}")
     if args.compare:
         _print_compare([_run_dir(r) for r in args.compare] + [out_dir], ev)

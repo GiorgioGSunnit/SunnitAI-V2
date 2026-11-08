@@ -54,7 +54,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .ai_chat import last_reply
 from . import defensive_generation as dg
-from . import ai_chat, anchored_writing, article_text, citation_ledger, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources, repetition_guard, role_fit, section_fit
+from . import ai_chat, anchored_writing, article_text, citation_ledger, comma_material, grounded_review, method_candidates, practical_checklist, protected_sources, render_computed, repetition_guard, role_fit, rule_quote, section_fit
 from .verbose_logger import exception_data
 
 
@@ -1166,7 +1166,7 @@ def acquired_rights(analysis: Dict[str, Any]) -> List[str]:
     why), then the analysis' questions and institutions naming one."""
     out = []
     for rule in (_signals(analysis) or {}).get("fired") or []:
-        if rule.get("acquired_right"):
+        if rule.get("acquired_right") and not rule.get("unstated"):      # unstated: interactive_flow.mark_unstated
             out.append(f"{', '.join(rule.get('institutions') or [])}: {rule.get('why') or ''}".strip(": "))
     for q in (analysis or {}).get("questioni") or []:
         names = [q.get("titolo") or ""] + [i.get("nome") or "" for i in q.get("istituti") or [] if isinstance(i, dict)]
@@ -1730,6 +1730,13 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
         plan = {**plan, "norme_contrarie": list(dict.fromkeys(list(plan.get("norme_contrarie") or [])
                                                               + [f"{n} {c}" for n, c in gated]))}
         dg.vlog("case_analysis_action_gate_plan", {"adverse": [f"{n} {c}" for n, c in gated]})
+    if render_computed.enabled():
+        try:            # RENDER_COMPUTED: the action gate's articles out of the remedies, into the objections block
+            plan, moved = render_computed.move_gated(plan, analysis)
+            if moved:
+                dg.vlog("case_analysis_gated_objections", {"moved": moved})
+        except Exception as exc:
+            _log_exception("move_gated", exc)
     from . import edge_expand
     if edge_expand.enabled():
         edge_expand.note_plan(plan)         # EDGE_EXPAND's reach log
@@ -1909,11 +1916,14 @@ def anchor_catalogue(plan: Dict[str, Any], analysis: Dict[str, Any], article_row
 def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[str, Any],
                  article_rows: List[Dict[str, Any]], references: Dict[str, List[Dict[str, Any]]],
                  principles: str, keep_all: bool = False,
-                 anchors: Optional["anchored_writing.Catalogue"] = None) -> List[Tuple[str, str, str, int]]:
+                 anchors: Optional["anchored_writing.Catalogue"] = None,
+                 rendered: Optional[str] = None) -> List[Tuple[str, str, str, int]]:
     """(title, instruction, material, max_tokens) for each section, in order. With keep_all
     (PLAN_KEEP_APPLICABLE_ENABLED) sections 3 and 4 discuss every article of the plan by name. With anchors
     (ANCHORED_WRITING_ENABLED) every section gets its passages and the anchor rule, the procedural section its
-    stage's procedure vocabulary."""
+    stage's procedure vocabulary. RULE_QUOTE: sections 3 and 4 get REGOLE DELLE NORME DEL PIANO (rule_quote). With
+    rendered (RENDER_COMPUTED: the procedural section's text, rendered by template) there is no procedural job: sections
+    1, 4 and 6 get the rendered text as read-only context, sections 3 and 4 the objections block."""
     party = plan["parte_assistita"] or "la parte assistita"
     case = f"CASO:\n{dg._case_text(facts, request)}"
     frame = analysis.get("frame") or {}
@@ -1996,6 +2006,16 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
     adverse += (f" Una norma segnata «{role_fit.ADVERSE_MARK}» si presenta solo come argomento della controparte, "
                 f"seguito dalla replica di {party}; mai a sostegno di {party}." if plan.get("norme_contrarie") else "")
     remedies = _remedies_block(plan)          # REVIEW_FIXES_ENABLED: the main remedy article's remedies, each
+    # RULE_QUOTE: each plan article's operative comma and its requisites, with the rule (section 3: its own articles)
+    rules_norme = rule_quote.material_block(plan, article_rows, analysis, norme_refs) if rule_quote.enabled() else ""
+    rules_all = rule_quote.material_block(plan, article_rows, analysis) if rule_quote.enabled() else ""
+    quote = (f" Per ogni norma segui {rule_quote.TITLE}: riporta il comma tra «…» con il suo numero o resta dentro le sue "
+             "parole; per ogni requisito numerato indica se è «provato» o «da provare» sui fatti.")
+    # RENDER_COMPUTED: the action gate's articles only as the other side's; the rendered procedural section read only
+    objections = render_computed.objections_block(plan) if rendered is not None else ""
+    objected = (f" Le norme di {render_computed.OBJECTIONS_TITLE} solo come argomento della controparte, con la replica."
+                if objections else "")
+    read_only = render_computed.read_only_block(rendered or "")
     evidence = (" Le prove da acquisire di una questione che coincidono con quelle di una questione precedente non si "
                 "ripetono: si rinvia a quella." if fixes else "")
 
@@ -2007,7 +2027,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "la norma su cui si fonda." + one_each + scoped + no_rulings,
          material(case, fixed, block("QUESITI", tasks), block(_QUESTIONS_TITLE, asked),
                   block(_TOOLS_TITLE, tools if questions and any(fact_signals_asks(q) for q in questions) else ""),
-                  _plan_text(plan, answers=True, rulings=False), scope, remedies), 600 + 150 * max(0, len(questions) - 1)),
+                  _plan_text(plan, answers=True, rulings=False), scope, remedies, read_only),
+         600 + 150 * max(0, len(questions) - 1)),
         (SECTION_TITLES[1],
          "SEZIONE: Inquadramento e questione centrale. La qualificazione giuridica della vicenda (la norma "
          "principale e quelle alternative o subordinate, e perché), la questione centrale e perché decide "
@@ -2020,8 +2041,8 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          f"SEZIONE: Norme e giurisprudenza. {norms}; per ogni pronuncia del PIANO: il principio che "
          "afferma, con il suo riferimento, e che cosa comporta per questo caso, senza svolgere gli argomenti "
          "(sezione 4). Solo norme e pronunce del PIANO; tra virgolette solo frasi dei testi e dei passi forniti."
-         + every + scoped + adverse + norme_only,
-         material(case, fixed, _plan_text(_scoped_plan(plan)), scope,
+         + every + scoped + adverse + norme_only + (quote if rules_norme else "") + objected,
+         material(case, fixed, _plan_text(_scoped_plan(plan)), scope, rules_norme, objections,
                   block("TESTI DELLE NORME", texts(norme_refs, per_article(15000, dg._ARTICLE_CHARS))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 1200)),
                   block("PRINCIPI DALLA GIURISPRUDENZA", principles)), 1600 if keep_all else 1200),
@@ -2030,10 +2051,11 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          f"l'argomento di {party} applicato ai fatti del caso, con le norme e le pronunce del piano; le prove da "
          "acquisire; l'obiezione più forte della controparte e la replica. Poi le tesi subordinate del PIANO. "
          "Prosa, senza ripetere per ogni questione lo stesso schema a voci; tra virgolette solo frasi dei testi e "
-         "dei passi forniti." + every_issue + scoped + applied + adverse + evidence,
+         "dei passi forniti." + every_issue + scoped + applied + adverse + evidence + (quote if rules_all else "")
+         + objected,
          material(case, fixed, to_sue, block("FATTI DEL CASO", facts_list), block(_QUALIFIED_TITLE, qualified),
                   block(_ROLES_TITLE, roles), block(_DAMAGES_TITLE, damages),
-                  _plan_text(plan, issues="full", subordinate=True), scope, remedies,
+                  _plan_text(plan, issues="full", subordinate=True), scope, remedies, rules_all, objections, read_only,
                   block("TESTI DELLE NORME", texts(refs, per_article(9000, 600))),
                   block("PASSI DELLE PRONUNCE", _ruling_texts(plan, references, 600))), 2200 if keep_all else 1800),
         (SECTION_TITLES[4],
@@ -2054,8 +2076,10 @@ def section_jobs(plan: Dict[str, Any], facts: str, request: str, analysis: Dict[
          "SEZIONE: Conclusioni. In due o tre paragrafi: gli argomenti in ordine di forza, come nel PIANO; una "
          f"stima motivata del rischio, tenendo conto dei punti deboli; la condotta consigliata a {party}."
          + no_rulings,
-         material(fixed, _plan_text(plan, subordinate=True, weak=True, rulings=False)), 500),
+         material(fixed, _plan_text(plan, subordinate=True, weak=True, rulings=False), read_only), 500),
     ]
+    if rendered is not None:            # RENDER_COMPUTED: the procedural section is rendered, not written
+        jobs = [job for job in jobs if job[0] != SECTION_TITLES[4]]
     if anchors is not None:
         jobs = _with_anchors(jobs, anchors, posture)
     jobs = [_with_budget(job) for job in jobs] if rules else jobs
@@ -3060,7 +3084,7 @@ def statement_context(analysis: Dict[str, Any]) -> Dict[str, Any]:
             "mediation": (signals.get("mediation") or {}).get("required"),
             "split_owner": str(fact_signals._the_split(signals["facts"]).get("owner") or ""),
             "conclusions": [{k: r.get(k) for k in ("id", "conclusion_subject", "conclusion_unless")}
-                            for r in signals.get("fired") or [] if r.get("conclusion")],
+                            for r in signals.get("fired") or [] if r.get("conclusion") and not r.get("unstated")],
             "defendants": bool(signals.get("defendants")),
             "excluded": [tuple(x) for r in signals.get("fired") or [] for x in r.get("excludes") or []],
             "excluded_by": [{"rule": r.get("id"), "article": tuple(x)} for r in signals.get("fired") or []
@@ -4450,7 +4474,26 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if plan is None:
         return None
     case = dg._case_text(facts, request)
+    pipeline_analysis = analysis
     plan, analysis = for_the_plan(plan, analysis)
+    rendered = None
+    if render_computed.enabled():
+        try:            # RENDER_COMPUTED: the procedural section from the computed block, by template
+            party = f"{plan.get('parte_assistita') or ''} {plan.get('posizione') or ''}".strip()
+            rendered = render_computed.render(analysis, party) or None      # nothing computed: the model writes it
+            if rendered:
+                pipeline_analysis[render_computed.RENDERED_KEY] = rendered
+            dg.vlog("case_analysis_render_computed", {"blocks": [t for t, _ in render_computed.blocks(analysis, party)],
+                                                      "chars": len(rendered or ""), "fallback": rendered is None,
+                                                      "gated": plan.get("obiezioni_norme") or []})
+        except Exception as exc:
+            _log_exception("render_computed", exc)
+            rendered = None
+    if rule_quote.enabled():
+        try:
+            dg.vlog("case_analysis_rule_quote_material", rule_quote.material_log(plan, article_rows, analysis))
+        except Exception as exc:
+            _log_exception("rule_quote.material_log", exc)
     in_plan = _plan_refs(plan)
     # v49: a sentence citing one is never dropped by tidy / final checks / anchors; TOOL_CITES_PROTECTED (v51): nor one
     # citing a procedural tool's or a computed term's article
@@ -4480,8 +4523,9 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
         # v49: the plan's articles too (h2 v48: 1382 c.c., exempt by heading, removed as an unanchored citation)
         anchors.checked = list(dict.fromkeys(list(grounded_review.strict_refs(article_rows, named, analysis)) + in_plan))
     sections = write_sections(plan, section_jobs(plan, facts, request, analysis, article_rows, references,
-                                                 principles, _keep_all(), anchors), lang, named, documents,
-                              article_rows, case, coverage=use_of, standard=standard_blocks(analysis),
+                                                 principles, _keep_all(), anchors, rendered), lang, named, documents,
+                              article_rows, case, coverage=use_of if rendered is None else None,
+                              standard=standard_blocks(analysis),
                               questions=explicit_questions(request, facts) if _review_fixes() else [],
                               checked=grounded_review.strict_refs(article_rows, named, analysis)
                               if grounded_review.strict() or grounded_review.abstain() else None, anchors=anchors,
@@ -4493,7 +4537,23 @@ def write_parere(facts: str, request: str, analysis: Dict[str, Any], article_row
     if covering():
         sections = _step("cover_plan_articles", sections, lambda secs: cover_plan_articles(
             plan, secs, article_rows, documents or [], case, context, conclusion_lines(analysis)))
+    if rule_quote.enabled():
+        def quoted(secs):       # RULE_QUOTE: a rule sentence stays within its comma, or becomes its quotation
+            done, log = rule_quote.check_sections(secs, plan, article_rows, analysis, documents or [])
+            dg.vlog("case_analysis_rule_quote", log)
+            return done
+        sections = _step("rule_quote", sections, quoted)
+    if plan.get("obiezioni_norme"):
+        def objections_only(secs):      # RENDER_COMPUTED: the action gate's articles only in an objection or a reply
+            done = [render_computed.gated_as_support(title, text, plan, documents) for title, text in secs]
+            entries = [e for _, log in done for e in log]
+            dg.vlog("case_analysis_gated_as_support", {"entries": entries, "dropped": len(entries)})
+            return [(title, text or original) for (title, original), (text, _) in zip(secs, done)]
+        sections = _step("gated_as_support", sections, objections_only)
     sections = _step("repetition_guard", sections, lambda secs: repetition_guard.guard_sections(secs, "rewritten")[0])
+    if rendered is not None:            # RENDER_COMPUTED: the rendered procedural section in its place, untouched
+        at = min(4, len(sections))
+        sections = sections[:at] + [(SECTION_TITLES[4], rendered)] + sections[at:]
     if use_of is not None:
         try:          # counted only: never fails the answer
             final = use_of(next((text for title, text in sections if title == SECTION_TITLES[4]), ""))

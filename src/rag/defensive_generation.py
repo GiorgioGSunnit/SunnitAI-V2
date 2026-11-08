@@ -4120,6 +4120,9 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
             # rivendicazione, confessoria, possessoria -- is the client's only when the client's role is the action's;
             # otherwise the article is the counterparty's, tagged adverse (analysis["action_gate"]), no call
             gated = _action_gate(analysis, istituto.get("nome"), resolved)
+            # TOPIC_STEP: the articles each institution resolved to (its topic's pool fallback); kept, never read here
+            analysis.setdefault("institution_refs", {}).setdefault(str(istituto.get("nome") or ""), []).extend(
+                f"{r['_article'][0]} {r['_article'][1]}" for r in resolved if r.get("_article"))
             for row in resolved:
                 if row.get("_article") in gated:
                     row["_role_adverse"] = gated[row["_article"]]
@@ -6194,6 +6197,17 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
                                      "article_refs": sorted({f"{r['_article'][0]} {r['_article'][1]}"
                                                              for r in article_rows if r.get("_article")})},
         duration_ms=(time.time() - retrieval_t0) * 1000)
+    from . import topic_step
+    if topic_step.enabled():
+        try:        # TOPIC_STEP: the case's topics, one per institution, anchored by rubrica (logged only, phase 1)
+            from .doc_lookup import _fetch_doc_names
+            with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+                links = topic_step.GraphLinks(session, _fetch_doc_names(driver, NEO4J_DATABASE))
+                analysis["topics"] = topic_step.build(analysis, article_rows + regime_rows, links,
+                                                      _case_text(facts, request))
+            vlog("case_analysis_topics", {"topics": analysis["topics"]})
+        except Exception as exc:
+            _log_exception("topic_step", exc)
 
     # Per-article applicability (round 3, item 3): off unless
     # APPLICABILITY_CHECK_ENABLED. Runs after article_rows/ruling_rows are
@@ -6365,6 +6379,13 @@ def _case_analysis_pipeline(facts: str, session_lang: str = "it", request: str =
     # PROTECTED_PARAPHRASE_ENABLED: no sentence reproduces a protected source of the material (counted only, off).
     draft = _safe_step("protected_sources", draft,
                        lambda d: protected_sources.enforce(d, rows=article_rows + ruling_rows, stage="strategy")[0])
+    from . import render_computed
+    if planned and render_computed.enabled():
+        def rendered_again(d):          # RENDER_COMPUTED: the procedural section as rendered, whatever an edit did
+            d, changed = render_computed.restore(d, analysis)
+            vlog("case_analysis_render_computed_restored", {"restored": changed})
+            return d
+        draft = _safe_step("render_computed", draft, rendered_again)
 
     arguments_at = "**4." if planned else "**3."      # where the client's arguments start
     # WRITER_RULES_ENABLED: a parere is complete in itself, no "deep-dive" links under it (the lawyer's review).

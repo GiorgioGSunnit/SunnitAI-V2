@@ -182,7 +182,7 @@
   area: contratti
   when:
     - contract: {label: "un contratto tra le parti"}
-    - request: {pattern: 'risol|scioglie|liberar|recede', label: "si chiede come sciogliere il contratto"}
+    - request: {pattern: 'risol|scioglie|liberar|recede|sfratt', label: "si chiede come sciogliere il contratto"}
   institution: [risoluzione per inadempimento, importanza dell'inadempimento]
   codice: c.c.
   ranges: [[1453,1462]]
@@ -294,7 +294,7 @@
   area: contratti
   when:
     - contract: {type: 'appalt|lavori|ristruttur|costruz|ristrutturaz', label: "un appalto di lavori"}
-    - fact: {pattern: 'vizi|difett|difform|crep|infiltraz|umidit|non a regola', label: "l'opera ha difetti"}
+    - fact: {pattern: 'vizi|difett|difform|crep|fessur|cediment|infiltraz|umidit|non a regola', label: "l'opera ha difetti"}
   institution: garanzia per le difformità e i vizi dell'opera
   codice: c.c.
   ranges: [[1655,1677]]
@@ -547,6 +547,7 @@
   institution: [sfratto per morosità, risoluzione della locazione per inadempimento]
   codice: c.p.c.
   ranges: [[657,669]]
+  requires: ["1453 c.c.", "1455 c.c."]          # v55 (c3): the resolution's own articles, in the civil code
   why: "Il conduttore che non paga i canoni pone lo sfratto per morosità e la risoluzione."
   status: experiment
 

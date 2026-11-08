@@ -1612,10 +1612,34 @@ def _items_naming(facts: Dict[str, Any], name: str, keys: Tuple[str, ...]) -> Li
     return out
 
 
+_TRANSFER_VERBS = r"(?:ha\s+)?(?:vend\w*|ced\w*|don\w*|alien\w*|trasferi\w*)"
+
+
+def _transferred(facts: Dict[str, Any], name: str, history: List[Dict[str, Any]]) -> bool:
+    """name's sale or transfer is in the facts (Leonardo v52: "Sempronio vende il terreno a Domitilla", 2003, with no
+    property_history entry of Sempronio's own): an event with name as the subject of a transfer verb, or another owner's
+    property_history entry for "<asset> di <name>" acquired by sale, gift, division or succession."""
+    low = _low(name)
+    if not low:
+        return False
+    subject = re.compile(rf"(?:^|[\s,;(])(?:il\s+|la\s+|i\s+|gli\s+)?{re.escape(low)}\s+{_TRANSFER_VERBS}\b")
+    for event in facts.get("events") or []:
+        if isinstance(event, dict) and subject.search(_low(event.get("what"))):
+            return True
+    for entry in history:
+        if _low(entry.get("owner")) in ("", low) or _low(entry.get("how_acquired")) not in _SEPARATING | {"compravendita"}:
+            continue
+        whose = re.search(r"\b(?:di|del|della|dei|degli)\s+(.+)$", _low(entry.get("asset")))
+        if whose and _named_in(low, whose.group(1)) and not re.search(r"\be\b|,", whose.group(1)):
+            return True
+    return False
+
+
 def _previous_owner(facts: Dict[str, Any], name: str, history: List[Dict[str, Any]]) -> bool:
     """name is in the facts only as a previous owner in the chain of title: every property_history entry of its own
-    passed on (a later owner holds the asset or a part of it, or the entry ended), none it still holds; or its role,
-    or every fact naming it, puts its ownership in the past ("appartenevano a Mevio")."""
+    passed on (a later owner holds the asset or a part of it, or the entry ended), none it still holds; or, holding no
+    entry it has not passed on, its sale or transfer is in the facts (_transferred: "Sempronio vende il terreno a
+    Domitilla"); or its role, or every fact naming it, puts its ownership in the past ("appartenevano a Mevio")."""
     low = _low(name)
     own = [(i, e) for i, e in enumerate(history) if _low(e.get("owner")) == low]
     others = {_low(e.get("owner")) for e in history if _low(e.get("owner")) not in ("", low)}
@@ -1628,6 +1652,8 @@ def _previous_owner(facts: Dict[str, Any], name: str, history: List[Dict[str, An
         named = bool(whose) and any(_named_in(o, whose.group(1)) for o in others)
         return bool(_parts_of(entry, history[i + 1:])[0] or ended or _low(entry.get("to")) or named)
     if own and all(passed_on(i, e) for i, e in own):
+        return True
+    if (not own or all(passed_on(i, e) for i, e in own)) and _transferred(facts, name, history):
         return True
     roles = " ".join(_low(p.get("role")) for p in facts.get("parties") or [] if _low(p.get("name")) == low)
     if re.search(_PREVIOUS_ROLE, roles):
@@ -1697,7 +1723,9 @@ def parties_line(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str,
 
 
 def conclusions_block(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]] = None) -> str:
-    lines = [f"- {r['conclusion']}" for r in (signals or {}).get("fired") or [] if r.get("conclusion")]
+    # "unstated" (interactive_flow.mark_unstated): fired on a field the case does not state, never a fixed conclusion
+    lines = [f"- {r['conclusion']}" for r in (signals or {}).get("fired") or [] if r.get("conclusion")
+             and not r.get("unstated")]
     mediated = (signals or {}).get("mediation") or {}
     try:            # PARTIES_ENFORCED: logged and left out on any failure, the block as before
         parties = parties_line(signals, analysis)

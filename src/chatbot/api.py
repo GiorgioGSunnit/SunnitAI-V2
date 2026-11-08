@@ -295,6 +295,13 @@ class ChatResponse(BaseModel):
         description="Ranked candidate system templates ({key, label, codice, score}) when "
         "classify_system_template finds 2+ close matches; FE should prompt the user to pick one.",
     )
+    interaction: Optional[dict] = Field(
+        default=None,
+        description="INTERACTIVE_FLOW: the round of an interactive case -- {schema, version, state (topics_offered, "
+        "frame_restated, answered), round (1, 2, 3 = the answer), topics [{n, title, anchor, articles, to_verify, "
+        "answered}], facts [{kind: party|date|term, text, ...}], questions [{id, n, text, kind: date|yesno|transfer, "
+        "about, articles, unlocks}], chosen, changes, actions, seconds}; null on every other reply.",
+    )
 
 
 class SessionResponse(BaseModel):
@@ -2081,6 +2088,67 @@ def _routed_intent(message: str, legal_intent: str, pending_calculation: Optiona
     return intent
 
 
+def _interactive_reply(session, session_id: str, message: str, result: dict, mode: str) -> "ChatResponse":
+    """INTERACTIVE_FLOW: the turn recorded in the session (its state in the anchors, the messages tagged with the
+    round), the summarization contract honoured as the defensive branch does, the reply with its interaction field."""
+    from ..rag import interactive_flow
+    session.anchors = interactive_flow.store(session.anchors, result["state"])
+    session.add_message("user", message, metadata={"type": "interactive"})
+    if len(session.messages) == 1:
+        session.title = _generate_session_title(message)
+    session.add_message("assistant", result["answer"], metadata={
+        "type": "interactive", **({"citations": result["citations"]} if result.get("citations") else {})})
+    confirmation = session._summarize_if_needed()
+    if confirmation:
+        session.add_message("assistant", confirmation, metadata={
+            "awaiting_summary_confirmation": True,
+            "pending_summary": {"text": session._pending_summary, "covers_turns": session._pending_summary_covers},
+            "type": "summary_confirmation",
+        })
+    session._dirty = True
+    chatbot._save_sessions()
+    vlog("interactive_turn", {"session_id": session_id, "mode": mode, "kind": result.get("kind"),
+                              "state": (result.get("interaction") or {}).get("state"),
+                              "version": (result.get("interaction") or {}).get("version")})
+    return ChatResponse(
+        session_id=session_id, answer=result["answer"], citations=result.get("citations") or [],
+        original_query=message, resolved_query=message, session_language=session.session_language,
+        status_messages=[f"interactive_{mode}"], awaiting_summary_confirmation=bool(confirmation),
+        title=session.title, interaction=result.get("interaction"))
+
+
+async def _interactive_follow_up(session_id: str, message: str, uid: Optional[str], db: Session) -> Optional["ChatResponse"]:
+    """INTERACTIVE_FLOW: a reply within the session's open interaction, or None (none open, or a message it does not
+    hold: the old path). Any failure is logged with its traceback and the old path answers."""
+    from ..rag import interactive_flow
+    session = chatbot.get_session(session_id, user_id=uid, db=db)
+    state = interactive_flow.active(session.anchors) if session is not None else None
+    if state is None:
+        return None
+    try:
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(None, partial(interactive_flow.follow_up, message, state))
+    except Exception as exc:
+        logger.error("chat: interactive follow-up failed, the old path answers: %s", exc, exc_info=True)
+        return None
+    if result is None:
+        return None
+    return _interactive_reply(session, session_id, message, result, "follow_up")
+
+
+async def _interactive_start(session, session_id: str, message: str, lang: str) -> Optional["ChatResponse"]:
+    """INTERACTIVE_FLOW: round 1 of a narrative case, or None on any failure (logged; the single-shot path then)."""
+    from ..rag import interactive_flow
+    try:
+        loop = asyncio.get_event_loop()
+        reply, field, state = await loop.run_in_executor(None, partial(interactive_flow.start, message, lang))
+    except Exception as exc:
+        logger.error("chat: interactive round 1 failed, the single-shot pipeline answers: %s", exc, exc_info=True)
+        return None
+    return _interactive_reply(session, session_id, message,
+                              {"answer": reply, "interaction": field, "state": state, "kind": "round1"}, "round1")
+
+
 def _classify_legal_intent(message: str, session_lang: str) -> str:
     """
     Classification of a message with NO document attached, deciding
@@ -2223,6 +2291,13 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
 
     _req_start = time.time()
     vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
+
+    # ── INTERACTIVE_FLOW: a reply within an open interactive case (a topic, an answer, "procedi") ──
+    # Only a session holding a live interactive state; anything it does not hold falls through unchanged.
+    if feature_flags.enabled("INTERACTIVE_FLOW"):
+        _interactive = await _interactive_follow_up(session_id, request.message, _uid, db)
+        if _interactive is not None:
+            return _interactive
 
     # ── Deepdive: user clicked a deepdive link from a defensive draft ──────
     # Checked on the raw request.message, ahead of every other branch
@@ -3446,6 +3521,14 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
         logger.info("chat: %r is a short topic question, not a case: answered, not drafted", request.message)
         _legal_intent = "rag"
     _legal_intent = _routed_intent(request.message, _legal_intent, last_pending_calculation(_session))
+    if _legal_intent == "defensive_draft" and feature_flags.enabled("INTERACTIVE_FLOW"):
+        # INTERACTIVE_FLOW: a narrative case in rounds (topics, facts, questions first); a "direct" route, or any
+        # failure, keeps the single-shot pipeline below.
+        from ..rag import interactive_flow
+        if interactive_flow.routes_here(request.message):
+            _interactive = await _interactive_start(_session, session_id, request.message, _session_lang)
+            if _interactive is not None:
+                return _interactive
     if _legal_intent == "defensive_draft":
         # Use message text as source — no document required
         from ..rag.defensive_generation import run_defensive_pipeline
