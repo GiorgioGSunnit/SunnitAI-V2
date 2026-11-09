@@ -202,7 +202,57 @@ PENALTY_RE = re.compile(r"\bè punit\w*|\bsono punit\w*|\bla pena\b|\breclusione
 AGGRAVANTE_RE = re.compile(r"^(?:il fatto è commess|se il colpevole|il colpevole|ricorr\w* (?:la|taluna|una) (?:delle )?"
                            r"circostanz|salvo che ricorr|la pena è aumentat|le pene sono aumentat)", re.IGNORECASE)
 OFFENCE_BOOK = ("c.p.", 241, 649)        # c.p. Libro II: the offences, their requisites co. 1's elements
-_PUNISHED_RE = re.compile(r",?\s*(?:è|sono)\s+punit\w*.*$", re.IGNORECASE | re.DOTALL)
+_PUNISHED_RE = re.compile(r",?\s*(?:(?:è|sono)\s+punit\w*|soggiac\w*|si\s+applica(?:no)?\b).*$", re.IGNORECASE | re.DOTALL)
+# v59 (v58-h7 321/319-ter/322, v58-h10 114 c.p.a.): a clause on the penalty or on a consequence -- what follows from the
+# requisites, never one of them -- in every code; a clause only pointing at other articles
+CONSEQUENCE_RE = re.compile(r"\b(?:pena|pene|punit\w*|punibil\w*|reclusione|multa|ammenda|arresto|si\s+applica(?:no)?|"
+                            r"ridott[aoie]|aumentat[aoie]|diminuit[aoie]|titolo\s+esecutivo|interessi\s+legali|"
+                            r"in\s+misura\s+pari|penalit\w*|sanzion\w*)\b", re.IGNORECASE)
+# a comma extending other articles' rules or penalties («Le pene stabilite … si applicano anche a chi …», «si applica la
+# pena della reclusione»): its own line only, no requisites (v58-h7 320, 321, 319-ter)
+EXTENSION_RE = re.compile(r"\bsi\s+applica(?:no)?\b(?:\s+(?:anche|altresì|la\s+pena|le\s+pene|le\s+disposizioni))?",
+                          re.IGNORECASE)
+_REFERENCE_RE = re.compile(r"\b(?:articol[oi]|artt?\.)\s*\d+(?:-[a-z]+)?(?:\s*(?:,|e)\s*\d+(?:-[a-z]+)?)*", re.IGNORECASE)
+_REFERENCE_WORDS = {"e", "o", "nel", "nell", "nella", "negli", "nei", "del", "dell", "della", "degli", "dei", "al", "all",
+                    "alla", "agli", "ai", "in", "di", "a", "da", "primo", "secondo", "terzo", "quarto", "quinto", "comma",
+                    "commi", "relazione", "suddette", "suddetti", "suddetta", "suddetto", "ipotesi", "previste",
+                    "previsti", "prevista", "previsto", "stabilite", "stabiliti", "stabilita", "indicate", "indicati",
+                    "medesime", "stesse", "cui", "le", "la", "il", "lo", "i", "gli", "l", "alle", "allo", "dello",
+                    "delle", "dai", "dagli", "dal", "dalla", "nelle", "nello", "sensi", "casi", "caso"}
+
+
+def reference_only(clause: str) -> bool:
+    """«nell'articolo 319», «e nell'articolo 320 in relazione alle suddette ipotesi degli articoli 318 e 319»: nothing but
+    a pointer to other articles."""
+    if not _REFERENCE_RE.search(clause or ""):
+        return False
+    rest = _REFERENCE_RE.sub(" ", str(clause).lower())
+    return not [w for w in re.findall(r"[a-zà-ù]+", rest) if w not in _REFERENCE_WORDS]
+
+
+def requisite_kept(clause: str) -> bool:
+    """v59: may this clause be a requisite line? Not a penalty or a consequence (CONSEQUENCE_RE), not an aggravante, not
+    only an article reference."""
+    clause = str(clause or "")
+    return bool(clause.strip()) and not CONSEQUENCE_RE.search(clause) and not AGGRAVANTE_RE.search(clause.strip()) \
+        and not reference_only(clause)
+
+
+def extends(text: str) -> bool:
+    """Does this comma extend other articles' rules or penalties (EXTENSION_RE) rather than set its own?"""
+    return bool(EXTENSION_RE.search(clean_text(text or "")))
+
+
+_OWN_SUBJECT_RE = re.compile(r"\bchiunque\b|^\W*(?:chi|il pubblico ufficiale|l['’]incaricato)\b", re.IGNORECASE)
+
+
+def refers_penalties(text: str) -> bool:
+    """v59 (v55-l2 585 c.p.: «Nei casi previsti dagli articoli 582, 583 …, la pena è aumentata …»): a comma extending
+    other articles' rules, or setting a penalty for the cases other articles provide with no subject of its own
+    (never «Chiunque, fuori dei casi indicati nell'articolo 571, maltratta …») -- its own line, no requisite."""
+    text = " ".join(_COMMA_HEAD_RE.sub("", clean_text(text or "").strip(), count=1).split())
+    return extends(text) or bool(CONSEQUENCE_RE.search(text) and _REFERENCE_RE.search(text)
+                                 and not _OWN_SUBJECT_RE.search(text))
 
 
 def offence(ref: Sequence[str]) -> bool:
@@ -215,7 +265,10 @@ def offence_elements(text: str) -> List[str]:
     """v58 (v57-p2 640: «Chiunque, con artifizi o raggiri, …» is the requisite set): the elements of an offence's first
     comma -- its words before «è punito», «Chiunque» left out, split on its commas; an element of fewer than two words
     joins the next."""
-    body = _PUNISHED_RE.sub("", " ".join(_COMMA_HEAD_RE.sub("", clean_text(text).strip(), count=1).split()))
+    whole = " ".join(_COMMA_HEAD_RE.sub("", clean_text(text).strip(), count=1).split())
+    if refers_penalties(whole):     # v59: «… si applicano anche a chi …», «Nei casi previsti …»: its own line only
+        return []
+    body = _PUNISHED_RE.sub("", whole)
     body = re.sub(r"^(?:chiunque|il pubblico ufficiale|l['’]incaricato di un pubblico servizio|chi)\s*,?\s*", "", body,
                   flags=re.IGNORECASE)
     out: List[str] = []
@@ -226,8 +279,16 @@ def offence_elements(text: str) -> List[str]:
             carry = piece
             continue
         carry = ""
-        if not AGGRAVANTE_RE.search(piece) and len(piece) <= REQUISITE_CHARS:
+        if requisite_kept(piece) and len(piece) <= REQUISITE_CHARS:
             out.append(piece.strip(" .;:"))
+    # v59 (v58-h7 322: «soggiace, qualora l'offerta o la promessa non sia accettata, alla pena …»): a condition set
+    # inside the penalty clause is an element too
+    penalty = _PUNISHED_RE.search(whole)
+    for piece in re.split(r"\s*,\s*", whole[penalty.start():] if penalty else ""):
+        piece = piece.strip(" .;:")
+        if re.match(r"(?:qualora|se|purch[ée]|sempre che)\b", piece, re.IGNORECASE) and requisite_kept(piece) \
+                and len(piece.split()) >= 3 and len(piece) <= REQUISITE_CHARS:
+            out.append(piece)
     return [x for x in out if x]
 
 
@@ -358,7 +419,7 @@ def requisites(text: str) -> List[str]:
         items = _ENUM_SPLIT_RE.split(segment)
         for j, raw in enumerate(items):
             item = _clean_item(raw)
-            if _DANGLING_RE.search(raw.strip(" ,;:")) or PENALTY_RE.search(item) or AGGRAVANTE_RE.search(item) \
+            if _DANGLING_RE.search(raw.strip(" ,;:")) or PENALTY_RE.search(item) or not requisite_kept(item) \
                     or (cut and j == len(items) - 1 and raw.rstrip().endswith(",")):
                 continue                    # v57: cut on a conjunction, or on a comma where the text ends; the punishment
             if len(item.split()) >= 3 and len(item) <= REQUISITE_CHARS:
@@ -417,9 +478,11 @@ def article_rules(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], anal
             reqs = {commi[0][0]: r for r in [offence_elements(commi[0][1])] if REQUISITES_MIN <= len(r) <= REQUISITES_MAX}
         else:
             reqs = {k: r for k, t in chosen for r in [requisites(t)] if REQUISITES_MIN <= len(r) <= REQUISITES_MAX}
+        # v59: a chosen comma extending other articles' penalties (320, 321, 319-ter c.p.) has its own line, never none
+        referring = [k for k, t in chosen if k not in reqs and refers_penalties(t)]
         out.append({"ref": (str(ref[0]), ref[1]), "label": f"{ref[0]} {ref[1]}", "commi": commi,
                     "selected": [k for k, _ in chosen], "how": how, "requisites": reqs, "adverse": against,
-                    "client": sorted(client), "counter": sorted(counter)})
+                    "referring": referring, "client": sorted(client), "counter": sorted(counter)})
     return out
 
 

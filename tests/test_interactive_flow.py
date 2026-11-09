@@ -532,7 +532,9 @@ def test_the_answer_has_the_five_sections_the_rendered_block_untouched_and_offer
     assert heads == ["**1. Risposta e strategia**", "**2. Norme applicate ai fatti**", "**3. Obiezioni e repliche**",
                      "**4. Profili processuali**", "**5. Conclusioni**"]
     assert "RENDERED BLOCK" in text and "2043" not in text and "[1]" not in text
-    assert "**Art. 1062 c.c.**" in text and "**Art. 1061 c.c.**" in text and "**1) La controparte potrà obiettare" in text
+    assert "**Art. 1062 c.c.**" in text and "**1) La controparte potrà obiettare" in text
+    # v59: 1061's block, emptied by tidy after assembly, is no bare heading -- named in the closing line
+    assert "**Art. 1061 c.c.**" not in text and "Altre norme del tema non trattate: art. 1061 c.c." in text
     assert text.rstrip().endswith("Se vuoi, posso approfondire: 2. Passaggio coattivo; 3. Usucapione ordinaria di beni "
                                   "immobili. Oppure dimmi un fatto nuovo e aggiorno il parere.")
     assert state["answers"]["1"]

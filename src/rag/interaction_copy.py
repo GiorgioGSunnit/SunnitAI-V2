@@ -72,6 +72,8 @@ QUESTIONS = {
     "data_messa_in_mora": "In quale data {counterparty} è stata messa in mora o ha ricevuto la contestazione?",
     # the date of the fact a prescription or querela term runs from
     "data_fatto": "Quando è avvenuto il fatto? Serve per i termini di prescrizione e di querela.",
+    # v59 (my draft): the same question where no topic is criminal -- no querela
+    "data_fatto_civile": "Quando è avvenuto il fatto? Serve per il termine di prescrizione.",
     # v55, the PO's text: the act's notification, while a TAR term is open
     "atto_notifica": ("In quale data è stato notificato (o pubblicato) il provvedimento che intendi impugnare? Da questa "
                       "data decorre il termine per il ricorso al TAR."),

@@ -184,37 +184,88 @@ DEFAULT_PROCEDURE = ("d'ufficio", "tribunale")        # v58: a delitto not in to
 OFFENCES_MAX = 5
 
 
+def procedure_lines(found: Sequence[tuple], offences: Sequence[tuple], dated: bool) -> List[str]:
+    """The «Procedibilità e competenza» lines: each table offence (topic_tables.CRIMINAL_PROCEDURE) found or among the
+    chosen topics' delitti, with its own procedibilità and competenza; the other delitti (offences: [(number, rubrica)]),
+    by default procedibili d'ufficio before the tribunale, in one line (v59: v58-h7 had five identical lines); while the
+    date of the fact is unknown, what runs from it."""
+    from . import topic_tables
+    table = topic_tables.CRIMINAL_PROCEDURE
+    shown = list(dict.fromkeys([tuple(r) for r in found] + [(str(n), "c.p.") for n, _ in offences
+                                                             if (str(n), "c.p.") in table]))
+    lines = []
+    for ref in shown:
+        name, how, court = table[ref]
+        lines.append(f"- {name[:1].upper() + name[1:]} (art. {ref[0]} {ref[1]}): procedibile {how}"
+                     + (f"; competenza: {court}" if court else "") + ".")
+    others = []
+    for number, rubrica in [tuple(o) for o in offences][:OFFENCES_MAX]:
+        if (str(number), "c.p.") in shown:
+            continue
+        name = " ".join(str(rubrica or "").split()).rstrip(" .") or "Delitto"
+        others.append(f"{name[:1].upper() + name[1:]} (art. {number} c.p.)")
+    if others:
+        lines.append(f"- {DEFAULT_LIST_JOIN.join(others)}: "
+                     + (DEFAULT_LINE_MANY if len(others) > 1 else DEFAULT_LINE_ONE).format(*DEFAULT_PROCEDURE) + ".")
+    if not dated:
+        querela = any("querela" in table[r][1] for r in shown)
+        lines.append("- Data del fatto: non nota. Da essa decorre la prescrizione del reato (art. 157 c.p.)"
+                     + ("; per i reati a querela, i tre mesi per proporla (art. 124 c.p.)" if querela else "") + ".")
+    return lines
+
+
+DEFAULT_LINE_ONE = "procedibile {0}; competenza: {1}"
+DEFAULT_LINE_MANY = "procedibili {0}; competenza: {1}"
+DEFAULT_LIST_JOIN = "; "
+
+
 def criminal_procedure(analysis: Dict[str, Any]) -> str:
     """v57 (J): in a criminal case, each offence the case's tables hold (topic_tables.offences) with its procedibilità
     and competenza; while the date of the fact is unknown, what runs from it -- the prescription (art. 157 c.p.) and,
-    for an offence a querela starts, its three months (art. 124 c.p.). "" otherwise."""
+    for an offence a querela starts, its three months (art. 124 c.p.). "" otherwise. v59 (v58-p2: truffa chosen, no
+    §4, the frame's first area not penale): the chosen topics' delitti (analysis["offences"]) make it a criminal answer
+    whatever the frame's areas."""
     from . import fact_signals, pool_gates, topic_tables
     areas = pool_gates.gate_areas(analysis)
-    if not areas or fact_signals.family(areas[0]) != "penale":
+    offences = [tuple(o) for o in (analysis or {}).get("offences") or []]
+    criminal = bool(areas) and fact_signals.family(areas[0]) == "penale"
+    if not criminal and not offences:
         return ""
-    found = topic_tables.offences(analysis, areas)
-    lines = []
-    for ref in found:
-        name, how, court = topic_tables.CRIMINAL_PROCEDURE[ref]
-        lines.append(f"- {name[:1].upper() + name[1:]} (art. {ref[0]} {ref[1]}): procedibile {how}"
-                     + (f"; competenza: {court}" if court else "") + ".")
-    # v58 (v57-h7 had no §4): the chosen topics' other delitti (analysis["offences"], interactive_flow), by default
-    # procedibili d'ufficio before the tribunale
-    for number, rubrica in [tuple(o) for o in (analysis or {}).get("offences") or []][:OFFENCES_MAX]:
-        if (str(number), "c.p.") in found:
-            continue
-        name = " ".join(str(rubrica or "").split()).rstrip(" .") or "Delitto"
-        lines.append(f"- {name[:1].upper() + name[1:]} (art. {number} c.p.): procedibile {DEFAULT_PROCEDURE[0]}; "
-                     f"competenza: {DEFAULT_PROCEDURE[1]}.")
+    found = topic_tables.offences(analysis, areas) if criminal else []
     facts = _signals(analysis).get("facts") or {}
     dated = any(str(e.get("date") or "").strip() and fact_signals.parse_date(str(e.get("date")))
                 and re.search(fact_signals._OFFENCE + "|" + fact_signals._DAMAGE + r"|spar|ucci|mort",
                               str(e.get("what") or "").lower()) for e in facts.get("events") or [])
-    if not dated:
-        querela = any("querela" in topic_tables.CRIMINAL_PROCEDURE[r][1] for r in found)
-        lines.append("- Data del fatto: non nota. Da essa decorre la prescrizione del reato (art. 157 c.p.)"
-                     + ("; per i reati a querela, i tre mesi per proporla (art. 124 c.p.)" if querela else "") + ".")
-    return "\n".join(lines)
+    return "\n".join(procedure_lines(found, offences, dated))
+
+
+# v59 (v55-l4, n9: usucapione chosen, no «Mediazione»): the chosen topics' c.c. articles whose matter needs mediation
+# first (art. 5, co. 1, d.lgs. 28/2010) when the facts' own reading (fact_signals.mediation) found none -- by article
+MEDIATION_RANGES = (("condominio", 1117, 1139), ("diritti reali", 832, 1172), ("successioni ereditarie", 456, 768),
+                    ("patti di famiglia", 768, 769), ("locazione", 1571, 1614), ("comodato", 1803, 1812),
+                    ("contratti assicurativi, bancari e finanziari", 1834, 1932),
+                    ("somministrazione", 1559, 1570), ("contratto d'opera", 2222, 2238),
+                    ("società di persone", 2251, 2324), ("affitto di aziende", 2562, 2562))
+
+
+def mediation_of(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """The mediation the facts require (fact_signals.mediation), else the one the chosen topics' matter requires
+    (analysis["topic_refs"]: their anchors and matched articles, interactive_flow): {"required", "subject", "text"}."""
+    from . import fact_signals
+    from .plan_then_write import _code_key
+    mediation = _signals(analysis).get("mediation") or {}
+    if mediation.get("required"):
+        return mediation
+    for number, code in [tuple(r) for r in (analysis or {}).get("topic_refs") or [] if len(r) == 2]:
+        m = re.match(r"\d+", str(number))
+        if not m or _code_key(str(code)) != "c.c.":
+            continue
+        subject = next((name for name, lo, hi in MEDIATION_RANGES if lo <= int(m.group(0)) <= hi), None)
+        if subject:
+            return {"required": True, "subject": subject,
+                    "text": f"Mediazione obbligatoria ({fact_signals.MEDIATION_REF}): la materia è {subject}, il suo "
+                            "esperimento è condizione di procedibilità della domanda."}
+    return mediation
 
 
 def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
@@ -223,10 +274,14 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     signals = _signals(analysis)
     gated = _gated(analysis)
     out: List[Tuple[str, str]] = []
-    mediation = signals.get("mediation") or {}
+    mediation = mediation_of(analysis)
     if mediation.get("required") and mediation.get("text"):
         out.append(("Mediazione", _sentence(mediation["text"])))
     terms = [t for t in signals.get("terms") or [] if t.get("text") and not _term_gated(t, gated)]
+    listed = (analysis or {}).get("listed_topics")
+    if listed:              # v59 (v58-l3 §4: the usucapione with no such topic): the terms the listed topics carry
+        from . import topic_step
+        terms = [t for t in terms if topic_step.carries_term(t, listed)]
     if terms:
         out.append(("Termini", "\n".join(_term_line(t) for t in terms)))
     tools = [t for t in signals.get("tools") or [] if not _tool_gated(t, gated)]

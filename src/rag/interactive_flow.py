@@ -801,6 +801,29 @@ def client_question(facts: Dict[str, Any], answered: Sequence[str] = ()) -> List
 
 # --- 2. round 1 -----------------------------------------------------------------------------------------------------
 
+def carried_terms(terms: Sequence[Dict[str, Any]], topics: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v59 (v58-l3: «L'usucapione va verificata», the negatoria's and the rivendicazione's lines, no such topic): the
+    computed terms a listed topic carries (topic_step.carries_term); with no topic, all."""
+    from . import topic_step
+    if not topics:
+        return list(terms)
+    return [t for t in terms if topic_step.carries_term(t, topics)]
+
+
+def _criminal_topics(topics: Sequence[Dict[str, Any]]) -> bool:
+    from .plan_then_write import _code_key
+    return any(_code_key(r[1]) in ("c.p.", "c.p.p.") for t in topics for r in _topic_refs(t, all_=True))
+
+
+def question_wording(question: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> str:
+    """The question's text; v59 (v58-h10 q.3: «… di prescrizione e di querela» in an administrative case): the date of
+    the fact asked for the prescription alone when no listed topic is criminal."""
+    if question.get("family") == "data_fatto" and topics and not _criminal_topics(topics) \
+            and C.QUESTIONS.get("data_fatto_civile"):
+        return C.QUESTIONS["data_fatto_civile"]
+    return question.get("text") or ""
+
+
 def _same_item(short: str, item: str) -> bool:
     """A question's label the topic's condition already says: more than half its words, two at least."""
     words = _stems(short)
@@ -922,7 +945,8 @@ def known_facts(analysis: Dict[str, Any]) -> List[Dict[str, str]]:
         text = _term_sentence(t)
         if text and text not in shown:
             shown.add(text)
-            out.append({"kind": "term", "id": str(t.get("id") or ""), "status": str(t.get("status") or ""), "text": text})
+            out.append({"kind": "term", "id": str(t.get("id") or ""), "status": str(t.get("status") or ""), "text": text,
+                        "ref": str(t.get("ref") or ""), "label": str(t.get("label") or "")})
     return out
 
 
@@ -999,14 +1023,15 @@ def round1(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
     events = events_sentence(facts)
     if events:
         lines.append(events)
-    terms = " ".join(f["text"] for f in facts if f["kind"] == "term")
+    terms = " ".join(f["text"] for f in carried_terms([f for f in facts if f["kind"] == "term"], state.get("topics") or []))
     if terms:
         lines.append(terms)
     if not facts:
         lines.append(C.NO_FACTS)
     if open_q:
         lines += ["", C.QUESTIONS_TITLE, ""]
-        lines += [C.fill(C.QUESTION_LINE, n=i, text=q["text"]) for i, q in enumerate(open_q, 1)]
+        lines += [C.fill(C.QUESTION_LINE, n=i, text=question_wording(q, state.get("topics") or []))
+                  for i, q in enumerate(open_q, 1)]
     lines += ["", C.INSTRUCTION]
     state["state"] = TOPICS_OFFERED
     return "\n".join(l for l in lines if l is not None), interaction(state, 1, ("choose_topic", "answer_questions", "proceed"))
@@ -1695,7 +1720,9 @@ def norm_blocks(rules: List[Dict[str, Any]], analysis: Dict[str, Any], rows: Seq
             if reqs:
                 lines += [C.fill(C.REQUISITE_LINE, comma=label, requisite=r, status=requisite_status(r, analysis))
                           for r in reqs]
-            elif _names_in(comma):      # v57: a comma line only where the comma names a fact (never «testo: da provare»)
+            elif _names_in(comma) or k in (rule.get("referring") or []):
+                # v57: a comma line only where the comma names a fact (never «testo: da provare»); v59 (v58-h7 321): or
+                # where it extends other articles' penalties -- its line, never a penalty as a requisite
                 lines.append(C.fill(C.COMMA_LINE, comma=label, status=requisite_status(comma, analysis)))
         out.append("\n".join(x for x in lines if x))
     return out
@@ -1788,21 +1815,8 @@ def assemble_norms(text: str, rules: List[Dict[str, Any]], analysis: Dict[str, A
             moved.append({"mark": mark, "to": _label(refs[i - 1])})
         placed.setdefault(i, []).append(paragraph)
         last = i
-    numbers = {i: [k for k, _ in (by_key.get(_key(ref)) or {}).get("commi") or []] for i, ref in enumerate(refs, 1)}
-    wrong = []
-    for i in list(placed):          # v57 (I: v56-h10 «co. 4» of 31 c.p.a. under 21-septies, which has two commi)
-        for paragraph in list(placed[i]):
-            m = _COMMA_LEAD_RE.match(paragraph)
-            if not m or int(m.group(1) or m.group(2)) in numbers[i] or not numbers[i] or None in numbers[i]:
-                continue
-            k, body = int(m.group(1) or m.group(2)), paragraph[m.end():]
-            holder = max(((rule_quote.share(body.split(".")[0], t), j) for j, ref in enumerate(refs, 1)
-                          for kk, t in (by_key.get(_key(ref)) or {}).get("commi") or [] if kk == k), default=(0.0, None))
-            placed[i].remove(paragraph)
-            if holder[1] is not None and holder[0] >= rule_quote.SHARE:
-                placed.setdefault(holder[1], []).append(paragraph)
-            wrong.append({"from": _label(refs[i - 1]), "comma": k,
-                          "to": _label(refs[holder[1] - 1]) if holder[1] and holder[0] >= rule_quote.SHARE else None})
+    wrong: List[Dict[str, Any]] = []
+    placed = commi_moved(placed, refs, by_key, wrong)
     placed = {i: v for i, v in placed.items() if v}
     unearned = {i: placed.pop(i) for i in list(placed) if _key(refs[i - 1]) not in earned}
     # v58 (v57-h5, l3, h7, p2: bare headings, 3 of the 5 misuses left): an article whose text was not read gets no
@@ -1824,6 +1838,43 @@ def assemble_norms(text: str, rules: List[Dict[str, Any]], analysis: Dict[str, A
         C.fill(C.OTHER_NORMS_ITEM, number=r[0], code=_code_label(r[1])) or _label(r) for r in untreated).rstrip(".")
     ) if untreated else ""
     return "\n\n".join(out + orphans + ([closing] if closing else []))
+
+
+def commi_moved(placed: Dict[int, List[str]], refs: Sequence[tuple], by_key: Dict[Tuple[str, str], Dict[str, Any]],
+                log: List[Dict[str, Any]]) -> Dict[int, List[str]]:
+    """v57 (I: v56-h10 «co. 4» of 31 c.p.a. under 21-septies, which has two commi): a paragraph opening on a comma
+    («co. N») its block's article does not have goes to the article whose comma N holds RULE_QUOTE's share of its first
+    sentence, else is dropped; placed: {block (1-based): [paragraph]}; v59: also a line opening on it inside a
+    paragraph."""
+    from . import rule_quote
+    numbers = {i: [k for k, _ in (by_key.get(_key(ref)) or {}).get("commi") or []] for i, ref in enumerate(refs, 1)}
+    out = {i: list(v) for i, v in placed.items()}
+    for i in list(out):
+        for paragraph in list(out[i]):
+            if not numbers.get(i) or None in numbers[i]:
+                continue
+            lines = paragraph.split("\n")
+            bad = [n for n, line in enumerate(lines) for m in [_COMMA_LEAD_RE.match(line)]
+                   if m and int(m.group(1) or m.group(2)) not in numbers[i]]
+            if not bad:
+                continue
+            first = bad[0]
+            m = _COMMA_LEAD_RE.match(lines[first])
+            k, body = int(m.group(1) or m.group(2)), "\n".join(lines[first:])[m.end():]
+            holder = max(((rule_quote.share(body.split(".")[0], t), j) for j, ref in enumerate(refs, 1)
+                          for kk, t in (by_key.get(_key(ref)) or {}).get("commi") or [] if kk == k), default=(0.0, None))
+            moved = "\n".join(lines[first:])
+            kept = "\n".join(lines[:first]).strip()
+            at = out[i].index(paragraph)
+            if kept:
+                out[i][at] = kept
+            else:
+                out[i].remove(paragraph)
+            if holder[1] is not None and holder[0] >= rule_quote.SHARE:
+                out.setdefault(holder[1], []).append(moved)
+            log.append({"from": _label(refs[i - 1]), "comma": k,
+                        "to": _label(refs[holder[1] - 1]) if holder[1] and holder[0] >= rule_quote.SHARE else None})
+    return out
 
 
 def _code_label(code: str) -> str:
@@ -1854,6 +1905,12 @@ def _offences(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]]) 
             if ref and rule_quote.offence(ref) and (ref[0], rubrica.get(_key(ref), "")) not in out:
                 out.append((ref[0], rubrica.get(_key(ref), "")))
     return out
+
+
+def _matched_refs(topics: Sequence[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """The chosen topics' anchors and matched articles."""
+    return list(dict.fromkeys(_parse_label(a) for t in topics for a in [t.get("anchor") or ""]
+                              + list(t.get("matched") or []) if a))
 
 
 def _pool_rubriche(state: Dict[str, Any]) -> Dict[Tuple[str, str], str]:
@@ -2439,7 +2496,10 @@ def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, Li
     if "obiezioni_norme" not in plan:
         plan = _isolated("move_gated", lambda: render_computed.move_gated(plan, analysis_p)[0], plan)
     who = f"{plan.get('parte_assistita') or ''} {plan.get('posizione') or ''}".strip() or party(analysis)
-    analysis_p = {**analysis_p, "offences": _offences(topics, rows)}         # v58 (J): §4's delitti
+    analysis_p = {**analysis_p, "offences": _offences(topics, rows),          # v58 (J): §4's delitti
+                  "topic_refs": _matched_refs(topics),                       # v59: the mediation of the topics' matter
+                  "listed_topics": [{"title": t.get("title"), "articles": t.get("articles"), "source": t.get("source")}
+                                    for t in state.get("topics") or []]}     # v59: §4's terms, the listed topics' only
     rendered = _isolated("render_computed", lambda: render_computed.render(analysis_p, who), state.get("rendered")) or ""
     analysis_p = {**analysis_p, CASE_KEY: analysis.get(CASE_KEY) or case}
     context = ptw.statement_context(analysis_p)
@@ -2490,7 +2550,9 @@ def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, Li
     else:
         logs["rubrica_stamp"] = [{"skipped": "RUBRICA_TEXT_CHECK off: no stamp without its text check"}]
     before = list(sections)
-    anchors = [_parse_label(t["anchor"]) for t in topics if t.get("anchor")]
+    # v59 (v58-p1: 52 c.p.'s sentences moved to «Altri profili»): a topic's matched articles -- a table's own -- stay too
+    anchors = list(dict.fromkeys(_parse_label(a) for t in topics for a in [t.get("anchor") or ""]
+                                 + list(t.get("matched") or []) if a))
     sections = _isolated("unsupported_out", lambda: unsupported_out(sections, rules, analysis_p, documents,
                                                                     logs["unsupported_out"], anchors), sections) or before
     at = next((i for i, (t, _) in enumerate(sections) if t == ANSWER_TITLES[4]), len(sections))
@@ -2506,6 +2568,8 @@ def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, Li
     sections = [(t, x) for t, x in sections if (x or "").strip()]      # an objections section with no reply: gone
     draft = _join(sections)
     draft = _isolated("tidy", lambda: text_tidy.tidy(draft)[0], draft) or draft
+    logs["final"] = []
+    draft = _isolated("answer_final", lambda: answer_final(draft, logs["final"]), draft) or draft      # v59
     others = [C.fill(C.CLOSING_TOPIC, n=i, title=t["title"]) for i, t in enumerate(state["topics"], 1) if i not in numbers]
     others = [o for o in others if o]          # v56: no other topic, no closing (never «Oppure dimmi…» alone)
     closing = C.fill_parts(C.CLOSING, topics=C.LIST_JOIN.join(others)) if others else ""
@@ -2522,10 +2586,242 @@ def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, Li
     return draft, citations
 
 
+# --- v59: the final pass, on the answer as the user reads it (after tidy, which can still empty a block) -------------
+
+_NORM_HEADING_RE = re.compile(r"^\*\*Art\.\s+(\S+)\s+(.+?)(?:\s+—\s+.*?)?\*\*\s*$")
+_OTHER_NORMS_RE = re.compile(r"^" + re.escape(C.OTHER_NORMS_LINE.split("{", 1)[0]) + r"\s*(.*?)\.?\s*$")
+_OTHER_ITEM_RE = re.compile(r"art\.\s*(\S+)\s+(.+?)\s*$")
+
+
+def norms_final(text: str, log: Optional[List[Dict[str, Any]]] = None) -> str:
+    """§2 as read: an article heading followed by nothing (v58-h5 625, 52, 628-bis, 53; v58-p1 52, 53; v58-l3 1117,
+    1118 -- tidy and the checks after assembly can empty a block) is no block; it is named once in the closing line
+    (OTHER_NORMS_LINE) with those already there."""
+    lines = (text or "").split("\n")
+    out: List[str] = []
+    untreated: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        m = _OTHER_NORMS_RE.match(line.strip())
+        if m:
+            untreated += [x.strip() for x in m.group(1).split(C.OTHER_NORMS_JOIN.strip() or ",") if x.strip()]
+            i += 1
+            continue
+        h = _NORM_HEADING_RE.match(line.strip())
+        if not h:
+            out.append(line)
+            i += 1
+            continue
+        j = i + 1
+        while j < len(lines) and not _NORM_HEADING_RE.match(lines[j].strip()) and not _OTHER_NORMS_RE.match(lines[j].strip()):
+            j += 1
+        if "".join(lines[i + 1:j]).strip():
+            out += lines[i:j]
+        else:
+            untreated.append(C.fill(C.OTHER_NORMS_ITEM, number=h.group(1), code=h.group(2).strip()) or f"art. {h.group(1)}")
+            if log is not None:
+                log.append({"bare": f"{h.group(1)} {h.group(2).strip()}"})
+        i = j
+    body = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
+    untreated = list(dict.fromkeys(untreated))
+    if not untreated:
+        return body
+    closing = C.fill(C.OTHER_NORMS_LINE, articles=C.OTHER_NORMS_JOIN.join(untreated).rstrip("."))
+    return f"{body}\n\n{closing}" if body else closing
+
+
+_LEADING_CUT_RE = re.compile(r"^[ \t]+(?=\S)")
+_BULLET_TAIL_RE = re.compile(r"^-\s*([,;:)\]].*)$")
+_LABEL_BULLET_RE = re.compile(r"^\s*[-•*]\s+(?:\[\d{1,2}\]\s*)?(?:\*\*)?artt?\.\s*\d+(?:-[a-z]+)?(?:\s+[\w.]+){0,5}(?:\*\*)?\.?"
+                              r"(?:\s+—\s+«[^»]*»?.*)?$", re.IGNORECASE)
+_FINITE_VERB_RE = re.compile(
+    r"\b(?:è|e'|sono|ha|hanno|può|possono|deve|devono|va|vanno|sta|fa|dà|era|erano|fu|sarà|saranno|sarebbe|sarebbero|"
+    r"viola|violano|include|includono|presenta|presentano|integrano|integrino|indica|indicano|contesta|sostiene|"
+    r"rileva|evidenzia|mostra|determina|implica|produce|ricorre|accerta|attesta|vieta|obbliga|autorizza|precisa|"
+    r"chiarisce|ritiene|osserva|afferma|nega|limita|esclude|aggrava|attenua|condiziona|"
+    r"risulta|risultano|sussiste|sussistono|richiede|richiedono|prevede|prevedono|dispone|consente|esclude|comporta|"
+    r"applica|applicano|rientra|rientrano|costituisce|costituiscono|configura|spetta|impone|attribuisce|stabilisce|"
+    r"deriva|dipende|manca|mancano|occorre|serve|basta|emerge|emergono|appare|appaiono|resta|restano|rimane|integra|"
+    r"punisce|tutela|regola|disciplina|estende|riguarda|permette|presuppone|esige|giustifica|legittima|opera|"
+    r"trova|trovano|risponde|rispondono|incide|grava|consiste|vale|valgono|segue|conferma|confermano|dimostra|"
+    r"dimostrano|prova|provano|qualifica|chiede|chiedono|ottiene|nega|esclud\w+|\w+(?:ano|ono|ava|eva|iva|avano|evano|"
+    r"rebbe|rebbero|erà|irà|ato|ata|ati|ate|ito|ita|iti|ite|uto|uta|uti|ute|ndo))\b", re.IGNORECASE)
+
+
+def _drop_first_sentence(text: str) -> str:
+    """text without its first sentence (a head cut at a removed citation: «(relativo all'uso dell'arma) costituisce …»)."""
+    m = re.search(r"[.!?](?:[»”\"])?(?=\s+[A-ZÀ-Ü«(\[\-]|\s*$)", text)
+    return text[m.end():].lstrip() if m else ""
+
+
+def _fragment_start(text: str) -> bool:
+    return _headless(text) or text.startswith("(")
+
+
+def _orphans_out(text: str, log: List[Dict[str, Any]]) -> str:
+    """v59 (v58-h5 §1 « (relativo all'uso dell'arma)…», v58-h7 §1 « La responsabilità di Caio…», §3 «(art. 321 c.p.\n-),
+    non è sufficiente»): a line cut where a sentence head went -- its indent gone, a headless first sentence dropped; a
+    bullet's tail on its own line («-), …») joined back to its bullet."""
+    out: List[str] = []
+    for line in (text or "").split("\n"):
+        tail = _BULLET_TAIL_RE.match(line)
+        if tail and out and out[-1].strip():
+            out[-1] = out[-1].rstrip() + tail.group(1)
+            log.append({"joined": tail.group(1)[:80]})
+            continue
+        if (not out or not out[-1].strip()) and re.match(r"^[—–]\s+(?=[A-ZÀ-Ü«])", line):
+            line = re.sub(r"^[—–]\s+", "", line)                  # a paragraph opening on the dash of a cut head
+            log.append({"dash": line[:80]})
+        cut = _LEADING_CUT_RE.match(line)
+        if cut and not re.match(r"^[ \t]+(?:[-*•]|\d+[.)])\s", line):
+            line = line[cut.end():]
+            line = re.sub(r"^[—–]\s+(?=[A-ZÀ-Ü«])", "", line)     # «— I contraenti possono …»: the head's dash only
+            if _fragment_start(line):
+                log.append({"headless": line[:120]})
+                line = _drop_first_sentence(line)
+                if not line.strip():
+                    continue
+        elif line and (not out or not out[-1].strip()) and _headless(line) and not re.match(r"^[-•*]\s+\S", line):
+            log.append({"headless": line[:120]})
+            line = _drop_first_sentence(line)
+            if not line.strip():
+                continue
+        out.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
+
+
+_OPENER_RE = (r"(?:Questi|Questo|Questa|Queste|Tale|Tali|Il|Lo|La|Le|Gli|I|In|Per|Inoltre|Pertanto|Quindi|Ciò|Non|"
+              r"Ne|Nel|Nella|Dal|Dalla|Ai|Al|Alla)\b")
+
+
+def _markers_once(text: str, log: List[Dict[str, Any]]) -> str:
+    """v59 (v57-h3 §5: «Se le opere risultano esistenti alla separazione,» twice, once before «Questi fatti»): in a
+    paragraph, a «(da verificare: …)» or a copy's condition («Se …, », CONDITIONS) said once; a marker inside a sentence
+    goes to its end."""
+    prefixes = [c.strip() for c in C.CONDITIONS.values() if c.strip()]
+    out = []
+    for paragraph in re.split(r"(\n[ \t]*\n)", text or ""):
+        seen: set = set()
+
+        def once(m):
+            key = m.group(0).strip().lower()
+            if key in seen:
+                log.append({"repeated": m.group(0).strip()[:80]})
+                return ""
+            seen.add(key)
+            return m.group(0)
+        paragraph = re.sub(r"\s*\(da verificare:[^)]*\)", once, paragraph)
+        for prefix in prefixes:
+            hits = list(re.finditer(re.escape(prefix) + r"\s*", paragraph))
+            for k, m in reversed(list(enumerate(hits))):
+                follows = paragraph[m.end():m.end() + 1]
+                glued = re.match(_OPENER_RE, paragraph[m.end():])         # «…, Questi fatti»: a sentence's own start
+                if k > 0 or glued:
+                    rest = paragraph[m.end():]
+                    if k > 0 and not follows.isupper():
+                        rest = rest[:1].upper() + rest[1:]
+                    paragraph = paragraph[:m.start()] + rest
+                    log.append({"repeated": prefix[:80]})
+
+        moved = []
+        for m in re.finditer(r"\s*\(da verificare:[^)]*\)", paragraph):
+            after = paragraph[m.end():]
+            if after.strip() and not re.match(r"^[»”\"]?\s*[.!?;]", after):
+                moved.append(m)
+        for m in reversed(moved):
+            after = paragraph[m.end():]
+            stop = re.search(r"[.!?](?=\s|$)", after)
+            if not stop:
+                continue
+            mark = m.group(0)
+            paragraph = paragraph[:m.start()] + after[:stop.start()] + mark + after[stop.start():]
+            log.append({"moved": mark.strip()[:80]})
+        out.append(paragraph)
+    return "".join(out)
+
+
+def _scaffold_bullets_out(text: str, glosses: bool, log: List[Dict[str, Any]]) -> str:
+    """v59 (v57-p1 §3, v55 «- [3] art. 1492 c.c.»): a bullet only an article's label; in «Altri profili» and the
+    objections, a one-line gloss with no verb."""
+    out = []
+    for line in (text or "").split("\n"):
+        m = re.match(r"^\s*[-•*]\s+(.*)$", line)
+        plain = re.sub(r"«[^»]*»|\([^)]*\)", " ", m.group(1)) if m else ""
+        if m and (_LABEL_BULLET_RE.match(line) or glosses and not _FINITE_VERB_RE.search(plain)
+                  and not re.search(r"\bnon\s+(?:si\s+|lo\s+|la\s+|ne\s+|vi\s+|ci\s+)?[a-zà-ù]{2,}|\w+isc(?:e|ono)\b", plain)):
+            log.append({"bullet": line.strip()[:120]})
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+_DANGLING_RE = re.compile(r"(?P<lead>\s*\(?\s*(?:cfr\.|vedi|v\.)\s+(?:la\s+)?sezione\s*)(?P<q>[*«\"“]?)"
+                          r"(?P<name>[^*»\"”)\n]{3,80}?)(?P<q2>[*»\"”]?)(?=\s*[),.;]|$)|"
+                          r"(?P<lead2>\bsezione\s+)(?P<q3>[«*\"“])(?P<name2>[^»*\"”\n]{3,80})[»*\"”]", re.IGNORECASE)
+
+
+def _references_fixed(text: str, titles: Sequence[str], log: List[Dict[str, Any]]) -> str:
+    """v59 (v58-h10 §1 «(cfr. sezione *Profili processuali e termini*)»): a section named that the answer does not have
+    is the present title sharing most of its words («Profili processuali»), the reference dropped when none does."""
+    from . import topic_step
+    present = {t.lower() for t in titles}
+
+    def fix(m):
+        name = (m.group("name") or m.group("name2") or "").strip(" .,;:")
+        if not name or name.lower() in present or re.match(r"^(?:successiv|precedent|seguent|\d)", name.lower()):
+            return m.group(0)
+        words = set(topic_step.tokens(name))
+        best = max(titles, key=lambda t: len(words & set(topic_step.tokens(t))), default="")
+        log.append({"section": name, "now": best if words & set(topic_step.tokens(best)) else ""})
+        if not words & set(topic_step.tokens(best)):
+            return ""
+        lead = m.group("lead") if m.group("lead") is not None else m.group("lead2")
+        return f"{lead}«{best}»"
+    text = _DANGLING_RE.sub(fix, text or "")
+    return re.sub(r"\(\s*\)", "", text).replace(" .", ".").replace(" ,", ",")
+
+
+def answer_final(draft: str, log: Optional[List[Dict[str, Any]]] = None) -> str:
+    """v59: the last pass on the answer before its closing offer -- §2's bare headings into the closing line
+    (norms_final); in every written section the cut lines (_orphans_out), a marker or a condition said once
+    (_markers_once), a section named that is not there (_references_fixed), a label-only bullet or, in «Altri profili» and
+    the objections, a verbless one (_scaffold_bullets_out). The procedural section is the code's and stays as rendered.
+    A section left with no sentence goes."""
+    log = log if log is not None else []
+    titles = list(ANSWER_TITLES) + [OTHER_PROFILES_TITLE]
+    marks = [m for m in re.finditer(r"(?m)^\*\*(\d+)\.\s+([^*\n]+)\*\*\s*$", draft or "")
+             if m.group(2).strip() in titles]
+    if not marks:
+        return draft
+    head = draft[:marks[0].start()]
+    sections = []
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(draft)
+        sections.append((m.group(2).strip(), draft[m.end():end].strip("\n")))
+    present = [t for t, _ in sections]
+    out = []
+    for title, text in sections:
+        if title != ANSWER_TITLES[3]:
+            text = _orphans_out(text, log)
+            text = _markers_once(text, log)
+            text = _references_fixed(text, present, log)
+            text = _scaffold_bullets_out(text, title in (OTHER_PROFILES_TITLE, ANSWER_TITLES[2]), log)
+        if title == ANSWER_TITLES[1]:
+            text = norms_final(text, log)
+        if title == OTHER_PROFILES_TITLE and not re.search(r"(?m)^\s*[-•*]\s+\S", text):
+            log.append({"section_out": title})
+            continue                # the intro alone, every item gone: no section
+        if re.search(r"[A-Za-zÀ-ü]{3}", text):
+            out.append((title, text.strip("\n")))
+    return head + _join(out)
+
+
 def with_copy_mediation(rendered: str, analysis: Dict[str, Any]) -> str:
     """The rendered procedural section with its mediation paragraph in the copy's words (MEDIATION), when mediation is a
     condition of the action."""
-    if not (_signals(analysis).get("mediation") or {}).get("required") or not C.MEDIATION:
+    from . import render_computed
+    if not render_computed.mediation_of(analysis).get("required") or not C.MEDIATION:
         return rendered
     return re.sub(r"(\*\*Mediazione\*\*\n\n)[^\n]+", lambda m: m.group(1) + C.MEDIATION, rendered, count=1)
 

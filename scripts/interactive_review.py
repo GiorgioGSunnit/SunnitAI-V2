@@ -382,7 +382,41 @@ def rules_report(recs: dict, targets: dict, dl) -> list:
     return L
 
 
+def lint_main(argv: list) -> None:
+    """--lint <files>: the output lint (answer_lint) of transcripts, one finding per line (file, case, section, rule,
+    excerpt), then the per-rule and per-file tables. --render-from <files>: the same transcripts re-rendered first
+    (render_replay: the stored writer output through the current renderer and post-checks), then linted."""
+    import answer_lint
+    parser = argparse.ArgumentParser(prog="interactive_review.py --lint")
+    parser.add_argument("--lint", nargs="*", default=None)
+    parser.add_argument("--render-from", nargs="*", default=None)
+    parser.add_argument("--out", help="write the re-rendered transcripts into this folder (--render-from)")
+    parser.add_argument("--quiet", action="store_true", help="the tables only")
+    args = parser.parse_args(argv)
+    files = []
+    for f in (args.render_from if args.render_from is not None else args.lint) or []:
+        files += sorted(os.path.join(f, x) for x in os.listdir(f) if x.endswith(".md")) if os.path.isdir(f) else [f]
+    findings = []
+    for path in files:
+        if args.render_from is not None:
+            import render_replay
+            cases = render_replay.replay_file(path)
+            if args.out:
+                os.makedirs(args.out, exist_ok=True)
+                render_replay.write_file(path, cases, os.path.join(args.out, os.path.basename(path)))
+            findings += answer_lint.lint_file(path, cases)
+        else:
+            findings += answer_lint.lint_file(path)
+    if not args.quiet:
+        for f in findings:
+            print("\t".join(f))
+        print()
+    print(answer_lint.tables(findings, files))
+
+
 def main() -> None:
+    if any(a in ("--lint", "--render-from") for a in sys.argv[1:]):
+        return lint_main(sys.argv[1:])
     import phase1_offline as p1
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("report")

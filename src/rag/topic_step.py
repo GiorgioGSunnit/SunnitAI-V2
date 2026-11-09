@@ -758,21 +758,96 @@ def _merge(into: Dict[str, Any], topic: Dict[str, Any]) -> None:
     into["questions"] = list(dict.fromkeys(list(into.get("questions") or []) + list(topic.get("questions") or [])))
     # v55: a regime's or a table's own articles go with it (n5: the l. 241 regime into the one-article TAR term topic);
     # v56: right after the anchor, before the neighbours (v55-p1: 575 and 589 c.p. past the eight articles read)
+    # v59 (v58-p1: 52 and 55 c.p., already the Capo's neighbours of 43, stayed unmatched -- bare, «non trattate» --
+    # while the three questions were the table's): every own article of the table is the topic's own (matched), the
+    # ones already among its articles moved up after the anchor, inside the planned ones
     refs = list(into["refs"])
-    new = [r for r in topic.get("own") or [] if r not in refs]
-    into["refs"] = refs[:1] + new + refs[1:]
-    into["planned"] = into.get("planned", len(refs)) + len(new)
-    into["own"] = list(dict.fromkeys(list(into.get("own") or []) + new))
+    planned = into.get("planned", len(refs))
+    own = [r for r in topic.get("own") or [] if r != refs[0]]
+    new = [r for r in own if r not in refs]
+    rest = [r for r in refs[1:] if r not in own]
+    into["refs"] = refs[:1] + own + rest
+    into["planned"] = max(planned + len(new), 1 + len(own))
+    into["own"] = list(dict.fromkeys(list(into.get("own") or []) + list(topic.get("own") or [])))
+
+
+def _refs_of_label(label: Any) -> List[Tuple[str, str]]:
+    """«art. 2947 c.c.», «artt. 29 e 41 c.p.a.», «2947 c.c.» -> [(number, code)]."""
+    m = re.match(r"\s*(?:artt?\.\s*)?((?:\d+(?:-[a-z]+)?(?:\s*,\s*|\s+e\s+))*\d+(?:-[a-z]+)?)\s+(.+?)\s*$",
+                 re.sub(r"\(.*?\)", "", str(label or "")))
+    return [(n, _code(m.group(2))) for n in re.split(r"\s*,\s*|\s+e\s+", m.group(1)) if n] if m else []
+
+
+def _topic_keys(topic: Dict[str, Any]) -> Set[Tuple[str, str]]:
+    labels = list(topic.get("articles") or []) + [f"{r[0]} {r[1]}" for r in topic.get("refs") or [] if len(r) == 2]
+    return {k for lab in labels for k in _refs_of_label(lab)}
+
+
+def _term_words(term: Dict[str, Any]) -> Set[str]:
+    return _content_stems(re.sub(r"\(.*?\)", "", str(term.get("label") or term.get("id") or "").replace("_", " "))) \
+        - GENERIC_STEMS - {"termin", "prescr", "azione", "decorr"}
+
+
+def _term_only(topic: Dict[str, Any], term: Dict[str, Any]) -> bool:
+    """A topic made of the term's articles alone (a term's own topic: «Prescrizione del risarcimento…» on 2947 c.c.)."""
+    keys, mine = set(_refs_of_label(term.get("ref"))), _topic_keys(topic)
+    return bool(mine) and mine <= keys and (str(topic.get("source") or "").startswith("termine")
+                                            or bool(_term_words(term) & _content_stems(topic.get("title"))))
+
+
+# v59: the matters of the c.c. a term belongs to (its regime), by article: a term is carried by a topic of its matter
+CIVIL_MATTERS = (("diritti reali", ((810, 1116), (1140, 1172))), ("condominio", ((1117, 1139),)),
+                 ("contratti", ((1173, 2042),)), ("fatto illecito", ((2043, 2059),)))
+# a term whose article is not its matter's (the prescriptions sit in Libro VI): the matter it runs for
+TERM_MATTERS = {"prescrizione_extracontrattuale": "fatto illecito", "prescrizione_circolazione": "fatto illecito",
+                "prescrizione_ordinaria": "contratti", "denuncia_conformita_consumo": "contratti",
+                "responsabilita_conformita_consumo": "contratti", "azione_conformita_consumo": "contratti"}
+
+
+def _matter(key: Tuple[str, str]) -> str:
+    """The c.c. matter of an article (CIVIL_MATTERS), else its code."""
+    m = re.match(r"\d+", key[0])
+    if key[1] == "c.c." and m:
+        return next((name for name, spans in CIVIL_MATTERS for lo, hi in spans if lo <= int(m.group(0)) <= hi), "c.c.")
+    return key[1]
+
+
+def carries_term(term: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> bool:
+    """v59 (v58-l3: the usucapione's, negatoria's and rivendicazione's lines in round 1 and §4 beside condominium and
+    damages topics; v58-h10: 2947 c.c. in an administrative case): a computed term is shown only when a listed topic
+    carries it -- holds one of its articles, or is of its matter (CIVIL_MATTERS, TERM_MATTERS; another code: the same
+    code) --, never by its own term-only topic alone while other topics are listed (alone, it is the answer's)."""
+    keys = set(_refs_of_label(term.get("ref")))
+    matters = {TERM_MATTERS.get(str(term.get("id") or ""))} - {None} or {_matter(k) for k in keys}
+    others = [t for t in topics if not _term_only(t, term)]
+    if not others:
+        return len(others) < len(topics)
+    if any(keys & _topic_keys(t) for t in others):
+        return True
+    return any(matters & {_matter(k) for k in _topic_keys(t)} for t in others)
+
+
+def term_topics_out(topics: List[Dict[str, Any]], terms: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v59 (v58-h10 topic 1, «Prescrizione del risarcimento del danno extracontrattuale» on 2947 c.c. beside the TAR's
+    and the ottemperanza's): a term's own topic the term is not carried by (carries_term) is no topic."""
+    out = []
+    for topic in topics:
+        mine = [t for t in terms if _term_only(topic, t)]
+        if mine and not any(carries_term(t, topics) for t in mine):
+            continue
+        out.append(topic)
+    return out
 
 
 def named_by_table(topic: Dict[str, Any]) -> None:
     """v57 (H: v56-p1 topic 1 "Elemento psicologico del reato" on 52/55/575/589): a topic a table merged into takes the
-    table's name when the table's own articles are more than half of its planned ones (the old title among its merged);
+    table's name when the table's own articles are at least half of its planned ones (the old title among its merged);
     the table's questions are already its own (_merge)."""
     planned = [tuple(r) for r in topic["refs"][:topic.get("planned", len(topic["refs"]))]]
     for table in topic.get("tables") or []:
         own = {tuple(r) for r in table["own"]}
-        if planned and len(own & set(planned)) * 2 > len(planned) and table["title"] != topic["title"]:
+        # v59 (v58-p1: 4 of 8, still «Elemento psicologico del reato»): at half or more
+        if planned and len(own & set(planned)) * 2 >= len(planned) and table["title"] != topic["title"]:
             topic["merged"] = [table["title"] if m == table["title"] else m for m in topic["merged"]
                                if m != table["title"]] + [topic["title"]]
             topic["title"] = table["title"]
@@ -894,6 +969,7 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
         position = {t["title"]: i for i, t in enumerate(kept)}
         out = sorted(out + offered, key=lambda t: position.get(t["title"], len(kept)))
         rest = [t for t in rest if t.get("why") != UNSUPPORTED_WHY]
+    out = term_topics_out(out, signals.get("terms") or [])          # v59
     if others is not None:
         case_words = _content_stems(case_text) - GENERIC_STEMS
         for topic in rest:                      # the "altri profili" are labelled by their anchor's Capo
