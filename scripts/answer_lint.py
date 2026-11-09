@@ -534,9 +534,18 @@ def lint_case(case: dict) -> List[Tuple[str, str, str]]:
     return [(s, r, _excerpt(x)) for s, r, x in found]
 
 
+def file_label(path: str) -> str:
+    """The name a finding carries: the run directory for a run's interactive.md (every run writes the same file
+    name), else the file name."""
+    base = os.path.basename(path)
+    if base == "interactive.md":
+        return os.path.basename(os.path.dirname(os.path.abspath(path))) or base
+    return base
+
+
 def lint_file(path: str, cases: Optional["OrderedDict[str, dict]"] = None) -> List[Tuple[str, str, str, str, str]]:
     """[(file, case, section, rule, excerpt)]."""
-    name = os.path.basename(path)
+    name = file_label(path)
     out = []
     for cid, case in (cases if cases is not None else read_cases(path)).items():
         out += [(name, cid, s, r, x) for s, r, x in lint_case(case)]
@@ -545,7 +554,7 @@ def lint_file(path: str, cases: Optional["OrderedDict[str, dict]"] = None) -> Li
 
 def tables(findings: List[tuple], files: List[str]) -> str:
     """The per-rule totals and the per-file × rule counts, markdown."""
-    names = [os.path.basename(f) for f in files]
+    names = [file_label(f) for f in files]
     per_rule = Counter(f[3] for f in findings)
     lines = ["| rule | findings |", "|---|---|"] + [f"| {r} | {per_rule.get(r, 0)} |" for r in RULES]
     lines.append(f"| **all** | **{len(findings)}** |")

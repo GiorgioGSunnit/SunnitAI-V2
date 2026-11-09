@@ -1,0 +1,24 @@
+interactive.md	n1	answer	missing_section	criminal answer with no «Procedibilità e competenza»
+interactive.md	n2	round 1	unearned_topic_point	topic 4 «Custodia cautelare in carcere»: 5/7 articles of «misure cautelari personali», not its name
+interactive.md	p1	round 1	unearned_topic_point	topic 1 «Eccesso colposo di legittima difesa»: 4/7 articles of «legittima difesa ed eccesso colposo», not its…
+interactive.md	p3	round 1	unearned_topic_point	topic 3 «Lesione personale»: art. 585 c.p. of «lesione personale» not treated
+
+| rule | findings |
+|---|---|
+| bare_heading | 0 |
+| penalty_requisite | 0 |
+| orphan_paragraph | 0 |
+| dangling_reference | 0 |
+| no_client | 0 |
+| repeated_marker | 0 |
+| missing_section | 1 |
+| gated_term | 0 |
+| unearned_topic_point | 3 |
+| duplicate_default | 0 |
+| scaffold_bullet | 0 |
+| misattributed_comma | 0 |
+| **all** | **4** |
+
+| file | bare_heading | penalty_requisite | orphan_paragraph | dangling_reference | no_client | repeated_marker | missing_section | gated_term | unearned_topic_point | duplicate_default | scaffold_bullet | misattributed_comma | all |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| interactive.md |  |  |  |  |  |  | 1 |  | 3 |  |  |  | 4 |

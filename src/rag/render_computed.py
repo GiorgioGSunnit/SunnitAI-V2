@@ -224,11 +224,15 @@ def criminal_procedure(analysis: Dict[str, Any]) -> str:
     and competenza; while the date of the fact is unknown, what runs from it -- the prescription (art. 157 c.p.) and,
     for an offence a querela starts, its three months (art. 124 c.p.). "" otherwise. v59 (v58-p2: truffa chosen, no
     §4, the frame's first area not penale): the chosen topics' delitti (analysis["offences"]) make it a criminal answer
-    whatever the frame's areas."""
+    whatever the frame's areas. v60 (v59-n1: usura framed civile, the one topic 43, 45 c.p., no delitto among them): chosen
+    topics all in c.p./c.p.p. (analysis["topic_refs"]) make it a criminal answer too."""
     from . import fact_signals, pool_gates, topic_tables
+    from .plan_then_write import _code_key
     areas = pool_gates.gate_areas(analysis)
     offences = [tuple(o) for o in (analysis or {}).get("offences") or []]
-    criminal = bool(areas) and fact_signals.family(areas[0]) == "penale"
+    refs = [tuple(r) for r in (analysis or {}).get("topic_refs") or [] if len(r) == 2]
+    criminal = (bool(areas) and fact_signals.family(areas[0]) == "penale"
+                or bool(refs) and all(_code_key(str(c)) in ("c.p.", "c.p.p.") for _, c in refs))
     if not criminal and not offences:
         return ""
     found = topic_tables.offences(analysis, areas) if criminal else []

@@ -193,7 +193,7 @@ def enabled() -> bool:
 def matches(analysis: Optional[Dict[str, Any]], areas: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     """[{id, name, refs, questions, matched: [(trigger, the name it is in)]}] of the TABLES the case's issue and
     institution names call for, within the families of its areas (none known: every family); the anchor and the title
-    from the first "anchors" pattern a matching name holds."""
+    from the first "anchors" pattern a matching name holds ("table_name": the table's own name, topic_step.named_by_table)."""
     from . import fact_signals
     families = {fact_signals.family(a) for a in areas or []} - {""}
     names = fact_signals.case_issue_names(analysis)
@@ -215,5 +215,5 @@ def matches(analysis: Optional[Dict[str, Any]], areas: Optional[List[str]] = Non
                 title = named
                 break
         out.append({"id": table["id"], "name": title, "refs": refs, "questions": list(table.get("questions") or []),
-                    "matched": list(dict.fromkeys(matched))})
+                    "matched": list(dict.fromkeys(matched)), "table_name": table["name"]})
     return out

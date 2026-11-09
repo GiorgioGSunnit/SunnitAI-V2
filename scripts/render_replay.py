@@ -101,8 +101,8 @@ def _topic(t: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _driving_tables(topic: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """The tables (topic_tables.TABLES) the round shows merged into the topic: the topic bears the table's name, or asks
-    a question only that table asks (answer_lint's evidence)."""
+    """The tables (topic_tables.TABLES) the round shows merged into the topic: the topic bears the table's name (or the
+    sub-name an "anchors" pattern gives), or asks a question only that table asks (answer_lint's evidence)."""
     from collections import Counter
     from src.rag import interaction_copy as C, topic_tables
     families = Counter(q for table in topic_tables.TABLES for q in table.get("questions") or [])
@@ -113,7 +113,8 @@ def _driving_tables(topic: Dict[str, Any]) -> List[Dict[str, Any]]:
         if not set(own) & mine:
             continue
         shorts = [C.QUESTION_SHORT.get(q) for q in table.get("questions") or [] if families[q] == 1]
-        if topic["title"].lower() == table["name"].lower() or any(s and s in topic["rest"] for s in shorts):
+        names = [table["name"].lower()] + [named.lower() for _, _, named in table.get("anchors") or []]
+        if topic["title"].lower() in names or any(s and s in topic["rest"] for s in shorts):
             out.append(table)
     return out
 
@@ -271,14 +272,16 @@ def _rebuilt_blocks(norms: str, topics: List[Dict[str, Any]], log: List[str]) ->
             log.append(f"art. {number} {code}: matched, no local text to rebuild its block")
             continue
         rules = rule_quote.article_rules({}, [row], {}, [row["_article"]])
-        block = F.norm_blocks(rules, {}, [row], [row["_article"]])
+        block = F.norm_blocks(rules, {}, [row], [row["_article"]], matched={F._key(tuple(row["_article"]))})
         if not block or "\n" not in block[0]:
             log.append(f"art. {number} {code}: matched, its block is its heading alone")
             continue
         if bare:
             norms = norms[:bare.start()] + block[0] + "\n\n" + norms[bare.end():]
         else:
-            norms = norms.rstrip() + "\n\n" + block[0]
+            closing = re.search(r"(?m)^Altre norme del tema non trattate:", norms)
+            norms = (norms[:closing.start()] + block[0] + "\n\n" + norms[closing.start():] if closing
+                     else norms.rstrip() + "\n\n" + block[0])
             norms = re.sub(rf"(Altre norme del tema non trattate:[^\n]*?)(?:,\s*)?\bart\. {re.escape(number)} [^,\n]*?(?=,|\.?$)",
                            r"\1", norms, flags=re.M)
             norms = re.sub(r"(?m)^Altre norme del tema non trattate:\s*\.?\s*$\n?", "", norms)
@@ -374,7 +377,9 @@ def _procedural(text: str, chosen: List[Dict[str, Any]], listed: List[Dict[str, 
                 rubrica = next((r for r in [_rubrica_of(text, ref[0])] if r), "")
                 offences.append((ref[0], rubrica or topic_tables.CRIMINAL_PROCEDURE.get((ref[0], "c.p."), ("",))[0]
                                  or t["title"]))
-    if PROCEDURE in blocks or offences:
+    # v60 (v59-n1: 43, 45 c.p. chosen, no delitto, the frame not penale): chosen topics all in c.p./c.p.p. are criminal
+    criminal = bool(refs) and all(answer_lint._code(c) in ("c.p.", "c.p.p.") for _, c in refs)
+    if PROCEDURE in blocks or offences or criminal:
         found, shown, dated = [], [], True
         for line in (blocks.get(PROCEDURE) or "").split("\n"):
             m = re.match(r"^-\s+(.*?)\s+\(art\.\s*(\S+)\s+c\.p\.\):\s*procedibil", line)
