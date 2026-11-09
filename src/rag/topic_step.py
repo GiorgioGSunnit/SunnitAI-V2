@@ -208,6 +208,15 @@ class CsvLinks:
         near = dict.fromkeys(self.out.get(label, []) + self.into.get(label, []))
         return [(tuple(lab.split(" ", 1)), self.inbound[lab]) for lab in near if " " in lab]
 
+    def refers_out(self, ref: Sequence[str]) -> List[Tuple[tuple, int]]:
+        """v57: the articles this one cites (outbound REFERS_TO only), each with how many articles cite it."""
+        label = _label((ref[0], _code(ref[1])))
+        return [(tuple(lab.split(" ", 1)), self.inbound[lab]) for lab in dict.fromkeys(self.out.get(label, []))
+                if " " in lab]
+
+    def rubrica_of(self, ref: Sequence[str]) -> str:
+        return self.rubriche.get((str(ref[0]), _code(ref[1])), "")
+
 
 class GraphLinks:
     """The corpus, read-only: rubriche (Section.titolo_articolo), Unit HAS_ARTICLE, REFERS_TO."""
@@ -286,6 +295,37 @@ class GraphLinks:
         rows = self.session.run(self._REFERS, doc=doc, num=str(ref[0])).data()
         return [(self._ref(r["doc"], r["section"]), int(r["inbound"] or 0)) for r in rows]
 
+    _REFERS_OUT = _ANCHOR + ("MATCH (s)-[:REFERS_TO]->(t:Section)<-[:CONTAINS]-(td:Document) "
+                             "OPTIONAL MATCH (src:Section)-[:REFERS_TO]->(t) "
+                             "RETURN td.name AS doc, t.name AS section, count(DISTINCT src) AS inbound")
+    _RUBRICHE = ("UNWIND $refs AS a MATCH (d:Document {id: a.doc})-[:CONTAINS]->(s:Section) WHERE s.name = a.num OR "
+                 "s.name STARTS WITH a.num + '.' OR s.name STARTS WITH a.num + '_' "
+                 "RETURN a.doc AS doc, a.num AS num, s.titolo_articolo AS rubrica")
+
+    def refers_out(self, ref: Sequence[str]) -> List[Tuple[tuple, int]]:
+        """v57: the articles this one cites (outbound REFERS_TO only), each with how many articles cite it."""
+        doc = self._doc_of(ref[1])
+        if not doc:
+            return []
+        rows = self.session.run(self._REFERS_OUT, doc=doc, num=str(ref[0])).data()
+        return [(self._ref(r["doc"], r["section"]), int(r["inbound"] or 0)) for r in rows]
+
+    def rubrica_of(self, ref: Sequence[str]) -> str:
+        return self.rubriche_of([ref]).get((str(ref[0]), _code(ref[1])), "")
+
+    def rubriche_of(self, refs: Sequence[Sequence[str]]) -> Dict[tuple, str]:
+        """{(number, code): rubrica} of refs, read once each."""
+        cache = self.__dict__.setdefault("_rubriche", {})
+        wanted = [(str(r[0]), _code(r[1])) for r in refs if (str(r[0]), _code(r[1])) not in cache]
+        args = [{"doc": self._doc_of(c), "num": n} for n, c in wanted if self._doc_of(c)]
+        if args:
+            by_doc = {d["id"]: _code(d.get("name")) for d in self.documents if d.get("id")}
+            for row in self.session.run(self._RUBRICHE, refs=args).data():
+                cache.setdefault((str(row["num"]), by_doc.get(row["doc"], "")), str(row["rubrica"] or ""))
+        for key in wanted:
+            cache.setdefault(key, "")
+        return {(str(r[0]), _code(r[1])): cache.get((str(r[0]), _code(r[1])), "") for r in refs}
+
 
 # --- the institutions -----------------------------------------------------------------------------------------------
 
@@ -326,14 +366,42 @@ def rules_to_verify(signals: Dict[str, Any], areas: Optional[List[str]] = None) 
     return out
 
 
+_DURATION_RE = r"\b(?:da|per)\s+(?:più di |oltre |almeno |circa )?(?:\d+|due|tre|dieci|venti|trenta)\s+anni|\bfin dal\b|\bsin dal\b"
+
+
+def possession_over_time(facts: Dict[str, Any]) -> bool:
+    """v58 (v57-l3: an owner's flat made an usucapione topic): a possession or use over time of what is not the
+    possessor's own -- a possession whose holder is no owner of the case (property_history, a party «proprietario»), of
+    a way or of a thing named as another party's, or one with a start or a stated duration."""
+    from . import fact_signals
+    possession = [p for p in (facts or {}).get("possession") or [] if isinstance(p, dict) and p.get("who")]
+    owners = {fact_signals._low(h.get("owner")) for h in (facts or {}).get("property_history") or [] if h.get("owner")}
+    owners |= {fact_signals._low(p.get("name")) for p in (facts or {}).get("parties") or []
+               if re.search(r"proprietari", fact_signals._low(p.get("role")))}
+    names = [fact_signals._low(x.get("name")) for x in (facts or {}).get("parties") or [] if x.get("name")]
+    for p in possession:
+        who, asset = fact_signals._low(p.get("who")), fact_signals._low(f"{p.get('asset')} {p.get('use')}")
+        if who not in owners and not any(o and o in who for o in owners):
+            return True
+        if re.search(fact_signals._WAY, asset) or any(n and n not in who and re.search(rf"\b{re.escape(n)}\b", asset)
+                                                      for n in names):
+            return True             # a way, or another party's thing: h3's road over the neighbours' plots
+        if str(p.get("since") or "").strip() or re.search(_DURATION_RE, fact_signals._low(f"{p.get('how')} {p.get('use')}")):
+            return True
+    return False
+
+
 def term_institutions(signals: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The computed terms still to verify (OPEN_TERM_STATUS), each an institution of source "termine": its name the
     term's label, its refs the term's articles."""
     from .plan_then_write import _code_key
     out = []
+    over_time = possession_over_time((signals or {}).get("facts") or {})
     for term in (signals or {}).get("terms") or []:
         if term.get("status") not in OPEN_TERM_STATUS:
             continue
+        if str(term.get("id") or "").startswith("usucapione") and (signals or {}).get("facts") and not over_time:
+            continue                # v58: no possession over time, no usucapione topic
         ref = str(term.get("ref") or "")
         # the longer abbreviations first: "c.p.a." is no "c.p." (v54-interactive n4: 120 c.p.a. read as 120 c.p.)
         code = re.search(r"(c\.\s?p\.\s?c\.|c\.\s?p\.\s?p\.|c\.\s?p\.\s?a\.|c\.\s?p\.|c\.\s?c\.|d\.\s?lgs\.?\s*[\d/]+)",
@@ -379,9 +447,17 @@ def _content_stems(text: Any) -> Set[str]:
     return {w[:6] for w in content_words(text) if len(w) >= 4}
 
 
+# v56 (h3's altri profili: "Abuso del diritto di proprietà" on 2814 c.c., «nuda proprietà»; a "prescrizione" on 1449
+# c.c., «Prescrizione.»): a word every part of the codes uses never makes a rubrica the name's
+GENERIC_STEMS = {w[:6] for key in GENERIC_RUBRICHE for w in key if len(w) >= 4} | {
+    "propri", "diritt", "obblig", "genera", "dispos", "partic", "specia", "discip", "beni", "respon", "danni",
+    "danno"}
+
+
 def shares_name(name: str, rubrica: str) -> bool:
-    """The rubrica holds a content word of the name (its first six letters: "coniugi" is "coniuge")."""
-    return bool(_content_stems(name) & _content_stems(rubrica))
+    """The rubrica holds a content word of the name (its first six letters: "coniugi" is "coniuge"), one no part of the
+    codes owns (GENERIC_STEMS)."""
+    return bool((_content_stems(name) & _content_stems(rubrica)) - GENERIC_STEMS)
 
 
 def area_fits(ref: Sequence[str], areas: Sequence[str]) -> bool:
@@ -431,6 +507,8 @@ def institutions(analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
             fact_signals._log_exception("topic_step.regimes", exc)
             regimes = []
         for regime in regimes:
+            if regime["id"] == "usucapione" and not possession_over_time(signals.get("facts") or {}):
+                continue            # v58: the usucapione regime too
             name = (fact_signals.real_action_name(signals, regime) if regime["id"] == fact_signals.REAL_ACTION_REGIME
                     else REGIME_NAMES.get(regime["id"], regime["id"].replace("_", " ")))
             add(name, "regime", regime=regime["id"], refs=[(str(n), _code(c)) for n, c in regime.get("refs") or []])
@@ -518,40 +596,95 @@ def anchor(inst: Dict[str, Any], links, codes: Optional[set], pool: Dict[tuple, 
         return tuple(refs[0]), "regime", ""
     two = _two_signal(pool)
     mine = [r for r in (resolved or []) if r in two and (not codes or r[1] in codes) and area_fits(r, areas)
-            and shares_name(inst["name"], _rubrica(two[r]))]
+            and shares_name(inst["name"], _rubrica(two[r])) and not generic_rubrica(_rubrica(two[r]), links)]
     if mine:            # the pool's two-signal articles found for this institution, the strongest
         ref = max(mine, key=lambda r: (_weight(two[r]), -mine.index(r)))
         return ref, "pool", _rubrica(two[ref])
     return None, "", ""
 
 
-def articles(ref: tuple, links, pool: Dict[tuple, Dict[str, Any]], codes: Optional[set] = None) -> List[tuple]:
-    """The anchor, then alternately its Sezione's articles nearest by number and its REFERS_TO neighbours least cited
-    (no hub; within the allowed codes, else the anchor's code), at most ARTICLES_MAX; then the two-signal pool articles
-    of its Capo."""
-    out = [ref]
-    if links is None:
-        return out
+# v57: the Capo's two-signal articles are planned (within the cap, after the Sezione's): on the replay, planned they hold
+# 93/125 expected norms and 7 of v55's 26 misused anchors; listed only, 80/125 and 1 -- the misuse was the gloss, which
+# the answer gives only to the articles that earned it (interactive_flow.earned_refs)
+CAPO_PLANNED = True
+SEZIONE_SHARE = 1 / 3          # v57: a word in more of a Sezione's rubriche than this says nothing within it
+NEAR_WINDOW = 0                # v57: no Sezione article by position alone (k = 1-3 kept no expected norm more)
+
+
+# v57: the books of the two codes the links do not divide (units.csv has no Libro I-II of the c.p.)
+CODE_BOOKS = {"c.p.": [(1, 240), (241, 649), (650, 734)],
+              "c.c.": [(1, 455), (456, 809), (810, 1172), (1173, 2059), (2060, 2642), (2643, 2969)]}
+
+
+def _book(ref: Sequence[str], links=None) -> str:
+    code = _code(ref[1])
+    number = _number(ref[0])
+    for i, (lo, hi) in enumerate(CODE_BOOKS.get(code, [])):
+        if lo <= number <= hi:
+            return f"{code} {i + 1}"
     try:
-        sezione = sorted((r for r in links.unit(ref, "SEZIONE") if r != ref),
+        return links.unit_name(ref, "LIBRO") if links is not None and hasattr(links, "unit_name") else ""
+    except Exception:
+        return ""
+
+
+def _rubriche(links, refs: Sequence[tuple]) -> Dict[tuple, str]:
+    if hasattr(links, "rubriche_of"):
+        return links.rubriche_of(refs)
+    return {(str(r[0]), _code(r[1])): (links.rubrica_of(r) if hasattr(links, "rubrica_of") else "") for r in refs}
+
+
+def articles(ref: tuple, links, pool: Dict[tuple, Dict[str, Any]], codes: Optional[set] = None, name: str = "",
+             matched: Optional[Sequence[tuple]] = None) -> List[tuple]:
+    """articles_split's planned then its tail."""
+    planned, tail = articles_split(ref, links, pool, codes, name, matched)
+    return planned + tail
+
+
+def articles_split(ref: tuple, links, pool: Dict[tuple, Dict[str, Any]], codes: Optional[set] = None, name: str = "",
+                   matched: Optional[Sequence[tuple]] = None) -> Tuple[List[tuple], List[tuple]]:
+    """v57 (v55-all's 37 misused: anchors glossed against the facts): a topic's anchors are its matched article(s) (ref,
+    or matched: a table's or a regime's own), then its Sezione's articles whose rubrica shares a word of the topic's name
+    no part of the codes owns (shares_name) and that is not in more than SEZIONE_SHARE of the Sezione's rubriche, nearest
+    by number; then the Capo's articles retrieval found by two signals (_two_signal); then the articles the matched one
+    cites (outbound REFERS_TO, its own code and book -- CODE_BOOKS --, no hub), least cited first; at
+    most ARTICLES_MAX. Never an article citing it, never another code's (a procedural citer -- 380/381 c.p.p. -- reaches
+    the procedural section only through a table), never another book's (640 c.p. cites 32-quater and 218, Libro I).
+    The Capo's two-signal articles: the replay's expected norms 1061, 641, 1163, 41 c.p. come only from them (without,
+    topic recall 83/125)."""
+    out = list(dict.fromkeys([tuple(r) for r in (matched or [])] + [tuple(ref)]))[:ARTICLES_MAX]
+    if links is None:
+        return out, []
+    try:
+        mates = [r for r in links.unit(ref, "SEZIONE") if r != ref]
+        rubriche = _rubriche(links, mates)
+        counts = Counter(st for r in mates for st in _content_stems(rubriche.get((str(r[0]), _code(r[1])), "")))
+        common = {st for st, n in counts.items() if len(mates) >= 3 and n > SEZIONE_SHARE * len(mates)}
+        wanted = _content_stems(name) - GENERIC_STEMS - common
+        ordered = sorted(mates + [ref], key=lambda r: (_number(r[0]), str(r[0])))
+        at = ordered.index(ref)
+        near = {r for r in ordered[max(0, at - NEAR_WINDOW):at + NEAR_WINDOW + 1] if r != ref}
+        sezione = sorted((r for r in mates if r in near or wanted & _content_stems(rubriche.get((str(r[0]), _code(r[1])), ""))),
                          key=lambda r: (abs(_number(r[0]) - _number(ref[0])), _number(r[0])))
-        within = codes or {_code(ref[1])}
-        near = sorted(((r, n) for r, n in links.refers(ref) if r != ref and n <= HUB_INBOUND and _code(r[1]) in within),
-                      key=lambda x: (x[1], x[0]))
+        cites = links.refers_out(ref) if hasattr(links, "refers_out") else []
+        own = _code(ref[1])
+        book = _book(ref, links)
+        cited = [r for r, n in sorted(cites, key=lambda x: (x[1], x[0])) if r != ref and n <= HUB_INBOUND
+                 and _code(r[1]) == own and (not book or _book(r, links) in ("", book))]
         capo = set(links.unit(ref, "CAPO"))
+        found = [r for r in sorted(_two_signal(pool), key=lambda r: _number(r[0])) if r in capo]
     except Exception as exc:
         from . import fact_signals
         fact_signals._log_exception("topic_step.articles", exc)
-        return out
-    neighbours = [r for _, r in sorted([(2 * i, r) for i, r in enumerate(sezione)] +
-                                       [(2 * i + 1, r) for i, (r, _) in enumerate(near)])]
-    for r in neighbours:
+        return out, []
+    for r in sezione + (found if CAPO_PLANNED else []) + cited:
         if len(out) >= ARTICLES_MAX:
             break
         if r not in out:
             out.append(r)
-    out += [r for r in sorted(_two_signal(pool), key=lambda r: _number(r[0])) if r in capo and r not in out]
-    return out
+    # past the cap, listed but never planned (interactive_flow reads a topic's first TOPIC_ARTICLES): the Capo's
+    # two-signal articles left out
+    return out, [r for r in found if r not in out]          # (planned, listed only)
 
 
 def _facts(inst: Dict[str, Any], refs: List[tuple], signals: Dict[str, Any]) -> List[str]:
@@ -614,12 +747,36 @@ def without_gated(title: str, gate: Dict[str, Any]) -> str:
 
 
 def _merge(into: Dict[str, Any], topic: Dict[str, Any]) -> None:
+    if str(topic.get("source") or "").startswith("tabella"):      # v57 (H): a table merged in, for its name
+        into.setdefault("tables", []).append({"title": topic["title"], "own": list(topic.get("own") or []),
+                                              "source": topic["source"]})
     into["merged"].append(topic["title"])
     into["merged"] += [m for m in topic.get("merged") or [] if m not in into["merged"]]
+    into["merged_sources"] = list(dict.fromkeys(list(into.get("merged_sources") or []) + [topic.get("source")]
+                                                + list(topic.get("merged_sources") or [])))
     into["facts"] = list(dict.fromkeys(into["facts"] + topic["facts"]))
     into["questions"] = list(dict.fromkeys(list(into.get("questions") or []) + list(topic.get("questions") or [])))
-    # v55: a regime's or a table's own articles go with it (n5: the l. 241 regime into the one-article TAR term topic)
-    into["refs"] = list(into["refs"]) + [r for r in topic.get("own") or [] if r not in into["refs"]]
+    # v55: a regime's or a table's own articles go with it (n5: the l. 241 regime into the one-article TAR term topic);
+    # v56: right after the anchor, before the neighbours (v55-p1: 575 and 589 c.p. past the eight articles read)
+    refs = list(into["refs"])
+    new = [r for r in topic.get("own") or [] if r not in refs]
+    into["refs"] = refs[:1] + new + refs[1:]
+    into["planned"] = into.get("planned", len(refs)) + len(new)
+    into["own"] = list(dict.fromkeys(list(into.get("own") or []) + new))
+
+
+def named_by_table(topic: Dict[str, Any]) -> None:
+    """v57 (H: v56-p1 topic 1 "Elemento psicologico del reato" on 52/55/575/589): a topic a table merged into takes the
+    table's name when the table's own articles are more than half of its planned ones (the old title among its merged);
+    the table's questions are already its own (_merge)."""
+    planned = [tuple(r) for r in topic["refs"][:topic.get("planned", len(topic["refs"]))]]
+    for table in topic.get("tables") or []:
+        own = {tuple(r) for r in table["own"]}
+        if planned and len(own & set(planned)) * 2 > len(planned) and table["title"] != topic["title"]:
+            topic["merged"] = [table["title"] if m == table["title"] else m for m in topic["merged"]
+                               if m != table["title"]] + [topic["title"]]
+            topic["title"] = table["title"]
+            return
 
 
 def same_name_merged(topics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -639,7 +796,9 @@ def same_name_merged(topics: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         ref = tuple(topic["anchor"].split(" ", 1))
         refs = [tuple(r) for r in twin["refs"]]
         if ref not in refs:
-            twin["refs"] = refs + [ref]
+            cut = twin.get("planned", len(refs))           # the absorbed anchor is planned, before the tail
+            twin["refs"] = refs[:cut] + [ref] + refs[cut:]
+            twin["planned"] = cut + 1
     return kept
 
 
@@ -689,14 +848,14 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
             continue
         if (str(ref[0]), _code(ref[1])) in decided:
             continue
-        refs = _sezione(ref, links) if how == "term" else articles(ref, links, pool, codes)
-        if how in ("table", "regime") and inst.get("refs"):     # v55: its own articles first, then the anchor's neighbours
-            refs = list(dict.fromkeys([tuple(r) for r in inst["refs"]] + refs))
+        own = [tuple(r) for r in inst.get("refs") or []] if how in ("table", "regime") else []
+        head, tail = articles_split(ref, links, pool, codes, inst["name"], own)     # v57: matched, Sezione, cited
+        refs, planned = head + tail, len(head)
         source = inst["source"] + (f" {inst.get('rule') or inst.get('regime') or inst.get('term') or inst.get('table')}"
                                    if inst.get("rule") or inst.get("regime") or inst.get("term") or inst.get("table")
                                    else "")
         built.append({"title": _title(inst["name"]), "anchor": _label(ref), "how": how, "rubrica": rubrica,
-                      "refs": refs, "source": source, "facts": _facts(inst, refs, signals), "merged": [],
+                      "refs": refs, "planned": planned, "source": source, "facts": _facts(inst, refs, signals), "merged": [],
                       "questions": list(inst.get("questions") or []),
                       "own": [tuple(r) for r in inst.get("refs") or []] if how in ("table", "regime") else [],
                       "rank": (_METHOD_ORDER.index(how), _SOURCE_ORDER.index(inst["source"]), i)})
@@ -709,12 +868,19 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
             continue
         kept.append(topic)
     kept = same_name_merged(kept)
+    for topic in kept:
+        named_by_table(topic)
     out, rest = [], []
     gate = analysis.get("action_gate") or {}
     for t in kept:
         topic = {"title": without_gated(t["title"], gate), "anchor": t["anchor"], "how": t["how"],
-                 "rubrica": t["rubrica"], "articles": [_label(r) for r in t["refs"]], "facts": t["facts"],
-                 "source": t["source"], "merged": t["merged"], **({"questions": t["questions"]} if t["questions"] else {})}
+                 "rubrica": t["rubrica"], "articles": [_label(r) for r in t["refs"]],
+                 "planned": t.get("planned", len(t["refs"])), "facts": t["facts"],
+                 **({"merged_sources": t["merged_sources"]} if t.get("merged_sources") else {}),
+                 "source": t["source"], "merged": t["merged"], **({"questions": t["questions"]} if t["questions"] else {}),
+                 # v57: the matched article(s) -- the anchor, a table's or a regime's own -- the only ones the answer
+                 # applies to the facts with the fired rules' and the user's (interactive_flow.earned_refs)
+                 "matched": list(dict.fromkeys([t["anchor"]] + [_label(r) for r in t.get("own") or []]))}
         if not topic["title"]:
             rest.append({**topic, "title": t["title"], "why": "azione della controparte"})
         elif not supported(topic):
@@ -729,7 +895,10 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
         out = sorted(out + offered, key=lambda t: position.get(t["title"], len(kept)))
         rest = [t for t in rest if t.get("why") != UNSUPPORTED_WHY]
     if others is not None:
-        for topic in rest[:TOPICS_MAX]:         # the "altri profili" are labelled by their anchor's Capo
+        case_words = _content_stems(case_text) - GENERIC_STEMS
+        for topic in rest:                      # the "altri profili" are labelled by their anchor's Capo
+            if len(others) >= TOPICS_MAX:
+                break
             try:
                 topic["capo"] = links.unit_name(tuple(topic["anchor"].split(" ", 1)), "CAPO") if links is not None \
                     and hasattr(links, "unit_name") else ""
@@ -737,8 +906,27 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
                 from . import fact_signals
                 fact_signals._log_exception("topic_step.capo", exc)
                 topic["capo"] = ""
+            if not relevant_other(topic, links, pool, case_words):
+                continue
             others.append(topic)
     return out[:TOPICS_MAX]
+
+
+def relevant_other(topic: Dict[str, Any], links, pool: Dict[tuple, Dict[str, Any]], case_words: Set[str]) -> bool:
+    """v58 (v57 round 1: «827 beni dello Stato», 2828-2833 as «danni all'immobile», «Capo V esercizio delle servitù»):
+    an "altro profilo" whose Capo shares no word of its title no part of the codes owns (the generic-word rule, at Capo
+    level) is none; nor one whose articles' rubriche share no such word with the case's text (when it is given)."""
+    if topic.get("capo") and not shares_name(topic["title"], re.sub(r"^\s*capo\s+[ivxlc\d-]+\s*[–-]\s*", "",
+                                                                     topic["capo"], flags=re.IGNORECASE)):
+        return False
+    if not case_words:
+        return True
+    refs = [tuple(a.split(" ", 1)) for a in topic.get("articles") or [] if " " in a]
+    rubriche = dict(_rubriche(links, refs)) if links is not None else {}
+    for ref in refs:
+        rubriche[(str(ref[0]), _code(ref[1]))] = rubriche.get((str(ref[0]), _code(ref[1]))) or \
+            _rubrica(pool.get((str(ref[0]), _code(ref[1]))) or {})
+    return any(_content_stems(r) - GENERIC_STEMS & case_words for r in rubriche.values() if r)
 
 
 def recall(topics: Sequence[Dict[str, Any]], expected: Sequence[Sequence[str]], key) -> Dict[str, Any]:

@@ -177,6 +177,10 @@ FIXTURES = {
     "difformita_appalto": F(contracts=[contract("appalto di ristrutturazione")], events=[ev("infiltrazioni nel bagno")]),
     "rovina_gravi_difetti": F(contracts=[contract("appalto")], events=[ev("lavori ultimati", "2015"),
                                                                        ev("compaiono crepe nei muri portanti", "2025")]),
+    "danno_cosa_in_custodia": F(events=[ev("macchie di umidità sul soffitto: l'acqua proviene dalla colonna di scarico "
+                                          "condominiale")]),
+    "amministratore_condominio": F(events=[ev("scrive tre volte all'amministratore del condominio"),
+                                           ev("infiltrazioni dalla colonna di scarico condominiale")]),
     "circolazione_veicoli": F(events=[ev("incidente stradale all'incrocio")]),
     "prescrizione_decorsa": F(events=[ev("incidente stradale", "2015")]),
     "tentativo": F(events=[ev("Tizio si è procurato un piede di porco e ha fatto un sopralluogo")]),
@@ -756,3 +760,10 @@ def test_review_fixes_an_occupation_tied_to_the_purchase_is_not_a_consumer(monke
     assert fs.qualify_parties(renter)[1] == []
     stated = F(**{**CAMPER, "parties": [person("Dario", purpose="attività di noleggio"), CAMPER["parties"][1]]})
     assert fs.qualify_parties(stated)[1] == []                                   # a purpose given is read as given
+
+
+def test_the_custody_rule_needs_a_common_thing_and_the_administrator_rule_its_condominium():
+    # v57 (v55 l3)
+    assert "danno_cosa_in_custodia" not in _fired(F(events=[ev("macchie di umidità sul soffitto del bagno")]))
+    assert "amministratore_condominio" not in _fired(F(events=[ev("infiltrazioni dal tetto della villa")]))
+    assert fs._clean_roles("acquirente", "Inquilino", "") == "conduttore"         # never acquirente

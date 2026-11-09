@@ -30,6 +30,16 @@ def case_text(record: dict) -> str:
     return text or " ".join(map(str, (record.get("frame") or {}).get("facts") or []))
 
 
+def refired(record: dict) -> dict:
+    """The record's fact signals with the fact rules fired again on its facts by the current rule table (--refire)."""
+    from src.rag import fact_signals
+    signals = dict(record.get("fact_signals") or {})
+    if signals.get("facts"):
+        areas = (record.get("frame") or {}).get("areas") or signals.get("areas") or []
+        signals["fired"] = fact_signals.fire_rules(signals["facts"], signals.get("terms") or [], areas=areas)
+    return signals
+
+
 def topics_of(record: dict, links) -> tuple:
     """(topics, others) as round 1 builds them from the record: phase1_offline.replay_c's pool and resolutions, the run's
     action gate (its events) for the titles. v55: the fired rules marked unstated first (interactive_flow.mark_unstated,
@@ -46,7 +56,7 @@ def topics_of(record: dict, links) -> tuple:
     gate = {d["article"]: d["reason"] for e, d, _ in record.get("events") or []
             if e == "case_analysis_action_gate" and isinstance(d, dict) and not d.get("fits")}
     analysis = {"frame": record.get("frame") or {}, "questioni": record.get("questioni") or [],
-                "fact_signals": record.get("fact_signals") or {}, "area": record.get("area"), "action_gate": gate,
+                "fact_signals": refired(record) if os.environ.get("PHASE2_REFIRE") else record.get("fact_signals") or {}, "area": record.get("area"), "action_gate": gate,
                 "institution_refs": {}}
     for inst in record.get("institutions") or []:
         if isinstance(inst, dict) and inst.get("nome"):
@@ -67,7 +77,10 @@ def main() -> None:
     parser.add_argument("--show", default="h3,p1", help="cases whose round-1 text is printed")
     parser.add_argument("--links", help="article_links' output folder (default: <run>/../article_links_out)")
     parser.add_argument("--out")
+    parser.add_argument("--refire", action="store_true", help="fire the fact rules again on each record's facts")
     args = parser.parse_args()
+    if args.refire:
+        os.environ["PHASE2_REFIRE"] = "true"
     run = os.path.abspath(args.run)
     cases_dir = os.path.join(run, "cases")
     links_dir = args.links or os.path.join(os.path.dirname(run), "article_links_out")
@@ -91,7 +104,7 @@ def main() -> None:
         try:
             topics, others, gate = topics_of(record, links)
             analysis = flow._restored_analysis(json.loads(json.dumps(
-                {"frame": record.get("frame") or {}, "fact_signals": record.get("fact_signals") or {},
+                {"frame": record.get("frame") or {}, "fact_signals": refired(record) if args.refire else record.get("fact_signals") or {},
                  "parte_assistita": "", "questioni": record.get("questioni") or [], "action_gate": gate,
                  flow.CASE_KEY: case_text(record)}, default=str)))
             questions = flow.questions(analysis, (), topics, [])

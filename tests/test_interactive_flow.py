@@ -372,13 +372,17 @@ def test_objections_are_the_copys_titles_for_the_open_questions_then_the_real_ac
     assert one == ["La controparte potrà obiettare che le opere non erano visibili al momento della separazione.",
                    "La controparte potrà obiettare che il passaggio avveniva per mera tolleranza.",
                    "La controparte potrà obiettare che il ritardo nell'agire dimostra l'abbandono del diritto."]
-    two = flow.objections({**state, "questions": []}, [state["topics"][1]], [("1051", "c.c."), ("1052", "c.c.")])
+    # v58: only the chosen topic's (its rule, regime or term): a frame topic raises none
+    assert flow.objections({**state, "questions": []}, [state["topics"][1]], [("1051", "c.c.")]) == []
+    rule_topic = {**state["topics"][1], "source": "regola fondo_intercluso"}
+    two = flow.objections({**state, "questions": []}, [rule_topic], [("1051", "c.c."), ("1052", "c.c.")])
     assert two[-1] == ("La controparte potrà obiettare che il passaggio inciderebbe su cortili o giardini esenti "
                        "(art. 1051 c.c.).") and len(two) == 3
     three = flow.objections(state, [state["topics"][2]], [("1158", "c.c.")])
-    assert "La controparte potrà obiettare che non è provato quando è iniziato il possesso." in three
-    # the works objection whenever its question is open, whatever the topic
-    assert three[0] == "La controparte potrà obiettare che le opere non erano visibili al momento della separazione."
+    assert three[0] == "La controparte potrà obiettare che non è provato quando è iniziato il possesso."
+    assert "La controparte potrà obiettare che le opere non erano visibili al momento della separazione." not in three
+    water = {"title": "Attribuzioni dell'amministratore", "anchor": "1130 c.c.", "source": "regola amministratore_condominio"}
+    assert flow.objections(state, [water], [("1117", "c.c."), ("1130", "c.c.")]) == []      # v57-l3: no servitù
 
 
 def test_the_objection_titles_are_the_copys_an_objection_with_no_reply_is_dropped_never_a_placeholder():
@@ -420,8 +424,30 @@ def test_a_requisite_to_prove_is_never_called_proved_and_makes_its_sentences_con
     out = flow.conditional_on_unknown([("Risposta e strategia", "Nessuna indennità è dovuta a Domitilla (art. 1054 c.c.). "
                                         "Se il fondo è intercluso, vale l'art. 1054 c.c.")], rules, analysis, documents,
                                       ["Leonardo"], log)
-    assert out[0][1].startswith("Se l'interclusione deriva dall'atto di separazione, nessuna indennità è dovuta")
+    # v58: the marker, never a prefix
+    assert out[0][1].startswith("Nessuna indennità è dovuta a Domitilla (art. 1054 c.c.) (da verificare: atto e anno "
+                                "della separazione dei fondi).")
     assert out[0][1].endswith("Se il fondo è intercluso, vale l'art. 1054 c.c.") and len(log) == 1
+
+
+def test_the_condition_marks_a_sentence_once_at_its_end_never_a_prefix_never_inside(monkeypatch):
+    # v57-h3 §1 and §5: «Se le opere risultano esistenti alla separazione,» three times, once as «…, Questi fatti»
+    analysis = flow._restored_analysis(_state(monkeypatch, None, H3_TEXT)["analysis"])
+    documents = [{"id": "LEGAL_DOC::cc", "name": "Codice Civile 2026"}]
+    rules = [{"ref": ("1062", "c.c."), "selected": [None],
+              "requisites": {None: ["che questi ha posto o lasciato le cose nello stato dal quale risulta la servitù"]}}]
+    text = ("Leonardo può ottenere la servitù, subordinatamente all'esistenza dell'opera (art. 1062 c.c.). Il caso non dice "
+            "quando avvenne. Questi fatti sono determinanti per l'art. 1062 c.c. La servitù è "
+            "costituita (art. 1062 c.c.) (da verificare: opere visibili alla separazione dei fondi).")
+    out = flow.conditional_on_unknown([("Conclusioni", text)], rules, analysis, documents, ["Leonardo"], [])[0][1]
+    assert "Se le opere" not in out and ", Questi" not in out
+    assert "subordinatamente all'esistenza dell'opera (art. 1062 c.c.)." in out                 # already conditional
+    assert "Questi fatti sono determinanti per l'art. 1062 c.c. (da verificare: opere visibili alla separazione dei " \
+           "fondi)." in out
+    assert out.count("(da verificare:") == 2                                                      # never twice
+    assert flow.marked("la servitù è costituita ex art. 1062 c.c", ["x"]) is None              # no stop of its own
+    assert flow.conditional_on_unknown([("Conclusioni", "Tali fatti vanno verificati (art. 1062 c.c.).")], rules, analysis,
+                                       documents, [], [])[0][1] == "Tali fatti vanno verificati (art. 1062 c.c.)."
 
 
 def test_every_round_text_comes_from_the_copy(monkeypatch):
@@ -722,3 +748,378 @@ def test_a_table_topics_question_family_is_asked_until_its_date_is_known(monkeyp
     assert q["text"] == flow.C.QUESTIONS["data_misura"] and q["target"] == ["events", 0, ["date"]]
     facts["events"][0]["date"] = "3 novembre 2026"
     assert not [q for q in flow.questions(analysis, (), topics, []) if q["family"] == "data_misura"]
+
+
+# --- v56: §2 by the plan, the clean text, the gates, the unanswered questions, the new tables ------------------------
+
+ART_52 = ("Non è punibile chi ha commesso il fatto, per esservi stato costretto dalla necessità di difendere un diritto "
+          "proprio od altrui contro il pericolo attuale di un'offesa ingiusta, sempre che la difesa sia proporzionata "
+          "all'offesa.\nNei casi previsti dall'articolo 614, primo e secondo comma, sussiste sempre il rapporto di "
+          "proporzione di cui al primo comma del presente articolo se taluno legittimamente presente in uno dei luoghi "
+          "ivi indicati usa un'arma legittimamente detenuta o altro mezzo idoneo al fine di difendere: a) la propria o la "
+          "altrui incolumità; b) i beni propri o altrui, quando non vi è desistenza e vi è pericolo d'aggressione. [12]\n"
+          "Note: comma aggiunto dalla l. 59/2006.")
+ART_42 = ("Nessuno può essere punito per un'azione od omissione preveduta dalla legge come reato, se non l'ha commessa con "
+          "coscienza e volontà.")
+
+
+def test_every_planned_article_gets_its_block_and_each_paragraph_the_article_it_cites():
+    from src.rag import rule_quote
+    analysis = {"frame": {"areas": ["penale"]}, "fact_signals": {"facts": {"parties": []}, "terms": []}}
+    rows = [_row("42", ART_42, "c.p."), _row("52", ART_52, "c.p.")]
+    refs = [("42", "c.p."), ("52", "c.p."), ("56", "c.p.")]
+    plan = {"questioni": [{"norme": [("42", "c.p."), ("52", "c.p."), ("56", "c.p.")]}]}
+    assert flow.section_refs(plan, rows, refs) == [("42", "c.p."), ("52", "c.p."), ("56", "c.p.")]
+    rules = rule_quote.article_rules(plan, rows, analysis, [("42", "c.p."), ("52", "c.p.")])
+    writer = ("[1] Tizio ha agito con coscienza e volontà (art. 42 c.p.).\n\n"
+              "La difesa era proporzionata ai sensi dell'art. 52 c.p.\n\n"
+              "Non c'era «desistenza e vi è pericolo d'aggressione» nel momento della reazione.\n\n"
+              "Il tentativo resta escluso: l'art. 56 c.p. richiede atti idonei.")
+    log = []
+    text = flow.assemble_norms(writer, rules, analysis, rows, log, flow.section_refs(plan, rows, refs),
+                               {("56", "c.p."): "Delitto tentato"})
+    at = {h: text.index(h) for h in ("**Art. 42 c.p.", "**Art. 52 c.p.")}
+    assert at["**Art. 42 c.p."] < text.index("coscienza e volontà (art. 42") < at["**Art. 52 c.p."]
+    assert at["**Art. 52 c.p."] < text.index("proporzionata ai sensi") < text.index("Non c'era «desistenza")
+    # v58: 56 c.p. has no text read: no block, its paragraph dropped, one closing line
+    assert "Il tentativo resta escluso" not in text and "**Art. 56" not in text
+    assert text.endswith("Altre norme del tema non trattate: art. 56 c.p.")
+    assert log[0]["unplaced"] == 0 and log[0]["dropped_no_text"] == {"56 c.p.": 1}
+
+
+def test_the_article_text_loses_its_footnotes_and_notes_and_definitions_have_no_requisites():
+    from src.rag import rule_quote
+    assert rule_quote.clean_rubrica("Disposizioni generali sul giudizio di ottemperanza [196]") == \
+        "Disposizioni generali sul giudizio di ottemperanza"
+    assert rule_quote.clean_rubrica("Truffa (1) (2) (3)") == "Truffa"
+    commi = rule_quote.row_commi(_row("52", ART_52, "c.p."))
+    assert len(commi) == 2 and "[12]" not in commi[1][1] and "Note" not in commi[1][1]
+    reqs = rule_quote.requisites(commi[1][1])
+    assert any("legittimamente detenuta" in r for r in reqs) and any("desistenza" in r for r in reqs)
+    nullity = ("È nullo il provvedimento amministrativo che manca degli elementi essenziali, che è viziato da difetto "
+               "assoluto di attribuzione, che è stato adottato in violazione o elusione del giudicato; nonché negli altri "
+               "casi espressamente previsti dalla legge.")
+    assert rule_quote.requisites(nullity) == []                   # a definition: no quando / se / purché / salvo
+    long_clause = "Il fatto è punito quando " + "l'agente agisce con modalità particolarmente gravi e reiterate " * 5 + "."
+    assert rule_quote.requisites(long_clause) == []               # longer than REQUISITE_CHARS
+
+
+def test_civil_tools_only_in_a_civil_main_area():
+    from src.rag import render_computed
+    tool = {"id": "accertamento_preventivo", "refs": [("696", "c.p.c.")], "text": "Accertamento tecnico preventivo.",
+            "why": "", "matched": []}
+    for areas, shown in ((["penale"], False), (["amministrativo", "contratti"], False), (["contratti"], True), ([], True)):
+        titles = [t for t, _ in render_computed.blocks({"frame": {"areas": areas}, "fact_signals": {"tools": [tool]}})]
+        assert ("Strumenti processuali" in titles) == shown, areas
+
+
+def test_an_unanswered_question_is_not_known_to_the_writer_and_its_assertion_is_marked(monkeypatch):
+    state = _state(monkeypatch, None, H3_TEXT)
+    families = {q["family"] for q in flow.unanswered(state)}
+    assert {"possesso_inizio", "atto_separazione"} <= families
+    block = flow.unknown_block(state)
+    assert block.startswith(flow.C.UNKNOWN_TITLE) and "inizio del possesso: non noto" in block
+    state["answered"] = {q["id"]: "x" for q in state["questions"] if q["family"] == "accesso_alternativo"}
+    sections = [("Risposta e strategia", "Leonardo usa la strada fin dal 1900. Il passaggio non sarebbe dovuto senza "
+                                         "alcuna indennità. Se il possesso è iniziato nel 1990, l'usucapione è maturata."),
+                ("Profili processuali", "Leonardo usa la strada fin dal 1900.")]
+    log = []
+    out = dict(flow.unanswered_out(sections, state, log))
+    first = out["Risposta e strategia"]
+    assert "fin dal 1900 (da verificare: inizio del possesso)." in first
+    assert "senza alcuna indennità (da verificare: atto e anno della separazione dei fondi)." in first
+    assert "Se il possesso è iniziato nel 1990, l'usucapione è maturata." in first          # already conditional
+    assert out["Profili processuali"] == "Leonardo usa la strada fin dal 1900."            # the rendered section
+    assert len(log) == 2
+
+
+def test_legittima_difesa_asks_52s_requisites_and_an_answer_decides_them(monkeypatch):
+    from src.rag import topic_tables
+    monkeypatch.setenv("TOPIC_TABLES", "true")
+    case = {"frame": {"central_issue_candidates": [{"nome": "Eccesso colposo di legittima difesa"}]}}
+    assert "legittima_difesa" not in {t["id"] for t in topic_tables.matches(case, ["penale"])}     # v58: no aggression
+    case["fact_signals"] = {"facts": {"events": [{"what": "un ladro si introduce in casa e Tizio spara"}]}}
+    found = {t["id"]: t for t in topic_tables.matches(case, ["penale"])}
+    assert found["legittima_difesa"]["refs"][:2] == [("55", "c.p."), ("52", "c.p.")]
+    assert {("575", "c.p."), ("589", "c.p.")} <= set(found["legittima_difesa"]["refs"])
+    facts = {"parties": [{"name": "Tizio", "role": "cliente, indagato"}], "client_side": "Tizio", "events": []}
+    analysis = {"frame": {"areas": ["penale"]}, "fact_signals": {"facts": facts, "terms": []}}
+    topic = {"title": "Legittima difesa", "anchor": "52 c.p.", "articles": ["52 c.p."], "source": "frame"}
+    qs = {q["family"]: q for q in flow.questions(analysis, (), [topic], [_row("52", ART_52, "c.p.")])}
+    assert {"arma_detenuta", "desistenza", "pericolo_aggressione"} <= set(qs)          # from 52 co. 2's own requisites
+    assert qs["arma_detenuta"]["text"] == "L'arma (o il mezzo) usata per difendersi era legittimamente detenuta da Tizio?"
+    flow._apply_answer(facts, qs["desistenza"], "sì")                  # the aggressor had desisted
+    flow._apply_answer(facts, qs["pericolo_aggressione"], "sì")
+    assert flow.requisite_status("non vi è desistenza e vi è pericolo d'aggressione", analysis) == "non risulta"
+
+
+def test_ottemperanza_and_the_elusion_of_the_judgment_anchor_on_21_septies_and_ask_the_acts_date(monkeypatch):
+    from src.rag import topic_tables
+    found = {t["id"]: t for t in topic_tables.matches(
+        {"frame": {"central_issue_candidates": [{"nome": "Elusione del giudicato"}]}}, ["amministrativo"])}
+    t = found["ottemperanza"]
+    assert t["refs"][0] == ("21-septies", "Legge sul Procedimento Amministrativo 2026")
+    assert {("112", "c.p.a."), ("114", "c.p.a."), ("31", "c.p.a.")} <= set(t["refs"]) and t["questions"] == ["data_atto_elusivo", "data_giudicato"]
+    facts = {"parties": [{"name": "Tizio", "role": "cliente"}], "client_side": "Tizio",
+             "events": [{"date": "", "what": "il Comune adotta un nuovo provvedimento di diniego", "kind": "provvedimento"}]}
+    analysis = {"frame": {"areas": ["amministrativo"]}, "fact_signals": {"facts": facts, "terms": []}}
+    topic = {"title": "Ottemperanza", "anchor": "112 c.p.a.", "articles": ["112 c.p.a."], "source": "tabella ottemperanza",
+             "questions": ["data_atto_elusivo"]}
+    q = next(q for q in flow.questions(analysis, (), [topic], []) if q["family"] == "data_atto_elusivo")
+    assert q["target"] == ["events", 0, ["date"]] and "180 giorni" in q["text"]
+
+
+def test_no_lone_closing_and_a_party_who_sold_is_no_owner(monkeypatch):
+    state = _state(monkeypatch)
+    facts = flow._facts(flow._restored_analysis(state["analysis"]))
+    facts["parties"].append({"name": "Sempronio", "role": "proprietario"})
+    facts["events"].append({"date": "2003", "what": "Sempronio vende il terreno a Domitilla", "kind": "vendita"})
+    lines = {f["name"]: f["text"] for f in flow.known_facts({"fact_signals": {"facts": facts, "terms": []}})
+             if f["kind"] == "party"}
+    assert lines["Sempronio"] == "Sempronio (ex proprietario)" and "Domitilla (controparte, proprietario)" == lines["Domitilla"]
+
+
+def test_with_no_other_topic_the_answer_has_no_closing(monkeypatch):
+    from src.rag import plan_then_write as ptw, render_computed
+    state = _state(monkeypatch)
+    state["topics"] = state["topics"][:1]
+    monkeypatch.setattr(flow, "_documents", lambda: [{"id": "LEGAL_DOC::cc", "name": "Codice Civile 2026"}])
+    monkeypatch.setattr(ptw, "make_plan", lambda *a, **k: {
+        "parte_assistita": "Leonardo", "posizione": "", "obiettivo": "", "questione_centrale": "", "risposte": [],
+        "subordinate": [], "punti_deboli": [], "questioni": [{"titolo": "T", "norme": [("1062", "c.c.")], "pronunce": [],
+                                                              "argomento": "", "obiezione": "", "replica": ""}]})
+    monkeypatch.setattr(render_computed, "render", lambda analysis, party="": "")
+    monkeypatch.setattr(ptw, "write_sections", lambda plan, jobs, *a, **k: [(t, f"[1] Testo di {t}.") for t, *_ in jobs])
+    text, _ = flow.write_answer(state, [1])
+    assert "Oppure dimmi" not in text and "Se vuoi, posso approfondire" not in text
+
+
+# --- v57: earned glosses, the cap across topics, the placement by words, requisites, scaffolding, roles, terms, §4 --
+
+def test_only_the_matched_rule_or_named_articles_are_applied_and_the_others_get_their_heading(monkeypatch):
+    from src.rag import rule_quote
+    analysis = {"frame": {"areas": ["penale"]}, "fact_signals": {"facts": {"parties": []}, "terms": [], "fired": []}}
+    rows = [_row("42", ART_42, "c.p."), _row("52", ART_52, "c.p.")]
+    refs = [("42", "c.p."), ("52", "c.p.")]
+    topics = [{"title": "Legittima difesa", "anchor": "52 c.p.", "matched": ["52 c.p."], "articles": ["52 c.p.", "42 c.p."]}]
+    glossed = flow.earned_refs(topics, analysis, "Tizio spara al ladro.", refs)
+    assert glossed == [("52", "c.p.")]                                   # 42: neither matched, nor a rule's, nor named
+    assert flow.earned_refs(topics, analysis, "Si applica l'art. 42 c.p.?", refs) == refs
+    plan = {"questioni": [{"norme": refs}]}
+    rules = rule_quote.article_rules(plan, rows, analysis, refs)
+    log = []
+    text = flow.assemble_norms("[1] La difesa era proporzionata (art. 52 c.p.).\n\nTizio agì con coscienza (art. 42 c.p.).",
+                               rules, analysis, rows, log, refs, {}, glossed)
+    assert "La difesa era proporzionata" in text and "con coscienza" not in text and "**Art. 42 c.p." not in text
+    assert text.endswith("Altre norme del tema non trattate: art. 42 c.p.")      # v58: never a bare heading
+    assert log[0]["dropped_unearned"] == {"42 c.p.": 1}
+
+
+def test_the_cap_holds_across_the_chosen_topics_matched_articles_first():
+    topics = [{"anchor": f"{a} c.p.", "matched": [f"{a} c.p."], "articles": [f"{a + i} c.p." for i in range(8)]}
+              for a in (100, 200, 300)]
+    refs = flow.capped_refs(topics)
+    assert len(refs) == 8 and refs[:3] == [("100", "c.p."), ("200", "c.p."), ("300", "c.p.")]
+    assert refs[3:6] == [("101", "c.p."), ("201", "c.p."), ("301", "c.p.")]      # then in turn
+
+
+def test_a_paragraph_citing_only_a_comma_goes_to_the_article_whose_comma_holds_its_words():
+    from src.rag import rule_quote
+    analysis = {"frame": {"areas": ["penale"]}, "fact_signals": {"facts": {"parties": []}, "terms": []}}
+    rows = [_row("42", ART_42, "c.p."), _row("52", ART_52, "c.p.")]
+    refs = [("42", "c.p."), ("52", "c.p.")]
+    rules = rule_quote.article_rules({"questioni": [{"norme": refs}]}, rows, analysis, refs)
+    writer = ("[1] Tizio agì con coscienza e volontà (art. 42 c.p.).\n\n"
+              "Ai sensi del comma 2, taluno legittimamente presente usa un'arma legittimamente detenuta al fine di "
+              "difendere la propria incolumità.")
+    text = flow.assemble_norms(writer, rules, analysis, rows, [], refs, {}, refs)
+    assert text.index("**Art. 52 c.p.") < text.index("Ai sensi del comma 2")         # never under art. 42
+
+
+def test_requisites_skip_definitions_penalties_and_fragments_and_no_placeholder_line():
+    from src.rag import rule_quote
+    art_43 = ("Il delitto: è doloso, o secondo l'intenzione, quando l'evento dannoso o pericoloso è dall'agente preveduto "
+              "e voluto; è colposo, o contro l'intenzione, quando l'evento non è voluto.")
+    assert rule_quote.requisites(art_43) == []                          # a definition, though it says «quando»
+    assert rule_quote.requisites("Il giudice condanna al pagamento, salvo che ciò sia manifestamente iniquo, e se "
+                                 "l'amministrazione non provvede entro il termine fissato.") == \
+        ["l'amministrazione non provvede entro il termine fissato"]       # «…iniquo, e»: cut on a conjunction
+    assert rule_quote.requisites("Se il fatto è commesso con violazione delle norme, la pena è della reclusione da due a "
+                                 "sette anni.") == []                                 # v58: an aggravante, never a requisite
+    analysis = {"fact_signals": {"facts": {"parties": []}, "terms": []}}
+    rule = {"ref": ("575", "c.p."), "commi": [(None, "Chiunque cagiona la morte di un uomo è punito con la reclusione "
+                                                     "non inferiore ad anni ventuno.")], "selected": [None], "how": "all",
+            "requisites": {}}
+    assert flow.norm_blocks([rule], analysis, []) == ["**Art. 575 c.p.**"]       # no «- testo: da provare.»
+
+
+def test_label_only_lines_and_rule_glosses_leave_the_answer():
+    assert flow.scaffolding_out("[3] art. 589 c.p.\nL'omicidio fu colposo.") == "[3] \nL'omicidio fu colposo."
+    assert flow.scaffolding_out("art. 21-septies Legge sul Procedimento Amministrativo 2026\nTesto.") == "Testo."
+    assert flow.scaffolding_out("art. 52 c.p. esclude la punibilità.") == "art. 52 c.p. esclude la punibilità."
+
+
+def test_one_client_never_the_other_side_and_two_candidates_ask_first():
+    out = {"client_side": "Caio", "parties": [{"name": "Tizio", "role": "cliente, privato"},
+                                              {"name": "Caio", "role": "cliente, controparte, privato"}]}
+    fact_signals.one_client(out, "")
+    assert [p["role"] for p in out["parties"]] == ["privato", "cliente, privato"]          # v56-h10
+    out = {"client_side": "", "parties": [{"name": "Tizio", "role": "cliente"}, {"name": "Caio", "role": "cliente"}]}
+    fact_signals.one_client(out, "Caio si rivolge all'avvocato. Tizio lo segue.")
+    assert [p["role"] for p in out["parties"]] == ["privato", "cliente"]
+    out = {"client_side": "", "parties": [{"name": "Tizio", "role": "cliente"}, {"name": "Caio", "role": "cliente"}]}
+    fact_signals.one_client(out, "Tizio e Caio litigano.")
+    assert out["client_ambiguous"] == ["Tizio", "Caio"]
+    analysis = {"frame": {"areas": ["civile"]}, "fact_signals": {"facts": out, "terms": []}}
+    q = flow.questions(analysis, (), [], [])[0]
+    assert q["id"] == "parte_assistita" and q["text"] == "Chi assisti in questo caso: Tizio o Caio?"
+    flow._apply_answer(out, q, "assisto Caio")
+    assert [p["role"] for p in out["parties"]] == ["privato", "cliente, privato"] and "client_ambiguous" not in out
+
+
+def test_a_comma_the_article_does_not_have_moves_to_the_article_holding_it():
+    from src.rag import rule_quote
+    analysis = {"frame": {"areas": ["amministrativo"]}, "fact_signals": {"facts": {"parties": []}, "terms": []}}
+    art_21s = ("1. È nullo il provvedimento amministrativo che è stato adottato in violazione o elusione del giudicato.\n"
+               "2. Le questioni inerenti alla nullità sono attribuite alla giurisdizione esclusiva del giudice amministrativo.")
+    art_31 = ("1. Decorsi i termini, chi vi ha interesse può chiedere l'accertamento dell'obbligo di provvedere.\n2. Il "
+              "giudice può pronunciare sulla fondatezza della pretesa.\n3. Si applica il rito.\n4. La domanda volta "
+              "all'accertamento delle nullità previste dalla legge si propone entro il termine di decadenza di "
+              "centottanta giorni.")
+    rows = [_row("112", art_21s, "c.p.a."), _row("31", art_31, "c.p.a.")]       # two commi: never a «co. 4»
+    refs = [("112", "c.p.a."), ("31", "c.p.a.")]
+    rules = rule_quote.article_rules({"questioni": [{"norme": refs}]}, rows, analysis, refs)
+    writer = ("[1] Il provvedimento è nullo (art. 112 c.p.a.).\n\n«co. 4» — Ai sensi dell'art. 112 c.p.a., la "
+              "domanda volta all'accertamento delle nullità si propone entro il termine di decadenza di centottanta "
+              "giorni.")
+    log = []
+    text = flow.assemble_norms(writer, rules, analysis, rows, log, refs, {}, refs)
+    assert text.index("**Art. 31 c.p.a.") < text.index("«co. 4»") and log[0]["commi"][0]["to"] == "31 c.p.a."
+
+
+def test_the_judgments_two_terms_are_computed(monkeypatch):
+    monkeypatch.setenv("FACT_SIGNALS_TODAY", TODAY)
+    facts = {"parties": [{"name": "Caio", "role": "cliente"}, {"name": "Comune di C.", "role": "pubblica amministrazione"}],
+             "events": [{"date": "", "what": "la sentenza del TAR annulla la graduatoria", "kind": "altro"},
+                        {"date": "", "what": "il Comune adotta un nuovo provvedimento che riconferma Tizio",
+                         "kind": "provvedimento"}], "_regimes": True}
+    terms = {t["id"]: t for t in fact_signals.compute_terms(facts, ["amministrativo"])}
+    assert terms["nullita_giudicato"]["status"] == "DA VERIFICARE" and terms["nullita_giudicato"]["ref"] == "art. 31 c.p.a."
+    assert terms["ottemperanza"]["status"] == "DA VERIFICARE" and terms["ottemperanza"]["length"] == "10 anni"
+    facts["events"][1]["date"] = "1 ottobre 2026"
+    after = {t["id"]: t for t in fact_signals.compute_terms(facts, ["amministrativo"])}
+    assert after["nullita_giudicato"]["status"] == "NON DECORSO"           # 180 days from 1 October
+
+
+def test_a_criminal_case_has_its_procedural_section_and_the_answer_its_cosmetics():
+    from src.rag import render_computed
+    analysis = {"frame": {"areas": ["penale"], "central_issue_candidates": [{"nome": "Legittima difesa"}]},
+                "fact_signals": {"facts": {"events": [{"what": "il ladro fugge e Tizio spara", "date": ""}]}}}
+    blocks = dict(render_computed.blocks(analysis))
+    body = blocks[render_computed.PROCEDURE_TITLE]
+    assert "Omicidio (art. 575 c.p.): procedibile d'ufficio; competenza: Corte d'assise (art. 5 c.p.p.)." in body
+    assert "Omicidio colposo (art. 589 c.p.): procedibile d'ufficio." in body
+    assert "Data del fatto: non nota. Da essa decorre la prescrizione del reato (art. 157 c.p.)." in body
+    log = []
+    out = flow.cosmetic_fixes([("Risposta e strategia", "Conviene agire in via subordinata, ma prioritariamente, per "
+                                "l'accertamento."), ("Conclusioni", "I termini vanno verificati, come indicato nella "
+                                "sezione «Profili processuali e termini».")], list(flow.ANSWER_TITLES), log)
+    assert "agire in via principale, per" in out[0][1]
+    assert out[1][1].endswith("nella sezione «Profili processuali».")
+
+
+# --- v58: from the v57 transcripts --------------------------------------------------------------------------------
+
+ART_640 = ("Chiunque, con artifizi o raggiri, inducendo taluno in errore, procura a sé o ad altri un ingiusto profitto con "
+           "altrui danno, è punito con la reclusione da sei mesi a tre anni e con la multa da euro 51 a euro 1.032.\n"
+           "La pena è della reclusione da uno a cinque anni: 1) se il fatto è commesso a danno dello Stato (8); 2-bis) se "
+           "il fatto è commesso in presenza della circostanza di cui all'articolo 61, numero 5] (6) 2-ter.")
+
+
+def test_an_offence_s_requisites_are_its_first_comma_s_elements_never_its_aggravanti():
+    from src.rag import rule_quote
+    rules = rule_quote.article_rules({"questioni": [{"norme": [("640", "c.p.")]}]}, [_row("640", ART_640, "c.p.")],
+                                     {"fact_signals": {}}, [("640", "c.p.")])
+    reqs = [r for v in rules[0]["requisites"].values() for r in v]
+    assert reqs == ["con artifizi o raggiri", "inducendo taluno in errore",
+                    "procura a sé o ad altri un ingiusto profitto con altrui danno"]          # v57-p2
+    assert rules[0]["selected"] == [rules[0]["commi"][0][0]]
+    assert "(8)" not in rule_quote.clean_text(ART_640) and "]" not in rule_quote.clean_text(ART_640)
+
+
+def test_a_sentence_citing_a_comma_the_article_does_not_have_is_dropped():
+    rules = [{"ref": ("628", "c.p."), "commi": [(1, "a"), (2, "b"), (3, "c")]}]
+    text = ("Non è provata la sottrazione. Né la violenza, come richiesto dal comma 9 dell'art. 628 c.p. Il co. 2 "
+            "dell'art. 628 c.p. vale per la rapina impropria.")
+    out = flow.phantom_commi_out([("Norme applicate ai fatti", text)], rules, [])[0][1]
+    assert "comma 9" not in out and "Non è provata la sottrazione." in out and "Il co. 2" in out          # v57-h5
+
+
+def test_with_no_client_tagged_the_first_question_asks_who_it_is():
+    facts = {"parties": [{"name": "Signora Bianchi", "role": "proprietario"}, {"name": "Amministratore", "role": "privato"},
+                         {"name": "Comune", "role": "pubblica amministrazione"}]}
+    q = flow.questions({"frame": {"areas": ["civile"]}, "fact_signals": {"facts": facts, "terms": []}}, (), [], [])[0]
+    assert q["id"] == "parte_assistita" and q["text"] == "Chi assisti in questo caso: Signora Bianchi o Amministratore?"
+
+
+def test_the_quoted_comma_beats_the_cited_numbers():
+    from src.rag import rule_quote
+    art_320 = "Le disposizioni degli articoli 318 e 319 si applicano anche all'incaricato di un pubblico servizio."
+    art_318 = ("Il pubblico ufficiale che, per l'esercizio delle sue funzioni, indebitamente riceve denaro o ne accetta la "
+               "promessa è punito con la reclusione da tre a otto anni.")
+    rows = [_row("320", art_320, "c.p."), _row("318", art_318, "c.p.")]
+    refs = [("320", "c.p."), ("318", "c.p.")]
+    rules = rule_quote.article_rules({"questioni": [{"norme": refs}]}, rows, {"fact_signals": {}}, refs)
+    writer = ("[2] «Le disposizioni degli articoli 318 e 319 si applicano anche all'incaricato di un pubblico servizio» "
+              "(co. 1): la norma estende gli artt. 318 e 319 c.p. a Tizio.")
+    text = flow.assemble_norms(writer, rules, {"fact_signals": {}}, rows, [], refs, {}, refs)
+    assert text.index("**Art. 320 c.p.") < text.index("«Le disposizioni") < text.index("**Art. 318 c.p.")   # v57-h7
+
+
+def test_a_rule_institutions_resolved_article_earns_no_gloss():
+    analysis = {"fact_signals": {"fired": [{"id": "condominio_parti_comuni", "requires": [], "conclusion": ""}]},
+                "rule_institutions": [{"nome": "uso delle parti comuni", "refs": [("1122-ter", "c.c.")]}]}
+    topics = [{"anchor": "1130 c.c.", "matched": ["1130 c.c."]}]
+    assert flow.earned_refs(topics, analysis, "", [("1130", "c.c."), ("1122-ter", "c.c.")]) == [("1130", "c.c.")]
+
+
+def test_usucapione_only_with_a_possession_over_time():
+    from src.rag import topic_step
+    owner = {"parties": [{"name": "Signora Bianchi", "role": "proprietario"}],
+             "possession": [{"who": "Signora Bianchi", "asset": "appartamento", "since": ""}]}
+    assert not topic_step.possession_over_time(owner)                                   # v57-l3
+    road = {"parties": [{"name": "Leonardo", "role": "cliente, proprietario"}],
+            "possession": [{"who": "Leonardo", "asset": "strada sterrata", "since": ""}]}
+    assert topic_step.possession_over_time(road)                                       # h3: a way over the neighbours'
+    terms = [{"id": "usucapione_ordinaria", "label": "usucapione", "ref": "art. 1158 c.c.", "status": "DA VERIFICARE"}]
+    assert topic_step.term_institutions({"facts": owner, "terms": terms}) == []
+    assert topic_step.term_institutions({"facts": road, "terms": terms})
+
+
+def test_a_criminal_answer_always_has_its_procedural_section():
+    from src.rag import render_computed
+    analysis = {"frame": {"areas": ["penale"]}, "fact_signals": {"facts": {"events": []}},
+                "offences": [("320", "Corruzione di persona incaricata di un pubblico servizio (1)")]}
+    body = dict(render_computed.blocks(analysis))[render_computed.PROCEDURE_TITLE]
+    assert "- Corruzione di persona incaricata di un pubblico servizio (1) (art. 320 c.p.): procedibile d'ufficio; " \
+           "competenza: tribunale." in body                                                     # v57-h7
+
+
+def test_an_altro_profilo_needs_its_capo_and_the_case_to_share_its_words():
+    from src.rag import topic_step
+    links = topic_step.CsvLinks([("c.c.", "CAPO", "CAPO IV – DELLE IPOTECHE", "2833")], [],
+                                {("2833", "c.c."): "Responsabilità per mancata iscrizione."})
+    topic = {"title": "Responsabilità per danni all'immobile", "anchor": "2833 c.c.", "articles": ["2833 c.c."],
+             "capo": "CAPO IV – DELLE IPOTECHE"}
+    assert not topic_step.relevant_other(topic, links, {}, {"umidit", "colonn", "condom"})          # v57-l3
+    ok = {"title": "Danno emergente e lucro cessante", "anchor": "1223 c.c.", "articles": ["1223 c.c."], "capo": ""}
+    links = topic_step.CsvLinks([], [], {("1223", "c.c."): "Risarcimento del danno emergente e lucro cessante."})
+    assert topic_step.relevant_other(ok, links, {}, topic_step._content_stems("il lucro cessante dell'affitto perso"))
+
+
+def test_a_sentence_cut_at_a_removed_citation_is_dropped_whole():
+    text = ("La signora Bianchi può agire. , che attribuisce al condominio la responsabilità per i danni.\n"
+            "art. 1130 c.c. impone la conservazione.\n- a) il primo punto.")
+    out = flow.headless_out([("Altri profili", text)], [])[0][1]                                   # v57-l3 §4
+    assert ", che attribuisce" not in out and "La signora Bianchi può agire." in out
+    assert "art. 1130 c.c. impone" in out and "a) il primo punto" in out

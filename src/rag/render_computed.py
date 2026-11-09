@@ -150,6 +150,73 @@ def _tool_gated(tool: Dict[str, Any], gated: set) -> bool:
     return any(f"{r[0]} {r[1]}" in gated for r in tool.get("refs") or [] if len(r) >= 2)
 
 
+_CIVIL_CODES = frozenset({"c.c.", "c.p.c."})
+# v56: the heads of damage only for the injured side -- the danneggiato, the erede, the crime's victim
+DAMAGED_RE = r"danneggiat|\bered[ei]\b|persona offesa|parte civile|vittim"
+
+
+def civil_tools_allowed(analysis: Dict[str, Any]) -> bool:
+    """v56 (v55-p1, v55-h10 §4): a tool on c.c. / c.p.c. articles only (696, 700 c.p.c.) is offered only when the case's
+    main area (its first: pool_gates.gate_areas) allows the civil codes (pool_gates.AREA_CODES, POOL_GATE_AREA's); no
+    known area: offered."""
+    from . import pool_gates
+    areas = [a for a in pool_gates.gate_areas(analysis) if a not in pool_gates.NO_CODES]
+    return not areas or bool(pool_gates.AREA_CODES.get(areas[0], frozenset()) & _CIVIL_CODES)
+
+
+def _civil_only(tool: Dict[str, Any]) -> bool:
+    from .plan_then_write import _code_key
+    codes = {_code_key(str(r[1])) for r in tool.get("refs") or [] if len(r) == 2}
+    return bool(codes) and codes <= _CIVIL_CODES
+
+
+def client_damaged(analysis: Dict[str, Any], party: str = "") -> bool:
+    """The client is the danneggiato or the erede (DAMAGED_RE): in its name and position, or its role in the facts."""
+    facts = _signals(analysis).get("facts") or {}
+    roles = " ".join(str(p.get("role") or "") for p in facts.get("parties") or []
+                     if isinstance(p, dict) and re.search(r"\bcliente\b", str(p.get("role") or ""), re.IGNORECASE))
+    text = f"{party} {(analysis or {}).get('parte_assistita') or ''} {(analysis or {}).get('posizione') or ''} {roles}"
+    return bool(re.search(DAMAGED_RE, text.lower()))
+
+
+PROCEDURE_TITLE = "Procedibilità e competenza"
+DEFAULT_PROCEDURE = ("d'ufficio", "tribunale")        # v58: a delitto not in topic_tables.CRIMINAL_PROCEDURE
+OFFENCES_MAX = 5
+
+
+def criminal_procedure(analysis: Dict[str, Any]) -> str:
+    """v57 (J): in a criminal case, each offence the case's tables hold (topic_tables.offences) with its procedibilità
+    and competenza; while the date of the fact is unknown, what runs from it -- the prescription (art. 157 c.p.) and,
+    for an offence a querela starts, its three months (art. 124 c.p.). "" otherwise."""
+    from . import fact_signals, pool_gates, topic_tables
+    areas = pool_gates.gate_areas(analysis)
+    if not areas or fact_signals.family(areas[0]) != "penale":
+        return ""
+    found = topic_tables.offences(analysis, areas)
+    lines = []
+    for ref in found:
+        name, how, court = topic_tables.CRIMINAL_PROCEDURE[ref]
+        lines.append(f"- {name[:1].upper() + name[1:]} (art. {ref[0]} {ref[1]}): procedibile {how}"
+                     + (f"; competenza: {court}" if court else "") + ".")
+    # v58 (v57-h7 had no §4): the chosen topics' other delitti (analysis["offences"], interactive_flow), by default
+    # procedibili d'ufficio before the tribunale
+    for number, rubrica in [tuple(o) for o in (analysis or {}).get("offences") or []][:OFFENCES_MAX]:
+        if (str(number), "c.p.") in found:
+            continue
+        name = " ".join(str(rubrica or "").split()).rstrip(" .") or "Delitto"
+        lines.append(f"- {name[:1].upper() + name[1:]} (art. {number} c.p.): procedibile {DEFAULT_PROCEDURE[0]}; "
+                     f"competenza: {DEFAULT_PROCEDURE[1]}.")
+    facts = _signals(analysis).get("facts") or {}
+    dated = any(str(e.get("date") or "").strip() and fact_signals.parse_date(str(e.get("date")))
+                and re.search(fact_signals._OFFENCE + "|" + fact_signals._DAMAGE + r"|spar|ucci|mort",
+                              str(e.get("what") or "").lower()) for e in facts.get("events") or [])
+    if not dated:
+        querela = any("querela" in topic_tables.CRIMINAL_PROCEDURE[r][1] for r in found)
+        lines.append("- Data del fatto: non nota. Da essa decorre la prescrizione del reato (art. 157 c.p.)"
+                     + ("; per i reati a querela, i tre mesi per proporla (art. 124 c.p.)" if querela else "") + ".")
+    return "\n".join(lines)
+
+
 def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     """[(title, body)] of the section, in the template's order (render's docstring); a block without content is left out."""
     from . import fact_signals
@@ -163,6 +230,8 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     if terms:
         out.append(("Termini", "\n".join(_term_line(t) for t in terms)))
     tools = [t for t in signals.get("tools") or [] if not _tool_gated(t, gated)]
+    if not civil_tools_allowed(analysis):
+        tools = [t for t in tools if not _civil_only(t)]
     parties = ""
     try:
         parties = fact_signals.parties_line(signals, analysis)
@@ -191,8 +260,11 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     criminal = next((t for t in tools if t.get("id") == fact_signals.CRIMINAL_TOOL), None)
     if criminal:
         out.append(("Profilo penale", _tool_line(criminal)))
+    procedure = criminal_procedure(analysis)
+    if procedure:
+        out.append((PROCEDURE_TITLE, procedure))
     damages = fact_signals.damages_block(signals) if signals.get("damages") else ""
-    if damages.strip():         # the heads of damage are the injured side's: for an accused client, the other side's
+    if damages.strip() and client_damaged(analysis, party):         # the heads of damage are the injured side's: for an accused client, the other side's
         side = signals.get("side") or fact_signals.client_side(party or str((analysis or {}).get("parte_assistita") or ""))
         title = {"accused": "Voci di danno che la controparte può far valere", "victim": "Voci di danno"}.get(
             side, "Voci di danno da considerare")

@@ -47,6 +47,7 @@ PARTIES_LINE = "Parti: {parties}."                                           # p
 PARTY = "{name} ({role})"                                                    # name, role
 PARTY_NO_ROLE = "{name}"                                                     # name
 PARTY_CLIENT = "{party} — cliente"                                           # party
+FORMER_OWNER = {"o": "ex proprietario", "a": "ex proprietaria"}             # v56 (my draft): a party who sold
 NO_FACTS = "Nessun fatto estratto."
 QUESTIONS_TITLE = "**Da chiarire**"
 QUESTION_LINE = "{n}. {text}"                                                # n, text
@@ -74,10 +75,26 @@ QUESTIONS = {
     # v55, the PO's text: the act's notification, while a TAR term is open
     "atto_notifica": ("In quale data è stato notificato (o pubblicato) il provvedimento che intendi impugnare? Da questa "
                       "data decorre il termine per il ricorso al TAR."),
+    # v57 (my draft): the judgment's date, for the ottemperanza's ten years (art. 114, co. 1, c.p.a.)
+    "data_giudicato": ("In quale data la sentenza è passata in giudicato? Da questa data decorrono i dieci anni per "
+                       "l'azione di ottemperanza (art. 114, co. 1, c.p.a.)."),
+    # v57 (my draft): two parties could be the client and the case does not say which (fact_signals.one_client)
+    "parte_assistita": "Chi assisti in questo caso: {names}?",
+    # v56 (my drafts, pending PO review): art. 52 co. 2 c.p.'s requisites, for a legittima difesa topic (topic_tables)
+    "arma_detenuta": "L'arma (o il mezzo) usata per difendersi era legittimamente detenuta da {client}?",
+    "desistenza": "Al momento della reazione l'aggressore aveva desistito (si era fermato o stava fuggendo)?",
+    "pericolo_aggressione": "Al momento della reazione c'era ancora un pericolo concreto di aggressione per {client} o per altri?",
+    # v56 (my draft): the act eluding a judgment, for an ottemperanza topic -- art. 31 co. 4 c.p.a.'s 180 days
+    "data_atto_elusivo": ("In quale data è stato adottato o comunicato il provvedimento che ritieni in contrasto con la "
+                          "sentenza? Da questa data decorrono i 180 giorni per farne valere la nullità (art. 31, co. 4, "
+                          "c.p.a.)."),
     # v55 (my draft, pending PO review): the cautionary order's execution, for a misure cautelari topic (topic_tables)
     "data_misura": ("In quale data è stata eseguita o notificata l'ordinanza cautelare? Da questa data decorrono i dieci "
                     "giorni per la richiesta di riesame (art. 309 c.p.p.)."),
 }
+CLIENT_JOIN = " o "                                                          # v57: the possible clients
+LIST_COMMA = ", "
+DEFENDER = "chi si è difeso"                                                 # the client slot when no name is known
 # how a topic's «da chiarire» point names an open question
 QUESTION_SHORT = {
     "possesso_inizio": "inizio del possesso",
@@ -87,7 +104,13 @@ QUESTION_SHORT = {
     "data_messa_in_mora": "data della messa in mora",
     "data_fatto": "data del fatto",
     "atto_notifica": "data di notifica del provvedimento",
+    "parte_assistita": "parte assistita",
+    "data_giudicato": "data del giudicato",
     "data_misura": "data dell'ordinanza cautelare",
+    "arma_detenuta": "arma legittimamente detenuta",
+    "desistenza": "desistenza dell'aggressore",
+    "pericolo_aggressione": "pericolo di aggressione",
+    "data_atto_elusivo": "data del provvedimento elusivo",
 }
 
 # --- round 2 ----------------------------------------------------------------------------------------------------------
@@ -123,6 +146,10 @@ COMMA_LABEL_ONLY = "testo"
 REQUISITE_LINE = "- {comma}, requisito «{requisite}»: {status}."             # comma, requisite, status
 COMMA_LINE = "- {comma}: {status}."                                          # comma, status: a comma with no requisite
 # the procedural section's mediation paragraph
+# v58 (the PO's words): the planned articles §2 does not treat -- no text read, or nothing to say on the facts
+OTHER_NORMS_LINE = "Altre norme del tema non trattate: {articles}."              # articles
+OTHER_NORMS_ITEM = "art. {number} {code}"                                      # number, code
+OTHER_NORMS_JOIN = ", "
 MEDIATION = ("Mediazione obbligatoria (art. 5 d.lgs. 28/2010): il suo mancato esperimento comporta l'improcedibilità "
              "della domanda.")
 SECTION_TITLES = ("Risposta e strategia", "Norme applicate ai fatti", "Obiezioni e repliche", "Profili processuali",
@@ -154,6 +181,11 @@ CONDITIONS = {
     "possesso_inizio": "Se il possesso ventennale risulta compiuto, ",
 }
 CONDITIONS_JOIN = " e "
+# v56 (my draft, pending PO review): a round-1 question left unanswered, for the writer and in the answer
+UNKNOWN_TITLE = "FATTI NON NOTI (domande del primo turno senza risposta)"
+UNKNOWN_LINE = "- {point}: non noto ({question})"                            # point, question
+UNKNOWN_RULE = "Non affermarli e non dedurli: dove servono, scrivi che vanno verificati."
+UNKNOWN_MARK = " (da verificare: {point})"                                  # point: the questions' short labels
 
 # --- closing and follow-ups -------------------------------------------------------------------------------------------
 CLOSING = "Se vuoi, posso approfondire: {topics}. Oppure dimmi un fatto nuovo e aggiorno il parere."    # topics

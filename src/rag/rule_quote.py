@@ -187,6 +187,70 @@ _COMMA_HEAD_RE = re.compile(r"^\(?co\.\s*\d+\)\s*|^\d{1,3}(?:-[a-z]+)?\.\s+", re
 _TRAILING_HEADING_RE = re.compile(r"\s+(?:CAPO|SEZIONE|TITOLO|LIBRO|PARTE)\s+[IVXLC\d]+\b.*$")
 
 
+# v56 (v55-h10 21-nonies / 21-septies, v55-p1 43 / 56 c.p.): the corpus' footnote markers and editorial notes
+_FOOTNOTE_RE = re.compile(r"\s*\[\d{1,4}\]")
+_NOTE_RE = re.compile(r"(?:^|\s)Note\s*:.*$", re.DOTALL)
+_RUBRICA_NOTE_RE = re.compile(r"\s*\(\d{1,3}\)")
+REQUISITE_CHARS = 200           # a longer clause is no requisite (a definition, a penalty): its comma's line instead
+# v57 (v56-p1 42/43 c.p., 589 c.p.; v56-h10 114 c.p.a.): a comma that defines or states a principle has no requisites;
+# a clause on the punishment is none; a fragment cut on a conjunction or a comma is none
+DEFINITION_RE = re.compile(r"^\s*(?:nessuno può essere punito|[^.:;]{0,40}:\s*è\b|[^.;]{0,80}\b(?:si intende|si "
+                           r"intendono|si considera|si considerano)\b)", re.IGNORECASE)
+PENALTY_RE = re.compile(r"\bè punit\w*|\bsono punit\w*|\bla pena\b|\breclusione\b|\bmulta\b|\bammenda\b|"
+                        r"\barresto (?:da|fino)\b", re.IGNORECASE)
+# v58: an aggravating circumstance or its exception is no element of the offence
+AGGRAVANTE_RE = re.compile(r"^(?:il fatto è commess|se il colpevole|il colpevole|ricorr\w* (?:la|taluna|una) (?:delle )?"
+                           r"circostanz|salvo che ricorr|la pena è aumentat|le pene sono aumentat)", re.IGNORECASE)
+OFFENCE_BOOK = ("c.p.", 241, 649)        # c.p. Libro II: the offences, their requisites co. 1's elements
+_PUNISHED_RE = re.compile(r",?\s*(?:è|sono)\s+punit\w*.*$", re.IGNORECASE | re.DOTALL)
+
+
+def offence(ref: Sequence[str]) -> bool:
+    from .plan_then_write import _code_key
+    m = re.match(r"\d+", str(ref[0]))
+    return bool(m) and _code_key(str(ref[1])) == OFFENCE_BOOK[0] and OFFENCE_BOOK[1] <= int(m.group(0)) <= OFFENCE_BOOK[2]
+
+
+def offence_elements(text: str) -> List[str]:
+    """v58 (v57-p2 640: «Chiunque, con artifizi o raggiri, …» is the requisite set): the elements of an offence's first
+    comma -- its words before «è punito», «Chiunque» left out, split on its commas; an element of fewer than two words
+    joins the next."""
+    body = _PUNISHED_RE.sub("", " ".join(_COMMA_HEAD_RE.sub("", clean_text(text).strip(), count=1).split()))
+    body = re.sub(r"^(?:chiunque|il pubblico ufficiale|l['’]incaricato di un pubblico servizio|chi)\s*,?\s*", "", body,
+                  flags=re.IGNORECASE)
+    out: List[str] = []
+    carry = ""
+    for piece in re.split(r"\s*,\s*", body):
+        piece = f"{carry} {piece}".strip() if carry else piece.strip()
+        if len(piece.split()) < 2:
+            carry = piece
+            continue
+        carry = ""
+        if not AGGRAVANTE_RE.search(piece) and len(piece) <= REQUISITE_CHARS:
+            out.append(piece.strip(" .;:"))
+    return [x for x in out if x]
+
+
+_DANGLING_RE = re.compile(r"\b(?:e|ed|o|od|ma|né|oppure|ovvero|nonché)\s*$", re.IGNORECASE)
+
+
+# v58 (v57-p2 640, v57-h5 628): the c.p.'s footnote numbers «(3)» and the stray «]» of a removed passage
+_PAREN_NOTE_RE = re.compile(r"\s*\(\d{1,2}\)(?=[\s.,;:»]|$)")
+_STRAY_BRACKET_RE = re.compile(r"\s*\](?![^\[]*\])|\[(?![^\[\]]*\])\s*")
+
+
+def clean_text(text: Any) -> str:
+    """An article's text without its footnote markers ("[196]", "(3)") and cut at its editorial notes ("Note: ...")."""
+    text = _FOOTNOTE_RE.sub("", _NOTE_RE.sub("", str(text or "")))
+    text = _STRAY_BRACKET_RE.sub(" ", _PAREN_NOTE_RE.sub("", text))
+    return "\n".join(" ".join(line.split()) for line in text.split("\n")).strip()       # the commi's lines kept
+
+
+def clean_rubrica(rubrica: Any) -> str:
+    """A rubrica without its footnote markers ("Truffa (1) (2) (3)", "Procedimento [202]")."""
+    return " ".join(_RUBRICA_NOTE_RE.sub("", _FOOTNOTE_RE.sub("", str(rubrica or ""))).split())
+
+
 def _heading_like(text: str) -> bool:
     letters = [c for c in text if c.isalpha()]
     return bool(_HEADING_RE.match(text)) or (len(letters) > 10 and sum(c.isupper() for c in letters) > 0.7 * len(letters))
@@ -198,7 +262,16 @@ def commi_of(text: str = "", parts: Optional[Sequence[str]] = None, how: Optiona
     text with no commi to count, then one entry), headings ("CAPO VIII ...") left out."""
     from . import comma_material
     if parts is None:
-        parts, how = comma_material.article_parts(text)
+        parts, how = comma_material.article_parts(clean_text(text))
+    else:                       # v56: each part cleaned; the parts after an editorial note dropped
+        kept = []
+        for part in parts:
+            noted = bool(_NOTE_RE.search(str(part or "")))
+            if clean_text(part):
+                kept.append(clean_text(part))
+            if noted:
+                break
+        parts = kept
     if not parts:
         return []
     numbers = comma_material.comma_numbers(parts, how)
@@ -241,8 +314,8 @@ def operative(commi: Sequence[Tuple[Optional[int], str]], client: Set[str], coun
 
 # --- 2. the requisites ----------------------------------------------------------------------------------------------
 
-_CONNECTOR_RE = re.compile(r"\b(salvo\s+che|purch[ée]|qualora|quando|se)\b(?!\s+(?:ne|lo|la|li|le|stess\w*)\b)",
-                           re.IGNORECASE)
+_CONNECTOR_RE = re.compile(r"\b(salvo\s+che|salvo|sempre\s+che|purch[ée]|qualora|quando|se)\b"
+                           r"(?!\s+(?:ne|lo|la|li|le|stess\w*)\b)", re.IGNORECASE)
 # where the main clause starts after a leading condition ("Se il fondo ..., il proprietario ha diritto")
 _MAIN_AFTER_RE = re.compile(r",\s+(?=(?:il|lo|la|l['’]|i|gli|le|questa|questo|questi|queste|esso|essa|essi|esse|egli|ella|si|"
                             r"non|è|sono|può|possono|deve|devono|ha|hanno|chi|tale|tali|ciascun\w*|ognuno|nessun\w*)\b)",
@@ -258,32 +331,38 @@ def _clean_item(text: str) -> str:
 
 
 def requisites(text: str) -> List[str]:
-    """The comma's conditions, each in its own words: the text after each quando / se / purché / salvo che / qualora to
-    the next one (a leading condition to where the main clause starts), split on its enumerations; with none of those
-    words, the items of an enumeration ("a) ...; b) ..."). "salvo che" items keep the words (an exception)."""
-    text = " ".join(_COMMA_HEAD_RE.sub("", (text or "").strip(), count=1).split())
+    """The comma's conditions, each in its own words: the text after each quando / se / purché / sempre che / salvo
+    (che) / qualora to the next one (a leading condition to where the main clause starts), split on its enumerations.
+    "salvo" items keep the word (an exception). v56: a comma with none of those words is a definition or a penalty --
+    no requisites (its comma's line); a clause longer than REQUISITE_CHARS neither."""
+    text = " ".join(_COMMA_HEAD_RE.sub("", clean_text(text).strip(), count=1).split())
+    if DEFINITION_RE.search(text):          # v57: a definition or a principle (42, 43 c.p.): the comma's line only
+        return []
     marks = list(_CONNECTOR_RE.finditer(text))
     pieces: List[str] = []
     if not marks:
-        items = [_clean_item(p) for p in _ENUM_SPLIT_RE.split(text)]
-        listed = bool(re.search(r"(?:^|\s)(?:[a-z]|\d{1,2})\)\s", text)) or ";" in text
-        return [i for i in items if len(i.split()) >= 3] if listed and len(items) >= 2 else []
+        return []
     for i, m in enumerate(marks):
         stop = marks[i + 1].start() if i + 1 < len(marks) else len(text)
         segment = text[m.end():stop]
         dot = re.search(r"\.(?:\s|$)", segment)
         if dot:
             segment = segment[:dot.start()]
+        cut = not (i + 1 < len(marks) and not dot)          # the segment ends the text, not at the next connector
         leading = m.start() == 0 or re.search(r"[.;:]\s*$", text[:m.start()])
         if leading:
             main = _MAIN_AFTER_RE.search(segment)
             if main and len(segment[:main.start()].split()) >= 3:
                 segment = segment[:main.start()]
         word = " ".join(m.group(1).lower().split())
-        for item in _ENUM_SPLIT_RE.split(segment):
-            item = _clean_item(item)
-            if len(item.split()) >= 3:
-                pieces.append(f"salvo che {item}" if word == "salvo che" else item)
+        items = _ENUM_SPLIT_RE.split(segment)
+        for j, raw in enumerate(items):
+            item = _clean_item(raw)
+            if _DANGLING_RE.search(raw.strip(" ,;:")) or PENALTY_RE.search(item) or AGGRAVANTE_RE.search(item) \
+                    or (cut and j == len(items) - 1 and raw.rstrip().endswith(",")):
+                continue                    # v57: cut on a conjunction, or on a comma where the text ends; the punishment
+            if len(item.split()) >= 3 and len(item) <= REQUISITE_CHARS:
+                pieces.append(f"{word} {item}" if word.startswith("salvo") else item)
     return list(dict.fromkeys(pieces))
 
 
@@ -333,7 +412,11 @@ def article_rules(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], anal
         commi = row_commi(row)
         against = any(_same_ref(tuple(ref), a) for a in adverse)
         chosen, how = operative(commi, counter, client) if against else operative(commi, client, counter)
-        reqs = {k: r for k, t in chosen for r in [requisites(t)] if REQUISITES_MIN <= len(r) <= REQUISITES_MAX}
+        if offence(ref) and commi:         # v58: an offence -- co. 1's elements, never its aggravanti's commi
+            chosen, how = [commi[0]], "offence"
+            reqs = {commi[0][0]: r for r in [offence_elements(commi[0][1])] if REQUISITES_MIN <= len(r) <= REQUISITES_MAX}
+        else:
+            reqs = {k: r for k, t in chosen for r in [requisites(t)] if REQUISITES_MIN <= len(r) <= REQUISITES_MAX}
         out.append({"ref": (str(ref[0]), ref[1]), "label": f"{ref[0]} {ref[1]}", "commi": commi,
                     "selected": [k for k, _ in chosen], "how": how, "requisites": reqs, "adverse": against,
                     "client": sorted(client), "counter": sorted(counter)})

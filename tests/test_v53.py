@@ -224,11 +224,14 @@ def test_nothing_computed_renders_nothing():
     assert render_computed.render({"fact_signals": {"terms": [], "tools": []}}) == ""
 
 
-def test_the_heads_of_damage_are_the_other_sides_for_an_accused_client():
+def test_the_heads_of_damage_only_for_a_damaged_or_heir_client():
+    # v56 (v55-p1 §4): an accused client, or one whose position is unknown, gets no heads of damage
     signals = {"damages": [{"id": "x", "lines": ["Iure proprio, per ciascun familiare: il danno."]}]}
-    assert render_computed.blocks({"fact_signals": signals}, "Tizio (imputato)")[0][0] == \
-        "Voci di danno che la controparte può far valere"
-    assert render_computed.blocks({"fact_signals": signals}, "")[0][0] == "Voci di danno da considerare"
+    assert render_computed.blocks({"fact_signals": signals}, "Tizio (imputato)") == []
+    assert render_computed.blocks({"fact_signals": signals}, "") == []
+    assert render_computed.blocks({"fact_signals": signals}, "Caio (erede della vittima)")[0][0] == "Voci di danno"
+    facts = {"parties": [{"name": "Sempronia", "role": "cliente, danneggiata"}]}
+    assert render_computed.blocks({"fact_signals": {**signals, "facts": facts}}, "Sempronia")[0][0].startswith("Voci di danno")
 
 
 def test_the_gated_article_leaves_the_remedies_for_the_objections_block():
@@ -373,24 +376,33 @@ def test_topics_are_institutions_anchored_by_rubrica_with_their_sezione_links_an
     assert dest["facts"][0].startswith("da verificare: un'opera visibile e permanente")
     pc = by["Passaggio coattivo"]
     assert pc["anchor"] == "1051 c.c." and pc["how"] == "exact"
-    assert pc["articles"][:3] == ["1051 c.c.", "1052 c.c.", "1032 c.c."]     # Sezione nearest, then the least cited link
-    assert "1 c.p.c." not in pc["articles"]                                   # a hub, and outside the allowed codes
+    # v57: no Sezione article without a word of the name, no article citing it (1052, 1032), no other code's (1 c.p.c.)
+    assert "1 c.p.c." not in pc["articles"] and "1032 c.c." not in pc["articles"]
     assert by["Decadenza dall'azione di reintegrazione"]["anchor"] == "1168 c.c."      # the pool's, resolved for it
     assert by["Decadenza dall'azione di reintegrazione"]["how"] == "pool"
     assert "Divisione di un fondo comune" not in by and "Legittima difesa" not in by    # c.p. not allowed in this case
     # v54: the frame's institutions with no rule, term or regime behind them are "altri profili", never topics
     assert [t["title"] for t in topics] == ["Servitù per destinazione del padre di famiglia"]
     assert [t["title"] for t in others] == ["Passaggio coattivo", "Decadenza dall'azione di reintegrazione"]
-    assert pc["articles"] == ["1051 c.c.", "1052 c.c.", "1032 c.c.", "1053 c.c.", "1054 c.c.", "1055 c.c."]
+    assert pc["articles"] == ["1051 c.c.", "1054 c.c."]          # the matched article, then 1054 two-signal in Capo II
 
 
-def test_a_topic_has_at_most_eight_articles_before_its_capos_two_signal_ones(monkeypatch):
-    monkeypatch.setattr(topic_step, "ARTICLES_MAX", 3)
-    links = topic_step.CsvLinks(UNITS, REFERS, RUBRICHE)
-    others = []
-    topic_step.build(_topic_analysis(), POOL, links, others=others)
-    pc = others[0]
-    assert pc["articles"] == ["1051 c.c.", "1052 c.c.", "1032 c.c.", "1054 c.c."]     # 3, then 1054 two-signal in Capo II
+def test_a_topics_anchors_are_its_article_its_names_sezione_its_capos_two_signal_and_what_it_cites(monkeypatch):
+    # v57 (v55-all: 37 misused anchors): matched; the Sezione's articles sharing a word of the name no part of the codes
+    # owns; the Capo's two-signal; the articles it cites, its own code and book -- at most ARTICLES_MAX, the rest of the
+    # two-signal past the cap (listed, never planned)
+    rubriche = {**RUBRICHE, ("1052", "c.c."): "Passaggio coattivo a favore di fondo non intercluso.",
+                ("1053", "c.c."): "Indennità.", ("1055", "c.c."): "Cessazione dell'interclusione.",
+                ("1056", "c.c."): "Passaggio coattivo di condotte.", ("40", "c.c."): "Altro."}
+    units = UNITS + [("c.c.", "CAPO", "CAPO II – DELLE SERVITU’ COATTIVE", "1056")]
+    refers = REFERS + [("1051 c.c.", "1056 c.c."), ("1051 c.c.", "40 c.c."), ("1051 c.c.", "218 c.p.")]
+    links = topic_step.CsvLinks(units, refers, rubriche)
+    assert topic_step.articles(("1051", "c.c."), links, topic_step._pool(POOL), None, "Passaggio coattivo") == \
+        [("1051", "c.c."), ("1052", "c.c."), ("1054", "c.c."), ("1056", "c.c.")]
+    monkeypatch.setattr(topic_step, "ARTICLES_MAX", 2)
+    assert topic_step.articles(("1051", "c.c."), links, topic_step._pool(POOL), None, "Passaggio coattivo") == \
+        [("1051", "c.c."), ("1052", "c.c."), ("1054", "c.c.")]                     # 1054 past the cap: listed only
+    assert topic_step._book(("640", "c.p.")) != topic_step._book(("218", "c.p."))
 
 
 def test_a_fired_rule_comes_before_one_to_verify_and_without_unknowns_none_is_to_verify():
@@ -526,8 +538,13 @@ def test_a_generic_rubrica_is_never_an_anchor_and_a_one_word_name_needs_a_comput
 
 def test_an_open_term_is_a_topic_on_its_article_and_sezione_and_a_decided_one_is_a_fact():
     units = UNITS + [("c.c.", "SEZIONE", "SEZIONE I – Dell'usucapione", n) for n in ("1158", "1159", "1160", "1161")]
-    links = topic_step.CsvLinks(units, REFERS, {**RUBRICHE, ("1168", "c.c."): "Azione di reintegrazione."})
+    links = topic_step.CsvLinks(units, REFERS, {**RUBRICHE, ("1168", "c.c."): "Azione di reintegrazione.",
+                                                ("1159", "c.c."): "Usucapione decennale.",
+                                                ("1160", "c.c."): "Usucapione di universalità di mobili.",
+                                                ("1161", "c.c."): "Usucapione dei beni mobili."})
     analysis = _topic_analysis()
+    analysis["fact_signals"]["facts"] = {**TOPIC_FACTS, "possession": [     # v58: a possession over time, not an owner's
+        {"who": "Leonardo", "asset": "strada di Domitilla", "since": "1990"}]}
     analysis["fact_signals"]["terms"] = [
         {"id": "usucapione_ordinaria", "label": "usucapione ordinaria di beni immobili", "ref": "art. 1158 c.c.",
          "status": "DA VERIFICARE"},
@@ -536,7 +553,8 @@ def test_an_open_term_is_a_topic_on_its_article_and_sezione_and_a_decided_one_is
     topics = topic_step.build(analysis, POOL, links, "", others=others)
     term = next(t for t in topics if t["source"].startswith("termine"))
     assert term["title"] == "Usucapione ordinaria di beni immobili" and term["anchor"] == "1158 c.c."
-    assert term["articles"] == ["1158 c.c.", "1159 c.c.", "1160 c.c.", "1161 c.c."] and term["how"] == "term"
+    # v57: "usucapione" is in every rubrica of the Sezione (SEZIONE_SHARE); v58: «beni» is generic (GENERIC_STEMS)
+    assert term["articles"] == ["1158 c.c."] and term["how"] == "term"
     assert all(t["anchor"] != "1168 c.c." for t in topics + others)         # possessoria DECORSO: a fact, no topic
 
 
@@ -649,7 +667,7 @@ def test_the_draft_tables_are_read_only_with_their_flag_and_within_the_cases_fam
     insts = topic_step.institutions(analysis)
     assert [i["source"] for i in insts[:4]] == ["tabella"] * 4 and insts[0]["refs"]
     for table in topic_tables.TABLES:                       # anchors and questions only: no conclusion in a table
-        assert set(table) <= {"id", "family", "name", "triggers", "refs", "anchors", "questions"}
+        assert set(table) <= {"id", "family", "name", "triggers", "refs", "anchors", "questions", "gate"}
         assert all(q in __import__("src.rag.interaction_copy", fromlist=["QUESTIONS"]).QUESTIONS for q in table["questions"])
 
 
@@ -657,12 +675,16 @@ def test_table_topics_come_with_the_frames_when_no_rule_or_term_supports_a_topic
     monkeypatch.setenv("TOPIC_TABLES", "true")
     links = topic_step.CsvLinks([], [], {("52", "c.p."): "Difesa legittima.", ("640", "c.p."): "Truffa"})
     analysis = {"frame": {"areas": ["penale"], "central_issue_candidates": [{"nome": "Legittima difesa"},
-                                                                           {"nome": "Truffa"}]}, "fact_signals": {}}
+                                                                           {"nome": "Truffa"}]},
+                "fact_signals": {"facts": {"events": [{"what": "aggredito da un intruso, Tizio reagisce"}]}}}
     others = []
     topics = topic_step.build(analysis, [], links, others=others)
     by = {t["title"]: t for t in topics}
     assert by["Truffa"]["source"] == "tabella truffa" and by["Truffa"]["questions"] == ["data_fatto"]
-    assert by["Legittima difesa"]["anchor"] == "52 c.p."          # the frame's exact anchor is offered, not hidden
+    # the frame's exact anchor is offered, not hidden; v57 (H): the legittima difesa table it absorbed names it
+    topic = by["Legittima difesa ed eccesso colposo"]
+    assert topic["anchor"] == "52 c.p." and "Legittima difesa" in topic["merged"]
+    assert topic["questions"] == ["arma_detenuta", "desistenza", "pericolo_aggressione"]
 
 
 def test_a_fired_rules_institution_anchors_on_its_required_article_in_another_code():
@@ -681,3 +703,25 @@ def test_a_fired_rules_institution_anchors_on_its_required_article_in_another_co
     topic = by["Risoluzione della locazione per inadempimento"]
     assert topic["anchor"] == "1453 c.c." and topic["how"] == "rule"
     assert "Sfratto per morosità" not in by or by["Sfratto per morosità"]["anchor"] != "1453 c.c."   # no word shared
+
+
+def test_a_pool_anchor_needs_a_word_of_its_own_not_a_generic_one():
+    # v56, h3's altri profili: "Abuso del diritto di proprietà" on 2814 c.c. («nuda proprietà»), «Prescrizione.» on 1449
+    assert not topic_step.shares_name("Abuso del diritto di proprietà", "Ipoteca sull'usufrutto e sulla nuda proprietà")
+    pool = {("1449", "c.c."): {"_multi_signal": True, "_fused_rank": 1, "s": {"titolo_articolo": "Prescrizione."}},
+            ("2814", "c.c."): {"_multi_signal": True, "_fused_rank": 1,
+                               "s": {"titolo_articolo": "Ipoteca sull'usufrutto e sulla nuda proprietà."}}}
+    assert topic_step.anchor({"name": "Prescrizione dell'azione di rescissione", "source": "frame"}, None, None, pool, [],
+                             [("1449", "c.c.")]) == (None, "", "")
+    assert topic_step.anchor({"name": "Abuso del diritto di proprietà", "source": "frame"}, None, None, pool, [],
+                             [("2814", "c.c.")]) == (None, "", "")
+
+
+def test_a_merged_topic_takes_the_tables_name_when_its_articles_dominate():
+    topic = {"title": "Elemento psicologico del reato", "anchor": "43 c.p.", "merged": [], "planned": 7,
+             "refs": [("43", "c.p."), ("575", "c.p."), ("589", "c.p."), ("42", "c.p."), ("52", "c.p."), ("55", "c.p."),
+                      ("56", "c.p.")],
+             "tables": [{"title": "Legittima difesa ed eccesso colposo", "source": "tabella legittima_difesa",
+                         "own": [("52", "c.p."), ("55", "c.p."), ("575", "c.p."), ("589", "c.p.")]}]}
+    topic_step.named_by_table(topic)                            # v56-p1: 4 of its 7 planned are the table's
+    assert topic["title"] == "Legittima difesa ed eccesso colposo" and topic["merged"] == ["Elemento psicologico del reato"]
