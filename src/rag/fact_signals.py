@@ -260,6 +260,8 @@ def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> 
         _stated_landlocked(out, case_text)
     if "client_side" in out:
         _client(out, case_text)
+    if out.get("parties"):
+        one_client(out, case_text)
     for item in out.get("property_history") or []:
         for field in ("how_acquired", "ended_by"):
             item[field] = _enum(item.get(field, ""), TRANSFER_KINDS, _TRANSFER_SYNONYMS)
@@ -467,6 +469,46 @@ def _client(out: Dict[str, Any], case_text: str) -> None:
     out["client_side_how"] = how
 
 
+_ASKS_RE = r"si rivolg\w*|chied\w*|vuol\w*|intend\w*|incaric\w*|domand\w*|desider\w*"
+
+
+def _drop_role(party: Dict[str, Any], role: str) -> None:
+    roles = [r for r in str(party.get("role") or "").split(", ") if r and r != role]
+    party["role"] = ", ".join(roles) or "privato"
+
+
+def one_client(out: Dict[str, Any], case_text: str) -> None:
+    """v57 (v56-h10: "Tizio (cliente); Caio (cliente, controparte)"): exactly one party is the client, and the client is
+    never the other side. The client is the party client_side names; else, of several, the one the case says turns to
+    the lawyer or asks (_ASKS_RE in a sentence naming it, alone); else none: out["client_ambiguous"] lists them and the
+    interactive flow asks it first (interaction_copy.QUESTIONS["parte_assistita"])."""
+    parties = [p for p in out.get("parties") or [] if isinstance(p, dict) and p.get("name")]
+    clients = [p for p in parties if "cliente" in _low(p.get("role")).split(", ")]
+    side = _low(out.get("client_side")).split("(")[0].strip()
+    named = [p for p in parties if side and (_low(p["name"]) in side or side in _low(p["name"]))]
+    winner = named[0] if len(named) == 1 else None
+    if winner is None and len(clients) > 1:
+        sentences = [x for x in re.split(r"(?<=[.;!?])\s+", case_text or "") if re.search(_ASKS_RE, _low(x))]
+        asking = [p for p in clients if any(re.search(rf"\b{re.escape(_low(p['name']))}\b", _low(x)) for x in sentences)]
+        winner = asking[0] if len(asking) == 1 else None
+        if winner is None:
+            out["client_ambiguous"] = [p["name"] for p in clients]
+            for p in clients:
+                _drop_role(p, "cliente")
+            return
+    if winner is None:
+        winner = clients[0] if len(clients) == 1 else None
+    if winner is None:
+        return
+    for p in parties:
+        if p is winner:
+            if "cliente" not in _low(p.get("role")).split(", "):
+                p["role"] = ", ".join(["cliente"] + [r for r in str(p.get("role") or "").split(", ") if r])
+            _drop_role(p, "controparte")
+        elif "cliente" in _low(p.get("role")).split(", "):
+            _drop_role(p, "cliente")
+
+
 def _enum(value: str, allowed: Tuple[str, ...], synonyms: Tuple[Tuple[str, str], ...] = ()) -> str:
     """value as one of allowed (the first it names, else by synonyms), "altro" for anything else, "" when empty."""
     low = _low(value)
@@ -493,6 +535,10 @@ def _party_context(name: str, case_text: str) -> str:
     return " ".join(out)
 
 
+# v57 (v55 l3: "Inquilino (acquirente)"): a party the case names by its role keeps it, the roles it excludes removed
+NAMED_ROLES = ((r"\binquilin|\bconduttor|\baffittuari|\blocatari", "conduttore", {"acquirente", "venditore", "proprietario"}),)
+
+
 def _clean_roles(written: str, name: str, case_text: str) -> str:
     """The party's roles from ROLES only (synonyms mapped); a qualified one (QUALIFIED_ROLE_CUES) only if the
     party's name or the words around it in the case state it (_party_context); "privato" for a party left with
@@ -502,6 +548,9 @@ def _clean_roles(written: str, name: str, case_text: str) -> str:
     roles += [r for pattern, r in _ROLE_SYNONYMS if re.search(pattern, low) and r not in roles]
     where = _low(name) + " " + _party_context(name, case_text)
     roles = [r for r in roles if r not in QUALIFIED_ROLE_CUES or re.search(QUALIFIED_ROLE_CUES[r], where)]
+    for pattern, role, excluded in NAMED_ROLES:
+        if re.search(pattern, _low(name)):
+            roles = [r for r in roles if r not in excluded] + ([role] if role not in roles else [])
     if not set(roles) - _SIDE_ROLES:
         roles.append("privato")
     return ", ".join(dict.fromkeys(roles))
@@ -815,6 +864,9 @@ _SENTENCE = r"sentenz|condann|assolu"
 _APPEAL = r"appell|impugn|ricorso per cassazione"
 _ACT = r"notific|provvediment|diniego|esclusion|aggiudicazion|ordinanz|decreto|revoca|annullament"
 _TENDER = r"gara|appalt|aggiudicaz|affidament"
+_JUDGMENT = r"giudicat|sentenz\w*[^.]{0,40}(?:\btar\b|tribunale amministrativ|consiglio di stato|annull)|ottemperanz"
+_REISSUED = (r"nuov\w* (?:provvediment|graduatori|delibera|att)|riadott|riconferm|conferm\w* (?:la|il|l['’])|"
+             r"riapprov|elus\w*|in contrasto con (?:la sentenza|il giudicato)")
 _TAR = r"\btar\b|ricorso al tribunale amministrativo|ricors\w* giurisdizional|ricorso amministrativo"
 _DISCOVERY = r"scopr|scopert|si accorg|accort|manifest|emers|compars\w* (?:di |delle |dei )?(?:crep|infiltraz|vizi|difett)"
 # A machine's fault is told by its symptoms as often as by "guasto" (the boat case, 26 Oct: alarms, the engine in
@@ -895,6 +947,20 @@ TERMS: List[Term] = [
          and _has_role(f, r"pubblica amministrazione|comune|ente"),
          since="dalla notificazione, comunicazione o piena conoscenza dell'atto", family="amministrativo",
          start_kinds=("notifica", "provvedimento"), end_kinds=("azione giudiziaria",)),
+    # v57 (I: v56-h10 §1 said 60 days, §5 ten years): the judgment's two terms -- the nullity of an act violating or
+    # eluding it, 180 days from that act (art. 31 co. 4 c.p.a.); the ottemperanza, ten years from the judgment (art.
+    # 114 co. 1 c.p.a.). The articles' commi are in the labels (a ref's numbers are its articles: term_institutions).
+    Term("nullita_giudicato", "azione di nullità per violazione o elusione del giudicato (art. 31, co. 4)",
+         "art. 31 c.p.a.", _REISSUED, _TAR, days=180,
+         applies=lambda f: bool(re.search(_JUDGMENT, _texts(f, ("events", "proceedings"))))
+         and _has_role(f, r"pubblica amministrazione|comune|ente"),
+         since="dall'adozione o dalla conoscenza del provvedimento in contrasto con il giudicato", family="amministrativo",
+         end_kinds=("azione giudiziaria",)),
+    Term("ottemperanza", "azione di ottemperanza (art. 114, co. 1)", "art. 114 c.p.a.", _JUDGMENT,
+         r"ottemperanz\w*[^.]{0,30}(?:propost|depositat|notificat)|ricors\w* (?:per|in) ottemperanz", years=10,
+         applies=lambda f: bool(re.search(_JUDGMENT, _texts(f, ("events", "proceedings"))))
+         and _has_role(f, r"pubblica amministrazione|comune|ente"),
+         since="dal passaggio in giudicato della sentenza", family="amministrativo", end_kinds=("azione giudiziaria",)),
     Term("denuncia_vizi_vendita", "denuncia dei vizi della cosa venduta", "art. 1495 c.c.", _DISCOVERY + "|" + _DEFECT,
          _DENOUNCE, days=8, applies=lambda f: _has_contract(f, r"vendit|compravendit|acquist")
          and (not _has_role(f, "consumatore") or bool(f.get("_regimes"))), since="dalla scoperta del vizio",
@@ -1612,10 +1678,34 @@ def _items_naming(facts: Dict[str, Any], name: str, keys: Tuple[str, ...]) -> Li
     return out
 
 
+_TRANSFER_VERBS = r"(?:ha\s+)?(?:vend\w*|ced\w*|don\w*|alien\w*|trasferi\w*)"
+
+
+def _transferred(facts: Dict[str, Any], name: str, history: List[Dict[str, Any]]) -> bool:
+    """name's sale or transfer is in the facts (Leonardo v52: "Sempronio vende il terreno a Domitilla", 2003, with no
+    property_history entry of Sempronio's own): an event with name as the subject of a transfer verb, or another owner's
+    property_history entry for "<asset> di <name>" acquired by sale, gift, division or succession."""
+    low = _low(name)
+    if not low:
+        return False
+    subject = re.compile(rf"(?:^|[\s,;(])(?:il\s+|la\s+|i\s+|gli\s+)?{re.escape(low)}\s+{_TRANSFER_VERBS}\b")
+    for event in facts.get("events") or []:
+        if isinstance(event, dict) and subject.search(_low(event.get("what"))):
+            return True
+    for entry in history:
+        if _low(entry.get("owner")) in ("", low) or _low(entry.get("how_acquired")) not in _SEPARATING | {"compravendita"}:
+            continue
+        whose = re.search(r"\b(?:di|del|della|dei|degli)\s+(.+)$", _low(entry.get("asset")))
+        if whose and _named_in(low, whose.group(1)) and not re.search(r"\be\b|,", whose.group(1)):
+            return True
+    return False
+
+
 def _previous_owner(facts: Dict[str, Any], name: str, history: List[Dict[str, Any]]) -> bool:
     """name is in the facts only as a previous owner in the chain of title: every property_history entry of its own
-    passed on (a later owner holds the asset or a part of it, or the entry ended), none it still holds; or its role,
-    or every fact naming it, puts its ownership in the past ("appartenevano a Mevio")."""
+    passed on (a later owner holds the asset or a part of it, or the entry ended), none it still holds; or, holding no
+    entry it has not passed on, its sale or transfer is in the facts (_transferred: "Sempronio vende il terreno a
+    Domitilla"); or its role, or every fact naming it, puts its ownership in the past ("appartenevano a Mevio")."""
     low = _low(name)
     own = [(i, e) for i, e in enumerate(history) if _low(e.get("owner")) == low]
     others = {_low(e.get("owner")) for e in history if _low(e.get("owner")) not in ("", low)}
@@ -1628,6 +1718,8 @@ def _previous_owner(facts: Dict[str, Any], name: str, history: List[Dict[str, An
         named = bool(whose) and any(_named_in(o, whose.group(1)) for o in others)
         return bool(_parts_of(entry, history[i + 1:])[0] or ended or _low(entry.get("to")) or named)
     if own and all(passed_on(i, e) for i, e in own):
+        return True
+    if (not own or all(passed_on(i, e) for i, e in own)) and _transferred(facts, name, history):
         return True
     roles = " ".join(_low(p.get("role")) for p in facts.get("parties") or [] if _low(p.get("name")) == low)
     if re.search(_PREVIOUS_ROLE, roles):
@@ -1697,7 +1789,9 @@ def parties_line(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str,
 
 
 def conclusions_block(signals: Optional[Dict[str, Any]], analysis: Optional[Dict[str, Any]] = None) -> str:
-    lines = [f"- {r['conclusion']}" for r in (signals or {}).get("fired") or [] if r.get("conclusion")]
+    # "unstated" (interactive_flow.mark_unstated): fired on a field the case does not state, never a fixed conclusion
+    lines = [f"- {r['conclusion']}" for r in (signals or {}).get("fired") or [] if r.get("conclusion")
+             and not r.get("unstated")]
     mediated = (signals or {}).get("mediation") or {}
     try:            # PARTIES_ENFORCED: logged and left out on any failure, the block as before
         parties = parties_line(signals, analysis)

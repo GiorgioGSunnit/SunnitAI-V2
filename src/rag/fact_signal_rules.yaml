@@ -182,7 +182,7 @@
   area: contratti
   when:
     - contract: {label: "un contratto tra le parti"}
-    - request: {pattern: 'risol|scioglie|liberar|recede', label: "si chiede come sciogliere il contratto"}
+    - request: {pattern: 'risol|scioglie|liberar|recede|sfratt', label: "si chiede come sciogliere il contratto"}
   institution: [risoluzione per inadempimento, importanza dell'inadempimento]
   codice: c.c.
   ranges: [[1453,1462]]
@@ -294,7 +294,7 @@
   area: contratti
   when:
     - contract: {type: 'appalt|lavori|ristruttur|costruz|ristrutturaz', label: "un appalto di lavori"}
-    - fact: {pattern: 'vizi|difett|difform|crep|infiltraz|umidit|non a regola', label: "l'opera ha difetti"}
+    - fact: {pattern: 'vizi|difett|difform|crep|fessur|cediment|infiltraz|umidit|non a regola', label: "l'opera ha difetti"}
   institution: garanzia per le difformità e i vizi dell'opera
   codice: c.c.
   ranges: [[1655,1677]]
@@ -313,6 +313,34 @@
   codice: c.c.
   ranges: [[1655,1677]]
   why: "Gravi difetti di un immobile comparsi anni dopo i lavori pongono la responsabilità decennale dell'appaltatore, oltre la garanzia ordinaria."
+  status: experiment
+
+# v57 (v55 l3: the condominium's drain pipe floods a flat; no rule held 2051, 2043, 1130 c.c.)
+- id: danno_cosa_in_custodia
+  area: responsabilita_civile
+  when:
+    - fact: {pattern: 'infiltraz|umidit|perdit\w* d.acqua|allag|crollat|crollo|cediment|macchi\w* di umid|acqua prov', label: "un danno da acqua o da un cedimento"}
+    - fact: {pattern: 'colonn\w* (?:di )?scaric|scarico condominial|tubaz|tubatur|impiant\w* condominial|lastrico|tetto|parti comuni|cos[ae] comun|condomin', label: "una cosa in custodia altrui (un impianto o una parte comune)"}
+  institution: [danno cagionato da cosa in custodia, risarcimento per fatto illecito]
+  codice: c.c.
+  ranges: [[2043,2059]]
+  requires: ["2051 c.c.", "2043 c.c."]
+  why: "Il danno causato da una cosa in custodia (un impianto o una parte comune) è del custode, salvo il caso fortuito."
+  status: experiment
+
+- id: amministratore_condominio
+  area: responsabilita_civile
+  when:
+    - any:
+        - role: [amministratore]
+        - fact: {pattern: 'amministrator', label: "l'amministratore del condominio"}
+    - fact: {pattern: 'condomin', label: "un condominio"}
+    - fact: {pattern: 'infiltraz|umidit|perdit\w* d.acqua|allag|crollat|crollo|cediment|guast|deteriorat', label: "un danno da una parte comune"}
+  institution: attribuzioni dell'amministratore
+  codice: c.c.
+  ranges: [[1129,1131]]
+  requires: ["1130 c.c."]
+  why: "L'amministratore deve compiere gli atti conservativi delle parti comuni: il suo ritardo pesa sul condominio."
   status: experiment
 
 - id: circolazione_veicoli
@@ -547,6 +575,7 @@
   institution: [sfratto per morosità, risoluzione della locazione per inadempimento]
   codice: c.p.c.
   ranges: [[657,669]]
+  requires: ["1453 c.c.", "1455 c.c."]          # v55 (c3): the resolution's own articles, in the civil code
   why: "Il conduttore che non paga i canoni pone lo sfratto per morosità e la risoluzione."
   status: experiment
 

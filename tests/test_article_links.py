@@ -199,7 +199,7 @@ def test_write_merges_in_batches_and_counts_what_was_there(monkeypatch):
     assert {"code": "c.p.c.", "level": "CAPO", "path": "LIBRO PRIMO – DISPOSIZIONI GENERALI > TITOLO I – DEGLI ORGANI "
             "GIUDIZIARI > CAPO I – DEL GIUDICE", "parent_level": "TITOLO",
             "parent_path": "LIBRO PRIMO – DISPOSIZIONI GENERALI > TITOLO I – DEGLI ORGANI GIUDIZIARI"} in rows["child_of"]
-    assert {"from": "e5", "to": "e4", "pattern": "word", "text": "articolo 1"} in rows["refers_to"]
+    assert {"from": "e5", "to": "e4", "pattern": "word", "text": "articolo 1", "resolution": "same_code"} in rows["refers_to"]
     session = WriteSession()
     first = al.write_graph(session, rows, "2026-11-04T00:00:00+00:00")
     assert first["units"]["created"] == len(rows["units"]) and first["refers_to"]["present"] == 0
@@ -384,3 +384,121 @@ def test_the_duplicate_names_are_an_ingestion_defect():
     assert result["pieces"]["38 [disposizioni di attuazione]"] == ["att-38", "att-38_1"]
     assert "- ingestion defect: Section names duplicated with a _N suffix: 2 (5 / 5_1, att-38 / att-38_1)" in \
         al.census_lines(result)
+
+
+# --- v53: the comma clause before the code, the resolution, the stale edges ---------------------------------------------
+
+# 2044 c.c. as the corpus holds it (the live graph had it pointing to c.c. 52, 55 and 7)
+ART_2044 = ("Non è responsabile chi cagiona il danno per legittima difesa di sé o di altri. Nei casi di cui all'articolo 52, "
+            "commi secondo, terzo e quarto, del codice penale, la responsabilità di chi ha compiuto il fatto è esclusa. Nel "
+            "caso di cui all'articolo 55, secondo comma, del codice penale, al danneggiato è dovuta una indennità la cui "
+            "misura è rimessa all'equo apprezzamento del giudice, tenuto altresì conto della gravità, delle modalità "
+            "realizzative e del contributo causale della condotta posta in essere dal danneggiato. Si applica, in quanto "
+            "compatibile, l'art. 7, comma 1, L. 26 aprile 2019, n. 36.")
+
+
+def test_the_comma_clause_is_skipped_before_the_code_or_act_2044_cc():
+    refs = [(r["matched"], r["to_code"], r["pattern"], r["resolution"]) for r in al.references(ART_2044, "c.c.")]
+    assert refs == [("articolo 52", "c.p.", "other code", "explicit_code"),
+                    ("articolo 55", "c.p.", "other code", "explicit_code"),
+                    ("art. 7", "other act", "other code", "explicit_code")]
+    broken = ART_2044.replace("articolo 52, commi", "articolo 52,  \n  commi").replace(", del codice penale, la", ",\n  del "
+                                                                                       "codice penale, la")
+    assert al.references(broken, "c.c.")[0]["to_code"] == "c.p."                    # a line break, double spaces
+
+
+def test_2044_resolves_52_and_55_to_the_penal_code_and_7_nowhere():
+    def doc(doc_id, name, code, texts):
+        sections = [{"id": f"{code}{n}", "name": f"{n}.0.0", "text": t, "next": None} for n, t in texts]
+        walk, off, runs, names = al.arrange(sections)
+        return {"doc": {"id": doc_id, "name": name}, "code": code, "sections": sections, "walk": walk, "off": off,
+                "runs": runs, "run_names": names}
+    cc = doc("dcc", "Codice Civile 2025", "c.c.", [("7", "Ogni persona ha diritto al nome."), ("52", "Testo."),
+                                                    ("55", "Testo."), ("2044", ART_2044)])
+    cp = doc("dcp", "Codice Penale 2026", "c.p.", [("52", "Difesa legittima."), ("55", "Eccesso colposo.")])
+    results = al.analyse([cc, cp])
+    refs = [(r["to_article"], r["to_code"], r["resolved"], r.get("to_id"), r["resolution"])
+            for r in results[0]["references"] if r["from"] == "2044"]
+    assert refs == [("52", "c.p.", True, "c.p.52", "explicit_code"), ("55", "c.p.", True, "c.p.55", "explicit_code"),
+                    ("7", "other act", False, None, "explicit_code")]           # never 7 c.c.
+    edges = al.graph_rows(results)["refers_to"]
+    assert {(e["from"], e["to"], e["resolution"]) for e in edges} == {("c.c.2044", "c.p.52", "explicit_code"),
+                                                                      ("c.c.2044", "c.p.55", "explicit_code")}
+
+
+def test_resolution_labels_and_a_clause_without_its_keyword_is_not_skipped():
+    def one(text, own="c.c."):
+        r = al.references(text, own)[0]
+        return r["to_code"], r["resolution"]
+    assert one("ai sensi dell'articolo 1032 del presente codice") == ("c.c.", "explicit_code")
+    assert one("ai sensi dell'articolo 1032 c.c.") == ("c.c.", "explicit_code")
+    assert one("ai sensi dell'articolo 1032, primo comma, e poi") == ("c.c.", "same_code")
+    assert one("dell'art. 3, lettera b), del d.lgs. 28/2010") == ("other act", "explicit_code")
+    assert one("le disposizioni dell'articolo precedente") == ("c.c.", "relative")
+    assert al.skip_clause(", e poi del codice penale") == ", e poi del codice penale"      # no keyword: nothing skipped
+
+
+class StaleSession(WriteSession):
+    """WriteSession that also holds the graph's edges of this source and deletes by id."""
+    def __init__(self, edges):
+        super().__init__()
+        self.edges, self.deleted = list(edges), []
+
+    def run(self, query, rows=(), **params):
+        if query == al.FIND_STALE:
+            class Found:
+                def __init__(self, data):
+                    self._data = data
+
+                def data(self):
+                    return self._data
+            return Found([e for e in self.edges if e["doc"] in params["docs"]])
+        if query == al.DELETE_STALE:
+            gone = [e for e in self.edges if e["edge"] in params["edges"]]
+            self.deleted += [e["edge"] for e in gone]
+            self.edges = [e for e in self.edges if e not in gone]
+
+            class Counters:
+                relationships_deleted = len(gone)
+
+            class Result:
+                def consume(self):
+                    class Summary:
+                        counters = Counters()
+                    return Summary()
+            return Result()
+        return super().run(query, rows, **params)
+
+
+def test_the_stale_edges_are_found_read_only_and_deleted_by_id_in_batches(monkeypatch):
+    monkeypatch.setattr(al, "BATCH", 1)
+    rows = {"refers_to": [{"from": "c.c.2044", "to": "c.p.52"}]}
+    graph = [{"edge": "x1", "from": "c.c.2044", "to": "c.c.52", "pattern": "word", "text": "articolo 52", "doc": "dcc"},
+             {"edge": "x2", "from": "c.c.2044", "to": "c.c.7", "pattern": "abbr", "text": "art. 7", "doc": "dcc"},
+             {"edge": "x3", "from": "c.c.2044", "to": "c.p.52", "pattern": "other code", "text": "articolo 52", "doc": "dcc"},
+             {"edge": "x4", "from": "p1", "to": "p2", "pattern": "word", "text": "articolo 2", "doc": "dcpc"}]
+    session = StaleSession(graph)
+    stale = al.stale_edges(session, ["dcc"], rows)
+    assert [e["edge"] for e in stale] == ["x1", "x2"]           # kept: the new pair; another document's never looked at
+    assert "DELETE" not in al.FIND_STALE and "MATCH" in al.FIND_STALE
+    assert al.delete_stale(session, stale) == 2 and session.deleted == ["x1", "x2"]
+    assert "source: $source" in al.DELETE_STALE and "SET e.resolution = r.resolution" in al.WRITE_REFERS_TO
+
+
+def test_compare_reports_the_targets_that_changed_and_the_ones_no_longer_resolved(tmp_path):
+    old = tmp_path / "old.csv"
+    old.write_text("from article,to article,pattern,matched text\n2044 c.c.,52 c.c.,word,articolo 52\n"
+                   "2044 c.c.,7 c.c.,abbr,art. 7\n1052 c.c.,1051 c.c.,relative,articolo precedente\n"
+                   "5 c.p.,1 c.p.,abbr,art. 1\n", encoding="utf-8")            # a code not read now: left out
+    results = [{"code": "c.c.", "references": [
+        {"from": "2044", "matched": "articolo 52", "resolved": True, "to_article": "52", "to_code": "c.p.",
+         "resolution": "explicit_code"},
+        {"from": "2044", "matched": "art. 7", "resolved": False, "to_article": "7", "to_code": "other act",
+         "resolution": "explicit_code"},
+        {"from": "1052", "matched": "articolo precedente", "resolved": True, "to_article": "1051", "to_code": "c.c.",
+         "resolution": "relative"}]}]
+    diff = al.compare(results, str(old), str(tmp_path))
+    assert (diff["changed"], diff["unresolved"], diff["new"]) == (1, 1, 1)
+    assert [(r["kind"], r["old"], r["new"]) for r in diff["samples"]] == [("changed target", "52 c.c.", "52 c.p."),
+                                                                         ("now unresolved", "7 c.c.", "-")]
+    assert list(csv.reader(open(diff["path"], encoding="utf-8")))[0][0] == "kind"
