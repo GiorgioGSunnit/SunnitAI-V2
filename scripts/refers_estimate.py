@@ -13,8 +13,9 @@ Three estimates, counts and article numbers only (public law):
   C. plan    seeds = the plan's articles of the 17 civil runs; gained = expected articles not in the plan that the
              lists offer; precision = gained / offered. Comparable to the 3 Nov estimate on the ruling relations.
 
-    python -I refers_estimate.py --links C:/tplstage/al_out --cases <repo>/tests/eval_narrative_cases.json \
-        --runs C:/tplstage/relations_v0_out_x/out
+    python -I scripts/refers_estimate.py --links <folder with units.csv and refers_to.csv> \
+        --cases tests/eval_narrative_cases.json --runs <folder with the <case>_A.json runs> [--hub 100]
+Results of 9 Nov 2026 and the reading: the note for Flavio, article_links_estimate_9nov.md (tplstage folder).
 """
 import argparse
 import csv
