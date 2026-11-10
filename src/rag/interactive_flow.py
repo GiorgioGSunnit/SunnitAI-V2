@@ -1692,11 +1692,12 @@ def earned_refs(topics: Sequence[Dict[str, Any]], analysis: Dict[str, Any], case
 
 def norm_blocks(rules: List[Dict[str, Any]], analysis: Dict[str, Any], rows: Sequence[Dict[str, Any]],
                 refs: Optional[Sequence[tuple]] = None, rubriche: Optional[Dict[Tuple[str, str], str]] = None,
-                brief: Optional[set] = None) -> List[str]:
+                brief: Optional[set] = None, matched: Optional[set] = None) -> List[str]:
     """Per article of the topic, in order (refs: section_refs; default, the rules'): its heading (NORM_HEADING, with its
     rubrica when read), then each selected comma's status lines -- each requisite with its status (REQUISITE_LINE), or
     a comma with no requisite with the comma's own (COMMA_LINE) -- from the fact fields (requisite_status). An article
-    with no text read: its heading only."""
+    with no text read: its heading only. v60 (v59-p3: 585 c.p., the lesioni table's, «non trattate»): a matched article
+    (matched: keys -- a chosen topic's anchor, a table's own) with text and no line gets its first selected comma's."""
     from . import article_text, plan_then_write as ptw, rule_quote
     out = []
     brief = brief or set()          # v57: articles that earned no application (earned_refs): no requisite lines
@@ -1724,6 +1725,10 @@ def norm_blocks(rules: List[Dict[str, Any]], analysis: Dict[str, Any], rows: Seq
                 # v57: a comma line only where the comma names a fact (never «testo: da provare»); v59 (v58-h7 321): or
                 # where it extends other articles' penalties -- its line, never a penalty as a requisite
                 lines.append(C.fill(C.COMMA_LINE, comma=label, status=requisite_status(comma, analysis)))
+        if len(lines) == 1 and chosen and _key(rule["ref"]) in (matched or set()):
+            k, comma = chosen[0]
+            lines.append(C.fill(C.COMMA_LINE, comma=C.fill(C.COMMA_LABEL, k=k) if k else C.COMMA_LABEL_ONLY,
+                                status=requisite_status(comma, analysis)))
         out.append("\n".join(x for x in lines if x))
     return out
 
@@ -1780,18 +1785,20 @@ def _paragraph_article(paragraph: str, mark: Optional[int], refs: Sequence[tuple
 def assemble_norms(text: str, rules: List[Dict[str, Any]], analysis: Dict[str, Any], rows: Sequence[Dict[str, Any]],
                    log: List[Dict[str, Any]], refs: Optional[Sequence[tuple]] = None,
                    rubriche: Optional[Dict[Tuple[str, str], str]] = None,
-                   glossed: Optional[Sequence[tuple]] = None) -> str:
+                   glossed: Optional[Sequence[tuple]] = None, matched: Optional[Sequence[tuple]] = None) -> str:
     """§2: one block per article (norm_blocks: heading and status lines, the code's, never the writer's), then the
     writer's paragraphs on it. v56: each paragraph goes to the article it cites, or whose comma it quotes, else to its
     "[N]" mark's (_paragraph_article) -- never to the previous heading because it follows it; a paragraph nothing places
     goes with the one before it, and before any placed one after the blocks (logged). No marks and as many paragraphs
     as articles, none citing: one per article, in order. v57 (B): glossed, the articles that earned an application
     (earned_refs), in the writer's numbering ("[N]" is the N-th of them); another article's block is its heading and
-    comma line only, a paragraph placed on it is dropped (logged)."""
+    comma line only, a paragraph placed on it is dropped (logged). v60: a matched article (a chosen topic's anchor, a
+    table's own) the writer skips keeps its block with its comma line (norm_blocks), never «non trattate»."""
     from . import rule_quote
     refs = list(refs) if refs is not None else [r["ref"] for r in rules]
     earned = {_key(r) for r in glossed} if glossed is not None else {_key(r) for r in refs}
-    blocks = norm_blocks(rules, analysis, rows, refs, rubriche, {_key(r) for r in refs} - earned)
+    blocks = norm_blocks(rules, analysis, rows, refs, rubriche, {_key(r) for r in refs} - earned,
+                         {_key(tuple(r)) for r in matched or []})
     if not blocks:
         return text
     by_key = {_key(r["ref"]): r for r in rules}
@@ -2562,7 +2569,8 @@ def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, Li
     logs["norms"] = []
     sections = [(t, assemble_objections(x, titles, logs["objections"]) if t == ANSWER_TITLES[2]
                  else assemble_norms(x, rules, analysis_p, rows, logs["norms"], section_refs(plan, rows, refs),
-                                     _pool_rubriche(state), earned_refs(topics, analysis_p, case, section_refs(plan, rows, refs)))
+                                     _pool_rubriche(state), earned_refs(topics, analysis_p, case, section_refs(plan, rows, refs)),
+                                     anchors)
                  if t == ANSWER_TITLES[1] else x)
                 for t, x in sections]
     sections = [(t, x) for t, x in sections if (x or "").strip()]      # an objections section with no reply: gone

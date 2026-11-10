@@ -395,7 +395,10 @@ def lint_main(argv: list) -> None:
     args = parser.parse_args(argv)
     files = []
     for f in (args.render_from if args.render_from is not None else args.lint) or []:
-        files += sorted(os.path.join(f, x) for x in os.listdir(f) if x.endswith(".md")) if os.path.isdir(f) else [f]
+        if os.path.isdir(f):
+            files += sorted(os.path.join(d, x) for d, _, xs in os.walk(f) for x in xs if x.endswith(".md"))
+        else:
+            files.append(f)
     findings = []
     for path in files:
         if args.render_from is not None:
@@ -403,7 +406,9 @@ def lint_main(argv: list) -> None:
             cases = render_replay.replay_file(path)
             if args.out:
                 os.makedirs(args.out, exist_ok=True)
-                render_replay.write_file(path, cases, os.path.join(args.out, os.path.basename(path)))
+                name = answer_lint.file_label(path)
+                target = os.path.join(args.out, name + (".md" if not name.endswith(".md") else ""))
+                render_replay.write_file(path, cases, target)
             findings += answer_lint.lint_file(path, cases)
         else:
             findings += answer_lint.lint_file(path)

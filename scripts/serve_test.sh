@@ -3,12 +3,13 @@
 # the server's .env.v45 plus INTERACTIVE_FLOW, TOPIC_STEP and TOPIC_TABLES on. Nothing in /opt/chatbot is read or
 # written, the chatbot service is not touched, no LLM setting is overridden (the model is .env.v45's).
 #
-#   scripts/serve_test.sh [PORT]     start (default: the first free port of 8030-8049; never 8010)
+#   scripts/serve_test.sh [start] [PORT]   start (default: the first free port of 8030-8049; never 8010)
 #   scripts/serve_test.sh stop       stop the server this script started
 #   scripts/serve_test.sh status     is it up, on which port
 #
 # HOST=0.0.0.0 to reach it from outside (default 127.0.0.1: ssh -L PORT:127.0.0.1:PORT root@<server>);
-# ENV_FILE=... another env file; PY=... another python (default venv/bin/python).
+# ENV_FILE=... another env file; PY=... another python (default venv/bin/python, else /opt/chatbot/venv/bin/python:
+# only its interpreter is used, the code is this checkout's).
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -17,7 +18,9 @@ case "$ROOT" in
     /opt/chatbot*) echo "refusing: this is $ROOT, run it from /root/v38"; exit 1 ;;
 esac
 ENV_FILE="${ENV_FILE:-.env.v45}"
-PY="${PY:-venv/bin/python}"
+if [ -z "${PY:-}" ]; then
+    if [ -x venv/bin/python ]; then PY=venv/bin/python; else PY=/opt/chatbot/venv/bin/python; fi
+fi
 HOST="${HOST:-127.0.0.1}"
 PIDFILE="$ROOT/serve_test.pid"
 LOG="$ROOT/serve_test.log"
@@ -34,6 +37,7 @@ case "${1:-}" in
         if running; then echo "up on port $(cut -d' ' -f2 "$PIDFILE") (pid $(cut -d' ' -f1 "$PIDFILE")), log $LOG"
         else echo "not running"; fi
         exit 0 ;;
+    start) shift ;;
 esac
 
 if running; then
@@ -44,6 +48,9 @@ fi
 [ -x "$PY" ] || { echo "no python at $PY"; exit 1; }
 
 PORT="${1:-}"
+case "$PORT" in
+    ''|*[!0-9]*) [ -z "$PORT" ] || { echo "usage: scripts/serve_test.sh [start] [PORT] | stop | status"; exit 1; } ;;
+esac
 if [ -z "$PORT" ]; then
     for p in $(seq 8030 8049); do
         if ! in_use "$p"; then PORT="$p"; break; fi

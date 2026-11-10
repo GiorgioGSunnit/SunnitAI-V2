@@ -521,7 +521,7 @@ def institutions(analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
             tables = []
         for table in tables:
             add(table["name"], "tabella", table=table["id"], refs=[(str(n), _code(c)) for n, c in table["refs"]],
-                questions=table["questions"])
+                questions=table["questions"], table_name=table.get("table_name") or table["name"])
     for issue in frame.get("central_issue_candidates") or []:
         if isinstance(issue, dict) and issue.get("nome"):
             add(issue["nome"], "frame", **({"area": issue["area"]} if issue.get("area") else {}))
@@ -748,8 +748,8 @@ def without_gated(title: str, gate: Dict[str, Any]) -> str:
 
 def _merge(into: Dict[str, Any], topic: Dict[str, Any]) -> None:
     if str(topic.get("source") or "").startswith("tabella"):      # v57 (H): a table merged in, for its name
-        into.setdefault("tables", []).append({"title": topic["title"], "own": list(topic.get("own") or []),
-                                              "source": topic["source"]})
+        into.setdefault("tables", []).append({"title": _title(topic.get("table_name") or topic["title"]),
+                                              "own": list(topic.get("own") or []), "source": topic["source"]})
     into["merged"].append(topic["title"])
     into["merged"] += [m for m in topic.get("merged") or [] if m not in into["merged"]]
     into["merged_sources"] = list(dict.fromkeys(list(into.get("merged_sources") or []) + [topic.get("source")]
@@ -842,9 +842,12 @@ def term_topics_out(topics: List[Dict[str, Any]], terms: Sequence[Dict[str, Any]
 def named_by_table(topic: Dict[str, Any]) -> None:
     """v57 (H: v56-p1 topic 1 "Elemento psicologico del reato" on 52/55/575/589): a topic a table merged into takes the
     table's name when the table's own articles are at least half of its planned ones (the old title among its merged);
-    the table's questions are already its own (_merge)."""
+    the table's questions are already its own (_merge). v60 (v59-n2 «Custodia cautelare in carcere», 5 of 7; v59-p1
+    «Eccesso colposo di legittima difesa», 4 of 7): the table's own name ("table_name"), not the sub-name its "anchors"
+    gave (topic_tables.matches), also for the table's own topic."""
     planned = [tuple(r) for r in topic["refs"][:topic.get("planned", len(topic["refs"]))]]
-    for table in topic.get("tables") or []:
+    mine = [{"title": topic["table_name"], "own": topic.get("own") or []}] if topic.get("table_name") else []
+    for table in mine + list(topic.get("tables") or []):
         own = {tuple(r) for r in table["own"]}
         # v59 (v58-p1: 4 of 8, still «Elemento psicologico del reato»): at half or more
         if planned and len(own & set(planned)) * 2 >= len(planned) and table["title"] != topic["title"]:
@@ -932,6 +935,7 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
         built.append({"title": _title(inst["name"]), "anchor": _label(ref), "how": how, "rubrica": rubrica,
                       "refs": refs, "planned": planned, "source": source, "facts": _facts(inst, refs, signals), "merged": [],
                       "questions": list(inst.get("questions") or []),
+                      **({"table_name": _title(inst["table_name"])} if inst.get("table_name") else {}),
                       "own": [tuple(r) for r in inst.get("refs") or []] if how in ("table", "regime") else [],
                       "rank": (_METHOD_ORDER.index(how), _SOURCE_ORDER.index(inst["source"]), i)})
     built.sort(key=lambda t: t["rank"])
