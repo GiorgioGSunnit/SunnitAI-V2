@@ -149,18 +149,38 @@ def graph_names(env_path: str, names: List[str]) -> Set[str]:
                 k, v = line.split("=", 1)
                 env[k.strip()] = v.strip().strip('"').strip("'")
     from neo4j import GraphDatabase, READ_ACCESS
-    found: Set[str] = set()
     driver = GraphDatabase.driver(env["NEO4J_URI"], auth=(env["NEO4J_USER"], env["NEO4J_PASSWORD"]))
     with driver.session(database=env.get("NEO4J_DATABASE", "neo4j"), default_access_mode=READ_ACCESS) as s:
-        for i in range(0, len(names), 500):
-            part = names[i:i + 500]
-            stems = {os.path.splitext(n)[0].lower(): n for n in part}
-            for r in s.run("MATCH (d:Document) WHERE d.file_name IN $names RETURN d.file_name AS f", names=part):
-                found.add(r["f"])
-            for r in s.run("UNWIND $stems AS st MATCH (d:Document) WHERE toLower(d.name) CONTAINS st "
-                           "RETURN DISTINCT st", stems=list(stems)):
-                found.add(stems[r["st"]])
+        # one read of every document's two names, matched here: asking the graph per name (every stem CONTAINS-ed
+        # against every document) ran over an hour on a 34,612-file batch
+        rows = [(r["f"], r["n"]) for r in s.run("MATCH (d:Document) RETURN d.file_name AS f, d.name AS n")]
     driver.close()
+    return match_graph(names, rows)
+
+
+_CODE_ANYWHERE = re.compile(f"(?=({ITALGIURE.pattern}))", ITALGIURE.flags)     # overlapping: no code is skipped
+
+
+def match_graph(names: List[str], rows: Iterable[tuple]) -> Set[str]:
+    """Which of `names` the graph's (file_name, name) rows hold: the file name itself, or a document name that
+    contains the file's stem (case-insensitive)."""
+    wanted = set(names)
+    stems = {os.path.splitext(n)[0].lower(): n for n in names}
+    by_code: Dict[str, List[str]] = {}
+    loose: List[str] = []                       # stems without the Italgiure code: compared one by one
+    for stem in stems:
+        m = ITALGIURE.search(stem)
+        if m:
+            by_code.setdefault(m.group(0), []).append(stem)
+        else:
+            loose.append(stem)
+    found: Set[str] = set()
+    for file_name, name in rows:
+        if file_name in wanted:
+            found.add(file_name)
+        low = (name or "").lower()
+        candidates = [st for m in _CODE_ANYWHERE.finditer(low) for st in by_code.get(m.group(1), ())] + loose
+        found.update(stems[st] for st in candidates if st in low)
     return found
 
 
@@ -182,7 +202,8 @@ def check(args) -> int:
             with open(sidecar, "rb") as fh:
                 sidecar_hashes[hashlib.sha1(fh.read().strip().lower()).hexdigest()] += 1
     same_display_name = sum(c - 1 for c in sidecar_hashes.values() if c > 1)
-    already = sorted(n for n in names if n in fed_names(args.manifest))
+    fed = fed_names(args.manifest)          # read once: per name it was 35k reads of the manifest
+    already = sorted(n for n in names if n in fed)
     in_graph: Set[str] = set()
     if args.graph:
         in_graph = graph_names(args.graph, names)
