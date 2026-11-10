@@ -482,7 +482,9 @@ def test_the_stale_edges_are_found_read_only_and_deleted_by_id_in_batches(monkey
     assert [e["edge"] for e in stale] == ["x1", "x2"]           # kept: the new pair; another document's never looked at
     assert "DELETE" not in al.FIND_STALE and "MATCH" in al.FIND_STALE
     assert al.delete_stale(session, stale) == 2 and session.deleted == ["x1", "x2"]
-    assert "source: $source" in al.DELETE_STALE and "SET e.resolution = r.resolution" in al.WRITE_REFERS_TO
+    assert "source: $source" in al.DELETE_STALE and "e.resolution = r.resolution" in al.WRITE_REFERS_TO
+    # v60h: additive -- an existing edge's resolution is set only where it has none, never overwritten
+    assert "ON MATCH SET e.resolution = coalesce(e.resolution, r.resolution)" in al.WRITE_REFERS_TO
 
 
 def test_compare_reports_the_targets_that_changed_and_the_ones_no_longer_resolved(tmp_path):
@@ -502,3 +504,84 @@ def test_compare_reports_the_targets_that_changed_and_the_ones_no_longer_resolve
     assert [(r["kind"], r["old"], r["new"]) for r in diff["samples"]] == [("changed target", "52 c.c.", "52 c.p."),
                                                                          ("now unresolved", "7 c.c.", "-")]
     assert list(csv.reader(open(diff["path"], encoding="utf-8")))[0][0] == "kind"
+
+
+# --- v60h: a document whose headings are in title case (Codice del processo amministrativo 2025), any type, by its id ----
+
+CPA = {
+    "1": "Libro I Disposizioni generali Titolo I Principi e organi della giurisdizione amministrativa Capo I Principi "
+         "generali Art. 1 Effettività La giurisdizione amministrativa assicura una tutela piena ed effettiva.",
+    "2": "Il processo amministrativo attua i principi della parità delle parti. Capo II Organi della giurisdizione "
+         "amministrativa",
+    "4": "Sono organi della giurisdizione amministrativa i tribunali amministrativi regionali e il Consiglio di Stato.",
+    "29": "Titolo III Azioni di cognizione Capo I Azione di annullamento 1. L'azione di annullamento si propone nel termine "
+          "di decadenza di sessanta giorni, salvo quanto previsto dal Capo II del presente Titolo.",
+    "30": "Si applicano le disposizioni di cui al Titolo IV e l'articolo 29.",
+}
+
+
+def _cpa_doc():
+    order = list(CPA)
+    sections = [{"id": f"a{k}", "name": k, "text": CPA[k], "next": f"a{order[i + 1]}" if i + 1 < len(order) else None}
+                for i, k in enumerate(order)]
+    walk, off, runs, names = al.arrange(sections)
+    return {"doc": {"id": "LEGAL_DOC::cba1e3", "name": "Codice del processo amministrativo 2025"}, "code": "c.p.a.",
+            "sections": sections, "walk": walk, "off": off, "runs": runs, "run_names": names,
+            "markers": al.marker_style(CPA.values())}
+
+
+def test_title_case_headings_are_read_where_a_heading_stands_never_in_a_reference():
+    assert al.marker_style(CPA.values()) == "title case" and al.marker_style(TEXTS.values()) == "capitals"
+    found = al.markers(CPA["1"], title=True)
+    assert [(m["level"], m["number"], m["name"], m["lead"]) for m in found] == [
+        ("LIBRO", "I", "Disposizioni generali", True),
+        ("TITOLO", "I", "Principi e organi della giurisdizione amministrativa", True),
+        ("CAPO", "I", "Principi generali", True)]
+    assert [(m["level"], m["name"], m["lead"]) for m in al.markers(CPA["2"], title=True)] == [
+        ("CAPO", "Organi della giurisdizione amministrativa", False)]               # at the end: opens the next article
+    assert [m["name"] for m in al.markers(CPA["29"], title=True)] == ["Azioni di cognizione", "Azione di annullamento"]
+    assert al.markers(CPA["30"], title=True) == [] and al.markers(CPA["30"]) == []  # «di cui al Titolo IV»: a reference
+    assert al.markers(CPA["1"]) == []                                               # never read in capitals mode
+
+
+def test_the_cpa_is_placed_and_its_rows_counted_for_the_write():
+    result = al.analyse([_cpa_doc()])[0]
+    assert result["markers"] == "title case"
+    assert result["units"]["1"] == {"LIBRO": "LIBRO I – Disposizioni generali",
+                                    "TITOLO": "TITOLO I – Principi e organi della giurisdizione amministrativa",
+                                    "CAPO": "CAPO I – Principi generali"}
+    assert result["units"]["4"]["CAPO"] == "CAPO II – Organi della giurisdizione amministrativa"
+    assert result["units"]["29"]["TITOLO"] == "TITOLO III – Azioni di cognizione" and result["units"]["30"]["CAPO"] == \
+        "CAPO I – Azione di annullamento"
+    rows = al.graph_rows([result])
+    lines = "\n".join(al.rows_census(rows))
+    assert "units 6 (LIBRO 1, TITOLO 2, CAPO 3)" in lines and f"HAS_ARTICLE {len(rows['has_article'])}" in lines
+    assert "REFERS_TO 1 (explicit_code 0, same_code 1, relative 0)" in lines           # 30 -> 29
+    assert "- markers: title case" in "\n".join(al.census_lines(result))
+
+
+def test_the_write_is_additive_and_stamped():
+    for query in (al.WRITE_UNITS, al.WRITE_CHILD_OF, al.WRITE_HAS_ARTICLE, al.WRITE_REFERS_TO):
+        assert "MERGE" in query and "DELETE" not in query and "ON CREATE SET" in query
+        assert "$computed_at" in query and "$source" in query
+        rest = query.replace("ON CREATE SET", "").replace("ON MATCH SET e.resolution = coalesce", "")
+        assert "SET" not in rest                                  # nothing set on what exists, but a missing resolution
+    rows = al.graph_rows(al.analyse([_cpa_doc()]))
+    session = WriteSession()
+    first = al.write_graph(session, rows, "2026-11-10T00:00:00+00:00")
+    assert first["units"]["created"] == 6 and all(n["present"] == 0 for n in first.values())
+
+
+def test_documents_are_read_by_id_or_type_and_the_unitless_listed_read_only():
+    for query in (al.QUERY_DOCS_TYPES, al.QUERY_DOC_IDS, al.QUERY_UNITLESS):
+        assert not re.search(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE|DETACH|CALL)\b", query, re.IGNORECASE)
+
+    class Session:
+        def run(self, query, **params):
+            assert query == al.QUERY_UNITLESS and params["types"] == ["primary", "special"]
+            rows = [{"id": "LEGAL_DOC::cba1e3", "name": "Codice del processo amministrativo 2025", "type": "special",
+                     "articles": 137},
+                    {"id": "x", "name": "appunti_rossi", "type": "special", "articles": 3}]
+            return type("R", (), {"data": lambda self: rows})()
+    found = al.unitless(Session(), ["primary", "special"])
+    assert [d["id"] for d in found] == ["LEGAL_DOC::cba1e3"]                      # a normative name only

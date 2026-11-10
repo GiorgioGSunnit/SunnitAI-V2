@@ -6,6 +6,19 @@ graph.
     cd /root/v38 && venv/bin/python scripts/article_links.py --env .env.v45 --write OUTDIR [--codes ...]
     ... --dry-run OUTDIR --compare OLD/refers_to.csv     # what changed against a previous dry run (changes.csv)
     ... --write OUTDIR --prune                           # the stale edges deleted first, then the merge
+    ... --unitless                                       # v60h: the normative documents no Unit holds yet (read-only)
+    ... --dry-run OUTDIR --doc LEGAL_DOC::cba1e3…        # v60h: one document by its store id, whatever its type
+
+v60h: --doc ID (repeatable) reads documents by their store id, whatever their document_type («Codice del processo
+amministrativo 2025»); --types primary,special widens the listing; --unitless lists the normative documents (their name
+names an act: citations.NORMATIVE_NAME_RE) of --types (default primary, special) whose articles no Unit holds
+(HAS_ARTICLE), with their articles, and stops. A document whose texts hold no heading marker in capitals is read with its
+markers in title case («Titolo I – …», «Capo I», «Libro primo»), each accepted only where a heading stands -- at the
+start of the text, after a sentence's end, or right after another heading -- never after a preposition or an article
+(«di cui al Capo I», «del Titolo II»: a reference); the census says which («markers: capitals | title case»). The census
+gives the rows --write would send: units by level, CHILD_OF, HAS_ARTICLE, REFERS_TO by resolution. --write is additive:
+MERGE only, every node and edge it creates stamped source: 'article_links' and computed_at, nothing that exists is changed
+(an edge's resolution set only where it has none), nothing deleted unless --prune.
 
 Target: every Document with document_type = 'primary', the six codes first (Codice Civile, c.p.c., c.p., c.p.p., c.p.a.,
 Codice della strada), then the others by name; --only NAME (repeatable) keeps the documents whose name starts with it,
@@ -87,7 +100,19 @@ _ORDINALS = (r"PRIM[OA]|SECOND[OA]|TERZ[OA]|QUART[OA]|QUINT[OA]|SEST[OA]|SETTIM[
              r"UNIC[OA]|PRELIMINARE")
 _NUMBER = rf"(?:[IVXLCDM]+|{_ORDINALS}|\d+)(?:[\s-]*(?:BIS|TER|QUATER|QUINQUIES|SEXIES|bis|ter|quater))?"
 MARKER_RE = re.compile(rf"(?<![\w’'])(?P<level>{'|'.join(LEVELS)})\s+(?P<number>{_NUMBER})\b\s*(?:[–—\-:.]\s*)?")
-_NAME_END_RE = re.compile(r"\s(?=(?:Art\.|Articolo)\s*\d)|(?<=[a-zà-ù])\.\s+(?=[A-ZÀ-Ü][a-zà-ù])")
+# v60h: the same markers in title case («Titolo I», «Capo II», «Libro primo»), for a document with none in capitals
+_ORDINALS_T = (r"(?:[Pp]rim|[Ss]econd|[Tt]erz|[Qq]uart|[Qq]uint|[Ss]est|[Ss]ettim|[Oo]ttav|[Nn]on|[Dd]ecim)[oa]|[Uu]nic[oa]|"
+               r"[Pp]reliminare")
+_NUMBER_T = rf"(?:[IVXLCDM]+|{_ORDINALS_T}|\d+)(?:[\s-]*(?:bis|ter|quater|quinquies|sexies|BIS|TER|QUATER))?"
+MARKER_TITLE_RE = re.compile(rf"(?<![\w’'])(?P<level>Libro|Parte|Titolo|Capo|Sezione)\s+(?P<number>{_NUMBER_T})\b"
+                             rf"\s*(?:[–—\-:.]\s*)?")
+# a title-case marker after one of these is a reference to a unit («di cui al Capo I», «del Titolo II»), no heading
+_REFERENCE_BEFORE_RE = re.compile(r"(?:\b(?:del|dal|al|nel|sul|il|lo|la|dello|della|dei|degli|delle|nei|negli|nelle|ai|"
+                                  r"agli|alle|dai|dagli|dalle|presente|medesimo|stesso|citato|predetto|suddetto|cui|e|ed|"
+                                  r"o|ovvero|di|a|da|in|su|per|con|tra|fra)|[dlnst]?ell['’]|all['’]|dall['’])\s*$",
+                                  re.IGNORECASE)
+HEADING_GAP = 300               # a title-case marker right after another heading: within this many characters, no sentence end
+_NAME_END_RE = re.compile(r"\s(?=(?:Art\.|Articolo)\s*\d)|(?<=[a-zà-ù])\.\s+(?=[A-ZÀ-Ü][a-zà-ù])|\s(?=\d{1,3}\.\s+[A-ZÀ-Ü])")
 
 _SUFFIX = r"(?:[\s-]*(?:bis|ter|quater|quinquies|sexies|septies|octies|novies|decies)\b)?"
 _NUM = rf"\d+{_SUFFIX}"
@@ -123,6 +148,15 @@ _SAME_CODE_RE = re.compile(r"(?:presente|medesim\w*|stess\w*)\s+codice\b", re.IG
 RESOLUTIONS = ("explicit_code", "same_code", "relative")
 
 QUERY_DOCS = "MATCH (d:Document) WHERE d.document_type = 'primary' RETURN d.id AS id, d.name AS name ORDER BY d.name"
+QUERY_DOCS_TYPES = ("MATCH (d:Document) WHERE d.document_type IN $types RETURN d.id AS id, d.name AS name, "
+                    "d.document_type AS type ORDER BY d.name")
+QUERY_DOC_IDS = ("MATCH (d:Document) WHERE d.id IN $ids RETURN d.id AS id, d.name AS name, d.document_type AS type "
+                 "ORDER BY d.name")
+# v60h: the documents of the types given whose article Sections no Unit holds (read-only)
+QUERY_UNITLESS = ("MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.document_type IN $types "
+                  "AND s.titolo_articolo IS NOT NULL OPTIONAL MATCH (u:Unit)-[:HAS_ARTICLE]->(s) "
+                  "WITH d, count(DISTINCT s) AS articles, count(DISTINCT u) AS units WHERE units = 0 "
+                  "RETURN d.id AS id, d.name AS name, d.document_type AS type, articles ORDER BY articles DESC, d.name")
 QUERY_SECTIONS = ("MATCH (d:Document {id: $doc})-[:CONTAINS]->(s:Section) "
                   "OPTIONAL MATCH (s)-[:NEXT]->(n:Section)<-[:CONTAINS]-(d) "
                   "RETURN elementId(s) AS id, s.name AS name, s.plain_text AS text, elementId(n) AS next")
@@ -204,12 +238,37 @@ def _caps(word: str) -> bool:
     return not letters or all(c.isupper() for c in letters)
 
 
-def markers(text: str) -> List[Dict[str, Any]]:
+def _title_markers(text: str) -> list:
+    """The title-case markers that stand where a heading does (v60h): at the text's start, after a sentence's end, or
+    within HEADING_GAP characters of the heading before with no sentence end between; never after a preposition or an
+    article (a reference to a unit)."""
+    out = []
+    for m in MARKER_TITLE_RE.finditer(text or ""):
+        before = text[:m.start()]
+        if _REFERENCE_BEFORE_RE.search(before[-24:]):
+            continue
+        tail = before.rstrip()
+        near = bool(out) and m.start() - out[-1].start() <= HEADING_GAP and not re.search(
+            r"[.;]\s+[A-ZÀ-Ü][a-zà-ù]", text[out[-1].end():m.start()])
+        if not tail or tail[-1] in ".:;)»\"”" or "\n" in before[len(tail):] or near:
+            out.append(m)
+    return out
+
+
+def marker_style(texts) -> str:
+    """«capitals» when the texts hold a marker in capitals, else «title case» when they hold one so, else «none»."""
+    texts = [t for t in texts if t]
+    if any(MARKER_RE.search(t) for t in texts):
+        return "capitals"
+    return "title case" if any(_title_markers(t) for t in texts) else "none"
+
+
+def markers(text: str, title: bool = False) -> List[Dict[str, Any]]:
     """[{"level", "number", "name", "start", "lead"}] of the heading markers in a Section's text, in order; "lead": only
     blanks, other markers or a heading in capitals ("DISPOSIZIONI SULLA LEGGE IN GENERALE CAPO I") precede it (it opens
-    its own article's unit)."""
+    its own article's unit). title (v60h): the markers in title case (_title_markers)."""
     text = text or ""
-    found = list(MARKER_RE.finditer(text))
+    found = _title_markers(text) if title else list(MARKER_RE.finditer(text))
     out = []
     for i, m in enumerate(found):
         end = found[i + 1].start() if i + 1 < len(found) else len(text)
@@ -315,7 +374,7 @@ def ordinal_text(n: int, like: str) -> str:
     return out
 
 
-def heading_only(sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def heading_only(sections: List[Dict[str, Any]], title: bool = False) -> List[Dict[str, Any]]:
     """[{"id", "level", "number", "ordinal", "unit"}] of the Sections with no article number whose text is a marker line
     (it starts with a marker, at most HEADING_ONLY_CHARS characters), one entry per marker, in the order given."""
     out = []
@@ -323,7 +382,7 @@ def heading_only(sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         text = " ".join(str(s.get("text") or "").split())
         if article_of(s.get("name")) is not None or not text or len(text) > HEADING_ONLY_CHARS:
             continue
-        found = markers(text)
+        found = markers(text, title)
         if not found or not found[0]["lead"]:
             continue
         for m in found:
@@ -332,8 +391,8 @@ def heading_only(sections: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return out
 
 
-def opening_units(walk: List[Dict[str, Any]], runs: List[int], run: int, headings: List[Dict[str, Any]]
-                  ) -> Tuple[Dict[str, str], List[str]]:
+def opening_units(walk: List[Dict[str, Any]], runs: List[int], run: int, headings: List[Dict[str, Any]],
+                  title: bool = False) -> Tuple[Dict[str, str], List[str]]:
     """({level: unit name}, [ids of the heading-only Sections used]) of a run's opening units: the units its articles
     before the first marker in the text belong to, one below the first marker seen at each level (SEZIONE II first:
     SEZIONE I) -- a level counts only if no marker above it came first. Named after a heading-only Section of the
@@ -343,7 +402,7 @@ def opening_units(walk: List[Dict[str, Any]], runs: List[int], run: int, heading
     for section, r in zip(walk, runs):
         if r != run:
             continue
-        for m in markers(section.get("text") or ""):
+        for m in markers(section.get("text") or "", title):
             if m["level"] not in first and m["level"] not in closed:
                 first[m["level"]] = m
             closed |= {lower for lower in LEVELS[LEVELS.index(m["level"]) + 1:] if lower not in first}
@@ -369,7 +428,8 @@ def label_of(article: str, run: int, names: Dict[int, str]) -> str:
 
 
 def place(walk: List[Dict[str, Any]], runs: Optional[List[int]] = None, names: Optional[Dict[int, str]] = None,
-          headings: Optional[List[Dict[str, Any]]] = None) -> Tuple[Dict[str, Dict[str, str]], List[Tuple[str, str]]]:
+          headings: Optional[List[Dict[str, Any]]] = None, title: bool = False
+          ) -> Tuple[Dict[str, Dict[str, str]], List[Tuple[str, str]]]:
     """({article label: {level: "CAPO V – DELL'ESERCIZIO ..."}}, [(article label, why unplaced)]) along the chain; each
     numbering run its own tree, starting in its opening units (opening_units; headings: heading_only's entries)."""
     runs = runs if runs is not None else [0] * len(walk)
@@ -389,8 +449,8 @@ def place(walk: List[Dict[str, Any]], runs: Optional[List[int]] = None, names: O
         current[level] = f"{level} {marker['number']}" + (f" – {marker['name']}" if marker["name"] else "")
     for section, run in zip(walk, runs):
         if run != run_now:          # a numbering: its own tree, from its opening units
-            run_now, current = run, dict(opening_units(walk, runs, run, heads)[0])
-        found = markers(section.get("text") or "")
+            run_now, current = run, dict(opening_units(walk, runs, run, heads, title)[0])
+        found = markers(section.get("text") or "", title)
         for m in pending:                        # opened at the end of the article before
             apply(m)
         pending = []
@@ -503,7 +563,7 @@ def read_document(session, doc: Dict[str, str]) -> Dict[str, Any]:
     sections = session.run(QUERY_SECTIONS, doc=doc["id"]).data()
     walk, off, runs, names = arrange(sections)
     return {"doc": doc, "code": code_of(doc["name"]), "sections": sections, "walk": walk, "off": off,
-            "runs": runs, "run_names": names}
+            "runs": runs, "run_names": names, "markers": marker_style(s.get("text") for s in sections)}
 
 
 def analyse(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -524,9 +584,10 @@ def analyse(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     for d in docs:
         runs = d.get("runs") or [0] * len(d["walk"])
         names = d.get("run_names") or {0: ""}
-        heads = heading_only(list(d["walk"]) + list(d["off"]))
-        units, unplaced = place(d["walk"], runs, names, heads)
-        opening = {r: opening_units(d["walk"], runs, r, heads) for r in sorted(set(runs))}
+        title = d.get("markers") == "title case"         # v60h: a document whose headings are in title case
+        heads = heading_only(list(d["walk"]) + list(d["off"]), title)
+        units, unplaced = place(d["walk"], runs, names, heads, title)
+        opening = {r: opening_units(d["walk"], runs, r, heads, title) for r in sorted(set(runs))}
         used = {i for _, ids in opening.values() for i in ids}
         placed_levels = {(level, ordinal(name.split()[1]) if len(name.split()) > 1 else None)
                          for u in units.values() for level, name in u.items()}
@@ -580,7 +641,8 @@ def analyse(docs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         articles = {label_of(a, run, names): ids for (run, a), ids in ((k, v) for k, v in index[d["code"]].items())}
         out.append({"doc": d["doc"], "code": d["code"], "articles": len(index[d["code"]]), "units": units,
                     "unplaced": unplaced, "references": refs, "pieces": articles, "run_names": names,
-                    "headings": heading_census, "duplicates": duplicates(d["sections"])})
+                    "headings": heading_census, "duplicates": duplicates(d["sections"]),
+                    "markers": d.get("markers") or "capitals"})
     return out
 
 
@@ -592,7 +654,8 @@ def census_lines(result: Dict[str, Any]) -> List[str]:
     resolved = Counter(r["pattern"] for r in refs if r["resolved"])
     why = Counter(w for _, w in result["unplaced"])
     levels = Counter(level for u in result["units"].values() for level in u)
-    lines = [f"## {result['doc']['name']} ({result['code']})", "",
+    lines = [f"## {result['doc']['name']} ({result['code']}, {result['doc'].get('id', '')})", "",
+             f"- markers: {result.get('markers') or 'capitals'}",
              f"- articles: {result['articles']}",
              f"- placed in a Libro/Parte/Titolo/Capo/Sezione path: {len(result['units'])}"
              + (f" (articles with a unit at each level: " + ", ".join(f"{l} {levels[l]}" for l in LEVELS if levels[l]) + ")"
@@ -623,6 +686,17 @@ def census_lines(result: Dict[str, Any]) -> List[str]:
         lines.append("")
         lines.append("other codes or acts named: " + ", ".join(f"{c} {n}" for c, n in others.most_common()))
     return lines + [""]
+
+
+def rows_census(rows: Dict[str, List[Dict[str, Any]]]) -> List[str]:
+    """v60h: what --write would send for these results -- units by level, CHILD_OF, HAS_ARTICLE, REFERS_TO by
+    resolution."""
+    levels = Counter(u["level"] for u in rows["units"])
+    how = Counter(r["resolution"] for r in rows["refers_to"])
+    return [f"- graph rows: units {len(rows['units'])} ("
+            + ", ".join(f"{level} {levels[level]}" for level in LEVELS if levels[level]) + ")"
+            + f"; CHILD_OF {len(rows['child_of'])}; HAS_ARTICLE {len(rows['has_article'])}; REFERS_TO "
+            f"{len(rows['refers_to'])} (" + ", ".join(f"{k} {how.get(k, 0)}" for k in RESOLUTIONS) + ")", ""]
 
 
 def art_code(label: str, code: str) -> str:
@@ -674,15 +748,20 @@ def write_csvs(results: List[Dict[str, Any]], outdir: str) -> Dict[str, str]:
 BATCH = 500
 SOURCE = "article_links"
 UNIT_INDEX = "CREATE INDEX unit_key IF NOT EXISTS FOR (u:Unit) ON (u.code, u.level, u.path)"
+# v60h: additive -- what is created is stamped (source, computed_at); what exists is left as it is (a REFERS_TO edge's
+# resolution set only where it has none)
 WRITE_UNITS = ("UNWIND $rows AS r MERGE (u:Unit {code: r.code, level: r.level, path: r.path}) "
-               "ON CREATE SET u.name = r.name")
+               "ON CREATE SET u.name = r.name, u.source = $source, u.computed_at = $computed_at")
 WRITE_CHILD_OF = ("UNWIND $rows AS r MATCH (c:Unit {code: r.code, level: r.level, path: r.path}) "
-                  "MATCH (p:Unit {code: r.code, level: r.parent_level, path: r.parent_path}) MERGE (c)-[:CHILD_OF]->(p)")
+                  "MATCH (p:Unit {code: r.code, level: r.parent_level, path: r.parent_path}) MERGE (c)-[e:CHILD_OF]->(p) "
+                  "ON CREATE SET e.source = $source, e.computed_at = $computed_at")
 WRITE_HAS_ARTICLE = ("UNWIND $rows AS r MATCH (u:Unit {code: r.code, level: r.level, path: r.path}) "
-                     "MATCH (s:Section) WHERE elementId(s) = r.section MERGE (u)-[:HAS_ARTICLE]->(s)")
+                     "MATCH (s:Section) WHERE elementId(s) = r.section MERGE (u)-[e:HAS_ARTICLE]->(s) "
+                     "ON CREATE SET e.source = $source, e.computed_at = $computed_at")
 WRITE_REFERS_TO = ("UNWIND $rows AS r MATCH (a:Section) WHERE elementId(a) = r.from MATCH (b:Section) WHERE elementId(b) = r.to "
                    "MERGE (a)-[e:REFERS_TO {pattern: r.pattern, text: r.text, source: $source}]->(b) "
-                   "ON CREATE SET e.computed_at = $computed_at SET e.resolution = r.resolution")
+                   "ON CREATE SET e.computed_at = $computed_at, e.resolution = r.resolution "
+                   "ON MATCH SET e.resolution = coalesce(e.resolution, r.resolution)")
 # v53: before the corrected edges are merged, the stale ones go -- an edge of this source from a Section of the documents
 # read whose (from, to) the new rows no longer hold. Found read-only (also by --dry-run), deleted by id in batches.
 FIND_STALE = ("MATCH (d:Document)-[:CONTAINS]->(a:Section)-[e:REFERS_TO {source: $source}]->(b:Section) WHERE d.id IN $docs "
@@ -802,11 +881,17 @@ def main() -> None:
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--census", action="store_true")
+    mode.add_argument("--unitless", action="store_true",
+                      help="list the normative documents of --types whose articles no Unit holds, and stop (read-only)")
     mode.add_argument("--dry-run", metavar="OUTDIR")
     mode.add_argument("--write", metavar="OUTDIR", help="the dry run's CSVs to OUTDIR, then MERGE them into the graph")
     parser.add_argument("--only", action="append", default=[], metavar="NAME",
                         help="documents whose name starts with NAME (repeatable)")
     parser.add_argument("--codes", default="", help='code labels or name prefixes, comma-separated: "c.c.,c.p.c."')
+    parser.add_argument("--doc", action="append", default=[], metavar="ID",
+                        help="a document by its store id, whatever its type (repeatable)")
+    parser.add_argument("--types", default="",
+                        help="document types to read, comma-separated (default: primary; --unitless: primary,special)")
     parser.add_argument("--compare", metavar="OLD_REFERS_CSV",
                         help="with --dry-run: the references whose target changed or that no longer resolve, against a "
                              "previous dry run's refers_to.csv (changes.csv, 20 samples printed)")
@@ -825,13 +910,26 @@ def main() -> None:
     access = neo4j.WRITE_ACCESS if args.write else neo4j.READ_ACCESS
     with neo4j.GraphDatabase.driver(uri, auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))) as driver:
         with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j"), default_access_mode=access) as session:
-            docs = select_codes(ordered(session.run(QUERY_DOCS).data(), args.only), codes)
+            types = [t.strip() for t in args.types.split(",") if t.strip()]
+            if args.unitless:
+                print_unitless(unitless(session, types or ["primary", "special"]))
+                return
+            if args.doc:
+                found = session.run(QUERY_DOC_IDS, ids=args.doc).data()
+                missing = sorted(set(args.doc) - {d["id"] for d in found})
+                if missing:
+                    sys.exit(f"no Document with id {', '.join(missing)}")
+                docs = ordered(found)
+            elif types and types != ["primary"]:
+                docs = select_codes(ordered(session.run(QUERY_DOCS_TYPES, types=types).data(), args.only), codes)
+            else:
+                docs = select_codes(ordered(session.run(QUERY_DOCS).data(), args.only), codes)
             read = [read_document(session, d) for d in docs]
             results = analyse(read)
-            print(f"# article_links census: {len(results)} primary documents"
+            print(f"# article_links census: {len(results)} documents"
                   + (" (writing)" if args.write else " (read-only)") + "\n")
             for r in results:
-                print("\n".join(census_lines(r)))
+                print("\n".join(census_lines(r) + rows_census(graph_rows([r]))))
             outdir = args.dry_run or args.write
             if outdir:
                 paths = write_csvs(results, outdir)
@@ -863,6 +961,22 @@ def main() -> None:
                 print("\n## Written (MERGE: created / already present)\n")
                 for kind, n in summary.items():
                     print(f"- {kind}: {n['rows']} rows, {n['created']} created, {n['present']} already present")
+
+
+def unitless(session, types: List[str]) -> List[Dict[str, Any]]:
+    """v60h: the normative documents of these types (their name names an act) whose articles no Unit holds, with their
+    articles (read-only)."""
+    import pathlib
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+    from src.rag.citations import normative_name
+    return [d for d in session.run(QUERY_UNITLESS, types=types).data() if normative_name(d.get("name"))]
+
+
+def print_unitless(docs: List[Dict[str, Any]]) -> None:
+    print(f"# Normative documents no Unit holds: {len(docs)} (read-only)\n")
+    print("| id | name | type | articles | code |\n|---|---|---|---:|---|")
+    for d in docs:
+        print(f"| {d['id']} | {d['name']} | {d.get('type') or ''} | {d.get('articles', 0)} | {code_of(d['name'])} |")
 
 
 def select_codes(docs: List[Dict[str, str]], codes: List[str]) -> List[Dict[str, str]]:

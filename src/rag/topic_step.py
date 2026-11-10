@@ -246,7 +246,10 @@ class GraphLinks:
         key = tuple(tokens(rubrica))
         if key not in self._counts:
             first = (re.findall(r"[\wà-ù']+", str(rubrica or "").lower()) or [""])[0]
-            rows = self.session.run(self._COUNT, first=first).data() if first else []
+            cache = self.__dict__.setdefault("_count_rows", {})
+            if first and first not in cache:
+                cache[first] = self.session.run(self._COUNT, first=first).data()
+            rows = cache.get(first, []) if first else []
             self._counts[key] = len({(r["doc"], r["section"]) for r in rows if tuple(tokens(r["rubrica"])) == key})
         return self._counts[key]
 
@@ -260,11 +263,20 @@ class GraphLinks:
     def _ref(doc: str, section: str) -> tuple:
         return (str(section or "").split(".")[0].split("_")[0], _code(doc))
 
-    def rubrica_matches(self, name: str, codes: Optional[set]) -> List[Tuple[tuple, str, str]]:
+    @staticmethod
+    def _last_word(name: str) -> str:
         words = [w for w in re.findall(r"[\wà-ù']+", str(name or "").lower()) if w not in _STOPWORDS]
-        if not words:
+        return words[-1] if words else ""
+
+    def rubrica_matches(self, name: str, codes: Optional[set]) -> List[Tuple[tuple, str, str]]:
+        word = self._last_word(name)
+        if not word:
             return []
-        rows = self.session.run(self._RUBRICA, docs=self._docs(codes), word=words[-1]).data()
+        docs = self._docs(codes)
+        cache = self.__dict__.setdefault("_rubrica_rows", {})
+        if (tuple(docs), word) not in cache:
+            cache[(tuple(docs), word)] = self.session.run(self._RUBRICA, docs=docs, word=word).data()
+        rows = cache[(tuple(docs), word)]
         out = []
         for r in rows:
             how = name_match(name, r["rubrica"])
@@ -278,15 +290,22 @@ class GraphLinks:
         doc = self._doc_of(ref[1])
         if not doc:
             return ""
-        rows = self.session.run(self._UNIT_NAME, doc=doc, num=str(ref[0]), level=level).data()
-        return str(rows[0]["name"] or "") if rows else ""
+        cache = self.__dict__.setdefault("_unit_names", {})
+        key = (doc, str(ref[0]), level)
+        if key not in cache:
+            rows = self.session.run(self._UNIT_NAME, doc=doc, num=str(ref[0]), level=level).data()
+            cache[key] = str(rows[0]["name"] or "") if rows else ""
+        return cache[key]
 
     def unit(self, ref: Sequence[str], level: str) -> List[tuple]:
         doc = self._doc_of(ref[1])
         if not doc:
             return []
-        rows = self.session.run(self._UNIT, doc=doc, num=str(ref[0]), level=level).data()
-        return list(dict.fromkeys(self._ref(r["doc"], r["section"]) for r in rows))
+        cache = self.__dict__.setdefault("_units", {})
+        key = (doc, str(ref[0]), level)
+        if key not in cache:
+            cache[key] = self.session.run(self._UNIT, doc=doc, num=str(ref[0]), level=level).data()
+        return list(dict.fromkeys(self._ref(r["doc"], r["section"]) for r in cache[key]))
 
     def refers(self, ref: Sequence[str]) -> List[Tuple[tuple, int]]:
         doc = self._doc_of(ref[1])
@@ -307,8 +326,95 @@ class GraphLinks:
         doc = self._doc_of(ref[1])
         if not doc:
             return []
-        rows = self.session.run(self._REFERS_OUT, doc=doc, num=str(ref[0])).data()
-        return [(self._ref(r["doc"], r["section"]), int(r["inbound"] or 0)) for r in rows]
+        cache = self.__dict__.setdefault("_refers_out", {})
+        key = (doc, str(ref[0]))
+        if key not in cache:
+            cache[key] = self.session.run(self._REFERS_OUT, doc=doc, num=str(ref[0])).data()
+        return [(self._ref(r["doc"], r["section"]), int(r["inbound"] or 0)) for r in cache[key]]
+
+    # --- v60b (round 1 on h3: topic_step 8.2 s, 69 queries one after another): the same queries for many items at
+    # once, UNWIND with a CALL subquery each, into the caches the methods above read; same rows per item, same limits
+    _B_RUBRICA = ("UNWIND $words AS w CALL { WITH w MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id IN $docs "
+                  "AND s.titolo_articolo IS NOT NULL AND toLower(s.titolo_articolo) CONTAINS w "
+                  "RETURN d.name AS doc, s.name AS section, s.titolo_articolo AS rubrica LIMIT 300 } "
+                  "RETURN w AS key, doc, section, rubrica")
+    _B_COUNT = ("UNWIND $firsts AS f CALL { WITH f MATCH (d:Document)-[:CONTAINS]->(s:Section) "
+                "WHERE s.titolo_articolo IS NOT NULL AND toLower(s.titolo_articolo) STARTS WITH f "
+                "RETURN DISTINCT d.id AS doc, s.name AS section, s.titolo_articolo AS rubrica LIMIT 5000 } "
+                "RETURN f AS key, doc, section, rubrica")
+    _B_ANCHOR = ("UNWIND $items AS it CALL { WITH it MATCH (d:Document {id: it.doc})-[:CONTAINS]->(s:Section) "
+                 "WHERE s.name = it.num OR s.name STARTS WITH it.num + '.' OR s.name STARTS WITH it.num + '_' ")
+    _B_UNIT = _B_ANCHOR + ("MATCH (u:Unit {level: it.level})-[:HAS_ARTICLE]->(s) MATCH (u)-[:HAS_ARTICLE]->(t:Section)"
+                           "<-[:CONTAINS]-(td:Document) RETURN DISTINCT td.name AS doc, t.name AS section } "
+                           "RETURN it.doc AS qdoc, it.num AS qnum, it.level AS qlevel, doc, section")
+    _B_UNIT_NAME = _B_ANCHOR + ("MATCH (u:Unit {level: it.level})-[:HAS_ARTICLE]->(s) RETURN u.name AS name LIMIT 1 } "
+                                "RETURN it.doc AS qdoc, it.num AS qnum, it.level AS qlevel, name")
+    _B_REFERS_OUT = _B_ANCHOR + ("MATCH (s)-[:REFERS_TO]->(t:Section)<-[:CONTAINS]-(td:Document) "
+                                 "OPTIONAL MATCH (src:Section)-[:REFERS_TO]->(t) "
+                                 "RETURN td.name AS doc, t.name AS section, count(DISTINCT src) AS inbound } "
+                                 "RETURN it.doc AS qdoc, it.num AS qnum, doc, section, inbound")
+
+    def prefetch_rubriche_matches(self, names: Sequence[str], codes: Optional[set]) -> None:
+        docs = self._docs(codes)
+        cache = self.__dict__.setdefault("_rubrica_rows", {})
+        words = sorted({w for w in (self._last_word(n) for n in names) if w and (tuple(docs), w) not in cache})
+        if not words:
+            return
+        for w in words:
+            cache[(tuple(docs), w)] = []
+        for r in self.session.run(self._B_RUBRICA, words=words, docs=docs).data():
+            cache[(tuple(docs), r["key"])].append({"doc": r["doc"], "section": r["section"], "rubrica": r["rubrica"]})
+
+    def prefetch_counts(self, rubriche: Sequence[str]) -> None:
+        cache = self.__dict__.setdefault("_count_rows", {})
+        firsts = sorted({(re.findall(r"[\wà-ù']+", str(r or "").lower()) or [""])[0] for r in rubriche
+                         if len(tokens(r)) <= GENERIC_SHORT_WORDS} - {""} - set(cache))
+        if not firsts:
+            return
+        for f in firsts:
+            cache[f] = []
+        for r in self.session.run(self._B_COUNT, firsts=firsts).data():
+            cache[r["key"]].append({"doc": r["doc"], "section": r["section"], "rubrica": r["rubrica"]})
+
+    def _items(self, refs: Sequence[Sequence[str]], cache: Dict, levels: Sequence[Optional[str]]) -> List[Dict[str, str]]:
+        out = []
+        for ref in refs:
+            doc = self._doc_of(ref[1])
+            for level in levels:
+                key = (doc, str(ref[0]), level) if level else (doc, str(ref[0]))
+                if doc and key not in cache:
+                    out.append({"doc": doc, "num": str(ref[0]), **({"level": level} if level else {})})
+        return list({tuple(sorted(i.items())): i for i in out}.values())
+
+    def prefetch_units(self, refs: Sequence[Sequence[str]], levels: Sequence[str]) -> None:
+        cache = self.__dict__.setdefault("_units", {})
+        items = self._items(refs, cache, levels)
+        if not items:
+            return
+        for i in items:
+            cache[(i["doc"], i["num"], i["level"])] = []
+        for r in self.session.run(self._B_UNIT, items=items).data():
+            cache[(r["qdoc"], r["qnum"], r["qlevel"])].append({"doc": r["doc"], "section": r["section"]})
+
+    def prefetch_unit_names(self, refs: Sequence[Sequence[str]], level: str) -> None:
+        cache = self.__dict__.setdefault("_unit_names", {})
+        items = self._items(refs, cache, [level])
+        if not items:
+            return
+        for i in items:
+            cache[(i["doc"], i["num"], level)] = ""
+        for r in self.session.run(self._B_UNIT_NAME, items=items).data():
+            cache[(r["qdoc"], r["qnum"], r["qlevel"])] = str(r["name"] or "")
+
+    def prefetch_refers_out(self, refs: Sequence[Sequence[str]]) -> None:
+        cache = self.__dict__.setdefault("_refers_out", {})
+        items = self._items(refs, cache, [None])
+        if not items:
+            return
+        for i in items:
+            cache[(i["doc"], i["num"])] = []
+        for r in self.session.run(self._B_REFERS_OUT, items=items).data():
+            cache[(r["qdoc"], r["qnum"])].append({"doc": r["doc"], "section": r["section"], "inbound": r["inbound"]})
 
     def rubrica_of(self, ref: Sequence[str]) -> str:
         return self.rubriche_of([ref]).get((str(ref[0]), _code(ref[1])), "")
@@ -812,11 +918,35 @@ def _matter(key: Tuple[str, str]) -> str:
     return key[1]
 
 
+GRADED_MIN = 2
+
+
+def graded_topics(topics: Sequence[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
+    """v60g (5): with graded topics (case-first: their "grades"), each graded 2 or more reduced to its articles graded 2
+    or more -- what a term may hang on; None when no topic carries grades (the rules' topics: as before)."""
+    if not any(isinstance(t.get("grades"), dict) and t.get("grades") for t in topics or []):
+        return None
+    out = []
+    for t in topics:
+        grades = t.get("grades") or {}
+        labels = [lab for lab, g in grades.items() if isinstance(g, int) and g >= GRADED_MIN]
+        if labels:
+            out.append({"title": t.get("title"), "articles": labels, "source": t.get("source"), "grades": grades})
+    return out
+
+
 def carries_term(term: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> bool:
     """v59 (v58-l3: the usucapione's, negatoria's and rivendicazione's lines in round 1 and §4 beside condominium and
     damages topics; v58-h10: 2947 c.c. in an administrative case): a computed term is shown only when a listed topic
     carries it -- holds one of its articles, or is of its matter (CIVIL_MATTERS, TERM_MATTERS; another code: the same
-    code) --, never by its own term-only topic alone while other topics are listed (alone, it is the answer's)."""
+    code) --, never by its own term-only topic alone while other topics are listed (alone, it is the answer's). v60g
+    (5): with graded topics, only a topic graded 2 or more carries it, by its articles graded 2 or more (graded_topics);
+    a term-only topic, an «Altri profili» entry or a grade-1 article never does."""
+    graded = graded_topics(topics)
+    if graded is not None:
+        keys = set(_refs_of_label(term.get("ref")))
+        matters = {TERM_MATTERS.get(str(term.get("id") or ""))} - {None} or {_matter(k) for k in keys}
+        return any(keys & _topic_keys(t) or matters & {_matter(k) for k in _topic_keys(t)} for t in graded)
     keys = set(_refs_of_label(term.get("ref")))
     matters = {TERM_MATTERS.get(str(term.get("id") or ""))} - {None} or {_matter(k) for k in keys}
     others = [t for t in topics if not _term_only(t, term)]
@@ -891,6 +1021,15 @@ def allowed(analysis: Dict[str, Any], case_text: str = "") -> Optional[set]:
     return {_code(c) for c in codes} if codes else None
 
 
+def _isolated_prefetch(run) -> None:
+    """A prefetch that fails leaves the caches as they were: the steps then read item by item, as before."""
+    try:
+        run()
+    except Exception as exc:
+        from . import fact_signals
+        fact_signals._log_exception("topic_step.prefetch", exc)
+
+
 def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, case_text: str = "",
           others: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
     """[{title, anchor, how, rubrica, articles: ["1062 c.c.", ...], facts, source, merged}] (module docstring). v54: a
@@ -918,7 +1057,16 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
         resolved.setdefault(tuple(tokens(name)), []).extend((str(r[0]), _code(r[1])) for r in refs if len(r) == 2)
     built = []
     decided = decided_refs(signals)
-    for i, inst in enumerate(institutions(analysis)):
+    insts = institutions(analysis)
+    # v60b: the graph reads of every institution at once (GraphLinks.prefetch_*: one query per kind), then the same
+    # steps as before, institution by institution, from the caches
+    batched = links is not None and hasattr(links, "prefetch_units")
+    if batched:
+        _isolated_prefetch(lambda: links.prefetch_rubriche_matches([inst["name"] for inst in insts], codes))
+        _isolated_prefetch(lambda: links.prefetch_counts(
+            [m[1] for inst in insts for m in links.rubrica_matches(inst["name"], codes)]))
+    anchored = []
+    for i, inst in enumerate(insts):
         own = [inst["area"]] if inst.get("area") else []
         ref, how, rubrica = anchor(inst, links, codes, pool, regimes, resolved.get(tuple(tokens(inst["name"]))),
                                    areas=own + list(areas))
@@ -926,6 +1074,15 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
             continue
         if (str(ref[0]), _code(ref[1])) in decided:
             continue
+        anchored.append((i, inst, ref, how, rubrica))
+    if batched:
+        refs_all = [ref for _, _, ref, _, _ in anchored]
+        _isolated_prefetch(lambda: links.prefetch_units(refs_all, ("SEZIONE", "CAPO")))
+        _isolated_prefetch(lambda: links.prefetch_refers_out(refs_all))
+        _isolated_prefetch(lambda: links.prefetch_unit_names(
+            refs_all + [r for ref in refs_all for r, _ in links.refers_out(ref)], "LIBRO"))
+        _isolated_prefetch(lambda: links.rubriche_of([r for ref in refs_all for r in links.unit(ref, "SEZIONE")]))
+    for i, inst, ref, how, rubrica in anchored:
         own = [tuple(r) for r in inst.get("refs") or []] if how in ("table", "regime") else []
         head, tail = articles_split(ref, links, pool, codes, inst["name"], own)     # v57: matched, Sezione, cited
         refs, planned = head + tail, len(head)
@@ -976,6 +1133,11 @@ def build(analysis: Dict[str, Any], rows: Iterable[Dict[str, Any]], links=None, 
     out = term_topics_out(out, signals.get("terms") or [])          # v59
     if others is not None:
         case_words = _content_stems(case_text) - GENERIC_STEMS
+        if batched:             # v60b: the Capo names and the rubriche of every candidate at once
+            _isolated_prefetch(lambda: links.prefetch_unit_names([tuple(t["anchor"].split(" ", 1)) for t in rest
+                                                                  if " " in str(t.get("anchor") or "")], "CAPO"))
+            _isolated_prefetch(lambda: links.rubriche_of([tuple(a.split(" ", 1)) for t in rest
+                                                          for a in t.get("articles") or [] if " " in a]))
         for topic in rest:                      # the "altri profili" are labelled by their anchor's Capo
             if len(others) >= TOPICS_MAX:
                 break

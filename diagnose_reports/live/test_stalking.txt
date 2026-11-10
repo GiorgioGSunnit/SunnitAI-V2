@@ -1,0 +1,68 @@
+Ho letto il caso di Caia. Prima di scrivere il parere, vorrei concordare con te su cosa concentrarlo e chiarire alcuni punti che il testo non dice.
+
+Argomenti individuati
+
+Querela (artt. 124, 120 c.p.; 336 c.p.p.). Da chiarire: data del fatto (domanda 3).
+Lesione personale (artt. 582, 583, 585, 590, 577, 581, 590-bis, 583-quater c.p.). Da chiarire: data del fatto (domanda 3).
+Misure cautelari personali (artt. 274, 273, 275, 285, 309 c.p.p.). Da chiarire: data dell'ordinanza cautelare (domanda 2).
+Altri profili (non trattati, salvo che tu lo chieda)
+
+Responsabilità penale per violenza sessuale o maltrattamenti in convivenza (artt. 609-octies, 609-bis, 609-quater, 609-ter c.p.)
+Ecco i fatti e i termini che ho ricavato dal caso:
+
+Parti: Tizio (indagato/imputato); Caia (persona offesa); Autorità giudiziaria (privato, pubblica amministrazione). Querela: termine di 3 mesi dalla notizia del fatto che costituisce il reato — DA VERIFICARE: il caso non indica le date da cui decorre.
+
+Da chiarire
+
+Chi assisti in questo caso: Tizio o Caia?
+In quale data è stata eseguita o notificata l'ordinanza cautelare? Da questa data decorrono i dieci giorni per la richiesta di riesame (art. 309 c.p.p.).
+Quando è avvenuto il fatto? Serve per i termini di prescrizione e di querela.
+Dimmi su quale argomento vuoi che mi concentri (il numero, oppure descrivimi l'angolo che ti interessa), rispondi alle domande che puoi, oppure scrivi "procedi" e parto dalla tesi principale.
+20:04
+
+
+
+
+
+1. Risposta e strategia
+
+La querela, come strumento principale, deve essere presentata entro il termine di tre mesi dalla notizia del reato, che dovrà essere verificata ai sensi dell’art. 124 c.p. La sua opportuna redazione dovrà contenere una descrizione puntuale delle condotte vessatorie, sistematiche e persecutorie, al fine di integrare sia la fattispecie di maltrattamenti in famiglia che, in via subordinata, quella di stalking.
+
+La strategia consigliata prevede innanzitutto la formalizzazione della querela, corredata da tutta la documentazione probatoria disponibile (es. certificati medici, testimonianze, registrazioni audio-video, ecc.), al fine di dimostrare la sistematicità e la gravità delle condotte di Tizio. In parallelo, dovrà essere richiesta l’adozione di misure cautelari, come l’obbligo di allontanamento e l’istituzione di un piano di protezione, ai sensi dell’art. 336 c.p.p. [DA VERIFICARE: l'art. 336 c.p.p. riguarda «Querela»], per garantire la sicurezza di Caia e prevenire ulteriori aggressioni. L’istanza dovrà essere presentata al Pubblico Ministero o al Giudice per le indagini preliminari, in base alla fase del procedimento.
+
+Tale qualificazione, pur non escludendo la precedente, potrebbe rafforzare la richiesta di misure cautelari e di protezione. La scelta strategica di adottare entrambe le qualificazioni giuridiche permette di massimizzare la tutela processuale e penale di Caia.
+
+2. Norme applicate ai fatti
+
+Art. 124 c.p. — Termine per proporre la querela. Rinuncia
+
+(co. 1) «Salvo che la legge disponga altrimenti, il diritto di querela non può essere esercitato, decorsi tre mesi dal giorno della notizia del fatto che costituisce il reato.» Ai sensi del comma 1, il diritto di querela si prescrive in tre mesi dalla notizia del fatto. Ai fini dell’applicazione di questa norma, è necessario verificare la data in cui Caia ha avuto conoscenza del fatto ostativo, nonché la data in cui ha presentato la querela. Essendo ignota la data del fatto, nonché la data di notizia del fatto, non è possibile stabilire se il termine di tre mesi sia stato rispettato. Pertanto, tale elemento va verificato in base ai documenti processuali e alle dichiarazioni rese da Caia.
+
+(co. 2) «Il diritto di querela non può essere esercitato se vi è stata rinuncia espressa o tacita da parte di colui al quale ne spetta l'esercizio.» Ai sensi del comma 2, l’esercizio del diritto di querela è escluso in caso di rinuncia espressa o tacita da parte della persona offesa. In questo caso, non risulta che Caia abbia espresso una rinuncia formale al diritto di querelare. Tuttavia, ai sensi del comma successivo, va verificato se Caia abbia compiuto fatti incompatibili con la volontà di querelarsi, come ad esempio un riconciliarsi con Tizio o un atteggiamento di tolleranza nei suoi confronti dopo le condotte vessatorie. Tale circostanza non è emersa dai fatti forniti e va accertata.
+
+(co. 3) «Vi è rinuncia tacita, quando chi ha facoltà di proporre querela ha compiuto fatti incompatibili con la volontà di querelarsi.» Ai sensi del comma 3, la rinuncia tacita si configura quando la persona offesa compie fatti che dimostrano una volontà di non procedere. In questo caso, non risultano presenti elementi che possano configurare una rinuncia tacita da parte di Caia. Al contrario, essa ha effettivamente presentato querela all’Autorità giudiziaria, il che costituisce un atto espresso di volontà di procedere. Nonostante ciò, per escludere qualsiasi contestazione in merito, va verificata la coerenza delle sue dichiarazioni e delle sue condotte successive alla querela.
+
+(co. 4) «La rinuncia si estende di diritto a tutti coloro che hanno commesso il reato.» Ai sensi del comma 4, in caso di rinuncia espressa o tacita da parte della persona offesa, essa si estende a tutti i soggetti coinvolti nel reato. In questo caso, non essendoci alcuna rinuncia da parte di Caia, né espressa né tacita, il comma non trova applicazione. Tuttavia, qualora emergesse una rinuncia, essa non potrebbe estendersi a Tizio, in quanto l’unico autore delle condotte denunciate.
+
+Altre norme del tema non trattate: art. 120 c.p., art. 336 c.p.p.
+
+3. Profili processuali
+
+Termini
+
+querela: termine di 3 mesi dalla notizia del fatto che costituisce il reato — DA VERIFICARE: il caso non indica le date da cui decorre (art. 124 c.p.).
+Procedibilità e competenza
+
+Lesione personale (art. 582 c.p.): procedibile a querela della persona offesa, d'ufficio nei casi aggravati (art. 582, co. 2).
+Data del fatto: non nota. Da essa decorre la prescrizione del reato (art. 157 c.p.); per i reati a querela, i tre mesi per proporla (art. 124 c.p.).
+4. Conclusioni
+
+L’esito probabile per Caia, nell’ambito della querela per maltrattamenti in famiglia e stalking, dipende in primo luogo dalla corretta qualificazione giuridica delle condotte riferite e dall’effettiva possibilità di dimostrare la loro sistematicità e la loro finalità vessatoria. Analogamente, per il reato di stalking, è necessario dimostrare una condotta sistematica e finalizzata a creare un ambiente di paura, elemento che potrebbe essere contestato in assenza di prove concrete.
+
+I rischi principali per Caia riguardano la contestazione della tempestività della querela, in base all’art. 124 c.p., e la mancanza di prove documentali sufficienti a dimostrare la sistematicità delle condotte. In particolare, il termine di 3 mesi per la querela decorre dalla notizia del fatto, ma la data precisa di tale notizia non è nota e va verificata. Inoltre, potrebbe essere avanzata l’obiezione di rinuncia tacita, qualora si dimostrasse che Caia abbia compiuto fatti incompatibili con la volontà di querelarsi. Per replicare a tali contestazioni, è necessario acquisire testimonianze, registrazioni, messaggi o qualsiasi elemento che documenti la persistenza e la natura vessatoria delle condotte di Tizio.
+
+La condotta consigliata prevede, in primo luogo, la raccolta di prove concrete e documentabili, come testimonianze di terzi, registrazioni audio o video, tracce digitali (messaggi, chiamate, posizionamenti), e qualsiasi elemento che possa dimostrare la sistematicità e la finalità intimidatoria delle condotte. In parallelo, è opportuno verificare con precisione la data in cui Caia è venuta a conoscenza del fatto, al fine di accertare la tempestività della querela. Eventuali ulteriori atti di intimidazione o minacce da parte di Tizio andranno immediatamente segnalati alle autorità competenti e documentati.
+
+In sintesi, la posizione di Caia può trovare fondamento giuridico nella qualificazione dei fatti come maltrattamenti in famiglia e/o stalking, ma richiede una prova rigorosa e documentale. L’azione penale deve essere supportata da elementi concreti e verificabili, al fine di superare le possibili contestazioni di tempestività e di mancanza di sistematicità. La prosecuzione del procedimento dovrà quindi procedere con attenzione alla raccolta di prove e alla verifica dei termini processuali.
+
+Se vuoi, posso approfondire: 2. Lesione personale; 3. Misure cautelari personali. Oppure dimmi un fatto nuovo e aggiorno il parere.

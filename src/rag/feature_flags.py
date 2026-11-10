@@ -742,6 +742,14 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 read no corpus. Off, or a "direct" route, or any failure: the single-shot pipeline,
                                 unchanged. The API reply carries `interaction`. See interactive_flow.py;
                                 scripts/diagnose_long.py --interactive-sim benchmarks it.
+  INTERACTIVE_CASE_FIRST       false (v60, with INTERACTIVE_FLOW): round 1 reads the case before anchoring -- one bounded
+                                call (case_read: client, goal, facts, what the case does not say, hypotheses on legal
+                                institutions) beside retrieval; the pool graded in two rounds on the top
+                                GRADE_PREFILTER_N (default 50) candidates by embedding similarity; the topics are the
+                                rows graded 2+ grouped by Sezione / Capo (topic_groups), the rules and tables attaching
+                                questions and anchors to them, the hypotheses to the topic their institutions anchor
+                                (the others shown «da verificare»), the rows graded 1 the "altri profili"; the chosen
+                                topics' ungraded rows graded in the answer step. Off: topic_step's topics, as before.
   TOPIC_TABLES                 false (v55, drafts pending the lawyer): topic_step reads topic_tables.TABLES -- criminal
                                 (rapina, furto, truffa, corruzione, concorso, tentativo, lesioni, 416-bis, misure
                                 cautelari, prescrizione del reato) and administrative (l. 241/1990, ricorso al TAR,

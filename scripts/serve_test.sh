@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The interactive flow for a hand test (the PO drives h3): uvicorn from this checkout (/root/v38) on a spare port, with
-# the server's .env.v45 plus INTERACTIVE_FLOW, TOPIC_STEP and TOPIC_TABLES on. Nothing in /opt/chatbot is read or
+# the server's .env.v45 plus INTERACTIVE_FLOW, TOPIC_STEP, TOPIC_TABLES and INTERACTIVE_CASE_FIRST (v60) on. Nothing in /opt/chatbot is read or
 # written, the chatbot service is not touched, no LLM setting is overridden (the model is .env.v45's).
 #
 #   scripts/serve_test.sh [start] [PORT]   start (default: the first free port of 8030-8049; never 8010)
@@ -69,10 +69,10 @@ while IFS= read -r line || [ -n "$line" ]; do
     value="${value%\"}"; value="${value#\"}"; value="${value%\'}"; value="${value#\'}"
     export "$key=$value"
 done < "$ENV_FILE"
-export INTERACTIVE_FLOW=true TOPIC_STEP=true TOPIC_TABLES=true
+export INTERACTIVE_FLOW=true TOPIC_STEP=true TOPIC_TABLES=true INTERACTIVE_CASE_FIRST=true
 
 echo "== serve_test $(date), code $(git rev-parse --short HEAD 2>/dev/null || echo '?'), $ENV_FILE + INTERACTIVE_FLOW," \
-     "TOPIC_STEP, TOPIC_TABLES, port $PORT" > "$LOG"
+     "TOPIC_STEP, TOPIC_TABLES, INTERACTIVE_CASE_FIRST, port $PORT" > "$LOG"
 nohup "$PY" -m uvicorn src.chatbot.api:app --host "$HOST" --port "$PORT" >> "$LOG" 2>&1 &
 echo "$! $PORT" > "$PIDFILE"
 

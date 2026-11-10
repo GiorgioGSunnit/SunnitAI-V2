@@ -19,9 +19,18 @@ from typing import Any, Optional
 ROUND1_OPENING = ("Ho letto il caso di {client}. Prima di scrivere il parere, vorrei concordare con te su cosa concentrarlo "
                   "e chiarire alcuni punti che il testo non dice.")            # client
 TOPICS_TITLE = "**Argomenti individuati**"
+# v60: the question the user's message asks (interactive_flow.apply_stated), with a topic matching it (listed first) or none
+ANGLE_STATED_CHOSEN = ("Mi chiedi: «{angle}». L'argomento che vi risponde è il primo della lista: se mi chiedi il parere, "
+                       "parto da lì.")                                         # angle
+ANGLE_STATED = "Mi chiedi: «{angle}». Ne terrò conto nel parere."                                             # angle
 TOPIC_LINE = "{n}. **{title}** (artt. {articles}) — {decides}."              # n, title, articles, decides
 TOPIC_LINE_SHORT = "{n}. **{title}** (artt. {articles})."                    # the same, when nothing says what it decides
 TOPIC_POINT = " Da chiarire: {point}."                                       # point: added when there is one
+# v60 (A, B, my draft): the first read's hypotheses under the topic that anchors them; those no topic anchors
+HYPOTHESIS_LINE = "   - linea {line}: {claim}"                               # line (principale, subordinata, controparte), claim
+HYPOTHESIS_LINE_PARTY = "   - linea {line} per {party}: {claim}"             # v60e (my draft): the client still open
+UNANCHORED_TITLE = "**Ipotesi da verificare** (nessuna norma trovata le sostiene ancora)"   # v60 (B, my draft)
+UNANCHORED_LINE = "- {claim}"                                                # v60 (B, my draft): claim
 # v55 (my draft, pending PO review): what a topic of a rule to verify decides -- never written as a fixed conclusion
 DECIDES_TO_VERIFY = "da verificare: {decides}"                               # decides
 NO_TOPICS = "Nessun argomento individuato con sicurezza: descrivi l'angolo che ti interessa."
@@ -51,9 +60,12 @@ FORMER_OWNER = {"o": "ex proprietario", "a": "ex proprietaria"}             # v5
 NO_FACTS = "Nessun fatto estratto."
 QUESTIONS_TITLE = "**Da chiarire**"
 QUESTION_LINE = "{n}. {text}"                                                # n, text
+QUESTION_FROM_READ = "Il caso non dice {point}: puoi precisarlo?"            # v60c (my draft): point, the first read's
 QUESTION_REF = "{short} (domanda {n})"                                       # short, n: a question named in a topic line
-INSTRUCTION = ("Dimmi su quale argomento vuoi che mi concentri (il numero, oppure descrivimi l'angolo che ti interessa), "
-               "rispondi alle domande che puoi, oppure scrivi \"procedi\" e parto dalla tesi principale.")
+# v60 (H): what the user can do, in plain words -- never a string to type
+INSTRUCTION = ("Puoi dirmi su quale argomento concentrarmi, anche descrivendolo con parole tue, rispondere alle domande che "
+               "puoi, aggiungere o correggere un fatto, oppure chiedermi subito il parere: in quel caso parto dal primo "
+               "argomento.")
 
 # --- the questions: one template per family (a family with no template is not asked) -------------------------------
 QUESTIONS = {
@@ -127,13 +139,35 @@ CHANGE_LINE = "{text}"                                                       # t
 CHANGE_RULE_ON = "{rule}: ora applicabile"                                   # rule (its institution)
 CHANGE_RULE_OFF = "{rule}: non più applicabile"                              # rule
 CHANGE_RULE_TEXT = "{rule}: conclusione aggiornata"                          # rule
-CHANGE_TERM = "{term}: {before} → {after}"                                   # term (its label), before, after
+CHANGE_TERM = "{term}: ora {after} (prima {before})"                          # v60e: no arrows; term, before, after
 CHANGE_PROCEDURAL = "profili processuali ricalcolati"
 CHANGE_PARTY_ADDED = "parte aggiunta: {name}"                                # name
-CHANGE_PARTY_ROLE = "{name}: ruolo {before} → {after}"                       # name, before, after
-CHANGE_DATE = "data di «{what}»: {before} → {after}"                         # what, before, after
+CHANGE_PARTY_ROLE = "{name}: ora {after} (prima {before})"                       # name, before, after
+CHANGE_DATE = "data di «{what}»: ora {after} (prima {before})"                         # what, before, after
 CHANGE_EVENT_ADDED = "evento aggiunto: {date} — {what}"                      # date, what
+CHANGE_CLIENT = "parte assistita: {name}"                                    # v60d (my draft): name
 ADDITION_ANSWER = "{question} {answer}"                                      # question, answer: a precisazione
+# v60e (my draft): after a reply that answers questions, the restatement -- two sentences (the client; what was answered,
+# in the answers' words), then what comes next; never the questions' text, arrows or repeats
+RESTATE_CLIENT = "Imposto il parere per {client}."                             # client
+RESTATE_NO_CLIENT = "Il parere esaminerà la posizione delle parti, senza assumerne una."
+RESTATE_ANSWERS = "Tengo conto di quanto mi hai precisato: {items}."            # items
+RESTATE_ITEM = "{point}: {answer}"                                             # point (the question's short label), answer
+# v60h (8, my draft): a yes/no answer restated as the fact it settles -- (sì, no) -- by question family; a first read's
+# question restates its own point as a statement (interactive_flow.stated_fact)
+RESTATE_YES_NO = {
+    "opera_separazione": ("alla separazione dei fondi esistevano già opere visibili e permanenti destinate al passaggio",
+                          "alla separazione dei fondi non esistevano opere visibili e permanenti destinate al passaggio"),
+    "accesso_alternativo": ("il fondo ha un altro accesso alla via pubblica",
+                            "il fondo non ha altro accesso alla via pubblica"),
+    "arma_detenuta": ("l'arma era legittimamente detenuta", "l'arma non era legittimamente detenuta"),
+    "desistenza": ("al momento della reazione l'aggressore aveva desistito",
+                   "al momento della reazione l'aggressore non aveva desistito"),
+    "pericolo_aggressione": ("al momento della reazione c'era ancora un pericolo concreto di aggressione",
+                             "al momento della reazione non c'era più un pericolo concreto di aggressione"),
+}
+RESTATE_NEXT_TOPICS = "Tratterò: {topics}. Va bene così, o vuoi correggere qualcosa?"     # topics
+RESTATE_NEXT_ANSWERED = "Vuoi che riscriva la risposta su «{titles}» tenendone conto?"     # titles
 
 # --- the answer -------------------------------------------------------------------------------------------------------
 # the requisites' statuses, from the fact fields (never the writer's)
@@ -152,8 +186,32 @@ COMMA_LINE = "- {comma}: {status}."                                          # c
 OTHER_NORMS_LINE = "Altre norme del tema non trattate: {articles}."              # articles
 OTHER_NORMS_ITEM = "art. {number} {code}"                                      # number, code
 OTHER_NORMS_JOIN = ", "
+# v60d (my draft): a §2 block whose gloss says the article does not apply, one item in one line
+NOT_APPLICABLE_LINE = "Norme considerate e non applicabili: {articles}."         # articles
+NOT_APPLICABLE_ITEM = "art. {number} {code}"                                     # number, code
+# v60h (6, my draft): a sanction article, one line under the obligation article it sanctions (never a block of its own)
+SANCTION_LINE_RUBRICA = "- Sanzione: art. {number} {code} — {rubrica}."           # number, code, rubrica
+SANCTION_LINE = "- Sanzione: art. {number} {code}."                              # v60h (6, my draft): number, code
 MEDIATION = ("Mediazione obbligatoria (art. 5 d.lgs. 28/2010): il suo mancato esperimento comporta l'improcedibilità "
              "della domanda.")
+# v60 (C): §4 «Procedibilità e competenza», one line per offence from the article's own text (procedural_facts) -- the
+# generic «procedibile d'ufficio; competenza: tribunale» is never written; a part with no fact is left out
+PROCEDURE_HEAD = "{name} (art. {number} c.p.)"                               # name (the rubrica), number
+PROCEDURE_PROCEDIBILITA = "procedibile {text}"                               # text
+PROCEDURE_QUERELA = "querela entro {term}, {remissione}"                     # term, remissione
+PROCEDURE_COMPETENZA = "competenza: {text}"                                  # text
+PROCEDURE_PENA = "pena: {text}"                                              # text
+PROCEDURE_JOIN = "; "
+# v60h (1, my draft): a querela offence's d'ufficio conditions, each with its record status, and the line's verdict
+PROCEDURE_CONDITIONAL = "procedibile a querela della persona offesa ({comma}); d'ufficio {conditions}"   # comma, conditions
+PROCEDURE_CONDITION = "{condition} ({where})"                    # v60h (1, my draft): condition, where (comma: status)
+PROCEDURE_CONDITION_JOIN = "; oppure "                                      # v60h (1, my draft)
+PROCEDURE_VERDICT = " — esito: {verdict}"                                    # v60h (1, my draft): verdict
+PROCEDURE_VERDICTS = {"provato": "procedibile d'ufficio (condizione provata)",           # v60h (1, my draft)
+                      "non risulta": "procedibile a querela (nessuna condizione d'ufficio risulta)",
+                      "da provare": "a querela, d'ufficio se una condizione è provata"}
+PROCEDURE_UNKNOWN = "procedibilità e competenza da verificare (non lette dal testo dell'articolo)"
+PROCEDURE_FIXED = "Quanto ai profili processuali: {text}."                   # text: a writer sentence contradicting them
 SECTION_TITLES = ("Risposta e strategia", "Norme applicate ai fatti", "Obiezioni e repliche", "Profili processuali",
                   "Conclusioni")
 OTHER_PROFILES_SECTION = "Altri profili"
@@ -189,13 +247,29 @@ UNKNOWN_LINE = "- {point}: non noto ({question})"                            # p
 UNKNOWN_RULE = "Non affermarli e non dedurli: dove servono, scrivi che vanno verificati."
 UNKNOWN_MARK = " (da verificare: {point})"                                  # point: the questions' short labels
 
+# v60 (D, my draft): the client neither stated nor answered when the answer is asked for
+CLIENT_ASSUMED = ("Non mi hai indicato chi assisti: imposto il parere per {name} ({role}), la parte che il caso indica "
+                  "come destinataria dell'azione. Se assisti un'altra parte, dimmelo e lo riscrivo.")   # name, role
+CLIENT_UNKNOWN = ("Non mi hai indicato chi assisti e il caso non lo fa capire: il parere esamina la posizione delle parti "
+                  "senza assumerne una. Dimmi chi assisti e lo riscrivo dal suo punto di vista.")
+
 # --- closing and follow-ups -------------------------------------------------------------------------------------------
-CLOSING = "Se vuoi, posso approfondire: {topics}. Oppure dimmi un fatto nuovo e aggiorno il parere."    # topics
+CLOSING = ("Se vuoi, posso approfondire anche: {topics}. Puoi anche darmi un fatto nuovo, e aggiorno il parere, o "
+           "chiedermi il documento.")                                        # topics
 CLOSING_TOPIC = "{n}. {title}"                                               # n, title
-NEW_FACT = "Ho aggiornato i fatti:\n{changes}\n\nVuoi che rigeneri la risposta su «{titles}»? (sì / no)"  # changes, titles
+NEW_FACT = "Ho aggiornato i fatti:\n{changes}\n\nVuoi che riscriva la risposta su «{titles}» tenendone conto?"  # changes, titles
 NEW_FACT_NONE = "precisazione acquisita"
-UNCLEAR = "Non ho capito la risposta. {next}"                                # next: INSTRUCTION or CONFIRM_LINE
-NO_TOPIC_TO_ANSWER = "Nessun argomento da trattare: indica il numero di uno degli argomenti."
+UNCLEAR = "Non sono sicuro di aver capito. {next}"                         # next: the CLARIFY_* question
+NO_TOPIC_TO_ANSWER = "Non trovo l'argomento da trattare: dimmi quale degli argomenti ti interessa."
+# v60 (H, my draft): the one clarifying question, by round; the answer to a question on how the exchange works
+CLARIFY_TOPICS = "Vuoi che mi concentri su uno degli argomenti elencati, o che scriva subito il parere partendo dal primo?"
+CLARIFY_CONFIRM = "Vuoi che scriva il parere così impostato, o c'è qualcosa da correggere?"
+CLARIFY_ANSWERED = "Vuoi approfondire un altro argomento, aggiungere un fatto o avere il documento?"
+FLOW_HELP = (                                                                # v60 (H, my draft)
+    "Funziona così: ti propongo gli argomenti del caso e le domande sui fatti che mancano. Puoi scegliere uno o "
+    "più argomenti, anche descrivendoli, rispondere alle domande, aggiungere o correggere fatti, chiedermi un "
+    "profilo che non ho elencato, oppure chiedermi il parere; dopo il parere puoi approfondire un altro "
+    "argomento o avere il documento.")
 ANSWER_FAILED = "Non sono riuscito a scrivere la risposta su questo argomento. Riprova, oppure scegli un altro argomento."
 
 

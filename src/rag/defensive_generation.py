@@ -9,6 +9,8 @@ Given an uploaded judicial document, this module:
 
 from __future__ import annotations
 
+import contextlib as _contextlib
+import contextvars as _contextvars
 import inspect
 import logging
 import os
@@ -24,6 +26,7 @@ from .ai_chat import _call_chat, embedding_model, last_reply, parse_json_reply
 from .llm_reply import salvage_json
 from .article_suffix import SUFFIX, normalize_number, number_variants
 from .verbose_logger import exception_data, vlog
+from .stage_meter import mark as _mark      # v60: named sub-steps of round 1's collection (no-op without a meter)
 
 
 def _log_exception(stage: str, exc: BaseException, **detail: Any) -> None:
@@ -1858,26 +1861,60 @@ def _candidate_articles(facts: str, analysis: Dict[str, Any], ruling_rows: List[
     return keep, candidates[:24]
 
 
-def _search_code_articles(session, analysis: Dict[str, Any]) -> List[tuple]:
+# v60b (round 1 on h3: v1_code_search 31.5 s, 19 queries at 1.7 s, one after another): the fulltext queries run on a
+# pool, one graph session per query, when the caller gives the driver; the results are read in the questions' order
+# exactly as before.
+GRAPH_WORKERS = 8
+_CODE_SEARCH_QUERY = ("CALL db.index.fulltext.queryNodes('section_fulltext', $t) YIELD node, score "
+                      "MATCH (d:Document)-[:CONTAINS]->(node) "
+                      "WHERE d.document_type = 'primary' AND any(p IN $prefixes WHERE d.name STARTS WITH p) "
+                      "RETURN d.name AS doc, node.name AS sec, score ORDER BY score DESC LIMIT 10")
+
+
+def graph_parallel(driver, database: str, jobs: List[Callable[[Any], Any]], workers: int = GRAPH_WORKERS) -> List[Any]:
+    """[job(session)] in the jobs' order, each on its own read session, at most `workers` at once; a job that raises
+    gives its exception as its result (the caller decides). With no driver: [], the caller runs them itself."""
+    if driver is None or not jobs or not callable(getattr(driver, "session", None)):
+        return []
+    import neo4j
+    from concurrent.futures import ThreadPoolExecutor
+
+    def run(job):
+        try:
+            with driver.session(database=database, default_access_mode=neo4j.READ_ACCESS) as own:
+                return job(own)
+        except Exception as exc:          # noqa: BLE001 -- handed back, as the serial code would have caught it
+            return exc
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(jobs))), thread_name_prefix="graph") as pool:
+        return list(pool.map(run, jobs))
+
+
+def _search_code_articles(session, analysis: Dict[str, Any], driver=None, database: str = "") -> List[tuple]:
     """Articles of the main codes whose text matches each question's keywords."""
     abbr_of = {prefix: abbr for abbr, prefix in _CODE_PREFIXES.items()}
-    refs: List[tuple] = []
+    prefixes = _CODE_SEARCH_PREFIXES.get(analysis.get("area"), _ALL_CODE_PREFIXES)
+    queries = []
     for q in analysis.get("questioni", []):
         words = [w for w in (q.get("parole_chiave") or []) if isinstance(w, str)]
         terms = _lucene_query(" ".join([q.get("titolo") or ""] + words))
-        if not terms:
-            continue
-        try:
-            found = session.run(
-                "CALL db.index.fulltext.queryNodes('section_fulltext', $t) YIELD node, score "
-                "MATCH (d:Document)-[:CONTAINS]->(node) "
-                "WHERE d.document_type = 'primary' AND any(p IN $prefixes WHERE d.name STARTS WITH p) "
-                "RETURN d.name AS doc, node.name AS sec, score ORDER BY score DESC LIMIT 10",
-                t=terms, prefixes=_CODE_SEARCH_PREFIXES.get(analysis.get("area"), _ALL_CODE_PREFIXES),
-            ).data()
-        except Exception as exc:
-            _log_exception("_search_code_articles", exc)
-            logger.warning("code search failed for %r: %s", terms, exc)
+        if terms:
+            queries.append(terms)
+
+    def job(terms):
+        return lambda own: own.run(_CODE_SEARCH_QUERY, t=terms, prefixes=prefixes).data()
+    results = graph_parallel(driver, database, [job(t) for t in queries]) if driver is not None else []
+    if not results:
+        results = []
+        for terms in queries:
+            try:
+                results.append(job(terms)(session))
+            except Exception as exc:      # noqa: BLE001
+                results.append(exc)
+    refs: List[tuple] = []
+    for terms, found in zip(queries, results):
+        if isinstance(found, Exception):
+            _log_exception("_search_code_articles", found)
+            logger.warning("code search failed for %r: %s", terms, found)
             continue
         taken = 0
         for row in found:
@@ -3404,17 +3441,24 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
     # HYBRID_NARRATIVE_ENABLED: the articles the rulings agree on are the map's hypotheses
     # (_select_articles_fusion), never a channel of their own here; their searches are skipped.
     hybrid = source_tiers.hybrid_enabled(analysis.get("route"))
+    _mark("select:v1_case_law")
     first_rulings = [] if hybrid else _search_case_law(session, analysis)
+    _mark("select:v1_similar_facts")
     similar = [] if hybrid else _search_similar_facts(session, analysis,
                                                       {(r.get("d") or {}).get("id") for r in first_rulings})
+    _mark("select:v1_rulings_cite")
     counts = _articles_cited_in_rulings(
         session, [(r.get("d") or {}).get("id") for r in (similar + first_rulings)[:10]]) if not hybrid else {}
     similar_counts = _articles_cited_in_rulings(
         session, [(r.get("d") or {}).get("id") for r in similar]) if not hybrid else {}
     case = _case_text(facts, request)
+    _mark("select:v1_code_search")
     keep, candidates = _candidate_articles(case, analysis, similar + first_rulings,
-                                           _search_code_articles(session, analysis), counts, similar_counts)
+                                           _search_code_articles(session, analysis, driver, database), counts,
+                                           similar_counts)
+    _mark("select:v1_fetch")
     candidate_rows = _fetch_articles(session, keep + candidates, store)
+    _mark("select:v1_choose_llm")
     chosen = _choose_articles(case, [r for r in candidate_rows if r["_article"] not in keep])
     if chosen is None:   # the choice failed: what the rulings cite, and the damages backbone
         backbone = set(_cited_by_rulings(similar + first_rulings)) | set(_CIVIL_DAMAGES_NORMS)
@@ -3431,6 +3475,7 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
     # cross-reference scope, so an empty law_hint here is correct, not
     # a shortcut. Tags added rows _source=CROSSREF_SOURCE, same as the
     # graph path.
+    _mark("select:v1_broaden")
     article_rows = broaden_article_context(
         {"raw_result": article_rows, "law_hint_doc_id": "", "user_id": "", "tenant_id": ""},
         driver, database,
@@ -3455,6 +3500,7 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
     # issue_spotting node adds them, resolved against the real document names
     # and already through the applicability check.
     spotted = []
+    _mark("select:v1_issue_spotting")
     if feature_flags.enabled("ISSUE_SPOTTING_ENABLED"):
         try:
             from .doc_lookup import _fetch_doc_names
@@ -3751,6 +3797,78 @@ def _required_rows(session, analysis: Dict[str, Any], held: set,
     return _fetch_articles(session, missing, store) if missing else []
 
 
+# v60b: the fusion's branches that need only the case, startable beside the analysis (prefetch_case_branches)
+_EARLY_BRANCHES: "_contextvars.ContextVar[Optional[Dict[str, Any]]]" = _contextvars.ContextVar("fusion_early",
+                                                                                              default=None)
+
+
+def _fusion_search_fn():
+    """search_in(session, text): the fusion's search of one text, by FUSION_CLEAN."""
+    if feature_flags.enabled(FUSION_CLEAN_FLAG):
+        # exp_distill.py's FUSION_CLEAN exactly: BASELINE merges its two clean
+        # lists by best rank, each DISTILL query keeps vector's refs then
+        # fulltext's (its _retrieve_clean).
+        return lambda own, text: list(dict.fromkeys(sum(_fusion_clean_searches(own, text, _CASE_POOL_VECTOR_INDEX,
+                                                                                _FUSION_SEARCH_K), [])))
+    return lambda own, text: _fusion_text_search(own, text, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
+
+
+def _baseline_branch(driver, database: str, case: str, clean: bool, session=None) -> List[tuple]:
+    """The fusion's BASELINE signal: the case's own search (its own session; the caller's without a driver)."""
+    def run(own):
+        if clean:
+            return _fusion_best_rank_merge(*_fusion_clean_searches(own, case, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K))
+        return _fusion_search_fn()(own, case)
+    found = graph_parallel(driver, database, [run])
+    if not found:
+        return run(session)
+    if isinstance(found[0], Exception):
+        raise found[0]
+    return found[0]
+
+
+def _distill_branch(driver, database: str, case: str, session=None) -> List[tuple]:
+    """The fusion's DISTILL signal: the bullets' call, then each bullet's search and the joined one's, at once."""
+    t0 = time.time()
+    try:
+        bullets = _fusion_distill_bullets(case)
+    except Exception as exc:
+        _log_exception("_select_articles_fusion", exc)
+        logger.warning("fusion: distill bullets failed: %s", exc)
+        bullets = []
+    vlog("case_pool_fusion_distill_llm", duration_ms=(time.time() - t0) * 1000)
+    joined = " ".join(b["testo"] for b in bullets)
+    texts = [b["testo"] for b in bullets] + ([joined] if joined else [])
+    search_in = _fusion_search_fn()
+    lists = graph_parallel(driver, database, [lambda own, t=t: search_in(own, t) for t in texts])
+    if not lists and texts:
+        lists = [search_in(session, t) for t in texts]
+    for item in lists:
+        if isinstance(item, Exception):
+            raise item
+    return _fusion_merge_by_hits(*lists) if lists else []
+
+
+@_contextlib.contextmanager
+def prefetch_case_branches(driver, database: str, facts: str, request: str):
+    """v60b: the fusion's baseline search and distill chain started now, on their own threads and sessions, beside
+    whatever the caller does next (the analysis); _select_articles_fusion, called inside this block on the same case,
+    takes their results instead of running them again. Nothing else changes; outside the block, nothing at all."""
+    from concurrent.futures import ThreadPoolExecutor
+    case = _case_text(facts, request)
+    clean = feature_flags.enabled(FUSION_CLEAN_FLAG)
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fusion_early")
+    branches = {"case": case, "clean": clean,
+                "baseline": pool.submit(_baseline_branch, driver, database, case, clean),
+                "distill": pool.submit(_distill_branch, driver, database, case)}
+    token = _EARLY_BRANCHES.set(branches)
+    try:
+        yield branches
+    finally:
+        _EARLY_BRANCHES.reset(token)
+        pool.shutdown(wait=False)
+
+
 def _select_articles_fusion(session, driver, database: str, facts: str, request: str,
                             analysis: Dict[str, Any], store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
     """Candidate pool = CURRENT (_select_articles_v2's own full "selected":
@@ -3809,6 +3927,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     from .nodes.retrieval import broaden_article_context
 
     v2 = _select_articles_v2(session, driver, database, facts, request, analysis, store=store)
+    _mark("select:fusion_baseline_search")
     keep, named = v2["keep"], v2["named"]
     institutions_resolved = v2.get("institutions_resolved") or []
     heading_matched = set(v2.get("heading_matched") or [])
@@ -3820,54 +3939,67 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     documents = _fetch_doc_names(driver, database)
     case = _case_text(facts, request)
     clean = feature_flags.enabled(FUSION_CLEAN_FLAG)
-    if clean:
-        # exp_distill.py's FUSION_CLEAN exactly: BASELINE merges its two clean
-        # lists by best rank, each DISTILL query keeps vector's refs then
-        # fulltext's (its _retrieve_clean).
-        def search(text):
-            return list(dict.fromkeys(sum(_fusion_clean_searches(session, text, _CASE_POOL_VECTOR_INDEX,
-                                                                 _FUSION_SEARCH_K), [])))
-        baseline_refs = _fusion_best_rank_merge(*_fusion_clean_searches(session, case, _CASE_POOL_VECTOR_INDEX,
-                                                                        _FUSION_SEARCH_K))
-    else:
-        def search(text):
-            return _fusion_text_search(session, text, _CASE_POOL_VECTOR_INDEX, _FUSION_SEARCH_K)
-        baseline_refs = search(case)
+    search_in = _fusion_search_fn()
 
-    t0 = time.time()
-    try:
-        bullets = _fusion_distill_bullets(case)
-    except Exception as exc:
-        _log_exception("_select_articles_fusion", exc)
-        logger.warning("fusion: distill bullets failed: %s", exc)
-        bullets = []
-    vlog("case_pool_fusion_distill_llm", duration_ms=(time.time() - t0) * 1000)
-    joined = " ".join(b["testo"] for b in bullets)
-    distill_lists = [search(b["testo"]) for b in bullets]
-    if joined:
-        distill_lists.append(search(joined))
-    distill_refs = _fusion_merge_by_hits(*distill_lists) if distill_lists else []
+    def search(text):
+        return search_in(session, text)
 
+    def searches(texts: List[str]) -> List[List[tuple]]:
+        """v60b: the texts' searches at once, one session each, in their order (serially without a driver)."""
+        found = graph_parallel(driver, database, [lambda own, t=t: search_in(own, t) for t in texts])
+        if not found and texts:
+            found = [search(t) for t in texts]
+        for item in found:
+            if isinstance(item, Exception):
+                raise item
+        return found
+
+    # v60b (round 1 on h3: the fusion stages 23.3 s, one after another, independent): the baseline search, the distill
+    # chain (its call, then its searches), the frame searches and the hybrid map run at once; each branch reads with its
+    # own sessions; what each finds, and how it is merged, unchanged. The baseline and the distill chain need only the
+    # case: started beside the analysis when the caller did (prefetch_case_branches), taken from there.
+    from concurrent.futures import ThreadPoolExecutor
+    from . import source_tiers
+    hybrid = source_tiers.hybrid_enabled(analysis.get("route"))
     # CASE_FRAME_ENABLED: the case's explicit questions, its procedural posture
     # and its central issues, each searched as its own query -- a fourth
     # signal, so an article they find and another signal also finds survives
     # the cap like any multi-signal one.
     frame_queries = _frame_queries(analysis.get("frame") or {})
-    frame_lists = [search(q) for q in frame_queries]
-    frame_refs = _fusion_merge_by_hits(*frame_lists) if frame_lists else []
-    # HYBRID_NARRATIVE_ENABLED (source_tiers.py): the rulings similar to the facts read first as a MAP. The
-    # issues their cards decide and the analysis' own issues are searched in the primary documents as one
-    # more signal; the articles they apply are hypotheses only (confirmed below), in place of the vote.
-    from . import source_tiers
-    hybrid = source_tiers.hybrid_enabled(analysis.get("route"))
-    ruling_map, issue_refs = None, []
-    if hybrid:
-        ruling_map = source_tiers.ruling_map(session, driver, database, case, _CASE_POOL_VECTOR_INDEX, analysis)
+    early = _EARLY_BRANCHES.get()
+    early = early if early is not None and early.get("case") == case and early.get("clean") == clean else None
+
+    def hybrid_branch():
+        # HYBRID_NARRATIVE_ENABLED (source_tiers.py): the rulings similar to the facts read first as a MAP. The
+        # issues their cards decide and the analysis' own issues are searched in the primary documents as one
+        # more signal; the articles they apply are hypotheses only (confirmed below), in place of the vote.
+        if not hybrid:
+            return None, []
+        def run_map(own):
+            return source_tiers.ruling_map(own, driver, database, case, _CASE_POOL_VECTOR_INDEX, analysis)
+        mapped = graph_parallel(driver, database, [run_map])
+        ruling_map = mapped[0] if mapped else run_map(session)
+        if isinstance(ruling_map, Exception):
+            raise ruling_map
         issue_queries = [q for q in dict.fromkeys(ruling_map["issues"] + _analysis_issue_titles(analysis))
                          if q and q not in frame_queries][:_HYBRID_ISSUE_QUERIES]
-        issue_lists = [search(q) for q in issue_queries]
+        issue_lists = searches(issue_queries)
         issue_refs = _fusion_merge_by_hits(*issue_lists) if issue_lists else []
         vlog("hybrid_issue_queries", {"queries": issue_queries, "found": len(issue_refs)})
+        return ruling_map, issue_refs
+
+    _mark("select:fusion_branches")
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="fusion") as pool:
+        baseline_job = early["baseline"] if early else pool.submit(_baseline_branch, driver, database, case, clean,
+                                                                    session)
+        distill_job = early["distill"] if early else pool.submit(_distill_branch, driver, database, case, session)
+        frame_job = pool.submit(searches, frame_queries)
+        hybrid_job = pool.submit(hybrid_branch)
+        baseline_refs = baseline_job.result()
+        distill_refs = distill_job.result()
+        frame_lists = frame_job.result()
+        ruling_map, issue_refs = hybrid_job.result()
+    frame_refs = _fusion_merge_by_hits(*frame_lists) if frame_lists else []
     vlog("case_pool_fusion_sources", {"clean": clean, "frame_queries": len(frame_queries),
                                       "baseline": len(baseline_refs), "distill": len(distill_refs),
                                       "frame": len(frame_refs), "issues": len(issue_refs)})
@@ -3882,6 +4014,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     from . import vote_pool
     voted, how = [], None
     vote_stats: Dict[tuple, Dict[str, int]] = {}
+    _mark("select:fusion_vote_pool")
     if vote_pool.enabled() and not hybrid:
         voted, how = vote_pool.ruling_vote(session, driver, database, case, _CASE_POOL_VECTOR_INDEX,
                                            analysis, vote_stats), vote_pool.mode()
@@ -3926,6 +4059,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
     # appended after the cap. Never a signal and never exempt: each one is graded like any candidate.
     from . import article_relations
     related_why: Dict[tuple, str] = {}
+    _mark("select:fusion_relations")
     if article_relations.enabled():
         seeds = list(dict.fromkeys(list(keep) + list(institutions_resolved) + fused[:article_relations.SEED_TOP]))
         related_added, related_why = article_relations.candidates(seeds, case, set(keep) | set(capped),
@@ -3939,6 +4073,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
         vlog("case_pool_vote_cut", {"mode": ":".join(str(p) for p in how), "added": [f"{n} {c}" for n, c in added],
                                     "tagged": sorted(f"{n} {c}" for n, c in vote_tagged)})
 
+    _mark("select:fusion_fetch")
     candidate_rows = _fetch_any(session, documents, selected, store)
     if hybrid and (map_channel or map_rulings):
         fetched = {row.get("_article") for row in candidate_rows}
@@ -3987,6 +4122,7 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
                           key=lambda r: selected.index(r["_article"]))
     have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name")) for r in article_rows}
 
+    _mark("select:fusion_broaden")
     crossref_seed_refs = set(named) | set(institutions_resolved)
     seed_rows = [r for r in article_rows if r.get("_article") in crossref_seed_refs]
     if seed_rows:
@@ -4026,6 +4162,32 @@ def _select_articles_fusion(session, driver, database: str, facts: str, request:
             "heading_exact": sorted(heading_exact), "tiers": True}
 
 
+def _institution_reads(documents: List[Dict[str, Any]], q: Dict[str, Any], istituto: Dict[str, Any], fact_v2: bool):
+    """v60b: job(session) -> an institution's graph reads, as _select_articles_v2's loop made them one after another:
+    {"v2": fact_resolver.resolve(...)} or {"error"} for a fact institution under FACT_ISSUES_RESOLVER_V2, else
+    {"resolved": _resolve_institution(...)} and, for a fact rule's institution, {"kept"}: fact_signals.keep_resolved,
+    else -- none kept, the rule has ranges -- _pick_in_rule_ranges."""
+    from . import fact_issues
+
+    def job(own):
+        if istituto.get("fonte") == fact_issues.FONTE and fact_v2:
+            from . import fact_resolver
+            try:
+                return {"v2": fact_resolver.resolve(own, documents, istituto)}
+            except Exception as exc:          # noqa: BLE001 -- handled in the loop, as before
+                return {"error": exc}
+        resolved = _resolve_institution(own, documents, istituto, q.get("parole_chiave"))
+        out = {"resolved": resolved}
+        if istituto.get("fonte"):
+            from . import fact_signals
+            kept = fact_signals.keep_resolved(istituto, resolved)
+            if not kept and istituto.get("ranges"):
+                kept = _pick_in_rule_ranges(own, documents, istituto, q.get("parole_chiave"))
+            out["kept"] = kept
+        return out
+    return job
+
+
 def _select_articles_v2(session, driver, database: str, facts: str, request: str,
                         analysis: Dict[str, Any], store: Optional[article_text.ArticleStore] = None) -> Dict[str, Any]:
     """v1's full selection (_select_articles — the user's own citations,
@@ -4053,15 +4215,17 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     from .nodes.retrieval import broaden_article_context
 
     base = _select_articles(session, driver, database, facts, request, analysis, store=store)
+    _mark("select:v2_institutions")
     documents = _fetch_doc_names(driver, database)
     named_in_case = set(_refs_in(_case_text(facts, request)))
 
     have = {((r.get("d") or {}).get("id"), (r.get("s") or {}).get("name"))
             for r in base["article_rows"]}
     added: List[Dict[str, Any]] = []
-    # Sequential, not concurrent: a neo4j Session isn't safe for concurrent
-    # use from several threads, and these are DB-only round-trips (cheap)
-    # — the one LLM call already happened, in _analyse_case_v2.
+    # v60b (round 1 on h3: v2_institutions 36.1 s, 111 graph queries one after another): each institution's graph reads
+    # -- its resolution, and a rule institution's pick inside its ranges -- run at once, one session each
+    # (_institution_reads: a neo4j Session is not shared across threads); the loop below takes them in the questions'
+    # order and does everything else as before, serially.
     central_questions = _central_questions(analysis)
     central_matched: List[tuple] = []
     fact_resolved: List[tuple] = []
@@ -4070,14 +4234,26 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
     if fact_v2:
         analysis["fact_institutions"] = []
     analysis["rule_institutions"] = []
+    pairs = [(q, istituto) for q in analysis.get("questioni", []) for istituto in q.get("istituti") or []]
+    reads = graph_parallel(driver, database, [_institution_reads(documents, q, istituto, fact_v2)
+                                              for q, istituto in pairs])
+    read_at = iter(reads) if reads else None
+
+    def read_of(q, istituto):
+        got = next(read_at) if read_at is not None else _institution_reads(documents, q, istituto, fact_v2)(session)
+        if isinstance(got, Exception):
+            raise got
+        return got
     for index, q in enumerate(analysis.get("questioni", [])):
         for istituto in q.get("istituti") or []:
+            read = read_of(q, istituto)
             if istituto.get("fonte") == fact_issues.FONTE and fact_v2:
                 # FACT_ISSUES_RESOLVER_V2_ENABLED: a fact's institution by its headings within its code, the core
                 # article and the related ones (fact_resolver.py); its articles are T1 and get their own plan issue.
-                from . import fact_resolver
                 try:
-                    resolved, how = fact_resolver.resolve(session, documents, istituto)
+                    if read.get("error") is not None:
+                        raise read["error"]
+                    resolved, how = read["v2"]
                 except Exception as exc:
                     _log_exception("_select_articles_v2", exc)
                     logger.warning("fact resolver failed for %r: %s", istituto.get("nome"), exc)
@@ -4098,13 +4274,11 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                     analysis.setdefault("fact_institutions", []).append(
                         {"nome": istituto.get("nome"), "fatto": istituto.get("fatto") or "", "refs": refs})
             else:
-                resolved = _resolve_institution(session, documents, istituto, q.get("parole_chiave"))
+                resolved = read["resolved"]
             if istituto.get("fonte") and not (istituto["fonte"] == fact_issues.FONTE and fact_v2):
-                # FACT_SIGNALS_ENABLED: a fact rule's institution, within its ranges
-                from . import fact_signals
-                kept = fact_signals.keep_resolved(istituto, resolved)
-                if not kept and istituto.get("ranges"):       # ANSWER_INVARIANTS_ENABLED, I3: inside the ranges
-                    kept = _pick_in_rule_ranges(session, documents, istituto, q.get("parole_chiave"))
+                # FACT_SIGNALS_ENABLED: a fact rule's institution, within its ranges (ANSWER_INVARIANTS_ENABLED, I3:
+                # picked inside the ranges when none is kept -- read in _institution_reads)
+                kept = read["kept"]
                 vlog("case_analysis_fact_institution", {"institution": istituto.get("nome"), "fonte": istituto["fonte"],
                                                          **({"fatto": istituto["fatto"]} if istituto.get("fatto") else {}),
                                                          "kept": [_label_of(r) for r in kept],
@@ -4137,6 +4311,7 @@ def _select_articles_v2(session, driver, database: str, facts: str, request: str
                 added.append(row)
 
     # A fired rule's required articles (fact_signal_rules.yaml, requires): read by number if the searches missed them.
+    _mark("select:v2_required")
     required = _required_rows(session, analysis, {r.get("_article") for r in base["article_rows"] + added}, store)
     fact_resolved += [tuple(ref) for ref in analysis["rule_required"]]
     for row in required:
@@ -4413,9 +4588,10 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     prompt (_grade_prompt_rows), at most _GRADE_ALL_PROMPT_CAP."""
     from . import method_candidates
 
+    limits = _GRADING_LIMITS.get() or {}
     priority = feature_flags.enabled(CHECK_PRIORITY_FLAG)
     gated = feature_flags.enabled(method_candidates.CHECKLIST_GATED_FLAG)
-    graded = feature_flags.enabled(CHECK_GRADED_FLAG)
+    graded = feature_flags.enabled(CHECK_GRADED_FLAG) or bool(limits.get("graded"))
     to_check, texts = _applicability_candidates(facts, request, article_rows)
     if not texts and not (priority or gated):
         return article_rows
@@ -4430,6 +4606,19 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     # rarely reach the draft (its budget holds some 25 articles at full text) and stay unchecked.
     # A graded call costs about a third of a verdict per article: twice the slots.
     by_label = {f"{a[0]} {a[1]}": a for a in to_check}
+    prefilter_out: List[str] = []
+    limits["candidates_n"] = len(texts)
+    if limits.get("prefilter") and texts:
+        t_pre = time.time()
+        # v60d: the first read's own finds (prefilter_keep: labels) are graded outside the prefilter's cap
+        must = {label for label in limits.get("prefilter_keep") or () if label in texts}
+        kept, prefilter_out = _prefiltered({k: v for k, v in texts.items() if k not in must}, _case_text(facts, request),
+                                           int(limits["prefilter"]), limits.get("embed_query"), limits.get("embed_documents"))
+        texts = {**kept, **{k: v for k, v in texts.items() if k in must}}
+        limits["prefilter_dropped"], limits["prefilter_ms"] = list(prefilter_out), round((time.time() - t_pre) * 1000)
+        limits["prefilter_kept"] = list(kept)
+        vlog("grade_prefilter", {"candidates": len(texts) + len(prefilter_out), "kept": len(texts),
+                                 "dropped": prefilter_out}, duration_ms=(time.time() - t_pre) * 1000)
 
     def grade_these(chosen: Dict[str, str]) -> tuple:
         if feature_flags.enabled(GRADER_EVIDENCE_FLAG):
@@ -4443,18 +4632,18 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         return _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(chosen, to_check, None,
                                                                                       _graded_focus(to_check, facts, request, analysis)))
     ungraded: List[str] = []
-    if graded and feature_flags.enabled(GRADE_ALL_PROMPT_FLAG) and texts:
+    if graded and (feature_flags.enabled(GRADE_ALL_PROMPT_FLAG) or limits.get("grade_all")) and texts:
         limit = f"prompt (cap {_GRADE_ALL_PROMPT_CAP})"
         chosen, verdicts, ungraded = _grade_prompt_rows(texts, by_label, article_rows, grade_these, facts, request,
                                                         analysis or {}, session_lang)
-        unchecked_labels = [label for label in texts if label not in chosen]
+        unchecked_labels = [label for label in texts if label not in chosen] + prefilter_out
         unchecked = len(unchecked_labels)
         texts = chosen
     else:
         limit = (_graded_max_checked() or len(texts)) if graded else _APPLICABILITY_MAX_CHECKED
-        unchecked = len(texts) - limit
-        unchecked_labels = list(texts)[limit:]
-        if unchecked > 0:
+        unchecked = len(texts) - limit + len(prefilter_out)
+        unchecked_labels = list(texts)[limit:] + prefilter_out
+        if len(texts) > limit:
             texts = dict(list(texts.items())[:limit])
         if not texts:
             verdicts = {}
@@ -4462,6 +4651,7 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
             verdicts, ungraded = grade_these(texts)
         else:
             verdicts = _applicability_verdicts(facts, request, texts)
+    limits["graded_n"] = len(texts)
     past_limit = [r for label in unchecked_labels for r in to_check.get(by_label.get(label), [])[:1]]
     if verdicts is None:
         # Every batch failed: kept as before; the method lists' candidates are not (CHECKLIST_GATED).
@@ -4597,6 +4787,61 @@ GRADE_ALL_PROMPT_FLAG = "GRADE_ALL_PROMPT"
 _GRADE_ALL_PROMPT_CAP = 120
 _GRADE_ALL_PROMPT_ROUNDS = 4
 
+# v60 (INTERACTIVE_CASE_FIRST, G): a caller's own limits on the graded check, for the calls it makes inside
+# grading_limits(): {"graded": force the graded check, "grade_all": force GRADE_ALL_PROMPT, "rounds": at most this many
+# rounds and no final one, "prefilter": grade only the top N by embedding similarity to the case}; the check writes
+# back "prefilter_dropped", "prefilter_ms", "rounds_run", "graded_n". Nothing changes for any other caller.
+import contextlib as _contextlib
+import contextvars as _contextvars
+_GRADING_LIMITS: "_contextvars.ContextVar[Optional[Dict[str, Any]]]" = _contextvars.ContextVar("grading_limits", default=None)
+GRADE_PREFILTER_ENV = "GRADE_PREFILTER_N"
+GRADE_PREFILTER_N = 50
+_PREFILTER_TEXT_CHARS = 600
+
+
+@_contextlib.contextmanager
+def grading_limits(limits: Dict[str, Any]):
+    token = _GRADING_LIMITS.set(limits)
+    try:
+        yield limits
+    finally:
+        _GRADING_LIMITS.reset(token)
+
+
+def grade_prefilter_n() -> int:
+    """GRADE_PREFILTER_N when a positive number, else GRADE_PREFILTER_N's default; 0 or less: no prefilter."""
+    try:
+        return int(os.getenv(GRADE_PREFILTER_ENV) or GRADE_PREFILTER_N)
+    except ValueError:
+        return GRADE_PREFILTER_N
+
+
+def _cosine(a: List[float], b: List[float]) -> float:
+    num = sum(x * y for x, y in zip(a, b))
+    den = (sum(x * x for x in a) ** 0.5) * (sum(y * y for y in b) ** 0.5)
+    return num / den if den else 0.0
+
+
+def _prefiltered(texts: Dict[str, str], case: str, top: int, embed_query=None, embed_documents=None
+                 ) -> tuple:
+    """(texts kept: the top `top` by similarity to the case, in their order; [labels dropped]). Fails open."""
+    if top <= 0 or len(texts) <= top:
+        return texts, []
+    try:
+        if embed_query is None:
+            from .ai_chat import _embed_query_with_prefix as embed_query
+        embed_documents = embed_documents or embedding_model.embed_documents
+        query = list(embed_query(case[:4000]))
+        labels = list(texts)
+        vectors = embed_documents([f"{label}: {texts[label][:_PREFILTER_TEXT_CHARS]}" for label in labels])
+        scored = sorted(range(len(labels)), key=lambda i: -_cosine(query, list(vectors[i])))
+        keep = set(scored[:top])
+    except Exception as exc:
+        logger.warning("grade prefilter failed, every candidate graded: %s", exc)
+        return texts, []
+    return ({label: texts[label] for i, label in enumerate(labels) if i in keep},
+            [label for i, label in enumerate(labels) if i not in keep])
+
 
 def _prompt_reach(article_rows: List[Dict[str, Any]], grades: Dict[tuple, int], facts: str, request: str,
                   analysis: Dict[str, Any], session_lang: str) -> set:
@@ -4638,14 +4883,20 @@ def _grade_prompt_rows(texts: Dict[str, str], by_label: Dict[str, tuple], articl
         ungraded.extend(missing)
         graded.update(chosen)
 
-    for _ in range(_GRADE_ALL_PROMPT_ROUNDS):
+    limits = _GRADING_LIMITS.get() or {}
+    most = int(limits.get("rounds") or _GRADE_ALL_PROMPT_ROUNDS)
+    must = [label for label in limits.get("prefilter_keep") or () if label in texts]      # v60d: always graded
+    for k in range(most):
         wanted = admitted()[:max(0, _GRADE_ALL_PROMPT_CAP - len(graded))]
+        if k == 0:
+            wanted += [label for label in must if label not in wanted and label not in graded]
         if not wanted:
             break
         grade(wanted)
         rounds.append(len(wanted))
+    limits["rounds_run"] = len(rounds)
     final = 0
-    if len(rounds) == _GRADE_ALL_PROMPT_ROUNDS:        # the rounds ran out: the estimate may admit more
+    if len(rounds) == _GRADE_ALL_PROMPT_ROUNDS and not limits.get("rounds"):   # the rounds ran out: the estimate may admit more
         wanted = admitted()[:max(0, _GRADE_ALL_PROMPT_CAP - len(graded))]
         if wanted:
             grade(wanted)
@@ -5497,8 +5748,20 @@ def _text_covers(context: str, ref: tuple, article: str) -> List[str]:
     return found if len(key) >= _STAMP_MIN_TERMS and len(found) * 3 >= len(key) * 2 else []
 
 
+def one_stem_clears(clause: str, heading: str, first_comma: str) -> List[str]:
+    """v60c (the interactive flow's rubrica check): the stems the citing clause shares with the article's rubrica or
+    its first comma -- one is enough to clear the citation."""
+    return sorted(_stamp_stems(clause, names=False) & (_stamp_stems(heading) | _stamp_stems(first_comma)))
+
+
+def first_comma(text: str) -> str:
+    from . import rule_quote
+    commi = rule_quote.commi_of(text or "")
+    return commi[0][1] if commi else str(text or "")
+
+
 def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: List[Dict[str, Any]],
-                          session, documents: List[Dict[str, Any]], case_text: str = "") -> str:
+                          session, documents: List[Dict[str, Any]], case_text: str = "", one_stem: bool = False) -> str:
     """The draft with each cited article whose real heading does not fit the use
     the draft makes of it flagged at its first citation. Articles of the case's
     area/posture lists are trusted; the others are checked in one call.
@@ -5576,9 +5839,12 @@ def _check_qualifications(draft: str, analysis: Dict[str, Any], article_rows: Li
         # the article's words: its rubrica too (v48, Leonardo v46: "il fondo è intercluso" against «Interclusione ...»);
         # never against an inverse situation ("direzione"): the mirror article shares the clause's words by being one
         # v51: a sentence opening with the citation is judged on the clause after it
-        found = _text_covers(_opening_clause(draft, ref) or headings[label][1], ref, f"{heading} " + " ".join(
-            str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())) \
-            if by_text and kind != "direzione" else []
+        text = " ".join(str(((rows_by_ref.get(ref) or {}).get("s") or {}).get("plain_text") or "").split())
+        clause = _opening_clause(draft, ref) or headings[label][1]
+        if one_stem and kind != "direzione":    # v60c: one stem shared with the rubrica or the first comma clears it
+            found = one_stem_clears(_citing_clause(clause, ref), heading, first_comma(text))
+        else:
+            found = _text_covers(clause, ref, f"{heading} {text}") if by_text and kind != "direzione" else []
         if found:
             not_stamped[label] = found
             return draft

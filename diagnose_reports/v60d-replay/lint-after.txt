@@ -1,0 +1,38 @@
+v55-all.md	h7	round 1	unearned_topic_point	topic 1 «Corruzione»: art. 319-ter c.p. of «corruzione» not treated
+
+| rule | findings |
+|---|---|
+| bare_heading | 0 |
+| penalty_requisite | 0 |
+| orphan_paragraph | 0 |
+| dangling_reference | 0 |
+| no_client | 0 |
+| repeated_marker | 0 |
+| missing_section | 0 |
+| gated_term | 0 |
+| unearned_topic_point | 1 |
+| duplicate_default | 0 |
+| scaffold_bullet | 0 |
+| misattributed_comma | 0 |
+| **all** | **1** |
+
+| file | bare_heading | penalty_requisite | orphan_paragraph | dangling_reference | no_client | repeated_marker | missing_section | gated_term | unearned_topic_point | duplicate_default | scaffold_bullet | misattributed_comma | all |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| v55-all.md |  |  |  |  |  |  |  |  | 1 |  |  |  | 1 |
+| v56-h10.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v56-h3.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v56-p1.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v57-anchors.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v57-h3.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v57-h5.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v57-h7.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v57-l3.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v57-p2.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v58-h10.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v58-h3.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v58-h5.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v58-h7.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v58-l3.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v58-p1.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v58-p2.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |
+| v59-all.md |  |  |  |  |  |  |  |  |  |  |  |  | 0 |

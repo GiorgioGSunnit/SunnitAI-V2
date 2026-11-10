@@ -20,6 +20,7 @@ Each case also gets "replay_log": what was changed and why.
 import glob
 import os
 import re
+from pathlib import Path
 import sys
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
@@ -205,13 +206,15 @@ def rebuild_round1(case: Dict[str, Any], topics: List[Dict[str, Any]], pieces: D
             log.append(f"term line out: «{term['text'][:60]}» (carried_terms)")
     body = re.sub(r"\n[ \t]*\n(?=\n)", "\n", body)
     # the questions
-    block = re.search(r"(?ms)(\*\*Da chiarire\*\*\s*\n\n)(.*?)(?=\n\nDimmi su quale)", body)
+    block = re.search(r"(?ms)(\*\*Da chiarire\*\*\s*\n\n)(.*?)(?=\n\n" + answer_lint.INSTRUCTION_START + ")", body)
     q_text = "\n".join(C.fill(C.QUESTION_LINE, n=i, text=q) for i, q in enumerate(worded, 1))
     if block:
         body = body[:block.start()] + (block.group(1) + q_text if worded else "").rstrip() + body[block.end():] \
             if worded else body[:block.start()].rstrip("\n") + body[block.end():]
     elif worded:
-        body = body.replace("\n\n" + C.INSTRUCTION, f"\n\n{C.QUESTIONS_TITLE}\n\n{q_text}\n\n{C.INSTRUCTION}")
+        closing = re.search(r"\n\n(?=" + answer_lint.INSTRUCTION_START + ")", body)
+        if closing:
+            body = body[:closing.start()] + f"\n\n{C.QUESTIONS_TITLE}\n\n{q_text}" + body[closing.start():]
     return re.sub(r"\n{3,}", "\n\n", body)
 
 
@@ -426,7 +429,9 @@ def replay_answer(case: Dict[str, Any], topics: List[Dict[str, Any]], chosen: Li
     out = []
     norms_rubriche = body
     for title, text in secs:
+        text = _stamps_rechecked(text, log)           # v60c (6): one stem with the rubrica or the first comma clears
         if title == F.ANSWER_TITLES[1]:
+            text = _abrogated_out(text, log)          # v60c (8)
             text = _blocks_refiltered(text, log)
             text = _rebuilt_blocks(text, chosen, log)
             text = _commi_checked(text, log)
@@ -443,6 +448,7 @@ def replay_answer(case: Dict[str, Any], topics: List[Dict[str, Any]], chosen: Li
     final_log: List[Dict[str, Any]] = []
     draft = F.answer_final(F._join([(t, x) for t, x in out if x.strip()]), final_log)
     log += [f"final: {x}" for x in final_log]
+    draft = _read_back(draft, case, log)              # v60c (6, 7, 9): the read-back pass, on the case's own text
     others = [C.fill(C.CLOSING_TOPIC, n=i, title=t["title"]) for i, t in enumerate(topics, 1) if t not in chosen]
     others = [o for o in others if o]
     if others:
@@ -451,7 +457,94 @@ def replay_answer(case: Dict[str, Any], topics: List[Dict[str, Any]], chosen: Li
     return draft
 
 
-def replay_case(case: Dict[str, Any]) -> Dict[str, Any]:
+# --- v60c: the rubrica stamps, abrogated articles, the read-back pass --------------------------------------------------
+
+_STAMP_RE = re.compile(r"\s*\[DA VERIFICARE: l'art\. (\S+) ([^\]]+?) riguarda «([^»]*)»\]")
+
+
+def _stamps_rechecked(text: str, log: List[str]) -> str:
+    """A rubrica stamp the one-stem rule clears (the citing clause shares a stem with the rubrica or the article's
+    first comma, the local text) is removed."""
+    from src.rag import defensive_generation as dg
+    out, last = [], 0
+    for m in _STAMP_RE.finditer(text or ""):
+        key = (m.group(1), answer_lint._code(m.group(2)))
+        found = article_texts().get(key)
+        start = max(text.rfind(". ", 0, m.start()), text.rfind("\n", 0, m.start())) + 1
+        stop = [i for i in (text.find(". ", m.end()), text.find("\n", m.end())) if i >= 0]
+        clause = text[start:m.start()] + " " + text[m.end():min(stop) if stop else len(text)]
+        cleared = dg.one_stem_clears(dg._citing_clause(clause, key), m.group(3), dg.first_comma(found[1] if found else ""))
+        out.append(text[last:m.start()] if cleared else text[last:m.end()])
+        last = m.end()
+        if cleared:
+            log.append(f"stamp art. {key[0]} {key[1]} cleared ({', '.join(cleared[:3])})")
+    return "".join(out) + (text or "")[last:] if out else text
+
+
+def _abrogated_out(norms: str, log: List[str]) -> str:
+    """§2 without the blocks -- and the «non trattate» items -- of articles whose local text is their abrogation."""
+    from src.rag.article_text import is_abrogated
+    for m in list(re.finditer(r"(?ms)^\*\*Art\.\s+(\S+)\s+([^—*\n]+?)(?:\s+—[^*\n]*)?\*\*\s*\n.*?(?=^\*\*Art\.|^Altre norme|\Z)",
+                              norms or ""))[::-1]:
+        found = article_texts().get((m.group(1), answer_lint._code(m.group(2))))
+        if found and is_abrogated(found[1]):
+            norms = norms[:m.start()] + norms[m.end():]
+            log.append(f"art. {m.group(1)} {m.group(2).strip()}: abrogated, its block out")
+    for number, code in [k for k, v in article_texts().items() if is_abrogated(v[1])]:
+        line = re.search(rf"(?m)^Altre norme del tema non trattate:.*\bart\. {re.escape(number)} ", norms or "")
+        if line:
+            norms = re.sub(rf"(Altre norme del tema non trattate:[^\n]*?)(?:,\s*)?\bart\. {re.escape(number)} [^,\n]*?(?=,|\.?$)",
+                           r"\1", norms, flags=re.M)
+            log.append(f"art. {number} {code}: abrogated, out of «non trattate»")
+    return re.sub(r"(?m)^Altre norme del tema non trattate:\s*\.?\s*$\n?", "", norms)
+
+
+_CASES: Optional[Dict[str, str]] = None
+
+
+def case_text_of(cid: str) -> str:
+    """The case's own text (tests/eval_narrative_cases.json), "" for a case not in it."""
+    global _CASES
+    if _CASES is None:
+        import json
+        path = Path(__file__).resolve().parents[1] / "tests" / "eval_narrative_cases.json"
+        try:
+            _CASES = {str(c.get("id")): str(c.get("question") or "") for c in json.loads(path.read_text("utf-8"))["cases"]}
+        except (OSError, ValueError, KeyError):
+            _CASES = {}
+    return _CASES.get(str(cid or "").split("@")[0], "")
+
+
+def _read_back(draft: str, case: Dict[str, Any], log: List[str]) -> str:
+    from src.rag import interactive_flow as F, readback
+    text = case_text_of(case.get("_id", ""))
+    if not text:
+        log.append("read-back skipped: no case text")
+        return draft
+    cited = {(n, answer_lint._code(c)) for n, c in re.findall(r"\bart\.\s*(\d+(?:-[a-z]+)?)\s+(c\.\s*[cp]\.(?:\s*[pca]\.)?)",
+                                                         draft, re.IGNORECASE)}
+    texts = article_texts()
+    articles = {f"{n} {c.replace(' ', '')}": f"{_rubrica(n, c)} {texts[(n, c)][1]}" for n, c in cited if (n, c) in texts}
+    heads = {f"{n} {answer_lint._code(c).replace(' ', '')}": h for n, c, h in re.findall(
+        r"(?m)^\*\*Art\.\s+(\S+)\s+([^—*\n]+?)\s+—\s+([^*\n]+)\*\*", draft)}
+    rubriche = {k: heads.get(k) or _rubrica(*k.split(" ", 1)) for k in articles}
+    procedural = dict(answer_lint.sections(draft)).get(F.ANSWER_TITLES[3], "")
+    sources = [text, procedural] + [v for v in articles.values()]
+    rb: Dict[str, Any] = {}
+    out = readback.read_back(draft, sources, {}, (F.ANSWER_TITLES[3],), rb, articles=articles, case=text,
+                             rubriche=rubriche)
+    for key in ("ungrounded", "contradictions", "not_in_case"):
+        for item in rb.get(key) or []:
+            if key == "not_in_case":
+                log.append(f"read-back: {'calcolato' if not item.get('not_in_case') else 'non risulta'} "
+                           f"{(item.get('not_in_case') or item.get('calculated'))}")
+            else:
+                log.append(f"read-back {key}: «{str(item.get('dropped'))[:80]}»")
+    return out
+
+
+def replay_case(case: Dict[str, Any], cid: str = "") -> Dict[str, Any]:
+    case = {**case, "_id": cid}
     log: List[str] = []
     old_chosen = [t["n"] for t in answer_lint.chosen(case)]
     topics, pieces = replay_round1(case, log)
@@ -469,7 +562,7 @@ def replay_case(case: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def replay_file(path: str) -> "OrderedDict[str, dict]":
-    return OrderedDict((cid, replay_case(case)) for cid, case in answer_lint.read_cases(path).items())
+    return OrderedDict((cid, replay_case(case, cid)) for cid, case in answer_lint.read_cases(path).items())
 
 
 def write_file(source: str, cases: "OrderedDict[str, dict]", target: str) -> None:
