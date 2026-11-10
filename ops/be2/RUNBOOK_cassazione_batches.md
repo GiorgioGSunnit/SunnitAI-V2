@@ -219,7 +219,7 @@ quarter of the rulings' sections; the app's reading-order fallback (name order) 
 | chunk fallbacks | 0 | > 0: stop worker 2 (above) |
 | LLM model errors | 0 | > 0: the ingest .env names a model the server no longer serves |
 | disk free | > 40 GB | the page flags it: `touch /var/log/maint/feed.pause` and the database discussion |
-| feeder: N left | falling by the day's written | PAUSED outside 21:00-23:35 CET = the pause file was left behind |
+| feeder: N left | falling by the day's written | PAUSED outside 20:30-23:35 CET = the pause file was left behind |
 | suspected duplicates | 0 | > 0: trace them before feeding more |
 | rulings without card | growing by day, cleared by the night | the cards window is too short: `--stop-at` later |
 

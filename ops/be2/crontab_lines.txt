@@ -8,9 +8,10 @@
 */10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 60 >> /var/log/maint/feed_queue.log 2>&1
 #
 # Cards window: prod cards the new rulings at 21:00 UTC = 22:00 CET; the cards and the ingest must not share the
-# GPU (15 s chunk timeout -> plain-text fallbacks). Feeding stops an hour before, so both queues are empty when
-# the cards start, and resumes when the cards' --stop-at (22:30 UTC = 23:30 CET) has passed.
-0 21 * * * touch /var/log/maint/feed.pause
+# GPU (15 s chunk timeout -> plain-text fallbacks). Feeding stops an hour and a half before, so both queues are
+# empty when the cards start, and resumes when the cards' --stop-at (22:30 UTC = 23:30 CET) has passed.
+# 20:30, not 21:00, since 10 Nov: the full path ran at ~50/h per worker that afternoon, so 60 files take ~73 min.
+30 20 * * * touch /var/log/maint/feed.pause
 35 23 * * * rm -f /var/log/maint/feed.pause
 #
 # Linker (existing line, 04:00 CET): after the first full --write pass by hand, add --new-only to the python line
@@ -33,7 +34,7 @@
 #   sed -e 's#^0 \* \* \* \* SRC=/home/sunnit/pdf2025 bash /home/sunnit/feed_queue.sh 240 100 .*#*/10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 60 >> /var/log/maint/feed_queue.log 2>\&1#' \
 #       -e 's#maint_health.py --env /opt/v2tools/health.env #maint_health.py --env /opt/v2tools/health.env --queue-dir /opt/sunnitai-be/document_upload,/opt/sunnitai-be/document_upload_2 --staging /home/sunnit/cass_batch1 #' \
 #       ~/crontab.bak_10nov > ~/crontab.new
-#   grep -q feed.pause ~/crontab.new || printf '0 21 * * * touch /var/log/maint/feed.pause\n35 23 * * * rm -f /var/log/maint/feed.pause\n' >> ~/crontab.new
+#   grep -q feed.pause ~/crontab.new || printf '30 20 * * * touch /var/log/maint/feed.pause\n35 23 * * * rm -f /var/log/maint/feed.pause\n' >> ~/crontab.new
 #   diff ~/crontab.bak_10nov ~/crontab.new
 #   sudo crontab ~/crontab.new && sudo crontab -l | grep -c "maint_feed\|feed.pause"      # 3
 #
