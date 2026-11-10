@@ -933,6 +933,33 @@ def _group_checked(plan: Dict[str, Any], checked: List[tuple], headings: Dict[tu
     return plan, placed, grouped, rest
 
 
+# v60f: the interactive answer's plan -- its issues fixed (the chosen topics, each with its articles' records:
+# interactive_flow, issue_records.plan_issues) and the user's own question (its angle)
+PLAN_ISSUES_KEY = "plan_issues"
+PLAN_ANGLE_KEY = "plan_angle"
+FIXED_ISSUES_TITLE = "QUESTIONI SCELTE (già decise, con le norme e i requisiti di ciascuna)"
+FIXED_ISSUES_RULE = ("Le questioni sono ESATTAMENTE quelle di QUESTIONI SCELTE, con i loro titoli e le loro norme, "
+                     "nell'ordine dato: non aggiungerne, non toglierne, non spostare norme dall'una all'altra. Per "
+                     "ciascuna scrivi argomento, obiezione e replica sui requisiti indicati e sui fatti che li "
+                     "sostengono o li contraddicono; un requisito senza fatti che lo sostengano resta da provare. Sii "
+                     "conciso: ogni campo al massimo in due frasi, senza ripetere i fatti.")
+FIXED_ACQUIRED_RULE = ("- Un diritto è già acquisito solo se DIRITTI GIÀ ACQUISITI lo indica (una regola dei fatti "
+                       "che il caso afferma); altrimenti è da provare, nella questione scelta che lo riguarda.\n")
+ANGLE_TITLE = "DOMANDA DELL'UTENTE"
+ANGLE_RULE = "Il piano risponde a questa domanda per prima, in «risposte»."
+
+
+def _fixed_block(analysis: Dict[str, Any]) -> str:
+    issues = (analysis or {}).get(PLAN_ISSUES_KEY) or []
+    if not issues:
+        return ""
+    parts = []
+    for i, issue in enumerate(issues, 1):
+        norms = ", ".join(f"art. {n} {_code_key(c)}" for n, c in issue.get("norme") or [])
+        parts.append(f"{i}. {issue.get('titolo')} — norme: {norms}\n{issue.get('scheda') or ''}".rstrip())
+    return f"{FIXED_ISSUES_TITLE}:\n" + "\n".join(parts) + "\n\n"
+
+
 def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: str, rulings: str,
                 principles: str, checks: List[str], voted: Optional[List[tuple]] = None,
                 applicable: Optional[List[tuple]] = None, must_place: Any = False,
@@ -951,17 +978,23 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
                                 for issue, refs in groups.items())
                     + "\nMetti ciascuna tra le norme della questione del piano che corrisponde a quella indicata; una "
                     "che non disciplina nessuna questione del piano resta fuori.\n\n")
+    if (analysis or {}).get(PLAN_ISSUES_KEY):   # v60f: issues fixed -- no list that asks to add or regroup an issue
+        votate, applicabili, by_issue = "", "", ""
     terms = _terms(analysis)
     qualified, tools = _qualifications(analysis), _tools(analysis)
     damages, roles = _damages(analysis), _roles(analysis)
     fixes = _review_fixes()
     questions = "\n".join(f"{i}. {q}" for i, q in enumerate(explicit_questions(request, facts), 1)) if fixes else ""
-    acquired = "\n".join(f"- {a}" for a in acquired_rights(analysis)) if fixes else ""
+    fixed = bool((analysis or {}).get(PLAN_ISSUES_KEY))
+    acquired = "\n".join(f"- {a}" for a in acquired_rights(analysis, stated_only=fixed)) if fixes else ""
+    defendants_rule = _DEFENDANTS_RULE
+    if fixed:                   # v60g (P6): a party the case does not identify is «da individuare»
+        from .writer_rules import DEFENDANTS_RULE as defendants_rule
     return (f"PARTE ASSISTITA (dall'analisi del caso): {dg._stance_party(analysis)}\n\n{base}\n\n"
             + (f"{_QUESTIONS_TITLE}:\n{questions}\n\n" if questions else "")
             + (f"{_ACQUIRED_TITLE}:\n{acquired}\n\n" if acquired else "")
             + (f"{_CONCLUSIONS_TITLE}:\n{_conclusions(analysis)}\n{_CONCLUSIONS_RULE}\n\n" if _conclusions(analysis) else "")
-            + (f"{_DEFENDANTS_TITLE}:\n{_defendants(analysis)}\n{_DEFENDANTS_RULE}\n\n" if _defendants(analysis) else "")
+            + (f"{_DEFENDANTS_TITLE}:\n{_defendants(analysis)}\n{defendants_rule}\n\n" if _defendants(analysis) else "")
             + (f"{_QUALIFIED_TITLE}:\n{qualified}\n{_QUALIFIED_RULE}\n\n" if qualified else "")
             + (f"{_ROLES_TITLE}:\n{roles}\n\n" if roles else "")
             + (f"{_DAMAGES_TITLE}:\n{damages}\n{_DAMAGES_RULE}\n\n" if damages else "")
@@ -983,6 +1016,8 @@ def _plan_human(facts: str, request: str, analysis: Dict[str, Any], articles: st
             + (f"NORME APPLICATE DALLA GIURISPRUDENZA SU FATTI SIMILI (sono in NORME): {votate}. Per ogni "
                "questione valuta se una di queste la disciplina, leggendone rubrica e testo; se sì, mettila tra "
                "le sue norme, altrimenti lasciala fuori.\n\n" if votate else "")
+            + (f"{ANGLE_TITLE}: {analysis[PLAN_ANGLE_KEY]}\n{ANGLE_RULE}\n\n" if (analysis or {}).get(PLAN_ANGLE_KEY) else "")
+            + _fixed_block(analysis)
             + "Prepara ora il piano.")
 
 
@@ -1161,14 +1196,15 @@ def _issue_kind(issue: Dict[str, Any]) -> str:
     return "recognition" if recognition and not constitutive else "constitutive" if constitutive and not recognition else ""
 
 
-def acquired_rights(analysis: Dict[str, Any]) -> List[str]:
+def acquired_rights(analysis: Dict[str, Any], stated_only: bool = False) -> List[str]:
     """The rights the case shows already acquired: the fired fact rules marked acquired_right (their institution and
-    why), then the analysis' questions and institutions naming one."""
+    why), then the analysis' questions and institutions naming one. stated_only (v60g P6: the interactive plan with its
+    issues fixed): the fired rules only -- a question's name is no fact."""
     out = []
     for rule in (_signals(analysis) or {}).get("fired") or []:
         if rule.get("acquired_right") and not rule.get("unstated"):      # unstated: interactive_flow.mark_unstated
             out.append(f"{', '.join(rule.get('institutions') or [])}: {rule.get('why') or ''}".strip(": "))
-    for q in (analysis or {}).get("questioni") or []:
+    for q in [] if stated_only else (analysis or {}).get("questioni") or []:
         names = [q.get("titolo") or ""] + [i.get("nome") or "" for i in q.get("istituti") or [] if isinstance(i, dict)]
         out += [n for n in names if n and _ACQUIRED_RE.search(n) and not _CONSTITUTIVE_RE.search(n)]
     return list(dict.fromkeys(out))
@@ -1593,7 +1629,14 @@ def make_plan(facts: str, request: str, analysis: Dict[str, Any], articles: str,
     applicable = (list(reasons) if reasons is not None else _checked(article_rows) if keep_checked
                   else _applicable(article_rows, facts, request, analysis) if keep_all else [])
     max_issues = _MAX_ISSUES_WIDE if keep_checked or len(applicable) >= _WIDE_APPLICABLE else _MAX_ISSUES
+    fixed = list((analysis or {}).get(PLAN_ISSUES_KEY) or [])
+    if fixed:                       # v60f: the issues are the chosen topics -- the plan argues them, never selects
+        max_issues = max(1, len(fixed))
     system = _plan_system(max_issues)
+    if fixed:
+        system = re.sub(r"Le questioni per prime, da due a \w+, in ordine di forza per la parte assistita\.",
+                        FIXED_ISSUES_RULE, system)
+        system = system.replace(_ACQUIRED_RULE.split("\n- ")[0] + "\n", FIXED_ACQUIRED_RULE)       # v60g (P6)
     issue_of = {r["_article"]: r.get("_grade_issue") or "" for r in article_rows if r.get("_article")}
     groups = _issue_groups(reasons, issue_of) if reasons is not None and _by_issue() else None
     human = _plan_human(facts, request, analysis, _with_headings(articles, headings), rulings, principles,
@@ -1806,7 +1849,10 @@ def _ruling_texts(plan: Dict[str, Any], references: Dict[str, List[Dict[str, Any
     return dg._source_block([references[p][0] for p in cited if references.get(p)], chars)
 
 
-def _section_system(plan: Dict[str, Any], lang: str) -> str:
+def _section_system(plan: Dict[str, Any], lang: str, sections_note: str = "", writer_rules: str = "") -> str:
+    """sections_note (v60f): the answer's own sections in place of the parere's six (the interactive answer has its own
+    list, one number, one set of titles). writer_rules (v60g d): the interactive answer's de-conflicted rule set
+    (writer_rules.system_rules) in place of _WRITER_RULES."""
     from .language import language_display_name
     party = plan["parte_assistita"] or "la parte assistita"
     position = f" ({plan['posizione']})" if plan["posizione"] else ""
@@ -1817,9 +1863,10 @@ def _section_system(plan: Dict[str, Any], lang: str) -> str:
         + ("centrale, stessi argomenti; delle sue norme e pronunce usa quelle che sostengono gli argomenti.\n\n"
            if rules else "centrale, stessi argomenti, stesse norme e pronunce.\n\n") +
         "REGOLE:\n"
-        "- Scrivi solo il testo della sezione, senza il suo titolo. Il parere ha sei sezioni (risposte ai "
-        "quesiti; inquadramento e fatti; norme e giurisprudenza; applicazione al caso; profili processuali e "
-        "termini; conclusioni): non ripetere ciò che spetta alle altre, sii essenziale.\n"
+        "- Scrivi solo il testo della sezione, senza il suo titolo. "
+        + (sections_note or "Il parere ha sei sezioni (risposte ai "
+           "quesiti; inquadramento e fatti; norme e giurisprudenza; applicazione al caso; profili processuali e "
+           "termini; conclusioni)") + ": non ripetere ciò che spetta alle altre, sii essenziale.\n"
         "- Non concedere mai un elemento contestato dell'accusa o della pretesa: una posizione che lo presuppone "
         "va presentata solo in via subordinata.\n"
         + ("- Norme: cita solo quelle del PIANO o dei TESTI forniti, sempre con numero e codice o legge come vi "
@@ -1831,7 +1878,7 @@ def _section_system(plan: Dict[str, Any], lang: str) -> str:
         "richiamare orientamenti giurisprudenziali. I fatti di una pronuncia non sono fatti del caso.\n"
         "- Non aggiungere fatti, date, importi o atti che il caso non contiene: se un dato manca, indica che cosa "
         "va verificato.\n"
-        + (_WRITER_RULES.format(party=party) if rules else "") +
+        + (writer_rules or (_WRITER_RULES.format(party=party) if rules else "")) +
         "- Parafrasa le norme con parole tue: il testo di una norma si riporta solo tra «…», mai fuori dalle virgolette né "
         "dentro una parentesi.\n"
         "- Prosa argomentata in paragrafi; elenchi puntati solo per prove da acquisire e attività da compiere.\n"
@@ -2150,6 +2197,10 @@ def _ends_sentence(text: str, i: int) -> bool:
     return not nxt or nxt[0] == "\n" or not (nxt[0].islower() or nxt[0].isdigit())
 
 
+# v60f (X4): the writer's paragraph mark «[N]» at a line's start -- never part of the sentence after it
+_PARAGRAPH_MARK_RE = re.compile(r"\[\d{1,2}\][ \t]*")
+
+
 def _sentence_span(text: str, start: int, end: int) -> Tuple[int, int]:
     """The sentence around text[start:end], within its line."""
     s = start
@@ -2157,6 +2208,9 @@ def _sentence_span(text: str, start: int, end: int) -> Tuple[int, int]:
         s -= 1
     while s < start and text[s].isspace():
         s += 1
+    mark = _PARAGRAPH_MARK_RE.match(text, s, start)     # v60f (X4): a paragraph's «[N]» is no sentence's
+    if mark and (s == 0 or text[s - 1] == "\n"):
+        s = mark.end()
     e = end
     while e < len(text) and text[e] != "\n" and not (text[e] in ".!?" and _ends_sentence(text, e)):
         e += 1
@@ -2170,7 +2224,8 @@ def _material_refs(material: str, documents: List[Dict[str, Any]]) -> List[tuple
 
 def _code_key(code: str) -> str:
     """A code by its sigla, also when written as its document's name ("Codice Civile 2026" -> "c.c.")."""
-    return next((abbr for abbr, prefix in dg._CODE_PREFIXES.items() if code.startswith(prefix)), code)
+    low = str(code or "").lower()           # v60e: «Codice della Strada 2026» as «Codice della strada»
+    return next((abbr for abbr, prefix in dg._CODE_PREFIXES.items() if low.startswith(prefix.lower())), code)
 
 
 def _same_ref(a: tuple, b: tuple) -> bool:
@@ -2877,6 +2932,9 @@ def _sentence_spans(text: str) -> List[Tuple[int, int]]:
                 _HEADING_LINE_RE.match(line) and not _HEADING_LINE_RE.match(line).group(2).strip(" .:;–-")):
             continue
         s = start + len(line) - len(line.lstrip())
+        mark = _PARAGRAPH_MARK_RE.match(text, s, end)     # v60f (X4): a paragraph's «[N]» is no sentence's
+        if mark:
+            s = mark.end()
         for i in range(s, end):
             if text[i] in ".!?" and _ends_sentence(text, i):
                 if text[s:i + 1].strip():
@@ -3571,12 +3629,17 @@ def _trace_comma_words(step: str, sections: List[Tuple[str, str]], rows: List[Di
 def _step(name: str, sections: List[Tuple[str, str]],
           run: Callable[[List[Tuple[str, str]]], Optional[List[Tuple[str, str]]]]) -> List[Tuple[str, str]]:
     """One step after writing, fail-safe: its sections, or -- on an exception, an empty result or a section lost --
-    the very sections it was given (the same object), logged as post_writing_step_failed."""
+    the very sections it was given (the same object), logged as post_writing_step_failed. v60: a stage of the request's
+    stage meter, when one is active (stage_meter.mark: a no-op otherwise)."""
+    from .stage_meter import mark
+    mark(f"review:{name}")
     try:
         out = run(sections)
         if out is None or len(out) != len(sections):
             raise ValueError(f"{len(out) if out is not None else 'no'} sections back for {len(sections)}")
-        return out
+        from . import answer_ledger         # v60f: what the step removed, when an answer's ledger is active; v60g:
+        kept = answer_ledger.note(name, sections, out)      # with a deferring one, its removals put back (proposed)
+        return kept if kept is not None and len(kept) == len(out) else out
     except Exception as exc:
         _log_exception("_step", exc)
         logger.exception("plan-then-write: step %s failed, the sections as they were: %s", name, exc)
@@ -3596,7 +3659,8 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
                    questions: Optional[List[str]] = None,
                    checked: Optional[List[tuple]] = None,
                    anchors: Optional["anchored_writing.Catalogue"] = None,
-                   context: Optional[Dict[str, Any]] = None) -> Optional[List[tuple]]:
+                   context: Optional[Dict[str, Any]] = None, sections_note: str = "",
+                   writer_rules: str = "") -> Optional[List[tuple]]:
     """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
     None if one still fails or comes back empty. _discipline(): each section then loses the citations
     its material does not hold (_cite_only_material; named: the articles the case names).
@@ -3609,7 +3673,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     the explicit `questions` goes unanswered (REVIEW_FIXES_ENABLED). Last, GROUNDED_REVIEW_ENABLED: every
     rule-sentence checked against its section's material (grounded_review.review; `checked`, strict: the articles
     it may keep cited, grounded_review.strict_refs)."""
-    system = _section_system(plan, lang)
+    system = _section_system(plan, lang, sections_note, writer_rules)
 
     def _step(name, secs, run):       # each step, and what it leaves of an article's words in place of its citation
         done = _guarded_step(name, secs, run)

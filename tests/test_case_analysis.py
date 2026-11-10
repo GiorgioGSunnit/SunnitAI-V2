@@ -463,7 +463,8 @@ def test_the_parere_is_written_from_the_retrieved_law(pipeline):
     out = DG.run_case_analysis_pipeline(CASE, "it")
 
     import neo4j
-    assert fake.modes == [neo4j.READ_ACCESS]                           # the database is only read
+    assert fake.modes and set(fake.modes) == {neo4j.READ_ACCESS}       # the database is only read (v60b: the code
+    # searches run on their own read sessions)
     assert ART_2051 in prompts["human"] and RULING in prompts["human"]
     assert COSTS_PART not in prompts["human"]                          # the ruling's reasoning, not its costs
     assert ("PRINCIPI DALLA GIURISPRUDENZA (per questione):\nQUESTIONE 1: Custodia\n- Il caso fortuito può "

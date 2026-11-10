@@ -11,6 +11,7 @@ import logging
 import re
 import sys
 import threading
+import time
 import os
 from typing import List, Optional, Union
 
@@ -234,6 +235,34 @@ def _reply_text(response, max_tokens: Optional[int] = None) -> str:
     return text
 
 
+def _stage_count() -> None:
+    """v60: a chat call counted on the request's stage meter (stage_meter), if one is active; never fails the call."""
+    try:
+        from .stage_meter import count
+        count("llm")
+    except Exception:
+        pass
+
+
+def _usage(response) -> tuple:
+    """(input tokens, output tokens) the server reported for a reply, (None, None) when it reported none."""
+    usage = getattr(response, "usage_metadata", None) or {}
+    if usage.get("input_tokens") is not None:
+        return usage.get("input_tokens"), usage.get("output_tokens")
+    token_usage = ((getattr(response, "response_metadata", None) or {}).get("token_usage") or {})
+    return token_usage.get("prompt_tokens"), token_usage.get("completion_tokens")
+
+
+def _stage_call(name: str, started: float, response) -> None:
+    """v60h (11): the call's seconds and tokens on the request's stage meter (stage_meter.call); never fails the call."""
+    try:
+        from .stage_meter import call
+        tokens_in, tokens_out = _usage(response) if response is not None else (None, None)
+        call(name, time.time() - started, tokens_in, tokens_out, started)
+    except Exception:
+        pass
+
+
 def _call_chat(
     messages: List[Union[SystemMessage, HumanMessage]],
     max_tokens: Optional[int] = None,
@@ -253,6 +282,7 @@ def _call_chat(
     guaranteed regardless of chat_model's own construction ever changing —
     not to lower it further, since 0 is already the floor.
     """
+    _stage_count()
     bind_kwargs = {}
     if max_tokens is not None:
         bind_kwargs["max_tokens"] = max_tokens
@@ -261,6 +291,7 @@ def _call_chat(
     if temperature is not None:
         bind_kwargs["temperature"] = temperature
     model = chat_model.bind(**bind_kwargs) if bind_kwargs else chat_model
+    name, started = _caller(), time.time()
     try:
         response = model.invoke(messages)
     except Exception as exc:
@@ -283,6 +314,7 @@ def _call_chat(
         )
         bind_kwargs["max_tokens"] = room
         response = chat_model.bind(**bind_kwargs).invoke(messages)
+    _stage_call(name, started, response)
     return _reply_text(response, bind_kwargs.get("max_tokens"))
 
 
@@ -293,6 +325,7 @@ def _call_chat_with_tools(
     max_tokens: Optional[int] = None,
 ) -> AIMessage:
     """Call the chat model with tools and return the full AI message."""
+    _stage_count()
     try:
         model = chat_model.bind_tools(
             tools,
@@ -305,7 +338,9 @@ def _call_chat_with_tools(
         model = chat_model.bind_tools(tools, tool_choice=tool_choice)
     if max_tokens is not None:
         model = model.bind(max_tokens=max_tokens)
+    name, started = _caller(), time.time()
     response = model.invoke(messages)
+    _stage_call(name, started, response)
     if isinstance(response.content, str):
         response.content = strip_think(response.content)
     return response

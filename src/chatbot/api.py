@@ -1838,6 +1838,48 @@ _COMPARISON_VERB_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Meta-words for the artifact itself. Safe with any determiner, since
+# nobody asks a general legal question about "the file". Determiners
+# include preposizioni articolate ("dal documento", "nel file") — those
+# are how users actually phrase it and the bare-article list missed them.
+_DET = (r"(?:quest[oa]|quell[oa]|quel|il|lo|la"
+        r"|d[ae]l|nel|sul|al|d[ae]llo|nello|sullo|allo"
+        r"|d[ae]lla|nella|sulla|alla)\s+|l['’]\s*")
+_ANAPHORIC_DOC_RE = re.compile(
+    r"(?:" + _DET + r")(?:file|document[oi]|modul[oi]|allegat[oi]|pdf)\b"
+    r"|\b(?:this|that|the)\s+(?:file|document|attachment)\b",
+    re.IGNORECASE,
+)
+# These nouns also name real legal concepts, so a bare article is not
+# enough: "il contratto di locazione richiede la forma scritta?" is a
+# corpus question, not a reference to an upload. Require a demonstrative.
+_ANAPHORIC_CONTENT_RE = re.compile(
+    r"\b(?:quest[oa]|quell[oa]|quel)\s+"
+    r"(?:contratt[oi]|att[oi]|ricors[oi]|verbal[ei]|sentenz[ae]|fattur[ae]|"
+    r"istanz[ae]|memori[ae]|certificat[oi]|test[oi])\b",
+    re.IGNORECASE,
+)
+# Upload references, in the two shapes users actually write: the verb
+# form ("che ho appena caricato") and the participle attached to the noun
+# ("dal documento caricato"). Near-certain references either way.
+_UPLOAD_REF_RE = re.compile(
+    r"\b(?:ti\s+)?ho\s+(?:appena\s+)?(?:caricato|allegato|inviato|mandato)\b"
+    r"|\bappena\s+(?:caricat|allegat|inviat)[oa]\b"
+    r"|\b(?:documento|file|contratto|atto|modulo|pdf|allegato"
+    r"|fattura|sentenza|istanza|memoria|relazione|perizia)\s+"
+    r"(?:che\s+ho\s+)?(?:appena\s+)?(?:caricat|allegat|inviat)[oiae]\b"
+    r"|\b(?:just\s+)?(?:uploaded|attached)\b",
+    re.IGNORECASE,
+)
+
+
+def _refers_to_upload(message: str) -> bool:
+    """The message names a file or points at an upload (the document branch's own tests: a filename, «questo
+    documento», «ho caricato») -- INTERACTIVE_FLOW: a narrative case that does is analysed with the file's text."""
+    return bool(_detect_document_intent(message or "") or _ANAPHORIC_DOC_RE.search(message or "")
+                or _ANAPHORIC_CONTENT_RE.search(message or "") or _UPLOAD_REF_RE.search(message or ""))
+
+
 def _detect_document_intent(message: str) -> list:
     """
     Return all filenames mentioned in the message as a list.
@@ -2088,16 +2130,20 @@ def _routed_intent(message: str, legal_intent: str, pending_calculation: Optiona
     return intent
 
 
-def _interactive_reply(session, session_id: str, message: str, result: dict, mode: str) -> "ChatResponse":
+def _interactive_reply(session, session_id: str, message: str, result: dict, mode: str,
+                       user_meta: Optional[dict] = None) -> "ChatResponse":
     """INTERACTIVE_FLOW: the turn recorded in the session (its state in the anchors, the messages tagged with the
     round), the summarization contract honoured as the defensive branch does, the reply with its interaction field."""
     from ..rag import interactive_flow
     session.anchors = interactive_flow.store(session.anchors, result["state"])
-    session.add_message("user", message, metadata={"type": "interactive"})
+    session.add_message("user", message, metadata={"type": "interactive", **(user_meta or {})})
+    if user_meta and user_meta.get("document_id"):
+        mark_document_session(session)
     if len(session.messages) == 1:
         session.title = _generate_session_title(message)
     session.add_message("assistant", result["answer"], metadata={
-        "type": "interactive", **({"citations": result["citations"]} if result.get("citations") else {})})
+        "type": "interactive", "kind": result.get("kind"),
+        **({"citations": result["citations"]} if result.get("citations") else {})})
     confirmation = session._summarize_if_needed()
     if confirmation:
         session.add_message("assistant", confirmation, metadata={
@@ -2133,20 +2179,114 @@ async def _interactive_follow_up(session_id: str, message: str, uid: Optional[st
         return None
     if result is None:
         return None
+    if result.get("document"):          # v60 (H): the document asked for in the user's own words
+        if result.get("kind") == "document_request":
+            session.anchors = interactive_flow.store(session.anchors, result["state"])
+            return _interactive_document(session, session_id, message, uid, session.tenant_id, force=True)
+        _interactive_reply(session, session_id, message, result, "follow_up")
+        return _interactive_document(session, session_id, message, uid, session.tenant_id, force=True,
+                                     record_user=False)
     return _interactive_reply(session, session_id, message, result, "follow_up")
 
 
-async def _interactive_start(session, session_id: str, message: str, lang: str) -> Optional["ChatResponse"]:
-    """INTERACTIVE_FLOW: round 1 of a narrative case, or None on any failure (logged; the single-shot path then)."""
+async def _interactive_start(session, session_id: str, message: str, lang: str, case: Optional[str] = None,
+                             user_meta: Optional[dict] = None) -> Optional["ChatResponse"]:
+    """INTERACTIVE_FLOW: round 1 of a narrative case, or None on any failure (logged; the single-shot path then).
+    case: an upload's text -- the case, the message its request (the angle); default the message is the case."""
     from ..rag import interactive_flow
+    source = "upload+message" if case is not None else "message"
+    text = case if case is not None else message
+    vlog("interactive", {"round": 1, "session_id": session_id, "case_source": source,
+                         "case_chars": len(text or "") + (len(message or "") if case is not None else 0),
+                         "message_length": len(message or "")})
     try:
         loop = asyncio.get_event_loop()
-        reply, field, state = await loop.run_in_executor(None, partial(interactive_flow.start, message, lang))
+        reply, field, state = await loop.run_in_executor(
+            None, partial(interactive_flow.start, text, lang, message if case is not None else ""))
     except Exception as exc:
         logger.error("chat: interactive round 1 failed, the single-shot pipeline answers: %s", exc, exc_info=True)
         return None
     return _interactive_reply(session, session_id, message,
-                              {"answer": reply, "interaction": field, "state": state, "kind": "round1"}, "round1")
+                              {"answer": reply, "interaction": field, "state": state, "kind": "round1"}, "round1",
+                              user_meta)
+
+
+async def _interactive_upload_case(session, session_id: str, message: str, lang: str, doc, doc_intent: str,
+                                   extract) -> Optional["ChatResponse"]:
+    """INTERACTIVE_FLOW, the document branch (journal 19:12:19, route='document' | intent='defensive_draft', the
+    single-shot ran): the upload's text + the message is the case when the document branch's own classifier says
+    defensive_draft, or the narrative check or the legal-intent classification passes on the combined text -- round 1
+    then runs on it (the file the case, the message the angle). None: not a case (a template to fill, a document to
+    review), the file unreadable, or round 1 failed -- the document branch goes on."""
+    import os as _os
+    from ..rag import interactive_flow
+    if not _os.path.exists(doc.storage_path):
+        return None
+    try:
+        upload = extract(doc.storage_path) or ""
+    except Exception as exc:
+        logger.warning("chat: interactive upload extract failed for %s: %s", doc.storage_path, exc)
+        return None
+    if not upload.strip():
+        return None
+    combined = f"{upload}\n\n{message}"
+    why = ("doc_intent" if doc_intent == "defensive_draft" else "narrative" if interactive_flow.routes_here(combined)
+           else "legal_intent" if _classify_legal_intent(combined, lang) == "defensive_draft" else "")
+    vlog("interactive_upload_check", {"session_id": session_id, "doc_intent": doc_intent, "case": why or "no",
+                                      "case_chars": len(combined)})
+    if not why:
+        return None
+    return await _interactive_start(session, session_id, message, lang, case=upload, user_meta={
+        "document_id": str(doc.id), "document_name": doc.original_filename, "document_role": doc.document_role})
+
+
+# INTERACTIVE_FLOW: the document asked for after a topic answer ("genera il documento", "bozza") -- a short message
+_INTERACTIVE_DOCUMENT_RE = re.compile(
+    r"\b(?:genera\w*|crea\w*|prepar\w*|redig\w*|scriv\w*|produc\w*|esporta\w*|scarica\w*|fammi|vorrei|voglio|dammi)\b"
+    r"[^.?!]{0,40}?\b(?:documento|bozza|docx|file word|word)\b"
+    r"|^\W*(?:(?:la|il|una|un)\s+)?(?:bozza|documento)\W*$",
+    re.IGNORECASE)
+_INTERACTIVE_ANSWER_KINDS = ("answer", "deepen", "regenerate")
+
+
+def _asks_interactive_document(message: str) -> bool:
+    from ..rag import interactive_flow
+    return len(message or "") < interactive_flow.NEW_CASE_CHARS and bool(_INTERACTIVE_DOCUMENT_RE.search(message or ""))
+
+
+def _interactive_document(session, session_id: str, message: str, uid: Optional[str],
+                          tid: Optional[str], force: bool = False, record_user: bool = True) -> Optional["ChatResponse"]:
+    """INTERACTIVE_FLOW: the document of the session's last topic answer (its text as the draft, a DOCX when the user
+    is known), when the interaction is answered and the message asks for the document; None otherwise (no answer
+    yet, another message: the paths below). Never a fresh single-shot draft."""
+    from ..rag import interactive_flow
+    state = interactive_flow.active(session.anchors) if session is not None else None
+    if not state or state.get("state") != interactive_flow.ANSWERED or not (force or _asks_interactive_document(message)):
+        return None
+    last = next((m for m in reversed(session.messages) if m.role == "assistant"
+                 and (m.metadata or {}).get("type") == "interactive"
+                 and (m.metadata or {}).get("kind") in _INTERACTIVE_ANSWER_KINDS), None)
+    if last is None:
+        return None
+    draft = last.content
+    citations = (last.metadata or {}).get("citations") or []
+    doc_id, doc_name = (_persist_generated_docx(draft=draft, doc_type="defensive_parere", user_id=uid, tenant_id=tid)
+                        if uid and tid else (None, None))
+    vlog("interactive", {"round": "document", "session_id": session_id, "docx": bool(doc_id),
+                         "answer_chars": len(draft or "")})
+    answer = "⚖️ **BOZZA DOCUMENTO** *(richiede revisione da parte dell'avvocato)*\n\n" + draft
+    if record_user:
+        session.add_message("user", message, metadata={"type": "interactive"})
+    session.add_message("assistant", answer, metadata={
+        "type": "interactive", "kind": "document",
+        **({"citations": citations} if citations else {}),
+        **({"generated_document_id": doc_id, "generated_document_name": doc_name} if doc_id else {})})
+    session._dirty = True
+    chatbot._save_sessions()
+    return ChatResponse(
+        session_id=session_id, answer=answer, citations=citations, original_query=message, resolved_query=message,
+        session_language=session.session_language, status_messages=["interactive_document"], title=session.title,
+        generated_document_id=doc_id, generated_document_name=doc_name)
 
 
 def _classify_legal_intent(message: str, session_lang: str) -> str:
@@ -2292,12 +2432,33 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
     _req_start = time.time()
     vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
 
+    _deferred_case = False      # INTERACTIVE_FLOW: a narrative case naming an upload, left to the document branch
     # ── INTERACTIVE_FLOW: a reply within an open interactive case (a topic, an answer, "procedi") ──
     # Only a session holding a live interactive state; anything it does not hold falls through unchanged.
     if feature_flags.enabled("INTERACTIVE_FLOW"):
+        # the document asked for after a topic answer wraps that answer (never a fresh single-shot)
+        _int_session = chatbot.get_session(session_id, user_id=_uid, db=db)
+        _interactive = _interactive_document(_int_session, session_id, request.message, _uid, _tid)
+        if _interactive is not None:
+            return _interactive
         _interactive = await _interactive_follow_up(session_id, request.message, _uid, db)
         if _interactive is not None:
             return _interactive
+        # a narrative case: round 1 ahead of every route below (the document route's defensive_draft, the legal
+        # intent, the router) -- journal 15:28:02, route='document' | intent='defensive_draft' ran the single-shot
+        from ..rag import interactive_flow as _iflow
+        if _int_session is not None and not _asks_interactive_document(request.message) \
+                and _iflow.routes_here(request.message):
+            if current_user and _refers_to_upload(request.message):
+                # v60: it names an upload -- the document branch runs round 1 on the file's text + the message
+                # (_interactive_upload_case); no file found there, round 1 on the message below (_deferred_case)
+                _deferred_case = True
+                vlog("interactive_deferred", {"session_id": session_id, "why": "refers to an upload"})
+            else:
+                _interactive = await _interactive_start(_int_session, session_id, request.message,
+                                                        _int_session.session_language)
+                if _interactive is not None:
+                    return _interactive
 
     # ── Deepdive: user clicked a deepdive link from a defensive draft ──────
     # Checked on the raw request.message, ahead of every other branch
@@ -2512,39 +2673,6 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                         generated_document_name=_corr_new_name,
                     )
 
-        # Meta-words for the artifact itself. Safe with any determiner, since
-        # nobody asks a general legal question about "the file". Determiners
-        # include preposizioni articolate ("dal documento", "nel file") — those
-        # are how users actually phrase it and the bare-article list missed them.
-        _DET = (r"(?:quest[oa]|quell[oa]|quel|il|lo|la"
-                r"|d[ae]l|nel|sul|al|d[ae]llo|nello|sullo|allo"
-                r"|d[ae]lla|nella|sulla|alla)\s+|l['’]\s*")
-        _ANAPHORIC_DOC_RE = re.compile(
-            r"(?:" + _DET + r")(?:file|document[oi]|modul[oi]|allegat[oi]|pdf)\b"
-            r"|\b(?:this|that|the)\s+(?:file|document|attachment)\b",
-            re.IGNORECASE,
-        )
-        # These nouns also name real legal concepts, so a bare article is not
-        # enough: "il contratto di locazione richiede la forma scritta?" is a
-        # corpus question, not a reference to an upload. Require a demonstrative.
-        _ANAPHORIC_CONTENT_RE = re.compile(
-            r"\b(?:quest[oa]|quell[oa]|quel)\s+"
-            r"(?:contratt[oi]|att[oi]|ricors[oi]|verbal[ei]|sentenz[ae]|fattur[ae]|"
-            r"istanz[ae]|memori[ae]|certificat[oi]|test[oi])\b",
-            re.IGNORECASE,
-        )
-        # Upload references, in the two shapes users actually write: the verb
-        # form ("che ho appena caricato") and the participle attached to the noun
-        # ("dal documento caricato"). Near-certain references either way.
-        _UPLOAD_REF_RE = re.compile(
-            r"\b(?:ti\s+)?ho\s+(?:appena\s+)?(?:caricato|allegato|inviato|mandato)\b"
-            r"|\bappena\s+(?:caricat|allegat|inviat)[oa]\b"
-            r"|\b(?:documento|file|contratto|atto|modulo|pdf|allegato"
-            r"|fattura|sentenza|istanza|memoria|relazione|perizia)\s+"
-            r"(?:che\s+ho\s+)?(?:appena\s+)?(?:caricat|allegat|inviat)[oiae]\b"
-            r"|\b(?:just\s+)?(?:uploaded|attached)\b",
-            re.IGNORECASE,
-        )
         if not _mentioned_names and (
             _ANAPHORIC_DOC_RE.search(request.message)
             or _ANAPHORIC_CONTENT_RE.search(request.message)
@@ -3072,6 +3200,11 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                 if feature_flags.enabled("ROUTER_ENABLED"):     # tagged only: a document keeps its path
                     logger.info("chat: route=document intent=%s", doc_intent)
                     vlog("chat_route", {"route": "document", "intent": doc_intent})
+                if feature_flags.enabled("INTERACTIVE_FLOW"):
+                    _interactive = await _interactive_upload_case(
+                        _session, session_id, request.message, _session_lang, _matched_doc, doc_intent, _extract)
+                    if _interactive is not None:
+                        return _interactive
 
                 if doc_intent == "generate":
                     # User wants to fill/duplicate their own uploaded document.
@@ -3521,14 +3654,12 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
         logger.info("chat: %r is a short topic question, not a case: answered, not drafted", request.message)
         _legal_intent = "rag"
     _legal_intent = _routed_intent(request.message, _legal_intent, last_pending_calculation(_session))
-    if _legal_intent == "defensive_draft" and feature_flags.enabled("INTERACTIVE_FLOW"):
-        # INTERACTIVE_FLOW: a narrative case in rounds (topics, facts, questions first); a "direct" route, or any
-        # failure, keeps the single-shot pipeline below.
-        from ..rag import interactive_flow
-        if interactive_flow.routes_here(request.message):
-            _interactive = await _interactive_start(_session, session_id, request.message, _session_lang)
-            if _interactive is not None:
-                return _interactive
+    if (_legal_intent == "defensive_draft" or _deferred_case) and feature_flags.enabled("INTERACTIVE_FLOW"):
+        # INTERACTIVE_FLOW: a case in rounds (topics, facts, questions first) -- v60: intent defensive_draft is enough,
+        # the narrative check ran above; only a failure keeps the single-shot pipeline below.
+        _interactive = await _interactive_start(_session, session_id, request.message, _session_lang)
+        if _interactive is not None:
+            return _interactive
     if _legal_intent == "defensive_draft":
         # Use message text as source — no document required
         from ..rag.defensive_generation import run_defensive_pipeline

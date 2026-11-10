@@ -28,6 +28,7 @@ the kept (core / related / text) and the refused with the reason.
 """
 
 import logging
+import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -216,3 +217,131 @@ def resolve(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any]) 
         out.extend(rows)
         log["kept"].append({"article": label, "as": kind, "heading": c["heading"]})
     return out, log
+
+
+# --- v60h (4): the first read's second and third channels --------------------------------------------------------------
+# After the rubrica stem match (resolve) misses: (2) the institution's rubricated name and nouns against the articles'
+# TEXT, full text within the code (text_channel), an article kept when its text holds the specific words (two, one when
+# the name has one); (3) both missing, the code's institutions index (data/institutions_<code>.json, built once from the
+# store's Titolo / Capo / Sezione structure and rubriche by scripts/build_institutions.py): the unit whose name holds
+# the institution's words, its articles whose rubrica shares one (else its first). Each row tagged as resolve's are not:
+# an ordinary candidate, graded like any other.
+TEXT_TOP = 8
+TEXT_KEPT = 3
+INDEX_KEPT = 3
+INDEX_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
+_INDEX: Dict[str, Optional[List[Dict[str, Any]]]] = {}
+_LEVEL_RANK = {"ARTICOLO": 0, "PARAGRAFO": 1, "SEZIONE": 2, "CAPO": 3, "TITOLO": 4, "PARTE": 5, "LIBRO": 6}
+
+
+def code_slug(code: str) -> str:
+    """«c.c.» -> «cc», «c.p.p.» -> «cpp»; another code's name, its letters and digits."""
+    return re.sub(r"[^a-z0-9]+", "", str(code or "").lower())[:40] or "code"
+
+
+def index_path(code: str) -> str:
+    return os.path.join(INDEX_DIR, f"institutions_{code_slug(code)}.json")
+
+
+def load_index(code: str) -> Optional[List[Dict[str, Any]]]:
+    """The code's institutions index (None when not built)."""
+    import json
+    key = code_slug(code)
+    if key not in _INDEX:
+        try:
+            with open(index_path(code), encoding="utf-8") as fh:
+                data = json.load(fh)
+            _INDEX[key] = list(data.get("institutions") or []) if isinstance(data, dict) else None
+        except (OSError, ValueError):
+            _INDEX[key] = None
+    return _INDEX[key]
+
+
+def _words_of(name: str, nouns: str = "") -> set:
+    return matching_words(name) | (matching_words(nouns) if nouns else set())
+
+
+def _need(words: set) -> int:
+    return min(2, len(words))
+
+
+def _rows_for(session, doc: Dict[str, Any], code: str, numbers: List[str]) -> List[Dict[str, Any]]:
+    from .issue_spotting import fetch_article
+    out = []
+    for number in numbers:
+        for row in fetch_article(session, doc["id"], number) or []:
+            row["_article"] = (number, code)
+            out.append(row)
+    return out
+
+
+def text_channel(session, documents: List[Dict[str, Any]], name: str, codice: str, nouns: str = ""
+                 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """(rows, log): channel 2 -- the name's (and the nouns') specific words against the code's article texts (the
+    section_fulltext index, TEXT_TOP), an article kept when its text holds _need of them; at most TEXT_KEPT."""
+    from . import defensive_generation as dg
+    words = _words_of(name, nouns)
+    log: Dict[str, Any] = {"channel": "testo", "query": name, "words": sorted(words), "kept": []}
+    if not words:
+        log["why"] = "no specific word"
+        return [], log
+    doc, abbr = _document(documents, codice)
+    if not doc:
+        log["why"] = f"code {codice!r} not resolved"
+        return [], log
+    code = abbr or doc.get("name")
+    terms = dg._lucene_query(" ".join([name] + ([nouns] if nouns else [])))
+    try:
+        found = session.run(
+            "CALL db.index.fulltext.queryNodes('section_fulltext', $t) YIELD node, score "
+            "MATCH (d:Document)-[:CONTAINS]->(node) WHERE d.id = $doc_id "
+            "RETURN node.name AS name, score ORDER BY score DESC LIMIT $k", t=terms, doc_id=doc["id"], k=TEXT_TOP).data()
+    except Exception as exc:            # noqa: BLE001 -- the index missing: no channel
+        log["why"] = f"text full text failed: {exc}"[:200]
+        return [], log
+    numbers = list(dict.fromkeys(n for n in (_number(r.get("name") or "") for r in found) if n))
+    out = []
+    for number in numbers:
+        rows = _rows_for(session, doc, code, [number])
+        if rows and len(words & _stems(_text(rows))) >= _need(words):
+            out += rows
+            log["kept"].append(f"{number} {code}")
+            if len(log["kept"]) >= TEXT_KEPT:
+                break
+    return out, log
+
+
+def index_channel(session, documents: List[Dict[str, Any]], name: str, codice: str, nouns: str = "",
+                  index: Optional[List[Dict[str, Any]]] = None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """(rows, log): channel 3 -- the code's institutions index: the unit whose name holds _need of the name's specific
+    words (the most, then the narrowest unit), its articles whose rubrica shares one of them, else its first; at most
+    INDEX_KEPT."""
+    words = _words_of(name, nouns)
+    log: Dict[str, Any] = {"channel": "indice", "query": name, "words": sorted(words), "kept": []}
+    doc, abbr = _document(documents, codice)
+    code = (abbr or (doc or {}).get("name") or codice)
+    entries = index if index is not None else load_index(abbr or codice)
+    if entries is None:
+        log["why"] = f"no index for {code} ({index_path(abbr or codice)})"
+        return [], log
+    if not words or not doc:
+        log["why"] = "no specific word" if not words else f"code {codice!r} not resolved"
+        return [], log
+    best = None
+    for e in entries:
+        shared = len(words & _stems(" ".join([str(e.get("name") or ""), str(e.get("rubricated") or "")])))
+        if shared >= max(1, _need(words)):
+            key = (-shared, _LEVEL_RANK.get(str(e.get("level") or ""), 9), len(e.get("articles") or []))
+            if best is None or key < best[0]:
+                best = (key, e)
+    if best is None:
+        log["why"] = "no unit holds the words"
+        return [], log
+    entry = best[1]
+    rubriche = entry.get("rubriche") or {}
+    articles = [str(a) for a in entry.get("articles") or []]
+    named = [a for a in articles if words & _stems(rubriche.get(a) or "")]
+    numbers = (named or articles)[:INDEX_KEPT]
+    log.update(unit=entry.get("rubricated") or entry.get("name"), level=entry.get("level"),
+               kept=[f"{n} {code}" for n in numbers])
+    return _rows_for(session, doc, code, numbers), log

@@ -132,6 +132,134 @@ def clause_cut(text: str, chars: int) -> str:
     return head.rsplit(" ", 1)[0].rstrip() + " […]"
 
 
+# v60c: an article the code no longer has -- its text is the abrogation («(abrogato)», «Articolo abrogato da …»,
+# «L'articolo è stato abrogato …»); a comma abrogated inside a live article is not one
+_ABROGATED_WHOLE_RE = re.compile(r"^\W*(?:\[\d+\]\s*)*\(?\s*abrogat[oa]\s*\)?\W*$", re.IGNORECASE)
+_ABROGATED_ARTICLE_RE = re.compile(r"\b(?:l['’]\s*)?(?:articolo|art\.)\s+(?:è\s+stato\s+|e'\s+stato\s+)?abrogat[oa]\b",
+                                   re.IGNORECASE)
+
+
+def is_abrogated(text: Any) -> bool:
+    plain = " ".join(str(text or "").split())
+    if not plain:
+        return False
+    if _ABROGATED_WHOLE_RE.match(plain) or _ABROGATED_ARTICLE_RE.search(plain):
+        return True
+    words = re.sub(r"\[[^\]]*\]|\(\d+\)", " ", plain)
+    return len(words.split()) <= 6 and bool(re.search(r"\babrogat[oa]\b", words, re.IGNORECASE)) \
+        and not re.search(r"\bcomm[ai]\b", words, re.IGNORECASE)
+
+
+def row_abrogated(row: Dict[str, Any]) -> bool:
+    s = (row or {}).get("s") or {}
+    return is_abrogated(s.get("plain_text") or s.get("abstract") or "") or is_abrogated(s.get("titolo_articolo") or "") \
+        and not (s.get("plain_text") or "").strip()
+
+
+# v60e (ingestion misalignment: a node whose rubrica belongs to another article's text): the rubrica's content words
+# against the first comma, then the whole text, by 4-letter stems. Judged only on a rubrica of two or more words outside
+# the generic ones a rubrica of any matter uses; a failing node is logged, never an anchor nor a written article
+# (topic_groups._best_rows, interactive_flow.prune_abrogated), and listed per code for ingestion
+# (scripts/misaligned_articles.py).
+_RUBRICA_GENERIC = set("""disposizioni disposizione generali generale norme norma casi caso particolari particolare effetti
+effetto ambito applicazione definizioni oggetto principi principio altri altre altro modalità termini termine procedimento
+regole regola misure misura casi ipotesi limiti limite rinvio materia speciali speciale ulteriori tutela diritti diritto
+obblighi obbligo""".split())
+_FIRST_COMMA_RE = re.compile(r"(?:^|\s)2\.\s+[A-ZÀ-Ü]")
+
+
+def _stems4(text: str) -> set:
+    return {w[:4] for w in re.findall(r"[a-zà-ü]{4,}", (text or "").lower())}
+
+
+def misaligned(rubrica: Any, text: Any) -> Optional[Dict[str, str]]:
+    """{"rubrica", "first_comma"} when the rubrica's words (two or more, generic ones aside) share no stem with the
+    article's first comma nor with its whole text; None otherwise, or when there is too little to judge."""
+    from .rule_quote import clean_rubrica
+    rub = clean_rubrica(rubrica).strip(" .")
+    body = " ".join(str(text or "").split())
+    words = {w for w in re.findall(r"[a-zà-ü]{4,}", rub.lower()) if w not in _RUBRICA_GENERIC}
+    if len(words) < 2 or len(body.split()) < 6 or is_abrogated(body):
+        return None
+    wanted = {w[:4] for w in words}
+    cut = _FIRST_COMMA_RE.search(body)
+    first = body[:cut.start()] if cut else body[:600]
+    if wanted & _stems4(first) or wanted & _stems4(body):
+        return None
+    return {"rubrica": rub, "first_comma": first[:160]}
+
+
+def _fits(rubrica: Any, text: Any) -> bool:
+    """The rubrica's content words (generic ones aside) share a stem with the text."""
+    from .rule_quote import clean_rubrica
+    words = {w[:4] for w in re.findall(r"[a-zà-ü]{4,}", clean_rubrica(rubrica).lower()) if w not in _RUBRICA_GENERIC}
+    return bool(words) and bool(words & _stems4(" ".join(str(text or "").split())))
+
+
+def shifted(rubrica: Any, text: Any, neighbours: Sequence[Tuple[Any, Any]]) -> Optional[str]:
+    """v60e: the stem check's suspicion confirmed by an adjacent article (ingestion shifts a run of rubriche onto the next
+    or the previous texts): a neighbour that fails the check itself, and whose text this rubrica fits or whose rubrica
+    fits this text. The neighbour's rubrica that confirms it, or None. A real article whose rubrica uses words its text
+    does not («Circostanze aggravanti», «Favoreggiamento personale») has no such neighbour -- 582 c.p.'s text names the
+    «circostanze aggravanti», but its own rubrica fits it -- and is never excluded."""
+    if not misaligned(rubrica, text):
+        return None
+    for n_rubrica, n_text in neighbours:
+        if misaligned(n_rubrica, n_text) and (_fits(rubrica, n_text) or _fits(n_rubrica, text)):
+            return " ".join(str(n_rubrica or "").split())[:120] or "(senza rubrica)"
+    return None
+
+
+NEIGHBOURS_QUERY = ("UNWIND $items AS it MATCH (d:Document {id: it.doc})-[:CONTAINS]->(s:Section) "
+                    "WHERE s.name IN it.names RETURN it.key AS key, s.name AS name, s.titolo_articolo AS rubrica, "
+                    "s.plain_text AS text")
+
+
+def neighbour_numbers(number: str) -> List[str]:
+    """The adjacent articles' numbers: N-1 and N+1, and N itself for a «N-bis»."""
+    m = re.match(r"(\d+)(.*)$", str(number or ""))
+    if not m:
+        return []
+    base = int(m.group(1))
+    out = [str(base - 1), str(base + 1)] + ([str(base)] if m.group(2) else [])
+    return [n for n in out if n != number and int(re.match(r"\d+", n).group(0)) > 0]
+
+
+def confirm_misaligned(session, rows: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """In place: each row whose rubrica fails the stem check (misaligned) is checked against its neighbours' rubrica
+    and text (one query); a confirmed one gets row["_misaligned"] (rubrica, first comma, the neighbour), the others
+    row["_misaligned"] = None. The confirmed rows."""
+    suspects = []
+    for r in rows:
+        s, d = r.get("s") or {}, r.get("d") or {}
+        number = article_number(s.get("name") or "") or (str(r["_article"][0]) if r.get("_article") else "")
+        if "_misaligned" in r or not number or not d.get("id"):
+            continue
+        r["_misaligned"] = None
+        if misaligned(s.get("titolo_articolo") or "", s.get("plain_text") or ""):
+            suspects.append((r, d["id"], number))
+    if not suspects:
+        return []
+    items = [{"key": i, "doc": doc, "names": [x for n in neighbour_numbers(num) for x in (n, f"{n}.0.0")]}
+             for i, (_, doc, num) in enumerate(suspects)]
+    found: Dict[int, List[Tuple[Any, Any]]] = {}
+    for rec in session.run(NEIGHBOURS_QUERY, items=items).data():
+        found.setdefault(rec["key"], []).append((rec.get("rubrica"), rec.get("text")))
+    out = []
+    for i, (r, _, _) in enumerate(suspects):
+        s = r.get("s") or {}
+        hit = shifted(s.get("titolo_articolo") or "", s.get("plain_text") or "", found.get(i) or [])
+        if hit:
+            r["_misaligned"] = {**misaligned(s.get("titolo_articolo") or "", s.get("plain_text") or ""), "neighbour": hit}
+            out.append(r)
+    return out
+
+
+def row_misaligned(row: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """The row's confirmed misalignment (confirm_misaligned set it), else None -- never the stem check alone."""
+    return (row or {}).get("_misaligned") if isinstance(row, dict) else None
+
+
 def heading(section: Optional[Dict[str, Any]]) -> str:
     """The article's rubrica: titolo_articolo, else title. A title is generated by a model within 50 tokens: asked to name
     the institute, it may copy the text instead, and the limit cuts it on a word ("La destinazione del padre di famiglia ha
@@ -414,9 +542,11 @@ def article_rows(number: str, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]
 # issue_spotting, fact_resolver, defensive_generation's lookups and citations, answer_processing, source_tiers,
 # protected_sources, formatting): returned by name, so a row never carries the vectors (embedding, heading_embedding,
 # embedding_v2, vettore) or embedding_text. A property the node lacks is left out of the row, as with the whole node.
+# v60h: no "document_title" -- no Document holds it (Neo4j warned on every query: the property key is not in the
+# database); the readers that look for it fall back on "name".
 SECTION_FIELDS = ("id", "name", "type", "title", "titolo_articolo", "abstract", "plain_text", "text", "document_id",
                   "description")
-DOCUMENT_FIELDS = ("id", "name", "document_type", "document_title", "document_id", "file_name", "document_subtype",
+DOCUMENT_FIELDS = ("id", "name", "document_type", "document_id", "file_name", "document_subtype",
                    "aliases", "valid_from", "valid_until", "description")
 
 

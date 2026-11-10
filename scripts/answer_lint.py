@@ -22,6 +22,9 @@ Rules (each with the v58 line that showed it):
   scaffold_bullet       a bullet that is only «[N] art. X» or a one-line gloss with no verb.
   misattributed_comma   a «co. N» under an article with no comma N, or «comma N dell'art. X» past X's last comma
                         (the commi known locally: the v52 material files, COMMI_SOURCES).
+  untreated_cited       v60e: an article in «Altre norme del tema non trattate» that §2 cites (citations: a code named
+                        with spaces too) -- its paragraph went under another heading.
+  marker_title          v60e: a round-1 topic whose title is a footnote marker («[1025]»), no words.
 """
 
 import glob
@@ -37,7 +40,7 @@ if ROOT not in sys.path:
 
 RULES = ["bare_heading", "penalty_requisite", "orphan_paragraph", "dangling_reference", "no_client", "repeated_marker",
          "missing_section", "gated_term", "unearned_topic_point", "duplicate_default", "scaffold_bullet",
-         "misattributed_comma"]
+         "misattributed_comma", "untreated_cited", "marker_title"]
 
 SECTION_TITLES = ["Risposta e strategia", "Norme applicate ai fatti", "Obiezioni e repliche", "Profili processuali",
                   "Conclusioni", "Altri profili"]
@@ -45,7 +48,7 @@ NORMS = "Norme applicate ai fatti"
 PROCEDURAL = "Profili processuali"
 COMMI_SOURCES = [os.path.expanduser("~/SunnitAI-V2/diagnose_reports/v52-candidate/cases/*/material.txt")]
 
-_HEADING_RE = re.compile(r"^\*\*Art\.\s+(\S+)\s+(.+?)(?:\s+—\s+(.*?))?\*\*\s*$")
+from src.rag.citations import HEADING_RE as _HEADING_RE  # noqa: E402 -- v60e: one reading of a §2 heading
 _REQUISITE_RE = re.compile(r"^-\s+(?:(?:co\.\s*\d+|testo),\s+requisito|Requisito)\s+«(.*)»\s*:\s*[^:]*$")
 _PENALTY_RE = re.compile(r"\b(?:pena|pene|punit\w*|punibil\w*|reclusione|multa|ammenda|si\s+applica(?:no)?|ridott[aoie]|"
                          r"aumentat[aoie]|titolo\s+esecutivo|interessi\s+legali|in\s+misura\s+pari|penalit\w*|sanzion\w*)\b",
@@ -143,14 +146,18 @@ def sections(answer: str) -> List[Tuple[str, str]]:
     return out
 
 
+# round 1's closing instruction: v54-v59's and v60's
+INSTRUCTION_START = r"(?:Dimmi su quale|Puoi dirmi su quale)"
+
+
 def facts_block(round1: str) -> str:
-    m = re.search(r"Ecco i fatti e i termini che ho ricavato dal caso:\s*\n(.*?)(?=\n\*\*Da chiarire\*\*|\nDimmi su quale|\Z)",
-                  round1 or "", re.DOTALL)
+    m = re.search(r"Ecco i fatti e i termini che ho ricavato dal caso:\s*\n(.*?)(?=\n\*\*Da chiarire\*\*|\n"
+                  + INSTRUCTION_START + r"|\Z)", round1 or "", re.DOTALL)
     return m.group(1) if m else ""
 
 
 def question_lines(round1: str) -> List[str]:
-    m = re.search(r"\*\*Da chiarire\*\*\s*\n(.*?)(?=\nDimmi su quale|\Z)", round1 or "", re.DOTALL)
+    m = re.search(r"\*\*Da chiarire\*\*\s*\n(.*?)(?=\n" + INSTRUCTION_START + r"|\Z)", round1 or "", re.DOTALL)
     return [x.strip() for x in (m.group(1) if m else "").splitlines() if re.match(r"\s*\d+\.\s", x)]
 
 
@@ -224,7 +231,8 @@ def lint_bare(norms: str) -> List[str]:
             continue
         rest = []
         for nxt in lines[i + 1:]:
-            if _HEADING_RE.match(nxt.strip()) or nxt.startswith("Altre norme del tema non trattate"):
+            if _HEADING_RE.match(nxt.strip()) or nxt.startswith(("Altre norme del tema non trattate",
+                                                                 "Norme considerate e non applicabili")):
                 break
             rest.append(nxt)
         if not "".join(rest).strip():
@@ -509,6 +517,26 @@ def lint_commi(norms: str, text_all: str) -> List[str]:
     return out
 
 
+def lint_untreated_cited(norms: str) -> List[str]:
+    """v60e: an article listed «non trattata» that §2's text cites, by the one citation reading (src.rag.citations)."""
+    from src.rag import citations
+    lines = (norms or "").splitlines()
+    listed = next((l for l in lines if l.startswith("Altre norme del tema non trattate:")), "")
+    if not listed:
+        return []
+    documents = citations.heading_documents(norms)
+    untreated = {citations.label(r) for r in citations.refs_in(listed, documents)}
+    body = "\n".join(re.sub(r"«[^»]*»", " ", l) for l in lines        # the writer's own words: no status line, no quote
+                     if not l.startswith(("Altre norme del tema non trattate:", "Norme considerate e non applicabili:",
+                                          "- ")) and not citations.heading(l))
+    cited = {citations.label(r) for r in citations.refs_in(body, documents)}
+    return [f"art. {x}: «non trattata» but cited in §2" for x in sorted(untreated & cited)]
+
+
+def lint_marker_title(round1: str) -> List[str]:
+    return [f"topic {t['n']} «{t['title']}»" for t in topics(round1) if not re.search(r"[A-Za-zÀ-ü]{3}", t["title"])]
+
+
 def lint_case(case: dict) -> List[Tuple[str, str, str]]:
     """[(section, rule, excerpt)] of one case."""
     found: List[Tuple[str, str, str]] = []
@@ -531,6 +559,8 @@ def lint_case(case: dict) -> List[Tuple[str, str, str]]:
     found += [("round 1", "unearned_topic_point", x) for x in lint_unearned(case, secs)]
     found += [(PROCEDURAL, "duplicate_default", x) for x in lint_default(dict(secs).get(PROCEDURAL, ""))]
     found += [(NORMS, "misattributed_comma", x) for x in lint_commi(norms, case["answer"])]
+    found += [(NORMS, "untreated_cited", x) for x in lint_untreated_cited(norms)]
+    found += [("round 1", "marker_title", x) for x in lint_marker_title(case.get("round1") or "")]
     return [(s, r, _excerpt(x)) for s, r, x in found]
 
 

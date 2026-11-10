@@ -1,0 +1,48 @@
+{
+  "_doc": "v60h (2): the closed lists of the conditions of procedibilità before a civil action, keyed by matter. Read by src/rag/render_computed.py (mediation_of, negotiation_of). A matter's articles: per code sigla, [first, last] article ranges; per special law, a pattern its store name matches (every article). A chosen topic's anchor or matched article in a matter of the list makes the line; an article in a 'never' matter never does. Edit here, not in the code.",
+  "mediazione": {
+    "ref": "art. 5, co. 1, d.lgs. 28/2010",
+    "ref_note": "the matters of art. 5, co. 1-bis before d.lgs. 149/2022, now art. 5, co. 1 (with associazione in partecipazione, consorzio, franchising, opera, rete, somministrazione, società di persone, subfornitura added)",
+    "matters": {
+      "condominio": {"codes": {"c.c.": [[1117, 1139]]}},
+      "diritti reali": {"codes": {"c.c.": [[810, 1116], [1158, 1167]]}},
+      "divisione": {"codes": {"c.c.": [[713, 768], [1111, 1116]]}},
+      "successioni ereditarie": {"codes": {"c.c.": [[456, 712]]}},
+      "patti di famiglia": {"numbers": ["768-bis", "768-ter", "768-quater", "768-quinquies", "768-sexies", "768-septies", "768-octies"]},
+      "locazione": {"codes": {"c.c.": [[1571, 1614]]}, "laws": ["392/1978", "431/1998", "equo canone", "locazion"]},
+      "comodato": {"codes": {"c.c.": [[1803, 1812]]}},
+      "affitto di aziende": {"codes": {"c.c.": [[2562, 2562]]}},
+      "risarcimento del danno da responsabilità medica e sanitaria": {"laws": ["24/2017", "gelli", "responsabilit\\w* (?:sanitari|medic|professionale degli esercenti)"]},
+      "risarcimento del danno da diffamazione con il mezzo della stampa o di altro mezzo di pubblicità": {"laws": ["47/1948", "disposizioni sulla stampa"]},
+      "contratti assicurativi": {"codes": {"c.c.": [[1882, 1932]]}},
+      "contratti bancari e finanziari": {"codes": {"c.c.": [[1834, 1860]]}, "laws": ["385/1993", "testo unico bancario", "58/1998", "testo unico della finanza"]},
+      "associazione in partecipazione": {"codes": {"c.c.": [[2549, 2554]]}},
+      "consorzio": {"codes": {"c.c.": [[2602, 2620]]}},
+      "franchising": {"laws": ["129/2004", "affiliazione commerciale", "franchising"]},
+      "contratto d'opera": {"codes": {"c.c.": [[2222, 2238]]}},
+      "contratto di rete": {"laws": ["contratto di rete"]},
+      "somministrazione": {"codes": {"c.c.": [[1559, 1570]]}},
+      "società di persone": {"codes": {"c.c.": [[2251, 2324]]}},
+      "subfornitura": {"laws": ["192/1998", "subfornitura"]}
+    },
+    "never": {
+      "rito del lavoro": {"codes": {"c.c.": [[2060, 2134]], "c.p.c.": [[409, 473]]}, "laws": ["81/2008", "sicurezza (?:sul|nei luoghi di) lavoro", "300/1970", "statuto dei lavoratori", "81/2015", "\\blavoro\\b", "lavorator"]},
+      "fatto illecito": {"codes": {"c.c.": [[2043, 2059]]}},
+      "possesso (azioni possessorie e di nunciazione)": {"codes": {"c.c.": [[1140, 1157], [1168, 1172]]}},
+      "reati": {"codes": {"c.p.": [[1, 99999]], "c.p.p.": [[1, 99999]]}}
+    }
+  },
+  "negoziazione_assistita": {
+    "ref": "art. 3 d.l. 132/2014",
+    "matters": {
+      "risarcimento del danno da circolazione di veicoli e natanti": {"facts": "circolazione"},
+      "domanda di pagamento, a qualsiasi titolo, di somme non eccedenti 50.000 euro": {"facts": "pagamento", "max_euro": 50000}
+    },
+    "never": {
+      "obbligazioni contrattuali da contratti tra professionisti e consumatori": {"facts": "consumatore"},
+      "materie di mediazione obbligatoria": {"facts": "mediazione"},
+      "rito del lavoro": {"matter": "rito del lavoro"},
+      "reati": {"matter": "reati"}
+    }
+  }
+}

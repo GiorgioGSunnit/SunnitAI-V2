@@ -151,7 +151,8 @@ def test_the_final_pass_repairs_cut_lines_markers_references_and_bullets():
     out = flow.answer_final(draft)
     assert "(relativo" not in out and "La difesa ricorrerà." in out                                  # v58-h5 §1
     assert "\nLa responsabilità di Caio non è piena." in out                                         # v58-h7 §1
-    assert "(cfr. sezione «Profili processuali»)" in out                                             # v58-h10 §1
+    # v60f (P9): the name is no longer repaired after writing -- the writer is told the answer's sections (test_v60f)
+    assert "(cfr. sezione *Profili processuali e termini*)" in out                                   # v58-h10 §1
     assert "(art. 321 c.p.), non basta." in out and "[3] art. 589" not in out                        # v58-h7 §3, v55
     assert "Inoltre, la mancanza" not in out                                                         # v58-h5 §3
     assert out.count("Se le opere risultano esistenti alla separazione") == 1 and "Questi fatti contano per lui " \
@@ -229,7 +230,9 @@ def test_the_lint_finds_each_defect_and_the_replay_leaves_none(tmp_path):
     assert rules == ["bare_heading", "dangling_reference", "duplicate_default", "no_client", "orphan_paragraph",
                      "penalty_requisite"]
     replayed = render_replay.replay_file(str(path))
-    assert answer_lint.lint_file(str(path), replayed) == []
+    # v60f (P9): an old transcript's wrong section name stays (the repair pass is gone; a new answer's writer is told
+    # the real names), so the lint still reports it -- the only finding left
+    assert [f[3] for f in answer_lint.lint_file(str(path), replayed)] == ["dangling_reference"]
     case = replayed["x1"]
     assert "Chi assisti in questo caso: Tizio o Caio?" in case["round1"]
     assert "- testo: da provare." in case["answer"] and "Altre norme del tema non trattate: art. 320 c.p." in case["answer"]

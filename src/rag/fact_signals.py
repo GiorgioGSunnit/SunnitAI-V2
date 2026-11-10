@@ -619,6 +619,9 @@ _MONTHS = {m: i for i, m in enumerate(("gennaio", "febbraio", "marzo", "aprile",
                                        "agosto", "settembre", "ottobre", "novembre", "dicembre"), 1)}
 _MONTH_RE = "|".join(_MONTHS)
 _DATE_PATTERNS = (
+    # v60d: a relative week resolved (relative_date): the interval, its first day as the iso
+    (re.compile(rf"\b(?:settimana|periodo) dal (\d{{1,2}}) ({_MONTH_RE}) ((?:18|19|20)\d{{2}}) al (\d{{1,2}}) "
+                rf"({_MONTH_RE}) ((?:18|19|20)\d{{2}})\b", re.IGNORECASE), "week"),     # v60g: a relative period too
     (re.compile(r"\b(\d{1,2})[/.-](\d{1,2})[/.-]((?:18|19|20)\d{2})\b"), "dmy"),
     (re.compile(r"\b((?:18|19|20)\d{2})-(\d{1,2})-(\d{1,2})\b"), "ymd"),
     (re.compile(rf"\b(\d{{1,2}})(?:°|º)?\s+({_MONTH_RE})\s+((?:18|19|20)\d{{2}})\b", re.IGNORECASE), "d month y"),
@@ -635,6 +638,10 @@ def parse_date(text: str) -> Optional[Tuple[dt.date, dt.date, str]]:
         if not m:
             continue
         try:
+            if kind == "week":
+                a = dt.date(int(m.group(3)), _MONTHS[m.group(2).lower()], int(m.group(1)))
+                b = dt.date(int(m.group(6)), _MONTHS[m.group(5).lower()], int(m.group(4)))
+                return a, b, a.isoformat()
             if kind == "dmy":
                 d = dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
                 return d, d, d.isoformat()
@@ -653,6 +660,253 @@ def parse_date(text: str) -> Optional[Tuple[dt.date, dt.date, str]]:
         except ValueError:
             continue
     return None
+
+
+# v60d: a date the user writes relative to the day they write it («2 giorni fa», «ieri», «la settimana scorsa», «a
+# marzo», «lunedì scorso»), resolved against that day (reply_today) to a date parse_date reads. A case's own text is
+# never read this way (its present is not today: present()); only the user's words in the conversation are.
+_NUMBER_WORDS = {"un": 1, "uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6, "sette": 7,
+                 "otto": 8, "nove": 9, "dieci": 10, "undici": 11, "dodici": 12, "quindici": 15, "venti": 20,
+                 "trenta": 30}
+_WEEKDAYS = {"lunedì": 0, "lunedi": 0, "martedì": 1, "martedi": 1, "mercoledì": 2, "mercoledi": 2, "giovedì": 3,
+             "giovedi": 3, "venerdì": 4, "venerdi": 4, "sabato": 5, "domenica": 6}
+_COUNT_RE = r"(\d{1,3}|" + "|".join(_NUMBER_WORDS) + r")"
+_WEEKDAY_RE = "|".join(_WEEKDAYS)
+
+
+def reply_today() -> dt.date:
+    """The day the user writes: TODAY_ENV when set (tests, simulations), else the real today."""
+    value = (os.getenv(TODAY_ENV) or "").strip()
+    try:
+        return dt.date.fromisoformat(value) if value else dt.date.today()
+    except ValueError:
+        return dt.date.today()
+
+
+def _written_day(d: dt.date) -> str:
+    return f"{d.day} {list(_MONTHS)[d.month - 1]} {d.year}"
+
+
+def _written_month(year: int, month: int) -> str:
+    return f"{list(_MONTHS)[month - 1]} {year}"
+
+
+def _period(a: dt.date, b: dt.date) -> str:
+    a, b = min(a, b), max(a, b)
+    return f"periodo dal {_written_day(a)} al {_written_day(b)}"
+
+
+def _back(today: dt.date, n: float, unit: str) -> dt.date:
+    """today less n units (giorni, settimane, mesi, anni; a fraction of a month or a year in days)."""
+    if unit == "gio":
+        return today - dt.timedelta(days=round(n))
+    if unit == "set":
+        return today - dt.timedelta(days=round(7 * n))
+    if unit == "mes":
+        whole = int(n)
+        return add_period(today, months=-whole) - dt.timedelta(days=round((n - whole) * 30))
+    whole = int(n)
+    return add_period(today, years=-whole) - dt.timedelta(days=round((n - whole) * 365))
+
+
+_UNIT_RE = r"(giorn[oi]|settiman[ae]|mes[ei]|ann[oi])"
+_APOSTROPHES_RE = re.compile(r"[’‘`´ʼ′]")
+
+
+def relative_text(text: Any) -> str:
+    """v60h (7): the words a relative date is matched on -- lower case, accents off («fà», «più», «metà», «lunedì»),
+    every apostrophe one («’», «`», «´») with no space after it («un' ora» -> «un'ora»), an elided «un'» a count («un'ora»
+    -> «un ora»), «vent'anni» / «trent'anni» spelled out."""
+    import unicodedata
+    low = _APOSTROPHES_RE.sub("'", str(text or "").lower())
+    low = "".join(c for c in unicodedata.normalize("NFKD", low) if not unicodedata.combining(c))
+    low = re.sub(r"'\s+", "'", " ".join(low.split()))
+    low = re.sub(r"\bun'(?=[a-z])", "un ", low)
+    return re.sub(r"\b(vent|trent)'anni\b", lambda m: {"vent": "venti", "trent": "trenta"}[m.group(1)] + " anni", low)
+_SEASONS = {"primavera": (3, 5), "estate": (6, 8), "autunno": (9, 11), "inverno": (12, 2)}
+_FAR_YEARS = 10             # «più di N … fa»: the earliest start at least this far back (an open bound, never a guess)
+_MONTH_PARTS = {"inizio": (1, 10), "metà": (10, 20), "meta": (10, 20), "fine": (20, 31)}
+_YEAR_PARTS = {"inizio": (1, 3), "metà": (5, 8), "meta": (5, 8), "fine": (10, 12)}
+
+
+def relative_period(text: str, today: Optional[dt.date] = None) -> str:
+    """v60g (6): a vague period relative to today, written as the range parse_date reads («periodo dal D M Y al D M
+    Y»; "" when none): «circa N mesi fa» (N less and more a quarter of N, one unit at least), «qualche/alcuni/pochi
+    giorni|settimane|mesi|anni fa» (2 to 6 of them), «più di / oltre N … fa» (from N to a bound far back: 3N, or
+    _FAR_YEARS years), «meno di N … fa» and «negli ultimi N …» (N ago to today), «da (circa / più di) N …» (a start that
+    long ago), «l'estate / l'inverno scorso» (the last such season ended before today), «a inizio / metà / fine del mese
+    o dell'anno scorso», «tra marzo e aprile» (the latest such span not after today)."""
+    today = today or reply_today()
+    low = relative_text(text)
+    if not low:
+        return ""
+
+    def count(word: str) -> int:
+        return int(word) if word.isdigit() else _NUMBER_WORDS.get(word, 0)
+    m = re.search(rf"\b(?:circa|quasi|piu o meno|all'incirca|grosso modo|intorno a) {_COUNT_RE} {_UNIT_RE} fa\b", low)
+    if m and count(m.group(1)):
+        n, unit = count(m.group(1)), m.group(2)[:3]
+        d = max(1.0, n / 4)
+        return _period(_back(today, n + d, unit), _back(today, max(0.0, n - d), unit))
+    m = re.search(rf"\b(?:qualche|alcuni|alcune|pochi|poche|diversi|diverse) {_UNIT_RE} fa\b", low)
+    if m:
+        unit = m.group(1)[:3]
+        return _period(_back(today, 6, unit), _back(today, 2, unit))
+    m = re.search(rf"\b(?:piu di|oltre|da piu di|da oltre) {_COUNT_RE} {_UNIT_RE}(?: fa)?\b", low)
+    if m and count(m.group(1)):
+        n, unit = count(m.group(1)), m.group(2)[:3]
+        far = min(_back(today, 3 * n, unit), add_period(today, years=-_FAR_YEARS))
+        return _period(far, _back(today, n, unit))
+    m = re.search(rf"\b(?:meno di|non piu di|neanche|nemmeno) {_COUNT_RE} {_UNIT_RE} fa\b", low) \
+        or re.search(rf"\bnegli ultimi {_COUNT_RE} {_UNIT_RE}\b", low)
+    if m and count(m.group(1)):
+        return _period(_back(today, count(m.group(1)), m.group(2)[:3]), today)
+    m = re.search(r"\bnell'ultim[oa] (settimana|mese|anno)\b", low)
+    if m:
+        return _period(_back(today, 1, m.group(1)[:3]), today)
+    m = re.search(rf"\bda (?:circa |quasi |almeno )?{_COUNT_RE} {_UNIT_RE}\b", low)
+    if m and count(m.group(1)) and not re.search(r"\bfa\b", low[m.end():m.end() + 4]):
+        n, unit = count(m.group(1)), m.group(2)[:3]
+        d = max(1.0, n / 4) if re.search(r"\bda (?:circa|quasi) ", m.group(0)) else 0.0
+        return _period(_back(today, n + d, unit), _back(today, max(0.0, n - d), unit)) if d else \
+            _written_day(_back(today, n, unit))
+    m = re.search(r"\b(primavera|estate|autunno|inverno) (?:scors[oa]|passat[oa])\b", low) or \
+        re.search(r"\b(?:scors[oa]|passat[oa]) (primavera|estate|autunno|inverno)\b", low)
+    if m:
+        first, last = _SEASONS[m.group(1)]
+        for year in (today.year, today.year - 1, today.year - 2):
+            start = dt.date(year - (1 if first > last else 0), first, 1)
+            end_month_year = year
+            end = dt.date(end_month_year, last, calendar.monthrange(end_month_year, last)[1])
+            if end < today:
+                return _period(start, end)
+        return ""
+    m = re.search(r"\b(?:a |ad |all'|alla )?(inizio|meta|fine) (?:del |dello |dell')?(mese|anno) (?:scorso|passato)\b",
+                  low)
+    if m:
+        part, what = m.group(1), m.group(2)
+        if what == "mese":
+            ref = add_period(today.replace(day=1), months=-1)
+            last = calendar.monthrange(ref.year, ref.month)[1]
+            a, b = _MONTH_PARTS[part]
+            return _period(ref.replace(day=a), ref.replace(day=min(b, last)))
+        a, b = _YEAR_PARTS[part]
+        year = today.year - 1
+        return _period(dt.date(year, a, 1), dt.date(year, b, calendar.monthrange(year, b)[1]))
+    m = re.search(rf"\btra (?:il mese di )?({_MONTH_RE}) e ({_MONTH_RE})\b", low)
+    if m and not parse_date(low):
+        first, last = _MONTHS[m.group(1)], _MONTHS[m.group(2)]
+        for year in (today.year, today.year - 1):
+            start = dt.date(year - (1 if first > last else 0), first, 1)
+            end = dt.date(year, last, calendar.monthrange(year, last)[1])
+            if start <= today:
+                return _period(start, min(end, today))
+    return ""
+
+
+def relative_date(text: str, today: Optional[dt.date] = None) -> str:
+    """The first relative date in text written as a date parse_date reads ("" when none): a day («ieri», «2 giorni
+    fa», «lunedì scorso», «il 3 marzo»), a week («la settimana scorsa»), a month («a marzo», «2 mesi fa», «il mese
+    scorso») or a year («l'anno scorso», «3 anni fa»). A month or a day without its year is the latest one not after
+    today. v60g (6): first a vague period (relative_period: «circa tre mesi fa», «qualche settimana fa», «da più di un
+    anno», «l'estate scorsa») as its range."""
+    today = today or reply_today()
+    low = relative_text(text)
+    if not low:
+        return ""
+    period = relative_period(low, today)
+    if period:
+        return period
+
+    def count(word: str) -> int:
+        return int(word) if word.isdigit() else _NUMBER_WORDS.get(word, 0)
+    m = re.search(rf"\b(?:{_COUNT_RE}|qualche|poche|alcune) or[ae] fa\b", low)
+    if m:                       # v60h (7): «un'ora fa», «2 ore fa»: today
+        return _written_day(today)
+    m = re.search(rf"\b{_COUNT_RE} (giorn[oi]|settiman[ae]|mes[ei]|ann[oi]) fa\b", low)
+    if m and count(m.group(1)):
+        n, unit = count(m.group(1)), m.group(2)[:3]
+        if unit == "gio":
+            return _written_day(today - dt.timedelta(days=n))
+        if unit == "set":
+            return _written_day(today - dt.timedelta(days=7 * n))
+        if unit == "mes":
+            d = add_period(today, months=-n)
+            return _written_month(d.year, d.month)
+        return str(today.year - n)
+    if re.search(r"\b(?:l'altro ieri|l'altroieri|altroieri|avantieri)\b", low):
+        return _written_day(today - dt.timedelta(days=2))
+    if re.search(r"\bieri\b", low):
+        return _written_day(today - dt.timedelta(days=1))
+    if re.search(r"\b(?:oggi|stamattina|stamane|stasera|stanotte|poco fa|poche ore fa)\b", low):
+        return _written_day(today)
+    if re.search(r"\b(?:la |nella )?(?:settimana scorsa|scorsa settimana|settimana passata)\b", low):
+        start = today - dt.timedelta(days=today.weekday() + 7)
+        end = start + dt.timedelta(days=6)
+        return f"settimana dal {_written_day(start)} al {_written_day(end)}"
+    if re.search(r"\b(?:il |nel |lo )?(?:mese scorso|scorso mese|mese passato)\b", low):
+        d = add_period(today.replace(day=1), months=-1)
+        return _written_month(d.year, d.month)
+    if re.search(r"\b(?:l'anno scorso|lo scorso anno|nell'anno passato|l'anno passato)\b", low):
+        return str(today.year - 1)
+    m = re.search(rf"\b(?:(?:lo |la )?scors[oa] ({_WEEKDAY_RE})|({_WEEKDAY_RE}) scors[oa])\b", low)
+    if m:
+        wanted = _WEEKDAYS[m.group(1) or m.group(2)]
+        back = (today.weekday() - wanted) % 7 or 7
+        return _written_day(today - dt.timedelta(days=back))
+    if parse_date(low):         # an absolute date (with its year) is no relative one
+        return ""
+    m = re.search(rf"\b(?:il |lo scorso |l'|lo )?(\d{{1,2}})(?:°|º)? ({_MONTH_RE})\b", low)
+    if m:
+        month, day = _MONTHS[m.group(2)], int(m.group(1))
+        for year in (today.year, today.year - 1):
+            try:
+                d = dt.date(year, month, day)
+            except ValueError:
+                continue
+            if d <= today:
+                return _written_day(d)
+        return ""
+    m = re.search(rf"\b(?:a|ad|in|nel|nel mese di|lo scorso|questo|a fine|a inizio|ai primi di)\s+({_MONTH_RE})\b", low) \
+        or re.search(rf"\b({_MONTH_RE}) scorso\b", low)
+    if m:
+        month = _MONTHS[m.group(1)]
+        year = today.year if month <= today.month else today.year - 1
+        return _written_month(year, month)
+    return ""
+
+
+RELATIVE_FIELDS = (("events", "date"), ("proceedings", "date"), ("possession", "since"), ("possession", "until"),
+                   ("works_or_signs", "existing_since"))
+
+
+def resolve_relative(facts: Optional[Dict[str, Any]], today: Optional[dt.date] = None) -> List[Dict[str, str]]:
+    """v60g (6): in place, every date field of the facts written relative to the case's present («tre mesi fa», «da
+    circa due anni», «l'estate scorsa») as the date or the range it stands for (relative_date, against the case's own
+    present_date, else the day the user writes: reply_today), its words kept in <field>_relative; the case's present
+    set to that day when it has none. The resolved ones."""
+    if not facts:
+        return []
+    present = parse_date(str(facts.get("present_date") or ""))
+    today = today or (present[0] if present else reply_today())
+    done = []
+    for key, field in RELATIVE_FIELDS:
+        for item in facts.get(key) or []:
+            if not isinstance(item, dict):
+                continue
+            written = str(item.get(field) or "").strip()
+            if not written or parse_date(written):
+                continue
+            resolved = relative_date(written, today)
+            if not resolved or not parse_date(resolved):
+                continue
+            item[f"{field}_relative"] = written
+            item[field] = resolved
+            item[f"{field}_iso"] = parse_date(resolved)[2]
+            done.append({"field": f"{key}.{field}", "written": written, "now": resolved})
+    if done and not present:
+        facts["present_date"] = _written_day(today)
+    return done
 
 
 def add_period(d: dt.date, years: int = 0, months: int = 0, days: int = 0) -> dt.date:
@@ -1196,6 +1450,94 @@ def no_prescription_terms(facts: Optional[Dict[str, Any]], fired: List[Dict[str,
     return [{"id": id, "label": label, "ref": ref, "length": "", "status": NO_PRESCRIPTION_STATUS, "from": {"what": "", "date": ""},
              "to": {"what": "", "date": ""}, "text": f"{label}: {NO_PRESCRIPTION_STATUS}"} for id, label, ref in NO_PRESCRIPTION
             if id in wanted]
+
+
+# v60h (3): the fact that triggers each term -- a sentence of the case (or of the client's precisazioni) must state it,
+# not negated («il telefono non è mai arrivato» delivers no good), or the term is neither computed nor rendered
+# (signals_from(case=...); logged as terms_untriggered). {term id: (pattern, the fact in words)}.
+_DELIVERED = (r"consegnat|consegn\w* (?:il|la|lo|l'|i|gli|le|del|della|dell')|ricevut|arrivat|recapitat|ritirat|"
+              r"installat|montat|in (?:mio|suo|loro|nostro) possesso", "un bene consegnato",
+              r"\b(?:e-?mail|mail|sms|messagg|whatsapp|telefonat|chiamat|link|bonific|pagament|codic|password|"
+              r"credenzial|notific|comunicazion|lettera|raccomandat|pec|denaro|soldi|somm[ae]|rimbors)\w*")
+_WORKS_DONE_FACT = (r"ultimat|consegnat|completat|fine dei lavori|lavori (?:finit|terminat|conclus)|terminat|collaud|"
+                    r"realizzat|eseguit", "un'opera compiuta o consegnata")
+_NOTIFIED_ACT = (r"(?:notific|comunicat|pubblicat|ricevut)\w*[^.;]{0,80}(?:provvediment|dinieg|ordinanz|decret|"
+                 r"delibera|revoca|annullament|esclusion|aggiudicaz|graduatori|atto)|(?:provvediment|dinieg|ordinanz|decret|"
+                 r"delibera|revoca|annullament|esclusion|aggiudicaz|graduatori)\w*[^.;]{0,80}(?:notific|comunicat|"
+                 r"pubblicat|ricevut)", "un atto notificato o comunicato")
+_JUDGMENT_FACT = (r"sentenz|giudicat", "una sentenza")
+# v60h: possession is also the use of a way or a thing over time -- «usa», «utilizza», «passa», «transita», «da anni»,
+# «da sempre», «da tempo» -- not only the word «possesso»
+_POSSESSION_FACT = (r"possed|possess|usucap|coltiv|utilizz|occup|abitat|abit[ao]|godut|godiment|recint|"
+                    r"\bus(?:a|ano|ava|avano|ato|ando)\b|\bpass(?:a|ano|ava|avano|ando)\b|\btransit\w*|"
+                    r"\bda (?:molti |tanti |diversi |numerosi |oltre |piu di )?(?:anni|decenni)\b|\bda sempre\b|"
+                    r"\bda (?:molto |lungo )?tempo\b", "il possesso del bene (anche l'uso di un passaggio o di un bene nel "
+                    "tempo)")
+_REAL_RIGHT_FACT = (r"servit|passagg|propriet|fondo|fondi|terren|immobil|casa|appartament|confin",
+                    "un diritto reale su un bene")
+TERM_TRIGGERS: Dict[str, Tuple[str, ...]] = {        # (pattern, the fact in words[, a sentence that is not it])
+    "possessoria": (r"spogli|turbativ|molest|sbarr|chius|cancell|lucchett|recinz|ostru|impedi|occupat",
+                    "lo spoglio o la turbativa del possesso"),
+    "non_uso_servitu": (r"servit|passagg|transit|attravers", "l'esercizio di una servitù o di un passaggio"),
+    "usucapione_ordinaria": _POSSESSION_FACT, "usucapione_abbreviata": _POSSESSION_FACT,
+    "usucapione_mobili": _POSSESSION_FACT,
+    "prescrizione_circolazione": (r"stradal|tamponament|investit|circolazion|(?:auto|moto|veicol|scooter|ciclomotor|camion)"
+                                  r"\w*[^.;]{0,60}(?:urt|scontr|collision|invest|tampon|incident|sinistr)",
+                                  "un sinistro stradale"),
+    "prescrizione_extracontrattuale": (r"incident|sinistr|cadut|cadd|lesion|ferit|infortun|danneggi|investit|crollat|"
+                                       r"tamponament|\bdann[oi]\b", "un fatto dannoso"),
+    "prescrizione_ordinaria": (r"contratt|accordo|incaric|ordinat|ordine|fattur|prestit|mutuo|vend|acquist|comprat|"
+                               r"appalt|locaz|affitt|assunt|rapporto di lavoro|dipendent|abbonament",
+                               "un contratto"),
+    "querela": (r"aggred|percoss|picchi|lesion|ferit|minacc|ingiuri|diffam|truff|raggir|frod|furt|rubat|sottratt|"
+                r"danneggi|molest|perseguit|violenz|infortun|insult|ingann|sedicent|spacciat|phishing|clonat|"
+                r"addebit\w* non autorizzat|fint[oa] (?:venditor|operator|funzionari|impiegat|sito)", "un fatto di reato"),
+    "ricorso_tar_appalti": _NOTIFIED_ACT, "ricorso_tar": _NOTIFIED_ACT,
+    "nullita_giudicato": _JUDGMENT_FACT, "ottemperanza": _JUDGMENT_FACT,
+    "denuncia_vizi_vendita": _DELIVERED, "azione_vizi_vendita": _DELIVERED,
+    "denuncia_conformita_consumo": _DELIVERED, "responsabilita_conformita_consumo": _DELIVERED,
+    "azione_conformita_consumo": _DELIVERED,
+    "denuncia_difformita_appalto": _WORKS_DONE_FACT, "azione_garanzia_appalto": _WORKS_DONE_FACT,
+    "manifestazione_gravi_difetti": _WORKS_DONE_FACT, "denuncia_gravi_difetti": _WORKS_DONE_FACT,
+    "impugnazione_penale": (r"sentenz|condann|assolt|assoluz", "una sentenza pronunciata"),
+    "azione_confessoria": _REAL_RIGHT_FACT, "azione_negatoria": _REAL_RIGHT_FACT,
+    "azione_rivendicazione": _REAL_RIGHT_FACT,
+}
+_NEGATED_BEFORE_RE = re.compile(r"\b(?:non|mai|nessun[oa]?|senza|né)\b[^.;,]{0,24}$", re.IGNORECASE)
+
+
+def case_sentences(case: str) -> List[str]:
+    return [" ".join(x.split()) for x in re.split(r"(?<=[.;!?])\s+|\n+", case or "") if x.strip()]
+
+
+def trigger_sentence(term_id: str, case: str) -> Optional[str]:
+    """The case sentence stating the term's triggering fact (TERM_TRIGGERS), not negated; "" when none; None for a term
+    with no trigger rule."""
+    rule = TERM_TRIGGERS.get(str(term_id or ""))
+    if rule is None:
+        return None
+    pattern = re.compile(rule[0], re.IGNORECASE)
+    exclude = re.compile(rule[2], re.IGNORECASE) if len(rule) > 2 else None
+    for sentence in case_sentences(case):
+        low = relative_text(sentence)
+        if exclude is not None and exclude.search(low):
+            continue
+        for m in pattern.finditer(low):
+            if not _NEGATED_BEFORE_RE.search(low[:m.start()]):
+                return sentence[:200]
+    return ""
+
+
+def untriggered(terms: List[Dict[str, Any]], case: str) -> Tuple[List[Dict[str, Any]], List[Dict[str, str]]]:
+    """(the terms whose triggering fact a case sentence states, or with no trigger rule; the others as {id, fact})."""
+    kept, dropped = [], []
+    for t in terms or []:
+        found = trigger_sentence(t.get("id"), case)
+        if found is None or found:
+            kept.append({**t, "trigger": found} if found else t)
+        else:
+            dropped.append({"id": str(t.get("id")), "fact": TERM_TRIGGERS[str(t.get("id"))][1]})
+    return kept, dropped
 
 
 # Art. 5, comma 1, d.lgs. 28/2010: the subjects where mediation is a condition of the action. (name, the word that
@@ -1989,15 +2331,21 @@ def central_issues(fired: List[Dict[str, Any]], limit: int = MAX_CENTRAL) -> Lis
 
 
 def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
-                 areas: Optional[List[str]] = None, rules: Optional[bool] = None, request: str = "") -> Dict[str, Any]:
+                 areas: Optional[List[str]] = None, rules: Optional[bool] = None, request: str = "",
+                 case: Optional[str] = None) -> Dict[str, Any]:
     """{"facts", "terms", "fired", "problem", ...} from the extracted facts, the rules fired within the case's
     areas (only with FACT_SIGNALS_ENABLED, or rules); FACT_REGIMES_ENABLED first qualifies the parties
-    (qualify_parties) and adds "qualifications", "regimes" and "tools". Logged as case_analysis_fact_signals."""
+    (qualify_parties) and adds "qualifications", "regimes" and "tools". Logged as case_analysis_fact_signals. v60h (3):
+    case given (the interactive flow), a term whose triggering fact no case sentence states (TERM_TRIGGERS) is not
+    computed -- before the rules read the terms -- and listed in "terms_untriggered"."""
     regimes = regimes_enabled()
     qualifications: List[Dict[str, Any]] = []
     if regimes and facts:
         facts, qualifications = qualify_parties(facts)
     terms = compute_terms(facts, areas)
+    dropped: List[Dict[str, str]] = []
+    if case is not None:
+        terms, dropped = untriggered(terms, case)
     fired: List[Dict[str, Any]] = []
     if enabled() if rules is None else rules:
         try:
@@ -2006,9 +2354,15 @@ def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
             _log_exception("signals_from", exc)
             logger.warning("fact signals: rules not applied: %s", exc)
             problem = problem or f"rules: {exc}"
-    terms = terms + _non_use_for_a_servitude(facts, terms, fired) + no_prescription_terms(facts, fired)
+    late = _non_use_for_a_servitude(facts, terms, fired) + no_prescription_terms(facts, fired)
+    if case is not None:
+        late, more = untriggered(late, case)
+        dropped += more
+    terms = terms + late
     out = {"facts": facts, "terms": terms, "fired": fired, "problem": problem, "areas": list(areas or []),
            "defendants": parties_to_sue(facts), "mediation": mediation(facts, fired)}
+    if case is not None:
+        out["terms_untriggered"] = dropped
     if regimes:
         out.update({"qualifications": qualifications, "regimes": regime_issues(facts, qualifications, areas),
                     "tools": rule_tools(procedural_tools(facts, areas, request), fired, facts), "damages": damage_heads(facts),

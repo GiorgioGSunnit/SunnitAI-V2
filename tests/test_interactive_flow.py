@@ -192,7 +192,7 @@ def test_round_one_is_the_pos_copy_topics_facts_terms_questions(monkeypatch):
     assert "L'azione possessoria è ormai preclusa (termine annuale dal 2016)." in text
     assert "L'estinzione per non uso non è maturata (scadrebbe nel 2036)." in text
     assert text.count("L'usucapione va verificata: il caso non dice da quando dura il possesso.") == 1
-    assert text.rstrip().endswith(flow.C.INSTRUCTION) and 'scrivi "procedi"' in text
+    assert text.rstrip().endswith(flow.C.INSTRUCTION) and '"procedi"' not in text      # v60 (H): no string dictated
     assert field["state"] == flow.TOPICS_OFFERED and [t["n"] for t in field["topics"]] == [1, 2, 3]
     assert {q["family"] for q in field["questions"]} == {"opera_separazione", "atto_separazione", "possesso_inizio",
                                                         "accesso_alternativo"}
@@ -264,7 +264,7 @@ def test_answers_go_into_the_facts_and_the_terms_rules_and_questions_are_recompu
                                        "statements": []})
     analysis = flow._restored_analysis(state["analysis"])
     assert analysis["fact_signals"]["facts"]["possession"][0]["since_iso"] == "1985"
-    assert "Usucapione ordinaria di beni immobili: DA VERIFICARE → DECORSO" in changes
+    assert "Usucapione ordinaria di beni immobili: ora DECORSO (prima DA VERIFICARE)" in changes
     assert "Servitù per destinazione del padre di famiglia: ora applicabile" in changes
     assert any("cancello" in c and "marzo 2017" in c for c in changes)
     assert {r["id"] for r in analysis["fact_signals"]["fired"]} >= {"destinazione_padre_famiglia", "usucapione_ordinaria"}
@@ -318,18 +318,19 @@ def test_after_the_answer_a_new_fact_is_recomputed_and_the_answer_offered_again(
                                                            "corrections": [], "statements": []})
     monkeypatch.setattr(flow, "write_answer", lambda st, numbers: (f"RISPOSTA su {numbers}", []))
     offer = flow.follow_up("aggiungi che la strada c'era già quando Mevio divise i terreni", state)
-    assert offer["kind"] == "new_fact" and "rigeneri la risposta su «Servitù per destinazione" in offer["answer"]
+    assert offer["kind"] == "new_fact" and "riscriva la risposta su «Servitù per destinazione" in offer["answer"]
     assert offer["state"]["pending_regenerate"] == [1]
     again = flow.follow_up("sì", offer["state"])
     assert again["kind"] == "regenerate" and again["answer"] == "RISPOSTA su [1]"
 
 
-def test_a_question_the_interaction_does_not_hold_and_a_new_case_go_back_to_the_old_path(monkeypatch):
-    state = _state(monkeypatch)
+def test_a_message_the_interaction_does_not_hold_gets_one_clarifying_question_and_a_new_case_the_old_path(monkeypatch):
+    state = _state(monkeypatch)       # v60 (H): inside the interaction, never a fresh round 1 -- a new narrative restarts
     state["state"] = flow.ANSWERED
     monkeypatch.setattr(flow, "_reply_call", lambda *a: {"topics": [], "confirm": False, "answers": {}, "angle": "",
                                                           "corrections": [], "statements": []})
-    assert flow.follow_up("Che cos'è l'enfiteusi?", state) is None
+    turn = flow.follow_up("Che cos'è l'enfiteusi?", state)
+    assert turn["kind"] == "unclear" and turn["answer"].endswith(flow.C.CLARIFY_ANSWERED)
     monkeypatch.setattr(flow, "routes_here", lambda message: True)
     assert flow.follow_up("Tizio e Caio " * 60, state) is None
 
@@ -535,8 +536,9 @@ def test_the_answer_has_the_five_sections_the_rendered_block_untouched_and_offer
     assert "**Art. 1062 c.c.**" in text and "**1) La controparte potrà obiettare" in text
     # v59: 1061's block, emptied by tidy after assembly, is no bare heading -- named in the closing line
     assert "**Art. 1061 c.c.**" not in text and "Altre norme del tema non trattate: art. 1061 c.c." in text
-    assert text.rstrip().endswith("Se vuoi, posso approfondire: 2. Passaggio coattivo; 3. Usucapione ordinaria di beni "
-                                  "immobili. Oppure dimmi un fatto nuovo e aggiorno il parere.")
+    assert text.rstrip().endswith("Se vuoi, posso approfondire anche: 2. Passaggio coattivo; 3. Usucapione ordinaria di "
+                                  "beni immobili. Puoi anche darmi un fatto nuovo, e aggiorno il parere, o chiedermi il "
+                                  "documento.")
     assert state["answers"]["1"]
 
 
@@ -578,13 +580,14 @@ def test_with_the_flag_off_the_single_shot_pipeline_answers(chat, monkeypatch):
     assert calls["single_shot"] == 1 and "PARERE IN UNA VOLTA" in body["answer"] and body["interaction"] is None
 
 
-def test_with_the_flag_on_a_direct_route_keeps_the_single_shot_pipeline(chat, monkeypatch):
-    api, client, calls = chat
+def test_with_the_flag_on_intent_defensive_draft_alone_takes_round_one(chat, monkeypatch):
+    api, client, calls = chat           # v60: a "direct" route the legal intent reads as defensive_draft -- no single-shot
     monkeypatch.setenv("INTERACTIVE_FLOW", "true")
     monkeypatch.setattr(flow, "routes_here", lambda message: False)
-    monkeypatch.setattr(flow, "start", lambda *a, **k: pytest.fail("a direct route went interactive"))
+    state = _state(monkeypatch)
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": (*flow.round1(state), state))
     body = client.post("/api/chat", json={"message": CASE}).json()
-    assert calls["single_shot"] == 1 and body["interaction"] is None
+    assert calls["single_shot"] == 0 and body["status_messages"] == ["interactive_round1"]
 
 
 def test_with_the_flag_on_a_narrative_case_runs_in_rounds_kept_in_the_session(chat, monkeypatch):
@@ -621,6 +624,138 @@ def test_a_failing_round_one_falls_back_to_the_single_shot_pipeline(chat, monkey
     monkeypatch.setattr(flow, "start", broken)
     body = client.post("/api/chat", json={"message": CASE}).json()
     assert calls["single_shot"] == 1 and body["interaction"] is None
+
+
+def test_a_narrative_case_starts_round_one_ahead_of_every_route_and_logs_it(chat, monkeypatch):
+    api, client, calls = chat
+    monkeypatch.setenv("INTERACTIVE_FLOW", "true")
+    monkeypatch.setattr(flow, "routes_here", lambda message: True)
+    monkeypatch.setattr(api, "_classify_legal_intent", lambda *a: pytest.fail("the router ran before round 1"))
+    monkeypatch.setattr(api, "_detect_document_intent", lambda *a: pytest.fail("the document route ran before round 1"))
+    state = _state(monkeypatch)
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": (*flow.round1(state), state))
+    logged = []
+    monkeypatch.setattr(api, "vlog", lambda event, data=None, *a: logged.append((event, data)))
+    body = client.post("/api/chat", json={"message": CASE}).json()
+    assert calls["single_shot"] == 0 and body["status_messages"] == ["interactive_round1"]
+    assert any(e == "interactive" and d.get("round") == 1 for e, d in logged)
+
+
+def test_the_document_after_a_topic_answer_wraps_that_answer_never_a_fresh_single_shot(chat, monkeypatch):
+    api, client, calls = chat
+    monkeypatch.setenv("INTERACTIVE_FLOW", "true")
+    monkeypatch.setattr(flow, "routes_here", lambda message: True)
+    state = _state(monkeypatch)
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": (*flow.round1(state), state))
+    monkeypatch.setattr(flow, "write_answer", lambda st, numbers: ("**1. Risposta e strategia**\n\nIL PARERE", []))
+    one = client.post("/api/chat", json={"message": CASE}).json()
+    sid = one["session_id"]
+    assert api._interactive_document(api.chatbot._sessions[sid], sid, "genera il documento", None, None) is None
+    client.post("/api/chat", json={"message": "1", "session_id": sid})
+    client.post("/api/chat", json={"message": "procedi", "session_id": sid})
+    monkeypatch.setattr(flow, "start", lambda *a, **k: pytest.fail("round 1 again"))
+    doc = client.post("/api/chat", json={"message": "genera il documento", "session_id": sid}).json()
+    assert doc["status_messages"] == ["interactive_document"] and calls["single_shot"] == 0
+    assert "IL PARERE" in doc["answer"] and doc["answer"].startswith("⚖️ **BOZZA DOCUMENTO**")
+    assert api._asks_interactive_document("bozza") and api._asks_interactive_document("Mi prepari la bozza?")
+    assert not api._asks_interactive_document(CASE + " " * 400)
+
+
+NO_CLIENT = {**FACTS, "parties": [{"name": "Leonardo", "role": "proprietario"}, {"name": "Domitilla", "role": "proprietario"}]}
+ROLE_AND_QUESTION = "Sei l'avvocato di Leonardo. Qual è l'atto giudiziario più opportuno?"
+
+
+def _analysed(monkeypatch, seen=None):
+    """flow.analyse_case stubbed: the test state, its parties naming no client (round 1 would ask «Chi assisti»)."""
+    def analyse_case(text, request="", lang="it"):
+        if seen is not None:
+            seen.append((text, request))
+        state = _state(monkeypatch, NO_CLIENT)
+        state["text"], state["request"] = text, request
+        return state
+    monkeypatch.setattr(flow, "analyse_case", analyse_case)
+    monkeypatch.setattr(flow, "_angle_topic", lambda *a: None)          # no corpus read
+    assert any(q["id"] == "parte_assistita" for q in _state(monkeypatch, NO_CLIENT)["questions"])
+
+
+def test_a_case_with_the_role_and_a_question_takes_round_one_with_the_client_and_the_angle(chat, monkeypatch):
+    api, client, calls = chat           # v60 (journal 19:12:19): case + «Sei l'avvocato di X» + a question
+    monkeypatch.setenv("INTERACTIVE_FLOW", "true")
+    monkeypatch.setattr(flow, "routes_here", lambda message: True)
+    _analysed(monkeypatch)
+    body = client.post("/api/chat", json={"message": f"{CASE} {ROLE_AND_QUESTION}"}).json()
+    assert calls["single_shot"] == 0 and body["status_messages"] == ["interactive_round1"]
+    assert not body.get("generated_document_id")
+    assert "Chi assisti" not in body["answer"] and "Mi chiedi: «Qual è l'atto giudiziario più opportuno?»" in body["answer"]
+    state = flow.active(api.chatbot._sessions[body["session_id"]].anchors)
+    assert state["answered"]["parte_assistita"] == "Leonardo" and state["analysis"]["parte_assistita"] == "Leonardo"
+    assert "parte_assistita" not in [q["id"] for q in state["questions"]]
+    assert state["angle"] == "Qual è l'atto giudiziario più opportuno?"
+    assert body["answer"].startswith("Ho letto il caso di Leonardo.")
+
+
+def test_the_angle_matching_a_topic_lists_it_first_and_procedi_takes_it(monkeypatch):
+    state = _state(monkeypatch, NO_CLIENT)
+    flow.apply_stated(state, flow.stated("Assisti Leonardo: come ottengo il passaggio coattivo?"))
+    assert [t["title"] for t in state["topics"]][:1] == ["Passaggio coattivo"] and len(state["topics"]) == 3
+    assert state["chosen"] == [1] and state["answered"]["parte_assistita"] == "Leonardo"
+    reply, _ = flow.round1(state)
+    assert "1. **Passaggio coattivo**" in reply and "se mi chiedi il parere, parto da lì" in reply
+    assert flow.stated("Il caso è questo. Nessuna domanda.") == {"client": "", "client_role": "", "angle": "", "date": ""}
+
+
+def test_an_uploaded_narrative_with_a_one_line_role_and_question_is_the_case_of_round_one(chat, monkeypatch, tmp_path):
+    import asyncio
+    from types import SimpleNamespace
+    api, client, calls = chat           # v60: the file the case, the message the angle; the upload's text analysed
+    monkeypatch.setenv("INTERACTIVE_FLOW", "true")
+    upload = tmp_path / "caso.txt"
+    upload.write_text(CASE, encoding="utf-8")
+    doc = SimpleNamespace(storage_path=str(upload), id="d1", original_filename="caso.txt", document_role="document")
+    seen, logged = [], []
+    _analysed(monkeypatch, seen)
+    monkeypatch.setattr(flow, "routes_here", lambda text: "cancello" in text)        # the case is in the file only
+    monkeypatch.setattr(api, "_classify_legal_intent", lambda *a: "rag")
+    monkeypatch.setattr(api, "vlog", lambda event, data=None, *a: logged.append((event, data)))
+    session = api.chatbot.create_session()
+    run = lambda intent: asyncio.run(api._interactive_upload_case(session, session.session_id, ROLE_AND_QUESTION, "it",
+                                                                  doc, intent, lambda path: open(path).read()))
+    body = run("analyse")
+    assert body is not None and body.status_messages == ["interactive_round1"] and calls["single_shot"] == 0
+    assert seen == [(CASE, ROLE_AND_QUESTION)]                                       # the upload analysed, the message its request
+    entry = next(d for e, d in logged if e == "interactive" and d.get("round") == 1)
+    assert entry["case_source"] == "upload+message" and entry["case_chars"] == len(CASE) + len(ROLE_AND_QUESTION)
+    state = flow.active(session.anchors)
+    assert state["answered"]["parte_assistita"] == "Leonardo" and state["angle"].startswith("Qual è l'atto")
+    assert "Chi assisti" not in body.answer and not body.generated_document_id
+    assert session.messages[0].metadata["document_name"] == "caso.txt"
+    # not a case (a template to fill): the document branch goes on
+    upload.write_text("Contratto di locazione tra ____ e ____.", encoding="utf-8")
+    seen.clear()
+    assert run("generate") is None and seen == []
+    assert run("defensive_draft") is not None and seen                               # the branch's own classifier
+
+
+def test_a_narrative_message_naming_an_upload_is_left_to_the_document_branch_then_round_one(chat, monkeypatch):
+    import asyncio
+    api, client, calls = chat           # v60: the file is the case -- the document branch reads it first
+    monkeypatch.setenv("INTERACTIVE_FLOW", "true")
+    monkeypatch.setattr(flow, "routes_here", lambda message: True)
+    order, logged = [], []
+    detect = api._detect_document_intent
+    monkeypatch.setattr(api, "_detect_document_intent", lambda m: order.append("document branch") or detect(m))
+    state = _state(monkeypatch)
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": order.append("round 1") or
+                        (*flow.round1(state), state))
+    monkeypatch.setattr(api, "vlog", lambda event, data=None, *a: logged.append((event, data)))
+    message = CASE + " Ti ho allegato il documento con i dettagli."
+    assert api._refers_to_upload(message) and api._refers_to_upload("vedi «perizia.pdf»") and not api._refers_to_upload(CASE)
+    monkeypatch.setattr(api, "enforce_tenant_product_access", lambda *a: None)
+    user = {"sub": "00000000-0000-0000-0000-000000000001", "tenant_id": "00000000-0000-0000-0000-000000000002"}
+    body = asyncio.run(api._chat_impl(api.ChatRequest(message=message), user, None))
+    assert any(e == "interactive_deferred" for e, _ in logged)
+    assert "round 1" in order and "document branch" in order[:order.index("round 1")]     # no file found: the message
+    assert body.status_messages == ["interactive_round1"] and calls["single_shot"] == 0
 
 
 # --- 6. the simulation ----------------------------------------------------------------------------------------------
@@ -1027,7 +1162,8 @@ def test_a_criminal_case_has_its_procedural_section_and_the_answer_its_cosmetics
                                 "l'accertamento."), ("Conclusioni", "I termini vanno verificati, come indicato nella "
                                 "sezione «Profili processuali e termini».")], list(flow.ANSWER_TITLES), log)
     assert "agire in via principale, per" in out[0][1]
-    assert out[1][1].endswith("nella sezione «Profili processuali».")
+    # v60f (P9): no name repaired after writing -- the writer is told the real ones (test_v60f)
+    assert out[1][1].endswith("nella sezione «Profili processuali e termini».")
 
 
 # --- v58: from the v57 transcripts --------------------------------------------------------------------------------
@@ -1061,7 +1197,7 @@ def test_with_no_client_tagged_the_first_question_asks_who_it_is():
     facts = {"parties": [{"name": "Signora Bianchi", "role": "proprietario"}, {"name": "Amministratore", "role": "privato"},
                          {"name": "Comune", "role": "pubblica amministrazione"}]}
     q = flow.questions({"frame": {"areas": ["civile"]}, "fact_signals": {"facts": facts, "terms": []}}, (), [], [])[0]
-    assert q["id"] == "parte_assistita" and q["text"] == "Chi assisti in questo caso: Signora Bianchi o Amministratore?"
+    assert q["id"] == "parte_assistita" and q["text"] == "Chi assisti in questo caso: Signora Bianchi o l'amministratore?"   # v60h (9): a role
 
 
 def test_the_quoted_comma_beats_the_cited_numbers():

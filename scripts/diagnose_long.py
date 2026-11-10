@@ -971,9 +971,21 @@ def mentioned_score(ev, case: dict, answer: str, citations=None) -> dict:
             "failures": scored.get("failures") or []}
 
 
-def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict, log) -> None:
+# v60f: the captured events a sim case keeps (cap["events"]): the interactive flow's own, the writer's and the checks'
+SIM_EVENT_PREFIXES = ("interactive_", "case_analysis_section", "case_analysis_writer", "case_analysis_citation",
+                      "case_analysis_plan", "case_analysis_norme", "case_analysis_unsupported", "post_writing",
+                      "citation_removed", "grounded", "plan_then_write", "anchored_writing", "pipeline_exception")
+
+
+def sim_events(cap: Optional[dict]) -> list:
+    """The captured events of the run, [event, data, ms], the ones of SIM_EVENT_PREFIXES."""
+    return [e for e in ((cap or {}).get("events") or []) if str(e[0]).startswith(SIM_EVENT_PREFIXES)]
+
+
+def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict, log, cap: Optional[dict] = None) -> None:
     """--interactive-sim: round 1, the oracle's topic choice as the user's message (no question answered), then
-    "procedi"; the answer scored, each round timed; cases/<id>.json of kind "interactive"."""
+    "procedi"; the answer scored, each round timed; cases/<id>.json of kind "interactive". v60f: with the writer's and
+    the checks' captured events (events), the answer's ledger, the per-article records and the case's sentences."""
     from src.rag import interactive_flow
     case = _eval_case(spec["id"]) or {"expected": spec.get("expected") or []}
     record = {"id": spec["id"], "kind": "interactive", "status": "ok", "expected": spec.get("expected"),
@@ -1005,8 +1017,18 @@ def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict
             if turn["kind"] == "answer":
                 answer, citations = turn["answer"], turn.get("citations") or []
         record["answer"] = answer
+        record["timings"] = dict((state or {}).get("timings") or {})        # v60 (G): per step
+        grading = dict((state or {}).get("grading") or {})
+        if grading:
+            record["grading"] = grading
+            record["prefilter_dropped_expected"] = prefilter_expected(grading.get("prefilter_dropped") or [],
+                                                                      spec.get("expected") or [])
         record["score"] = mentioned_score(ev, case, answer, citations)
         record["rendered"] = state.get("rendered") if state else ""
+        for key in ("records", "ledger", "sentences", "client", "chosen",         # v60f: the funnel's exact reasons
+                    "read", "read_side"):                                         # v60g: the parties' lines
+            if state and state.get(key) is not None:
+                record[key] = state[key]
         if answer:
             try:
                 record.update(answer_extras(answer, spec.get("expected") or [], ev))
@@ -1020,9 +1042,24 @@ def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict
     record["seconds"] = round(time.time() - t0, 1)
     record["seconds_by_round"] = {f"{r.get('kind') or 'round1'}": r["seconds"] for r in record["rounds"]}
     record["llm"] = {"calls": llm_stats["calls"], "seconds": round(llm_stats["seconds"], 1), "errors": llm_stats["errors"]}
+    record["events"] = sim_events(cap)
     with open(spec["out"], "w", encoding="utf-8") as fh:
         json.dump(record, fh, ensure_ascii=False, indent=1, default=str)
     log(f"saved {spec['out']} ({record['status']}, {record['seconds']}s)")
+
+
+def prefilter_expected(dropped: list, expected: list) -> list:
+    """v60 (G): the expected norms among the articles the grading prefilter dropped (a regression number on the
+    benchmark, never its yardstick)."""
+    def key(number, code):
+        return str(number).strip().lower(), re.sub(r"[^a-z]", "", str(code).lower())
+    wanted = {key(a, item.get("code")) for item in expected or [] for a in item.get("any_of") or [item.get("article")]}
+    out = []
+    for label in dropped or []:
+        number, _, code = str(label).partition(" ")
+        if key(number, code) in wanted:
+            out.append(label)
+    return out
 
 
 def extras_of(answer: str, expected: list, ev) -> list:
@@ -1144,12 +1181,20 @@ def write_interactive_report(run_dir: str, ev, baseline: Optional[str] = None) -
                         f"{tot['bx']} ({tot['bx'] / max(1, tot['nb']):.1f}/answer) | "
                         f"{tot['bm']} ({tot['bm'] / max(1, tot['nb']):.1f}/answer) | "
                         f"{tot['bs'] / max(1, tot['nb']):.0f} avg |" if tot["nb"] else "- | - | - | - |"))
+    graded = [r for r in records if r.get("grading")]
+    if graded:          # v60 (G): what the grading prefilter dropped among the expected norms (regression only)
+        dropped = [(r["id"], x) for r in graded for x in r.get("prefilter_dropped_expected") or []]
+        lines += ["", f"Grading prefilter (regression only): {len(dropped)} expected norm(s) dropped across "
+                      f"{len(graded)} case(s)"
+                      + (": " + "; ".join(f"{cid} {x}" for cid, x in dropped) if dropped else ".")]
     for r in records:
         lines += ["", f"## {r['id']}", "", f"Extras: {', '.join(extras_of(r.get('answer') or '', r.get('expected') or [], ev)) or '-'}; "
                   f"misused: {', '.join(r.get('misused') or []) or '-'}", "",
                   f"Oracle: {(r.get('oracle') or {}).get('why', '-')}; covered: "
                   + "; ".join(f"{k}: {', '.join(v) or '-'}" for k, v in ((r.get("oracle") or {}).get("covered") or {}).items()),
                   "", "Missing in the answer: " + (", ".join((r.get("score") or {}).get("missing") or []) or "-")]
+        if r.get("timings"):
+            lines += ["", "Timings: " + ", ".join(f"{k} {v}" for k, v in r["timings"].items() if v is not None)]
         if r.get("errors"):
             lines += ["", "Errors:", "```", "\n".join(e[-1500:] for e in r["errors"]), "```"]
         for turn in r.get("rounds") or []:
@@ -1200,7 +1245,7 @@ def run_child(spec_path: str, env_path: str) -> None:
     request = "" if text.strip() == message.strip() else message   # run_defensive_pipeline's own rule
 
     if spec.get("interactive_sim"):
-        run_interactive_sim(spec, text, request, ev, llm_stats, log)
+        run_interactive_sim(spec, text, request, ev, llm_stats, log, cap)
         return
     if spec.get("topics_only"):
         _stop_after_retrieval(dg, cap)
@@ -3276,6 +3321,7 @@ def main() -> None:
     for spec in specs:
         if args.interactive_sim:
             settings.setdefault("INTERACTIVE_FLOW", "true")
+            settings.setdefault("INTERACTIVE_CASE_FIRST", "true")       # v60: the case-first method
         spec.update(lang=args.lang, settings=settings, dump_llm=args.dump_llm, topics_only=args.topics_only,
                     interactive_sim=args.interactive_sim,
                     out=os.path.join(out_dir, "cases", f"{spec['id']}.json"))
