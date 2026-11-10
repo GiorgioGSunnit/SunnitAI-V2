@@ -182,7 +182,8 @@ def check(args) -> int:
             with open(sidecar, "rb") as fh:
                 sidecar_hashes[hashlib.sha1(fh.read().strip().lower()).hexdigest()] += 1
     same_display_name = sum(c - 1 for c in sidecar_hashes.values() if c > 1)
-    already = sorted(n for n in names if n in fed_names(args.manifest))
+    fed = fed_names(args.manifest)          # read once: per name it was 35k reads of the manifest
+    already = sorted(n for n in names if n in fed)
     in_graph: Set[str] = set()
     if args.graph:
         in_graph = graph_names(args.graph, names)
