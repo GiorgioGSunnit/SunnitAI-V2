@@ -128,3 +128,14 @@ def test_check_is_quiet_on_a_clean_batch(tmp_path, capsys):
 def test_italgiure_code_gives_year_and_branch(name, year, branch):
     m = maint_feed.ITALGIURE.search(name)
     assert m and m.group(2) == year and m.group(1).lower() == branch
+
+
+def test_match_graph_finds_a_file_by_its_file_name_or_by_a_document_name_holding_its_stem():
+    names = ["snpen@s10@a2025@n00001@tS.clean.pdf", "snpen@s10@a2025@n00002@tS.clean.pdf",
+             "snpen@s10@a2025@n00003@tS.clean.pdf", "odd file.pdf", "other.pdf"]
+    rows = [("snpen@s10@a2025@n00001@tS.clean.pdf", "[PENALE] snpen s10 a2025 n00001 tS.clean"),   # by file name
+            (None, "SNPEN@S10@A2025@N00002@TS.CLEAN"),                                             # by name, any case
+            ("x.pdf", "[PENALE] snpen s10 a2025 n00003 tS.clean"),                                 # spaces: not the stem
+            ("y.pdf", "copy of Odd File (2)"), ("z.pdf", None)]
+    assert maint_feed.match_graph(names, rows) == {names[0], names[1], "odd file.pdf"}
+    assert maint_feed.match_graph(names, []) == set()
