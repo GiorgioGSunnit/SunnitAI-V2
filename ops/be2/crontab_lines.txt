@@ -2,10 +2,11 @@
 # prod's on UTC. Edit with `sudo crontab -e` after `sudo crontab -l > ~/crontab.bak_$(date +%d%b)`.
 #
 # ---- be2, root ---------------------------------------------------------------------------------------------
-# Feeder: every 10 minutes top each queue up to --target files. One worker drains ~60/h, so 60 per queue is about
-# an hour of work: the queue never runs dry, and a pause empties it within the hour. REPLACES the hourly
+# Feeder: every 10 minutes top each queue up to --target files, about an hour of one worker's work: the queue
+# never runs dry, and a pause empties it within the hour. 40, not 60, since 11 Nov: on the longer rulings a worker
+# writes ~40/h, and 60 files would outlast the 20:30 pause into the cards' start at 22:00. REPLACES the hourly
 # feed_queue.sh line (SRC=/home/sunnit/pdf2025 ... feed_queue.sh 240 100). Change --src / --batch per batch.
-*/10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 60 >> /var/log/maint/feed_queue.log 2>&1
+*/10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 40 >> /var/log/maint/feed_queue.log 2>&1
 #
 # Cards window: prod cards the new rulings at 21:00 UTC = 22:00 CET; the cards and the ingest must not share the
 # GPU (15 s chunk timeout -> plain-text fallbacks). Feeding stops an hour and a half before, so both queues are
@@ -38,4 +39,5 @@
 #   diff ~/crontab.bak_10nov ~/crontab.new
 #   sudo crontab ~/crontab.new && sudo crontab -l | grep -c "maint_feed\|feed.pause"      # 3
 #
-# Rollback: sudo crontab ~/crontab.bak_10nov
+# Rollback: sudo crontab ~/crontab.bak_10nov   (the state before 10 Nov: no feeder, no pause lines)
+# Installed since: pause 21:00 -> 20:30 (10 Nov), --target 60 -> 40 (11 Nov; the copy before it is ~/crontab.bak_11nov).

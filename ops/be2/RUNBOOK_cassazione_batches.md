@@ -193,6 +193,7 @@ Why a call hangs is not known.
 
 The patch makes the waits a setting, `ANALISI_CHUNK_TIMEOUTS` (default "60,120"; a value under 30 s or unreadable
 falls back to it). The test: worker 2 at `40,40,40` (three requests, as today) beside worker 1 on the default.
+**Applied on be2 on 11 Nov 2026 at 12:54 CET** (the comparison below starts from that time).
 ```
 scp ops/be2/patch_ingest_lever5.py sunnit@185.199.24.31:~/
 # be2. Both queues must be empty: by day pause the feeder and let them drain (~75 min), or use the evening pause.
