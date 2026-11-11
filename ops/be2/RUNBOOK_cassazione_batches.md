@@ -200,8 +200,9 @@ quarter of the rulings' sections; the app's reading-order fallback (name order) 
    ```
    sudo python3 -c "import sys; sys.path.insert(0,'/opt/v2tools'); import maint_health as m; print(m.ingest_journal('70 minutes ago', units=('sunnitai-ingest','sunnitai-ingest-2')))"
    ```
-   Baseline at one worker: ~60 written, 0 chunk_fallbacks. Two workers pass when `written` is clearly above 60
-   and `chunk_fallbacks` stays 0. Fallbacks above 0 = the GPU is oversubscribed: stop worker 2
+   Baseline at one worker: ~60 written. Two workers pass when `written` is clearly above 60 and
+   `chunk_fallbacks` stays near 1% of `chunks` (the rate of 10-11 Nov, the same in light and heavy hours; the
+   counter read 0 until 11 Nov because it missed the double-timeout case). Well above 1% = the GPU is oversubscribed: stop worker 2
    (`sudo systemctl disable --now sunnitai-ingest-2`, move its queue's files back to staging), continue at one
    worker, and give Flavio the numbers (his code: Semaphore(50) per document and the 15 s / 60 s timeouts in
    `lex_package/analisi_parallel.py`).
@@ -215,8 +216,8 @@ quarter of the rulings' sections; the app's reading-order fallback (name order) 
 
 | line | fine | act |
 |---|---|---|
-| ingest 24 h: N written | ~1,400 at one worker, ~2,500 at two | 0 while files wait = stalled: `systemctl status`, journal |
-| chunk fallbacks | 0 | > 0: stop worker 2 (above) |
+| ingest 24 h: N written | ~1,700 at two workers on Section I (10-13 chunks a ruling); about 1,000 chunks an hour | 0 while files wait = stalled: `systemctl status`, journal |
+| chunk fallbacks | about 1% of chunks | well above 1%: stop worker 2 (above) |
 | LLM model errors | 0 | > 0: the ingest .env names a model the server no longer serves |
 | disk free | > 40 GB | the page flags it: `touch /var/log/maint/feed.pause` and the database discussion |
 | feeder: N left | falling by the day's written | PAUSED outside 20:30-23:35 CET = the pause file was left behind |

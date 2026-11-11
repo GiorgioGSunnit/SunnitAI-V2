@@ -187,7 +187,8 @@ def summary_line(n: dict, prev: Optional[dict]) -> str:
     if n.get("ingest_written") is not None:
         cheap = f" ({n['ingest_no_analysis']:,} without analysis)" if n.get("ingest_no_analysis") else ""
         parts.insert(9, f"ingest 24 h: {n['ingest_written']:,} written{cheap}, {n['ingest_model_errors']:,} LLM model errors, "
-                        f"{n['ingest_fallbacks']:,} chunk fallbacks")
+                        f"{n['ingest_fallbacks']:,} chunk fallbacks"
+                        + (f" ({100 * n['ingest_fallbacks'] / n['ingest_chunks']:.1f}% of chunks)" if n.get("ingest_chunks") else ""))
     if n.get("disk_free_gb") is not None:
         parts.insert(10, f"disk free {n['disk_free_gb']:.0f} GB" + (f" (store {n['store_gb']:.0f} GB)" if n.get("store_gb") else ""))
     if n.get("feeder_left") is not None:
@@ -300,6 +301,7 @@ def disk_status(data_dir: str, runner: Callable = subprocess.run) -> dict:
 
 MODEL_MISSING = re.compile(r"The model `([^`]+)` does not exist")
 JOURNAL_TIME = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})")
+TOTAL_CHUNKS = re.compile(r"\[TIMING\] total_chunks=(\d+)")       # one line per document that had chunks to analyse
 
 
 def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.run,
@@ -317,7 +319,7 @@ def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.ru
         return {"found": False, "why": type(exc).__name__}
     if out.returncode != 0:
         return {"found": False, "why": (out.stderr or "").strip()[:120] or f"exit {out.returncode}"}
-    written = errors = timeouts = fallbacks = failed = no_analysis = 0
+    written = errors = timeouts = fallbacks = failed = no_analysis = chunks = 0
     models, last = Counter(), None
     for line in out.stdout.splitlines():
         if "[4/4] done" in line:
@@ -331,14 +333,19 @@ def ingest_journal(since: str = "24 hours ago", runner: Callable = subprocess.ru
         m = MODEL_MISSING.search(line)
         if m:
             models[m.group(1)] += 1
-        if "structured attempt" in line:
-            if "timed out" in line:
-                timeouts += 1
-            elif "failed" in line:
-                fallbacks += 1
+        if "structured attempt" in line and "timed out" in line:
+            timeouts += 1
+        # Logged once per chunk that leaves the structured path: after two timeouts (60 s, 120 s) or one error.
+        # Until 11 Nov 2026 only the error case was counted, so a day with 192 double timeouts read as 0.
+        if "trying plain text fallback" in line:
+            fallbacks += 1
+        m = TOTAL_CHUNKS.search(line)
+        if m:
+            chunks += int(m.group(1))
         if "Moved to failed" in line:
             failed += 1
     return {"found": True, "since": since, "written": written, "last_written": last, "errors": errors,
+            "chunks": chunks,
             "model_missing": dict(models), "chunk_timeouts": timeouts, "chunk_fallbacks": fallbacks,
             "moved_to_failed": failed, "no_analysis": no_analysis}
 
@@ -572,6 +579,7 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
          "ingest_written": ingest["written"] if ingest["found"] else None,
          "ingest_model_errors": sum(ingest["model_missing"].values()) if ingest["found"] else None,
          "ingest_fallbacks": ingest["chunk_fallbacks"] if ingest["found"] else None,
+         "ingest_chunks": ingest.get("chunks") if ingest["found"] else None,
          "ingest_no_analysis": ingest.get("no_analysis", 0) if ingest["found"] else None,
          "disk_free_gb": disk.get("free_gb"), "store_gb": disk.get("store_gb"),
          "feeder_left": feeder.get("left") if feeder["found"] else None,
@@ -647,9 +655,12 @@ def build_report(g: dict, queue: dict, logs: List[dict], unresolved: Tuple[Optio
            + f"; failed {queue['failed']:,}; " + ", ".join(f"service {u} {st}" for u, st in services.items())
            + ("" if queue["queue_dir_found"] else " (queue folder not found on this machine)")]
     if ingest["found"] and ingest["chunk_fallbacks"]:
-        md.append(f"- **{ingest['chunk_fallbacks']:,} chunk analyses fell back to plain text** -- the LLM server did not "
-                  "answer within the ingest's 15 s + 60 s; those sections were stored without their analysis. With two "
-                  "ingest workers or the cards running alongside, this is the number that says the GPU is oversubscribed.")
+        share = (f" ({100 * ingest['chunk_fallbacks'] / ingest['chunks']:.1f}% of {ingest['chunks']:,} chunks)"
+                 if ingest.get("chunks") else "")
+        md.append(f"- **{ingest['chunk_fallbacks']:,} chunk analyses fell back to plain text**{share} -- two structured "
+                  "attempts (60 s, then 120 s) got no answer, so those sections carry the simpler plain-text analysis. "
+                  "About 1% of chunks is the rate seen on 10-11 Nov 2026 with two workers, light load or heavy; well "
+                  "above it, the GPU is oversubscribed.")
     if ingest["found"] and not ingest["written"] and queue["waiting"]:
         md.append(f"- **nothing written in the last {ingest['since']} while {queue['waiting']:,} files wait** -- "
                   "the ingest is stalled: check the service and its journal")
