@@ -207,6 +207,9 @@ average call 7.3 s throughout: worker 2 asking again sooner does not slow worker
 ruling with a hung chunk, 4 rulings in 10 on both workers: 116 s of analysis on worker 1, 77 s on worker 2. Per
 ruling, all phases: 91 s against 72 s. Chunks an hour is not a measure of capacity here: worker 1's fell (528 ->
 485) only because its rulings got shorter, while its rulings an hour rose (37 -> 39.5).
+
+**Worker 1 has the setting too since 12 Nov 2026, 11:24 CET**: the same line appended to `/opt/sunnitai-be/.env`
+(backup `.env.bak_12nov`), worker 1 restarted on its empty queue. Both workers now wait 40,40,40.
 ```
 scp ops/be2/patch_ingest_lever5.py sunnit@185.199.24.31:~/
 # be2. Both queues must be empty: by day pause the feeder and let them drain (~75 min), or use the evening pause.
