@@ -2,15 +2,17 @@
 # prod's on UTC. Edit with `sudo crontab -e` after `sudo crontab -l > ~/crontab.bak_$(date +%d%b)`.
 #
 # ---- be2, root ---------------------------------------------------------------------------------------------
-# Feeder: every 10 minutes top each queue up to --target files. One worker drains ~60/h, so 60 per queue is about
-# an hour of work: the queue never runs dry, and a pause empties it within the hour. REPLACES the hourly
+# Feeder: every 10 minutes top each queue up to --target files, about an hour of one worker's work: the queue
+# never runs dry, and a pause empties it within the hour. 40, not 60, since 11 Nov: on the longer rulings a worker
+# writes ~40/h, and 60 files would outlast the 20:30 pause into the cards' start at 22:00. REPLACES the hourly
 # feed_queue.sh line (SRC=/home/sunnit/pdf2025 ... feed_queue.sh 240 100). Change --src / --batch per batch.
-*/10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 60 >> /var/log/maint/feed_queue.log 2>&1
+*/10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 40 >> /var/log/maint/feed_queue.log 2>&1
 #
 # Cards window: prod cards the new rulings at 21:00 UTC = 22:00 CET; the cards and the ingest must not share the
-# GPU (15 s chunk timeout -> plain-text fallbacks). Feeding stops an hour before, so both queues are empty when
-# the cards start, and resumes when the cards' --stop-at (22:30 UTC = 23:30 CET) has passed.
-0 21 * * * touch /var/log/maint/feed.pause
+# GPU (15 s chunk timeout -> plain-text fallbacks). Feeding stops an hour and a half before, so both queues are
+# empty when the cards start, and resumes when the cards' --stop-at (22:30 UTC = 23:30 CET) has passed.
+# 20:30, not 21:00, since 10 Nov: the full path ran at ~50/h per worker that afternoon, so 60 files take ~73 min.
+30 20 * * * touch /var/log/maint/feed.pause
 35 23 * * * rm -f /var/log/maint/feed.pause
 #
 # Linker (existing line, 04:00 CET): after the first full --write pass by hand, add --new-only to the python line
@@ -33,8 +35,9 @@
 #   sed -e 's#^0 \* \* \* \* SRC=/home/sunnit/pdf2025 bash /home/sunnit/feed_queue.sh 240 100 .*#*/10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 60 >> /var/log/maint/feed_queue.log 2>\&1#' \
 #       -e 's#maint_health.py --env /opt/v2tools/health.env #maint_health.py --env /opt/v2tools/health.env --queue-dir /opt/sunnitai-be/document_upload,/opt/sunnitai-be/document_upload_2 --staging /home/sunnit/cass_batch1 #' \
 #       ~/crontab.bak_10nov > ~/crontab.new
-#   grep -q feed.pause ~/crontab.new || printf '0 21 * * * touch /var/log/maint/feed.pause\n35 23 * * * rm -f /var/log/maint/feed.pause\n' >> ~/crontab.new
+#   grep -q feed.pause ~/crontab.new || printf '30 20 * * * touch /var/log/maint/feed.pause\n35 23 * * * rm -f /var/log/maint/feed.pause\n' >> ~/crontab.new
 #   diff ~/crontab.bak_10nov ~/crontab.new
 #   sudo crontab ~/crontab.new && sudo crontab -l | grep -c "maint_feed\|feed.pause"      # 3
 #
-# Rollback: sudo crontab ~/crontab.bak_10nov
+# Rollback: sudo crontab ~/crontab.bak_10nov   (the state before 10 Nov: no feeder, no pause lines)
+# Installed since: pause 21:00 -> 20:30 (10 Nov), --target 60 -> 40 (11 Nov; the copy before it is ~/crontab.bak_11nov).

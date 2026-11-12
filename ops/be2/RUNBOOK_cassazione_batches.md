@@ -182,6 +182,46 @@ script when the count grows. Seen on the way, for Flavio: the rulings' NEXT chai
 section with two NEXT in 244 of 300 sampled documents, typically 3-5 heads), and the split pieces name_i are a
 quarter of the rulings' sections; the app's reading-order fallback (name order) already covers it.
 
+## 3d. Lever 5: the chunk waits as a setting (prepared 11 Nov, `ops/be2/patch_ingest_lever5.py`)
+
+Why: the journal of 10-11 Nov (763 rulings, both workers). A chunk call answers within 30 s or never. 4.5% of the
+chunks hang on the first request, and a fresh request for the same chunk answers in about 6 s half the time. The
+waits are 60 s, then 120 s (inside it the client's own 90 s limit and a third request), so the waiting is about
+40% of all worker time and 1% of the chunks end on the plain-text analysis. The model server's counters (vLLM
+`/metrics`) show no answer over 10,000 tokens and no call over 120 s: nothing runs on after the ingest hangs up.
+Why a call hangs is not known.
+
+The patch makes the waits a setting, `ANALISI_CHUNK_TIMEOUTS` (default "60,120"; a value under 30 s or unreadable
+falls back to it). The test: worker 2 at `40,40,40` (three requests, as today) beside worker 1 on the default.
+**Applied on be2 on 11 Nov 2026 at 12:54 CET** (the comparison below starts from that time).
+```
+scp ops/be2/patch_ingest_lever5.py sunnit@185.199.24.31:~/
+# be2. Both queues must be empty: by day pause the feeder and let them drain (~75 min), or use the evening pause.
+sudo touch /var/log/maint/feed.pause
+find /opt/sunnitai-be/document_upload /opt/sunnitai-be/document_upload_2 -maxdepth 1 -name '*.pdf' | wc -l   # 0
+python3 ~/patch_ingest_lever5.py --selftest && sudo python3 ~/patch_ingest_lever5.py --check
+sudo python3 ~/patch_ingest_lever5.py
+sudo /opt/sunnitai-be/venv/bin/python3 -m py_compile /opt/sunnitai-be/src/be/src/lex_package/analisi_parallel.py && echo compiles
+echo 'ANALISI_CHUNK_TIMEOUTS=40,40,40' | sudo tee -a /opt/sunnitai-be/.env.worker2
+sudo systemctl restart sunnitai-ingest sunnitai-ingest-2 && sleep 3 && systemctl is-active sunnitai-ingest sunnitai-ingest-2
+sudo rm -f /var/log/maint/feed.pause     # by day only; in the evening window the 23:35 crontab line removes it
+```
+Verify after ~20 minutes: `sudo journalctl -u sunnitai-ingest-2 --since "30 minutes ago" | grep -c "timed out after 40s"`
+is above 0, and the same count for `-u sunnitai-ingest` is 0 (worker 1 still says "after 60s"). With three waits the
+journal's third attempt reads "attempt 3/2".
+
+Compare after some hours, per worker, from the restart time:
+```
+for u in sunnitai-ingest sunnitai-ingest-2; do sudo journalctl -u $u --since "<restart time>" --no-pager -o short-iso | awk -v u=$u '/\[4\/4\] done/{w++} /total_chunks=[0-9]+/{match($0,/total_chunks=[0-9]+/); c+=substr($0,RSTART+13,RLENGTH-13)} /structured attempt/&&/timed out/{t++} /trying plain text fallback/{f++} END{printf "%s: written %d, chunks %d, timeouts %d, plain text %d (%.2f%% of chunks)\n", u, w, c, t, f, (c ? 100*f/c : 0)}'; done
+```
+Keep it, and set it for worker 1 too (the same line in `/opt/sunnitai-be/.env`, restart on an empty queue), only
+when worker 2 wrote clearly more rulings AND its plain-text share is not above worker 1's (about 1%; at ~4,000
+chunks per worker a difference under 0.3 points is noise). The plain-text share is the quality guard: a higher
+share means more sections with the simpler analysis.
+Rollback: delete the line from `.env.worker2` and restart worker 2 (the default again; the patched file behaves
+as before). Full: `sudo python3 ~/patch_ingest_lever5.py --undo`, restart both workers on empty queues.
+Lever 4's patch expects the file as it was before lever 5: give it the new checksum (c2a57da4...) before applying it.
+
 ## 4. Monday: the batch lands
 
 1. The batch goes to `/home/sunnit/cass_batch1`, flat (PDF + `.name` sidecar per file, as the 2025 batch). Names
@@ -200,8 +240,9 @@ quarter of the rulings' sections; the app's reading-order fallback (name order) 
    ```
    sudo python3 -c "import sys; sys.path.insert(0,'/opt/v2tools'); import maint_health as m; print(m.ingest_journal('70 minutes ago', units=('sunnitai-ingest','sunnitai-ingest-2')))"
    ```
-   Baseline at one worker: ~60 written, 0 chunk_fallbacks. Two workers pass when `written` is clearly above 60
-   and `chunk_fallbacks` stays 0. Fallbacks above 0 = the GPU is oversubscribed: stop worker 2
+   Baseline at one worker: ~60 written. Two workers pass when `written` is clearly above 60 and
+   `chunk_fallbacks` stays near 1% of `chunks` (the rate of 10-11 Nov, the same in light and heavy hours; the
+   counter read 0 until 11 Nov because it missed the double-timeout case). Well above 1% = the GPU is oversubscribed: stop worker 2
    (`sudo systemctl disable --now sunnitai-ingest-2`, move its queue's files back to staging), continue at one
    worker, and give Flavio the numbers (his code: Semaphore(50) per document and the 15 s / 60 s timeouts in
    `lex_package/analisi_parallel.py`).
@@ -215,11 +256,11 @@ quarter of the rulings' sections; the app's reading-order fallback (name order) 
 
 | line | fine | act |
 |---|---|---|
-| ingest 24 h: N written | ~1,400 at one worker, ~2,500 at two | 0 while files wait = stalled: `systemctl status`, journal |
-| chunk fallbacks | 0 | > 0: stop worker 2 (above) |
+| ingest 24 h: N written | ~1,700 at two workers on Section I (10-13 chunks a ruling); about 1,000 chunks an hour | 0 while files wait = stalled: `systemctl status`, journal |
+| chunk fallbacks | about 1% of chunks | well above 1%: stop worker 2 (above) |
 | LLM model errors | 0 | > 0: the ingest .env names a model the server no longer serves |
 | disk free | > 40 GB | the page flags it: `touch /var/log/maint/feed.pause` and the database discussion |
-| feeder: N left | falling by the day's written | PAUSED outside 21:00-23:35 CET = the pause file was left behind |
+| feeder: N left | falling by the day's written | PAUSED outside 20:30-23:35 CET = the pause file was left behind |
 | suspected duplicates | 0 | > 0: trace them before feeding more |
 | rulings without card | growing by day, cleared by the night | the cards window is too short: `--stop-at` later |
 
@@ -228,5 +269,6 @@ quarter of the rulings' sections; the app's reading-order fallback (name order) 
 - Worker 2: `sudo systemctl disable --now sunnitai-ingest-2`; `sudo mv /opt/sunnitai-be/document_upload_2/*.pdf /opt/sunnitai-be/document_upload_2/*.name /home/sunnit/cass_batch1/`.
 - Feeder: comment its crontab line; the old `feed_queue.sh` line can return (same manifest, same queue).
 - Linker: restore the `.bak` of the script and of `link_nightly.sh`; the stamps stay and hurt nothing.
+- Lever 5: delete `ANALISI_CHUNK_TIMEOUTS` from `.env.worker2` (and `.env`), restart; `patch_ingest_lever5.py --undo` restores the file.
 - Health: restore the `.bak`; the old report ignores the new arguments' files.
 - Cards: `--stop-at 00:45` back on prod's line.

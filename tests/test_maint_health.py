@@ -267,7 +267,9 @@ class _Out:
 
 JOURNAL = """2026-11-05T13:14:38+0100 be2 python3[1]: 2026-11-05 13:14:38,250 INFO —   [4/4] done 2.3s — 65 nodes, 85 rels
 2026-11-05T13:15:55+0100 be2 python3[1]: 2026-11-05 13:15:55,377 WARNING — Chunk 4/6 structured attempt 1/2 timed out after 15s
-2026-11-05T13:15:56+0100 be2 python3[1]: 2026-11-05 13:15:56,000 WARNING — Chunk 4/6 structured attempt 2/2 failed: fallback to plain text
+2026-11-05T13:14:39+0100 be2 python3[1]: 2026-11-05 13:14:39,000 INFO — [TIMING] total_chunks=6, method=parallel_gather
+2026-11-05T13:15:56+0100 be2 python3[1]: 2026-11-05 13:15:56,000 WARNING — Chunk 4/6 structured attempt 2/2 timed out after 60s
+2026-11-05T13:15:56+0100 be2 python3[1]: 2026-11-05 13:15:56,001 WARNING — Chunk 4/6 structured output failed — trying plain text fallback
 2026-11-05T13:15:57+0100 be2 python3[1]: 2026-11-05 13:15:57,885 INFO —   [1/4] done 18.0s
 2026-11-05T13:16:07+0100 be2 python3[1]: 2026-11-05 13:16:07,118 INFO —   [4/4] done 2.1s — 16 nodes, 16 rels
 2026-11-05T11:00:01+0100 be2 python3[1]: 2026-11-05 11:00:01,000 ERROR — LLM call failed: 404 The model `qwen2.5-32b-awq` does not exist
@@ -287,7 +289,8 @@ def test_ingest_journal_counts_documents_written_and_the_model_the_server_lacks(
     assert calls[0][:4] == ["journalctl", "-u", "sunnitai-ingest", "--since"] and "24 hours ago" in calls[0]
     assert j["found"] and j["written"] == 2 and j["last_written"] == "2026-11-05T13:16:07"
     assert j["errors"] == 2 and j["model_missing"] == {"qwen2.5-32b-awq": 2}
-    assert j["chunk_timeouts"] == 1 and j["chunk_fallbacks"] == 1 and j["moved_to_failed"] == 1
+    # two timeouts (15 s, 60 s) send the chunk to plain text: one fallback, the case the counter missed until 11 Nov
+    assert j["chunk_timeouts"] == 2 and j["chunk_fallbacks"] == 1 and j["moved_to_failed"] == 1 and j["chunks"] == 6
     assert j["no_analysis"] == 1                                   # the cheap path, counted per document
     assert mh.ingest_journal(runner=lambda *a, **k: _Out("", 1, "No journal files were found.")) == {
         "found": False, "why": "No journal files were found."}
@@ -301,11 +304,11 @@ def test_report_flags_the_missing_model_in_the_summary_and_the_page():
     ingest = mh.ingest_journal(runner=lambda *a, **k: _Out(JOURNAL))
     md, state, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0, ingest=ingest)
     assert ("queue 2 waiting / 0 failed · ingest 24 h: 2 written (1 without analysis), 2 LLM model errors, "
-            "1 chunk fallbacks · suspected duplicates") in line
+            "1 chunk fallbacks (16.7% of chunks) · suspected duplicates") in line
     assert "2 documents written (1 without analysis: INGEST_SKIP_ANALYSIS)" in md
-    assert "**1 chunk analyses fell back to plain text**" in md
+    assert "**1 chunk analyses fell back to plain text** (16.7% of 6 chunks)" in md
     assert "- ingest journal (last 24 hours ago): 2 documents written (1 without analysis: INGEST_SKIP_ANALYSIS), last at 2026-11-05T13:16:07; errors 2; " \
-           "chunk analyses timed out 1, fell back to plain text 1; moved to failed 1" in md
+           "chunk analyses timed out 2, fell back to plain text 1; moved to failed 1" in md
     assert "**LLM model not found: qwen2.5-32b-awq (2 calls)**" in md and state["ingest"] == ingest
     md, _, line = mh.build_report(GRAPH, QUEUE, [], (0, {}), None, None, 1.0)             # journal not read: still fine
     assert "ingest journal: not readable here (not read)" in md and "ingest 24 h" not in line
