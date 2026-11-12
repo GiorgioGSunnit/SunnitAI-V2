@@ -199,10 +199,14 @@ Result after 21 hours (12 Nov 09:53). The night before the change the two worker
 plain text 1.14% and 1.16% of chunks). After it: worker 1 wrote 722 rulings from 8,980 chunks, worker 2 wrote 867
 from 10,436 (+20% rulings, +16% chunks). Plain text 1.10% against 1.20%, inside chance at this size (0.15 points).
 First-attempt timeouts 5.1% and 5.2% of chunks, so 40 s cuts no normal call; a hung chunk ends on plain text 23%
-of the time on both. The quality guard holds: the setting stays. Not settled: how much the pair gains. Worker 1,
-unchanged, analysed fewer chunks an hour than the night before (528 -> 485) and the pair's total is flat (1,030 ->
-1,047) while the rulings got shorter (13.7 -> 11.7 chunks), so part of worker 2's lead may be worker 1 slowed by
-the shared model server.
+of the time on both. The quality guard holds: the setting stays.
+
+The gain is worker 2's own, not taken from worker 1 (the "[TIMING] Parallel LLM analysis complete" lines, same
+periods). For like rulings (8-16 chunks, no timeout) worker 1's analysis took 16.3 s before and 16.1-16.2 s after,
+average call 7.3 s throughout: worker 2 asking again sooner does not slow worker 1's calls. What changed is the
+ruling with a hung chunk, 4 rulings in 10 on both workers: 116 s of analysis on worker 1, 77 s on worker 2. Per
+ruling, all phases: 91 s against 72 s. Chunks an hour is not a measure of capacity here: worker 1's fell (528 ->
+485) only because its rulings got shorter, while its rulings an hour rose (37 -> 39.5).
 ```
 scp ops/be2/patch_ingest_lever5.py sunnit@185.199.24.31:~/
 # be2. Both queues must be empty: by day pause the feeder and let them drain (~75 min), or use the evening pause.
