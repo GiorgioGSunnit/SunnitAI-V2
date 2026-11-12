@@ -15,6 +15,11 @@ index built from the first source that has units:
      of each level before it;
   4. rubriche: none of these -- each article an institution of its own, named by its rubrica (level ARTICOLO).
 
+v60n: with units (1-3), every article is also an entry of its own -- a leaf, level ARTICOLO, named by its rubrica, its
+"parent" the deepest unit holding it -- so the index channel (fact_resolver.index_channel, which ranks an article first
+on a tie) resolves a single-article institution («Truffa» -> 640 c.p.); a generic rubrica («Circostanze aggravanti») is
+no leaf.
+
 A code's documents are those whose name reads as the code (citations.code_key), else whose name starts with its
 prefix, case aside (dg._CODE_PREFIXES), else whose name holds one of its ALIASES; every document type. The probe --
 documents (id, name, type, articles), unit levels and relationships to the articles and to the documents, the article
@@ -94,7 +99,7 @@ def _rubricated(unit: str) -> str:
 
 def entries(rows, article_number, unit_title, generic, clean_rubrica):
     """[{name, rubricated, level, articles, rubriche}] from rows {uid, level, unit, name, rubrica}, one per unit, its
-    articles in order; a generic or empty unit name left out."""
+    articles in order; a generic or empty unit name left out. v60n: then one leaf per article of a unit (leaves)."""
     units = {}
     for r in rows:
         number = article_number(r.get("name") or "")
@@ -110,7 +115,29 @@ def entries(rows, article_number, unit_title, generic, clean_rubrica):
         articles = sorted(u["rubriche"], key=_order)
         out.append({"name": name, "rubricated": _rubricated(u["unit"]), "level": u["level"], "articles": articles,
                     "rubriche": {a: u["rubriche"][a] for a in articles}})
+    out += leaves(units.values(), unit_title, generic)
     out.sort(key=lambda e: (_order(e["articles"][0]) if e["articles"] else (10 ** 9, ""), _rank(e["level"])))
+    return out
+
+
+def leaves(units, unit_title, generic):
+    """v60n: one entry per article of the units (never of an ARTICOLO unit: the rubriche source is leaves already) --
+    {name and rubricated: its rubrica, level ARTICOLO, articles [it], rubriche, parent: the deepest named unit holding
+    it, parent_level}; an article with no rubrica, or a generic one, none."""
+    best = {}
+    for u in units:
+        if u["level"] == "ARTICOLO":
+            continue
+        name = unit_title(u["unit"])
+        for number, rubrica in u["rubriche"].items():
+            rank = _rank(u["level"]) if name and not generic(name) else len(LEVEL_ORDER) + 1
+            if number not in best or rank < best[number][0]:
+                best[number] = (rank, rubrica, name if rank <= len(LEVEL_ORDER) else "", u["level"])
+    out = []
+    for number, (_, rubrica, parent, level) in best.items():
+        if rubrica and not generic(rubrica):
+            out.append({"name": rubrica, "rubricated": rubrica, "level": "ARTICOLO", "articles": [number],
+                        "rubriche": {number: rubrica}, "parent": parent, "parent_level": level if parent else ""})
     return out
 
 

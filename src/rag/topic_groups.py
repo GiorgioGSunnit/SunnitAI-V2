@@ -181,17 +181,21 @@ def attach_rules(topics: List[Dict[str, Any]], rule_topics: Sequence[Dict[str, A
 
 
 def attach_hypotheses(topics: List[Dict[str, Any]], hypotheses: Sequence[Dict[str, Any]],
-                      rubriche: Dict[str, str]) -> List[Dict[str, Any]]:
-    """Each hypothesis to the topic one of its institutions anchors best (module docstring); the unanchored ones."""
+                      rubriche: Dict[str, str], procedural_names: Iterable[str] = ()) -> List[Dict[str, Any]]:
+    """Each hypothesis to the topic one of its institutions anchors best (module docstring); the unanchored ones. v60n:
+    only where it may (may_anchor)."""
     unanchored = []
     words = [(_topic_words(t, rubriche), t) for t in topics]
+    procedural_names = list(procedural_names or ())
     for h in hypotheses or []:
-        stems = [topic_step._content_stems(inst) - topic_step.GENERIC_STEMS for inst in h.get("institutions") or []]
-        stems = [x for x in stems if x]
+        named = [inst for inst in h.get("institutions") or []
+                 if topic_step._content_stems(inst) - topic_step.GENERIC_STEMS]
 
-        def score(w):           # an institution anchors when all its content words, two at most needed, are the topic's
+        def score(w, t):        # an institution anchors when all its content words, two at most needed, are the topic's
+            stems = [topic_step._content_stems(inst) - topic_step.GENERIC_STEMS for inst in named
+                     if may_anchor(inst, t, procedural_names)]
             return max((len(x & w) for x in stems if len(x & w) >= min(2, len(x))), default=0)
-        scored = [(score(w), -i, t) for i, (w, t) in enumerate(words)]
+        scored = [(score(w, t), -i, t) for i, (w, t) in enumerate(words)]
         best = max(scored, key=lambda x: x[:2], default=None)
         if best and best[0] >= 1:
             best[2]["hypotheses"].append(h)
@@ -291,6 +295,192 @@ def build(rows: Iterable[Dict[str, Any]], unit_of: Dict[Tuple[str, str], Dict[st
     return {"topics": kept, "others": others, "unanchored": unanchored, "lost_rules": lost}
 
 
+def outside_profiles(rows: Iterable[Dict[str, Any]], unit_of: Dict[Tuple[str, str], Dict[str, str]], why: str
+                     ) -> List[Dict[str, Any]]:
+    """v60q: the articles the code-area gate keeps out (interactive_flow.area_gate) as «altri profili» -- one per Capo
+    (else per Sezione, else per article), never graded nor planned; why their reason."""
+    best: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in rows:
+        ref = _ref(row)
+        if ref and ref not in best:
+            best[ref] = {**row, "_grade": 0}
+    out = []
+    for g in _group(list(best.values()), unit_of, ("CAPO", "SEZIONE")):
+        t = _topic(g)
+        out.append({**t, "how": "area", "planned": 0, "matched": [], "graded": 0, "grades": {}, "best_grade": None,
+                    "capo": g["unit"] if g["level"] == "capo" else "", "why": why})
+    return out
+
+
+# --- v60q: the Capo-scope gate of Libro IV Titolo III c.c. («Dei singoli contratti») ------------------------------------
+# Each Capo there is one contract type: its article is a candidate, a topic's article or an anchor only when the case's
+# contract type is that Capo's -- the extraction's contracts (fact_signals facts["contracts"]: type, parties, clauses), or
+# the frame's area «locazione» -- or when the user's text names the article. Titolo II (the general part, artt.
+# 1321-1469) and every article outside Titolo III: always. The gate drops only when the extraction yields at least one
+# contract type (a contract's type); none, it admits everything (logged «off: no contract type»). A closed list: (Capo,
+# contract, first article, last article, the words of a contract type that make it that Capo's).
+CONTRACT_CAPI: Tuple[Tuple[str, str, int, int, str], ...] = (
+    ("I", "vendita", 1470, 1547, r"vendit|compravendit|acquist|cessione d\w* (?:immobil|bene|quot)"),
+    ("II", "riporto", 1548, 1551, r"riporto"),
+    ("III", "permuta", 1552, 1555, r"permut"),
+    ("IV", "contratto estimatorio", 1556, 1558, r"estimatori|conto vendita"),
+    ("V", "somministrazione", 1559, 1570, r"somministr|fornitur"),
+    ("VI", "locazione", 1571, 1654, r"locazion|locat|affitt|canone|sublocaz"),
+    ("VII", "appalto", 1655, 1677, r"appalt|ristruttur|costruzion|lavori"),
+    ("VIII", "trasporto", 1678, 1702, r"trasport|vettor"),
+    ("IX", "mandato", 1703, 1741, r"mandat|commission|spedizion"),
+    ("X", "agenzia", 1742, 1753, r"agenzi|agente"),
+    ("XI", "mediazione", 1754, 1765, r"mediazion\w* (?:immobiliar|creditiz|commercial)|mediator|agenzia immobiliar|"
+                                    r"provvigion"),
+    ("XII", "deposito", 1766, 1797, r"deposit|custodi|parcheggi|albergator|albergo"),
+    ("XIII", "sequestro convenzionale", 1798, 1802, r"sequestro convenzional"),
+    ("XIV", "comodato", 1803, 1812, r"comodat"),
+    ("XV", "mutuo", 1813, 1822, r"mutu|prestit|finanziament"),
+    ("XVI", "conto corrente", 1823, 1833, r"conto corrent"),
+    ("XVII", "contratti bancari", 1834, 1860, r"banc|conto corrent|apertura di credito|anticipazion|sconto|cassett"),
+    ("XVIII", "rendita perpetua", 1861, 1871, r"rendita perpetu"),
+    ("XIX", "rendita vitalizia", 1872, 1881, r"vitalizi"),
+    ("XX", "assicurazione", 1882, 1932, r"assicur|polizz"),
+    ("XXI", "giuoco e scommessa", 1933, 1935, r"giuoc|gioc|scommess"),
+    ("XXII", "fideiussione", 1936, 1957, r"fideiuss"),
+    ("XXIII", "mandato di credito", 1958, 1959, r"mandato di credito"),
+    ("XXIV", "anticresi", 1960, 1964, r"anticresi"),
+    ("XXV", "transazione", 1965, 1976, r"transazion|transatti"),
+    ("XXVI", "cessione dei beni ai creditori", 1977, 1986, r"cessione dei beni ai creditori"),
+)
+CONTRACT_AREAS = {"locazione": "locazione"}         # a frame area that is a Capo's contract type
+
+
+def capo_of(ref: Sequence[str]) -> Optional[Tuple[str, str]]:
+    """(Capo, contract) of a c.c. article of Titolo III; None for any other article."""
+    if not ref or len(ref) != 2 or topic_step._code(ref[1]) != "c.c.":
+        return None
+    m = re.match(r"\d+", str(ref[0]))
+    n = int(m.group(0)) if m else 0
+    return next(((capo, name) for capo, name, lo, hi, _ in CONTRACT_CAPI if lo <= n <= hi), None)
+
+
+def contract_types(facts: Any) -> List[str]:
+    """The contract types the extraction names (each contract's "type"; a contract given as a string, the string)."""
+    out = []
+    for c in (facts or {}).get("contracts") or [] if isinstance(facts, dict) else []:
+        value = c.get("type") if isinstance(c, dict) else c
+        if str(value or "").strip():
+            out.append(" ".join(str(value).split()))
+    return out
+
+
+def contract_scope(analysis: Dict[str, Any], case: str = "") -> Dict[str, Any]:
+    """The gate's reading of the case: {"on" (the extraction yields a contract type), "off" (why not), "contracts" (the
+    extraction's contract types), "areas", "admitted" (the Capi whose contract type the case's is: its contracts' words
+    -- type, parties, clauses -- and the contract areas), "named" (the labels the user's text names)}."""
+    from . import defensive_generation as dg, fact_signals
+    signals = (analysis or {}).get("fact_signals") or {}
+    facts = signals.get("facts")
+    areas = [str(a) for a in ((analysis or {}).get("frame") or {}).get("areas") or signals.get("areas") or []]
+    types = contract_types(facts)
+    words = "\n".join(types + [fact_signals._texts(facts, ("contracts",))] + [CONTRACT_AREAS[a] for a in areas
+                                                                              if a in CONTRACT_AREAS]) if types else ""
+    admitted = [capo for capo, _, _, _, pattern in CONTRACT_CAPI if words and re.search(pattern, words, re.IGNORECASE)]
+    named = {_label((str(r[0]), topic_step._code(r[1]))) for r in dg._refs_in(case or "") if len(r) == 2}
+    return {"on": bool(types), **({} if types else {"off": "no contract type"}), "contracts": types, "areas": areas,
+            "admitted": admitted, "named": sorted(named)}
+
+
+def out_of_scope(ref: Sequence[str], scope: Dict[str, Any]) -> Optional[str]:
+    """The reason the gate drops the article ("Capo VI – locazione: nessun contratto del caso"), None when it stays."""
+    capo = capo_of(ref)
+    if not capo or not scope.get("on") or capo[0] in (scope.get("admitted") or ()):
+        return None
+    if _label((str(ref[0]), topic_step._code(ref[1]))) in set(scope.get("named") or ()):
+        return None
+    return f"Capo {capo[0]} – {capo[1]}: il contratto del caso non è questo"
+
+
+def gate_rows(rows: Iterable[Dict[str, Any]], scope: Dict[str, Any], log: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The rows whose article the gate keeps; each dropped one in log["rows"] with its Capo."""
+    out = []
+    for row in rows:
+        ref = _ref(row)
+        why = out_of_scope(ref, scope) if ref else None
+        if why:
+            log.setdefault("rows", []).append({"article": _label(ref), "why": why})
+            continue
+        out.append(row)
+    return out
+
+
+def gate_topics(topics: Sequence[Dict[str, Any]], scope: Dict[str, Any], log: Dict[str, Any], key: str = "topics"
+                ) -> List[Dict[str, Any]]:
+    """The topics without the articles the gate drops (articles, matched, planned; the anchor the first kept); a topic
+    left with none is gone. log[key]: each topic changed or dropped."""
+    out = []
+    for t in topics:
+        arts = list(t.get("articles") or [])
+        gone = [a for a in arts + [t.get("anchor") or ""] if a and _parse(a) and out_of_scope(_parse(a), scope)]
+        if not gone:
+            out.append(t)
+            continue
+        planned = int(t.get("planned") or len(arts))
+        kept = [a for a in arts if a not in gone]
+        log.setdefault(key, []).append({"title": t.get("title"), "dropped": list(dict.fromkeys(gone)),
+                                        "gone": not kept})
+        if not kept:
+            continue
+        t = {**t, "articles": kept, "planned": len([a for a in arts[:planned] if a in kept]) or 1,
+             "matched": [a for a in t.get("matched") or [] if a in kept]}
+        if t.get("anchor") in gone or t.get("anchor") not in kept:
+            t["anchor"] = kept[0]
+        if isinstance(t.get("grades"), dict):
+            t["grades"] = {a: g for a, g in t["grades"].items() if a not in gone}
+        out.append(t)
+    return out
+
+
+def _parse(label: str) -> Optional[Tuple[str, str]]:
+    m = re.match(r"\s*(\d+(?:-[a-z]+)?)\s+(.+?)\s*$", str(label or ""))
+    return (m.group(1), m.group(2)) if m else None
+
+
+# --- v60n: area-code priority -- a procedural code's article anchors only a procedural institution ----------------------
+# For a substantive institution the area's substantive code (c.p. in criminal, c.c. in civil) wins over any procedural
+# code's hit: a c.p.p. / c.p.c. article never anchors it (v6x sims: p2 «appropriazione indebita» -> 381 c.p.p., the
+# arrest article listing the offence). An institution is procedural when its name says so (_PROCEDURAL_RE, a closed list
+# erring towards procedural: a wrong «procedural» only keeps today's behaviour) or when the store rubricates it only in a
+# procedural code (interactive_flow.first_read_search: its rubrica hits).
+PROCEDURAL_CODES = ("c.p.p.", "c.p.c.")
+_PROCEDURAL_RE = re.compile(
+    r"\b(?:arrest[oi]|ferm[oi]|convalid\w*|misur\w* cautelar\w*|cautelar\w*|custodia|domiciliar\w*|riesame|"
+    r"impugnazion\w*|appell[oi]|ricors[oi]|cassazione|revisione|rimessione|competenz\w*|giurisdizion\w*|"
+    r"notific\w*|perquisizion\w*|ispezion\w*|intercettazion\w*|sequestr\w* (?:preventiv|probatori|conservativ|"
+    r"giudiziari)\w*|incidente probatorio|indagin\w*|udienz\w*|archiviazion\w*|rinvio a giudizio|patteggiament\w*|"
+    r"applicazione della pena su richiesta|giudizio|rito|decreto penale|decreto ingiuntivo|ingiunzion\w*|opposizion\w*|"
+    r"precetto|pignorament\w*|esecuzione forzata|espropriazione forzata|sfratt\w*|procediment\w*|process[oi]|"
+    r"processual\w*|litisconsorzi\w*|chiamata in causa|intervento|provvediment\w* d'urgenza|testimon\w*|"
+    r"mezzi di prova|prova|prove|querel\w*|citazione|costituzione in giudizio|contumacia|domanda giudiziale|"
+    r"legittimazione|interesse ad agire|inammissibilit\w*|improcedibilit\w*|procedibilit\w*|revocazione|"
+    r"spese di lite|gratuito patrocinio|difensore|sentenz\w*|giudicato|termine per (?:impugnare|proporre))\b",
+    re.IGNORECASE)
+
+
+def procedural(name: Any) -> bool:
+    """v60n: an institution named as a procedural one (_PROCEDURAL_RE)."""
+    return bool(_PROCEDURAL_RE.search(" ".join(str(name or "").split())))
+
+
+def may_anchor(institution: str, topic: Dict[str, Any], procedural_names: Iterable[str] = ()) -> bool:
+    """v60n: whether the topic may hold the institution -- never a procedural code's topic for a substantive one."""
+    if (topic.get("code") or "") not in PROCEDURAL_CODES:
+        return True
+    low = {str(x).lower() for x in procedural_names or ()}
+    return procedural(institution) or str(institution or "").lower() in low
+
+
+def substantive_codes(codes: Iterable[str]) -> List[str]:
+    """v60n: the area's substantive codes (c.p. in criminal, c.c. in civil), in the areas' order."""
+    return [c for c in codes or () if c not in PROCEDURAL_CODES]
+
+
 # --- v60c: hypotheses anchored -- the graded rows' rubriche by stems first, then the Sezione / Capo titles by similarity -
 # An institution of the hypothesis anchors in a topic when its content words (two, or its only one) are in the rubrica
 # of one of the topic's graded rows ("rubrica"); else when its embedding is at ANCHOR_MIN or more from the topic's Sezione
@@ -326,27 +516,37 @@ def topic_vectors(session, topics: Sequence[Dict[str, Any]], rows: Iterable[Dict
                        if t.get("unit") else [] for t in topics]}
 
 
-def _stem_anchor(institution: str, topics: Sequence[Dict[str, Any]], rubriche: Dict[str, str]
-                 ) -> Tuple[int, Optional[int], str]:
-    """(shared words, topic index, the matched rubrica) of the best rubrica match of the topics' graded rows."""
+def _stem_anchor(institution: str, topics: Sequence[Dict[str, Any]], rubriche: Dict[str, str],
+                 codes: Sequence[str] = (), procedural_names: Iterable[str] = ()) -> Tuple[int, Optional[int], str]:
+    """(shared words, topic index, the matched rubrica) of the best rubrica match of the topics' graded rows. v60n:
+    never a topic the institution may not anchor in (may_anchor); on a tie, the area's substantive code's topic."""
     wanted = topic_step._content_stems(institution) - topic_step.GENERIC_STEMS
     best = (0, None, "")
     if not wanted:
         return best
+    mine = substantive_codes(codes)
+    best_key = (0, False)
     for i, t in enumerate(topics):
+        if not may_anchor(institution, t, procedural_names):
+            continue
         for label in (t.get("grades") or {}):
             shared = len(wanted & (topic_step._content_stems(rubriche.get(label, "")) - topic_step.GENERIC_STEMS))
-            if shared >= min(2, len(wanted)) and shared > best[0]:
-                best = (shared, i, f"art. {label}: {rubriche.get(label, '')}")
+            key = (shared, (t.get("code") or "") in mine)
+            if shared >= min(2, len(wanted)) and key > best_key:
+                best, best_key = (shared, i, f"art. {label}: {rubriche.get(label, '')}"), key
     return best
 
 
 def anchor_by_similarity(topics: List[Dict[str, Any]], vectors: Dict[str, Any], hypotheses: Sequence[Dict[str, Any]],
                          embed: Optional[Callable[[List[str]], List[List[float]]]] = None,
-                         threshold: Optional[float] = None, rubriche: Optional[Dict[str, str]] = None
+                         threshold: Optional[float] = None, rubriche: Optional[Dict[str, str]] = None,
+                         codes: Sequence[str] = (), procedural_names: Iterable[str] = ()
                          ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """(the unanchored hypotheses, one log entry per hypothesis: the path that attached it -- "rubrica" or "titolo" --
-    or none, its institution, topic, matched text and score)."""
+    or none, its institution, topic, matched text and score). v60n: an institution anchors only where it may
+    (may_anchor: a procedural code's topic for a procedural institution only), the area's substantive code first
+    (codes: the case's area codes)."""
+    procedural_names = list(procedural_names or ())
     threshold = anchor_min() if threshold is None else threshold
     rubriche = rubriche or {}
     by_stem = {}
@@ -355,7 +555,7 @@ def anchor_by_similarity(topics: List[Dict[str, Any]], vectors: Dict[str, Any], 
         return list(dict.fromkeys([x for x in list(h.get("rubricated") or []) + list(h.get("institutions") or []) if x]))
     for h in hypotheses or []:
         for inst in names_of(h):
-            shared, i, match = _stem_anchor(inst, topics, rubriche)
+            shared, i, match = _stem_anchor(inst, topics, rubriche, codes, procedural_names)
             if i is not None and shared > by_stem.get(id(h), (0,))[0]:
                 by_stem[id(h)] = (shared, i, inst, match)
     rest = [h for h in hypotheses or [] if id(h) not in by_stem]
@@ -379,6 +579,8 @@ def anchor_by_similarity(topics: List[Dict[str, Any]], vectors: Dict[str, Any], 
             if inst not in got:
                 continue
             for i, mine in enumerate(vectors.get("topics") or []):
+                if i < len(topics) and not may_anchor(inst, topics[i], procedural_names):
+                    continue
                 for what, title in mine:
                     if title in got:
                         score = _cosine(got[inst], got[title])

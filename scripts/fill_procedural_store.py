@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """v60 (C): fill the procedural facts store -- each c.p. offence's procedibilità (v60h: with the conditions that make a
 querela offence d'ufficio, procedural_facts.VERSION 2), querela term, remissione, competenza and pena, each c.p.p. / c.p.a. / c.p.c. article's stated term, computed from the article's own text
-(src/rag/procedural_facts.extract) and stored on its Section node (proc_facts as JSON, proc_version).
+(src/rag/procedural_facts.extract) and stored on its Section node (proc_facts as JSON, proc_version). v60s: every string
+cleaned of the corpus' markers («(abrogato)», footnotes) before it is written (procedural_facts.clean_facts).
 
 Dry run by default: computes and prints the coverage, writes nothing. --write stores them.
 
@@ -62,7 +63,7 @@ def main(argv=None) -> None:
                     if not rows:
                         continue
                     row = {**rows[0], "_article": (number, code)}
-                    facts = procedural_facts.from_row(row)
+                    facts = procedural_facts.clean_facts(procedural_facts.from_row(row))   # v60s (6): no «(abrogato)»
                     if not facts:
                         continue
                     counts["with_facts"] += 1

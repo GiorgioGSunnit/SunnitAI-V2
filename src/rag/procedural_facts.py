@@ -225,6 +225,25 @@ def from_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return extract(str(ref[0]), str(ref[1]), rule_quote.row_commi(row))
 
 
+# v60s (6): the markers the corpus leaves in an article's text -- «(abrogato)», «(soppresso)», footnotes «(3)», «[196]» --
+# never reach the store: every string of the facts cleaned (rule_quote.clean_text and these), a list item left empty out
+_STORE_MARKER_RE = re.compile(r"\s*[(\[]\s*(?:abrogat[oaie]|soppress[oaie]|omissis|\d{1,4})\s*[)\]]", re.IGNORECASE)
+
+
+def clean_facts(value: Any) -> Any:
+    """The facts with every string free of the corpus' markers (_STORE_MARKER_RE, rule_quote.clean_text); a dict's or a
+    list's entry whose text is left empty goes."""
+    from . import rule_quote
+    if isinstance(value, str):
+        return " ".join(rule_quote.clean_text(_STORE_MARKER_RE.sub("", value)).split())
+    if isinstance(value, list):
+        out = [clean_facts(v) for v in value]
+        return [v for v in out if not (v == "" or (isinstance(v, dict) and "text" in v and not v["text"]))]
+    if isinstance(value, dict):
+        return {k: clean_facts(v) for k, v in value.items()}
+    return value
+
+
 LOOKUP_QUERY = ("UNWIND $items AS it MATCH (d:Document {id: it.doc})-[:CONTAINS]->(s:Section) "
                 "WHERE s.name = it.num OR s.name = it.num + '.0.0' "
                 f"RETURN it.doc AS doc, it.num AS num, s.{PROPERTY} AS facts, s.{VERSION_PROPERTY} AS version")

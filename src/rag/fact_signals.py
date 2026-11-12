@@ -255,9 +255,9 @@ def validate_facts(raw: Any, case_text: str, regimes: Optional[bool] = None) -> 
     for item in out.get("events") or []:
         item["kind"] = _enum(item.get("kind", ""), EVENT_KINDS)
     if "possession" in out:
-        _stated_tolerance(out, case_text)
+        _stated_tolerance(out, case_only(case_text))         # v60i (4): never the user's own message
     if "access" in out:
-        _stated_landlocked(out, case_text)
+        _stated_landlocked(out, case_only(case_text))
     if "client_side" in out:
         _client(out, case_text)
     if out.get("parties"):
@@ -1467,12 +1467,27 @@ _NOTIFIED_ACT = (r"(?:notific|comunicat|pubblicat|ricevut)\w*[^.;]{0,80}(?:provv
                  r"pubblicat|ricevut)", "un atto notificato o comunicato")
 _JUDGMENT_FACT = (r"sentenz|giudicat", "una sentenza")
 # v60h: possession is also the use of a way or a thing over time -- «usa», «utilizza», «passa», «transita», «da anni»,
-# «da sempre», «da tempo» -- not only the word «possesso»
-_POSSESSION_FACT = (r"possed|possess|usucap|coltiv|utilizz|occup|abitat|abit[ao]|godut|godiment|recint|"
-                    r"\bus(?:a|ano|ava|avano|ato|ando)\b|\bpass(?:a|ano|ava|avano|ando)\b|\btransit\w*|"
-                    r"\bda (?:molti |tanti |diversi |numerosi |oltre |piu di )?(?:anni|decenni)\b|\bda sempre\b|"
-                    r"\bda (?:molto |lungo )?tempo\b", "il possesso del bene (anche l'uso di un passaggio o di un bene nel "
-                    "tempo)")
+# «da sempre», «da tempo» -- not only the word «possesso». v60i (5): the usucapione's own fact is the possession ad
+# usucapionem stated -- a possession or a use AND its time in one sentence («usa il sentiero da vent'anni», «coltiva il
+# campo dal 1990»), or the acquisition by usucapione asserted («ha usucapito», «acquistato per usucapione») --, never
+# the matter (a servitù, a passage, the word «usucapione»), never a use by permission, tolerance or a contract (art.
+# 1144 c.c.: no possession). The words are matched accent-free (relative_text).
+_POSSESSING = (r"possed\w*|possess\w*|\bcoltiv\w*|\butilizz\w*|\boccup\w*|\babit(?:o|a|iamo|ano|ava|avano|ato|ando)\b|"
+               r"\bgod(?:o|e|iamo|ono|eva|evano|uto|endo)\b|\brecint\w*|\bus(?:o|a|iamo|ano|ava|avano|ato|ando)\b|"
+               r"\bpass(?:o|a|iamo|ano|ava|avano|ando|ato)\b|\btransit\w*|\besercit\w*|\bmanten\w*|\bcura(?:no|va|vano)?\b|"
+               r"\bcome (?:se fosse )?(?:il |l')?(?:unico )?proprietari\w*|\buti dominus\b")
+_SINCE = (r"\bda (?:(?:molti|tanti|diversi|numerosi|oltre|piu di|circa|almeno|ben|quasi) )?(?:\d+ |due |tre |quattro |"
+          r"cinque |sei |sette |otto |nove |dieci |undici |dodici |quindici |venti |venticinque |trenta |quaranta |"
+          r"cinquanta )?(?:anni|decenni)\b|\bda sempre\b|\bda (?:molto |lungo )?tempo\b|\bdal(?:l')? ?(?:19|20)\d{2}\b|"
+          r"\bdagli anni\b|\bper (?:(?:oltre|piu di|circa|almeno|ben|quasi) )?(?:\d+|venti|trenta|dieci|quindici|"
+          r"venticinque|quaranta|cinquanta) anni\b|\bininterrott\w*|\bcontinuativ\w*|\bultraventennal\w*|"
+          r"\bventennal\w*|\bdecennal\w*")
+_USUCAPIONE_FACT = (rf"(?:{_POSSESSING})(?=.*(?:{_SINCE}))|(?:{_SINCE})(?=.*(?:{_POSSESSING}))|\busucapit\w*|"
+                    r"\bacquist\w* (?:\w+ ){0,3}per usucapione|\bmaturat\w* (?:l')?usucapione",
+                    "il possesso ad usucapionem (il possesso o l'uso del bene e la sua durata, detti dal caso)",
+                    r"\btolleranz\w*|\btollerat\w*|\bpermess\w*|\bautorizz\w*|\bconsenso\b|\bin affitto\b|"
+                    r"\bin locazione\b|\bin comodato\b|\bin uso\b|\bdetenzion\w*|\bdetent\w*")
+_POSSESSION_FACT = _USUCAPIONE_FACT          # the name the v60h tests and callers use
 _REAL_RIGHT_FACT = (r"servit|passagg|propriet|fondo|fondi|terren|immobil|casa|appartament|confin",
                     "un diritto reale su un bene")
 TERM_TRIGGERS: Dict[str, Tuple[str, ...]] = {        # (pattern, the fact in words[, a sentence that is not it])
@@ -1505,9 +1520,43 @@ TERM_TRIGGERS: Dict[str, Tuple[str, ...]] = {        # (pattern, the fact in wor
 }
 _NEGATED_BEFORE_RE = re.compile(r"\b(?:non|mai|nessun[oa]?|senza|né)\b[^.;,]{0,24}$", re.IGNORECASE)
 
+# v60i (4): the user's own message is never a case sentence for a tool, term or fact trigger -- the request typed over an
+# upload («RICHIESTA DELL'UTENTE: …»), and in a typed case the sentences that speak to the lawyer, not of the facts: a
+# question, «Sei l'avvocato di …», «Assisto / difendo …», an instruction («Indica …», «Valuta …», «Si chiede …»).
+_REQUEST_RE = re.compile(r"^\s*RICHIESTA DELL'UTENTE:.*?(?:\n\s*\n\s*DOCUMENTO CARICATO:\s*\n?|$)", re.DOTALL)
+_USER_SENTENCE_RE = re.compile(
+    r"\?\s*[»\"”)]?\s*$"
+    r"|^\W*(?:sei|siete|sono|siamo)\s+(?:l['’]\s*|il\s+|la\s+)?(?:avvocat|legale|difensor|consulent)"
+    r"|^\W*(?:in\s+qualit[àa]\s+di|come|quale|nelle\s+vesti\s+di)\s+(?:l['’]\s*|il\s+|la\s+)?(?:avvocat|legale|difensor)"
+    r"|^\W*(?:l['’]\s*|il\s+|la\s+)?(?:avvocat[oa]|legale|difensore)\s+(?:del|dell|della|dello|dei|degli|delle|di)\b[^.;]{0,40}$"
+    r"|^\W*(?:assisto|assistiamo|difendo|difendiamo|rappresento|rappresentiamo|tutelo|patrocino|assumi|assuma)\b"
+    r"|^\W*(?:(?:ti|le|vi)\s+)?(?:chiedo|domando)\b|^\W*si\s+(?:chiede|richiede|domanda)\b|^\W*(?:vorrei|desidero|"
+    r"mi\s+serv\w+|ho\s+bisogno|aiutami|indica(?:mi|re)?|valuta(?:re)?|redig(?:i|ere)|scriv(?:i|ere)|spiega(?:mi|re)?|"
+    r"dimmi|analizza(?:re)?|individua(?:re)?|prepara(?:re)?|predisp(?:oni|orre)|approfondisci|approfondire|"
+    r"elenca(?:re)?|suggerisci|consiglia(?:mi)?|esamina(?:re)?|illustra(?:re)?|descrivi|fornisci|concentrati|"
+    r"procedi)\b", re.IGNORECASE)
+
+
+def user_message(sentence: str) -> bool:
+    """v60i (4): the sentence is the user speaking to the lawyer (a question, the client named, an instruction), not a
+    fact of the case."""
+    return bool(_USER_SENTENCE_RE.search(" ".join(str(sentence or "").split())))
+
+
+def case_only(case: str) -> str:
+    """v60i (4): the case without the user's own message: the request typed over an upload, and the sentences that are
+    the user speaking (user_message). What every tool, term and fact trigger reads."""
+    text = _REQUEST_RE.sub("", case or "", count=1)
+    out = []
+    for line in text.split("\n"):
+        kept = [x for x in re.split(r"(?<=[.;!?])\s+", line) if x.strip() and not user_message(x)]
+        out.append(" ".join(kept))
+    return "\n".join(out)
+
 
 def case_sentences(case: str) -> List[str]:
-    return [" ".join(x.split()) for x in re.split(r"(?<=[.;!?])\s+|\n+", case or "") if x.strip()]
+    """The case's sentences a trigger reads -- v60i (4): never the user's own message (case_only)."""
+    return [" ".join(x.split()) for x in re.split(r"(?<=[.;!?])\s+|\n+", case_only(case)) if x.strip()]
 
 
 def trigger_sentence(term_id: str, case: str) -> Optional[str]:
@@ -1536,7 +1585,8 @@ def untriggered(terms: List[Dict[str, Any]], case: str) -> Tuple[List[Dict[str, 
         if found is None or found:
             kept.append({**t, "trigger": found} if found else t)
         else:
-            dropped.append({"id": str(t.get("id")), "fact": TERM_TRIGGERS[str(t.get("id"))][1]})
+            dropped.append({"id": str(t.get("id")), "fact": TERM_TRIGGERS[str(t.get("id"))][1],
+                            "label": str(t.get("label") or ""), "ref": str(t.get("ref") or "")})   # v60p: for §4
     return kept, dropped
 
 
@@ -1949,7 +1999,8 @@ def other_contractor(facts: Dict[str, Any]) -> str:
     held = {_low(h.get("owner")) for h in history if _asset_words(h.get("asset")) in mine}      # the client's own part, by whoever held it
     others = [n.strip() for n in str(split.get("parts") or "").split(",") if n.strip() and not _is_client(n, clients) and _low(n) not in held]
     who = f"l'altro contraente è {', '.join(others)}, condividente" if others else "l'altro contraente è chi ha avuto l'altra parte"
-    return f"{who} nella divisione del fondo di {owner}"
+    from . import party_names               # v60i (7): «del proprietario», never «di il proprietario»
+    return party_names.contract(f"{who} nella divisione del fondo di {party_names.label(owner)}")
 
 
 _OBSTRUCTIONS = ("spoglio", "turbativa", "chiusura/ostruzione accesso")
@@ -2365,7 +2416,9 @@ def signals_from(facts: Optional[Dict[str, Any]], problem: str = "",
         out["terms_untriggered"] = dropped
     if regimes:
         out.update({"qualifications": qualifications, "regimes": regime_issues(facts, qualifications, areas),
-                    "tools": rule_tools(procedural_tools(facts, areas, request), fired, facts), "damages": damage_heads(facts),
+                    # v60i (4): with the case given (the interactive flow) the user's message triggers no tool
+                    "tools": rule_tools(procedural_tools(facts, areas, request if case is None else ""), fired, facts),
+                    "damages": damage_heads(facts),
                     "multi_roles": multiple_roles(facts)})
     vlog("case_analysis_fact_signals", {**out, "central": all_central(out)})
     if facts:

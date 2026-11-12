@@ -157,7 +157,8 @@ def check_case(cid: str, case: dict, rubriche: dict, expected: list, ev, dl) -> 
     norme = re.search(r"\*\*2\. Norme applicate ai fatti\*\*(.*?)(?=\n\*\*\d+\. |\Z)", ans, re.S)
     if norme:
         body = norme.group(1)
-        if not re.search(r"requisito «.+?»: (?:provato|da provare|non risulta)\.", body):
+        # v60k/l (single shot): «da verificare: il caso non dice …» and «da verificare» are status lines too
+        if not re.search(r"requisito «.+?»: (?:provato|da provare|non risulta|da verificare\b[^\n]*?)\.", body):
             issues.append("L2 §2 has no code-printed status lines")
         heads = re.findall(r"(?m)^\*\*Art\. (\d+(?:-[a-z]+)?) ([^*—]+?)(?: — [^*]+)?\*\*\s*$", body)
         dup = [h for h, k in Counter(heads).items() if k > 1]

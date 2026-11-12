@@ -295,6 +295,14 @@ class ChatResponse(BaseModel):
         description="Ranked candidate system templates ({key, label, codice, score}) when "
         "classify_system_template finds 2+ close matches; FE should prompt the user to pick one.",
     )
+    article_citations: list = Field(
+        default_factory=list,
+        description="CASE_FIRST_SINGLE_SHOT (v60q): the articles the parere cites, which its body cites as references "
+        "and never quotes -- [{id ('1062 c.c.'), number, code, rubrica, commi [{n, text}], status (its verdict, or its "
+        "line: non applicabile / non trattata), reason, in_body, rows [{article, comma, requisite, status, "
+        "supporting_sentence, contradicting_sentence}]: the record's rows, which the body no longer prints (v60r)}], in "
+        "the order the parere first cites them, for the frontend to render on demand; empty on every other reply.",
+    )
     interaction: Optional[dict] = Field(
         default=None,
         description="INTERACTIVE_FLOW: the round of an interactive case -- {schema, version, state (topics_offered, "
@@ -2143,7 +2151,8 @@ def _interactive_reply(session, session_id: str, message: str, result: dict, mod
         session.title = _generate_session_title(message)
     session.add_message("assistant", result["answer"], metadata={
         "type": "interactive", "kind": result.get("kind"),
-        **({"citations": result["citations"]} if result.get("citations") else {})})
+        **({"citations": result["citations"]} if result.get("citations") else {}),
+        **({"article_citations": result["article_citations"]} if result.get("article_citations") else {})})
     confirmation = session._summarize_if_needed()
     if confirmation:
         session.add_message("assistant", confirmation, metadata={
@@ -2160,7 +2169,8 @@ def _interactive_reply(session, session_id: str, message: str, result: dict, mod
         session_id=session_id, answer=result["answer"], citations=result.get("citations") or [],
         original_query=message, resolved_query=message, session_language=session.session_language,
         status_messages=[f"interactive_{mode}"], awaiting_summary_confirmation=bool(confirmation),
-        title=session.title, interaction=result.get("interaction"))
+        title=session.title, interaction=result.get("interaction"),
+        article_citations=result.get("article_citations") or [])
 
 
 async def _interactive_follow_up(session_id: str, message: str, uid: Optional[str], db: Session) -> Optional["ChatResponse"]:
@@ -2189,16 +2199,34 @@ async def _interactive_follow_up(session_id: str, message: str, uid: Optional[st
     return _interactive_reply(session, session_id, message, result, "follow_up")
 
 
+def _interactive_on() -> bool:
+    """INTERACTIVE_FLOW (the rounds) or CASE_FIRST_SINGLE_SHOT (v60k: one parere): a narrative case goes to
+    interactive_flow."""
+    from ..rag import interactive_flow
+    return interactive_flow.turns_on()
+
+
 async def _interactive_start(session, session_id: str, message: str, lang: str, case: Optional[str] = None,
                              user_meta: Optional[dict] = None) -> Optional["ChatResponse"]:
     """INTERACTIVE_FLOW: round 1 of a narrative case, or None on any failure (logged; the single-shot path then).
-    case: an upload's text -- the case, the message its request (the angle); default the message is the case."""
+    case: an upload's text -- the case, the message its request (the angle); default the message is the case. v60k
+    (CASE_FIRST_SINGLE_SHOT): the complete parere instead (interactive_flow.single_shot), round 1 run inside it."""
     from ..rag import interactive_flow
     source = "upload+message" if case is not None else "message"
     text = case if case is not None else message
-    vlog("interactive", {"round": 1, "session_id": session_id, "case_source": source,
+    vlog("interactive", {"round": "single_shot" if interactive_flow.single_shot_enabled() else 1,
+                         "session_id": session_id, "case_source": source,
                          "case_chars": len(text or "") + (len(message or "") if case is not None else 0),
                          "message_length": len(message or "")})
+    if interactive_flow.single_shot_enabled():
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, partial(interactive_flow.single_shot, text, lang, message if case is not None else ""))
+        except Exception as exc:
+            logger.error("chat: single-shot case-first failed, the single-shot pipeline answers: %s", exc, exc_info=True)
+            return None
+        return _interactive_reply(session, session_id, message, result, "single_shot", user_meta)
     try:
         loop = asyncio.get_event_loop()
         reply, field, state = await loop.run_in_executor(
@@ -2435,7 +2463,8 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
     _deferred_case = False      # INTERACTIVE_FLOW: a narrative case naming an upload, left to the document branch
     # ── INTERACTIVE_FLOW: a reply within an open interactive case (a topic, an answer, "procedi") ──
     # Only a session holding a live interactive state; anything it does not hold falls through unchanged.
-    if feature_flags.enabled("INTERACTIVE_FLOW"):
+    # v60k: CASE_FIRST_SINGLE_SHOT too -- the case answered in one parere, its follow-ups updating it
+    if _interactive_on():
         # the document asked for after a topic answer wraps that answer (never a fresh single-shot)
         _int_session = chatbot.get_session(session_id, user_id=_uid, db=db)
         _interactive = _interactive_document(_int_session, session_id, request.message, _uid, _tid)
@@ -3200,7 +3229,7 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                 if feature_flags.enabled("ROUTER_ENABLED"):     # tagged only: a document keeps its path
                     logger.info("chat: route=document intent=%s", doc_intent)
                     vlog("chat_route", {"route": "document", "intent": doc_intent})
-                if feature_flags.enabled("INTERACTIVE_FLOW"):
+                if _interactive_on():
                     _interactive = await _interactive_upload_case(
                         _session, session_id, request.message, _session_lang, _matched_doc, doc_intent, _extract)
                     if _interactive is not None:
@@ -3654,7 +3683,7 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
         logger.info("chat: %r is a short topic question, not a case: answered, not drafted", request.message)
         _legal_intent = "rag"
     _legal_intent = _routed_intent(request.message, _legal_intent, last_pending_calculation(_session))
-    if (_legal_intent == "defensive_draft" or _deferred_case) and feature_flags.enabled("INTERACTIVE_FLOW"):
+    if (_legal_intent == "defensive_draft" or _deferred_case) and _interactive_on():
         # INTERACTIVE_FLOW: a case in rounds (topics, facts, questions first) -- v60: intent defensive_draft is enough,
         # the narrative check ran above; only a failure keeps the single-shot pipeline below.
         _interactive = await _interactive_start(_session, session_id, request.message, _session_lang)

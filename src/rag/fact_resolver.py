@@ -23,6 +23,13 @@ right one only to its core article ("Garanzia per i vizi della cosa venduta" -> 
      civile dell'ente pubblico per lesioni permanenti" reached art. 406 c.c., guardianship, by two words of its text,
      and was placed in the plan as T1).
 
+v60n: before the indexes, the rubrica itself (rubrica_matches over the code's rubriche, read once per document): a
+rubrica equal to the name once footnote markers and punctuation are stripped («Truffa» -> 640 c.p.), else the rubriche
+beginning with it («Corruzione» -> 318, 319, 319-ter, 320 c.p.), else those whose first words have its words' roots
+(«Furti» -> «Furto»); what it finds are the core articles, the related and text-only ones then judged as before. A
+single-word name is never generic unless its word is (generic_stems): with no rubrica match, a heading holding its one
+word is a core.
+
 Logged per institution (the caller's case_analysis_fact_institution): the candidates (article, heading, how found),
 the kept (core / related / text) and the refused with the reason.
 """
@@ -133,6 +140,77 @@ def candidates(session, doc_id: str, name: str) -> List[Dict[str, Any]]:
     return list(out.values())
 
 
+# --- v60n: the rubrica first -- exact, then prefix, then root ---------------------------------------------------------
+RUBRICHE_QUERY = ("MATCH (d:Document)-[:CONTAINS]->(s:Section) WHERE d.id = $doc_id AND s.titolo_articolo IS NOT NULL "
+                  "RETURN s.name AS name, s.titolo_articolo AS rubrica")
+PREFIX_KEPT = 5                 # the rubriche a name begins (prefix, root): at most these, in article order
+EXACT_KEPT = 8                  # v60o: identical rubriche («Confisca», seven in c.p.) are all the institution's
+_RUBRICHE: Dict[str, List[Tuple[str, str]]] = {}
+_LEADING_ARTICLES = {"il", "lo", "la", "i", "gli", "le", "l", "un", "uno", "una"}
+_ART_PREFIX_RE = re.compile(r"^\s*art(?:icolo)?\.?\s*\d+(?:[-\s]?[a-z]+)?\s*[-–—.:]?\s*", re.IGNORECASE)
+
+
+def rubrica_key(text: Any) -> str:
+    """A rubrica (or a name) as rubrica_matches compares it: footnote markers out («(1)», «[202]», «*»), an «Art. N –»
+    lead out, lower case, every punctuation mark a space, a leading article out."""
+    from .rule_quote import clean_rubrica
+    t = _ART_PREFIX_RE.sub("", clean_rubrica(text))
+    words = re.sub(r"[^\w\s]|_|\d", " ", t.lower()).split()
+    while words and words[0] in _LEADING_ARTICLES:
+        words = words[1:]
+    return " ".join(words)
+
+
+def _root(word: str) -> str:
+    """A word's root for the inflection-tolerant prefix: its last letter off, six letters at most («furto», «furti» ->
+    «furt»; «minaccia», «minacce» -> «minacc»)."""
+    return word[:-1][:6] if len(word) > 4 else word
+
+
+def _order(number: str) -> tuple:
+    m = re.match(r"(\d+)(?:[-.]?([a-z]+))?", str(number or ""))
+    return (int(m.group(1)), m.group(2) or "") if m else (10 ** 9, str(number))
+
+
+def code_rubriche(session, doc_id: str) -> List[Tuple[str, str]]:
+    """[(number, rubrica)] of the document's articles, in article order -- read once per document (RUBRICHE_QUERY);
+    [] when the read fails."""
+    if doc_id not in _RUBRICHE:
+        try:
+            rows = session.run(RUBRICHE_QUERY, doc_id=doc_id).data()
+        except Exception as exc:            # noqa: BLE001 -- no list: the indexes alone, as before
+            logger.info("fact resolver: rubriche of %s not read: %s", doc_id, exc)
+            return []
+        out: Dict[str, str] = {}
+        for r in rows or []:
+            number = _number(r.get("name") or "")
+            if number and r.get("rubrica") and number not in out:
+                out[number] = str(r["rubrica"])
+        _RUBRICHE[doc_id] = sorted(out.items(), key=lambda x: _order(x[0]))
+    return _RUBRICHE[doc_id]
+
+
+def rubrica_matches(rubriche: List[Tuple[str, str]], name: str) -> Tuple[str, List[str]]:
+    """(how, numbers) of the rubriche matching the name, in article order: «esatta» -- equal to it (rubrica_key);
+    else «prefisso» -- beginning with it, whole words; else «radice» -- their first words having its words' roots
+    (_root: a word of three letters or more); ("", []) when none."""
+    key = rubrica_key(name)
+    if not key:
+        return "", []
+    keyed = [(n, rubrica_key(r)) for n, r in rubriche]
+    exact = [n for n, k in keyed if k == key]
+    if exact:
+        return "esatta", exact
+    prefix = [n for n, k in keyed if k.startswith(key + " ")]
+    if prefix:
+        return "prefisso", prefix
+    roots = [_root(w) for w in key.split() if len(w) > 2]
+    if not roots:
+        return "", []
+    rooted = [n for n, k in keyed if [_root(w) for w in k.split() if len(w) > 2][:len(roots)] == roots]
+    return ("radice", rooted) if rooted else ("", [])
+
+
 def _text(rows: List[Dict[str, Any]]) -> str:
     return " ".join(str((r.get("s") or {}).get("plain_text") or (r.get("s") or {}).get("abstract") or "")
                     for r in rows or [])
@@ -164,9 +242,21 @@ def resolve(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any]) 
     code = abbr or doc.get("name")
     chapter = answer_invariants.chapter(name, abbr or "")
     log["chapter"] = chapter
+    how, by_rubrica = rubrica_matches(code_rubriche(session, doc["id"]), name)        # v60n: the rubrica first
+    by_rubrica = [n for n in by_rubrica if not chapter or answer_invariants.in_ranges(n, chapter)]
+    by_rubrica = by_rubrica[:EXACT_KEPT if how == "esatta" else PREFIX_KEPT]
+    if by_rubrica:
+        log["rubrica"] = {"how": how, "articles": [f"{n} {code}" for n in by_rubrica]}
     found = candidates(session, doc["id"], name)
+    have = {c["number"] for c in found}
+    found = [{"number": n, "heading": dict(code_rubriche(session, doc["id"])).get(n, ""), "via": f"rubrica {how}"}
+             for n in by_rubrica if n not in have] + found
     log["candidates"] = [{"article": f"{c['number']} {code}", "heading": c["heading"], "via": c["via"]} for c in found]
     judged = []          # (kind, head_shared, order, candidate, rows)
+    # v60n: a single-word name's heading match is its word's root among the heading's words (_root), never a bare
+    # five-letter stem («complicità» never meets «Completamento»)
+    single = [w for w in rubrica_key(name).split() if len(w) > 2 and _stems(w) & specific] if len(specific) == 1 else []
+    root = _root(single[0]) if single else ""
     for order, c in enumerate(found):
         label = f"{c['number']} {code}"
         if chapter and not answer_invariants.in_ranges(c["number"], chapter):
@@ -177,11 +267,16 @@ def resolve(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any]) 
             log["refused"].append({"article": label, "why": "no text"})
             continue
         heading = c["heading"] or dg._rows_heading(rows)
-        head = len(specific & _stems(heading))
+        head = (1 if root in {_root(w) for w in rubrica_key(heading).split()} else 0) if root \
+            else len(specific & _stems(heading))
         text = len(specific & _stems(_text(rows)))
         judged.append((head, text, order, c, rows, label))
-    need = max(2, (len(specific) + 1) // 2)       # a heading sharing one word only is never the core
-    cores = sorted([j for j in judged if j[0] >= need], key=lambda j: (-j[0], j[2]))
+    # a heading sharing one word only is never the core -- v60n: unless the name has one word (not a generic one)
+    need = 1 if len(specific) == 1 else max(2, (len(specific) + 1) // 2)
+    if by_rubrica:              # v60n: the rubriche the name matches are the cores, in article order
+        cores = [j for n in by_rubrica for j in judged if j[3]["number"] == n]
+    else:
+        cores = sorted([j for j in judged if j[0] >= need], key=lambda j: (-j[0], j[2]))
     core_numbers = [_as_int(j[3]["number"]) for j in cores]
     kept: List[Tuple[str, Any]] = [("core", j) for j in cores]
     for j in judged:
@@ -199,11 +294,13 @@ def resolve(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any]) 
             log["refused"].append({"article": label, "why": why})
         else:
             log["refused"].append({"article": label, "why": "heading and text share no specific word"})
-    kept.sort(key=lambda kj: ({"core": 0, "related": 1, "text": 2}[kj[0]], kj[1][2]))
+    kept.sort(key=lambda kj: ({"core": 0, "related": 1, "text": 2}[kj[0]],
+                              cores.index(kj[1]) if kj[0] == "core" else kj[1][2]))
+    limit = max(MAX_KEPT, len(cores))          # v60n: every core a rubrica match found (PREFIX_KEPT at most)
     out: List[Dict[str, Any]] = []
     for k, (kind, (_, _, _, c, rows, label)) in enumerate(kept):
-        if k >= MAX_KEPT:
-            log["refused"].append({"article": label, "why": f"beyond the {MAX_KEPT} kept"})
+        if k >= limit:
+            log["refused"].append({"article": label, "why": f"beyond the {limit} kept"})
             continue
         from . import evidence_tiers
         for row in rows:

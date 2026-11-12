@@ -534,8 +534,10 @@ def test_the_answer_has_the_five_sections_the_rendered_block_untouched_and_offer
                      "**4. Profili processuali**", "**5. Conclusioni**"]
     assert "RENDERED BLOCK" in text and "2043" not in text and "[1]" not in text
     assert "**Art. 1062 c.c.**" in text and "**1) La controparte potrà obiettare" in text
-    # v59: 1061's block, emptied by tidy after assembly, is no bare heading -- named in the closing line
-    assert "**Art. 1061 c.c.**" not in text and "Altre norme del tema non trattate: art. 1061 c.c." in text
+    # v59: a block emptied after assembly is no bare heading (named in the closing line: test_v59); v60k: tidy never cuts
+    # the code's status lines («- co. 1: provato.» is no cut citation), so 1061 keeps its heading and comma lines
+    assert "**Art. 1061 c.c.**\n- co. 1: provato.\n- co. 2: provato." in text
+    assert "Altre norme del tema non trattate: art. 1061 c.c." not in text
     assert text.rstrip().endswith("Se vuoi, posso approfondire anche: 2. Passaggio coattivo; 3. Usucapione ordinaria di "
                                   "beni immobili. Puoi anche darmi un fatto nuovo, e aggiorno il parere, o chiedermi il "
                                   "documento.")

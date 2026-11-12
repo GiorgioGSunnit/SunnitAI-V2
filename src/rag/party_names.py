@@ -8,6 +8,11 @@ itself writes in lower case («un idraulico», «il produttore»; a proper name 
 word is capitalised (a proper name: «Società Alfa», «Ditta Rossi», «Mario» stay names). label(name): the role with its article; any other name as given.
 contract(text): «di il» -> «del», «a l'» -> «all'», … after a slot filled with a label. lower_roles(text, names): in a
 model's text, each capitalised role name lower case with its article (and the preposition before it contracted).
+
+v60i (7): the articled preposition in every party reference -- «dell'inquilino», «all'acquirente», never «di
+l'inquilino», «a l’acquirente» (either apostrophe) nor «dell'l'inquilino» (a capitalised role after a contracted
+preposition, «dell'Inquilino», keeps the one article); contract_roles(text, names) contracts a role phrase the text
+already writes in lower case, and lower_roles runs it.
 """
 
 import re
@@ -30,7 +35,6 @@ _ARTICLES = {"il", "lo", "la", "l", "i", "gli", "le", "un", "uno", "una", "sig",
              "dottssa"}
 _LINKS = {"di", "del", "della", "dello", "dei", "degli", "delle", "da", "in", "con", "e", "ed", "per", "a", "al", "alla"}
 _FEMININE_E = {"parte", "persona", "madre", "moglie", "gente", "fonte", "società", "comunità", "autorità", "università"}
-_CONTRACT = {"di": "de", "a": "a", "da": "da", "in": "ne", "su": "su"}
 
 
 def _words(name: str) -> List[str]:
@@ -100,22 +104,54 @@ def label(name: str, case: str = "") -> str:
     return role_phrase(name) if is_role(name, case) else name
 
 
+_PREP_FORMS = {"di": {"il": "del", "lo": "dello", "la": "della", "l'": "dell'", "i": "dei", "gli": "degli", "le": "delle"},
+               "a": {"il": "al", "lo": "allo", "la": "alla", "l'": "all'", "i": "ai", "gli": "agli", "le": "alle"},
+               "da": {"il": "dal", "lo": "dallo", "la": "dalla", "l'": "dall'", "i": "dai", "gli": "dagli", "le": "dalle"},
+               "in": {"il": "nel", "lo": "nello", "la": "nella", "l'": "nell'", "i": "nei", "gli": "negli", "le": "nelle"},
+               "su": {"il": "sul", "lo": "sullo", "la": "sulla", "l'": "sull'", "i": "sui", "gli": "sugli", "le": "sulle"}}
+# an articled preposition already written («dell'», «della », «agli ») -> (its preposition, its article)
+_CONTRACTED = {form.rstrip("'"): (prep, art) for prep, forms in _PREP_FORMS.items() for art, form in forms.items()}
+_SPLIT_RE = re.compile(r"\b(di|a|da|in|su|Di|A|Da|In|Su)\s+(il|lo|la|l['’]|i|gli|le)(?:\s+|(?<=['’]))")
+
+
+def _joined(prep: str, art: str, apostrophe: str = "'") -> str:
+    """The articled preposition of prep + art, with prep's capital and the text's own apostrophe."""
+    key = "l'" if art.lower() in ("l'", "l’") else art.lower()
+    joined = _PREP_FORMS[prep.lower()][key]
+    joined = joined.replace("'", apostrophe)
+    return joined if prep[:1].islower() else joined[:1].upper() + joined[1:]
+
+
 def contract(text: str) -> str:
-    """The articled prepositions a filled slot leaves split: «di il» -> «del», «a l'» -> «all'», «in la» -> «nella»."""
+    """The articled prepositions a filled slot leaves split: «di il» -> «del», «a l'» -> «all'», «in la» -> «nella»
+    (v60i: «l’» too, its apostrophe kept)."""
     def repl(m):
         prep, art = m.group(1), m.group(2)
-        low = prep.lower()
-        base = _CONTRACT[low]
-        joined = {"il": base + "l", "lo": base + "llo", "la": base + "lla", "l'": base + "ll'", "i": base + "i",
-                  "gli": base + "gli", "le": base + "lle"}[art.lower()]
-        if low == "a":
-            joined = {"il": "al", "lo": "allo", "la": "alla", "l'": "all'", "i": "ai", "gli": "agli", "le": "alle"}[art.lower()]
-        if low == "di":
-            joined = {"il": "del", "lo": "dello", "la": "della", "l'": "dell'", "i": "dei", "gli": "degli",
-                      "le": "delle"}[art.lower()]
-        joined = joined if prep[:1].islower() else joined[:1].upper() + joined[1:]
-        return joined + ("" if art.endswith("'") else " ")
-    return re.sub(r"\b(di|a|da|in|su|Di|A|Da|In|Su)\s+(il|lo|la|l'|i|gli|le)(?:\s+|(?<='))", repl, text or "")
+        apostrophe = art[-1] if art[-1] in "'’" else "'"
+        joined = _joined(prep, art, apostrophe)
+        return joined + ("" if joined.endswith(("'", "’")) else " ")
+    return _SPLIT_RE.sub(repl, text or "")
+
+
+def contract_roles(text: str, names: Sequence[str]) -> str:
+    """v60i (7): a preposition and an article left split before a role name's noun, in lower case or capitalised
+    («di l'inquilino», «a l’acquirente») -> the articled preposition («dell'inquilino», «all’acquirente»)."""
+    nouns = set()
+    for name in names or []:
+        bare = re.sub(r"^(?:(?:il|lo|la|i|gli|le)\s+|l['’])", "", str(name or ""), flags=re.IGNORECASE).strip()
+        if bare:
+            nouns.add(re.escape(bare.split()[0].lower()))
+    if not nouns or not text:
+        return text
+    pattern = re.compile(r"\b(di|a|da|in|su|Di|A|Da|In|Su)\s+(il|lo|la|l['’]|i|gli|le)(\s+|(?<=['’]))(?=(?i:"
+                         + "|".join(sorted(nouns, key=len, reverse=True)) + r")\b)")
+
+    def repl(m):
+        art = m.group(2)
+        apostrophe = art[-1] if art[-1] in "'’" else "'"
+        joined = _joined(m.group(1), art, apostrophe)
+        return joined + ("" if joined.endswith(("'", "’")) else " ")
+    return pattern.sub(repl, text)
 
 
 def role_names(parties: Iterable[dict], case: str = "") -> List[str]:
@@ -125,6 +161,7 @@ def role_names(parties: Iterable[dict], case: str = "") -> List[str]:
 
 
 _PHRASE_ARTICLE_RE = re.compile(r"^(?:il |lo |la |i |gli |le |l')")
+_JOINED_ALT = "|".join(sorted(_CONTRACTED, key=len, reverse=True))
 
 
 def lower_roles(text: str, names: Sequence[str]) -> str:
@@ -134,9 +171,9 @@ def lower_roles(text: str, names: Sequence[str]) -> str:
     if not names or not text:
         return text
     if "\n" in text:
-        return "\n".join(line if line.lstrip().startswith("**") else _lower_line(line, names)
+        return "\n".join(line if line.lstrip().startswith("**") else contract_roles(_lower_line(line, names), names)
                          for line in text.split("\n"))
-    return text if text.lstrip().startswith("**") else _lower_line(text, names)
+    return text if text.lstrip().startswith("**") else contract_roles(_lower_line(text, names), names)
 
 
 def _lower_line(text: str, names: Sequence[str]) -> str:
@@ -149,11 +186,20 @@ def _lower_line(text: str, names: Sequence[str]) -> str:
         noun = _PHRASE_ARTICLE_RE.sub("", phrase)
         pattern = re.compile(r"(?P<pre>\b(?:di|a|da|in|su|per|con|tra|fra|Di|A|Da|In|Su|Per|Con)\s+)?"
                              r"(?P<art>\b(?:il|lo|la|i|gli|le|Il|Lo|La|I|Gli|Le)\s+|\b[lL]['’]\s*)?"
+                             r"(?P<joined>\b(?i:" + _JOINED_ALT + r")(?:['’]\s*|\s+))?"
                              + re.escape(capital) + r"\b(?!\s+[A-ZÀ-Ü])")          # «Società Alfa»: a name
         source = text or ""
 
         def repl(m, phrase=phrase, noun=noun, source=source):
-            pre, art = m.group("pre") or "", m.group("art") or ""
+            pre, art, joined = m.group("pre") or "", m.group("art") or "", m.group("joined") or ""
+            if joined:          # v60i (7): «dell'Inquilino» -> «dell'inquilino», never «dell'l'inquilino»
+                word = re.match(r"[^\W\d_]+", joined).group(0)
+                prep = _CONTRACTED[word.lower()][0]
+                prep = prep if word[:1].islower() else prep[:1].upper() + prep[1:]
+                apostrophe = next((c for c in joined if c in "'’"), "'")
+                own = re.match(r"(il |lo |la |i |gli |le |l')", phrase).group(1)
+                out = _joined(prep, own.strip() if own != "l'" else "l'", apostrophe)
+                return out + ("" if out.endswith(("'", "’")) else " ") + noun
             if art:
                 return pre + art + noun
             if pre:

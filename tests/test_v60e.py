@@ -327,7 +327,7 @@ def test_negotiation_instead_of_mediation_for_a_road_accident():
     facts = {"events": [{"what": "sinistro stradale: tamponamento dell'auto di Rossi", "date": ""}],
              "injuries": [{"what": "colpo di frusta"}], "requests": ["risarcimento del danno"]}
     analysis = _civil(facts, topic_refs=[("1917", "c.c.")])          # an insurance-contract article: mediation matter
-    assert render_computed.mediation_of(analysis)["required"]
+    assert not render_computed.mediation_of(analysis)["required"]    # v60q: the case's matter, never a written article
     titles = [t for t, _ in render_computed.blocks(analysis)]
     assert render_computed.NEGOTIATION_TITLE in titles and "Mediazione" not in titles
     legacy = [t for t, _ in render_computed.blocks({**analysis, "store_offences_only": False})]

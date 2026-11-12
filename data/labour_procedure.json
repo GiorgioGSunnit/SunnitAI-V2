@@ -1,0 +1,22 @@
+{
+  "_doc": "v60i (9): the procedural facts of a labour dispute as a closed list, ready for when the labour corpus arrives. Read by src/rag/render_computed.py (labour_of). The lines appear, with the case-first flow, when a chosen topic's anchor or matched article is of the matter 'rito del lavoro' (data/mediation_matters.json, mediazione.never: c.c. 2060-2134, c.p.c. 409-473, the labour laws) -- with the labour corpus in the store, its articles anchor those topics. A line with 'triggers' appears only when a sentence of the case (never the user's own message) states that fact. The texts are drafts for the PO (the copy review lists them); edit here, not in the code.",
+  "title": "Controversia di lavoro",
+  "facts": [
+    {
+      "id": "impugnazione_licenziamento",
+      "triggers": "licenzia\\w*|recess\\w* (?:del|dal) (?:datore|rapporto)|cessazione del rapporto di lavoro",
+      "text": "Impugnazione del licenziamento: entro 60 giorni dalla ricezione della sua comunicazione scritta (o dei motivi, se successivi), con qualsiasi atto scritto, anche stragiudiziale; l'impugnazione è inefficace se entro i successivi 180 giorni non è depositato il ricorso al giudice del lavoro o comunicata alla controparte la richiesta di conciliazione o arbitrato",
+      "ref": "art. 6, co. 1 e 2, l. 604/1966"
+    },
+    {
+      "id": "rito_lavoro",
+      "text": "Rito del lavoro: le controversie individuali di lavoro si propongono con ricorso al tribunale in funzione di giudice del lavoro",
+      "ref": "artt. 409 e 414 c.p.c."
+    },
+    {
+      "id": "conciliazione_facoltativa",
+      "text": "Tentativo di conciliazione: facoltativo, non è condizione di procedibilità della domanda, salvo i casi in cui una legge speciale lo rende obbligatorio",
+      "ref": "art. 410 c.p.c."
+    }
+  ]
+}

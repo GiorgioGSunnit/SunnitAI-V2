@@ -189,6 +189,17 @@ OTHER_NORMS_JOIN = ", "
 # v60d (my draft): a §2 block whose gloss says the article does not apply, one item in one line
 NOT_APPLICABLE_LINE = "Norme considerate e non applicabili: {articles}."         # articles
 NOT_APPLICABLE_ITEM = "art. {number} {code}"                                     # number, code
+# v60i (1, my draft): with the record, each article of the two closing lines with its reason
+NORM_ITEM_REASON = "art. {number} {code} ({reason})"                             # v60i (1, my draft): number, code, reason
+LINE_REASON_NOT_RESULTING = "non risulta «{element}»"                           # v60i (1, my draft): element
+LINE_REASON_NOT_RESULTING_ANY = "un suo requisito non risulta"                  # v60i (1, my draft)
+# v60r (1, my draft, single shot): §2's one status sentence per article -- the requisites' rows go to the response's
+# article citations, never into the body
+ARTICLE_STATUS = "Esito sui fatti del caso: {verdict} (requisiti provati: {proved} su {total})."   # verdict, proved, total
+LINE_REASON_NO_SUPPORT = "nessun fatto del caso a sostegno"                     # v60i (1, my draft)
+LINE_REASON_NO_TEXT = "testo non letto"                                         # v60i (1, my draft)
+LINE_REASON_SANCTION = "sanzione di una norma non trattata"                     # v60i (1, my draft)
+LINE_REASON_NOT_WRITTEN = "nessuna applicazione scritta"                        # v60i (1, my draft)
 # v60h (6, my draft): a sanction article, one line under the obligation article it sanctions (never a block of its own)
 SANCTION_LINE_RUBRICA = "- Sanzione: art. {number} {code} — {rubrica}."           # number, code, rubrica
 SANCTION_LINE = "- Sanzione: art. {number} {code}."                              # v60h (6, my draft): number, code
@@ -260,6 +271,73 @@ CLOSING_TOPIC = "{n}. {title}"                                               # n
 NEW_FACT = "Ho aggiornato i fatti:\n{changes}\n\nVuoi che riscriva la risposta su «{titles}» tenendone conto?"  # changes, titles
 NEW_FACT_NONE = "precisazione acquisita"
 UNCLEAR = "Non sono sicuro di aver capito. {next}"                         # next: the CLARIFY_* question
+# --- v60k: single shot (CASE_FIRST_SINGLE_SHOT): one message in, one parere out ------------------------------------------
+# the client assumed from the case: the parere's first line (v60k, the PO's words)
+SINGLE_SHOT_CLIENT = "Il parere è reso nell'interesse di {client}; se assisti un'altra parte, dimmelo."      # client
+# v60r (5, my draft): the same with the party's label from the frame (penale: indagato / querelato; civile: convenuto)
+SINGLE_SHOT_CLIENT_ROLE = ("Il parere è reso nell'interesse di {client} ({role}); se assisti un'altra parte, "
+                           "dimmelo.")                                                                  # client, role
+# v60s (7, my drafts): the single-shot first line when the client is known (stated, answered or named by the facts) --
+# with its label when it is the party the action is directed at, else with the counterparty's
+SINGLE_SHOT_CLIENT_KNOWN = "Il parere è reso nell'interesse di {client}."                                   # client
+SINGLE_SHOT_CLIENT_KNOWN_ROLE = "Il parere è reso nell'interesse di {client} ({role})."                     # client, role
+SINGLE_SHOT_CLIENT_COUNTERPARTY = "Il parere è reso nell'interesse di {client}; controparte: {party} ({role})."
+# v60s (4, my draft): an article §1 or §4 names that is neither «applicabile» nor «da provare» with a proven element
+TO_EVALUATE_MARK = " (da valutare: {articles})"                                                              # articles
+TO_EVALUATE_ITEM = "art. {number} {code}"                                                                    # number, code
+# v60r (5): the label of the party the action is directed at, by the frame's area -- penale (querelato when the case
+# speaks of a querela), civile
+FRAME_PARTY_LABELS = {"penale": "indagato", "penale_querela": "querelato", "civile": "convenuto"}
+# a fact the case does not state, where it counts -- §2 status lines, the writer's sections (v60k, the PO's words)
+OPEN_POINT = "da verificare: il caso non dice {fact}"                                                       # fact
+OPEN_POINTS_TITLE = "Punti da precisare"                                     # v60k, the PO's words
+# a legal characterisation the case leaves open: never a point, the parere's own job -- §2's status line (v60l, the PO's
+# words)
+QUALIFIED_STATUS = "da verificare"
+# v60p (my draft): §4's trascrizione line when only the parere's own analysis names its domanda -- the fact that settles
+# it, after «da verificare: il caso non dice» (OPEN_POINT)
+TRASCRIZIONE_FACT = "quale domanda dell'art. 2653 c.c. si propone sull'immobile (rivendicazione o accertamento di un diritto reale)"
+# v60l (my drafts): the writer's block of the legal characterisations the parere itself has to settle, single shot
+QUALIFICATIONS_WRITER_TITLE = "QUALIFICAZIONI CHE SPETTANO AL PARERE (non sono fatti da chiedere al cliente)"
+QUALIFICATIONS_WRITER_RULE = ("Valutale tu, nelle norme applicate ai fatti, argomentando dai fatti del caso; dove non "
+                              "bastano a concludere, dillo con parole tue e indica quale fatto deciderebbe, senza domande "
+                              "e senza «il caso non dice».")       # v60q (my draft): the status is the code's
+# v60q (my drafts): the writer's block of the parties' states of mind the first read left as missing, single shot -- argued
+# from the facts, never a missing fact nor a question
+STATES_OF_MIND_WRITER_TITLE = "STATI SOGGETTIVI DA ARGOMENTARE (non sono fatti mancanti né domande)"
+STATES_OF_MIND_WRITER_RULE = ("Argomentali tu dai fatti del caso (condotte, tempi, comunicazioni), nelle sezioni dove "
+                              "contano: mai «il caso non dice», mai una domanda.")
+UPDATED_MARK = " (aggiornato)"                                               # v60k, the PO's words
+OPEN_POINT_ITEM = "{n}. {question}"                                          # v60k (my draft): n, question
+# v60k (my drafts): each question's fact as «il caso non dice …» reads it, by its template
+OPEN_POINT_FACTS = {
+    "possesso_inizio": "da quando è iniziato il possesso",
+    "opera_separazione": "se alla separazione dei fondi esistevano opere visibili e permanenti",
+    "atto_separazione": "con quale atto e in quale anno i fondi furono separati",
+    "accesso_alternativo": "se il fondo ha un altro accesso alla via pubblica",
+    "data_messa_in_mora": "la data della messa in mora o della contestazione",
+    "data_fatto": "la data del fatto",
+    "data_fatto_civile": "la data del fatto",
+    "atto_notifica": "la data di notifica o di pubblicazione del provvedimento",
+    "data_giudicato": "la data del passaggio in giudicato della sentenza",
+    "data_misura": "la data di esecuzione o di notifica dell'ordinanza cautelare",
+    "arma_detenuta": "se l'arma era legittimamente detenuta",
+    "desistenza": "se l'aggressore aveva desistito",
+    "pericolo_aggressione": "se il pericolo di aggressione era ancora attuale",
+    "data_atto_elusivo": "la data del provvedimento elusivo",
+}
+# v60k (my draft): the writer's block of the facts the case does not state, single shot
+OPEN_POINTS_WRITER_TITLE = "FATTI CHE IL CASO NON DICE"
+OPEN_POINTS_WRITER_RULE = ("Non affermarli e non dedurli. Dove uno di questi fatti conta, scrivi nella frase che ne dipende "
+                           "«da verificare: il caso non dice …»; non fare mai domande nel testo.")
+# v60k (my draft): an article beyond the single-shot cap, in «Altre norme del tema non trattate», with its topic
+LINE_REASON_CAP = "tema «{topic}», oltre il limite di {cap} articoli"                                # topic, cap
+# v60k (my draft): how the single-shot flow works, when asked after a parere -- v60q (my draft): no points to answer
+SINGLE_SHOT_HELP = ("Mi scrivi il caso e ti restituisco il parere completo. Poi puoi aggiungere o correggere un fatto, "
+                    "chiedermi di approfondire un punto o un'ipotesi («e se…»): aggiorno il parere e segno le parti "
+                    "cambiate. Puoi anche chiedermi il documento.")
+# v60k (my draft): the single-shot answer's closing -- v60q (my draft): one sentence, add facts or deepen a point
+SINGLE_SHOT_CLOSING = "Puoi aggiungere fatti o chiedermi di approfondire un punto, e aggiorno il parere."
 NO_TOPIC_TO_ANSWER = "Non trovo l'argomento da trattare: dimmi quale degli argomenti ti interessa."
 # v60 (H, my draft): the one clarifying question, by round; the answer to a question on how the exchange works
 CLARIFY_TOPICS = "Vuoi che mi concentri su uno degli argomenti elencati, o che scriva subito il parere partendo dal primo?"

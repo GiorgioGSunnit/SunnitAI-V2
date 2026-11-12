@@ -649,8 +649,12 @@ def test_the_first_reads_gaps_become_questions_after_the_rules_ones(monkeypatch)
     asked = [{"id": "data_fatto", "text": "Quando è avvenuto il fatto?", "short": "data del fatto"}]
     out = flow.with_read_questions(asked, ["la data del fatto", "se l'arma era detenuta legalmente",
                                            "chi ha chiamato i soccorsi", "a", "b", "c", "d"], {})
-    assert [q["id"] for q in out][:3] == ["data_fatto", "read_2", "read_3"] and len(out) == flow.MAX_QUESTIONS
-    assert out[1]["text"] == "Il caso non dice se l'arma era detenuta legalmente: puoi precisarlo?"
+    # v60k: the generic «Quando è avvenuto il fatto?» after the read's own questions, dropped first at the cap
+    assert [q["id"] for q in out][:2] == ["read_2", "read_3"] and len(out) == flow.MAX_QUESTIONS
+    assert "data_fatto" not in [q["id"] for q in out]
+    assert out[0]["text"] == "Il caso non dice se l'arma era detenuta legalmente: puoi precisarlo?"
+    few = flow.with_read_questions(asked, ["se l'arma era detenuta legalmente"], {})
+    assert [q["id"] for q in few] == ["read_1", "data_fatto"]                    # room left: the generic one last
     assert flow.with_read_questions(asked, ["se l'arma era detenuta legalmente"], {"read_1": "sì"}) == asked
     state = base._state(monkeypatch)
     state["questions"] = out

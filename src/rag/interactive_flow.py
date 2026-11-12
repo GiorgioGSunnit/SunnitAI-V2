@@ -48,6 +48,7 @@ questions, chosen, changes, actions}.
 import copy
 import json
 import logging
+import os
 import re
 import time
 import traceback
@@ -92,12 +93,38 @@ def enabled() -> bool:
 
 # v60: the case-first method (A first read, B topics from the graded rows, G round-1 grading limits)
 CASE_FIRST_FLAG = "INTERACTIVE_CASE_FIRST"
-ROUND1_GRADE_ROUNDS = 2         # G: round 1 grades in two expansion rounds; the answer step grades the chosen topics' rest
+ROUND1_GRADE_ROUNDS = 2         # G: expansion rounds; the answer step grades the chosen topics' rest. v60o: never the
+                                # kept set's limit -- round 1 grades every candidate the prefilter keeps (grade_kept)
 RESERVE_MAX = 12                # G: ungraded rows kept for the answer step (the chosen topics' Sezione / Capo)
 
 
 def case_first_enabled() -> bool:
-    return feature_flags.enabled(CASE_FIRST_FLAG)
+    return feature_flags.enabled(CASE_FIRST_FLAG) or single_shot_enabled()
+
+
+# v60k: single shot on the case-first pipeline -- one message in, one complete parere out (single_shot); round 1 runs
+# inside it, never shown. On, it is the narrative case's path whatever INTERACTIVE_FLOW says (the rounds stay behind it).
+SINGLE_SHOT_FLAG = "CASE_FIRST_SINGLE_SHOT"
+SINGLE_SHOT_ARTICLES = 15       # the article cap of the single-shot answer (the rounds' TOPIC_ARTICLES: 8)
+OPEN_POINTS_ENV = "OPEN_POINTS_MAX"
+OPEN_POINTS_MAX = 0             # v60q: no «Punti da precisare» block -- every missing fact «da verificare» where it counts
+SINGLE_SHOT_TARGET_S = 240      # the PO's target, logged against (single_shot_timings)
+SINGLE_SHOT_TOPICS = 5          # v60n: the topics the single-shot answer covers (covered_topics); the rest, one line each
+SINGLE_SHOT_TOPICS_MIN = 3      # v60q: at least this many covered where as many exist (covered_topics)
+
+
+def single_shot_enabled() -> bool:
+    return feature_flags.enabled(SINGLE_SHOT_FLAG)
+
+
+def turns_on() -> bool:
+    """The API's gate: a narrative case goes to this module -- in rounds (INTERACTIVE_FLOW) or single shot."""
+    return enabled() or single_shot_enabled()
+
+
+def single_mode(state: Optional[Dict[str, Any]]) -> bool:
+    """The state is a single-shot one (single_shot made it): its answer, its follow-ups."""
+    return (state or {}).get("mode") == "single_shot"
 
 
 # --- logging and isolation -------------------------------------------------------------------------------------------
@@ -343,6 +370,98 @@ def area_codes(analysis: Dict[str, Any]) -> List[str]:
     return list(dict.fromkeys(out)) or ["c.c.", "c.p.", "c.p.c.", "c.p.p."]
 
 
+# v60i (3): the c.p.a. only in an administrative frame -- with c.p.a. units in the graph (article_links) its Titoli and
+# Capi reach the index channel and the topic grouping; a case whose frame (or analysis) has no administrative area gets
+# no c.p.a. article, unless the user's text names it. Unknown areas: not administrative.
+# v60q: the code-area gate, general (area_gate) -- an article of a code outside the frame's area (CODE_FAMILY: c.c.
+# outside civile, c.p. and c.p.p. outside penale, c.p.a. outside amministrativo) is a candidate only when a first-read
+# institution found it (its row's _first_read), a fired rule or table names it (its topic's anchor or own articles:
+# topic_step's "matched") or the user's text names it; otherwise it is one of the «altri profili», never graded nor a
+# topic. Each admission logged with its reason. The frame's areas unknown: no gate (logged).
+CPA_CODE = "c.p.a."
+CODE_FAMILY = {"c.c.": "civile", "c.p.": "penale", "c.p.p.": "penale", "c.p.a.": "amministrativo"}
+AREA_OUT_WHY = "fuori dall'area del caso"
+
+
+def administrative_frame(analysis: Dict[str, Any]) -> bool:
+    return "amministrativo" in frame_families(analysis)
+
+
+def frame_families(analysis: Dict[str, Any]) -> List[str]:
+    """The families (civile, penale, amministrativo) of the frame's areas and the analysis' area."""
+    from . import fact_signals
+    areas = list(_areas(analysis or {})) + [str((analysis or {}).get("area") or "")]
+    return sorted({fact_signals.family(a) for a in areas} - {""})
+
+
+_QUERELA_RE = re.compile(r"\bquerel\w*", re.IGNORECASE)
+
+
+def frame_party_label(analysis: Dict[str, Any], case: str = "", role: str = "") -> str:
+    """v60r (5): the label of the party the action is directed at, from the frame's first area -- penale: «querelato»
+    when the case or its facts speak of a querela, else «indagato»; civile: «convenuto»; any other: "". The party's
+    extracted role holding the same word gives its ending («convenuta»): never guessed from the name."""
+    from . import fact_signals
+    areas = list(_areas(analysis or {})) + [str((analysis or {}).get("area") or "")]
+    family = next((fact_signals.family(a) for a in areas if fact_signals.family(a)), "")
+    if family == "penale":
+        said = f"{case or ''}\n{fact_signals._texts(_facts(analysis or {}))}"
+        label = C.FRAME_PARTY_LABELS.get("penale_querela" if _QUERELA_RE.search(said) else "penale", "")
+    else:
+        label = C.FRAME_PARTY_LABELS.get(family, "")
+    m = re.search(rf"\b{re.escape(label[:-1])}[oaie]\b", str(role or ""), re.IGNORECASE) if label else None
+    return m.group(0).lower() if m else label
+
+
+def rule_named(rule_topics: Sequence[Dict[str, Any]]) -> Dict[Tuple[str, str], str]:
+    """{article key: the rule or table that names it} -- each fired rule's or table's topic's own articles (anchor and
+    matched)."""
+    out: Dict[Tuple[str, str], str] = {}
+    for t in rule_topics or []:
+        for label in [t.get("anchor") or ""] + list(t.get("matched") or []):
+            if label:
+                out.setdefault(_key(_parse_label(label)), str(t.get("source") or t.get("title") or "regola"))
+    return out
+
+
+def area_gate(rows: Sequence[Dict[str, Any]], analysis: Dict[str, Any], case: str,
+              named_by_rules: Optional[Dict[Tuple[str, str], str]] = None, log: Optional[Dict[str, Any]] = None
+              ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """(the rows admitted, the rows outside the frame's area for the «altri profili»). log: {"families", "admitted":
+    [{article, why}] (an outside article and its reason), "altri_profili": [labels], "off"} filled in."""
+    from . import defensive_generation as dg
+    log = log if log is not None else {}
+    families = frame_families(analysis)
+    log["families"] = families
+    if not families:
+        log["off"] = "areas unknown"
+        return list(rows or []), []
+    named = {_key(r) for r in dg._refs_in(case or "") if len(r) == 2}
+    rules = named_by_rules or {}
+    kept, outside = [], []
+    for row in rows or []:
+        ref = row.get("_article")
+        key = _key(ref) if ref and len(ref) == 2 else None
+        family = CODE_FAMILY.get(key[1]) if key else None
+        if not family or family in families:
+            kept.append(row)
+            continue
+        label = _label(key)
+        why = ("nominato dall'utente" if key in named else
+               f"istituto della prima lettura «{row['_first_read']}»" if row.get("_first_read") else
+               f"regola «{rules[key]}»" if key in rules else
+               f"regola «{row['_rule_anchor']}»" if row.get("_rule_anchor") else "")
+        if why:
+            kept.append(row)
+            if label not in {x["article"] for x in log.get("admitted") or []}:
+                log.setdefault("admitted", []).append({"article": label, "why": why})
+        else:
+            outside.append(row)
+            if label not in (log.get("altri_profili") or []):
+                log.setdefault("altri_profili", []).append(label)
+    return kept, outside
+
+
 ALTERNATIVES_MAX = 3        # v60g (7): the first read's alternative qualifications searched, beyond FIRST_READ_MAX
 
 
@@ -399,8 +518,10 @@ def first_read_search(driver, database: str, documents: List[Dict[str, Any]], in
     "tried": {institution: [[query, how, code, n]]}}. v60h (4): the rubrica match missing in a code, (2) the rubricated
     name and the hypothesis' nouns against the code's article texts (fact_resolver.text_channel), (3) both missing, the
     code's institutions index (fact_resolver.index_channel); each row tagged _first_read_channel («rubrica», «testo»,
-    «indice»); log "channels": {institution: {label: channel}}."""
-    from . import defensive_generation as dg, fact_resolver
+    «indice»); log "channels": {institution: {label: channel}}. v60n: a substantive institution's hits in a
+    procedural code (c.p.p., c.p.c.) are dropped -- its area's substantive code answers it (procedural_institutions);
+    log "procedural" (the names) and "area_code" ({institution: {procedural, why, dropped}})."""
+    from . import defensive_generation as dg, fact_resolver, topic_groups
     resolve = resolve or fact_resolver.resolve
     text_search = text_search or fact_resolver.text_channel
     index_search = index_search or fact_resolver.index_channel
@@ -454,12 +575,18 @@ def first_read_search(driver, database: str, documents: List[Dict[str, Any]], in
     tried: Dict[str, List[list]] = {item["name"]: [] for item in searches}
     channels: Dict[str, Dict[str, str]] = {item["name"]: {} for item in searches}
     seen = set()
+    procedural, area_log = procedural_institutions(searches, pairs, results)          # v60n: area-code priority
     for (item, code), got in zip(pairs, results):
         inst = item["name"]
         if isinstance(got, Exception) or not got:
             continue
         found, attempts_made = got
         tried[inst] += attempts_made
+        if code in topic_groups.PROCEDURAL_CODES and inst not in procedural:
+            if found:
+                area_log.setdefault(inst, {"procedural": False})["dropped"] = [
+                    _label(r["_article"]) for r in found if r.get("_article")]
+            continue
         for row in found or []:
             if not row.get("_article"):
                 continue
@@ -479,10 +606,60 @@ def first_read_search(driver, database: str, documents: List[Dict[str, Any]], in
             tried.setdefault(item["rubricated"], tried[item["name"]])
     return rows, {"institutions": [s["name"] for s in searches], "alternatives": alternatives,
                   "rubricated": {s["name"]: s.get("rubricated") for s in searches if s.get("rubricated")},
-                  "codes": list(codes), "hits": hits, "tried": tried, "channels": channels}
+                  "codes": list(codes), "hits": hits, "tried": tried, "channels": channels,
+                  "procedural": sorted(procedural | {s.get("rubricated") for s in searches
+                                                     if s["name"] in procedural and s.get("rubricated")}),
+                  "area_code": area_log}
+
+
+def procedural_institutions(searches: Sequence[Dict[str, Any]], pairs: Sequence[tuple], results: Sequence[Any]
+                            ) -> Tuple[set, Dict[str, Dict[str, Any]]]:
+    """v60n: (the names of the procedural institutions, the log): an institution is procedural when its name or its
+    rubricated name says so (topic_groups.procedural), or when its rubrica hits (channel «rubrica») are all in a
+    procedural code -- the store rubricates it there only."""
+    from . import topic_groups
+    rubrica_codes: Dict[str, set] = {}
+    for (item, code), got in zip(pairs, results):
+        if isinstance(got, Exception) or not got:
+            continue
+        if any(r.get("_first_read_channel", "rubrica") == "rubrica" for r in got[0] or []):
+            rubrica_codes.setdefault(item["name"], set()).add(code)
+    out, log = set(), {}
+    for item in searches:
+        inst = item["name"]
+        if topic_groups.procedural(inst) or topic_groups.procedural(item.get("rubricated")):
+            out.add(inst)
+            log[inst] = {"procedural": True, "why": "nome"}
+        elif rubrica_codes.get(inst) and rubrica_codes[inst] <= set(topic_groups.PROCEDURAL_CODES):
+            out.add(inst)
+            log[inst] = {"procedural": True, "why": f"rubrica solo in {', '.join(sorted(rubrica_codes[inst]))}"}
+    return out, log
 
 
 CUTTING_SHARE = 0.8         # v60d: of the prefilter's N kept, more than this share graded 2+: the prefilter is cutting
+
+
+def grading_keep(rows: Sequence[Dict[str, Any]], case: str, anchors: Sequence[str], first_read: Sequence[str]
+                 ) -> List[str]:
+    """v60o: the labels round 1 grades first, past the prefilter -- the candidates the user's text names, then the
+    rules' and tables' anchors, then the first read's hits (anchors, first_read: the grader's labels), each once."""
+    from . import defensive_generation as dg
+    named = {_key(r) for r in dg._refs_in(case or "") if len(r) == 2}
+    labels = [f"{r['_article'][0]} {r['_article'][1]}" for r in rows or [] if r.get("_article") and _key(r["_article"]) in named]
+    return list(dict.fromkeys(labels + list(anchors or []) + list(first_read or [])))
+
+
+def grading_invariant(limits: Dict[str, Any]) -> Dict[str, Any]:
+    """v60o: the invariant graded == kept of one run, as the check wrote it back (dg._grade_kept): {kept, graded, ok,
+    missing: the kept labels with no grade, first: the labels graded first}. No candidate: nothing to grade, ok; the
+    check failing before it graded: not ok, said why."""
+    inv = limits.get("invariant")
+    if inv:
+        return {k: inv.get(k) for k in ("kept", "graded", "ok", "missing", "first", "no_text")}
+    if not limits.get("candidates_n"):
+        return {"kept": 0, "graded": 0, "ok": True, "missing": [], "first": []}
+    return {"kept": None, "graded": limits.get("graded_n"), "ok": False, "missing": [],
+            "first": [], "why": "the kept set was not graded (the check failed before grading)"}
 
 
 def grading_breadth(rows: Sequence[Dict[str, Any]], limits: Dict[str, Any]) -> Dict[str, Any]:
@@ -497,7 +674,8 @@ def grading_breadth(rows: Sequence[Dict[str, Any]], limits: Dict[str, Any]) -> D
     n = int(limits.get("prefilter") or 0)
     kept_2 = sum(1 for label in kept if grades.get(label, 0) >= 2)
     return {"candidates": limits.get("candidates_n"), "prefilter_n": n, "prefilter_kept": len(kept),
-            "outside_cap": len(limits.get("prefilter_keep") or []), "graded": limits.get("graded_n"),
+            "outside_cap": len(limits.get("prefilter_keep") or []), "kept": limits.get("kept_n"),     # v60o
+            "graded": limits.get("graded_n"),
             "graded_2plus": sum(1 for g in grades.values() if g >= 2), "kept_graded_2plus": kept_2,
             "cutting": bool(n) and kept_2 > CUTTING_SHARE * n}
 
@@ -578,10 +756,49 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                     _isolated("first_read_texts", lambda: article_text.fill_texts(session, added, store_))
                 article_rows = list(article_rows) + added
                 search_log = {**search_log, "new": len(added), "s": round(time.time() - t_search, 1)}
+        links = topic_step.GraphLinks(session, documents)
+        anchor_keep: List[str] = []
+        if case_first:          # v60n: the fired rules' and tables' anchors -- candidates, graded like any other
+            stage_meter.mark("rule_anchors")
+            pre = _isolated("rule_anchor_topics", lambda: topic_step.build(analysis, article_rows + regime_rows, links,
+                                                                           case, others=[]), []) or []
+            added, anchor_log = _isolated("rule_anchors", lambda: rule_anchor_rows(
+                session, documents, pre, article_rows, regime_rows, store_), ([], {})) or ([], {})
+            article_rows = list(article_rows) + list(added)
+            anchor_keep = list(anchor_log.get("keep") or [])
+            out["rule_anchors"] = anchor_log
+            _log("rule_anchors", anchor_log)
+        scope: Dict[str, Any] = {}
+        gate_log: Dict[str, Any] = {}
+        outside: List[Dict[str, Any]] = []
+        if case_first:          # v60q: a code outside the frame's area only when the first read, a rule or the user names
+            area_log: Dict[str, Any] = {}                                # the article (v60i: the c.p.a. alone, dropped)
+            by_rules = rule_named(pre)
+            gated = _isolated("area_gate", lambda: (area_gate(article_rows, analysis, case, by_rules, area_log),
+                                                    area_gate(regime_rows, analysis, case, by_rules, area_log)), None)
+            if gated is not None:
+                (article_rows, out_a), (regime_rows, out_r) = gated
+                outside = out_a + out_r
+                gone = {_key(r["_article"]) for r in outside}
+                anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
+                must = [a for a in must if _key(_parse_label(a)) not in gone]
+            out["area_gate"] = area_log
+            _log("area_gate", area_log)
+        if case_first:          # v60q: Titolo III c.c., a Capo only for the case's own contract type
+            from . import topic_groups
+            scope = _isolated("capo_scope", lambda: topic_groups.contract_scope(analysis, case), {}) or {}
+            article_rows = _isolated("capo_gate", lambda: topic_groups.gate_rows(article_rows, scope, gate_log),
+                                     article_rows)
+            gone = {x["article"] for x in gate_log.get("rows") or []}
+            anchor_keep = [a for a in anchor_keep if a not in gone]
+            must = [a for a in must if a not in gone]
         stage_meter.mark("grading")
-        if case_first:          # v60 (G): round 1's graded check -- two rounds, the embedding prefilter's top N
-            limits = {"graded": True, "grade_all": True, "rounds": ROUND1_GRADE_ROUNDS, "prefilter": dg.grade_prefilter_n(),
-                      "prefilter_keep": list(dict.fromkeys(must))}
+        if case_first:          # v60 (G): round 1's graded check -- the embedding prefilter's top N
+            # v60o: every kept candidate graded (grade_kept) -- the user-named articles, the rules' and tables' anchors
+            # and the first read's hits first, past the prefilter and in a call of their own; the invariant graded == kept
+            limits = {"graded": True, "grade_kept": True, "grade_all": True, "rounds": ROUND1_GRADE_ROUNDS,
+                      "prefilter": dg.grade_prefilter_n(),
+                      "prefilter_keep": grading_keep(article_rows, case, anchor_keep, must)}
             t_grade = time.time()
             with dg.grading_limits(limits):
                 graded = _isolated("grading", lambda: dg._filter_applicable_articles(text, request, article_rows, analysis),
@@ -597,7 +814,11 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                               "graded": limits.get("graded_n"), "prefilter_ms": limits.get("prefilter_ms"),
                               "prefilter_dropped": limits.get("prefilter_dropped") or []}
             out["grading"]["breadth"] = grading_breadth(article_rows, limits)
+            out["grading"]["invariant"] = grading_invariant(limits)                     # v60o: graded == kept
+            out["grading"]["calls"] = limits.get("calls") or {}         # v60p: calls, wall time, the longest call
             _log("grading_breadth", out["grading"]["breadth"])
+            _log("grading_invariant", out["grading"]["invariant"])
+            _log("grading_calls", {**out["grading"]["calls"], "grading_s": out["grading"]["s"]})
             if search_log:
                 grades = {f"{r['_article'][0]} {r['_article'][1]}": r.get("_grade") for r in article_rows
                           if r.get("_article") and r.get("_first_read")}
@@ -606,14 +827,13 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 search_log["graded_2plus"] = sum(1 for g in grades.values() if isinstance(g, int) and g >= 2)
                 out["first_read_search"] = search_log
                 _log("first_read_search", search_log)
-        if case_first and graded is not None:   # v60g (1): an article whose distinctive element no fact supports: grade 1
-            from . import issue_records
+        if case_first and graded is not None:   # v60g (1), v60m: an article whose distinctive element the case
+            from . import issue_records        # contradicts or the facts exclude: grade 1 (never one the case is silent on)
             stage_meter.mark("distinctive_link")
             named = [issue_records._label(r) for r in dg._refs_in(case)]
-            out["distinctive"] = _isolated("distinctive_link", lambda: issue_records.demote_unsupported(
+            out["distinctive"] = _isolated("distinctive_link", lambda: issue_records.demote_contradicted(
                 article_rows, case, analysis, keep=named), {}) or {}
-            out["grading"]["distinctive"] = {k: v for k, v in out["distinctive"].items() if k != "demoted"} | {
-                "demoted": [d["article"] for d in out["distinctive"].get("demoted") or []]}
+            out["grading"]["distinctive"] = dict(out["distinctive"])     # v60m: each demotion with why, for the sim
             _log("distinctive_link", out["distinctive"], out["distinctive"].get("ms"))
         out.update(article_rows=article_rows, regime_rows=regime_rows)
         if case_first:          # v60e: a rubrica not its text's, confirmed by a neighbour, is never a topic's
@@ -621,7 +841,6 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             _isolated("misaligned", lambda: article_text.confirm_misaligned(
                 session, [r for r in article_rows if isinstance(r.get("_grade"), int) and r["_grade"] >= 1]))
         stage_meter.mark("topic_step")
-        links = topic_step.GraphLinks(session, documents)
         others: List[Dict[str, Any]] = []
         topics = _isolated("topic_step", lambda: topic_step.build(analysis, article_rows + regime_rows, links, case,
                                                                    others=others), [])
@@ -630,9 +849,14 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             from . import topic_groups
             stage_meter.mark("topic_groups")
             t_topics = time.time()
-            unit_of = _isolated("units", lambda: topic_groups.units(session, article_rows + ungraded), {}) or {}
+            unit_of = _isolated("units", lambda: topic_groups.units(session, article_rows + ungraded + outside),
+                                {}) or {}
             built = _isolated("topic_groups", lambda: topic_groups.build(article_rows, unit_of, (), topics), None)
             out["unit_of"] = unit_of
+            out["units"] = {topic_groups._label(topic_groups._ref(r)): sorted(set(unit_of[topic_groups.unit_key(r)]
+                                                                                  .values()))
+                            for r in article_rows + ungraded + outside
+                            if topic_groups._ref(r) and unit_of.get(topic_groups.unit_key(r))}   # v60r (2)
             if built is not None:
                 out["topics"], out["others"] = built["topics"], built["others"]
                 out["lost_rules"] = built["lost_rules"]
@@ -643,6 +867,15 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                            or (unit_of.get(topic_groups.unit_key(r)) or {}).get("CAPO") in units]
                 out["reserve"] = [{**r, "_unit": next(u for u in (unit_of.get(topic_groups.unit_key(r)) or {}).values()
                                                        if u in units)} for r in reserve[:RESERVE_MAX]]
+            if outside:         # v60q: the code-area gate's articles, «altri profili» (never graded, never a topic)
+                out["others"] = list(out["others"]) + (_isolated("area_profiles", lambda: topic_groups.outside_profiles(
+                    outside, unit_of, AREA_OUT_WHY), []) or [])
+            out["topics"] = _isolated("capo_gate_topics", lambda: topic_groups.gate_topics(    # v60q: the anchors the
+                out["topics"], scope, gate_log), out["topics"])                                 # rules attached after
+            out["others"] = _isolated("capo_gate_others", lambda: topic_groups.gate_topics(    # the rows' gate
+                out["others"], scope, gate_log, "others"), out["others"])
+            out["capo_gate"] = {k: v for k, v in scope.items()} | gate_log
+            _log("capo_gate", out["capo_gate"])
             out["grading"]["topics_s"] = round(time.time() - t_topics, 1)
             topics = out["topics"]
             stage_meter.mark("anchor_vectors")      # v60: the graded rows' rubrica vectors, the units' titles
@@ -678,21 +911,72 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
     return out
 
 
+def rule_anchor_rows(session, documents: List[Dict[str, Any]], rule_topics: Sequence[Dict[str, Any]],
+                     article_rows: Sequence[Dict[str, Any]], regime_rows: Sequence[Dict[str, Any]], store=None
+                     ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """v60n: the fired rules' and tables' anchor articles (topic_step's topics: each its anchor) as candidates, graded
+    like any other (the caller keeps them past the prefilter) -- they make a topic only when graded 2 or more
+    (topic_groups.build). One already a candidate is tagged _rule_anchor (its topic's source); one among the tools' rows
+    is copied (their tags left); the others read. (the rows added, the log {"anchors", "already", "from_tools", "read",
+    "unread", "keep": the grader's labels of every anchor now a candidate})."""
+    from . import article_text, defensive_generation as dg, topic_step
+    have = {_key(r["_article"]): r for r in article_rows or [] if r.get("_article")}
+    tools = {_key(r["_article"]): r for r in regime_rows or [] if r.get("_article")}
+    anchors: Dict[Tuple[str, str], str] = {}
+    for rt in rule_topics or []:
+        if rt.get("anchor"):
+            anchors.setdefault(_key(_parse_label(rt["anchor"])), str(rt.get("source") or rt.get("title") or ""))
+    log: Dict[str, Any] = {"anchors": [_label(k) for k in anchors], "already": [], "from_tools": [], "read": [],
+                           "unread": []}
+    added, missing = [], []
+    for key, source in anchors.items():
+        if key in have:
+            have[key].setdefault("_rule_anchor", source)
+            log["already"].append(_label(key))
+        elif key in tools:
+            row = {k: v for k, v in tools[key].items() if not k.startswith("_") or k == "_article"}
+            added.append({**row, "_rule_anchor": source})
+            log["from_tools"].append(_label(key))
+        else:
+            missing.append((key, source))
+    if missing:
+        by_code = {topic_step._code(d.get("name")): d.get("name") for d in documents if d.get("name")}
+        fetch = [(n, c if c in dg._CODE_PREFIXES else by_code.get(c, c)) for (n, c), _ in missing]
+        got: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for row in dg._fetch_any(session, documents, fetch, store) or []:
+            if row.get("_article"):
+                got.setdefault(_key(row["_article"]), row)
+        for key, source in missing:
+            if key in got:
+                added.append({**got[key], "_rule_anchor": source})
+                log["read"].append(_label(key))
+            else:
+                log["unread"].append(_label(key))
+    if added:
+        article_text.fill_texts(session, added, store)
+    log["keep"] = [f"{r['_article'][0]} {r['_article'][1]}" for r in added] + \
+        [f"{have[_key(_parse_label(label))]['_article'][0]} {have[_key(_parse_label(label))]['_article'][1]}"
+         for label in log["already"]]
+    return added, log
+
+
 def attach_side(topics: List[Dict[str, Any]], hypotheses: Sequence[Dict[str, Any]], vectors: Optional[Dict[str, Any]],
-                rubriche: Optional[Dict[str, str]], search: Optional[Dict[str, Any]] = None
+                rubriche: Optional[Dict[str, str]], search: Optional[Dict[str, Any]] = None, codes: Sequence[str] = ()
                 ) -> Tuple[List[Dict[str, Any]], str]:
     """(unanchored, method): the topics' hypotheses replaced by these (v60c: the rubriche by stems, then the titles by
     similarity; the embedding failing, by words). v60e: an unanchored one logs what was searched for it -- its
-    institutions, their rubricated names and the first-read search's hits for them."""
+    institutions, their rubricated names and the first-read search's hits for them. v60n: a procedural code's topic
+    anchors only a procedural institution, the area's substantive code first (codes; search["procedural"])."""
     from . import topic_groups
     for t in topics:
         t["hypotheses"] = []
     hypotheses = list(hypotheses or [])
     unanchored: List[Dict[str, Any]] = []
     method = "none"
+    procedural = list((search or {}).get("procedural") or [])
     if vectors is not None and hypotheses:
         matched = _isolated("anchor_hypotheses", lambda: topic_groups.anchor_by_similarity(
-            topics, vectors, hypotheses, rubriche=rubriche or {}), None)
+            topics, vectors, hypotheses, rubriche=rubriche or {}, codes=codes, procedural_names=procedural), None)
         if matched is not None:
             unanchored, entries = matched
             method = "rubrica/titolo"
@@ -706,7 +990,7 @@ def attach_side(topics: List[Dict[str, Any]], hypotheses: Sequence[Dict[str, Any
                 entry["party"] = h.get("party")
                 _log("hypothesis_anchor", entry)
     if method == "none" and rubriche is not None:      # the embedding failed: by words, as before
-        unanchored = topic_groups.attach_hypotheses(topics, hypotheses, rubriche)
+        unanchored = topic_groups.attach_hypotheses(topics, hypotheses, rubriche, procedural)
         method = "words"
     elif method == "none":
         unanchored = list(hypotheses)
@@ -757,7 +1041,8 @@ def reside(state: Dict[str, Any], client: str = "", renumber: Sequence[List[int]
         read["unknown"] = list(read.get("unknown") or []) or list(reread.get("unknown") or [])
         state["read"] = _jsonable(read)
     before = list(topics)
-    unanchored, method = attach_side(topics, mine, topic_groups.topic_vectors(None, topics), _pool_rubriche_labels(state))
+    unanchored, method = attach_side(topics, mine, topic_groups.topic_vectors(None, topics), _pool_rubriche_labels(state),
+                                     {"procedural": state.get("procedural") or []}, area_codes(analysis))
     if reorder:                 # the answer step (topics already chosen) only re-attaches
         topic_groups.order(topics)
     where = {id(t): i for i, t in enumerate(topics, 1)}
@@ -930,7 +1215,8 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         _isolated("terms_untriggered", lambda: trigger_terms(analysis, text, request))         # v60h (3)
         found = _analysed_and_retrieved(text, request, lang, analysis, t0, meter, pending)
     t1, t2 = found.pop("_t1"), found.pop("_t2")
-    _log("retrieval", meter.as_log())
+    round1_stages = meter.as_log()
+    _log("retrieval", round1_stages)
     read = pending.result() if pending is not None else {}
     unanchored: List[Dict[str, Any]] = []
     read_side = ""
@@ -942,7 +1228,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         mine = case_read.side(hypotheses, known) if known else []
         read_side = known if mine else ""
         unanchored, method = attach_side(found["topics"], mine or hypotheses, found.get("vectors"),
-                                         found.get("rubriche"), found.get("first_read_search"))
+                                         found.get("rubriche"), found.get("first_read_search"), area_codes(analysis))
         if found.get("rubriche") is not None:       # v60c: every identified offence in a topic
             found["offences"] = _isolated("offences", lambda: topic_groups.ensure_offences(
                 found["topics"], found.setdefault("others", []), found["article_rows"], found.get("unit_of") or {},
@@ -972,17 +1258,22 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         "analysis": _jsonable({**{k: v for k, v in analysis.items() if k != "topics"},
                                CASE_KEY: dg._case_text(text, request)}),
         "topics": _jsonable(found["topics"]), "others": _jsonable(found.get("others") or []),
+        "units": _jsonable(found.get("units") or {}),            # v60r (2): each article's Sezione / Capo
         "rows": [_compact_row(r) for r in found["topic_rows"]],
         "tool_rows": [_compact_row(r) for r in found["regime_rows"]],
         "pool": [{"_article": list(r["_article"]), "_multi_signal": bool(r.get("_multi_signal")),
                   "rubrica": str((r.get("s") or {}).get("titolo_articolo") or "")}
                  for r in found["article_rows"] if r.get("_article")],
         "rendered": rendered, "answered": {}, "chosen": [], "angle": "", "changes": [], "answers": {},
-        "timings": {"analysis_s": round(t1 - t0, 1), "retrieval_s": round(t2 - t1, 1)}}
+        "timings": {"analysis_s": round(t1 - t0, 1), "retrieval_s": round(t2 - t1, 1),
+                    "round1_stages": {k: v for k, v in round1_stages.items() if k.endswith("_s")}}}
     if pending is not None:     # v60: the first read, the hypotheses no topic anchors, the rows for the answer step
         state.update(read=_jsonable(read), unanchored=_jsonable(unanchored), read_side=read_side,
+                     procedural=list((found.get("first_read_search") or {}).get("procedural") or []),   # v60n
                      reserve=[_compact_row(r) for r in found.get("reserve") or []],
-                     grading=_jsonable(found.get("grading") or {}), lost_rules=list(found.get("lost_rules") or []))
+                     grading=_jsonable(found.get("grading") or {}), lost_rules=list(found.get("lost_rules") or []),
+                     capo_gate=_jsonable(found.get("capo_gate") or {}),                 # v60q
+                     area_gate=_jsonable(found.get("area_gate") or {}))
         state["timings"].update(first_read_s=round(pending.ms / 1000, 1) if pending.ms is not None else None,
                                 first_read_wait_s=round((pending.wait_ms or 0) / 1000, 1),
                                 grading_s=(found.get("grading") or {}).get("s"),
@@ -992,7 +1283,11 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
     if pending is not None:     # v60c (5): what the case does not say, asked (after the rules' and tables' questions)
         state["read_unknown"] = list(read.get("unknown") or [])     # v60d: after the rules' questions, never before
         dropped: List[Dict[str, Any]] = []
-        state["questions"] = with_read_questions(state["questions"], state["read_unknown"], {}, dropped)
+        state["questions"] = with_read_questions(state["questions"], state["read_unknown"], {}, dropped,
+                                                 case=case_text(state), names=party_names_of(state),
+                                                 client=client_of(state))
+        state["qualifications"] = [d["point"] for d in dropped if d.get("dropped") == "qualificazione"]    # v60l
+        state["states_of_mind"] = [d["point"] for d in dropped if d.get("dropped") == "stato soggettivo"]  # v60q
         _log("first_read_questions", {"raw": state["read_unknown"], "raw_reply": read.get("unknown_raw"),
                                       "asked": [q["id"] for q in state["questions"] if q["id"].startswith("read_")],
                                       "dropped": dropped})
@@ -1268,8 +1563,10 @@ def _family_questions(family: str, facts: Dict[str, Any], signals: Dict[str, Any
             parties = facts.get("parties") or []
             other = next((p.get("name") for p in parties if re.search(r"controparte", _low(p.get("role")))), "") or \
                 next((p.get("name") for p in parties if p.get("name") and not _client_side(p["name"], facts)), "")
+            from . import party_names           # v60i (7): «all'inquilino», never «a Inquilino»
             add("data_messa_in_mora", "data_messa_in_mora", ["events", i, ["date"]], {"counterparty": other},
-                new_item={"what": f"messa in mora o contestazione a {other}", "kind": "diffida"})
+                new_item={"what": party_names.contract(f"messa in mora o contestazione a {party_names.label(other)}"),
+                          "kind": "diffida"})
     return out
 
 
@@ -1321,9 +1618,10 @@ def _client_land(facts: Dict[str, Any]) -> str:
         asset = owner["asset"]
         return asset if re.search(r"\bdi\s+[A-ZÀ-Ü]", asset) else f"{asset} di {owner['owner']}"
     name = (_client_names(facts) or [""])[0]
+    from . import party_names               # v60i (7): «il fondo del proprietario», never «di il proprietario»
     if named and name:
-        return f"il terreno di {name}"
-    return f"il fondo di {name}" if name else "il fondo del cliente"
+        return party_names.contract(f"il terreno di {party_names.label(name)}")
+    return party_names.contract(f"il fondo di {party_names.label(name)}") if name else "il fondo del cliente"
 
 
 def _with_answer(facts: Dict[str, Any], question: Dict[str, Any], value: str) -> Dict[str, Any]:
@@ -1438,11 +1736,107 @@ def questions(analysis: Dict[str, Any], answered: Sequence[str] = (), topics: Op
                             if fact_state(n, facts, signals, case) != PROVATO and _fact_holds(n, trial, trial_signals)]
                 if len(changes) > len(best):
                     best = changes
-            ranked.append((-len(best), order, {**q, "unlocks": best,
-                                              "topics": list(dict.fromkeys(t.get("anchor") or "" for t in asking))}))
-    ranked.sort(key=lambda x: x[:2])
+            ranked.append((generic_question(q), -len(best), order,
+                           {**q, "unlocks": best, "topics": list(dict.fromkeys(t.get("anchor") or "" for t in asking))}))
+    ranked.sort(key=lambda x: x[:3])            # v60k: a generic template after every specific one
     first = client_question(facts, answered, case)
-    return (first + [q for _, _, q in ranked])[:MAX_QUESTIONS]
+    return (first + [q for *_, q in ranked])[:MAX_QUESTIONS]
+
+
+# v60k: the two question defects, both modes -- a question the case already answers is never asked (asked_in_case: the
+# nouns of its core in one case sentence, with a date or a number there when it asks a date); a rule question whose
+# template names nothing of the case (generic_question: «Quando è avvenuto il fatto?») ranks below the first read's
+# specific ones and goes first at the cap
+_ASKS_DATE_RE = re.compile(r"\b(?:quando|da quando|in (?:quale|che) (?:data|anno|giorno|mese)|(?:quale|che) (?:data|anno)|"
+                           r"da quale anno)\b", re.IGNORECASE)
+_VALUE_RE = re.compile(r"\b\d{1,2}[/.-]\d{1,2}(?:[/.-]\d{2,4})?\b|\b(?:1[89]|20)\d{2}\b|\b\d{1,2}\s+(?:gennaio|febbraio|"
+                       r"marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b|\b(?:ieri|oggi|"
+                       r"stamattina|stamane)\b", re.IGNORECASE)
+_QUESTION_STOP = {"quand", "quale", "quali", "quant", "data", "anno", "giorn", "fatto", "fatti", "serve", "decor",
+                  "termi", "dipen", "valut", "indic", "altro", "altri", "anche", "quest", "ancor", "esatt", "punto",
+                  "preci", "risul"}
+
+
+def generic_question(q: Dict[str, Any]) -> bool:
+    """A rule question whose template has no slot for a fact of the case (a name, a work, a party): «Quando è avvenuto
+    il fatto?». The first read's questions and the client's are never generic."""
+    if q.get("kind") == "free" or str(q.get("id") or "").startswith("read_") or q.get("id") == "parte_assistita":
+        return False
+    template = C.QUESTIONS.get(str(q.get("template") or q.get("family") or q.get("id") or ""))
+    return bool(template) and "{" not in template
+
+
+def question_nouns(q: Dict[str, Any], names: Sequence[str] = ()) -> set:
+    """The nouns of the question's core (its first clause: what it asks), five-letter stems, no party's name."""
+    from . import issue_records
+    text = str(q.get("point") or q.get("text") or "")
+    core = re.split(r"[?;(]|,\s|\s—\s|\banche se\b", text, maxsplit=1)[0]
+    party = {w[:5] for n in names for w in re.findall(r"[a-zà-ü]{4,}", _low(n))}
+    return {n for n in issue_records.element_nouns(core) if n not in _QUESTION_STOP and n not in party}
+
+
+def asked_in_case(q: Dict[str, Any], sentences: Sequence[str], names: Sequence[str] = ()) -> str:
+    """The case sentence already answering the question, "" when none: a question asking a date -- one sentence holding
+    the nouns of its core (two, or its one) and a date or a number; any other -- one sentence holding every noun of its
+    core (two at least). The client's question never."""
+    from . import fact_signals
+    if q.get("id") == "parte_assistita":
+        return ""
+    nouns = question_nouns(q, names)
+    if not nouns:
+        return ""
+    date = q.get("kind") == "date" or bool(_ASKS_DATE_RE.search(str(q.get("point") or q.get("text") or "")))
+    for sentence in sentences or []:
+        have = {w[:5] for w in re.findall(r"[a-zà-ü]{4,}", _low(sentence))}
+        if date:
+            if len(nouns & have) >= min(2, len(nouns)) and (_VALUE_RE.search(sentence) or fact_signals.relative_date(sentence)):
+                return sentence
+        elif len(nouns) >= 2 and nouns <= have:
+            return sentence
+    return ""
+
+
+# v60l: a point that asks for a legal characterisation, never a fact a client can state (an event, a date, a document, a
+# quantity, a party's act or status): the parere's own job -- never a question nor an open point; in §2 «da verificare»
+# (C.QUALIFIED_STATUS) without a question. A closed list: the PO's three («la natura giuridica di…», «se si tratta di…»,
+# «la qualificazione di…») and their own variants
+_QUALIFICATION_RE = re.compile(r"\bnatura\s+giuridica\b|\bqualificazion[ei]\b|\bqualificar[ei]\b|\bqualificabil[ei]\b|"
+                               r"\binquadrament[oi]\s+giuridic[oi]\b|\bse\s+si\s+tratt(?:a|i|asse)\s+di\b|"
+                               r"^(?:si\s+)?tratt(?:a|i|asse)\s+di\b", re.IGNORECASE)
+
+
+def qualification(point: Any) -> bool:
+    """A point (a question, or its words) asking for a legal characterisation (_QUALIFICATION_RE)."""
+    text = point if isinstance(point, str) else str((point or {}).get("point") or (point or {}).get("text") or "")
+    return bool(_QUALIFICATION_RE.search(" ".join(text.split())))
+
+
+# v60q: a party's state of mind -- what the parere argues from the facts it has, never a fact to ask nor one to list as
+# missing: the PO's five (deliberato, intenzionale, consapevole, in mala fede, dolo) and their own variants, a closed list
+_STATE_OF_MIND_RE = re.compile(
+    r"\bdeliberat\w*|\bintenzional\w*|\bintenzion[ei]\b|\bconsapevol\w*|\b(?:mala|buona|cattiva)\s*fede\b|"
+    r"\bdolo\b|\bdolos\w*|\bvolontariamente\b|\bdi\s+proposito\b|\bscientemente\b|\bsapendo\s+che\b|"
+    r"\b(?:era|fosse|sia)\s+a\s+conoscenza\b|\bconoscev\w+\b|\bsapev\w+\b", re.IGNORECASE)
+
+
+def state_of_mind(point: Any, client: str = "", names: Sequence[str] = ()) -> bool:
+    """v60q: a point (a question, or its words) on a party's state of mind (_STATE_OF_MIND_RE) -- never the client's own:
+    a point naming the client and no other party (names) is a fact the client can state."""
+    text = point if isinstance(point, str) else str((point or {}).get("point") or (point or {}).get("text") or "")
+    text = " ".join(text.split())
+    if not _STATE_OF_MIND_RE.search(text):
+        return False
+    def named(name: str) -> bool:
+        words = [w for w in re.findall(r"[^\W\d_]{3,}", str(name or "")) if w[:1].isupper()]
+        return any(re.search(rf"\b{re.escape(w)}\b", text) for w in words)
+    others = [n for n in names or () if n and n != client]
+    return not (client and named(client) and not any(named(n) for n in others))
+
+
+def client_of(state: Dict[str, Any]) -> str:
+    """The client's name: the one the answer settled, else the extraction's."""
+    name = str((state.get("client") or {}).get("name") or "")
+    return name or (_client_name(_restored_analysis(state["analysis"])) if state.get("analysis") else "")
 
 
 def _case_first_topics(topics: Sequence[Dict[str, Any]]) -> bool:
@@ -1463,11 +1857,16 @@ READ_QUESTIONS_MIN = 2      # v60d: the room the first read's own questions keep
 
 
 def with_read_questions(asked: List[Dict[str, Any]], unknown: Sequence[str], answered: Dict[str, Any],
-                        log: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+                        log: Optional[List[Dict[str, Any]]] = None, case: str = "",
+                        names: Sequence[str] = (), client: str = "") -> List[Dict[str, Any]]:
     """v60c (5): the first read's «what the case does not say», each a question after the rules' and the tables', not
     one they already ask (half its words in one of theirs), not answered, at most MAX_QUESTIONS in all. v60d: the read's
     questions keep READ_QUESTIONS_MIN places (the client's question first, then the rules' that fit); each point not
-    asked is in log with its reason ("empty", "answered", "dedup" with the question it repeats, "cap")."""
+    asked is in log with its reason ("empty", "answered", "dedup" with the question it repeats, "cap"). v60k, both
+    modes: case given, a question a case sentence already answers is dropped ("nel caso", asked_in_case: never the
+    user's own message); a generic rule question (generic_question) comes after the read's, dropped first at the cap.
+    v60l, both modes: a point asking a legal characterisation (qualification) is never a question ("qualificazione").
+    v60q, both modes: nor one on a party's state of mind, the client's own aside (state_of_mind: "stato soggettivo")."""
     log = log if log is not None else []
     rules = [q for q in asked if not str(q.get("id") or "").startswith("read_")]
     mine_q: List[Dict[str, Any]] = []
@@ -1479,6 +1878,12 @@ def with_read_questions(asked: List[Dict[str, Any]], unknown: Sequence[str], ans
             continue
         if qid in answered:
             log.append({"point": point, "dropped": "answered"})
+            continue
+        if qualification(point):        # v60l: the parere's own job, never asked
+            log.append({"point": point, "dropped": "qualificazione"})
+            continue
+        if state_of_mind(point, client, names):     # v60q: argued from the facts, never asked
+            log.append({"point": point, "dropped": "stato soggettivo"})
             continue
         mine = _stems(point)
         twin = next((q for q in rules + mine_q
@@ -1493,14 +1898,39 @@ def with_read_questions(asked: List[Dict[str, Any]], unknown: Sequence[str], ans
         mine_q.append({"id": qid, "family": "lettura", "template": "lettura", "kind": "free", "target": None,
                        "text": text, "short": point if len(point) <= 60 else point[:57].rsplit(" ", 1)[0] + "…",
                        "unlocks": [], "topics": [], "point": point})
-    room = max(0, MAX_QUESTIONS - min(READ_QUESTIONS_MIN, len(mine_q)))
-    kept_rules = rules[:room]
+    if case:                    # v60k: never a fact the case states
+        from . import fact_signals
+        sentences = fact_signals.case_sentences(case)
+        kept = []
+        for q in rules + mine_q:
+            said = asked_in_case(q, sentences, names)
+            if said:
+                log.append({"question": q.get("id"), **({"point": q["point"]} if q.get("point") else {}),
+                            "dropped": "nel caso", "sentence": said[:160]})
+            else:
+                kept.append(q)
+        rules = [q for q in rules if q in kept]
+        mine_q = [q for q in mine_q if q in kept]
+    client = [q for q in rules if q.get("id") == "parte_assistita"]
+    generic = [q for q in rules if generic_question(q)]
+    specific = [q for q in rules if q not in client and q not in generic]
+    room = max(0, MAX_QUESTIONS - len(client) - min(READ_QUESTIONS_MIN, len(mine_q)))
+    kept_rules = client + specific[:room]
     kept_read = mine_q[:MAX_QUESTIONS - len(kept_rules)]
+    kept_generic = generic[:max(0, MAX_QUESTIONS - len(kept_rules) - len(kept_read))]
     for q in mine_q[len(kept_read):]:
         log.append({"point": q["point"], "dropped": "cap"})
-    for q in rules[room:]:
+    for q in specific[room:]:
         log.append({"question": q.get("id"), "dropped": "cap (room for the first read)"})
-    return kept_rules + kept_read
+    for q in generic[len(kept_generic):]:
+        log.append({"question": q.get("id"), "dropped": "cap (generica, dopo le domande specifiche)"})
+    return kept_rules + kept_read + kept_generic
+
+
+def party_names_of(state: Dict[str, Any]) -> List[str]:
+    """The parties' names of the state's facts."""
+    facts = _facts(_restored_analysis(state["analysis"])) if state.get("analysis") else {}
+    return [str(p.get("name")) for p in facts.get("parties") or [] if isinstance(p, dict) and p.get("name")]
 
 
 def client_question(facts: Dict[str, Any], answered: Sequence[str] = (), case: str = "") -> List[Dict[str, Any]]:
@@ -2185,7 +2615,8 @@ def recompute(state: Dict[str, Any], before: Optional[Tuple[Dict[str, str], Dict
     state["questions"] = _isolated("questions", lambda: questions(analysis, list(state.get("answered") or {}),
                                                                   state.get("topics") or [], state.get("rows") or []), [])
     state["questions"] = with_read_questions(state["questions"], state.get("read_unknown") or [],
-                                             state.get("answered") or {})          # v60c (5)
+                                             state.get("answered") or {}, case=case_text(state),
+                                             names=party_names_of(state))          # v60c (5); v60k: the case's own
     _isolated("records_refresh", lambda: refresh_records(state))                   # v60f
     _log("recomputed", {"changes": changes, "questions": [q["id"] for q in state["questions"]],
                         "terms_untriggered": [d.get("id") for d in new.get("terms_untriggered") or []]})
@@ -2373,8 +2804,40 @@ def case_sentences(state: Dict[str, Any]) -> List[Dict[str, str]]:
             for field, how in (item.items() if isinstance(item, dict) else []):
                 if field.endswith("_how") and how and item.get(field[:-4]):
                     assumed.append(f"{key}: {field[:-4]} = {item.get(field[:-4])} (dedotto: {how})")
-    return issue_records.sentences(dg._case_text(state.get("text") or "", state.get("request") or ""),
-                                   state.get("additions") or [], assumed[:10])
+    sents = issue_records.sentences(dg._case_text(state.get("text") or "", state.get("request") or ""),
+                                    state.get("additions") or [], assumed[:10])
+    mark_sides(sents, state)
+    return sents
+
+
+# v60t: an attributed sentence's speaker -- a party named just before an alleging verb («Sempronio sostiene che…») or
+# after «secondo» / «a detta di»; one other than the client speaks for the counterparty (issue_records.COUNTERPARTY:
+# never support, the contradiction path); the client's own, or no speaker named, is the client's account
+_SAYS_RE = (r"(?:sostien|sostenut|afferm|lament|riferisc|riferit|dichiar|ritien|pretend|eccepi|contest|denunci|accus|"
+            r"asseris|asserit)\w*")
+
+
+def attributed_to(sentence: str, names: Sequence[str]) -> str:
+    """The party a sentence attributes its content to (names: the case's parties), "" when none is named."""
+    for name in sorted({str(n) for n in names or () if n}, key=len, reverse=True):
+        for word in [w for w in re.findall(r"[^\W\d_]{3,}", name) if w[:1].isupper()]:
+            w = re.escape(word)
+            if re.search(rf"\b{w}\b(?:\s+[\w'’]+){{0,3}}?\s+{_SAYS_RE}", sentence) or \
+                    re.search(rf"\b(?:secondo|a detta d\w*|stando a)\s+(?:\w+\s+)?{w}\b", sentence, re.IGNORECASE):
+                return name
+    return ""
+
+
+def mark_sides(sents: Sequence[Dict[str, Any]], state: Dict[str, Any]) -> None:
+    """In place: each attributed sentence's speaker ("by") and side ("side": the counterparty's when the speaker is a
+    party other than the client -- client_of: settled, else the extraction's; unknown client: no side)."""
+    from . import issue_records
+    names, client = party_names_of(state), _low(client_of(state))
+    for s in sents:
+        by = attributed_to(s.get("text") or "", names) if s.get("certainty") == issue_records.ALLEGATO else ""
+        s["by"] = by
+        mine = bool(client) and (_low(by) == client or _low(by) in client or client in _low(by))
+        s["side"] = issue_records.COUNTERPARTY if by and client and not mine else ("cliente" if by and mine else "")
 
 
 def build_records(state: Dict[str, Any], rows: Sequence[Dict[str, Any]]) -> None:
@@ -2431,9 +2894,15 @@ def link_records(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], dead: 
     if not records:
         return None
     sents = state.get("sentences") or case_sentences(state)
+    mark_sides(sents, state)                    # v60t: the client is settled now -- whose account each sentence is
     state["sentences"] = sents
     labels = [[issue_records._label(r) for r in _topic_refs(t) if _key(r) not in dead] for t in topics]
     log = issue_records.link(records, topics, labels, sents)
+    by_id = {s["id"]: s for s in sents}
+    for rec in records.values():                # a topic linked before (cached) settled again on today's sides
+        for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
+            issue_records.settle(r, by_id)
+        rec["verdict"] = issue_records.verdict(rec)
     state.setdefault("timings", {})["records_link_s"] = round(log["total_ms"] / 1000, 2)
     _log("records_link", log, log["total_ms"])
     return log
@@ -2461,10 +2930,199 @@ def plan_inputs(state: Dict[str, Any], analysis: Dict[str, Any], topics: Sequenc
     return issues
 
 
+def main_line_topic(topics: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """v60t (2): the answer's main line -- the topic holding the first read's main-line hypothesis, else the first."""
+    topics = list(topics or [])
+    return next((t for t in topics if any(h.get("line") == "principale" for h in t.get("hypotheses") or [])),
+                topics[0] if topics else None)
+
+
+def anchor_blocks(state: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v60p: the anchor article of each covered topic (the topics this answer covers -- grade 3, the main line, a
+    user-named article) always earns its §2 block (issue_records.block_due: rec["anchor_due"]), never one «non
+    applicabile» (v60r 6: its silent elements «da provare», no longer «da verificare»). Every
+    record's flag set anew for this answer. Logged; the entries. v60t (2), single shot: the main line's anchor alone
+    (main_line_topic; state["main_anchor"]) -- every other article's block needs a proven element (rec["needs_proof"])."""
+    from . import issue_records
+    records = state.get("records") or {}
+    single = single_mode(state)
+    for rec in records.values():
+        rec.pop("anchor_due", None)
+        if single:                          # v60t (2): single shot, a block needs a proven element
+            rec["needs_proof"] = True
+        else:
+            rec.pop("needs_proof", None)
+    main = main_line_topic(topics)
+    state["main_anchor"] = issue_records._label(_parse_label(main["anchor"])) if main and main.get("anchor") else ""
+    out = []
+    by_id = {s["id"]: s for s in state.get("sentences") or [] if s.get("id")}
+    for t in ([main] if single and main else topics or []):     # v60t (2): single shot, the main line's anchor only
+        if not t.get("anchor"):
+            continue
+        label = issue_records._label(_parse_label(t["anchor"]))
+        rec = records.get(label)
+        if rec is None:
+            out.append({"topic": t.get("title"), "anchor": label, "record": False})
+            continue
+        before = issue_records.block_due(rec, by_id, open_questions(state))
+        rec["anchor_due"] = str(t.get("title") or True)
+        out.append({"topic": t.get("title"), "anchor": label, "verdict": rec.get("verdict"), "earned_before": before,
+                    "block": issue_records.block_due(rec, by_id, open_questions(state)),
+                    "silent": sum(1 for r in rec.get("requisites") or [] if r.get("status") == DA_PROVARE
+                                  and not r.get("supporting") and not r.get("contradicting"))})
+    _log("anchor_blocks", out)
+    return out
+
+
+def offence_issue(topic: Dict[str, Any]) -> bool:
+    """v60s (1): an issue titled after an offence unit -- its anchor (whose Sezione / Capo, else rubrica, names it) is an
+    article of c.p. Libro II (rule_quote.offence)."""
+    from . import rule_quote
+    anchor = topic.get("anchor") or (topic.get("articles") or [""])[0]
+    return bool(anchor) and rule_quote.offence(_key(_parse_label(anchor)))
+
+
+def surviving_issues(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]],
+                     dead: set) -> List[Dict[str, Any]]:
+    """v60s (1): after the qualification check (the record's verdicts, link_records), an offence issue (offence_issue)
+    keeps at least one offence article -- c.p. Libro II, a pena in the procedural store (its row's "_proc", else read
+    from its text: procedural_facts), not abrogated or misaligned (dead), its record not «non applicabile»; otherwise the
+    issue goes with every article it lists -- a procedural or ancillary article never survives its removed offence (in
+    another surviving issue it stays that issue's). Each dropped issue logged (issue_dropped). The issues kept."""
+    from . import issue_records, procedural_facts, rule_quote
+    records = state.get("records") or {}
+    by_key = {_key(r["_article"]): r for r in rows if r.get("_article")}
+    out = []
+    for t in topics:
+        if not offence_issue(t):
+            out.append(t)
+            continue
+        refs = [_key(r) for r in _topic_refs(t, all_=True)]
+        kept, why = [], {}
+        for key in refs:
+            if not rule_quote.offence(key):
+                continue
+            row = by_key.get(key) or {}
+            pena = (row.get("_proc") or (procedural_facts.from_row(row) if row else {}) or {}).get("pena")
+            verdict = (records.get(_label(key)) or {}).get("verdict")
+            if key in dead:
+                why[_label(key)] = "abrogato o non allineato"
+            elif not pena:
+                why[_label(key)] = "nessuna pena nel testo"
+            elif verdict == issue_records.NOT_APPLICABLE:
+                why[_label(key)] = "non applicabile"
+            else:
+                kept.append(_label(key))
+        if kept:
+            out.append(t)
+            continue
+        _log("issue_dropped", {"issue": t.get("title"), "anchor": t.get("anchor"), "offences": why,
+                               "articles": [_label(k) for k in refs]})
+    return out
+
+
+def own_analysis(state: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """v60p: the parere's own analysis for §4's triggers (render_computed.own_trigger): the first read's hypothesis lines
+    (claim, institutions, their rubricated names) and the covered topics (title, rubrica, unit, their articles'
+    rubriche; their articles)."""
+    from . import issue_records
+    read = state.get("read") or {}
+    lines = [" ".join(str(x) for x in [h.get("claim") or ""] + list(h.get("institutions") or [])
+                      + list(h.get("rubricated") or []) if x) for h in read.get("hypotheses") or []]
+    records = state.get("records") or {}
+    out = []
+    for t in topics or []:
+        arts = [issue_records._label(_parse_label(a)) for a in t.get("articles") or []]
+        text = " ".join(str(x) for x in [t.get("title"), t.get("rubrica"), t.get("unit")]
+                        + [(records.get(a) or {}).get("rubrica") for a in arts] if x)
+        out.append({"title": str(t.get("title") or ""), "text": text, "articles": arts})
+    return {"lines": [x for x in lines if x.strip()], "topics": out}
+
+
 def record_verdicts(state: Dict[str, Any]) -> Dict[str, str]:
     """v60g: {"N code": the record's verdict} (issue_records.verdict)."""
     from . import issue_records
     return {label: rec.get("verdict") or issue_records.verdict(rec) for label, rec in (state.get("records") or {}).items()}
+
+
+def open_questions(state: Dict[str, Any]) -> List[str]:
+    """v60j: the ids of the round-1 questions still open (asked, not answered)."""
+    answered = set((state or {}).get("answered") or {})
+    return [str(q["id"]) for q in (state or {}).get("questions") or [] if q.get("id") and q["id"] not in answered]
+
+
+def record_lines(state: Dict[str, Any], sanctions: Optional[Dict[Tuple[str, str], Optional[tuple]]] = None,
+                 beyond: Optional[Dict[str, str]] = None, cap: int = 0) -> Dict[str, Tuple[str, str]]:
+    """v60i (1): {"N code": (line, reason)} -- each article with no §2 block due (issue_records.block_due: «non
+    applicabile», or «da provare» with no sentence of the case for it), its line and reason (line_reason); a sanction
+    article whose obligation is not treated, «non trattata» as such."""
+    from . import issue_records
+    by_id = {s["id"]: s for s in state.get("sentences") or [] if s.get("id")}
+    asked = open_questions(state)
+    out: Dict[str, Tuple[str, str]] = {}
+    for label, rec in (state.get("records") or {}).items():
+        got = issue_records.line_reason(rec, by_id, asked)
+        if got:
+            out[label] = got
+    for key, target in (sanctions or {}).items():
+        if target is None:
+            out[_label(key)] = (issue_records.LINE_NOT_TREATED, C.LINE_REASON_SANCTION)
+    for label, topic in (beyond or {}).items():         # v60k (single shot): the cap's, with its topic
+        out[label] = (issue_records.LINE_NOT_TREATED, C.fill(C.LINE_REASON_CAP, topic=topic, cap=cap)
+                      or C.LINE_REASON_NOT_WRITTEN)
+    return out
+
+
+# v60i (2): the articles the counterparty relies on -- a line of the other side (the client's «controparte» line, or
+# another party's own) anchored on the article (its rubrica; else its topic's anchor), and the action gate's adverse
+# ones -- none the client's own lines rest on too
+_ANCHORED_ART_RE = re.compile(r"^art\.\s+(\S+)\s+(.+?):\s")
+
+
+def counterparty_articles(state: Dict[str, Any]) -> Dict[str, str]:
+    """{"N code": why} of the articles the other side relies on; {} while the client is not known."""
+    from . import case_read
+    analysis = state.get("analysis") or {}
+    client = str((state.get("client") or {}).get("name") or analysis.get("parte_assistita")
+                 or (state.get("answered") or {}).get("parte_assistita") or "").strip()
+    if not client:
+        return {}
+    theirs: Dict[str, str] = {}
+    mine: set = set()
+    for t in state.get("topics") or []:
+        for h in t.get("hypotheses") or []:
+            party, line = str(h.get("party") or ""), str(h.get("line") or "")
+            own = case_read.same_party(party, client) if party else True
+            m = _ANCHORED_ART_RE.match(str(h.get("anchored_by") or ""))
+            label = f"{m.group(1)} {m.group(2)}" if m else str(t.get("anchor") or "")
+            if not label:
+                continue
+            if (own and line == "controparte") or (not own and line in ("principale", "subordinata")):
+                theirs.setdefault(label, " ".join(str(h.get("claim") or h.get("anchor_institution") or
+                                                      "linea della controparte").split())[:160])
+            elif own and line in ("principale", "subordinata"):
+                mine.add(label)
+    for label in (analysis.get("action_gate") or {}):
+        theirs.setdefault(str(label), "azione che spetta alla controparte")
+    return {k: v for k, v in theirs.items() if k not in mine}
+
+
+def role_verdicts(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v60i (2): each record marked with the counterparty's reliance (rec["relied_by"]), its verdict again
+    (issue_records.verdict: «argomento del cliente» for such an article whose elements fail). Logged; the log."""
+    from . import issue_records
+    records = state.get("records") or {}
+    relied = counterparty_articles(state)
+    for label, rec in records.items():
+        if label in relied:
+            rec["relied_by"] = relied[label]
+        else:
+            rec.pop("relied_by", None)
+        rec["verdict"] = issue_records.verdict(rec)
+    out = {"relied": relied, "client_arguments": [label for label, rec in records.items()
+                                                  if rec.get("verdict") == issue_records.CLIENT_ARGUMENT]}
+    _log("role_verdicts", out)
+    return out
 
 
 def check_context(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], refs: Sequence[tuple],
@@ -2489,18 +3147,215 @@ def check_context(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], refs: S
     commi = {citations.label(rule["ref"]): {k for k, _ in rule.get("commi") or [] if isinstance(k, int)}
              for rule in rules or []}
     allowed_labels = {citations.label(r) for r in list(allowed) + list(refs) + list(dg._refs_in(case or "")) if len(r) == 2}
-    return {"records": state.get("records") or {}, "allowed": allowed_labels,
+    return {"records": state.get("records") or {}, "sentences": state.get("sentences") or [],
+            "open_questions": open_questions(state), "single_shot": single_mode(state), "allowed": allowed_labels,
             "glossed": {citations.label(r) for r in glossed}, "texts": texts, "rubriche": rubriche, "names": names,
             "commi": commi,
             "documents": list(documents or []) + ref_documents(list(refs) + list(glossed), rows),
-            "client": str((state.get("client") or {}).get("name") or ""),
+            "client": str((state.get("client") or {}).get("name") or ""), "parties": party_names_of(state),   # v60q
             "skip": {ANSWER_TITLES[3], OTHER_PROFILES_TITLE}, "norms_title": ANSWER_TITLES[1],
             "numbering": list(glossed)}
 
 
-def folded_norms(draft: str, verdicts: Optional[Dict[str, str]], log: List[Dict[str, Any]]) -> str:
+def _template_re(template: str, slots: Dict[str, str]) -> "re.Pattern":
+    """A copy template as a line pattern: its words escaped, each slot its own pattern (slots), anchored."""
+    out, at = "", 0
+    for m in re.finditer(r"\{(\w+)\}", template):
+        out += re.escape(template[at:m.start()]) + slots.get(m.group(1), r".+?")
+        at = m.end()
+    return re.compile("^" + out + re.escape(template[at:]) + "$")
+
+
+_COMMA_SLOT = r"(?:co\. \S+|" + re.escape(C.COMMA_LABEL_ONLY) + ")"
+_ROW_LINE_RES = [_template_re(t, {"comma": _COMMA_SLOT, "requisite": ".+", "status": ".+", "number": r"\S+",
+                                  "code": ".+?", "rubrica": ".+"})
+                 for t in (C.REQUISITE_LINE, C.COMMA_LINE, C.SANCTION_LINE_RUBRICA, C.SANCTION_LINE) if t]
+_SANCTION_ART_RE = re.compile(r"art\.\s*(\S+)\s+(.+?)(?:\s+—\s+.*)?\.$")
+
+
+ASSERTING_TITLES = (ANSWER_TITLES[0], ANSWER_TITLES[4])     # v60t (3): «Risposta e strategia», «Conclusioni»
+
+
+def asserted_only(draft: str, state: Dict[str, Any], log: Optional[List[Dict[str, Any]]] = None) -> str:
+    """v60s (4): the answer's opening and closing sections (ASSERTING_TITLES -- v60t: by title, the numbers shift when
+    «Obiezioni e repliche» is empty; never «Profili processuali», whose lines the code writes) assert only the articles
+    whose record allows it (issue_records.assertable: «applicabile», or «da provare» with a proven element); a sentence
+    naming another article with a record gets «(da valutare: art. N …)» (TO_EVALUATE_MARK) unless it says so already.
+    Outside the rule: an article with no record (the computed material's, the procedure's), an «argomento del cliente»
+    (the client's argument against it) and (v60t) the main line's anchor (state["main_anchor"]), always written with its
+    own status."""
+    from . import answer_ledger, citations, issue_records, record_check
+    from .plan_then_write import _sentence_spans
+    records = state.get("records") or {}
+    if not records:
+        return draft
+    documents = ref_documents([_parse_label(k) for k in records])
+    main = str(state.get("main_anchor") or "")
+    out = []
+    for title, text in answer_ledger.sections_of(draft):
+        if title not in ASSERTING_TITLES or not (text or "").strip():
+            out.append((title, text))
+            continue
+        marks: Dict[Tuple[int, int], str] = {}
+        for s, e in _sentence_spans(text):
+            sentence = text[s:e]
+            if "da valutare" in sentence.lower():
+                continue
+            labels = list(dict.fromkeys(citations.label(r) for r in citations.refs_in(sentence, documents)))
+            weak = [x for x in labels if x in records and x != main and not issue_records.assertable(records[x])
+                    and (records[x].get("verdict") or issue_records.verdict(records[x])) != issue_records.CLIENT_ARGUMENT]
+            if not weak:
+                continue
+            items = C.LIST_COMMA.join(C.fill(C.TO_EVALUATE_ITEM, number=_parse_label(x)[0],
+                                             code=_parse_label(x)[1]) or x for x in weak)
+            marks[(s, e)] = record_check._mark(sentence, C.fill(C.TO_EVALUATE_MARK, articles=items) or "")
+            if log is not None:
+                log.append({"section": title, "articles": weak, "sentence": " ".join(sentence.split())[:200]})
+        for (s, e) in sorted(marks, reverse=True):
+            text = text[:s] + marks[(s, e)] + text[e:]
+        out.append((title, text))
+    return answer_ledger.rejoin(draft, out)
+
+
+_LABEL_WORDS = {"art", "artt", "articolo", "articoli", "c", "p", "a", "codice", "civile", "penale", "procedura",
+                "di", "del", "della", "dei", "co", "comma", "e", "ed"}
+
+
+def _bare_article_line(line: str, heading: str, records: Dict[str, Dict[str, Any]]) -> bool:
+    """v60s (5): a line of a §2 block that is an article's label alone -- «art. 1062 c.c.», «[1] Art. 1062 c.c. —
+    Destinazione del padre di famiglia», a «[N]» mark alone: no word beyond the label's, its code's and a rubrica's
+    (the block's heading's, the records')."""
+    st = line.strip()
+    if not st:
+        return False
+    if re.fullmatch(r"\[\d{1,2}\]", st):
+        return True
+    if not re.match(r"^\W*(?:\[\d{1,2}\]\s*)?\W*art(?:icol[oi]|t)?\.?\s*\d", st, re.IGNORECASE):
+        return False
+    rubriche = " ".join([heading.split(" — ", 1)[1] if " — " in heading else ""] +
+                        [str(r.get("rubrica") or "") for r in records.values()])
+    allowed = _LABEL_WORDS | set(re.findall(r"[a-zà-ü’']+", rubriche.lower()))
+    return all(w in allowed for w in re.findall(r"[a-zà-ü’']+", st.lower()))
+
+
+def ledger_out(draft: str, state: Dict[str, Any], log: Optional[Dict[str, Any]] = None
+               ) -> Tuple[str, List[Dict[str, Any]]]:
+    """v60r (1, single shot): the record's rows never in the body. §2's status lines (REQUISITE_LINE, COMMA_LINE), its
+    sanction lines and its closing lines naming articles («Altre norme del tema non trattate», «Norme considerate e non
+    applicabili») leave the text, and so does a block left with its heading alone; each block keeps its heading, ONE
+    status sentence (ARTICLE_STATUS, the record's verdict) and the writer's paragraphs. (the text, the rows for the
+    article citations: per article one row {article, comma None, requisite None, status (its verdict or its line),
+    reason, in_body}, then one per element {article, comma, requisite, status (issue_records.element_status: «da provare»
+    for one no fact touches, v60r 6), supporting_sentence, contradicting_sentence}.) log: what moved."""
+    from . import answer_ledger, issue_records, rule_quote
+    log = log if log is not None else {}
+    records = state.get("records") or {}
+    said = {x["id"]: x.get("text") or "" for x in state.get("sentences") or [] if x.get("id")}
+    sections = answer_ledger.sections_of(draft)
+    if ANSWER_TITLES[1] not in dict(sections):
+        return draft, []
+    articles: Dict[str, Dict[str, Any]] = {}          # label -> {"in_body", "line", "reason"} in order of appearance
+
+    def seen(label: str, **info) -> None:
+        articles.setdefault(label, {"in_body": False, "line": "", "reason": ""}).update(
+            {k: v for k, v in info.items() if v or k == "in_body"})
+
+    def norms(text: str) -> str:
+        lines = text.split("\n")
+        pre: List[str] = []
+        blocks: List[Dict[str, Any]] = []
+        i = 0
+        while i < len(lines):
+            line, st = lines[i], lines[i].strip()
+            h = _NORM_HEADING_RE.match(st)
+            if h:
+                label = f"{h.group(1)} {_code_label(h.group(2).strip())}"
+                seen(label)                     # the articles in the order §2 gives them
+                blocks.append({"label": label, "heading": line, "body": [], "rows": 0})
+                i += 1
+                while i < len(lines) and lines[i].strip() and any(r.match(lines[i].strip()) for r in _ROW_LINE_RES):
+                    m = _SANCTION_ART_RE.search(lines[i].strip()) if "Sanzione" in lines[i] else None
+                    if m:
+                        seen(f"{m.group(1)} {_code_label(m.group(2).strip())}", line="sanzione",
+                             reason=f"sanziona l'art. {label}")
+                    blocks[-1]["rows"] += 1
+                    i += 1
+                continue
+            closing = _OTHER_NORMS_RE.match(st) or _NOT_APPLICABLE_RE.match(st)
+            if closing:
+                kind = issue_records.LINE_NOT_TREATED if _OTHER_NORMS_RE.match(st) else issue_records.LINE_NOT_APPLICABLE
+                for number, code, reason in _line_items(closing.group(1)):
+                    if number:
+                        seen(f"{number} {_code_label(code)}", line=kind, reason=reason)
+                log.setdefault("closing_lines", []).append(kind)
+                i += 1
+                continue
+            (blocks[-1]["body"] if blocks else pre).append(line)
+            i += 1
+        out = ["\n".join(pre).strip("\n")] if "\n".join(pre).strip() else []
+        main = str(state.get("main_anchor") or "")
+        if main and main in records and main not in {b["label"] for b in blocks}:
+            # v60t (2): the main line's anchor is always written, with its honest status -- first, as the main line
+            rec = records[main]
+            number, code = _parse_label(main)
+            heading = C.fill(C.NORM_HEADING_RUBRICA, number=number, code=code,
+                             rubrica=rule_quote.clean_rubrica(rec.get("rubrica") or "").rstrip(" .")) or \
+                C.fill(C.NORM_HEADING, number=number, code=code)
+            blocks.insert(0, {"label": main, "heading": heading, "body": [], "rows": 0})
+            rest = {k: v for k, v in articles.items() if k != main}         # first in the citations too, its line gone
+            articles.clear()
+            seen(main)
+            articles.update(rest)
+            log["main_anchor_added"] = main
+        for b in blocks:
+            kept = [x for x in b["body"] if not _bare_article_line(x, b["heading"], records)]      # v60s (5)
+            if len(kept) < len(b["body"]):
+                log.setdefault("bare_lines", {})[b["label"]] = [" ".join(x.split()) for x in b["body"] if x not in kept]
+            body = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n")
+            if not body.strip() and b["label"] == main and main in records:      # v60t (2): heading and status only
+                seen(main, in_body=True)
+                rec = records[main]
+                reqs = rec.get("requisites") or []
+                status = C.fill(C.ARTICLE_STATUS, verdict=rec.get("verdict") or issue_records.verdict(rec),
+                                proved=str(issue_records.proven(rec)), total=str(len(reqs))) if reqs else None
+                out.append(b["heading"] + (f"\n{status}" if status else ""))
+                continue
+            if not body.strip():            # a heading alone: the article is a row of the citations only
+                seen(b["label"], line=issue_records.LINE_NOT_TREATED, reason=C.LINE_REASON_NOT_WRITTEN)
+                log.setdefault("bare", []).append(b["label"])
+                continue
+            seen(b["label"], in_body=True)
+            rec = records.get(b["label"]) or {}
+            reqs = rec.get("requisites") or []
+            status = C.fill(C.ARTICLE_STATUS, verdict=rec.get("verdict") or issue_records.verdict(rec),
+                            proved=str(sum(1 for r in reqs if r.get("status") == PROVATO)), total=str(len(reqs))) \
+                if reqs else None
+            out.append(b["heading"] + (f"\n{status}" if status else "") + "\n\n" + body)
+            log.setdefault("status_lines", {})[b["label"]] = b["rows"]
+        return "\n\n".join(out)
+    new = [(t, (x[:len(x) - len(x.lstrip("\n"))] + norms(x.strip("\n")) + x[len(x.rstrip("\n")):])
+            if t == ANSWER_TITLES[1] else x) for t, x in sections]
+    rows: List[Dict[str, Any]] = []
+    for label, info in articles.items():
+        rec = records.get(label) or {}
+        verdict = (rec.get("verdict") or issue_records.verdict(rec)) if rec else ""
+        rows.append({"article": label, "comma": None, "requisite": None,
+                     "status": verdict if info["in_body"] else (info["line"] or verdict),
+                     "reason": info["reason"] if not info["in_body"] else "", "in_body": info["in_body"]})
+        for r in rec.get("requisites") or []:
+            sup = next((said[x] for x in r.get("supporting") or [] if said.get(x)), None)
+            con = next((said[x] for x in r.get("contradicting") or [] if said.get(x)), None)
+            rows.append({"article": label, "comma": r.get("comma"), "requisite": r.get("text") or None,
+                         "status": issue_records.element_status(rec, r), "supporting_sentence": sup,
+                         "contradicting_sentence": con})
+    log["articles"] = {k: ("body" if v["in_body"] else v["line"]) for k, v in articles.items()}
+    return answer_ledger.rejoin(draft, new), rows
+
+
+def folded_norms(draft: str, verdicts: Optional[Dict[str, str]], log: List[Dict[str, Any]],
+                 lines: Optional[Dict[str, Tuple[str, str]]] = None) -> str:
     """v60g: after the check, §2's blocks left bare named in its closing lines (norms_final), the section's spacing
-    kept."""
+    kept. v60i (1): lines, the record's one-line articles with their reasons."""
     from . import answer_ledger
     sections = answer_ledger.sections_of(draft)
     out = []
@@ -2508,7 +3363,7 @@ def folded_norms(draft: str, verdicts: Optional[Dict[str, str]], log: List[Dict[
         if title == ANSWER_TITLES[1]:
             lead = text[:len(text) - len(text.lstrip("\n"))]
             trail = text[len(text.rstrip("\n")):]
-            text = lead + norms_final(text.strip("\n"), log, verdicts) + trail
+            text = lead + norms_final(text.strip("\n"), log, verdicts, lines) + trail
         out.append((title, text))
     return answer_ledger.rejoin(draft, out)
 
@@ -2524,7 +3379,8 @@ REASON_LOST = "perso senza rimozione registrata"
 def bucket_articles(refs: Sequence[Tuple[str, str]], glossed: Sequence[Tuple[str, str]], draft: str, ledger,
                     cap_dropped: Sequence[Tuple[str, str]] = (), rows: Sequence[Dict[str, Any]] = (),
                     records: Optional[Dict[str, Dict[str, Any]]] = None,
-                    sanctions: Optional[Dict[Tuple[str, str], Optional[tuple]]] = None) -> Dict[str, Dict[str, Any]]:
+                    sanctions: Optional[Dict[Tuple[str, str], Optional[tuple]]] = None,
+                    cap: int = TOPIC_ARTICLES) -> Dict[str, Dict[str, Any]]:
     """v60f: each planned article in exactly one bucket -- scritto (its §2 block has a paragraph), non applicabile (the
     «Norme considerate e non applicabili» line), non trattato with the reason (not asked of the writer, not written by
     it, or removed: the first step that removed its sentences, from the ledger); the cap's drops «oltre il limite».
@@ -2572,6 +3428,9 @@ def bucket_articles(refs: Sequence[Tuple[str, str]], glossed: Sequence[Tuple[str
         if records is not None and verdict == issue_records.NOT_APPLICABLE:
             entry = {"bucket": BUCKET_NOT_APPLICABLE, "reason": issue_records.verdict_reason(rec) or "esito del record",
                      "written": bool(blocks.get(label, "").strip())}
+        elif records is not None and verdict == issue_records.CLIENT_ARGUMENT and blocks.get(label, "").strip():
+            entry = {"bucket": BUCKET_WRITTEN, "reason": f"argomento del cliente: la controparte vi si fonda "
+                     f"({rec.get('relied_by') or ''}), ma {issue_records.verdict_reason(rec)}"}
         elif records is None and label in na:
             entry = {"bucket": BUCKET_NOT_APPLICABLE, "reason": "la glossa dichiara la norma non applicabile"}
         elif blocks.get(label, "").strip():
@@ -2594,7 +3453,7 @@ def bucket_articles(refs: Sequence[Tuple[str, str]], glossed: Sequence[Tuple[str
         out[label] = entry
     for ref in cap_dropped:
         label = citations.label(ref)
-        out.setdefault(label, {"bucket": BUCKET_CAP, "reason": f"limite di {TOPIC_ARTICLES} articoli, ordinati per grado "
+        out.setdefault(label, {"bucket": BUCKET_CAP, "reason": f"limite di {cap} articoli, ordinati per grado "
                                "e sostegno degli elementi", "removed_sentences": 0})
     return out
 
@@ -2827,6 +3686,21 @@ def requisite_status(requisite: str, analysis: Dict[str, Any]) -> str:
     return recorded if recorded else facts_status(requisite, analysis)
 
 
+def shown_status(requisite: str, analysis: Dict[str, Any]) -> str:
+    """The status a §2 line shows: requisite_status; v60k (single shot, issue_records.points_from active), a «da provare»
+    whose missing fact an open question asks reads «da verificare: il caso non dice …» (C.OPEN_POINT); v60l, one whose
+    open matter is a legal characterisation, «da verificare» (C.QUALIFIED_STATUS), no question."""
+    from . import issue_records
+    status = requisite_status(requisite, analysis)
+    if status == DA_PROVARE:
+        point = issue_records.recorded_point(requisite)
+        if point:
+            return C.fill(C.OPEN_POINT, fact=point) or status
+        if issue_records.recorded_qualified(requisite):
+            return C.QUALIFIED_STATUS
+    return status
+
+
 def facts_status(requisite: str, analysis: Dict[str, Any]) -> str:
     """The requisite's status from the facts the requisite's words name (fact_state, each): NON_RISULTA when one is known
     not to hold, PROVATO when every one holds, else DA_PROVARE -- from the extracted facts, the computed terms and the
@@ -2837,6 +3711,16 @@ def facts_status(requisite: str, analysis: Dict[str, Any]) -> str:
         return DA_PROVARE
     states = [fact_state(n, facts, signals, str((analysis or {}).get(CASE_KEY) or "")) for n in named]
     return NON_RISULTA if NON_RISULTA in states else PROVATO if all(x == PROVATO for x in states) else DA_PROVARE
+
+
+def excluding_facts(requisite: str, analysis: Dict[str, Any]) -> List[str]:
+    """v60m: the facts the requisite's words name that the extracted facts say do not hold (fact_state «non risulta»)."""
+    facts, signals = _facts(analysis), _signals(analysis)
+    if not facts:
+        return []
+    named = list(dict.fromkeys(name for pattern, name in _REQUISITE_FACTS if re.search(pattern, _low(requisite))))
+    case = str((analysis or {}).get(CASE_KEY) or "")
+    return [n for n in named if fact_state(n, facts, signals, case) == NON_RISULTA]
 
 
 _REAL_ACTION_RE = re.compile(r"servit|confessori|negatori|rivendic|passagg|usucapi|propriet|possess", re.IGNORECASE)
@@ -3011,18 +3895,21 @@ def glossed_refs(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], analys
     """The planned articles the writer applies, in plan order: those that earned an application (earned_refs); v60g
     (d), with records, also every one whose record has a requisite proved or a case sentence for it
     (issue_records.support) -- the record, not the topic's anchor alone, says what is argued. v60h: never a «non
-    applicabile» article (5) nor, rows given, a sanction article (6: a line under its obligation's block)."""
+    applicabile» article (5) nor, rows given, a sanction article (6: a line under its obligation's block). v60i (1): with
+    records, exactly the articles a §2 block is due to (issue_records.block_due: «applicabile», «argomento del
+    cliente», or «da provare» with a sentence of the case for it or, v60j, a missing fact an open round-1 question
+    asks); an article with no record, as earned."""
     from . import issue_records
     earned = {_key(r) for r in earned_refs(topics, analysis, case, planned)}
-    if rows:
-        earned -= set(sanction_map(planned, rows))
     records = (state or {}).get("records") or {}
     if records:
-        earned |= {_key(r) for r in planned if issue_records.support(records.get(issue_records._label(r)) or {})}
-        # v60h (5): a «non applicabile» article is never applied -- one item of «Norme considerate e non applicabili»
-        earned -= {_key(r) for r in planned if records.get(issue_records._label(r))
-                   and (records[issue_records._label(r)].get("verdict")
-                        or issue_records.verdict(records[issue_records._label(r)])) == issue_records.NOT_APPLICABLE}
+        by_id = {s["id"]: s for s in (state or {}).get("sentences") or [] if s.get("id")}
+        asked = open_questions(state)
+        due = {_key(r) for r in planned if records.get(issue_records._label(r))
+               and issue_records.block_due(records[issue_records._label(r)], by_id, asked)}
+        earned = {k for k in earned if not records.get(_label(k))} | due
+    if rows:
+        earned -= set(sanction_map(planned, rows))
     return [r for r in planned if _key(r) in earned]
 
 
@@ -3055,16 +3942,16 @@ def norm_blocks(rules: List[Dict[str, Any]], analysis: Dict[str, Any], rows: Seq
             reqs = (rule.get("requisites") or {}).get(k) or [] if _key(rule["ref"]) not in brief else []
             label = C.fill(C.COMMA_LABEL, k=k) if k else C.COMMA_LABEL_ONLY
             if reqs:
-                lines += [C.fill(C.REQUISITE_LINE, comma=label, requisite=r, status=requisite_status(r, analysis))
+                lines += [C.fill(C.REQUISITE_LINE, comma=label, requisite=r, status=shown_status(r, analysis))
                           for r in reqs]
             elif _names_in(comma) or k in (rule.get("referring") or []):
                 # v57: a comma line only where the comma names a fact (never «testo: da provare»); v59 (v58-h7 321): or
                 # where it extends other articles' penalties -- its line, never a penalty as a requisite
-                lines.append(C.fill(C.COMMA_LINE, comma=label, status=requisite_status(comma, analysis)))
+                lines.append(C.fill(C.COMMA_LINE, comma=label, status=shown_status(comma, analysis)))
         if len(lines) == 1 and chosen and _key(rule["ref"]) in (matched or set()):
             k, comma = chosen[0]
             lines.append(C.fill(C.COMMA_LINE, comma=C.fill(C.COMMA_LABEL, k=k) if k else C.COMMA_LABEL_ONLY,
-                                status=requisite_status(comma, analysis)))
+                                status=shown_status(comma, analysis)))
         out.append("\n".join(x for x in lines if x))
     return out
 
@@ -3138,7 +4025,8 @@ def assemble_norms(text: str, rules: List[Dict[str, Any]], analysis: Dict[str, A
                    log: List[Dict[str, Any]], refs: Optional[Sequence[tuple]] = None,
                    rubriche: Optional[Dict[Tuple[str, str], str]] = None,
                    glossed: Optional[Sequence[tuple]] = None, matched: Optional[Sequence[tuple]] = None,
-                   keep: bool = False, sanctions: Optional[Dict[Tuple[str, str], Optional[tuple]]] = None) -> str:
+                   keep: bool = False, sanctions: Optional[Dict[Tuple[str, str], Optional[tuple]]] = None,
+                   beyond: Sequence[tuple] = ()) -> str:
     """§2: one block per article (norm_blocks: heading and status lines, the code's, never the writer's), then the
     writer's paragraphs on it. v56: each paragraph goes to the article it cites, or whose comma it quotes, else to its
     "[N]" mark's (_paragraph_article) -- never to the previous heading because it follows it; a paragraph nothing places
@@ -3150,7 +4038,8 @@ def assemble_norms(text: str, rules: List[Dict[str, Any]], analysis: Dict[str, A
     the answer with records): no paragraph is dropped here -- one on an unearned or a textless article stays in its
     block, a comma no article holds stays where it is; the check run last (record_check) decides. sanctions (v60h 6:
     sanction_map): a sanction article has no block -- one line (SANCTION_LINE) under its obligation's block, a paragraph
-    placed on it goes to that block; none planned, it is named in the «non trattate» line."""
+    placed on it goes to that block; none planned, it is named in the «non trattate» line. beyond (v60k, single shot):
+    the articles the cap left out, named in that line too (their reason, with the topic: record_lines)."""
     from . import rule_quote
     refs = list(refs) if refs is not None else [r["ref"] for r in rules]
     sanctions = sanctions or {}
@@ -3228,6 +4117,8 @@ def assemble_norms(text: str, rules: List[Dict[str, Any]], analysis: Dict[str, A
                 "dropped_unearned": {_label(refs[i - 1]): len(v) for i, v in unearned.items()},
                 "dropped_no_text": {_label(refs[i - 1]): len(v) for i, v in no_text.items()},
                 "untreated": [_label(r) for r in untreated]})
+    have = {_key(r) for r in list(refs) + list(untreated)}
+    untreated += [r for r in beyond or () if _key(r) not in have]
     closing = C.fill(C.OTHER_NORMS_LINE, articles=C.OTHER_NORMS_JOIN.join(
         C.fill(C.OTHER_NORMS_ITEM, number=r[0], code=_code_label(r[1])) or _label(r) for r in untreated).rstrip(".")
     ) if untreated else ""
@@ -3392,9 +4283,10 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
         f"\n  da verificare: {v}" for v in _to_verify(t, state.get("questions") or [])) for t in topics)
     glossed = glossed_refs(state, topics, analysis, case_text(state), section_refs(plan, rows, refs), rows)
     rule_refs = [r for r in _rule_refs(rows, refs) if _key(r) in {_key(x) for x in glossed}]
+    references = single_mode(state)          # v60q: single shot, an article is a reference -- never its quoted text
     rules = rule_quote.material_block(plan, rows, analysis, rule_refs, status=lambda r: requisite_status(r, analysis),
-                                      title=RULES_TITLE, rule_text=writer_rules.RULES_TEXT if records else RULES_TEXT,
-                                      force=True)
+                                      title=RULES_TITLE, rule_text=writer_rules.RULES_TEXT_REFERENCES if references
+                                      else writer_rules.RULES_TEXT if records else RULES_TEXT, force=True)
     numbered = "\n".join(f"{i}. art. {n} {ptw._code_key(c)}" for i, (n, c) in enumerate(glossed, 1))
     rules = f"{rules}\n\nNORME NELL'ORDINE DEI PARAGRAFI:\n{numbered}" if rules and numbered else rules
     schede = issue_records.writer_block(records, glossed, state.get("sentences") or [], state.get("questions") or []) \
@@ -3409,22 +4301,30 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
     lines_of_case = hypotheses_block(topics)          # v60 (A): the first read's lines the chosen topics anchor
     people = relationships_block(state, analysis)     # v60d: the relationships the case states, the deceased
     no_rulings = " Non citare pronunce."
+    main_topic = main_line_topic(topics)          # v60s (4): §1's norms; v60t (3): the main line's anchor among them
+    main_anchor = issue_records._label(_parse_label(main_topic["anchor"])) if main_topic and main_topic.get("anchor") \
+        else ""
+    ok = [label for label, rec in records.items() if issue_records.assertable(rec) or label == main_anchor]
+    asserted = (C.fill(writer_rules.ASSERTABLE_RULE, articles=", ".join(f"art. {x}" for x in ok)) if ok else
+                writer_rules.NONE_ASSERTABLE_RULE) if records else ""
+    budget = writer_budget(len(glossed), len(topics)) if single_mode(state) else {
+        "lead": 900, "norms": 1700, "conclusions": CONCLUSIONS_TOKENS}
     jobs = [
         (ANSWER_TITLES[0],
          f"SEZIONE: Risposta e strategia. La risposta diretta a {who} sull'argomento, in due-quattro paragrafi: che cosa "
          "può ottenere, con quale azione e su quale norma, e la strategia consigliata (prima la domanda principale, poi "
-         "le subordinate). Non illustrare le norme nel dettaglio (sezione successiva)." + shape + no_rulings,
+         "le subordinate). Non illustrare le norme nel dettaglio (sezione successiva)." + asserted + shape + no_rulings,
          material(case, fixed, people, block("ARGOMENTO", topic_lines), lines_of_case,
-                  ptw._plan_text(plan, answers=True, rulings=False), read_only), 900),
+                  ptw._plan_text(plan, answers=True, rulings=False), read_only), budget["lead"]),
         (ANSWER_TITLES[1],
-         (writer_rules.NORMS_INSTRUCTION if records else
+         (writer_rules.NORMS_INSTRUCTION_REFERENCES if references else writer_rules.NORMS_INSTRUCTION if records else
           f"SEZIONE: Norme applicate ai fatti. Per ciascuna norma di {RULES_TITLE}, nell'ordine, un paragrafo aperto dal "
           "numero della norma nell'elenco tra parentesi quadre su una riga nuova («[1] ...», «[2] ...»), senza titolo: la "
           "regola, riportando il comma tra «…» con il suo numero o restando dentro le sue parole, e come si applica ai "
           "fatti del caso, con il fatto che prova ciascun requisito o la prova da acquisire. Lo stato di ogni requisito è "
           "già scritto sopra il paragrafo: non ripeterlo e non contraddirlo. Solo le norme dell'elenco: le altre norme "
           "dell'argomento hanno già il loro titolo e non vanno commentate.") + shape + no_rulings,
-         material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts)), 1700),
+         material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts)), budget["norms"]),
         (ANSWER_TITLES[2],
          f"SEZIONE: Obiezioni e repliche. Per ciascuna delle OBIEZIONI DELLA CONTROPARTE DA TRATTARE, nell'ordine e senza "
          f"aggiungerne: solo la replica di {who}, in due-tre frasi, sui fatti del caso e sulle norme fornite, aperta dal "
@@ -3436,13 +4336,29 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
                   block("TESTI DELLE NORME", texts)), 1100),
         (ANSWER_TITLES[4],
          f"SEZIONE: Conclusioni. In due paragrafi: l'esito probabile per {who} su questo argomento; i rischi, cioè i "
-         "requisiti da provare e le obiezioni più forti; la condotta consigliata e le prove da acquisire." + shape
-         + no_rulings,
+         "requisiti da provare e le obiezioni più forti; la condotta consigliata e le prove da acquisire." + asserted
+         + shape + no_rulings,
          material(fixed, people, lines_of_case, ptw._plan_text(plan, subordinate=True, weak=True, rulings=False), rules,
                   read_only),
-         CONCLUSIONS_TOKENS),
+         budget["conclusions"]),
     ]
     return [j for j in jobs if j[0] != ANSWER_TITLES[2] or objected]       # v58: no objection of the topic, no §3
+
+
+# v60k: the single-shot writer's budget, by the articles §2 writes and the topics the other sections cover
+NORMS_TOKENS_BASE, NORMS_TOKENS_PER_ARTICLE, NORMS_TOKENS_MAX = 400, 220, 4000
+TOPIC_TOKENS, LEAD_TOKENS_MAX, CONCLUSIONS_TOKENS_MAX = 150, 1600, 1800
+
+
+def writer_budget(articles: int, topics: int) -> Dict[str, int]:
+    """{"lead", "norms", "conclusions"}: never below the rounds' (900, 1700, CONCLUSIONS_TOKENS); §2 by its articles,
+    §1 and §5 by the topics beyond the first."""
+    more = max(0, topics - 1)
+    out = {"lead": min(LEAD_TOKENS_MAX, 900 + TOPIC_TOKENS * more),
+           "norms": min(NORMS_TOKENS_MAX, max(1700, NORMS_TOKENS_BASE + NORMS_TOKENS_PER_ARTICLE * articles)),
+           "conclusions": min(CONCLUSIONS_TOKENS_MAX, CONCLUSIONS_TOKENS + TOPIC_TOKENS * more)}
+    _log("writer_budget", {"articles": articles, "topics": topics, **out})
+    return out
 
 
 def term_consistency(sections: List[Tuple[str, str]], context: Dict[str, Any], analysis: Dict[str, Any],
@@ -3482,6 +4398,50 @@ def term_consistency(sections: List[Tuple[str, str]], context: Dict[str, Any], a
             text = text[:s] + changes[(s, e)] + text[e:]
         out.append((title, re.sub(r"[ \t]{2,}", " ", text).strip()))
     return out
+
+
+# v60q: the statuses are the code's (§2's status lines, its «da verificare: il caso non dice …» and «(da verificare: …)»
+# marks) -- the writer's prose never uses their words as ordinary words («non è da provare che…», «è provato che…», «non
+# risulta che…»): each becomes a plain word of the same meaning (a closed list), quotations and the open-point formula
+# untouched. Run on the writer's sections before any step adds a mark.
+_STATUS_WORDS = ((re.compile(r"\bda provare\b", re.IGNORECASE), "da dimostrare"),
+                 (re.compile(r"\bprovat([oaie])\b", re.IGNORECASE), r"dimostrat\1"),
+                 (re.compile(r"\bnon risulta\b", re.IGNORECASE), "non emerge"),
+                 (re.compile(r"\bnon risultano\b", re.IGNORECASE), "non emergono"),
+                 (re.compile(r"\bda verificare\b(?!\s*:\s*il caso non (?:dice|indica))", re.IGNORECASE), "da accertare"))
+_KEEP_SPANS_RE = re.compile(r"«[^»]*»|“[^”]*”|\(da verificare:[^)]*\)")
+
+
+def status_words_out(sections: List[Tuple[str, str]], log: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+    """The writer's sections with the status words it uses as ordinary words replaced (_STATUS_WORDS); each change
+    logged with its sentence."""
+    from .plan_then_write import _sentence_spans
+
+    def plain(piece: str) -> str:
+        for pattern, word in _STATUS_WORDS:
+            piece = pattern.sub(lambda m: _same_case(m.group(0), m.expand(word)), piece)
+        return piece
+    out = []
+    for title, text in sections:
+        if title == ANSWER_TITLES[3] or not text:
+            out.append((title, text))
+            continue
+        pieces, at = [], 0
+        for m in _KEEP_SPANS_RE.finditer(text):
+            pieces += [plain(text[at:m.start()]), m.group(0)]
+            at = m.end()
+        new = "".join(pieces + [plain(text[at:])])
+        if new != text:
+            before = {text[a:b].strip() for a, b in _sentence_spans(text)}
+            for a, b in _sentence_spans(new):
+                if new[a:b].strip() not in before:
+                    log.append({"section": title, "now": " ".join(new[a:b].split())[:300]})
+        out.append((title, new))
+    return out
+
+
+def _same_case(old: str, new: str) -> str:
+    return new[:1].upper() + new[1:] if old[:1].isupper() else new
 
 
 # v57 (G: v56-p1 §3 "- [3] art. 589 c.p.", §2 "art. 43 c.p."): a line the writer gives only to an article's label,
@@ -3709,7 +4669,7 @@ def _conditional(sentence: str, conditions: Sequence[str]) -> str:
 
 def conditional_on_unknown(sections: List[Tuple[str, str]], rules: List[Dict[str, Any]], analysis: Dict[str, Any],
                            documents: List[Dict[str, Any]], names: Sequence[str],
-                           log: List[Dict[str, Any]]) -> List[Tuple[str, str]]:
+                           log: List[Dict[str, Any]], single: bool = False) -> List[Tuple[str, str]]:
     """A requisite «da provare» marks every sentence relying on it: a sentence citing its article (not a rule sentence,
     not already conditional or speaking of the proof) gets the copy's marker with the requisite's question label
     (marked: «(da verificare: …)», once per sentence, before its final stop) for a fact the copy conditions
@@ -3731,6 +4691,8 @@ def conditional_on_unknown(sections: List[Tuple[str, str]], rules: List[Dict[str
                     if family == "atto_separazione" and "landlocked" not in names:
                         continue
                     point = C.QUESTION_SHORT.get(family) or family      # v58: the marker's words, never a prefix
+                    if single:                                          # v60k: «il caso non dice …»
+                        point = open_point_label({"template": family, "family": family}) or point
                     if family and C.CONDITIONS.get(f"{family}:{number}"):
                         own.append(point)
                     elif family and C.CONDITIONS.get(family):
@@ -3799,8 +4761,64 @@ def unanswered(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     return out
 
 
+def open_points_list(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v60k: every open question but the client's -- each its own point (unanswered keeps one per family, and the first
+    read's questions are all of one). v60l: never a legal characterisation (qualification); v60q: nor a party's state of
+    mind (state_of_mind)."""
+    answered = set(state.get("answered") or {})
+    client, names = client_of(state), party_names_of(state)
+    return [q for q in state.get("questions") or [] if q.get("id") not in answered and q.get("id") != "parte_assistita"
+            and not qualification(q) and not state_of_mind(q, client, names)]
+
+
+def open_point_label(q: Dict[str, Any], names: Sequence[str] = ()) -> str:
+    """The open point inside a writer's sentence marker (UNKNOWN_MARK «(da verificare: …)»): «il caso non dice …»."""
+    return (C.fill(C.OPEN_POINT, fact=open_point_fact(q, names)) or "").split(": ", 1)[-1]
+
+
+def open_point_fact(q: Dict[str, Any], names: Sequence[str] = ()) -> str:
+    """v60k: the fact an open question asks, as «il caso non dice …» reads it -- its template's (C.OPEN_POINT_FACTS),
+    else the first read's own words, else its short label. v60l: lowercase after «il caso non dice» (lowered_start)."""
+    fact = C.OPEN_POINT_FACTS.get(str(q.get("template") or q.get("family") or q.get("id") or ""))
+    text = " ".join(str(fact or q.get("point") or q.get("short") or q.get("text") or "").split()).rstrip(" .?")
+    return lowered_start(text, names)
+
+
+def lowered_start(text: str, names: Sequence[str] = ()) -> str:
+    """v60l: the text with a lowercase first letter -- not when its first word is a party's name (names) or an acronym
+    (two capitals or more)."""
+    m = re.match(r"[^\W\d_][\w'’.-]*", text or "")
+    if not m:
+        return text or ""
+    word = m.group(0).split("'")[0].split("’")[0]
+    own = {w for n in names or () for w in re.findall(r"[^\W\d_]+", str(n))}
+    if word in own or (len(word) >= 2 and word.isupper()):
+        return text
+    return text[:1].lower() + text[1:]
+
+
 def unknown_block(state: Dict[str, Any]) -> str:
-    """v56: the open questions for the writer, each «non noto» (UNKNOWN_TITLE, the copy's UNKNOWN_LINE)."""
+    """v56: the open questions for the writer, each «non noto» (UNKNOWN_TITLE, the copy's UNKNOWN_LINE). v60k (single
+    shot): each the fact the case does not state, «da verificare: il caso non dice …», never a question (the copy's
+    OPEN_POINTS_WRITER_*). v60l (single shot): the legal characterisations the first read left open, the parere's own
+    to settle (the copy's QUALIFICATIONS_WRITER_*). v60q (single shot): the parties' states of mind it left as missing,
+    to argue from the facts (STATES_OF_MIND_WRITER_*)."""
+    if single_mode(state):
+        names = party_names_of(state)
+        lines = [f"- {C.fill(C.OPEN_POINT, fact=open_point_fact(q, names))}" for q in open_points_list(state)
+                 if open_point_fact(q, names)]
+        block = f"{C.OPEN_POINTS_WRITER_TITLE}:\n" + "\n".join(lines) + f"\n{C.OPEN_POINTS_WRITER_RULE}" if lines else ""
+        quals = [f"- {lowered_start(' '.join(str(x).split()).rstrip(' .?'), names)}"
+                 for x in state.get("qualifications") or [] if str(x).strip()]
+        if quals:
+            block = "\n\n".join(b for b in (block, f"{C.QUALIFICATIONS_WRITER_TITLE}:\n" + "\n".join(quals)
+                                             + f"\n{C.QUALIFICATIONS_WRITER_RULE}") if b)
+        minds = [f"- {lowered_start(' '.join(str(x).split()).rstrip(' .?'), names)}"     # v60q
+                 for x in state.get("states_of_mind") or [] if str(x).strip()]
+        if minds:
+            block = "\n\n".join(b for b in (block, f"{C.STATES_OF_MIND_WRITER_TITLE}:\n" + "\n".join(minds)
+                                             + f"\n{C.STATES_OF_MIND_WRITER_RULE}") if b)
+        return block
     lines = [C.fill(C.UNKNOWN_LINE, point=q.get("short") or q.get("family"), question=q.get("text")) for q in unanswered(state)]
     lines = [x for x in lines if x]
     return f"{C.UNKNOWN_TITLE}:\n" + "\n".join(lines) + f"\n{C.UNKNOWN_RULE}" if lines else ""
@@ -3832,7 +4850,8 @@ def unanswered_out(sections: List[Tuple[str, str]], state: Dict[str, Any], log: 
                    and (not subject or re.search(subject, sentence, re.IGNORECASE))]
             if not hit:
                 continue
-            now = marked(sentence, [q.get("short") or q["family"] for q in hit])
+            now = marked(sentence, [open_point_label(q, names) if single_mode(state) else q.get("short") or q["family"]
+                                    for q in hit])
             if not now:
                 continue
             changes[(s, e)] = now
@@ -3922,6 +4941,9 @@ def grade_chosen(state: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> Lis
 
 
 _CHARGED_RE = re.compile(r"a carico|indagat|imputat|convenut|ricorrent|accusat|denunciat", re.IGNORECASE)
+# v60s (7): the extraction writes a convenuto as «controparte» (fact_signals._ROLE_SYNONYMS) -- with no client tagged,
+# the party the action is directed at
+_COUNTERPARTY_RE = re.compile(r"\bcontroparte\b", re.IGNORECASE)
 
 
 def _assumed_party(state: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -3929,8 +4951,9 @@ def _assumed_party(state: Dict[str, Any], analysis: Dict[str, Any]) -> Optional[
     ricorrente (never the deceased)."""
     facts = _facts(analysis)
     dead = set(deceased(facts, case_text(state)))         # v60d: the deceased is never the client
-    return next((p for p in facts.get("parties") or [] if isinstance(p, dict) and p.get("name")
-                 and p["name"] not in dead and _CHARGED_RE.search(str(p.get("role") or ""))), None)
+    parties = [p for p in facts.get("parties") or [] if isinstance(p, dict) and p.get("name") and p["name"] not in dead]
+    return next((p for p in parties if _CHARGED_RE.search(str(p.get("role") or ""))), None) or \
+        next((p for p in parties if _COUNTERPARTY_RE.search(str(p.get("role") or ""))), None)      # v60s (7)
 
 
 def prepare_side(state: Dict[str, Any]) -> None:
@@ -3951,24 +4974,61 @@ def settle_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str,
     CLIENT_ASSUMED; none: ("", CLIENT_UNKNOWN). Not asked (the facts name the client): ("", "")."""
     answered = (state.get("answered") or {}).get("parte_assistita")
     if answered:
-        return str(analysis.get("parte_assistita") or answered), ""
+        client = str(analysis.get("parte_assistita") or answered)
+        return client, (known_client_line(state, analysis, client) if single_mode(state) else "")      # v60s (7)
     if not any(q.get("id") == "parte_assistita" for q in state.get("questions") or []):
-        return "", ""
+        known = _client_name(analysis) if single_mode(state) else ""      # v60s (7): named by the facts
+        return "", (known_client_line(state, analysis, known) if known else "")
     facts = _facts(analysis)
     pick = _assumed_party(state, analysis)
-    # v60d: after a reply that answered a question, never «Non mi hai indicato…» (the assumption is only logged)
-    quiet = bool(state.get("answered_in_reply"))
+    # v60d: after a reply that answered a question, never «Non mi hai indicato…» (the assumption is only logged);
+    # v60k: a single-shot parere says it every time it is assumed (its first line)
+    quiet = bool(state.get("answered_in_reply")) and not single_mode(state)
     if pick is None:
         _log("client_settled", {"how": "unknown", "line": not quiet})
         return "", "" if quiet else C.CLIENT_UNKNOWN
-    role = str(pick.get("role") or "").strip()
+    label = frame_party_label(analysis, str(analysis.get(CASE_KEY) or ""), str(pick.get("role") or ""))   # v60r (5)
+    role = label or str(pick.get("role") or "").strip()
+    _log("party_label", {"party": pick["name"], "label": label, "extracted": pick.get("role") or ""})
     _apply_answer(facts, {"kind": "party", "names": [pick["name"]]}, pick["name"])
     analysis["parte_assistita"] = pick["name"]
     _log("client_settled", {"how": "assumed", "client": pick["name"], "line": not quiet})
     from . import party_names               # v60h (9)
-    return pick["name"], "" if quiet else party_names.contract(
-        C.fill(C.CLIENT_ASSUMED, name=party_names.label(pick["name"], str(analysis.get(CASE_KEY) or "")), role=role)
-        or "")
+    shown = party_names.label(pick["name"], str(analysis.get(CASE_KEY) or ""))
+    if single_mode(state):                  # v60k: «Il parere è reso nell'interesse di X; se assisti un'altra parte…»
+        line = (C.fill(C.SINGLE_SHOT_CLIENT_ROLE, client=shown, role=label) if label and label != _low(shown) else None) \
+            or C.fill(C.SINGLE_SHOT_CLIENT, client=shown)                   # v60r (5): with the frame's label
+        return pick["name"], "" if quiet else party_names.contract(line or "")
+    return pick["name"], "" if quiet else party_names.contract(C.fill(C.CLIENT_ASSUMED, name=shown, role=role) or "")
+
+
+def known_client_line(state: Dict[str, Any], analysis: Dict[str, Any], client: str) -> str:
+    """v60s (7): the single-shot first line for a client the user stated or the facts name -- with the frame's label
+    (frame_party_label) when the client is the party the action is directed at (its role: _CHARGED_RE), else with the
+    counterparty's (a party a carico, else the extraction's «controparte»); neither: the client alone. Logged."""
+    from . import party_names
+    case = str(analysis.get(CASE_KEY) or "")
+    facts = _facts(analysis)
+    dead = set(deceased(facts, case_text(state)))
+    parties = [p for p in facts.get("parties") or [] if isinstance(p, dict) and p.get("name") and p["name"] not in dead]
+    mine = next((p for p in parties if _low(p["name"]) == _low(client)), {})
+    shown = party_names.label(client, case)
+    line, how = None, "solo cliente"
+    if mine and _CHARGED_RE.search(str(mine.get("role") or "")):
+        label = frame_party_label(analysis, case, str(mine.get("role") or ""))
+        line, how = C.fill(C.SINGLE_SHOT_CLIENT_KNOWN_ROLE, client=shown, role=label), "cliente destinatario"
+    else:
+        others = [p for p in parties if _low(p["name"]) != _low(client)]
+        other = next((p for p in others if _CHARGED_RE.search(str(p.get("role") or ""))), None) or \
+            next((p for p in others if _COUNTERPARTY_RE.search(str(p.get("role") or ""))), None)
+        if other:
+            label = frame_party_label(analysis, case, str(other.get("role") or ""))
+            line = C.fill(C.SINGLE_SHOT_CLIENT_COUNTERPARTY, client=shown, party=party_names.label(other["name"], case),
+                          role=label)
+            how = f"controparte {other['name']}" if line else how
+    line = line or C.fill(C.SINGLE_SHOT_CLIENT_KNOWN, client=shown) or ""
+    _log("client_line", {"client": client, "how": how, "line": line})
+    return party_names.contract(line)
 
 
 def hypotheses_block(topics: Sequence[Dict[str, Any]]) -> str:
@@ -4042,7 +5102,10 @@ def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, Li
             return _write_answer(state, numbers)
         finally:
             meter.stop()
-            _log("answer_stages", meter.as_log())
+            stages = meter.as_log()
+            _log("answer_stages", stages)
+            state.setdefault("timings", {})["answer_stages"] = {k: v for k, v in stages.items()
+                                                                 if k.endswith("_s")}      # v60k
 
 
 def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, List[Dict[str, Any]]]:
@@ -4070,10 +5133,29 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     records = state.get("records") or {}
     mark("records_link")        # v60f: each chosen topic's requisites linked to the case's sentences, in parallel
     _isolated("records_link", lambda: link_records(state, topics, dead))
+    if records:                 # v60i (2): the counterparty's articles whose elements fail are the client's argument
+        _isolated("role_verdicts", lambda: role_verdicts(state))
+    if records:                 # v60s (1): an offence issue with no offence article left goes, with all its articles
+        topics = _isolated("issue_survival", lambda: surviving_issues(state, topics, all_rows, dead), topics) or []
+        if not topics:
+            return C.NO_TOPIC_TO_ANSWER, []
+    if records:                 # v60p: each covered topic's anchor earns its §2 block
+        _isolated("anchor_blocks", lambda: anchor_blocks(state, topics))
     cap_dropped: List[Tuple[str, str]] = []
-    refs = capped_refs(topics, records=records if records else None, dropped=cap_dropped,     # v60f (A4): by weight
+    single = single_mode(state)
+    cap = SINGLE_SHOT_ARTICLES if single else TOPIC_ARTICLES          # v60k: the single-shot answer's cap
+    refs = capped_refs(topics, cap=cap, records=records if records else None, dropped=cap_dropped,  # v60f (A4): by weight
                        available={_key(r["_article"]) for r in all_rows if r.get("_article")})
     refs = [r for r in refs if _key(r) not in dead]
+    beyond: List[Tuple[tuple, str]] = []
+    if single:                  # v60k: what the cap leaves out, each with its topic, for the «non trattate» line
+        for ref in cap_dropped:
+            if _key(ref) in dead or _key(ref) in {_key(r) for r, _ in beyond}:     # v60q: once, with its first topic
+                continue
+            topic = next((t for t in topics if _key(ref) in {_key(r) for r in _topic_refs(t, all_=True)}), {})
+            beyond.append((tuple(ref), str(topic.get("title") or "")))
+        _log("single_shot_cap", {"cap": cap, "planned": [_label(r) for r in refs],
+                                 "beyond": [{"article": _label(r), "topic": t} for r, t in beyond]})
     all_rows = [r for r in all_rows if not (r.get("_article") and _key(r["_article"]) in dead)]
     rows = [r for r in all_rows if r.get("_article") and _key(r["_article"]) in {_key(x) for x in refs}]
     for row in rows:            # v56: no footnote marker or editorial note reaches the writer or §2
@@ -4115,7 +5197,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         _log("procedibilita", {f"{n} c.p.": {"esito": f.get("ufficio_esito") or "", "condizioni": [
             {"comma": c.get("comma"), "text": c.get("text", "")[:160], "status": c.get("status"), "why": c.get("why")}
             for c in f.get("ufficio_condizioni") or []]} for n, f in offence_facts.items() if f.get("querela")})
-    analysis_p = {**analysis_p, "offences": offences,          # v58 (J): §4's delitti
+    analysis_p = {**analysis_p, "own_analysis": own_analysis(state, topics),   # v60p: §4's terms by the parere's own
+                  "offences": offences,          # v58 (J): §4's delitti
                   "offence_facts": offence_facts,              # v60 (C): from the text; v60h (1): with the statuses
                   "topic_refs": _matched_refs(topics),                       # v59: the mediation of the topics' matter
                   "listed_topics": [{"title": t.get("title"), "articles": t.get("articles"), "source": t.get("source"),
@@ -4128,8 +5211,13 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             analysis_p = {**analysis_p, "fact_signals": {**_signals(analysis_p), "mediation": {
                 k: v for k, v in listed.items() if k != "matters"}}}
             _log("mediation_list", listed)
+        labour = _isolated("labour_list", lambda: render_computed.labour_of(analysis_p), None)    # v60i (9)
+        if labour is not None and labour.get("matter"):
+            _log("labour_list", labour)
     mark("render")
     rendered = _isolated("render_computed", lambda: render_computed.render(analysis_p, who), state.get("rendered")) or ""
+    if single:                  # v60k: §4's open points in the single-shot form, for the section and the writer alike
+        rendered = open_points_wording(rendered)
     mark("jobs")
     analysis_p = {**analysis_p, CASE_KEY: analysis.get(CASE_KEY) or case}
     context = ptw.statement_context(analysis_p)
@@ -4138,7 +5226,12 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     records_on = record_mode(state)
     # v60g (d): while the answer is written every status is the record's -- the jobs' rules block, the §2 status lines,
     # the checks, the read-back; (e) the ledger defers every removal to the one check run last (record_check)
-    with issue_records.statuses_from(state.get("records") if records_on else None):
+    names_ = party_names_of(state)
+    points = {q["id"]: open_point_fact(q, names_) for q in open_points_list(state)} if single and records_on else {}
+    quals = list(state.get("qualifications") or []) if single and records_on else []      # v60l: «da verificare»
+    # v60r (6): an element no fact touches is «da provare» -- v60p's «da verificare» for the anchors' silent ones is gone
+    with issue_records.statuses_from(state.get("records") if records_on else None), \
+            issue_records.points_from(state.get("records") if points or quals else None, points, quals):   # v60k
         jobs = _jobs(state, plan, analysis_p, rows + tool_rows, refs, topics, rendered, documents)
         glossed = glossed_refs(state, topics, analysis_p, case, section_refs(plan, rows, refs), rows)
         ledger = answer_ledger.Ledger(glossed, ref_documents(list(refs) + list(glossed), rows), defer=records_on)
@@ -4146,7 +5239,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             citation_ledger.protect(list(dict.fromkeys(list(refs) + list(glossed))))     # v60f (X7): tidy's guard set
             try:
                 draft = _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, rows, tool_rows, case,
-                                  context, refs, topics, rendered, numbers, t0, planned, glossed)
+                                  context, refs, topics, rendered, numbers, t0, planned, glossed, beyond, cap)
             finally:
                 citation_ledger.protect(())
     if draft is None:
@@ -4155,8 +5248,14 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     unaccounted = ledger.unaccounted(final)
     buckets = bucket_articles(refs, glossed, draft, ledger, cap_dropped, rows,
                               state.get("records") if records_on else None,
-                              _isolated("sanctions", lambda: sanction_map(section_refs(plan, rows, refs), rows), {}))
+                              _isolated("sanctions", lambda: sanction_map(section_refs(plan, rows, refs), rows), {}),
+                              cap=cap)
     record_answer(state, buckets, ledger, unaccounted, numbers)
+    if single:                                  # v60r (1): the record's rows go to the article citations only
+        moved: Dict[str, Any] = {}
+        draft, state["ledger_rows"] = _isolated("ledger_out", lambda: ledger_out(draft, state, moved),
+                                                (draft, [])) or (draft, [])
+        _log("ledger_rows", {**moved, "rows": len(state["ledger_rows"])})
     from . import party_names                   # v60h (9): a party named by role never capitalised as a name
     roles = party_names.role_names(_facts(analysis).get("parties") or [], case)
     if roles:
@@ -4164,11 +5263,30 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         if lowered != draft:
             _log("roles_lowered", {"roles": roles})
         draft = lowered
+    if single:                                  # v60k: «Punti da precisare», v60q: at most OPEN_POINTS_MAX (0: none)
+        found = _isolated("open_points", lambda: open_points(state, list(refs) + [r for r, _ in beyond]), None)
+        if found and found.get("block"):
+            draft = f"{draft}\n\n{found['block']}"
+    if records_on:                              # v60s (4): §1 and §4 assert only what the record allows
+        weak: List[Dict[str, Any]] = []
+        draft = _isolated("asserted_only", lambda: asserted_only(draft, state, weak), draft) or draft
+        if weak:
+            _log("asserted_only", {"marked": weak})
+    merged: List[str] = []                      # v60r (4): consecutive «(da verificare…)» markers, one
+    draft = merged_markers(draft, merged)
+    if merged:
+        _log("markers_merged", {"runs": merged})
     if assumption:                              # v60 (D): the client assumed, said first
         draft = f"{assumption}\n\n{draft}"
     others = [C.fill(C.CLOSING_TOPIC, n=i, title=t["title"]) for i, t in enumerate(state["topics"], 1) if i not in numbers]
     others = [o for o in others if o]          # v56: no other topic, no closing (never «Oppure dimmi…» alone)
-    closing = C.fill_parts(C.CLOSING, topics=C.LIST_JOIN.join(others)) if others else ""
+    closing = C.fill_parts(C.CLOSING, topics=C.LIST_JOIN.join(others)) if others else \
+        (C.SINGLE_SHOT_CLOSING if single else "")
+    if single:                                  # v60n: the topics not covered, one line each under «Altri profili»
+        rest = _isolated("other_profiles", lambda: single_profiles(state, numbers, analysis), []) or []    # v60r (2)
+        if rest:
+            draft += "\n\n" + "\n".join([C.OTHER_PROFILES_TITLE, ""] + rest)
+        closing = C.SINGLE_SHOT_CLOSING
     if closing:
         draft += "\n\n" + closing
     for n in numbers:
@@ -4183,7 +5301,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
 
 
 def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, rows, tool_rows, case, context, refs,
-              topics, rendered, numbers, t0, planned, glossed=None) -> Optional[str]:
+              topics, rendered, numbers, t0, planned, glossed=None, beyond=(), cap=TOPIC_ARTICLES) -> Optional[str]:
     """The sections written and every pass after them, to the final draft (before the client line and the closing);
     None when the writer fails. Every pass runs through plan_then_write._step or the answer ledger (v60f). v60g, with
     records: the writer under writer_rules (d); no pass deletes -- the ledger defers their removals -- and the one
@@ -4193,7 +5311,8 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     from . import (answer_ledger, defensive_generation as dg, plan_then_write as ptw, record_check, render_computed,
                    repetition_guard, rule_quote, text_tidy, writer_rules)
     records_on = record_mode(state)
-    rules_text = writer_rules.system_rules(plan.get("parte_assistita") or "") if records_on else ""
+    rules_text = writer_rules.system_rules(plan.get("parte_assistita") or "", references=single_mode(state)) \
+        if records_on else ""
     mark("write")
     sections = _isolated("write", lambda: ptw.write_sections(plan, jobs, lang, named, documents, rows + tool_rows, case,
                                                              context=context, sections_note=sections_note(),
@@ -4206,6 +5325,10 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     logs_k: List[Dict[str, Any]] = []
     sections = ptw._step("cosmetic_fixes", sections, lambda secs: cosmetic_fixes(
         secs, list(ANSWER_TITLES) + [OTHER_PROFILES_TITLE], logs_k))                                            # v57 (K)
+    if records_on:              # v60q: the statuses are the code's -- never the writer's ordinary words
+        status_log: List[Dict[str, Any]] = []
+        sections = ptw._step("status_words", sections, lambda secs: status_words_out(secs, status_log))
+        _log("status_words", {"rewritten": status_log})
     logs: Dict[str, List[Dict[str, Any]]] = {"term_consistency": [], "unsupported_out": [], "citation_check": [],
                                              "strict_status": [], "conditional": [], "objections": []}
     rule_refs = _rule_refs(rows, refs)
@@ -4220,9 +5343,9 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
         secs, analysis_p["offence_facts"], {n: r for n, r in offences}, logs["procedural_consistency"],
         skip=(ANSWER_TITLES[3],)))
 
-    def quoted(secs):
+    def quoted(secs):           # v60q (single shot): references, never the comma's text -- a failing rule sentence goes
         done, log = rule_quote.check_sections(secs, plan, rows, analysis_p, documents, verbs=rule_quote.EXTENDED_VERB_RE,
-                                              refs=rule_refs)
+                                              refs=rule_refs, quote=not single_mode(state))
         logs["rule_quote"] = [log]
         return done
     sections = ptw._step("rule_quote", sections, quoted)
@@ -4233,7 +5356,7 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     mark("party_names")
     names = _isolated("party_names", lambda: rule_quote.party_names(analysis_p, plan), []) or []
     sections = ptw._step("conditional_on_unknown", sections, lambda secs: conditional_on_unknown(
-        secs, rules, analysis_p, documents, names, logs["conditional"]))
+        secs, rules, analysis_p, documents, names, logs["conditional"], single=single_mode(state)))
     logs["unanswered"] = []
     sections = ptw._step("unanswered_out", sections, lambda secs: unanswered_out(secs, state, logs["unanswered"], names))
     if plan.get("obiezioni_norme"):
@@ -4242,6 +5365,7 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     sections = ptw._step("repetition_guard", sections, lambda secs: repetition_guard.guard_sections(secs, "interactive")[0])
     mark("allowed")
     allowed = _allowed(state, analysis_p, rule_refs or refs, tool_rows, rendered, documents)
+    allowed = list(allowed) + [r for r, _ in beyond or ()]      # v60k: named in the «non trattate» line, never argued
     sections = ptw._step("citation_check", sections, lambda secs: citation_check(secs, allowed, documents,
                                                                                 logs["citation_check"]))
     logs["headless"] = []
@@ -4276,7 +5400,8 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     sections = ptw._step("assemble", sections, lambda secs: [
         (t, assemble_objections(x, titles, logs["objections"]) if t == ANSWER_TITLES[2]
          else assemble_norms(x, rules, analysis_p, rows, logs["norms"], section_refs(plan, rows, refs),
-                             _pool_rubriche(state), glossed, anchors, keep=records_on, sanctions=sanctions)
+                             _pool_rubriche(state), glossed, anchors, keep=records_on, sanctions=sanctions,
+                             beyond=[r for r, _ in beyond or ()])
          if t == ANSWER_TITLES[1] else x) for t, x in secs])
     before = list(sections)
     sections = [(t, x) for t, x in sections if (x or "").strip()]      # an objections section with no reply: gone
@@ -4286,7 +5411,19 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     draft = answer_ledger.draft_step("tidy", draft, lambda d: text_tidy.tidy(d)[0])
     logs["final"] = []
     verdicts = record_verdicts(state) if records_on else None
-    draft = answer_ledger.draft_step("answer_final", draft, lambda d: answer_final(d, logs["final"], verdicts))   # v59
+    lines = record_lines(state, sanctions, {_label(_key(r)): t for r, t in beyond or ()}, cap) \
+        if records_on else None                                                     # v60i (1); v60k: the cap's
+    if records_on:
+        from . import issue_records
+        asked_now = open_questions(state)
+        _log("norm_blocks", {"blocks": [_label(_key(r)) for r in glossed],
+                             "by_question": {label: issue_records.asked(state["records"][label], asked_now)
+                                             for label in (_label(_key(r)) for r in glossed)
+                                             if label in (state.get("records") or {})
+                                             and issue_records.asked(state["records"][label], asked_now)},
+                             "lines": {label: list(v) for label, v in (lines or {}).items()
+                                       if label in {_label(_key(r)) for r in section_refs(plan, rows, refs)}}})
+    draft = answer_ledger.draft_step("answer_final", draft, lambda d: answer_final(d, logs["final"], verdicts, lines))
     mark("readback")
     logs["readback"] = {}                       # v60 (E): contradictions, facts in no source, the lint
     draft = answer_ledger.draft_step("readback", draft, lambda d: _read_back(
@@ -4299,7 +5436,7 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
             or (None, {"error": "failed"})
         if checked is not None:
             draft = answer_ledger.rejoin(draft, checked)
-            draft = folded_norms(draft, verdicts, logs["final"])
+            draft = folded_norms(draft, verdicts, logs["final"], lines)
         _log("record_check", {k: v for k, v in logs["record_check"].items() if k != "rejected"}
              | {"rejected": len(logs["record_check"].get("rejected") or [])})
     _log("answer", {"topics": [t["title"] for t in topics], "planned": planned, "articles": [_label(r) for r in rule_refs],
@@ -4320,27 +5457,39 @@ _NOT_APPLY_RE = re.compile(
     r"|\b(?:è|risulta)\s+inapplicabile|\besula\s+dal(?:la)?\s+(?:caso|fattispecie|vicenda)"
     r"|^\W*(?:norma\s+)?non\s+applicabile\b", re.IGNORECASE)
 _CASE_REF_RE = re.compile(r"\b(?:al|nel|alla|nella|ai|nei|per il|per la)\s+(?:presente\s+)?(?:caso|fattispecie|vicenda|"
-                          r"fatti|specie)\b|\bqui\b|\bin concreto\b|\bin esame\b", re.IGNORECASE)
+                          r"fatti|specie)\b|\bqui\b|\bin concreto\b|\bin esame\b"
+                          # v60i (6): «non si applica in questo caso», «nel caso di specie»
+                          r"|\bin\s+(?:questo|quest['’]|tale|codesto)\s*(?:caso|fattispecie|vicenda|ipotesi)\b"
+                          r"|\bnel\s+caso\s+(?:di\s+specie|concreto|in\s+esame)\b", re.IGNORECASE)
 _NORM_SUBJECT_RE = re.compile(r"^\W*(?:(?:la|questa|tale)\s+(?:norma|disposizione|previsione)|(?:l['’]|quest['’]|"
                               r"tale\s+)\s*articolo|l['’]art\.\s*\d+|essa|non\s+si\s+applica|norma\s+non\s+"
                               r"applicabile|non\s+applicabile)\b", re.IGNORECASE)
 # v60e: phrasings that declare it whatever their subject («non rileva (direttamente)», «non costituisce un problema»,
 # «mantiene la sua efficacia», «non trova applicazione», «non è pertinente», «non si pone»)
+# v60i (6): the PO's phrasings from the live answers -- «non è rilevante», «non è scaduto», «non costituisce una norma
+# sostanziale», «è ancora in corso» (a term that bars nothing yet)
 _NOT_APPLY_STRONG_RE = re.compile(
     r"\bnon\s+rileva(?:\s+direttamente)?\b|\bnon\s+costituisce\s+(?:un\s+|alcun\s+)?problema|\bmantiene\s+(?:la\s+sua\s+|"
     r"intatta\s+la\s+(?:sua\s+)?)?efficacia|\bnon\s+trova\s+applicazione|\bnon\s+(?:è|risulta|appare)\s+pertinente|"
-    r"\bnon\s+si\s+pone\b", re.IGNORECASE)
+    r"\bnon\s+si\s+pone\b"
+    r"|\bnon\s+(?:è|risulta|appare|sembra)\s+(?:direttamente\s+)?rilevante|\bnon\s+(?:è|risulta)\s+(?:ancora\s+)?scadut[oa]\b"
+    r"|\bnon\s+costituisce\s+(?:una\s+)?norma\s+sostanziale|\b(?:è|risulta)\s+ancora\s+in\s+corso\b", re.IGNORECASE)
 _APPLIES_RE = re.compile(r"(?<!non )\b(?:si applica|è applicabile|trova applicazione|si applicano|sono applicabili)\b",
                          re.IGNORECASE)
 _PARTIAL_RE = re.compile(r"\b(?:comma|co\.|ma|tuttavia|invece|bensì|salvo|se|qualora|ove|purché|nella misura)\b",
                          re.IGNORECASE)
 
 
+_ABBREV_SAFE_SPLIT_RE = re.compile(r"(?<!\bn\.)(?<!\bnn\.)(?<!\bco\.)(?<!\bart\.)(?<!\bartt\.)(?<!\blett\.)(?<!\bss\.)"
+                                   r"(?<!\bcfr\.)(?<=[.;!?])\s+", re.IGNORECASE)
+
+
 def declares_inapplicable(gloss: str) -> bool:
     """v60d: the gloss says its article does not apply to the case (one sentence, _NOT_APPLY_RE with the case or the
     norm as its subject), and none of its sentences applies it."""
     plain = re.sub(r"«[^»]*»|\"[^\"]*\"", " ", gloss or "")
-    sentences = [x.strip() for x in re.split(r"(?<=[.;!?])\s+", " ".join(plain.split())) if x.strip()]
+    # v60i (6): never split after an abbreviation («(comma 2, n. 2) non è rilevante» is one sentence about one comma)
+    sentences = [x.strip() for x in _ABBREV_SAFE_SPLIT_RE.split(" ".join(plain.split())) if x.strip()]
     said = any((_NOT_APPLY_RE.search(x) and (_CASE_REF_RE.search(x) or _NORM_SUBJECT_RE.search(x))
                 or _NOT_APPLY_STRONG_RE.search(x)) and not _PARTIAL_RE.search(x) for x in sentences)
     applied = any(_APPLIES_RE.search(x) and not _NOT_APPLY_RE.search(x) and not _NOT_APPLY_STRONG_RE.search(x)
@@ -4351,29 +5500,79 @@ _OTHER_ITEM_RE = re.compile(r"art\.\s*(\S+)\s+(.+?)\s*$")
 _NOT_APPLICABLE_RE = re.compile(r"^" + re.escape(C.NOT_APPLICABLE_LINE.split("{", 1)[0]) + r"\s*(.*?)\.?\s*$")
 
 
+_ITEM_RE = re.compile(r"^art\.\s*(\S+)\s+(.+?)(?:\s+\((.*)\))?\s*$")
+
+
+def _line_items(text: str) -> List[Tuple[str, str, str]]:
+    """v60i (1): the items of a closing line as (number, code, reason) -- split at the join outside «…» and (…), so a
+    reason holding a comma stays one item. v60k: the last item's code given back the dot the line's own full stop took
+    («c.c» -> «c.c.»)."""
+    join = C.OTHER_NORMS_JOIN or ", "
+    pieces, cur, depth, i = [], "", 0, 0
+    while i < len(text or ""):
+        ch = text[i]
+        if ch in "(«":
+            depth += 1
+        elif ch in ")»":
+            depth = max(0, depth - 1)
+        if depth == 0 and text.startswith(join, i):
+            pieces.append(cur)
+            cur, i = "", i + len(join)
+            continue
+        cur += ch
+        i += 1
+    pieces.append(cur)
+    out = []
+    for piece in (x.strip() for x in pieces if x.strip()):
+        m = _ITEM_RE.match(piece)
+        if not m:
+            out.append(("", piece, ""))
+            continue
+        code = m.group(2).strip()
+        if re.fullmatch(r"(?:[a-z]{1,4}\.\s?)+[a-z]{1,4}", code):          # an abbreviation cut at its last dot
+            code += "."
+        out.append((m.group(1), code, m.group(3) or ""))
+    return out
+
+
 def norms_final(text: str, log: Optional[List[Dict[str, Any]]] = None,
-                verdicts: Optional[Dict[str, str]] = None) -> str:
+                verdicts: Optional[Dict[str, str]] = None,
+                lines: Optional[Dict[str, Tuple[str, str]]] = None) -> str:
     """§2 as read: an article heading followed by nothing (v58-h5 625, 52, 628-bis, 53; v58-p1 52, 53; v58-l3 1117,
     1118 -- tidy and the checks after assembly can empty a block) is no block; it is named once in the closing line
     (OTHER_NORMS_LINE) with those already there. verdicts (v60g P1: {"N code": the record's verdict}): «non
     applicabile» is the record's, never the gloss' -- no gloss is read for it (declares_inapplicable) and none goes; a bare
-    block of a «non applicabile» article is named in NOT_APPLICABLE_LINE."""
+    block of a «non applicabile» article is named in NOT_APPLICABLE_LINE. lines (v60i 1: {"N code": (line, reason)},
+    record_lines -- the articles with no block due): such an article with no paragraph left is one item of its line,
+    its reason with it (a paragraph on it is the check's to remove first); every item of the record's lines carries its
+    reason."""
     from . import issue_records
-    lines = (text or "").split("\n")
+    lines = lines or {}
+    rows = (text or "").split("\n")
     out: List[str] = []
-    untreated: List[str] = []
-    inapplicable: List[str] = []
+    untreated: Dict[str, Tuple[str, str, str]] = {}
+    inapplicable: Dict[str, Tuple[str, str, str]] = {}
+
+    def label_of(number: str, code: str) -> str:
+        return f"{number} {_code_label(code)}" if number else code
+
+    def add(target, number, code, reason=""):
+        key = label_of(number, code)
+        reason = reason or (target.get(key) or ("", "", ""))[2] or (lines.get(key) or ("", ""))[1]
+        target[key] = (number, code, reason)
     i = 0
-    while i < len(lines):
-        line = lines[i]
+    while i < len(rows):
+        line = rows[i]
         m = _OTHER_NORMS_RE.match(line.strip())
         if m:
-            untreated += [x.strip() for x in m.group(1).split(C.OTHER_NORMS_JOIN.strip() or ",") if x.strip()]
+            for number, code, reason in _line_items(m.group(1)):
+                add(untreated, number, code, reason)
             i += 1
             continue
         m = _NOT_APPLICABLE_RE.match(line.strip())
         if m:
-            inapplicable += [x.strip() for x in m.group(1).split(C.OTHER_NORMS_JOIN.strip() or ",") if x.strip()]
+            for number, code, reason in _line_items(m.group(1)):
+                add(inapplicable, number, code, reason)
             i += 1
             continue
         h = _NORM_HEADING_RE.match(line.strip())
@@ -4382,54 +5581,67 @@ def norms_final(text: str, log: Optional[List[Dict[str, Any]]] = None,
             i += 1
             continue
         j = i + 1
-        while j < len(lines) and not _NORM_HEADING_RE.match(lines[j].strip()) and not _OTHER_NORMS_RE.match(lines[j].strip()) \
-                and not _NOT_APPLICABLE_RE.match(lines[j].strip()):
+        while j < len(rows) and not _NORM_HEADING_RE.match(rows[j].strip()) and not _OTHER_NORMS_RE.match(rows[j].strip()) \
+                and not _NOT_APPLICABLE_RE.match(rows[j].strip()):
             j += 1
-        body_ij = "\n".join(lines[i + 1:j]).strip()
-        label = f"{h.group(1)} {_code_label(h.group(2).strip())}"
+        body_ij = "\n".join(rows[i + 1:j]).strip()
+        number, code = h.group(1), h.group(2).strip()
+        label = f"{number} {_code_label(code)}"
         if verdicts is not None:            # v60g: the record decides; a block with its gloss stays as written
-            prose = any(x.strip() and not x.lstrip().startswith("- ") for x in lines[i + 1:j])
-            if verdicts.get(label) == issue_records.NOT_APPLICABLE and not prose:
+            prose = any(x.strip() and not x.lstrip().startswith("- ") for x in rows[i + 1:j])
+            due = lines.get(label)
+            if due and not prose:
+                # v60i (1): no block due (the verdict not «applicabile», or «da provare» with no sentence of the case
+                # for it): one item of its line, with its reason
+                add(inapplicable if due[0] == issue_records.LINE_NOT_APPLICABLE else untreated, number, code, due[1])
+                if log is not None:
+                    log.append({"one_line": label, "line": due[0], "reason": due[1]})
+            elif verdicts.get(label) == issue_records.NOT_APPLICABLE and not prose:
                 # v60h (5): a «non applicabile» article is one item of the line, never a block (its status lines go
                 # with it; a paragraph on it is the check's to remove: record_check norma_non_applicabile)
-                inapplicable.append(C.fill(C.NOT_APPLICABLE_ITEM, number=h.group(1), code=h.group(2).strip())
-                                    or f"art. {h.group(1)}")
+                add(inapplicable, number, code)
                 if log is not None:
                     log.append({"not_applicable": label, "by": "record"})
             elif body_ij:
-                out += lines[i:j]
+                out += rows[i:j]
             elif verdicts.get(label) == issue_records.NOT_APPLICABLE:
-                inapplicable.append(C.fill(C.NOT_APPLICABLE_ITEM, number=h.group(1), code=h.group(2).strip())
-                                    or f"art. {h.group(1)}")
+                add(inapplicable, number, code)
                 if log is not None:
                     log.append({"not_applicable": label, "by": "record"})
             else:
-                untreated.append(C.fill(C.OTHER_NORMS_ITEM, number=h.group(1), code=h.group(2).strip())
-                                 or f"art. {h.group(1)}")
+                add(untreated, number, code, C.LINE_REASON_NOT_WRITTEN if lines else "")
                 if log is not None:
                     log.append({"bare": label})
             i = j
             continue
         if body_ij and declares_inapplicable(body_ij):      # v60d: one item of NOT_APPLICABLE_LINE, not a block
-            inapplicable.append(C.fill(C.NOT_APPLICABLE_ITEM, number=h.group(1), code=h.group(2).strip())
-                                or f"art. {h.group(1)}")
+            add(inapplicable, number, code)
             if log is not None:
-                log.append({"not_applicable": f"{h.group(1)} {h.group(2).strip()}", "gloss": " ".join(body_ij.split())[:300]})
+                log.append({"not_applicable": f"{number} {code}", "gloss": " ".join(body_ij.split())[:300]})
         elif body_ij:
-            out += lines[i:j]
+            out += rows[i:j]
         else:
-            untreated.append(C.fill(C.OTHER_NORMS_ITEM, number=h.group(1), code=h.group(2).strip()) or f"art. {h.group(1)}")
+            add(untreated, number, code)
             if log is not None:
-                log.append({"bare": f"{h.group(1)} {h.group(2).strip()}"})
+                log.append({"bare": f"{number} {code}"})
         i = j
+
+    def item(number, code, reason, plain):
+        if not number:
+            return code
+        if reason:
+            return C.fill(C.NORM_ITEM_REASON, number=number, code=code, reason=reason) or f"art. {number} {code}"
+        return C.fill(plain, number=number, code=code) or f"art. {number}"
     body = re.sub(r"\n{3,}", "\n\n", "\n".join(out)).strip("\n")
-    untreated = list(dict.fromkeys(untreated))
+    for key in [k for k in untreated if k in inapplicable]:
+        untreated.pop(key)
     closings = []
     if inapplicable:
-        closings.append(C.fill(C.NOT_APPLICABLE_LINE,
-                               articles=C.OTHER_NORMS_JOIN.join(dict.fromkeys(inapplicable)).rstrip(".")))
+        closings.append(C.fill(C.NOT_APPLICABLE_LINE, articles=C.OTHER_NORMS_JOIN.join(
+            item(n, c, r, C.NOT_APPLICABLE_ITEM) for n, c, r in inapplicable.values()).rstrip(".")))
     if untreated:
-        closings.append(C.fill(C.OTHER_NORMS_LINE, articles=C.OTHER_NORMS_JOIN.join(untreated).rstrip(".")))
+        closings.append(C.fill(C.OTHER_NORMS_LINE, articles=C.OTHER_NORMS_JOIN.join(
+            item(n, c, r, C.OTHER_NORMS_ITEM) for n, c, r in untreated.values()).rstrip(".")))
     closing = "\n\n".join(c for c in closings if c)
     if not closing:
         return body
@@ -4562,7 +5774,7 @@ def _scaffold_bullets_out(text: str, glosses: bool, log: List[Dict[str, Any]]) -
 
 
 def answer_final(draft: str, log: Optional[List[Dict[str, Any]]] = None,
-                 verdicts: Optional[Dict[str, str]] = None) -> str:
+                 verdicts: Optional[Dict[str, str]] = None, lines: Optional[Dict[str, Tuple[str, str]]] = None) -> str:
     """v59: the last pass on the answer before its closing offer -- §2's bare headings into the closing line
     (norms_final); in every written section the cut lines (_orphans_out), a marker or a condition said once
     (_markers_once), a label-only bullet or, in «Altri profili» and
@@ -4587,7 +5799,7 @@ def answer_final(draft: str, log: Optional[List[Dict[str, Any]]] = None,
             text = _markers_once(text, log)        # v60f (P9): _references_fixed gone, the writer names real sections
             text = _scaffold_bullets_out(text, title in (OTHER_PROFILES_TITLE, ANSWER_TITLES[2]), log)
         if title == ANSWER_TITLES[1]:
-            text = norms_final(text, log, verdicts)
+            text = norms_final(text, log, verdicts, lines)
         if title == OTHER_PROFILES_TITLE and not re.search(r"(?m)^\s*[-•*]\s+\S", text):
             log.append({"section_out": title})
             continue                # the intro alone, every item gone: no section
@@ -4646,12 +5858,46 @@ _CLIENT_STATED_RE = re.compile(
 _ROLE_WORDS = (r"imputat[oa]|indagat[oa]|persona offesa|vittima|querelante|denunciante|attore|attrice|convenut[oa]|"
                r"ricorrente|resistente|appellante|appellat[oa]|locatore|locatrice|conduttore|conduttrice|venditore|"
                r"venditrice|acquirente|committente|appaltatore|datore di lavoro|lavorator[ea]|creditore|debitore|"
-               r"erede|eredi|danneggiat[oa]|danneggiante|proprietari[oa]|condomin[oa]|amministratore")
+               r"erede|eredi|danneggiat[oa]|danneggiante|proprietari[oa]|condomin[oa]|amministratore|"
+               # v60i (8): the roles a case names its parties by
+               r"inquilin[oa]|affittuari[oa]|comproprietari[oa]|societ[àa]|aziend[ae]|ditt[ae]|impres[ae]|"
+               r"vicin[oa]|consumator[ea]|fornitore|professionista|dipendente|compratore|compratrice|comodatari[oa]|"
+               r"comodante|usufruttuari[oa]|mutuatari[oa]|legittimari[oa]|paziente|struttura|banca|"
+               r"assicurazione|compagnia|condominio|comune|ente")
+# v60i (8): the lawyer of a role -- «sono l'avvocato dell'inquilino», «come legale del proprietario» -- or, at the start
+# of the message (a reply to «Chi assisti?»), «l'avvocato dell'inquilino» alone; inside a narrative («il legale del
+# proprietario ha scritto») it is the other side's lawyer, never the client
+_LAWYER_OF = (r"(?:il\s+|la\s+|l['’]\s*)?(?:legale|avvocat[oa]|difensore)\s+(?:del(?:la|lo|l['’])?|dei|degli|delle|di)")
 _CLIENT_ROLE_RE = re.compile(
-    r"\b(?:assisto|assistiamo|difendo|difendiamo|rappresento|rappresentiamo|tutelo|seguo|patrocino|"
-    r"(?:il|la)\s+mi[oa]\s+(?:cliente|assistit[oa])\s+(?:è|e')|sono\s+(?:il|l['’]|la)\s*(?:legale|avvocat[oa]|difensore)"
-    r"\s+(?:del(?:la|lo|l['’])?|dei|degli|delle))\s*(?:il|lo|la|l['’]|i|gli|le)?\s*(" + _ROLE_WORDS + r")\b",
+    r"(?:\b(?:assisto|assistiamo|difendo|difendiamo|rappresento|rappresentiamo|tutelo|seguo|patrocino|"
+    r"(?:il|la)\s+mi[oa]\s+(?:cliente|assistit[oa])\s+(?:è|e'))"
+    r"|\b(?:sono|sei|siamo|come|quale|in\s+qualit[àa]\s+di|nelle\s+vesti\s+di|assunte\s+le\s+vesti\s+di)\s+" + _LAWYER_OF
+    + r")\s*(?:il|lo|la|l['’]|i|gli|le)?\s*(" + _ROLE_WORDS + r")\b",
     re.IGNORECASE)
+_CLIENT_ROLE_BARE_RE = re.compile(r"^\W*" + _LAWYER_OF + r"\s*(?:il|lo|la|l['’]|i|gli|le)?\s*(" + _ROLE_WORDS
+                                  + r")\b(?=\s*(?:[.,;:!?]|$))", re.IGNORECASE)
+# v60i (8): a role word and the words that name the same party in the facts (its name or its role)
+_ROLE_SYNONYMS = (
+    (r"inquilin|conduttor|conduttric|affittuari|locatari", r"inquilin|conduttor|conduttric|affittuari|locatari"),
+    (r"locator|locatric", r"locator|locatric"),
+    (r"proprietari|comproprietari", r"proprietari"),
+    (r"societ|aziend|ditt|impres", r"societ|aziend|ditt[ae]\b|impres|\bs\.?\s?r\.?\s?l\b|\bs\.?\s?p\.?\s?a\b|"
+                                   r"\bs\.?\s?n\.?\s?c\b|\bs\.?\s?a\.?\s?s\b|\bsrl\b|\bspa\b"),
+    (r"datore", r"datore|datrice|aziend|societ|ditt[ae]\b|impres"),
+    (r"lavorator|dipendent", r"lavorator|dipendent|operai"),
+    (r"acquirent|comprator|compratric", r"acquirent|comprator|compratric|consumator"),
+    (r"venditor|venditric", r"venditor|venditric|alienant"),
+)
+
+
+def role_party(role: str, parties: Sequence[Dict[str, Any]], exclude: Sequence[str] = ()) -> str:
+    """v60i (8): the one party a role word names -- its name or its role holds the word or a synonym of it
+    (_ROLE_SYNONYMS: «l'inquilino» is the conduttore, «la società» the S.r.l.); "" when none or several."""
+    low = _low(role)
+    words = next((names for pattern, names in _ROLE_SYNONYMS if re.match(pattern, low)), re.escape(low[:6]))
+    hits = [p["name"] for p in parties or [] if isinstance(p, dict) and p.get("name") and p["name"] not in exclude
+            and re.search(words, f"{_low(p['name'])} | {_low(p.get('role'))}")]
+    return hits[0] if len(set(hits)) == 1 else ""
 _QUESTION_RE = re.compile(r"[^.?!\n]*\?")
 
 
@@ -4664,7 +5910,7 @@ def stated(text: str) -> Dict[str, str]:
     client = next((g for g in m.groups() if g), "") if m else ""
     role = ""
     if not client:
-        r = _CLIENT_ROLE_RE.search(text or "")
+        r = _CLIENT_ROLE_RE.search(text or "") or _CLIENT_ROLE_BARE_RE.search((text or "").strip())
         role = r.group(1).lower() if r else ""
     questions = [" ".join(q.split()) for q in _QUESTION_RE.findall(text or "") if len(q.split()) >= 3]
     angle = re.sub(r"^(?:e|ma|quindi|dunque|allora)\s+", "", questions[-1], flags=re.IGNORECASE) if questions else ""
@@ -4721,13 +5967,11 @@ def apply_stated(state: Dict[str, Any], said: Dict[str, str], renumber: Sequence
     """The client the user named is the client (no «Chi assisti» question); the question they asked is the angle: the
     topics it matches listed first and chosen ("procedi" takes them), every topic still listed."""
     name = said.get("client") or ""
-    if not name and said.get("client_role"):        # v60d: by its role -- the one party whose role holds the word
-        stem = said["client_role"][:6]
+    if not name and said.get("client_role"):        # v60d: by its role; v60i (8): its name or role, or a synonym
         facts0 = _facts(_restored_analysis(state["analysis"]))
         dead = set(deceased(facts0, case_text(state)))
-        hits = [p["name"] for p in facts0.get("parties") or [] if isinstance(p, dict) and p.get("name")
-                and p["name"] not in dead and stem in _low(p.get("role"))]
-        name = hits[0] if len(set(hits)) == 1 else ""
+        name = role_party(said["client_role"], facts0.get("parties") or [], list(dead))
+        _log("client_by_role", {"role": said["client_role"], "party": name})
     if name:
         analysis = _restored_analysis(state["analysis"])
         facts = _facts(analysis)
@@ -4781,6 +6025,453 @@ def start(message: str, lang: str = "it", request: str = "") -> Tuple[str, Dict[
     return reply, field, state
 
 
+# --- v60k: single shot (CASE_FIRST_SINGLE_SHOT) ------------------------------------------------------------------------
+# One message in, one complete parere out, the five sections: round 1 runs inside (first read, retrieval, grouping,
+# records, demotion) and is never shown. The client from the message (stated, apply_stated), else assumed from the case
+# (settle_client: SINGLE_SHOT_CLIENT, the parere's first line); its lines order the topics (reside). Every topic with
+# graded rows is covered, the cap SINGLE_SHOT_ARTICLES. What the case does not state is «da verificare: il caso non dice
+# …» where it counts; v60q: no «Punti da precisare» unless OPEN_POINTS_MAX says (open_points). A later message
+# updates the parere from the cached analysis, the changed parts marked «(aggiornato)» (_single_update).
+
+OTHER_PROFILES_MAX = 5          # v60r (2): the single-shot «Altri profili» lines, the best by score
+
+
+def single_profiles(state: Dict[str, Any], numbers: Sequence[int], analysis: Dict[str, Any]) -> List[str]:
+    """v60r (2): the single-shot «Altri profili» -- one line per topic not covered, its articles those inside the
+    Sezione / Capo it is named by (state["units"]: an article known to lie outside it leaves the line; its anchor, the
+    first left), past the code-area gate (an article of a code outside the frame's area only when admitted: area_gate's
+    log); a line left with none goes. Ordered by score (the best grade, then the graded rows) and cut at
+    OTHER_PROFILES_MAX. Logged with what each check took out."""
+    units = state.get("units") or {}
+    gate = state.get("area_gate") or {}
+    families = gate.get("families") if "families" in gate else frame_families(analysis)
+    admitted = {x.get("article") for x in gate.get("admitted") or []}
+
+    def in_area(label: str) -> bool:
+        family = CODE_FAMILY.get(_key(_parse_label(label))[1])
+        return not family or not families or family in families or label in admitted
+    log: Dict[str, Any] = {"outside_unit": {}, "outside_area": {}, "dropped": [], "reanchored": {}}
+    items = []
+    for i, t in enumerate(state.get("topics") or [], 1):
+        if i in numbers:
+            continue
+        arts = [_label(_key(r)) for r in _topic_refs(t)]
+        unit = str(t.get("unit") or "") if t.get("source") in ("sezione", "capo") else ""
+        inside = [a for a in arts if not unit or a not in units or unit in units[a]]
+        if len(inside) < len(arts):
+            log["outside_unit"][t.get("title") or str(i)] = [a for a in arts if a not in inside]
+        kept = [a for a in inside if in_area(a)]
+        if len(kept) < len(inside):
+            log["outside_area"][t.get("title") or str(i)] = [a for a in inside if a not in kept]
+        if not kept:
+            log["dropped"].append(t.get("title") or str(i))
+            continue
+        if arts and kept[0] != arts[0]:
+            log["reanchored"][t.get("title") or str(i)] = kept[0]
+        items.append(((int(t.get("best_grade") or 0), int(t.get("graded") or 0)), i, t, kept))
+    items.sort(key=lambda x: (-x[0][0], -x[0][1], x[1]))
+    log["listed"] = [{"topic": t.get("title"), "score": list(score), "articles": kept}
+                     for score, _, t, kept in items[:OTHER_PROFILES_MAX]]
+    log["cut"] = [t.get("title") for _, _, t, _ in items[OTHER_PROFILES_MAX:]]
+    _log("single_shot_profiles", log)
+    lines = [C.fill(C.OTHER_PROFILE_LINE_TITLE, title=t["title"], articles=_articles_line({"articles": kept}))
+             for _, _, t, kept in items[:OTHER_PROFILES_MAX]]
+    return [x for x in lines if x]
+
+
+# v60r (4): consecutive «(da verificare…)» markers -- the writer's, conditional_on_unknown's, the record check's -- one
+_MARKER_RUN_RE = re.compile(r"(?:[ \t]*\(da verificare(?::[^()]*)?\)){2,}", re.IGNORECASE)
+_MARKER_RE = re.compile(r"\(da verificare(?::\s*([^()]*))?\)", re.IGNORECASE)
+
+
+def merged_markers(text: str, log: Optional[List[str]] = None) -> str:
+    """The text with each run of adjacent «(da verificare…)» markers as one, its contents deduplicated («; »)."""
+    def one(m: "re.Match") -> str:
+        items = list(dict.fromkeys(" ".join(x.split()) for x in _MARKER_RE.findall(m.group(0)) if x.strip()))
+        lead = m.group(0)[:len(m.group(0)) - len(m.group(0).lstrip())]
+        if log is not None:
+            log.append(" ".join(m.group(0).split())[:200])
+        return lead + (f"(da verificare: {'; '.join(items)})" if items else "(da verificare)")
+    return _MARKER_RUN_RE.sub(one, text or "")
+
+
+def covered_topics(state: Dict[str, Any]) -> List[int]:
+    """The topics the single-shot answer covers. v60n: at most SINGLE_SHOT_TOPICS, those holding an article the user's
+    text names, the main-line hypothesis or a row graded 3 (in that priority), in their order; none: the immediate
+    answer's (default_choice). The rest, one line each under «Altri profili» (_write_answer). Logged. v60q: the
+    criteria order every topic -- a named article, the main line, a row graded 3, then the topics meeting none, each
+    group in the topics' order -- and the answer covers the first SINGLE_SHOT_TOPICS of that order, in that order: at
+    least SINGLE_SHOT_TOPICS_MIN where as many exist (logged with the order)."""
+    from . import defensive_generation as dg
+    named = {_key(r) for r in dg._refs_in(case_text(state)) if len(r) == 2}
+    why: Dict[int, List[str]] = {}
+    for i, t in enumerate(state.get("topics") or [], 1):
+        reasons = []
+        if named & {_key(_parse_label(a)) for a in t.get("articles") or []}:
+            reasons.append("articolo nominato")
+        if any(h.get("line") == "principale" for h in t.get("hypotheses") or []):
+            reasons.append("linea principale")
+        if any(isinstance(g, int) and g >= 3 for g in (t.get("grades") or {}).values()):
+            reasons.append("grado 3")
+        if reasons:
+            why[i] = reasons
+    rank = ("articolo nominato", "linea principale", "grado 3")
+    count = len(state.get("topics") or [])
+    order = sorted(range(1, count + 1), key=lambda i: (min(rank.index(r) for r in why[i]) if i in why else len(rank), i))
+    chosen = order[:SINGLE_SHOT_TOPICS] or default_choice(state)[:SINGLE_SHOT_TOPICS]
+    floor = min(SINGLE_SHOT_TOPICS_MIN, count)
+    _log("single_shot_topics", {"covered": chosen, "order": order,
+                                "why": {str(i): why.get(i) or ["nessun criterio: per ordine"] for i in chosen},
+                                "rest": [i for i in range(1, count + 1) if i not in chosen],
+                                "beyond_cap": sorted(set(why) - set(chosen)),
+                                "floor": {"min": floor, "ok": len([i for i in chosen if 0 < i <= count]) >= floor}})
+    return chosen
+
+
+def single_shot(message: str, lang: str = "it", request: str = "") -> Dict[str, Any]:
+    """v60k: the complete parere for a narrative case -- {"answer", "interaction", "state", "citations", "kind"}, as
+    follow_up's. Round 1 internally (analyse_case), the client the message states (apply_stated) or the one the answer
+    assumes, whose side orders the topics (prepare_side); every graded topic answered (write_answer); timed
+    (single_shot_timings)."""
+    t0 = time.time()
+    state = analyse_case(message, request, lang)
+    state["mode"] = "single_shot"
+    said = stated(request or message)
+    _isolated("stated", lambda: apply_stated(state, said))
+    if not (state.get("answered") or {}).get("parte_assistita"):
+        _isolated("prepare_side", lambda: prepare_side(state))       # the assumed client's lines order the topics
+    numbers = covered_topics(state)
+    state["chosen"] = numbers
+    t1 = time.time()
+    state["state"] = FRAME_CONFIRMED
+    text, citations = write_answer(state, numbers)
+    state["state"] = ANSWERED
+    state["last_answer"], state["last_snapshot"] = text, _snapshot(state)
+    touch(state, "single shot")
+    timings = single_shot_timings(state, t0, t1)
+    _log("single_shot_funnel", single_shot_funnel(state, numbers))
+    field = interaction(state, 3, ("deepen", "add_fact"))
+    field["seconds"] = timings["total_s"]
+    articles = _isolated("article_citations", lambda: article_citations(state, text), []) or []     # v60q
+    return {"answer": text, "interaction": field, "state": state, "citations": citations, "kind": "answer",
+            "article_citations": articles}
+
+
+def article_citations(state: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
+    """v60q (single shot): the articles the parere cites, for the frontend to show on demand -- the body cites them as
+    references and never quotes them. v60r (1): with the record's rows the body no longer prints (ledger_out). [{"id":
+    "1062 c.c.", "number", "code", "rubrica", "commi": [{"n", "text"}] (none when its text was not read), "status" (its
+    verdict, or its line: «non applicabile», «non trattata»), "reason", "in_body", "rows": [{"article", "comma",
+    "requisite", "status", "supporting_sentence", "contradicting_sentence"}]}], in the order the parere first cites them,
+    then the ones only the rows hold; an article with neither text nor rows is not listed. The record check reads the
+    same texts server-side (check_context). Logged."""
+    from . import article_text, citations, rule_quote
+    rows = _restored_rows(state.get("rows")) + _restored_rows(state.get("tool_rows"))
+    by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for row in rows:
+        if row.get("_article"):
+            by_key.setdefault(_key(row["_article"]), row)
+    documents = ref_documents(list(by_key), rows)
+    ledger: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for r in state.get("ledger_rows") or []:
+        ledger.setdefault(_key(_parse_label(r["article"])), []).append(r)
+    order = list(dict.fromkeys([_key(r) for r in citations.refs_in(text or "", documents) if len(r) == 2] + list(ledger)))
+    out = []
+    for key in order:
+        row = by_key.get(key)
+        commi = rule_quote.row_commi(row) if row else []
+        mine = ledger.get(key) or []
+        if not commi and not mine:
+            continue
+        head = next((r for r in mine if r.get("requisite") is None and r.get("comma") is None), {})
+        rubrica = rule_quote.clean_rubrica(str(article_text.heading(row.get("s")) or "")).rstrip(" .") if row else ""
+        out.append({"id": _label(key), "number": key[0], "code": key[1], "rubrica": rubrica,
+                    "commi": [{"n": k, "text": t} for k, t in commi], "status": head.get("status") or "",
+                    "reason": head.get("reason") or "", "in_body": bool(head.get("in_body", True)),
+                    "rows": [{k: r.get(k) for k in ("article", "comma", "requisite", "status", "supporting_sentence",
+                                                    "contradicting_sentence")} for r in mine if r is not head]})
+    _log("article_citations", {"articles": [a["id"] for a in out], "rows": sum(len(a["rows"]) for a in out),
+                               "chars": sum(len(c["text"]) for a in out for c in a["commi"])})
+    return out
+
+
+def single_shot_timings(state: Dict[str, Any], t0: float, t1: float) -> Dict[str, Any]:
+    """[VERBOSE:interactive_single_shot_timings]: round 1's steps and stages, the answer's, the total against
+    SINGLE_SHOT_TARGET_S."""
+    timings = state.setdefault("timings", {})
+    now = time.time()
+    out = {"round1_s": round(t1 - t0, 1), "answer_s": round(now - t1, 1), "total_s": round(now - t0, 1),
+           "target_s": SINGLE_SHOT_TARGET_S,
+           "round1": {k: timings.get(k) for k in ("analysis_s", "retrieval_s", "first_read_s", "first_read_wait_s",
+                                                  "grading_s", "topics_s", "records_s") if timings.get(k) is not None},
+           "round1_stages": timings.get("round1_stages") or {},
+           "answer": {k: v for k, v in timings.items() if k.startswith(("answer_", "records_link")) and
+                      not isinstance(v, dict)},
+           "answer_stages": timings.get("answer_stages") or {}}
+    out["over_target"] = out["total_s"] > SINGLE_SHOT_TARGET_S
+    timings["single_shot_s"] = out["total_s"]
+    state["single_shot_timings"] = out
+    _log("single_shot_timings", out)
+    return out
+
+
+def single_shot_funnel(state: Dict[str, Any], numbers: Sequence[int]) -> Dict[str, Any]:
+    """The answer's funnel: topics listed and covered, the articles by their bucket, the open points asked."""
+    from collections import Counter
+    buckets = Counter((rec.get("answer") or {}).get("bucket") for rec in (state.get("records") or {}).values()
+                      if rec.get("answer"))
+    points = state.get("open_points") or {}
+    return {"topics": len(state.get("topics") or []), "covered": list(numbers),
+            "articles": {k: v for k, v in buckets.items() if k}, "open_points": len(points.get("points") or []),
+            "asked": len(points.get("asked") or []), "dropped": len(points.get("dropped") or [])}
+
+
+_TERM_CHANGE_RE = re.compile("^" + re.sub(r"\\\{\w+\\\}", ".+", re.escape(C.CHANGE_TERM)) + "$")
+_RULE_CHANGE_RE = re.compile("^(?:" + "|".join(re.sub(r"\\\{\w+\\\}", ".+", re.escape(t))
+                                               for t in (C.CHANGE_RULE_ON, C.CHANGE_RULE_OFF)) + ")$")
+
+
+def open_points_max() -> int:
+    """v60q: the «Punti da precisare» the single-shot answer asks -- OPEN_POINTS_MAX (the environment's, a number of 0 or
+    more), default 0: no block."""
+    try:
+        return max(0, int(os.getenv(OPEN_POINTS_ENV) or OPEN_POINTS_MAX))
+    except ValueError:
+        return OPEN_POINTS_MAX
+
+
+def open_points(state: Dict[str, Any], refs: Sequence[tuple]) -> Dict[str, Any]:
+    """v60k: the facts the case does not state (each open question's: open_point_fact) and the ones asked in «Punti da
+    precisare» -- at most open_points_max() (v60q: default 0, no block), each kept only when (a) its answer changes a term (its trial changes
+    one: unlocks), a procedibilità verdict (it asks a d'ufficio condition of a planned offence) or an article's verdict
+    (it asks a requisite of a planned article, or flips one or a rule), (b) it is specific to a named fact -- a generic
+    rule question (generic_question) only when a computed term depends on it and the case states no date --, (c) no
+    case sentence already answers it (asked_in_case). Specific before generic, then the most it changes. Logged
+    (open_points | asked | dropped with the reason); in the state; {"points", "asked", "dropped", "block"}. v60l: a
+    point is a fact a client can state -- a legal characterisation (qualification: the first read's, dropped when the
+    questions were built, state["qualifications"], or any open question's) is never one, dropped "qualificazione"."""
+    from . import fact_signals, issue_records
+    labels = {issue_records._label(r) for r in refs}
+    records = state.get("records") or {}
+    by_q: Dict[str, set] = {}
+    for label in labels:
+        rec = records.get(label) or {}
+        for r in rec.get("requisites") or []:
+            if r.get("question") and r.get("status") == DA_PROVARE:
+                by_q.setdefault(str(r["question"]), set()).add("esito")
+        for c in rec.get("procedibilita") or []:
+            if c.get("question") and c.get("status") == DA_PROVARE:
+                by_q.setdefault(str(c["question"]), set()).add("procedibilità")
+    sentences = fact_signals.case_sentences(case_text(state))
+    dated = any(_VALUE_RE.search(x) or fact_signals.relative_date(x) for x in sentences)
+    names = party_names_of(state)
+    points, kept, dropped = [], [], []
+    dropped += [{"point": " ".join(str(x).split())[:160], "reason": "qualificazione"}
+                for x in state.get("qualifications") or [] if str(x).strip()]
+    answered = set(state.get("answered") or {})
+    dropped += [{"question": q["id"], "reason": "qualificazione"} for q in state.get("questions") or []
+                if q.get("id") not in answered and q.get("id") != "parte_assistita" and qualification(q)]
+    client = client_of(state)           # v60q: a party's state of mind -- argued, never a point
+    dropped += [{"point": " ".join(str(x).split())[:160], "reason": "stato soggettivo"}
+                for x in state.get("states_of_mind") or [] if str(x).strip()]
+    dropped += [{"question": q["id"], "reason": "stato soggettivo"} for q in state.get("questions") or []
+                if q.get("id") not in answered and q.get("id") != "parte_assistita" and not qualification(q)
+                and state_of_mind(q, client, names)]
+    for i, q in enumerate(open_points_list(state)):
+        fact = open_point_fact(q, names)
+        if fact:
+            points.append({"question": q["id"], "point": C.fill(C.OPEN_POINT, fact=fact)})
+        kinds = set(by_q.get(str(q.get("id"))) or ())
+        unlocks = [str(u) for u in q.get("unlocks") or []]
+        if any(_TERM_CHANGE_RE.match(u) for u in unlocks):
+            kinds.add("termine")
+        if any(u.startswith("requisito:") or _RULE_CHANGE_RE.match(u) for u in unlocks):
+            kinds.add("esito")
+        if not kinds:
+            dropped.append({"question": q["id"], "reason": "la risposta non cambia termini, procedibilità né esiti"})
+            continue
+        said = asked_in_case(q, sentences, names)
+        if said:
+            dropped.append({"question": q["id"], "reason": f"nel caso: «{said[:120]}»"})
+            continue
+        generic = generic_question(q)
+        if generic and "termine" not in kinds:
+            dropped.append({"question": q["id"], "reason": "generica: nessun termine calcolato ne dipende"})
+            continue
+        if generic and dated:
+            dropped.append({"question": q["id"], "reason": "generica: il caso indica una data"})
+            continue
+        kept.append((generic, -len(kinds), i, q, sorted(kinds)))
+    kept.sort(key=lambda x: x[:3])
+    most = open_points_max()            # v60q: default 0 -- no block; the points stay «da verificare» in the parere
+    asked = kept[:most]
+    beyond = f"oltre i {most} punti" if most else "nessun blocco (OPEN_POINTS_MAX 0): «da verificare» nel parere"
+    dropped += [{"question": q["id"], "reason": beyond} for *_, q, _ in kept[most:]]
+    items = [C.fill(C.OPEN_POINT_ITEM, n=n, question=q.get("text")) for n, (*_, q, _) in enumerate(asked, 1)]
+    items = [x for x in items if x]
+    block = f"**{C.OPEN_POINTS_TITLE}**\n\n" + "\n".join(items) if items else ""
+    out = {"points": points, "asked": [{"question": q["id"], "changes": kinds} for *_, q, kinds in asked],
+           "dropped": dropped, "block": block}
+    state["open_points"] = {k: v for k, v in out.items() if k != "block"}
+    _log("open_points", state["open_points"])
+    return out
+
+
+# v60k: §4's own wording of a fact the case does not state -- the computed terms' «DA VERIFICARE[, …]: il caso non
+# indica …» and the procedure's «Data del fatto: non nota.» -- in the single-shot form (C.OPEN_POINT)
+_TERM_UNKNOWN_RE = re.compile(r"\bda verificare(?:,[^:\n]*)?:\s*il caso non indica\b", re.IGNORECASE)
+_DATE_UNKNOWN_RE = re.compile(r"\bData del fatto: non nota\.")
+
+
+def open_points_wording(rendered: str) -> str:
+    """The rendered procedural section with its open points as «da verificare: il caso non dice …»."""
+    lead = C.OPEN_POINT.split("{fact}", 1)[0].rstrip()                 # «da verificare: il caso non dice»
+    out = _TERM_UNKNOWN_RE.sub(lead, rendered or "")
+    date = C.fill(C.OPEN_POINT, fact=C.OPEN_POINT_FACTS.get("data_fatto") or "la data del fatto")
+    return _DATE_UNKNOWN_RE.sub((C.capital(date) + ".") if date else "Data del fatto: non nota.", out)
+
+
+def _snapshot(state: Dict[str, Any]) -> Dict[str, Any]:
+    """What an update compares: each record's verdict and each requisite's status and open question (an answered point
+    changes its status line), each term's status and article."""
+    analysis = _restored_analysis(state["analysis"]) if state.get("analysis") else {}
+    return {"records": {label: [rec.get("verdict") or "", [[r.get("status"), r.get("question") or ""]
+                                                           for r in rec.get("requisites") or []]]
+                        for label, rec in (state.get("records") or {}).items()},
+            "terms": {str(t.get("id")): [t.get("status") or "", str(t.get("ref") or "")]
+                      for t in _signals(analysis).get("terms") or []}}
+
+
+def changed_labels(before: Dict[str, Any], after: Dict[str, Any]) -> set:
+    """The articles an update changed: a record's verdict or a requisite's status, a term's status (its article)."""
+    out = {label for label, v in (after.get("records") or {}).items() if (before.get("records") or {}).get(label) != v}
+    for tid, (status, ref) in (after.get("terms") or {}).items():
+        if ((before.get("terms") or {}).get(tid) or [None])[0] != status:
+            m = re.search(r"(\d+(?:-[a-z]+)?)\s+(.+)$", re.sub(r"^\s*artt?\.\s*", "", ref))
+            if m:
+                out.add(_label(_key((m.group(1), m.group(2).strip()))))
+    return out
+
+
+_SECTION_HEAD_RE = re.compile(r"^\*\*\d+\.\s+(.+?)\*\*\s*$")
+
+
+def _bare(text: str) -> str:
+    return " ".join(str(text or "").replace(C.UPDATED_MARK.strip(), " ").split()).strip()
+
+
+def mark_updated(text: str, old: str, labels: set, words: str, log: Optional[Dict[str, Any]] = None) -> str:
+    """v60k: the parts of an updated parere that changed, each marked «(aggiornato)» (C.UPDATED_MARK): a part is one the
+    old parere does not hold (word for word) and that the update touches -- in «Profili processuali» (the code's) any
+    new line; elsewhere a §2 block of a changed article (labels), a paragraph or line citing one, or holding two of the
+    new facts' words. Section titles, the client line and «Punti da precisare» never."""
+    if not old:
+        return text
+    from . import citations
+    old_lines = {_bare(x) for x in old.split("\n") if x.strip()}
+    old_paras = {_bare(x) for x in re.split(r"\n\s*\n", old) if x.strip()}
+    new_words = _stems(words)
+    section, article, n = "", "", 0
+
+    def touched(chunk: str) -> bool:
+        cited = {citations.label(r) for r in citations.refs_in(chunk)}
+        return article in labels or bool(cited & labels) or len(_stems(chunk) & new_words) >= 2
+
+    out = []
+    for chunk in re.split(r"(\n\s*\n)", text):
+        if not chunk.strip() or re.fullmatch(r"\n\s*\n", chunk):
+            out.append(chunk)
+            continue
+        first = chunk.strip().split("\n")[0].strip()
+        head = _SECTION_HEAD_RE.match(first)
+        if head:
+            section, article = head.group(1).strip(), ""
+        elif first == f"**{C.OPEN_POINTS_TITLE}**":
+            section, article = C.OPEN_POINTS_TITLE, ""
+        if head or section == C.OPEN_POINTS_TITLE or not section:
+            out.append(chunk)
+            continue
+        lines = chunk.split("\n")
+        if any(x.lstrip().startswith(("- ", "**")) for x in lines):
+            for j, line in enumerate(lines):
+                h = _NORM_HEADING_RE.match(line.strip())
+                if h:
+                    article = f"{h.group(1)} {_code_label(h.group(2).strip())}"
+                    if article in labels and _bare(chunk) not in old_paras:
+                        lines[j], n = line.rstrip() + C.UPDATED_MARK, n + 1
+                elif line.strip() and _bare(line) not in old_lines and (section == ANSWER_TITLES[3] or touched(line)):
+                    lines[j], n = line.rstrip() + C.UPDATED_MARK, n + 1
+            out.append("\n".join(lines))
+        elif _bare(chunk) not in old_paras and (section == ANSWER_TITLES[3] or touched(chunk)):
+            out.append(chunk.rstrip() + C.UPDATED_MARK + chunk[len(chunk.rstrip()):])
+            n += 1
+        else:
+            out.append(chunk)
+    if log is not None:
+        log.update(marked=n, labels=sorted(labels))
+    return "".join(out)
+
+
+def _reply_words(parsed: Dict[str, Any], angle: str = "") -> str:
+    """The words of what a reply adds: its answers, statements, corrections and angle."""
+    def flat(value):
+        if isinstance(value, dict):
+            return " ".join(flat(v) for v in value.values())
+        if isinstance(value, (list, tuple)):
+            return " ".join(flat(v) for v in value)
+        return str(value or "")
+    return " ".join(flat(parsed.get(k)) for k in ("answers", "statements", "corrections")) + " " + (angle or "")
+
+
+def _single_update(message: str, state: Dict[str, Any], parsed: Dict[str, Any], t0: float) -> Dict[str, Any]:
+    """v60k: a message after a single-shot parere -- answers, a new fact, «approfondisci X», «e se…» (the reply
+    interpreter's reading; a message it reads nothing in is an angle) -- the parere written again from the cached
+    analysis, every topic it covered plus the ones the message names, the changed parts marked (mark_updated)."""
+    from . import issue_records
+    intents = parsed.get("intents") or []
+
+    def out(answer, kind, citations=None):
+        field = interaction(state, 3, ("deepen", "add_fact"))
+        field["seconds"] = round(time.time() - t0, 1)
+        state.setdefault("timings", {})[f"{kind}_s"] = field["seconds"]
+        articles = (_isolated("article_citations", lambda: article_citations(state, answer), []) or []) \
+            if kind == "regenerate" else []                                                         # v60q
+        return {"answer": answer, "interaction": field, "state": state, "citations": citations or [], "kind": kind,
+                **({"article_citations": articles} if articles else {})}
+    gives = bool(parsed.get("answers") or parsed.get("corrections") or parsed.get("statements") or parsed.get("client"))
+    if "domanda_flusso" in intents and len(intents) == 1 and not gives:
+        touch(state, "flow question")
+        return out(C.SINGLE_SHOT_HELP, "flow_help")
+    if "documento" in intents and not gives:
+        return {**out("", "document_request"), "document": True}
+    before = state.get("last_snapshot") or _snapshot(state)
+    if gives:
+        apply_reply(state, parsed)
+    angle = str(parsed.get("angle") or "")
+    if not (gives or parsed.get("topics") or angle):
+        angle = " ".join(message.split())[:300]           # «e se…», «approfondisci il possesso»: the angle
+    hits = match_angle(state, angle) if angle else []
+    if angle:
+        state["angle"] = angle
+    deepened = list(dict.fromkeys(list(parsed.get("topics") or []) + hits))
+    numbers = list(dict.fromkeys(list(state.get("chosen") or covered_topics(state)) + deepened))
+    numbers = [n for n in numbers if 0 < n <= len(state.get("topics") or [])]
+    state["chosen"] = numbers
+    state["state"] = FRAME_CONFIRMED
+    text, citations = write_answer(state, numbers)
+    state["state"] = ANSWERED
+    after = _snapshot(state)
+    labels = changed_labels(before, after) | {issue_records._label(r) for n in deepened
+                                              for r in _topic_refs(state["topics"][n - 1])}
+    log: Dict[str, Any] = {}
+    text = mark_updated(text, state.get("last_answer") or "", labels, _reply_words(parsed, angle), log)
+    state["last_answer"], state["last_snapshot"] = text, after
+    state["pending_regenerate"] = []
+    touch(state, "single shot update")
+    _log("single_shot_update", {"intents": intents, "gave": gives, "angle": angle, "deepened": deepened, **log})
+    return out(text, "regenerate", citations)
+
+
 def follow_up(message: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """A reply within the interaction: {"answer", "interaction", "state", "citations", "kind"}, or None when this
     message is not one (a new case, or a question the interaction does not hold) -- the old path then."""
@@ -4794,6 +6485,8 @@ def follow_up(message: str, state: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     _log("reply", {"phase": phase, "how": parsed["how"], "intents": intents, "topics": parsed["topics"],
                    "confirm": parsed["confirm"], "answers": list(parsed["answers"]), "angle": parsed["angle"],
                    "corrections": len(parsed["corrections"]), "statements": len(parsed["statements"])})
+    if single_mode(state) and phase == ANSWERED:           # v60k: the parere again, its changed parts marked
+        return _single_update(message, state, parsed, t0)
     rnd = 1 if phase == TOPICS_OFFERED else 3 if phase == ANSWERED else 2
 
     def out(answer, field, kind, citations=None):

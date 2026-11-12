@@ -66,7 +66,9 @@ def test_the_records_status_settles_the_facts_and_the_link():
              "S2": {"id": "S2", "certainty": "allegato", "text": "Secondo Leonardo il cancello del fondo era aperto."}}
     req = lambda **kw: {"kind": "requisito", "facts_status": C.STATUS_DA_PROVARE, "supporting": [], "contradicting": [],
                         "text": "la chiusura del cancello del fondo", **kw}
-    cases = [(req(supporting=["S1"]), C.STATUS_PROVATO), (req(supporting=["S2"]), C.STATUS_DA_PROVARE),
+    cases = [(req(supporting=["S1"]), C.STATUS_PROVATO),
+             (req(supporting=["S2"]), C.STATUS_PROVATO),            # v60t (1): grounded -- an allegation too
+             (req(supporting=["S9"]), C.STATUS_DA_PROVARE),         # a sentence the case does not hold
              (req(contradicting=["S1"], supporting=["S1"]), C.STATUS_NON_RISULTA),
              (req(facts_status=C.STATUS_PROVATO, contradicting=["S1"]), C.STATUS_PROVATO),
              (req(kind="comma", supporting=["S1"]), C.STATUS_DA_PROVARE), (req(), C.STATUS_DA_PROVARE)]
@@ -78,7 +80,9 @@ def test_the_records_status_settles_the_facts_and_the_link():
     assert issue_records.verdict(rec) == issue_records.NOT_APPLICABLE and "«a» non risulta" in \
         issue_records.verdict_reason(rec)
     rec["requisites"].append({"kind": "requisito", "comma": 2, "status": C.STATUS_PROVATO, "text": "c"})
-    assert issue_records.verdict(rec) == issue_records.TO_PROVE        # comma 2 holds: not inapplicable as a whole
+    assert issue_records.verdict(rec) == issue_records.NOT_APPLICABLE  # v60r (3): comma 1, the anchor comma, decides
+    rec["anchor_comma"] = 2                                              # v60s (2): its topic names co. 2
+    assert issue_records.verdict(rec) == issue_records.APPLICABLE        # comma 1 «non pertinente», comma 2 proven
     assert issue_records.verdict({"requisites": [rec["requisites"][1]]}) == issue_records.APPLICABLE
 
 
@@ -117,7 +121,8 @@ def test_p1_to_p6_are_resolved_and_written_down(monkeypatch):
     system = ptw._section_system({"parte_assistita": "Leonardo", "posizione": ""}, "it", flow.sections_note(),
                                  writer_rules.system_rules("Leonardo"))
     assert "Non scrivere mai che una norma è «non pertinente»" not in system \
-        and "Le norme con esito «non applicabile» non sono nelle SCHEDE" in system         # v60h (5)
+        and "Nelle SCHEDE ci sono solo le norme con esito «applicabile», «argomento del cliente» o «da provare»" \
+        in system                                                                            # v60h (5), v60i (1, 2)
     assert "Non scrivere mai che una norma è «non pertinente»" in ptw._section_system(
         {"parte_assistita": "Leonardo", "posizione": ""}, "it")                       # the parere unchanged
     analysis = {"questioni": [{"titolo": "Usucapione del passaggio"}], "fact_signals": {"fired": []}}
@@ -134,9 +139,13 @@ def test_an_article_the_record_supports_is_applied_even_when_not_the_topics_anch
     analysis = flow._restored_analysis(state["analysis"])
     topics = [{"anchor": "1062 c.c.", "matched": ["1062 c.c."]}]
     before = flow.glossed_refs(state, topics, analysis, "", planned)
+    # v60j: 1062's missing facts are open round-1 questions (atto_separazione): a block
     assert ("1062", "c.c.") in before and ("1159", "c.c.") not in before
     state["records"]["1159 c.c."]["requisites"] = [{"status": C.STATUS_DA_PROVARE, "supporting": ["S1"]}]
     assert flow.glossed_refs(state, topics, analysis, "", planned) == before + [("1159", "c.c.")]
+    # v60i (1): the questions answered and no sentence of the case for it, the topic's anchor alone earns none
+    state["answered"] = {q["id"]: "risposta" for q in state["questions"]}
+    assert ("1062", "c.c.") not in flow.glossed_refs(state, topics, analysis, "", planned)
 
 
 # --- e. one check, last, against the record: the three invariants --------------------------------------------------------
@@ -260,19 +269,19 @@ def _graded_rows(monkeypatch):
     return rows
 
 
-def test_an_article_whose_distinctive_element_no_fact_supports_is_graded_one(monkeypatch):
+def test_an_article_whose_distinctive_element_the_case_contradicts_is_graded_one(monkeypatch):
     rows = _graded_rows(monkeypatch)
     elements = issue_records.distinctive(rows, {})
     assert "1062 c.c." in elements and elements["1062 c.c."]["text"]
     supported = elements["1062 c.c."]["text"]
     calls = []
 
-    def call(topic, reqs, sents):
+    def call(topic, reqs, sents):       # v60m: only a sentence narrated as a fact contradicting it demotes
         calls.append(len(reqs))
-        return {r["id"]: {"sostiene": ["S2"] if r["text"] == supported else [], "contraddice": [], "manca": "x"}
-                for _, r in reqs}
-    log = issue_records.demote_unsupported(rows, "Leonardo passa sul fondo. Domitilla ha chiuso il cancello nel 2016.",
-                                           {}, keep=["1158 c.c."], call=call)
+        return {r["id"]: {"sostiene": ["S2"] if r["text"] == supported else [],
+                          "contraddice": [] if r["text"] == supported else ["S2"], "manca": "x"} for _, r in reqs}
+    log = issue_records.demote_contradicted(rows, "Leonardo passa sul fondo. Domitilla ha chiuso il cancello nel 2016.",
+                                            {}, keep=["1158 c.c."], call=call)
     by = {issue_records._label(r["_article"]): r for r in rows}
     assert by["1062 c.c."]["_grade"] == 2 and by["1062 c.c."]["_distinctive"]["supporting"] == ["S2"]
     demoted = {d["article"] for d in log["demoted"]}
@@ -285,11 +294,11 @@ def test_an_article_whose_distinctive_element_no_fact_supports_is_graded_one(mon
 
 def test_a_failed_or_late_link_demotes_nothing(monkeypatch):
     rows = _graded_rows(monkeypatch)
-    log = issue_records.demote_unsupported(rows, "Leonardo passa sul fondo.", {},
-                                           call=lambda *a: (_ for _ in ()).throw(RuntimeError("down")))
+    log = issue_records.demote_contradicted(rows, "Leonardo passa sul fondo.", {},
+                                            call=lambda *a: (_ for _ in ()).throw(RuntimeError("down")))
     assert log["errors"] and not log["demoted"] and all(r["_grade"] == 2 for r in rows)
-    log = issue_records.demote_unsupported(rows, "Leonardo passa sul fondo.", {},
-                                           call=lambda *a: time.sleep(0.5) or {}, seconds=0.1)
+    log = issue_records.demote_contradicted(rows, "Leonardo passa sul fondo.", {},
+                                            call=lambda *a: time.sleep(0.5) or {}, seconds=0.1)
     assert log["errors"][0].startswith("timeout") and all(r["_grade"] == 2 for r in rows)
 
 

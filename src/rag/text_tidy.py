@@ -57,6 +57,9 @@ _FRAGMENT_RE = re.compile(
     r"^(?:\s*(?:[,;:.)\]]+|(?:comma|co\.)\s*\d+(?:-\w+)?(?:\s*(?:e|,)\s*\d+)*|(?:del|della|dello|dei|ex)\s+" + _CODE
     + r"|" + _CODE + r"))+\s*", re.IGNORECASE)
 _FRAGMENT_START_RE = re.compile(r"^\s*(?:[,;:.)\]]|(?:comma|co\.)\s*\d)")     # "comma" lower-case: a cut citation
+# v60k: a §2 status line, the code's (interaction_copy REQUISITE_LINE / COMMA_LINE: «- co. 1, requisito «…»: …», «- co. 2:
+# …», «- testo: …») -- never a cut citation's tail
+_STATUS_LINE_RE = re.compile(r"^(?:co\.\s*\d+(?:-\w+)?|testo)(?:,\s+requisito\s+«|:\s)")
 
 
 # a fragment right after a sentence's end: the sentence splitter reads "valido. comma 2 ..." as one sentence
@@ -445,7 +448,7 @@ def lead_fragment(sentence: str) -> str:
     words remain."""
     prefix = _LIST_RE.match(sentence).group(0)
     body = sentence[len(prefix):]
-    if not _FRAGMENT_START_RE.match(body):
+    if not _FRAGMENT_START_RE.match(body) or (prefix.startswith("-") and _STATUS_LINE_RE.match(body)):
         return sentence
     rest = _FRAGMENT_RE.sub("", body, count=1)
     if len(_stems(rest)) < 3:

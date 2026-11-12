@@ -321,6 +321,7 @@ MEDIATION_RANGES = (("condominio", 1117, 1139), ("diritti reali", 832, 1172), ("
 # mediazione's matters (art. 5, co. 1, d.lgs. 28/2010, formerly co. 1-bis) and the negoziazione assistita's own (art. 3
 # d.l. 132/2014). With the case-first flow (store_only) the mediazione line appears only when a chosen topic's anchor or
 # matched article is of a listed matter; labour disputes (rito del lavoro), torts and crimes are never in the list.
+# v60q: the case's own matter instead -- its contract type and area (case_matter), never an article the parere writes.
 MATTERS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
                             "mediation_matters.json")
 _MATTERS: List[Optional[Dict[str, Any]]] = [None]
@@ -367,26 +368,62 @@ def matter_of(ref: Sequence[str], which: str = "mediazione") -> Tuple[str, bool]
     return "", False
 
 
+def case_matter(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """v60q: the case's own matter in the mediazione's closed list -- from the extraction's contract types (fact_signals
+    facts["contracts"]) and the case's areas (the frame's), never from an article the parere writes (the Capo-scope gate
+    of topic_groups, on the procedibilità lines): each matter's "case" (data file). {"contracts", "areas", "matter", "by",
+    "never"}: the first matter a contract type matches, else the first an area matches (one asking for words of the
+    extraction before one that does not); "never" the never matter the areas make (rito del lavoro: the area lavoro;
+    reati: every area penale)."""
+    from . import fact_signals
+    from .interactive_flow import _areas
+    lists = matters_list().get("mediazione") or {}
+    facts = _signals(analysis).get("facts") or {}
+    contracts = [x for x in fact_signals._texts(facts, ("contracts",)).split("\n") if x.strip()] \
+        if isinstance(facts, dict) else []
+    words = fact_signals._texts(facts, ("contracts", "requests", "events")) if isinstance(facts, dict) else ""
+    areas = [str(a) for a in _areas(analysis or {})]
+    out = {"contracts": contracts, "areas": areas, "matter": "", "by": "", "never": ""}
+    matters = [(name, e.get("case") or {}) for name, e in (lists.get("matters") or {}).items() if isinstance(e, dict)]
+    for name, case in matters:
+        hit = next((c for c in contracts if case.get("contracts") and re.search(case["contracts"], c, re.IGNORECASE)),
+                   None)
+        if hit:
+            out.update(matter=name, by=f"contratto «{hit[:80]}»")
+            break
+    if not out["matter"]:
+        for name, case in sorted(matters, key=lambda m: not m[1].get("words")):
+            area = next((a for a in areas if a in (case.get("areas") or ())), None)
+            if area and (not case.get("words") or re.search(case["words"], words, re.IGNORECASE)):
+                out.update(matter=name, by=f"area «{area}»")
+                break
+    for name, entry in (lists.get("never") or {}).items():
+        case = (entry or {}).get("case") or {}
+        mine = [a for a in areas if a in (case.get("areas") or ())]
+        if mine and (not case.get("all") or len(mine) == len(areas)):
+            out["never"] = name
+            break
+    return out
+
+
 def listed_mediation(analysis: Dict[str, Any]) -> Dict[str, Any]:
-    """{"required", "subject", "text", "matters"}: the mediazione of the chosen topics' matter (the closed list)."""
+    """{"required", "subject", "text", "matters"}: the mediazione of the case's own matter (case_matter: its contract
+    type and area, the closed list); "matters" is that reading, for the log."""
     lists = matters_list().get("mediazione") or {}
     ref_text = lists.get("ref") or "art. 5, co. 1, d.lgs. 28/2010"
-    seen = []
-    for ref in [tuple(r) for r in (analysis or {}).get("topic_refs") or [] if len(r) == 2]:
-        name, never = matter_of(ref)
-        seen.append({"article": f"{ref[0]} {ref[1]}", "matter": name, "never": never})
-    hit = next((s for s in seen if s["matter"] and not s["never"]), None)
-    if not hit:
+    seen = case_matter(analysis)
+    if not seen["matter"] or (seen["never"] and not seen["by"].startswith("contratto")):
         return {"required": False, "subject": "", "text": "", "matters": seen}
-    return {"required": True, "subject": hit["matter"], "matters": seen,
-            "text": f"Mediazione obbligatoria ({ref_text}): la materia è {hit['matter']}, il suo esperimento è "
+    return {"required": True, "subject": seen["matter"], "matters": seen,
+            "text": f"Mediazione obbligatoria ({ref_text}): la materia è {seen['matter']}, il suo esperimento è "
                     "condizione di procedibilità della domanda."}
 
 
 def mediation_of(analysis: Dict[str, Any]) -> Dict[str, Any]:
     """The mediation the facts require (fact_signals.mediation), else the one the chosen topics' matter requires
     (analysis["topic_refs"]: their anchors and matched articles, interactive_flow): {"required", "subject", "text"}.
-    v60h (2): with the case-first flow, only the chosen topics' matter in the closed list (listed_mediation)."""
+    v60h (2): with the case-first flow, only the chosen topics' matter in the closed list (listed_mediation); v60q: the
+    case's own matter (case_matter)."""
     from . import fact_signals
     from .plan_then_write import _code_key
     if store_only(analysis):
@@ -404,6 +441,49 @@ def mediation_of(analysis: Dict[str, Any]) -> Dict[str, Any]:
                     "text": f"Mediazione obbligatoria ({fact_signals.MEDIATION_REF}): la materia è {subject}, il suo "
                             "esperimento è condizione di procedibilità della domanda."}
     return mediation
+
+
+# v60i (9): the labour dispute's procedural facts, a closed list (data/labour_procedure.json) for when the labour corpus
+# arrives -- the lines appear, with the case-first flow, when a chosen topic's article is of the matter «rito del lavoro»
+# (the mediazione list's never matter); a line with its own trigger (the dismissal's impugnazione) only when a sentence
+# of the case, never the user's own message, states that fact.
+LABOUR_FILE = os.path.join(os.path.dirname(MATTERS_FILE), "labour_procedure.json")
+LABOUR_MATTER = "rito del lavoro"
+_LABOUR: List[Optional[Dict[str, Any]]] = [None]
+
+
+def labour_list() -> Dict[str, Any]:
+    """The data file, read once ({} when missing or unreadable: no labour line)."""
+    if _LABOUR[0] is None:
+        try:
+            import json
+            with open(LABOUR_FILE, encoding="utf-8") as fh:
+                _LABOUR[0] = json.load(fh)
+        except (OSError, ValueError):
+            _LABOUR[0] = {}
+    return _LABOUR[0] or {}
+
+
+def labour_of(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """{"matter": a chosen topic's article of the labour matter (or ""), "lines": the closed list's lines that hold,
+    "untriggered": the ids whose fact no case sentence states}."""
+    from . import fact_signals
+    from .interactive_flow import CASE_KEY
+    refs = [tuple(r) for r in (analysis or {}).get("topic_refs") or [] if len(r) == 2]
+    hit = next((f"{r[0]} {r[1]}" for r in refs if matter_of(r) == (LABOUR_MATTER, True)), "")
+    if not hit:
+        return {"matter": "", "lines": [], "untriggered": []}
+    sentences = fact_signals.case_sentences(str((analysis or {}).get(CASE_KEY) or ""))
+    lines, untriggered = [], []
+    for fact in labour_list().get("facts") or []:
+        trigger = fact.get("triggers")
+        if trigger and not any(re.search(trigger, x, re.IGNORECASE) for x in sentences):
+            untriggered.append(fact.get("id"))
+            continue
+        text = " ".join(str(fact.get("text") or "").split()).rstrip(".")
+        if text:
+            lines.append(f"- {text} ({fact['ref']})." if fact.get("ref") else f"- {text}.")
+    return {"matter": hit, "lines": lines, "untriggered": untriggered}
 
 
 # v60e: the negoziazione assistita obbligatoria (art. 3 d.l. 132/2014) where its own facts say so -- a claim for damages
@@ -426,19 +506,16 @@ def _euros(text: str) -> List[float]:
 
 
 def _negotiation_excluded(analysis: Dict[str, Any], facts: Dict[str, Any]) -> str:
-    """v60h (2): why the negoziazione's own list excludes the case ("" when it does not): a chosen topic of a matter its
-    list never takes (rito del lavoro; reati, every chosen topic criminal), a consumer contract (art. 3, co. 1, last
-    period: contracts between professionals and consumers)."""
+    """v60h (2): why the negoziazione's own list excludes the case ("" when it does not): a matter its list never takes
+    (rito del lavoro; reati) -- v60q: the case's own (case_matter: its area), never a chosen topic's article --, a
+    consumer contract (art. 3, co. 1, last period: contracts between professionals and consumers)."""
     from . import fact_signals
     lists = matters_list().get("negoziazione_assistita") or {}
     never = lists.get("never") or {}
-    refs = [tuple(r) for r in (analysis or {}).get("topic_refs") or [] if len(r) == 2]
-    matters = [matter_of(r) for r in refs]
     wanted = {e.get("matter") for e in never.values() if isinstance(e, dict) and e.get("matter")}
-    if "rito del lavoro" in wanted and any(m == "rito del lavoro" and n for m, n in matters):
-        return "rito del lavoro"
-    if "reati" in wanted and matters and all(m == "reati" and n for m, n in matters):
-        return "reati"
+    mine = case_matter(analysis)["never"]
+    if mine and mine in wanted:
+        return mine
     if any(e.get("facts") == "consumatore" for e in never.values() if isinstance(e, dict)) \
             and fact_signals._has_role(facts, "consumatore"):
         return "contratto tra professionista e consumatore"
@@ -476,30 +553,135 @@ def negotiation_of(analysis: Dict[str, Any]) -> Dict[str, Any]:
 
 # v60e: a strumento only with its triggering fact in the case's own words -- the case sentence that holds the tool's
 # matter and its trigger, which is the «Nel caso» it shows; none: not rendered (never another fact as «Nel caso»)
+# v60i (5): the trascrizione della domanda (art. 2653 c.c.) needs its own fact -- a domanda the article lists, stated by
+# the case over an immovable or a real right on one: to vindicate ownership or another real right of enjoyment, or to
+# have such a right declared (the rivendicazione; the accertamento, with the confessoria and the negatoria; an
+# usucapione to be declared), or an act interrupting the usucapione of an immovable (my reading of art. 2653, n. 1 and
+# the interruption of the usucapione: to be checked against the article's text) -- never the matter (a servitù case).
+_IMMOVABLE = (r"fond[oi]\b|terren|immobil|\bcasa\b|appartament|edifici|villa|garage|\bbox\b|cortil|giardin|strad|"
+              r"sentier|passagg|servit|particell|\blott[oi]\b|stabile|capannon|magazzin|cantin|soffitt|lastric|muro|confin|"
+              r"confessori|negatori")          # the confessoria and the negatoria: real rights over immovables
+_DOMANDA_2653 = (r"rivendic\w*|\bconfessori\w*|\bnegatori\w*|"
+                 r"\b(?:accert\w*|dichiar\w*|riconosc\w*)[^.;]{0,60}?\b(?:propriet\w*|servit\w*|usufrutt\w*|"
+                 r"usucap\w*|diritt\w* (?:reale|reali|di passaggio|di propriet|di servit|di usufrutto|d'uso|di uso|"
+                 r"di abitazione|di superficie))|"
+                 r"\binterr(?:omp|ott|uzion)\w*[^.;]{0,40}?\busucap\w*")
 TOOL_TRIGGERS = {
     "accertamento_preventivo": (r"difett|vizi|dann|guast|crep|infiltraz|lesion|rott|allag|stato dei luoghi|prov[ae]",
                                 r"ripar|ripristin|elimin|modific|alter|cambi|deperi|deterior|disperd|perd|sostitu|demol|"
                                 r"smalt|rimoss|cancell|urgen|prima che"),
     "provvedimento_urgenza": (r"", r"urgen|imminent|irreparabil|aggrav|peggior|pericol|sicurezz|incolumit|sta per"),
+    "trascrizione_domanda": (_IMMOVABLE, _DOMANDA_2653),
 }
+# the tools whose own block reads their computed «matched» (the action transcribed): the trigger is kept beside it
+_KEEP_MATCHED = {"trascrizione_domanda"}
 
 
 def tool_trigger(tool: Dict[str, Any], case: str) -> Optional[str]:
     """The case sentence triggering the tool (TOOL_TRIGGERS: its matter, when it has one, and its trigger); "" when
-    none; None for a tool with no trigger rule."""
+    none; None for a tool with no trigger rule. v60i (4): never a sentence of the user's own message
+    (fact_signals.case_sentences)."""
+    from . import fact_signals
     rule = TOOL_TRIGGERS.get(str(tool.get("id") or ""))
     if rule is None:
         return None
     matter, trigger = rule
-    for sentence in re.split(r"(?<=[.;!?])\s+|\n+", case or ""):
+    for sentence in fact_signals.case_sentences(case):
         low = sentence.lower()
         if re.search(trigger, low) and (not matter or re.search(matter, low)):
             return " ".join(sentence.split())[:200]
     return ""
 
 
-def _triggered_tools(tools: List[Dict[str, Any]], analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """store_only: each tool with a trigger rule kept only with its case sentence, which becomes its «Nel caso»."""
+# v60p: a term and the trascrizione line also trigger on the parere's own analysis (analysis["own_analysis"], set by the
+# answer step: {"lines": the first read's hypothesis lines, "topics": [{title, text, articles}] the covered topics}) --
+# a hypothesis line or a covered topic naming the institution (OWN_TERM_TRIGGERS; a term also by its article among the
+# topic's) -- rendered «da verificare: il caso non dice …» with the fact that would settle it; a case sentence still
+# yields the computed version. Each line's trigger logged (computed_triggers): «frase del caso», «calcolo» (a term with
+# no trigger rule), «ipotesi», «argomento». A closed list, the institution's names:
+OWN_TERM_TRIGGERS = {
+    "possessoria": r"possessori|spogli|reintegra|manutenzione nel possesso",
+    "non_uso_servitu": r"non uso|estinzion\w* (?:della |delle |per )?(?:servit|non uso)",
+    "usucapione_ordinaria": r"usucap", "usucapione_abbreviata": r"usucap", "usucapione_mobili": r"usucap\w* (?:di|dei) (?:beni )?mobil",
+    "prescrizione_circolazione": r"circolazione (?:dei|di) veicoli|sinistr\w* stradal",
+    "prescrizione_extracontrattuale": r"fatto illecito|extracontrattual|aquilian",
+    "prescrizione_ordinaria": r"inadempiment|responsabilit\w* contrattual",
+    "querela": r"querel|procedibilit",
+    "ricorso_tar": r"annullament\w* (?:del|dell|di)|ricorso (?:al )?t\.?a\.?r|ricorso giurisdizional",
+    "ricorso_tar_appalti": r"appalt\w* pubblic|aggiudicazion",
+    "nullita_giudicato": r"elusion\w* del giudicato|nullit\w* (?:per )?violazione del giudicato",
+    "ottemperanza": r"ottemperanz",
+    "denuncia_vizi_vendita": r"vizi (?:della cosa|del bene)|garanzia per (?:i )?vizi|redibitori|quanti minoris",
+    "azione_vizi_vendita": r"vizi (?:della cosa|del bene)|garanzia per (?:i )?vizi|redibitori|quanti minoris",
+    "denuncia_conformita_consumo": r"difetto di conformit|garanzia legale", "responsabilita_conformita_consumo":
+        r"difetto di conformit|garanzia legale", "azione_conformita_consumo": r"difetto di conformit|garanzia legale",
+    "denuncia_difformita_appalto": r"difformit|vizi dell'opera", "azione_garanzia_appalto": r"difformit|vizi dell'opera",
+    "manifestazione_gravi_difetti": r"gravi difetti|rovina", "denuncia_gravi_difetti": r"gravi difetti|rovina",
+    "impugnazione_penale": r"impugnazion|appello",
+    "azione_confessoria": r"confessori|accertament\w* (?:della|di una) servit",
+    "azione_negatoria": r"negatori",
+    "azione_rivendicazione": r"rivendic",
+}
+# the domande of art. 2653, n. 1, c.c. as the parere names them
+OWN_TRASCRIZIONE_TRIGGER = (r"rivendic|confessori|negatori|accertament\w* (?:della|del|dei|di una|di un) "
+                            r"(?:propriet|servit|diritt|usufrutt)|usucap")
+
+
+def _refs_of(text: str) -> List[str]:
+    from . import defensive_generation as dg, topic_step
+    text = str(text or "").strip()
+    if text and not re.match(r"artt?\.?\s", text, re.IGNORECASE):
+        text = f"art. {text}"                                     # «1158 c.c.» as the refs read it
+    return [f"{n} {topic_step._code(c)}" for n, c in (dg._refs_in(text) or []) if n and c]
+
+
+def own_trigger(pattern: str, refs: Sequence[str], own: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """v60p: («ipotesi» | «argomento», what names it) -- the first hypothesis line naming the institution (pattern), else
+    the first covered topic naming it or holding one of its articles (refs); None."""
+    if not own:
+        return None
+    rx = re.compile(pattern, re.IGNORECASE) if pattern else None
+    for line in own.get("lines") or []:
+        if rx and rx.search(str(line or "")):
+            return "ipotesi", " ".join(str(line).split())[:160]
+    for t in own.get("topics") or []:
+        if (rx and rx.search(str(t.get("text") or ""))) or (refs and set(refs) & set(t.get("articles") or [])):
+            return "argomento", str(t.get("title") or "")
+    return None
+
+
+def own_term_lines(analysis: Dict[str, Any], computed: Sequence[Dict[str, Any]], log: List[Dict[str, Any]]) -> List[str]:
+    """v60p: the «da verificare» lines of the terms no case sentence triggered (signals["terms_untriggered"]) that the
+    parere's own analysis names (own_trigger), one per fact and institution; each logged with its trigger."""
+    from . import interaction_copy as C
+    own = (analysis or {}).get("own_analysis") or {}
+    if not own:
+        return []
+    have = {str(t.get("id")) for t in computed or []}
+    out, seen = [], set()
+    for d in _signals(analysis).get("terms_untriggered") or []:
+        tid = str(d.get("id") or "")
+        pattern = OWN_TERM_TRIGGERS.get(tid)
+        if not pattern or tid in have or (pattern, d.get("fact")) in seen:
+            continue
+        hit = own_trigger(pattern, _refs_of(d.get("ref")), own)
+        if not hit:
+            continue
+        seen.add((pattern, d.get("fact")))
+        ref = str(d.get("ref") or "").strip()
+        ref = ref if not ref or ref.lower().startswith("art") else f"art. {ref}"
+        label = str(d.get("label") or tid.replace("_", " ").capitalize())
+        point = C.fill(C.OPEN_POINT, fact=d.get("fact"))
+        if point:
+            out.append(f"- {label}" + (f" ({ref})" if ref else "") + f": {point}.")
+            log.append({"line": tid, "trigger": hit[0], "by": hit[1]})
+    return out
+
+
+def _triggered_tools(tools: List[Dict[str, Any]], analysis: Dict[str, Any],
+                     dropped_tools: Optional[List[Dict[str, Any]]] = None) -> List[Dict[str, Any]]:
+    """store_only: each tool with a trigger rule kept only with its case sentence, which becomes its «Nel caso». v60p:
+    the dropped ones into dropped_tools, when given."""
     from .interactive_flow import CASE_KEY
     case = str((analysis or {}).get(CASE_KEY) or "")
     out, dropped = [], []
@@ -508,9 +690,11 @@ def _triggered_tools(tools: List[Dict[str, Any]], analysis: Dict[str, Any]) -> L
         if found is None:
             out.append(t)
         elif found:
-            out.append({**t, "matched": [found]})
+            out.append({**t, "trigger": found} if t.get("id") in _KEEP_MATCHED else {**t, "matched": [found]})
         else:
             dropped.append(t.get("id"))
+            if dropped_tools is not None:
+                dropped_tools.append(t)
     if dropped:
         try:
             from .verbose_logger import vlog
@@ -532,18 +716,26 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
         out.append((NEGOTIATION_TITLE, _sentence(negotiation["text"])))
     elif mediation.get("required") and mediation.get("text"):
         out.append(("Mediazione", _sentence(mediation["text"])))
+    labour = labour_of(analysis) if store_only(analysis) else {}
+    if labour.get("lines"):                 # v60i (9): the labour dispute's closed list
+        out.append((labour_list().get("title") or "Controversia di lavoro", "\n".join(labour["lines"])))
     terms = [t for t in signals.get("terms") or [] if t.get("text") and not _term_gated(t, gated)]
     listed = (analysis or {}).get("listed_topics")
     if listed:              # v59 (v58-l3 §4: the usucapione with no such topic): the terms the listed topics carry
         from . import topic_step
         terms = [t for t in terms if topic_step.carries_term(t, listed)]
-    if terms:
-        out.append(("Termini", "\n".join(_term_line(t) for t in terms)))
+    triggers: List[Dict[str, Any]] = []         # v60p: which trigger produced each line
+    triggers += [{"line": str(t.get("id")), "trigger": "frase del caso" if t.get("trigger") else "calcolo",
+                  "by": str(t.get("trigger") or "")[:160]} for t in terms]
+    lines = [_term_line(t) for t in terms] + own_term_lines(analysis, terms, triggers)
+    if lines:
+        out.append(("Termini", "\n".join(lines)))
     tools = [t for t in signals.get("tools") or [] if not _tool_gated(t, gated)]
     if not civil_tools_allowed(analysis):
         tools = [t for t in tools if not _civil_only(t)]
+    untriggered_tools: List[Dict[str, Any]] = []
     if store_only(analysis):                # v60e: a strumento only with its triggering fact
-        tools = _triggered_tools(tools, analysis)
+        tools = _triggered_tools(tools, analysis, untriggered_tools)
     parties = ""
     try:
         parties = fact_signals.parties_line(signals, analysis)
@@ -570,6 +762,12 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     if trascrizione:
         action = _transcribed_action(trascrizione, gated)
         out.append((TRASCRIZIONE_TITLE, f"Va trascritta la domanda giudiziale" + (f" ({action})" if action else "") + "."))
+        triggers.append({"line": "trascrizione_domanda", "trigger": "frase del caso",
+                         "by": str(trascrizione.get("trigger") or "")[:160]})
+    else:                                   # v60p: the parere's own analysis naming a domanda of art. 2653
+        line = own_trascrizione(analysis, gated, untriggered_tools, triggers)
+        if line:
+            out.append((TRASCRIZIONE_TITLE, line))
     criminal = next((t for t in tools if t.get("id") == fact_signals.CRIMINAL_TOOL), None)
     if criminal and not store_only(analysis):
         out.append(("Profilo penale", _tool_line(criminal)))
@@ -582,6 +780,12 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
         title = {"accused": "Voci di danno che la controparte può far valere", "victim": "Voci di danno"}.get(
             side, "Voci di danno da considerare")
         out.append((title, damages.strip()))
+    if triggers:
+        try:
+            from .verbose_logger import vlog
+            vlog("computed_triggers", {"lines": triggers})       # v60p: which trigger produced each line
+        except Exception:           # noqa: BLE001 -- logging never fails the render
+            pass
     return out
 
 
@@ -596,6 +800,25 @@ def _named(text: str, analysis: Dict[str, Any]) -> str:
                        reverse=True):
         text = re.sub(rf"\b{re.escape(name.lower())}\b", name, text)
     return party_names.lower_roles(text, party_names.role_names(parties, case))     # v60h (9): roles are not names
+
+
+def own_trascrizione(analysis: Dict[str, Any], gated: set, untriggered_tools: Sequence[Dict[str, Any]],
+                     log: List[Dict[str, Any]]) -> str:
+    """v60p: the trascrizione line the regime computed (a real action on an immovable) but no case sentence triggered,
+    when a hypothesis line or a covered topic names a domanda of art. 2653, n. 1, c.c. (OWN_TRASCRIZIONE_TRIGGER, or
+    art. 2653 among the topic's articles) -- «Da verificare: il caso non dice …» (the copy's TRASCRIZIONE_FACT); never
+    a tool not computed, nor the other side's."""
+    from . import interaction_copy as C
+    own = (analysis or {}).get("own_analysis") or {}
+    tool = next((t for t in untriggered_tools or [] if t.get("id") == "trascrizione_domanda"), None)
+    if not own or tool is None or _tool_gated(tool, gated):
+        return ""
+    hit = own_trigger(OWN_TRASCRIZIONE_TRIGGER, ["2653 c.c."], own)
+    point = C.fill(C.OPEN_POINT, fact=C.TRASCRIZIONE_FACT) if hit else ""
+    if not point:
+        return ""
+    log.append({"line": "trascrizione_domanda", "trigger": hit[0], "by": hit[1]})
+    return C.capital(point) + "."
 
 
 def render(analysis: Dict[str, Any], party: str = "") -> str:

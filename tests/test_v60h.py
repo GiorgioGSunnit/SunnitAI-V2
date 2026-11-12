@@ -124,9 +124,11 @@ def test_mediation_appears_only_for_a_chosen_topics_matter_in_the_closed_list():
     assert of(("768-bis", "c.c.")) == ("patti di famiglia", False) and of(("1490", "c.c.")) == ("", False)
     case_first = {"store_offences_only": True, "fact_signals": {"mediation": {"required": True, "subject": "x",
                                                                               "text": "dai fatti"}}}
-    for refs in ([["2087", "c.c."]], [["2043", "c.c."], ["640", "c.p."]], []):
-        assert not render_computed.mediation_of({**case_first, "topic_refs": refs})["required"]   # the facts never
-    listed = render_computed.mediation_of({**case_first, "topic_refs": [["2087", "c.c."], ["1117", "c.c."]]})
+    for refs in ([["2087", "c.c."]], [["2043", "c.c."], ["640", "c.p."]], [], [["1117", "c.c."]]):
+        assert not render_computed.mediation_of({**case_first, "topic_refs": refs})["required"]   # v60q: never an article
+    condominio = {**case_first, "frame": {"areas": ["diritti_reali"]}, "topic_refs": [["2087", "c.c."]],
+                  "fact_signals": {"facts": {"requests": ["delibera dell'assemblea condominiale"]}}}
+    listed = render_computed.mediation_of(condominio)
     assert listed["required"] and listed["subject"] == "condominio" and "art. 5, co. 1, d.lgs. 28/2010" in listed["text"]
     assert render_computed.mediation_of({"fact_signals": {"mediation": {"required": True, "text": "dai fatti"}}})[
         "text"] == "dai fatti"                                                                 # the legacy path as before
@@ -141,9 +143,10 @@ def test_the_negotiation_keeps_its_own_list():
                                                        "parties": [{"name": "Mario", "role": "cliente, consumatore"}]}}}
     assert render_computed.negotiation_of(consumer) == {"required": False, "text": "",
                                                         "why": "esclusa: contratto tra professionista e consumatore"}
-    labour = {**payment, "topic_refs": [["2087", "c.c."]]}
+    labour = {**payment, "frame": {"areas": ["lavoro"]}}                  # v60q: the case's area, never a written article
     assert render_computed.negotiation_of(labour)["why"] == "esclusa: rito del lavoro"
-    assert render_computed.negotiation_of({**payment, "topic_refs": [["640", "c.p."]]})["why"] == "esclusa: reati"
+    assert render_computed.negotiation_of({**payment, "frame": {"areas": ["penale"]}})["why"] == "esclusa: reati"
+    assert render_computed.negotiation_of({**payment, "topic_refs": [["2087", "c.c."]]})["required"]
 
 
 # --- 3. a term needs its triggering fact -------------------------------------------------------------------------------
@@ -161,11 +164,12 @@ def test_a_term_is_neither_computed_nor_rendered_without_its_triggering_fact():
     kept, _ = fact_signals.untriggered(terms[:2], "Il telefono mi è stato consegnato il 3 marzo ma non si accende.")
     assert len(kept) == 2 and kept[0]["trigger"].startswith("Il telefono mi è stato consegnato")
     assert fact_signals.trigger_sentence("ricorso_tar", "Il Comune mi ha notificato il diniego il 3 marzo.")
-    # possession: the use of a way or a thing over time, not only the word «possesso»
-    for said in ("Leonardo passa sul fondo di Domitilla.", "La famiglia transita sulla strada.", "Uso il sentiero da anni.",
-                 "Utilizza il magazzino da tempo.", "Coltiviamo quel campo da sempre."):
+    # possession: the use of a way or a thing over time, not only the word «possesso» -- v60i (5): the use AND its time
+    for said in ("Leonardo passa sul fondo di Domitilla da vent'anni.", "La famiglia transita sulla strada da sempre.",
+                 "Uso il sentiero da anni.", "Utilizza il magazzino da tempo.", "Coltiviamo quel campo da sempre."):
         assert fact_signals.trigger_sentence("usucapione_ordinaria", said), said
-    for said in ("Il cliente non usa più la strada.", "L'anno passato ho venduto la casa.", "Mario è proprietario."):
+    for said in ("Il cliente non usa più la strada.", "L'anno passato ho venduto la casa.", "Mario è proprietario.",
+                 "Leonardo passa sul fondo di Domitilla."):
         assert fact_signals.trigger_sentence("usucapione_ordinaria", said) == "", said
 
 
@@ -250,7 +254,7 @@ def test_the_index_is_built_from_the_stores_units():
             {"uid": "u1", "level": "CAPO", "unit": "CAPO II – Della vendita", "name": "1470", "rubrica": "Nozione"},
             {"uid": "u1", "level": "CAPO", "unit": "CAPO II – Della vendita", "name": "1490.2", "rubrica": "x"},
             {"uid": "u2", "level": "CAPO", "unit": "CAPO I – Disposizioni generali", "name": "1321", "rubrica": "Nozione"}]
-    out = build.entries(rows, *helpers)
+    out = [e for e in build.entries(rows, *helpers) if e["level"] != "ARTICOLO"]      # v60n: the leaves aside
     assert [(e["name"], e["level"], e["articles"]) for e in out] == [("Vendita", "CAPO", ["1470", "1490"])]
     assert out[0]["rubricated"] == "Della vendita" and out[0]["rubriche"]["1490"].startswith("Garanzia")
     assert build.level_of("Chapter") == "CAPO" and build.level_of("titolo") == "TITOLO" and build.level_of("") == "?"
@@ -267,18 +271,20 @@ def test_a_code_without_units_is_built_from_what_it_has():
     # a structural property on the articles, or a breadcrumb path
     values = [{"name": "29", "rubrica": "Azione di annullamento", "value": "Capo II – Azioni di cognizione"},
               {"name": "30", "rubrica": "Azione di condanna", "value": "Capo II – Azioni di cognizione"}]
-    out = build.entries(build.property_rows(values, "capo"), *helpers)
+    out = [e for e in build.entries(build.property_rows(values, "capo"), *helpers) if e["level"] != "ARTICOLO"]
     assert [(e["name"], e["level"], e["articles"]) for e in out] == [("Azioni di cognizione", "CAPO", ["29", "30"])]
     crumbs = [{"name": "29", "rubrica": "Azione di annullamento",
                "value": "Libro II > Titolo III – Ricorso giurisdizionale > Capo II – Azioni di cognizione"}]
-    assert {e["level"] for e in build.entries(build.property_rows(crumbs, "breadcrumb"), *helpers)} == {"TITOLO", "CAPO"}
+    assert {e["level"] for e in build.entries(build.property_rows(crumbs, "breadcrumb"), *helpers)
+            if e["level"] != "ARTICOLO"} == {"TITOLO", "CAPO"}
     # heading Sections in the NEXT chain: each article under the last heading of each level
     chain = [{"sid": "1", "name": "T3", "title": "Titolo III – Azioni di cognizione", "rubrica": None, "next": "2"},
              {"sid": "2", "name": "C1", "title": "Capo I – Azione avverso il silenzio", "rubrica": None, "next": "3"},
              {"sid": "3", "name": "29", "title": "", "rubrica": "Azione di annullamento", "next": "4"},
              {"sid": "4", "name": "C2", "title": "Capo II – Azione di condanna", "rubrica": None, "next": "5"},
              {"sid": "5", "name": "30", "title": "", "rubrica": "Azione di condanna", "next": None}]
-    out = {(e["level"], e["name"]): e["articles"] for e in build.entries(build.chain_rows(chain), *helpers)}
+    out = {(e["level"], e["name"]): e["articles"] for e in build.entries(build.chain_rows(chain), *helpers)
+           if e["level"] != "ARTICOLO"}
     assert out == {("TITOLO", "Azioni di cognizione"): ["29", "30"], ("CAPO", "Azione avverso il silenzio"): ["29"],
                    ("CAPO", "Azione di condanna"): ["30"]}
     # nothing else: each article its own institution, by its rubrica
@@ -326,7 +332,7 @@ def test_each_anchor_logs_the_channel_that_found_it(monkeypatch):
 
 # --- 5. the record's strictness --------------------------------------------------------------------------------------
 
-def test_provato_needs_a_supporting_sentence_holding_the_elements_nouns():
+def test_provato_needs_only_a_grounded_supporting_sentence():           # v60t (1): v60h's nouns condition is gone
     by_id = {"S1": {"id": "S1", "certainty": "accertato", "text": "Il datore non aveva fornito i dispositivi di "
                                                                    "protezione."},
              "S2": {"id": "S2", "certainty": "accertato", "text": "Il lavoratore è caduto dal ponteggio."}}
@@ -336,16 +342,25 @@ def test_provato_needs_a_supporting_sentence_holding_the_elements_nouns():
     assert req["status"] == "provato"
     req = {**req, "supporting": ["S2"], "status": None}
     issue_records.settle(req, by_id)
-    assert req["status"] == "da provare" and "sostantivi dell'elemento" in req["why"]
+    assert req["status"] == "provato" and req["why"] == "lo dice il caso (S2, accertato)"   # its nouns: no longer asked
+    by_id["S3"] = {"id": "S3", "certainty": "assunto", "source": "sistema", "text": "Parte assistita assunta: Mevio"}
+    req = {**req, "supporting": ["S3"], "status": None}
+    issue_records.settle(req, by_id)
+    assert req["status"] == "da provare"                                  # the system's sentence never grounds it
 
 
 def test_a_distinctive_element_that_does_not_hold_makes_the_article_not_applicable():
-    rec = {"requisites": [{"kind": "requisito", "comma": 1, "status": "non risulta", "text": "violenza", "distinctive": True},
-                          {"kind": "requisito", "comma": 2, "status": "provato", "text": "altro"}]}
+    rec = {"requisites": [
+        {"kind": "requisito", "comma": 2, "status": "provato", "text": "altro"},
+        {"kind": "requisito", "comma": 1, "status": "non risulta", "text": "violenza", "distinctive": True}]}
+    assert issue_records.anchor_comma(rec) == 1                           # v60s (2): co. 1, whatever comes first
     assert issue_records.verdict(rec) == issue_records.NOT_APPLICABLE
     assert issue_records.verdict_reason(rec).startswith("elemento distintivo «violenza» non risulta")
-    rec["requisites"][0]["distinctive"] = False
-    assert issue_records.verdict(rec) == issue_records.TO_PROVE           # comma 2 holds: as before
+    moved = {"requisites": [{"kind": "requisito", "comma": 1, "status": "provato", "text": "altro"},
+                            {"kind": "requisito", "comma": 2, "status": "non risulta", "text": "violenza",
+                             "distinctive": True}]}
+    assert issue_records.anchor_comma(moved) == 1                         # the distinctive element never moves it
+    assert issue_records.verdict(moved) == issue_records.APPLICABLE       # co. 2 «non pertinente»
     row = {"_distinctive_text": "violenza"}
     seeded = {"requisites": [{"kind": "requisito", "text": "violenza"}, {"kind": "requisito", "text": "altro"}]}
     issue_records.seed(seeded, row)
@@ -367,7 +382,7 @@ def test_the_demotion_runs_to_completion_and_logs_what_it_left_unassessed(monkey
         if len(sizes) == 2:
             time.sleep(0.4)
         return {r["id"]: {"sostiene": ["S1"]} for _, r in reqs[1:]}            # the first of each call unanswered
-    log = issue_records.demote_unsupported(rows, "Il possessore usa il fondo da anni.", {}, call=call, seconds=0.2)
+    log = issue_records.demote_contradicted(rows, "Il possessore usa il fondo da anni.", {}, call=call, seconds=0.2)
     assert issue_records.DISTINCTIVE_PER_CALL == 6 and sorted(sizes) == [1, 6, 6]
     assert not log["complete"] and len(log["unassessed"]) >= 6 and log["errors"]
     assert all(r.get("_distinctive_text") for r in rows)                       # every element known to its record

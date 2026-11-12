@@ -59,6 +59,10 @@ class FakeSession:
         self.queries = []
 
     def run(self, query, **params):
+        if query == fr.RUBRICHE_QUERY:      # v60n: the code's rubriche, read once per document
+            self.queries.append(("rubriche", params))
+            rows = [{"name": f"{n}.0.0", "rubrica": ARTICLES[n][0]} for n in ARTICLES]
+            return type("R", (), {"data": lambda self_: rows})()
         kind = "vector" if "vector.queryNodes" in query else "title" if "$index, $lucene" in query else "text"
         self.queries.append((kind, params))
         rows = [{"name": f"{n}.0.0", "heading": ARTICLES[n][0]} for n in self.lists[kind]]
@@ -70,6 +74,7 @@ def v2(monkeypatch):
     monkeypatch.setenv(fi.FLAG, "true")
     monkeypatch.setenv(fi.RESOLVER_V2_FLAG, "true")
     monkeypatch.setattr(dg, "embedding_model", type("E", (), {"embed_query": lambda self, t: [0.1, 0.2]})())
+    monkeypatch.setattr(fr, "_RUBRICHE", {})
     monkeypatch.setattr(issue_spotting, "fetch_article", lambda session, doc_id, number, *a, **k: [
         {"s": {"name": f"{number}.0.0", "titolo_articolo": ARTICLES[number][0], "plain_text": ARTICLES[number][1]},
          "d": {"id": doc_id}}] if number in ARTICLES else [])
@@ -127,7 +132,8 @@ def test_core_and_related_articles_within_the_code(v2):
     assert refused["2462 c.c."] == "outside the institution's chapter"          # the sale's chapter is known
     assert refused["1492 c.c."] == "heading and text share no specific word"
     assert rows[0]["_heading_match"] and rows[0]["_fact_institution"] == "garanzia per i vizi della cosa venduta"
-    assert [k for k, _ in session.queries] == ["vector", "title", "text"]
+    assert [k for k, _ in session.queries] == ["rubriche", "vector", "title", "text"]       # v60n: rubriche first
+    assert log["rubrica"] == {"how": "esatta", "articles": ["1490 c.c."]}
     assert all(p.get("doc_id") == "cc" for _, p in session.queries)          # always within the named code
 
 

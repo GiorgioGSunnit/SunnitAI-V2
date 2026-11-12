@@ -28,7 +28,9 @@ REWRITE_SHARE = 0.6
 SENTENCE_CHARS = 300
 CHECK_STEP = "record_check"
 WRITING_STEPS = {"complete_sections": "il redattore ha riscritto la sezione troncata",
-                 "cover_blocks": "il redattore ha riscritto la sezione per coprire un blocco"}
+                 "cover_blocks": "il redattore ha riscritto la sezione per coprire un blocco",
+                 # v60q: a rewrite, never a removal -- a short sentence whose status word changed shares too few stems
+                 "status_words": "parole di stato del redattore sostituite: gli stati li scrive il codice"}
 _MARKERS_RE = re.compile(r"\s*\((?:da verificare|non risulta dal caso|calcolato)[^)]*\)|\s*\[DA VERIFICARE:[^\]]*\]",
                          re.IGNORECASE)
 _MARK_RE = re.compile(r"^\s*\[(\d{1,2})\]\s*")

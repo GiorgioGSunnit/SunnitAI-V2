@@ -8,9 +8,17 @@ Inputs, either:
                        included) and answer.md (the final answer); or files DIR/<id>.case.txt + DIR/<id>.answer.md
   --transcript FILE    an interactive transcript (diagnose_long --interactive-sim's interactive.md, or the server's run
                        directory): each case's answer, with --case-texts JSON {id: case text}
+  --live DIR           v60i (10): the live transcripts as the chat shows them (DIR/<id>.txt: round 1, then the parere):
+                       each one's parere, from its first section on; the case text from --case-texts, else
+                       DIR/<id>.case.txt, else none (the rows that need it -- the invented facts -- are then the model's
+                       guess, flagged in the table)
+
+The table: one row per case, then for each case its rows with our number and an empty column for the PO's (ours first,
+the PO's after: the PO scores without seeing ours being the point).
 
   python scripts/rubric_score.py --cases ~/po_cases --out rubric.md
   python scripts/rubric_score.py --transcript diagnose_reports/runs/v60-all/interactive.md --case-texts cases.json
+  python scripts/rubric_score.py --live diagnose_reports/live --out diagnose_reports/live/rubric.md
 
 Needs the model (the server's .env): one call per case.
 """
@@ -21,7 +29,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -85,6 +93,47 @@ def from_transcript(path: str, texts: Dict[str, str]) -> Dict[str, Tuple[str, st
     return out
 
 
+# v60i (10): where the parere starts in a live transcript -- the old pipeline's «⚖️ BOZZA …» header, or the first
+# section of either answer («1. Risposte ai quesiti», «1. Risposta e strategia»)
+_PARERE_START_RE = re.compile(r"(?m)^\s*(?:⚖️|\*{0,2}1\.\s+Rispost[ae]\b)")
+
+
+def answer_of(transcript: str) -> str:
+    """The parere of a live transcript: from where it starts (_PARERE_START_RE) to the end; "" when none."""
+    m = _PARERE_START_RE.search(transcript or "")
+    return transcript[m.start():].strip() if m else ""
+
+
+def from_live(folder: str, texts: Optional[Dict[str, str]] = None) -> Dict[str, Tuple[str, str]]:
+    """{id: (case text, parere)} of DIR/<id>.txt; the case text from texts, else DIR/<id>.case.txt, else ""."""
+    out = {}
+    base = Path(folder)
+    for path in sorted(base.glob("*.txt")):
+        if path.name.endswith(".case.txt"):
+            continue
+        cid = path.stem
+        answer = answer_of(path.read_text(encoding="utf-8"))
+        if not answer:
+            continue
+        case = (texts or {}).get(cid)
+        if case is None and (base / f"{cid}.case.txt").is_file():
+            case = (base / f"{cid}.case.txt").read_text(encoding="utf-8")
+        out[cid] = (case or "", answer)
+    return out
+
+
+def po_tables(scored: Dict[str, Dict[str, Dict[str, Any]]], no_case: Sequence[str] = ()) -> str:
+    """v60i (10): per case, each row with our number and an empty column for the PO's."""
+    out = ["", "## Per case: our number, then the PO's", ""]
+    for cid, rows in scored.items():
+        out.append(f"**{cid}**" + (" (no case text: «fatti inventati» is the model's guess)" if cid in no_case else ""))
+        out += ["", "| row | ours | PO |", "|---|---|---|"]
+        out += [f"| {col} | {'—' if rows[k]['score'] is None else format(rows[k]['score'], 'g')} |  |"
+                for k, col, _ in ROWS]
+        out.append("")
+    return "\n".join(out)
+
+
 def clean(raw: Any) -> Dict[str, Dict[str, Any]]:
     """The model's reply as {key: {"score": 0-1 or None, "why"}} for every row."""
     out = {}
@@ -145,18 +194,21 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--cases", help="a folder of cases: <id>/case.txt + <id>/answer.md")
     parser.add_argument("--transcript", help="an interactive transcript (.md, or a run directory holding interactive.md)")
-    parser.add_argument("--case-texts", help="JSON {id: case text} for --transcript")
+    parser.add_argument("--live", help="a folder of live transcripts: <id>.txt (round 1, then the parere)")
+    parser.add_argument("--case-texts", help="JSON {id: case text} for --transcript or --live")
     parser.add_argument("--out", help="write the table here (default: stdout)")
     args = parser.parse_args(argv)
+    texts = json.loads(Path(os.path.expanduser(args.case_texts)).read_text(encoding="utf-8")) if args.case_texts else {}
     if args.cases:
         cases = from_dir(os.path.expanduser(args.cases))
+    elif args.live:
+        cases = from_live(os.path.expanduser(args.live), texts)
     elif args.transcript:
         path = os.path.expanduser(args.transcript)
         path = os.path.join(path, "interactive.md") if os.path.isdir(path) else path
-        texts = json.loads(Path(os.path.expanduser(args.case_texts)).read_text(encoding="utf-8")) if args.case_texts else {}
         cases = from_transcript(path, texts)
     else:
-        parser.error("--cases or --transcript")
+        parser.error("--cases, --live or --transcript")
     bench = benchmark_ids()
     if bench & set(cases):
         print(f"note: {len(bench & set(cases))} benchmark case(s) scored for regression only, out of the mean",
@@ -168,7 +220,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         except Exception as exc:
             print(f"{cid}: scoring failed: {exc}", file=sys.stderr)
             scored[cid] = clean({})
-    out = table(scored, bench)
+    no_case = [cid for cid, (text, _) in cases.items() if not text.strip()]
+    if no_case:
+        print(f"note: no case text for {len(no_case)} case(s): {', '.join(no_case)}", file=sys.stderr)
+    out = table(scored, bench) + "\n" + po_tables(scored, no_case)
     if args.out:
         Path(args.out).write_text(out + "\n", encoding="utf-8")
         print(f"wrote {args.out}")

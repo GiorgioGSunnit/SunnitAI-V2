@@ -748,10 +748,13 @@ def rule_sentence(sentence: str, names: Sequence[str], verbs: Optional[re.Patter
 
 
 def check_text(title: str, text: str, rules: List[Dict[str, Any]], names: Sequence[str],
-               documents: List[Dict[str, Any]], verbs: Optional[re.Pattern] = None) -> Tuple[str, List[Dict[str, Any]], int]:
+               documents: List[Dict[str, Any]], verbs: Optional[re.Pattern] = None,
+               quote: bool = True) -> Tuple[str, List[Dict[str, Any]], int]:
     """(text, log, rule clauses judged) of one section: each rule clause of a plan article judged (judge); a sentence with
     a failing one replaced by the quotation of each failing article's comma (a renumbering when only the comma number
-    is wrong); the sentence after it untouched."""
+    is wrong); the sentence after it untouched. quote False (v60q, single shot: articles are references, never quoted
+    text): no quotation -- the failing clauses go, the clauses that passed stay as their own sentences; nothing passed,
+    the sentence goes ("dropped": with a deferring ledger a proposal, the record check's to confirm)."""
     from .plan_then_write import _sentence_spans
     replace: Dict[Tuple[int, int], str] = {}
     log: List[Dict[str, Any]] = []
@@ -771,19 +774,21 @@ def check_text(title: str, text: str, rules: List[Dict[str, Any]], names: Sequen
             if verdict["fix"] == "renumber":
                 renumbered = _renumbered(renumbered, rule["ref"], verdict["named"], verdict["comma"])
             else:
-                quoted.append(quotation(rule, verdict["comma"]))
+                quoted.append(quotation(rule, verdict["comma"]) if quote else "")
         if not failed:
             continue
         lead = re.match(r"^\s*(?:[-•*]\s+|\d+[.)]\s+)", sentence)
         kept = [_as_sentence(c) for c in passed] if quoted else []     # a clause that passed stays, as its own sentence
-        now = (lead.group(0) if lead else "") + (" ".join(kept + list(dict.fromkeys(quoted))) if quoted
-                                                 else renumbered.strip())
+        new_text = " ".join(x for x in kept + list(dict.fromkeys(quoted)) if x)
+        now = ((lead.group(0) if lead and new_text else "") + new_text) if quoted else \
+            (lead.group(0) if lead else "") + renumbered.strip()
         if now.strip() == sentence.strip():
             continue
         replace[(s, e)] = now
+        fixed = "quoted" if quote else "kept_passed" if new_text else "dropped"
         for rule, verdict in failed:
             log.append({"section": title, "article": rule["label"], "comma": verdict["comma"], "why": verdict["why"],
-                        "share": verdict["share"], "how": "renumbered" if verdict["fix"] == "renumber" else "quoted",
+                        "share": verdict["share"], "how": "renumbered" if verdict["fix"] == "renumber" else fixed,
                         "sentence": " ".join(sentence.split())[:400], "now": now[:400]})
     for (s, e) in sorted(replace, reverse=True):
         tail = text[e:e + 1]
@@ -794,9 +799,10 @@ def check_text(title: str, text: str, rules: List[Dict[str, Any]], names: Sequen
 def check_sections(sections: List[Tuple[str, str]], plan: Dict[str, Any], article_rows: List[Dict[str, Any]],
                    analysis: Dict[str, Any], documents: Optional[List[Dict[str, Any]]] = None,
                    skip: Iterable[str] = (), verbs: Optional[re.Pattern] = None,
-                   refs: Optional[Sequence[tuple]] = None) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
+                   refs: Optional[Sequence[tuple]] = None, quote: bool = True
+                   ) -> Tuple[List[Tuple[str, str]], Dict[str, Any]]:
     """(sections, log): check_text on every section but those in skip (a rendered one); verbs and refs as check_text and
-    article_rules take them (INTERACTIVE_FLOW: EXTENDED_VERB_RE, the topic's articles)."""
+    article_rules take them (INTERACTIVE_FLOW: EXTENDED_VERB_RE, the topic's articles); quote as check_text's."""
     rules = article_rules(plan, article_rows, analysis, refs)
     names = party_names(analysis, plan)
     skip = set(skip)
@@ -805,7 +811,7 @@ def check_sections(sections: List[Tuple[str, str]], plan: Dict[str, Any], articl
         if title in skip or not rules:
             out.append((title, text))
             continue
-        new, log, n = check_text(title, text, rules, names, documents or [], verbs)
+        new, log, n = check_text(title, text, rules, names, documents or [], verbs, quote)
         out.append((title, new))
         entries += log
         judged += n

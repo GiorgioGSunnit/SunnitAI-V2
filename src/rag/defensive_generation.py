@@ -17,7 +17,7 @@ import os
 import re
 import sys
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -4451,7 +4451,18 @@ def _applicability_key(label: str) -> str:
     return " ".join(re.sub(r"^\s*art(?:icolo)?\.?\s*", "", str(label), flags=re.IGNORECASE).lower().split())
 
 
-def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[str, Any]]) -> tuple:
+def _exempt_articles(facts: str, request: str, article_rows: List[Dict[str, Any]]) -> set:
+    """The articles the check never removes (_applicability_candidates' docstring): cross-reference rows, the articles
+    the user's own text names, the rows found by their own rubrica (_heading_match)."""
+    from .nodes.cypher import CROSSREF_SOURCE
+    named = set(_refs_in(_case_text(facts, request)))
+    return {row.get("_article") for row in article_rows
+            if row.get("_article") and (row.get("_source") == CROSSREF_SOURCE or row.get("_article") in named
+                                        or row.get("_heading_match"))}
+
+
+def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[str, Any]],
+                              grade_exempt: bool = False) -> tuple:
     """({article: rows} to check, {label: text}). Exempt, never sent to the
     model: rows without an article tag, cross-reference rows (grounded in a
     chosen article's own text), the articles the user's own text names, and
@@ -4480,6 +4491,8 @@ def _applicability_candidates(facts: str, request: str, article_rows: List[Dict[
     exempt = {row.get("_article") for row in article_rows
               if row.get("_article") and (row.get("_source") == CROSSREF_SOURCE or row.get("_article") in named
                                           or row.get("_heading_match"))}
+    if grade_exempt:            # v60o (grade_kept): graded too -- never removed (_filter_applicable_articles)
+        exempt = set()
     to_check: Dict[tuple, List[Dict[str, Any]]] = {}
     for row in article_rows:
         article = row.get("_article")
@@ -4592,7 +4605,10 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     priority = feature_flags.enabled(CHECK_PRIORITY_FLAG)
     gated = feature_flags.enabled(method_candidates.CHECKLIST_GATED_FLAG)
     graded = feature_flags.enabled(CHECK_GRADED_FLAG) or bool(limits.get("graded"))
-    to_check, texts = _applicability_candidates(facts, request, article_rows)
+    # v60o: grading every kept candidate grades the exempt ones too (the user-named, the rubrica's own): a grade, never
+    # a removal
+    keep_exempt = _exempt_articles(facts, request, article_rows) if graded and limits.get("grade_kept") else set()
+    to_check, texts = _applicability_candidates(facts, request, article_rows, grade_exempt=bool(keep_exempt))
     if not texts and not (priority or gated):
         return article_rows
     from . import evidence_tiers
@@ -4620,7 +4636,7 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         vlog("grade_prefilter", {"candidates": len(texts) + len(prefilter_out), "kept": len(texts),
                                  "dropped": prefilter_out}, duration_ms=(time.time() - t_pre) * 1000)
 
-    def grade_these(chosen: Dict[str, str]) -> tuple:
+    def grade_these(chosen: Dict[str, str], groups: Optional[Sequence[Sequence[str]]] = None) -> tuple:
         if feature_flags.enabled(GRADER_EVIDENCE_FLAG):
             issues = _graded_issues(analysis)
             return _graded_verdicts(
@@ -4628,11 +4644,20 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
                 _graded_texts(chosen, to_check, _evidence_context(facts, request, analysis),
                               _graded_focus(to_check, facts, request, analysis)),
                 _graded_system(evidence=True, issues=bool(issues), examples=feature_flags.enabled(GRADER_EXAMPLES_FLAG)),
-                issues)
+                issues, groups=groups)
         return _graded_verdicts(_graded_case(facts, request, analysis), _graded_texts(chosen, to_check, None,
-                                                                                      _graded_focus(to_check, facts, request, analysis)))
+                                                                                      _graded_focus(to_check, facts, request, analysis)),
+                                groups=groups)
     ungraded: List[str] = []
-    if graded and (feature_flags.enabled(GRADE_ALL_PROMPT_FLAG) or limits.get("grade_all")) and texts:
+    if graded and limits.get("grade_kept") and texts:     # v60o: every kept candidate graded, the caller's first
+        limit = "kept"
+        candidates = {f"{r['_article'][0]} {r['_article'][1]}" for r in article_rows if r.get("_article")}
+        no_text = [label for label in dict.fromkeys(limits.get("prefilter_keep") or ())
+                   if label in candidates and label not in texts]
+        verdicts, ungraded = _grade_kept(texts, limits, grade_these, no_text)
+        unchecked_labels = list(prefilter_out)
+        unchecked = len(unchecked_labels)
+    elif graded and (feature_flags.enabled(GRADE_ALL_PROMPT_FLAG) or limits.get("grade_all")) and texts:
         limit = f"prompt (cap {_GRADE_ALL_PROMPT_CAP})"
         chosen, verdicts, ungraded = _grade_prompt_rows(texts, by_label, article_rows, grade_these, facts, request,
                                                         analysis or {}, session_lang)
@@ -4651,7 +4676,7 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
             verdicts, ungraded = grade_these(texts)
         else:
             verdicts = _applicability_verdicts(facts, request, texts)
-    limits["graded_n"] = len(texts)
+    limits["graded_n"] = (limits.get("invariant") or {}).get("graded", len(texts)) if limit == "kept" else len(texts)
     past_limit = [r for label in unchecked_labels for r in to_check.get(by_label.get(label), [])[:1]]
     if verdicts is None:
         # Every batch failed: kept as before; the method lists' candidates are not (CHECKLIST_GATED).
@@ -4662,7 +4687,7 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
     case = _case_text(facts, request)
     # Evidence tiers, Rule 2: a T1/T2 article graded 0 gets a second, independent judgement (the yes/no check); it
     # goes only when that one agrees, else it is demoted (kept for the writer, never forced into the plan).
-    zero_evidenced = [a for a in to_check if graded and tiers.get(a) in (1, 2)
+    zero_evidenced = [a for a in to_check if graded and tiers.get(a) in (1, 2) and a not in keep_exempt
                       and _grade(verdicts.get(_applicability_key(f"{a[0]} {a[1]}"))) == 0]
     second = (_applicability_verdicts(facts, request, {f"{a[0]} {a[1]}": texts.get(f"{a[0]} {a[1]}", "")
                                                        for a in zero_evidenced}) or {}) if zero_evidenced else {}
@@ -4672,7 +4697,9 @@ def _filter_applicable_articles(facts: str, request: str, article_rows: List[Dic
         row0 = to_check[article][0]
         if graded:
             grade = _grade(verdict)
-            if grade == 0 and article in zero_evidenced:
+            if grade == 0 and article in keep_exempt:          # v60o: graded, never removed
+                grades[article] = (0, " ".join(str((verdict or {}).get("issue") or "").split())[:120])
+            elif grade == 0 and article in zero_evidenced:
                 other = second.get(_applicability_key(label))
                 if _drops_article(other, texts.get(label, "")):
                     dropped_articles.add(article)
@@ -4918,6 +4945,38 @@ def _grade_prompt_rows(texts: Dict[str, str], by_label: Dict[str, tuple], articl
     return graded, verdicts, ungraded
 
 
+# v60o (the seven-case sim: kept 63-65, graded 36-45, first-read hits and rule anchors among the ungraded -- p2 640, 646,
+# 648 c.p.; h7 43, 117 c.p.): grading_limits "grade_kept" grades every candidate the prefilter keeps, never a round's
+# share of them -- the caller's priority labels (prefilter_keep, in its order: the user-named articles, the rules' and
+# tables' anchors, the first read's hits) in a call of their own, so they are the first batch whatever the order flags
+# do, then the prefilter's rows. The invariant: graded == kept, written back and logged (grading_invariant).
+def _grade_kept(texts: Dict[str, str], limits: Dict[str, Any], grade_these, no_text: Sequence[str] = ()) -> tuple:
+    """({key: verdict}, [labels left without a grade]) for every kept label (texts: what the prefilter kept, its keep
+    list with it); limits gets "kept_n", "rounds_run" (the calls) and "invariant" {kept, graded, ok, missing, first,
+    no_text}. no_text: candidates of the keep list with no text to grade -- kept, so missing (the invariant broken)."""
+    first = [label for label in dict.fromkeys(limits.get("prefilter_keep") or ()) if label in texts]
+    rest = [label for label in texts if label not in first]
+    # v60p: one grading run -- the priority labels' batches submitted first, the prefilter's with them, every call
+    # (retries too) in one pool bounded by _APPLICABILITY_WORKERS (_graded_verdicts' groups)
+    got, missing_now = grade_these({label: texts[label] for label in first + rest}, groups=[g for g in (first, rest) if g])
+    verdicts: Dict[str, Dict[str, Any]] = dict(got or {})
+    ungraded: List[str] = list(missing_now or [])
+    graded = [label for label in texts if _grade(verdicts.get(_applicability_key(label))) is not None]
+    missing = [label for label in texts if label not in set(graded)] + list(no_text)
+    runs = limits.get("grading_calls") or []
+    limits["kept_n"], limits["rounds_run"] = len(texts) + len(no_text), 1
+    limits["calls"] = {"calls": sum(r.get("calls", 0) for r in runs), "wall_s": max((r.get("wall_s", 0) for r in runs),
+                                                                                    default=0),
+                       "longest_s": max((r.get("longest_s", 0) for r in runs), default=0),
+                       "longest": max(runs, key=lambda r: r.get("longest_s", 0)).get("longest") if runs else None}
+    limits["invariant"] = {"kept": len(texts) + len(no_text), "graded": len(graded), "ok": not missing,
+                           "missing": missing, "first": first, "no_text": list(no_text)}
+    vlog("grading_invariant", limits["invariant"])
+    if missing:
+        logger.warning("graded check: %d of %d kept candidates without a grade: %s", len(missing), len(texts), missing)
+    return verdicts, ungraded
+
+
 # CHECK_PRIORITY_ENABLED (diagnose_long, 25 Oct: half of the pool past the 36 checked slots, and
 # kept unchecked): the slots go first to the voted articles, then to those several signals found,
 # then the rest in the pipeline's order, the method lists last (_check_rank); an article left
@@ -5055,43 +5114,74 @@ def _label_key(label: str) -> tuple:
 
 
 def _graded_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYSTEM,
-                     issues: Optional[List[str]] = None) -> tuple:
+                     issues: Optional[List[str]] = None, groups: Optional[Sequence[Sequence[str]]] = None) -> tuple:
     """({label key: verdict}, [labels left without a grade]) for the graded check: _APPLICABILITY_BATCH
-    articles per call, up to _APPLICABILITY_WORKERS at once; then the articles still without a grade --
-    skipped by the model, cut off, or in a failed call -- once more, _GRADED_RETRY_BATCH per call. Never
-    fails as a whole: an article that still has no grade is returned among the ungraded."""
-    from concurrent.futures import ThreadPoolExecutor
+    articles per call; then the articles still without a grade -- skipped by the model, cut off, or in a failed call --
+    once more, _GRADED_RETRY_BATCH per call. Never fails as a whole: an article that still has no grade is returned
+    among the ungraded. v60p: every call in one pool of _APPLICABILITY_WORKERS -- the groups' batches (groups: label
+    lists batched apart, in their order: the first group's batches start first) and each batch's retry as soon as that
+    batch is back, never a group or a retry round waiting for another; the calls, the wall time and the longest call
+    logged (and written to the grading limits, when a caller set them)."""
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 
     if feature_flags.enabled(GRADER_VOTE_FLAG):
         return _voted_verdicts(case, texts, system, issues)
 
-    def run(labels: List[str], size: int, retry: bool) -> List[tuple]:
-        groups = [{label: texts[label] for label in labels[i:i + size]} for i in range(0, len(labels), size)]
-        if len(groups) == 1:
-            return [_graded_batch(case, groups[0], retry, system, issues)]
-        with ThreadPoolExecutor(max_workers=min(_APPLICABILITY_WORKERS, len(groups))) as pool:
-            return list(pool.map(lambda group: _graded_batch(case, group, retry, system, issues), groups))
-
     t0 = time.time()
-    # GRADER_FIXED_ORDER: the batches by article id, whatever order retrieval gave them.
-    labels = sorted(texts, key=_label_key) if feature_flags.enabled(GRADER_FIXED_ORDER_FLAG) else list(texts)
+    fixed = feature_flags.enabled(GRADER_FIXED_ORDER_FLAG)      # GRADER_FIXED_ORDER: by article id, within each group
+    order = [list(g) for g in (groups or [list(texts)]) if g]
+    order = [sorted(g, key=_label_key) if fixed else g for g in order]
+    labels = [label for g in order for label in g if label in texts]
+    batches = [{label: texts[label] for label in g[i:i + _APPLICABILITY_BATCH] if label in texts}
+               for g in order for i in range(0, len(g), _APPLICABILITY_BATCH)]
+    batches = [b for b in batches if b]
     got: Dict[str, Dict[str, Any]] = {}
-    first = run(labels, _APPLICABILITY_BATCH, False)
-    for read, _ in first:
-        got.update(read)
-    missing = [label for label in labels if label not in got]
-    second = run(missing, _GRADED_RETRY_BATCH, True) if missing else []
-    for read, _ in second:
-        got.update({label: v for label, v in read.items() if label not in got})
+    first: List[tuple] = []
+    second: List[tuple] = []
+    calls: List[Dict[str, Any]] = []
+    retried: List[str] = []
+
+    def timed(group: Dict[str, str], retry: bool) -> tuple:
+        started = time.time()
+        try:
+            read, problem = _graded_batch(case, group, retry, system, issues)
+        except Exception as exc:            # noqa: BLE001 -- a failed call is a batch without grades
+            read, problem = {}, f"{type(exc).__name__}: {exc}"[:200]
+        return read or {}, problem or "", round(time.time() - started, 2), group, retry
+    if batches:
+        with ThreadPoolExecutor(max_workers=max(1, min(_APPLICABILITY_WORKERS, len(batches)))) as pool:
+            pending = {pool.submit(timed, b, False) for b in batches}
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    read, problem, seconds, group, retry = future.result()
+                    calls.append({"s": seconds, "n": len(group), "retry": retry, "first": next(iter(group))})
+                    if retry:
+                        second.append((read, problem))
+                        got.update({label: v for label, v in read.items() if label not in got})
+                        continue
+                    first.append((read, problem))
+                    got.update(read)
+                    missing = [label for label in group if label not in read]
+                    retried += missing
+                    for i in range(0, len(missing), _GRADED_RETRY_BATCH):
+                        pending.add(pool.submit(timed, {label: texts[label] for label in
+                                                        missing[i:i + _GRADED_RETRY_BATCH]}, True))
     ungraded = [label for label in labels if label not in got]
     problems = [problem for _, problem in first if problem]
+    longest = max(calls, key=lambda c: c["s"], default=None)
+    stats = {"calls": len(calls), "wall_s": round(time.time() - t0, 2), "longest_s": longest["s"] if longest else 0,
+             "longest": longest, "workers": _APPLICABILITY_WORKERS, "sum_s": round(sum(c["s"] for c in calls), 2)}
     log = {"checked": len(labels), "batches": len(first), "failed_batches": sum(1 for read, p in first if p and not read),
            "incomplete_batches": sum(1 for read, p in first if p and read),
            "cut_replies": sum(1 for _, p in first + second if "(reply cut)" in p),
-           "retried": len(missing), "retry_batches": len(second), "recovered": len(missing) - len(ungraded),
-           "ungraded": ungraded}
+           "retried": len(retried), "retry_batches": len(second), "recovered": len(retried) - len(ungraded),
+           "ungraded": ungraded, **stats}
     if problems:
         log["error"] = problems[0]
+    limits = _GRADING_LIMITS.get()
+    if limits is not None:
+        limits.setdefault("grading_calls", []).append(stats)
     vlog("case_analysis_applicability", log, duration_ms=(time.time() - t0) * 1000)
     return {_applicability_key(label): v for label, v in got.items()}, ungraded
 
@@ -5132,14 +5222,25 @@ def _voted_verdicts(case: str, texts: Dict[str, str], system: str = _GRADED_SYST
     jobs = [(label, k) for label in labels for k in range(_GRADER_VOTES)]
     temperature = _grader_vote_temperature()
 
+    seconds: List[tuple] = []
+
     def vote(job):
         label = job[0]
+        started = time.time()
         read, problem = _graded_batch(case, {label: texts[label]}, False, system, issues, temperature=temperature)
+        seconds.append((round(time.time() - started, 2), label))
         return read.get(label), problem
     if not jobs:
         return {}, []
     with ThreadPoolExecutor(max_workers=min(_grader_vote_workers(), len(jobs))) as pool:
         results = list(pool.map(vote, jobs))
+    longest = max(seconds, default=(0, ""))
+    limits = _GRADING_LIMITS.get()          # v60p: the calls, the wall time and the longest call
+    if limits is not None:
+        limits.setdefault("grading_calls", []).append({
+            "calls": len(jobs), "wall_s": round(time.time() - t0, 2), "longest_s": longest[0],
+            "longest": {"s": longest[0], "n": 1, "retry": False, "first": longest[1]},
+            "workers": _grader_vote_workers(), "sum_s": round(sum(x for x, _ in seconds), 2)})
     votes: Dict[str, List[Optional[int]]] = {label: [] for label in labels}
     answers: Dict[str, List[Dict[str, Any]]] = {label: [] for label in labels}
     for (label, _), (verdict, _) in zip(jobs, results):

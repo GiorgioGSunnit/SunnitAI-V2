@@ -750,6 +750,27 @@ documents (codes, laws), the INTERPRETATION tier the rulings, filtered by what t
                                 questions and anchors to them, the hypotheses to the topic their institutions anchor
                                 (the others shown «da verificare»), the rows graded 1 the "altri profili"; the chosen
                                 topics' ungraded rows graded in the answer step. Off: topic_step's topics, as before.
+  CASE_FIRST_SINGLE_SHOT       false (v60k): the case-first pipeline in one message -- a narrative case gets the complete
+                                parere (the five sections), round 1 run inside it and never shown (implies
+                                INTERACTIVE_CASE_FIRST; on, it is the path whatever INTERACTIVE_FLOW says). The client
+                                from the message, else assumed and said in the first line; every topic with graded rows
+                                covered, at most 15 articles; what the case does not state «da verificare: il caso non
+                                dice …» where it counts (v60q: no «Punti da precisare» -- OPEN_POINTS_MAX, default 0; a
+                                party's state of mind is argued, never missing); a later message updates the parere, the
+                                changed parts marked «(aggiornato)». v60q: articles are references -- §2 cites «art. N
+                                codice — rubrica» with the status lines, never the commi's text; the text goes to the
+                                response's article_citations; the topics ordered by the criteria (a named article, the
+                                main line, a row graded 3, then the rest), the first five covered (at least three where
+                                as many exist). With INTERACTIVE_CASE_FIRST, v60q: an article of a code outside the
+                                frame's area (c.c. in penale, c.p./c.p.p. in civile, c.p.a. outside amministrativo) is a
+                                candidate only when a first-read institution, a fired rule or the user names it, else
+                                one of the «altri profili»; Titolo III c.c. only for the extraction's contract type (no
+                                contract type: no gate). v60r: §2 keeps per article its heading, one status sentence
+                                and the writer's text -- the record's rows (status lines, sanction and closing lines)
+                                go to article_citations only; every article «non applicabile» only from its anchor
+                                comma (v60s: co. 1 unless its topic names another), any other unmet comma «non
+                                pertinente». See interactive_flow.single_shot;
+                                scripts/diagnose_long.py --interactive-sim --single-shot.
   TOPIC_TABLES                 false (v55, drafts pending the lawyer): topic_step reads topic_tables.TABLES -- criminal
                                 (rapina, furto, truffa, corruzione, concorso, tentativo, lesioni, 416-bis, misure
                                 cautelari, prescrizione del reato) and administrative (l. 241/1990, ricorso al TAR,
