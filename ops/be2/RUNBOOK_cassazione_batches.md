@@ -194,6 +194,15 @@ Why a call hangs is not known.
 The patch makes the waits a setting, `ANALISI_CHUNK_TIMEOUTS` (default "60,120"; a value under 30 s or unreadable
 falls back to it). The test: worker 2 at `40,40,40` (three requests, as today) beside worker 1 on the default.
 **Applied on be2 on 11 Nov 2026 at 12:54 CET** (the comparison below starts from that time).
+
+Result after 21 hours (12 Nov 09:53). The night before the change the two workers were equal (422 and 429 rulings,
+plain text 1.14% and 1.16% of chunks). After it: worker 1 wrote 722 rulings from 8,980 chunks, worker 2 wrote 867
+from 10,436 (+20% rulings, +16% chunks). Plain text 1.10% against 1.20%, inside chance at this size (0.15 points).
+First-attempt timeouts 5.1% and 5.2% of chunks, so 40 s cuts no normal call; a hung chunk ends on plain text 23%
+of the time on both. The quality guard holds: the setting stays. Not settled: how much the pair gains. Worker 1,
+unchanged, analysed fewer chunks an hour than the night before (528 -> 485) and the pair's total is flat (1,030 ->
+1,047) while the rulings got shorter (13.7 -> 11.7 chunks), so part of worker 2's lead may be worker 1 slowed by
+the shared model server.
 ```
 scp ops/be2/patch_ingest_lever5.py sunnit@185.199.24.31:~/
 # be2. Both queues must be empty: by day pause the feeder and let them drain (~75 min), or use the evening pause.
