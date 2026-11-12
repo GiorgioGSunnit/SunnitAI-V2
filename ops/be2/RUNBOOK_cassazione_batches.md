@@ -238,6 +238,47 @@ Rollback: delete the line from `.env.worker2` and restart worker 2 (the default 
 as before). Full: `sudo python3 ~/patch_ingest_lever5.py --undo`, restart both workers on empty queues.
 Lever 4's patch expects the file as it was before lever 5: give it the new checksum (c2a57da4...) before applying it.
 
+## 3e. Third ingest worker (prepared 12 Nov, NOT applied)
+
+Why it may help: on 11-12 Nov worker 2 sent 16% more calls and worker 1's normal calls took the same time, and
+the model server showed no request waiting, so the server is not the limit at two workers. be2 has room (8 cores,
+load 0.45, 5 GB of memory available on 12 Nov). What is not known: how much a third worker adds, and whether the
+chatbot's answers slow down by day, since they use the same model server. So it starts as a measured test.
+
+Before: the morning reading with two workers (section 3d's comparison and timing commands) is the baseline.
+```
+scp ops/be2/env.worker3 sunnit@185.199.24.31:~/
+# be2. Gate: memory of each running worker; go on only if a third one fits in what is available.
+for u in sunnitai-ingest sunnitai-ingest-2; do ps -o rss= -p $(systemctl show -p MainPID --value $u) | awk '{printf "%d MB\n", $1/1024}'; done; free -m | awk 'NR==2{print "available", $7, "MB"}'
+sudo mkdir -p /opt/sunnitai-be/document_upload_3 && sudo chown --reference=/opt/sunnitai-be/document_upload /opt/sunnitai-be/document_upload_3 && sudo chmod --reference=/opt/sunnitai-be/document_upload /opt/sunnitai-be/document_upload_3
+sudo cp ~/env.worker3 /opt/sunnitai-be/.env.worker3 && sudo chown --reference=/opt/sunnitai-be/.env /opt/sunnitai-be/.env.worker3 && sudo chmod 600 /opt/sunnitai-be/.env.worker3
+sudo touch /var/log/sunnitai-ingest-3.log && sudo chown --reference=/var/log/sunnitai-ingest.log /var/log/sunnitai-ingest-3.log
+sudo sed -e 's/worker2/worker3/g' -e 's/worker 2/worker 3/' -e 's/document_upload_2/document_upload_3/' /etc/systemd/system/sunnitai-ingest-2.service | sudo tee /etc/systemd/system/sunnitai-ingest-3.service > /dev/null
+systemctl cat sunnitai-ingest-3 | grep -vE "^#"                    # EnvironmentFile .env, then .env.worker3
+sudo systemctl daemon-reload && sudo systemctl enable --now sunnitai-ingest-3 && sleep 3
+systemctl is-active sunnitai-ingest-3; journalctl -u sunnitai-ingest-3 -n 2 --no-pager
+```
+Verify: the journal's last line says "watching /opt/sunnitai-be/document_upload_3". Any other folder: stop it at
+once (`sudo systemctl disable --now sunnitai-ingest-3`). Then give it files and put it in the report:
+```
+sudo crontab -l > ~/crontab.bak_worker3
+sed -e 's#--queue /opt/sunnitai-be/document_upload_2 --target#--queue /opt/sunnitai-be/document_upload_2 --queue /opt/sunnitai-be/document_upload_3 --target#' -e 's#document_upload_2 --staging#document_upload_2,/opt/sunnitai-be/document_upload_3 --units sunnitai-ingest,sunnitai-ingest-2,sunnitai-ingest-3 --staging#' ~/crontab.bak_worker3 > ~/crontab.now
+diff ~/crontab.bak_worker3 ~/crontab.now                           # two lines change: the feeder and the health report
+sudo crontab ~/crontab.now
+```
+Guard, two hours later and the next morning (the same commands as 3d with the third unit added to the loop):
+- normal calls: rulings of 8-16 chunks without a timeout take about 16 s of analysis, average call 7.3-7.7 s, on
+  workers 1 and 2. More than 10% above that means the model server is now shared too thinly: the chatbot's calls
+  slow down by as much.
+- plain text stays near 1.2% of chunks, first-attempt timeouts near 5%.
+- the model server's `num_requests_waiting` stays 0.
+If one fails: stop. Clean stop: `sudo crontab ~/crontab.bak_worker3` (its queue gets no more files), wait until
+`document_upload_3` holds no PDF (under an hour), then `sudo systemctl disable --now sunnitai-ingest-3`.
+
+To watch if it stays: three workers write about 3,000 rulings a day and the cards do about 30 a minute, 2,700 in
+their 90 minutes. "still to card" above 0 in the morning means the window is short: prod's `--stop-at 23:00` and
+be2's resume line at `5 0`.
+
 ## 4. Monday: the batch lands
 
 1. The batch goes to `/home/sunnit/cass_batch1`, flat (PDF + `.name` sidecar per file, as the 2025 batch). Names
