@@ -315,6 +315,39 @@ sudo crontab ~/crontab.now
 Three workers all Saturday and Sunday write about 3,000 rulings a day and the cards do about 32 a minute, 2,900
 in their 90 minutes: a small "still to card" on Sunday and Monday morning is expected, and Monday night catches up.
 
+## 3f. The chunk calls that never end (found 13 Nov; cause of the endless answer not known yet)
+
+About 5% of chunk calls get no answer within the wait, and waiting for them is about 30% of a worker's time. What
+such a call is: on 13 Nov, 12:16-12:26 CET, two workers ingesting, the model server's own counters over the ten
+minutes (`<LLM_BASE_URL without /v1>/metrics`):
+
+| | all | of requests that finished | gap |
+|---|---|---|---|
+| generated tokens | +172,653 | +132,098 | 40,555 = 23.5% of what the server wrote |
+| prompt tokens | +370,839 | +352,213 | 18,626 = 5.0% |
+| requests | | +289 (stop 281, length 8, abort 0) | about 15 unfinished |
+
+So the unfinished requests are the 5%, and each got some 2,650 tokens written for it, forty seconds of writing
+(a finished answer has about 450). Since the server started: 20.9 of 85.3 million generated tokens (24.5%). A
+"hung" chunk call is an answer that does not end, dropped when the ingest hangs up; the server counts it neither
+as finished nor as aborted. The reading of 11 Nov ("no long answers, so no runaway") looked only at finished
+requests. A quarter of the shared model server's writing is this waste.
+
+The request (analisi_parallel.py, llm/factory.py; be2 has langchain-openai 0.3.4, openai 1.59.9; the server is vLLM
+0.28.0): `ChatOpenAI(temperature=0, request_timeout=90).with_structured_output(Analisi_Paragrafo)`, no length cap.
+The answer's shape has three free text fields and an open list of references.
+
+Not known: what the endless answer is made of (white space the JSON shape allows, a list that never closes, a
+field repeating itself). The fix depends on it. `ops/be2/probe_runaway.py` looks: it sends the sections of 12
+rulings from the graph exactly as the ingest does (the ingest's own model object builds the request), streamed and
+capped at 3,000 tokens, and prints numbers and field names only. Read-only; about what one worker sends in six
+minutes.
+```
+scp ops/be2/probe_runaway.py sunnit@185.199.24.31:~/
+cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py
+```
+No fix before its result.
+
 ## 4. Monday: the batch lands
 
 1. The batch goes to `/home/sunnit/cass_batch1`, flat (PDF + `.name` sidecar per file, as the 2025 batch). Names
