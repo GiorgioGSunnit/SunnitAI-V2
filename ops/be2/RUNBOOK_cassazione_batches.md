@@ -348,20 +348,31 @@ cap. The JSON rule the server enforces allows white space anywhere between two e
 that has started to repeat it never leaves.
 
 The server has a remedy of its own, JSON "always compact without any whitespace" (vLLM's
-`disable_any_whitespace`): as a server setting it would change every caller's answers, the chatbot's too, and
-needs a restart of the model server; the request can carry it too (`structured_outputs.disable_any_whitespace`),
-which touches the ingest's own calls only. The documentation does not say whether that is honoured next to
-`response_format`, so the probe's second pass tries it on real sections, read-only (about twenty minutes of one
-worker's load): five times each section that did not end, once each 60 that ended, as today and under the two
-ways of asking.
+`disable_any_whitespace`). As a server setting (`--structured-outputs-config`, backend xgrammar or guidance) it
+would change every caller's answers, the chatbot's too, and needs a restart of the model server: the proper fix,
+and Flavio's and the PM's to decide. Carried by the request it does NOT work on this server (probe's second run,
+13 Nov, 147 sections, 10 did not end: 8 in the references list, 2 just before it): next to `response_format` it
+is refused (HTTP 400); alone with `structured_outputs.json` it is accepted and ignored (56 of 56 answers still
+with line breaks; 27 of 50 did not end against 29 of 50 as today). The same run measured the chance: asked
+again, a section that did not end fails 58% of the time; one that ended, 4 times in 60. Two runs of the same
+request at temperature 0 give the same tag 49 times in 56 and the same whole answer 22 times in 56.
+
+Remedies a request can carry, tried next by the probe (read-only, about twenty minutes of one worker's load):
+a frequency penalty (0.1 and 0.3: a piece repeated without end becomes less and less likely, so the repeat breaks
+and the JSON closes), the server's stop on repetition (`repetition_detection`: the answer is cut, so what counts
+is whether its content was complete), and the documented white-space pattern.
 ```
 scp ops/be2/probe_runaway.py sunnit@185.199.24.31:~/
-cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --compact
+cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 8 --repeats 4 --normal 40
 ```
-Read: "did not end" must fall to 0 under a form whose answers show "with line breaks 0" (the form took effect),
-and the answers that ended must keep their content (same tag, the quote still found word for word, the same
-sizes; "as today" is the control: two runs of the same request already differ a little). Only then a change of
-the ingest, on one worker first, with the plain-text share as the guard.
+Read: under a remedy "did not end" must fall to 0, and the answers that ended must keep their content (same tag,
+the quote still found word for word, the same sizes; "as today" is the control). Only then a change of the
+ingest, on one worker first, with the plain-text share as the guard.
+
+Seen on the way, not looked into: in the answers that end, the summary field (`requirement`) has a median of 7-8
+characters, the quote 550 and the search text 40-50. The request shows the model the two prompt files, which ask
+for a tag only; the fields' descriptions sit in the schema, which shapes the answer. Whether the model sees them
+is not verified, nor what the stored abstracts look like.
 
 ## 4. Monday: the batch lands
 

@@ -18,21 +18,27 @@ First run, 13 Nov (117 sections): 4 answers did not end (3.4%), all four the sam
 then, inside the list of references and after its first entry, white space only, repeating every 4 characters,
 until the cap. The request is `response_format` json_schema (strict), no length cap.
 
---compact adds a second pass that tries the server's own remedy, JSON without free white space, on the same
-sections: five times each section that did not end, once each 60 sections that ended, under three forms of the
-request (as today, and two ways of asking for it). It shows whether the endless answers stop, and whether the
-answers that ended keep the same content.
+--remedies adds a second pass that tries remedies a request can carry, on the same sections: several times each
+section that did not end, once each a number of sections that ended, as today and under each remedy. It shows
+whether the endless answers stop, and whether the answers that ended keep the same content.
+
+Second run, 13 Nov (147 sections, 10 did not end; 8 in the references list, 2 just before it): the server's own
+"JSON without free white space" does not work per request here: `structured_outputs.disable_any_whitespace` next
+to `response_format` is refused (HTTP 400), and alone with `structured_outputs.json` it is accepted and ignored
+(every answer still has line breaks; 27 of 50 did not end, 29 of 50 as today). Asked again, a section that did
+not end fails 58% of the time; one that ended, 4 times in 60.
 
     cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py                # 12 rulings, about 150 calls
-    cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --compact      # + the second pass, about 400
+    cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 8 --repeats 4 --normal 40
     python probe_runaway.py --selftest                                              # no server needed
 
-Load: about what one ingest worker sends in six minutes; with --compact, in twenty.
+Load: about what one ingest worker sends in six minutes; with --remedies as above, in twenty.
 """
 import argparse
 import json
 import os
 import random
+import re
 import statistics
 import sys
 import threading
@@ -50,13 +56,23 @@ PROMPTS = f"{PACKAGES}/lex_package/utils/prompts"
 FIELDS = ("requirement", "core_text", "search_text", "pattern_type", "riferimenti")
 CHUNK_WORDS = 250                                       # analisi_parallel.MAX_CHUNK_WORDS
 ENDLESS = ("length", "cut by the probe")
-# The same request under three forms: as the ingest sends it, and two ways of asking the server for JSON without
-# free white space (vLLM's structured_outputs.disable_any_whitespace; its documentation does not say whether it is
-# honoured next to response_format, so both are tried). None removes a key; "$schema" is the answer's own schema.
+# The same request as the ingest sends it, and with one remedy each that only this request carries. None removes
+# a key; "$schema" is the answer's own schema.
+#   frequency penalty: every repeat of a piece makes that piece less likely, so a repeat without end breaks by
+#     itself and the JSON closes; it could also touch long word-for-word quotes, hence two strengths and the
+#     comparison of the answers that ended;
+#   stop on repetition: vLLM's repetition_detection ends the answer when a short pattern repeats; the answer is
+#     then cut, so what counts is whether its content was complete before the cut;
+#   white space pattern: the other documented way to limit white space between JSON elements.
+# Tried on 13 Nov and dropped: structured_outputs.disable_any_whitespace (refused next to response_format, ignored
+# alone).
 FORMS = [("as today", {}),
-         ("white space forbidden, added to the request", {"structured_outputs": {"disable_any_whitespace": True}}),
-         ("white space forbidden, structured_outputs alone",
-          {"response_format": None, "structured_outputs": {"json": "$schema", "disable_any_whitespace": True}})]
+         ("frequency penalty 0.1", {"frequency_penalty": 0.1}),
+         ("frequency penalty 0.3", {"frequency_penalty": 0.3}),
+         ("stop on repetition", {"repetition_detection": {"max_pattern_size": 20, "min_count": 10}}),
+         ("white space pattern", {"response_format": None,
+                                  "structured_outputs": {"json": "$schema", "whitespace_pattern": "[ ]?"}})]
+CONTENT_DONE = re.compile(r'"pattern_type"\s*:\s*(null|"[^"]*")')    # the four content fields come before it
 
 
 def read_env(path: str) -> dict:
@@ -265,11 +281,20 @@ def second_pass(url: str, key: str, body: dict, system: str, user: str, sections
     def middle(values):
         values = list(values)
         return f"{statistics.median(values):.0f}" if values else "-"
+    def how(ok):
+        """Of the answers that ended: how they finished, and how many are whole JSON or at least whole content."""
+        whole = sum(1 for r in ok if content(r["text"]) is not None)
+        cut = sum(1 for r in ok if content(r["text"]) is None and CONTENT_DONE.search(r["text"]))
+        return (f"finish {dict(Counter(r['finish'] for r in ok))}, valid JSON {whole}"
+                + (f", cut but with the content complete {cut}" if len(ok) > whole else ""))
     if endless:
         print(f"the {len(endless)} sections whose first answer did not end, {repeats} times each:")
         for form, (name, _) in enumerate(FORMS):
             rs = [r for (f, kind, _), r in done if f == form and kind == "endless"]
-            print(f"  {name}: {sum(1 for r in rs if r['finish'] in ENDLESS)} of {len(rs)} did not end" + refused(rs))
+            ok = [r for r in rs if not r["error"] and r["finish"] not in ENDLESS]
+            print(f"  {name}: {sum(1 for r in rs if r['finish'] in ENDLESS)} of {len(rs)} did not end"
+                  + (f" | the {len(ok)} that ended: {how(ok)}, tokens median {middle(r['tokens'] for r in ok)}, "
+                     f"seconds median {middle(r['seconds'] for r in ok)}" if ok else "") + refused(rs))
     print(f"{len(ended)} sections whose first answer ended, once under each form:")
     for form, (name, _) in enumerate(FORMS):
         rs = [(i, r) for (f, kind, i), r in done if f == form and kind == "ended"]
@@ -277,7 +302,7 @@ def second_pass(url: str, key: str, body: dict, system: str, user: str, sections
         valid = [(i, c) for i, c in ((i, content(r["text"])) for i, r in ok) if c is not None]
         quoted = sum(1 for i, c in valid if squeeze(c.get("core_text"))
                      and squeeze(c.get("core_text")) in squeeze(" ".join(sections[i][1].split()[:CHUNK_WORDS])))
-        print(f"  {name}: ended {len(ok)} of {len(rs)}, valid JSON {len(valid)}, with line breaks "
+        print(f"  {name}: ended {len(ok)} of {len(rs)}, {how([r for _, r in ok])}, with line breaks "
               f"{sum(1 for _, r in ok if chr(10) in r['text'])} | tokens median {middle(r['tokens'] for _, r in ok)}, "
               f"seconds median {middle(r['seconds'] for _, r in ok)}" + refused([r for _, r in rs]))
         print(f"      same tag as the first answer {sum(1 for i, c in valid if c.get('pattern_type') == before[i].get('pattern_type'))}, "
@@ -327,18 +352,24 @@ def selftest() -> None:
     assert shape("")["open_field"] == "(none)"
 
     class Model(BaseHTTPRequestHandler):                # a stand-in model server: streams, honours max_tokens;
-        def do_POST(self):                              # asked for no white space it writes compact and always ends
-            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            compact = (body.get("structured_outputs") or {}).get("disable_any_whitespace")
+        def do_POST(self):                              # with a frequency penalty it writes compact and always ends,
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))     # on repetition it cuts
+            compact = bool(body.get("frequency_penalty"))
             endless = "ENDLESS" in body["messages"][-1]["content"] and not compact
             answer = {"requirement": "x", "core_text": "plain words", "pattern_type": "altro", "riferimenti": []}
             whole = json.dumps(answer, separators=(",", ":")) if compact else json.dumps(answer, indent=2)
-            pieces = ['{"requirement": "x",'] + ["\n"] * (body["max_tokens"] - 1) if endless else [whole[:9], whole[9:]]
+            last = "stop"
+            if endless and body.get("repetition_detection"):
+                pieces, last = ['{"requirement": "x", "core_text": "plain words", "pattern_type": "altro",', "\n", "\n"], "repetition"
+            elif endless:
+                pieces, last = ['{"requirement": "x",'] + ["\n"] * (body["max_tokens"] - 1), "length"
+            else:
+                pieces = [whole[:9], whole[9:]]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
             for n, piece in enumerate(pieces, 1):
-                finish = ("length" if endless else "stop") if n == len(pieces) else None
+                finish = last if n == len(pieces) else None
                 event = {"choices": [{"delta": {"content": piece}, "finish_reason": finish}]}
                 self.wfile.write(f"data: {json.dumps(event)}\n\n".encode())
             usage = {"choices": [], "usage": {"completion_tokens": len(pieces)}}
@@ -352,10 +383,12 @@ def selftest() -> None:
     url = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
     request = {"model": "m", "response_format": {"type": "json_schema", "json_schema": {"strict": True, "schema": {"a": 1}}}}
     assert with_form(request, FORMS[0][1]) == request
-    assert with_form(request, FORMS[1][1])["structured_outputs"] == {"disable_any_whitespace": True}
-    alone = with_form(request, FORMS[2][1])
-    assert "response_format" not in alone and alone["structured_outputs"] == {"json": {"a": 1}, "disable_any_whitespace": True}
+    assert with_form(request, FORMS[1][1]) == {**request, "frequency_penalty": 0.1}
+    alone = with_form(request, FORMS[4][1])
+    assert "response_format" not in alone and alone["structured_outputs"] == {"json": {"a": 1}, "whitespace_pattern": "[ ]?"}
+    assert "response_format" in request                 # the request itself is never changed
     assert content('{"a": 1}') == {"a": 1} and content('{"a": 1') is None and content("[1]") is None
+    assert CONTENT_DONE.search('{"core_text": "q", "pattern_type": "altro",\n\n') and not CONTENT_DONE.search('{"pattern_type":\n\n')
     try:
         good = ask(url, "EMPTY", {"messages": [{"role": "user", "content": "a section"}], "max_tokens": 50, "stream": True})
         bad = ask(url, "EMPTY", {"messages": [{"role": "user", "content": "ENDLESS"}], "max_tokens": 50, "stream": True})
@@ -372,11 +405,13 @@ def selftest() -> None:
     assert bad["finish"] == "length" and bad["tokens"] == 50 and shape(bad["text"])["tail_space"] > 0.5
     assert gone["error"] and not gone["text"]
     said = said.getvalue()
-    assert "second pass: 9 calls" in said and "as today: 2 of 2 did not end" in said, said
-    assert "white space forbidden, added to the request: 0 of 2 did not end" in said, said
-    assert "as today: ended 1 of 1, valid JSON 1, with line breaks 1" in said, said
-    assert "white space forbidden, structured_outputs alone: ended 1 of 1, valid JSON 1, with line breaks 0" in said, said
-    assert said.count("same tag as the first answer 1, same whole answer 1, quote found word for word in the section 1") == 3, said
+    assert "second pass: 15 calls" in said and "as today: 2 of 2 did not end" in said, said
+    assert "frequency penalty 0.1: 0 of 2 did not end | the 2 that ended: finish {'stop': 2}, valid JSON 2, tokens" in said, said
+    assert ("stop on repetition: 0 of 2 did not end | the 2 that ended: finish {'repetition': 2}, valid JSON 0, "
+            "cut but with the content complete 2") in said, said
+    assert "as today: ended 1 of 1, finish {'stop': 1}, valid JSON 1, with line breaks 1" in said, said
+    assert "frequency penalty 0.3: ended 1 of 1, finish {'stop': 1}, valid JSON 1, with line breaks 0" in said, said
+    assert said.count("same tag as the first answer 1, same whole answer 1, quote found word for word in the section 1") == 5, said
     assert "response_format json_schema (strict True)" in request_shape(
         {"model": "m", "messages": [], "response_format": {"type": "json_schema", "json_schema": {"strict": True}}})
     assert "tool_choice function" in request_shape({"tools": [{}], "tool_choice": {"type": "function"}, "max_tokens": 9})
@@ -392,7 +427,8 @@ def main() -> int:
     p.add_argument("--cap", type=int, default=3000, help="tokens after which an answer counts as never-ending")
     p.add_argument("--env", default=f"{INGEST}/.env", help="the ingest's settings (model, address, key)")
     p.add_argument("--graph-env", default="/opt/v2tools/health.env", help="NEO4J_* settings for the read")
-    p.add_argument("--compact", action="store_true", help="second pass: the same sections with white space forbidden")
+    p.add_argument("--remedies", "--compact", dest="compact", action="store_true",
+                   help="second pass: the same sections as today and with one remedy each")
     p.add_argument("--repeats", type=int, default=5, help="second pass: times each never-ending section is asked again")
     p.add_argument("--normal", type=int, default=60, help="second pass: sections that ended, asked once per form")
     p.add_argument("--selftest", action="store_true")
