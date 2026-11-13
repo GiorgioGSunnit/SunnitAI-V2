@@ -380,11 +380,31 @@ Next, read-only (about thirty minutes of one worker's load): the dose. 0.05 and 
 scp ops/be2/probe_runaway.py sunnit@185.199.24.31:~/
 cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 10 --repeats 4 --normal 100
 ```
-Then, not before Monday 16 Nov (the third worker's first nights come first, one change at a time): the lowest
-strength that ends every answer, as a setting of the chunk request, default off, on worker 2 only; guards: the
+The dose run (13 Nov, 95 sections, 1 did not end; then 94 sections that end, once per form) changed the choice:
+
+| | ended, of 94 | identical to the first answer | same tag | quote word for word | quote, characters |
+|---|---|---|---|---|---|
+| as today (asked again) | 92 | 34 (37%) | 88 | 81 | 446 |
+| frequency penalty 0.05 | 93 | 22 (24%) | 86 | 83 | 507 |
+| frequency penalty 0.1 | 93 | 14 (15%) | 90 | 84 | 478 |
+
+The penalty does change the answers, more the stronger it is (fewer identical ones), though the tag and the
+word-for-word quote do not suffer; and it does not end every answer: one white-space answer without end under
+each strength (over the two runs, on sections that normally end: 3 of 134 as today, 1 of 134 at 0.1; on the ones
+that do not: 11 of 44 and 0 of 44). Over the four first passes 25 of 475 answers did not end (5.3%).
+
+So the remedy to build is the stop on repetition (`repetition_detection`, in the request's extra body): it
+watches for a short pattern repeated ten times and ends the answer there, and by construction leaves every other
+answer as it is. In the third run it ended all 80 answers, and the 8 it cut had their four content fields
+complete. The ingest must then keep that content instead of treating the cut answer as a failure (today a cut
+answer would go to the plain-text fallback): a small change in analisi_parallel.py, behind a setting that is off
+by default, to prepare like levers 3 and 5 (backup, undo, self-test), rehearse read-only on be2 (the same
+closing of the cut answer run on real cut answers; how the library reports a cut answer) and try on worker 2
+only, not before Monday 16 Nov: the third worker's first nights come first, one change at a time. Guards: the
 timeouts per chunk (5% today, about 0 expected), the plain-text share (1.1% today, lower expected), worker 1's
 normal calls unchanged. Server load: the writing wasted today (23.5%) pays for about 30% more answers, so even
-40% more rulings an hour write about 7% more tokens than now.
+40% more rulings an hour write about 7% more tokens than now. The server setting stays the proper fix for
+everybody, and Flavio's and the PM's to decide.
 
 Seen on the way, not looked into: in the answers that end, the summary field (`requirement`) has a median of 7-8
 characters, the quote 550 and the search text 40-50. The request shows the model the two prompt files, which ask
