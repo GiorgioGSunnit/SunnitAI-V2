@@ -241,9 +241,13 @@ Lever 4's patch expects the file as it was before lever 5: give it the new check
 ## 3e. Third ingest worker (prepared 12 Nov, NOT applied)
 
 Why it may help: on 11-12 Nov worker 2 sent 16% more calls and worker 1's normal calls took the same time, and
-the model server showed no request waiting, so the server is not the limit at two workers. be2 has room (8 cores,
-load 0.45, 5 GB of memory available on 12 Nov). What is not known: how much a third worker adds, and whether the
-chatbot's answers slow down by day, since they use the same model server. So it starts as a measured test.
+the model server showed no request waiting, so the server is not the limit at two workers. be2 has cores to spare
+(8, load 0.45) but little memory: on 13 Nov the database holds its full 10.5 GB (heap fixed at 6 GB plus its data
+cache) and 2.6 GB is available; a worker takes about 0.5 GB. The "5 GB available" of 12 Nov was misleading: up to
+2.9 GB of the database sat in swap then (systemd's "memory swap peak" for the run that ended on 13 Nov at 06:30,
+when an automatic system update restarted every service). What is not known: how much a third worker adds, and
+whether the chatbot's answers slow down by day, since they use the same model server. So it starts as a measured
+test.
 
 Before: the morning reading with two workers (section 3d's comparison and timing commands) is the baseline.
 ```
@@ -272,6 +276,9 @@ Guard, two hours later and the next morning (the same commands as 3d with the th
   slow down by as much.
 - plain text stays near 1.2% of chunks, first-attempt timeouts near 5%.
 - the model server's `num_requests_waiting` stays 0.
+- memory (`free -m | awk 'NR==2{print "available",$7} NR==3{print "swap used",$3}'`): before the third worker,
+  13 Nov, available 2,600 MB and swap 33 MB. Available under 1,000 MB or swap above 3,000 MB (of 4,095): stop.
+  The cost of tight memory is the database pushed into swap, slower for the ingest and for the chatbot.
 If one fails: stop. Clean stop: `sudo crontab ~/crontab.bak_worker3` (its queue gets no more files), wait until
 `document_upload_3` holds no PDF (under an hour), then `sudo systemctl disable --now sunnitai-ingest-3`.
 
