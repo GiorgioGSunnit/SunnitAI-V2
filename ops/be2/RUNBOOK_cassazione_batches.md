@@ -446,6 +446,18 @@ of one worker's load). Expected: about 5% cut, every one with the content comple
 answer in 40 s (5% today). "content incomplete" on more than one or two, or `core_text` as the field being
 written, means the stop cuts answers that repeat for a good reason: do not apply, the numbers come back first.
 
+**Rehearsal run on be2, 13 Nov: passed.** Checksums as uploaded, the file "ready to apply". Part 1: the request
+carries the stop next to `response_format`; a cut answer reaches the ingest as a ValidationError with its text;
+the content is kept. Part 2, 203 sections of 19 rulings: 194 ended by themselves (6.0 s median, quote found word
+for word in 172), 9 were cut (4.4%, back in 4.0 s median, 43 characters of white space at the end), none was left
+without an answer in 40 s (about 10 expected today) and none was cut inside its content. All 9 cut answers had
+summary, quote and search text filled and the quote word for word in the section. None had a whole reference
+to keep: the white space starts before the first reference is complete (the earlier "after its first entry"
+counted a reference as soon as it was opened). So a kept cut answer carries no references, like today's
+fallback; a section gets its references from the fresh request, which is why the worker asks again first.
+Limit of the sample: 0 answers cut inside their content in 203 leaves room for a rate under about 1.5%; the
+plain-text share on worker 2 is the guard for it.
+
 Apply, Monday 16 Nov at the earliest, worker 2 only, on its empty queue (by day the pause empties the queues
 in about an hour; or use the evening pause):
 ```
