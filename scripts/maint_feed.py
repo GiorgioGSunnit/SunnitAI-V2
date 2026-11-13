@@ -16,6 +16,10 @@ aside in <src>/_already_fed instead of being fed again, because the ingest REPLA
         [--queue /opt/sunnitai-be/document_upload_2] --target 100 --max 300
         cron, every ten minutes, as root:  */10 * * * * python3 /opt/v2tools/maint_feed.py feed ... >> /var/log/maint/feed_queue.log
     pause:  touch /var/log/maint/feed.pause     resume:  rm /var/log/maint/feed.pause
+    off-hours worker:  --off-hours-queue /opt/sunnitai-be/document_upload_3 --off-hours-unit sunnitai-ingest-3 [--weekends]
+        a further queue topped up only while nobody uses the chatbot (23:00-06:00 local time; Saturday and Sunday
+        too with --weekends); its ingest service is started then, and stopped by day once its queue holds no PDF.
+        The clock decides at every run, so a missed cron line cannot leave that worker running by day.
 
 Manifest lines stay 'YYYY-MM-DD batch file' (maint_health.py reads them); the state file is read by the health
 report's feeder line.
@@ -28,6 +32,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 from collections import Counter
 from typing import Dict, Iterable, List, Optional, Set
@@ -35,10 +40,30 @@ from typing import Dict, Iterable, List, Optional, Set
 ITALGIURE = re.compile(r"(snpen|snciv)[@_]s\w\w[@_]a((?:19|20)\d{2})[@_]n\d+[@_]t[a-z]", re.IGNORECASE)
 MANIFEST_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2})\s+(\S+)\s+(\S.*)$")
 ALREADY_FED, ALREADY_IN_GRAPH = "_already_fed", "_already_in_graph"
+# Local time (be2 runs on Italian time): the off-hours queue is fed from 23:00 to 06:00. The last files handed
+# at 05:50 are done before 07:00; the lawyers' first test on 12 Nov 2026 was at 08:42.
+OFF_HOURS_FROM, OFF_HOURS_UNTIL = 23, 6
 
 
 def now_utc() -> str:
     return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def local_now() -> dt.datetime:
+    return dt.datetime.now()
+
+
+def off_hours(now: dt.datetime, weekends: bool = False) -> bool:
+    """Whether `now` (local time) is outside the chatbot's hours: the night, and Saturday and Sunday when asked."""
+    return now.hour >= OFF_HOURS_FROM or now.hour < OFF_HOURS_UNTIL or (weekends and now.weekday() >= 5)
+
+
+def systemctl(verb: str, unit: str) -> bool:
+    """`systemctl <verb> <unit>`; True when it returned 0 (is-active: the unit runs)."""
+    try:
+        return subprocess.run(["systemctl", verb, unit], capture_output=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
 
 
 def pdfs_in(folder: str) -> List[str]:
@@ -93,16 +118,20 @@ def feed(args) -> int:
         state["failed"] = sum(1 for f in os.listdir(args.failed_dir) if f.lower().endswith(".pdf"))
     except OSError:
         pass
+    extra = args.off_hours_queue
+    on = bool(extra) and off_hours(local_now(), args.weekends)
     if not os.path.isdir(args.src):
         state["error"] = f"staging folder not found: {args.src}"
     elif state["paused"]:
         state["left"] = len(pdfs_in(args.src))
     else:
         needs = {}
-        for queue in args.queue:
+        for queue in list(args.queue) + ([extra] if on else []):
             os.makedirs(queue, exist_ok=True)
             needs[queue] = args.target - len(pdfs_in(queue))
             state["queues"][queue] = len(pdfs_in(queue))
+        if extra and not on:
+            state["queues"][extra] = len(pdfs_in(extra))        # shown, not topped up: by day it only empties
         already = fed_names(args.manifest)
         candidates = []
         for name in pdfs_in(args.src):
@@ -125,11 +154,19 @@ def feed(args) -> int:
                 state["fed"] += 1
                 state["queues"][queue] += 1
         state["left"] = len(pdfs_in(args.src))
+    if extra and args.off_hours_unit:
+        # a queue file is deleted only when its ruling is fully written, so no PDF there means the worker is idle
+        running = systemctl("is-active", args.off_hours_unit)
+        if on and not running:
+            state["worker"] = "started" if systemctl("start", args.off_hours_unit) else "START FAILED"
+        elif not on and running and not pdfs_in(extra):
+            state["worker"] = "stopped" if systemctl("stop", args.off_hours_unit) else "STOP FAILED"
     queues = ", ".join(f"{os.path.basename(q) or q} {n}" for q, n in state["queues"].items()) or "-"
     line = (f"{state['time']} batch={args.batch} " + ("PAUSED, " if state["paused"] else "")
             + f"fed {state['fed']} (queues now: {queues}), {state['left'] if state['left'] is not None else '?'} left"
             + (f", {state['already_fed']} already fed set aside" if state["already_fed"] else "")
             + (f", failed so far {state['failed']}" if state["failed"] is not None else "")
+            + (f"; off-hours worker {state['worker']}" if state.get("worker") else "")
             + (f" -- {state['error']}" if state.get("error") else ""))
     print(line)
     if args.state:
@@ -250,6 +287,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     f.add_argument("--pause-file", default="/var/log/maint/feed.pause")
     f.add_argument("--state", default="/var/log/maint/feed_state.json", help="JSON read by the health report")
     f.add_argument("--failed-dir", default="/opt/sunnitai-be/document_failed")
+    f.add_argument("--off-hours-queue", help="a further queue folder, topped up only at night (23:00-06:00 local time)")
+    f.add_argument("--off-hours-unit", help="that queue's ingest service: started off-hours, stopped by day once "
+                                            "the queue holds no PDF (needs root)")
+    f.add_argument("--weekends", action="store_true", help="off-hours include Saturday and Sunday, all day")
     c = sub.choices["check"]
     c.add_argument("--graph", metavar="ENV", help="also ask the graph (a health.env with NEO4J_* settings)")
     c.add_argument("--set-aside", action="store_true", help="move the already-fed / already-in-graph files out")

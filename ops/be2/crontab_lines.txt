@@ -8,6 +8,12 @@
 # feed_queue.sh line (SRC=/home/sunnit/pdf2025 ... feed_queue.sh 240 100). Change --src / --batch per batch.
 */10 * * * * /usr/bin/python3 /opt/v2tools/maint_feed.py feed --src /home/sunnit/cass_batch1 --batch cass_batch1 --queue /opt/sunnitai-be/document_upload --queue /opt/sunnitai-be/document_upload_2 --target 40 >> /var/log/maint/feed_queue.log 2>&1
 #
+# Third worker, off-hours only (runbook 3e, prepared 13 Nov): the same line with, before --target,
+#   --off-hours-queue /opt/sunnitai-be/document_upload_3 --off-hours-unit sunnitai-ingest-3 [--weekends]
+# The feeder tops that queue up and starts the unit only from 23:00 to 06:00 (Saturday and Sunday too with
+# --weekends), gives it nothing by day and stops the unit once its queue is empty: the chatbot's hours stay as
+# they are. The health line then names three queues and `--units sunnitai-ingest,sunnitai-ingest-2,sunnitai-ingest-3`.
+#
 # Cards window: prod cards the new rulings at 21:00 UTC = 22:00 CET; the cards and the ingest must not share the
 # GPU (15 s chunk timeout -> plain-text fallbacks). Feeding stops an hour and a half before, so both queues are
 # empty when the cards start, and resumes when the cards' --stop-at (22:30 UTC = 23:30 CET) has passed.

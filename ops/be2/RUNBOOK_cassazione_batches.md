@@ -238,57 +238,81 @@ Rollback: delete the line from `.env.worker2` and restart worker 2 (the default 
 as before). Full: `sudo python3 ~/patch_ingest_lever5.py --undo`, restart both workers on empty queues.
 Lever 4's patch expects the file as it was before lever 5: give it the new checksum (c2a57da4...) before applying it.
 
-## 3e. Third ingest worker (prepared 12 Nov, NOT applied; on hold since 13 Nov)
+## 3e. Third ingest worker, off-hours only (prepared 13 Nov)
 
-On hold, 13 Nov: nothing goes live that may change the chatbot's answer quality or answer times, and a third
-worker cannot be shown to leave the answer times alone (shared model server, tight memory on be2) before those
-times are measured. The batch stays on two workers. The rest of this section is kept for when that is measured.
+Rule since 13 Nov: nothing goes live that may change the chatbot's answer quality or its answer times. By day a
+third worker would send half as many calls again to the model server the chatbot shares, and nobody has measured
+what that does to an answer. So the third worker works only while nobody uses the chatbot: 23:00-06:00 Italian
+time (phase 1) and, once a night's reading is clean, Saturday and Sunday too (phase 2, `--weekends`). Production's
+log for 6-13 Nov has no answer on the weekend of 7-8 Nov and one at night (02:25 on 12 Nov).
 
-Why it may help: on 11-12 Nov worker 2 sent 16% more calls and worker 1's normal calls took the same time, and
-the model server showed no request waiting, so the server is not the limit at two workers. be2 has cores to spare
-(8, load 0.45) but little memory: on 13 Nov the database holds its full 10.5 GB (heap fixed at 6 GB plus its data
-cache) and 2.6 GB is available; a worker takes about 0.5 GB. The "5 GB available" of 12 Nov was misleading: up to
-2.9 GB of the database sat in swap then (systemd's "memory swap peak" for the run that ended on 13 Nov at 06:30,
-when an automatic system update restarted every service). What is not known: how much a third worker adds, and
-whether the chatbot's answers slow down by day, since they use the same model server. So it starts as a measured
-test.
+The feeder decides by the clock at every run (`maint_feed.py feed ... --off-hours-queue ... --off-hours-unit ...`):
+off-hours it tops up the third queue and starts the unit; by day it gives that queue nothing and stops the unit as
+soon as the queue holds no PDF (a queue file is deleted only when its ruling is fully written). The last files
+are handed at 05:50 and are done before 07:00. A missed cron line cannot leave this worker running by day.
 
-Before: the morning reading with two workers (section 3d's comparison and timing commands) is the baseline.
+On 11-12 Nov worker 2 sent 16% more calls and worker 1's normal calls took the same time, and the model server
+showed no request waiting, so the server is not the limit at two workers. be2 has cores to spare (8, load 0.45)
+but little memory: on 13 Nov the database holds its full 10.5 GB (heap fixed at 6 GB plus its data cache) and
+2.6 GB is available; a worker takes about 0.5 GB while it runs and nothing once stopped. The "5 GB available" of
+12 Nov was misleading: up to 2.9 GB of the database sat in swap then (systemd's "memory swap peak" for the run that
+ended on 13 Nov at 06:30, when an automatic system update restarted every service). What is not known: how much a
+third worker adds (estimate: about 46 rulings an hour like the others, 340 a night, 1,000 a weekend day).
+
+Before: the morning reading with two workers (section 3d's comparison and timing commands) is the baseline:
+13 Nov, rulings of 8-16 chunks without a timeout 16.0-16.5 s of analysis, average call 7.2-7.5 s, plain text 1.1%.
 ```
-scp ops/be2/env.worker3 sunnit@185.199.24.31:~/
-# be2. Gate: memory of each running worker; go on only if a third one fits in what is available.
-for u in sunnitai-ingest sunnitai-ingest-2; do ps -o rss= -p $(systemctl show -p MainPID --value $u) | awk '{printf "%d MB\n", $1/1024}'; done; free -m | awk 'NR==2{print "available", $7, "MB"}'
+# from the PC
+scp scripts/maint_feed.py ops/be2/env.worker3 sunnit@185.199.24.31:~/
+# be2: the queue, the settings, the log, the unit (derived from worker 2's installed unit)
 sudo mkdir -p /opt/sunnitai-be/document_upload_3 && sudo chown --reference=/opt/sunnitai-be/document_upload /opt/sunnitai-be/document_upload_3 && sudo chmod --reference=/opt/sunnitai-be/document_upload /opt/sunnitai-be/document_upload_3
 sudo cp ~/env.worker3 /opt/sunnitai-be/.env.worker3 && sudo chown --reference=/opt/sunnitai-be/.env /opt/sunnitai-be/.env.worker3 && sudo chmod 600 /opt/sunnitai-be/.env.worker3
 sudo touch /var/log/sunnitai-ingest-3.log && sudo chown --reference=/var/log/sunnitai-ingest.log /var/log/sunnitai-ingest-3.log
 sudo sed -e 's/worker2/worker3/g' -e 's/worker 2/worker 3/' -e 's/document_upload_2/document_upload_3/' /etc/systemd/system/sunnitai-ingest-2.service | sudo tee /etc/systemd/system/sunnitai-ingest-3.service > /dev/null
 systemctl cat sunnitai-ingest-3 | grep -vE "^#"                    # EnvironmentFile .env, then .env.worker3
-sudo systemctl daemon-reload && sudo systemctl enable --now sunnitai-ingest-3 && sleep 3
-systemctl is-active sunnitai-ingest-3; journalctl -u sunnitai-ingest-3 -n 2 --no-pager
+sudo systemctl daemon-reload && sudo systemctl start sunnitai-ingest-3 && sleep 5
+systemctl is-active sunnitai-ingest-3; sudo journalctl -u sunnitai-ingest-3 --no-pager | grep -o "document_upload[_0-9]*" | sort | uniq -c
 ```
-Verify: the journal's last line says "watching /opt/sunnitai-be/document_upload_3". Any other folder: stop it at
-once (`sudo systemctl disable --now sunnitai-ingest-3`). Then give it files and put it in the report:
+Verify: "active", and the only folder named is `document_upload_3`. Any other folder: stop it at once
+(`sudo systemctl stop sunnitai-ingest-3`). The unit is not enabled: the feeder starts it. Its queue is empty, so it
+sits idle and calls no model. Then the feeder (the old crontab line works unchanged with the new file):
+```
+md5sum ~/maint_feed.py                                             # the same as `md5sum scripts/maint_feed.py` on the PC
+sudo cp /opt/v2tools/maint_feed.py /opt/v2tools/maint_feed.py.bak_13nov && sudo cp ~/maint_feed.py /opt/v2tools/maint_feed.py && md5sum /opt/v2tools/maint_feed.py
+```
+The switch: the feeder line gains the off-hours queue and unit, the health report the third queue and unit.
 ```
 sudo crontab -l > ~/crontab.bak_worker3
-sed -e 's#--queue /opt/sunnitai-be/document_upload_2 --target#--queue /opt/sunnitai-be/document_upload_2 --queue /opt/sunnitai-be/document_upload_3 --target#' -e 's#document_upload_2 --staging#document_upload_2,/opt/sunnitai-be/document_upload_3 --units sunnitai-ingest,sunnitai-ingest-2,sunnitai-ingest-3 --staging#' ~/crontab.bak_worker3 > ~/crontab.now
+sed -e 's#--queue /opt/sunnitai-be/document_upload_2 --target#--queue /opt/sunnitai-be/document_upload_2 --off-hours-queue /opt/sunnitai-be/document_upload_3 --off-hours-unit sunnitai-ingest-3 --target#' -e 's#document_upload_2 --staging#document_upload_2,/opt/sunnitai-be/document_upload_3 --units sunnitai-ingest,sunnitai-ingest-2,sunnitai-ingest-3 --staging#' ~/crontab.bak_worker3 > ~/crontab.now
 diff ~/crontab.bak_worker3 ~/crontab.now                           # two lines change: the feeder and the health report
 sudo crontab ~/crontab.now
 ```
-Guard, two hours later and the next morning (the same commands as 3d with the third unit added to the loop):
-- normal calls: rulings of 8-16 chunks without a timeout take about 16 s of analysis, average call 7.3-7.7 s, on
-  workers 1 and 2. More than 10% above that means the model server is now shared too thinly: the chatbot's calls
-  slow down by as much.
-- plain text stays near 1.2% of chunks, first-attempt timeouts near 5%.
-- the model server's `num_requests_waiting` stays 0.
-- memory (`free -m | awk 'NR==2{print "available",$7} NR==3{print "swap used",$3}'`): before the third worker,
-  13 Nov, available 2,600 MB and swap 33 MB. Available under 1,000 MB or swap above 3,000 MB (of 4,095): stop.
-  The cost of tight memory is the database pushed into swap, slower for the ingest and for the chatbot.
-If one fails: stop. Clean stop: `sudo crontab ~/crontab.bak_worker3` (its queue gets no more files), wait until
-`document_upload_3` holds no PDF (under an hour), then `sudo systemctl disable --now sunnitai-ingest-3`.
+Verify by day, within ten minutes: `tail -n 1 /var/log/maint/feed_queue.log` lists `document_upload_3 0` and ends
+with "off-hours worker stopped", and `systemctl is-active sunnitai-ingest-3` says inactive: the day rule works.
+That evening the 23:00 line ends with "off-hours worker started" and the 23:40 line feeds three queues.
 
-To watch if it stays: three workers write about 3,000 rulings a day and the cards do about 30 a minute, 2,700 in
-their 90 minutes. "still to card" above 0 in the morning means the window is short: prod's `--stop-at 23:00` and
-be2's resume line at `5 0`.
+Guard, the morning after (the commands of 3d with `sunnitai-ingest-3` added to the loop, from 23:40 to 06:45):
+- normal calls on workers 1 and 2: more than 10% above the baseline means the model server is shared too thinly
+  with three workers, even at night: stop.
+- plain text stays near 1.1% of chunks on all three workers, first-attempt timeouts near 5%.
+- `grep "off-hours worker" /var/log/maint/feed_queue.log | tail -n 4 | awk '{print $1, $(NF-2), $(NF-1), $NF}'`:
+  started near 22:00Z, stopped near 06:00Z (the log's times are UTC). "FAILED" there: the feeder is not root.
+- memory (`free -m | awk 'NR==2{print "available",$7} NR==3{print "swap used",$3}'`): before the third worker,
+  13 Nov, available 2,600 MB and swap 33 MB. Swap above 3,000 MB (of 4,095): stop. The cost of tight memory is
+  the database pushed into swap, slower for the ingest and for the chatbot.
+- prod's cards line: "still to card 0".
+Stop for good: `sudo crontab ~/crontab.bak_worker3` (its queue gets no more files), wait until `document_upload_3`
+holds no PDF (under an hour), then `sudo systemctl stop sunnitai-ingest-3`.
+
+Phase 2, the weekends, after a clean night:
+```
+sudo crontab -l > ~/crontab.bak_weekends
+sed -e 's#--off-hours-unit sunnitai-ingest-3 --target#--off-hours-unit sunnitai-ingest-3 --weekends --target#' ~/crontab.bak_weekends > ~/crontab.now
+diff ~/crontab.bak_weekends ~/crontab.now                          # one line changes: the feeder
+sudo crontab ~/crontab.now
+```
+Three workers all Saturday and Sunday write about 3,000 rulings a day and the cards do about 32 a minute, 2,900
+in their 90 minutes: a small "still to card" on Sunday and Monday morning is expected, and Monday night catches up.
 
 ## 4. Monday: the batch lands
 
