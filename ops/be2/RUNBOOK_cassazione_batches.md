@@ -238,7 +238,11 @@ Rollback: delete the line from `.env.worker2` and restart worker 2 (the default 
 as before). Full: `sudo python3 ~/patch_ingest_lever5.py --undo`, restart both workers on empty queues.
 Lever 4's patch expects the file as it was before lever 5: give it the new checksum (c2a57da4...) before applying it.
 
-## 3e. Third ingest worker (prepared 12 Nov, NOT applied)
+## 3e. Third ingest worker (prepared 12 Nov, NOT applied; on hold since 13 Nov)
+
+On hold, 13 Nov: nothing goes live that may change the chatbot's answer quality or answer times, and a third
+worker cannot be shown to leave the answer times alone (shared model server, tight memory on be2) before those
+times are measured. The batch stays on two workers. The rest of this section is kept for when that is measured.
 
 Why it may help: on 11-12 Nov worker 2 sent 16% more calls and worker 1's normal calls took the same time, and
 the model server showed no request waiting, so the server is not the limit at two workers. be2 has cores to spare
