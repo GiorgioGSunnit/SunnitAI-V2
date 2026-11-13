@@ -269,11 +269,12 @@ sudo mkdir -p /opt/sunnitai-be/document_upload_3 && sudo chown --reference=/opt/
 sudo cp ~/env.worker3 /opt/sunnitai-be/.env.worker3 && sudo chown --reference=/opt/sunnitai-be/.env /opt/sunnitai-be/.env.worker3 && sudo chmod 600 /opt/sunnitai-be/.env.worker3
 sudo touch /var/log/sunnitai-ingest-3.log && sudo chown --reference=/var/log/sunnitai-ingest.log /var/log/sunnitai-ingest-3.log
 sudo sed -e 's/worker2/worker3/g' -e 's/worker 2/worker 3/' -e 's/document_upload_2/document_upload_3/' /etc/systemd/system/sunnitai-ingest-2.service | sudo tee /etc/systemd/system/sunnitai-ingest-3.service > /dev/null
-systemctl cat sunnitai-ingest-3 | grep -vE "^#"                    # EnvironmentFile .env, then .env.worker3
-sudo systemctl daemon-reload && sudo systemctl start sunnitai-ingest-3 && sleep 5
-systemctl is-active sunnitai-ingest-3; sudo journalctl -u sunnitai-ingest-3 --no-pager | grep -o "document_upload[_0-9]*" | sort | uniq -c
+sudo systemctl daemon-reload && systemctl cat sunnitai-ingest-3 | grep -vE "^#"      # EnvironmentFile .env, then .env.worker3
+# started only if the unit reads .env.worker3 and names nothing of worker 2: two daemons on one queue would race
+F=/etc/systemd/system/sunnitai-ingest-3.service; if grep -q "^EnvironmentFile=/opt/sunnitai-be/.env.worker3" $F && ! grep -qE "worker2|document_upload_2" $F; then sudo systemctl start sunnitai-ingest-3 && sleep 5; else echo "NOT STARTED: the unit file is not as expected"; fi
+systemctl is-active sunnitai-ingest-3; sudo cat /proc/$(systemctl show -p MainPID --value sunnitai-ingest-3)/environ | tr '\0' '\n' | grep -c '^BATCH_UPLOAD_DIR=/opt/sunnitai-be/document_upload_3$'
 ```
-Verify: "active", and the only folder named is `document_upload_3`. Any other folder: stop it at once
+Verify: "active" and 1 (the running process watches `document_upload_3`). Anything else: stop it at once
 (`sudo systemctl stop sunnitai-ingest-3`). The unit is not enabled: the feeder starts it. Its queue is empty, so it
 sits idle and calls no model. Then the feeder (the old crontab line works unchanged with the new file):
 ```
