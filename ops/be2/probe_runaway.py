@@ -14,18 +14,30 @@ ingest. Nothing is written anywhere.
 
 It prints numbers and field names only, never a word of a ruling or of an answer.
 
+First run, 13 Nov (117 sections): 4 answers did not end (3.4%), all four the same: the answer's content complete,
+then, inside the list of references and after its first entry, white space only, repeating every 4 characters,
+until the cap. The request is `response_format` json_schema (strict), no length cap.
+
+--compact adds a second pass that tries the server's own remedy, JSON without free white space, on the same
+sections: five times each section that did not end, once each 60 sections that ended, under three forms of the
+request (as today, and two ways of asking for it). It shows whether the endless answers stop, and whether the
+answers that ended keep the same content.
+
     cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py                # 12 rulings, about 150 calls
+    cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --compact      # + the second pass, about 400
     python probe_runaway.py --selftest                                              # no server needed
 
-Load: about what one ingest worker sends in six minutes.
+Load: about what one ingest worker sends in six minutes; with --compact, in twenty.
 """
 import argparse
 import json
 import os
+import random
 import statistics
 import sys
 import threading
 import time
+import urllib.error
 import urllib.request
 import zlib
 from collections import Counter
@@ -37,6 +49,14 @@ PACKAGES = f"{INGEST}/src/be/src"                       # what batch_ingest.py p
 PROMPTS = f"{PACKAGES}/lex_package/utils/prompts"
 FIELDS = ("requirement", "core_text", "search_text", "pattern_type", "riferimenti")
 CHUNK_WORDS = 250                                       # analisi_parallel.MAX_CHUNK_WORDS
+ENDLESS = ("length", "cut by the probe")
+# The same request under three forms: as the ingest sends it, and two ways of asking the server for JSON without
+# free white space (vLLM's structured_outputs.disable_any_whitespace; its documentation does not say whether it is
+# honoured next to response_format, so both are tried). None removes a key; "$schema" is the answer's own schema.
+FORMS = [("as today", {}),
+         ("white space forbidden, added to the request", {"structured_outputs": {"disable_any_whitespace": True}}),
+         ("white space forbidden, structured_outputs alone",
+          {"response_format": None, "structured_outputs": {"json": "$schema", "disable_any_whitespace": True}})]
 
 
 def read_env(path: str) -> dict:
@@ -105,6 +125,8 @@ def ask(url: str, key: str, body: dict, most_seconds: float = 120.0) -> dict:
                 if time.time() - t0 > most_seconds:
                     out["finish"] = out["finish"] or "cut by the probe"
                     break
+    except urllib.error.HTTPError as exc:               # the server refused the request: its status says how
+        out["error"] = f"HTTP {exc.code}"
     except Exception as exc:                            # the type only: a message could quote the request
         out["error"] = type(exc).__name__
     out["text"], out["seconds"] = "".join(parts), time.time() - t0
@@ -191,10 +213,85 @@ def messages_for(system: str, user: str, title: str, text: str) -> list:
                                         "flag del comma: 'False'"}]
 
 
+def with_form(body: dict, change: dict) -> dict:
+    """`body` with a form's keys set (None: the key removed; "$schema": the schema the request already carries)."""
+    schema = ((body.get("response_format") or {}).get("json_schema") or {}).get("schema")
+    out = {k: v for k, v in body.items() if not (k in change and change[k] is None)}
+    for k, v in change.items():
+        if v is not None:
+            out[k] = {kk: (schema if vv == "$schema" else vv) for kk, vv in v.items()} if isinstance(v, dict) else v
+    return out
+
+
+def content(text: str):
+    """The answer as a dict; None when it is not one JSON object."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def squeeze(value) -> str:
+    return " ".join(str(value or "").split())
+
+
+def second_pass(url: str, key: str, body: dict, system: str, user: str, sections: list, first: list, cap: int,
+                repeats: int, normal: int, burst: int = 12) -> None:
+    """The forms side by side on the same sections: `repeats` times each section whose first answer did not end,
+    once each up to `normal` sections whose first answer ended. Counts and medians only."""
+    endless = [i for i, r in enumerate(first) if not r["error"] and r["finish"] in ENDLESS]
+    before = {i: content(r["text"]) for i, r in enumerate(first) if not r["error"] and r["finish"] not in ENDLESS}
+    ended = [i for i, c in before.items() if c is not None][:normal]
+    tasks = ([(f, "endless", i) for f in range(len(FORMS)) for i in endless for _ in range(repeats)]
+             + [(f, "ended", i) for f in range(len(FORMS)) for i in ended])
+    random.Random(13).shuffle(tasks)                    # forms and sections mixed in every burst
+    print(f"second pass: {len(tasks)} calls, capped at {cap} tokens")
+
+    def one(task):
+        form, _, i = task
+        title, text = sections[i]
+        return task, ask(url, key, {**with_form(body, FORMS[form][1]), "messages": messages_for(system, user, title, text),
+                                    "stream": True, "stream_options": {"include_usage": True}, "max_tokens": cap})
+    done = []
+    for start in range(0, len(tasks), burst):
+        with ThreadPoolExecutor(max_workers=burst) as pool:
+            done += list(pool.map(one, tasks[start:start + burst]))
+
+    def refused(rs):
+        errors = Counter(r["error"] for r in rs if r["error"])
+        return (" -- errors: " + ", ".join(f"{t} x{n}" for t, n in errors.items())) if errors else ""
+
+    def middle(values):
+        values = list(values)
+        return f"{statistics.median(values):.0f}" if values else "-"
+    if endless:
+        print(f"the {len(endless)} sections whose first answer did not end, {repeats} times each:")
+        for form, (name, _) in enumerate(FORMS):
+            rs = [r for (f, kind, _), r in done if f == form and kind == "endless"]
+            print(f"  {name}: {sum(1 for r in rs if r['finish'] in ENDLESS)} of {len(rs)} did not end" + refused(rs))
+    print(f"{len(ended)} sections whose first answer ended, once under each form:")
+    for form, (name, _) in enumerate(FORMS):
+        rs = [(i, r) for (f, kind, i), r in done if f == form and kind == "ended"]
+        ok = [(i, r) for i, r in rs if not r["error"] and r["finish"] not in ENDLESS]
+        valid = [(i, c) for i, c in ((i, content(r["text"])) for i, r in ok) if c is not None]
+        quoted = sum(1 for i, c in valid if squeeze(c.get("core_text"))
+                     and squeeze(c.get("core_text")) in squeeze(" ".join(sections[i][1].split()[:CHUNK_WORDS])))
+        print(f"  {name}: ended {len(ok)} of {len(rs)}, valid JSON {len(valid)}, with line breaks "
+              f"{sum(1 for _, r in ok if chr(10) in r['text'])} | tokens median {middle(r['tokens'] for _, r in ok)}, "
+              f"seconds median {middle(r['seconds'] for _, r in ok)}" + refused([r for _, r in rs]))
+        print(f"      same tag as the first answer {sum(1 for i, c in valid if c.get('pattern_type') == before[i].get('pattern_type'))}, "
+              f"same whole answer {sum(1 for i, c in valid if c == before[i])}, quote found word for word in the "
+              f"section {quoted} | median characters: summary {middle(len(squeeze(c.get('requirement'))) for _, c in valid)}, "
+              f"quote {middle(len(squeeze(c.get('core_text'))) for _, c in valid)}, search text "
+              f"{middle(len(squeeze(c.get('search_text'))) for _, c in valid)}; references "
+              f"{middle(len(c.get('riferimenti') or []) for _, c in valid)}")
+
+
 def report(results: list, cap: int) -> None:
     errors = Counter(r["error"] for r in results if r["error"])
-    done = [r for r in results if not r["error"] and r["finish"] not in ("length", "cut by the probe")]
-    endless = [r for r in results if not r["error"] and r["finish"] in ("length", "cut by the probe")]
+    done = [r for r in results if not r["error"] and r["finish"] not in ENDLESS]
+    endless = [r for r in results if not r["error"] and r["finish"] in ENDLESS]
     if done:
         tokens = sorted(r["tokens"] for r in done)
         print(f"answers that ended: {len(done)} -- tokens median {statistics.median(tokens):.0f}, "
@@ -229,11 +326,14 @@ def selftest() -> None:
     assert s["open_field"] == "requirement" and s["tail_space"] == 1.0 and s["tail_distinct"] == 1 and s["tail_period"] == 1
     assert shape("")["open_field"] == "(none)"
 
-    class Model(BaseHTTPRequestHandler):                # a stand-in model server: streams, honours max_tokens
-        def do_POST(self):
+    class Model(BaseHTTPRequestHandler):                # a stand-in model server: streams, honours max_tokens;
+        def do_POST(self):                              # asked for no white space it writes compact and always ends
             body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-            endless = "ENDLESS" in body["messages"][-1]["content"]
-            pieces = ['{"requirement": "x",'] + ["\n"] * (body["max_tokens"] - 1) if endless else ['{"requirement":', ' "x"}']
+            compact = (body.get("structured_outputs") or {}).get("disable_any_whitespace")
+            endless = "ENDLESS" in body["messages"][-1]["content"] and not compact
+            answer = {"requirement": "x", "core_text": "plain words", "pattern_type": "altro", "riferimenti": []}
+            whole = json.dumps(answer, separators=(",", ":")) if compact else json.dumps(answer, indent=2)
+            pieces = ['{"requirement": "x",'] + ["\n"] * (body["max_tokens"] - 1) if endless else [whole[:9], whole[9:]]
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.end_headers()
@@ -250,15 +350,33 @@ def selftest() -> None:
     server = HTTPServer(("127.0.0.1", 0), Model)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
+    request = {"model": "m", "response_format": {"type": "json_schema", "json_schema": {"strict": True, "schema": {"a": 1}}}}
+    assert with_form(request, FORMS[0][1]) == request
+    assert with_form(request, FORMS[1][1])["structured_outputs"] == {"disable_any_whitespace": True}
+    alone = with_form(request, FORMS[2][1])
+    assert "response_format" not in alone and alone["structured_outputs"] == {"json": {"a": 1}, "disable_any_whitespace": True}
+    assert content('{"a": 1}') == {"a": 1} and content('{"a": 1') is None and content("[1]") is None
     try:
         good = ask(url, "EMPTY", {"messages": [{"role": "user", "content": "a section"}], "max_tokens": 50, "stream": True})
         bad = ask(url, "EMPTY", {"messages": [{"role": "user", "content": "ENDLESS"}], "max_tokens": 50, "stream": True})
         gone = ask("http://127.0.0.1:9/v1/chat/completions", "EMPTY", {"messages": []})
+        import contextlib
+        import io
+        said = io.StringIO()
+        with contextlib.redirect_stdout(said):          # section 0 never ends as today, section 1 ends
+            second_pass(url, "EMPTY", request, "S", "U", [("t", "ENDLESS plain words"), ("t", "some plain words here")],
+                        [bad, good], cap=40, repeats=2, normal=5)
     finally:
         server.shutdown()
-    assert good["finish"] == "stop" and good["tokens"] == 2 and good["text"] == '{"requirement": "x"}' and not good["error"]
+    assert good["finish"] == "stop" and good["tokens"] == 2 and content(good["text"])["core_text"] == "plain words"
     assert bad["finish"] == "length" and bad["tokens"] == 50 and shape(bad["text"])["tail_space"] > 0.5
     assert gone["error"] and not gone["text"]
+    said = said.getvalue()
+    assert "second pass: 9 calls" in said and "as today: 2 of 2 did not end" in said, said
+    assert "white space forbidden, added to the request: 0 of 2 did not end" in said, said
+    assert "as today: ended 1 of 1, valid JSON 1, with line breaks 1" in said, said
+    assert "white space forbidden, structured_outputs alone: ended 1 of 1, valid JSON 1, with line breaks 0" in said, said
+    assert said.count("same tag as the first answer 1, same whole answer 1, quote found word for word in the section 1") == 3, said
     assert "response_format json_schema (strict True)" in request_shape(
         {"model": "m", "messages": [], "response_format": {"type": "json_schema", "json_schema": {"strict": True}}})
     assert "tool_choice function" in request_shape({"tools": [{}], "tool_choice": {"type": "function"}, "max_tokens": 9})
@@ -274,6 +392,9 @@ def main() -> int:
     p.add_argument("--cap", type=int, default=3000, help="tokens after which an answer counts as never-ending")
     p.add_argument("--env", default=f"{INGEST}/.env", help="the ingest's settings (model, address, key)")
     p.add_argument("--graph-env", default="/opt/v2tools/health.env", help="NEO4J_* settings for the read")
+    p.add_argument("--compact", action="store_true", help="second pass: the same sections with white space forbidden")
+    p.add_argument("--repeats", type=int, default=5, help="second pass: times each never-ending section is asked again")
+    p.add_argument("--normal", type=int, default=60, help="second pass: sections that ended, asked once per form")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args()
     if args.selftest:
@@ -315,6 +436,12 @@ def main() -> int:
         with ThreadPoolExecutor(max_workers=max(1, len(bodies))) as pool:
             results += list(pool.map(lambda b: ask(url, key, b), bodies))
     report(results, args.cap)
+    if args.compact:
+        if "schema" not in ((body.get("response_format") or {}).get("json_schema") or {}):
+            print("second pass skipped: the request carries no JSON schema to ask for in compact form")
+            return 0
+        flat = [section for sections in rulings for section in sections]
+        second_pass(url, key, body, system, user, flat, results, min(args.cap, 2000), args.repeats, args.normal)
     return 0
 
 

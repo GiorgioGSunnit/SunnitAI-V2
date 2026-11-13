@@ -337,16 +337,31 @@ The request (analisi_parallel.py, llm/factory.py; be2 has langchain-openai 0.3.4
 0.28.0): `ChatOpenAI(temperature=0, request_timeout=90).with_structured_output(Analisi_Paragrafo)`, no length cap.
 The answer's shape has three free text fields and an open list of references.
 
-Not known: what the endless answer is made of (white space the JSON shape allows, a list that never closes, a
-field repeating itself). The fix depends on it. `ops/be2/probe_runaway.py` looks: it sends the sections of 12
-rulings from the graph exactly as the ingest does (the ingest's own model object builds the request), streamed and
-capped at 3,000 tokens, and prints numbers and field names only. Read-only; about what one worker sends in six
-minutes.
+What the endless answer is made of: `ops/be2/probe_runaway.py` sends the sections of 12 rulings from the graph
+exactly as the ingest does (the ingest's own model object builds the request), streamed and capped at 3,000
+tokens, and prints numbers and field names only. Read-only; about what one worker sends in six minutes. Its run
+of 13 Nov: the request is `response_format` json_schema (strict), no length cap; 117 sections, 113 answers ended
+(median 330 tokens, longest 1,253, every one with at least one reference although the ingest sends "flag False"),
+4 did not end (3.4%). All four are the same: the content complete in the first 1,100-1,800 characters, then,
+inside the list of references and after its first entry, white space only, repeating every 4 characters, to the
+cap. The JSON rule the server enforces allows white space anywhere between two elements; at temperature 0 a model
+that has started to repeat it never leaves.
+
+The server has a remedy of its own, JSON "always compact without any whitespace" (vLLM's
+`disable_any_whitespace`): as a server setting it would change every caller's answers, the chatbot's too, and
+needs a restart of the model server; the request can carry it too (`structured_outputs.disable_any_whitespace`),
+which touches the ingest's own calls only. The documentation does not say whether that is honoured next to
+`response_format`, so the probe's second pass tries it on real sections, read-only (about twenty minutes of one
+worker's load): five times each section that did not end, once each 60 that ended, as today and under the two
+ways of asking.
 ```
 scp ops/be2/probe_runaway.py sunnit@185.199.24.31:~/
-cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py
+cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --compact
 ```
-No fix before its result.
+Read: "did not end" must fall to 0 under a form whose answers show "with line breaks 0" (the form took effect),
+and the answers that ended must keep their content (same tag, the quote still found word for word, the same
+sizes; "as today" is the control: two runs of the same request already differ a little). Only then a change of
+the ingest, on one worker first, with the plain-text share as the guard.
 
 ## 4. Monday: the batch lands
 
