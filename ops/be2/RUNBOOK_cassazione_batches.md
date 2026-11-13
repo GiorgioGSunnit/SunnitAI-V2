@@ -357,17 +357,34 @@ with line breaks; 27 of 50 did not end against 29 of 50 as today). The same run 
 again, a section that did not end fails 58% of the time; one that ended, 4 times in 60. Two runs of the same
 request at temperature 0 give the same tag 49 times in 56 and the same whole answer 22 times in 56.
 
-Remedies a request can carry, tried next by the probe (read-only, about twenty minutes of one worker's load):
-a frequency penalty (0.1 and 0.3: a piece repeated without end becomes less and less likely, so the repeat breaks
-and the JSON closes), the server's stop on repetition (`repetition_detection`: the answer is cut, so what counts
-is whether its content was complete), and the documented white-space pattern.
+Remedies a request can carry (probe's third run, 13 Nov: 116 sections, 10 did not end, all in the references
+list; then 40 more answers on those ten sections under each remedy, and one each on 40 sections that end):
+
+| remedy | of 40, without end | on 40 sections that end |
+|---|---|---|
+| as today (asked again) | 10 | 39 ended; same tag as the first answer 36, same whole answer 9, quote word for word 34 |
+| frequency penalty 0.1 | 0, all valid JSON | 40 ended; same tag 38, same whole answer 9, quote word for word 34, same sizes |
+| frequency penalty 0.3 | 5 | 38 ended; same whole answer 0, quote shorter (534 against 634 characters) |
+| stop on repetition (`repetition_detection` 20 / 10) | 0; 7 cut, content complete in all | 40 ended, 1 cut with content complete; nothing else changes |
+| white-space pattern `[ ]?` | 5 | no effect |
+
+A frequency penalty makes a piece less likely each time it is repeated, so the endless white space breaks and
+the JSON closes by itself: a valid answer, with no change to the ingest's code beyond one request setting. It
+has a dose: 0.3 changes the content and leaves answers without end of its own. The stop on repetition is the
+gentlest (it cannot touch an answer that does not repeat) but hands the ingest a cut answer, which today's code
+would send to the plain-text fallback: it would need code that keeps the complete content.
+
+Next, read-only (about thirty minutes of one worker's load): the dose. 0.05 and 0.1 on 100 sections that end,
+0.3 only on the ones that do not, to see what its failures are made of.
 ```
 scp ops/be2/probe_runaway.py sunnit@185.199.24.31:~/
-cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 8 --repeats 4 --normal 40
+cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 10 --repeats 4 --normal 100
 ```
-Read: under a remedy "did not end" must fall to 0, and the answers that ended must keep their content (same tag,
-the quote still found word for word, the same sizes; "as today" is the control). Only then a change of the
-ingest, on one worker first, with the plain-text share as the guard.
+Then, not before Monday 16 Nov (the third worker's first nights come first, one change at a time): the lowest
+strength that ends every answer, as a setting of the chunk request, default off, on worker 2 only; guards: the
+timeouts per chunk (5% today, about 0 expected), the plain-text share (1.1% today, lower expected), worker 1's
+normal calls unchanged. Server load: the writing wasted today (23.5%) pays for about 30% more answers, so even
+40% more rulings an hour write about 7% more tokens than now.
 
 Seen on the way, not looked into: in the answers that end, the summary field (`requirement`) has a median of 7-8
 characters, the quote 550 and the search text 40-50. The request shows the model the two prompt files, which ask

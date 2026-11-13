@@ -28,11 +28,17 @@ to `response_format` is refused (HTTP 400), and alone with `structured_outputs.j
 (every answer still has line breaks; 27 of 50 did not end, 29 of 50 as today). Asked again, a section that did
 not end fails 58% of the time; one that ended, 4 times in 60.
 
+Third run, 13 Nov (116 sections, 10 did not end, all in the references list), 40 more answers on those ten
+sections under each remedy: as today 10 of 40 without end; frequency penalty 0.1 none, all valid JSON; frequency
+penalty 0.3 five; stop on repetition none (7 cut, content complete); white-space pattern five. On 40 sections
+that end, 0.1 is indistinguishable from asking again as today (same tag 38 and 36, same whole answer 9 and 9,
+quote found word for word 34 and 34, same sizes); 0.3 gives no identical answer and shorter quotes.
+
     cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py                # 12 rulings, about 150 calls
-    cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 8 --repeats 4 --normal 40
+    cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 10 --repeats 4 --normal 100
     python probe_runaway.py --selftest                                              # no server needed
 
-Load: about what one ingest worker sends in six minutes; with --remedies as above, in twenty.
+Load: about what one ingest worker sends in six minutes; with --remedies as above, in thirty.
 """
 import argparse
 import json
@@ -59,19 +65,18 @@ ENDLESS = ("length", "cut by the probe")
 # The same request as the ingest sends it, and with one remedy each that only this request carries. None removes
 # a key; "$schema" is the answer's own schema.
 #   frequency penalty: every repeat of a piece makes that piece less likely, so a repeat without end breaks by
-#     itself and the JSON closes; it could also touch long word-for-word quotes, hence two strengths and the
-#     comparison of the answers that ended;
-#   stop on repetition: vLLM's repetition_detection ends the answer when a short pattern repeats; the answer is
-#     then cut, so what counts is whether its content was complete before the cut;
-#   white space pattern: the other documented way to limit white space between JSON elements.
+#     itself and the JSON closes. It has a dose: on 13 Nov 0.1 ended 40 of 40 answers with the content of the
+#     sections that end unchanged, 0.3 left 5 of 40 without end and changed the content. So three strengths, the
+#     strongest only on the sections that do not end, to see what its failures are.
 # Tried on 13 Nov and dropped: structured_outputs.disable_any_whitespace (refused next to response_format, ignored
-# alone).
+# alone); structured_outputs.whitespace_pattern "[ ]?" (5 of 40 without end, no effect); repetition_detection
+# {max_pattern_size 20, min_count 10} works (0 of 40 without end; the 8 answers it cut all had their content
+# complete) but hands the ingest a cut answer, which its code would have to learn to keep.
 FORMS = [("as today", {}),
+         ("frequency penalty 0.05", {"frequency_penalty": 0.05}),
          ("frequency penalty 0.1", {"frequency_penalty": 0.1}),
-         ("frequency penalty 0.3", {"frequency_penalty": 0.3}),
-         ("stop on repetition", {"repetition_detection": {"max_pattern_size": 20, "min_count": 10}}),
-         ("white space pattern", {"response_format": None,
-                                  "structured_outputs": {"json": "$schema", "whitespace_pattern": "[ ]?"}})]
+         ("frequency penalty 0.3", {"frequency_penalty": 0.3})]
+ENDLESS_ONLY = {"frequency penalty 0.3"}               # not asked on the sections that ended
 CONTENT_DONE = re.compile(r'"pattern_type"\s*:\s*(null|"[^"]*")')    # the four content fields come before it
 
 
@@ -260,7 +265,7 @@ def second_pass(url: str, key: str, body: dict, system: str, user: str, sections
     before = {i: content(r["text"]) for i, r in enumerate(first) if not r["error"] and r["finish"] not in ENDLESS}
     ended = [i for i, c in before.items() if c is not None][:normal]
     tasks = ([(f, "endless", i) for f in range(len(FORMS)) for i in endless for _ in range(repeats)]
-             + [(f, "ended", i) for f in range(len(FORMS)) for i in ended])
+             + [(f, "ended", i) for f in range(len(FORMS)) if FORMS[f][0] not in ENDLESS_ONLY for i in ended])
     random.Random(13).shuffle(tasks)                    # forms and sections mixed in every burst
     print(f"second pass: {len(tasks)} calls, capped at {cap} tokens")
 
@@ -298,6 +303,8 @@ def second_pass(url: str, key: str, body: dict, system: str, user: str, sections
     print(f"{len(ended)} sections whose first answer ended, once under each form:")
     for form, (name, _) in enumerate(FORMS):
         rs = [(i, r) for (f, kind, i), r in done if f == form and kind == "ended"]
+        if not rs:
+            continue
         ok = [(i, r) for i, r in rs if not r["error"] and r["finish"] not in ENDLESS]
         valid = [(i, c) for i, c in ((i, content(r["text"])) for i, r in ok) if c is not None]
         quoted = sum(1 for i, c in valid if squeeze(c.get("core_text"))
@@ -311,6 +318,14 @@ def second_pass(url: str, key: str, body: dict, system: str, user: str, sections
               f"quote {middle(len(squeeze(c.get('core_text'))) for _, c in valid)}, search text "
               f"{middle(len(squeeze(c.get('search_text'))) for _, c in valid)}; references "
               f"{middle(len(c.get('riferimenti') or []) for _, c in valid)}")
+    for form, (name, _) in enumerate(FORMS):            # what an answer without end is made of, under each form
+        bad = [shape(r["text"]) for (f, _, _), r in done if f == form and r["finish"] in ENDLESS]
+        if bad:
+            print(f"{name}, its {len(bad)} answers that did not end: field being written "
+                  + ", ".join(f"{k} {n}" for k, n in Counter(s["open_field"] for s in bad).most_common())
+                  + f"; last 2,000 characters: white space median {100 * statistics.median(s['tail_space'] for s in bad):.0f}%, "
+                  f"distinct characters median {statistics.median(s['tail_distinct'] for s in bad):.0f}, "
+                  f"with an exact repeat {sum(1 for s in bad if s['tail_period'])}")
 
 
 def report(results: list, cap: int) -> None:
@@ -383,9 +398,9 @@ def selftest() -> None:
     url = f"http://127.0.0.1:{server.server_port}/v1/chat/completions"
     request = {"model": "m", "response_format": {"type": "json_schema", "json_schema": {"strict": True, "schema": {"a": 1}}}}
     assert with_form(request, FORMS[0][1]) == request
-    assert with_form(request, FORMS[1][1]) == {**request, "frequency_penalty": 0.1}
-    alone = with_form(request, FORMS[4][1])
-    assert "response_format" not in alone and alone["structured_outputs"] == {"json": {"a": 1}, "whitespace_pattern": "[ ]?"}
+    assert with_form(request, FORMS[1][1]) == {**request, "frequency_penalty": 0.05}
+    alone = with_form(request, {"response_format": None, "structured_outputs": {"json": "$schema", "x": 1}})
+    assert "response_format" not in alone and alone["structured_outputs"] == {"json": {"a": 1}, "x": 1}
     assert "response_format" in request                 # the request itself is never changed
     assert content('{"a": 1}') == {"a": 1} and content('{"a": 1') is None and content("[1]") is None
     assert CONTENT_DONE.search('{"core_text": "q", "pattern_type": "altro",\n\n') and not CONTENT_DONE.search('{"pattern_type":\n\n')
@@ -405,13 +420,15 @@ def selftest() -> None:
     assert bad["finish"] == "length" and bad["tokens"] == 50 and shape(bad["text"])["tail_space"] > 0.5
     assert gone["error"] and not gone["text"]
     said = said.getvalue()
-    assert "second pass: 15 calls" in said and "as today: 2 of 2 did not end" in said, said
+    assert "second pass: 11 calls" in said and "as today: 2 of 2 did not end" in said, said       # 4x2 + 3x1
     assert "frequency penalty 0.1: 0 of 2 did not end | the 2 that ended: finish {'stop': 2}, valid JSON 2, tokens" in said, said
-    assert ("stop on repetition: 0 of 2 did not end | the 2 that ended: finish {'repetition': 2}, valid JSON 0, "
-            "cut but with the content complete 2") in said, said
     assert "as today: ended 1 of 1, finish {'stop': 1}, valid JSON 1, with line breaks 1" in said, said
-    assert "frequency penalty 0.3: ended 1 of 1, finish {'stop': 1}, valid JSON 1, with line breaks 0" in said, said
-    assert said.count("same tag as the first answer 1, same whole answer 1, quote found word for word in the section 1") == 5, said
+    assert "frequency penalty 0.05: ended 1 of 1, finish {'stop': 1}, valid JSON 1, with line breaks 0" in said, said
+    assert "frequency penalty 0.3: ended" not in said, said             # the strongest: never-ending sections only
+    assert said.count("same tag as the first answer 1, same whole answer 1, quote found word for word in the section 1") == 3, said
+    assert "as today, its 2 answers that did not end: field being written requirement 2; last 2,000" in said, said
+    cut = [{"text": '{"core_text": "q", "pattern_type": "altro",\n\n', "finish": "repetition"}]
+    assert CONTENT_DONE.search(cut[0]["text"]) and content(cut[0]["text"]) is None
     assert "response_format json_schema (strict True)" in request_shape(
         {"model": "m", "messages": [], "response_format": {"type": "json_schema", "json_schema": {"strict": True}}})
     assert "tool_choice function" in request_shape({"tools": [{}], "tool_choice": {"type": "function"}, "max_tokens": 9})
