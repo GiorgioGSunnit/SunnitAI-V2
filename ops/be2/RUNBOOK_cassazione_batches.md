@@ -411,6 +411,71 @@ characters, the quote 550 and the search text 40-50. The request shows the model
 for a tag only; the fields' descriptions sit in the schema, which shapes the answer. Whether the model sees them
 is not verified, nor what the stored abstracts look like.
 
+Read in the code while writing lever 6, not verified on stored data: the "plain-text fallback" sends its plain
+prompt to the structured model object (`_get_structured_llm_fallback`) and then looks for labelled lines
+(`REQUIREMENT:` ...) in the text form of the object that comes back, which has none. If so, a chunk on that
+path keeps empty fields and the tag "altro", like a chunk without analysis, not a simpler analysis.
+
+### 3f.1 Lever 6: the stop on repetition (prepared 13 Nov, `ops/be2/patch_ingest_lever6.py`; NOT applied)
+
+`ANALISI_STOP_REPETITION=1` in a worker's environment file adds `repetition_detection` (20 / 10, the values
+measured) to that worker's chunk requests. An endless answer then comes back in the time of a normal one, cut
+inside its JSON, and the library cannot read it (a pydantic ValidationError that carries the text). The worker:
+
+- asks again, as it does today after a timeout (the same number of requests, without the 40 s wait), so a
+  section gets the full answer whenever a fresh request gives one, exactly as today;
+- only when no attempt ends by itself keeps the content of the cut answer (summary, quote, search text, tag,
+  the references written whole), where today the chunk goes to the plain-text fallback;
+- never keeps an answer cut before its content was complete: asked again, then the fallback, as today.
+
+Without the setting every edit is inert. One file, 5 edits, 83 lines added, checked against be2's checksum
+after lever 5 (c2a57da4...); after the patch the file reads aa293a42... Rehearsed 13 Nov on a copy rebuilt to
+that checksum: it applies, compiles, refuses a second run, and the undo restores the copy. The library path
+(request, cut answer, content kept) ran on the PC's library versions, which are newer than be2's (openai 2.54
+against 1.59.9): be2's own are what part 1 of the rehearsal checks.
+
+Rehearsal on be2, read-only, before anything is applied (not between 22:00 and 23:30 CET, the cards' window):
+```
+scp ops/be2/patch_ingest_lever6.py ops/be2/probe_runaway.py sunnit@185.199.24.31:~/
+python3 ~/patch_ingest_lever6.py --selftest && sudo python3 ~/patch_ingest_lever6.py --check
+cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --lever6 --rulings 20
+```
+Part 1 sends nothing to the model server: three lines, each must say "yes". A "NO" stops the run: the patch
+has to change first. Part 2 sends about 250 sections with the stop through the ingest's own call (ten minutes
+of one worker's load). Expected: about 5% cut, every one with the content complete, and no call left without an
+answer in 40 s (5% today). "content incomplete" on more than one or two, or `core_text` as the field being
+written, means the stop cuts answers that repeat for a good reason: do not apply, the numbers come back first.
+
+Apply, Monday 16 Nov at the earliest, worker 2 only, on its empty queue (by day the pause empties the queues
+in about an hour; or use the evening pause):
+```
+sudo touch /var/log/maint/feed.pause
+find /opt/sunnitai-be/document_upload_2 -maxdepth 1 -name '*.pdf' | wc -l                                    # 0
+sudo python3 ~/patch_ingest_lever6.py --check && sudo python3 ~/patch_ingest_lever6.py
+sudo /opt/sunnitai-be/venv/bin/python3 -m py_compile /opt/sunnitai-be/src/be/src/lex_package/analisi_parallel.py && echo compiles
+echo 'ANALISI_STOP_REPETITION=1' | sudo tee -a /opt/sunnitai-be/.env.worker2
+sudo systemctl restart sunnitai-ingest-2 && sleep 3 && systemctl is-active sunnitai-ingest-2
+sudo rm -f /var/log/maint/feed.pause     # by day only; in the evening window the 23:35 crontab line removes it
+```
+Worker 1 and the third worker are not restarted: they read the patched file at their next start, without the
+setting, and behave as before. Verify after half an hour: on worker 2 "cut by the repetition stop" is above 0
+and "timed out after 40s" about 0; on worker 1 the first is 0.
+```
+for u in sunnitai-ingest sunnitai-ingest-2; do for w in "cut by the repetition stop" "timed out after 40s"; do echo "$u, $w: $(sudo journalctl -u $u --since '30 minutes ago' --no-pager | grep -c "$w")"; done; done
+```
+Compare after some hours, per worker, from the restart time:
+```
+for u in sunnitai-ingest sunnitai-ingest-2; do sudo journalctl -u $u --since "<restart time>" --no-pager -o short-iso | awk -v u=$u '/\[4\/4\] done/{w++} /total_chunks=[0-9]+/{match($0,/total_chunks=[0-9]+/); c+=substr($0,RSTART+13,RLENGTH-13)} /structured attempt/&&/timed out/{t++} /cut by the repetition stop/{k++} /cut by the repetition stop \(content incomplete\)/{n++} /content of the cut answer kept/{s++} /trying plain text fallback/{f++} END{printf "%s: written %d, chunks %d, timeouts %d, cut %d (incomplete %d), cut answers kept %d, plain text %d (%.2f%% of chunks)\n", u, w, c, t, k, n, s, f, (c ? 100*f/c : 0)}'; done
+```
+Keep it only when worker 2 wrote clearly more rulings than worker 1 over the same hours, its timeouts are near
+0, AND its plain-text share is not above worker 1's (about 1.1%; under 0.3 points at ~4,000 chunks per worker
+is noise). "incomplete" should be a handful at most: every such answer is one the stop cut inside its content.
+The other workers come after that reading, one at a time: `.env.worker3` for the third; worker 1's line would
+go into `/opt/sunnitai-be/.env`, so check first what else on be2 reads that file.
+Rollback: delete the line from `.env.worker2` and restart worker 2 on its empty queue (the patched file then
+behaves as before). Full: `sudo python3 ~/patch_ingest_lever6.py --undo`, then restart on an empty queue every
+worker that started after the patch. Lever 4's patch would need the checksum after lever 6 (aa293a42...).
+
 ## 4. Monday: the batch lands
 
 1. The batch goes to `/home/sunnit/cass_batch1`, flat (PDF + `.name` sidecar per file, as the 2025 batch). Names
@@ -459,5 +524,6 @@ is not verified, nor what the stored abstracts look like.
 - Feeder: comment its crontab line; the old `feed_queue.sh` line can return (same manifest, same queue).
 - Linker: restore the `.bak` of the script and of `link_nightly.sh`; the stamps stay and hurt nothing.
 - Lever 5: delete `ANALISI_CHUNK_TIMEOUTS` from `.env.worker2` (and `.env`), restart; `patch_ingest_lever5.py --undo` restores the file.
+- Lever 6 (once applied): delete `ANALISI_STOP_REPETITION` from `.env.worker2`, restart worker 2; `patch_ingest_lever6.py --undo` restores the file.
 - Health: restore the `.bak`; the old report ignores the new arguments' files.
 - Cards: `--stop-at 00:45` back on prod's line.

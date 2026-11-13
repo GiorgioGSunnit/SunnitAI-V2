@@ -34,13 +34,25 @@ penalty 0.3 five; stop on repetition none (7 cut, content complete); white-space
 that end, 0.1 is indistinguishable from asking again as today (same tag 38 and 36, same whole answer 9 and 9,
 quote found word for word 34 and 34, same sizes); 0.3 gives no identical answer and shorter quotes.
 
+Fourth run, 13 Nov (the dose, 94 sections that end): the penalty changes the answers, more the stronger it is
+(identical to the first answer 37% as today, 24% at 0.05, 15% at 0.1) and still leaves one answer without end.
+So the remedy is the stop on repetition, with the ingest keeping the content of the answer it cuts: lever 6.
+
+--lever6 is the rehearsal of that patch, with patch_ingest_lever6.py beside this file. Part 1, no model server
+involved: on this machine's library, does the request carry the stop, does a cut answer reach the ingest with
+its text, is its content kept. Part 2: real sections through the ingest's own call with the stop: how many end
+by themselves, how many are cut, and what is kept of those. The functions it runs are the ones the patch inserts.
+
     cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py                # 12 rulings, about 150 calls
     cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --remedies --rulings 10 --repeats 4 --normal 100
+    cd /opt/sunnitai-be && sudo venv/bin/python3 ~/probe_runaway.py --lever6 --rulings 20   # --rulings 0: part 1 only
     python probe_runaway.py --selftest                                              # no server needed
 
-Load: about what one ingest worker sends in six minutes; with --remedies as above, in thirty.
+Load: about what one ingest worker sends in six minutes; with --remedies as above, in thirty; --lever6 with 20
+rulings, in ten.
 """
 import argparse
+import asyncio
 import json
 import os
 import random
@@ -357,6 +369,155 @@ def report(results: list, cap: int) -> None:
         print("errors (type, count): " + ", ".join(f"{t} {n}" for t, n in errors.items()))
 
 
+def prompts() -> tuple:
+    """The ingest's two prompt files (system, user)."""
+    out = []
+    for name in ("system.txt", "analisi.txt"):
+        with open(f"{PROMPTS}/{name}", encoding="utf-8", errors="replace") as fh:
+            out.append(fh.read())
+    return tuple(out)
+
+
+# What the stop on repetition leaves of an answer: the content, one reference, ten times the repeated white space.
+CUT_ANSWER = ('{\n  "requirement": "r",\n  "core_text": "c",\n  "search_text": "s",\n  "pattern_type": "altro",\n'
+              '  "riferimenti": [\n    {"n_articolo": "12", "n_paragrafo": "", "nome_documento": "codice penale", '
+              '"codice_documento": "cp"},' + "\n    " * 10)
+
+
+def field(answer, name: str):
+    return answer.get(name) if isinstance(answer, dict) else getattr(answer, name, None)
+
+
+async def chunk_call(runnable, messages, cut_text, wait: float = 40.0) -> dict:
+    """One chunk call as the patched ingest sees it: how it came back (ended, cut, no answer, error), the answer
+    or the cut answer's text (kept in memory only), the type of what was raised, the seconds."""
+    out = {"how": "ended", "result": None, "text": None, "raised": ""}
+    t0 = time.time()
+    try:
+        out["result"] = await asyncio.wait_for(runnable.ainvoke(messages), timeout=wait)
+    except asyncio.TimeoutError:
+        out["how"] = "no answer"
+    except Exception as exc:                            # the type only: a message could quote the answer
+        out["text"], out["raised"] = cut_text(exc), type(exc).__name__
+        out["how"] = "error" if out["text"] is None else "cut"
+    out["seconds"] = time.time() - t0
+    return out
+
+
+def lever6_report(outcomes: list, chunks: list, salvage) -> None:
+    """Part 2 in numbers: how each call came back, and what is kept of the answers the stop cut."""
+    def middle(values, digits: int = 0) -> str:
+        values = list(values)
+        return f"{statistics.median(values):.{digits}f}" if values else "-"
+
+    def quoted(answers) -> int:                         # the quote stands word for word in the section sent
+        return sum(1 for i, a in answers if squeeze(field(a, "core_text"))
+                   and squeeze(field(a, "core_text")) in squeeze(chunks[i]))
+    by = {how: [(i, o) for i, o in enumerate(outcomes) if o["how"] == how] for how in ("ended", "cut", "no answer", "error")}
+    ended = [(i, o["result"]) for i, o in by["ended"]]
+    print(f"  ended by themselves: {len(ended)} (seconds median {middle((o['seconds'] for _, o in by['ended']), 1)}; "
+          f"quote found word for word in the section {quoted(ended)})")
+    cut = [(i, o, salvage(o["text"])) for i, o in by["cut"]]
+    kept = [(i, k) for i, _, k in cut if k is not None]
+    lost = [o for _, o, k in cut if k is None]
+    print(f"  cut by the stop: {len(cut)}" + (
+        f" (seconds median {middle((o['seconds'] for _, o, _ in cut), 1)}; white space at the end, characters median "
+        f"{middle(len(o['text']) - len(o['text'].rstrip()) for _, o, _ in cut)})" if cut else ""))
+    if cut:
+        filled = sum(1 for _, k in kept if all(squeeze(field(k, name)) for name in FIELDS[:3]))
+        refs = [len(field(k, "riferimenti") or []) for _, k in kept]
+        print(f"    content complete, kept: {len(kept)} -- summary, quote and search text all filled {filled}, with "
+              f"references {sum(1 for n in refs if n)} (kept per answer, median {middle(refs)}), quote found word for "
+              f"word in the section {quoted(kept)}")
+        print(f"    content incomplete, asked again: {len(lost)}" + (
+            " -- field being written: " + ", ".join(
+                f"{k} {n}" for k, n in Counter(shape(o["text"])["open_field"] for o in lost).most_common()) if lost else ""))
+    print(f"  no answer within 40 s: {len(by['no answer'])}")
+    errors = Counter(o["raised"] for _, o in by["error"])
+    if errors:
+        print("  errors (type, count): " + ", ".join(f"{t} {n}" for t, n in errors.items()))
+
+
+def lever6(rulings_wanted: int, graph_env: str) -> int:
+    """The rehearsal of lever 6: the functions the patch inserts, on this machine's library (part 1, no model
+    server) and on real sections sent with the stop through the ingest's own call (part 2). Read-only."""
+    try:
+        import patch_ingest_lever6 as patch
+    except ImportError:
+        print("patch_ingest_lever6.py must sit beside this file: nothing sent")
+        return 1
+    sys.path.insert(0, PACKAGES)
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from lex_package.llm.factory import build_chat_model
+    from lex_package.t.analisi_articolo import Analisi_Paragrafo
+    f = patch.helpers(Analisi_Paragrafo)
+    os.environ[patch.SETTING] = "1"                     # for this process only
+
+    def structured(overrides=None):                     # what the patched _build_structured returns
+        llm = build_chat_model(target="primary", temperature=0, overrides=overrides)
+        return f["_with_repetition_stop"](llm).with_structured_output(Analisi_Paragrafo)
+
+    seen: dict = {}
+
+    class CutAnswer(BaseHTTPRequestHandler):            # a stand-in model server: every answer is a cut one
+        def do_POST(self):
+            seen["body"] = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)) or b"{}")
+            reply = {"id": "probe", "object": "chat.completion", "created": 0, "model": "probe",
+                     "choices": [{"index": 0, "finish_reason": "repetition",
+                                  "message": {"role": "assistant", "content": CUT_ANSWER}}],
+                     "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}}
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(reply).encode("utf-8"))
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), CutAnswer)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        got = asyncio.run(chunk_call(structured({"base_url": f"http://127.0.0.1:{server.server_port}/v1"}),
+                                     [SystemMessage(content="S"), HumanMessage(content="U")], f["_cut_answer_text"], wait=20))
+    finally:
+        server.shutdown()
+    body = seen.get("body") or {}
+    carried = body.get("repetition_detection") == f["_REPETITION_STOP"] and "response_format" in body
+    kept = f["_salvage_cut_answer"](got["text"]) if got["text"] is not None else None
+    whole = kept is not None and field(kept, "core_text") == "c" and len(field(kept, "riferimenti") or []) == 1
+    print("part 1, this machine's library (no model server involved):")
+    print(f"  the request carries the stop next to the answer's shape: {'yes' if carried else 'NO'} ({request_shape(body)})")
+    print(f"  a cut answer reaches the ingest as: {got['how']}" + (f" ({got['raised']})" if got["raised"] else "")
+          + f"; its text is recovered: {'yes' if got['text'] == CUT_ANSWER else 'NO'}")
+    print(f"  its content is kept (the fields and the one reference): {'yes' if whole else 'NO'}")
+    if not (carried and got["text"] == CUT_ANSWER and whole):
+        print("STOP: lever 6 as written would not work on this machine; nothing sent to the model server")
+        return 1
+    if rulings_wanted <= 0:
+        return 0
+    system, user = prompts()
+    try:
+        rulings = rulings_sections(read_env(graph_env), rulings_wanted)
+    except Exception as exc:
+        print(f"the sections could not be read from the graph ({type(exc).__name__}): nothing sent to the model")
+        return 1
+    llm = structured()
+
+    async def run() -> list:
+        out = []
+        for sections in rulings:                        # one ruling's chunks go out together, as in the ingest
+            asked = [messages_for(system, user, title, text) for title, text in sections]
+            out += await asyncio.gather(*[chunk_call(llm, [SystemMessage(content=m[0]["content"]),
+                                                           HumanMessage(content=m[1]["content"])], f["_cut_answer_text"])
+                                          for m in asked])
+        return out
+    outcomes = asyncio.run(run())
+    chunks = [" ".join(text.split()[:CHUNK_WORDS]) for sections in rulings for _, text in sections]
+    print(f"part 2, real sections through the ingest's own call, with the stop: rulings {len(rulings)}, sections {len(chunks)}")
+    lever6_report(outcomes, chunks, f["_salvage_cut_answer"])
+    return 0
+
+
 def selftest() -> None:
     assert period("ab" * 50) == 2 and period(" " * 30) == 1 and period("the quick brown fox jumps over") == 0
     ref = '{"n_articolo": "12", "n_paragrafo": "", "nome_documento": "codice penale", "codice_documento": "cp"}, '
@@ -434,6 +595,53 @@ def selftest() -> None:
     assert "tool_choice function" in request_shape({"tools": [{}], "tool_choice": {"type": "function"}, "max_tokens": 9})
     m = messages_for("S", "U", "T", "w " * 300)
     assert m[0] == {"role": "system", "content": "S"} and len(m[1]["content"].split("'")[3].split()) == CHUNK_WORDS
+
+    # lever 6: the patch's own functions, on calls that end, are cut (whole and half way), hang and fail
+    import patch_ingest_lever6 as patch
+
+    class Kept:                                         # in the place of Analisi_Paragrafo: hands the data back
+        model_validate = staticmethod(lambda data: data)
+
+    class Unreadable(Exception):                        # what the library raises for an answer cut inside its JSON
+        def __init__(self, text):
+            super().__init__("unreadable")
+            self.text = text
+
+        def errors(self):
+            return [{"type": "json_invalid", "input": self.text}]
+
+    class Call:
+        def __init__(self, what):
+            self.what = what
+
+        async def ainvoke(self, messages):
+            if self.what == "hang":
+                await asyncio.sleep(5)
+            if self.what == "fail":
+                raise KeyError("a word of the answer")
+            if self.what != "end":
+                raise Unreadable(self.what)
+            return {"core_text": "plain words"}
+    f = patch.helpers(Kept)
+    half = '{"requirement": "r", "core_text": "plain plain plain'
+    whats = ["end", CUT_ANSWER.replace('"c"', '"plain words"'), half, "hang", "fail"]
+
+    async def all_calls():
+        return [await chunk_call(Call(w), [], f["_cut_answer_text"], wait=0.2) for w in whats]
+    outcomes = asyncio.run(all_calls())
+    assert [o["how"] for o in outcomes] == ["ended", "cut", "cut", "no answer", "error"], outcomes
+    assert outcomes[4]["raised"] == "KeyError" and outcomes[1]["text"].endswith("\n    ") and outcomes[0]["text"] is None
+    said = io.StringIO()
+    with contextlib.redirect_stdout(said):
+        lever6_report(outcomes, ["some plain words here", "some plain words here", "x", "x", "x"], f["_salvage_cut_answer"])
+    said = said.getvalue()
+    assert "ended by themselves: 1 (seconds median 0.0; quote found word for word in the section 1)" in said, said
+    assert "cut by the stop: 2 (seconds median 0.0; white space at the end, characters median 25)" in said, said
+    assert ("content complete, kept: 1 -- summary, quote and search text all filled 1, with references 1 (kept per "
+            "answer, median 1), quote found word for word in the section 1") in said, said
+    assert "content incomplete, asked again: 1 -- field being written: core_text 1" in said, said
+    assert "no answer within 40 s: 1" in said and "errors (type, count): KeyError 1" in said, said
+    assert "plain" not in said                          # numbers and field names only
     report([good, bad, gone], 50)
     print("selftest ok")
 
@@ -448,6 +656,8 @@ def main() -> int:
                    help="second pass: the same sections as today and with one remedy each")
     p.add_argument("--repeats", type=int, default=5, help="second pass: times each never-ending section is asked again")
     p.add_argument("--normal", type=int, default=60, help="second pass: sections that ended, asked once per form")
+    p.add_argument("--lever6", action="store_true",
+                   help="the rehearsal of patch_ingest_lever6.py (beside this file); --rulings 0 for part 1 only")
     p.add_argument("--selftest", action="store_true")
     args = p.parse_args()
     if args.selftest:
@@ -455,6 +665,8 @@ def main() -> int:
         return 0
     for k, v in read_env(args.env).items():
         os.environ.setdefault(k, v)
+    if args.lever6:
+        return lever6(args.rulings, args.graph_env)
     try:
         seen = captured_request()
     except Exception as exc:
@@ -468,10 +680,7 @@ def main() -> int:
     base = (os.environ.get("LLM_BASE_URL") or "").rstrip("/")
     url = base + (seen["path"][len("/v1"):] if seen["path"].startswith("/v1") else seen["path"])
     key = os.environ.get("LLM_API_KEY") or os.environ.get("OPENAI_API_KEY") or "EMPTY"
-    with open(f"{PROMPTS}/system.txt", encoding="utf-8", errors="replace") as fh:
-        system = fh.read()
-    with open(f"{PROMPTS}/analisi.txt", encoding="utf-8", errors="replace") as fh:
-        user = fh.read()
+    system, user = prompts()
     try:
         rulings = rulings_sections(read_env(args.graph_env), args.rulings)
     except Exception as exc:
