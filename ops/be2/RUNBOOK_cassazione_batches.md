@@ -182,6 +182,13 @@ script when the count grows. Seen on the way, for Flavio: the rulings' NEXT chai
 section with two NEXT in 244 of 300 sampled documents, typically 3-5 heads), and the split pieces name_i are a
 quarter of the rulings' sections; the app's reading-order fallback (name order) already covers it.
 
+Recurrence 14 Nov: the model server restarted at 06:32 CET (its own `process_start_time_seconds`; why is not
+known, it is not our machine). For a few minutes every call of the three workers failed with "Connection
+error". The ingest treats that like a bad chunk (no retry, then plain text, which fails too), so 216 chunks got
+the string: "error abstracts 107 (+106)" in the 15 Nov report and 1.5% fallbacks over that day. No error in any
+hour since. The ingest has no guard for a model server that is down, so the next restart of that server does
+the same. The repair is the script above (count, `--shapes`, `--write`); not run yet, the user's decision.
+
 ## 3d. Lever 5: the chunk waits as a setting (prepared 11 Nov, `ops/be2/patch_ingest_lever5.py`)
 
 Why: the journal of 10-11 Nov (763 rulings, both workers). A chunk call answers within 30 s or never. 4.5% of the
@@ -302,6 +309,31 @@ Guard, the morning after (the commands of 3d with `sunnitai-ingest-3` added to t
   13 Nov, available 2,600 MB and swap 33 MB. Swap above 3,000 MB (of 4,095): stop. The cost of tight memory is
   the database pushed into swap, slower for the ingest and for the chatbot.
 - prod's cards line: "still to card 0".
+
+**Read 15 Nov, the first two nights (23:40-06:25): the speed guard is clean.** Written / chunks / plain text /
+analysis of a ruling of 8-16 chunks without a timeout:
+
+| night | worker 1 | worker 2 | worker 3 |
+|---|---|---|---|
+| 12-13, two workers | 301 / 3,847 / 1.09% / 16.1 s | 316 / 4,036 / 1.14% / 16.6 s | - |
+| 13-14 | 312 / 4,312 / 0.83% / 15.8 s | 350 / 4,379 / 0.55% / 17.5 s | 295 / 4,152 / 1.11% / 16.7 s |
+| 14-15 | 260 / 4,784 / 0.88% / 16.1 s | 282 / 4,235 / 0.90% / 16.3 s | 279 / 3,980 / 0.90% / 16.5 s |
+
+Three workers do not slow each other: workers 1 and 2 together wrote more chunks with the third beside them
+(7,883, then 8,691 and 9,019). The third adds 280-295 rulings a night, not the 340 estimated; the rulings are
+getting longer. It started at 22:00Z and stopped at 05:50Z both nights.
+
+Memory: swap used 3,260 MB on 15 Nov, above the line written above. That line was mis-set: it counts the whole
+machine, and the number it came from was the database's own. The database's swap peak since the 13 Nov restart
+is 2.9 GB (`systemctl show neo4j -p MemorySwapCurrent -p MemorySwapPeak`), the same as with two workers; the
+other 1.1 GB is be2's other services parked, and `vmstat 5 4` shows nothing pushed out by day. So the third
+worker is not shown to push the database deeper. Proposed lines, not yet agreed: stop when the database's peak
+passes 3.2 GB or total swap 3,700 MB. Standing fact: the database always has 2-3 GB in swap on be2; what that
+costs a chatbot search is not measured.
+
+Prod's cards on 14 Nov: 2,335 in 80 of their 90 minutes. The window has to grow (prod's `--stop-at`, be2's
+resume time) before anything raises the daily output further.
+
 Stop for good: `sudo crontab ~/crontab.bak_worker3` (its queue gets no more files), wait until `document_upload_3`
 holds no PDF (under an hour), then `sudo systemctl stop sunnitai-ingest-3`.
 
@@ -416,7 +448,7 @@ prompt to the structured model object (`_get_structured_llm_fallback`) and then 
 (`REQUIREMENT:` ...) in the text form of the object that comes back, which has none. If so, a chunk on that
 path keeps empty fields and the tag "altro", like a chunk without analysis, not a simpler analysis.
 
-### 3f.1 Lever 6: the stop on repetition (prepared 13 Nov, `ops/be2/patch_ingest_lever6.py`; NOT applied)
+### 3f.1 Lever 6: the stop on repetition (`ops/be2/patch_ingest_lever6.py`; ON on worker 2 since 15 Nov 12:08 CET)
 
 `ANALISI_STOP_REPETITION=1` in a worker's environment file adds `repetition_detection` (20 / 10, the values
 measured) to that worker's chunk requests. An endless answer then comes back in the time of a normal one, cut
@@ -458,8 +490,8 @@ fallback; a section gets its references from the fresh request, which is why the
 Limit of the sample: 0 answers cut inside their content in 203 leaves room for a rate under about 1.5%; the
 plain-text share on worker 2 is the guard for it.
 
-Apply, Monday 16 Nov at the earliest, worker 2 only, on its empty queue (by day the pause empties the queues
-in about an hour; or use the evening pause):
+Apply, one worker at a time, on its empty queue (by day the pause empties the queues in about an hour; or use
+the evening pause). The patch itself is applied once; the lines below are worker 2's, 15 Nov:
 ```
 sudo touch /var/log/maint/feed.pause
 find /opt/sunnitai-be/document_upload_2 -maxdepth 1 -name '*.pdf' | wc -l                                    # 0
@@ -467,14 +499,23 @@ sudo python3 ~/patch_ingest_lever6.py --check && sudo python3 ~/patch_ingest_lev
 sudo /opt/sunnitai-be/venv/bin/python3 -m py_compile /opt/sunnitai-be/src/be/src/lex_package/analisi_parallel.py && echo compiles
 echo 'ANALISI_STOP_REPETITION=1' | sudo tee -a /opt/sunnitai-be/.env.worker2
 sudo systemctl restart sunnitai-ingest-2 && sleep 3 && systemctl is-active sunnitai-ingest-2
+sudo cat /proc/$(systemctl show -p MainPID --value sunnitai-ingest-2)/environ | tr '\0' '\n' | grep -cE '^(ANALISI_STOP_REPETITION=1|ANALISI_CHUNK_TIMEOUTS=40,40,40)$'   # 2
 sudo rm -f /var/log/maint/feed.pause     # by day only; in the evening window the 23:35 crontab line removes it
 ```
+The count of 2 says the running process has both settings (a line glued to the one before it would give less).
 Worker 1 and the third worker are not restarted: they read the patched file at their next start, without the
-setting, and behave as before. Verify after half an hour: on worker 2 "cut by the repetition stop" is above 0
-and "timed out after 40s" about 0; on worker 1 the first is 0.
+setting, and behave as before. Verify after half an hour: on worker 2 "cut by the repetition stop" is above 0,
+"timed out after 40s" about 0 and "/2 failed" 0 (a model server that refuses the stop would show there); on
+worker 1 "cut" is 0.
 ```
-for u in sunnitai-ingest sunnitai-ingest-2; do for w in "cut by the repetition stop" "timed out after 40s"; do echo "$u, $w: $(sudo journalctl -u $u --since '30 minutes ago' --no-pager | grep -c "$w")"; done; done
+for u in sunnitai-ingest sunnitai-ingest-2; do for w in "[4/4] done" "cut by the repetition stop" "content of the cut answer kept" "timed out after 40s" "/2 failed" "trying plain text fallback"; do echo "$u, $w: $(sudo journalctl -u $u --since '30 minutes ago' --no-pager | grep -cF "$w")"; done; done
 ```
+**Applied 15 Nov, worker 2 only.** The model server had restarted on 14 Nov (3c.3), after the rehearsal, so the
+rehearsal ran again first (`--rulings 10`): same version (vLLM 0.28.0), part 1 three "yes", 72 sections of 9
+rulings: 67 ended by themselves, 5 were cut, all 5 with the content complete, none left without an answer in
+40 s. Then the patch (5 edits; backup `analisi_parallel.py.bak_lever6_15nov` beside the file), "compiles", the
+line in `.env.worker2`, the restart ("active", count 2) and the pause removed at 12:08 CET: the comparison with
+worker 1 starts there (`--since "2026-11-15 12:08"`). To read: the half-hour verify, then the comparison.
 Compare after some hours, per worker, from the restart time:
 ```
 for u in sunnitai-ingest sunnitai-ingest-2; do sudo journalctl -u $u --since "<restart time>" --no-pager -o short-iso | awk -v u=$u '/\[4\/4\] done/{w++} /total_chunks=[0-9]+/{match($0,/total_chunks=[0-9]+/); c+=substr($0,RSTART+13,RLENGTH-13)} /structured attempt/&&/timed out/{t++} /cut by the repetition stop/{k++} /cut by the repetition stop \(content incomplete\)/{n++} /content of the cut answer kept/{s++} /trying plain text fallback/{f++} END{printf "%s: written %d, chunks %d, timeouts %d, cut %d (incomplete %d), cut answers kept %d, plain text %d (%.2f%% of chunks)\n", u, w, c, t, k, n, s, f, (c ? 100*f/c : 0)}'; done
@@ -536,6 +577,6 @@ worker that started after the patch. Lever 4's patch would need the checksum aft
 - Feeder: comment its crontab line; the old `feed_queue.sh` line can return (same manifest, same queue).
 - Linker: restore the `.bak` of the script and of `link_nightly.sh`; the stamps stay and hurt nothing.
 - Lever 5: delete `ANALISI_CHUNK_TIMEOUTS` from `.env.worker2` (and `.env`), restart; `patch_ingest_lever5.py --undo` restores the file.
-- Lever 6 (once applied): delete `ANALISI_STOP_REPETITION` from `.env.worker2`, restart worker 2; `patch_ingest_lever6.py --undo` restores the file.
+- Lever 6 (on worker 2 since 15 Nov): `sudo sed -i '/^ANALISI_STOP_REPETITION=/d' /opt/sunnitai-be/.env.worker2 && sudo systemctl restart sunnitai-ingest-2`; `patch_ingest_lever6.py --undo` restores the file.
 - Health: restore the `.bak`; the old report ignores the new arguments' files.
 - Cards: `--stop-at 00:45` back on prod's line.
