@@ -523,14 +523,25 @@ rehearsal ran again first (`--rulings 10`): same version (vLLM 0.28.0), part 1 t
 rulings: 67 ended by themselves, 5 were cut, all 5 with the content complete, none left without an answer in
 40 s. Then the patch (5 edits; backup `analisi_parallel.py.bak_lever6_15nov` beside the file), "compiles", the
 line in `.env.worker2`, the restart ("active", count 2) and the pause removed at 12:08 CET: the comparison with
-worker 1 starts there (`--since "2026-11-15 12:08"`). To read: the half-hour verify, then the comparison.
+worker 1 starts there (`--since "2026-11-15 12:08"`). Nothing was in progress on worker 2 at the restart (its
+last ruling had finished at 12:04:41).
+
+Half-hour verify, about 12:25-12:55: worker 2 wrote 30 rulings with 39 answers cut, 0 timeouts, 0 failed and
+0 plain text; worker 1 wrote 21 with 17 timeouts, 1 plain text and 0 cut. The stop works. One number to watch:
+10 chunks on worker 2 ended as "content of the cut answer kept", so all three of their attempts were cut. The
+old path's rate (plain text about 1% of chunks) would give about 4 in as many chunks. A kept answer has the
+content but no list of references, like the plain-text fallback (`riferimenti=None` there too). If a longer
+reading confirms it, asking again a few seconds after a cut repeats the endless answer more often than asking
+again after a 40 s wait. So the comparison counts the attempts one by one.
+
 Compare after some hours, per worker, from the restart time:
 ```
-for u in sunnitai-ingest sunnitai-ingest-2; do sudo journalctl -u $u --since "<restart time>" --no-pager -o short-iso | awk -v u=$u '/\[4\/4\] done/{w++} /total_chunks=[0-9]+/{match($0,/total_chunks=[0-9]+/); c+=substr($0,RSTART+13,RLENGTH-13)} /structured attempt/&&/timed out/{t++} /cut by the repetition stop/{k++} /cut by the repetition stop \(content incomplete\)/{n++} /content of the cut answer kept/{s++} /trying plain text fallback/{f++} END{printf "%s: written %d, chunks %d, timeouts %d, cut %d (incomplete %d), cut answers kept %d, plain text %d (%.2f%% of chunks)\n", u, w, c, t, k, n, s, f, (c ? 100*f/c : 0)}'; done
+for u in sunnitai-ingest sunnitai-ingest-2; do sudo journalctl -u $u --since "<restart time>" --no-pager -o short-iso | awk -v u=$u '/\[4\/4\] done/{w++} /total_chunks=[0-9]+/{match($0,/total_chunks=[0-9]+/); c+=substr($0,RSTART+13,RLENGTH-13)} match($0,/structured attempt [123]\/2 (timed out|cut by the repetition stop)/){a=substr($0,RSTART+19,1); if ($0 ~ /timed out/) t[a]++; else k[a]++} /cut by the repetition stop \(content incomplete\)/{n++} /content of the cut answer kept/{s++} /trying plain text fallback/{f++} END{printf "%s: written %d, chunks %d | timed out 1st %d, 2nd %d, 3rd %d | cut 1st %d, 2nd %d, 3rd %d (incomplete %d) | cut answers kept %d (%.2f%% of chunks), plain text %d (%.2f%%)\n", u, w, c, t[1], t[2], t[3], k[1], k[2], k[3], n, s, (c?100*s/c:0), f, (c?100*f/c:0)}'; done
 ```
 Keep it only when worker 2 wrote clearly more rulings than worker 1 over the same hours, its timeouts are near
-0, AND its plain-text share is not above worker 1's (about 1.1%; under 0.3 points at ~4,000 chunks per worker
-is noise). "incomplete" should be a handful at most: every such answer is one the stop cut inside its content.
+0, AND its chunks that end without a full answer (kept plus plain text) are not above worker 1's plain-text
+share (about 1.1%; under 0.3 points at ~4,000 chunks per worker is noise). "incomplete" should be a handful at
+most: every such answer is one the stop cut inside its content.
 The other workers come after that reading, one at a time: `.env.worker3` for the third; worker 1's line would
 go into `/opt/sunnitai-be/.env`, so check first what else on be2 reads that file.
 Rollback: delete the line from `.env.worker2` and restart worker 2 on its empty queue (the patched file then
