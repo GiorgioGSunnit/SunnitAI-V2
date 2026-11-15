@@ -534,6 +534,22 @@ content but no list of references, like the plain-text fallback (`riferimenti=No
 reading confirms it, asking again a few seconds after a cut repeats the endless answer more often than asking
 again after a 40 s wait. So the comparison counts the attempts one by one.
 
+Reading 12:08-20:20, eight hours (the line below): it was a cluster, the longer reading does not confirm it.
+
+| | worker 1 (as before) | worker 2 (with the stop) |
+|---|---|---|
+| rulings written | 492 | 663 (+35%) |
+| chunks | 5,020 | 6,042 (+20%) |
+| first attempt without an end | 273 timed out (5.4%) | 331 cut + 3 timed out (5.5%) |
+| second, third attempt without an end | 106, 57 | 120, 71 |
+| chunks that end without a full answer | 57 plain text (1.14%) | 66 kept + 5 plain text (1.18%) |
+
+A retry repeats the endless answer as often after a cut as after a 40 s wait (36% and 58% against 39% and 54%).
+The same share of chunks ends without a full answer; on worker 2 they keep the content of the structured answer
+where worker 1 sends them to the plain-text prompt. 28 of the 518 cut answers were cut before their content
+was complete (5.4%; the rehearsals had 0 of 14): never kept, asked again. The first-attempt rate is the same on
+both workers, so the stop is not cutting answers that would have ended by themselves (to within half a point).
+
 Compare after some hours, per worker, from the restart time:
 ```
 for u in sunnitai-ingest sunnitai-ingest-2; do sudo journalctl -u $u --since "<restart time>" --no-pager -o short-iso | awk -v u=$u '/\[4\/4\] done/{w++} /total_chunks=[0-9]+/{match($0,/total_chunks=[0-9]+/); c+=substr($0,RSTART+13,RLENGTH-13)} match($0,/structured attempt [123]\/2 (timed out|cut by the repetition stop)/){a=substr($0,RSTART+19,1); if ($0 ~ /timed out/) t[a]++; else k[a]++} /cut by the repetition stop \(content incomplete\)/{n++} /content of the cut answer kept/{s++} /trying plain text fallback/{f++} END{printf "%s: written %d, chunks %d | timed out 1st %d, 2nd %d, 3rd %d | cut 1st %d, 2nd %d, 3rd %d (incomplete %d) | cut answers kept %d (%.2f%% of chunks), plain text %d (%.2f%%)\n", u, w, c, t[1], t[2], t[3], k[1], k[2], k[3], n, s, (c?100*s/c:0), f, (c?100*f/c:0)}'; done
