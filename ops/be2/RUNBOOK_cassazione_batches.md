@@ -187,7 +187,15 @@ known, it is not our machine). For a few minutes every call of the three workers
 error". The ingest treats that like a bad chunk (no retry, then plain text, which fails too), so 216 chunks got
 the string: "error abstracts 107 (+106)" in the 15 Nov report and 1.5% fallbacks over that day. No error in any
 hour since. The ingest has no guard for a model server that is down, so the next restart of that server does
-the same. The repair is the script above (count, `--shapes`, `--write`); not run yet, the user's decision.
+the same.
+
+Repaired 15 Nov with the script above (`--shapes`, then `--write`, three seconds, workers running): 107 sections
+in 15 rulings. 104 had nothing of the analysis left and got the first 200 words of their text with the heading
+in front; 3 kept their good parts; 15 descriptions rebuilt; every count 0 after. Vectors not re-embedded. These
+15 rulings stay without model summaries in most sections: only feeding them again would give them one, and
+there is no tested procedure for that. Mind `--undo`: it restores every node holding a `*_before_fix` backup,
+and the 8 Nov backups are still on the nodes (37,617 sections now), so it would put the error text back into
+all of them. It is an undo of the last write only after `--purge-backups` has removed the older backups.
 
 ## 3d. Lever 5: the chunk waits as a setting (prepared 11 Nov, `ops/be2/patch_ingest_lever5.py`)
 
