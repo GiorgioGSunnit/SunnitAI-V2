@@ -326,6 +326,12 @@ analysis of a ruling of 8-16 chunks without a timeout:
 | 12-13, two workers | 301 / 3,847 / 1.09% / 16.1 s | 316 / 4,036 / 1.14% / 16.6 s | - |
 | 13-14 | 312 / 4,312 / 0.83% / 15.8 s | 350 / 4,379 / 0.55% / 17.5 s | 295 / 4,152 / 1.11% / 16.7 s |
 | 14-15 | 260 / 4,784 / 0.88% / 16.1 s | 282 / 4,235 / 0.90% / 16.3 s | 279 / 3,980 / 0.90% / 16.5 s |
+| 15-16, the stop on worker 2 | 271 / 4,277 / 0.94% / not read | 368 / 5,790 / 0.95% (kept + plain text) / not read | 264 / 4,527 / 0.91% / not read |
+
+Night 15-16: worker 2 with the stop wrote 35% more chunks than worker 1 and the other two kept their own pace
+(4,277 and 4,527 chunks against 3,980-4,784 on the nights before). The database's swap peak did not move
+(2,923 MiB, the figure called "2.9 GB" below; the proposed line is 3,200 MiB); swap used 2,662 MB at 09:20.
+Prod's cards that evening: 2,499 in 79 of their 90 minutes, 2 failed.
 
 Three workers do not slow each other: workers 1 and 2 together wrote more chunks with the third beside them
 (7,883, then 8,691 and 9,019). The third adds 280-295 rulings a night, not the 340 estimated; the rulings are
@@ -550,6 +556,12 @@ where worker 1 sends them to the plain-text prompt. 28 of the 518 cut answers we
 was complete (5.4%; the rehearsals had 0 of 14): never kept, asked again. The first-attempt rate is the same on
 both workers, so the stop is not cutting answers that would have ended by themselves (to within half a point).
 
+Night 15-16 Nov (23:40-06:25, three workers, the stop on worker 2 only): the rule passes again. Worker 2 wrote
+368 rulings and 5,790 chunks against 271 / 4,277 (worker 1) and 264 / 4,527 (worker 3); timed out 3 against
+203 and 251 on the first attempt; chunks without a full answer 0.95% (51 kept + 4 plain text) against 0.94%
+and 0.91%; 18 of 403 cut answers were cut inside their content (4.5%). Worker 3 runs the patched file without
+the setting: 0 cut, as designed.
+
 Compare after some hours, per worker, from the restart time:
 ```
 for u in sunnitai-ingest sunnitai-ingest-2; do sudo journalctl -u $u --since "<restart time>" --no-pager -o short-iso | awk -v u=$u '/\[4\/4\] done/{w++} /total_chunks=[0-9]+/{match($0,/total_chunks=[0-9]+/); c+=substr($0,RSTART+13,RLENGTH-13)} match($0,/structured attempt [123]\/2 (timed out|cut by the repetition stop)/){a=substr($0,RSTART+19,1); if ($0 ~ /timed out/) t[a]++; else k[a]++} /cut by the repetition stop \(content incomplete\)/{n++} /content of the cut answer kept/{s++} /trying plain text fallback/{f++} END{printf "%s: written %d, chunks %d | timed out 1st %d, 2nd %d, 3rd %d | cut 1st %d, 2nd %d, 3rd %d (incomplete %d) | cut answers kept %d (%.2f%% of chunks), plain text %d (%.2f%%)\n", u, w, c, t[1], t[2], t[3], k[1], k[2], k[3], n, s, (c?100*s/c:0), f, (c?100*f/c:0)}'; done
@@ -594,6 +606,45 @@ worker that started after the patch. Lever 4's patch would need the checksum aft
 5. Day one, afternoon: trace three new rulings (`scripts/trace_ruling.py`, names masked): number and date
    present, sections by the ruling's structure, one CITES set after the next linker pass.
 
+## 4a. Files without ruling text (found 16 Nov; `C:\tplstage\no_text_files.py`)
+
+A batch holds two kinds of PDF that are not rulings, besides the 5,133-byte placeholder the prepare tool
+already removes:
+- **header only**: one page from Italgiure's own generator with the header (court, act, section, number,
+  president, date) and nothing below it; 7.7-8.2 KB.
+- **image page**: one identical 9,212-byte scanned page without text (md5 22c75fde4c356372f8fe0ed86c955aff).
+
+| batch | header only | image page | of |
+|---|---|---|---|
+| cass_batch1 (penale 2025) | 3,618 | 24 | 29,305 staged (12%) |
+| cass_civ2025 (packed, not uploaded) | 795 | 454 | 31,770 (4%) |
+
+In the penal batch they sit at the low ruling numbers of every section (numbers 4 to 18,071 of 41,910: a third
+of the files in that range); the 5,307 rulings of the first 2025 batch have none. The ingest writes a
+header-only file as a ruling: no text, no CITES. That is the jump in "rulings without CITES" on the days the
+feeder crosses the start of a section (11 Nov: 38% of the new rulings; 16 Nov: +650, 457 such files in that
+day's 2,571). By 16 Nov 09:20, 1,543 header-only files and 16 image pages had been handed over; they are in
+the graph (or in `document_failed`) and nothing has been done about them yet. The cards job cards any ruling
+with text of any length (`exp_ruling_cards.pick`), so they get cards too.
+
+Lists of names for the colleague who scrapes: `C:\tplstage\cass_batch1_parts\cass_batch1_no_text.txt` (3,642),
+`C:\tplstage\cass_civ2025_parts\cass_civ2025_no_text.txt` (1,249). Remake them, or check a new batch, with
+`python -I C:\tplstage\no_text_files.py <pdf folder> <names of an earlier batch | none> [<list to write>]`
+(byte-level, prints counts only).
+
+Set them aside in a staging folder (a move into a side folder the feeder and the report do not read; between
+two feeder runs, so not in a minute ending in 0). In the penal batch no file with text has these sizes (the
+smallest is 8,131 B):
+```
+cd /home/sunnit/cass_batch1
+find . -maxdepth 1 -name '*.pdf' \( -size +7799c -size -8000c -o -size 9212c \) | wc -l
+mkdir -p _no_text && find . -maxdepth 1 -name '*.pdf' \( -size +7799c -size -8000c -o -size 9212c \) | while read -r f; do mv "$f" "${f%.pdf}.name" _no_text/; done
+find . -maxdepth 1 -name '*.pdf' \( -size +7799c -size -8000c -o -size 9212c \) | wc -l      # 0
+ls _no_text | grep -c '\.pdf$'; ls _no_text | grep -c '\.name$'                              # the same number twice
+```
+Civil batch, after the unpack: the same with `-size -10000c` as the only size test (1,249 files; the smallest
+civil file with text is 51,791 B). Back: `mv _no_text/* .`
+
 ## 5. Every morning during a batch (the 05:30 report, `/var/log/maint/summary_<date>.txt`)
 
 | line | fine | act |
@@ -604,6 +655,7 @@ worker that started after the patch. Lever 4's patch would need the checksum aft
 | disk free | > 40 GB | the page flags it: `touch /var/log/maint/feed.pause` and the database discussion |
 | feeder: N left | falling by the day's written | PAUSED outside 20:30-23:35 CET = the pause file was left behind |
 | suspected duplicates | 0 | > 0: trace them before feeding more |
+| rulings without CITES | about +240 to +300 a day | a jump: files without ruling text went in (4a) |
 | rulings without card | growing by day, cleared by the night | the cards window is too short: `--stop-at` later |
 
 ## 6. Rollback, in one place
