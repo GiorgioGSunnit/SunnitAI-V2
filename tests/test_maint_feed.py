@@ -1,5 +1,6 @@
 """maint_feed.py: the feeder tops the queues up to a target, keeps the manifest format, sets aside files already fed,
 honours the pause file; the batch check counts what must be looked at before feeding. All on temporary folders."""
+import datetime as dt
 import json
 import os
 import sys
@@ -79,6 +80,54 @@ def test_feed_does_nothing_while_the_pause_file_exists(tmp_path, capsys):
     assert not os.path.exists(tmp_path / "manifest.txt")
     assert "PAUSED, fed 0" in capsys.readouterr().out
     assert json.load(open(tmp_path / "state.json", encoding="utf-8"))["paused"] is True
+
+
+FRI_NOON, FRI_NIGHT, SAT_NOON = dt.datetime(2026, 11, 13, 12, 0), dt.datetime(2026, 11, 13, 23, 40), dt.datetime(2026, 11, 14, 12, 0)
+
+
+def test_off_hours_are_the_night_and_the_weekend_only_when_asked():
+    f = maint_feed.off_hours
+    assert not f(dt.datetime(2026, 11, 13, 22, 59)) and f(dt.datetime(2026, 11, 13, 23, 0))      # Friday evening
+    assert f(dt.datetime(2026, 11, 16, 5, 59)) and not f(dt.datetime(2026, 11, 16, 6, 0))       # Monday morning
+    assert not f(FRI_NOON) and not f(FRI_NOON, weekends=True)
+    assert not f(SAT_NOON) and f(SAT_NOON, weekends=True)
+    assert f(dt.datetime(2026, 11, 15, 20, 0), weekends=True)                                    # Sunday evening
+
+
+def off_hours_run(tmp_path, monkeypatch, now, running, *flags):
+    """One feeder run at `now` with q1 and the off-hours queue q3 (target 2); the systemctl verbs it issued."""
+    verbs = []
+    monkeypatch.setattr(maint_feed, "local_now", lambda: now)
+    monkeypatch.setattr(maint_feed, "systemctl", lambda verb, unit: (verbs.append(f"{verb} {unit}"), running)[1]
+                        if verb == "is-active" else (verbs.append(f"{verb} {unit}"), True)[1])
+    argv = feed_args(tmp_path, [tmp_path / "q1"], target=2, **{"off-hours-queue": tmp_path / "q3",
+                                                               "off-hours-unit": "worker3"})
+    assert maint_feed.main(argv + list(flags)) == 0
+    return [v for v in verbs if not v.startswith("is-active")]
+
+
+def test_by_day_the_off_hours_queue_gets_nothing_and_its_worker_stops_once_the_queue_is_empty(tmp_path, monkeypatch, capsys):
+    make_batch(tmp_path / "src")
+    make_batch(tmp_path / "q3", ["snpen_s50_a2025_n00009_tS.pdf"])             # one ruling still in its queue
+    assert off_hours_run(tmp_path, monkeypatch, FRI_NOON, True) == []           # it finishes that ruling first
+    assert len(maint_feed.pdfs_in(str(tmp_path / "q1"))) == 2 and len(maint_feed.pdfs_in(str(tmp_path / "q3"))) == 1
+    os.remove(tmp_path / "q3" / "snpen_s50_a2025_n00009_tS.pdf")
+    assert off_hours_run(tmp_path, monkeypatch, FRI_NOON, True) == ["stop worker3"]
+    assert maint_feed.pdfs_in(str(tmp_path / "q3")) == []
+    assert "q3 0), 6 left; off-hours worker stopped" in capsys.readouterr().out
+    assert off_hours_run(tmp_path, monkeypatch, SAT_NOON, False) == []          # a Saturday is a day without --weekends
+
+
+def test_off_hours_the_extra_queue_is_topped_up_and_its_worker_started(tmp_path, monkeypatch, capsys):
+    make_batch(tmp_path / "src")
+    assert off_hours_run(tmp_path, monkeypatch, FRI_NIGHT, False) == ["start worker3"]
+    assert len(maint_feed.pdfs_in(str(tmp_path / "q1"))) == 2 and len(maint_feed.pdfs_in(str(tmp_path / "q3"))) == 2
+    assert "off-hours worker started" in capsys.readouterr().out
+    assert off_hours_run(tmp_path, monkeypatch, FRI_NIGHT, True) == []          # already running: left alone
+    for name in maint_feed.pdfs_in(str(tmp_path / "q3")):
+        os.remove(tmp_path / "q3" / name)
+    assert off_hours_run(tmp_path, monkeypatch, SAT_NOON, True, "--weekends") == []
+    assert len(maint_feed.pdfs_in(str(tmp_path / "q3"))) == 2                   # Saturday by day, with --weekends
 
 
 def test_feed_reports_a_missing_staging_folder(tmp_path, capsys):
