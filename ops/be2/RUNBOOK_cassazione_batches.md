@@ -645,6 +645,48 @@ ls _no_text | grep -c '\.pdf$'; ls _no_text | grep -c '\.name$'                 
 Civil batch, after the unpack: the same with `-size -10000c` as the only size test (1,249 files; the smallest
 civil file with text is 51,791 B). Back: `mv _no_text/* .`
 
+Done on cass_batch1 on 16 Nov: 2,064 files moved to `/home/sunnit/cass_batch1/_no_text` (0 left of those
+sizes; 19 more had been fed since the morning count of 2,083).
+
+## 4b. Civile 2025 (`cass_civ2025`) goes before Section VII (decided 16 Nov)
+
+Order: Section VI of the penal batch finishes (about Tue 17 Nov morning), then the civil batch, then the penal
+Section VII orders, which wait in `/home/sunnit/cass_batch1`. The civil parts are packed in
+`C:\tplstage\cass_civ2025_parts` (9 tars + md5; 31,770 PDFs, 1,249 of them without ruling text; sidecars still
+with underscores, both fixed on be2 below).
+
+1. Upload from the PC (`cd C:\tplstage\cass_civ2025_parts`, `sftp sunnit@185.199.24.31`): `mkdir cass_civ2025_parts`,
+   `cd cass_civ2025_parts`, `put cass_civ2025_parts.md5`, `put cass_civ2025_part*.tar`. After a dropped
+   connection: on be2 `touch ~/cass_civ2025_parts/cass_civ2025_part{1..9}.tar`, then `put -a cass_civ2025_part*.tar`.
+2. On be2, not between 22:00 and 23:30 (rehearsed on made-up files; must print nine OK, then 1249, 1249, 30521,
+   0, 30521):
+   ```
+   cd ~/cass_civ2025_parts && md5sum -c cass_civ2025_parts.md5; cd ~
+   mkdir -p /home/sunnit/cass_civ2025 && for f in ~/cass_civ2025_parts/cass_civ2025_part*.tar; do tar -xf "$f" -C /home/sunnit/cass_civ2025; done
+   cd /home/sunnit/cass_civ2025
+   find . -maxdepth 1 -name '*.name' -exec sed -i 's/_/ /g' {} +
+   mkdir -p _no_text && find . -maxdepth 1 -name '*.pdf' -size -10000c | while read -r f; do mv "$f" "${f%.pdf}.name" _no_text/; done
+   ls _no_text | grep -c '\.pdf$'; ls _no_text | grep -c '\.name$'
+   find . -maxdepth 1 -name '*.pdf' | wc -l
+   find . -maxdepth 1 -name '*.name' -exec grep -l '_' {} + | wc -l
+   find . -maxdepth 1 -name '*.name' -exec grep -lE '^.{0,3}\[CIVILE\] snciv s[0-9A-Z]+ a2025 n[0-9]+ t[A-Z]( o[A-Z])?\.clean' {} + | wc -l
+   cd ~
+   ```
+3. The check, read-only: `cd /opt/chatbot && sudo venv/bin/python -I /opt/v2tools/maint_feed.py check --src /home/sunnit/cass_civ2025 --batch cass_civ2025 --graph /opt/v2tools/health.env; cd ~`.
+   Expected: 30,521 files, all 2025, all civil, no duplicates, none already handed over or in the graph.
+4. The switch, when Section VI is through (`ls /home/sunnit/cass_batch1 | grep -c '^snpen@s60.*\.pdf$'` is 0),
+   by day (rehearsed on a sample crontab: two lines change, the feeder's and the health report's):
+   ```
+   sudo crontab -l > ~/crontab.bak_civ
+   sed -e 's#/home/sunnit/cass_batch1#/home/sunnit/cass_civ2025#g' -e 's#--batch cass_batch1#--batch cass_civ2025#' ~/crontab.bak_civ > ~/crontab.civ
+   diff ~/crontab.bak_civ ~/crontab.civ
+   sudo crontab ~/crontab.civ
+   ```
+   The files of the penal batch already in the queues are written first. The first civil rulings are the
+   trial: read the first hour before leaving it alone. Back: `sudo crontab ~/crontab.bak_civ` (the civil files
+   already in the queues are still written; a ruling fed twice replaces itself).
+5. Section VII afterwards: the same switch in the other direction.
+
 ## 5. Every morning during a batch (the 05:30 report, `/var/log/maint/summary_<date>.txt`)
 
 | line | fine | act |
