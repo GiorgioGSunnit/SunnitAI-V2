@@ -846,8 +846,11 @@ class ChatBot:
 
     def chat(self, session_id: str, user_message: str,
              user_id: Optional[str] = None,
-             tenant_id: Optional[str] = None) -> Dict[str, Any]:
+             tenant_id: Optional[str] = None,
+             intake: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Process a user message within a session and return the response.
+
+        intake (v61): the request's intake (src/rag/intake.py), kept on the user's message.
 
         Returns:
             {
@@ -871,7 +874,7 @@ class ChatBot:
             session.tenant_id = tenant_id
 
         # Record the user message
-        session.add_message("user", user_message)
+        session.add_message("user", user_message, **({"metadata": {"intake": intake}} if intake else {}))
 
         # Generate title on the first message
         if len(session.messages) == 1:
@@ -951,6 +954,8 @@ class ChatBot:
                 pending_calculation=pending_calculation_in,
                 awaiting_summary_confirmation=awaiting_summary_in,
                 pending_summary=pending_summary_in,
+                # v68: a cenni or a quesito -- the plain answer's grounding (plain_grounding)
+                **({"deliverable": str(intake["deliverable"])} if (intake or {}).get("deliverable") else {}),
             )
             answer = result.get("answer", "I couldn't find an answer to your question.")
             references = _strip_embeddings(result.get("references", []))

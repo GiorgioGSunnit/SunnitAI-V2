@@ -83,26 +83,42 @@ def certainty(sentence: str) -> str:
     return ACCERTATO
 
 
+_SENTENCE_RE = re.compile(r"(?<=[.;!?])\s+(?=[A-ZÀ-Ü«\"(])")
+
+
 def _split(text: str) -> List[str]:
+    from .sentence_split import split          # v75: «il Sig. Caio» is one sentence
     out = []
-    for piece in re.split(r"(?<=[.;!?])\s+(?=[A-ZÀ-Ü«\"(])|\n+", text or ""):
+    for piece in [x for line in re.split(r"\n+", text or "") for x in split(line, _SENTENCE_RE)]:
         piece = " ".join(piece.split())
         if len(piece) >= 12 and re.search(r"[a-zà-ü]{3}", piece):
             out.append(piece[:SENTENCE_CHARS])
     return out
 
 
-def sentences(case: str, additions: Sequence[str] = (), assumed: Sequence[str] = ()) -> List[Dict[str, str]]:
+def _asked(text: str, asks: Sequence[str]) -> bool:
+    """v75: the sentence is one of the requested blocks (a listed quesito) or holds one."""
+    key = " ".join(re.findall(r"[a-zà-ü0-9]+", text.lower()))
+    for a in asks or []:
+        ask = " ".join(re.findall(r"[a-zà-ü0-9]+", str(a or "").lower()))
+        if len(ask.split()) >= 2 and (ask in key or key in ask):
+            return True
+    return False
+
+
+def sentences(case: str, additions: Sequence[str] = (), assumed: Sequence[str] = (),
+              asks: Sequence[str] = ()) -> List[Dict[str, str]]:
     """The case's sentences, then the client's precisazioni, then the system's assumptions, numbered S1… v60i (4): never
     the user's own message (fact_signals.case_only: the request over an upload, a question, «Sei l'avvocato di …», an
-    instruction) -- no element is supported or contradicted by it."""
+    instruction) -- no element is supported or contradicted by it. v75: nor the requested blocks (asks: the quesiti
+    intake listed) -- the ask is never a fact."""
     from .fact_signals import case_only, user_message
     out: List[Dict[str, str]] = []
     seen = set()
 
     def add(text, source, how=None, origin=""):
         key = text.lower()
-        if key in seen or len(out) >= SENTENCES_MAX:
+        if key in seen or len(out) >= SENTENCES_MAX or source != "sistema" and _asked(text, asks):
             return
         seen.add(key)
         out.append({"id": f"S{len(out) + 1}", "text": text, "source": source, "certainty": how or certainty(text),
@@ -154,10 +170,14 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str,
     if not rules:
         return []
     rule = rules[0]
+    split_by = "clausole penali" if rule.get("how") == "offence_clauses" else ""      # v76: logged
     texts = dict(rule.get("commi") or [])
     out: List[Dict[str, Any]] = []
     for k in (rule.get("selected") or [])[:COMMI_MAX]:
         reqs = (rule.get("requisites") or {}).get(k)
+        if not reqs and not rule_quote.offence(tuple(row["_article"])) and texts.get(k):
+            one = rule_quote.civil_split(texts[k], single=True)     # v76b: a record's one condition is an element
+            reqs = one if len(one) == 1 else reqs
         items = reqs if reqs else [" ".join(str(texts.get(k) or "").split())[:300]]
         for text in items:
             if not text or len(out) >= REQUISITES_PER_ARTICLE:
@@ -165,7 +185,7 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str,
             status = facts_status(text, analysis) if reqs else DA_PROVARE
             out.append({"id": "", "comma": k, "text": text, "kind": "requisito" if reqs else "comma",
                         "facts_status": status, "status": status, "why": "", "supporting": [], "contradicting": [],
-                        "missing": "", "question": ""})
+                        "missing": "", "question": "", **({"split": split_by} if split_by and reqs else {})})
     return out
 
 
@@ -217,12 +237,16 @@ def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], anal
             if row.get("_first_read"):
                 kept.append(f"primo esame: {row['_first_read']}")
             writable = ref in _topic_refs(t)
-            out[label] = {"article": label, "rubrica": str(s.get("titolo_articolo") or t.get("rubrica") or ""),
+            rubrica = str(s.get("titolo_articolo") or t.get("rubrica") or "")
+            gated = not decomposed_by_gate(label, rubrica)          # v74: never a fattispecie record, any route
+            out[label] = {"article": label, "rubrica": rubrica,
                           "topic": t.get("title") or "", "grade": grade if isinstance(grade, int) else None,
                           "issue": str(row.get("_grade_issue") or ""), "kept": kept or ["elencato nel tema"],
                           "dropped": None if writable else "elencato, non scrivibile (né graduato né del tema)",
-                          "requisites": _requisites(row, analysis) if row and writable else [],
+                          "requisites": _requisites(row, analysis) if row and writable and not gated else [],
                           "linked": "", "answer": {}}
+            if gated:
+                out[label]["not_fattispecie"] = NOT_FATTISPECIE
             seed(out[label], row)
             out[label]["procedibilita"] = _conditions(row) if row and writable else []
             if named.get(_key(ref)):
@@ -309,6 +333,22 @@ def refresh(records: Dict[str, Dict[str, Any]], analysis: Dict[str, Any], questi
 # v60g (d): the record's status of a requisite -- the facts' when they decide it, else the link's sentences (v60t: a
 # contradiction narrated as fact makes it «non risulta»; any grounded support «provato»); a whole comma (kind "comma")
 # keeps the facts' (a sentence never proves a comma's every element)
+def _trigger(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> Optional[Dict[str, str]]:
+    """v76: the case sentence a fact-derived status rests on -- the case's or a precisazione's own words (grounded,
+    narrated or attributed, never the system's), sharing the element's nouns (two, or its only one; a precisazione --
+    the user's answer to a question -- one); None when no sentence does: the status stays «da provare»."""
+    own = element_nouns(req.get("text") or "")
+    if not own:
+        return None
+    for s in sorted(by_id.values(), key=lambda x: x.get("source") != "precisazione"):
+        if s.get("source") == "sistema" or s.get("certainty") not in (ACCERTATO, ALLEGATO) or not grounded(s):
+            continue
+        need = 1 if s.get("source") == "precisazione" else min(2, len(own))
+        if len(own & element_nouns(s.get("text") or "")) >= need:
+            return s
+    return None
+
+
 def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
     from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
     facts = req.get("facts_status") or req.get("status") or DA_PROVARE
@@ -327,12 +367,22 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
     # narrated or attributed (a parere rests on the facts as the client gives them); a hedged or hypothetical one never.
     # v60h's condition (the sentence holding the element's own nouns) is gone
     ground = [s for s in sup if grounded(s) and s.get("certainty") in (ACCERTATO, ALLEGATO)]
-    if facts == PROVATO:
-        status, why = PROVATO, "dai fatti estratti"
-    elif facts == NON_RISULTA:
-        status, why = NON_RISULTA, "i fatti estratti lo escludono"
+    # v76: a status needs a sentence -- «provato» only with a case sentence that holds it (the link's, grounded), «non
+    # risulta» only with one that says the contrary; what the extracted facts or a signal read with no such sentence
+    # stays «da provare» (its why says so)
+    if facts == PROVATO and not ground and not sure_con:
+        trigger = _trigger(req, by_id)                  # the sentence that brought the fact (a precisazione's too)
+        if trigger:
+            req["supporting"] = list(req["supporting"]) + [trigger["id"]]
+            status, why = PROVATO, f"lo dice il caso ({trigger['id']}: la frase da cui viene il fatto)"
+        else:
+            status, why = DA_PROVARE, "i fatti estratti lo indicano, ma nessuna frase del caso lo sostiene"
+    elif facts == NON_RISULTA and not sure_con:
+        status, why = DA_PROVARE, "i fatti estratti lo escludono, ma nessuna frase del caso lo dice"
     elif req.get("kind") not in ("requisito", "procedibilita"):
-        status, why = facts, "comma intero: dai fatti estratti"
+        status, why = (PROVATO, f"lo dice il caso ({ground[0]['id']})") if facts == PROVATO and ground else (
+            (NON_RISULTA, f"il caso dice il contrario ({sure_con[0]['id']})") if facts == NON_RISULTA and sure_con
+            else (DA_PROVARE, "comma intero: nessuna frase del caso lo decide"))
     elif sure_con:
         status, why = NON_RISULTA, f"il caso dice il contrario ({sure_con[0]['id']})"
     elif ground:
@@ -390,6 +440,124 @@ def unmet_in_anchor(rec: Dict[str, Any]) -> List[Dict[str, Any]]:
     from .interactive_flow import NON_RISULTA
     k = anchor_comma(rec)
     return [r for r in rec.get("requisites") or [] if r.get("status") == NON_RISULTA and _comma(r) == k]
+
+
+# --- v62: what is counted, and the threats read from the defence -------------------------------------------------------
+
+THREAT, WEAPON = "threat", "weapon"           # rec["side"]: the article against the client (the charge, the claim) or its own
+APPLICATION = "applicazione"                  # the citations' status of an article whose requisites are not counted
+PROCEDURAL_CODES = ("c.p.p.", "c.p.c.", "c.p.a.")
+GENERAL_CODES = ("disp. prel.", "preleggi", "disp. att.")
+OFFENCES_FROM = 241                           # c.p. Libro II and III (the norme incriminatrici); Libro I before it
+_DEFINITIONAL_RE = re.compile(r"^\W*(?:nozion\w*|definizion\w*|ambito di applicazion\w*|oggetto\b|finalit\w*|"
+                              r"principi generali|disposizioni (?:generali|preliminari|comuni)|"
+                              # v76: a rule on time limits or proof confers no remedy -- a procedural line, never a claim
+                              r"termin[ei]\b|onere della prova|prescrizion\w*|decadenz\w*|"
+                              # v76b: what modifies, extends or administers other articles is no fattispecie either
+                              r"circostanz\w*|pen[ae]\s+accessori\w*|sanzion\w*\s+accessori\w*|confisc\w*|"
+                              r"cas[io]\s+di\s+(?:non\s+punibilit|procedibilit)\w*|caus[ae]\s+di\s+non\s+punibilit\w*|"
+                              r"giurisdizion\w*|competenz\w*|procedibilit\w*|pubblicazion\w*\s+della\s+sentenza|"
+                              r"disposizion\w*\s+(?:finali|transitori\w*|di\s+attuazione|di\s+coordinamento)|"
+                              r"norm[ae]\s+(?:finali|transitori\w*)|entrata\s+in\s+vigore|abrogazion\w*)", re.IGNORECASE)
+ELEMENT_CHARS = 140
+
+
+def counted(label: str, rubrica: str = "") -> bool:
+    """v62: the article's requisites are counted («requisiti provati: N su M») -- a fattispecie: a norma incriminatrice
+    (c.p. Libro II and III) or a civil fattispecie. Never c.p. Libro I, a procedural code (c.p.p., c.p.c., c.p.a.), the
+    general provisions, or a definitional article (its rubrica: «Nozione», «Definizioni», «Ambito di applicazione»,
+    «Disposizioni generali» …): those get an «applicazione» paragraph."""
+    from .plan_then_write import _code_key
+    parts = str(label or "").split(" ", 1)
+    if len(parts) < 2:
+        return True
+    code = _code_key(parts[1])
+    if code in PROCEDURAL_CODES or code in GENERAL_CODES:
+        return False
+    m = re.match(r"\d+", parts[0])
+    if code == "c.p." and m and int(m.group(0)) < OFFENCES_FROM:
+        return False
+    return not _DEFINITIONAL_RE.match(str(rubrica or ""))
+
+
+JUSTIFICATIONS = ("50", "51", "52", "53", "54")    # c.p. cause di giustificazione: graded, never a fattispecie
+NOT_FATTISPECIE = "parte generale o norma processuale: non è una fattispecie"     # my draft (v74), logged
+
+
+def justification(label: str) -> bool:
+    """v74: a c.p. cause di giustificazione (artt. 50-54): Libro I, never a fattispecie record (never the charge, a
+    threat, an alternative, a claim, a «sussunzione» table), but its requisites graded -- as a circumstance's are --,
+    the scriminante line's."""
+    parts = str(label or "").split(" ", 1)
+    from .plan_then_write import _code_key
+    return len(parts) == 2 and _code_key(parts[1]) == "c.p." and parts[0] in JUSTIFICATIONS
+
+
+def decomposed_by_gate(label: str, rubrica: str = "") -> bool:
+    """v74: the gate before any decomposition, every route -- a fattispecie (counted) or a cause di giustificazione
+    gets elements; a procedural code's article, c.p. Libro I's, the general provisions, a definitional one never do
+    (they stay «applicazione» paragraphs and procedural lines)."""
+    return counted(label, rubrica) or justification(label)
+
+
+def decomposed(rec: Dict[str, Any]) -> bool:
+    """v74: the record is split into elements -- at least one requisite read from the article (kind «requisito»); the
+    whole-comma fallback (kind «comma») is a text, not an element."""
+    return any(r.get("kind") == "requisito" for r in rec.get("requisites") or [])
+
+
+def applied(label: str, rec: Dict[str, Any]) -> bool:
+    """v63: the article's paragraph is an application, no requisite counted -- not counted (counted), or brought in by
+    a «cenni» subject or (v64) another general road (rec["applicazione"]: interactive_flow.general_rows) with no
+    requisite of its own."""
+    return bool(rec.get("applicazione")) and not rec.get("requisites") or not counted(label, rec.get("rubrica") or "")
+
+
+def _element(req: Dict[str, Any]) -> str:
+    text = " ".join(str(req.get("text") or "").split()).strip(" .;,")
+    return text if len(text) <= ELEMENT_CHARS else text[:ELEMENT_CHARS - 1].rstrip() + "…"
+
+
+def defence_items(rec: Dict[str, Any], penal: bool = True) -> List[str]:
+    """v62: a threat article's elements read from the defence -- a proven one «elemento da contestare: …» (its own
+    text, the point to contest), a silent one «elemento non provato dall'accusa» («dalla controparte» on a civil claim),
+    a contradicted one «elemento escluso dai fatti del caso»; an element «non pertinente» (another comma's) left out."""
+    from . import interaction_copy as C
+    from .interactive_flow import NON_RISULTA, PROVATO
+    out = []
+    for r in rec.get("requisites") or []:
+        status = element_status(rec, r)
+        if status == NOT_RELEVANT or not _element(r):
+            continue
+        if status == PROVATO:
+            template = C.THREAT_CONTEST
+        elif status == NON_RISULTA:
+            template = C.THREAT_EXCLUDED
+        else:
+            template = C.THREAT_UNPROVEN["penale" if penal else "civile"]
+        out.append(C.fill(template, element=_element(r)))
+    return [x for x in out if x]
+
+
+def contradicted(rec: Dict[str, Any]) -> bool:
+    """v65: an element of the record the facts contradict -- «non risulta» in its anchor comma (element_status), or a
+    sentence of the case against an element not proven."""
+    from .interactive_flow import NON_RISULTA, PROVATO
+    return any(element_status(rec, r) == NON_RISULTA or (r.get("contradicting") and r.get("status") != PROVATO)
+               for r in rec.get("requisites") or [])
+
+
+def threat_elements(rec: Dict[str, Any]) -> List[str]:
+    """v63: a threat article's elements by name -- its record's (an element «non pertinente» left out): all §1 and the
+    conclusions may contest."""
+    return [_element(r) for r in rec.get("requisites") or [] if element_status(rec, r) != NOT_RELEVANT and _element(r)]
+
+
+def threat_status(rec: Dict[str, Any], penal: bool = True) -> Optional[str]:
+    """v62: a threat article's one status sentence, from the defence (defence_items) -- never «applicabile, N su N»."""
+    from . import interaction_copy as C
+    items = defence_items(rec, penal)
+    return C.fill(C.THREAT_STATUS, items=C.THREAT_ITEMS_JOIN.join(items)) if items else None
 
 
 def element_status(rec: Dict[str, Any], req: Dict[str, Any]) -> str:
@@ -491,7 +659,10 @@ def block_due(rec: Dict[str, Any], by_id: Optional[Dict[str, Dict[str, str]]] = 
     topic always (rec["anchor_due"], set for the answer being written: interactive_flow.anchor_blocks) -- never one
     «non applicabile». v60t (2, single shot: rec["needs_proof"]): «da provare» earns one only with an element «provato»
     or a missing fact an open question asks -- a supporting sentence alone no longer does; the anchor_due one is the
-    main line's anchor alone."""
+    main line's anchor alone. v63: an article a «cenni» subject rests on (v64: any general road, rec["applicazione"])
+    always: its application."""
+    if rec.get("applicazione") or rec.get("named_due"):     # v63, v64: a general road's article; v65: the user's
+        return True
     v = rec.get("verdict") or verdict(rec)
     if v in (APPLICABLE, CLIENT_ARGUMENT):
         return True
@@ -905,18 +1076,44 @@ WRITER_SENTENCE_CHARS = 160
 
 
 def writer_block(records: Dict[str, Dict[str, Any]], refs: Sequence[Tuple[str, str]], sents: Sequence[Dict[str, str]],
-                 questions: Sequence[Dict[str, Any]] = ()) -> str:
+                 questions: Sequence[Dict[str, Any]] = (), penal: bool = True, defending: bool = False) -> str:
     """The SCHEDE for §2, in the writer's numbering (refs: the paragraphs' order): per article its verdict, then each
     requisite with its status, the case's sentences for and against it (their words and certainty, never their ids),
-    what is missing and the open question asking it. "" with no record."""
+    what is missing and the open question asking it. "" with no record. v62: an article whose requisites are not
+    counted (counted) is one line, «applicazione», no requisite; a threat (rec["side"]) is the charge or the claim, its
+    elements read from the defence (defence_items) -- the rules for both after the schede (writer_rules). v65: for a
+    defending client (defending: imputato, convenuto) an application reads from the defence too
+    (APPLICATION_MARK_DEFENCE): what the defence argues, what to verify, never a conclusion against the client."""
+    from . import writer_rules
     text_of = {s["id"]: s for s in sents or []}
     asked = {str(q.get("id")): q.get("text") or "" for q in questions or []}
     lines = []
+    applications, threats = False, False
     for i, ref in enumerate(refs, 1):
         rec = records.get(_label(ref))
         if not rec:
             continue
         head = f"[{i}] art. {_label(ref)}" + (f" — {rec['rubrica']}" if rec.get("rubrica") else "")
+        if applied(_label(ref), rec):        # v62: no count, an application paragraph (v63: a cenni's article too)
+            lines.append(f"{head} — {writer_rules.APPLICATION_MARK_DEFENCE if defending else writer_rules.APPLICATION_MARK}")
+            applications = True
+            continue
+        if rec.get("side") == THREAT:                                  # v62: the charge or the claim, from the defence
+            lines.append(f"{head} — {writer_rules.THREAT_MARK['penale' if penal else 'civile']}")
+            threats = True
+            elements = iter(defence_items(rec, penal))
+            for r in rec.get("requisites") or []:
+                if element_status(rec, r) == NOT_RELEVANT or not _element(r):
+                    continue
+                parts = [f"  - {next(elements, '')}"]
+                for key, word in (("supporting", "fatti dell'accusa" if penal else "fatti della controparte"),
+                                  ("contradicting", "fatti a favore della difesa")):
+                    said = [f"«{text_of[x]['text'][:WRITER_SENTENCE_CHARS]}» ({text_of[x]['certainty']})"
+                            for x in r.get(key) or [] if x in text_of]
+                    if said:
+                        parts.append(f"{word}: " + "; ".join(said))
+                lines.append(" — ".join(parts))
+            continue
         v = rec.get("verdict") or verdict(rec)
         why = ""
         if v == NOT_APPLICABLE:
@@ -940,7 +1137,10 @@ def writer_block(records: Dict[str, Dict[str, Any]], refs: Sequence[Tuple[str, s
                 if r.get("question") and asked.get(str(r["question"])):
                     parts.append(f"domanda aperta: {asked[str(r['question'])]}")
             lines.append(" — ".join(parts))
-    return f"{WRITER_TITLE}:\n" + "\n".join(lines) if lines else ""
+    rules = ([writer_rules.APPLICATION_RULE_DEFENCE if defending else writer_rules.APPLICATION_RULE]
+             if applications else []) + \
+        ([writer_rules.THREAT_RULE["penale" if penal else "civile"]] if threats else [])
+    return f"{WRITER_TITLE}:\n" + "\n".join(lines + rules) if lines else ""
 
 
 def facts_block(sents: Sequence[Dict[str, str]]) -> str:

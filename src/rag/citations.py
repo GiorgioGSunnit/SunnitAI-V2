@@ -85,6 +85,69 @@ def refs_in(text: str, documents: Optional[Sequence[Dict[str, Any]]] = None) -> 
     return [ref for _, _, ref in cites(text, documents)]
 
 
+# v72: one tolerant reading of article citations for intake, the charge, the named articles and the rubrica check --
+# whatever defensive_generation._refs_in reads («art 584 cp», «art.584 c.p.», «articolo 584 del codice penale», the
+# «artt.» lists), and also the bare «584 c.p.» and «art. 62 n. 6 c.p.» / «art. 62, co. 1, n. 2, c.p.» (the article,
+# its numero dropped). A bare number right after «comma», «co.», «n.», «numero», «lett.» is never an article.
+_NUMBERED_RE = None
+_BARE_RE = None
+_NOT_ARTICLE_BEFORE_RE = re.compile(r"(?:\bco\.|\bcomma|\bcommi|\bn\.|\bnn\.|\bnumer[oi]|\bnum\.|\blett\.|\blettera|\bart(?:t|icol[oi])?\.?|"
+                                    r"[\d/.,-])\s*,?\s*$", re.IGNORECASE)
+
+
+def _patterns():
+    global _NUMBERED_RE, _BARE_RE
+    if _NUMBERED_RE is None:
+        from . import defensive_generation as dg
+        codes = "|".join(p for p, _ in dg._CODE_SPELLINGS)
+        _NUMBERED_RE = re.compile(
+            r"\b(?:art(?:t)?\.?|articol[oi])\s*" + dg._ARTICLE_NUM
+            + r"(?:\s*,?\s*(?:co\.|comma)\s*\d+)?\s*,?\s*(?:n\.|num\.|numero)\s*\d+\s*,?\s*(?:del\s+)?(" + codes + r")",
+            re.IGNORECASE)
+        _BARE_RE = re.compile(r"(?<![\w])" + dg._ARTICLE_NUM + r"\s*,?\s*(?:del\s+)?(" + codes + r")", re.IGNORECASE)
+    return _NUMBERED_RE, _BARE_RE
+
+
+def article_refs(text: str) -> List[Tuple[str, str]]:
+    """(number, code) of every article the text cites, in order, repeats kept -- defensive_generation._refs_in's
+    readings first (the same results on what it reads), then the numbered and the bare forms outside them."""
+    return [ref for _, ref in article_cites(text)]
+
+
+def article_cites(text: str) -> List[Tuple[int, Tuple[str, str]]]:
+    """article_refs with each citation's position in the text."""
+    from . import defensive_generation as dg
+    text = text or ""
+    numbered, bare = _patterns()
+    found: List[Tuple[int, Tuple[str, str]]] = []
+    spans: List[Tuple[int, int]] = []
+    for start, end, refs in dg._article_lists(text):
+        found += [(start, r) for r in refs]
+        spans.append((start, end))
+
+    def free(a: int, b: int) -> bool:
+        return not any(a < e and s < b for s, e in spans)
+    for m in dg._CITED_ARTICLE_RE.finditer(text):
+        if not free(*m.span()):
+            continue
+        code = dg._code_of(m.group(2))
+        if code:
+            found.append((m.start(), (dg._article_num(m.group(1)), code)))
+            spans.append(m.span())
+    for m in numbered.finditer(text):
+        code = dg._code_of(m.group(2))
+        if code and free(*m.span()):
+            found.append((m.start(), (dg._article_num(m.group(1)), code)))
+            spans.append(m.span())
+    for m in bare.finditer(text):
+        code = dg._code_of(m.group(2))
+        if not code or not free(*m.span()) or _NOT_ARTICLE_BEFORE_RE.search(text[max(0, m.start() - 14):m.start()]):
+            continue
+        found.append((m.start(), (dg._article_num(m.group(1)), code)))
+        spans.append(m.span())
+    return sorted(found, key=lambda x: x[0])
+
+
 def store_names(documents: Sequence[Dict[str, Any]]) -> List[str]:
     return [str(d["name"]) for d in documents or [] if isinstance(d, dict) and d.get("name")]
 

@@ -275,6 +275,11 @@ def calculation_gate(state: Dict[str, Any]) -> Dict[str, Any]:
         if state.get("skip_calculation"):
             logger.info("calc_gate: route=normal reason=skip_calculation")
             return {"calc_route": "normal"}
+        if state.get("deliverable") and state["deliverable"] != "calcolo":
+            # v69: the intake decided -- a quesito («entro quale termine …», no date to count from) or a cenni is
+            # answered with the term and its article, never by a calculator counting from today
+            logger.info("calc_gate: route=normal reason=deliverable_%s", state["deliverable"])
+            return {"calc_route": "normal"}
         if _NARRATIVE_DEFENCE_RE.search(state.get("query", "") or ""):
             logger.info("calc_gate: route=normal reason=narrative_defence_request")
             return {"calc_route": "normal"}

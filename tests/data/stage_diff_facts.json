@@ -1,0 +1,175 @@
+{
+ "_about": "v70 (10): synthetic facts for scripts/stage_diff.py -- the procedural section of the default cell (civile/attore/pre_filing) against v59's. Each: the case text (the triggers read it), fact_signals' facts, the frame's areas (the names of data/mediation_matters.json). topic_refs: the chosen topics' articles, as the flow passes them (both runs read them: the mediation by matter).",
+ "cases": [
+  {
+   "id": "appalto_vizi",
+   "areas": [
+    "contratti"
+   ],
+   "case": "Tizio ha affidato all'impresa Alfa il rifacimento del tetto con un contratto d'appalto del 3 marzo 2024. Dopo le piogge di ottobre compaiono infiltrazioni d'acqua che si aggravano ogni settimana. Alfa chiede il saldo di 18.000 euro e rifiuta di riparare. Tizio vuole sapere come tutelarsi.",
+   "facts": {
+    "parties": [
+     {
+      "name": "Tizio",
+      "role": "cliente, committente",
+      "kind": "persona fisica"
+     },
+     {
+      "name": "Alfa",
+      "role": "appaltatore",
+      "kind": "società"
+     }
+    ],
+    "events": [
+     {
+      "date": "3 marzo 2024",
+      "what": "contratto d'appalto per il rifacimento del tetto",
+      "who": "Tizio",
+      "kind": "contratto",
+      "date_iso": "2024-03-03"
+     },
+     {
+      "date": "ottobre 2024",
+      "what": "infiltrazioni d'acqua dal tetto che si aggravano",
+      "who": "",
+      "kind": "danno",
+      "date_iso": "2024-10"
+     }
+    ],
+    "works_or_signs": [
+     {
+      "what": "tetto rifatto con vizi e infiltrazioni",
+      "visible": "sì"
+     }
+    ],
+    "risks": [
+     {
+      "what": "le infiltrazioni si aggravano ogni settimana",
+      "kind": "aggravamento"
+     }
+    ],
+    "contracts": [
+     {
+      "what": "appalto per il rifacimento del tetto",
+      "date": "3 marzo 2024",
+      "parties": "Tizio, Alfa"
+     }
+    ],
+    "money": [
+     {
+      "what": "saldo richiesto da Alfa",
+      "amount": "18.000 euro"
+     }
+    ],
+    "requests": [
+     "Tizio vuole sapere come tutelarsi contro Alfa."
+    ],
+    "injuries": [],
+    "proceedings": []
+   },
+   "topic_refs": [
+    [
+     "1655",
+     "c.c."
+    ],
+    [
+     "1667",
+     "c.c."
+    ],
+    [
+     "1668",
+     "c.c."
+    ]
+   ]
+  },
+  {
+   "id": "condominio_danni",
+   "areas": [
+    "diritti_reali"
+   ],
+   "case": "Nel condominio di via Roma il lastrico solare è rotto e da mesi l'acqua entra nell'appartamento di Caio all'ultimo piano, danneggiando soffitti e mobili. L'amministratore non convoca l'assemblea. Caio chiede quali azioni può intraprendere.",
+   "facts": {
+    "parties": [
+     {
+      "name": "Caio",
+      "role": "cliente, condomino",
+      "kind": "persona fisica"
+     },
+     {
+      "name": "Condominio di via Roma",
+      "role": "controparte",
+      "kind": "condominio"
+     }
+    ],
+    "events": [
+     {
+      "date": "",
+      "what": "il lastrico solare rotto fa entrare acqua nell'appartamento di Caio",
+      "who": "",
+      "kind": "danno",
+      "date_iso": ""
+     }
+    ],
+    "works_or_signs": [
+     {
+      "what": "lastrico solare rotto",
+      "visible": "sì"
+     }
+    ],
+    "risks": [
+     {
+      "what": "danni a soffitti e mobili che aumentano",
+      "kind": "aggravamento"
+     }
+    ],
+    "contracts": [],
+    "money": [],
+    "requests": [
+     "Caio chiede quali azioni può intraprendere."
+    ],
+    "injuries": [],
+    "proceedings": []
+   },
+   "topic_refs": [
+    [
+     "1117",
+     "c.c."
+    ],
+    [
+     "1126",
+     "c.c."
+    ],
+    [
+     "2051",
+     "c.c."
+    ]
+   ]
+  },
+  {
+   "id": "leonardo_servitu",
+   "areas": [
+    "diritti_reali"
+   ],
+   "facts_file": "tests/fixtures/leonardo_v45d_facts.json",
+   "case": "Leonardo è proprietario di un terreno raggiungibile solo da una strada sterrata che attraversa i fondi di Tizio, Caio e Domitilla. Nel 2016 Domitilla ha apposto un cancello chiuso e Leonardo non può più accedere al suo fondo.",
+   "topic_refs": [
+    [
+     "1051",
+     "c.c."
+    ],
+    [
+     "1032",
+     "c.c."
+    ],
+    [
+     "1058",
+     "c.c."
+    ],
+    [
+     "1061",
+     "c.c."
+    ]
+   ]
+  }
+ ]
+}

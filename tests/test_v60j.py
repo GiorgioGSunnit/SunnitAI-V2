@@ -82,14 +82,14 @@ def test_the_index_clears_the_azione_confessoria_and_the_source_is_logged():
 def test_an_institution_all_sources_miss_is_marked_with_what_was_tried():
     sentence = "La responsabilità del vettore marittimo ex art. 1079 c.c. copre il carico."
     out, log = record_check.check([("Conclusioni", sentence)], _ctx_1079(lambda code: UNITS))
-    assert "(da verificare: art. 1079 c.c., rubrica «" in out[0][1]
-    assert log["marked"][0]["missed"] == list(record_check.CLEAR_SOURCES) and log["marked"][0]["index"] is True
+    assert out[0][1] == "La responsabilità del vettore marittimo copre il carico."       # v68: the citation dropped
+    assert log["rewritten"][0]["missed"] == list(record_check.CLEAR_SOURCES) and log["rewritten"][0]["index"] is True
     out, log = record_check.check([("Conclusioni", CONFESSORIA)], _ctx_1079(lambda code: None))   # no index built
-    assert "(da verificare: art. 1079 c.c." in out[0][1]
-    assert log["marked"][0]["index"] is False and "indice" not in log["marked"][0]["missed"]
+    assert "art. 1079" not in out[0][1]
+    assert log["rewritten"][0]["index"] is False and "indice" not in log["rewritten"][0]["missed"]
     other = [{"name": "Delle azioni a difesa della proprietà", "level": "CAPO", "articles": ["948", "949"]}]
     out, _ = record_check.check([("Conclusioni", CONFESSORIA)], _ctx_1079(lambda code: other))    # 1079 in no unit
-    assert "(da verificare: art. 1079 c.c." in out[0][1]
+    assert "art. 1079" not in out[0][1]
 
 
 def test_each_source_clears_in_its_order():

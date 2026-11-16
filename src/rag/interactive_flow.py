@@ -57,7 +57,7 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import feature_flags
 from . import interaction_copy as C
-from .topic_step import OPEN_TERM_STATUS
+from .topic_step import CODE_BOOKS, OPEN_TERM_STATUS
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +125,22 @@ def turns_on() -> bool:
 def single_mode(state: Optional[Dict[str, Any]]) -> bool:
     """The state is a single-shot one (single_shot made it): its answer, its follow-ups."""
     return (state or {}).get("mode") == "single_shot"
+
+
+def method_notes(state: Optional[Dict[str, Any]]) -> str:
+    """v72: under the method, the lawyer's notes di inquadramento of the records (lawyer_method.notes_block) for the
+    norms writer; "" otherwise."""
+    if not method_mode(state):
+        return ""
+    from . import lawyer_method
+    return lawyer_method.notes_block((state or {}).get("records") or {})
+
+
+def method_mode(state: Optional[Dict[str, Any]]) -> bool:
+    """v70 (LAWYER_METHOD): the single-shot answer with records is written by the lawyer's method, in his ten sections."""
+    from . import lawyer_method
+    return lawyer_method.enabled() and single_mode(state) and bool((state or {}).get("records")) \
+        and not (state or {}).get("method_refused")             # v75: the placeholder thesis -- the standard body
 
 
 # --- logging and isolation -------------------------------------------------------------------------------------------
@@ -509,8 +525,8 @@ def claim_nouns(claim: str, top: int = 4) -> str:
 
 
 def first_read_search(driver, database: str, documents: List[Dict[str, Any]], institutions: Sequence[Any],
-                      codes: Sequence[str], session=None, resolve=None, text_search=None, index_search=None
-                      ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+                      codes: Sequence[str], session=None, resolve=None, text_search=None, index_search=None,
+                      user_text: Optional[str] = None, concept_fetch=None) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """(rows, log): each institution searched in each code (fact_resolver.resolve; jobs on their own graph sessions,
     serially on session without a driver) -- v60e: its rubricated name first, then its own wording, then the nouns of
     its hypothesis sentence, the first that finds rows -- each row tagged _first_read (the institution) and
@@ -520,12 +536,36 @@ def first_read_search(driver, database: str, documents: List[Dict[str, Any]], in
     code's institutions index (fact_resolver.index_channel); each row tagged _first_read_channel («rubrica», «testo»,
     «indice»); log "channels": {institution: {label: channel}}. v60n: a substantive institution's hits in a
     procedural code (c.p.p., c.p.c.) are dropped -- its area's substantive code answers it (procedural_institutions);
-    log "procedural" (the names) and "area_code" ({institution: {procedural, why, dropped}})."""
-    from . import defensive_generation as dg, fact_resolver, topic_groups
+    log "procedural" (the names) and "area_code" ({institution: {procedural, why, dropped}}). v65: user_text given, the
+    rubrica channel is gated (fact_resolver.rubrica_admits: two content words of the name, or a term the user names;
+    a generic legal word never alone). v75: a procedural ask («sequestro», «costituirsi parte civile», «querela»)
+    resolves through the concepts table (cenni.procedural_refs: sequestro -> 253, 321, 262 c.p.p.; parte civile -> 74-79
+    c.p.p.), its rows read by concept_fetch (the graph's), channel «concetto» -- never through a rubrica search, where
+    one shared word («Confisca», «Querela») brings any article; log "concepts": {institution: [labels]}."""
+    from . import cenni, defensive_generation as dg, fact_resolver, topic_groups
     resolve = resolve or fact_resolver.resolve
     text_search = text_search or fact_resolver.text_channel
     index_search = index_search or fact_resolver.index_channel
     searches = [{"name": x, "rubricated": "", "claim": ""} if isinstance(x, str) else dict(x) for x in institutions]
+    by_concept: Dict[str, List[Tuple[str, str]]] = {}
+    for item in searches:
+        concept, refs = cenni.procedural_refs(f"{item['name']} {item.get('rubricated') or ''}")
+        if refs:
+            by_concept[item["name"]] = refs
+    concept_rows: List[Dict[str, Any]] = []
+    if by_concept:
+        fetch = concept_fetch or cenni.graph_tools(lambda: documents)[0]
+        wanted = list(dict.fromkeys(ref for refs in by_concept.values() for ref in refs))
+        got = _isolated("concept_fetch", lambda: fetch(wanted), []) or []
+        have = {_key(r["_article"]): r for r in got if r.get("_article")}
+        for inst, refs in by_concept.items():
+            for ref in refs:
+                row = have.get(_key(ref))
+                if row is not None:
+                    concept_rows.append({**{k: v for k, v in row.items() if k not in _RESOLVER_TAGS},
+                                         "_first_read": inst, "_first_read_code": ref[1],
+                                         "_first_read_channel": "concetto"})
+        searches = [s for s in searches if s["name"] not in by_concept]
     alternatives = [s["name"] for s in searches if s.get("alternative")]
 
     def attempts(item):
@@ -541,7 +581,8 @@ def first_read_search(driver, database: str, documents: List[Dict[str, Any]], in
         def job(own):
             tried = []
             for query, how in attempts(item):
-                got = resolve(own, documents, {"nome": query, "codice": code})
+                got = resolve(own, documents, {"nome": query, "codice": code,
+                                               **({"testo_utente": user_text} if user_text is not None else {})})
                 found = (got[0] if isinstance(got, tuple) else got) or []
                 tried.append([query, how, code, len(found)])
                 if found:
@@ -604,7 +645,17 @@ def first_read_search(driver, database: str, documents: List[Dict[str, Any]], in
         if item.get("rubricated"):
             hits.setdefault(item["rubricated"], hits[item["name"]])
             tried.setdefault(item["rubricated"], tried[item["name"]])
-    return rows, {"institutions": [s["name"] for s in searches], "alternatives": alternatives,
+    concepts_log: Dict[str, List[str]] = {}
+    for row in concept_rows:            # v75: the procedural asks, by the concepts table
+        key, inst = _key(row["_article"]), row["_first_read"]
+        concepts_log.setdefault(inst, []).append(_label(key))
+        hits.setdefault(inst, []).append(_label(key))
+        channels.setdefault(inst, {})[_label(key)] = "concetto"
+        if key not in seen:
+            seen.add(key)
+            rows.append(row)
+    return rows, {"institutions": [s["name"] for s in searches] + list(by_concept), "alternatives": alternatives,
+                  "concepts": concepts_log,
                   "rubricated": {s["name"]: s.get("rubricated") for s in searches if s.get("rubricated")},
                   "codes": list(codes), "hits": hits, "tried": tried, "channels": channels,
                   "procedural": sorted(procedural | {s.get("rubricated") for s in searches
@@ -730,14 +781,17 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         case_first = case_first_enabled()
         must: List[str] = []
         search_log: Dict[str, Any] = {}
+        first_read: Optional[Dict[str, Any]] = None
         if case_first and pending is not None:      # v60d: the first read's institutions searched, before the grading
             stage_meter.mark("first_read_search")
             read = pending.result()
+            first_read = read
             institutions = read_institutions(read)
             if institutions:
                 t_search = time.time()
                 found_rows, search_log = _isolated("first_read_search", lambda: first_read_search(
-                    graph, NEO4J_DATABASE, documents, institutions, area_codes(analysis), session), ([], {})) or ([], {})
+                    graph, NEO4J_DATABASE, documents, institutions, area_codes(analysis), session, user_text=case),
+                    ([], {})) or ([], {})
                 have = {_key(r["_article"]): r for r in article_rows if r.get("_article")}
                 added = []
                 for row in found_rows:
@@ -792,6 +846,41 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             gone = {x["article"] for x in gate_log.get("rows") or []}
             anchor_keep = [a for a in anchor_keep if a not in gone]
             must = [a for a in must if a not in gone]
+        if case_first:          # v64: a general-part article (c.p. Libro I) is never a grading candidate -- the user's
+            from . import cenni                       # named ones aside (cenni: its own roads into the norms section)
+            named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
+            article_rows, general_out = cenni.general_part_gate(article_rows, named_keys)
+            regime_rows, regime_out = cenni.general_part_gate(regime_rows, named_keys)
+            if general_out or regime_out:
+                gone = {_key(_parse_label(x)) for x in general_out + regime_out}
+                anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
+                must = [a for a in must if _key(_parse_label(a)) not in gone]
+                out["general_part_gate"] = {"dropped": general_out + regime_out}
+                _log("general_part_gate", out["general_part_gate"])
+        # v74: every route -- a special law's article without its signal never reaches grading
+        from . import special_laws             # v65: a special law only with its domain signal in the first read
+        named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
+        words = special_laws.read_text(first_read) if first_read else case
+        article_rows, special_out = special_laws.gate(article_rows, words, named_keys)
+        regime_rows, special_regime = special_laws.gate(regime_rows, words, named_keys)
+        if special_out or special_regime:
+            gone = {_key(_parse_label(x.split(" (", 1)[0])) for x in special_out + special_regime}
+            anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
+            must = [a for a in must if _key(_parse_label(a)) not in gone]
+            out["special_law_gate"] = {"dropped": special_out + special_regime,
+                                       "from": "prima lettura" if first_read else "testo del caso"}
+            _log("special_law_gate", out["special_law_gate"])
+        if case_first:
+            from . import intake as intake_mod      # v69: c.p.c. 409-447 only when the case's rito is «lavoro»
+            labour = intake_mod.rito_rule(case)[0] == "lavoro"
+            article_rows, labour_out = special_laws.labour_gate(article_rows, labour, named_keys)
+            regime_rows, labour_regime = special_laws.labour_gate(regime_rows, labour, named_keys)
+            if labour_out or labour_regime:
+                gone = {_key(_parse_label(x)) for x in labour_out + labour_regime}
+                anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
+                must = [a for a in must if _key(_parse_label(a)) not in gone]
+                out["labour_gate"] = {"dropped": labour_out + labour_regime}
+                _log("labour_gate", out["labour_gate"])
         stage_meter.mark("grading")
         if case_first:          # v60 (G): round 1's graded check -- the embedding prefilter's top N
             # v60o: every kept candidate graded (grade_kept) -- the user-named articles, the rules' and tables' anchors
@@ -904,6 +993,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         from . import procedural_facts           # v60 (C): the procedural facts of the topics' criminal / procedural articles
         stage_meter.mark("procedural_facts")
         _isolated("procedural_facts", lambda: procedural_facts.attach(session, rows))
+        from . import article_notes             # v72: the lawyer's note di inquadramento, from the store
+        _isolated("article_notes", lambda: article_notes.attach(session, rows))
         stage_meter.mark("commi")
         if comma_material.enabled():
             _isolated("commi", lambda: comma_material.attach(session, rows, "strategy", store=store_))
@@ -2804,8 +2895,10 @@ def case_sentences(state: Dict[str, Any]) -> List[Dict[str, str]]:
             for field, how in (item.items() if isinstance(item, dict) else []):
                 if field.endswith("_how") and how and item.get(field[:-4]):
                     assumed.append(f"{key}: {field[:-4]} = {item.get(field[:-4])} (dedotto: {how})")
+    asks = [str(b.get("subject") or "") for b in (state.get("intake") or {}).get("requested_blocks") or []
+            if b.get("kind") == "quesito"]                  # v75: the ask is never a fact
     sents = issue_records.sentences(dg._case_text(state.get("text") or "", state.get("request") or ""),
-                                    state.get("additions") or [], assumed[:10])
+                                    state.get("additions") or [], assumed[:10], asks)
     mark_sides(sents, state)
     return sents
 
@@ -2886,9 +2979,14 @@ def persist_client(state: Dict[str, Any], client: str, assumption: str = "") -> 
     _log("client_persisted", state["client"])
 
 
-def link_records(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], dead: set) -> Optional[Dict[str, Any]]:
+DECOMPOSED_TOPIC = "norme dell'addebito, qualificazioni alternative e norme nominate"   # the link call's title (v74)
+
+
+def link_records(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], dead: set,
+                 extra: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
     """v60f (b): the chosen topics' requisites linked to the case's sentences (issue_records.link: one bounded call per
-    topic, in parallel), in state["records"]; timed and logged."""
+    topic, in parallel), in state["records"]; timed and logged. v74: extra -- the records decompose_records split
+    outside the topics (the charge, the alternatives, the named articles), linked as one more call."""
     from . import issue_records
     records = state.get("records") or {}
     if not records:
@@ -2897,6 +2995,10 @@ def link_records(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], dead: 
     mark_sides(sents, state)                    # v60t: the client is settled now -- whose account each sentence is
     state["sentences"] = sents
     labels = [[issue_records._label(r) for r in _topic_refs(t) if _key(r) not in dead] for t in topics]
+    in_topics = {x for group in labels for x in group}
+    extra = [x for x in extra if x not in in_topics and records.get(x)]
+    if extra:
+        topics, labels = list(topics) + [{"title": DECOMPOSED_TOPIC}], labels + [extra]
     log = issue_records.link(records, topics, labels, sents)
     by_id = {s["id"]: s for s in sents}
     for rec in records.values():                # a topic linked before (cached) settled again on today's sides
@@ -3130,8 +3232,8 @@ def check_context(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], refs: S
                   rules: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
     """v60g (e): what record_check reads -- the records, the articles the answer may cite (the topic's, the computed
     material's: _allowed, and those the case names), the ones the writer applies, each article's text, rubrica and
-    commi, the client."""
-    from . import citations, defensive_generation as dg
+    commi, the client. v65: each article's numbered and lettered items (record_check.article_items)."""
+    from . import citations, defensive_generation as dg, record_check
     texts, rubriche, names = {}, {}, {}
     for r in rows:
         if r.get("_article"):
@@ -3154,7 +3256,38 @@ def check_context(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], refs: S
             "documents": list(documents or []) + ref_documents(list(refs) + list(glossed), rows),
             "client": str((state.get("client") or {}).get("name") or ""), "parties": party_names_of(state),   # v60q
             "skip": {ANSWER_TITLES[3], OTHER_PROFILES_TITLE}, "norms_title": ANSWER_TITLES[1],
-            "numbering": list(glossed)}
+            "numbering": list(glossed),
+            # v64: the threats' recorded elements, all §1 and the conclusions may say they require; v68: every
+            # recorded article's elements, in every section the writer writes
+            "asserting": list(REQUIREMENT_TITLES), "threats": requirement_context(state),
+            "items": {label: record_check.article_items(text, ROW_TEXT_CHARS) for label, text in texts.items()},
+            # v65: the alternatives no fact of the case holds, never in §1
+            "lead": ANSWER_TITLES[0], "unfounded": sorted(k for k, r in (state.get("records") or {}).items()
+                                                          if r.get("alternative_facts") == "no")}
+
+
+# v68: the sections a requirement claim is checked in -- every one the writer writes (the procedure is the code's)
+REQUIREMENT_TITLES = tuple(t for t in ANSWER_TITLES if t != ANSWER_TITLES[3])
+
+
+def requirement_context(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """v68: {label: {"rubrica", "elements"}} of every record with a recorded element -- a threat or a weapon: whatever a
+    sentence says an article requires must be one of its elements (an application record, no element counted, is
+    outside the check)."""
+    from . import issue_records
+    out = {}
+    for label, rec in (state.get("records") or {}).items():
+        elements = issue_records.threat_elements(rec)
+        if elements:
+            out[label] = {"rubrica": str(rec.get("rubrica") or ""), "elements": elements}
+    return out
+
+
+def threat_context(state: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """v64: {label: {"rubrica", "elements"}} of each threat record (issue_records.threat_elements)."""
+    from . import issue_records
+    return {label: {"rubrica": str(rec.get("rubrica") or ""), "elements": issue_records.threat_elements(rec)}
+            for label, rec in (state.get("records") or {}).items() if rec.get("side") == issue_records.THREAT}
 
 
 def _template_re(template: str, slots: Dict[str, str]) -> "re.Pattern":
@@ -3183,14 +3316,21 @@ def asserted_only(draft: str, state: Dict[str, Any], log: Optional[List[Dict[str
     naming another article with a record gets «(da valutare: art. N …)» (TO_EVALUATE_MARK) unless it says so already.
     Outside the rule: an article with no record (the computed material's, the procedure's), an «argomento del cliente»
     (the client's argument against it) and (v60t) the main line's anchor (state["main_anchor"]), always written with its
-    own status."""
-    from . import answer_ledger, citations, issue_records, record_check
+    own status. v63: nor an article a «cenni» subject brought in (v64: any general road: rec["applicazione"] -- an
+    application, no verdict), nor -- the client
+    imputato or convenuto -- one of the client's alternative qualifications (rec["alternative"]): an alternative needs
+    no proven element to be argued. v68: nor a weapon (rec["side"] «weapon»: the client's own article) -- no marker on
+    the client's weapons, whatever the role."""
+    from . import answer_ledger, citations, issue_records, posture as posture_mod, record_check
     from .plan_then_write import _sentence_spans
     records = state.get("records") or {}
     if not records:
         return draft
     documents = ref_documents([_parse_label(k) for k in records])
     main = str(state.get("main_anchor") or "")
+    defending = (state.get("posture") or {}).get("role") in posture_mod.ACCUSED_ROLES
+    exempt = {k for k, r in records.items() if r.get("applicazione") or defending and r.get("alternative")
+              or r.get("side") == issue_records.WEAPON}
     out = []
     for title, text in answer_ledger.sections_of(draft):
         if title not in ASSERTING_TITLES or not (text or "").strip():
@@ -3202,7 +3342,8 @@ def asserted_only(draft: str, state: Dict[str, Any], log: Optional[List[Dict[str
             if "da valutare" in sentence.lower():
                 continue
             labels = list(dict.fromkeys(citations.label(r) for r in citations.refs_in(sentence, documents)))
-            weak = [x for x in labels if x in records and x != main and not issue_records.assertable(records[x])
+            weak = [x for x in labels if x in records and x != main and x not in exempt
+                    and not issue_records.assertable(records[x])
                     and (records[x].get("verdict") or issue_records.verdict(records[x])) != issue_records.CLIENT_ARGUMENT]
             if not weak:
                 continue
@@ -3238,7 +3379,25 @@ def _bare_article_line(line: str, heading: str, records: Dict[str, Dict[str, Any
     return all(w in allowed for w in re.findall(r"[a-zà-ü’']+", st.lower()))
 
 
-def ledger_out(draft: str, state: Dict[str, Any], log: Optional[Dict[str, Any]] = None
+APPLICATION_FACT_STEMS = 2         # v64: a case's content stems an «applicazione» paragraph shares, beyond its article's
+
+
+def grounded_application(body: str, label: str, state: Dict[str, Any], text: str = "", rubrica: str = "") -> bool:
+    """v64: an «applicazione» paragraph touches the case -- it names the client or a party, or shares
+    APPLICATION_FACT_STEMS content stems with the case's sentences that neither its article's text nor its rubrica
+    holds (a paragraph restating the rubrica touches nothing)."""
+    from .topic_step import GENERIC_STEMS, _content_stems
+    low = _low(body)
+    names = [str((state.get("client") or {}).get("name") or "")] + party_names_of(state)
+    if any(n and re.search(rf"\b{re.escape(_low(n))}\b", low) for n in names if len(n.strip()) > 2):
+        return True
+    case = " ".join(str(x.get("text") or "") for x in state.get("sentences") or []) or case_text(state)
+    own = set(_content_stems(f"{text} {rubrica}")) | GENERIC_STEMS | set(_content_stems(label))
+    return len((set(_content_stems(body)) & set(_content_stems(case))) - own) >= APPLICATION_FACT_STEMS
+
+
+def ledger_out(draft: str, state: Dict[str, Any], log: Optional[Dict[str, Any]] = None,
+               texts: Optional[Dict[str, str]] = None, retry: Optional[Callable[[str], str]] = None
                ) -> Tuple[str, List[Dict[str, Any]]]:
     """v60r (1, single shot): the record's rows never in the body. §2's status lines (REQUISITE_LINE, COMMA_LINE), its
     sanction lines and its closing lines naming articles («Altre norme del tema non trattate», «Norme considerate e non
@@ -3246,7 +3405,12 @@ def ledger_out(draft: str, state: Dict[str, Any], log: Optional[Dict[str, Any]] 
     status sentence (ARTICLE_STATUS, the record's verdict) and the writer's paragraphs. (the text, the rows for the
     article citations: per article one row {article, comma None, requisite None, status (its verdict or its line),
     reason, in_body}, then one per element {article, comma, requisite, status (issue_records.element_status: «da provare»
-    for one no fact touches, v60r 6), supporting_sentence, contradicting_sentence}.) log: what moved."""
+    for one no fact touches, v60r 6), supporting_sentence, contradicting_sentence}.) log: what moved. v64: an
+    «applicazione» block whose paragraph touches neither the client nor a fact of the case (grounded_application;
+    texts: {label: the article's text}) leaves the body -- the article is a row of the citations only. v68: an article
+    the user named (or the main line's anchor) whose block the writer left empty gets a second writer call for it alone
+    (retry(label) -> its paragraph); still empty, a named article is a row of the citations, never a bare heading (the
+    main anchor keeps its heading and status, v60t)."""
     from . import answer_ledger, issue_records, rule_quote
     log = log if log is not None else {}
     records = state.get("records") or {}
@@ -3307,29 +3471,57 @@ def ledger_out(draft: str, state: Dict[str, Any], log: Optional[Dict[str, Any]] 
             seen(main)
             articles.update(rest)
             log["main_anchor_added"] = main
+        for label, rec in records.items():      # v65: an article the user names always has its block
+            if rec.get("named_due") and label not in {b["label"] for b in blocks}:
+                number, code = _parse_label(label)
+                heading = C.fill(C.NORM_HEADING_RUBRICA, number=number, code=code,
+                                 rubrica=rule_quote.clean_rubrica(rec.get("rubrica") or "").rstrip(" .")) or \
+                    C.fill(C.NORM_HEADING, number=number, code=code)
+                blocks.append({"label": label, "heading": heading, "body": [], "rows": 0})
+                seen(label)
+                log.setdefault("named_added", []).append(label)
+        blocks.sort(key=lambda b: block_rank(b["label"], records.get(b["label"]) or {}, main))   # v69: the strongest first
+        shown = 0
+
+        def capped(label: str) -> bool:     # v69: past BODY_BLOCKS_MAX, a row of the citations
+            if shown < BODY_BLOCKS_MAX:
+                return False
+            seen(label, line=issue_records.LINE_NOT_TREATED, reason=C.LINE_REASON_CAPPED)
+            log.setdefault("capped", []).append(label)
+            return True
         for b in blocks:
             kept = [x for x in b["body"] if not _bare_article_line(x, b["heading"], records)]      # v60s (5)
             if len(kept) < len(b["body"]):
                 log.setdefault("bare_lines", {})[b["label"]] = [" ".join(x.split()) for x in b["body"] if x not in kept]
             body = re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n")
-            if not body.strip() and b["label"] == main and main in records:      # v60t (2): heading and status only
-                seen(main, in_body=True)
-                rec = records[main]
-                reqs = rec.get("requisites") or []
-                status = C.fill(C.ARTICLE_STATUS, verdict=rec.get("verdict") or issue_records.verdict(rec),
-                                proved=str(issue_records.proven(rec)), total=str(len(reqs))) if reqs else None
+            always = b["label"] == main or (records.get(b["label"]) or {}).get("named_due")      # v65: the user's too
+            if not body.strip() and always and b["label"] in records and retry:     # v68: a call for it alone
+                body = (_isolated("named_retry", lambda: retry(b["label"]), "") or "").strip("\n")
+                log.setdefault("named_retry", {})[b["label"]] = "written" if body.strip() else "empty"
+            if not body.strip() and always and b["label"] in records and b["label"] == main:     # v60t (2)
+                if capped(b["label"]):
+                    continue
+                shown += 1
+                seen(b["label"], in_body=True)
+                rec = records[b["label"]]
+                status = status_sentence(b["label"], rec, state, proved=issue_records.proven(rec))     # v62
                 out.append(b["heading"] + (f"\n{status}" if status else ""))
                 continue
             if not body.strip():            # a heading alone: the article is a row of the citations only
                 seen(b["label"], line=issue_records.LINE_NOT_TREATED, reason=C.LINE_REASON_NOT_WRITTEN)
                 log.setdefault("bare", []).append(b["label"])
                 continue
-            seen(b["label"], in_body=True)
             rec = records.get(b["label"]) or {}
-            reqs = rec.get("requisites") or []
-            status = C.fill(C.ARTICLE_STATUS, verdict=rec.get("verdict") or issue_records.verdict(rec),
-                            proved=str(sum(1 for r in reqs if r.get("status") == PROVATO)), total=str(len(reqs))) \
-                if reqs else None
+            if rec and not always and issue_records.applied(b["label"], rec) and not grounded_application(
+                    body, b["label"], state, (texts or {}).get(b["label"]) or "", rec.get("rubrica") or ""):
+                seen(b["label"], line=issue_records.APPLICATION, reason=C.LINE_REASON_NO_FACT)     # v64
+                log.setdefault("ungrounded_applications", []).append(b["label"])
+                continue
+            if capped(b["label"]):
+                continue
+            shown += 1
+            seen(b["label"], in_body=True)
+            status = status_sentence(b["label"], rec, state)       # v62: by side, never for a non-fattispecie
             out.append(b["heading"] + (f"\n{status}" if status else "") + "\n\n" + body)
             log.setdefault("status_lines", {})[b["label"]] = b["rows"]
         return "\n\n".join(out)
@@ -3339,10 +3531,14 @@ def ledger_out(draft: str, state: Dict[str, Any], log: Optional[Dict[str, Any]] 
     for label, info in articles.items():
         rec = records.get(label) or {}
         verdict = (rec.get("verdict") or issue_records.verdict(rec)) if rec else ""
+        applied = bool(rec) and issue_records.applied(label, rec)     # v62; v63: a cenni's article too
+        if applied:
+            verdict = issue_records.APPLICATION
         rows.append({"article": label, "comma": None, "requisite": None,
                      "status": verdict if info["in_body"] else (info["line"] or verdict),
-                     "reason": info["reason"] if not info["in_body"] else "", "in_body": info["in_body"]})
-        for r in rec.get("requisites") or []:
+                     "reason": info["reason"] if not info["in_body"] else "", "in_body": info["in_body"],
+                     **({"side": rec["side"]} if rec.get("side") else {})})
+        for r in ([] if applied else rec.get("requisites") or []):
             sup = next((said[x] for x in r.get("supporting") or [] if said.get(x)), None)
             con = next((said[x] for x in r.get("contradicting") or [] if said.get(x)), None)
             rows.append({"article": label, "comma": r.get("comma"), "requisite": r.get("text") or None,
@@ -3910,7 +4106,37 @@ def glossed_refs(state: Dict[str, Any], topics: Sequence[Dict[str, Any]], analys
         earned = {k for k in earned if not records.get(_label(k))} | due
     if rows:
         earned -= set(sanction_map(planned, rows))
-    return [r for r in planned if _key(r) in earned]
+    chosen = [r for r in planned if _key(r) in earned]
+    if records:                 # v69: at most BODY_BLOCKS_MAX blocks, the strongest first (block_rank)
+        chosen = sorted(chosen, key=lambda r: block_rank(_label(_key(r)), records.get(_label(_key(r))) or {},
+                                                         str((state or {}).get("main_anchor") or "")))
+        if len(chosen) > BODY_BLOCKS_MAX:
+            _log("body_blocks_cap", {"kept": [_label(_key(r)) for r in chosen[:BODY_BLOCKS_MAX]],
+                                     "out": [_label(_key(r)) for r in chosen[BODY_BLOCKS_MAX:]]})
+        chosen = chosen[:BODY_BLOCKS_MAX]
+    return chosen
+
+
+# v69: the norms section's cap -- blocks, not topics: at most seven, in this order -- the main line's anchor, the
+# «applicabile» ones, the «da provare» with an element proven, the user's named ones, the rest; the others are rows of
+# the article citations (LINE_REASON_CAPPED)
+BODY_BLOCKS_MAX = 7
+
+
+def block_rank(label: str, rec: Dict[str, Any], main: str = "") -> int:
+    """v69: a §2 block's place (lower first): 0 the main anchor, 1 «applicabile», 2 «da provare» with an element
+    proven, 3 named by the user, 4 the rest."""
+    from . import issue_records
+    if label and label == main:
+        return 0
+    verdict = rec.get("verdict") or (issue_records.verdict(rec) if rec else "")
+    if verdict == issue_records.APPLICABLE:
+        return 1
+    if verdict == issue_records.TO_PROVE and issue_records.proven(rec):
+        return 2
+    if rec.get("named_due"):
+        return 3
+    return 4
 
 
 def norm_blocks(rules: List[Dict[str, Any]], analysis: Dict[str, Any], rows: Sequence[Dict[str, Any]],
@@ -4248,6 +4474,50 @@ def relationships_block(state: Dict[str, Any], analysis: Dict[str, Any]) -> str:
     return f"{RELATIONSHIPS_TITLE}:\n" + "\n".join(lines) + f"\n{RELATIONSHIPS_RULE}"
 
 
+def penal_posture(state: Dict[str, Any]) -> bool:
+    """v62: the threats read in the penal words («dall'accusa») -- a penal posture, or an imputato; a civil posture or a
+    convenuto: «dalla controparte»."""
+    posture = state.get("posture") or {}
+    if posture.get("family") == "civile" or posture.get("role") == "convenuto":
+        return False
+    return True
+
+
+def defending_posture(state: Dict[str, Any]) -> bool:
+    """v65: the client defends -- imputato or convenuto (the posture's role)."""
+    from . import posture as posture_mod
+    return (state.get("posture") or {}).get("role") in posture_mod.ACCUSED_ROLES
+
+
+def status_sentence(label: str, rec: Dict[str, Any], state: Dict[str, Any], proved: Optional[int] = None
+                    ) -> Optional[str]:
+    """v62: §2's one status sentence of an article -- none for an article whose requisites are not counted
+    (issue_records.counted: c.p. Libro I, procedural, general, definitional); for a threat, the defence's reading
+    (issue_records.threat_status), never «applicabile, N su N»; else the record's verdict and count (ARTICLE_STATUS)."""
+    from . import issue_records
+    reqs = rec.get("requisites") or []
+    if not reqs or issue_records.applied(label, rec) or method_mode(state):     # v70: §4's table, never «N su M»
+        return None
+    if rec.get("side") == issue_records.THREAT:
+        return issue_records.threat_status(rec, penal_posture(state))
+    count = proved if proved is not None else sum(1 for r in reqs if r.get("status") == PROVATO)
+    return C.fill(C.ARTICLE_STATUS, verdict=rec.get("verdict") or issue_records.verdict(rec), proved=str(count),
+                  total=str(len(reqs)))
+
+
+def threat_elements_rule(records: Dict[str, Dict[str, Any]], threats: Sequence[str]) -> str:
+    """v63: §1's and the conclusions' rule on the threats -- each threat article with its record's elements, by name
+    (issue_records.threat_elements): all they may contest."""
+    from . import issue_records, writer_rules
+    items = []
+    for label in threats:
+        elements = issue_records.threat_elements(records.get(label) or {})
+        items.append(C.fill(writer_rules.THREAT_ELEMENTS_ITEM, article=label,
+                            elements=C.LIST_COMMA.join(f"«{e}»" for e in elements)) if elements else
+                     C.fill(writer_rules.THREAT_ELEMENTS_NONE, article=label))
+    return C.fill(writer_rules.THREAT_ELEMENTS_RULE, items="; ".join(x for x in items if x)) or "" if items else ""
+
+
 def sections_note() -> str:
     """v60f (P9): the answer's sections, one number and one set of titles, for the writer's system and its jobs."""
     names = [t.lower() for t in ANSWER_TITLES]
@@ -4289,8 +4559,9 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
                                       else writer_rules.RULES_TEXT if records else RULES_TEXT, force=True)
     numbered = "\n".join(f"{i}. art. {n} {ptw._code_key(c)}" for i, (n, c) in enumerate(glossed, 1))
     rules = f"{rules}\n\nNORME NELL'ORDINE DEI PARAGRAFI:\n{numbered}" if rules and numbered else rules
-    schede = issue_records.writer_block(records, glossed, state.get("sentences") or [], state.get("questions") or []) \
-        if records else ""               # v60g (d): the record, as the writer applies it
+    schede = issue_records.writer_block(records, glossed, state.get("sentences") or [], state.get("questions") or [],
+                                        penal=penal_posture(state), defending=defending_posture(state)) \
+        if records else ""               # v60g (d): the record, as the writer applies it; v62: threats, applications
     facts = issue_records.facts_block(state.get("sentences") or []) if records and state.get("sentences") else \
         block("FATTI DEL CASO", ptw._facts_list(analysis))
     texts = ptw._with_headings(dg._source_block([r for r in rows if r.get("_article") in rule_refs], dg._ARTICLE_CHARS),
@@ -4307,13 +4578,29 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
     ok = [label for label, rec in records.items() if issue_records.assertable(rec) or label == main_anchor]
     asserted = (C.fill(writer_rules.ASSERTABLE_RULE, articles=", ".join(f"art. {x}" for x in ok)) if ok else
                 writer_rules.NONE_ASSERTABLE_RULE) if records else ""
+    weapons = [label for label, rec in records.items() if label not in ok and rec.get("side") == issue_records.WEAPON]
+    if weapons:                 # v68: the client's own articles not yet assertable -- argued, never «da valutare»
+        asserted += C.fill(writer_rules.WEAPON_TO_PROVE_RULE, articles=", ".join(f"art. {x}" for x in weapons)) or ""
+    threats = [label for label, rec in records.items() if rec.get("side") == issue_records.THREAT]
+    if threats:                 # v62: the charge or the claim is contested in §1 and §5, never asserted
+        asserted += C.fill(writer_rules.THREAT_ASSERT_RULE, articles=", ".join(f"art. {x}" for x in threats),
+                           who=who) or ""
+        asserted += threat_elements_rule(records, threats)     # v63: only the record's elements, by name
+    unfounded = [label for label, rec in records.items() if rec.get("alternative_facts") == "no"]
+    lead_only = C.fill(writer_rules.UNFOUNDED_ALTERNATIVES_RULE, articles=", ".join(f"art. {x}" for x in unfounded)) \
+        if unfounded else ""                                    # v65: no fact holds them: never in §1
     budget = writer_budget(len(glossed), len(topics)) if single_mode(state) else {
         "lead": 900, "norms": 1700, "conclusions": CONCLUSIONS_TOKENS}
+    short = collapsed(state)        # v68: five or more requested blocks -- a summary, the norms, the procedure
+    if short:
+        asked = [str(b.get("subject") or b.get("kind")) for b in requested_kinds(state)]
+        asserted += C.fill(writer_rules.COLLAPSED_LEAD_NOTE, questions="; ".join(f"«{q}»" for q in asked)) or ""
     jobs = [
         (ANSWER_TITLES[0],
          f"SEZIONE: Risposta e strategia. La risposta diretta a {who} sull'argomento, in due-quattro paragrafi: che cosa "
          "può ottenere, con quale azione e su quale norma, e la strategia consigliata (prima la domanda principale, poi "
-         "le subordinate). Non illustrare le norme nel dettaglio (sezione successiva)." + asserted + shape + no_rulings,
+         "le subordinate). Non illustrare le norme nel dettaglio (sezione successiva)." + asserted + (lead_only or "")
+         + shape + no_rulings,
          material(case, fixed, people, block("ARGOMENTO", topic_lines), lines_of_case,
                   ptw._plan_text(plan, answers=True, rulings=False), read_only), budget["lead"]),
         (ANSWER_TITLES[1],
@@ -4324,7 +4611,8 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
           "fatti del caso, con il fatto che prova ciascun requisito o la prova da acquisire. Lo stato di ogni requisito è "
           "già scritto sopra il paragrafo: non ripeterlo e non contraddirlo. Solo le norme dell'elenco: le altre norme "
           "dell'argomento hanno già il loro titolo e non vanno commentate.") + shape + no_rulings,
-         material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts)), budget["norms"]),
+         material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts),
+                  method_notes(state)), budget["norms"]),
         (ANSWER_TITLES[2],
          f"SEZIONE: Obiezioni e repliche. Per ciascuna delle OBIEZIONI DELLA CONTROPARTE DA TRATTARE, nell'ordine e senza "
          f"aggiungerne: solo la replica di {who}, in due-tre frasi, sui fatti del caso e sulle norme fornite, aperta dal "
@@ -4342,7 +4630,10 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
                   read_only),
          budget["conclusions"]),
     ]
-    return [j for j in jobs if j[0] != ANSWER_TITLES[2] or objected]       # v58: no objection of the topic, no §3
+    jobs = [j for j in jobs if j[0] != ANSWER_TITLES[2] or objected]       # v58: no objection of the topic, no §3
+    if method_mode(state):      # v70: the method plan writes the questione, the solutions, the objections, the conclusions
+        return [j for j in jobs if j[0] == ANSWER_TITLES[1]]
+    return [j for j in jobs if j[0] not in (ANSWER_TITLES[2], ANSWER_TITLES[4])] if short else jobs
 
 
 # v60k: the single-shot writer's budget, by the articles §2 writes and the topics the other sections cover
@@ -4359,6 +4650,17 @@ def writer_budget(articles: int, topics: int) -> Dict[str, int]:
            "conclusions": min(CONCLUSIONS_TOKENS_MAX, CONCLUSIONS_TOKENS + TOPIC_TOKENS * more)}
     _log("writer_budget", {"articles": articles, "topics": topics, **out})
     return out
+
+
+def fact_wording_inputs(state: Dict[str, Any]) -> Tuple[List[str], str, bool]:
+    """v74: (the fatti certi -- the case's certain sentences, as the method's facts read them --, the client's name,
+    whether the client is the accused) for the fact-noun check (fact_terms)."""
+    from . import lawyer_method, posture as posture_mod
+    certi = [str(s.get("text") or "") for s in state.get("sentences") or []
+             if s.get("certainty") in lawyer_method.CERTAIN and s.get("source") != "sistema"]
+    client = str((state.get("client") or {}).get("name") or "")
+    role = str((state.get("posture") or {}).get("role") or (state.get("intake") or {}).get("role") or "")
+    return certi, client, role in posture_mod.ACCUSED_ROLES
 
 
 def term_consistency(sections: List[Tuple[str, str]], context: Dict[str, Any], analysis: Dict[str, Any],
@@ -4477,15 +4779,22 @@ _ART_COMMA_RE = re.compile(r"\bart(?:icolo|\.)\s*(\d+(?:-[a-z]+)?)\s*(?:[a-z.]{2
 def phantom_commi_out(sections: List[Tuple[str, str]], rules: List[Dict[str, Any]], log: List[Dict[str, Any]]
                       ) -> List[Tuple[str, str]]:
     """v58 (v57-h5: «come richiesto dal comma 9 dell'art. 628 c.p.»): a sentence citing a comma an article read here does
-    not have (its commi numbered) is dropped whole; the rendered section is never read."""
+    not have (its commi numbered) is dropped whole; the rendered section is never read. v65: a number or a letter it
+    does not have too (record_check.phantom_item: «art. 61, n. 22 c.p.», «lettera f) dell'art. 7»)."""
     from . import plan_then_write as ptw
+    from . import citations, record_check
     commi: Dict[str, set] = {}
+    items: Dict[str, Dict[str, Any]] = {}
     for rule in rules:
         numbers = [k for k, _ in rule.get("commi") or []]
         if numbers and None not in numbers:
             commi.setdefault(str(rule["ref"][0]), set()).update(numbers)
-    if not commi:
+        text = " ".join(str(t or "") for _, t in rule.get("commi") or [])
+        if text.strip():            # v65: its numbered and lettered items too
+            items[citations.label(rule["ref"])] = record_check.article_items(text)
+    if not commi and not items:
         return sections
+    documents = ref_documents([tuple(r["ref"]) for r in rules if r.get("ref")])
     out = []
     for title, text in sections:
         if title == ANSWER_TITLES[3]:
@@ -4496,7 +4805,8 @@ def phantom_commi_out(sections: List[Tuple[str, str]], rules: List[Dict[str, Any
             sentence = text[s:e]
             pairs = [(m.group(2), m.group(1)) for m in _COMMA_OF_RE.finditer(sentence)] + \
                     [(m.group(1), m.group(2)) for m in _ART_COMMA_RE.finditer(sentence)]
-            if any(n in commi and int(k) not in commi[n] for n, k in pairs):
+            if any(n in commi and int(k) not in commi[n] for n, k in pairs) or \
+                    record_check.phantom_item(sentence, documents, items):
                 spans.append((s, e))
                 log.append({"section": title, "sentence": " ".join(sentence.split())[:300]})
         out.append((title, ptw._drop_spans(text, spans) if spans else text))
@@ -5002,6 +5312,18 @@ def settle_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str,
     return pick["name"], "" if quiet else party_names.contract(C.fill(C.CLIENT_ASSUMED, name=shown, role=role) or "")
 
 
+def intake_labels(state: Dict[str, Any], case: str = "") -> Tuple[str, str]:
+    """v65: (the client's label, the counterparty's) from intake's role and stage (posture.role_label,
+    counterparty_label: the opposite role); ("", "") when intake did not read the role."""
+    from . import posture as posture_mod
+    read = state.get("intake") or {}
+    role, stage = str(read.get("role") or ""), str(read.get("stage") or "")
+    if not role or role == posture_mod.UNKNOWN:
+        return "", ""
+    civil_party = bool(posture_mod.re.search(r"\bparte civile\b", case or "", posture_mod.re.IGNORECASE))
+    return posture_mod.role_label(role, stage), posture_mod.counterparty_label(role, stage, civil_party)
+
+
 def known_client_line(state: Dict[str, Any], analysis: Dict[str, Any], client: str) -> str:
     """v60s (7): the single-shot first line for a client the user stated or the facts name -- with the frame's label
     (frame_party_label) when the client is the party the action is directed at (its role: _CHARGED_RE), else with the
@@ -5014,15 +5336,16 @@ def known_client_line(state: Dict[str, Any], analysis: Dict[str, Any], client: s
     mine = next((p for p in parties if _low(p["name"]) == _low(client)), {})
     shown = party_names.label(client, case)
     line, how = None, "solo cliente"
+    labels = intake_labels(state, case)         # v65: the client's role read, its opposite the counterparty's
     if mine and _CHARGED_RE.search(str(mine.get("role") or "")):
-        label = frame_party_label(analysis, case, str(mine.get("role") or ""))
+        label = labels[0] or frame_party_label(analysis, case, str(mine.get("role") or ""))
         line, how = C.fill(C.SINGLE_SHOT_CLIENT_KNOWN_ROLE, client=shown, role=label), "cliente destinatario"
     else:
         others = [p for p in parties if _low(p["name"]) != _low(client)]
         other = next((p for p in others if _CHARGED_RE.search(str(p.get("role") or ""))), None) or \
             next((p for p in others if _COUNTERPARTY_RE.search(str(p.get("role") or ""))), None)
         if other:
-            label = frame_party_label(analysis, case, str(other.get("role") or ""))
+            label = labels[1] or frame_party_label(analysis, case, str(other.get("role") or ""))
             line = C.fill(C.SINGLE_SHOT_CLIENT_COUNTERPARTY, client=shown, party=party_names.label(other["name"], case),
                           role=label)
             how = f"controparte {other['name']}" if line else how
@@ -5095,9 +5418,9 @@ def party_names(state: Dict[str, Any], analysis: Dict[str, Any], names: Sequence
 def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, List[Dict[str, Any]]]:
     """Step 5: the answer on the chosen topics, from the cache (no retrieval). (text, citations). v60: under a stage
     meter, one journal line [VERBOSE:interactive_answer_stages] with each stage's seconds and calls."""
-    from . import stage_meter
+    from . import lawyer_method, stage_meter
     meter = stage_meter.Meter()
-    with meter.active():
+    with meter.active(), lawyer_method.scope():     # v70: the method's writer rules, once the posture is known
         try:
             return _write_answer(state, numbers)
         finally:
@@ -5113,6 +5436,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     from . import (defensive_generation as dg, plan_then_write as ptw, render_computed, repetition_guard, rule_quote,
                    text_tidy)
     t0 = time.time()
+    state.pop("method_refused", None)       # v75: each answer decides it again
     lang = state.get("lang") or "it"
     analysis = _restored_analysis(state["analysis"])
     topics = [state["topics"][n - 1] for n in numbers if 0 < n <= len(state.get("topics") or [])]
@@ -5127,14 +5451,26 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     if client:                  # v60e: the client's lines for the writer, the chosen topics as they are
         _isolated("reside", lambda: reside(state, client, reorder=False))
         persist_client(state, client, assumption)                           # v60f (B8)
+    from . import posture as posture_mod      # v62: the client's posture (intake's rito, role, stage) and its consumers
+    posture = _isolated("posture", lambda: posture_mod.of(state, analysis), None) or {}
+    state["posture"] = _jsonable(posture)
+    _log("posture", posture)
     all_rows = _restored_rows(state.get("rows"))
     from .article_text import row_abrogated, row_misaligned     # v60c: an abrogated article is never written; v60e:
     dead = {_key(r["_article"]) for r in all_rows if r.get("_article") and (row_abrogated(r) or row_misaligned(r))}
     records = state.get("records") or {}
+    extra: List[str] = []
+    if records and method_mode(state):      # v74: every record decomposed -- the charge, the alternatives, the named
+        extra, fetched = _isolated("decompose_records", lambda: decompose_records(state, posture, all_rows, dead),
+                                   ([], [])) or ([], [])
+        all_rows = all_rows + [r for r in fetched if _key(r["_article"]) not in
+                               {_key(x["_article"]) for x in all_rows if x.get("_article")}]
     mark("records_link")        # v60f: each chosen topic's requisites linked to the case's sentences, in parallel
-    _isolated("records_link", lambda: link_records(state, topics, dead))
+    _isolated("records_link", lambda: link_records(state, topics, dead, extra))
     if records:                 # v60i (2): the counterparty's articles whose elements fail are the client's argument
         _isolated("role_verdicts", lambda: role_verdicts(state))
+    if records:                 # v62: each record a weapon or a threat for the client (the charge, the claim)
+        _isolated("record_sides", lambda: posture_mod.mark_sides(state, posture))
     if records:                 # v60s (1): an offence issue with no offence article left goes, with all its articles
         topics = _isolated("issue_survival", lambda: surviving_issues(state, topics, all_rows, dead), topics) or []
         if not topics:
@@ -5157,6 +5493,18 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         _log("single_shot_cap", {"cap": cap, "planned": [_label(r) for r in refs],
                                  "beyond": [{"article": _label(r), "topic": t} for r, t in beyond]})
     all_rows = [r for r in all_rows if not (r.get("_article") and _key(r["_article"]) in dead)]
+    asked_blocks = (state.get("intake") or {}).get("requested_blocks") or []
+    subjects = [str(b["subject"]) for b in asked_blocks if b.get("kind") == "cenni" and b.get("subject")]
+    grounds: Optional[Dict[str, List[Dict[str, Any]]]] = None
+    if subjects:                # v63: the cenni's articles, resolved once -- each an «applicazione» paragraph in §2
+        grounds = _isolated("cenni_rows", lambda: cenni_rows(state, subjects, analysis, rows=all_rows), {}) or {}
+    if records:                 # v64: the general part only through its own roads -- the cenni, the charge's element
+        named_keys = set(user_named(state))                                              # kinds, the sanctions
+        refs = general_part_out(refs, named_keys)
+        roads = _isolated("general_rows", lambda: general_rows(state, posture, grounds or {}, analysis, all_rows),
+                          {}) or {}
+        all_rows, refs = _isolated("general_applications", lambda: general_applications(
+            state, roads, all_rows, refs, dead), (all_rows, refs)) or (all_rows, refs)
     rows = [r for r in all_rows if r.get("_article") and _key(r["_article"]) in {_key(x) for x in refs}]
     for row in rows:            # v56: no footnote marker or editorial note reaches the writer or §2
         sec = row.get("s") or {}
@@ -5184,11 +5532,30 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     plan, analysis_p = ptw.for_the_plan(plan, analysis)
     if client:                  # v60 (D): the client settled (stated, answered or assumed) is the plan's
         plan = {**plan, "parte_assistita": client}
+    if posture.get("entry"):    # v62: the main line's act and goal from the posture (the default cell: today's plan)
+        plan = posture_mod.apply_plan(plan, posture)
+        _log("plan_posture", {"atto": plan.get("atto"), "obiettivo": plan.get("obiettivo")})
+    blocks = (state.get("intake") or {}).get("requested_blocks") or []
+    if blocks:                  # v61: the explicit asks the intake read, passed through (not consumed yet)
+        plan = {**plan, "requested_blocks": blocks}
     if "obiezioni_norme" not in plan:
         plan = _isolated("move_gated", lambda: render_computed.move_gated(plan, analysis_p)[0], plan)
     who = f"{plan.get('parte_assistita') or ''} {plan.get('posizione') or ''}".strip() or party(analysis)
     from . import procedural_facts
     offences = _offences(topics, rows)
+    focus_log: Dict[str, Any] = {}
+    alternatives_done: Optional[Dict[str, Any]] = None
+    if records and any(b.get("kind") == "alternative" for b in asked_blocks):
+        def write_early(jobs_):         # v64: the alternatives written before §4 -- their verdicts decide its lines
+            return ptw.write_sections(plan, jobs_, lang, dg._refs_in(case), documents, rows + tool_rows, case,
+                                      context=ptw.statement_context(analysis_p), sections_note="")
+        alternatives_done = _isolated("alternatives_written", lambda: write_alternatives(
+            state, all_rows, case, write_early), None)
+    if records:                 # v63: the charged articles and (v64) the alternatives that fit, never a rejected one
+        offences, focus_log = posture_mod.procedure_offences(
+            records, offences, alternatives_done["fits"] if alternatives_done else None)
+        if focus_log:
+            _log("procedure_offences", focus_log)
     facts_cp = procedural_facts.by_number(rows)
     offence_facts = {n: facts_cp[n] for n, _ in offences if n in facts_cp}
     if records:                 # v60h (1): each d'ufficio condition with its record status, the line's verdict
@@ -5197,15 +5564,19 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         _log("procedibilita", {f"{n} c.p.": {"esito": f.get("ufficio_esito") or "", "condizioni": [
             {"comma": c.get("comma"), "text": c.get("text", "")[:160], "status": c.get("status"), "why": c.get("why")}
             for c in f.get("ufficio_condizioni") or []]} for n, f in offence_facts.items() if f.get("querela")})
-    analysis_p = {**analysis_p, "own_analysis": own_analysis(state, topics),   # v60p: §4's terms by the parere's own
+    analysis_p = {**analysis_p, "posture": posture,     # v62: §4 by the stage (render_computed.stage_blocks)
+                  "own_analysis": own_analysis(state, topics),   # v60p: §4's terms by the parere's own
                   "offences": offences,          # v58 (J): §4's delitti
+                  "procedure_focus": [n for n, _ in offences] if focus_log else [],      # v63: the charge's, the table's
+                  "charge_stated": any(r.get("charged") for r in records.values()),     # v64: no querela term then
+                  "special_signals": special_signals(state),       # v65: a special law's term lines need its domain
                   "offence_facts": offence_facts,              # v60 (C): from the text; v60h (1): with the statuses
                   "topic_refs": _matched_refs(topics),                       # v59: the mediation of the topics' matter
                   "listed_topics": [{"title": t.get("title"), "articles": t.get("articles"), "source": t.get("source"),
                                      **({"grades": t["grades"]} if t.get("grades") else {})}
                                     for t in state.get("topics") or []]}     # v59: §4's terms, the listed topics' only;
                                                                              # v60g (5): by their articles graded 2+
-    if render_computed.store_only(analysis_p):      # v60h (2): the writer's conclusions and checks read the closed list's
+    if render_computed.store_only(analysis_p) and render_computed.mediation_rito(posture):   # v60h (2); v75: intake's
         listed = _isolated("mediation_list", lambda: render_computed.listed_mediation(analysis_p), None)
         if listed is not None:
             analysis_p = {**analysis_p, "fact_signals": {**_signals(analysis_p), "mediation": {
@@ -5214,10 +5585,27 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         labour = _isolated("labour_list", lambda: render_computed.labour_of(analysis_p), None)    # v60i (9)
         if labour is not None and labour.get("matter"):
             _log("labour_list", labour)
+    store_terms = _isolated("store_terms", lambda: store_terms_for(posture, analysis_p, all_rows), {}) or {}
+    analysis_p = {**analysis_p, "store_terms": store_terms}        # v66: §4's terms are the store's
     mark("render")
     rendered = _isolated("render_computed", lambda: render_computed.render(analysis_p, who), state.get("rendered")) or ""
     if single:                  # v60k: §4's open points in the single-shot form, for the section and the writer alike
         rendered = open_points_wording(rendered)
+    method_ctx: Optional[Dict[str, Any]] = None
+    method_plan: Dict[str, Any] = {}
+    if method_mode(state):      # v70: the lawyer's method -- his rules in every writer call, its context, the thesis
+        from . import lawyer_method                                                       # selection (thinking on)
+        lawyer_method.begin(posture.get("rito") or "", _areas(analysis))
+        mark("method")
+        method_ctx, method_plan = _isolated("lawyer_method_plan", lambda: method_inputs(
+            state, posture, plan, topics, refs, all_rows, case), (None, {})) or (None, {})
+        refused = _isolated("lawyer_method_refusal", lambda: lawyer_method.placeholder_main(
+            method_ctx, method_plan), "") if method_ctx is not None else ""
+        if refused:             # v75: a placeholder thesis is a failure state -- never printed: the standard body
+            state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["placeholder"]       # v76: said in the answer
+            lawyer_method.end()
+            method_ctx, method_plan = None, {}
+            _log("lawyer_method_refused", {"why": "placeholder", "tesi": refused})
     mark("jobs")
     analysis_p = {**analysis_p, CASE_KEY: analysis.get(CASE_KEY) or case}
     context = ptw.statement_context(analysis_p)
@@ -5253,7 +5641,12 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     record_answer(state, buckets, ledger, unaccounted, numbers)
     if single:                                  # v60r (1): the record's rows go to the article citations only
         moved: Dict[str, Any] = {}
-        draft, state["ledger_rows"] = _isolated("ledger_out", lambda: ledger_out(draft, state, moved),
+        texts = {_label(_key(r["_article"])): str((r.get("s") or {}).get("plain_text") or "") for r in all_rows
+                 if r.get("_article")}
+        def retry(label: str) -> str:           # v68: a named article the writer skipped, written alone
+            return named_retry(state, label, texts, lambda jobs_: ptw.write_sections(
+                plan, jobs_, lang, named, documents, rows + tool_rows, case, context=context, sections_note=""))
+        draft, state["ledger_rows"] = _isolated("ledger_out", lambda: ledger_out(draft, state, moved, texts, retry),
                                                 (draft, [])) or (draft, [])
         _log("ledger_rows", {**moved, "rows": len(state["ledger_rows"])})
     from . import party_names                   # v60h (9): a party named by role never capitalised as a name
@@ -5276,13 +5669,47 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     draft = merged_markers(draft, merged)
     if merged:
         _log("markers_merged", {"runs": merged})
+    banned: List[str] = []                      # v65: «non verificabile» nowhere -- «da verificare»
+    draft = banned_words_out(draft, banned)
+    if banned:
+        _log("banned_words", {"rewritten": banned})
+    if records:                                 # v65: a term or an amount §1 states for an article: the store's
+        number_log: List[Dict[str, Any]] = []
+        draft = _isolated("store_numbers", lambda: store_numbers_out(
+            draft, store_numbers(all_rows), ref_documents(list(refs), all_rows), number_log), draft) or draft
+        if number_log:
+            _log("store_numbers", {"rewritten": [x for x in number_log if x.get("now")],
+                                   "left": [x for x in number_log if not x.get("now")]})
+    fragments: List[str] = []                   # v64: a paragraph left starting with «(» or a lowercase word, gone
+    draft = fragment_paragraphs(draft, fragments)
+    if fragments:
+        _log("fragment_paragraphs", {"dropped": fragments})
+    if asked_blocks:                            # v62: the explicit asks, sections in the asked order
+        def write_requested(jobs_):
+            return ptw.write_sections(plan, jobs_, lang, named, documents, rows + tool_rows, case, context=context,
+                                      sections_note="")
+        quesiti_material = _isolated("quesito_material", lambda: quesito_material(state, glossed, all_rows, rendered),
+                                     "") if any(b.get("kind") == "quesito" for b in asked_blocks) else ""
+        draft = _isolated("requested_sections", lambda: requested_sections(
+            state, draft, asked_blocks, write_requested, analysis_p, case, grounds=grounds, rows=all_rows,
+            alternatives_done=alternatives_done, quesito_material=quesiti_material or ""), draft) or draft
+    if method_ctx is not None:                  # v70: his ten sections, from ours and the method plan
+        from . import lawyer_method
+        rest = _isolated("other_profiles", lambda: single_profiles(state, numbers, analysis), []) or []
+        compose_log: Dict[str, Any] = {}
+        draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
+            answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
+        _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
+    if state.get("method_refused"):             # v76: the method never steps aside silently -- the answer says so
+        from . import lawyer_method
+        draft = f"{lawyer_method.not_applied_note(state['method_refused'])}\n\n{draft}"
     if assumption:                              # v60 (D): the client assumed, said first
         draft = f"{assumption}\n\n{draft}"
     others = [C.fill(C.CLOSING_TOPIC, n=i, title=t["title"]) for i, t in enumerate(state["topics"], 1) if i not in numbers]
     others = [o for o in others if o]          # v56: no other topic, no closing (never «Oppure dimmi…» alone)
     closing = C.fill_parts(C.CLOSING, topics=C.LIST_JOIN.join(others)) if others else \
         (C.SINGLE_SHOT_CLOSING if single else "")
-    if single:                                  # v60n: the topics not covered, one line each under «Altri profili»
+    if single and method_ctx is None:           # v60n: the topics not covered, one line each under «Altri profili»
         rest = _isolated("other_profiles", lambda: single_profiles(state, numbers, analysis), []) or []    # v60r (2)
         if rest:
             draft += "\n\n" + "\n".join([C.OTHER_PROFILES_TITLE, ""] + rest)
@@ -5300,6 +5727,666 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     return draft, citations
 
 
+def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any], topics: Sequence[Dict[str, Any]],
+                  refs: Sequence[tuple], rows: Sequence[Dict[str, Any]], case: str
+                  ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """v70: the method's context (lawyer_method.prepare: the client, the main line's anchor, §3's order, the retrieved
+    rulings with their document id and massima -- the only citable ones (v71) --, the open questions, the first read's
+    lines, the named articles the ingestion marks abrogated, our
+    objections as the fallback) and its plan (the thesis selection, timed)."""
+    from . import defensive_generation as dg, issue_records, lawyer_method
+    from .article_text import row_abrogated
+    main_topic = main_line_topic(topics)
+    main = issue_records._label(_parse_label(main_topic["anchor"])) if main_topic and main_topic.get("anchor") else ""
+    client = str(plan.get("parte_assistita") or (state.get("client") or {}).get("name") or "")
+    order = [_label(_key(r)) for r in refs]
+    rulings = []                # v71: the retrieved rulings -- document id, label, massima -- the only citable ones
+    for r in rows:
+        d = r.get("d") or {}
+        sec = r.get("s") or {}
+        massima = r.get("_passage") or " ".join(str(sec.get("plain_text") or sec.get("abstract") or "").split())
+        if not r.get("_article") and d.get("id") and massima and d["id"] not in {x["id"] for x in rulings}:
+            rulings.append({"id": str(d["id"]), "label": dg._ruling_label(r) or str(d.get("name") or d["id"]),
+                            "massima": massima})
+    lines = [f"linea {h.get('line')}: {h.get('claim')}" for t in topics for h in t.get("hypotheses") or []
+             if h.get("claim")]
+    named = {_key(k) for k in user_named(state)}
+    abrogated = [_label(_key(r["_article"])) for r in _restored_rows(state.get("rows")) if r.get("_article")
+                 and _key(r["_article"]) in named and row_abrogated(r)]
+    areas = _areas(_restored_analysis(state["analysis"])) if state.get("analysis") else []
+    ctx = lawyer_method.prepare(state, posture, rows, case, client, main, order, rulings, lines, abrogated,
+                                objections(state, topics, refs), frame_areas=areas, questions=unanswered(state),
+                                case_id_=str(state.get("case_id") or ""))
+    mplan = lawyer_method.method_plan(ctx)
+    # v73: the objections written after the selection, given the selected line and the barred list
+    mplan = _isolated("lawyer_method_objections", lambda: lawyer_method.objections_plan(ctx, mplan), mplan) or mplan
+    for key in ("thesis_selection_s", "objections_s"):
+        state.setdefault("timings", {})[key] = (ctx.get("timings") or {}).get(key)
+    return ctx, mplan
+
+
+# --- v62: the requested blocks (intake's requested_blocks), sections in the asked order -----------------------------------
+CENNI_TOKENS, ALTERNATIVES_TOKENS = 450, 700
+QUESITO_TOKENS, QUESITO_TITLE_CHARS = 700, 160
+
+
+def quesito_material(state: Dict[str, Any], refs: Sequence[tuple], rows: Sequence[Dict[str, Any]], rendered: str
+                     ) -> str:
+    """v65: what a «quesito» is answered from -- the record (the SCHEDE of the answer's articles: issue_records.
+    writer_block), the procedural section the code rendered, and the store's facts of the answer's articles
+    (procedural_facts, by code)."""
+    from . import issue_records, procedural_facts
+    parts = []
+    records = state.get("records") or {}
+    schede = issue_records.writer_block(records, list(refs), state.get("sentences") or [], state.get("questions") or [],
+                                        penal=penal_posture(state), defending=defending_posture(state)) \
+        if records else ""
+    if schede:
+        parts.append(schede)
+    if (rendered or "").strip():
+        parts.append(f"PROFILI PROCESSUALI (calcolati dal codice):\n{rendered.strip()}")
+    lines, quoted = [], []
+    for code in procedural_facts.CODES:
+        for number, facts in procedural_facts.by_number(rows, code).items():
+            label = f"{number} {code}"
+            items = [f"{k}: {v}" for k, v in facts.items() if isinstance(v, str) and v and k in STORE_FACT_KEYS]
+            terms, info = procedural_facts.term_lines(facts, label)          # v66: the one accessor
+            items += terms + procedural_facts.from_lines(facts, label)
+            if info["ambiguous"]:
+                quoted.append(label)
+            if items:
+                lines.append(f"- art. {label}: " + "; ".join(x for x in items if x))
+    if quoted:
+        _log("store_terms", {"where": "quesito", "ambiguous": quoted})
+    if lines:
+        parts.append("FATTI PROCESSUALI DEL CODICE (dal testo degli articoli):\n" + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
+STORE_FACT_KEYS = ("procedibilita", "querela_termine", "remissione", "competenza", "pena")      # v66: the terms apart
+
+
+def store_terms_for(posture: Dict[str, Any], analysis: Dict[str, Any], rows: Sequence[Dict[str, Any]], fetch=None
+                    ) -> Dict[str, Dict[str, Any]]:
+    """v66: {label: the store's facts} of the articles whose terms §4 shows -- the closed list's «store» articles
+    (render_computed.store_articles) and the computed terms' (fact_signals) -- from the answer's rows, the others read in
+    one call (fetch: the graph's). Logged."""
+    from . import cenni, procedural_facts, render_computed
+    labels = list(render_computed.store_articles(posture))
+    labels += [x for x in (render_computed.ref_label(t.get("ref")) for t in _signals(analysis).get("terms") or [])
+               if x and x.split(" ", 1)[1] in procedural_facts.CODES]
+    labels = [x for x in dict.fromkeys(labels) if x.split(" ", 1)[1] in procedural_facts.CODES]
+    if not labels:
+        return {}
+    have = {_label(_key(r["_article"])): r for r in rows if r.get("_article")}
+    missing = [_parse_label(x) for x in labels if x not in have]
+    if missing:
+        fetch = fetch or cenni.graph_tools(_documents)[0]
+        for r in _isolated("store_terms_fetch", lambda: fetch(missing), []) or []:
+            if r.get("_article"):
+                have.setdefault(_label(_key(r["_article"])), r)
+    out: Dict[str, Dict[str, Any]] = {}
+    for label in labels:
+        row = have.get(label)
+        if row is None:
+            continue
+        number, code = _parse_label(label)
+        facts = procedural_facts.by_number([{**row, "_article": (number, code)}], code).get(number)
+        if facts:
+            out[label] = facts
+    _log("store_terms", {"where": "lettura", "articles": labels, "read": sorted(out),
+                         "ambiguous": sorted(x for x, f in out.items() if f.get("termine_ambiguo"))})
+    return out
+
+
+def quesito_title(question: str) -> str:
+    """v65: a «quesito» section's heading -- the question itself, one line, capitalised, cut at a word."""
+    text = " ".join(str(question or "").replace("*", "").split())
+    text = text if len(text) <= QUESITO_TITLE_CHARS else text[:QUESITO_TITLE_CHARS].rsplit(" ", 1)[0] + "…"
+    return C.capital(text)
+CENNI_TEXT_CHARS = 2400
+
+
+def _row_rubrica(row: Dict[str, Any]) -> str:
+    from . import rule_quote
+    sec = row.get("s") or {}
+    return rule_quote.clean_rubrica(str(sec.get("titolo_articolo") or row.get("rubrica") or "")).rstrip(" .")
+
+
+def cenni_rows(state: Dict[str, Any], subjects: Sequence[str], analysis: Dict[str, Any], search=None, fetch=None,
+               index=None, rows: Sequence[Dict[str, Any]] = ()) -> Dict[str, List[Dict[str, Any]]]:
+    """{subject: the rows of the articles grounding its «cenni»} -- v63 (cenni.resolve): a general concept on its
+    general-part articles (the concepts table, else the institutions index's general articles), an article the subject
+    names by its rubrica, nothing else ([]: the cenni cite none). The case's rows (rows, state's rows and reserve)
+    first; search (the rubrica search: first_read_search), fetch (articles by number) and index default to the graph's.
+    Logged."""
+    from . import cenni
+    pool = list(rows or []) + _restored_rows(state.get("rows")) + _restored_rows(state.get("reserve"))
+    if search is None:
+        def search(names):
+            from .main import NEO4J_DATABASE, driver
+            return first_read_search(driver, NEO4J_DATABASE, _documents(), names, area_codes(analysis),
+                                     user_text=case_text(state))[0]
+    if fetch is None or index is None:
+        graph_fetch, graph_index = cenni.graph_tools(_documents)
+        fetch, index = fetch or graph_fetch, index or graph_index
+
+    def guarded(name, call):
+        return lambda *a: _isolated(name, lambda: call(*a), []) or []
+    out, log = cenni.resolve(subjects, pool, area_codes(analysis), fetch=guarded("cenni_fetch", fetch),
+                             index=guarded("cenni_index", index), search=guarded("cenni_search", search))
+    _log("cenni_rows", log)
+    return out
+
+
+def special_signals(state: Dict[str, Any]) -> Optional[Dict[str, bool]]:
+    """v65: {special law id: its domain signal is in the first read} (special_laws); None without a first read."""
+    from . import special_laws
+    read = state.get("read")
+    return special_laws.signals(special_laws.read_text(read)) if read else None
+
+
+def general_part_out(refs: Sequence[tuple], named: set) -> List[tuple]:
+    """v64: the answer's articles without a general-part one (c.p. Libro I) the user does not name -- it enters only
+    through general_rows' roads. Logged."""
+    from . import cenni
+    out = [r for r in refs if not cenni.general_part(r) or _key(r) in named]
+    if len(out) < len(refs):
+        _log("general_part_out", {"dropped": [_label(_key(r)) for r in refs if r not in out]})
+    return out
+
+
+DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativa", "named": "nominata dall'utente",
+                 "claim": "domanda (ipotesi principale della prima lettura)"}
+
+
+def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]], dead: set,
+                      fetch=None) -> Tuple[List[str], List[Dict[str, Any]]]:
+    """v74 (LAWYER_METHOD): every article that gets a record is split into elements the way the charge is -- the
+    charge (intake's and the case text's), the first read's alternative qualifications, the articles the user names;
+    the topics' own are already. The same decomposition as the topics' (issue_records._requisites), only its read
+    requisites kept (a whole-comma text is no element); the gate first (issue_records.decomposed_by_gate: never a
+    procedural code's article nor c.p. Libro I's, a cause di giustificazione aside). An article that cannot be
+    decomposed gets no record (an existing one marked «undecomposed»: the method leaves it out). The rows no row
+    holds read in one call (fetch: the graph's). Returns (the labels to link, the rows fetched); logged."""
+    from . import cenni, issue_records, lawyer_method, posture as posture_mod
+    records = state.get("records")
+    if records is None:
+        return [], []
+    analysis = _restored_analysis(state["analysis"])
+    case = case_text(state)
+    wanted: Dict[str, str] = {}
+    for x in posture_mod.intake_charges(posture) + posture_mod.charge_labels(case):
+        wanted.setdefault(x, DECOMPOSE_WHY["charge"])
+    if not wanted:              # v75: a civil claim naming no article -- the first read's principal hypothesis for it
+        for x in posture_mod.claim_from_read(state, posture, rows):
+            wanted.setdefault(x, DECOMPOSE_WHY["claim"])
+    for x in posture_mod.alternative_labels(state, rows):
+        wanted.setdefault(x, DECOMPOSE_WHY["alternative"])
+    for ref in user_named(state):
+        wanted.setdefault(_label(ref), DECOMPOSE_WHY["named"])
+    have = {_key(r["_article"]): r for r in rows if r.get("_article")}
+    keys = {label: _key(_parse_label(label)) for label in wanted}
+    missing = [k for k in dict.fromkeys(keys.values()) if k not in have and k not in dead]
+    fetched: List[Dict[str, Any]] = []
+    if missing:
+        fetch = fetch or cenni.graph_tools(_documents)[0]
+        fetched = [r for r in _isolated("decompose_fetch", lambda: fetch(missing), []) or [] if r.get("_article")]
+        for r in fetched:
+            have.setdefault(_key(r["_article"]), r)
+    log: Dict[str, Any] = {"split": {}, "gated": [], "undecomposed": [], "unread": [], "already": []}
+    link: List[str] = []
+    for label, why in wanted.items():
+        key = keys[label]
+        rec = records.get(label)
+        row = have.get(key)
+        rubrica = str((rec or {}).get("rubrica") or (_row_rubrica(row) if row else ""))
+        if key in dead:
+            continue
+        if not issue_records.decomposed_by_gate(label, rubrica):
+            log["gated"].append(label)
+            continue
+        if rec and issue_records.decomposed(rec):
+            log["already"].append(label)
+            continue
+        decisive = why in (DECOMPOSE_WHY["charge"], DECOMPOSE_WHY["claim"])
+        if row is None:
+            log["unread"].append(label)
+            if decisive:            # v76: the charge or the claim unread -- the method cannot be applied, said
+                state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["unread"].format(art=label)
+            continue
+        reqs = [r for r in issue_records._requisites(row, analysis) if r.get("kind") == "requisito"]
+        if not reqs:
+            log["undecomposed"].append(label)
+            if rec is not None:
+                rec["undecomposed"] = True
+            if decisive:            # v76: even the general penal splitter found no element -- said in the answer
+                state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["undecomposed"].format(art=label)
+            continue
+        if rec is None:
+            rec = records[label] = {"article": label, "rubrica": rubrica, "topic": "", "grade": None, "issue": "",
+                                    "kept": [why], "dropped": None, "linked": "", "answer": {}}
+        rec.update(requisites=reqs, decomposed_for=why)
+        if not rec.get("procedibilita"):        # v76: its d'ufficio conditions, graded by the link like the topics'
+            rec["procedibilita"] = issue_records._conditions(row)
+        rec.pop("undecomposed", None)
+        issue_records.seed(rec, row)
+        link.append(label)
+        log["split"][label] = {"why": why, "elements": len(reqs), "by": reqs[0].get("split") or "articolo"}
+    if link:
+        issue_records.number(records)
+        issue_records.refresh(records, analysis, state.get("questions") or [], state.get("sentences") or [])
+    _log("decompose_records", log)
+    return link, fetched
+
+
+def general_rows(state: Dict[str, Any], posture: Dict[str, Any], grounds: Dict[str, List[Dict[str, Any]]],
+                 analysis: Dict[str, Any], rows: Sequence[Dict[str, Any]], fetch=None) -> Dict[str, List[Dict[str, Any]]]:
+    """v64: {why: rows} -- the articles the answer applies without a record of their own, by road: each «cenni»
+    subject's (grounds); for each threat, the general-part articles of its elements' kinds (cenni.element_refs:
+    «cagiona» -> 40, 41 c.p.); for an imputato, the posture table's sanction articles (entry["sanctions"]). The
+    articles no row holds read in one call (fetch: the graph's). Logged. v65: every article the user names
+    (user_named), its block always due."""
+    from . import cenni, issue_records
+    out: Dict[str, List[Dict[str, Any]]] = {}
+    for subject, found in (grounds or {}).items():
+        if found:
+            out[C.fill(C.APPLICATION_VIA_CENNI, subject=subject) or subject] = list(found)
+    wanted: List[Tuple[str, Tuple[str, str]]] = []
+    codes = area_codes(analysis)
+    for label, rec in (state.get("records") or {}).items():
+        if rec.get("side") == issue_records.THREAT:
+            for element in issue_records.threat_elements(rec):
+                why = C.fill(C.APPLICATION_VIA_ELEMENT, article=label) or label
+                wanted += [(why, ref) for ref in cenni.element_refs(element, codes)]
+    entry = (posture or {}).get("entry") or {}
+    if (posture or {}).get("role") == "imputato":
+        wanted += [(C.APPLICATION_VIA_SANCTION, _parse_label(x)) for x in entry.get("sanctions") or []]
+    wanted += [(C.APPLICATION_VIA_NAMED, ref) for ref in user_named(state)]          # v65: always its block
+    have = {_key(r["_article"]): r for r in rows if r.get("_article")}
+    missing = list(dict.fromkeys(ref for _, ref in wanted if _key(ref) not in have))
+    if missing:
+        fetch = fetch or cenni.graph_tools(_documents)[0]
+        for r in _isolated("general_fetch", lambda: fetch(missing), []) or []:
+            if r.get("_article"):
+                have.setdefault(_key(r["_article"]), r)
+    for why, ref in wanted:
+        row = have.get(_key(ref))
+        if row is not None and _key(ref) not in {_key(x["_article"]) for x in out.get(why, [])}:
+            out.setdefault(why, []).append(row)
+    _log("general_rows", {why: [_label(_key(r["_article"])) for r in found] for why, found in out.items()}
+         | ({"unread": [_label(_key(r)) for r in missing if _key(r) not in have]} if missing else {}))
+    return out
+
+
+def user_named(state: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """v65: the articles the user names -- intake's named_articles, and those the case's text cites -- each once."""
+    from . import defensive_generation as dg
+    out: List[Tuple[str, str]] = []
+    for a in (state.get("intake") or {}).get("named_articles") or []:
+        if isinstance(a, dict) and a.get("article"):
+            out.append(_key(_parse_label(a["article"])))
+    from . import citations
+    out += [_key(r) for r in citations.article_refs(case_text(state)) if len(r) == 2]     # v72: the shared parser
+    return list(dict.fromkeys(out))
+
+
+def general_applications(state: Dict[str, Any], roads: Dict[str, List[Dict[str, Any]]],
+                         all_rows: List[Dict[str, Any]], refs: List[tuple], dead: set
+                         ) -> Tuple[List[Dict[str, Any]], List[tuple]]:
+    """v63 (the cenni), v64 (every road: general_rows): each article enters the answer -- its row among the rows, its
+    reference among the answer's (after the cap: asked for), and, without a record of its own, a record with no
+    requisite (rec["applicazione"]: why it is there) -- so the norms section gives it an «applicazione» paragraph
+    (issue_records.applied, block_due); ledger_out keeps it only when it touches the client or a fact of the case.
+    Logged."""
+    records = state.get("records") or {}
+    have = {_key(r["_article"]) for r in all_rows if r.get("_article")}
+    keys = {_key(r) for r in refs}
+    rows_out, refs_out, added = list(all_rows), list(refs), {}
+    for why, found in (roads or {}).items():
+        for row in found or []:
+            key = _key(row["_article"])
+            if key in dead:
+                continue
+            if key not in have:
+                have.add(key)
+                rows_out.append(row)
+            if key not in keys:
+                keys.add(key)
+                refs_out.append(tuple(row["_article"]))
+            label = _label(key)
+            if label not in records:
+                records[label] = {"rubrica": _row_rubrica(row), "requisites": [], "applicazione": why}
+                added[label] = why
+            if why == C.APPLICATION_VIA_NAMED:      # v65: the user's article, its block always due
+                records[label]["named_due"] = True
+    _log("general_applications", {"added": added, "refs": [_label(_key(r)) for r in refs_out if _key(r) not in
+                                                            {_key(x) for x in refs}]})
+    return rows_out, refs_out
+
+
+ALTERNATIVE_MARK_RE = re.compile(r"(?m)^\s*\[(\d{1,2})\]\s*")
+
+
+def requested_jobs(state: Dict[str, Any], blocks: Sequence[Dict[str, Any]],
+                   grounds: Dict[str, List[Dict[str, Any]]], case: str,
+                   alternatives: Sequence[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]] = (),
+                   quesito_material: str = "") -> Tuple[List[tuple], Dict[int, str]]:
+    """(the writer's jobs, {block index: a fixed text}) for the «cenni» and «alternative» blocks: a cenni job on its
+    articles' rubriche and texts (writer_rules.CENNI_*); the alternatives' job (v63) on the alternatives whose article
+    is known (posture.alternative_rows), numbered -- one sentence each; none: ALTERNATIVES_NONE, no call. v65: each
+    «quesito» its own job, headed by the question, answered from the record and the store (quesito_material)."""
+    from . import writer_rules
+    jobs, fixed = [], {}
+    for i, b in enumerate(blocks):
+        if b.get("kind") == "quesito" and b.get("subject"):
+            title = quesito_title(str(b["subject"]))
+            jobs.append((f"{i}:{title}", writer_rules.QUESITO_INSTRUCTION.format(question=b["subject"]),
+                         f"CASO:\n{case}" + (f"\n\n{quesito_material}" if quesito_material else ""), QUESITO_TOKENS))
+            continue
+        if b.get("kind") == "cenni" and b.get("subject"):
+            subject = str(b["subject"])
+            found = grounds.get(subject) or []
+            title = C.fill(C.CENNI_SECTION, subject=C.capital(subject)) or subject
+            instruction = writer_rules.CENNI_INSTRUCTION.format(subject=subject) + (
+                writer_rules.CENNI_GROUNDED if found else writer_rules.CENNI_UNGROUNDED)
+            parts = []
+            for row in found:
+                sec = row.get("s") or {}
+                text = " ".join(str(sec.get("plain_text") or row.get("text") or "").split())[:CENNI_TEXT_CHARS]
+                parts.append(f"NORMA: art. {_label(_key(row['_article']))} — {_row_rubrica(row)}\nTESTO:\n{text}")
+            jobs.append((f"{i}:{title}", instruction, "\n\n".join(parts), CENNI_TOKENS))
+        elif b.get("kind") == "alternative":
+            known = [(a, r) for a, r in alternatives if r]
+            if not known:
+                fixed[i] = C.ALTERNATIVES_NONE
+                continue
+            listed = "\n".join(f"[{n}] art. {_label(_key(r['_article']))} — {_row_rubrica(r)} ({a.get('name')})"
+                               + (f": {a['why']}" if a.get("why") else "")
+                               + (f" — {C.ALTERNATIVE_NO_FACTS}" if a.get("facts") == "no" else "")
+                               for n, (a, r) in enumerate(known, 1))
+            jobs.append((f"{i}:{C.ALTERNATIVES_SECTION}", writer_rules.ALTERNATIVES_INSTRUCTION,
+                         f"CASO:\n{case}\n\nQUALIFICAZIONI ALTERNATIVE:\n{listed}", ALTERNATIVES_TOKENS))
+    return jobs, fixed
+
+
+_ALTERNATIVE_VERDICT_RE = re.compile(r"^\s*(S[IÌ]|NO)\b\s*[:—–.,-]?\s*", re.IGNORECASE)
+FITS, REJECTED = "si", "no"
+
+
+def parse_alternatives(written: str, alternatives: Sequence[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]]
+                       ) -> Tuple[List[Dict[str, Any]], bool]:
+    """v64: ([{alt, row, verdict, sentence}] for each alternative with an article, in order; whether the writer left
+    text under no number) -- the writer's item «[N] SÌ|NO: frase»: its verdict (FITS, REJECTED, "" when not given) and
+    its first sentence ("" when none)."""
+    from .plan_then_write import _sentence_spans
+    known = [(a, r) for a, r in alternatives if r]
+    marks = list(ALTERNATIVE_MARK_RE.finditer(written or ""))
+    said: Dict[int, Tuple[str, str]] = {}
+    for j, m in enumerate(marks):
+        chunk = (written[m.end():marks[j + 1].start()] if j + 1 < len(marks) else written[m.end():]).strip()
+        tag = _ALTERNATIVE_VERDICT_RE.match(chunk)
+        verdict = (REJECTED if tag.group(1).upper() == "NO" else FITS) if tag else ""
+        chunk = C.capital(chunk[tag.end():]) if tag else chunk
+        spans = _sentence_spans(chunk)
+        sentence = chunk[spans[0][0]:spans[0][1]].strip() if spans else ""
+        if int(m.group(1)) not in said:
+            said[int(m.group(1))] = (verdict, sentence)
+    orphan = bool(marks and (written or "")[:marks[0].start()].strip()) or (not marks and bool((written or "").strip()))
+    return [{"alt": a, "row": r, "sentence": said.get(n, ("", ""))[1],
+             # v65: an alternative no fact of the case holds (the first read's verdict) is a NO, whatever the writer says
+             "verdict": REJECTED if a.get("facts") == "no" else said.get(n, ("", ""))[0]}
+            for n, (a, r) in enumerate(known, 1)], orphan
+
+
+def alternatives_text(written: str, alternatives: Sequence[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]],
+                      log: Optional[Dict[str, Any]] = None) -> str:
+    """v63: the alternatives section as the code writes it -- per alternative with an article, «art. N — rubrica» and
+    the writer's one sentence numbered for it (its first sentence; v64: its «SÌ»/«NO» verdict read and left out); the
+    writer's text under no number is dropped, and so is an alternative with no article or no sentence. None left:
+    ALTERNATIVES_NONE."""
+    items, orphan = parse_alternatives(written, alternatives)
+    out, dropped = [], []
+    for item in items:
+        if not item["sentence"]:
+            dropped.append(str(item["alt"].get("name") or ""))
+            continue
+        number, code = _parse_label(_label(_key(item["row"]["_article"])))
+        out.append(C.fill(C.ALTERNATIVE_ITEM, number=number, code=code, rubrica=_row_rubrica(item["row"]),
+                          sentence=item["sentence"]))
+    if log is not None:
+        log.update(written=len(out), dropped=dropped + [str(a.get("name") or "") for a, r in alternatives if not r],
+                   orphan=orphan, verdicts={_label(_key(i["row"]["_article"])): i["verdict"] for i in items})
+    return "\n\n".join(x for x in out if x) or C.ALTERNATIVES_NONE
+
+
+def sound_alternative(rec: Optional[Dict[str, Any]]) -> bool:
+    """v65: a «SÌ» stands only on a record with no contradicted element (issue_records.contradicted)."""
+    from . import issue_records
+    return bool(rec) and not issue_records.contradicted(rec)
+
+
+def write_alternatives(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], case: str, write
+                       ) -> Dict[str, Any]:
+    """v64: the alternatives section written before the procedural section -- {"text": the section (alternatives_text),
+    "fits": the labels of the alternatives the writer says fit the facts («SÌ»), "log"}: the procedural section covers
+    the charge and these, never a rejected one. write(jobs) -> [(title, text)]. Logged. v65: one the first read finds
+    no fact for is a NO; a «SÌ» needs a record with no contradicted element (sound_alternative)."""
+    from . import posture as posture_mod
+    alternatives = posture_mod.alternative_rows(state, rows)
+    jobs, fixed = requested_jobs(state, [{"kind": "alternative"}], {}, case, alternatives)
+    written = dict(write(jobs) or []) if jobs else {}
+    raw = next((str(x) for x in written.values() if x and str(x).strip()), "")
+    log: Dict[str, Any] = {}
+    text = fixed.get(0) or alternatives_text(raw, alternatives, log)
+    items = parse_alternatives(raw, alternatives)[0] if raw else []
+    records = state.get("records") or {}
+    fits = [_label(_key(i["row"]["_article"])) for i in items if i["verdict"] == FITS and i["sentence"]
+            and sound_alternative(records.get(_label(_key(i["row"]["_article"]))))]
+    _log("alternatives_written", {**log, "fits": fits})
+    return {"text": text, "fits": fits, "log": log}
+
+
+def requested_sections(state: Dict[str, Any], draft: str, blocks: Sequence[Dict[str, Any]], write, analysis: Dict[str, Any],
+                       case: str, search=None, grounds: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+                       rows: Sequence[Dict[str, Any]] = (), fetch=None, index=None,
+                       alternatives_done: Optional[Dict[str, Any]] = None, quesito_material: str = "") -> str:
+    """The answer with the requested blocks as sections, in the asked order: each «cenni» a short institution paragraph
+    on its articles (cenni_rows -- grounds when the answer already resolved them; no record, no count), «alternative»
+    the first read's alternative qualifications each «art. N — rubrica» with one sentence on why it fits or not
+    (alternatives_text), «parere» the normal body (its sections) -- where none is asked, the body after the cenni. The
+    other kinds are the body's. write(jobs) -> [(title, text)] (the writer). Numbered anew (_join); logged. v64:
+    alternatives_done -- the section the answer already wrote (write_alternatives), never written twice. v65: each
+    «quesito» a section headed by its question, answered from the record and the store (quesito_material), in the
+    asked order; the standard body after them, where no parere is asked. v68: the requested blocks always first, in the
+    asked order, the body after them wherever the parere is asked (civil and penal alike); five or more, the body
+    short (collapsed_body)."""
+    from . import answer_ledger, posture as posture_mod
+    kinds = [str(b.get("kind") or "") for b in blocks]
+    if not any(k in ("cenni", "alternative", "quesito") for k in kinds):
+        return draft
+    subjects = [str(b["subject"]) for b in blocks if b.get("kind") == "cenni" and b.get("subject")]
+    if grounds is None:
+        grounds = cenni_rows(state, subjects, analysis, search, fetch, index, rows) if subjects else {}
+    alternatives = posture_mod.alternative_rows(state, rows) if "alternative" in kinds else []
+    asked = [b for b in blocks if not (alternatives_done and b.get("kind") == "alternative")]
+    jobs, fixed = requested_jobs(state, asked, grounds, case, alternatives, quesito_material)
+    index_of = [i for i, b in enumerate(blocks) if not (alternatives_done and b.get("kind") == "alternative")]
+    jobs = [(f"{index_of[int(t.split(':', 1)[0])]}:{t.split(':', 1)[1]}", *rest) for t, *rest in jobs]
+    fixed = {index_of[i]: x for i, x in fixed.items()}
+    written = dict(write(jobs) or []) if jobs else {}
+    texts = {**fixed, **{int(t.split(":", 1)[0]): x for t, x in written.items() if x and str(x).strip()}}
+    required: List[Dict[str, Any]] = []     # v68: the requested sections too -- a requirement no record holds goes
+    texts = {i: requirement_out(str(x), state, rows, required) if kinds[i] in REQUESTED_KINDS else x
+             for i, x in texts.items()}
+    miscited: List[Dict[str, Any]] = []     # v69: and an institution with another article's number (record_check's)
+    texts = {i: rubrica_out(str(x), state, rows, miscited) if kinds[i] in REQUESTED_KINDS else x
+             for i, x in texts.items()}
+    alt_log: Dict[str, Any] = {}
+    for i, k in enumerate(kinds):
+        if k == "alternative" and alternatives_done:
+            texts[i] = str(alternatives_done.get("text") or C.ALTERNATIVES_NONE)
+        elif k == "alternative" and i not in fixed:
+            texts[i] = alternatives_text(str(texts.get(i) or ""), alternatives, alt_log)
+    sections = answer_ledger.sections_of(draft)
+    head = "".join(x for t, x in sections if not t).strip("\n")
+    body = [(t, x.strip("\n")) for t, x in sections if t]
+    out: List[Tuple[str, str]] = []
+    for i, b in enumerate(blocks):          # v68: the requested blocks first, in the asked order, then the body --
+        if i in texts and b.get("kind") in ("cenni", "alternative", "quesito"):     # civil and penal alike
+            title = (C.fill(C.CENNI_SECTION, subject=C.capital(str(b["subject"]))) if b.get("kind") == "cenni"
+                     else quesito_title(str(b["subject"])) if b.get("kind") == "quesito" else C.ALTERNATIVES_SECTION)
+            out.append((title, str(texts[i]).strip("\n")))
+    at = len(out)
+    repeated: List[str] = []
+    if sum(1 for k in kinds if k in REQUESTED_KINDS) >= COLLAPSE_AT:
+        body = collapsed_body(body, [x for _, x in out], repeated)
+    out += body
+    _log("requested_sections", {"blocks": kinds, "written": sorted(texts), "body_at": at,
+                                **({"collapsed": [t for t, _ in body], "repeated": repeated}
+                                   if sum(1 for k in kinds if k in REQUESTED_KINDS) >= COLLAPSE_AT else {}),
+                                **({"unrecorded_requirements": required} if required else {}),
+                                **({"istituto_rubrica": miscited} if miscited else {}),
+                                "grounded": {x: [_label(_key(r["_article"])) for r in v] for x, v in grounds.items()},
+                                **({"alternatives": alt_log} if alt_log else {})})
+    return (f"{head}\n\n" if head else "") + _join(out)
+
+
+NAMED_RETRY_TOKENS = 700
+NAMED_TEXT_CHARS = 2400
+_PARAGRAPH_MARK_RE = re.compile(r"(?m)^\s*\[\d{1,2}\]\s*")
+
+
+def named_retry(state: Dict[str, Any], label: str, texts: Optional[Dict[str, str]], write) -> str:
+    """v68: the paragraph of one article the writer left without one (ledger_out's retry) -- one §2 job on that article
+    alone: the case, its facts, the article's record (issue_records.writer_block) and its text, NORMS_INSTRUCTION with
+    NAMED_RETRY_NOTE. write(jobs) -> [(title, text)]; its «[1]» mark dropped; "" when nothing comes back."""
+    from . import issue_records, protected_sources, writer_rules
+    records = state.get("records") or {}
+    ref = _parse_label(label)
+    scheda = issue_records.writer_block({label: records.get(label) or {}}, [ref], state.get("sentences") or [],
+                                        state.get("questions") or [], penal=penal_posture(state),
+                                        defending=defending_posture(state)) if label in records else ""
+    facts = issue_records.facts_block(state.get("sentences") or []) if state.get("sentences") else ""
+    text = " ".join(str((texts or {}).get(label) or "").split())[:NAMED_TEXT_CHARS]
+    material = protected_sources.with_rule("\n\n".join(p for p in (
+        f"CASO:\n{case_text(state)}", facts, scheda, f"NORME NELL'ORDINE DEI PARAGRAFI:\n1. art. {label}",
+        f"TESTI DELLE NORME:\n[art. {label}]\n{text}" if text else "") if p))
+    instruction = (writer_rules.NORMS_INSTRUCTION_REFERENCES if single_mode(state) else writer_rules.NORMS_INSTRUCTION) \
+        + (C.fill(writer_rules.NAMED_RETRY_NOTE, article=f"art. {label}") or "")
+    written = dict(write([(ANSWER_TITLES[1], instruction, material, NAMED_RETRY_TOKENS)]) or [])
+    paragraph = _PARAGRAPH_MARK_RE.sub("", str(written.get(ANSWER_TITLES[1]) or "")).strip()
+    _log("named_retry", {"article": label, "written": bool(paragraph), "chars": len(paragraph)})
+    return paragraph
+
+
+# v68: the requested blocks come first, the body after them; five or more, and the body is short -- its lead a summary
+# («Sintesi e strategia»), its norms («Norme»), the procedure, no objections nor conclusions, no sentence a requested
+# section already says
+REQUESTED_KINDS = ("cenni", "alternative", "quesito")
+COLLAPSE_AT = 5
+REPEAT_OVERLAP = 0.7            # the share of a body sentence's words a requested section's sentence holds
+
+
+def requested_kinds(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return [b for b in (state.get("intake") or {}).get("requested_blocks") or [] if b.get("kind") in REQUESTED_KINDS]
+
+
+def collapsed(state: Dict[str, Any]) -> bool:
+    """v68: five or more requested blocks -- the body is written short (_jobs) and rendered short (collapsed_body)."""
+    return len(requested_kinds(state)) >= COLLAPSE_AT
+
+
+def _words_of(text: str) -> set:
+    return {w[:7] for w in re.findall(r"[a-zà-ü]{4,}", (text or "").lower())}
+
+
+def requirement_out(text: str, state: Dict[str, Any], rows: Sequence[Dict[str, Any]], log: List[Dict[str, Any]]) -> str:
+    """v68: a requested section (quesito, cenni, alternative -- written after the review) without a sentence stating
+    a requirement of an article that is not among its recorded elements (record_check's word test on
+    requirement_context); each removal logged."""
+    from . import record_check
+    from .plan_then_write import _sentence_spans
+    context = requirement_context(state)
+    if not context or not (text or "").strip():
+        return text
+    documents = ref_documents([_parse_label(k) for k in context], list(rows or []))
+    names = [str((state.get("client") or {}).get("name") or "")] + list(party_names_of(state))
+    cut = []
+    for s, e in _sentence_spans(text):
+        why = record_check._unrecorded_requirement(text[s:e], context, documents, names)
+        if why:
+            cut.append((s, e))
+            log.append({"sentence": " ".join(text[s:e].split())[:200], "why": why})
+    for s, e in reversed(cut):
+        text = text[:s] + text[e:]
+    return re.sub(r"[ \t]{2,}", " ", text).strip() if cut else text
+
+
+def rubrica_out(text: str, state: Dict[str, Any], rows: Sequence[Dict[str, Any]], log: List[Dict[str, Any]]) -> str:
+    """v69: a requested section (written after record_check) with record_check's rubrica rule -- «istituto (art. N)»,
+    «istituto ai sensi dell'art. N» whose rubrica no source clears: the record's article for the institution, else no
+    citation (record_check._institution, _cited_instead); each logged."""
+    from . import citations, record_check
+    from .plan_then_write import _sentence_spans
+    records = state.get("records") or {}
+    rubriche, texts, names = {}, {}, {}
+    for r in rows or []:
+        if r.get("_article"):
+            s = r.get("s") or {}
+            label = citations.label(r["_article"])
+            rubriche.setdefault(label, str(s.get("titolo_articolo") or ""))
+            texts.setdefault(label, str(s.get("plain_text") or ""))
+            if r.get("_first_read"):
+                names[label] = f"{names.get(label, '')} {r['_first_read']}".strip()
+    for label, rec in records.items():
+        if rec.get("topic"):
+            names[label] = f"{names.get(label, '')} {rec['topic']}".strip()
+    if not (text or "").strip() or not (rubriche or records):
+        return text
+    documents = ref_documents([_parse_label(k) for k in set(records) | set(rubriche)], list(rows or []))
+    edits = []
+    for s, e in _sentence_spans(text):
+        hit = record_check._institution(text[s:e], documents, rubriche, texts, names, [], None, records)
+        if hit:
+            now = record_check._cited_instead(text[s:e], hit, documents)
+            edits.append((s, e, now))
+            log.append({"article": hit[0], "institution": hit[1], "now_article": hit[4] or "",
+                        "sentence": " ".join(text[s:e].split())[:200], "now": " ".join(now.split())[:200]})
+    for s, e, now in reversed(edits):
+        text = text[:s] + now + text[e:]
+    return text
+
+
+def collapsed_body(body: List[Tuple[str, str]], asked: Sequence[str], repeated: List[str]) -> List[Tuple[str, str]]:
+    """v68: the body after five or more requested sections -- «Risposta e strategia» as «Sintesi e strategia», the
+    norms as «Norme», «Profili processuali»; objections and conclusions gone; a sentence whose words a requested
+    section's sentence holds (REPEAT_OVERLAP) dropped (logged in repeated), headings and list lines kept."""
+    from .plan_then_write import _sentence_spans
+    names = {ANSWER_TITLES[0]: C.SUMMARY_SECTION, ANSWER_TITLES[1]: C.NORMS_SHORT_SECTION, ANSWER_TITLES[3]: ANSWER_TITLES[3]}
+    theirs = [w for text in asked for s, e in _sentence_spans(text) for w in [_words_of(text[s:e])] if len(w) >= 6]
+    out = []
+    for title, text in body:
+        if title not in names:
+            continue
+        if title != ANSWER_TITLES[3]:
+            cut = []
+            for s, e in _sentence_spans(text):
+                sentence = text[s:e]
+                mine = _words_of(sentence)
+                if sentence.lstrip().startswith(("**", "- ")) or len(mine) < 6:
+                    continue
+                if any(len(mine & w) >= REPEAT_OVERLAP * len(mine) for w in theirs):
+                    cut.append((s, e))
+                    repeated.append(" ".join(sentence.split())[:160])
+            for s, e in reversed(cut):
+                text = text[:s] + text[e:]
+            text = re.sub(r"[ \t]{2,}", " ", re.sub(r"\n{3,}", "\n\n", text)).strip()
+        if text:
+            out.append((names[title], text))
+    return out
+
+
 def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, rows, tool_rows, case, context, refs,
               topics, rendered, numbers, t0, planned, glossed=None, beyond=(), cap=TOPIC_ARTICLES) -> Optional[str]:
     """The sections written and every pass after them, to the final draft (before the client line and the closing);
@@ -5314,9 +6401,17 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     rules_text = writer_rules.system_rules(plan.get("parte_assistita") or "", references=single_mode(state)) \
         if records_on else ""
     mark("write")
+    # v68: every article with recorded elements -- the client's weapons too -- in every section the writer writes
+    threats_now = {label: t["elements"] for label, t in requirement_context(state).items()} if records_on else {}
+    review = {"threats": threats_now, "sections": list(REQUIREMENT_TITLES)} if threats_now else None      # v65
+    method = method_mode(state)
+    t_write = time.time()
     sections = _isolated("write", lambda: ptw.write_sections(plan, jobs, lang, named, documents, rows + tool_rows, case,
                                                              context=context, sections_note=sections_note(),
-                                                             writer_rules=rules_text), None)
+                                                             writer_rules=rules_text, review_extra=review,
+                                                             thinking=True if method else None), None)
+    if method:                  # v70 (3): the writer's duration, beside the thesis selection's
+        state.setdefault("timings", {})["writer_s"] = round(time.time() - t_write, 1)
     if not sections:
         _log("answer_failed", {"topics": [t["title"] for t in topics], "planned": planned})
         return None
@@ -5336,6 +6431,11 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     rules = _isolated("article_rules", lambda: rule_quote.article_rules(plan, rows, analysis_p, rule_refs), []) or []
     sections = ptw._step("term_consistency", sections,
                          lambda secs: term_consistency(secs, context, analysis_p, logs["term_consistency"]))
+    logs["fact_wording"] = []   # v74: the term check extended to fact nouns -- the act and the parties in the case's words
+    from . import fact_terms
+    certi, client_, accused = fact_wording_inputs(state)
+    sections = ptw._step("fact_wording", sections, lambda secs: fact_terms.apply_sections(
+        secs, certi, case, client_, accused, logs["fact_wording"]))
     from . import procedural_facts
     offences = analysis_p.get("offences") or []
     logs["procedural_consistency"] = []         # v60 (C): the writer's procedural sentences against the article's text
@@ -5431,6 +6531,9 @@ def _reviewed(state, plan, analysis, analysis_p, jobs, lang, named, documents, r
     if records_on:              # v60g (e): the one check, last, against the record -- the only one that removes
         mark("record_check")
         ctx = check_context(state, rows + tool_rows, refs, glossed, allowed, documents, case, rules)
+        ctx["requirement_review"] = review or {}        # v65: the writer review's verdicts on the threats' requirements
+        if review:
+            _log("requirement_review", {k: review.get(k) for k in ("ran", "failed", "flagged")})
         checked, logs["record_check"] = _isolated("record_check", lambda: record_check.check(
             answer_ledger.sections_of(draft), ctx, answer_ledger.current()), (None, {"error": "failed"})) \
             or (None, {"error": "failed"})
@@ -6010,11 +7113,53 @@ def apply_stated(state: Dict[str, Any], said: Dict[str, str], renumber: Sequence
     _log("stated", {"client": name, "angle": angle, "angle_topics": hits})
 
 
-def start(message: str, lang: str = "it", request: str = "") -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
+def take_intake(state: Dict[str, Any], intake: Optional[Dict[str, Any]], message: str, request: str = "") -> None:
+    """v61: the request's intake in the state (state["intake"], every later stage reads it) -- the API's, else read here
+    (intake.request_intake: the request the message when the case is an upload), its default role and rito filled from
+    the analysis (intake.resolve). Logged. v73: state["intake_source"] -- «request» (read before the flow, as the API
+    and the sims do), «flow» (read here: a caller that skipped it; the sims fail on it)."""
+    from . import intake as intake_mod
+    state["intake_source"] = "request" if intake is not None else "flow"
+    if intake is None:
+        intake = intake_mod.request_intake(request or message, message if request else "",
+                                           refers_to_upload=bool(request))
+    state["intake"] = intake_mod.resolve(intake, state.get("analysis") or {})
+    _log("intake_state", {**intake_mod.log_view(state["intake"]), "source": state["intake_source"]})
+
+
+def entry_args(message: str, case: Optional[str] = None) -> Tuple[str, str]:
+    """v73: (text, request) of the case-first flow as the API starts it (api._interactive_start): an upload's text the
+    case and the message its request; without one, the message the case."""
+    return (case, message) if case is not None else (message, "")
+
+
+def request_case_first(message: str, lang: str = "it", upload: str = "", case_id: str = "",
+                       refers_to_upload: bool = True, upload_role: str = "") -> Dict[str, Any]:
+    """v73: one request as the API serves it, for the sims (scripts/diagnose_long.py --interactive-sim, scripts/
+    nightly_sim.py): the intake first -- intake.request_intake, the API's function with the API's inputs (a new
+    session: no history; an upload sent with the message: about it) --, then the case-first flow with it
+    (single_shot), the case the upload when the intake reads it there (api: intake case_in «upload»), else the message.
+    The result as single_shot's, with "intake" (its log view) and "api_route" (the route the API takes: a route other
+    than case-first means the API would not have run this flow)."""
+    from . import intake as intake_mod
+    read = intake_mod.request_intake(message, upload or "", (), refers_to_upload=bool(upload) and refers_to_upload,
+                                     upload_role=upload_role)
+    case = upload if (upload or "").strip() and read.get("case_in") == "upload" else None
+    text, request = entry_args(message, case)
+    result = single_shot(text, lang, request, intake=read, case_id=case_id)
+    result["intake"] = intake_mod.log_view(read)
+    result["api_route"] = read.get("route")
+    return result
+
+
+def start(message: str, lang: str = "it", request: str = "", intake: Optional[Dict[str, Any]] = None
+          ) -> Tuple[str, Dict[str, Any], Dict[str, Any]]:
     """A narrative case: (reply, interaction, state) of round 1. v60: the client and the question the user's own words
-    state (the request when the case is an upload, else the message) are consumed (apply_stated)."""
+    state (the request when the case is an upload, else the message) are consumed (apply_stated). v61: the intake kept
+    in the state (take_intake)."""
     t0 = time.time()
     state = analyse_case(message, request, lang)
+    _isolated("intake", lambda: take_intake(state, intake, message, request))
     said = stated(request or message)
     _isolated("stated", lambda: apply_stated(state, said))
     reply, field = round1(state)
@@ -6036,13 +7181,48 @@ def start(message: str, lang: str = "it", request: str = "") -> Tuple[str, Dict[
 OTHER_PROFILES_MAX = 5          # v60r (2): the single-shot «Altri profili» lines, the best by score
 
 
+# v68: the books an «Altri profili» article must share with a covered topic's (topic_step.CODE_BOOKS, and the c.p.c.'s:
+# I disposizioni generali, II cognizione, III esecuzione, IV procedimenti speciali); a code with no ranges: the code
+# v76: c.c. Libro IV by its Titoli (obbligazioni in generale, contratti in generale, singoli contratti, promesse
+# unilaterali, titoli di credito, gestione di affari, indebito, arricchimento, fatti illeciti) -- a covered vendita
+# never admits a gestione d'affari profile; the other Libri whole
+PROFILE_BOOKS = {**CODE_BOOKS,
+                 "c.c.": [(1, 455), (456, 809), (810, 1172), (1173, 1320), (1321, 1469), (1470, 1986), (1987, 1991),
+                          (1992, 2027), (2028, 2032), (2033, 2040), (2041, 2042), (2043, 2059), (2060, 2642),
+                          (2643, 2969)],
+                 "c.p.c.": [(1, 162), (163, 473), (474, 632), (633, 840)]}
+
+
+def profile_book(label: str) -> Tuple[str, Optional[int]]:
+    """v68: (code, book number or None) of an article label."""
+    number, code = _key(_parse_label(label))
+    base = re.match(r"\d+", str(number))
+    for i, (lo, hi) in enumerate(PROFILE_BOOKS.get(code, [])):
+        if base and lo <= int(base.group(0)) <= hi:
+            return code, i + 1
+    return code, None
+
+
 def single_profiles(state: Dict[str, Any], numbers: Sequence[int], analysis: Dict[str, Any]) -> List[str]:
     """v60r (2): the single-shot «Altri profili» -- one line per topic not covered, its articles those inside the
     Sezione / Capo it is named by (state["units"]: an article known to lie outside it leaves the line; its anchor, the
     first left), past the code-area gate (an article of a code outside the frame's area only when admitted: area_gate's
     log); a line left with none goes. Ordered by score (the best grade, then the graded rows) and cut at
-    OTHER_PROFILES_MAX. Logged with what each check took out."""
+    OTHER_PROFILES_MAX. Logged with what each check took out. v68: an article only in the code and book (Libro) of a
+    covered topic's article (profile_book; a code with no book ranges: the code), or in the posture's table (its
+    articles, its sanctions) -- never a Libro the answer does not touch («Mezzadria» in a contract case)."""
     units = state.get("units") or {}
+    topics_all = state.get("topics") or []
+    covered = {profile_book(_label(_key(r))) for i, t in enumerate(topics_all, 1) if i in numbers for r in _topic_refs(t)}
+    if state.get("main_anchor"):
+        covered.add(profile_book(str(state["main_anchor"])))
+    entry = (state.get("posture") or {}).get("entry") or {}
+    table = {str(x) for x in list(entry.get("articles") or []) + list(entry.get("sanctions") or [])}
+
+    def in_book(label: str) -> bool:
+        code, book = profile_book(label)
+        return label in table or not covered or (code, book) in covered if book else \
+            label in table or not covered or code in {c for c, _ in covered}
     gate = state.get("area_gate") or {}
     families = gate.get("families") if "families" in gate else frame_families(analysis)
     admitted = {x.get("article") for x in gate.get("admitted") or []}
@@ -6050,9 +7230,9 @@ def single_profiles(state: Dict[str, Any], numbers: Sequence[int], analysis: Dic
     def in_area(label: str) -> bool:
         family = CODE_FAMILY.get(_key(_parse_label(label))[1])
         return not family or not families or family in families or label in admitted
-    log: Dict[str, Any] = {"outside_unit": {}, "outside_area": {}, "dropped": [], "reanchored": {}}
+    log: Dict[str, Any] = {"outside_unit": {}, "outside_area": {}, "outside_book": {}, "dropped": [], "reanchored": {}}
     items = []
-    for i, t in enumerate(state.get("topics") or [], 1):
+    for i, t in enumerate(topics_all, 1):
         if i in numbers:
             continue
         arts = [_label(_key(r)) for r in _topic_refs(t)]
@@ -6063,6 +7243,10 @@ def single_profiles(state: Dict[str, Any], numbers: Sequence[int], analysis: Dic
         kept = [a for a in inside if in_area(a)]
         if len(kept) < len(inside):
             log["outside_area"][t.get("title") or str(i)] = [a for a in inside if a not in kept]
+        booked = [a for a in kept if in_book(a)]            # v68: the Libro of a covered topic, or the posture's table
+        if len(booked) < len(kept):
+            log["outside_book"][t.get("title") or str(i)] = [a for a in kept if a not in booked]
+        kept = booked
         if not kept:
             log["dropped"].append(t.get("title") or str(i))
             continue
@@ -6082,6 +7266,140 @@ def single_profiles(state: Dict[str, Any], numbers: Sequence[int], analysis: Dic
 # v60r (4): consecutive «(da verificare…)» markers -- the writer's, conditional_on_unknown's, the record check's -- one
 _MARKER_RUN_RE = re.compile(r"(?:[ \t]*\(da verificare(?::[^()]*)?\)){2,}", re.IGNORECASE)
 _MARKER_RE = re.compile(r"\(da verificare(?::\s*([^()]*))?\)", re.IGNORECASE)
+
+
+# --- v65: the numbers of §1 and the conclusions against the store ------------------------------------------------------
+NUMBER_TITLES = (ANSWER_TITLES[0], ANSWER_TITLES[4])
+_UNIT_KEYS = {"gior": "giorni", "mes": "mesi", "ann": "anni"}
+_EURO_RE = re.compile(r"(?:euro|€)\s*(\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?|(\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?\s*(?:euro|€)",
+                      re.IGNORECASE)
+
+
+def _unit(word: str) -> str:
+    low = (word or "").lower()
+    return next((v for k, v in _UNIT_KEYS.items() if low.startswith(k)), "")
+
+
+def store_numbers(rows: Sequence[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """v65: {label: {"terms": [(qty, unit, subject)], "amounts": [euro]}} the store holds for the answer's articles
+    (procedural_facts by code: the termini, the querela's term, the pena's euro amounts)."""
+    from . import procedural_facts as pf
+    out: Dict[str, Dict[str, Any]] = {}
+    for code in pf.CODES:
+        for number, facts in pf.by_number(rows, code).items():
+            terms = [(int(t["qty"]), _unit(t.get("unit")), str(t.get("subject") or ""))
+                     for t in procedural_facts_terms(facts) if str(t.get("qty")).isdigit()]
+            ambiguous = sorted({_unit(t.get("unit")) for t in procedural_facts_terms(facts, ambiguous=True)})
+            q = re.match(pf._QTY + r"\s+(giorni|mesi|anni)", str(facts.get("querela_termine") or ""), re.IGNORECASE)
+            if q and pf._n(q.group(1)) is not None:
+                terms.append((pf._n(q.group(1)), _unit(q.group(2)), "querela"))
+            amounts = [int(x.replace(".", "")) for x in re.findall(r"euro\s*(\d{1,3}(?:\.\d{3})+|\d+)",
+                                                                  str(facts.get("pena") or ""), re.IGNORECASE)]
+            if terms or amounts or ambiguous:
+                out[f"{number} {code}"] = {"terms": terms, "amounts": amounts, "ambiguous": ambiguous}
+    return out
+
+
+def procedural_facts_terms(facts: Dict[str, Any], ambiguous: bool = False) -> List[Dict[str, Any]]:
+    """v66: the store's terms through its accessor -- the clear ones, or (ambiguous) the ones the law states twice."""
+    from . import procedural_facts as pf
+    return [t for t in pf.terms_of(facts) if bool(t.get("ambiguous")) == ambiguous]
+
+
+def store_numbers_out(draft: str, store: Dict[str, Dict[str, Any]], documents, log: Optional[List[Dict[str, Any]]] = None
+                      ) -> str:
+    """v65: in §1 and the conclusions (NUMBER_TITLES), a sentence citing one article the store has numbers for: each
+    term («trenta giorni») and each euro amount it states for it must be the store's -- a different one is rewritten
+    to the store's number (the store's term of that unit whose subject the sentence names, else its only one of that
+    unit; the amounts one for one when as many) and logged; an ambiguous one is logged, left."""
+    from . import answer_ledger, citations, procedural_facts as pf
+    from .plan_then_write import _sentence_spans
+    if not store:
+        return draft
+    term_re = re.compile(r"\b" + pf._QTY + r"\s+(giorni|giorno|mesi|mese|anni|anno)\b", re.IGNORECASE)
+    out = []
+    for title, text in answer_ledger.sections_of(draft):
+        if title not in NUMBER_TITLES or not (text or "").strip():
+            out.append((title, text))
+            continue
+        edits: List[Tuple[int, int, str]] = []
+        for s, e in _sentence_spans(text):
+            sentence = text[s:e]
+            labels = list(dict.fromkeys(citations.label(r) for r in citations.refs_in(sentence, documents)))
+            mine = [x for x in labels if x in store]
+            if len(mine) != 1:
+                continue
+            label, have = mine[0], store[mine[0]]
+            low = sentence.lower()
+            for m in term_re.finditer(sentence):
+                said, unit = pf._n(m.group(1)), _unit(m.group(2))
+                pool = [t for t in have["terms"] if t[1] == unit]
+                if unit in (have.get("ambiguous") or ()):       # v66: the law gives two numbers -- never rewritten
+                    if log is not None:
+                        log.append({"section": title, "article": label, "said": m.group(0), "store": "ambiguo"})
+                    continue
+                if said is None or not pool or said in [t[0] for t in pool]:
+                    continue
+                named = [t for t in pool if t[2] and t[2] in low]
+                target = named[0] if len(named) == 1 else pool[0] if len(pool) == 1 else None
+                entry = {"section": title, "article": label, "said": m.group(0), "store": [f"{t[0]} {t[1]}" for t in pool]}
+                if target:
+                    entry["now"] = f"{target[0]} {target[1]}"
+                    edits.append((s + m.start(), s + m.end(), entry["now"]))
+                if log is not None:
+                    log.append(entry)
+            found = [(m, int((m.group(1) or m.group(2)).replace(".", ""))) for m in _EURO_RE.finditer(sentence)]
+            wrong = [(m, v) for m, v in found if have["amounts"] and v not in have["amounts"]]
+            if wrong:
+                pairs = list(zip(found, have["amounts"])) if len(found) == len(have["amounts"]) else \
+                    [(found[0], have["amounts"][0])] if len(found) == 1 == len(have["amounts"]) else []
+                for (m, v), right in pairs:
+                    if v != right:
+                        g = 1 if m.group(1) else 2
+                        edits.append((s + m.start(g), s + m.end(g), f"{right:,}".replace(",", ".")))
+                if log is not None:
+                    log.append({"section": title, "article": label, "said": [m.group(0) for m, _ in wrong],
+                                "store": have["amounts"], **({"now": have["amounts"]} if pairs else {})})
+        for a, b, new in sorted(edits, reverse=True):
+            text = text[:a] + new + text[b:]
+        out.append((title, text))
+    return answer_ledger.rejoin(draft, out)
+
+
+_BANNED_RE = re.compile(r"\b(?:non\s+verificabil[ei](?:\s+con\s+le\s+date\s+del\s+caso)?|NON\s+VERIFICABILE)\b",
+                        re.IGNORECASE)
+
+
+def banned_words_out(draft: str, log: Optional[List[str]] = None) -> str:
+    """v65: «non verificabile» never in the answer, any section -- «da verificare» in its place, each one logged."""
+    def one(m: "re.Match") -> str:
+        if log is not None:
+            log.append(m.group(0))
+        return "da verificare"
+    return _BANNED_RE.sub(one, draft or "")
+
+
+_FRAGMENT_PARAGRAPH_RE = re.compile(r"^\s*[(a-zà-ù]")
+
+
+def fragment_paragraphs(draft: str, log: Optional[List[str]] = None) -> str:
+    """v64: the writer's sections (the procedural section and the code's lists aside) without a paragraph that starts
+    with a parenthesis or a lowercase letter -- a fragment left by a removal or a marker («(lesione personale dolosa)
+    o all'art. 590 …»); each dropped paragraph logged."""
+    from . import answer_ledger
+    titles = {ANSWER_TITLES[0], ANSWER_TITLES[1], ANSWER_TITLES[2], ANSWER_TITLES[4]}
+    out = []
+    for title, text in answer_ledger.sections_of(draft):
+        if title not in titles or not (text or "").strip():
+            out.append((title, text))
+            continue
+        lead, trail = text[:len(text) - len(text.lstrip("\n"))], text[len(text.rstrip("\n")):]
+        paragraphs = re.split(r"\n[ \t]*\n", text.strip("\n"))
+        kept = [p for p in paragraphs if not _FRAGMENT_PARAGRAPH_RE.match(p)]
+        if len(kept) < len(paragraphs) and log is not None:
+            log += [" ".join(p.split())[:200] for p in paragraphs if _FRAGMENT_PARAGRAPH_RE.match(p)]
+        out.append((title, lead + "\n\n".join(kept) + trail if len(kept) < len(paragraphs) else text))
+    return answer_ledger.rejoin(draft, out)
 
 
 def merged_markers(text: str, log: Optional[List[str]] = None) -> str:
@@ -6128,14 +7446,18 @@ def covered_topics(state: Dict[str, Any]) -> List[int]:
     return chosen
 
 
-def single_shot(message: str, lang: str = "it", request: str = "") -> Dict[str, Any]:
+def single_shot(message: str, lang: str = "it", request: str = "", intake: Optional[Dict[str, Any]] = None,
+                case_id: str = "") -> Dict[str, Any]:
     """v60k: the complete parere for a narrative case -- {"answer", "interaction", "state", "citations", "kind"}, as
     follow_up's. Round 1 internally (analyse_case), the client the message states (apply_stated) or the one the answer
     assumes, whose side orders the topics (prepare_side); every graded topic answered (write_answer); timed
-    (single_shot_timings)."""
+    (single_shot_timings). v61: the intake kept in the state (take_intake), its requested blocks passed to the plan."""
     t0 = time.time()
     state = analyse_case(message, request, lang)
     state["mode"] = "single_shot"
+    if case_id:                 # v71: the run's id, for the thesis log (logs/thesis_<case>.json)
+        state["case_id"] = case_id
+    _isolated("intake", lambda: take_intake(state, intake, message, request))
     said = stated(request or message)
     _isolated("stated", lambda: apply_stated(state, said))
     if not (state.get("answered") or {}).get("parte_assistita"):

@@ -9,7 +9,7 @@ from typing import Any, Dict, List
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from ..ai_chat import _call_chat
-from .. import protected_sources
+from .. import plain_grounding, protected_sources
 from ..article_codes import complete_codes
 from ..article_suffix import SUFFIX, normalize_number
 from ..answer_processing import (
@@ -144,6 +144,13 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
         list(_raw_result[0].keys()) if _raw_result else None,
     )
     data = rerank_results(state.get("query", ""), _raw_result)
+    _cenni_notes = None
+    if state.get("deliverable") == "cenni":      # v69: inside the area the subject names, its notes from the same code
+        _area_log: Dict[str, Any] = {}
+        data, _cenni_notes = plain_grounding.cenni_restrict(
+            state.get("raw_query") or state.get("query", ""), data, state.get("special_dottrina_rows") or [], _area_log,
+            fetch=plain_grounding.graph_fetch)
+        vlog("plain_cenni_area", _area_log)
     logger.info("synthesize_answer: data=%d, raw_result=%d, bm25_doc_ids=%s", len(data), len(state.get('raw_result') or []), state.get('bm25_doc_ids'))
     _dottrina_only = False
 
@@ -213,8 +220,8 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     if not data:
         # Main corpus has nothing but dottrina might — fall through to the dottrina
         # section below by treating the special sections as the primary source.
-        _fallback_special_rows = state.get("special_dottrina_rows") or []
-        if _fallback_special_rows:
+        _fallback_special_rows = _cenni_notes if _cenni_notes is not None else (state.get("special_dottrina_rows") or [])
+        if _fallback_special_rows:            # v69: a cenni's, of its own code family only
             data = _fallback_special_rows
             _dottrina_only = True
         else:
@@ -263,7 +270,7 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     secondary_citations = [c for c in all_citations if c.get("document_type") == "interpretation"]
     # Special/dottrina sources are retrieved and carried separately from the main
     # pipeline (context_retrieval's dedicated state key) — never part of `data`.
-    special_dottrina_rows = state.get("special_dottrina_rows") or []
+    special_dottrina_rows = _cenni_notes if _cenni_notes is not None else (state.get("special_dottrina_rows") or [])
     special_citations = _extract_citations(special_dottrina_rows)
     # Tiered synthesis only applies to the standard (non-comparison) answer flow —
     # comparison mode builds Data from paired document rows and has its own prompt shape.
@@ -304,6 +311,13 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if citation_strings:
         human_parts.append("Fonti disponibili:\n" + "\n".join(citation_strings) + "\n")
+    if plain_grounding.applies(state.get("deliverable")) and not plain_grounding.rulings_in(data):
+        human_parts.append(plain_grounding.NO_RULINGS_NOTE)          # v68: grounded below too (plain_grounding)
+    if state.get("deliverable") == "quesito":                       # v69: a term asked -- the store's, with its article
+        _store = plain_grounding.store_lines(data)
+        if _store:
+            human_parts.append(plain_grounding.STORE_TERMS_NOTE.format(lines="\n".join(_store)))
+            vlog("plain_store_terms", {"lines": _store})
     if state.get("bm25_doc_ids") and state.get("bm25_from_article_lookup"):
         human_parts.append(
             "Answer ONLY using the data provided above. Do not use any knowledge outside of the retrieved data. "
@@ -567,6 +581,14 @@ def synthesize_answer(state: Dict[str, Any]) -> Dict[str, Any]:
 
     answer = _strip_hallucinated_fonti(answer)
 
+    # v68: a cenni or a quesito -- every article cited among the retrieved sections, no case law without a ruling
+    if plain_grounding.applies(state.get("deliverable")):
+        _grounding: Dict[str, Any] = {"deliverable": state.get("deliverable")}
+        answer = plain_grounding.ground(answer, data, _grounding)
+        vlog("plain_grounding", _grounding)
+    if state.get("deliverable") == "cenni":      # v69: a cenni never closes with a question
+        answer = plain_grounding.no_closing_question(answer)
+
     # Citation quality filter disabled — corpus too small for meaningful filtering
     # Gap phrase detection handles hallucination prevention instead
     filtered_citations = citations
@@ -755,6 +777,8 @@ def generate_clarifying_question(state: Dict[str, Any]) -> Dict[str, Any]:
     and stash the candidate sections so the next turn can re-rank instead of
     re-retrieving from scratch."""
     if state.get("pending_sections"):
+        return {}
+    if state.get("deliverable") == "cenni":      # v69: a cenni never closes with a question
         return {}
     citations = state.get("citations") or []
     unique_doc_names = {c.get("document_name") for c in citations if c.get("document_name")}

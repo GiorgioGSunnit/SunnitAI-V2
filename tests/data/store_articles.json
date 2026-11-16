@@ -1,0 +1,99 @@
+{
+  "_about": "Store v3 test texts (tests/test_v66.py, tests/test_v67.py): arts. 325, 327, 641 c.p.c. and 585 c.p.p. copied verbatim on 2026-11-12 (v67: 326 c.p.c. likewise, page updated 20/02/2026; v69: 166 c.p.c., page updated 20/02/2026, its footnote marker «(3)» left out) from brocardi.it's Dispositivo (pages updated 20/02/2026 for c.p.c., 30/09/2026 for c.p.p.), footnote markers and bracketed cross-references left out, commi numbered as the pages' massime cite them. NOT the graph's text: the server run of scripts/fill_procedural_store.py --show on these articles is the check against the store.",
+  "articles": {
+    "166 c.p.c.": {
+      "source": "https://www.brocardi.it/codice-di-procedura-civile/libro-secondo/titolo-i/capo-i/sezione-i/art166.html",
+      "commi": [
+        [
+          1,
+          "Il convenuto deve costituirsi a mezzo del procuratore, o personalmente nei casi consentiti dalla legge, almeno settanta giorni prima dell'udienza di comparizione fissata nell'atto di citazione depositando la comparsa di cui all'articolo 167 con la copia della citazione notificata, la procura e i documenti che offre in comunicazione."
+        ]
+      ]
+    },
+    "325 c.p.c.": {
+      "source": "https://www.brocardi.it/codice-di-procedura-civile/libro-secondo/titolo-iii/capo-i/art325.html",
+      "commi": [
+        [
+          1,
+          "Il termine per proporre l'appello, la revocazione e l'opposizione di terzo di cui all'articolo 404, secondo comma, è di trenta giorni. È anche di trenta giorni il termine per proporre la revocazione e l'opposizione di terzo sopra menzionata contro la sentenza delle corti d'appello."
+        ],
+        [
+          2,
+          "Il termine per proporre il ricorso per cassazione è di giorni sessanta."
+        ]
+      ]
+    },
+    "326 c.p.c.": {
+      "source": "https://www.brocardi.it/codice-di-procedura-civile/libro-secondo/titolo-iii/capo-i/art326.html",
+      "commi": [
+        [
+          1,
+          "I termini stabiliti nell'articolo 325 sono perentori e decorrono dalla notificazione della sentenza, sia per il soggetto notificante che per il destinatario della notificazione, dal momento in cui il relativo procedimento si perfeziona per il destinatario, tranne per i casi previsti nei numeri 1, 2, 3 e 6 dell'articolo 395 e negli articoli 397 e 404 secondo comma, riguardo ai quali il termine decorre dal giorno in cui è stato scoperto il dolo o la falsità o la collusione o è stato recuperato il documento o è passata in giudicato la sentenza di cui al numero 6 dell'articolo 395, o il pubblico ministero ha avuto conoscenza della sentenza."
+        ],
+        [
+          2,
+          "Nel caso previsto nell'articolo 332, l'impugnazione proposta contro una parte fa decorrere nei confronti dello stesso soccombente il termine per proporla contro le altre parti."
+        ]
+      ]
+    },
+    "327 c.p.c.": {
+      "source": "https://www.brocardi.it/codice-di-procedura-civile/libro-secondo/titolo-iii/capo-i/art327.html",
+      "commi": [
+        [
+          1,
+          "Indipendentemente dalla notificazione, l'appello, il ricorso per cassazione e la revocazione per i motivi indicati nei numeri 4 e 5 dell'articolo 395 non possono proporsi dopo decorsi sei mesi dalla pubblicazione della sentenza."
+        ],
+        [
+          2,
+          "Questa disposizione non si applica quando la parte contumace dimostra di non aver avuto conoscenza del processo per nullità della citazione o della notificazione di essa, e per nullità della notificazione degli atti di cui all'articolo 292."
+        ]
+      ]
+    },
+    "641 c.p.c.": {
+      "source": "https://www.brocardi.it/codice-di-procedura-civile/libro-quarto/titolo-i/capo-i/art641.html",
+      "commi": [
+        [
+          1,
+          "Se esistono le condizioni previste nell'articolo 633, il giudice, con decreto motivato da emettere entro trenta giorni dal deposito del ricorso, ingiunge all'altra parte di pagare la somma o di consegnare la cosa o la quantità di cose chieste o invece di queste la somma di cui all'articolo 639 nel termine di quaranta giorni, con l'espresso avvertimento che nello stesso termine può essere fatta opposizione a norma degli articoli seguenti e che, in mancanza di opposizione, si procederà a esecuzione forzata."
+        ],
+        [
+          2,
+          "Quando concorrono giusti motivi, il termine può essere ridotto fino a dieci giorni oppure aumentato a sessanta. Se l'intimato risiede in uno degli altri Stati dell'Unione europea, il termine è di cinquanta giorni e può essere ridotto fino a venti giorni. Se l'intimato risiede in altri Stati, il termine è di sessanta giorni e, comunque, non può essere inferiore a trenta né superiore a centoventi."
+        ],
+        [
+          3,
+          "Nel decreto, eccetto per quello emesso sulla base di titoli che hanno già efficacia esecutiva secondo le vigenti disposizioni, il giudice liquida le spese e le competenze e ne ingiunge il pagamento."
+        ]
+      ]
+    },
+    "585 c.p.p.": {
+      "source": "https://www.brocardi.it/codice-di-procedura-penale/libro-nono/titolo-i/art585.html",
+      "commi": [
+        [
+          1,
+          "Il termine per proporre impugnazione, per ciascuna delle parti, è:\na) di quindici giorni, per i provvedimenti emessi in seguito a procedimento in camera di consiglio e nel caso previsto dall'articolo 544 comma 1;\nb) di trenta giorni, nel caso previsto dall'articolo 544 comma 2;\nc) di quarantacinque giorni, nel caso previsto dall'articolo 544 comma 3."
+        ],
+        [
+          "1-bis",
+          "I termini previsti dal comma 1 sono aumentati di quindici giorni per l'impugnazione del difensore dell'imputato giudicato in assenza."
+        ],
+        [
+          2,
+          "I termini previsti dal comma 1 decorrono:\na) dalla notificazione o comunicazione dell'avviso di deposito del provvedimento emesso in seguito a procedimento in camera di consiglio;\nb) dalla lettura del provvedimento in udienza, quando è redatta anche la motivazione, per tutte le parti che sono state o che debbono considerarsi presenti nel giudizio, anche se non sono presenti alla lettura;\nc) dalla scadenza del termine stabilito dalla legge o determinato dal giudice per il deposito della sentenza ovvero, nel caso previsto dall'articolo 548 comma 2, dal giorno in cui è stata eseguita la notificazione o la comunicazione dell'avviso di deposito;\nd) dal giorno in cui è stata eseguita la comunicazione dell'avviso di deposito con l'estratto del provvedimento, per il procuratore generale presso la corte di appello rispetto ai provvedimenti emessi in udienza da qualsiasi giudice della sua circoscrizione diverso dalla corte di appello."
+        ],
+        [
+          3,
+          "Quando la decorrenza è diversa per l'imputato e per il suo difensore, opera per entrambi il termine che scade per ultimo."
+        ],
+        [
+          4,
+          "Fino a quindici giorni prima dell'udienza possono essere presentati nella cancelleria del giudice della impugnazione motivi nuovi, con le forme previste dall'articolo 582. L'inammissibilità dell'impugnazione si estende ai motivi nuovi."
+        ],
+        [
+          5,
+          "I termini previsti dal presente articolo sono stabiliti a pena di decadenza."
+        ]
+      ]
+    }
+  }
+}

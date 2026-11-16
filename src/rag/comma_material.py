@@ -52,7 +52,11 @@ def enabled() -> bool:
 _LIST_ITEM_RE = re.compile(r"(?<=[:;.])\s+(?=(?:\d{1,2}|[a-z])(?:-?(?:bis|ter|quater))?\)\s)")
 _ITEM_RE = re.compile(r"^(?:\d{1,2}|[a-z])(?:-?(?:bis|ter|quater))?\)\s")
 _COMMA_HEAD_RE = re.compile(r"^(\d{1,3})(?:-[a-z]+)?\.\s")
-_NUMBERED_RE = re.compile(r"(?<=[.;:])\s+(?=\d{1,2}\.\s+[A-ZÀ-Ü])")
+# v67: a comma added later («1-bis.», «3-ter.») -- its own comma, never a part of the one before
+SUFFIXES = ("bis", "ter", "quater", "quinquies", "sexies", "septies", "octies", "novies", "decies")
+_SUFFIX = r"(?:" + "|".join(SUFFIXES) + r")"
+_SUFFIXED_HEAD_RE = re.compile(r"^(\d{1,3})\s*-\s*(" + _SUFFIX + r")\.\s", re.IGNORECASE)
+_NUMBERED_RE = re.compile(r"(?<=[.;:])\s+(?=\d{1,2}(?:\s*-\s*" + _SUFFIX + r")?\.\s+[A-ZÀ-Ü])")
 _SENTENCE_RE = re.compile(r"(?<=[.;])\s+(?=[A-ZÀ-Ü])")
 
 
@@ -146,6 +150,38 @@ def comma_numbers(parts: Sequence[str], how: Optional[str]) -> List[Optional[int
             k += 1
         out.append(max(k, 1))
     return out
+
+
+def comma_labels(parts: Sequence[str], how: Optional[str]) -> List[Any]:
+    """v67: comma_numbers with a later comma's own label -- «1-bis. …» is comma "1-bis" (and its list items with it),
+    never a part of comma 1; every other part as comma_numbers gives it."""
+    numbers = comma_numbers(parts, how)
+    if how not in ("lines", "numbered") or not any(_SUFFIXED_HEAD_RE.match(p) for p in parts):
+        return numbers
+    out: List[Any] = []
+    current: Any = None
+    for n, part in zip(numbers, parts):
+        head = _SUFFIXED_HEAD_RE.match(part)
+        if head:
+            current = f"{int(head.group(1))}-{head.group(2).lower()}"
+        elif _COMMA_HEAD_RE.match(part) or current is None or (not _ITEM_RE.match(part) and n != _base(current)):
+            current = n
+        out.append(current)
+    return out
+
+
+def _base(label: Any) -> Optional[int]:
+    if isinstance(label, int) or label is None:
+        return label
+    m = re.match(r"\d+", str(label))
+    return int(m.group(0)) if m else None
+
+
+def comma_order(label: Any) -> Tuple[int, int]:
+    """v67: a comma label's place -- 1, "1-bis", "1-ter", 2 …"""
+    base = _base(label) or 0
+    suffix = str(label).partition("-")[2].lower() if isinstance(label, str) else ""
+    return base, (SUFFIXES.index(suffix) + 1 if suffix in SUFFIXES else 0)
 
 
 def commi_from_sections(number: str, texts: Dict[str, str], kinds: Optional[Dict[str, str]] = None,

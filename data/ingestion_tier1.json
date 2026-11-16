@@ -1,0 +1,18 @@
+{
+ "_about": "v75: the laws to ingest first (tier 1): governing laws the answers need that the corpus lacks. Each with why; once ingested, its special_laws.json entry gates it by its domain signal.",
+ "documents": [
+  {
+   "id": "dlgs_11_2010",
+   "name": "D.Lgs. 27 gennaio 2010, n. 11 (attuazione della direttiva 2007/64/CE, servizi di pagamento nel mercato interno; come modificato dal d.lgs. 218/2017, PSD2)",
+   "why": "la disciplina delle operazioni di pagamento non autorizzate (phishing, frodi su carte e bonifici): artt. 10, 11, 12 -- onere della prova del prestatore, rimborso, responsabilità del pagatore per colpa grave",
+   "special_law": "dlgs_11_2010",
+   "status": "da ingerire"
+  },
+  {
+   "id": "dl_11_2009",
+   "name": "D.L. 23 febbraio 2009, n. 11, conv. dalla l. 23 aprile 2009, n. 38 (misure urgenti in materia di sicurezza pubblica e di contrasto alla violenza sessuale, nonché in tema di atti persecutori)",
+   "why": "l'ammonimento del questore (art. 8) chiesto nei casi di atti persecutori: il concetto «ammonimento» (data/general_concepts.json) lo cita",
+   "status": "da verificare nel corpus: se assente, da ingerire"
+  }
+ ]
+}

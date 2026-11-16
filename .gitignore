@@ -35,3 +35,5 @@ data/logs/
 # Server diagnostics (contains connection details)
 server_check.sh
 eval_runs/
+# v71: runtime logs (logs/thesis_<case>.json, the thesis call's input and output)
+logs/

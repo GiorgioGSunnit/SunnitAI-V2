@@ -285,7 +285,7 @@ def test_the_api_answers_a_case_in_one_parere_and_routes_its_follow_up(chat, mon
     monkeypatch.setattr(flow, "start", lambda *a, **k: pytest.fail("round 1 shown in single shot"))
     state = base._state(monkeypatch)
     state.update(mode="single_shot", state=flow.ANSWERED)
-    monkeypatch.setattr(flow, "single_shot", lambda text, lang="it", request="": {
+    monkeypatch.setattr(flow, "single_shot", lambda text, lang="it", request="", **k: {
         "answer": "IL PARERE COMPLETO", "interaction": flow.interaction(state, 3, ("deepen", "add_fact")),
         "state": state, "citations": [], "kind": "answer"})
     body = client.post("/api/chat", json={"message": base.CASE}).json()

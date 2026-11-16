@@ -122,7 +122,10 @@ def _dated(term: Dict[str, Any], text: str) -> str:
 
 
 def _term_line(term: Dict[str, Any]) -> str:
+    """A computed term's line -- v65: "" (dropped) for a term with no article number in its reference."""
     from . import answer_invariants
+    if not re.search(r"\d", str(term.get("ref") or "")):
+        return ""
     text = _dated(term, str(term.get("text") or "").strip())
     if answer_invariants.enabled():
         text = answer_invariants.plain_status(text)
@@ -132,6 +135,70 @@ def _term_line(term: Dict[str, Any]) -> str:
     if not ref or ref in text:
         return "- " + _sentence(text)
     return "- " + _sentence(f"{text}, {ref}" if text.rstrip().endswith(")") else f"{text} ({ref})")
+
+
+_REF_LABEL_RE = re.compile(r"(\d+(?:-[a-z]+)?)\s*(?:,\s*co\.\s*\S+\s*)?(c\.\s?p\.\s?p\.|c\.\s?p\.\s?c\.|c\.\s?p\.\s?a\.|"
+                           r"c\.\s?c\.|c\.\s?p\.)", re.IGNORECASE)
+_LENGTH_TOKEN_RE = re.compile(r"\d+|\b(giorn|mes|ann)\w*", re.IGNORECASE)
+
+
+def ref_label(ref: Any) -> str:
+    """v66: «art. 585 c.p.p.» -> «585 c.p.p.» (a computed term's reference as the store keys it); "" for none."""
+    from .plan_then_write import _code_key
+    m = _REF_LABEL_RE.search(str(ref or ""))
+    if not m:
+        return ""
+    code = _code_key(re.sub(r"\s+", "", m.group(2)).lower())
+    return f"{m.group(1)} {code}"
+
+
+def _numbers(length: str) -> set:
+    """«15, 30 o 45 giorni» -> {(15, "giorni"), (30, "giorni"), (45, "giorni")}: each number with the first unit after
+    it («1 anno e 6 mesi» -> {(1, "anni"), (6, "mesi")})."""
+    units = {"giorn": "giorni", "mes": "mesi", "ann": "anni"}
+    out, pending = set(), []
+    for m in _LENGTH_TOKEN_RE.finditer(str(length or "")):
+        if m.group(0).isdigit():
+            pending.append(int(m.group(0)))
+        else:
+            out |= {(n, units[m.group(1).lower()]) for n in pending}
+            pending = []
+    return out
+
+
+def store_term_line(term: Dict[str, Any], store: Optional[Dict[str, Dict[str, Any]]],
+                    log: Optional[List[Dict[str, Any]]] = None) -> str:
+    """v66: §4's line for a computed term (fact_signals) whose article the store holds terms for -- the store's term
+    for its subject (procedural_facts.term_lines), never fact_signals' own number: the same numbers keep the computed
+    line ("": the caller's); other numbers, the store's terms with the decorrenza flagged and no computed date; an
+    ambiguous term, its sentence quoted, no number, no date. "" when the store has no term for it."""
+    from . import interaction_copy as C, procedural_facts
+    label = ref_label(term.get("ref"))
+    facts = (store or {}).get(label)
+    if not label or not facts or not procedural_facts.terms_of(facts):
+        return ""
+    lines, info = procedural_facts.term_lines(facts, label, str(term.get("label") or term.get("id") or ""))
+    entry = {"term": term.get("id"), "article": label}
+    if not info["terms"]:
+        if log is not None:
+            log.append({**entry, "how": "nessun termine dell'archivio per questo atto"})
+        return ""
+    if not info["ambiguous"] and _numbers(term.get("length")) == info["numbers"]:
+        return ""
+    name = C.capital(str(term.get("label") or "").strip()) or label
+    line = C.fill(C.STORE_TERM_LINE, label=name, terms="; ".join(lines)) or ""
+    if log is not None:
+        log.append({**entry, "how": "ambiguo: frase citata" if info["ambiguous"] else "numero dell'archivio",
+                    "computed": sorted(_numbers(term.get("length"))), "store": sorted(info["numbers"])})
+    return f"- {line}" if line else ""
+
+
+def _store_log(where: str, entries: List[Dict[str, Any]]) -> None:
+    try:
+        from .verbose_logger import vlog
+        vlog("store_terms", {"where": where, "lines": entries})
+    except Exception:           # noqa: BLE001 -- logging never fails the render
+        pass
 
 
 def _tool_line(tool: Dict[str, Any]) -> str:
@@ -186,22 +253,25 @@ OFFENCES_MAX = 5
 
 
 def procedure_lines(found: Sequence[tuple], offences: Sequence[tuple], dated: bool,
-                    facts: Optional[Dict[str, Dict[str, Any]]] = None) -> List[str]:
+                    facts: Optional[Dict[str, Dict[str, Any]]] = None, procedibilita: bool = True,
+                    querela_term: bool = True) -> List[str]:
     """The «Procedibilità e competenza» lines: each table offence (topic_tables.CRIMINAL_PROCEDURE) found or among the
     chosen topics' delitti, with its own procedibilità and competenza; the other delitti (offences: [(number, rubrica)]),
     by default procedibili d'ufficio before the tribunale, in one line (v59: v58-h7 had five identical lines); while the
-    date of the fact is unknown, what runs from it."""
+    date of the fact is unknown, what runs from it (v63: the querela's term only where querela_term -- never at the
+    trial nor, v64, once a charge is stated; prescrizione always)."""
     from . import topic_tables
     table = topic_tables.CRIMINAL_PROCEDURE
     if facts is not None:
-        return _fact_lines(found, offences, dated, facts)
+        return _fact_lines(found, offences, dated, facts, procedibilita=procedibilita, querela_term=querela_term)
     shown = list(dict.fromkeys([tuple(r) for r in found] + [(str(n), "c.p.") for n, _ in offences
                                                              if (str(n), "c.p.") in table]))
     lines = []
     for ref in shown:
         name, how, court = table[ref]
-        lines.append(f"- {name[:1].upper() + name[1:]} (art. {ref[0]} {ref[1]}): procedibile {how}"
-                     + (f"; competenza: {court}" if court else "") + ".")
+        lines.append(f"- {name[:1].upper() + name[1:]} (art. {ref[0]} {ref[1]}): "
+                     + "; ".join(x for x in (f"procedibile {how}" if procedibilita else "",
+                                             f"competenza: {court}" if court else "") if x) + ".")
     others = []
     for number, rubrica in [tuple(o) for o in offences][:OFFENCES_MAX]:
         if (str(number), "c.p.") in shown:
@@ -210,9 +280,10 @@ def procedure_lines(found: Sequence[tuple], offences: Sequence[tuple], dated: bo
         others.append(f"{name[:1].upper() + name[1:]} (art. {number} c.p.)")
     if others:
         lines.append(f"- {DEFAULT_LIST_JOIN.join(others)}: "
-                     + (DEFAULT_LINE_MANY if len(others) > 1 else DEFAULT_LINE_ONE).format(*DEFAULT_PROCEDURE) + ".")
+                     + ((DEFAULT_LINE_MANY if len(others) > 1 else DEFAULT_LINE_ONE).format(*DEFAULT_PROCEDURE)
+                        if procedibilita else f"competenza: {DEFAULT_PROCEDURE[1]}") + ".")
     if not dated:
-        querela = any("querela" in table[r][1] for r in shown)
+        querela = procedibilita and querela_term and any("querela" in table[r][1] for r in shown)
         lines.append("- Data del fatto: non nota. Da essa decorre la prescrizione del reato (art. 157 c.p.)"
                      + ("; per i reati a querela, i tre mesi per proporla (art. 124 c.p.)" if querela else "") + ".")
     return lines
@@ -235,7 +306,8 @@ def store_only(analysis: Optional[Dict[str, Any]]) -> bool:
 
 
 def _fact_lines(found: Sequence[tuple], offences: Sequence[tuple], dated: bool,
-                facts: Dict[str, Dict[str, Any]], table_lines: bool = True) -> List[str]:
+                facts: Dict[str, Dict[str, Any]], table_lines: bool = True, procedibilita: bool = True,
+                querela_term: bool = True) -> List[str]:
     """v60 (C): one line per offence from its procedural facts (procedural_facts: the store, else its text); the table's
     offences (CRIMINAL_PROCEDURE) found in the case without a text of their own keep the table's line; the offences with
     neither, one line «da verificare». Then the date of the fact, as before."""
@@ -248,19 +320,22 @@ def _fact_lines(found: Sequence[tuple], offences: Sequence[tuple], dated: bool,
     for number in order:
         if facts.get(number):
             lines.append(procedural_facts.line(number, names.get(number) or table.get((number, "c.p."), ("",))[0],
-                                               facts[number]))
+                                               facts[number], procedibilita=procedibilita))
         elif table_lines and (number, "c.p.") in table:
             name, how, court = table[(number, "c.p.")]
-            lines.append(f"- {name[:1].upper() + name[1:]} (art. {number} c.p.): procedibile {how}"
-                         + (f"; competenza: {court}" if court else "") + ".")
+            court = procedural_facts.ASSISE if procedural_facts.assise(number, None, False) else court
+            lines.append(f"- {name[:1].upper() + name[1:]} (art. {number} c.p.): "
+                         + "; ".join(x for x in (f"procedibile {how}" if procedibilita else "",
+                                                 f"competenza: {court}" if court else "") if x) + ".")
         else:
             name = " ".join(str(names.get(number) or "").split()).rstrip(" .") or "Delitto"
             unknown.append(C.fill(C.PROCEDURE_HEAD, name=name[:1].upper() + name[1:], number=number))
     if unknown:
         lines.append(f"- {DEFAULT_LIST_JOIN.join(unknown)}: {C.PROCEDURE_UNKNOWN}.")
     if not dated:
-        querela = any((facts.get(n) or {}).get("querela") for n in order) or table_lines and any(
-            "querela" in table[(n, "c.p.")][1] for n in order if (n, "c.p.") in table and not facts.get(n))
+        querela = procedibilita and querela_term and (any((facts.get(n) or {}).get("querela") for n in order) or
+                                                      table_lines and any(
+            "querela" in table[(n, "c.p.")][1] for n in order if (n, "c.p.") in table and not facts.get(n)))
         lines.append("- Data del fatto: non nota. Da essa decorre la prescrizione del reato (art. 157 c.p.)"
                      + ("; per i reati a querela, il termine per proporla" if querela else "") + ".")
     return lines
@@ -282,6 +357,12 @@ def criminal_procedure(analysis: Dict[str, Any]) -> str:
     from .plan_then_write import _code_key
     areas = pool_gates.gate_areas(analysis)
     offences = [tuple(o) for o in (analysis or {}).get("offences") or []]
+    posture = (analysis or {}).get("posture") or {}
+    if posture.get("stage") in LATE_STAGES:         # v62: after the decision, never procedibilità
+        return ""
+    procedibilita = not (posture.get("stage") == "primo_grado" and posture.get("querela_stated"))
+    # v63: at the trial the querela's term is past; v64: so it is whenever the case states a charge (from the indagini)
+    querela_term = posture.get("stage") != "primo_grado" and not (analysis or {}).get("charge_stated")
     if store_only(analysis):        # v60d: only the topics' offences, their lines from the store (no table, no default)
         if not offences:
             return ""
@@ -293,19 +374,124 @@ def criminal_procedure(analysis: Dict[str, Any]) -> str:
                     for e in facts.get("events") or [])
         stored = (analysis or {}).get("offence_facts")
         return "\n".join(_fact_lines([], offences, dated, dict(stored) if isinstance(stored, dict) else {},
-                                     table_lines=False))
+                                     table_lines=False, procedibilita=procedibilita, querela_term=querela_term))
     refs = [tuple(r) for r in (analysis or {}).get("topic_refs") or [] if len(r) == 2]
     criminal = (bool(areas) and fact_signals.family(areas[0]) == "penale"
                 or bool(refs) and all(_code_key(str(c)) in ("c.p.", "c.p.p.") for _, c in refs))
     if not criminal and not offences:
         return ""
     found = topic_tables.offences(analysis, areas) if criminal else []
+    focus = [str(n) for n in (analysis or {}).get("procedure_focus") or []]
+    if focus:                   # v63: with a charge stated, the table's offences only among the charge's and alternatives
+        found = [r for r in found if str(r[0]) in focus]
     facts = _signals(analysis).get("facts") or {}
     dated = any(str(e.get("date") or "").strip() and fact_signals.parse_date(str(e.get("date")))
                 and re.search(fact_signals._OFFENCE + "|" + fact_signals._DAMAGE + r"|spar|ucci|mort",
                               str(e.get("what") or "").lower()) for e in facts.get("events") or [])
     facts = (analysis or {}).get("offence_facts")
-    return "\n".join(procedure_lines(found, offences, dated, dict(facts) if isinstance(facts, dict) else None))
+    return "\n".join(procedure_lines(found, offences, dated, dict(facts) if isinstance(facts, dict) else None,
+                                      procedibilita=procedibilita, querela_term=querela_term))
+
+
+# --- v62: the stage (analysis["posture"]: src/rag/posture.py) ------------------------------------------------------------
+# pre_filing / indagini: today's section. primo_grado: today's (no procedibilità when the case states a querela), then
+# the stage's closed list (riti alternativi, costituzione di parte civile). impugnazione / esecuzione: the stage's closed
+# list alone -- never procedibilità, never «Parti da convenire». «Parti da convenire» only for civile / attore /
+# pre_filing (an unknown field: as today).
+LATE_STAGES = ("impugnazione", "esecuzione")
+PRE_FILING_RITI = ("civile", "famiglia")      # v70 (10): the ordinary civil claim's list -- never the labour rito's
+OPEN_STAGES = ("indagini", "primo_grado")     # v65: their closed list after today's blocks (by role: stage_blocks)
+STAGE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
+                          "stage_procedure.json")
+_STAGE: Dict[str, Any] = {}
+
+
+def stage_list() -> Dict[str, Any]:
+    """data/stage_procedure.json (read once; {} when missing or unreadable)."""
+    if "data" not in _STAGE:
+        import json
+        try:
+            with open(STAGE_FILE, encoding="utf-8") as f:
+                _STAGE["data"] = json.load(f)
+        except (OSError, ValueError):
+            _STAGE["data"] = {}
+    return _STAGE["data"]
+
+
+def _stage_family(posture: Dict[str, Any]) -> str:
+    """The closed list's family: «penale» for the ordinary penal rite (the giudice di pace's has its own appeal rules,
+    not listed), «civile» for the civil rites."""
+    rito = str((posture or {}).get("rito") or "")
+    if rito == "penale":
+        return "penale"
+    return "civile" if rito in ("civile", "lavoro", "famiglia", "esecuzione") else ""
+
+
+def stage_blocks(posture: Dict[str, Any], store: Optional[Dict[str, Dict[str, Any]]] = None, rendered: str = ""
+                 ) -> List[Tuple[str, str]]:
+    """[(title, body)] of the stage's closed list for the posture's family, stage and role: each block's lines, the
+    act ({act}: the posture's entry) and a prior decision's date ({date}) filled; the term's date stated, else flagged
+    «da verificare». [] for a cell the list does not hold. v66: a block naming «store» articles takes its terms and their
+    decorrenza from the store (procedural_facts.term_lines, from_lines; store: {label: facts}) -- the list carries no
+    number of its own; an article not read, STORE_TERM_UNREAD. v70 (10): a block whose «unless» pattern the section
+    already shows (rendered: the blocks before it) is left out -- never the same tool twice."""
+    from . import interaction_copy as C, procedural_facts
+    posture = posture or {}
+    blocks_ = (stage_list().get(_stage_family(posture)) or {}).get(str(posture.get("stage") or "")) or []
+    role = str(posture.get("role") or "sconosciuto")
+    act = str((posture.get("entry") or {}).get("act") or "")
+    date = next((d.get("date") for d in posture.get("prior_decisions") or [] if d.get("date")
+                 and d.get("outcome") != "contestazione"), "")     # v71: a charge is no decision
+    out: List[Tuple[str, str]] = []
+    for block in blocks_:
+        roles = block.get("roles")
+        if roles and role not in roles:
+            continue
+        if block.get("unless") and rendered and re.search(block["unless"], rendered):
+            continue
+        lines = []
+        store_log: List[Dict[str, Any]] = []
+        for label in block.get("store") or []:          # v66: the store's terms and their decorrenza
+            facts = (store or {}).get(label)
+            found, info = procedural_facts.term_lines(facts, label) if facts else ([], {"ambiguous": False})
+            found += procedural_facts.from_lines(facts, label) if facts else []
+            lines += found or [C.fill(C.STORE_TERM_UNREAD, article=label) or ""]
+            store_log.append({"article": label, "lines": len(found), "read": bool(facts),
+                              "ambiguous": bool(info.get("ambiguous"))})
+        if store_log:
+            _store_log(f"lista chiusa: {block.get('title')}", store_log)
+        for line in block.get("lines") or []:
+            if "{act}" in line:
+                line = C.capital(line.replace("{act}", act) if act else line.replace("{act}: ", "").replace("{act}", ""))
+            lines.append(line)
+        if date and block.get("date_line"):
+            lines.append(block["date_line"].format(date=date))
+        elif block.get("date_flag"):
+            lines.append(C.capital(block["date_flag"]) + ".")
+        if lines:
+            out.append((block["title"], "\n".join(f"- {x}" for x in lines) if len(lines) > 1 else lines[0]))
+    return out
+
+
+def store_articles(posture: Optional[Dict[str, Any]]) -> List[str]:
+    """v66: the articles the posture's closed list takes its terms from (its blocks' «store», the client's role's)."""
+    posture = posture or {}
+    blocks_ = (stage_list().get(_stage_family(posture)) or {}).get(str(posture.get("stage") or "")) or []
+    role = str(posture.get("role") or "sconosciuto")
+    return list(dict.fromkeys(label for b in blocks_ if not b.get("roles") or role in b["roles"]
+                              for label in b.get("store") or []))
+
+
+def parties_allowed(posture: Optional[Dict[str, Any]]) -> bool:
+    """«Parti da convenire» only for a civil rite's attore before filing; a field the posture does not know: as today."""
+    posture = posture or {}
+    if not posture:
+        return True
+    if posture.get("rito") not in (None, "", "sconosciuto", "civile", "lavoro", "famiglia"):
+        return False
+    if posture.get("role") not in (None, "", "sconosciuto", "attore"):
+        return False
+    return posture.get("stage") in (None, "", "sconosciuto", "pre_filing")
 
 
 # v59 (v55-l4, n9: usucapione chosen, no «Mediazione»): the chosen topics' c.c. articles whose matter needs mediation
@@ -704,13 +890,48 @@ def _triggered_tools(tools: List[Dict[str, Any]], analysis: Dict[str, Any],
     return out
 
 
+PENAL_TERMS = ("querela",)
+
+
+def penal_rito(posture: Dict[str, Any]) -> bool:
+    """v75b: «Procedibilità e competenza», «Profilo penale» and the querela's term only for a penal rito intake read
+    (posture.intake_family) -- never the frame's area nor a word of the case («phishing»); no posture (the replay, an
+    old state), or a posture without the intake's key: as before."""
+    if not posture or "intake_rito" not in posture:
+        return True
+    from . import posture as posture_mod
+    return posture_mod.intake_family(posture) == "penale"
+
+
+def rito_terms(terms: List[Dict[str, Any]], posture: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v75b: the terms of the section without the penal ones (PENAL_TERMS: the querela's) unless intake read a penal
+    rito -- a word of a civil case («phishing») never brings them."""
+    return list(terms) if penal_rito(posture) else [t for t in terms if str(t.get("id") or "") not in PENAL_TERMS]
+
+
+def mediation_rito(posture: Dict[str, Any]) -> bool:
+    """v75: the mediazione and the pre-filing list (ATP, 700) only for the rito intake read (posture.intake_family:
+    civile, famiglia), never the frame's area; no posture (the sim's old states, the replay): as before."""
+    if not posture:
+        return True
+    rito = str(posture["intake_rito"] if "intake_rito" in posture else posture.get("rito") or "")
+    return rito in PRE_FILING_RITI
+
+
 def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
-    """[(title, body)] of the section, in the template's order (render's docstring); a block without content is left out."""
+    """[(title, body)] of the section, in the template's order (render's docstring); a block without content is left out.
+    v62: by the posture's stage (LATE_STAGES, stage_blocks, parties_allowed)."""
     from . import fact_signals
+    posture = (analysis or {}).get("posture") or {}
+    if posture.get("stage") in LATE_STAGES:
+        late = stage_blocks(posture, (analysis or {}).get("store_terms"))
+        if late:
+            _stage_log(posture, [t for t, _ in late], "closed list")
+            return late
     signals = _signals(analysis)
     gated = _gated(analysis)
     out: List[Tuple[str, str]] = []
-    mediation = mediation_of(analysis)
+    mediation = mediation_of(analysis) if mediation_rito(posture) else {}      # v75: the intake rito's only
     negotiation = negotiation_of(analysis) if store_only(analysis) else {}
     if negotiation.get("required"):         # v60e: instead of the mediazione
         out.append((NEGOTIATION_TITLE, _sentence(negotiation["text"])))
@@ -720,6 +941,9 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     if labour.get("lines"):                 # v60i (9): the labour dispute's closed list
         out.append((labour_list().get("title") or "Controversia di lavoro", "\n".join(labour["lines"])))
     terms = [t for t in signals.get("terms") or [] if t.get("text") and not _term_gated(t, gated)]
+    from . import special_laws           # v65: a special law's term (the consumer code's) only with its domain signal
+    terms = [t for t in terms if special_laws.term_allowed(t, (analysis or {}).get("special_signals"))]
+    terms = rito_terms(terms, posture)      # v75b: the querela's term only for a penal intake rito
     listed = (analysis or {}).get("listed_topics")
     if listed:              # v59 (v58-l3 §4: the usucapione with no such topic): the terms the listed topics carry
         from . import topic_step
@@ -727,7 +951,11 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     triggers: List[Dict[str, Any]] = []         # v60p: which trigger produced each line
     triggers += [{"line": str(t.get("id")), "trigger": "frase del caso" if t.get("trigger") else "calcolo",
                   "by": str(t.get("trigger") or "")[:160]} for t in terms]
-    lines = [_term_line(t) for t in terms] + own_term_lines(analysis, terms, triggers)
+    store_log: List[Dict[str, Any]] = []         # v66: the store's terms, never fact_signals' own table, where it has them
+    lines = [x for x in [store_term_line(t, (analysis or {}).get("store_terms"), store_log) or _term_line(t)
+                         for t in terms] + own_term_lines(analysis, terms, triggers) if x]
+    if store_log:
+        _store_log("termini", store_log)
     if lines:
         out.append(("Termini", "\n".join(lines)))
     tools = [t for t in signals.get("tools") or [] if not _tool_gated(t, gated)]
@@ -745,9 +973,11 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
                and not (t.get("id") == _LITIS and parties)]
     if general:
         out.append(("Strumenti processuali", "\n".join(f"- {_tool_line(t)}" for t in general)))
+    if not parties_allowed(posture):            # v62: civile / attore / pre_filing only
+        parties = ""
     if parties:
         out.append(("Parti da convenire", _sentence(parties)))
-    elif signals.get("defendants"):
+    elif signals.get("defendants") and parties_allowed(posture):
         dead = set(_deceased(analysis))         # v60d: the deceased is never a party to sue
         names = "; ".join(f"{d['name']} ({d['why']})" if d.get("why") else str(d["name"])
                           for d in signals["defendants"] if d.get("name") and d["name"] not in dead)
@@ -769,9 +999,9 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
         if line:
             out.append((TRASCRIZIONE_TITLE, line))
     criminal = next((t for t in tools if t.get("id") == fact_signals.CRIMINAL_TOOL), None)
-    if criminal and not store_only(analysis):
+    if criminal and not store_only(analysis) and penal_rito(posture):          # v75b: the intake rito's only
         out.append(("Profilo penale", _tool_line(criminal)))
-    procedure = criminal_procedure(analysis)
+    procedure = criminal_procedure(analysis) if penal_rito(posture) else ""
     if procedure:
         out.append((PROCEDURE_TITLE, procedure))
     damages = fact_signals.damages_block(signals) if signals.get("damages") and not store_only(analysis) else ""
@@ -780,6 +1010,16 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
         title = {"accused": "Voci di danno che la controparte può far valere", "victim": "Voci di danno"}.get(
             side, "Voci di danno da considerare")
         out.append((title, damages.strip()))
+    if posture.get("stage") == "pre_filing" and mediation_rito(posture):     # v70 (10): v59's mediazione, ATP, 700;
+        shown = "\n".join(f"{t}\n{b}" for t, b in out)                                 # ATP and 700, restored
+        before = stage_blocks(posture, (analysis or {}).get("store_terms"), rendered=shown)
+        out += before
+        if before:
+            _stage_log(posture, [t for t, _ in before], "pre-filing list after today's")
+    if posture.get("stage") in OPEN_STAGES:     # v62: the trial's closed list after today's blocks; v65: the indagini's
+        trial = stage_blocks(posture, (analysis or {}).get("store_terms"))
+        out += trial
+        _stage_log(posture, [t for t, _ in trial], "after today's")
     if triggers:
         try:
             from .verbose_logger import vlog
@@ -787,6 +1027,16 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
         except Exception:           # noqa: BLE001 -- logging never fails the render
             pass
     return out
+
+
+def _stage_log(posture: Dict[str, Any], titles: Sequence[str], how: str) -> None:
+    try:
+        from .verbose_logger import vlog
+        vlog("procedure_stage", {"rito": posture.get("rito"), "role": posture.get("role"),
+                                 "stage": posture.get("stage"), "querela_stated": posture.get("querela_stated"),
+                                 "blocks": list(titles), "how": how})
+    except Exception:           # noqa: BLE001 -- logging never fails the render
+        pass
 
 
 def _named(text: str, analysis: Dict[str, Any]) -> str:

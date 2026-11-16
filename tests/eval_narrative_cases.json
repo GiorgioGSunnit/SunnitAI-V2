@@ -1,39 +1,6 @@
 {
-  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names. 2026-10-18: c3's expected 'art. 5 l392' removed -- L. 392/1978 is not in the corpus; the law actually governing residential leases today is L. 431/1998, and its own art. 5 covers transitional contracts, not relevant to c3's facts. c3's expected is now just 658 cpc, 1453 cc, 1587 cc. 2026-10-19: added l1-l4, four long narrative cases written for scripts/exp_distill.py's experiment (not in Flavio's original list, but not 'extra' either -- their expected lists are curated, not just the question's own named article), moved here so exp_distill.py and eval_narrative.py share one source of truth. 2026-10-19: added h1-h11, 11 real exam-style cases from a practising lawyer (not Flavio's, not written for this project), flagged \"heldout\": true. Their \"expected\" lists are provisional (\"expected_status\": \"draft — pending lawyer validation\"); corrections will replace them. Held-out cases are a check on whatever the tuning set (everything else in this file) already converged on, never themselves used to write a prompt, pick a fixture, or decide whether a change helped -- and never added to scripts/exp_distill.py's case set either. eval_narrative.py excludes them by default; --include-heldout/--heldout-only opt in, and report them in their own section with their own average, never mixed into the tuning set's. 2026-10-24: added a second held-out set from the lawyer (test2.txt, 11 cases), questions verbatim except the spreadsheet labels 'Amministrativo<tab>' before n4 and the heading 'CIVILE A SEGUIRE' before n6. n1-n9 (\"set\": \"heldout2\", \"heldout\": true) are the 9 fresh cases; s1-s2 (\"set\": \"seen2\", \"seen\": true) are the first two (Tizio/Caia maltrattamenti, Pio/Esposito), already used by Antonelo to tune plan mode, so reported in their own section and never in heldout2's average. Cases with a set run only with --set or --only. Their expected lists (from the lawyer's table, 24 Oct) are drafts, pending the lawyer's validation; after a correction, score saved runs again with --rescore. l241 is 'Legge sul Procedimento Amministrativo 2026' in the corpus. New codes: dlgs36, tuel. s1-s2 have no expected lists.",
+  "_about": "Acceptance set for tests/eval_narrative.py. Questions copied on 2026-10-15 from production's /tmp/qt and /tmp/qn (Flavio's runs), kept verbatim, typos included. Expected articles from Flavio's list in v2_round3_brief.md. Codes: cp, cpp, cc, cpc, consumo, l392 (see CODES in eval_narrative.py). 'extra' cases are not in Flavio's list: their expectation is only the article the question itself names. 2026-10-18: c3's expected 'art. 5 l392' removed -- L. 392/1978 is not in the corpus; the law actually governing residential leases today is L. 431/1998, and its own art. 5 covers transitional contracts, not relevant to c3's facts. c3's expected is now just 658 cpc, 1453 cc, 1587 cc. 2026-10-19: added l1-l4, four long narrative cases written for scripts/exp_distill.py's experiment (not in Flavio's original list, but not 'extra' either -- their expected lists are curated, not just the question's own named article), moved here so exp_distill.py and eval_narrative.py share one source of truth. 2026-10-19: added h1-h11, 11 real exam-style cases from a practising lawyer (not Flavio's, not written for this project), flagged \"heldout\": true. Their \"expected\" lists are provisional (\"expected_status\": \"draft — pending lawyer validation\"); corrections will replace them. Held-out cases are a check on whatever the tuning set (everything else in this file) already converged on, never themselves used to write a prompt, pick a fixture, or decide whether a change helped -- and never added to scripts/exp_distill.py's case set either. eval_narrative.py excludes them by default; --include-heldout/--heldout-only opt in, and report them in their own section with their own average, never mixed into the tuning set's. 2026-10-24: added a second held-out set from the lawyer (test2.txt, 11 cases), questions verbatim except the spreadsheet labels 'Amministrativo<tab>' before n4 and the heading 'CIVILE A SEGUIRE' before n6. n1-n9 (\"set\": \"heldout2\", \"heldout\": true) are the 9 fresh cases; s1-s2 (\"set\": \"seen2\", \"seen\": true) are the first two (Tizio/Caia maltrattamenti, Pio/Esposito), already used by Antonelo to tune plan mode, so reported in their own section and never in heldout2's average. Cases with a set run only with --set or --only. Their expected lists (from the lawyer's table, 24 Oct) are drafts, pending the lawyer's validation; after a correction, score saved runs again with --rescore. l241 is 'Legge sul Procedimento Amministrativo 2026' in the corpus. New codes: dlgs36, tuel. s1-s2 have no expected lists. 2026-11-12: sempronio removed.",
   "cases": [
-    {
-      "id": "sempronio",
-      "question": "Sempronio a seguito di un acceso diverbio con Caio gli sferra un violento schiaffo al volto. Caio indietreggia e cade a terra battendo il capo contro un marciapiede. Sempronio presta soccorso a Caio e chiama l’ambulanza. Caio muore poco dopo in ospedale a seguito di un’emorragia cerebraleda trauma cranico.\nIl PM contesta a Sempronio l’art 584 cp.\nIl candidato assunte le vesti del legale di Sempronio, premessi brevi cenni sull’omicidio preterintenzionale, il nesso causale e l’elemento soggettivo, delinea una strategia difensiva, ipotizzando anche possibili reati alternativi configurabili nel caso di specie",
-      "expected": [
-        {
-          "code": "cp",
-          "article": "584"
-        },
-        {
-          "code": "cp",
-          "article": "581"
-        },
-        {
-          "code": "cp",
-          "article": "582"
-        },
-        {
-          "code": "cp",
-          "article": "43"
-        },
-        {
-          "code": "cp",
-          "article": "589"
-        }
-      ],
-      "forbidden_cited": [
-        {
-          "code": "cp",
-          "article": "116",
-          "why": "concorso anomalo needs several agents; one agent here"
-        }
-      ]
-    },
     {
       "id": "sempronio_no_hint",
       "extra": true,

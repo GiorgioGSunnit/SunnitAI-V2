@@ -70,7 +70,7 @@ def test_the_records_status_settles_the_facts_and_the_link():
              (req(supporting=["S2"]), C.STATUS_PROVATO),            # v60t (1): grounded -- an allegation too
              (req(supporting=["S9"]), C.STATUS_DA_PROVARE),         # a sentence the case does not hold
              (req(contradicting=["S1"], supporting=["S1"]), C.STATUS_NON_RISULTA),
-             (req(facts_status=C.STATUS_PROVATO, contradicting=["S1"]), C.STATUS_PROVATO),
+             (req(facts_status=C.STATUS_PROVATO, contradicting=["S1"]), C.STATUS_NON_RISULTA),   # v76: a sentence
              (req(kind="comma", supporting=["S1"]), C.STATUS_DA_PROVARE), (req(), C.STATUS_DA_PROVARE)]
     for r, status in cases:
         issue_records.settle(r, by_id)
@@ -329,9 +329,10 @@ def test_an_institution_sharing_no_stem_with_the_articles_rubrica_is_marked_in_a
     sections = [("Conclusioni", "Resta la responsabilità del vettore marittimo (art. 2051 c.c.) per il carico perso."),
                 ("Risposta e strategia", "Vale la destinazione del padre di famiglia (art. 1062 c.c.) per la strada.")]
     out, log = record_check.check(sections, ctx)
-    assert "(da verificare: art. 2051 c.c., rubrica «Danno cagionato da cosa in custodia»)" in out[0][1]
-    assert "(da verificare" not in out[1][1]
-    assert [m["rule"] for m in log["marked"]] == ["istituto_rubrica"]
+    # v68: no article's rubrica names the institution -- the citation is dropped, the sentence kept
+    assert out[0][1] == "Resta la responsabilità del vettore marittimo per il carico perso."
+    assert "(art. 1062 c.c.)" in out[1][1]
+    assert [m["rule"] for m in log["rewritten"]] == ["istituto_rubrica"] and not log["marked"]
 
 
 # --- 4. the first read: every named party, the persona offesa, the verified re-read ---------------------------------------

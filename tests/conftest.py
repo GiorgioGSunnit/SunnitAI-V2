@@ -26,3 +26,11 @@ FLAGS = frozenset(_flags())
 def _flags_unset(monkeypatch):
     for name in FLAGS:
         monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _intake_without_model(monkeypatch):
+    """v61: no test reaches a model through the intake (src/rag/intake.ask_model): the rules and the defaults decide,
+    as with the model unavailable. A test of the model's part stubs ask_model itself."""
+    from src.rag import intake
+    monkeypatch.setattr(intake, "ask_model", lambda *a, **k: {})

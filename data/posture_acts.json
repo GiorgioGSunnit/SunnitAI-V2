@@ -1,0 +1,223 @@
+{
+  "_about": "v62: the act family and the goal of the parere's main line by the client's posture (src/rag/posture.py), read from intake's rito, role and stage. An entry matches when the cell's rito, role and stage are each among its lists. A cell no entry matches -- civile/attore/pre_filing above all -- keeps today's plan exactly (no act, the plan's own goal). The texts are Code's drafts, listed in docs/copy_review.md for the PO. v64: sanctions, the general-part articles on the penalty an imputato's parere applies (each an «applicazione» paragraph in the norms section when it touches the client or a fact of the case). v70: an imputato entry before the sentence carries «subordinate» -- the riti alternativi and the sentencing lines posture.apply_plan adds to the plan's subordinate line, so it exists even when the model does not think of it (Code's drafts). v71: an imputato entry carries «fallback_main» -- the main line when every thesis of the method plan is barred (each contests an element the record marks integrato): the PO's words.",
+  "entries": [
+    {
+      "rito": [
+        "penale"
+      ],
+      "role": [
+        "parte_civile"
+      ],
+      "stage": [
+        "impugnazione"
+      ],
+      "act": "appello ai soli effetti civili (art. 576 c.p.p.)",
+      "goal": "l'accertamento della responsabilità ai fini civili e il risarcimento del danno",
+      "articles": [
+        "576 c.p.p."
+      ]
+    },
+    {
+      "rito": [
+        "penale"
+      ],
+      "role": [
+        "imputato"
+      ],
+      "stage": [
+        "impugnazione"
+      ],
+      "act": "appello contro la sentenza di condanna (art. 593 c.p.p.)",
+      "goal": "il proscioglimento o, in subordine, la riduzione della pena",
+      "articles": [
+        "593 c.p.p."
+      ],
+      "sanctions": [
+        "62 c.p.",
+        "62-bis c.p.",
+        "133 c.p."
+      ],
+      "fallback_main": "ammettere la condotta, contestare l'inquadramento / contenere la pena"
+    },
+    {
+      "rito": [
+        "penale",
+        "penale_gdp"
+      ],
+      "role": [
+        "imputato"
+      ],
+      "stage": [
+        "indagini",
+        "primo_grado"
+      ],
+      "act": "linea difensiva",
+      "goal": "l'esclusione o la riduzione dell'addebito",
+      "sanctions": [
+        "62 c.p.",
+        "62-bis c.p.",
+        "133 c.p."
+      ],
+      "subordinate": [
+        "giudizio abbreviato (artt. 438 ss. c.p.p.): riduzione di un terzo della pena per i delitti (art. 442, co. 2, c.p.p.)",
+        "applicazione della pena su richiesta (art. 444 c.p.p.), se la pena in concreto lo consente (non oltre cinque anni dopo la diminuzione)",
+        "attenuanti generiche (art. 62-bis c.p.) e commisurazione della pena (art. 133 c.p.)"
+      ],
+      "fallback_main": "ammettere la condotta, contestare l'inquadramento / contenere la pena"
+    },
+    {
+      "rito": [
+        "penale",
+        "penale_gdp"
+      ],
+      "role": [
+        "persona_offesa",
+        "parte_civile"
+      ],
+      "stage": [
+        "primo_grado"
+      ],
+      "act": "azione civile nel processo penale (artt. 74 ss. c.p.p.)",
+      "goal": "il risarcimento del danno nel processo penale",
+      "articles": [
+        "74 c.p.p."
+      ]
+    },
+    {
+      "rito": [
+        "penale",
+        "penale_gdp"
+      ],
+      "role": [
+        "persona_offesa"
+      ],
+      "stage": [
+        "indagini"
+      ],
+      "act": "facoltà della persona offesa nelle indagini (artt. 90 e 410 c.p.p.)",
+      "goal": "l'esercizio dell'azione penale nei confronti dell'indagato",
+      "articles": [
+        "90 c.p.p.",
+        "90-bis c.p.p.",
+        "335 c.p.p.",
+        "360 c.p.p.",
+        "367 c.p.p.",
+        "408 c.p.p.",
+        "410 c.p.p.",
+        "74 c.p.p.",
+        "79 c.p.p."
+      ]
+    },
+    {
+      "rito": [
+        "penale",
+        "penale_gdp"
+      ],
+      "role": [
+        "persona_offesa"
+      ],
+      "stage": [
+        "pre_filing"
+      ],
+      "act": "querela (art. 336 c.p.p.)",
+      "goal": "l'avvio del procedimento penale e la tutela della persona offesa",
+      "articles": [
+        "336 c.p.p."
+      ]
+    },
+    {
+      "rito": [
+        "civile",
+        "lavoro",
+        "famiglia"
+      ],
+      "role": [
+        "convenuto"
+      ],
+      "stage": [
+        "primo_grado"
+      ],
+      "act": "comparsa di costituzione e risposta (art. 167 c.p.c.)",
+      "goal": "il rigetto della domanda",
+      "articles": [
+        "166 c.p.c.",
+        "167 c.p.c.",
+        "36 c.p.c.",
+        "171-ter c.p.c.",
+        "183 c.p.c.",
+        "696 c.p.c.",
+        "696-bis c.p.c."
+      ]
+    },
+    {
+      "rito": [
+        "civile",
+        "lavoro",
+        "famiglia"
+      ],
+      "role": [
+        "attore",
+        "convenuto"
+      ],
+      "stage": [
+        "impugnazione"
+      ],
+      "act": "appello (artt. 339 ss. c.p.c.)",
+      "goal": "la riforma della sentenza di primo grado",
+      "articles": [
+        "339 c.p.c."
+      ]
+    },
+    {
+      "rito": [
+        "civile",
+        "esecuzione"
+      ],
+      "role": [
+        "convenuto"
+      ],
+      "stage": [
+        "esecuzione"
+      ],
+      "act": "opposizione all'esecuzione o agli atti esecutivi (artt. 615 e 617 c.p.c.)",
+      "goal": "la sospensione e la caducazione dell'esecuzione",
+      "articles": [
+        "615 c.p.c.",
+        "617 c.p.c."
+      ]
+    },
+    {
+      "rito": [
+        "civile",
+        "esecuzione"
+      ],
+      "role": [
+        "terzo"
+      ],
+      "stage": [
+        "esecuzione"
+      ],
+      "act": "opposizione di terzo all'esecuzione (art. 619 c.p.c.)",
+      "goal": "la liberazione del bene dal pignoramento",
+      "articles": [
+        "619 c.p.c."
+      ]
+    },
+    {
+      "rito": [
+        "amministrativo"
+      ],
+      "role": [
+        "attore"
+      ],
+      "stage": [
+        "pre_filing"
+      ],
+      "act": "ricorso al TAR per l'annullamento del provvedimento (art. 29 c.p.a.)",
+      "goal": "l'annullamento del provvedimento lesivo",
+      "articles": [
+        "29 c.p.a."
+      ]
+    }
+  ]
+}

@@ -1,0 +1,182 @@
+{
+ "_about": "v75 (my drafts, for the lawyer's review): the candidate lines by role that come from the matter, not from a record of their own (src/rag/lawyer_method.py thesis_candidates). «matters»: a civil claim's matter by its article's place in the c.c. (range: first and last article); the attore's remedies, the convenuto's eccezioni -- each line offered on the claim record's elements. «penal_property»: the c.p. range of the offences against property, whose victim is offered sequestro and restituzione. v76: «fallback» -- the civil role's line when the record offers none (never the penal containment).",
+ "matters": [
+  {
+   "id": "obbligazioni",
+   "code": "c.c.",
+   "range": [
+    1173,
+    1320
+   ],
+   "remedies": [
+    {
+     "label": "l'adempimento e il risarcimento del danno da inadempimento",
+     "articles": "artt. 1218 e 1223 c.c."
+    }
+   ],
+   "eccezioni": [
+    {
+     "label": "l'impossibilità sopravvenuta per causa non imputabile",
+     "articles": "artt. 1218 e 1256 c.c.",
+     "requires": "una causa non imputabile al debitore che renda impossibile la prestazione"
+    },
+    {
+     "label": "il concorso del fatto colposo del creditore",
+     "articles": "art. 1227 c.c.",
+     "requires": "una condotta colposa del creditore che abbia concorso al danno"
+    },
+    {
+     "label": "la prescrizione ordinaria",
+     "articles": "art. 2946 c.c.",
+     "requires": "le date dell'inadempimento e degli atti interruttivi"
+    }
+   ]
+  },
+  {
+   "id": "contratti",
+   "code": "c.c.",
+   "range": [
+    1321,
+    1986
+   ],
+   "remedies": [
+    {
+     "label": "la risoluzione del contratto per inadempimento e il risarcimento del danno",
+     "articles": "art. 1453 c.c."
+    },
+    {
+     "label": "l'adempimento e il risarcimento del danno da inadempimento",
+     "articles": "artt. 1218 e 1453 c.c."
+    }
+   ],
+   "eccezioni": [
+    {
+     "label": "l'eccezione di inadempimento",
+     "articles": "art. 1460 c.c.",
+     "requires": "un inadempimento della controparte nelle obbligazioni corrispettive"
+    },
+    {
+     "label": "la non scarsa importanza dell'inadempimento",
+     "articles": "art. 1455 c.c.",
+     "requires": "la misura dell'inadempimento rispetto all'interesse della controparte"
+    },
+    {
+     "label": "la prescrizione ordinaria",
+     "articles": "art. 2946 c.c.",
+     "requires": "le date dell'inadempimento e degli atti interruttivi"
+    }
+   ]
+  },
+  {
+   "id": "fatti_illeciti",
+   "code": "c.c.",
+   "range": [
+    2043,
+    2059
+   ],
+   "remedies": [
+    {
+     "label": "il risarcimento del danno patrimoniale e non patrimoniale",
+     "articles": "artt. 2043, 2056 e 2059 c.c."
+    },
+    {
+     "label": "la reintegrazione in forma specifica",
+     "articles": "art. 2058 c.c."
+    }
+   ],
+   "eccezioni": [
+    {
+     "label": "il concorso del fatto colposo del danneggiato",
+     "articles": "artt. 1227 e 2056 c.c.",
+     "requires": "una condotta colposa del danneggiato che abbia concorso al danno"
+    },
+    {
+     "label": "la prescrizione quinquennale",
+     "articles": "art. 2947 c.c.",
+     "requires": "la data del fatto illecito e degli atti interruttivi"
+    }
+   ]
+  },
+  {
+   "id": "proprieta",
+   "code": "c.c.",
+   "range": [
+    832,
+    951
+   ],
+   "remedies": [
+    {
+     "label": "l'azione di rivendicazione",
+     "articles": "art. 948 c.c."
+    },
+    {
+     "label": "l'azione negatoria",
+     "articles": "art. 949 c.c."
+    }
+   ],
+   "eccezioni": [
+    {
+     "label": "l'acquisto per usucapione",
+     "articles": "art. 1158 c.c.",
+     "requires": "un possesso continuato per vent'anni"
+    }
+   ]
+  },
+  {
+   "id": "servitu",
+   "code": "c.c.",
+   "range": [
+    1027,
+    1099
+   ],
+   "remedies": [
+    {
+     "label": "l'azione confessoria",
+     "articles": "art. 1079 c.c."
+    }
+   ],
+   "eccezioni": [
+    {
+     "label": "l'estinzione della servitù per non uso ventennale",
+     "articles": "art. 1073 c.c.",
+     "requires": "vent'anni di non uso"
+    }
+   ]
+  },
+  {
+   "id": "possesso",
+   "code": "c.c.",
+   "range": [
+    1140,
+    1172
+   ],
+   "remedies": [
+    {
+     "label": "l'azione di reintegrazione",
+     "articles": "art. 1168 c.c."
+    },
+    {
+     "label": "l'azione di manutenzione",
+     "articles": "art. 1170 c.c."
+    }
+   ],
+   "eccezioni": [
+    {
+     "label": "la decadenza annuale dall'azione possessoria",
+     "articles": "artt. 1168 e 1170 c.c.",
+     "requires": "la data dello spoglio o della molestia"
+    }
+   ]
+  }
+ ],
+ "penal_property": {
+  "code": "c.p.",
+  "range": [
+   624,
+   649
+  ]
+ },
+ "fallback": {
+  "convenuto": "Contestare la domanda o, in alternativa, transigere"
+ }
+}

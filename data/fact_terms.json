@@ -1,0 +1,38 @@
+{
+ "_about": "v74: the fact nouns the answer must take from the case (src/rag/fact_terms.py). A class holds distinct acts (or objects); a member is one act, with its forms (synonyms: the same act). When the fatti certi name one member of a class, a synonym the case never uses is the writer's paraphrase: replaced by the case's own noun (its article re-inflected), or the sentence dropped; another member the case never uses is replaced only in a class with siblings «replace» (one act told differently: the physical acts), else the sentence is dropped (an object the case does not state). «accusatory»: words that prejudge the accused (replaced by the client's name when the client is the accused). art: the singular definite article; g: the gender (for «l'»). My drafts: to be reviewed.",
+ "classes": [
+  {"id": "atto_fisico", "siblings": "replace", "members": [
+   [{"form": "schiaffo", "plural": "schiaffi", "art": "lo", "g": "m"}, {"form": "ceffone", "plural": "ceffoni", "art": "il", "g": "m"}, {"form": "sberla", "plural": "sberle", "art": "la", "g": "f"}, {"form": "manrovescio", "plural": "manrovesci", "art": "il", "g": "m"}],
+   [{"form": "pugno", "plural": "pugni", "art": "il", "g": "m"}, {"form": "cazzotto", "plural": "cazzotti", "art": "il", "g": "m"}],
+   [{"form": "calcio", "plural": "calci", "art": "il", "g": "m"}, {"form": "pedata", "plural": "pedate", "art": "la", "g": "f"}],
+   [{"form": "spinta", "plural": "spinte", "art": "la", "g": "f"}, {"form": "spintone", "plural": "spintoni", "art": "lo", "g": "m"}],
+   [{"form": "testata", "plural": "testate", "art": "la", "g": "f"}],
+   [{"form": "gomitata", "plural": "gomitate", "art": "la", "g": "f"}],
+   [{"form": "ginocchiata", "plural": "ginocchiate", "art": "la", "g": "f"}],
+   [{"form": "morso", "plural": "morsi", "art": "il", "g": "m"}],
+   [{"form": "graffio", "plural": "graffi", "art": "il", "g": "m"}],
+   [{"form": "strattone", "plural": "strattoni", "art": "lo", "g": "m"}]
+  ]},
+  {"id": "arma", "members": [
+   [{"form": "coltello", "plural": "coltelli", "art": "il", "g": "m"}],
+   [{"form": "pistola", "plural": "pistole", "art": "la", "g": "f"}, {"form": "rivoltella", "plural": "rivoltelle", "art": "la", "g": "f"}],
+   [{"form": "fucile", "plural": "fucili", "art": "il", "g": "m"}],
+   [{"form": "bastone", "plural": "bastoni", "art": "il", "g": "m"}, {"form": "randello", "plural": "randelli", "art": "il", "g": "m"}],
+   [{"form": "mazza", "plural": "mazze", "art": "la", "g": "f"}],
+   [{"form": "spranga", "plural": "spranghe", "art": "la", "g": "f"}],
+   [{"form": "bottiglia", "plural": "bottiglie", "art": "la", "g": "f"}],
+   [{"form": "sasso", "plural": "sassi", "art": "il", "g": "m"}, {"form": "pietra", "plural": "pietre", "art": "la", "g": "f"}],
+   [{"form": "martello", "plural": "martelli", "art": "il", "g": "m"}]
+  ]},
+  {"id": "veicolo", "members": [
+   [{"form": "automobile", "plural": "automobili", "art": "l'", "g": "f"}, {"form": "auto", "plural": "", "art": "l'", "g": "f"}, {"form": "autovettura", "plural": "autovetture", "art": "l'", "g": "f"}, {"form": "vettura", "plural": "vetture", "art": "la", "g": "f"}],
+   [{"form": "motocicletta", "plural": "motociclette", "art": "la", "g": "f"}, {"form": "moto", "plural": "", "art": "la", "g": "f"}],
+   [{"form": "bicicletta", "plural": "biciclette", "art": "la", "g": "f"}, {"form": "bici", "plural": "", "art": "la", "g": "f"}],
+   [{"form": "camion", "plural": "", "art": "il", "g": "m"}, {"form": "autocarro", "plural": "autocarri", "art": "l'", "g": "m"}],
+   [{"form": "furgone", "plural": "furgoni", "art": "il", "g": "m"}],
+   [{"form": "monopattino", "plural": "monopattini", "art": "il", "g": "m"}],
+   [{"form": "ciclomotore", "plural": "ciclomotori", "art": "il", "g": "m"}, {"form": "motorino", "plural": "motorini", "art": "il", "g": "m"}]
+  ]}
+ ],
+ "accusatory": ["aggressore", "assassino", "omicida", "colpevole", "reo", "carnefice", "malfattore"]
+}

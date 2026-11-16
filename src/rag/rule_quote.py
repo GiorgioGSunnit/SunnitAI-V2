@@ -243,7 +243,71 @@ def extends(text: str) -> bool:
     return bool(EXTENSION_RE.search(clean_text(text or "")))
 
 
-_OWN_SUBJECT_RE = re.compile(r"\bchiunque\b|^\W*(?:chi|il pubblico ufficiale|l['’]incaricato)\b", re.IGNORECASE)
+_OWN_SUBJECT_RE = re.compile(r"\bchiunque\b|^\W*(?:chi|il pubblico ufficiale|l['’]incaricato)\b|"
+                             # v76b: the subject after a leading clause («Quando …, coloro che partecipano …»,
+                             # «Fuori dei casi …, il pubblico ufficiale … che …»)
+                             r"\b(?:coloro|colui|colei)\s+che\b|,\s*(?:il\s+pubblico\s+ufficiale|l['’]incaricato)\b",
+                             re.IGNORECASE)
+_SANCTIONED_RE = re.compile(r"\bnei\s+confronti\s+d\w*\s+[^.;]{2,200}?\bche\b|\ba\s+chiunque\b|"
+                            r"\ba\s+carico\s+d\w*\s+[^.;]{2,120}?\bche\b", re.IGNORECASE)
+_RULES_SUBJECT_RE = re.compile(r"^\W*(?:le|la|il|i|gli)\s+(?:disposizion|pen[ae]\b|norm|sanzion\w*\s+previst)",
+                               re.IGNORECASE)
+_NP_VERB_RE = re.compile(r"\s(?:il|lo|la|l['’]|i|gli|le)\s*[a-zà-ü]+(?:\s+[a-zà-ü]+){0,3}?\s+(?:non\s+)?(?:ha|hanno|è|sono|"
+                         r"può|possono|deve|devono|resta|restano|si\s+\w+)\b", re.IGNORECASE)
+# v76b: a clausola di riserva or a default -- never an element («Fuori dei casi previsti …», «Salvo che il fatto
+# costituisca reato», «se il contratto non dispone diversamente», «salvo patto contrario»)
+_NOT_ELEMENT_RE = re.compile(r"^\W*(?:fuori\s+de[il]\s+casi|salvo\s+che\s+il\s+fatto|se\s+il\s+fatto\s+non\s+costituisce)|"
+                             r"\bsalvo\s+quanto\b|\bfatt[oaie]\s+salv|\bferm[oaie]\s+rest|"
+                             r"\b(?:diversamente|altrimenti|patto\s+contrario|diversa\s+(?:disposizione|pattuizione|"
+                             r"volontà|previsione)|clausola\s+contraria|(?:non\s+)?(?:è\s+)?(?:stabilito|convenuto|"
+                             r"disposto)\s+(?:altrimenti|diversamente))\b", re.IGNORECASE)
+
+
+def element_kept(text: str) -> bool:
+    """v76b: a clause that is an element -- never a clausola di riserva nor a default clause."""
+    return not _NOT_ELEMENT_RE.search(text or "")
+# v76b: a qualified subject with its own relative clause («Il cittadino, o lo straniero …, il quale …», «L'imprenditore
+# che …») -- never the penalties' or the rules' («Le pene stabilite … che», «Le disposizioni … che»)
+_RELATIVE = r"(?:che|il\s+quale|la\s+quale|i\s+quali|le\s+quali)"
+_QUALIFIED_RE = re.compile(r"^\W*((?:il|la|lo|i|gli|le)\s+|l['’]\s*)(?!pen[ae]\b|disposizion|norm|cas[io]\b|sanzion|"
+                           r"limit|termin|stess)([^.;:]{2,100}?)\s*,?\s*\b" + _RELATIVE + r"\b\s*,?\s*", re.IGNORECASE)
+_MARKER_RE = re.compile(r"\s+(?=(?:con|mediante|in\s+modo\s+da|al\s+fine\s+di|allo\s+scopo\s+di|a\s+fine\s+di|"
+                        r"per\s+procurare|per\s+trarne|in\s+conseguenza\s+d\w*|per\s+effetto\s+d\w*|a\s+causa\s+d\w*|"
+                        r"senza)\b)", re.IGNORECASE)
+
+
+_RISERVA_HEAD_RE = re.compile(r"^\W*(?:salvo\s+che\s+il\s+fatto\s+costituisca[^,]{0,120},|fuori\s+de[il]\s+casi[^,]{0,160},)"
+                              r"\s*", re.IGNORECASE)
+
+
+def without_riserva(text: str) -> str:
+    """v76b: the comma without its leading clausola di riserva («Salvo che il fatto costituisca reato, …»)."""
+    return _RISERVA_HEAD_RE.sub("", text or "", count=1)
+
+
+def qualified_subject(text: str) -> Tuple[str, str]:
+    """v76b: (the subject's quality, the rest) of a clause opening on a qualified subject and its relative («Il
+    cittadino che porta le armi …» -> («il cittadino», «porta le armi …»)); ("", text) otherwise."""
+    m = _QUALIFIED_RE.match(text or "")
+    if not m:
+        return "", text
+    subject = " ".join((m.group(1) + m.group(2)).split()).strip(" ,").lower()
+    if len(subject.split()) > 12 or re.search(r"\b(?:cui|che|quale|quali)\b", subject) or \
+            re.search(r"[\s,](?:e|o|ed|od)$", subject):       # a clause of its own («il cui fondo …, e»): no subject
+        return "", text
+    return subject, text[m.end():]
+
+
+def split_markers(pieces: Sequence[str]) -> List[str]:
+    """v76b: each piece cut before its means / purpose / cause markers (con, mediante, in modo da, al fine di, in
+    conseguenza di, per effetto di, senza …), the parts of two words or more kept."""
+    out = []
+    for piece in pieces:
+        for part in _MARKER_RE.split(piece):
+            part = part.strip(" ,;.")
+            if len(part.split()) >= 2:
+                out.append(part)
+    return out
 
 
 def refers_penalties(text: str) -> bool:
@@ -251,14 +315,35 @@ def refers_penalties(text: str) -> bool:
     other articles' rules, or setting a penalty for the cases other articles provide with no subject of its own
     (never «Chiunque, fuori dei casi indicati nell'articolo 571, maltratta …») -- its own line, no requisite."""
     text = " ".join(_COMMA_HEAD_RE.sub("", clean_text(text or "").strip(), count=1).split())
-    return extends(text) or bool(CONSEQUENCE_RE.search(text) and _REFERENCE_RE.search(text)
-                                 and not _OWN_SUBJECT_RE.search(text))
+    text = re.split(r"(?<=[.;])\s+(?=[A-ZÀ-Ü])", text, maxsplit=1)[0]     # v76b: its first sentence decides
+    own = bool(_OWN_SUBJECT_RE.search(text) or _QUALIFIED_RE.match(without_riserva(text))
+               or _SANCTIONED_RE.search(text))
+    if _RULES_SUBJECT_RE.match(text) and CONSEQUENCE_RE.search(text):     # v76b: «Le pene stabilite negli articoli
+        return True                                                       # precedenti sono diminuite se …»
+    if extends(text):           # v76b: «Le disposizioni … si applicano …» extends; «… nei confronti dei soggetti che
+        return bool(_RULES_SUBJECT_RE.match(text)) or not own        # omettono … si applica la sanzione» is its own
+    return bool(CONSEQUENCE_RE.search(text) and _REFERENCE_RE.search(text) and not own)
 
 
 def offence(ref: Sequence[str]) -> bool:
     from .plan_then_write import _code_key
     m = re.match(r"\d+", str(ref[0]))
     return bool(m) and _code_key(str(ref[1])) == OFFENCE_BOOK[0] and OFFENCE_BOOK[1] <= int(m.group(0)) <= OFFENCE_BOOK[2]
+
+
+_PENAL_PROVISION_RE = re.compile(r"\b(?:è|sono)\s+punit[oaie]\b|\bsi\s+applica\s+la\s+(?:pena|reclusione|multa|"
+                                 r"sanzione)\b|\bè\s+soggett[oa]\s+alla\s+sanzione\b", re.IGNORECASE)
+
+
+def _is_cp(ref: Sequence[str]) -> bool:
+    from .plan_then_write import _code_key
+    return _code_key(str(ref[1])) in ("c.p.", "c.c.", "c.p.p.", "c.p.c.", "c.p.a.")
+
+
+def penal_provision(text: str) -> bool:
+    """v76b: a comma that punishes a conduct («Chiunque … è punito», «… è soggetto alla sanzione …») -- an offence's
+    first comma in any code (a special law's penal provision too)."""
+    return bool(_PENAL_PROVISION_RE.search(text or "")) and not refers_penalties(text)
 
 
 def offence_elements(text: str) -> List[str]:
@@ -269,8 +354,8 @@ def offence_elements(text: str) -> List[str]:
     if refers_penalties(whole):     # v59: «… si applicano anche a chi …», «Nei casi previsti …»: its own line only
         return []
     body = _PUNISHED_RE.sub("", whole)
-    body = re.sub(r"^(?:chiunque|il pubblico ufficiale|l['’]incaricato di un pubblico servizio|chi)\s*,?\s*", "", body,
-                  flags=re.IGNORECASE)
+    body = re.sub(r"^(?:chiunque|il pubblico ufficiale|l['’]incaricato di un pubblico servizio|chi)\b\s*,?\s*", "", body,
+                  flags=re.IGNORECASE)       # v76: a whole word -- never the first letters of the clause
     out: List[str] = []
     carry = ""
     for piece in re.split(r"\s*,\s*", body):
@@ -279,8 +364,8 @@ def offence_elements(text: str) -> List[str]:
             carry = piece
             continue
         carry = ""
-        if requisite_kept(piece) and len(piece) <= REQUISITE_CHARS:
-            out.append(piece.strip(" .;:"))
+        if requisite_kept(piece) and len(piece) <= REQUISITE_CHARS and element_kept(piece):
+            out += _subjective_split(piece.strip(" .;:"))
     # v59 (v58-h7 322: «soggiace, qualora l'offerta o la promessa non sia accettata, alla pena …»): a condition set
     # inside the penalty clause is an element too
     penalty = _PUNISHED_RE.search(whole)
@@ -290,6 +375,138 @@ def offence_elements(text: str) -> List[str]:
                 and len(piece.split()) >= 3 and len(piece) <= REQUISITE_CHARS:
             out.append(piece)
     return [x for x in out if x]
+
+
+# v74: the subjective element the offence's clause names («cagiona per colpa la morte di una persona») is an element of
+# its own -- every record is split into elements the way the charge is, a one-clause offence too
+_SUBJECTIVE_RE = re.compile(r"\s*\b(per colpa)\b\s*", re.IGNORECASE)
+
+
+def _subjective_split(piece: str) -> List[str]:
+    m = _SUBJECTIVE_RE.search(piece)
+    if not m:
+        return [piece]
+    rest = " ".join((piece[:m.start()] + " " + piece[m.end():]).split())
+    return [rest, m.group(1).lower()] if len(rest.split()) >= 2 else [piece]
+
+
+# v76: the general penal splitter -- the clause after «chiunque» (wherever the penalty stands: «è punito … chiunque,
+# con condotte reiterate, minaccia o molesta taluno in modo da cagionare …»), cut on its commas and before «con»,
+# «mediante», «in modo da», «al fine di», «allo scopo di», «per procurare»
+_PENAL_MARK_RE = re.compile(r"\s+(?=(?:con|mediante|in\s+modo\s+da|al\s+fine\s+di|allo\s+scopo\s+di|a\s+fine\s+di|"
+                            r"per\s+procurare|per\s+trarne)\b)", re.IGNORECASE)
+
+
+def penal_clauses(text: str) -> List[str]:
+    """v76: an offence's elements when its commas alone do not give them (offence_elements): the clause the offence
+    describes, from «chiunque» (else up to «è punito»), split on its commas and its means / purpose / effect markers."""
+    whole = " ".join(_COMMA_HEAD_RE.sub("", clean_text(text).strip(), count=1).split())
+    if refers_penalties(whole):         # «… si applicano anche a chi …»: its own line only, as offence_elements
+        return []
+    m = re.search(r"\bchiunque\b", whole, re.IGNORECASE)
+    body = whole[m.end():] if m else _PUNISHED_RE.split(whole, maxsplit=1)[0]
+    body = re.split(r"(?<=[.;])\s", body, maxsplit=1)[0]
+    body = _PUNISHED_RE.split(body, maxsplit=1)[0]
+    if not m and not element_kept(body.strip(" ,")):    # v76b: the subject after the penalty («Salvo che …, è punito
+        first = re.split(r"(?<=[.;])\s", whole, maxsplit=1)[0]       # con … il pubblico ufficiale … che, al fine di …»)
+        after = re.search(r"\b(?:il|la|lo|i|gli|le|l['’])\s*[a-zà-ü][^.;]{1,100}?\b" + _RELATIVE + r"\b", first,
+                          re.IGNORECASE)
+        punished = _PUNISHED_RE.search(first)
+        if after and punished and after.start() > punished.start():
+            body = first[after.start():]
+    out: List[str] = []
+    subject, rest = ("", body) if m else qualified_subject(without_riserva(body.strip()))     # v76b: a reato proprio
+    # -- the subject's quality an element
+    if subject:
+        out.append(subject)
+        body = rest
+    for piece in re.split(r"\s*,\s*", body):
+        for part in _PENAL_MARK_RE.split(piece):
+            part = part.strip(" ,;.")
+            if len(part.split()) >= 2 and requisite_kept(part) and len(part) <= REQUISITE_CHARS \
+                    and not PENALTY_RE.search(part) and element_kept(part):
+                out += _subjective_split(part)
+    return list(dict.fromkeys(out))
+
+
+# v75: a civil fattispecie told in one sentence -- «Qualunque fatto doloso o colposo, che cagiona ad altri un danno
+# ingiusto, obbliga …», «Il debitore che non esegue esattamente la prestazione dovuta è tenuto al risarcimento …»: split
+# at its consequence, the antecedent's clauses are its elements; a risarcimento whose antecedent names no danno has the
+# danno as an element too
+_CONSEQUENCE_RE = re.compile(r"\b(?:è|sono)\s+tenut[oaie]\b|\bobblig(?:a|ano)\b|\brispond(?:e|ono)\b|"
+                             r"\b(?:è|sono)\s+responsabil[ei]\b|\bha(?:nno)?\s+diritto\b|\bdev(?:e|ono)\b", re.IGNORECASE)
+_SUBJECT_HEAD_RE = re.compile(r"^(?:(?:qualunque|qualsiasi|chiunque|ogni|il|lo|la|i|gli|le)\s+|l['’]\s*)",
+                              re.IGNORECASE)        # v76: a whole word only -- «imputato», «lesione» keep their letters
+
+
+def _fitting(reqs: List[str]) -> List[str]:
+    return reqs if REQUISITES_MIN <= len(reqs) <= REQUISITES_MAX else []
+
+
+def _clauses(text: str) -> List[str]:
+    """A fattispecie's clauses: split on commas and relative pronouns, each of two words and up, its pronoun dropped."""
+    out = []
+    for piece in re.split(r"\s*,\s*|\s+(?=(?:che|il quale|la quale|i quali|le quali)\s)", text or ""):
+        piece = re.sub(r"^(?:che|il quale|la quale|i quali|le quali)\s+", "", piece.strip(" ,;."), flags=re.IGNORECASE)
+        words = [w for w in piece.split() if not re.fullmatch(r"(?:il|lo|la|l['’]\w*|i|gli|le|un|uno|una)", w, re.I)]
+        if len(words) >= 2 and requisite_kept(piece) and len(piece) <= REQUISITE_CHARS:
+            out.append(piece)
+    return out
+
+
+_CHI_RE = re.compile(r"^\W*(chi\s+[^,;.]{3,100}?)\s*,?\s+(?=(?:non\s+)?(?:è|sono|può|deve|ha\s+diritto|risponde|resta|"
+                     r"rimane|perde|decade|acquista|è\s+tenut)\b)", re.IGNORECASE)
+
+
+def subject_clause(text: str) -> str:
+    """v76b: the clause naming who the rule is about -- «Chi ha ricevuto le cose …» (to its main verb), or a qualified
+    subject with its relative (qualified_subject); "" otherwise."""
+    flat = " ".join(_COMMA_HEAD_RE.sub("", clean_text(text).strip(), count=1).split())
+    m = _CHI_RE.match(flat)
+    if m:
+        return m.group(1).strip()
+    subject, rest = qualified_subject(flat)
+    return subject
+
+
+def civil_split(text: str, single: bool = False) -> List[str]:
+    """v76b: a civil comma's elements, the first split that gives two or more -- its conditions (requisites), the
+    single condition cut on its markers, the fattispecie told in one sentence (civil_elements); else, with single (the
+    records' own decomposition, never the writer's material), its one condition of three words or more."""
+    conds = [c for c in requisites(text) if element_kept(c)]       # a default clause is no element
+    subject = subject_clause(text)          # «Chi ha ricevuto le cose …», «Il fideiussore per un'obbligazione futura»
+    commas = [x.strip(" ,;.") for x in re.split(r"\s*,\s*", conds[0]) if len(x.split()) >= 3] if len(conds) == 1 else []
+    for found in (conds, commas, [subject] + conds if subject and len(conds) == 1 else [], civil_elements(text)):
+        if _fitting(found):
+            return found
+    return conds if single and len(conds) == 1 and len(conds[0].split()) >= 3 else []
+
+
+def civil_elements(text: str) -> List[str]:
+    """v75: the elements of a civil fattispecie in one sentence (above); [] when the sentence has no consequence verb
+    or its antecedent no clause."""
+    whole = " ".join(_COMMA_HEAD_RE.sub("", clean_text(text).strip(), count=1).split())
+    first = re.split(r"(?<=[.;])\s", whole, maxsplit=1)[0]
+    m = _CONSEQUENCE_RE.search(first)
+    if not m:
+        return []
+    antecedent, consequence = first[:m.start()], first[m.end():]
+    if re.match(r"\s*(?:se|quando|qualora|ove|nei\s+casi|nel\s+caso)\b", antecedent, re.IGNORECASE):
+        return []               # a condition first: the requisites' own split (requisites) reads it
+    subject, rest = qualified_subject(antecedent)       # v76b: «L'imprenditore che …»: the quality an element
+    out = ([subject] if subject else []) + _clauses(rest if subject else _SUBJECT_HEAD_RE.sub("", antecedent))
+    # (civil clauses are cut on commas and relatives only: «senza eccessivo dispendio» belongs to its verb)
+    guarantee = re.match(r"\s*(?:a\s+)?(?:garantire|assicurare)\s+che\s+(.+)", consequence, re.IGNORECASE)
+    if not out and guarantee:   # v76: «Il venditore è tenuto a garantire che la cosa venduta sia immune da vizi …»
+        out = _clauses(guarantee.group(1))
+    if not out and re.match(r"(?:è|sono)\s+responsabil|rispond", m.group(0), re.IGNORECASE):
+        # «Ciascuno è responsabile del danno cagionato dalle cose che ha in custodia, salvo che …»: what one answers for
+        body = re.split(r"\s*,?\s*\b(?:salvo\s+che|se\s+non|tranne\s+che|a\s+meno\s+che)\b", consequence)[0]
+        out = _clauses(re.sub(r"^\s*(?:del|della|dello|dei|degli|delle|per\s+(?:il|la|i|gli|le))\s+", "", body))
+    if out and re.search(r"\brisarc\w*\s+(?:del\s+)?dann", consequence, re.IGNORECASE) and \
+            not any(re.search(r"\bdann", x, re.IGNORECASE) for x in out):
+        out.append("il danno")
+    return out
 
 
 _DANGLING_RE = re.compile(r"\b(?:e|ed|o|od|ma|né|oppure|ovvero|nonché)\s*$", re.IGNORECASE)
@@ -317,10 +534,11 @@ def _heading_like(text: str) -> bool:
     return bool(_HEADING_RE.match(text)) or (len(letters) > 10 and sum(c.isupper() for c in letters) > 0.7 * len(letters))
 
 
-def commi_of(text: str = "", parts: Optional[Sequence[str]] = None, how: Optional[str] = None
-             ) -> List[Tuple[Optional[int], str]]:
+def commi_of(text: str = "", parts: Optional[Sequence[str]] = None, how: Optional[str] = None,
+             suffixed: bool = False) -> List[Tuple[Optional[Any], str]]:
     """[(k, text)] of an article's real commi (comma_material.comma_numbers: a list item joins its comma; k None for a
-    text with no commi to count, then one entry), headings ("CAPO VIII ...") left out."""
+    text with no commi to count, then one entry), headings ("CAPO VIII ...") left out. v67: suffixed, a later comma
+    («1-bis. …») its own entry, k "1-bis" (comma_material.comma_labels) -- the procedural store's commi."""
     from . import comma_material
     if parts is None:
         parts, how = comma_material.article_parts(clean_text(text))
@@ -335,24 +553,26 @@ def commi_of(text: str = "", parts: Optional[Sequence[str]] = None, how: Optiona
         parts = kept
     if not parts:
         return []
-    numbers = comma_material.comma_numbers(parts, how)
+    numbers = (comma_material.comma_labels if suffixed else comma_material.comma_numbers)(parts, how)
     if all(n is None for n in numbers):
         whole = _TRAILING_HEADING_RE.sub("", " ".join(" ".join(parts).split()))
         return [] if not whole or _heading_like(whole) else [(None, whole)]
-    grouped: Dict[int, List[str]] = {}
+    grouped: Dict[Any, List[str]] = {}
     for n, part in zip(numbers, parts):
         grouped.setdefault(n or 1, []).append(_COMMA_HEAD_RE.sub("", part.strip(), count=1))
-    out = [(k, _TRAILING_HEADING_RE.sub("", " ".join(" ".join(ps).split()))) for k, ps in sorted(grouped.items())]
+    out = [(k, _TRAILING_HEADING_RE.sub("", " ".join(" ".join(ps).split())))
+           for k, ps in sorted(grouped.items(), key=lambda kv: comma_material.comma_order(kv[0]))]
     return [(k, t) for k, t in out if t and not _heading_like(t)]
 
 
-def row_commi(row: Dict[str, Any]) -> List[Tuple[Optional[int], str]]:
-    """An article row's commi: COMMA_MATERIAL's parts when it holds them, else its text split."""
+def row_commi(row: Dict[str, Any], suffixed: bool = False) -> List[Tuple[Optional[Any], str]]:
+    """An article row's commi: COMMA_MATERIAL's parts when it holds them, else its text split (v67: suffixed, see
+    commi_of)."""
     from . import comma_material
     if row.get(comma_material.COMMI_KEY):
-        return commi_of(parts=row[comma_material.COMMI_KEY], how=row.get(comma_material.FROM_KEY))
+        return commi_of(parts=row[comma_material.COMMI_KEY], how=row.get(comma_material.FROM_KEY), suffixed=suffixed)
     s = row.get("s") or {}
-    return commi_of(str(s.get("plain_text") or s.get("abstract") or ""))
+    return commi_of(str(s.get("plain_text") or s.get("abstract") or ""), suffixed=suffixed)
 
 
 def operative(commi: Sequence[Tuple[Optional[int], str]], client: Set[str], counter: Set[str]
@@ -375,8 +595,11 @@ def operative(commi: Sequence[Tuple[Optional[int], str]], client: Set[str], coun
 
 # --- 2. the requisites ----------------------------------------------------------------------------------------------
 
-_CONNECTOR_RE = re.compile(r"\b(salvo\s+che|salvo|sempre\s+che|purch[ée]|qualora|quando|se)\b"
-                           r"(?!\s+(?:ne|lo|la|li|le|stess\w*)\b)", re.IGNORECASE)
+_CONNECTOR_RE = re.compile(r"\b(salvo\s+che|salvo|sempre\s+che|purch[ée]|qualora|quando|in\s+caso\s+di|"
+                           r"nel\s+caso\s+(?:di|in\s+cui)|nei\s+casi\s+in\s+cui|"
+                           r"se\b(?!\s+(?:ne|stess\w*)\b))\b", re.IGNORECASE)   # v76: «quando la cosa» an article;
+                           # v76b: «se la restituzione» too (the code's «se la» is an article; «se ne», «se stesso» not);
+                           # «in caso di», «nel caso in cui» are conditions
 # where the main clause starts after a leading condition ("Se il fondo ..., il proprietario ha diritto")
 _MAIN_AFTER_RE = re.compile(r",\s+(?=(?:il|lo|la|l['’]|i|gli|le|questa|questo|questi|queste|esso|essa|essi|esse|egli|ella|si|"
                             r"non|è|sono|può|possono|deve|devono|ha|hanno|chi|tale|tali|ciascun\w*|ognuno|nessun\w*)\b)",
@@ -416,6 +639,10 @@ def requisites(text: str) -> List[str]:
             if main and len(segment[:main.start()].split()) >= 3:
                 segment = segment[:main.start()]
         word = " ".join(m.group(1).lower().split())
+        if word.startswith(("in caso", "nel caso di")):          # v76b: a noun-phrase condition ends where the main
+            main = _NP_VERB_RE.search(segment)                   # clause's subject and verb begin («In caso di recesso
+            if main:                                             # il cliente ha diritto …»)
+                segment = segment[:main.start()]
         items = _ENUM_SPLIT_RE.split(segment)
         for j, raw in enumerate(items):
             item = _clean_item(raw)
@@ -424,6 +651,9 @@ def requisites(text: str) -> List[str]:
                 continue                    # v57: cut on a conjunction, or on a comma where the text ends; the punishment
             if len(item.split()) >= 3 and len(item) <= REQUISITE_CHARS:
                 pieces.append(f"{word} {item}" if word.startswith("salvo") else item)
+            elif len(item) > REQUISITE_CHARS and not word.startswith("salvo") and "," in item:     # v76b: a long
+                pieces += [x.strip(" ,;.") for x in re.split(r"\s*,\s*", item)       # condition, cut on its commas
+                           if len(x.split()) >= 3 and len(x) <= REQUISITE_CHARS and requisite_kept(x)]
     return list(dict.fromkeys(pieces))
 
 
@@ -473,11 +703,18 @@ def article_rules(plan: Dict[str, Any], article_rows: List[Dict[str, Any]], anal
         commi = row_commi(row)
         against = any(_same_ref(tuple(ref), a) for a in adverse)
         chosen, how = operative(commi, counter, client) if against else operative(commi, client, counter)
-        if offence(ref) and commi:         # v58: an offence -- co. 1's elements, never its aggravanti's commi
+        if commi and (offence(ref) or (not _is_cp(ref) and penal_provision(commi[0][1]))):   # v58: an offence -- co.
+            # 1's elements, never its aggravanti's commi; v76b: a special law's penal provision too
             chosen, how = [commi[0]], "offence"
-            reqs = {commi[0][0]: r for r in [offence_elements(commi[0][1])] if REQUISITES_MIN <= len(r) <= REQUISITES_MAX}
+            found = _fitting(offence_elements(commi[0][1]))
+            if not found:               # v76: the general penal splitter («chiunque …, con …, in modo da …»); a
+                clauses = penal_clauses(commi[0][1])      # one-clause offence (612: «minaccia ad altri un ingiusto
+                found = _fitting(clauses) or (            # danno») its conduct alone, of three words at least
+                    clauses if len(clauses) == 1 and len(clauses[0].split()) >= 3 else [])
+                how = "offence_clauses"
+            reqs = {commi[0][0]: found} if found else {}
         else:
-            reqs = {k: r for k, t in chosen for r in [requisites(t)] if REQUISITES_MIN <= len(r) <= REQUISITES_MAX}
+            reqs = {k: r for k, t in chosen for r in [civil_split(t)] if r}       # v75, v76b: civil too
         # v59: a chosen comma extending other articles' penalties (320, 321, 319-ter c.p.) has its own line, never none
         referring = [k for k, t in chosen if k not in reqs and refers_penalties(t)]
         out.append({"ref": (str(ref[0]), ref[1]), "label": f"{ref[0]} {ref[1]}", "commi": commi,

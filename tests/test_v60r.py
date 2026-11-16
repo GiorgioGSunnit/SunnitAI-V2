@@ -110,24 +110,27 @@ def _topic(title, articles, unit="", source="sezione", best=2, graded=1):
 def test_the_profiles_are_inside_their_unit_past_the_area_gate_by_score_and_cut(monkeypatch):
     logged = []
     monkeypatch.setattr(flow, "_log", lambda event, data, *a: logged.append((event, data)))
-    topics = [_topic("Coperto", ["1 c.c."]),
+    topics = [_topic("Coperto", ["1027 c.c.", "575 c.p."]),          # v68: c.c. Libro III and c.p. Libro II covered
               _topic("Passaggio coattivo", ["1051 c.c.", "1158 c.c."], "SEZIONE I – PASSAGGIO", best=2, graded=2),
               _topic("Fatti illeciti", ["2043 c.c."], "CAPO II – FATTI ILLECITI", source="capo", best=3),
               _topic("Servitù apparenti", ["1062 c.c.", "1061 c.c."], "SEZIONE III – APPARENTI", best=3),
               _topic("Senza unità", ["640 c.p."], source="rubrica", best=1)]
     topics += [_topic(f"T{n}", [f"{n} c.p."], source="rubrica", best=2, graded=n) for n in (600, 601, 602)]
+    topics += [_topic("Mezzadria", ["2141 c.c."], source="rubrica", best=3)]          # v68: c.c. Libro V -- out
     units = {"1051 c.c.": ["SEZIONE I – PASSAGGIO"], "1158 c.c.": ["CAPO II – USUCAPIONE"],
              "2043 c.c.": ["CAPO II – FATTI ILLECITI"], "1062 c.c.": ["SEZIONE II – ALTRA"],
              "1061 c.c.": ["SEZIONE III – APPARENTI"]}
     state = {"topics": topics, "units": units,
              "area_gate": {"families": ["penale"], "admitted": [{"article": "1051 c.c.", "why": "regola «x»"},
-                                                                 {"article": "1061 c.c.", "why": "regola «y»"}]}}
+                                                                 {"article": "1061 c.c.", "why": "regola «y»"},
+                                                                 {"article": "2141 c.c.", "why": "regola «z»"}]}}
     lines = flow.single_profiles(state, [1], {})
     assert lines == ["- Servitù apparenti (artt. 1061 c.c.)", "- T602 (artt. 602 c.p.)", "- T601 (artt. 601 c.p.)",
                      "- T600 (artt. 600 c.p.)", "- Passaggio coattivo (artt. 1051 c.c.)"]
     log = dict(logged)["single_shot_profiles"]
     assert log["outside_unit"] == {"Passaggio coattivo": ["1158 c.c."], "Servitù apparenti": ["1062 c.c."]}
-    assert log["outside_area"] == {"Fatti illeciti": ["2043 c.c."]} and log["dropped"] == ["Fatti illeciti"]
+    assert log["outside_area"] == {"Fatti illeciti": ["2043 c.c."]} and log["dropped"] == ["Fatti illeciti", "Mezzadria"]
+    assert log["outside_book"] == {"Mezzadria": ["2141 c.c."]}
     assert log["reanchored"] == {"Servitù apparenti": "1061 c.c."} and log["cut"] == ["Senza unità"]
     assert flow.OTHER_PROFILES_MAX == 5
 

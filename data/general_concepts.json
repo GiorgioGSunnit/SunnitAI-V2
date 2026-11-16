@@ -1,0 +1,430 @@
+{
+ "_about": "v63: the general-part concepts a «cenni» subject may name, each with the articles that regulate it (src/rag/cenni.py). A subject matching a concept's pattern (lower case, any position) is a general concept: its cenni rest on these articles, never on a special-part article (c.p. Libro II/III) unless that article's rubrica names the subject itself («omicidio preterintenzionale» -> 43 and 584 c.p.). A concept is consulted only when its code is among the case's codes. Patterns are Python regular expressions. v64: elements, the patterns of a charged article's element that is of the concept's kind (nesso causale: «cagiona»; elemento soggettivo: «con atti diretti a», «per colpa») -- the concept's articles then get an «applicazione» paragraph for the defence (src/rag/cenni.element_refs). The mapping is Code's draft of doctrine, listed in docs/copy_review.md for the PO and the lawyer. v75: the procedural concepts («procedural»: true -- querela, sequestro, restituzione, parte civile): a procedural ask the first read or a cenni names resolves through this table (interactive_flow.first_read_search), never through a single-word rubrica hit («Confisca», «Querela»). v76: the protection asks -- divieto di avvicinamento (282-ter c.p.p.), allontanamento d'urgenza (384-bis c.p.p.), misure cautelari (272-275 c.p.p.), ammonimento del questore (art. 8 d.l. 11/2009; on the ingestion list until the corpus holds it).",
+ "concepts": [
+  {
+   "name": "nesso causale",
+   "code": "c.p.",
+   "articles": [
+    "40",
+    "41"
+   ],
+   "patterns": [
+    "\\bness\\w*\\s+(?:di\\s+)?causal",
+    "\\bcausalit",
+    "\\bcaus\\w*\\s+sopravvenut",
+    "\\bconcorso\\s+di\\s+cause"
+   ],
+   "elements": [
+    "\\bcagion",
+    "\\bcausa(?:re|to|ta|ti|te|no)?\\b",
+    "\\bcome\\s+conseguenza\\b",
+    "\\bderiv(?:a|ano|ato|ata|ante|i)\\b"
+   ]
+  },
+  {
+   "name": "reato omissivo improprio",
+   "code": "c.p.",
+   "articles": [
+    "40"
+   ],
+   "patterns": [
+    "\\bposizion\\w*\\s+di\\s+garanzi",
+    "\\breat\\w*\\s+omissiv",
+    "\\bomission\\w*\\s+impropri"
+   ]
+  },
+  {
+   "name": "elemento soggettivo",
+   "code": "c.p.",
+   "articles": [
+    "42",
+    "43"
+   ],
+   "patterns": [
+    "\\belement\\w*\\s+(?:soggettiv|psicologic)",
+    "\\bdol[oi]\\b",
+    "\\bcolp[ae]\\b",
+    "\\bcoefficient\\w*\\s+psicologic"
+   ],
+   "elements": [
+    "\\bdol(?:o|osa|oso|osamente)\\b",
+    "\\bcolp(?:a|osa|oso|osamente)\\b",
+    "\\bintenzional",
+    "\\bpreterintenzion",
+    "\\bvolontariament",
+    "\\batti\\s+diretti\\s+a\\b",
+    "\\b(?:al|allo)\\s+(?:fine|scopo)\\s+di\\b",
+    "\\bconsapevol"
+   ]
+  },
+  {
+   "name": "preterintenzione",
+   "code": "c.p.",
+   "articles": [
+    "43"
+   ],
+   "patterns": [
+    "\\bpreterintenzion"
+   ]
+  },
+  {
+   "name": "errore sul fatto",
+   "code": "c.p.",
+   "articles": [
+    "47"
+   ],
+   "patterns": [
+    "\\berrore\\s+(?:sul|di)\\s+fatto"
+   ]
+  },
+  {
+   "name": "reato impossibile",
+   "code": "c.p.",
+   "articles": [
+    "49"
+   ],
+   "patterns": [
+    "\\breat\\w*\\s+impossibil"
+   ]
+  },
+  {
+   "name": "cause di giustificazione",
+   "code": "c.p.",
+   "articles": [
+    "50",
+    "51",
+    "52",
+    "53",
+    "54"
+   ],
+   "patterns": [
+    "\\bcaus\\w*\\s+di\\s+giustificazion",
+    "\\bscriminant"
+   ]
+  },
+  {
+   "name": "consenso dell'avente diritto",
+   "code": "c.p.",
+   "articles": [
+    "50"
+   ],
+   "patterns": [
+    "\\bconsenso\\s+dell['’]?\\s*avente"
+   ]
+  },
+  {
+   "name": "esercizio di un diritto o adempimento di un dovere",
+   "code": "c.p.",
+   "articles": [
+    "51"
+   ],
+   "patterns": [
+    "\\besercizio\\s+(?:di\\s+un|del)\\s+diritto",
+    "\\badempimento\\s+(?:di\\s+un|del)\\s+dovere"
+   ]
+  },
+  {
+   "name": "legittima difesa",
+   "code": "c.p.",
+   "articles": [
+    "52"
+   ],
+   "patterns": [
+    "\\blegittima\\s+difesa"
+   ]
+  },
+  {
+   "name": "uso legittimo delle armi",
+   "code": "c.p.",
+   "articles": [
+    "53"
+   ],
+   "patterns": [
+    "\\buso\\s+legittimo\\s+delle\\s+armi"
+   ]
+  },
+  {
+   "name": "stato di necessità",
+   "code": "c.p.",
+   "articles": [
+    "54"
+   ],
+   "patterns": [
+    "\\bstato\\s+di\\s+necessit"
+   ]
+  },
+  {
+   "name": "eccesso colposo",
+   "code": "c.p.",
+   "articles": [
+    "55"
+   ],
+   "patterns": [
+    "\\beccesso\\s+colpos"
+   ]
+  },
+  {
+   "name": "tentativo",
+   "code": "c.p.",
+   "articles": [
+    "56"
+   ],
+   "patterns": [
+    "\\btentativ",
+    "\\bdelitt\\w*\\s+tentat",
+    "\\bdesistenz",
+    "\\brecesso\\s+attivo"
+   ]
+  },
+  {
+   "name": "circostanze aggravanti comuni",
+   "code": "c.p.",
+   "articles": [
+    "61"
+   ],
+   "patterns": [
+    "\\bcircostanz\\w*\\s+aggravant",
+    "\\baggravant\\w*\\s+comun"
+   ]
+  },
+  {
+   "name": "circostanze attenuanti",
+   "code": "c.p.",
+   "articles": [
+    "62",
+    "62-bis"
+   ],
+   "patterns": [
+    "\\bcircostanz\\w*\\s+attenuant",
+    "\\battenuant\\w*\\s+(?:comun|generich)"
+   ]
+  },
+  {
+   "name": "concorso di circostanze",
+   "code": "c.p.",
+   "articles": [
+    "69"
+   ],
+   "patterns": [
+    "\\bbilanciament",
+    "\\bconcorso\\s+(?:di|tra|fra)\\s+circostanz"
+   ]
+  },
+  {
+   "name": "reato continuato e concorso formale",
+   "code": "c.p.",
+   "articles": [
+    "81"
+   ],
+   "patterns": [
+    "\\breat\\w*\\s+continuat",
+    "\\bconcorso\\s+formal"
+   ]
+  },
+  {
+   "name": "aberratio ictus",
+   "code": "c.p.",
+   "articles": [
+    "82"
+   ],
+   "patterns": [
+    "\\baberratio\\s+ictus",
+    "\\berrore\\s+nell['’]?\\s*uso\\s+dei\\s+mezzi"
+   ]
+  },
+  {
+   "name": "aberratio delicti",
+   "code": "c.p.",
+   "articles": [
+    "83"
+   ],
+   "patterns": [
+    "\\baberratio\\s+delicti",
+    "\\bevento\\s+diverso\\s+da\\s+quello\\s+voluto"
+   ]
+  },
+  {
+   "name": "imputabilità",
+   "code": "c.p.",
+   "articles": [
+    "85",
+    "88",
+    "89"
+   ],
+   "patterns": [
+    "\\bimputabilit",
+    "\\bcapacit\\w*\\s+di\\s+intendere",
+    "\\bvizio\\s+(?:\\w+\\s+)?di\\s+mente"
+   ]
+  },
+  {
+   "name": "recidiva",
+   "code": "c.p.",
+   "articles": [
+    "99"
+   ],
+   "patterns": [
+    "\\brecidiv"
+   ]
+  },
+  {
+   "name": "concorso di persone nel reato",
+   "code": "c.p.",
+   "articles": [
+    "110"
+   ],
+   "patterns": [
+    "\\bconcorso\\s+(?:di\\s+persone|di\\s+più\\s+persone|nel\\s+reato|morale|material)"
+   ]
+  },
+  {
+   "name": "concorso anomalo",
+   "code": "c.p.",
+   "articles": [
+    "116"
+   ],
+   "patterns": [
+    "\\bconcorso\\s+anomalo",
+    "\\breat\\w*\\s+diverso\\s+da\\s+quello\\s+voluto"
+   ]
+  },
+  {
+   "name": "querela",
+   "code": "c.p.",
+   "articles": [
+    "120",
+    "124"
+   ],
+   "patterns": [
+    "^querela$",
+    "\\bdiritto\\s+di\\s+querela",
+    "\\btermin\\w*\\s+(?:per\\s+(?:la\\s+)?|di\\s+)querela"
+   ],
+   "procedural": true
+  },
+  {
+   "name": "particolare tenuità del fatto",
+   "code": "c.p.",
+   "articles": [
+    "131-bis"
+   ],
+   "patterns": [
+    "\\btenuit\\w*\\s+del\\s+fatto"
+   ]
+  },
+  {
+   "name": "prescrizione del reato",
+   "code": "c.p.",
+   "articles": [
+    "157"
+   ],
+   "patterns": [
+    "\\bprescrizion\\w*\\s+del\\s+reato"
+   ]
+  },
+  {
+   "name": "sospensione condizionale della pena",
+   "code": "c.p.",
+   "articles": [
+    "163"
+   ],
+   "patterns": [
+    "\\bsospension\\w*\\s+condizional"
+   ]
+  },
+  {
+   "name": "sequestro",
+   "code": "c.p.p.",
+   "articles": [
+    "253",
+    "321",
+    "262"
+   ],
+   "procedural": true,
+   "patterns": [
+    "\\bsequestr[a-z]*\\b(?!\\s+di\\s+persona)"
+   ]
+  },
+  {
+   "name": "restituzione delle cose sequestrate",
+   "code": "c.p.p.",
+   "articles": [
+    "262",
+    "263"
+   ],
+   "procedural": true,
+   "patterns": [
+    "\\brestituzion\\w*\\s+(?:delle\\s+|dei\\s+|di\\s+)?(?:cose|beni|somme|denar\\w*|bene)\\b",
+    "\\bdissequestr\\w*"
+   ]
+  },
+  {
+   "name": "parte civile",
+   "code": "c.p.p.",
+   "articles": [
+    "74",
+    "75",
+    "76",
+    "77",
+    "78",
+    "79"
+   ],
+   "procedural": true,
+   "patterns": [
+    "\\bparte\\s+civile\\b",
+    "\\bcostitu\\w*\\s+(?:di\\s+)?parte\\s+civile",
+    "\\bazione\\s+civile\\s+(?:nel|in\\s+sede\\s+di)\\s+(?:processo\\s+)?penale"
+   ]
+  },
+  {
+   "name": "divieto di avvicinamento",
+   "code": "c.p.p.",
+   "articles": [
+    "282-ter"
+   ],
+   "procedural": true,
+   "patterns": [
+    "\\bdiviet\\w*\\s+di\\s+avvicinament\\w*",
+    "\\bavvicinament\\w*\\s+ai\\s+luoghi"
+   ]
+  },
+  {
+   "name": "allontanamento d'urgenza",
+   "code": "c.p.p.",
+   "articles": [
+    "384-bis"
+   ],
+   "procedural": true,
+   "patterns": [
+    "\\ballontanament\\w*\\s+(?:d['’]\\s*urgenza|urgente)",
+    "\\ballontanament\\w*\\s+d['’]\\s*urgenza\\s+dalla\\s+casa"
+   ]
+  },
+  {
+   "name": "misure cautelari",
+   "code": "c.p.p.",
+   "articles": [
+    "272",
+    "273",
+    "274",
+    "275"
+   ],
+   "procedural": true,
+   "patterns": [
+    "\\bmisur\\w*\\s+cautelar\\w*",
+    "\\bcautelar\\w*\\s+personal\\w*"
+   ]
+  },
+  {
+   "name": "ammonimento",
+   "code": "d.l. 11/2009",
+   "articles": [
+    "8"
+   ],
+   "procedural": true,
+   "patterns": [
+    "\\bammoniment\\w*"
+   ]
+  }
+ ]
+}

@@ -65,6 +65,80 @@ ASSERTABLE_RULE = (" Fonda la sezione solo su queste norme: {articles}; ogni alt
                    "come «da valutare».")
 NONE_ASSERTABLE_RULE = (" Nessuna norma è ancora applicabile sui fatti, né ha un requisito provato: nominale solo come "
                         "«da valutare».")
+# v68 (my draft): the client's own articles (weapons) not yet assertable -- argued with what remains to prove, never
+# with the «da valutare» formula
+WEAPON_TO_PROVE_RULE = (" Le norme {articles} sono del cliente: presentale come domande o eccezioni da sostenere, "
+                        "dicendo quale requisito resta da provare, senza la formula «da valutare».")
+
+# v68 (my draft): an article the user named whose block the writer left empty -- a second call for it alone
+NAMED_RETRY_NOTE = (" Tratta solo l'{article}, che l'utente ha nominato: un solo paragrafo, aperto da «[1]», su che cosa "
+                    "dispone la norma e come si applica ai fatti del caso.")
+
+# v68 (my draft): five or more requested blocks -- the lead is a summary, the questions have their own sections
+COLLAPSED_LEAD_NOTE = (" I quesiti seguenti hanno ciascuno una sezione propria, scritta a parte: {questions}. Qui solo la "
+                       "sintesi della risposta e la strategia, in uno-due paragrafi, senza ripetere le risposte ai "
+                       "quesiti.")
+
+# v62 (my draft): an article whose requisites are not counted (c.p. Libro I, procedural, general, definitional) -- its
+# §2 paragraph is an application, no requisite proven or to prove
+APPLICATION_MARK = "applicazione: norma generale o processuale, nessun requisito da contare"
+APPLICATION_RULE = ("Per le norme segnate «applicazione»: un paragrafo che dice che cosa dispone la norma e come opera nel "
+                    "caso; non elencare requisiti provati o da provare e non scrivere un esito.")
+# v65 (my draft): for a defending client (imputato, convenuto) an application paragraph reads from the defence too
+APPLICATION_MARK_DEFENCE = ("applicazione, dalla parte della difesa: che cosa sostiene la difesa e che cosa resta da "
+                            "verificare")
+APPLICATION_RULE_DEFENCE = ("Per le norme segnate «applicazione, dalla parte della difesa»: un paragrafo che dice che cosa "
+                            "dispone la norma, che cosa ne ricava la difesa sui fatti del caso e che cosa resta da "
+                            "verificare; mai una conclusione contro la parte assistita (che la norma la condanna, che "
+                            "l'aggravante o l'elemento sussiste), né requisiti provati o un esito.")
+# v62 (my draft): the charge or the claim against the client, read from the defence
+THREAT_MARK = {"penale": "norma dell'accusa, da contestare: gli elementi letti dalla difesa",
+               "civile": "norma della domanda avversaria, da contestare: gli elementi letti dalla difesa"}
+THREAT_RULE = {
+    "penale": ("Per le norme segnate «norma dell'accusa»: scrivi dalla parte della difesa. Per ogni elemento da "
+               "contestare indica il punto contestabile sui fatti; per ogni elemento non provato rileva che l'accusa "
+               "non lo prova; non scrivere che la norma è applicabile né quanti requisiti sono provati. Contesta solo "
+               "gli elementi elencati sotto la norma: nessun altro elemento, requisito o atteggiamento psicologico."),
+    "civile": ("Per le norme segnate «norma della domanda avversaria»: scrivi dalla parte del convenuto. Per ogni "
+               "elemento da contestare indica il punto contestabile sui fatti; per ogni elemento non provato rileva che "
+               "la controparte non lo prova; non scrivere che la norma è applicabile né quanti requisiti sono provati. "
+               "Contesta solo gli elementi elencati sotto la norma: nessun altro elemento, requisito o atteggiamento "
+               "psicologico."),
+}
+# v62 (my draft): the requested blocks -- a «cenni» section on an institution, the alternative qualifications
+CENNI_INSTRUCTION = ("SEZIONE: Cenni su «{subject}». Un paragrafo breve, di quattro-sei frasi, sull'istituto: che cos'è e "
+                     "quali sono i suoi elementi.")
+CENNI_GROUNDED = (" Fondalo sul testo e sulla rubrica delle NORME fornite, citate come riferimento («art. N codice — "
+                  "rubrica») senza riportarne il testo tra virgolette; nessun altro articolo. Non applicarle ai fatti "
+                  "del caso, non scrivere requisiti provati o da provare, non citare pronunce.")
+CENNI_UNGROUNDED = (" Nessuna norma è fornita per questo istituto: non citare articoli né pronunce, non applicarlo ai "
+                    "fatti del caso.")
+ALTERNATIVES_INSTRUCTION = ("SEZIONE: Qualificazioni alternative. Per ciascuna qualificazione di QUALIFICAZIONI "
+                            "ALTERNATIVE, nell'ordine, una riga nuova aperta dal suo numero tra parentesi quadre e "
+                            "dall'esito -- «SÌ» se si adatta ai fatti del caso, «NO» se non si adatta -- poi una sola "
+                            "frase sul perché («[1] SÌ: ...», «[2] NO: ...»). Non ripetere il numero né la rubrica "
+                            "dell'articolo (li scrive il codice), non aggiungere altre qualificazioni, non citare "
+                            "pronunce.")
+
+# v65 (my draft): a listed question of the user, its own section -- answered from the record and the store only
+QUESITO_INSTRUCTION = ("SEZIONE: {question} Rispondi a questa domanda, in uno-tre paragrafi, solo con il materiale "
+                       "fornito: le SCHEDE DELLE NORME (lo stato di ogni requisito è quello delle schede) e i fatti "
+                       "processuali che il codice ha calcolato. Se il materiale non basta, dillo e indica che cosa va "
+                       "verificato. Cita le norme come riferimento («art. N codice»), senza riportarne il testo; non "
+                       "citare pronunce; non ripetere la domanda.")
+
+# v62 (my draft): §1 and the conclusions -- the charge or the claim is what the client contests, never asserted
+THREAT_ASSERT_RULE = (" Le norme {articles} sono l'addebito o la domanda contro {who}: presentale come da contestare, "
+                      "mai come applicabili.")
+# v63 (my draft): §1 and the conclusions contest only the threat's own elements, by name -- never one the norm lacks
+THREAT_ELEMENTS_RULE = (" Di queste norme contesta solo gli elementi del registro, chiamandoli per nome: {items}. Nessun "
+                        "altro elemento, requisito o atteggiamento psicologico: ciò che non è in questo elenco la norma "
+                        "non lo richiede.")
+THREAT_ELEMENTS_ITEM = "art. {article}: {elements}"
+# v65 (my draft): an alternative the first read finds no fact for stays out of §1
+UNFOUNDED_ALTERNATIVES_RULE = (" Non proporre in questa sezione le qualificazioni alternative che nessun fatto del caso "
+                               "sostiene ({articles}): sono trattate nella sezione delle qualificazioni alternative.")
+THREAT_ELEMENTS_NONE = "art. {article}: nessun elemento nel registro, non contestarne altri"
 
 # v60r (6, my draft): an element no fact of the case touches is the code's «da provare» -- never narrated as missing
 NO_SIGNAL_RULE = (

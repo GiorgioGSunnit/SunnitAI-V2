@@ -46,13 +46,24 @@ _SYSTEM = (
     "dell'articolo che lo disciplina, es. \"Difesa legittima\", \"Servitù coattive\", \"Risoluzione per "
     "inadempimento\"), MAI numeri di articolo; "
     "da_provare: i fatti che vanno provati; prove: le prove da raccogliere.\n"
-    "- qualificazioni_alternative: al massimo 4 voci {istituto, rubricato, perche}: le ALTRE qualificazioni giuridiche "
-    "degli stessi fatti, diverse da quelle delle ipotesi (es. truffa o insolvenza fraudolenta; furto o appropriazione "
-    "indebita; responsabilità contrattuale o extracontrattuale), ciascuna con il nome come rubricato nel codice e in una "
-    "frase il fatto che la farebbe preferire; MAI numeri di articolo.\n"
+    "- qualificazioni_alternative: al massimo 4 voci {istituto, rubricato, perche, fatti}: le ALTRE qualificazioni "
+    "giuridiche degli stessi fatti, diverse da quelle delle ipotesi (es. truffa o insolvenza fraudolenta; furto o "
+    "appropriazione indebita; responsabilità contrattuale o extracontrattuale), ciascuna con il nome come rubricato nel "
+    "codice e in una frase il fatto che la farebbe preferire; fatti: \"sì\" se un fatto che il caso dice la sostiene, "
+    "\"no\" se nessun fatto del caso la sostiene; MAI numeri di articolo.\n"
     "Non inventare fatti. Rispondi SOLO con il JSON.")
 TOPUP = ("PARTI SENZA LINEE: {parties}. Dai SOLO le ipotesi (principale, subordinata, controparte) di queste parti, "
          "con \"parte\" uguale al loro nome; le altre chiavi possono restare vuote.")
+
+
+def facts_verdict(value: Any) -> str:
+    """v65: the first read's «fatti» of an alternative -- "si", "no", or "" when it gave none."""
+    low = " ".join(str(value or "").lower().split())
+    if low in ("sì", "si", "yes", "true", "vero"):
+        return "si"
+    if low in ("no", "false", "falso") or re.match(r"no\b", low):
+        return "no"
+    return ""
 
 
 def _cut(value: Any, chars: int = TEXT_CHARS) -> str:
@@ -125,7 +136,8 @@ def clean(raw: Any, request: str = "") -> Dict[str, Any]:
             continue
         name, rubricated = _cut(a.get("istituto"), 80), _cut(a.get("rubricato"), 80)
         if name and not _ARTICLE_RE.search(name) and not _ARTICLE_RE.search(rubricated or ""):
-            alternatives.append({"name": name, "rubricated": rubricated, "why": _cut(a.get("perche") or a.get("perché"))})
+            alternatives.append({"name": name, "rubricated": rubricated, "why": _cut(a.get("perche") or a.get("perché")),
+                                 "facts": facts_verdict(a.get("fatti"))})      # v65: does a fact of the case hold it
     out = {"client": {"name": _cut(client.get("nome"), 80), "role": _cut(client.get("ruolo"), 80)},
            "parties": parties[:MAX_PARTIES], "alternatives": alternatives[:MAX_ALTERNATIVES],
            "goal": _cut(raw.get("obiettivo")),

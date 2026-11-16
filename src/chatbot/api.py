@@ -536,7 +536,8 @@ def _pick_catalog_template(message: str, lang: str) -> str:
     return result[0]["key"] if result else "unknown"
 
 
-def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "", section_hint: str = "") -> dict:
+def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_sections: Optional[list] = None, studio_name: str = "", section_hint: str = "", case_record: str = "") -> dict:
+    """case_record (v61): the case-first first read of a narrated case, the drafting call's context (intake.case_record)."""
     citations = None
     if cached_sections is not None:
         sources = sorted({s["document_title"] for s in cached_sections if s.get("document_title")})
@@ -565,7 +566,8 @@ def _run_generation_sync(message: str, session_lang: str, doc_type: str, cached_
         except Exception as exc:
             logger.warning("RAG retrieval for generation failed: %s", exc)
             sources = []
-    gen = generate_document(message, doc_type, session_lang, citations, studio_name, section_hint)
+    gen = generate_document(message, doc_type, session_lang, citations, studio_name, section_hint,
+                            **({"case_record": case_record} if case_record else {}))
     return {"draft": gen["draft"], "case_details": gen["case_details"], "sources": sources, "doc_type": gen["doc_type"]}
 
 
@@ -2081,19 +2083,13 @@ def _classify_top_level_intent(message: str, session_lang: str) -> str:
 # Oct 2026 "contratto firmato sotto minaccia" got a full strategy draft instead
 # of an answer on art. 1434 c.c. Ambiguous words ("sono", "ci") are not taken as
 # first person; anything longer or with own facts is left to the classifier.
-_TOPIC_MAX_WORDS = 8
-_OWN_FACTS_RE = re.compile(r"\b(io|ho|abbiamo|siamo|mi|me|mio|mia|miei|mie|nostro|nostra|nostri|nostre)\b",
-                           re.IGNORECASE)
-_STRATEGY_ASK_RE = re.compile(
-    r"strategi|difend|difes[ao]\b|parere|cosa (?:posso|possiamo|devo|dobbiamo|dovrei|dovremmo) fare",
-    re.IGNORECASE,
-)
+# v61: the rule moved to src/rag/intake.py (topic_question; TOPIC_MAX_WORDS and its patterns there).
 
 
 def _is_topic_question(message: str) -> bool:
-    return (len(message.split()) <= _TOPIC_MAX_WORDS
-            and not _OWN_FACTS_RE.search(message)
-            and not _STRATEGY_ASK_RE.search(message))
+    """v61: the rule lives in the intake (intake.topic_question), which applies it."""
+    from ..rag import intake
+    return intake.topic_question(message)
 
 
 _CLASSIFY_HEAD_CHARS = 400
@@ -2206,14 +2202,77 @@ def _interactive_on() -> bool:
     return interactive_flow.turns_on()
 
 
+# --- v61: the intake (src/rag/intake.py) -- what the request wants, read once, before the route decision ---------------
+
+def _expects_upload(request: "ChatRequest", current_user: Optional[dict]) -> bool:
+    """The request carries a document (its id or ids, a file named or pointed at): the intake waits for the file's text,
+    read where the document branch finds the file."""
+    return bool(current_user and (request.document_id or request.document_ids or _refers_to_upload(request.message)))
+
+
+def _is_deepdive(message: str) -> bool:
+    low = (message or "").strip().lower()
+    return low.startswith("deepdive:") or low.startswith("approfondisci:")
+
+
+async def _request_intake(box: dict, message: str, session, upload: str = "", refers: bool = False,
+                          upload_role: str = "") -> dict:
+    """The request's intake (intake.request_intake: the rules, then one model call for the fields they leave empty; it
+    logs [VERBOSE:intake]), once per request: the first call reads it, box keeps it, a later call returns it. v73: the
+    sims call the same function with the same inputs (interactive_flow.request_case_first)."""
+    if "intake" in box:
+        return box["intake"]
+    from ..rag import intake
+    history = [{"role": m.role, "content": m.content} for m in (getattr(session, "messages", None) or [])]
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, partial(intake.request_intake, message, upload, history,
+                                                      refers_to_upload=refers, upload_role=upload_role or ""))
+    box["intake"], box["upload"] = result, upload or ""
+    return result
+
+
+def _upload_text(doc, extract) -> str:
+    """The text of the request's document, for the intake ("" when the file is missing or unreadable)."""
+    import os as _os
+    try:
+        return (extract(doc.storage_path) or "") if _os.path.exists(doc.storage_path) else ""
+    except Exception as exc:
+        logger.warning("chat: the intake could not read %s: %s", doc.storage_path, exc)
+        return ""
+
+
+def _out_of_scope_reply(session, session_id: str, message: str, intake_result: dict) -> "ChatResponse":
+    """v61: the copy for a request no route answers -- case law (ricerca_giurisprudenza), a tax or an insolvency matter
+    (out of the corpus)."""
+    from ..rag import intake
+    from ..rag import interaction_copy as C
+    if intake_result.get("deliverable") == "ricerca_giurisprudenza":
+        answer = C.CASE_LAW_OUT_OF_SCOPE
+    else:
+        rito = intake_result.get("rito") or ""
+        answer = C.OUT_OF_CORPUS_MATTER.format(materia=C.OUT_OF_CORPUS_MATTERS.get(rito, rito))
+    session.add_message("user", message, metadata={"intake": intake.log_view(intake_result)})
+    if len(session.messages) == 1:
+        session.title = _generate_session_title(message)
+    session.add_message("assistant", answer, metadata={"type": "out_of_scope"})
+    chatbot._save_sessions()
+    return ChatResponse(session_id=session_id, answer=answer, original_query=message, resolved_query=message,
+                        session_language=session.session_language, status_messages=["out_of_scope"],
+                        title=session.title)
+
+
 async def _interactive_start(session, session_id: str, message: str, lang: str, case: Optional[str] = None,
-                             user_meta: Optional[dict] = None) -> Optional["ChatResponse"]:
+                             user_meta: Optional[dict] = None, intake: Optional[dict] = None) -> Optional["ChatResponse"]:
     """INTERACTIVE_FLOW: round 1 of a narrative case, or None on any failure (logged; the single-shot path then).
     case: an upload's text -- the case, the message its request (the angle); default the message is the case. v60k
-    (CASE_FIRST_SINGLE_SHOT): the complete parere instead (interactive_flow.single_shot), round 1 run inside it."""
+    (CASE_FIRST_SINGLE_SHOT): the complete parere instead (interactive_flow.single_shot), round 1 run inside it. v61:
+    the request's intake goes into the case's state (state["intake"]) and onto the user's message."""
     from ..rag import interactive_flow
+    from ..rag import intake as intake_mod
+    if intake is not None:
+        user_meta = {**(user_meta or {}), "intake": intake_mod.log_view(intake)}
     source = "upload+message" if case is not None else "message"
-    text = case if case is not None else message
+    text, request = interactive_flow.entry_args(message, case)        # v73: the sims' own (request_case_first)
     vlog("interactive", {"round": "single_shot" if interactive_flow.single_shot_enabled() else 1,
                          "session_id": session_id, "case_source": source,
                          "case_chars": len(text or "") + (len(message or "") if case is not None else 0),
@@ -2222,7 +2281,7 @@ async def _interactive_start(session, session_id: str, message: str, lang: str, 
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, partial(interactive_flow.single_shot, text, lang, message if case is not None else ""))
+                None, partial(interactive_flow.single_shot, text, lang, request, intake=intake))
         except Exception as exc:
             logger.error("chat: single-shot case-first failed, the single-shot pipeline answers: %s", exc, exc_info=True)
             return None
@@ -2230,7 +2289,7 @@ async def _interactive_start(session, session_id: str, message: str, lang: str, 
     try:
         loop = asyncio.get_event_loop()
         reply, field, state = await loop.run_in_executor(
-            None, partial(interactive_flow.start, text, lang, message if case is not None else ""))
+            None, partial(interactive_flow.start, text, lang, request, intake=intake))
     except Exception as exc:
         logger.error("chat: interactive round 1 failed, the single-shot pipeline answers: %s", exc, exc_info=True)
         return None
@@ -2239,32 +2298,17 @@ async def _interactive_start(session, session_id: str, message: str, lang: str, 
                               user_meta)
 
 
-async def _interactive_upload_case(session, session_id: str, message: str, lang: str, doc, doc_intent: str,
-                                   extract) -> Optional["ChatResponse"]:
-    """INTERACTIVE_FLOW, the document branch (journal 19:12:19, route='document' | intent='defensive_draft', the
-    single-shot ran): the upload's text + the message is the case when the document branch's own classifier says
-    defensive_draft, or the narrative check or the legal-intent classification passes on the combined text -- round 1
-    then runs on it (the file the case, the message the angle). None: not a case (a template to fill, a document to
-    review), the file unreadable, or round 1 failed -- the document branch goes on."""
-    import os as _os
-    from ..rag import interactive_flow
-    if not _os.path.exists(doc.storage_path):
+async def _interactive_upload_case(session, session_id: str, message: str, lang: str, doc, upload: str,
+                                   intake: Optional[dict] = None) -> Optional["ChatResponse"]:
+    """INTERACTIVE_FLOW, the document branch: round 1 (or the single shot) on the upload's text + the message -- the file
+    the case, the message the angle. v61: the intake decided it is a case whose case is the upload (intake case_in;
+    before, the branch's own classifier, the narrative check or the legal intent did). None: the file has no text, or
+    round 1 failed -- the document branch goes on."""
+    if not (upload or "").strip():
         return None
-    try:
-        upload = extract(doc.storage_path) or ""
-    except Exception as exc:
-        logger.warning("chat: interactive upload extract failed for %s: %s", doc.storage_path, exc)
-        return None
-    if not upload.strip():
-        return None
-    combined = f"{upload}\n\n{message}"
-    why = ("doc_intent" if doc_intent == "defensive_draft" else "narrative" if interactive_flow.routes_here(combined)
-           else "legal_intent" if _classify_legal_intent(combined, lang) == "defensive_draft" else "")
-    vlog("interactive_upload_check", {"session_id": session_id, "doc_intent": doc_intent, "case": why or "no",
-                                      "case_chars": len(combined)})
-    if not why:
-        return None
-    return await _interactive_start(session, session_id, message, lang, case=upload, user_meta={
+    vlog("interactive_upload_check", {"session_id": session_id, "case": "intake",
+                                      "case_chars": len(upload) + len(message or "")})
+    return await _interactive_start(session, session_id, message, lang, case=upload, intake=intake, user_meta={
         "document_id": str(doc.id), "document_name": doc.original_filename, "document_role": doc.document_role})
 
 
@@ -2460,7 +2504,9 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
     _req_start = time.time()
     vlog("request_start", {"session_id": session_id, "message_length": len(request.message)})
 
-    _deferred_case = False      # INTERACTIVE_FLOW: a narrative case naming an upload, left to the document branch
+    from ..rag import intake as _intake_mod
+    _intake_box: dict = {}          # v61: the request's intake, read once (_request_intake)
+    _case_first_tried = False       # v61: the case-first flow already ran on this request (and failed)
     # ── INTERACTIVE_FLOW: a reply within an open interactive case (a topic, an answer, "procedi") ──
     # Only a session holding a live interactive state; anything it does not hold falls through unchanged.
     # v60k: CASE_FIRST_SINGLE_SHOT too -- the case answered in one parere, its follow-ups updating it
@@ -2473,21 +2519,22 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
         _interactive = await _interactive_follow_up(session_id, request.message, _uid, db)
         if _interactive is not None:
             return _interactive
-        # a narrative case: round 1 ahead of every route below (the document route's defensive_draft, the legal
-        # intent, the router) -- journal 15:28:02, route='document' | intent='defensive_draft' ran the single-shot
-        from ..rag import interactive_flow as _iflow
+        # v61: the intake decides the route (src/rag/intake.py). A parere starts the case-first flow here, ahead of
+        # every route below (journal 15:28:02: route='document' | intent='defensive_draft' ran the single-shot); a
+        # request that carries a document waits for the file's text -- the document branch reads the intake there
+        # (no file found: the intake on the message alone, after it).
         if _int_session is not None and not _asks_interactive_document(request.message) \
-                and _iflow.routes_here(request.message):
-            if current_user and _refers_to_upload(request.message):
-                # v60: it names an upload -- the document branch runs round 1 on the file's text + the message
-                # (_interactive_upload_case); no file found there, round 1 on the message below (_deferred_case)
-                _deferred_case = True
-                vlog("interactive_deferred", {"session_id": session_id, "why": "refers to an upload"})
+                and not _is_deepdive(request.message):
+            if _expects_upload(request, current_user):
+                vlog("interactive_deferred", {"session_id": session_id, "why": "the request carries a document"})
             else:
-                _interactive = await _interactive_start(_int_session, session_id, request.message,
-                                                        _int_session.session_language)
-                if _interactive is not None:
-                    return _interactive
+                _intake = await _request_intake(_intake_box, request.message, _int_session)
+                if _intake["route"] == _intake_mod.CASE_FIRST:
+                    _case_first_tried = True
+                    _interactive = await _interactive_start(_int_session, session_id, request.message,
+                                                            _int_session.session_language, intake=_intake)
+                    if _interactive is not None:
+                        return _interactive
 
     # ── Deepdive: user clicked a deepdive link from a defensive draft ──────
     # Checked on the raw request.message, ahead of every other branch
@@ -2875,24 +2922,36 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                         )
 
 
+                # The document the request is about: the one the user named, otherwise the newest upload.
+                _typed_names = _detect_document_intent(request.message)
+                _named_docs = [
+                    d for d in _matched_docs
+                    if any(t.lower() in d.original_filename.lower() for t in _typed_names)
+                ]
+                if len(_named_docs) == 1:
+                    _primary_doc = _named_docs[0]           # user named one explicitly
+                else:
+                    _primary_doc = max(                     # otherwise the newest upload
+                        _matched_docs,
+                        key=lambda d: (d.uploaded_at is not None, d.uploaded_at or 0),
+                    )
+                # v61: the intake, with that document's text -- it decides what the branch does (below). The message
+                # is about the file when it names or points at it, or the page sent the file as this message's own
+                # (document_id: before, an analyse request by default)
+                _upload = _upload_text(_primary_doc, _extract)
+                _intake = await _request_intake(_intake_box, request.message, _session, _upload,
+                                                refers=_refers_to_upload(request.message) or bool(request.document_id),
+                                                upload_role=getattr(_primary_doc, "document_role", "") or "")
+
                 # Several attached documents only mean "compare them" when the user
                 # asked to. The panel now sends every attached file on every message,
                 # so without this a question about one document ("riassumi il
                 # contratto") would be answered with a comparison of all of them.
-                # Narrow to the best single candidate instead.
-                if len(_matched_docs) >= 2 and not _COMPARISON_VERB_RE.search(request.message):
-                    _typed_names = _detect_document_intent(request.message)
-                    _named_docs = [
-                        d for d in _matched_docs
-                        if any(t.lower() in d.original_filename.lower() for t in _typed_names)
-                    ]
-                    if len(_named_docs) == 1:
-                        _chosen_doc = _named_docs[0]        # user named one explicitly
-                    else:
-                        _chosen_doc = max(                  # otherwise the newest upload
-                            _matched_docs,
-                            key=lambda d: (d.uploaded_at is not None, d.uploaded_at or 0),
-                        )
+                # Narrow to the best single candidate instead. v61: a comparison
+                # only when the intake reads a review of the documents.
+                if len(_matched_docs) >= 2 and not (_COMPARISON_VERB_RE.search(request.message)
+                                                    and _intake["route"] == _intake_mod.DOCUMENT):
+                    _chosen_doc = _primary_doc
                     logger.info(
                         "chat: %d documents attached, no comparison intent - using %r",
                         len(_matched_docs), _chosen_doc.original_filename,
@@ -3220,18 +3279,19 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
 
                 # ── ONE DOC → analyse or generate ─────────────────────────
                 _matched_doc = _matched_docs[0]
-                doc_intent = _classify_doc_intent(
-                    request.message,
-                    _session_lang,
-                    filename=_matched_doc.original_filename,
-                    default="analyse" if getattr(_matched_doc, "document_role", "document") == "document" else "rag",
-                )
+                # v61: the intake decides (before: _classify_doc_intent, then the upload-case check)
+                doc_intent = _intake_mod.doc_intent(_intake)
                 if feature_flags.enabled("ROUTER_ENABLED"):     # tagged only: a document keeps its path
                     logger.info("chat: route=document intent=%s", doc_intent)
                     vlog("chat_route", {"route": "document", "intent": doc_intent})
-                if _interactive_on():
-                    _interactive = await _interactive_upload_case(
-                        _session, session_id, request.message, _session_lang, _matched_doc, doc_intent, _extract)
+                if _interactive_on() and _intake["route"] == _intake_mod.CASE_FIRST:
+                    _case_first_tried = True
+                    if _intake.get("case_in") == "upload":
+                        _interactive = await _interactive_upload_case(
+                            _session, session_id, request.message, _session_lang, _matched_doc, _upload, _intake)
+                    else:
+                        _interactive = await _interactive_start(_session, session_id, request.message,
+                                                                _session_lang, intake=_intake)
                     if _interactive is not None:
                         return _interactive
 
@@ -3673,23 +3733,23 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                     _not_found,
                 )
 
-    # ── LLM-based legal intent detection (no document attached) ──────────
+    # ── v61: the intake's route (no document, or the branch above fell through) ──────────
+    # The intake replaces the legal-intent classifier, the router's upgrade and the generation check as the decision;
+    # the routes below are the ones they chose among, unchanged.
     _session = chatbot.get_session(session_id, user_id=_uid, db=db)
     if _session is None:
         raise HTTPException(status_code=404, detail="Session not found")
     _session_lang = _session.session_language
-    _legal_intent = _classify_legal_intent(request.message, _session_lang)
-    if _legal_intent == "defensive_draft" and _is_topic_question(request.message):
-        logger.info("chat: %r is a short topic question, not a case: answered, not drafted", request.message)
-        _legal_intent = "rag"
-    _legal_intent = _routed_intent(request.message, _legal_intent, last_pending_calculation(_session))
-    if (_legal_intent == "defensive_draft" or _deferred_case) and _interactive_on():
-        # INTERACTIVE_FLOW: a case in rounds (topics, facts, questions first) -- v60: intent defensive_draft is enough,
-        # the narrative check ran above; only a failure keeps the single-shot pipeline below.
-        _interactive = await _interactive_start(_session, session_id, request.message, _session_lang)
+    _intake = await _request_intake(_intake_box, request.message, _session)
+    _route = _intake["route"]
+    if _route == _intake_mod.CASE_FIRST and _interactive_on() and not _case_first_tried:
+        # INTERACTIVE_FLOW: a case in rounds or single shot; only a failure keeps the single-shot pipeline below.
+        _interactive = await _interactive_start(_session, session_id, request.message, _session_lang, intake=_intake)
         if _interactive is not None:
             return _interactive
-    if _legal_intent == "defensive_draft":
+    if _route == _intake_mod.OUT_OF_SCOPE:
+        return _out_of_scope_reply(_session, session_id, request.message, _intake)
+    if _route == _intake_mod.CASE_FIRST:
         # Use message text as source — no document required
         from ..rag.defensive_generation import run_defensive_pipeline
         try:
@@ -3732,12 +3792,8 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
             awaiting_summary_confirmation=bool(_confirmation_q),
             title=_session.title,
         )
-    elif _legal_intent == "generate":
-        pass  # fall through to existing _classify_top_level_intent
-    # else: "rag" → fall through to existing flow unchanged
 
-    _top_intent = _classify_top_level_intent(request.message, "it")
-    if _top_intent == "generate" or is_generation_request(request.message):
+    if _route == _intake_mod.GENERATION:
         session = chatbot.get_session(session_id, user_id=_uid, db=db)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -3805,13 +3861,20 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
                 title=session.title,
             )
         cached = _get_cached_sections(session)
-        session.add_message("user", request.message)
+        session.add_message("user", request.message, metadata={"intake": _intake_mod.log_view(_intake)})
         if len(session.messages) == 1:
             session.title = _generate_session_title(request.message)
         try:
             loop = asyncio.get_event_loop()
+            # v61: an atto on a narrated case is drafted with the case-first record of it (the first read)
+            _record = ""
+            if _intake.get("facts"):
+                _record = await loop.run_in_executor(None, partial(
+                    _intake_mod.case_record, request.message, _intake_box.get("upload") or "", session_lang))
+                vlog("generation_case_record", {"session_id": session_id, "chars": len(_record)})
             gen_result = await loop.run_in_executor(
-                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached)
+                None, partial(_run_generation_sync, request.message, session_lang, doc_type, cached,
+                              case_record=_record)
             )
         except Exception as exc:
             logger.error("Generation error: %s", exc, exc_info=True)
@@ -3859,7 +3922,8 @@ async def _chat_impl(request: ChatRequest, current_user: Optional[dict], db: Ses
         result = await loop.run_in_executor(
             None, partial(chatbot.chat, session_id, request.message,
                           user_id=current_user.get("sub") if current_user else None,
-                          tenant_id=current_user.get("tenant_id") if current_user else None)
+                          tenant_id=current_user.get("tenant_id") if current_user else None,
+                          intake=_intake_mod.log_view(_intake))
         )
     except SessionExpiredError:
         raise HTTPException(status_code=404, detail="Session expired")

@@ -133,7 +133,7 @@ def pick_in_chapter(session, doc_id: str, name: str, ranges: List[List[int]],
 
 # --- I5: internal tokens --------------------------------------------------------------------------------------------
 _STATUS_WORDS = {"NON DECORSO": "non ancora decorso", "DECORSO": "già decorso", "INCERTO": "incerto",
-                 "NON VERIFICABILE": "non verificabile con le date del caso", "DA VERIFICARE": "da verificare",
+                 "NON VERIFICABILE": "da verificare", "DA VERIFICARE": "da verificare",     # v65: never «non verificabile»
                  "IN CORSO": "in corso", "PRECLUSO": "precluso", "SCADUTO": "scaduto", "NON APPLICABILE": "non applicabile",
                  "APPLICABILE": "applicabile"}
 _STATUS_RE = re.compile(r"\b(?:" + "|".join(sorted(map(re.escape, _STATUS_WORDS), key=len, reverse=True)) + r")\b")

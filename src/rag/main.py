@@ -61,6 +61,8 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class AgentState(TypedDict, total=False):
+    # v68: the intake's deliverable («cenni», «quesito», …) -- the plain answer's grounding reads it (plain_grounding)
+    deliverable: Optional[str]
     awaiting_clarification: Optional[bool]
     pending_sections: List[Dict[str, Any]]
     pending_calculation: Optional[Dict[str, Any]]
@@ -388,12 +390,14 @@ def run(query: str, session_language: str = "it",
         awaiting_summary_confirmation: bool = False,
         pending_summary: Optional[Dict[str, Any]] = None,
         raw_query: Optional[str] = None,
-        skip_calculation: bool = False) -> Dict[str, Any]:
+        skip_calculation: bool = False,
+        deliverable: str = "") -> Dict[str, Any]:
     """Run a single query through the agent graph.
 
     Set `skip_calculation` when calling this graph for retrieval only — for
     supporting sources behind a document draft, say — so the calculation gate
     cannot intercept the turn and return a number in place of the sources.
+    v68: `deliverable` -- the intake's («cenni», «quesito»): the answer's grounding (plain_grounding) applies to them.
     """
     compiled = _get_compiled_graph()
     initial_state: AgentState = {
@@ -432,6 +436,7 @@ def run(query: str, session_language: str = "it",
         "confirmed_summary": None,
         "confirmed_summary_covers_turns": None,
         "skip_calculation": skip_calculation,
+        "deliverable": deliverable or "",
     }
     ccnl = _ccnl_turn(raw_query or query, initial_state)
     if ccnl is not None:

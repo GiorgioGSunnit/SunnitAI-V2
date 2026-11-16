@@ -1408,7 +1408,16 @@ def _undated_entry(term: Term, start_unknown: bool = False) -> Dict[str, Any]:
             "text": text, "undated": True, **({"start_unknown": True} if start_unknown else {})}
 
 
+# v65 (my draft): a term the case's dates cannot settle -- its rule stated, only the decorrenza flagged
+TERM_DECORRENZA_FLAG = "DA VERIFICARE la decorrenza: il caso non indica la data attuale"
+
+
 def _term_entry(id, label, ref, word, length, status, start, end_what, end_written, note=""):
+    if status == "NON VERIFICABILE":        # v65: never «non verificabile» -- the rule stated, the decorrenza flagged
+        text = (f"{label}: {word}, con decorrenza da {start[1] or 'fatto'} {_short(start[2])}".rstrip()
+                + f" — {TERM_DECORRENZA_FLAG}")
+        return {"id": id, "label": label, "ref": ref, "length": length, "status": status,
+                "from": {"what": start[1], "date": start[2]}, "to": {"what": end_what, "date": end_written}, "text": text}
     text = (f"{label}: {word} {status} ({start[1] or 'fatto'} {_short(start[2])}, {end_what} "
             f"{end_written})".replace(" )", ")") + (f"; {note}" if note and status == "INCERTO" else ""))
     return {"id": id, "label": label, "ref": ref, "length": length, "status": status,
@@ -1534,7 +1543,12 @@ _USER_SENTENCE_RE = re.compile(
     r"mi\s+serv\w+|ho\s+bisogno|aiutami|indica(?:mi|re)?|valuta(?:re)?|redig(?:i|ere)|scriv(?:i|ere)|spiega(?:mi|re)?|"
     r"dimmi|analizza(?:re)?|individua(?:re)?|prepara(?:re)?|predisp(?:oni|orre)|approfondisci|approfondire|"
     r"elenca(?:re)?|suggerisci|consiglia(?:mi)?|esamina(?:re)?|illustra(?:re)?|descrivi|fornisci|concentrati|"
-    r"procedi)\b", re.IGNORECASE)
+    r"procedi)\b"
+    # v75: a listed ask («1) Indicare …», «b. se la querela …», «- valutare …») and the list's lead-in («In particolare:»)
+    r"|^\W*(?:\d{1,2}[.)]|[a-hA-H][.)]|[-•–*])\s*(?:indic|valut|individu|chiar|precis|verific|stabil|esamin|spieg|redig|"
+    r"predispo|illustr|descriv|qual[ei]\b|quale\b|se\b|come\b|quando\b|entro\b|in\s+che|chi\b|cosa\b|perch[ée]\b)"
+    r"|^\W*(?:in\s+particolare|i\s+(?:seguenti\s+)?quesiti(?:\s+sono)?|le\s+(?:seguenti\s+)?domande(?:\s+sono)?)\s*:",
+    re.IGNORECASE)
 
 
 def user_message(sentence: str) -> bool:
@@ -1545,11 +1559,13 @@ def user_message(sentence: str) -> bool:
 
 def case_only(case: str) -> str:
     """v60i (4): the case without the user's own message: the request typed over an upload, and the sentences that are
-    the user speaking (user_message). What every tool, term and fact trigger reads."""
+    the user speaking (user_message). What every tool, term and fact trigger reads. v75: an abbreviation («il Sig.
+    Caio») never ends a sentence (sentence_split.rejoin)."""
+    from .sentence_split import rejoin
     text = _REQUEST_RE.sub("", case or "", count=1)
     out = []
     for line in text.split("\n"):
-        kept = [x for x in re.split(r"(?<=[.;!?])\s+", line) if x.strip() and not user_message(x)]
+        kept = [x for x in rejoin(re.split(r"(?<=[.;!?])\s+", line)) if x.strip() and not user_message(x)]   # v75
         out.append(" ".join(kept))
     return "\n".join(out)
 

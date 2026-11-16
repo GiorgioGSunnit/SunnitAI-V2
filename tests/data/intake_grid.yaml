@@ -1,0 +1,151 @@
+# v61: the intake grid -- synthetic one-paragraph requests, one per deliverable and, for a parere, one per role x stage
+# cell that exists in law, each with the values intake must detect (scripts/intake_check.py; tests/test_v61.py).
+# A row passes when every value under `expected` matches. `upload` is the text of the document the request carries.
+# Written with the rules (v61), not held out: it measures the rules' coverage of the phrasings below.
+
+- id: atto_citazione
+  prompt: "Redigi un atto di citazione per Mario Rossi contro la Beta S.r.l., che non gli ha pagato tre fatture per complessivi 12.000 euro nonostante i solleciti."
+  expected: {deliverable: atto, route: generation}
+
+- id: atto_diffida
+  prompt: "Predisponi una diffida ad adempiere da inviare al conduttore che non paga i canoni da quattro mesi."
+  expected: {deliverable: atto, route: generation}
+
+- id: atto_querela
+  prompt: "Querela nei confronti di Caio per diffamazione: ha scritto su Facebook che il mio cliente è un truffatore."
+  expected: {deliverable: atto, route: generation}
+
+- id: atto_fill_upload
+  prompt: "Compila questo modulo con i dati di Giovanni Bianchi, nato a Torino il 3 marzo 1980."
+  upload: "ISTANZA DI ACCESSO AGLI ATTI. Il sottoscritto ____ nato a ____ il ____ chiede di prendere visione dei documenti ____."
+  expected: {deliverable: atto, route: document}
+
+- id: cenni_usucapione
+  prompt: "Cenni sull'usucapione abbreviata."
+  expected: {deliverable: cenni, route: rag}
+
+- id: cenni_caparra
+  prompt: "Spiegami la differenza tra caparra confirmatoria e caparra penitenziale."
+  expected: {deliverable: cenni, route: rag}
+
+- id: cenni_concorso_esterno
+  prompt: "Cos'è il concorso esterno in associazione mafiosa?"
+  expected: {deliverable: cenni, route: rag}
+
+- id: quesito_appello
+  prompt: "Entro quanto tempo si propone appello contro una sentenza civile non notificata?"
+  expected: {deliverable: quesito, route: rag}
+
+- id: quesito_competenza
+  prompt: "Qual è il giudice competente per una causa di sfratto per morosità?"
+  expected: {deliverable: quesito, route: rag}
+
+- id: quesito_procedibilita
+  prompt: "Il reato di lesioni personali lievissime è procedibile a querela?"
+  expected: {deliverable: quesito, route: rag}
+
+- id: revisione_contratto
+  prompt: "Analizza il contratto che ti ho allegato e dimmi se ci sono clausole vessatorie."
+  upload: "CONTRATTO DI FORNITURA. Tra Alfa S.r.l. e Beta S.p.A. si conviene quanto segue. Art. 1 Oggetto. Art. 2 Corrispettivo. Art. 9 Foro competente esclusivo: Tribunale di Milano. Art. 10 Il fornitore può recedere in ogni momento senza preavviso."
+  expected: {deliverable: revisione_documento, route: document}
+
+- id: revisione_comparsa
+  prompt: "Cosa ne pensi di questa comparsa di risposta?"
+  upload: "TRIBUNALE DI ROMA. COMPARSA DI COSTITUZIONE E RISPOSTA per Gamma S.r.l., convenuta, contro Delta S.p.A., attrice. In fatto. In diritto. Si eccepisce la prescrizione del credito. Conclusioni."
+  expected: {deliverable: revisione_documento, route: document}
+
+- id: calcolo_interessi
+  prompt: "Calcola gli interessi legali su 15.000 euro dal 1 marzo 2021 a oggi."
+  expected: {deliverable: calcolo, route: rag}
+
+- id: giurisprudenza_chance
+  prompt: "Trovami le sentenze più recenti della Cassazione sul danno da perdita di chance."
+  expected: {deliverable: ricerca_giurisprudenza, route: out_of_scope}
+
+- id: giurisprudenza_custode
+  prompt: "Qual è l'orientamento della Cassazione sulla responsabilità del custode ex art. 2051 c.c.?"
+  expected: {deliverable: ricerca_giurisprudenza, route: out_of_scope}
+
+- id: altro_saluto
+  prompt: "Grazie mille, è tutto chiaro."
+  expected: {deliverable: altro, route: rag}
+
+- id: imputato_indagini
+  prompt: "Il mio cliente Marco Bianchi ha ricevuto un avviso di garanzia: il PM lo indaga per appropriazione indebita di 30.000 euro sottratti alla società di cui era amministratore. Come imposto la difesa?"
+  expected: {deliverable: parere, route: case_first, rito: penale, role: imputato, stage: indagini}
+
+- id: imputato_primo_grado
+  prompt: "Assisto Luca Verdi, rinviato a giudizio per furto aggravato in un supermercato: la prima udienza dibattimentale è fissata a marzo. Il video della sorveglianza non lo inquadra mai in volto. Quale linea difensiva?"
+  expected: {deliverable: parere, route: case_first, rito: penale, role: imputato, stage: primo_grado}
+
+- id: imputato_impugnazione
+  prompt: "Tizio è stato condannato in primo grado dal Tribunale di Milano a due anni per truffa; la sentenza si fonda solo sulla testimonianza della persona offesa. Il candidato, assunte le vesti del difensore di Tizio, rediga parere sui motivi di appello."
+  expected: {deliverable: parere, route: case_first, rito: penale, role: imputato, stage: impugnazione}
+
+- id: offesa_indagini
+  prompt: "Sono l'avvocato di Anna Neri, che ha sporto querela contro l'ex compagno per atti persecutori: da mesi la segue e le invia decine di messaggi al giorno. Il PM non ha ancora chiesto misure cautelari. Cosa possiamo fare?"
+  expected: {deliverable: parere, route: case_first, rito: penale, role: persona_offesa, stage: indagini}
+
+- id: offesa_pre_filing
+  prompt: "Caio ha sottratto dal conto della zia anziana 20.000 euro usando le sue credenziali di home banking. La zia se ne accorge e si rivolge a un avvocato. Il candidato, assunte le vesti del legale della persona offesa, indichi le iniziative da assumere."
+  expected: {deliverable: parere, route: case_first, rito: penale, role: persona_offesa, stage: pre_filing}
+
+- id: parte_civile_primo_grado
+  prompt: "Nel processo per omicidio stradale a carico di Sempronio, i genitori della vittima si sono costituiti parte civile. All'udienza il difensore dell'imputato chiede il rito abbreviato. Come legale della parte civile, quale strategia seguire?"
+  expected: {deliverable: parere, route: case_first, rito: penale, role: parte_civile, stage: primo_grado}
+
+- id: parte_civile_impugnazione
+  prompt: "Il Tribunale ha assolto Mevio dal reato di lesioni colpose perché il fatto non costituisce reato; Caia, che si era costituita parte civile, vuole ottenere comunque il risarcimento. Il candidato, assunte le vesti del legale di Caia, indichi il mezzo di impugnazione e la strategia."
+  expected: {deliverable: parere, route: case_first, rito: penale, role: parte_civile, stage: impugnazione}
+
+- id: attore_pre_filing
+  prompt: "Sono l'avvocato della Gamma S.r.l., che ha fornito materiali edili alla Delta S.p.A. per 80.000 euro; Delta non paga nonostante due solleciti. Gamma vuole recuperare il credito: quali azioni?"
+  expected: {deliverable: parere, route: case_first, rito: civile, role: attore, stage: pre_filing}
+
+- id: attore_primo_grado
+  prompt: "Assisto Paolo, che ha citato in giudizio il proprio vicino per l'immissione di rumori intollerabili; il convenuto si è costituito eccependo la prescrizione. Come rispondere all'eccezione?"
+  expected: {deliverable: parere, route: case_first, rito: civile, role: attore, stage: primo_grado}
+
+- id: convenuto_primo_grado
+  prompt: "La società Alfa ha notificato al mio cliente, Giorgio Blu, un atto di citazione chiedendo 50.000 euro per un presunto inadempimento di un contratto d'appalto. La prima udienza è tra tre mesi. Come impostare la difesa?"
+  expected: {deliverable: parere, route: case_first, rito: civile, role: convenuto, stage: primo_grado}
+
+- id: convenuto_pre_filing
+  prompt: "Il mio cliente ha ricevuto una diffida dall'ex socio, che gli chiede 40.000 euro di utili non distribuiti e minaccia di agire in giudizio. Come rispondere?"
+  expected: {deliverable: parere, route: case_first, rito: civile, role: convenuto, stage: pre_filing}
+
+- id: convenuto_esecuzione
+  prompt: "Al signor Rossi è stato notificato un atto di precetto per 25.000 euro fondato su un decreto ingiuntivo che lui sostiene di non aver mai ricevuto. Sono il suo avvocato: come lo difendo?"
+  expected: {deliverable: parere, route: case_first, rito: esecuzione, role: convenuto, stage: esecuzione}
+
+- id: terzo_esecuzione
+  prompt: "Nel pignoramento immobiliare promosso dalla Banca Alfa contro Caio è stato pignorato anche un appartamento che appartiene a Sempronia, che lo aveva acquistato con atto trascritto prima del pignoramento. Assisto Sempronia: quali rimedi?"
+  expected: {deliverable: parere, route: case_first, rito: esecuzione, role: terzo, stage: esecuzione}
+
+- id: lavoro_licenziamento
+  prompt: "Sono l'avvocato di Laura, licenziata per giusta causa dopo dodici anni perché avrebbe usato il telefono aziendale per motivi personali. Il datore di lavoro non le ha contestato nulla per iscritto prima. Come impugnare il licenziamento?"
+  expected: {deliverable: parere, route: case_first, rito: lavoro, role: attore, stage: pre_filing}
+
+- id: famiglia_affidamento
+  prompt: "Giulia e Marco sono sposati da dieci anni e hanno due figli minori. Marco se n'è andato di casa e non versa nulla per i figli. Sono l'avvocato di Giulia: come ottengo l'affidamento e l'assegno di mantenimento?"
+  expected: {deliverable: parere, route: case_first, rito: famiglia, role: attore, stage: pre_filing}
+
+- id: amministrativo_gara
+  prompt: "Il Comune di Alfa ha escluso la Edilnord S.r.l. da una gara d'appalto per un presunto difetto del DURC, senza alcun contraddittorio. Sono il legale di Edilnord: come agire davanti al TAR?"
+  expected: {deliverable: parere, route: case_first, rito: amministrativo, role: attore, stage: pre_filing}
+
+- id: penale_gdp
+  prompt: "Tizio, durante una lite condominiale, ha dato uno schiaffo al vicino Caio, che ha riportato un ematoma guaribile in cinque giorni. Caio ha presentato querela e il giudice di pace ha fissato l'udienza. Il candidato, assunte le vesti del difensore di Tizio, indichi la linea difensiva."
+  expected: {deliverable: parere, route: case_first, rito: penale_gdp, role: imputato, stage: primo_grado}
+
+- id: tributario_fuori_corpus
+  prompt: "L'Agenzia delle Entrate ha notificato al mio cliente un avviso di accertamento per IRPEF non dichiarata di 60.000 euro. Come contestarlo?"
+  expected: {deliverable: parere, route: out_of_scope, rito: tributario}
+
+- id: fallimentare_fuori_corpus
+  prompt: "Sono il legale di un fornitore che vanta un credito di 30.000 euro verso una società dichiarata in liquidazione giudiziale la scorsa settimana. Come insinuarsi al passivo?"
+  expected: {deliverable: parere, route: out_of_scope, rito: fallimentare}
+
+- id: blocchi_esame
+  prompt: "Tizio, svegliato di notte, spara a un ladro che fugge dalla finestra e lo ferisce alle gambe. Premessi brevi cenni sulla legittima difesa e sull'eccesso colposo, il candidato, assunte le vesti del difensore di Tizio, rediga parere motivato."
+  expected: {deliverable: parere, route: case_first, rito: penale, blocks: "cenni,cenni,parere"}

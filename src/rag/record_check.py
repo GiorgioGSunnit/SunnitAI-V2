@@ -20,7 +20,7 @@ Removed (each rule a reference, never a heuristic of its own):
   applicazione_non_chiesta  a §2 paragraph on an article the writer was not asked to apply, whose record has no fact for it
                             (v60i 1: no block due -- issue_records.block_due)
   virgolette_fuori_testo    a quotation, attributed to an article, its text and rubrica do not hold (rule_quote's measure)
-  comma_inesistente         it cites a comma the article does not have
+  comma_inesistente         it cites a comma the article does not have (v65: or a number or a letter: phantom_item)
   contro_assistito          it proposes an action, a complaint or a claim against the client (the state's client)
   ripetizione               it repeats an earlier sentence of its section (repetition_guard's measure: four content
                             stems at least -- «Questo requisito è provato.» twice is two requisites)
@@ -36,6 +36,16 @@ Removed (each rule a reference, never a heuristic of its own):
                             consapevole, in mala fede, dolo: interactive_flow.state_of_mind) as a fact the case does not
                             state -- the parere argues it from the facts; the «il caso non dice …» clause is cut, the
                             sentence removed only when nothing is left of it (logged as rewritten otherwise)
+  requisito_non_registrato  (v64) in §1 or the conclusions (ctx["asserting"]), a sentence stating what a threat
+                            article (the charge, the claim: ctx["threats"]) «richiede», «presuppone», «è necessario
+                            che» … -- cited, or named by its rubrica -- whose requirement names none of its recorded
+                            elements. v65: the writer review's semantic verdict (ctx["requirement_review"]: the
+                            sentences it flagged, plan_then_write.REVIEW_REQUIREMENT) where its call answered for the
+                            section; the word test (_unrecorded_requirement: half of the clause's content words at
+                            least must be the elements') only where it failed or did not run
+  alternativa_senza_fatti   (v65) in §1 (ctx["lead"]), a sentence citing an alternative qualification no fact of the
+                            case holds (the first read's verdict: ctx["unfounded"]) -- it belongs to the alternatives
+                            section, as a NO
   domanda_nel_parere        (v60k, single shot: ctx["single_shot"]) a question in the parere's body -- a fact the case
                             does not state is «da verificare: il caso non dice …» where it counts (v60q: no
                             «Punti da precisare» by default, OPEN_POINTS_MAX 0)
@@ -56,7 +66,8 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 REMOVE_RULES = ("fuori_dal_record", "esito_contraddetto", "norma_non_applicabile", "norma_senza_testo",
                 "applicazione_non_chiesta",
                 "virgolette_fuori_testo", "comma_inesistente", "contro_assistito", "ripetizione", "frammento",
-                "testo_della_norma", "regola_fuori_testo", "stato_soggettivo", "domanda_nel_parere")
+                "testo_della_norma", "regola_fuori_testo", "stato_soggettivo", "domanda_nel_parere",
+                "requisito_non_registrato", "alternativa_senza_fatti")
 MARK_RULES = ("istituto_rubrica", "contraddizione_interna")
 QUOTE_MIN = 25
 _QUOTE_RE = re.compile(r"«([^»]{%d,})»" % QUOTE_MIN)
@@ -66,10 +77,17 @@ _AGAINST_RE = re.compile(r"\b(?:quereli?\w*|denunci\w*|agire|agisca|citare|conve
                          r"(?:sig(?:\.|nor[ae]?)\s+|dott\.(?:ssa)?\s+)?", re.IGNORECASE)
 # v60g (3): an institution named for an article -- the words just before «(art. N …)», «ex art. N», «ai sensi
 # dell'art. N», «di cui all'art. N», or inside «art. N … (…)» after it
+# v72: «art. N», «art N», «art.N», «articolo N» alike (the shared parser's forms, citations.article_refs)
+_ART = r"(?:artt?\.?|articol[oi])\s*"
 _BEFORE_RE = re.compile(r"(?:\(\s*|\b(?:ex|di cui all['’]|previst[oa] dall['’]|disciplinat[oa] dall['’])\s*)"
-                        r"artt?\.\s*(?P<num>\d+(?:-[a-z]+)?)", re.IGNORECASE)
-_AFTER_RE = re.compile(r"\bartt?\.\s*(?P<num>\d+(?:-[a-z]+)?)[^(),;.]{0,12}\(\s*(?P<inst>[a-zà-ü'’ ]{6,60})\)",
+                        + _ART + r"(?P<num>\d+(?:-[a-z]+)?)", re.IGNORECASE)
+_AFTER_RE = re.compile(r"\b" + _ART + r"(?P<num>\d+(?:-[a-z]+)?)[^(),;.]{0,12}\(\s*(?P<inst>[a-zà-ü'’ ]{6,60})\)",
                        re.IGNORECASE)
+# v68: «lesioni personali ai sensi dell'art. 575 c.p.», «a norma dell'art.», «in base all'art.» -- the words before it an
+# institution only when some article's rubrica names it (institution_article), never «Tizio ha agito ai sensi …»
+_LOOSE_BEFORE_RE = re.compile(r"\b(?:ai sensi dell['’]|ai sensi degli|a norma dell['’]|in base all['’])\s*"
+                              + _ART + r"(?P<num>\d+(?:-[a-z]+)?)", re.IGNORECASE)
+_LOOSE_INTRO_RE = re.compile(r"\b(?:ai sensi dell['’]|ai sensi degli|a norma dell['’]|in base all['’])\s*$", re.IGNORECASE)
 _VERB_END_RE = re.compile(r"(?:are|ere|ire|ato|ata|ati|ate|ito|ita|iti|ite|uto|uta|ando|endo|ebbe|ono|isce|iscono)$")
 INSTITUTION_WORDS = 3
 _INSTITUTION_STOP = {"della", "delle", "dello", "degli", "dalla", "dalle", "nella", "nelle", "sulla", "sulle", "alla",
@@ -209,6 +227,55 @@ _MISSING_RE = re.compile(r"(?:\(?\s*da\s+verificare\s*:\s*)?\b(?:il\s+caso|la\s+
                          r"(?:dice|indica|precisa|chiarisce|specifica|riferisce)\b", re.IGNORECASE)
 
 
+# v65: an article's numbered and lettered items («1) …», «a) …»), and a sentence citing one («art. 61, n. 4»,
+# «lettera b) dell'art. 7»)
+_ITEM_NUMBER_RE = re.compile(r"(?:^|[\s;:,.(«])(\d{1,2})\)\s")
+_ITEM_LETTER_RE = re.compile(r"(?:^|[\s;:,.(«])([a-z])\)\s")
+_ITEM_KIND = r"(n(?:umero|\.|°)|lett(?:era|\.)?)"
+_ITEM_VALUE = r"(\d{1,2}|[a-z])\b\)?"
+_ART_ITEM_RE = re.compile(r"\bart(?:icolo|\.)\s*(\d+(?:-[a-z]+)?)\s*(?:[a-z.]{2,8}\s*)?,?\s*(?:(?:comma|co\.)\s*\d{1,2}"
+                          r"\s*,?\s*)?" + _ITEM_KIND + r"\s*" + _ITEM_VALUE, re.IGNORECASE)
+_ITEM_OF_RE = re.compile(_ITEM_KIND + r"\s*" + _ITEM_VALUE + r"\s*,?\s*(?:del(?:l['’])?\s*(?:comma|co\.)\s*\d{1,2}\s*,?\s*)?"
+                         r"(?:dell['’]\s*|dello\s+|del\s+)?art(?:icolo|\.)\s*(\d+(?:-[a-z]+)?)", re.IGNORECASE)
+TEXT_CUT_MARGIN = 50
+
+
+def article_items(text: str, cut: int = 0) -> Dict[str, Any]:
+    """v65: {"numbers", "letters", "cut"} of an article's text -- its numbered and lettered items; cut: the text may be
+    cut short (its length within TEXT_CUT_MARGIN of the cut given), so an item past its last one is unknown, not
+    missing."""
+    text = " ".join(str(text or "").split())
+    return {"numbers": {int(n) for n in _ITEM_NUMBER_RE.findall(text)},
+            "letters": set(_ITEM_LETTER_RE.findall(text)),
+            "cut": bool(cut) and len(text) >= cut - TEXT_CUT_MARGIN, "read": bool(text)}
+
+
+def phantom_item(sentence: str, documents, items: Dict[str, Dict[str, Any]]) -> str:
+    """v65: why the sentence cites a number or a letter its article does not have («art. 61, n. 22 c.p.», «lettera f)
+    dell'art. 7») -- "" when none, or when the article's text is not read or may be cut before it."""
+    from . import citations
+    found = [(m.group(1), m.group(2), m.group(3), m) for m in _ART_ITEM_RE.finditer(sentence or "")]
+    found += [(m.group(3), m.group(1), m.group(2), m) for m in _ITEM_OF_RE.finditer(sentence or "")]
+    for number, kind, value, m in found:
+        labels = [_label_of(r) for r in citations.refs_in(sentence[m.start():m.end() + 30], documents)
+                  if str(r[0]) == str(number)]
+        for lab in labels:
+            have = items.get(lab)
+            if not have or not have.get("read"):
+                continue
+            letter = kind.lower().startswith("lett")
+            pool = have["letters"] if letter else have["numbers"]
+            value_k = value.lower() if letter else int(value) if value.isdigit() else None
+            if value_k is None or value_k in pool:
+                continue
+            if have.get("cut") and (not pool or value_k > max(pool)):
+                continue
+            what = f"la lettera {value_k})" if letter else f"il numero {value_k})"
+            has = ", ".join(str(x) for x in sorted(pool)) or "nessuno"
+            return f"cita {what} dell'art. {lab}, che non l'ha (ha: {has})"
+    return ""
+
+
 def _phantom_comma(sentence: str, documents, commi: Dict[str, Set[int]]) -> str:
     from .interactive_flow import _ART_COMMA_RE, _COMMA_OF_RE
     from . import citations
@@ -290,36 +357,77 @@ def _cleared(label: str, nouns: Sequence[str], words: Sequence[str], rubriche: D
 
 def _institution(sentence: str, documents, rubriche: Dict[str, str], texts: Dict[str, str],
                  names: Optional[Dict[str, str]] = None, cleared: Optional[List[Dict[str, Any]]] = None,
-                 index=None) -> Optional[Tuple[str, str, bool]]:
+                 index=None, records: Optional[Dict[str, Dict[str, Any]]] = None
+                 ) -> Optional[Tuple[str, str, bool, Tuple[int, int], Optional[str], bool]]:
     """(label, institution, whether its code has an index) when the sentence names an institution for an article -- the
     nouns among the
     INSTITUTION_WORDS words before its citation, or in the parenthesis after it -- that no source clears (_cleared:
     the article's rubrica, the code's institutions index, its text, the names the record gives it: its topic's title,
-    the first read's institution that found it). cleared (v60j): each institution a source cleared, with the source."""
+    the first read's institution that found it). cleared (v60j): each institution a source cleared, with the source.
+    v68: (…, the cited number's span, the article whose rubrica names the institution -- institution_article --, whether
+    the form is a loose one): «ai sensi dell'art. N» and its kind count only when such an article exists."""
     from . import citations
     found = []
     for m in _BEFORE_RE.finditer(sentence):
         head = re.sub(r"\b(?:ex|di cui all['’]|previst[oa] dall['’]|disciplinat[oa] dall['’])\s*$", "",
                       sentence[:m.start()], flags=re.IGNORECASE)
         words = re.findall(r"[a-zà-ü'’]+", head.lower())[-INSTITUTION_WORDS:]
-        found.append((m, _nouns(words), words))
+        found.append((m, _nouns(words), words, False))
     for m in _AFTER_RE.finditer(sentence):
         words = re.findall(r"[a-zà-ü'’]+", m.group("inst").lower())
-        found.append((m, _nouns(words), words))
-    for m, nouns, words in found:
+        found.append((m, _nouns(words), words, False))
+    for m in _LOOSE_BEFORE_RE.finditer(sentence):           # v68
+        head = _LOOSE_INTRO_RE.sub("", sentence[:m.end() - len(m.group(0))])
+        words = re.findall(r"[a-zà-ü'’]+", head.lower())[-INSTITUTION_WORDS:]
+        found.append((m, _nouns(words), words, True))
+    for m, nouns, words, loose in found:
         if not _stems4(" ".join(nouns)):
             continue
-        labels = [_label_of(r) for r in citations.refs_in(sentence[m.start():m.end() + 30], documents)
-                  if str(r[0]) == m.group("num")]
+        snippet = sentence[m.start():m.end() + 30]
+        labels = [_label_of(r) for r in citations.refs_in(snippet, documents) if str(r[0]) == m.group("num")] or \
+            [_label_of(r) for r in citations.article_refs(snippet) if str(r[0]) == m.group("num")]     # v72
         for lab in labels:
-            if not (rubriche.get(lab) and texts.get(lab)):
+            # v69: the record's rubrica when the rows hold none (an article a road brought in: the posture's table)
+            rubrica = rubriche.get(lab) or str(((records or {}).get(lab) or {}).get("rubrica") or "")
+            if not rubrica:
                 continue                # without the article's own words, nothing to check against
-            by, indexed = _cleared(lab, nouns, words, rubriche, texts, names, index)
+            by, indexed = _cleared(lab, nouns, words, {**rubriche, lab: rubrica}, texts, names, index)
             if by:
                 if cleared is not None:
                     cleared.append({"article": lab, "institution": " ".join(nouns), "by": by})
                 continue
-            return lab, " ".join(nouns), indexed
+            target = institution_article(nouns, lab, records or {}, rubriche)
+            if loose and not target:
+                continue                # v68: the words name no article of the material -- no institution
+            return lab, " ".join(nouns), indexed, m.span("num"), target, loose
+    return None
+
+
+def _cited_instead(sentence: str, hit: Tuple[Any, ...], documents) -> str:
+    """v68: the sentence with the mis-cited article replaced by the institution's (hit[4]: the number only, the code
+    as written), or -- none -- without the citation (anchored_writing.drop_citations: its code, its «ai sensi dell'»)."""
+    from . import anchored_writing
+    (start, end), target = hit[3], hit[4]
+    if target:
+        return sentence[:start] + target.split(" ", 1)[0] + sentence[end:]
+    number, _, code = hit[0].partition(" ")
+    return anchored_writing.drop_citations(sentence, [(number, code)], documents)
+
+
+def institution_article(nouns: Sequence[str], cited: str, records: Dict[str, Dict[str, Any]],
+                        rubriche: Dict[str, str]) -> Optional[str]:
+    """v68: the article of the institution a sentence names for another one -- the record's article whose rubrica shares
+    the most stems with it (the records first, then the material's rows), in the cited article's code; None when none
+    does, or two tie."""
+    mine = _stems4(" ".join(nouns))
+    code = cited.split(" ", 1)[1] if " " in cited else ""
+    for pool in ({k: str((r or {}).get("rubrica") or "") for k, r in records.items()}, rubriche):
+        scored = sorted(((len(mine & _stems4(rub)), lab) for lab, rub in pool.items()
+                         if lab != cited and rub and lab.split(" ", 1)[-1] == code and mine & _stems4(rub)), reverse=True)
+        if scored and (len(scored) == 1 or scored[0][0] > scored[1][0]):
+            return scored[0][1]
+        if scored:
+            return None
     return None
 
 
@@ -451,7 +559,8 @@ def check(sections: List[Tuple[str, str]], ctx: Dict[str, Any], ledger=None) -> 
                 rule, why = ("regola_fuori_testo", "enuncia la regola di una norma con parole che il suo testo non "
                              "contiene (rule_quote), e il parere non ne riporta il testo")
             if not rule:
-                why = _phantom_comma(sentence, documents, commi)
+                why = _phantom_comma(sentence, documents, commi) or \
+                    phantom_item(sentence, documents, ctx.get("items") or {})        # v65: letters and numbers too
                 rule = "comma_inesistente" if why else ""
             if not rule:
                 why = _against_client(sentence, ctx.get("client") or "")
@@ -462,6 +571,18 @@ def check(sections: List[Tuple[str, str]], ctx: Dict[str, Any], ledger=None) -> 
             if not rule:
                 why = _fragment(sentence)
                 rule = "frammento" if why else ""
+            unfounded = set(ctx.get("unfounded") or ()) & set(labels)
+            if not rule and unfounded and title == ctx.get("lead"):        # v65: no fact holds it: not in §1
+                rule, why = ("alternativa_senza_fatti", f"propone in §1 l'art. {sorted(unfounded)[0]}, qualificazione "
+                             "alternativa che nessun fatto del caso sostiene (sezione delle qualificazioni alternative)")
+            if not rule and title in set(ctx.get("asserting") or ()):     # v64: only the threat's recorded elements
+                review = ctx.get("requirement_review") or {}
+                if title in (review.get("ran") or ()):      # v65: the writer review answered -- its verdict decides
+                    why = (REQUIREMENT_FLAGGED if _flagged(sentence, review.get("flagged") or ()) else "")
+                else:                                       # its call failed or did not run: the word test
+                    why = _unrecorded_requirement(sentence, ctx.get("threats") or {}, documents,
+                                                  [ctx.get("client") or ""] + list(ctx.get("parties") or ()))
+                rule = "requisito_non_registrato" if why else ""
             cut = _state_of_mind_cut(sentence, ctx.get("client") or "", ctx.get("parties") or ()) \
                 if single and not rule else None
             if cut == "":
@@ -489,13 +610,17 @@ def check(sections: List[Tuple[str, str]], ctx: Dict[str, Any], ledger=None) -> 
                 continue
             mark = ""
             hit = _institution(sentence, documents, rubriche, texts, ctx.get("names"), log["cleared"],
-                               ctx.get("index"))
-            if hit:
-                mark = f" (da verificare: art. {hit[0]}, rubrica «{rubriche.get(hit[0], '')[:80]}»)"
-                log["marked"].append({"section": title, "rule": "istituto_rubrica", "article": hit[0],
-                                      "institution": hit[1], "missed": [x for x in CLEAR_SOURCES
-                                                                        if hit[2] or x != "indice"],
-                                      "index": hit[2], "sentence": u["text"][:200]})
+                               ctx.get("index"), ctx.get("records"))
+            if hit:                     # v68: the citation replaced by the institution's article, else dropped
+                now = _cited_instead(sentence, hit, documents)
+                marks[(s, e)] = now
+                log["rewritten"].append({"section": title, "rule": "istituto_rubrica", "article": hit[0],
+                                         "institution": hit[1], "now_article": hit[4] or "",
+                                         "missed": [x for x in CLEAR_SOURCES if hit[2] or x != "indice"],
+                                         "index": hit[2], "sentence": u["text"][:200], "now": " ".join(now.split())[:200]})
+                log["rules"]["istituto_rubrica"] = log["rules"].get("istituto_rubrica", 0) + 1
+                previous = now if "\n" not in text[e:e + 2] else ""
+                continue
             elif _denies_previous(sentence, previous):
                 mark = " (da verificare: contraddice la frase precedente)"
                 log["marked"].append({"section": title, "rule": "contraddizione_interna", "sentence": u["text"][:200]})
@@ -512,6 +637,101 @@ def check(sections: List[Tuple[str, str]], ctx: Dict[str, Any], ledger=None) -> 
             text = lead + _tidy(text) + trail
         out.append((title, text))
     return out, log
+
+
+# v64: a sentence stating what a norm requires, and the words of a requirement clause that name nothing of it
+_REQUIRES_RE = re.compile(r"\b(?:richied\w*|presuppon\w*|(?:è|sono|risulta|risultano)\s+necessari\w*|occorr\w*\s+che|"
+                          r"esig\w*|postul\w*|(?:deve|devono)\s+(?:sussistere|ricorrere|esserci))\b", re.IGNORECASE)
+_NEUTRAL_WORDS = ("condotta", "agente", "soggetto", "autore", "fatto", "fatti", "caso", "norma", "articolo", "codice",
+                  "comma", "fattispecie", "configurabilità", "configurazione", "sussistenza", "presenza", "prova",
+                  "necessario", "necessaria", "imputato", "reato", "delitto", "elemento", "elementi", "requisito",
+                  "requisiti", "integrazione", "integrare", "richiede", "presuppone", "occorre", "affinché", "inoltre",
+                  "anche", "sempre", "solo", "soltanto", "parte")
+REQUIREMENT_COVERED = 0.5
+_OTHER_SUBJECT_RE = re.compile(r"\b(?:difesa|accusa|pm|pubblico\s+ministero|giudice|tribunale|corte|cliente|parte\s+"
+                               r"civile|controparte|imputat\w*|persona\s+offesa)\b", re.IGNORECASE)
+_REQUIREMENT_STOP = {"dell", "nell", "sull", "dall", "quell", "dagl", "degl", "negl", "sugl", "dove", "come", "cioè",
+                     "ossia", "ovvero", "oppure", "sia", "siano", "abbia", "abbiano", "fosse", "fossero", "essere",
+                     "stato", "stata", "sono", "dalla", "tale", "tali", "quale", "quali", "loro", "suoi", "sue", "suo",
+                     "propri", "propria", "proprio", "altro", "altra", "altri", "ogni", "parte", "della", "delle"}
+
+
+def _unrecorded_requirement(sentence: str, threats: Dict[str, Dict[str, Any]], documents,
+                            names: Sequence[str] = ()) -> str:
+    """v64: the reason when the sentence states what a threat article requires and the requirement names none of its
+    recorded elements -- the clause after «richiede», «presuppone», «è necessario che» …: its content stems (the
+    article's rubrica, the parties' names and neutral words aside) less than REQUIREMENT_COVERED the elements'; "" else."""
+    from . import citations
+
+    def stems(text: str) -> Set[str]:       # four letters and up: «dolo», «uomo» count; function words never
+        return {w[:6] for w in re.findall(r"[a-zà-ü]{4,}", str(text or "").lower())
+                if w not in _FUNCTION_STOP and w not in _REQUIREMENT_STOP}
+    m = _REQUIRES_RE.search(sentence or "")
+    if not m or not threats:
+        return ""
+    before = sentence[:m.start()]           # the norm is the verb's subject: named before it, no one else between
+    cited = {_label_of(r) for r in citations.refs_in(before, documents)}
+    words = stems(before)
+    about = [label for label, t in threats.items() if label in cited
+             or (stems(t.get("rubrica") or "") and stems(t.get("rubrica") or "") <= words)]
+    if not about:
+        return ""
+    tail = re.split(r"\bartt?\.\s*\d+[\w-]*(?:\s+c\.[a-z.]+)?", before)[-1].lower()
+    if _OTHER_SUBJECT_RE.search(tail) or any(n and len(n) > 2 and n.lower() in tail for n in names or ()):
+        return ""
+    clause = re.split(r"[;]", sentence[m.end():], maxsplit=1)[0]
+    clause = re.sub(r"\bartt?\.\s*\d+[\w-]*(?:\s+(?:c\.p\.p\.|c\.p\.c\.|c\.p\.|c\.c\.))?", " ", clause)
+    asked = stems(clause) - stems(" ".join(_NEUTRAL_WORDS)) - stems(" ".join(names or ()))
+    for label in about:
+        asked_here = asked - stems(threats[label].get("rubrica") or "")
+        own = stems(" ".join(threats[label].get("elements") or []))
+        if not asked_here or len(asked_here & own) >= REQUIREMENT_COVERED * len(asked_here):
+            return ""
+    label = about[0]
+    elements = "; ".join(f"«{e[:60]}»" for e in threats[label].get("elements") or []) or "nessuno"
+    return f"enuncia un requisito dell'art. {label} che il registro non elenca (elementi registrati: {elements})"
+
+
+# v74: the negation check's word test (the review call failed) -- a negation, and most of an element's content stems or its
+# id, in the sentence; an element the sentence's thesis contests is never one
+_NEGATION_RE = re.compile(r"\b(?:non|né|manc\w*|assen\w*|esclu\w*|insussist\w*|difett\w*|carenz\w*|priv[oaie]|"
+                          r"senza|nega\w*|neg[ao])\b", re.IGNORECASE)
+NEGATION_COVERED = 0.6
+
+
+def negated_elements(sentence: str, elements: Dict[str, Dict[str, Any]], allowed: Sequence[str] = ()) -> List[str]:
+    """v74: the ids of the record's elements the sentence negates and may not -- a negation word in it, and the
+    element's id or at least NEGATION_COVERED of its content stems (two at least); [] else."""
+    if not _NEGATION_RE.search(sentence or ""):
+        return []
+
+    def stems(text: str) -> Set[str]:
+        return {w[:6] for w in re.findall(r"[a-zà-ü]{4,}", str(text or "").lower()) if w not in _FUNCTION_STOP}
+    words = stems(sentence)
+    out = []
+    for eid, e in (elements or {}).items():
+        if eid in allowed:
+            continue
+        own = stems(e.get("text") or "")
+        if re.search(rf"\b{re.escape(eid)}\b", sentence) or \
+                (len(own) >= 2 and len(own & words) >= NEGATION_COVERED * len(own)):
+            out.append(eid)
+    return out
+
+
+REQUIREMENT_FLAGGED = ("il riesame segnala un requisito di una norma dell'addebito o della domanda che non è tra i suoi "
+                       "elementi registrati")
+
+
+def _words_of(text: str) -> str:
+    return " ".join(re.findall(r"[a-zà-ü0-9]+", str(text or "").lower()))
+
+
+def _flagged(sentence: str, flagged: Sequence[str]) -> bool:
+    """v65: the sentence is one the writer review flagged (word for word, one holding the other: later passes may have
+    added a marker or cut a clause)."""
+    mine = _words_of(sentence)
+    return bool(mine) and any(x and (x in mine or mine in x) for x in (_words_of(f) for f in flagged or ()))
 
 
 def _code_line(text: str, at: int) -> bool:

@@ -1,0 +1,32 @@
+{
+ "_about": "v71: the expected thesis of the critique, for the scorer's structural check of the soluzioni table (scripts/rubric_score.py thesis_outcome), as the PO corrected it: the main line is either the riqualificazione in omicidio colposo (art. 589) labelled minoritaria -- his §7.2 -- or «ammettere la condotta, contenere la pena» -- his §7.3 and §7.5; «assenza di nesso causale» -- his §1.1 -- is never the main line and never unlabelled (it must be labelled minoritaria or marked non sostenibile). The patterns are Code's, the sources his words. punti: the point ids scored from the table and their kind.",
+ "punti": {
+  "1.1": "esclusa",
+  "7.2": "principale"
+ },
+ "principale": {
+  "fonte": [
+   "7.2",
+   "7.3",
+   "7.5"
+  ],
+  "testo": "Linea principale: valorizzare l’eccezionalità dell’evento (caduta su marciapiede) per chiedere la riqualificazione in omicidio colposo (art. 589), argomentando che mancava un dolo di percosse finalizzato alla lesione. È una tesi minoritaria: va presentata come tale.",
+  "alternative": [
+   {
+    "nome": "riqualificazione 589, minoritaria",
+    "pattern": "\\b589\\b|omicidio\\s+colposo",
+    "minoritaria": true
+   },
+   {
+    "nome": "ammettere la condotta, contenere la pena",
+    "pattern": "ammett\\w*\\s+(?:la\\s+)?condott\\w*|conten\\w*\\s+(?:la\\s+)?pena|contenimento"
+   }
+  ]
+ },
+ "esclusa": {
+  "fonte": "1.1",
+  "testo": "Il parere punta tutto sull’assenza di nesso causale tra lo schiaffo e la morte. È la tesi meno sostenibile.",
+  "pattern": "(?:assenza|mancanza|esclusione|interruzione|difetto|insussistenza)\\s+(?:del\\s+|di\\s+)?nesso\\s+(?:causale|di\\s+causalit)|nesso\\s+(?:causale|di\\s+causalit\\w*)\\s+(?:è\\s+)?(?:interrott|esclus|assente|insussistent)|causa\\s+sopravvenuta",
+  "regola": "mai principale; se presente, etichettata minoritaria o non sostenibile"
+ }
+}

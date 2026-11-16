@@ -1,10 +1,10 @@
 """Read-only: the expected norms the long cases miss, across diagnose_long runs.
 
-Every report.json under DIR (default ./diagnose_reports) is a run, named by its folder. Only the 32 cases of
-diagnose_long's TUNING_IDS + HELDOUT_IDS are read; a run holding fewer than all 32 is listed as partial and left
+Every report.json under DIR (default ./diagnose_reports) is a run, named by its folder. Only the 31 cases of
+diagnose_long's TUNING_IDS + HELDOUT_IDS are read; a run holding fewer than all 31 is listed as partial and left
 out of the stable-miss logic. Prints, in markdown:
 
-  0  the runs, with how many of the 32 cases each holds
+  0  the runs, with how many of the 31 cases each holds
   1  every expected norm whose stage is not MENTIONED in some complete run, with its stage per run; stable (missing
      in every complete run) and flaky separated
   2  the stable misses by loss mechanism, with the slot fields of that mechanism, one row per run

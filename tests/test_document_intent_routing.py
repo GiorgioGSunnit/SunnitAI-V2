@@ -91,10 +91,11 @@ def chat_api(monkeypatch):
 def _enters_generation_branch(api, message: str) -> bool:
     """Evaluate the real /api/chat generation condition for `message`.
 
-    Mirrors the `if` in the chat endpoint exactly: both operands, same order.
+    v61: the intake decides (src/rag/intake.py): the generation branch runs on
+    its route «generation» -- its rules here, the model out (conftest).
     """
-    top_intent = api._classify_top_level_intent(message, "it")
-    return top_intent == "generate" or api.is_generation_request(message)
+    from src.rag import intake
+    return intake.detect(message)["route"] == intake.GENERATION
 
 
 def _retrieval_rows():

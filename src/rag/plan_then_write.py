@@ -1800,6 +1800,8 @@ def _plan_text(plan: Dict[str, Any], answers: bool = False, issues: str = "title
     only for a section that also has their passages."""
     party = plan["parte_assistita"] or "la parte assistita"
     lines = [f"Parte assistita: {party}" + (f" ({plan['posizione']})" if plan["posizione"] else "")]
+    if plan.get("atto"):        # v62: the main line's act from the client's posture (src/rag/posture.py)
+        lines.append(f"Linea principale: {plan['atto']}")
     if plan["obiettivo"]:
         lines.append(f"Obiettivo: {plan['obiettivo']}")
     if plan["questione_centrale"]:
@@ -1916,7 +1918,7 @@ _WRITER_RULES = (
     "- Un'azione possessoria il cui termine è decorso è preclusa: mai proponibile, neppure in via subordinata.\n"
     "- La servitù dell'art. 1062 c.c. nasce dalla separazione dei due fondi con l'opera visibile già presente, non "
     "dall'uso.\n"
-    "- I TERMINI CALCOLATI sono l'unica fonte: nessuna sezione dice soddisfatto un termine che risulta non verificabile "
+    "- I TERMINI CALCOLATI sono l'unica fonte: nessuna sezione dice soddisfatto un termine che risulta da verificare "
     "o incerto, né il contrario.\n"
     "- Il parere è completo in sé: non rimandare ad approfondimenti successivi.\n"
     "- Una norma si nomina sempre con numero e codice: mai le parole del suo testo o della sua rubrica al posto del numero.\n"
@@ -3019,6 +3021,28 @@ _REVIEW_SYSTEM = (
     'Rispondi SOLO con un array JSON, vuoto se nessuna frase va segnalata: '
     '[{"i": 3, "tipo": "fatto_non_nel_caso", "perche": "una frase"}]'
 )
+_REVIEW_ANSWER = "Rispondi SOLO con un array JSON"
+# v65 (my draft): the requirement check, semantic -- with the charge's or the claim's elements as the record lists them;
+# v68 (my draft): every norm with a record, the client's own too
+REVIEW_REQUIREMENT_TYPE = (
+    "- \"requisito_non_registrato\": la frase dice che cosa una delle NORME CON ELEMENTI REGISTRATI richiede, "
+    "presuppone o rende necessario, e indica un requisito che non corrisponde a nessuno dei suoi elementi registrati "
+    "(un elemento soggettivo, una soglia, una condizione che l'elenco non contiene). Non segnalare la frase che "
+    "contesta uno degli elementi elencati, anche con parole sue.\n")
+REVIEW_REQUIREMENT = "requisito_non_registrato"
+# v74 (my draft): the requirement check element by element -- a thesis's argument may not negate an element the thesis
+# does not contest (lawyer_method.bind_arguments); its word test when the call fails: record_check.negated_elements
+REVIEW_NEGATION_TYPE = (
+    "- \"elemento_negato\": la frase nega uno degli ELEMENTI REGISTRATI -- dice che manca, che non è provato, che è "
+    "escluso o insussistente, o nega il fatto che lo integra -- e quell'elemento non è tra quelli che la sua tesi "
+    "contesta (indicati accanto alla frase). Non segnalare la frase che dice integrato un elemento, né quella che nega "
+    "un elemento che la sua tesi contesta.\n")
+REVIEW_NEGATION = "elemento_negato"
+NEGATION_SYSTEM = (
+    "Ricevi gli ELEMENTI REGISTRATI (id, testo, esito sui fatti) e le frasi degli argomenti di alcune tesi difensive, "
+    "numerate; accanto a ogni frase, gli elementi che la sua tesi contesta. Segnala soltanto questo tipo:\n"
+    + REVIEW_NEGATION_TYPE + 'Rispondi SOLO con un array JSON, vuoto se nessuna frase va segnalata: '
+    '[{"i": 3, "elemento": "R2", "perche": "una frase"}]')
 
 
 # What a "fact not in the case" flag is never about (run 20261026-0841's false positives), checked in code.
@@ -3384,16 +3408,21 @@ def _wrong_statement(sentence: str, context: Optional[Dict[str, Any]] = None) ->
 
 
 def _review_call(title: str, text: str, spans: List[Tuple[int, int]], case_text: str,
-                 party: str = "") -> Optional[List[Dict[str, Any]]]:
-    """The review's flags [{i (0-based span index), tipo, perche}], or None when the call fails."""
+                 party: str = "", threats: str = "") -> Optional[List[Dict[str, Any]]]:
+    """The review's flags [{i (0-based span index), tipo, perche}], or None when the call fails. v65: threats (the
+    charge's or the claim's articles with their recorded elements, review_threats) -- the review also flags a sentence
+    stating a requirement of one of them that is not among its elements (REVIEW_REQUIREMENT_TYPE)."""
     numbered = [(k, text[s:e].strip()) for k, (s, e) in enumerate(spans) if len(text[s:e].strip()) >= 25]
     if not numbered:
         return []
     listing = "\n".join(f"{n}. {sentence}" for n, (_, sentence) in enumerate(numbered, 1))
     human = (f"PARTE ASSISTITA: {party}\n\n" if party else "") + \
-        f"CASO:\n{(case_text or '')[:12000]}\n\nSEZIONE «{title}»:\n{listing}"
+        f"CASO:\n{(case_text or '')[:12000]}\n\n" + \
+        (f"NORME CON ELEMENTI REGISTRATI (del cliente e della controparte):\n{threats}\n\n" if threats else "") + \
+        f"SEZIONE «{title}»:\n{listing}"
+    system = _REVIEW_SYSTEM.replace(_REVIEW_ANSWER, REVIEW_REQUIREMENT_TYPE + _REVIEW_ANSWER) if threats else _REVIEW_SYSTEM
     try:
-        raw = dg._chat_json([SystemMessage(content=_REVIEW_SYSTEM), HumanMessage(content=human)],
+        raw = dg._chat_json([SystemMessage(content=system), HumanMessage(content=human)],
                             max_tokens=200 + 60 * min(len(numbered), 30), temperature=0)
     except Exception as exc:
         _log_exception("_review_call", exc)
@@ -3407,23 +3436,60 @@ def _review_call(title: str, text: str, spans: List[Tuple[int, int]], case_text:
     return out
 
 
+def negation_review(items: Sequence[Dict[str, Any]], elements: Dict[str, Dict[str, Any]], call=None
+                    ) -> Optional[List[Dict[str, Any]]]:
+    """v74: the requirement check against the record, element by element (REVIEW_NEGATION_TYPE) -- items [{"text",
+    "may_negate": [ids]}], elements {id: {article, text, status}}; the flags [{i (0-based item), elemento, perche}] the
+    call raises on an element the record holds and the item may not negate (any other flag ignored), or None when the
+    call fails (the caller's word test then: record_check.negated_elements)."""
+    if not items:
+        return []
+    block = "\n".join(f"- [{x}] art. {e.get('article')}: «{e.get('text')}» -- {e.get('status')}" for x, e in elements.items())
+    listing = "\n".join(f"{n}. [contesta: {', '.join(it.get('may_negate') or []) or 'nessuno'}] {it['text']}"
+                        for n, it in enumerate(items, 1))
+    human = f"ELEMENTI REGISTRATI:\n{block}\n\nFRASI:\n{listing}"
+    messages = [SystemMessage(content=NEGATION_SYSTEM), HumanMessage(content=human)]
+    try:
+        raw = (call or dg._chat_json)(messages, max_tokens=200 + 60 * min(len(items), 40), temperature=0)
+    except Exception as exc:
+        _log_exception("negation_review", exc)
+        logger.warning("writer rules: negation review failed: %s", exc)
+        return None
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if not (isinstance(item, dict) and str(item.get("i", "")).isdigit() and 1 <= int(item["i"]) <= len(items)):
+            continue
+        k, eid = int(item["i"]) - 1, str(item.get("elemento") or "").strip().upper()
+        if eid in elements and eid not in (items[k].get("may_negate") or []):
+            out.append({"i": k, "elemento": eid, "perche": " ".join(str(item.get("perche") or "").split())[:200]})
+    return out
+
+
 def review_section(title: str, text: str, case_text: str, article_rows: Optional[List[Dict[str, Any]]] = None,
                    documents: Optional[List[Dict[str, Any]]] = None, party: str = "",
                    context: Optional[Dict[str, Any]] = None,
-                   plan: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]]]:
+                   plan: Optional[Dict[str, Any]] = None,
+                   extra: Optional[Dict[str, Any]] = None) -> Tuple[str, List[Dict[str, Any]]]:
     """(text, log), WRITER_RULES_ENABLED: dropped, each sentence citing an article only to say it does not apply
     (the review call, and _NOT_APPLY_RE in the sentence; without the call, only a remark on relevance,
     _NOT_RELEVANT_RE) and each burden template whose norm allocates nothing (_burden_templates); flagged with
     _FACT_MARK (only with FACT_MARK_INLINE_ENABLED; otherwise logged), each sentence the review finds asserting a
     party's conduct, knowledge or intent the case does not hold, unless _fact_flag_excluded; dropped, each
     sentence proposing an action against the client (party) or a co-client. GROUNDED_EXCLUSION (with the plan): a
-    sentence excluding an article on a ground grounded_exclusion accepts is not dropped as a non-application."""
+    sentence excluding an article on a ground grounded_exclusion accepts is not dropped as a non-application. v65:
+    extra {"threats": {label: elements}, "sections": titles, "flagged": [], "ran": [], "failed": []} -- in those
+    sections the review also checks each requirement stated of a threat against its elements (REVIEW_REQUIREMENT): a
+    flagged sentence is dropped whole and recorded in extra["flagged"]; extra["ran"] / ["failed"] say whether the call
+    answered (record_check's fallback is the word test)."""
     rows, documents = article_rows or [], documents or []
     known = {r["_article"] for r in rows if r.get("_article")}
     spans = _sentence_spans(text)
     if not spans:
         return text, []
-    flags = _review_call(title, text, spans, case_text, party)
+    threats = review_threats(extra, title)
+    flags = _review_call(title, text, spans, case_text, party, threats)
+    if threats:
+        (extra.setdefault("failed", []) if flags is None else extra.setdefault("ran", [])).append(title)
     drop: Dict[int, Tuple[str, str]] = {}
     mark: Dict[int, str] = {}
     filtered: List[Dict[str, Any]] = []
@@ -3451,6 +3517,9 @@ def review_section(title: str, text: str, case_text: str, article_rows: Optional
                 mark[k] = flag["perche"]
         elif flag["tipo"] == "contro_assistito" and party:
             drop[k] = ("against_client", flag["perche"])
+        elif flag["tipo"] == REVIEW_REQUIREMENT and threats:          # v65: the whole sentence, never a clause
+            drop[k] = ("unrecorded_requirement", flag["perche"])
+            extra.setdefault("flagged", []).append(sentence.strip())
     for k, why in _burden_templates(title, text, spans, rows, documents, known).items():
         drop.setdefault(k, ("burden", why))
     for k, (s, e) in enumerate(spans):
@@ -3470,6 +3539,15 @@ def review_section(title: str, text: str, case_text: str, article_rows: Optional
         dropped = {text[spans[k][0]:spans[k][1]].strip() for k in drop}
         marked = _drop_spans(marked, [(s, e) for s, e in spans_after if marked[s:e].strip() in dropped])
     return marked, log
+
+
+def review_threats(extra: Optional[Dict[str, Any]], title: str) -> str:
+    """v65: the threats' block for the review of a section extra names -- «art. N: «element»; «element»» per line; ""
+    for another section or none."""
+    if not extra or title not in (extra.get("sections") or ()) or not extra.get("threats"):
+        return ""
+    return "\n".join(f"- art. {label}: " + ("; ".join(f"«{e}»" for e in elements) or "nessun elemento registrato")
+                     for label, elements in extra["threats"].items())
 
 
 def standard_blocks(analysis: Dict[str, Any]) -> Dict[str, str]:
@@ -3660,8 +3738,11 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
                    checked: Optional[List[tuple]] = None,
                    anchors: Optional["anchored_writing.Catalogue"] = None,
                    context: Optional[Dict[str, Any]] = None, sections_note: str = "",
-                   writer_rules: str = "") -> Optional[List[tuple]]:
-    """[(title, text)] for the jobs, written in parallel; a failed section is tried once more.
+                   writer_rules: str = "", review_extra: Optional[Dict[str, Any]] = None,
+                   thinking: Optional[bool] = None) -> Optional[List[tuple]]:
+    """[(title, text)] for the jobs, written in parallel; a failed section is tried once more. v70: thinking=True asks
+    each section call to reason (LLM_THINKING=per_call); the lawyer's method active (lawyer_method.active), his
+    honesty rules and the matter's modules close every section's system.
     None if one still fails or comes back empty. _discipline(): each section then loses the citations
     its material does not hold (_cite_only_material; named: the articles the case names).
     _writer_rules(): a cut section is written again or trimmed, then each is reviewed (review_section).
@@ -3674,6 +3755,11 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
     rule-sentence checked against its section's material (grounded_review.review; `checked`, strict: the articles
     it may keep cited, grounded_review.strict_refs)."""
     system = _section_system(plan, lang, sections_note, writer_rules)
+    from . import lawyer_method
+    method_rules = lawyer_method.current_rules()          # v70 (2): in every writer call while the method is active
+    if method_rules:
+        system = f"{system}\n\n{method_rules}"
+    think = {"thinking": True} if thinking and lawyer_method.thinking_supported() else {}
 
     def _step(name, secs, run):       # each step, and what it leaves of an article's words in place of its citation
         done = _guarded_step(name, secs, run)
@@ -3709,7 +3795,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
         def once(material):
             messages = [SystemMessage(content=f"{system}\n\n{instruction}"), HumanMessage(content=material)]
             last_reply.finish_reason = None
-            text = dg._call_chat(messages, max_tokens=max_tokens)
+            text = dg._call_chat(messages, max_tokens=max_tokens, **think)
             finish = getattr(last_reply, "finish_reason", None)
             dg.vlog("case_analysis_section_call", {"section": title, "finish_reason": finish, "chars": len(text or ""),
                                                    "max_tokens": max_tokens, **({"half": half} if half else {})})
@@ -3836,7 +3922,7 @@ def write_sections(plan: Dict[str, Any], jobs: List[Tuple[str, str, str, int]], 
             with ThreadPoolExecutor(max_workers=len(secs)) as pool:
                 reviewed = list(pool.map(lambda pair: review_section(pair[0], pair[1], case_text, article_rows,
                                                                      documents, plan.get("parte_assistita") or "",
-                                                                     context, plan=plan),
+                                                                     context, plan=plan, extra=review_extra),
                                          secs))
             writer_log.extend(entry for _, log in reviewed for entry in log)
             dg.vlog("case_analysis_writer_rules", _writer_log(writer_log), duration_ms=(time.time() - t2) * 1000)

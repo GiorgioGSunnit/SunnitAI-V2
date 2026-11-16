@@ -1,0 +1,233 @@
+{
+  "_about": "v62: the procedural section's closed-list blocks by the matter's family and the stage (src/rag/render_computed.stage_blocks), read from intake's posture. Each block {title, lines, roles?}: roles limits a block to the client's roles (absent: every role); a line may name {act} (the posture's act, data/posture_acts.json) and {date} (a prior decision's date the case states). date_flag is the «da verificare» line when the case does not state the date the term runs from. The texts are Code's drafts, listed in docs/copy_review.md for the PO. v65: penale.indagini for the persona offesa (its rights and tools in the indagini, the later constitution) and civile.primo_grado for the convenuto (costituzione, decadenze, riconvenzionale, preclusioni, istruzione preventiva), each after today's blocks. v66: a block's «store» articles give its terms and their decorrenza from the procedural store (render_computed.stage_blocks, procedural_facts.term_lines / from_lines) -- the impugnazione «Termini» blocks carry no number of their own. v70 (10): civile.pre_filing for the claimant (attore, or the role unknown -- the default cell) restores the v59 list's mediazione, ATP (696/696-bis) and 700, each as the condition under which it serves, after today's blocks; a block whose «unless» pattern the section already shows (the computed mediation, a triggered tool) is left out (render_computed.stage_blocks(rendered=...)).",
+  "penale": {
+    "primo_grado": [
+      {
+        "title": "Riti alternativi",
+        "lines": [
+          "L'imputato può chiedere, nei termini di legge, il giudizio abbreviato (artt. 438 ss. c.p.p.), l'applicazione della pena su richiesta (artt. 444 ss. c.p.p.) o, per i reati per cui è ammessa, la sospensione del procedimento con messa alla prova (art. 168-bis c.p.)."
+        ]
+      },
+      {
+        "title": "Costituzione di parte civile",
+        "lines": [
+          "Il danneggiato dal reato può esercitare nel processo penale l'azione civile per le restituzioni e il risarcimento del danno (art. 74 c.p.p.), con la dichiarazione di costituzione di parte civile (art. 78 c.p.p.), per l'udienza preliminare e, successivamente, fino agli adempimenti relativi alla costituzione delle parti nel giudizio (art. 79 c.p.p.)."
+        ]
+      }
+    ],
+    "impugnazione": [
+      {
+        "title": "Legittimazione",
+        "roles": [
+          "parte_civile",
+          "persona_offesa"
+        ],
+        "lines": [
+          "La parte civile può proporre impugnazione contro i capi della sentenza di condanna che riguardano l'azione civile e, ai soli effetti della responsabilità civile, contro la sentenza di proscioglimento pronunciata nel giudizio (art. 576 c.p.p.)."
+        ]
+      },
+      {
+        "title": "Legittimazione",
+        "roles": [
+          "imputato"
+        ],
+        "lines": [
+          "L'imputato può appellare la sentenza di condanna (art. 593 c.p.p.), salvi i casi di inappellabilità previsti dalla stessa norma."
+        ]
+      },
+      {
+        "title": "Legittimazione",
+        "roles": [
+          "sconosciuto",
+          "terzo",
+          "attore",
+          "convenuto"
+        ],
+        "lines": [
+          "La parte civile può impugnare i capi civili della sentenza e, ai soli effetti della responsabilità civile, la sentenza di proscioglimento (art. 576 c.p.p.); l'imputato può appellare la sentenza di condanna (art. 593 c.p.p.)."
+        ]
+      },
+      {
+        "title": "Atto",
+        "lines": [
+          "{act}: l'atto indica, a pena di inammissibilità, i capi o i punti della decisione impugnati, le prove di cui si deduce l'omessa o erronea valutazione, le richieste e i motivi (art. 581 c.p.p.)."
+        ]
+      },
+      {
+        "title": "Termini",
+        "store": [
+          "585 c.p.p."
+        ],
+        "date_flag": "da verificare: il caso non dice la data della lettura della sentenza e del deposito della motivazione, da cui il termine decorre",
+        "date_line": "Data della sentenza indicata nel caso: {date}; da verificare la data del deposito della motivazione, da cui il termine decorre."
+      },
+      {
+        "title": "Rinnovazione dell'istruzione dibattimentale",
+        "lines": [
+          "Nell'atto di appello o nei motivi nuovi si può chiedere la riassunzione di prove già acquisite o l'assunzione di nuove prove: il giudice dispone la rinnovazione se ritiene di non poter decidere allo stato degli atti (art. 603, co. 1, c.p.p.)."
+        ]
+      },
+      {
+        "title": "Effetti sul giudizio civile",
+        "lines": [
+          "La sentenza penale irrevocabile di condanna pronunciata dopo il dibattimento fa stato nel giudizio civile di danno quanto alla sussistenza del fatto, alla sua illiceità penale e alla sua commissione da parte dell'imputato (art. 651 c.p.p.); quella di assoluzione perché il fatto non sussiste, l'imputato non lo ha commesso o il fatto è stato compiuto nell'adempimento di un dovere o nell'esercizio di una facoltà legittima fa stato contro il danneggiato che si è costituito o è stato posto in condizione di costituirsi parte civile (art. 652 c.p.p.)."
+        ]
+      }
+    ],
+    "esecuzione": [
+      {
+        "title": "Esecuzione della pena",
+        "lines": [
+          "Per le pene detentive brevi il pubblico ministero sospende l'ordine di esecuzione e il condannato può chiedere, entro trenta giorni, una misura alternativa alla detenzione (art. 656, co. 5, c.p.p.).",
+          "Le questioni sul titolo esecutivo si propongono con l'incidente di esecuzione davanti al giudice dell'esecuzione (art. 666 c.p.p.)."
+        ]
+      }
+    ],
+    "indagini": [
+      {
+        "title": "Diritti e facoltà della persona offesa",
+        "roles": [
+          "persona_offesa"
+        ],
+        "lines": [
+          "La persona offesa può presentare memorie e indicare elementi di prova in ogni stato e grado del procedimento, salvo il giudizio di cassazione (art. 90 c.p.p.), e riceve le informazioni sui propri diritti fin dal primo contatto con l'autorità procedente (art. 90-bis c.p.p.).",
+          "Può chiedere di conoscere le iscrizioni nel registro delle notizie di reato che la riguardano (art. 335, co. 3, c.p.p.) e, tramite il difensore, presentare memorie e richieste scritte al pubblico ministero (art. 367 c.p.p.)."
+        ]
+      },
+      {
+        "title": "Accertamenti tecnici non ripetibili",
+        "roles": [
+          "persona_offesa"
+        ],
+        "lines": [
+          "Quando il pubblico ministero dispone accertamenti tecnici non ripetibili ne dà avviso alla persona offesa, che può nominare consulenti tecnici (art. 360 c.p.p.)."
+        ]
+      },
+      {
+        "title": "Richiesta di archiviazione e opposizione",
+        "roles": [
+          "persona_offesa"
+        ],
+        "lines": [
+          "La persona offesa che ha dichiarato di voler essere informata riceve l'avviso della richiesta di archiviazione e, nel termine indicato nell'avviso, può prendere visione degli atti e presentare opposizione chiedendo la prosecuzione delle indagini e indicando l'oggetto dell'investigazione suppletiva e i relativi elementi di prova (artt. 408, co. 2-3, e 410 c.p.p.)."
+        ],
+        "date_flag": "da verificare: se la persona offesa ha dichiarato di voler essere informata della richiesta di archiviazione, da cui dipende l'avviso"
+      },
+      {
+        "title": "Costituzione di parte civile (fase successiva)",
+        "roles": [
+          "persona_offesa"
+        ],
+        "lines": [
+          "Esercitata l'azione penale, il danneggiato potrà esercitare l'azione civile nel processo con la costituzione di parte civile, dall'udienza preliminare (artt. 74-79 c.p.p.)."
+        ]
+      }
+    ]
+  },
+  "civile": {
+    "impugnazione": [
+      {
+        "title": "Atto",
+        "lines": [
+          "{act}: l'atto di citazione in appello indica, a pena di inammissibilità, per ciascun motivo il capo della decisione impugnato, le censure alla ricostruzione dei fatti, le violazioni di legge denunciate e la loro rilevanza ai fini della decisione (art. 342 c.p.c.)."
+        ]
+      },
+      {
+        "title": "Termini",
+        "store": [
+          "325 c.p.c.",
+          "326 c.p.c.",
+          "327 c.p.c."
+        ],
+        "date_flag": "da verificare: il caso non dice la data di pubblicazione o di notificazione della sentenza, da cui il termine decorre",
+        "date_line": "Data della decisione indicata nel caso: {date}; da verificare se e quando la sentenza è stata notificata."
+      }
+    ],
+    "esecuzione": [
+      {
+        "title": "Opposizioni all'esecuzione",
+        "lines": [
+          "Con l'opposizione all'esecuzione si contesta il diritto della parte istante di procedere a esecuzione forzata: prima che l'esecuzione inizi, con citazione davanti al giudice competente; dopo, con ricorso al giudice dell'esecuzione (art. 615 c.p.c.).",
+          "Con l'opposizione agli atti esecutivi si contesta la regolarità formale del titolo, del precetto o dei singoli atti, entro venti giorni dalla notificazione del titolo o del precetto o dal compimento dell'atto (art. 617 c.p.c.).",
+          "Il terzo che pretende di avere la proprietà o altro diritto reale sui beni pignorati può proporre opposizione con ricorso al giudice dell'esecuzione (art. 619 c.p.c.)."
+        ],
+        "date_flag": "da verificare: il caso non dice la data di notificazione del precetto o dell'atto contestato, da cui decorrono i venti giorni dell'art. 617 c.p.c."
+      }
+    ],
+    "primo_grado": [
+      {
+        "title": "Costituzione del convenuto",
+        "roles": [
+          "convenuto"
+        ],
+        "lines": [
+          "Il convenuto si costituisce depositando la comparsa di risposta nel termine che precede l'udienza di comparizione indicata nell'atto di citazione (art. 166 c.p.c.).",
+          "Nella comparsa propone tutte le difese e prende posizione sui fatti posti a fondamento della domanda; a pena di decadenza propone le domande riconvenzionali e le eccezioni processuali e di merito non rilevabili d'ufficio, e dichiara se intende chiamare in causa un terzo (art. 167 c.p.c.)."
+        ],
+        "date_flag": "da verificare: la data dell'udienza indicata nell'atto di citazione, da cui si conta a ritroso il termine per costituirsi"
+      },
+      {
+        "title": "Domanda riconvenzionale",
+        "roles": [
+          "convenuto"
+        ],
+        "lines": [
+          "La domanda riconvenzionale che dipende dal titolo dedotto in giudizio dall'attore, o da quello che già appartiene alla causa come mezzo di eccezione, è decisa dal giudice della causa principale (art. 36 c.p.c.); va proposta nella comparsa di risposta (art. 167, co. 2, c.p.c.)."
+        ]
+      },
+      {
+        "title": "Preclusioni",
+        "roles": [
+          "convenuto"
+        ],
+        "lines": [
+          "Le memorie integrative fissano, a scadenze successive prima dell'udienza, le precisazioni delle domande e delle eccezioni, le repliche, i mezzi di prova e le produzioni documentali, e la prova contraria (art. 171-ter c.p.c.); la prima udienza di comparizione e trattazione è regolata dall'art. 183 c.p.c."
+        ]
+      },
+      {
+        "title": "Istruzione preventiva",
+        "roles": [
+          "convenuto"
+        ],
+        "lines": [
+          "In caso di urgenza si può chiedere un accertamento tecnico o un'ispezione giudiziale per verificare lo stato di luoghi o la qualità o la condizione di cose (art. 696 c.p.c.), o una consulenza tecnica preventiva ai fini della composizione della lite, anche fuori dai casi di urgenza (art. 696-bis c.p.c.)."
+        ]
+      }
+    ],
+    "pre_filing": [
+      {
+        "title": "Mediazione",
+        "roles": [
+          "attore",
+          "sconosciuto"
+        ],
+        "unless": "(?im)^(?:mediazione|negoziazione assistita)\\b",
+        "lines": [
+          "La mediazione (d.lgs. 4 marzo 2010, n. 28) è condizione di procedibilità della domanda nelle materie dell'art. 5, co. 1; fuori da quelle resta una via facoltativa per una soluzione concordata prima del giudizio (art. 2)."
+        ]
+      },
+      {
+        "title": "Accertamento tecnico preventivo",
+        "roles": [
+          "attore",
+          "sconosciuto"
+        ],
+        "unless": "\\b696\\b",
+        "lines": [
+          "Se occorre fissare prima del giudizio lo stato dei luoghi o la qualità o la condizione di cose, l'accertamento tecnico preventivo (art. 696 c.p.c.) o la consulenza tecnica preventiva ai fini della composizione della lite (art. 696-bis c.p.c.)."
+        ]
+      },
+      {
+        "title": "Provvedimento d'urgenza",
+        "roles": [
+          "attore",
+          "sconosciuto"
+        ],
+        "unless": "\\b700\\b",
+        "lines": [
+          "Se il diritto è minacciato da un pregiudizio imminente e irreparabile nel tempo occorrente per farlo valere in via ordinaria, il provvedimento d'urgenza (art. 700 c.p.c.)."
+        ]
+      }
+    ]
+  }
+}

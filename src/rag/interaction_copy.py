@@ -196,6 +196,13 @@ LINE_REASON_NOT_RESULTING_ANY = "un suo requisito non risulta"                  
 # v60r (1, my draft, single shot): §2's one status sentence per article -- the requisites' rows go to the response's
 # article citations, never into the body
 ARTICLE_STATUS = "Esito sui fatti del caso: {verdict} (requisiti provati: {proved} su {total})."   # verdict, proved, total
+# v62 (my draft): a threat article's status sentence, from the defence -- the charge or the claim against the client
+THREAT_STATUS = "Per la difesa: {items}."                                          # items, THREAT_ITEMS_JOIN
+THREAT_ITEMS_JOIN = "; "
+THREAT_CONTEST = "elemento da contestare: «{element}»"                             # element: its own text
+THREAT_UNPROVEN = {"penale": "elemento non provato dall'accusa: «{element}»",      # v62 (my draft)
+                   "civile": "elemento non provato dalla controparte: «{element}»"}
+THREAT_EXCLUDED = "elemento escluso dai fatti del caso: «{element}»"               # v62 (my draft)
 LINE_REASON_NO_SUPPORT = "nessun fatto del caso a sostegno"                     # v60i (1, my draft)
 LINE_REASON_NO_TEXT = "testo non letto"                                         # v60i (1, my draft)
 LINE_REASON_SANCTION = "sanzione di una norma non trattata"                     # v60i (1, my draft)
@@ -349,6 +356,49 @@ FLOW_HELP = (                                                                # v
     "profilo che non ho elencato, oppure chiedermi il parere; dopo il parere puoi approfondire un altro "
     "argomento o avere il documento.")
 ANSWER_FAILED = "Non sono riuscito a scrivere la risposta su questo argomento. Riprova, oppure scegli un altro argomento."
+
+
+# --- v61: intake, the requests no route answers ---------------------------------------------------------------------
+# v61 (my draft): a request for case law (ricerca_giurisprudenza) -- out of scope
+CASE_LAW_OUT_OF_SCOPE = ("La ricerca di giurisprudenza (sentenze, massime, orientamenti) non rientra tra le richieste che "
+                         "gestisco. Posso invece spiegarti le norme che regolano la questione o, se mi descrivi il caso, "
+                         "preparare un parere.")
+# v61 (my draft): a tax or insolvency matter -- out of the corpus; {materia} from OUT_OF_CORPUS_MATTERS
+OUT_OF_CORPUS_MATTER = ("La materia {materia} non rientra nelle fonti che consulto, quindi non posso darti una risposta "
+                        "affidabile. Se il caso ha anche profili civili, penali o amministrativi, indicameli e li "
+                        "esamino.")
+# v61 (my draft): the matter's name in OUT_OF_CORPUS_MATTER, by intake rito
+OUT_OF_CORPUS_MATTERS = {"tributario": "tributaria", "fallimentare": "fallimentare (crisi d'impresa e insolvenza)"}
+
+# --- v62: the requested blocks, sections in the asked order ----------------------------------------------------------
+# v62 (my draft): a «cenni» block's section title; subject as the user wrote it
+CENNI_SECTION = "Cenni: {subject}"
+# v62 (my draft): the «alternative» block's section title, and its line when the first read found none
+ALTERNATIVES_SECTION = "Qualificazioni alternative"
+ALTERNATIVES_NONE = "La lettura del caso non indica qualificazioni alternative dei fatti."
+# v69 (my draft): the citations' reason of an article past the body's cap of norms (interactive_flow.BODY_BLOCKS_MAX)
+LINE_REASON_CAPPED = "non trattata nel testo: il parere svolge le norme più rilevanti, fino a sette"  # v69 (my draft)
+# v68 (my drafts): with five or more requested blocks the body after them is short -- its lead and its norms renamed
+SUMMARY_SECTION = "Sintesi e strategia"  # v68 (my draft)
+NORMS_SHORT_SECTION = "Norme"  # v68 (my draft)
+# v64 (my drafts): why an article with no record of its own is in the norms section (rec["applicazione"], logged and
+# in the state), and the citations' reason when its paragraph touches neither the client nor a fact of the case
+APPLICATION_VIA_CENNI = "cenni: {subject}"                                           # subject
+APPLICATION_VIA_ELEMENT = "elemento dell'addebito, art. {article}"                   # article
+APPLICATION_VIA_SANCTION = "trattamento sanzionatorio dell'imputato"
+APPLICATION_VIA_NAMED = "articolo nominato dall'utente"                              # v65 (my draft)
+LINE_REASON_NO_FACT = "applicazione che non tocca il cliente né i fatti del caso"   # v64 (my draft)
+# v66 (my drafts): a stored term the law states ambiguously (two numbers for one act in one comma) -- its sentence quoted,
+# never a number; where its terms run from, the law's words; an article whose text was not read
+AMBIGUOUS_TERM = ("«{sentence}» ({where}) — il comma dà più termini per lo stesso atto: il termine va letto nel testo e "
+                  "la decorrenza è da verificare")                     # v66 (my draft): sentence, where
+DECORRENZA_LINE = "Decorrenza ({where}): «{text}»"                    # v66 (my draft): where, text
+STORE_TERM_UNREAD = "Art. {article}: testo non letto, termini da verificare"         # v66 (my draft): article
+STORE_TERM_LINE = "{label}: {terms} — decorrenza da verificare"      # v66 (my draft): label, terms
+# v65 (my draft): the alternatives job's note on one the first read finds no fact for -- its answer is NO
+ALTERNATIVE_NO_FACTS = "nessun fatto del caso la sostiene: esito NO"
+# v63 (my draft): each alternative, its article («art. N — rubrica», the code's) and the writer's one sentence
+ALTERNATIVE_ITEM = "**Art. {number} {code} — {rubrica}**\n{sentence}"                 # number, code, rubrica, sentence
 
 
 def _slots(template: str) -> list:

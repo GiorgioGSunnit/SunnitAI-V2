@@ -5,7 +5,7 @@ calls themselves (qwen2.5-32b-awq, same model the app already uses).
 
 Run from the app folder so it uses the app's code, .env and venv:
     cd /opt/chatbot && venv/bin/python scripts/exp_distill.py
-    ... --only sempronio,l1,l2             # just these cases
+    ... --only p1,l1,l2                    # just these cases
     ... --workers 4                        # cases in parallel (default 4)
     ... --vector-index section_embeddings_v2   # override the vector index name
     ... --k 20                             # retrieved per call; recall@10 and @k are both reported
@@ -68,8 +68,8 @@ and the latency each one adds):
                       baseline, distill} found the article, then by the
                       best rank among those that did (_merge_by_hits).
 
-Case set: sempronio, sempronio_no_hint, p1, p2, p3, c1, c2, c3, l1, l2, l3,
-l4 -- all from tests/eval_narrative_cases.json (one source of truth with
+Case set: sempronio_no_hint, p1, p2, p3, c1, c2, c3, l1, l2, l3, l4 --
+all from tests/eval_narrative_cases.json (one source of truth with
 tests/eval_narrative.py; l1-l4 were defined only here until 2026-10-19).
 cp_short, cc_short, q_long and dottrina are deliberately left out of this
 experiment -- they stay in tests/eval_narrative.py's own regression run.
@@ -247,10 +247,10 @@ from src.rag.lookups import _sanitize_fulltext_query  # noqa: E402
 
 DEFAULT_CASES = Path(__file__).resolve().parent.parent / "tests" / "eval_narrative_cases.json"
 
-# --- The 12 cases, all from eval_narrative_cases.json (one source of truth,
+# --- The 11 cases, all from eval_narrative_cases.json (one source of truth,
 # since 2026-10-19: l1-l4 used to be defined here too, duplicating what's now
 # also in that file -- moved there to stop the two from drifting apart) ------
-_CARRIED_OVER = ["sempronio", "sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3",
+_CARRIED_OVER = ["sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3",
                 "l1", "l2", "l3", "l4"]
 
 METHODS = ["baseline", "distill", "distill_questions", "current"]

@@ -103,7 +103,8 @@ def test_the_block_numbers_two_to_eight_requisites_and_quotes_the_rest_whole(mon
     block = rule_quote.material_block(PLAN, ROWS, ANALYSIS)
     assert block.startswith(f"{rule_quote.TITLE}:\n") and block.endswith(rule_quote.RULE_TEXT)
     assert "co. 1: requisiti (dal testo del comma):\n    1. «consta, mediante" in block              # 1062: two
-    assert "co. 2: «Se i due fondi cessarono" in block                                            # one: whole
+    assert "co. 2: requisiti (dal testo del comma):\n    1. «i due fondi cessarono di appartenere allo stesso " \
+           "proprietario»\n    2. «senza alcuna disposizione relativa alla servitù»" in block   # v76b: cut on its comma
     assert "art. 1067 c.c. — il comma che opera per Leonardo:\n  co. 2: «Il proprietario del fondo servente" in block
     assert "fondo dominante non può fare innovazioni" not in block
     assert "co. 1: «Se il fondo è divenuto da ogni parte chiuso" in block                         # 1054: quoted

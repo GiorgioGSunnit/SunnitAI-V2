@@ -97,7 +97,7 @@ from datetime import datetime
 from typing import Optional
 
 DEFAULT_REQUEST = "Delinea una strategia difensiva per il cliente sulla base del documento allegato."
-TUNING_IDS = ["sempronio", "sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4"]
+TUNING_IDS = ["sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4"]
 HELDOUT_IDS = [f"h{i}" for i in range(1, 12)] + [f"n{i}" for i in range(1, 10)]
 MAX_PARALLEL = 3
 CASE_TIMEOUT = 1800
@@ -294,6 +294,7 @@ def _instrument(dg) -> dict:
     events = cap["events"]
 
     from src.rag import verbose_logger
+    from src.rag import intake as _intake         # noqa: F401 -- v73: loaded before the patch, its [VERBOSE:intake] captured
 
     def vlog(event, data=None, duration_ms=None, **_):
         events.append([event, _plain(data), duration_ms])
@@ -972,7 +973,7 @@ def mentioned_score(ev, case: dict, answer: str, citations=None) -> dict:
 
 
 # v60f: the captured events a sim case keeps (cap["events"]): the interactive flow's own, the writer's and the checks'
-SIM_EVENT_PREFIXES = ("interactive_", "case_analysis_section", "case_analysis_writer", "case_analysis_citation",
+SIM_EVENT_PREFIXES = ("intake", "interactive_", "case_analysis_section", "case_analysis_writer", "case_analysis_citation",
                       "case_analysis_plan", "case_analysis_norme", "case_analysis_unsupported", "post_writing",
                       "citation_removed", "grounded", "plan_then_write", "anchored_writing", "pipeline_exception")
 
@@ -980,6 +981,29 @@ SIM_EVENT_PREFIXES = ("interactive_", "case_analysis_section", "case_analysis_wr
 def sim_events(cap: Optional[dict]) -> list:
     """The captured events of the run, [event, data, ms], the ones of SIM_EVENT_PREFIXES."""
     return [e for e in ((cap or {}).get("events") or []) if str(e[0]).startswith(SIM_EVENT_PREFIXES)]
+
+
+def sim_request(text: str, request: str) -> tuple:
+    """v73: (message, upload) of the sim's case as the API receives it -- a file case (a request beside the file's
+    text): the request the message and the file the upload; else the case the message."""
+    return (request, text) if (request or "").strip() else (text, "")
+
+
+def intake_line(view: dict) -> str:
+    return ", ".join(f"{k} {view.get(k)}" for k in ("deliverable", "route", "rito", "role", "stage", "case_in")) + \
+        f", charge {[d.get('articles') for d in view.get('prior_decisions') or [] if d.get('articles')]}"
+
+
+def intake_missing(record: dict, state: Optional[dict], cap: Optional[dict]) -> str:
+    """v73: why the run has no intake line -- "" when the [VERBOSE:intake] line was logged (captured, or the record's
+    when nothing captures) and the flow took the request's intake, not one it read itself."""
+    if cap is not None and not any(e[0] == "intake" for e in sim_events(cap)):
+        return "no [VERBOSE:intake] event captured"
+    if not record.get("intake"):
+        return "the record holds no intake"
+    if state is not None and state.get("intake_source") != "request":
+        return f"the flow read the intake itself (intake_source {state.get('intake_source')!r})"
+    return ""
 
 
 def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict, log, cap: Optional[dict] = None) -> None:
@@ -995,9 +1019,13 @@ def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict
     t0 = time.time()
     state = None
     try:
+        message, upload = sim_request(text, request)
         if spec.get("single_shot"):         # v60k: one call, the parere; no oracle (there is nothing to choose)
-            result = interactive_flow.single_shot(text, spec.get("lang") or "it", request)
+            # v73: the intake first, as the API reads it (the same function, the same inputs), then the flow
+            result = interactive_flow.request_case_first(message, spec.get("lang") or "it", upload, case_id=spec["id"])
             state = result["state"]
+            record.update(intake=result["intake"], api_route=result["api_route"])
+            log(f"intake: {intake_line(result['intake'])}; the API's route {result['api_route']}")
             timings = state.get("single_shot_timings") or {}
             record.update(mode="single_shot", oracle=None, answer=result["answer"], topics=state.get("topics") or [],
                           questions=[q["text"] for q in state.get("questions") or []],
@@ -1016,7 +1044,13 @@ def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict
                 f"{timings.get('answer_s')}s); funnel {record['single_shot']['funnel']}")
             _sim_tail(record, state, spec, ev, case, result["answer"], result.get("citations") or [])
             raise _SimDone()
-        reply, field, state = interactive_flow.start(text, spec.get("lang") or "it", request)
+        from src.rag import intake as intake_mod
+        read = intake_mod.request_intake(message, upload, (), refers_to_upload=bool(upload))
+        record.update(intake=intake_mod.log_view(read), api_route=read.get("route"))
+        log(f"intake: {intake_line(record['intake'])}; the API's route {read.get('route')}")
+        case_text_, request_ = interactive_flow.entry_args(
+            message, upload if upload.strip() and read.get("case_in") == "upload" else None)
+        reply, field, state = interactive_flow.start(case_text_, spec.get("lang") or "it", request_, intake=read)
         record["rounds"].append({"round": 1, "message": "(case)", "seconds": round(time.time() - t0, 1),
                                  "reply": reply, "interaction": field})
         topics = state.get("topics") or []
@@ -1046,6 +1080,12 @@ def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict
         record["status"] = f"ERROR {type(exc).__name__}: {str(exc)[:200]}"
         record["errors"].append(traceback.format_exc())
         traceback.print_exc()
+    missing = intake_missing(record, state, cap)
+    if missing:                 # v73: a sim that did not read the intake as the API does is not the live path
+        record["status"] = f"ERROR no intake line: {missing}"
+        record["errors"].append(record["status"])
+        print(f"FAIL {spec['id']}: {record['status']}", file=sys.stderr)
+        log(f"FAIL: {record['status']}")
     record["seconds"] = round(time.time() - t0, 1)
     record["seconds_by_round"] = {f"{r.get('kind') or 'round1'}": r["seconds"] for r in record["rounds"]}
     if record.get("mode") == "single_shot":            # v60k: round 1 runs inside the one call
@@ -1102,6 +1142,8 @@ def _sim_tail(record: dict, state: Optional[dict], spec: dict, ev, case: dict, a
                 "read", "read_side"):                                         # v60g: the parties' lines
         if state and state.get(key) is not None:
             record[key] = state[key]
+    if state and state.get("posture") is not None:          # v62: the client's posture and what it drove
+        record["posture"] = state["posture"]
     if answer:
         try:
             record.update(answer_extras(answer, spec.get("expected") or [], ev))
@@ -3365,7 +3407,7 @@ def _slug(text: str) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--only", help="comma-separated case ids (default: every case with expected articles "
-                                       "among the 12 tuning ones, h1-h11, n1-n9)")
+                                       "among the 11 tuning ones, h1-h11, n1-n9)")
     parser.add_argument("--no-cases", action="store_true", help="only the --file documents")
     parser.add_argument("--file", action="append", default=[], help="a local .pdf/.docx/.txt, read as an upload is")
     parser.add_argument("--request", action="append", default=[], help="the user's message for each --file, in order")

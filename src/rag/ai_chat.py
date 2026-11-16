@@ -42,11 +42,38 @@ _NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
 _OFF = {"false", "0", "no", "off"}
 
 
+# v70 (3): LLM_THINKING=per_call -- reasoning off by default (the no-reasoning body, as «false»), on only for the calls
+# that ask for it (_call_chat(thinking=True): the thesis selection and the writer), each with THINKING_EXTRA_TOKENS more
+# max_tokens, since the reasoning counts against them. Under any other setting thinking= is ignored: unset must send
+# nothing (OpenAI's API rejects the field).
+_PER_CALL = {"per_call", "per-call", "call"}
+_THINKING = {"chat_template_kwargs": {"enable_thinking": True}}
+THINKING_EXTRA_TOKENS = int(os.getenv("LLM_THINKING_EXTRA_TOKENS", "2000") or 2000)
+
+
 def _thinking_kwargs(setting: Optional[str]) -> dict:
-    """ChatOpenAI kwargs for the LLM_THINKING setting: the no-reasoning body when it says no, else nothing."""
-    if (setting or "").strip().lower() in _OFF:
+    """ChatOpenAI kwargs for the LLM_THINKING setting: the no-reasoning body when it says no (or per_call: off unless a
+    call asks), else nothing."""
+    if (setting or "").strip().lower() in _OFF | _PER_CALL:
         return {"extra_body": _NO_THINKING}
     return {}
+
+
+def per_call(setting: Optional[str] = None) -> bool:
+    """v70 (3): LLM_THINKING=per_call -- the calls choose (thinking_bind)."""
+    value = os.getenv("LLM_THINKING") if setting is None else setting
+    return (value or "").strip().lower() in _PER_CALL
+
+
+def thinking_bind(thinking: Optional[bool], max_tokens: Optional[int], setting: Optional[str] = None) -> dict:
+    """v70 (3): the bind kwargs a call's thinking choice adds -- under per_call only: thinking=True the reasoning body and
+    THINKING_EXTRA_TOKENS more max_tokens; anything else nothing (the model's global body stands)."""
+    if not thinking or not per_call(setting):
+        return {}
+    out: dict = {"extra_body": _THINKING}
+    if max_tokens is not None:
+        out["max_tokens"] = max_tokens + THINKING_EXTRA_TOKENS
+    return out
 
 
 _chat_kwargs = {
@@ -65,7 +92,9 @@ def _announce_thinking(setting: Optional[str]) -> Optional[str]:
     check counted 0). The verbose logger prints for the same reason."""
     if not _thinking_kwargs(setting):
         return None
-    notice = f"LLM_THINKING={setting.strip()}: the chat model is asked not to reason before answering"
+    notice = (f"LLM_THINKING={setting.strip()}: the chat model reasons only where a call asks (thesis selection, the "
+              "writer)" if per_call(setting) else
+              f"LLM_THINKING={setting.strip()}: the chat model is asked not to reason before answering")
     logger.info(notice)
     print(notice, flush=True)
     return notice
@@ -268,8 +297,12 @@ def _call_chat(
     max_tokens: Optional[int] = None,
     stop: Optional[List[str]] = None,
     temperature: Optional[float] = None,
+    thinking: Optional[bool] = None,
 ) -> str:
     """Call the chat model and trim whitespace from the response.
+
+    thinking (v70, 3): True asks this call to reason -- under LLM_THINKING=per_call only (thinking_bind), with
+    THINKING_EXTRA_TOKENS more max_tokens; ignored under any other setting.
 
     A long prompt plus a fixed answer budget can exceed the serving context: a
     25k-character template asked for 4000 output tokens against a 10000-token
@@ -290,6 +323,7 @@ def _call_chat(
         bind_kwargs["stop"] = stop
     if temperature is not None:
         bind_kwargs["temperature"] = temperature
+    bind_kwargs.update(thinking_bind(thinking, max_tokens))
     model = chat_model.bind(**bind_kwargs) if bind_kwargs else chat_model
     name, started = _caller(), time.time()
     try:
@@ -300,8 +334,8 @@ def _call_chat(
             raise
         limit, prompt_tokens = sizes
         room = limit - prompt_tokens - _RETRY_MARGIN_TOKENS
-        if max_tokens is not None:
-            room = min(room, max_tokens)     # never ask for a longer answer than the caller did
+        if bind_kwargs.get("max_tokens") is not None:
+            room = min(room, bind_kwargs["max_tokens"])     # never ask for a longer answer than the caller did
         if room < _MIN_ANSWER_TOKENS:
             logger.error(
                 "prompt of %d tokens leaves only %d of the %d-token context for the "
@@ -316,6 +350,30 @@ def _call_chat(
         response = chat_model.bind(**bind_kwargs).invoke(messages)
     _stage_call(name, started, response)
     return _reply_text(response, bind_kwargs.get("max_tokens"))
+
+
+def call_chat_n(messages: List[Union[SystemMessage, HumanMessage]], n: int, max_tokens: Optional[int] = None,
+                temperature: float = 0.7, thinking: Optional[bool] = None) -> List[str]:
+    """v72: n replies to the same messages in one request (the OpenAI «n»; temperature above 0, or the n replies are
+    one), each cleaned like _call_chat's; a server that returns fewer is asked again one at a time for the rest.
+    thinking as _call_chat's (thinking_bind)."""
+    _stage_count()
+    extra = thinking_bind(thinking, max_tokens)
+    kwargs = {**_chat_kwargs, "n": n, "temperature": temperature,
+              **({"max_tokens": extra.get("max_tokens", max_tokens)} if max_tokens is not None else {})}
+    if extra.get("extra_body"):
+        kwargs["extra_body"] = extra["extra_body"]
+    name, started = _caller(), time.time()
+    texts: List[str] = []
+    try:
+        result = ChatOpenAI(**kwargs).generate([list(messages)])
+        texts = [_reply_text(g.message, kwargs.get("max_tokens")) for g in result.generations[0]]
+    except Exception as exc:          # noqa: BLE001 -- one at a time below
+        logger.warning("call_chat_n: %d replies in one request failed (%s): one at a time", n, exc)
+    _stage_call(name, started, None)
+    while len(texts) < n:
+        texts.append(_call_chat(messages, max_tokens=max_tokens, temperature=temperature, thinking=thinking))
+    return texts[:n]
 
 
 def _call_chat_with_tools(

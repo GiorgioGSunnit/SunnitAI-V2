@@ -9,8 +9,9 @@ PO (key, text, where it appears) -- docs/copy_review.md. Re-runnable; reads the 
   2. The user-facing strings Code drafted outside the copy file (EXTRA: §4's procedural lines, the closed-list
      mediazione and negoziazione texts, the check's and the read-back's marks): every string literal of 12 characters or
      more, with a space, in the named constants and functions.
-  3. v60i (9): the texts of the closed lists kept as data (DATA: the labour dispute's procedural facts), each with its
-     reference.
+  3. v60i (9): the texts of the closed lists kept as data (DATA: the labour dispute's procedural facts; v62: the posture's
+     acts and goals, the procedural section's blocks by stage; v63: the general-part concepts' articles), each with
+     its reference.
 
   python scripts/copy_export.py                    # docs/copy_review.md
   python scripts/copy_export.py --out /tmp/copy.md
@@ -44,11 +45,77 @@ EXTRA = (
     ("procedural_facts", "extract", "Risposta, «Procedibilità e competenza»: procedibilità e remissione"),
     ("record_check", "check", "Risposta, ogni sezione: segno su una frase da verificare", r"^\s*\(da verificare.*\)$"),
     ("readback", "UNVERIFIED", "Risposta: segno su un fatto della parte non trovato nel caso"),
+    # v70: the lawyer's method's own texts (LAWYER_METHOD)
+    ("lawyer_method", "facts_section", "Metodo, «Fatti»: certi, ipotizzabili, mancanti"),
+    ("lawyer_method", "changes", "Metodo, «Fatti»: che cosa cambierebbe un fatto mancante"),
+    ("lawyer_method", "subsumption_rows", "Metodo, «Sussunzione»: il fatto di un elemento"),
+    ("lawyer_method", "subsumption_section", "Metodo, «Sussunzione»: le tabelle e le circostanze"),
+    ("lawyer_method", "NO_AGGRAVANTE", "Metodo, «Sussunzione»: nessuna aggravante integrata"),
+    ("lawyer_method", "AGGRAVANTI_CHECKED", "Metodo, «Sussunzione»: le aggravanti verificate"),
+    ("lawyer_method", "assessment", "Metodo, «Conclusioni»: il perché dell'esito probabile"),
+    ("lawyer_method", "ASSESSMENT_LINES", "Metodo, «Conclusioni»: esito probabile, grado di certezza, obiettivo"),
+    ("lawyer_method", "riti_lines", "Metodo, «Soluzioni a confronto»: un rito alternativo precluso dalla pena"),
+    ("lawyer_method", "TEMPORAL_LINE", "Metodo, «Profili processuali»: la disciplina applicabile"),
+    ("lawyer_method", "TEMPORAL_UNKNOWN", "Metodo, «Profili processuali»: la data dei fatti non indicata"),
+    ("lawyer_method", "TEMPORAL_ABROGATED", "Metodo, «Profili processuali»: norme abrogate"),
+    ("lawyer_method", "TEMPORAL_POINTS", "Metodo, «Punti da verificare»: la disciplina applicabile"),
+    ("lawyer_method", "temporal", "Metodo, «Profili processuali»: le riforme successive ai fatti"),
+    ("lawyer_method", "fallback_thesis", "Metodo, «Soluzioni a confronto»: la tesi di ripiego"),
+    ("lawyer_method", "solutions_section", "Metodo, «Soluzioni a confronto»: la tabella e la strategia"),
+    ("lawyer_method", "OBJ_PROVEN", "Metodo, «Obiezioni e risposte»: un elemento provato dell'addebito"),
+    ("lawyer_method", "OBJ_OPEN", "Metodo, «Obiezioni e risposte»: un elemento da provare dell'addebito"),
+    ("lawyer_method", "OBJ_DENIED", "Metodo, «Obiezioni e risposte»: un elemento del cliente da provare"),
+    ("lawyer_method", "NO_ANSWER", "Metodo, «Obiezioni e risposte»: risposta da costruire"),
+    ("lawyer_method", "objections_section", "Metodo, «Obiezioni e risposte»: nessuna obiezione"),
+    ("lawyer_method", "orientations_section", "Metodo, «Orientamenti giurisprudenziali»"),
+    ("lawyer_method", "question_section", "Metodo, «Questione giuridica»: dal registro"),
+    ("lawyer_method", "points_section", "Metodo, «Punti da verificare»: nessun punto"),
+    ("lawyer_method", "compose", "Metodo: sezioni vuote"),
+    ("lawyer_method", "ANALYSIS_TITLE", "Metodo, «Norme e analisi per elementi»: titolo delle tabelle"),
+    ("lawyer_method", "RISK_LINE", "Metodo, «Conclusioni e valutazione del rischio»: rischio residuo"),
+    ("lawyer_method", "STEPS_TITLE", "Metodo, «Conclusioni e valutazione del rischio»: passi successivi"),
+    ("lawyer_method", "steps_text", "Metodo, «Conclusioni e valutazione del rischio»: lo scopo di un passo"),
+    ("lawyer_method", "summary_section", "Metodo, «Sintesi della soluzione»: senza sintesi del modello"),
+    ("lawyer_method", "CLAIM_MARK", "Metodo: una circostanza invocata senza i suoi requisiti"),
+    ("lawyer_method", "BARRED_LABEL", "Metodo, «Soluzioni a confronto»: una tesi che nega un elemento integrato"),
+    ("lawyer_method", "CANDIDATE_TEXTS", "Metodo, «Soluzioni a confronto»: le tesi candidate del codice"),
+    ("lawyer_method", "conclusions_from_selection", "Metodo, «Conclusioni»: dalla tesi scelta"),
+    ("lawyer_method", "steps_from_selection", "Metodo, «Conclusioni»: i passi successivi dalla tesi scelta"),
+    ("lawyer_method", "STEP_TEXTS", "Metodo, «Conclusioni»: i passi dagli elementi della tesi scelta (v73)"),
+    ("lawyer_method", "CODE_ARGUMENTS", "Metodo, «Soluzioni a confronto»: l'argomento delle tesi che non contestano "
+                                        "elementi (v74)"),
+    ("lawyer_method", "CHARGED_PROSE", "Metodo, «Norme e analisi per elementi»: il paragrafo della norma contestata "
+                                       "dalle righe di sussunzione (v75b)"),
+    ("lawyer_method", "NOT_APPLIED", "Risposta: il metodo dell'avvocato non applicato (v76)"),
+    ("lawyer_method", "NOT_APPLIED_WHY", "Risposta: perché il metodo non è stato applicato (v76)"),
+    ("issue_records", "NOT_FATTISPECIE", "Registro: una norma di parte generale o processuale (v74, nel log)"),
+    ("interactive_flow", "DECOMPOSE_WHY", "Registro: perché una norma ha un registro scomposto (v74, nel log)"),
+    ("lawyer_method", "thesis_objections", "Metodo, «Obiezioni e risposte»: dalla tesi scelta"),
+    ("lawyer_method", "MAIN_LINE", "Metodo, «Conclusioni»: la linea principale"),
+    ("lawyer_method", "SUB_LINE", "Metodo, «Conclusioni»: la linea subordinata"),
+    ("lawyer_method", "BARRED_LINE", "Metodo, «Conclusioni»: le tesi non sostenibili"),
+    ("lawyer_method", "UNVERIFIABLE_LABEL", "Metodo, «Soluzioni a confronto»: una tesi che non dichiara gli elementi"),
+    ("lawyer_method", "INTEGRATED_NOTE", "Metodo, «Soluzioni a confronto»: una tesi minoritaria che contesta un "
+                                         "elemento integrato"),
+    ("lawyer_method", "orientations_section", "Metodo, «Orientamenti rilevanti»: righe del codice"),
+    ("lawyer_method", "settle_objective", "Metodo, «Conclusioni»: una tesi sostenibile alternativa"),
 )
 
 # (data file, where): the closed lists' texts kept as data -- the title and each fact's text with its reference
 DATA = (
     ("labour_procedure.json", "Risposta, «Profili processuali»: controversia di lavoro (lista chiusa)"),
+    # v62: the posture's act and goal (the plan's main line), the procedural section's blocks by stage
+    ("posture_acts.json", "Piano, linea principale: l'atto e l'obiettivo per la posizione del cliente"),
+    ("stage_procedure.json", "Risposta, «Profili processuali»: i blocchi per fase (lista chiusa)"),
+    # v63: the general-part concepts a «cenni» subject rests on, with their articles (doctrine, for the lawyer)
+    ("general_concepts.json", "Risposta, «Cenni» e «Norme applicate ai fatti»: le norme di parte generale di un concetto"),
+    # v70: the lawyer's method's tables Code drafted -- the reforms, the litisconsorzio, the stragiudiziale options, the
+    # circumstances' elements, the riti alternativi (his own texts in the same file -- sections, fasi, rules, modules --
+    # are his, verbatim from docs/lawyer/metodo.md: not listed)
+    ("lawyer_method.json", "Metodo dell'avvocato (LAWYER_METHOD): le tabelle di Code"),
+    # v74: the fact nouns the answer takes from the case; v75: the remedies and eccezioni by matter
+    ("fact_terms.json", "Risposta: i nomi dei fatti presi dal caso (classi di atti e oggetti)"),
+    ("remedies.json", "Metodo, «Soluzioni a confronto»: rimedi dell'attore ed eccezioni del convenuto per materia"),
 )
 
 
@@ -238,6 +305,66 @@ def data_rows():
             if text:
                 rows.append((f"data/{stem}[{fact.get('id')}]", text + (f" ({fact['ref']})" if fact.get("ref") else ""),
                              where))
+        for entry in data.get("entries") or []:          # v62: posture_acts -- per cell its act and its goal
+            cell = f"{'|'.join(entry.get('rito') or [])}/{'|'.join(entry.get('role') or [])}/" \
+                   f"{'|'.join(entry.get('stage') or [])}"
+            for key in ("act", "goal"):
+                if entry.get(key):
+                    rows.append((f"data/{stem}[{cell}].{key}", entry[key], where))
+            for i, line in enumerate(entry.get("subordinate") or [], 1):     # v70: the imputato's subordinate line
+                rows.append((f"data/{stem}[{cell}].subordinate.{i}", line, where))
+        for concept in data.get("concepts") or []:       # v63: general_concepts -- per concept its articles
+            articles = ", ".join(str(a) for a in concept.get("articles") or [])
+            if concept.get("name") and articles:
+                rows.append((f"data/{stem}[{concept['name']}]", f"artt. {articles} {concept.get('code') or ''}".strip(),
+                             where))
+        for matter in data.get("matters") or []:         # v75: remedies -- per matter its remedies and eccezioni
+            if not isinstance(matter, dict):
+                continue
+            for kind in ("remedies", "eccezioni"):
+                for r in matter.get(kind) or []:
+                    rows.append((f"data/{stem}[{matter['id']}].{kind}", f"{r['label']} ({r['articles']})"
+                                 + (f" -- richiede: {r['requires']}" if r.get("requires") else ""), where))
+        for cls in data.get("classes") or []:             # v74: fact_terms -- per class its acts, each with its forms
+            if not isinstance(cls, dict):
+                continue
+            for i, member in enumerate(cls.get("members") or [], 1):
+                rows.append((f"data/{stem}[{cls['id']}].{i}", ", ".join(f["form"] for f in member), where))
+        if data.get("accusatory"):
+            rows.append((f"data/{stem}.accusatory", ", ".join(data["accusatory"]), where))
+        if "matters" in data or "classes" in data:
+            continue
+        if "sections" in data:                           # v70: lawyer_method -- his method's texts, all of them
+            rows += method_rows(data, stem, where)
+            continue
+        for family, stages in data.items():              # v62: stage_procedure -- per family and stage its blocks
+            if family.startswith("_") or not isinstance(stages, dict):
+                continue
+            for stage, blocks in stages.items():
+                for block in blocks if isinstance(blocks, list) else []:
+                    roles = f" ({', '.join(block['roles'])})" if block.get("roles") else ""
+                    base = f"data/{stem}[{family}/{stage}/{block.get('title')}{roles}]"
+                    rows.append((f"{base}.title", block.get("title") or "", where))
+                    for i, line in enumerate(block.get("lines") or [], 1):
+                        rows.append((f"{base}.{i}", line, where))
+                    for key in ("date_flag", "date_line"):
+                        if block.get(key):
+                            rows.append((f"{base}.{key}", block[key], where))
+    return rows
+
+
+def method_rows(data, stem, where):
+    """v70: data/lawyer_method.json -- Code's drafted tables only: the reforms, the litisconsorzio lines, the
+    stragiudiziale options, the circumstances and their elements, the riti alternativi (the lawyer's own texts in the
+    file are his, not drafts)."""
+    rows = [(f"data/{stem}.reforms[{r['id']}]", f"{r['name']}, dal {r['from']}: {r['note']}", where)
+             for r in data.get("reforms") or []]
+    rows += [(f"data/{stem}.litisconsorzio[{m['matter']}]", m["line"], where) for m in data.get("litisconsorzio") or []]
+    rows += [(f"data/{stem}.stragiudiziale[{k}]", v, where) for k, v in (data.get("stragiudiziale") or {}).items()]
+    for c in data.get("circumstances") or []:
+        rows.append((f"data/{stem}.circumstances[{c['label']}]", f"{c['kind']}: {c['name']}", where))
+        rows += [(f"data/{stem}.circumstances[{c['label']}].{i}", e, where) for i, e in enumerate(c.get("elements") or [], 1)]
+    rows += [(f"data/{stem}.riti_alternativi[{r['id']}]", r["line"], where) for r in data.get("riti_alternativi") or []]
     return rows
 
 

@@ -50,7 +50,7 @@ def _script(name):
 
 def test_the_dufficio_conditions_are_read_from_the_offences_text():
     facts = procedural_facts.extract("582", "c.p.", ART_582)
-    assert facts["querela"] and facts["querela_comma"] == "co. 3" and procedural_facts.VERSION == 2
+    assert facts["querela"] and facts["querela_comma"] == "co. 3" and procedural_facts.VERSION >= 2   # v65: 3
     assert [(c["comma"], c["opener"], c["text"][:22]) for c in facts["ufficio_condizioni"]] == [
         ("co. 2", "se", "ricorre taluna delle c"), ("co. 2", "se", "il fatto è commesso co")]
     salvo = procedural_facts.extract("590", "c.p.", ART_590)["ufficio_condizioni"]

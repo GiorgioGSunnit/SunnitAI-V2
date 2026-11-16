@@ -19,7 +19,7 @@ than half its runs that the situations rank in the top 20.
 Run from the app folder (prod), so it uses the app's code, .env and embedding model:
     cd /opt/chatbot && venv/bin/python scripts/exp_situations.py
     ... --reference /root/eval/eval_runs/20261020-093048-reference-20oct
-    ... --only sempronio,c2      ... --k 200
+    ... --only p1,c2             ... --k 200
 
 --query facts searches story against story instead: the case's facts in neutral form
 (the structured analysis' first call, one LLM call per case), each fact on its own, the
@@ -62,7 +62,7 @@ logging.getLogger("neo4j.notifications").setLevel(logging.ERROR)
 
 import eval_narrative as ev  # noqa: E402  (art_of, code_of_document, _label: the eval's own scoring)
 
-TUNING_CASES = ["sempronio", "sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4"]
+TUNING_CASES = ["sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4"]
 INDEX = os.getenv("SITUATION_VECTOR_INDEX", "situation_embeddings_v2")
 KS = (10, 20, 30)
 

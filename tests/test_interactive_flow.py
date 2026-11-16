@@ -587,7 +587,7 @@ def test_with_the_flag_on_intent_defensive_draft_alone_takes_round_one(chat, mon
     monkeypatch.setenv("INTERACTIVE_FLOW", "true")
     monkeypatch.setattr(flow, "routes_here", lambda message: False)
     state = _state(monkeypatch)
-    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": (*flow.round1(state), state))
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="", **k: (*flow.round1(state), state))
     body = client.post("/api/chat", json={"message": CASE}).json()
     assert calls["single_shot"] == 0 and body["status_messages"] == ["interactive_round1"]
 
@@ -598,7 +598,7 @@ def test_with_the_flag_on_a_narrative_case_runs_in_rounds_kept_in_the_session(ch
     monkeypatch.setattr(flow, "routes_here", lambda message: True)
     state = _state(monkeypatch)
 
-    def start(message, lang="it", request=""):
+    def start(message, lang="it", request="", **k):
         reply, field = flow.round1(state)
         return reply, field, state
     monkeypatch.setattr(flow, "start", start)
@@ -635,7 +635,7 @@ def test_a_narrative_case_starts_round_one_ahead_of_every_route_and_logs_it(chat
     monkeypatch.setattr(api, "_classify_legal_intent", lambda *a: pytest.fail("the router ran before round 1"))
     monkeypatch.setattr(api, "_detect_document_intent", lambda *a: pytest.fail("the document route ran before round 1"))
     state = _state(monkeypatch)
-    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": (*flow.round1(state), state))
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="", **k: (*flow.round1(state), state))
     logged = []
     monkeypatch.setattr(api, "vlog", lambda event, data=None, *a: logged.append((event, data)))
     body = client.post("/api/chat", json={"message": CASE}).json()
@@ -648,7 +648,7 @@ def test_the_document_after_a_topic_answer_wraps_that_answer_never_a_fresh_singl
     monkeypatch.setenv("INTERACTIVE_FLOW", "true")
     monkeypatch.setattr(flow, "routes_here", lambda message: True)
     state = _state(monkeypatch)
-    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": (*flow.round1(state), state))
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="", **k: (*flow.round1(state), state))
     monkeypatch.setattr(flow, "write_answer", lambda st, numbers: ("**1. Risposta e strategia**\n\nIL PARERE", []))
     one = client.post("/api/chat", json={"message": CASE}).json()
     sid = one["session_id"]
@@ -709,33 +709,35 @@ def test_the_angle_matching_a_topic_lists_it_first_and_procedi_takes_it(monkeypa
 def test_an_uploaded_narrative_with_a_one_line_role_and_question_is_the_case_of_round_one(chat, monkeypatch, tmp_path):
     import asyncio
     from types import SimpleNamespace
-    api, client, calls = chat           # v60: the file the case, the message the angle; the upload's text analysed
+    from src.rag import intake
+    api, client, calls = chat           # v60: the file the case, the message the angle; v61: the intake decides it
     monkeypatch.setenv("INTERACTIVE_FLOW", "true")
-    upload = tmp_path / "caso.txt"
-    upload.write_text(CASE, encoding="utf-8")
-    doc = SimpleNamespace(storage_path=str(upload), id="d1", original_filename="caso.txt", document_role="document")
+    doc = SimpleNamespace(storage_path=str(tmp_path / "caso.txt"), id="d1", original_filename="caso.txt",
+                          document_role="document")
     seen, logged = [], []
     _analysed(monkeypatch, seen)
     monkeypatch.setattr(flow, "routes_here", lambda text: "cancello" in text)        # the case is in the file only
-    monkeypatch.setattr(api, "_classify_legal_intent", lambda *a: "rag")
     monkeypatch.setattr(api, "vlog", lambda event, data=None, *a: logged.append((event, data)))
     session = api.chatbot.create_session()
-    run = lambda intent: asyncio.run(api._interactive_upload_case(session, session.session_id, ROLE_AND_QUESTION, "it",
-                                                                  doc, intent, lambda path: open(path).read()))
-    body = run("analyse")
+    read = intake.detect(ROLE_AND_QUESTION, CASE)
+    assert read["route"] == intake.CASE_FIRST and read["case_in"] == "upload" and read["deliverable"] == "parere"
+    run = lambda upload: asyncio.run(api._interactive_upload_case(session, session.session_id, ROLE_AND_QUESTION, "it",
+                                                                  doc, upload, read))
+    body = run(CASE)
     assert body is not None and body.status_messages == ["interactive_round1"] and calls["single_shot"] == 0
     assert seen == [(CASE, ROLE_AND_QUESTION)]                                       # the upload analysed, the message its request
     entry = next(d for e, d in logged if e == "interactive" and d.get("round") == 1)
     assert entry["case_source"] == "upload+message" and entry["case_chars"] == len(CASE) + len(ROLE_AND_QUESTION)
     state = flow.active(session.anchors)
     assert state["answered"]["parte_assistita"] == "Leonardo" and state["angle"].startswith("Qual è l'atto")
+    assert state["intake"]["deliverable"] == "parere"
     assert "Chi assisti" not in body.answer and not body.generated_document_id
     assert session.messages[0].metadata["document_name"] == "caso.txt"
-    # not a case (a template to fill): the document branch goes on
-    upload.write_text("Contratto di locazione tra ____ e ____.", encoding="utf-8")
+    assert session.messages[0].metadata["intake"]["route"] == intake.CASE_FIRST
+    # not a case (a template to fill): the intake reads no case; a file without text runs nothing
+    assert intake.detect(ROLE_AND_QUESTION, "Contratto di locazione tra ____ e ____.")["route"] != intake.CASE_FIRST
     seen.clear()
-    assert run("generate") is None and seen == []
-    assert run("defensive_draft") is not None and seen                               # the branch's own classifier
+    assert run("") is None and seen == []
 
 
 def test_a_narrative_message_naming_an_upload_is_left_to_the_document_branch_then_round_one(chat, monkeypatch):
@@ -747,7 +749,7 @@ def test_a_narrative_message_naming_an_upload_is_left_to_the_document_branch_the
     detect = api._detect_document_intent
     monkeypatch.setattr(api, "_detect_document_intent", lambda m: order.append("document branch") or detect(m))
     state = _state(monkeypatch)
-    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="": order.append("round 1") or
+    monkeypatch.setattr(flow, "start", lambda message, lang="it", request="", **k: order.append("round 1") or
                         (*flow.round1(state), state))
     monkeypatch.setattr(api, "vlog", lambda event, data=None, *a: logged.append((event, data)))
     message = CASE + " Ti ho allegato il documento con i dettagli."

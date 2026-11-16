@@ -17,7 +17,7 @@ session per case for the account it logs in as, so use a dedicated account.
 
   # credentials from the environment (EVAL_EMAIL, EVAL_PASSWORD, optional EVAL_TOTP), else prompted
   python tests/eval_narrative.py --base-url http://localhost:8000
-  python tests/eval_narrative.py --base-url http://localhost:8000 --token <JWT> --only sempronio,c2
+  python tests/eval_narrative.py --base-url http://localhost:8000 --token <JWT> --only p1,c2
   # each case 3 times, to separate a real change from model/run variance
   python tests/eval_narrative.py --base-url http://localhost:8000 --repeat 3 --label flag-off
   # what changed between two runs

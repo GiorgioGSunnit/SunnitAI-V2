@@ -3013,8 +3013,12 @@ def generate_document(
     citations: list = None,
     studio_name: str = "",
     section_hint: str = "",
+    case_record: str = "",
 ) -> Dict[str, Any]:
     """Generic document generator dispatching on doc_type via DOCUMENT_TYPE_REGISTRY.
+
+    case_record (v61, intake: an atto asked on a narrated case): the case-first first read of the case (client, goal,
+    facts, what the case does not say), given to the drafting call as context beside the user's message.
 
     Returns:
         {"draft": str, "case_details": Dict[str, str], "doc_type": str}
@@ -3098,6 +3102,9 @@ def generate_document(
         f"Usa {ph} SOLO per dati non presenti né nel messaggio né nei campi strutturati. "
         f"Non aggiungere note, spiegazioni o avvertenze fuori dall'atto."
     )
+    if case_record:
+        human_content = (f"Scheda del caso (lettura del caso, da usare per i fatti; non aggiungere fatti che non vi "
+                         f"compaiono):\n{case_record}\n\n") + human_content
     if relevant_section_text:
         human_content = (
             f"Testo esatto da usare come base:\n{relevant_section_text}\n\n"

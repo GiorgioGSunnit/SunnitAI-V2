@@ -1,0 +1,55 @@
+{
+ "_about": "v70: the nightly's five posture cells (scripts/nightly_sim.py) -- synthetic cases, none of the benchmark's, one per cell; «cell» is what intake must read and what the structural checks expect (lawyer_method.structure_checks).",
+ "cells": [
+  {
+   "id": "civile_attore_pre_filing",
+   "cell": {
+    "family": "civile",
+    "rito": "civile",
+    "role": "attore",
+    "stage": "pre_filing"
+   },
+   "text": "Tizio ha affidato all'impresa Alfa il rifacimento del tetto della sua casa con un contratto d'appalto del 3 marzo 2026. Dopo le piogge di ottobre compaiono infiltrazioni d'acqua che si aggravano ogni settimana. Alfa chiede il saldo di 18.000 euro e rifiuta di riparare. Assisto Tizio: quali azioni può intraprendere contro Alfa?"
+  },
+  {
+   "id": "civile_convenuto_primo_grado",
+   "cell": {
+    "family": "civile",
+    "rito": "civile",
+    "role": "convenuto",
+    "stage": "primo_grado"
+   },
+   "text": "Con atto di citazione notificato il 10 settembre 2026 Sempronio ha convenuto Caio davanti al Tribunale di Milano chiedendo la condanna al risarcimento di 30.000 euro per le infiltrazioni provenienti dal bagno dell'appartamento di Caio. Caio sostiene che le infiltrazioni derivano dal tetto condominiale. Assisto Caio, convenuto: come impostare la difesa?"
+  },
+  {
+   "id": "penale_imputato_primo_grado",
+   "cell": {
+    "family": "penale",
+    "rito": "penale",
+    "role": "imputato",
+    "stage": "primo_grado"
+   },
+   "text": "Tizio e Caia hanno convissuto more uxorio fino al gennaio 2025, quando si sono separati. Dopo la separazione Tizio ha più volte pedinato Caia, l'ha insultata davanti al suo posto di lavoro e in un'occasione l'ha spinta a terra. Caia ha sporto denuncia-querela e Tizio è ora imputato di maltrattamenti in famiglia (art. 572 c.p.); il processo di primo grado è iniziato. Sono il difensore di Tizio: quale strategia difensiva?"
+  },
+  {
+   "id": "penale_offesa_pre_filing",
+   "cell": {
+    "family": "penale",
+    "rito": "penale",
+    "role": "persona_offesa",
+    "stage": "pre_filing"
+   },
+   "text": "Il 5 maggio 2026, durante una partita di calcio amatoriale, Sempronio ha colpito Tizio con un violento calcio alla gamba mentre Tizio gli dava le spalle, procurandogli la frattura del perone; Tizio è guarito dopo tre mesi. Tizio non ha ancora presentato querela. Assisto Tizio: come può agire nei confronti di Sempronio?"
+  },
+  {
+   "id": "lavoro_attore_pre_filing",
+   "cell": {
+    "family": "civile",
+    "rito": "lavoro",
+    "role": "attore",
+    "stage": "pre_filing"
+   },
+   "text": "Laura, dipendente a tempo indeterminato della società Alfa S.r.l. dal 2018, è stata licenziata il 20 ottobre 2026 con una lettera che non indica alcuna motivazione e senza alcuna contestazione disciplinare. Assisto Laura: come impugnare il licenziamento?"
+  }
+ ]
+}

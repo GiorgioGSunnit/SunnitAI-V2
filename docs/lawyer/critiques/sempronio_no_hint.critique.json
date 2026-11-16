@@ -1,0 +1,231 @@
+{
+ "id": "sempronio_no_hint",
+ "source": "docs/lawyer/critica_penale_v2.md",
+ "case": "Sempronio a seguito di un acceso diverbio con Caio gli sferra un violento schiaffo al volto. Caio indietreggia e cade a terra battendo il capo contro un marciapiede. Sempronio presta soccorso a Caio e chiama l’ambulanza. Caio muore poco dopo in ospedale a seguito di un’emorragia cerebraleda trauma cranico.\nIl candidato assunte le vesti del legale di Sempronio, premessi brevi cenni sull’omicidio preterintenzionale, il nesso causale e l’elemento soggettivo, delinea una strategia difensiva, ipotizzando anche possibili reati alternativi configurabili nel caso di specie",
+ "giudizio": "Giudizio complessivo: il parere è ordinato e copre i punti richiesti, ma la strategia principale è giuridicamente debole e contiene errori che un PM o un giudice rileverebbero subito. Va riscritta nel nucleo.",
+ "points": [
+  {
+   "id": "1.1",
+   "sezione": "L’errore centrale: la tesi sul nesso causale",
+   "categoria": "tesi",
+   "punto": "Il parere punta tutto sull’assenza di nesso causale tra lo schiaffo e la morte. È la tesi meno sostenibile."
+  },
+  {
+   "id": "1.2",
+   "sezione": "L’errore centrale: la tesi sul nesso causale",
+   "categoria": "tesi",
+   "punto": "Il fatto è lineare: schiaffo, caduta, trauma cranico, emorragia, morte. Non c’è una causa sopravvenuta autonoma."
+  },
+  {
+   "id": "1.3",
+   "sezione": "L’errore centrale: la tesi sul nesso causale",
+   "categoria": "tesi",
+   "punto": "L’art. 41 c.p., co. 2, esclude il nesso solo se la causa sopravvenuta è da sola sufficiente a determinare l’evento. Qui la caduta è conseguenza diretta e non eccezionale dello schiaffo, quindi rientra nella serie causale."
+  },
+  {
+   "id": "1.4",
+   "sezione": "L’errore centrale: la tesi sul nesso causale",
+   "categoria": "tesi",
+   "punto": "Le “cause” evocate (salute pregressa, reazione emotiva, posizione di Caio) sono concause preesistenti o contemporanee. Per l’art. 41, co. 1, non escludono il nesso: lo confermano."
+  },
+  {
+   "id": "1.5",
+   "sezione": "L’errore centrale: la tesi sul nesso causale",
+   "categoria": "tesi",
+   "punto": "Il parere, nella sezione 6, riporta correttamente il co. 2 dell’art. 41, ma poi lo applica in modo contraddittorio (parla di “concorso” come se giovasse alla difesa)."
+  },
+  {
+   "id": "1.6",
+   "sezione": "L’errore centrale: la tesi sul nesso causale",
+   "categoria": "tesi",
+   "punto": "La conclusione del paragrafo 5, secondo cui “non sussiste un nesso causale diretto”, è quindi la parte più fragile. Lo stesso parere, alla sezione 8, ammette poi che se il colpo ha determinato la caduta il nesso “potrebbe essere ritenuto stabile”: cioè smentisce la propria tesi."
+  },
+  {
+   "id": "2.1",
+   "sezione": "L’errore sul dolo delle percosse",
+   "categoria": "categoria",
+   "punto": "Nell’art. 584 c.p. il dolo richiesto è quello dei delitti di percosse (581) o lesioni (582), e non la previsione dell’evento morte. Dunque:"
+  },
+  {
+   "id": "2.2",
+   "sezione": "L’errore sul dolo delle percosse",
+   "categoria": "categoria",
+   "punto": "La difesa non può basarsi sull’assenza di “consapevolezza del rischio di morte” o sulla “imprevedibilità” dell’evento: sono criteri tipici della colpa, non della preterintenzione."
+  },
+  {
+   "id": "2.3",
+   "sezione": "L’errore sul dolo delle percosse",
+   "categoria": "categoria",
+   "punto": "Secondo la giurisprudenza prevalente, per la preterintenzione basta il nesso causale tra atti diretti a percuotere o ledere e la morte. Non occorre la prevedibilità in concreto dell’evento più grave (Cass. pen., Sez. Un., 22 gennaio 2009, n. 22676 sul rapporto tra preterintenzione e responsabilità oggettiva; da verificare l’orientamento più recente)."
+  },
+  {
+   "id": "2.4",
+   "sezione": "L’errore sul dolo delle percosse",
+   "categoria": "categoria",
+   "punto": "Lo schiaffo è un atto doloso di percosse: questo elemento è pacifico, e il parere stesso lo riconosce nella sezione 6, dove ammette che l’art. 581 è “applicabile”."
+  },
+  {
+   "id": "3.1",
+   "sezione": "Contraddizioni e incongruenze interne",
+   "categoria": "coerenza",
+   "punto": "Sezione 4 e 5: si propone l’art. 590 (lesioni colpose) come alternativa, ma lo schiaffo è un atto volontario. Non esiste “colpa” in uno schiaffo sferrato di proposito. Il parere lo intuisce per l’art. 589 e poi lo dimentica per il 590."
+  },
+  {
+   "id": "3.2",
+   "sezione": "Contraddizioni e incongruenze interne",
+   "categoria": "coerenza",
+   "punto": "Art. 589: la sua motivazione (sez. 4) è confusa e dice in sostanza che l’omicidio colposo non è configurabile. Va detto chiaramente: manca la colpa pura, perché la condotta è dolosa."
+  },
+  {
+   "id": "3.3",
+   "sezione": "Contraddizioni e incongruenze interne",
+   "categoria": "coerenza",
+   "punto": "Sezione 8: “consapevole del rischio di lesione grave ma non di morte → lesioni colpose” è un non-sequitur. Se c’è consapevolezza del rischio di lesione grave si va verso il dolo (eventuale) di lesioni, non verso la colpa."
+  },
+  {
+   "id": "3.4",
+   "sezione": "Contraddizioni e incongruenze interne",
+   "categoria": "coerenza",
+   "punto": "Soccorso: è definito “attenuante”, ma l’art. 62 n. 6 c.p. richiede il risarcimento o la riparazione prima del giudizio, o l’adoperarsi spontaneamente per elidere le conseguenze. Il soccorso va più correttamente valorizzato come attenuanti generiche (art. 62-bis) e come indice del dolo (assenza di intenzione di nuocere)."
+  },
+  {
+   "id": "3.5",
+   "sezione": "Contraddizioni e incongruenze interne",
+   "categoria": "coerenza",
+   "punto": "Art. 62 n. 2 (provocazione): è citato in modo impreciso. Richiede un fatto ingiusto altrui e un nesso di proporzione/immediatezza. Il parere non dice cosa abbia fatto Caio. Senza il contenuto del diverbio, l’attenuante è solo ipotizzata."
+  },
+  {
+   "id": "4.1",
+   "sezione": "Errori su profili processuali",
+   "categoria": "processuale",
+   "punto": "La competenza per l’omicidio preterintenzionale è della Corte d’assise (art. 5 c.p.p.), ed è corretta. Ma la pena indicata (10-18 anni) va verificata: l’art. 584 prevede reclusione da dieci a diciotto anni, quindi è giusta. È la procedibilità del 590 a essere trattata in modo confuso e andrebbe sintetizzata."
+  },
+  {
+   "id": "4.2",
+   "sezione": "Errori su profili processuali",
+   "categoria": "processuale",
+   "punto": "Il rinvio alla querela e al giudice di pace per il 590 è corretto, ma irrilevante: nel caso concreto l’ipotesi è debole (vedi sopra), quindi occupa spazio senza utilità."
+  },
+  {
+   "id": "4.3",
+   "sezione": "Errori su profili processuali",
+   "categoria": "processuale",
+   "punto": "Manca del tutto un riferimento alle aggravanti: lo schiaffo “violento” al volto in un contesto di diverbio non ne integra di per sé, ma va escluso espressamente."
+  },
+  {
+   "id": "5.1",
+   "sezione": "Cosa manca (e che un buon parere dovrebbe contenere)",
+   "categoria": "mancanza",
+   "punto": "La qualificazione alternativa corretta: la vera linea difensiva realistica è non negare il nesso, ma contestare che gli atti fossero “diretti a commettere” un delitto di percosse/lesioni nel senso richiesto, oppure sostenere la qualificazione come omicidio colposo (art. 589) se si dimostra che l’agente non ha agito con dolo di percosse. È una tesi difficile, perché lo schiaffo è volontario. Per questo il parere dovrebbe dirlo apertamente e dare una valutazione realistica del rischio."
+  },
+  {
+   "id": "5.2",
+   "sezione": "Cosa manca (e che un buon parere dovrebbe contenere)",
+   "categoria": "mancanza",
+   "punto": "La strategia di mitigazione: concentrarsi su pena e trattamento: attenuanti generiche, provocazione (se i fatti la supportano), condotta successiva al reato (soccorso, chiamata dell’ambulanza), incensuratezza, eventuale risarcimento ai familiari."
+  },
+  {
+   "id": "5.3",
+   "sezione": "Cosa manca (e che un buon parere dovrebbe contenere)",
+   "categoria": "mancanza",
+   "punto": "Le questioni probatorie utili: la perizia medico-legale ha senso, ma non per negare il nesso. Serve a verificare se la morte sia compatibile con altre cause (es. patologia pregressa) e a valutare l’intensità effettiva dello schiaffo."
+  },
+  {
+   "id": "5.4",
+   "sezione": "Cosa manca (e che un buon parere dovrebbe contenere)",
+   "categoria": "mancanza",
+   "punto": "La giurisprudenza: il parere cita solo norme. Un parere difensivo serio richiede almeno un riferimento giurisprudenziale sul rapporto tra preterintenzione e nesso causale, sulla prevedibilità e sulla causa sopravvenuta eccezionale (art. 41, co. 2)."
+  },
+  {
+   "id": "5.5",
+   "sezione": "Cosa manca (e che un buon parere dovrebbe contenere)",
+   "categoria": "mancanza",
+   "punto": "Le tracce di “da verificare” nel testo: è accettabile segnalare incertezze, ma qui compaiono nel mezzo dell’argomentazione e indeboliscono il tono. Vanno risolte o spostate in una sezione apposita."
+  },
+  {
+   "id": "6.1",
+   "sezione": "Pregi",
+   "categoria": "pregio",
+   "punto": "La struttura segue bene la traccia: cenni, alternative, strategia, norme, conclusioni."
+  },
+  {
+   "id": "6.2",
+   "sezione": "Pregi",
+   "categoria": "pregio",
+   "punto": "L’indicazione delle prove (perizia medico-legale, testimoni) è sensata."
+  },
+  {
+   "id": "6.3",
+   "sezione": "Pregi",
+   "categoria": "pregio",
+   "punto": "Il richiamo alle attenuanti e al comportamento post-factum è utile, anche se inquadrato male."
+  },
+  {
+   "id": "6.4",
+   "sezione": "Pregi",
+   "categoria": "pregio",
+   "punto": "Il parere riconosce onestamente che lo schiaffo integra l’art. 581."
+  },
+  {
+   "id": "7.1",
+   "sezione": "Strategia che io consiglierei",
+   "categoria": "attesa",
+   "punto": "Ammettere la condotta, contestare l’inquadramento: schiaffo impulsivo in un contesto di lite, senza intenzione di ledere gravemente."
+  },
+  {
+   "id": "7.2",
+   "sezione": "Strategia che io consiglierei",
+   "categoria": "attesa",
+   "punto": "Linea principale: valorizzare l’eccezionalità dell’evento (caduta su marciapiede) per chiedere la riqualificazione in omicidio colposo (art. 589), argomentando che mancava un dolo di percosse finalizzato alla lesione. È una tesi minoritaria: va presentata come tale."
+  },
+  {
+   "id": "7.3",
+   "sezione": "Strategia che io consiglierei",
+   "categoria": "attesa",
+   "punto": "Linea subordinata: accettare l’art. 584 e puntare su attenuanti generiche (62-bis), provocazione (62 n. 2) se i fatti la sorreggono, e valutazione favorevole della condotta successiva, per arrivare a una pena vicina al minimo edittale."
+  },
+  {
+   "id": "7.4",
+   "sezione": "Strategia che io consiglierei",
+   "categoria": "attesa",
+   "punto": "Istruttoria: perizia medico-legale sulla dinamica della caduta e sullo stato di salute pregresso, testi sul diverbio (per la provocazione), prova del soccorso (chiamata al 118)."
+  },
+  {
+   "id": "7.5",
+   "sezione": "Strategia che io consiglierei",
+   "categoria": "attesa",
+   "punto": "Valutazione del rischio per il cliente: dirgli con chiarezza che l’esito più probabile è la condanna ex art. 584, e che l’obiettivo realistico è contenere la pena. Valutare anche il rito alternativo (abbreviato, con riduzione di un terzo, o patteggiamento se la pena concreta lo consente)."
+  }
+ ],
+ "tesi_attesa": {
+  "punti": {
+   "1.1": "esclusa",
+   "7.2": "principale"
+  },
+  "principale": {
+   "fonte": [
+    "7.2",
+    "7.3",
+    "7.5"
+   ],
+   "testo": "Linea principale: valorizzare l’eccezionalità dell’evento (caduta su marciapiede) per chiedere la riqualificazione in omicidio colposo (art. 589), argomentando che mancava un dolo di percosse finalizzato alla lesione. È una tesi minoritaria: va presentata come tale.",
+   "alternative": [
+    {
+     "nome": "riqualificazione 589, minoritaria",
+     "pattern": "\\b589\\b|omicidio\\s+colposo",
+     "minoritaria": true
+    },
+    {
+     "nome": "ammettere la condotta, contenere la pena",
+     "pattern": "ammett\\w*\\s+(?:la\\s+)?condott\\w*|conten\\w*\\s+(?:la\\s+)?pena|contenimento"
+    }
+   ]
+  },
+  "esclusa": {
+   "fonte": "1.1",
+   "testo": "Il parere punta tutto sull’assenza di nesso causale tra lo schiaffo e la morte. È la tesi meno sostenibile.",
+   "pattern": "(?:assenza|mancanza|esclusione|interruzione|difetto|insussistenza)\\s+(?:del\\s+|di\\s+)?nesso\\s+(?:causale|di\\s+causalit)|nesso\\s+(?:causale|di\\s+causalit\\w*)\\s+(?:è\\s+)?(?:interrott|esclus|assente|insussistent)|causa\\s+sopravvenuta",
+   "regola": "mai principale; se presente, etichettata minoritaria o non sostenibile"
+  }
+ }
+}

@@ -12,7 +12,7 @@ logger = logging.getLogger("sunnitai.verbose")
 FULL_KEYS = {"facts", "rules", "issues", "traceback"}
 # Printed whatever VERBOSE_LOGGING says: an exception the pipeline caught, with its traceback (v45d: a run failed with
 # only "'bool' object is not iterable" to go on).
-ALWAYS_EVENTS = {"pipeline_exception"}
+ALWAYS_EVENTS = {"pipeline_exception", "intake"}     # v61: the request's intake, whatever VERBOSE_LOGGING says
 
 
 # What traces a run: scripts/diagnose_long.py's case logs carry these whatever VERBOSE_LOGGING says.

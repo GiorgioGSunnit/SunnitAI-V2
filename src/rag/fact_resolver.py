@@ -54,6 +54,27 @@ def _stems(text: str) -> set:
     return dg._stems_of(text)
 
 
+# v65: the rubrica channel's gate -- a match needs RUBRICA_MIN_WORDS content words of the institution's name in the
+# rubrica, or a term the user's own text names; these generic legal words never match alone
+RUBRICA_STOPLIST = ("decreto decreti termine termini impugnazione impugnazioni garanzia garanzie disposizioni disposizione "
+                    "generali generale obbligazioni obbligazione contratto contratti")
+RUBRICA_MIN_WORDS = 2
+
+
+def rubrica_admits(name: str, heading: str, user_text: Optional[str]) -> str:
+    """v65: "" when the rubrica (heading) may match the institution (name); else why not -- the words they share all
+    generic (RUBRICA_STOPLIST), or fewer than RUBRICA_MIN_WORDS of them and none the user's text names."""
+    shared = matching_words(name) & _stems(heading)
+    own = shared - _stems(RUBRICA_STOPLIST)
+    if not own:
+        return "solo parole generiche in comune" if shared else "nessuna parola in comune"
+    if len(shared) >= RUBRICA_MIN_WORDS:
+        return ""
+    if own <= _stems(user_text or ""):
+        return ""
+    return "una sola parola del nome in comune, non nominata dall'utente"
+
+
 def generic_stems() -> set:
     from . import defensive_generation as dg
     return dg._strict_generic_stems() | _stems(GENERIC_WORDS)
@@ -231,6 +252,8 @@ def resolve(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any]) 
     name = " ".join(str(istituto.get("nome") or "").split())
     codice = str(istituto.get("codice") or "")
     log: Dict[str, Any] = {"institution": name, "codice": codice, "candidates": [], "kept": [], "refused": []}
+    gated = "testo_utente" in istituto        # v65: the first read's rubrica channel, gated (rubrica_admits)
+    user_text = str(istituto.get("testo_utente") or "")
     specific = matching_words(name)
     if not specific:
         log["refused"].append({"article": None, "why": "generic institution name: no specific word"})
@@ -244,6 +267,13 @@ def resolve(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any]) 
     log["chapter"] = chapter
     how, by_rubrica = rubrica_matches(code_rubriche(session, doc["id"]), name)        # v60n: the rubrica first
     by_rubrica = [n for n in by_rubrica if not chapter or answer_invariants.in_ranges(n, chapter)]
+    if gated and by_rubrica:
+        heading_of = dict(code_rubriche(session, doc["id"]))
+        for n in list(by_rubrica):
+            why = rubrica_admits(name, heading_of.get(n, ""), user_text)
+            if why:
+                by_rubrica.remove(n)
+                log["refused"].append({"article": f"{n} {code}", "why": f"rubrica: {why}"})
     by_rubrica = by_rubrica[:EXACT_KEPT if how == "esatta" else PREFIX_KEPT]
     if by_rubrica:
         log["rubrica"] = {"how": how, "articles": [f"{n} {code}" for n in by_rubrica]}
@@ -277,6 +307,12 @@ def resolve(session, documents: List[Dict[str, Any]], istituto: Dict[str, Any]) 
         cores = [j for n in by_rubrica for j in judged if j[3]["number"] == n]
     else:
         cores = sorted([j for j in judged if j[0] >= need], key=lambda j: (-j[0], j[2]))
+    if gated:                   # v65: a heading match is a rubrica match too
+        for j in list(cores):
+            why = rubrica_admits(name, j[3]["heading"] or "", user_text)
+            if why:
+                cores.remove(j)
+                log["refused"].append({"article": j[5], "why": f"rubrica: {why}"})
     core_numbers = [_as_int(j[3]["number"]) for j in cores]
     kept: List[Tuple[str, Any]] = [("core", j) for j in cores]
     for j in judged:
@@ -415,6 +451,9 @@ def index_channel(session, documents: List[Dict[str, Any]], name: str, codice: s
     INDEX_KEPT."""
     words = _words_of(name, nouns)
     log: Dict[str, Any] = {"channel": "indice", "query": name, "words": sorted(words), "kept": []}
+    if words and not words - _stems(RUBRICA_STOPLIST):      # v65: generic legal words never match alone
+        log["why"] = "solo parole generiche"
+        return [], log
     doc, abbr = _document(documents, codice)
     code = (abbr or (doc or {}).get("name") or codice)
     entries = index if index is not None else load_index(abbr or codice)

@@ -35,7 +35,7 @@ an error, not silently scored as all-NOT_IN_POOL.
 
 Run from the app folder so it uses the app's code, .env and venv:
     cd /opt/chatbot && venv/bin/python scripts/loss_funnel.py
-    ... --only sempronio,l1          # just these cases
+    ... --only p1,l1                 # just these cases
     ... --fusion                     # force the fusion path regardless of the flags
     ... --out /root/loss_funnel      # where the table lands (default ./loss_funnel_runs)
 
@@ -79,9 +79,9 @@ import src.rag.defensive_generation as dg  # noqa: E402
 from src.rag import feature_flags  # noqa: E402
 
 DEFAULT_CASES = Path(__file__).resolve().parent.parent / "tests" / "eval_narrative_cases.json"
-# The 12 non-"extra" narrative cases -- same set scripts/exp_distill.py uses,
+# The 11 non-"extra" narrative cases -- same set scripts/exp_distill.py uses,
 # the ones Flavio's own 30.3/47 figure is counted over.
-_NARRATIVE_CASE_IDS = ["sempronio", "sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3",
+_NARRATIVE_CASE_IDS = ["sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3",
                        "l1", "l2", "l3", "l4"]
 
 _STAGE_ORDER = ["NOT_IN_POOL", "IN_POOL_CUT_BY_CAP", "DROPPED_BY_CHECK", "SELECTED_NOT_CITED", "CITED"]

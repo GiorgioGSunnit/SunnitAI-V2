@@ -93,7 +93,7 @@ def test_expected_documents_are_checked():
 def test_the_cases_file_is_complete():
     cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
     ids = [c["id"] for c in cases if not c.get("extra") and not c.get("heldout") and not c.get("set")]
-    assert ids == ["sempronio", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4", "cp_short"]
+    assert ids == ["p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4", "cp_short"]
     for case in cases:
         assert case["question"].strip()
         for item in case["expected"]:
@@ -350,7 +350,7 @@ def test_cases_file_has_heldout2_and_seen2():
 def test_set_cases_run_only_when_asked():
     cases = json.loads((HERE / "eval_narrative_cases.json").read_text(encoding="utf-8"))["cases"]
     default = {c["id"] for c in ev.select(cases)}
-    assert not default & {"s1", "n1"} and "sempronio" in default
+    assert not default & {"s1", "n1"} and "p1" in default
     assert [c["id"] for c in ev.select(cases, sets="heldout2")] == [f"n{n}" for n in range(1, 10)]
     assert {c["id"] for c in ev.select(cases, heldout_only=True)} == {f"h{n}" for n in range(1, 12)}
     assert [c["id"] for c in ev.select(cases, only="s1,n3")] == ["s1", "n3"]
