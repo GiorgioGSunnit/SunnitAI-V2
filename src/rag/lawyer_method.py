@@ -594,8 +594,25 @@ def main_threat(records: Dict[str, Dict[str, Any]]) -> str:
                  and issue_records.counted(x, str(r.get("rubrica") or ""))), "")
 
 
+HYPOTHESIS_LABEL = "ipotesi di reato (addebito non indicato nel quesito)"     # v79 (C4), the PO's words
+NO_CHARGE_WHY = {"penale": "l'addebito non è indicato nel quesito e i fatti narrati non ne individuano uno",
+                 "civile": "la domanda avversaria non è indicata nel quesito e i fatti narrati non ne individuano una"}
+
+
 def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = ""
                ) -> Dict[str, Any]:
+    """v79 (C4): a charge the first read's hypothesis gave (rec["charge_hypothesis"]) is labelled HYPOTHESIS_LABEL in
+    the why -- §1 and §9 print it --; no charge at all is said in the reader's words (NO_CHARGE_WHY), never «il
+    registro non contiene …»."""
+    a = _assessment(records, posture, main, client)
+    rec = (records or {}).get(a.get("article") or "") or {}
+    if rec.get("charge_hypothesis"):
+        a = {**a, "hypothesis": True, "why": f"{HYPOTHESIS_LABEL}: art. {a['article']}; {a['why']}"}
+    return a
+
+
+def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = ""
+                ) -> Dict[str, Any]:
     """{"esito", "grado", "obiettivo", "why", "article"}: the probable outcome read from the record, not from the side
     we write for. Defending (imputato, convenuto): the charge's or the claim's main article -- every element proven:
     unfavourable, the goal is containing it; most proven: unfavourable, a partial outcome (another qualification,
@@ -608,7 +625,7 @@ def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main
         label = main_threat(records)
         if not label:                   # v71: no charge on the record -- never «esito pieno»
             return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
-                    "why": "il registro non contiene l'addebito con i suoi elementi"}
+                    "why": NO_CHARGE_WHY["civile" if (posture or {}).get("family") == "civile" else "penale"]}
         proved, excluded, total = _counts(records[label])
         weapons = [x for x, r in records.items() if r.get("side") == "weapon" and r.get("alternative")
                    and _counts(r)[0] and not _counts(r)[1]]
@@ -633,7 +650,7 @@ def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main
                                                                 if r.get("side") != "threat" and _live(r)), ""))
     if not label:
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
-                "why": f"il registro non contiene la norma su cui {who} fonda la pretesa"}
+                "why": f"i fatti narrati non indicano la norma su cui {who} fonda la pretesa"}
     proved, excluded, total = _counts(records[label])
     if excluded:
         return {"esito": SFAVOREVOLE, "grado": MEDIO, "obiettivo": PARZIALE, "article": label,
@@ -2514,8 +2531,12 @@ def question_section(plan: Dict[str, Any], a: Dict[str, Any], records: Dict[str,
     label = a.get("article") or ""
     rec = (records or {}).get(label) or {}
     if not label:
-        return "La questione giuridica è da verificare: il registro non contiene la norma principale."
+        return "La questione giuridica è da verificare: i fatti narrati non indicano la norma principale."
     rubrica = f" ({_plain(rec.get('rubrica'))})" if rec.get("rubrica") else ""
+    if rec.get("charge_hypothesis"):       # v79 (C4): no charge stated -- never «contestato»
+        return (f"Se i fatti integrino l'art. {label}{rubrica}, {HYPOTHESIS_LABEL}, e quale "
+                + ("difesa sia sostenibile." if rec.get("side") == "threat" else
+                   f"tutela spetti a {client or 'la parte assistita'}."))
     if rec.get("side") == "threat":
         return f"Se i fatti integrino l'art. {label}{rubrica} contestato a {client or 'la parte assistita'} e quale difesa sia sostenibile."
     return f"Se i fatti integrino l'art. {label}{rubrica} e quale tutela spetti a {client or 'la parte assistita'}."

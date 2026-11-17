@@ -5284,6 +5284,22 @@ def prepare_side(state: Dict[str, Any]) -> None:
         _isolated("reside", lambda: reside(state, client))
 
 
+def lawyer_method_on() -> bool:
+    from . import lawyer_method
+    return lawyer_method.enabled()
+
+
+def derived_role(state: Dict[str, Any], analysis: Dict[str, Any]) -> str:
+    """v79 (C5): the client's role the posture will use when nobody says who the client is -- intake's, else the one
+    intake.resolve derives from the analysis; "" when neither has one."""
+    from . import intake
+    got = state.get("intake") or {}
+    role = str(got.get("role") or "")
+    if role in ("", intake.UNKNOWN):
+        role = str((intake.resolve(got, analysis) or {}).get("role") or "") if got else ""
+    return "" if role in ("", intake.UNKNOWN) else role
+
+
 def settle_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str, str]:
     """D: (the client, the line saying it was assumed). Stated or answered: (it, ""). Asked and unanswered: the party the
     case puts a carico, convenuto or ricorrente (never the first name), set in this answer's analysis only, with
@@ -5301,6 +5317,10 @@ def settle_client(state: Dict[str, Any], analysis: Dict[str, Any]) -> Tuple[str,
     # v60k: a single-shot parere says it every time it is assumed (its first line)
     quiet = bool(state.get("answered_in_reply")) and not single_mode(state)
     if pick is None:
+        derived = derived_role(state, analysis) if single_mode(state) and lawyer_method_on() else ""
+        if derived:             # v79 (C5): the method writes a parere anyway -- from the role derived, said in one line
+            _log("client_settled", {"how": "derived_role", "role": derived, "line": not quiet})
+            return "", "" if quiet else (C.fill(C.CLIENT_DERIVED, role=derived.replace("_", " ")) or "")
         _log("client_settled", {"how": "unknown", "line": not quiet})
         return "", "" if quiet else C.CLIENT_UNKNOWN
     label = frame_party_label(analysis, str(analysis.get(CASE_KEY) or ""), str(pick.get("role") or ""))   # v60r (5)
@@ -5933,7 +5953,8 @@ def general_part_out(refs: Sequence[tuple], named: set) -> List[tuple]:
 
 
 DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativa", "named": "nominata dall'utente",
-                 "claim": "domanda (ipotesi principale della prima lettura)"}
+                 "claim": "domanda (ipotesi principale della prima lettura)",
+                 "hypothesis": "addebito (ipotesi di reato della prima lettura)"}      # v79 (C4)
 
 
 def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]], dead: set,
@@ -5954,9 +5975,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     wanted: Dict[str, str] = {}
     for x in posture_mod.intake_charges(posture) + posture_mod.charge_labels(case):
         wanted.setdefault(x, DECOMPOSE_WHY["charge"])
-    if not wanted:              # v75: a civil claim naming no article -- the first read's principal hypothesis for it
+    if not wanted:              # v75: a civil claim naming no article -- the first read's principal hypothesis for it;
+        why = DECOMPOSE_WHY["hypothesis" if str(posture.get("family") or "") == "penale" else "claim"]      # v79 (C4)
         for x in posture_mod.claim_from_read(state, posture, rows):
-            wanted.setdefault(x, DECOMPOSE_WHY["claim"])
+            wanted.setdefault(x, why)
     for x in posture_mod.alternative_labels(state, rows):
         wanted.setdefault(x, DECOMPOSE_WHY["alternative"])
     for ref in user_named(state):
@@ -5970,7 +5992,13 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         fetched = [r for r in _isolated("decompose_fetch", lambda: fetch(missing), []) or [] if r.get("_article")]
         for r in fetched:
             have.setdefault(_key(r["_article"]), r)
-    log: Dict[str, Any] = {"split": {}, "gated": [], "undecomposed": [], "unread": [], "already": []}
+    aliases = special_law_aliases(keys, have)      # v79 (C3): «73 d.P.R. 309/1990» is its store document's article
+    if aliases:
+        state["charge_aliases"] = {**(state.get("charge_aliases") or {}), **aliases}
+        wanted = {aliases.get(x, x): why for x, why in wanted.items()}
+        keys = {aliases.get(x, x): (_key(_parse_label(aliases[x])) if x in aliases else k) for x, k in keys.items()}
+    log: Dict[str, Any] = {"split": {}, "gated": [], "undecomposed": [], "unread": [], "already": [],
+                           "aliases": aliases}
     link: List[str] = []
     for label, why in wanted.items():
         key = keys[label]
@@ -5985,7 +6013,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         if rec and issue_records.decomposed(rec):
             log["already"].append(label)
             continue
-        decisive = why in (DECOMPOSE_WHY["charge"], DECOMPOSE_WHY["claim"])
+        decisive = why in (DECOMPOSE_WHY["charge"], DECOMPOSE_WHY["claim"], DECOMPOSE_WHY["hypothesis"])
         if row is None:
             log["unread"].append(label)
             if decisive:            # v76: the charge or the claim unread -- the method cannot be applied, said
@@ -6014,6 +6042,26 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         issue_records.refresh(records, analysis, state.get("questions") or [], state.get("sentences") or [])
     _log("decompose_records", log)
     return link, fetched
+
+
+def special_law_aliases(keys: Dict[str, tuple], have: Dict[tuple, Dict[str, Any]]) -> Dict[str, str]:
+    """v79 (C3): {«73 d.P.R. 309/1990»: the label of the row holding art. 73 of that act under its store document's
+    name} -- a wanted special-law label no row holds by that key, matched to a row of the same number whose code or
+    document belongs to the same law of data/special_laws.json."""
+    from . import special_laws
+    out: Dict[str, str] = {}
+    for label, key in keys.items():
+        if key in have:
+            continue
+        law = special_laws.law_of(key[1])
+        if not law:
+            continue
+        for k, row in have.items():
+            doc = str((row.get("d") or {}).get("name") or "")
+            if k[0] == key[0] and (special_laws.law_of(k[1]) or special_laws.law_of(doc) or {}).get("id") == law["id"]:
+                out[label] = _label(k)
+                break
+    return out
 
 
 def general_rows(state: Dict[str, Any], posture: Dict[str, Any], grounds: Dict[str, List[Dict[str, Any]]],
@@ -7011,8 +7059,11 @@ _CLIENT_ROLE_RE = re.compile(
     r"(?:\b(?:assisto|assistiamo|difendo|difendiamo|rappresento|rappresentiamo|tutelo|seguo|patrocino|"
     r"(?:il|la)\s+mi[oa]\s+(?:cliente|assistit[oa])\s+(?:è|e'))"
     r"|\b(?:sono|sei|siamo|come|quale|in\s+qualit[àa]\s+di|nelle\s+vesti\s+di|assunte\s+le\s+vesti\s+di)\s+" + _LAWYER_OF
-    + r")\s*(?:il|lo|la|l['’]|i|gli|le)?\s*(" + _ROLE_WORDS + r")\b",
+    + r")\s*(?:il|lo|la|l['’]|i|gli|le|un|una|uno|un['’])?\s*(" + _ROLE_WORDS + r")\b",
     re.IGNORECASE)
+# v79 (C5): «Assisto un/una/il/la/l' <noun>» -- any noun in lower case, the client named by what it is
+_CLIENT_NOUN_RE = re.compile(r"\b(?i:assisto|assistiamo|difendo|difendiamo|rappresento|rappresentiamo)\s+"
+                             r"(?i:un|una|uno|il|lo|la|l['’]|un['’])\s*([a-zà-ù][a-zà-ù]{2,})\b")
 _CLIENT_ROLE_BARE_RE = re.compile(r"^\W*" + _LAWYER_OF + r"\s*(?:il|lo|la|l['’]|i|gli|le)?\s*(" + _ROLE_WORDS
                                   + r")\b(?=\s*(?:[.,;:!?]|$))", re.IGNORECASE)
 # v60i (8): a role word and the words that name the same party in the facts (its name or its role)
@@ -7049,7 +7100,8 @@ def stated(text: str) -> Dict[str, str]:
     client = next((g for g in m.groups() if g), "") if m else ""
     role = ""
     if not client:
-        r = _CLIENT_ROLE_RE.search(text or "") or _CLIENT_ROLE_BARE_RE.search((text or "").strip())
+        r = _CLIENT_ROLE_RE.search(text or "") or _CLIENT_ROLE_BARE_RE.search((text or "").strip()) \
+            or _CLIENT_NOUN_RE.search(text or "")
         role = r.group(1).lower() if r else ""
     questions = [" ".join(q.split()) for q in _QUESTION_RE.findall(text or "") if len(q.split()) >= 3]
     angle = re.sub(r"^(?:e|ma|quindi|dunque|allora)\s+", "", questions[-1], flags=re.IGNORECASE) if questions else ""

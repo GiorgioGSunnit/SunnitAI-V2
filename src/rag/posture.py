@@ -130,12 +130,52 @@ def apply_plan(plan: Dict[str, Any], posture: Optional[Dict[str, Any]]) -> Dict[
 
 
 # the case's sentences stating the charge or the claim: «il PM contesta …», «imputato di …», «a norma degli articoli …»,
-# «chiede la condanna …»
-_CHARGE_RE = re.compile(
-    r"\bcontest\w*|\bimputat\w*\s+(?:di|del|della|dei|per)\b|\baccusat\w*\s+di\b|\bindagat\w*\s+per\b|"
-    r"\ba norma degli?\s+art|\bai sensi dell['’]?\s*art|\bper il (?:reato|delitto) di\b|\bchied\w* (?:la condanna|il "
-    r"pagamento|il risarcimento|la risoluzione)|\bdomanda di\b|\bcita\w* in giudizio\b|\bconvien\w* in giudizio\b",
-    re.IGNORECASE)
+# «chiede la condanna …» -- v79 (C2): the wordings are data (data/charge_wordings.json), never code
+CHARGE_WORDINGS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data",
+                                    "charge_wordings.json")
+_CHARGE: Dict[str, Any] = {}
+
+
+def charge_re() -> "re.Pattern":
+    """The charge sentence's wordings (data/charge_wordings.json), one expression, read once; a missing or broken file:
+    an expression matching nothing (logged)."""
+    if "re" not in _CHARGE:
+        try:
+            with open(CHARGE_WORDINGS_FILE, encoding="utf-8") as f:
+                patterns = [w["pattern"] for w in json.load(f).get("wordings") or [] if w.get("pattern")]
+            _CHARGE["re"] = re.compile("|".join(patterns) or r"(?!x)x", re.IGNORECASE)
+        except (OSError, ValueError, KeyError, re.error) as exc:
+            logger.warning("posture: %s not read: %s", CHARGE_WORDINGS_FILE, exc)
+            _CHARGE["re"] = re.compile(r"(?!x)x")
+    return _CHARGE["re"]
+
+
+# v79 (C3): an article of a special law (data/special_laws.json) -- «art. 73 d.P.R. 309/1990», «art. 73, comma 5, del
+# d.P.R. n. 309 del 1990», «art. 55 del d.lgs. 81/2008» -- as «<number> <act> <number>/<year>»
+_SPECIAL_CITE_RE = re.compile(
+    r"\bart(?:t|icol[oi])?\.?\s*(?P<art>\d{1,4}(?:-(?:bis|ter|quater|quinquies|sexies))?)\b(?P<gap>[^;]{0,40}?)"
+    r"\b(?:del(?:la|l['’])?\s+)?(?P<act>d\.\s?p\.\s?r\.|d\.\s?lgs\.?|decreto\s+legislativo|decreto\s+del\s+presidente\s+della\s+"
+    r"repubblica|legge|l\.)\s*(?:\d{1,2}\s+[a-zà-ù]+\s+(?P<dy>\d{4})\s*,?\s*)?(?:n\.\s*)?(?P<num>\d{1,4})"
+    r"(?:\s*/\s*(?P<y1>\d{4}|\d{2})\b|,?\s+del\s+(?P<y2>\d{4})\b)?", re.IGNORECASE)
+_ACT_NAMES = (("d.P.R.", r"d\.\s?p\.\s?r|presidente"), ("d.lgs.", r"lgs|legislativo"), ("l.", r"legge|l\."))
+_CODE_SIGLA_RE = re.compile(r"\bc\.\s?[pc]\.|\bart(?:t|icol[oi])?\.?\s*\d", re.IGNORECASE)
+
+
+def special_cites(sentence: str) -> List[Tuple[int, str]]:
+    """v79 (C3): [(position, «<article> <act> <n>/<year>»)] of the special-law articles a sentence cites -- an act of the
+    special laws' table only (special_laws.law_of: its number and year)."""
+    from . import special_laws
+    out = []
+    for m in _SPECIAL_CITE_RE.finditer(sentence or ""):
+        year = m.group("y1") or m.group("y2") or m.group("dy")
+        if not year or _CODE_SIGLA_RE.search(m.group("gap") or ""):
+            continue
+        year = year if len(year) == 4 else ("19" if int(year) > 30 else "20") + year
+        act = next(name for name, pattern in _ACT_NAMES if re.search(pattern, m.group("act"), re.IGNORECASE))
+        text = f"{act} {int(m.group('num'))}/{year}"
+        if special_laws.law_of(text):
+            out.append((m.start(), f"{m.group('art').lower()} {text}"))
+    return out
 
 
 # a list of articles closed by its code's name («a norma degli articoli 582 - 583, comma 1, numero 1 – 585 – 61, numero
@@ -157,8 +197,10 @@ def sentence_articles(sentence: str) -> List[str]:
         body = _SUB_RE.sub(lambda x: " " * len(x.group(0)), m.group(1))       # the positions kept
         found += [(m.start(1) + n.start(), (n.group(0).lower(), code))
                   for n in re.finditer(r"\b\d{1,4}(?:-(?:bis|ter|quater|quinquies))?\b", body)]
-    found.sort(key=lambda x: x[0])
-    return list(dict.fromkeys(interactive_flow._label(interactive_flow._key(ref)) for _, ref in found))
+    labels = [(at, interactive_flow._label(interactive_flow._key(ref))) for at, ref in found]
+    labels += special_cites(sentence)                              # v79 (C3): a special law's article
+    labels.sort(key=lambda x: x[0])
+    return list(dict.fromkeys(label for _, label in labels))
 
 
 def intake_family(posture: Optional[Dict[str, Any]]) -> str:
@@ -182,7 +224,7 @@ def charge_labels(case: str) -> List[str]:
     from . import intake
     out: List[str] = list(intake_charges({"prior_decisions": intake.prior_decisions(case or "")}))
     for sentence in intake.sentences(case or ""):
-        if _CHARGE_RE.search(sentence):
+        if charge_re().search(sentence):
             out += [x for x in sentence_articles(sentence) if x not in out]
     return out
 
@@ -198,6 +240,7 @@ def intake_charges(posture: Optional[Dict[str, Any]]) -> List[str]:
 
 CHARGE_OUTCOME = "contestazione"
 CLAIM_ROLES = {"attore": "principale", "convenuto": "controparte"}     # v75: whose line is the attore's claim
+PENAL_LINE = "principale"       # v79 (C4): a criminal case's charge, when none is stated: the read's main hypothesis
 
 
 # v76: the claim as the citazione pleads it -- petitum and causa petendi («chiedeva al Tribunale di accertare /
@@ -226,11 +269,16 @@ def claim_from_read(state: Dict[str, Any], posture: Optional[Dict[str, Any]], ro
     search found for that hypothesis's institutions (tagged _first_read), fattispecie only, in the read's order. []
     for another family or role, or when the read has no such line."""
     from . import interactive_flow as flow, issue_records
-    if str((posture or {}).get("family") or "") != "civile":
-        return []
-    line = CLAIM_ROLES.get(str((posture or {}).get("role") or ""))
+    fam = str((posture or {}).get("family") or "")
     hyps = ((state or {}).get("read") or {}).get("hypotheses") or []
-    hyp = next((h for h in hyps if h.get("line") == line), None)
+    if fam == "penale":         # v79 (C4): no charge stated -- the read's main hypothesis, whoever the client
+        line = PENAL_LINE
+        hyp = next((h for h in hyps if h.get("line") == PENAL_LINE), hyps[0] if hyps else None)
+    elif fam != "civile":
+        return []
+    else:
+        line = CLAIM_ROLES.get(str((posture or {}).get("role") or ""))
+        hyp = next((h for h in hyps if h.get("line") == line), None)
     pleaded = pleaded_claim(flow.case_text(state or {})) if line == "controparte" else ""
     if pleaded:                 # v76: the convenuto's claim is the pleaded one -- the hypothesis that matches it
         read = (state or {}).get("read") or {}
@@ -257,9 +305,16 @@ def claim_from_read(state: Dict[str, Any], posture: Optional[Dict[str, Any]], ro
         for r in pool:
             label = flow._label(flow._key(r["_article"]))
             if flow._low(r["_first_read"]) == flow._low(" ".join(str(inst).split())) and label not in out \
-                    and issue_records.counted(label, flow._row_rubrica(r)):
+                    and issue_records.counted(label, flow._row_rubrica(r)) and (fam != "penale" or penal_article(label)):
                 out.append(label)
     return out
+
+
+def penal_article(label: str) -> bool:
+    """v79 (C4): an article a criminal charge can be -- the c.p.'s, or a special law's (data/special_laws.json)."""
+    from . import special_laws
+    code = str(label or "").partition(" ")[2]
+    return code == "c.p." or bool(special_laws.law_of(code))
 
 
 def _stems(text: str) -> set:
@@ -328,7 +383,7 @@ def charged_by_name(case: str, records: Dict[str, Dict[str, Any]], rows: Sequenc
                 names.append((label, _stems(str(row["_first_read"]))))
     out: List[str] = []
     for sentence in intake.sentences(case or ""):
-        if not _CHARGE_RE.search(sentence):
+        if not charge_re().search(sentence):
             continue
         words = _stems(sentence)
         hits = [(label, stems) for label, stems in names if stems and stems - GENERIC_STEMS and stems <= words]
@@ -349,12 +404,16 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
     rows = interactive_flow._restored_rows((state or {}).get("rows")) + \
         interactive_flow._restored_rows((state or {}).get("reserve"))
     # the charge's order: v71 -- intake's charge first («contesta / imputa / chiede la condanna ai sensi di art. N»)
-    from_intake, from_case = intake_charges(posture), charge_labels(case)
+    aliases = (state or {}).get("charge_aliases") or {}     # v79 (C3): a special law's label -> its store document's
+    from_intake = [aliases.get(x, x) for x in intake_charges(posture)]
+    from_case = [aliases.get(x, x) for x in charge_labels(case)]
     order = list(dict.fromkeys(from_intake + from_case + charged_by_name(case, records, rows)))
     read_log: Dict[str, Any] = {}
     from_read = [] if order else claim_from_read(state, posture, (), read_log)   # v75: a civil claim naming no article
+    hypothesis = bool(from_read) and str((posture or {}).get("family") or "") == "penale"     # v79 (C4)
     order = order or [x for x in from_read if x in records]
     charged = set(order)
+    first = order[0] if order else ""
     alternatives = ((state or {}).get("read") or {}).get("alternatives") or []
     alt_rows = alternative_rows(state)
     alt = {interactive_flow._label(interactive_flow._key(r["_article"])) for _, r in alt_rows if r}
@@ -364,9 +423,11 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
              if isinstance(a, dict) and a.get("article") and a.get("use")}
     threats: Dict[str, str] = {}
     for label, rec in records.items():
-        own = label in alt or alternative_record(rec, alternatives)
+        # v79 (C1): the first charged article stays the charge even when the read lists it among the alternatives
+        own = (label in alt or alternative_record(rec, alternatives)) and label != first
         for key, value in (("charged", order.index(label) + 1 if label in charged else 0), ("alternative", own),
-                           ("alternative_facts", alt_facts.get(label, "") if own else "")):     # v65: the read's verdict
+                           ("alternative_facts", alt_facts.get(label, "") if own else ""),     # v65: the read's verdict
+                           ("charge_hypothesis", hypothesis and label in charged)):            # v79 (C4)
             if value:
                 rec[key] = value
             else:
@@ -388,7 +449,9 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
     out = {"role": role, "charged": order, "alternatives": sorted(x for x, r in records.items()
                                                                             if r.get("alternative")),
            "threats": threats, "charge_from": {"intake": from_intake, "case": from_case,       # v73
-                                               "first_read": from_read, **read_log},              # v75, v76
+                                               "first_read": from_read, **read_log,               # v75, v76
+                                               **({"hypothesis": True} if hypothesis else {}),    # v79
+                                               **({"aliases": aliases} if aliases else {})},
            "charge_unmarked": [x for x in from_intake + from_case if x not in records]}
     interactive_flow._log("record_sides", out)
     return out

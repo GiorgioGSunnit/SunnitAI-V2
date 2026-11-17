@@ -1197,6 +1197,21 @@ def doc_intent(result: Dict[str, Any]) -> str:
     return DOC_INTENTS.get(result.get("deliverable") or "", "rag")
 
 
+# v79 (C5): the text shows someone suing, serving or prosecuting the client -- the only ground for «convenuto»
+_SUED_RE = re.compile(
+    r"\batto\s+di\s+citazione|\bcitat[oaie]\s+(?:in\s+giudizio|davanti)|\b(?:ha|hanno|aveva|avevano)\s+(?:citato|convenuto)\b|"
+    r"\bconvenut[oaie]\b|\b(?:fatto|fa|fare|intentat\w*|promoss\w*|avviat\w*)\s+(?:una\s+)?causa\b|\bagit\w*\s+in\s+giudizio|"
+    r"\bnotificat\w*|\bnotifica\w*\s+(?:di\s+)?(?:un|una|il|la|l['’])|\bdecreto\s+ingiuntivo|\bingiunzion\w+\s+di\s+pagamento|"
+    r"\bprecetto\b|\bpignorament\w*|\bsfratt\w*|\bricorso\s+(?:contro|nei\s+confronti)|\bimputat\w*|\bindagat\w*|"
+    r"\brinviat\w*\s+a\s+giudizio|\b(?:ha|hanno)\s+(?:denunciato|querelato)\b|\bquerela\s+(?:contro|nei\s+confronti)",
+    re.IGNORECASE)
+CONVENUTO_UNSUPPORTED = "il modello: «convenuto», ma il testo non mostra un'azione contro il cliente (attore)"
+
+
+def sued(text: str) -> bool:
+    return bool(_SUED_RE.search(text or ""))
+
+
 def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (), *, model: bool = True,
            refers_to_upload: bool = False, upload_role: str = "") -> Dict[str, Any]:
     """The intake of one request (see the module's doc). message: the user's words; upload: the text of the document
@@ -1236,6 +1251,9 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
             value = str(answer.get(field) or "")
             if field == "rito" and value == "lavoro" and not employment(f"{message}\n{upload}"):
                 continue                # v69: the model's «lavoro» needs an employment relationship in the text
+            if field == "role" and value == "convenuto" and not sued(f"{message}\n{upload}"):
+                take(field, "attore", MODEL, CONVENUTO_UNSUPPORTED)      # v79 (C5): nobody acts against the client
+                continue
             if value in _ALLOWED[field] and value != UNKNOWN:
                 take(field, value, MODEL, "il modello")
     if "deliverable" not in values:
@@ -1367,6 +1385,8 @@ def resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Optio
         penal = (out.get("rito") or "").startswith("penale") or family == "penale"
         role = {"accused": "imputato" if penal else "convenuto",
                 "victim": "persona_offesa" if penal else "attore"}.get(side, "")
+        if role == "convenuto" and not sued(str((analysis or {}).get(interactive_flow.CASE_KEY) or "")):
+            role = "attore"             # v79 (C5): «convenuto» only when the text shows an action against the client
         if role:
             out["role"] = role
             out["client"] = {**(out.get("client") or {}), "side": side}
