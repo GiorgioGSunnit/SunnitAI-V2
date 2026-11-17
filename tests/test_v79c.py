@@ -92,7 +92,8 @@ def test_a_special_law_charge_gets_a_record_under_the_stores_name(monkeypatch):
     p = {"rito": "penale", "family": "penale", "role": "imputato", "stage": "primo_grado"}
     link, _ = flow.decompose_records(state, p, [], set(), fetch=fetch)
     canonical = flow._label(flow._key(row["_article"]))
-    assert seen["keys"] == [("73", "d.P.R. 309/1990")] and link == [canonical] and canonical in state["records"]
+    assert seen["keys"][0] == ("73", "d.P.R. 309/1990") and link == [canonical] and canonical in state["records"]
+    assert set(seen["keys"][1:]) == {("40", "c.p."), ("41", "c.p."), ("43", "c.p.")}      # v79.7: with any charge
     assert state["charge_aliases"] == {"73 d.P.R. 309/1990": canonical}
     state["records"][canonical]["requisites"][0]["id"] = "R1"
     out = posture.mark_sides(state, p)

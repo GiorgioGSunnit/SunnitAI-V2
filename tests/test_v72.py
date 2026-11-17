@@ -80,19 +80,23 @@ def test_the_code_enumerates_the_candidates_with_their_ids_and_labels():
     assert requalify["contesta"] == ["R1"] and requalify["poggia_su"] == ["R9"] and requalify["label"] == M.MINORITY
     assert by_kind["scriminante"]["poggia_su"] == ["R20"]
     assert by_kind["attenuante"]["tesi"].startswith("Attenuante dell'art. 62 n. 2 c.p.")
-    assert "contenimento" not in by_kind                   # the charge is not fully integrato
+    # v79.7 (item 2): the imputato's order -- contests by element, the riqualificazione, the scriminante and the
+    # attenuante, the containment line last (offered on every charge, resting on no element when not all integrato)
+    assert [c["kind"] for c in cands] == ["contest_integrated", "contest_open", "contest_excluded", "requalify",
+                                          "scriminante", "attenuante", "contenimento"]
+    assert by_kind["contenimento"]["poggia_su"] == []
 
 
 def test_the_containment_line_when_the_charge_is_fully_integrated_and_always_kept():
     recs = _records("provato", "provato", "provato")
     cands = M.thesis_candidates(_ctx(recs))
     kinds = [c["kind"] for c in cands]
-    assert kinds[0] == "contenimento" and cands[0]["fallback"] and cands[0]["poggia_su"] == ["R1", "R2", "R3"]
+    assert kinds[-1] == "contenimento" and cands[-1]["fallback"] and cands[-1]["poggia_su"] == ["R1", "R2", "R3"]
     assert kinds.count("contest_integrated") == 3
     many = _records("provato", "provato", "provato")
     many["584 c.p."]["requisites"] += [_req(i, f"elemento {i}", "provato") for i in range(4, 12)]
     capped = M.thesis_candidates(_ctx(many))
-    assert len(capped) == M.CANDIDATES_MAX and capped[0]["kind"] == "contenimento"
+    assert len(capped) == M.CANDIDATES_MAX and capped[-1]["kind"] == "contenimento"
 
 
 def test_a_claimant_gets_his_articles_with_proven_elements():
@@ -114,7 +118,8 @@ def test_the_call_argues_the_candidates_and_its_own_theses_are_dropped():
                                                "T2": {"realismo": "alto"}, "T7": {"realismo": "alto"}},
                                "soluzioni": [{"tesi": "mia"}]}, cands, log)
     assert [s["candidate"] for s in sols] == [c["id"] for c in cands] and log["dropped"] == ["T7", "soluzioni"]
-    assert sols[0]["argomento"] == "a" and sols[0]["realismo"] == "alto"
+    assert sols[0]["argomento"] == "a" and sols[0]["realismo"] == "basso"     # T1: the minority contest of R1
+    assert sols[1]["kind"] == "contest_open" and sols[1]["realismo"] == "alto"
     minority = next(s for s in sols if s["minoritaria"])
     assert minority["realismo"] == M.BASSO                   # a minority candidate: basso whatever the model says
 
@@ -200,7 +205,7 @@ def test_the_conclusions_and_steps_come_from_the_selection_not_the_plan():
     assert "Assoluzione certa" not in answer and "Passo del modello" not in answer and "Sintesi del modello" not in answer
     # v79 (E2): outside the tables an element is its words, never its code
     el = "«la morte come conseguenza degli atti»"
-    assert f"**Linea principale**: L'elemento {el} dell'art. 584 c.p. non è provato — arg T1." in con
+    assert f"**Linea principale**: L'elemento {el} dell'art. 584 c.p. non è provato — arg T2." in con
     assert f"dipende da: la prova degli elementi {el}" in con and f"che l'accusa provi gli elementi {el}" in con
     # v73: the main line contests R2 -- its step is the accusa's proof of it, from the line's own element
     assert f"- Verificare quale prova l'accusa ha di: la causa della morte — scopo: decide l'elemento {el} dell'art. " \

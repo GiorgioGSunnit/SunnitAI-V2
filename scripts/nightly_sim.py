@@ -43,6 +43,13 @@ v79 (E2, E3): check reader_wording -- no element code outside the tables, no «r
 absent from the parere. v79 (D4): the selection table adds the defence lines, the defence articles the general-part gate
 dropped (criminal cells), the ranked candidates.
 
+v79.7: per cell, the retrieval's top-ranked articles and what became of each (in record / candidate / dropped, with the
+reason: interactive_flow.ranked_trace); the rulings table adds, per article, how many rulings each filter dropped (the
+rubrica's noun, the rule verb, the procedural marker, the element's nouns, the Sez. 7 / ordinanza rank); the counts add
+where the charge's contests came from (threats_from) and, when no record was marked the charge, why (no_threat).
+--baseline takes a file or a folder (its nightly.json, else its newest .json) and fails before any cell runs when it
+cannot be read.
+
 v79 (A2, A3): per cell, the thesis selection's counts (candidates offered / parsed / valued / barred / unverifiable /
 minoritaria, the main line chosen, whether it is the fallback) in their own table, compared with the baseline's;
 --deterministic runs the thesis call once at temperature 0 (THESIS_DETERMINISTIC) for a version-to-version comparison
@@ -134,6 +141,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
             gate = (result.get("state") or {}).get("defence_gate") or {}
             out["thesis_counts"]["defence_gate_dropped"] = len(gate.get("dropped") or [])
             out["defence_gate"] = gate
+        out["ranked_trace"] = list((result.get("state") or {}).get("ranked_trace") or [])        # v79.7 (item 3)
         timings = (result.get("state") or {}).get("timings") or {}
         out["timings"] = {"total_s": round(time.time() - t0, 1),
                           **{k: timings.get(k) for k in ("thesis_selection_s", "writer_s", "answer_s")}}
@@ -275,12 +283,18 @@ def rulings_lines(results: List[Dict[str, Any]]) -> List[str]:
     rows = [c for c in results if c.get("rulings") is not None]
     if not rows:
         return []
+    from src.rag import rulings
     lines = ["", "## Rulings in the record (per cell, per article)", "",
-             "| cell | article | found | linked | graded | kept |", "|---|---|---|---|---|---|"]
+             "Filters (v79.7): how many rulings (rubrica, rank, shortlist, link) or sentences (length, reference, verb, "
+             "procedural, nouns) each one dropped.", "",
+             "| cell | article | found | linked | graded | kept | passages | " + " | ".join(rulings.FILTERS) + " |",
+             "|---" * (7 + len(rulings.FILTERS)) + "|"]
     for c in rows:
         for label, a in (c["rulings"].get("articles") or {}).items():
+            f = a.get("filters") or {}
             lines.append(f"| {c['id']} | {label} | {a.get('found', 0)} | {a.get('linked', 0)} | {a.get('graded', 0)} | "
-                         f"{a.get('kept', 0)} |")
+                         f"{a.get('kept', 0)} | {a.get('passages', '—')} | "
+                         + " | ".join(str(f.get(k, '—')) for k in rulings.FILTERS) + " |")
     lines += ["", "| cell | estremi parsed | unparsed | section unmapped | passages quoted | none | orientations "
                   "computed | to verify |", "|---|---|---|---|---|---|---|---|"]
     for c in rows:
@@ -295,7 +309,8 @@ def rulings_lines(results: List[Dict[str, Any]]) -> List[str]:
 
 
 COUNT_COLUMNS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback",
-                 "defence_lines", "defence_gate_dropped", "ranked_candidates")         # v79 (D4)
+                 "defence_lines", "defence_gate_dropped", "ranked_candidates",          # v79 (D4)
+                 "threats_from", "no_threat")                                           # v79.7 (item 2)
 
 
 def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -329,6 +344,20 @@ def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any
     return lines
 
 
+def ranked_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.7 (item 3): per cell, the retrieval's top-ranked articles -- in record / candidate / dropped, with why."""
+    rows = [c for c in results if c.get("ranked_trace")]
+    if not rows:
+        return []
+    lines = ["", "## Retrieval top-ranked articles (per cell)", "", "| cell | rank | article | status | why |",
+             "|---|---|---|---|---|"]
+    for c in rows:
+        for t in c["ranked_trace"]:
+            lines.append(f"| {c['id']} | {t.get('rank', '—')} | {t.get('article')} | {t.get('status')}"
+                         f"{' (linea)' if t.get('line') else ''} | {t.get('why') or ''} |")
+    return lines
+
+
 def lawyer_lines(folder: Optional[Path]) -> List[str]:
     """v77: the lawyer's latest mean per version on the held-out set (src/chatbot/heldout.py)."""
     from src.chatbot import heldout
@@ -353,6 +382,33 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
     if check:           # v78: offline, the penal cells only (the record is not in a file)
         out["checks"].append(check)
     return out
+
+
+def read_baseline(path: Optional[str]) -> Optional[Dict[str, Any]]:
+    """v79.7: the baseline run -- a --json-out file, or a folder holding one (its nightly.json, else its newest
+    .json); None without --baseline. Anything unreadable raises SystemExit, before any cell runs."""
+    if not path:
+        return None
+    p = Path(path)
+    if p.is_dir():
+        found = p / "nightly.json" if (p / "nightly.json").is_file() else max(
+            (x for x in p.glob("*.json") if x.is_file()), key=lambda x: x.stat().st_mtime, default=None)
+        if found is None:
+            raise SystemExit(f"--baseline {path}: a folder with no .json in it")
+        p = found
+    if not p.is_file():
+        sibling = Path(f"{path}.json")          # «nightly-v79.6» for «nightly-v79.6.json»
+        if not sibling.is_file():
+            raise SystemExit(f"--baseline {path}: no such file or folder")
+        p = sibling
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"--baseline {p}: not readable ({type(exc).__name__}: {exc})")
+    if not isinstance(data, dict) or not isinstance(data.get("cells"), list):
+        raise SystemExit(f"--baseline {p}: not a nightly --json-out (no «cells»)")
+    print(f"nightly: baseline {p} (version {data.get('version') or '—'})", file=sys.stderr)
+    return data
 
 
 def stage_check() -> Dict[str, Any]:
@@ -393,6 +449,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     if stages is not None:
         lines += ["", "## Stage lists against v59 (default cell)", "", stages["report"]]
     lines += counts_lines(results, baseline)
+    lines += ranked_lines(results)
     lines += rulings_lines(results)
     lines += lawyer or []
     return "\n".join(lines) + "\n"
@@ -419,11 +476,10 @@ def main(argv=None) -> int:
         os.environ["LLM_REASONING_EFFORT"] = args.reasoning_effort
     if args.deterministic:                      # v79 (A3): over the env file's, for this run
         os.environ["THESIS_DETERMINISTIC"] = "1"
+    baseline = read_baseline(args.baseline)             # v79.7: before any cell runs
     specs = [c for c in cells() if not args.only or c["id"] in args.only]
     results = [offline_cell(s, args.answers) if args.answers else run_cell(s) for s in specs]
     stages = None if args.no_stages else stage_check()
-    baseline = json.loads(Path(args.baseline).read_text(encoding="utf-8")) if args.baseline and \
-        os.path.isfile(args.baseline) else None
     regressed = regressions(results, baseline)
     from src import version
     run_version = version.current()

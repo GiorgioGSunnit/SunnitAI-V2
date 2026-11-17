@@ -321,6 +321,8 @@
   when:
     - fact: {pattern: 'infiltraz|umidit|perdit\w* d.acqua|allag|crollat|crollo|cediment|macchi\w* di umid|acqua prov', label: "un danno da acqua o da un cedimento"}
     - fact: {pattern: 'colonn\w* (?:di )?scaric|scarico condominial|tubaz|tubatur|impiant\w* condominial|lastrico|tetto|parti comuni|cos[ae] comun|condomin', label: "una cosa in custodia altrui (un impianto o una parte comune)"}
+    # v79.7: works entrusted to a contractor («affida il rifacimento del tetto») are no thing in another's custody
+    - not: {fact: {pattern: 'affid\w*\s+(?:\S+\s+){0,5}?(?:il |la |i |gli |le |l.)?(?:rifaciment|lavor|ristruttur|riparaz|manutenz|realizzaz|costruz|rinnov|sostituz|opera\b|opere\b)|\bappalt', label: "lavori affidati a un'impresa"}}
   institution: [danno cagionato da cosa in custodia, risarcimento per fatto illecito]
   codice: c.c.
   ranges: [[2043,2059]]

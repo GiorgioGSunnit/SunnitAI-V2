@@ -776,12 +776,16 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                                     set(picked.get("named") or []) | set(picked.get("keep") or []),
                                     picked.get("fact_resolved") or [], picked.get("heading_exact") or [])
         article_rows = picked["article_rows"]
+        top = retrieval_top(article_rows)       # v79.7 (item 3): the retrieval's top-ranked, each gate that drops one
+        gates: Dict[str, str] = {}
         if hybrid:
             article_rows = source_tiers.keep_types(session, article_rows, source_tiers.AUTHORITY_TYPES, "authority")
             regime_rows = source_tiers.keep_types(session, regime_rows, source_tiers.AUTHORITY_TYPES, "authority_regimes")
+            track_gate(top, gates, "authority", article_rows)
         if pool_gates.enabled():
             article_rows = _isolated("pool_gates", lambda: pool_gates.apply(session, article_rows, analysis, case)[0],
                                      article_rows)
+            track_gate(top, gates, "pool_gates", article_rows)
         case_first = case_first_enabled()
         must: List[str] = []
         search_log: Dict[str, Any] = {}
@@ -837,6 +841,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             if gated is not None:
                 (article_rows, out_a), (regime_rows, out_r) = gated
                 outside = out_a + out_r
+                track_gate(top, gates, "area_gate", article_rows)
                 gone = {_key(r["_article"]) for r in outside}
                 anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
                 must = [a for a in must if _key(_parse_label(a)) not in gone]
@@ -847,6 +852,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             scope = _isolated("capo_scope", lambda: topic_groups.contract_scope(analysis, case), {}) or {}
             article_rows = _isolated("capo_gate", lambda: topic_groups.gate_rows(article_rows, scope, gate_log),
                                      article_rows)
+            track_gate(top, gates, "capo_gate", article_rows)
             gone = {x["article"] for x in gate_log.get("rows") or []}
             anchor_keep = [a for a in anchor_keep if a not in gone]
             must = [a for a in must if a not in gone]
@@ -856,6 +862,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             named_labels = [_label(_key(r)) for r in dg._refs_in(case) if len(r) == 2]
             article_rows = _isolated("matter_gate", lambda: topic_groups.matter_gate(
                 article_rows, list(anchor_keep) + list(must) + named_labels, matter_log), article_rows)
+            track_gate(top, gates, "matter_gate", article_rows)
             if matter_log.get("dropped"):
                 gone = {x["article"] for x in matter_log["dropped"]}
                 anchor_keep = [a for a in anchor_keep if a not in gone]
@@ -865,8 +872,9 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         if case_first:          # v64: a general-part article (c.p. Libro I) is never a grading candidate -- the user's
             from . import cenni                       # named ones aside (cenni: its own roads into the norms section)
             named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
-            out["defence_gate"] = defence_ranked(article_rows)       # v79 (D1): before the gate drops them
+            out["defence_gate"] = defence_ranked(article_rows, top)  # v79 (D1): before the gate drops them
             article_rows, general_out = cenni.general_part_gate(article_rows, named_keys)
+            track_gate(top, gates, "general_part_gate", article_rows)
             regime_rows, regime_out = cenni.general_part_gate(regime_rows, named_keys)
             if general_out or regime_out:
                 gone = {_key(_parse_label(x)) for x in general_out + regime_out}
@@ -880,6 +888,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         words = special_laws.read_text(first_read) if first_read else case
         article_rows, special_out = special_laws.gate(article_rows, words, named_keys)
         regime_rows, special_regime = special_laws.gate(regime_rows, words, named_keys)
+        track_gate(top, gates, "special_law_gate", article_rows)
         if special_out or special_regime:
             gone = {_key(_parse_label(x.split(" (", 1)[0])) for x in special_out + special_regime}
             anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
@@ -892,6 +901,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             labour = intake_mod.rito_rule(case)[0] == "lavoro"
             article_rows, labour_out = special_laws.labour_gate(article_rows, labour, named_keys)
             regime_rows, labour_regime = special_laws.labour_gate(regime_rows, labour, named_keys)
+            track_gate(top, gates, "labour_gate", article_rows)
             if labour_out or labour_regime:
                 gone = {_key(_parse_label(x)) for x in labour_out + labour_regime}
                 anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
@@ -914,6 +924,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 have = {tuple(g["_article"]) for g in graded if g.get("_article") and isinstance(g.get("_grade"), int)}
                 ungraded = [r for r in graded if r.get("_article") and tuple(r["_article"]) in kept - have]
                 article_rows = graded
+                track_gate(top, gates, "grading", article_rows)
             else:
                 ungraded = []
             out["grading"] = {"s": round(time.time() - t_grade, 1), "rounds": limits.get("rounds_run"),
@@ -951,7 +962,9 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         topics = _isolated("topic_step", lambda: topic_step.build(analysis, article_rows + regime_rows, links, case,
                                                                    others=others), [])
         out["topics"], out["others"] = topics, others
-        out["ranked"] = ranked_labels(article_rows)     # v79 (D2): the retrieval step's top-ranked articles
+        out["retrieval_top"] = [{**t, **({"gate": gates[t["article"]]} if t["article"] in gates else {})}
+                                for t in top]           # v79.7 (item 3): the nightly's table
+        out["ranked"] = ranked_labels(out["retrieval_top"])     # v79 (D2), v79.7: the retrieval's own ranking
         if case_first:          # v60 (B): the topics from the graded rows; the rules' and tables' attach to them
             from . import topic_groups
             stage_meter.mark("topic_groups")
@@ -1373,6 +1386,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         "units": _jsonable(found.get("units") or {}),            # v60r (2): each article's Sezione / Capo
         "rows": [_compact_row(r) for r in found["topic_rows"]],
         "ranked": list(found.get("ranked") or []),                         # v79 (D2)
+        "retrieval_top": _jsonable(found.get("retrieval_top") or []),      # v79.7 (item 3)
         "defence_gate": _jsonable(found.get("defence_gate") or {}),         # v79 (D1, D4)
         "tool_rows": [_compact_row(r) for r in found["regime_rows"]],
         "pool": [{"_article": list(r["_article"]), "_multi_signal": bool(r.get("_multi_signal")),
@@ -5666,6 +5680,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         else:
             method_ctx, method_plan = _isolated("lawyer_method_plan", lambda: method_inputs(
                 state, posture, plan, topics, refs, all_rows, case), (None, {})) or (None, {})
+        state["ranked_trace"] = _isolated("ranked_trace", lambda: ranked_trace(state, method_ctx), []) or []
+        _log("ranked_trace", state["ranked_trace"])     # v79.7 (item 3): the retrieval's top-ranked, each one's fate
         refused = _isolated("lawyer_method_refusal", lambda: lawyer_method.placeholder_main(
             method_ctx, method_plan), "") if method_ctx is not None else ""
         if refused:             # v75: a placeholder thesis is a failure state -- never printed: the standard body
@@ -6115,14 +6131,20 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         why = DECOMPOSE_WHY["hypothesis" if str(posture.get("family") or "") == "penale" else "claim"]      # v79 (C4)
         for x in posture_mod.claim_from_read(state, posture, rows):
             wanted.setdefault(x, why)
+    charged = bool(wanted)
     for x in posture_mod.alternative_labels(state, rows):
         wanted.setdefault(x, DECOMPOSE_WHY["alternative"])
     for ref in user_named(state):
         wanted.setdefault(_label(ref), DECOMPOSE_WHY["named"])
-    for x in defence_wanted(state) if str(posture.get("family") or "") != "civile" else []:   # v79 (D1): a penal
-        wanted.setdefault(x, DECOMPOSE_WHY["defence"])          # case's general-part defence, by concept or by rank
+    routes = defence_wanted(state, charged) if str(posture.get("family") or "") != "civile" else {}
+    for x in routes:            # v79 (D1): a penal case's general-part defence, by concept, by rank, by the charge
+        wanted.setdefault(x, DECOMPOSE_WHY["defence"])
+    gate = state.get("defence_gate")
+    if isinstance(gate, dict) and gate.get("dropped"):      # v79.7: «dropped» is what entered by no route at all
+        gate["dropped"] = [x for x in gate["dropped"] if x not in routes]
+        gate["entered"] = dict(routes)
     for x in state.get("ranked") or []:     # v79 (D2): a top-ranked article not in the record -- a candidate to grade
-        if x not in records:
+        if x not in records or (records[x] or {}).get("dropped"):      # v79.7: a dropped one's stub is no record
             wanted.setdefault(x, DECOMPOSE_WHY["ranked"])
     have = {_key(r["_article"]): r for r in rows if r.get("_article")}
     keys = {label: _key(_parse_label(label)) for label in wanted}
@@ -6139,34 +6161,43 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         wanted = {aliases.get(x, x): why for x, why in wanted.items()}
         keys = {aliases.get(x, x): (_key(_parse_label(aliases[x])) if x in aliases else k) for x, k in keys.items()}
     log: Dict[str, Any] = {"split": {}, "gated": [], "undecomposed": [], "unread": [], "already": [],
-                           "aliases": aliases}
+                           "aliases": aliases, "defence_routes": routes}
     link: List[str] = []
+    outcome: Dict[str, str] = {}        # v79.7 (item 3): what became of each, for the ranked trace
     for label, why in wanted.items():
         key = keys[label]
         rec = records.get(label)
         row = have.get(key)
         rubrica = str((rec or {}).get("rubrica") or (_row_rubrica(row) if row else ""))
         if key in dead:
+            outcome[label] = "abrogated"
             continue
         if row is not None and row_abrogated_(row):          # v79.6 (item 3): fetched now -- repealed, no record
             log.setdefault("abrogated", []).append(label)
             state["abrogated"] = list(dict.fromkeys(list(state.get("abrogated") or []) + [label]))
+            outcome[label] = "abrogated"
             continue
         if not issue_records.decomposed_by_gate(label, rubrica, defence=why == DECOMPOSE_WHY["defence"]):
             log["gated"].append(label)
+            outcome[label] = "gated"
             continue
-        if rec and issue_records.decomposed(rec) and not rec.get("not_fattispecie"):
+        stub = bool(rec) and bool(rec.get("dropped"))
+        if rec and issue_records.decomposed(rec) and not rec.get("not_fattispecie") and not stub:
             log["already"].append(label)
+            if why == DECOMPOSE_WHY["defence"] and not rec.get("defence_by"):
+                rec["defence_by"] = routes.get(label, "")
             continue
         decisive = why in (DECOMPOSE_WHY["charge"], DECOMPOSE_WHY["claim"], DECOMPOSE_WHY["hypothesis"])
         if row is None:
             log["unread"].append(label)
+            outcome[label] = "unread"
             if decisive:            # v76: the charge or the claim unread -- the method cannot be applied, said
                 state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["unread"].format(art=label)
             continue
         reqs = [r for r in issue_records._requisites(row, analysis) if r.get("kind") == "requisito"]
         if not reqs:
             log["undecomposed"].append(label)
+            outcome[label] = "undecomposed"
             if rec is not None:
                 rec["undecomposed"] = True
             if decisive:            # v76: even the general penal splitter found no element -- said in the answer
@@ -6175,10 +6206,11 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         if rec is None:
             rec = records[label] = {"article": label, "rubrica": rubrica, "topic": "", "grade": None, "issue": "",
                                     "kept": [why], "dropped": None, "linked": "", "answer": {}}
-            if why == DECOMPOSE_WHY["ranked"]:      # v79 (D2): graded as a candidate, never a record of the answer
-                rec["ranked_candidate"] = True
+        if why == DECOMPOSE_WHY["ranked"]:          # v79 (D2): graded as a candidate, never a record of the answer
+            rec["ranked_candidate"] = True          # (v79.7: a dropped article's stub too)
         if why == DECOMPOSE_WHY["defence"]:         # v79 (D1): a topic's general-part record, a defence's now
             rec.pop("not_fattispecie", None)
+            rec["defence_by"] = routes.get(label, "")       # v79.7: concetto / rango / addebito
         rec.update(requisites=reqs, decomposed_for=why)
         if not rec.get("procedibilita"):        # v76: its d'ufficio conditions, graded by the link like the topics'
             rec["procedibilita"] = issue_records._conditions(row)
@@ -6189,6 +6221,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     if link:
         issue_records.number(records)
         issue_records.refresh(records, analysis, state.get("questions") or [], state.get("sentences") or [])
+    state["decompose_why"] = outcome
     _log("decompose_records", log)
     return link, fetched
 
@@ -6201,41 +6234,117 @@ def _rank_of(row: Dict[str, Any], position: int) -> tuple:
     return (fused if isinstance(fused, (int, float)) else 10 ** 6, position)
 
 
-def defence_ranked(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
+def retrieval_top(rows: Sequence[Dict[str, Any]], n: int = RANKED_TOP) -> List[Dict[str, Any]]:
+    """v79.7 (item 3): the retrieval step's top-ranked articles, as it returned them (before any gate): [{article,
+    rank}] -- its fused rank, else its place in the list."""
+    order = sorted(((_rank_of(r, i), r) for i, r in enumerate(rows or []) if r.get("_article")), key=lambda x: x[0])
+    out: List[Dict[str, Any]] = []
+    for (fused, position), r in order:
+        label = _label(_key(r["_article"]))
+        if label not in {x["article"] for x in out}:
+            out.append({"article": label, "rank": fused if fused < 10 ** 6 else position + 1})
+        if len(out) >= n:
+            break
+    return out
+
+
+def track_gate(top: Sequence[Dict[str, Any]], gates: Dict[str, str], stage: str, rows: Sequence[Dict[str, Any]]
+               ) -> None:
+    """v79.7: in gates, the first stage after which a top-ranked article is no longer among the rows."""
+    present = {_label(_key(r["_article"])) for r in rows or [] if r.get("_article")}
+    for t in top or []:
+        if t["article"] not in present and t["article"] not in gates:
+            gates[t["article"]] = stage
+
+
+def defence_ranked(rows: Sequence[Dict[str, Any]], top: Sequence[Dict[str, Any]] = ()) -> Dict[str, List[str]]:
     """v79 (D1): the general-part defence articles (issue_records.DEFENCE_ARTICLES) among the retrieved rows, before the
-    general-part gate drops them: {"ranked": those among the RANKED_TOP of the retrieval's ranking -- they enter the
-    record --, "dropped": the others (the gate drops them; the nightly counts them)}."""
+    general-part gate drops them: {"ranked": those among the retrieval's top-ranked (v79.7: its own ranking, before any
+    gate -- top) -- they enter the record --, "dropped": the others (the gate drops them; the nightly counts them)}."""
     from . import issue_records
     order = sorted(((_rank_of(r, i), r) for i, r in enumerate(rows or []) if r.get("_article")), key=lambda x: x[0])
-    top = {_label(_key(r["_article"])) for _, r in order[:RANKED_TOP]}
+    best = {t["article"] for t in top} if top else {_label(_key(r["_article"])) for _, r in order[:RANKED_TOP]}
     seen = list(dict.fromkeys(_label(_key(r["_article"])) for _, r in order
                               if issue_records.defence_article(_label(_key(r["_article"])))))
-    return {"ranked": [x for x in seen if x in top], "dropped": [x for x in seen if x not in top]}
+    return {"ranked": [x for x in seen if x in best], "dropped": [x for x in seen if x not in best]}
 
 
-def ranked_labels(rows: Sequence[Dict[str, Any]]) -> List[str]:
-    """v79 (D2): the RANKED_TOP graded articles of the case, best grade first, then the retrieval's rank -- fattispecie
-    only (issue_records.counted); a strong grade (2) at least."""
-    from . import issue_records
-    graded = [(i, r) for i, r in enumerate(rows or []) if r.get("_article") and isinstance(r.get("_grade"), int)
-              and r["_grade"] >= 2 and issue_records.counted(_label(_key(r["_article"])), _row_rubrica(r))]
-    graded.sort(key=lambda x: (-x[1]["_grade"], _rank_of(x[1], x[0])))
-    return list(dict.fromkeys(_label(_key(r["_article"])) for _, r in graded))[:RANKED_TOP]
+def ranked_labels(top: Sequence[Dict[str, Any]]) -> List[str]:
+    """v79 (D2): the articles the retrieval ranks among its top -- v79.7: its own ranking (retrieval_top), no grade
+    needed, every one no gate dropped; the ones not in the record are graded as candidates (decompose_records)."""
+    return [t["article"] for t in top or [] if not t.get("gate")]
 
 
-def defence_wanted(state: Dict[str, Any]) -> List[str]:
-    """v79 (D1): the defence articles that enter the record -- the first read names their concept
-    (data/general_concepts.json), or they are among the retrieval's top-ranked (state["defence_gate"]["ranked"])."""
+CHARGE_DEFENCES = ("40 c.p.", "41 c.p.", "43 c.p.")     # v79.7 (item 3): causation and fault, with every charge
+DEFENCE_ROUTES = {"concept": "concetto", "rank": "rango", "charge": "addebito"}
+
+
+def defence_wanted(state: Dict[str, Any], charged: bool = False) -> Dict[str, str]:
+    """v79 (D1): {defence article: its route} -- the first read or the case's facts name its concept
+    (data/general_concepts.json; v79.7: the case's own words too), it is among the retrieval's top-ranked
+    (state["defence_gate"]["ranked"]), or (v79.7) causation and fault (40, 41, 43 c.p.) whenever a charge is
+    recorded."""
     from . import cenni, issue_records, special_laws
-    words = special_laws.read_text(state.get("read") or {})
-    out: List[str] = []
-    for c in cenni.concepts() if words else []:
+    words = " \n".join(x for x in (special_laws.read_text(state.get("read") or {}), case_text(state)) if x)
+    out: Dict[str, str] = {}
+    for c in cenni.concepts() if words.strip() else []:
         if c.get("procedural") or str(c.get("code") or "") != "c.p.":
             continue
         if any(re.search(p, words, re.IGNORECASE) for p in c.get("patterns") or []):
-            out += [f"{a} c.p." for a in c.get("articles") or [] if issue_records.defence_article(f"{a} c.p.")]
-    out += list((state.get("defence_gate") or {}).get("ranked") or [])
-    return list(dict.fromkeys(out))
+            for a in c.get("articles") or []:
+                if issue_records.defence_article(f"{a} c.p."):
+                    out.setdefault(f"{a} c.p.", DEFENCE_ROUTES["concept"])
+    for x in (state.get("defence_gate") or {}).get("ranked") or []:
+        out.setdefault(x, DEFENCE_ROUTES["rank"])
+    for x in CHARGE_DEFENCES if charged else ():
+        out.setdefault(x, DEFENCE_ROUTES["charge"])
+    return out
+
+
+RANKED_WHY = {   # v79.7 (item 3): the nightly's reasons, per top-ranked article (never printed in a parere)
+    "in_record": "nella scheda del caso",
+    "candidate": "valutato e ammesso come candidato",
+    "gate": "escluso prima della valutazione ({gate})",
+    "graded_out": "valutato come candidato: nessun elemento provato, o uno escluso",
+    "no_line": "valutato come candidato, ma non dà una linea per il ruolo del cliente",
+    "gated": "parte generale (non difesa) o norma processuale: nessun elemento",
+    "undecomposed": "il testo non si scompone in elementi",
+    "unread": "testo non letto",
+    "abrogated": "abrogato",
+    "not_wanted": "non una fattispecie né una difesa del caso",
+    "record_dropped": "scartato nella scheda ({why})"}
+
+
+def ranked_trace(state: Dict[str, Any], ctx: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """v79.7 (item 3): each of the retrieval's top-ranked articles and what became of it -- «in record», «candidate»
+    (graded and admitted as a thesis candidate) or «dropped», with the reason (RANKED_WHY)."""
+    records = state.get("records") or {}
+    cands = set(state.get("candidate_articles") or [])
+    view = (ctx or {}).get("records_view") or {}
+    decomposed = state.get("decompose_why") or {}
+    out = []
+    for t in state.get("retrieval_top") or []:
+        label = t["article"]
+        rec = records.get(label) or {}
+        if rec.get("ranked_candidate"):
+            if label in cands:
+                status, why = "candidate", RANKED_WHY["candidate"]
+            else:
+                status, why = "dropped", RANKED_WHY["graded_out" if label in (view.get("ranked_dropped") or [])
+                                                    else "no_line"]
+        elif rec and not rec.get("dropped") and (rec.get("requisites") or rec.get("applicazione")):
+            status, why = "in record", RANKED_WHY["in_record"]           # a defence by its rank too (D1)
+        elif t.get("gate"):
+            status, why = "dropped", RANKED_WHY["gate"].format(gate=t["gate"])
+        elif decomposed.get(label) in RANKED_WHY:
+            status, why = "dropped", RANKED_WHY[decomposed[label]]
+        elif rec.get("dropped"):
+            status, why = "dropped", RANKED_WHY["record_dropped"].format(why=rec["dropped"])
+        else:
+            status, why = "dropped", RANKED_WHY["not_wanted"]
+        out.append({"rank": t.get("rank"), "article": label, "status": status, "why": why,
+                    **({"line": True} if label in cands else {})})
+    return out
 
 
 def special_law_aliases(keys: Dict[str, tuple], have: Dict[tuple, Dict[str, Any]]) -> Dict[str, str]:

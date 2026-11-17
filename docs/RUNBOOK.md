@@ -146,6 +146,18 @@ cd /opt/chatbot && venv/bin/python scripts/repeal_audit.py --env .env --out /roo
 
 It counts, per code (c.p., c.c., c.p.c., c.p.p.): the articles a property flags as repealed; those whose text is a repeal reference alone or opens with a repeal note; and those the text marks but no property flags (listed in `repeal_audit.md` for the ingestion side).
 
+## 4c. The passage filters on the corpus (v79.7)
+
+This is read-only. Run it to see what the passage picker's filters drop for the penal cells' charges, and which verb forms the sentences dropped for «no rule verb» use:
+
+```bash
+cd /opt/chatbot && venv/bin/python scripts/rulings_filters.py --env .env --json-out /root/rulings_filters.json
+```
+
+Extend `rulings._RULE_RE` with the forms it lists, not with guesses. The nightly's rulings table gives the same filter counts per cell and per article.
+
+`--baseline` on `nightly_sim.py` takes the previous run's `--json-out` file or its folder, and stops before any cell when it cannot read it.
+
 ## 5. The held-out loop
 
 Every case-first answer that the live copy or the test copy serves is saved to `/opt/chatbot/heldout/` by

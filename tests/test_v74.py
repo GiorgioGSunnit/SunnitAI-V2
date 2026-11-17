@@ -75,15 +75,15 @@ def test_a_thesis_contesting_nothing_is_argued_by_the_code():
     assert "Tutti gli elementi dell'art. 584 c.p. risultano integrati (R1, R2, R3)" in contain["code_argument"]["argomento"]
     assert ENTRY["goal"] in contain["code_argument"]["argomento"]
     assert all(c["argued"] == "model" for c in cands if c["kind"].startswith("contest_"))
-    assert "[argomentata dal codice: non valutarla]" in M.candidates_block(cands)
+    assert "[argomentata dal codice: indica solo il realismo]" in M.candidates_block(cands)
     log = {}
     raw = {"valutazioni": {contain["id"]: {"pro": "Del modello.", "argomento": "Il nesso non c'è.", "realismo": "basso"}}}
     sols = M.apply_valuations(raw, cands, log)
     mine = next(s for s in sols if s["kind"] == "contenimento")
-    assert "Del modello" not in mine["pro"] and "nesso" not in mine["argomento"] and mine["realismo"] == "alto"
+    # v79.7: the text stays the code's, the realismo is the model's
+    assert "Del modello" not in mine["pro"] and "nesso" not in mine["argomento"] and mine["realismo"] == "basso"
     assert log["code_argued_ignored"] == [contain["id"]]
-    model_ids = {c["id"] for c in cands if c["argued"] == "model"}       # the score counts what the model argues
-    full = {"valutazioni": {i: {"realismo": "basso"} for i in model_ids}}
+    full = {"valutazioni": {c["id"]: {"realismo": "basso"} for c in cands}}        # v79.7: every candidate valued
     assert M.score_sample(full, cands, {})[0] == 10.0
 
 
@@ -151,7 +151,7 @@ def test_the_conclusions_restate_the_bound_argument_only(monkeypatch, tmp_path):
     assert mine["argomento"] == "La morte non è provata come conseguenza degli atti."      # R1 is not its to negate
     answer = M.compose([("Norme applicate ai fatti", "regola")], ctx, plan)
     assert "Gli atti diretti a percuotere o ledere non ci sono" not in answer
-    assert ctx["argument_binding"]["dropped"][0]["elemento"] == "R1"
+    assert any(d["elemento"] == "R1" and d["tesi"] == open_["id"] for d in ctx["argument_binding"]["dropped"])
 
 
 # --- 2. every record decomposed --------------------------------------------------------------------------------------------

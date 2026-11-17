@@ -81,7 +81,20 @@ _RULE_RE = re.compile(r"\b(?:richied\w*|si\s+configura\w*|configura(?:no)?\b|int
                       r"sussist\w*|(?:è|sia|sono|siano|risulta|risultano)\s+(?:necessari|sufficient|richiest|integrat|"
                       r"costituit|esclus|configurabil)\w*|presuppon\w*|si\s+realizza\w*|deve\s+ritenersi|va\s+ritenut\w*|va\s+esclus\w*|"
                       r"(?:è|resta|rimane)\s+esclus\w*|esclud\w*|rientra(?:no)?\b|costituisc\w*|si\s+intend\w*|"
-                      r"consist\w*|ricorr(?:e|ono)\b)", re.IGNORECASE)
+                      r"consist\w*|ricorr(?:e|ono)\b|"
+                      # v79.7 (item 4): the forms a massima states its rule with, beyond v78's list -- to be checked
+                      # against the corpus with scripts/rulings_filters.py (its «rule verb» column)
+                      r"(?:è|sono|risulta|risultano)\s+(?:configurabil|ravvisabil|riconducibil|punibil|sussumibil|"
+                      r"qualificabil|ascrivibil|imputabil|irrilevant|rilevant|idone|inidone)\w*|"
+                      r"(?:deve|devono|va|vanno|può|possono)\s+(?:essere\s+)?(?:ritenut|considerat|qualificat|ricondott|"
+                      r"esclus|riconosciut|ravvisat|intes|affermat|negat)\w*|"
+                      r"deve(?:no)?\s+(?:escludersi|ravvisarsi|affermarsi|intendersi|qualificarsi|ricondursi|riconoscersi)|"
+                      r"si\s+(?:perfeziona|consuma|verifica|ravvisa|configura|ha\s+quando)\w*|"
+                      r"(?:è|sia)\s+sufficiente|(?:non\s+)?basta(?:no)?\b|(?:non\s+)?(?:è|sia)\s+necessari\w*|"
+                      r"postula(?:no)?\b|implica(?:no)?\b|comporta(?:no)?\b|integrat\w*\s+(?:il|la|i|le)\s+(?:reato|delitto|fattispecie|"
+                      r"condotta|elemento)|assum\w*\s+rilie\w*|ha\s+natura\b|ha\s+(?:ad\s+)?oggetto\b|"
+                      r"(?:non\s+)?rileva(?:no)?\b|grava\b|incombe\b|spetta(?:no)?\b|(?:è|sono)\s+tenut\w*|"
+                      r"rispond(?:e|ono)\s+(?:del|della|dei|delle|a\s+titolo)\b)", re.IGNORECASE)
 _PROCEDURAL_RE = re.compile(r"\bmotiv[oi]\s+di\s+ricorso|\b(?:primo|secondo|terzo|quarto|quinto|sesto|unico)\s+motivo\b|"
                             r"\bcorte\s+territoriale\b|\bcorte\s+d['’]\s?appello\b|\bricorrent[ei]\b|\blament\w*|"
                             r"\bsi\s+duol\w*|\bdeduc[eo]\w*|\bdep\.|\brv\.|\baddebito\s+mosso|\b(?:sentenza|ordinanza)\s+"
@@ -222,22 +235,71 @@ def rubrica_stems(rubrica: str) -> set:
     return stems(rubrica)
 
 
+HEAD_STEM_CHARS = 8
+_RUBRICA_SKIP = _STOP | {"altri", "altre", "altro", "casi", "caso", "disposizioni", "disposizione", "norme", "norma",
+                         "fatto", "fatti", "delitto", "delitti", "reato", "reati", "particolari", "speciali", "generali"}
+
+
+def head_stem(rubrica: str) -> str:
+    """v79.7 (item 4): the rubrica's head noun as a stem -- its first content word without its inflection (the final
+    vowels), at most HEAD_STEM_CHARS letters: «Lesione personale» -> «lesion», «Maltrattamenti contro familiari e
+    conviventi» -> «maltratt», «Furto» -> «furt»; "" for a rubrica with none."""
+    for w in re.findall(r"[a-zàèéìòù]{4,}", (rubrica or "").lower()):
+        if w in _RUBRICA_SKIP:
+            continue
+        return re.sub(r"[aeiouàèéìòù]+$", "", w)[:HEAD_STEM_CHARS]
+    return ""
+
+
 def on_rubrica(abstract: str, rubrica: str) -> bool:
-    """v78: the citing section's abstract shares the article's rubrica nouns -- all of them (two at most: «lesione
-    personale»), two of a longer one; an article with no rubrica: True."""
-    own = rubrica_stems(rubrica)
-    if not own:
+    """v78: the citing section's abstract is on the article. v79.7 (item 4): one noun by stem -- the rubrica's head
+    noun (head_stem: «lesion-», «maltratt-», «furt-») begins a word of the abstract; v78 asked for every rubrica noun
+    verbatim («lesione» and «personale»), and «maltrattamenti in famiglia» never matched «familiari». An article with
+    no rubrica: True."""
+    head = head_stem(rubrica)
+    if len(head) < 3:
         return True
-    return len(own & stems(abstract)) >= min(2, len(own))
+    return any(w.startswith(head) for w in re.findall(r"[a-zàèéìòù]{3,}", (abstract or "").lower()))
+
+
+# v79.7 (item 4): nouns every offence's element may hold -- shared alone, they make no passage the element's («il
+# profitto» of 648 c.p. and «i proventi dell'evasione fiscale» share one, and say nothing of each other)
+GENERIC_ELEMENT_NOUNS = {"profi", "delit", "reato", "reati", "danno", "danni", "perso", "cosa", "cose", "condo", "sogge",
+                         "agent", "autor", "altri", "norma", "legge", "pena", "event", "azion", "omiss", "benef",
+                         "vanta", "utili", "denar", "somma", "bene", "beni", "propr", "terzo", "terzi"}
 
 
 def element_noun_hit(sentence: str, element: Dict[str, Any]) -> bool:
-    """v78: the sentence holds the element's nouns (issue_records.element_nouns: one of one or two, two of more)."""
+    """v78: the sentence holds the element's nouns (issue_records.element_nouns: one of one or two, two of more).
+    v79.7 (item 4): at least one of those it shares is the element's own -- not a noun any offence holds
+    (GENERIC_ELEMENT_NOUNS): an element of generic nouns only is graded on no passage."""
     from . import issue_records
     own = issue_records.element_nouns(element.get("text") or "")
     if not own:
         return False
-    return len(own & issue_records.element_nouns(sentence)) >= (1 if len(own) <= 2 else 2)
+    shared = own & issue_records.element_nouns(sentence)
+    return len(shared) >= (1 if len(own) <= 2 else 2) and bool(shared - GENERIC_ELEMENT_NOUNS)
+
+
+FILTERS = ("rubrica", "rank_demoted", "shortlist_cut", "length", "mid_reference", "rule_verb", "procedural",
+           "element_nouns", "no_principle", "off_element", "unrelated")    # v79.7 (item 4): the per-article counts
+
+
+def sentence_filter(sentence: str, elements: Sequence[Dict[str, Any]]) -> str:
+    """v79.7 (item 4): the first filter a citing section's sentence fails ("" when it passes them all) -- its length,
+    a start inside a reference, no rule verb, a procedural marker, none of an element's own nouns."""
+    lo, hi = SENTENCE_CHARS
+    if not lo <= len(sentence) <= hi:
+        return "length"
+    if not starts_clean(sentence):
+        return "mid_reference"
+    if not _RULE_RE.search(sentence):
+        return "rule_verb"
+    if _PROCEDURAL_RE.search(sentence):
+        return "procedural"
+    if not any(element_noun_hit(sentence, e) for e in elements):
+        return "element_nouns"
+    return ""
 
 
 def quotable(sentence: str, element: Optional[Dict[str, Any]] = None) -> bool:
@@ -316,14 +378,18 @@ _SPLIT_RE = re.compile(r"(?<=[.;:])\s+(?=[A-ZÀÈÉÌÒÙ«\"(])")
 STAMP_RE = re.compile(r"\s*corte\s+di\s+cassazione\s*[-–—]?\s*copia\s+non\s+ufficiale(?:\s*[-–—]?\s*\d{1,4}(?!\s*/))?",
                       re.IGNORECASE)
 PAGE_RE = re.compile(r"\s*\b(?:pag(?:ina|\.)?|p\.)\s*\d{1,4}(?:\s*(?:di|/)\s*\d{1,4})?\b", re.IGNORECASE)
+# v79.7: the digital signature's block («Firmato Da: ROSSI MARIO Emesso Da: ARUBAPEC S.P.A. NG CA 3 Serial#: 7c5b1a»)
+SIGNATURE_RE = re.compile(r"\s*\b(?i:firmat[oa]\s+(?:digitalmente\s+)?da|emess[oa]\s+da)\b\s*:?\s*"
+                          r"(?:(?:[A-ZÀ-Ý0-9][A-ZÀ-Ý0-9'’.&-]*(?:\s+|$)){1,10}|[A-ZÀ-Ý][a-zà-ÿ'’]+(?:\s+[A-ZÀ-Ý][a-zà-ÿ'’]+)?)|"
+                          r"\s*\b(?i:serial)\s*#?\s*:?\s*[0-9A-Fa-f]{4,}\b")
 # a sentence that starts inside a reference («n. 1234/2025, ha affermato …», «Rv. 2811», «, che …») is never quoted
 _MID_REFERENCE_RE = re.compile(r"^(?:[a-zà-ù0-9,;:.)\]/-]|(?:n|nn|rv|dep|sez|cit|pag|cfr)\.\s)", re.IGNORECASE)
 _UPPER_START_RE = re.compile(r"^[«\"“(]?[A-ZÀÈÉÌÒÙ]")
 
 
 def strip_stamp(text: str) -> str:
-    """v79 (F2): the text without the PDF's stamp and its page counts."""
-    return " ".join(PAGE_RE.sub(" ", STAMP_RE.sub(" ", text or "")).split())
+    """v79 (F2): the text without the PDF's stamp and its page counts; v79.7: without the signature block either."""
+    return " ".join(PAGE_RE.sub(" ", SIGNATURE_RE.sub(" ", STAMP_RE.sub(" ", text or ""))).split())
 
 
 def starts_clean(sentence: str) -> bool:
@@ -445,6 +511,7 @@ def printed_problems(answer: str) -> List[str]:
     its head («Sez. 5, n. 12/2025» with no «Cass.» before it)."""
     out = [f"etichetta {m.group(0)}" for m in _LABEL_RE.finditer(answer or "")]
     out += ["timbro «copia non ufficiale»" for _ in STAMP_RE.finditer(answer or "")]
+    out += [f"timbro della firma «{m.group(0).strip()[:40]}»" for m in SIGNATURE_RE.finditer(answer or "")]
     for m in _HEADLESS_RE.finditer(answer or ""):
         before = (answer or "")[max(0, m.start() - 45):m.start()]
         if "Cass." not in before and not _ACT_BEFORE_RE.search(before):
@@ -457,15 +524,19 @@ def sentences(text: str) -> List[str]:
     return [s for s in (_plain(x) for x in sentence_split.split(strip_stamp(text or ""), _SPLIT_RE)) if s]
 
 
-def candidate_sentences(text: str, elements: Sequence[Dict[str, Any]], article: str) -> List[str]:
-    """The SENTENCES_PER_RULING sentences of a citing section nearest to the elements (noun overlap; naming the article
-    counts one more), in their order in the text; too short or too long ones never."""
-    number = re.escape(str(article).split(" ")[0])
-    named = re.compile(rf"\bart(?:icol[oi]|t?\.)\s*{number}\b", re.I)
-    lo, hi = SENTENCE_CHARS
-    scored = [(overlap(s, elements) + (1 if named.search(s) else 0), i, s) for i, s in enumerate(sentences(text))
-              if lo <= len(s) <= hi and starts_clean(s) and quotable(s)        # v79 (F2): never mid-reference
-              and any(element_noun_hit(s, e) for e in elements)]
+def candidate_sentences(text: str, elements: Sequence[Dict[str, Any]], article: str,
+                        counts: Optional[Dict[str, int]] = None) -> List[str]:
+    """The SENTENCES_PER_RULING sentences of a citing section nearest to the elements (noun overlap), in their order in
+    the text; too short or too long ones never. v79.7 (item 4): naming the article adds nothing -- a sentence is the
+    element's by its nouns; counts: per filter, the sentences it dropped (sentence_filter)."""
+    scored = []
+    for i, s in enumerate(sentences(text)):
+        failed = sentence_filter(s, elements)
+        if failed:
+            if counts is not None:
+                counts[failed] = counts.get(failed, 0) + 1
+            continue
+        scored.append((overlap(s, elements), i, s))
     best = sorted(scored, key=lambda x: (-x[0], x[1]))[:SENTENCES_PER_RULING]
     return [s for _, _, s in sorted((x for x in best if x[0] > 0), key=lambda x: x[1])]
 
@@ -505,12 +576,14 @@ def link(short: List[Dict[str, Any]], case: str = "", call: Optional[Callable] =
         m = re.fullmatch(rf"{r['_pid']}\.(\d+)", sid)
         k = int(m.group(1)) if m else 0
         r["passage"] = r["candidates"][k - 1] if 1 <= k <= len(r["candidates"]) else ""
+        r["_empty"] = "" if r["passage"] else "no_principle"
         ids = {e["id"] for e in r["elements"]}
         el = str(got.get("elemento") or "").strip().strip("[]").upper()
         r["element_id"] = el if el in ids else (r["elements"][0]["id"] if r["passage"] and len(ids) == 1 else "")
         graded_on = next((e for e in r["elements"] if e["id"] == r["element_id"]), None)
         if r["passage"] and (graded_on is None or not quotable(r["passage"], graded_on)):
             r["passage"], r["element_id"] = "", ""          # v78: no rule on that element -- the estremi alone
+            r["_empty"] = "off_element"                      # v79.7: its nouns are not the graded element's
         try:
             r["pertinenza"] = max(0, min(2, int(got.get("pertinenza"))))
         except (TypeError, ValueError):
@@ -589,7 +662,8 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     for label, rec in records.items():
         row = by_label_rows.get(_key(_parse_label(label)))
         art_log = log["articles"].setdefault(label, {"found": 0, "linked": 0, "unparsed": 0, "off_rubrica": 0,
-                                                            "graded": 0, "kept": 0})
+                                                            "graded": 0, "kept": 0, "passages": 0,
+                                                            "filters": {f: 0 for f in FILTERS}})
         if row is None:
             art_log["unread"] = True
             continue
@@ -611,6 +685,7 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
             log["estremi"]["parsed"] += 1
             if not on_rubrica(g["abstract"], str(rec.get("rubrica") or "")):
                 art_log["off_rubrica"] += 1          # v78: its abstract is not on the article: dropped for it
+                art_log["filters"]["rubrica"] += 1
                 continue
             if not chamber(p):
                 log["estremi"]["section_unmapped"] += 1
@@ -618,12 +693,20 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
                           "su": sezioni_unite(p), "date": ruling_date(g["date_enacted"], p["year"]),
                           "score": overlap(g["abstract"], mine), "sections": g["sections"], "elements": mine,
                           "parsed": p})
-        shortlist[label] = sorted(cands, key=_order_key)[:GRADED_PER_ARTICLE]
+        ranked = sorted(cands, key=_order_key)
+        shortlist[label] = ranked[:GRADED_PER_ARTICLE]
+        art_log["filters"]["rank_demoted"] += sum(1 for r in ranked[GRADED_PER_ARTICLE:] if demoted(r.get("parsed")))
+        art_log["filters"]["shortlist_cut"] += sum(1 for r in ranked[GRADED_PER_ARTICLE:] if not demoted(r.get("parsed")))
     short = round_robin(shortlist, SHORTLIST_MAX)
+    for label, v in shortlist.items():          # v79.7: past the answer's shortlist, by rank or by the cap
+        for r in v:
+            if r not in short:
+                art_log = log["articles"][label]["filters"]
+                art_log["rank_demoted" if demoted(r.get("parsed")) else "shortlist_cut"] += 1
     body = texts(session, [s for r in short for s in r["sections"]])
     for r in short:
         r["candidates"] = candidate_sentences(" ".join(body.get(s) or "" for s in r["sections"]), r["elements"],
-                                              r["article"])
+                                              r["article"], log["articles"][r["article"]]["filters"])
     call_log = link(short, ctx.get("case") or "", call)
     log["link_call"] = call_log
     by_article: Dict[str, List[Dict[str, Any]]] = {}
@@ -631,7 +714,10 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     for r in short:
         if call_log.get("ok") and r.get("pertinenza") == 0:
             dropped.append(r["estremi"])
+            log["articles"][r["article"]]["filters"]["unrelated"] += 1
             continue
+        if call_log.get("ok") and r.get("_empty"):
+            log["articles"][r["article"]]["filters"][r["_empty"]] += 1
         r["score"] = (r.get("score") or 0) + 3 * (r.get("pertinenza") or 0)
         if not call_log.get("ok"):
             r.update(passage="", element_id="", verso=NEUTRAL)
@@ -642,6 +728,7 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     kept = round_robin({k: graded[k][:PER_ARTICLE] for k in records if k in graded}, PER_ANSWER)     # the printed
     for r in kept:
         log["articles"][r["article"]]["kept"] += 1
+        log["articles"][r["article"]]["passages"] += bool(r.get("passage"))
         log["passages"]["quoted" if r.get("passage") else "none"] += 1
     orientations = [orientation(e, [r for v in graded.values() for r in v]) for e in disputed]
     for o in orientations:

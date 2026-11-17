@@ -121,7 +121,9 @@ def test_a_rule_on_the_element_is_quotable_and_one_on_another_element_is_not():
 
 def test_an_abstract_off_the_rubrica_drops_the_ruling_for_the_article():
     assert rulings.on_rubrica("Lesioni personali: la malattia richiede un'alterazione funzionale.", "Lesione personale")
-    assert not rulings.on_rubrica("Maltrattamento di animali: lesione all'animale da compagnia.", "Lesione personale")
+    # v79.7 (item 4): one noun by stem -- «lesione all'animale» is on «lesione-»; the element's nouns decide after
+    assert rulings.on_rubrica("Maltrattamento di animali: lesione all'animale da compagnia.", "Lesione personale")
+    assert not rulings.on_rubrica("Maltrattamento di animali: sofferenze inflitte al cane.", "Lesione personale")
     assert rulings.on_rubrica("qualunque testo", "")
 
 
@@ -160,7 +162,7 @@ ROWS = [{"_article": ("582", "c.p."), "d": {"id": "CP"}, "s": {"name": "582"}}]
 
 def test_the_build_drops_the_off_rubrica_ruling_and_ranks_sez_7_and_ordinanze_last():
     rows = [_row(1, section="70", when="2025-12-01"), _row(2, act="O", when="2025-11-01"), _row(3, when="2025-01-01"),
-            _row(4, abstract="Maltrattamento di animali: lesione al cane")]
+            _row(4, abstract="Maltrattamento di animali: sofferenze al cane")]
     session = Session(rows, {f"S{i}": f"{MOTIVO} {PRINCIPLE}" for i in range(1, 5)})
     verdicts = {f"P{i}": {"frase": f"P{i}.1", "elemento": "R1", "pertinenza": 2, "verso": "a favore"} for i in range(1, 4)}
     record = rulings.build(_ctx(), ROWS, session, call=lambda m, t: verdicts)

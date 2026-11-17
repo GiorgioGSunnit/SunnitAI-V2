@@ -66,7 +66,8 @@ def test_the_concept_the_first_read_names_brings_its_defence_article():
     state = {"read": {"facts": ["Alfa ha reagito per legittima difesa e ha ecceduto in eccesso colposo."],
                       "hypotheses": [{"claim": "tentativo di furto", "institutions": ["tentativo"]}]},
              "defence_gate": {"ranked": ["41 c.p."]}}
-    assert flow.defence_wanted(state) == ["52 c.p.", "55 c.p.", "56 c.p.", "41 c.p."]
+    assert flow.defence_wanted(state) == {"52 c.p.": "concetto", "55 c.p.": "concetto", "56 c.p.": "concetto",
+                                          "41 c.p.": "rango"}             # v79.7: each with its route
 
 
 def test_the_gate_still_drops_the_rest_and_a_defence_article_off_its_route():
@@ -163,15 +164,22 @@ def test_a_defence_article_is_never_the_charge_nor_a_subsumption_table():
 
 # --- D2 ------------------------------------------------------------------------------------------------------------------
 
-def test_the_ranked_labels_are_the_top_graded_fattispecie():
+def test_the_ranked_labels_are_the_retrievals_own_top_no_gate_dropped():
+    # v79.7 (item 3): the retrieval's ranking (its fused rank), not the grade -- every one no gate dropped
     from src.rag import interactive_flow as flow
-    rows = [_row("640", "c.p.", rank=5, grade=2), _row("646", "c.p.", rank=1, grade=3), _row("52", "c.p.", rank=1,
-                                                                                          grade=3),
-            _row("624", "c.p.", rank=2, grade=1), _row("405", "c.p.p.", rank=1, grade=3)]
+    rows = [_row("640", "c.p.", rank=5, grade=2), _row("646", "c.p.", rank=1, grade=3), _row("52", "c.p.", rank=3),
+            _row("624", "c.p.", rank=2, grade=1), _row("405", "c.p.p.", rank=4)]
     rows += [_row(str(700 + i), "c.p.", rank=10 + i, grade=2) for i in range(12)]
-    got = flow.ranked_labels(rows)
-    assert got[:2] == ["646 c.p.", "640 c.p."] and len(got) == flow.RANKED_TOP
-    assert "624 c.p." not in got and "52 c.p." not in got and "405 c.p.p." not in got
+    top = flow.retrieval_top(rows)
+    assert [t["article"] for t in top][:5] == ["646 c.p.", "624 c.p.", "52 c.p.", "405 c.p.p.", "640 c.p."]
+    assert len(top) == flow.RANKED_TOP and top[0]["rank"] == 1
+    gates = {}
+    flow.track_gate(top, gates, "area_gate", [r for r in rows if r["_article"][1] != "c.p.p."])
+    flow.track_gate(top, gates, "grading", [r for r in rows if r["_article"][0] not in ("405", "624")])
+    assert gates == {"405 c.p.p.": "area_gate", "624 c.p.": "grading"}
+    marked = [{**t, **({"gate": gates[t["article"]]} if t["article"] in gates else {})} for t in top]
+    got = flow.ranked_labels(marked)
+    assert got[:3] == ["646 c.p.", "52 c.p.", "640 c.p."] and "405 c.p.p." not in got and "624 c.p." not in got
 
 
 def test_a_ranked_article_not_in_the_record_is_decomposed_as_a_candidate(monkeypatch):

@@ -1085,9 +1085,10 @@ METHOD_SYSTEM = (
     "e la sua etichetta (sostenibile / minoritaria); la VALUTAZIONE DAL REGISTRO (esito probabile, grado di certezza e "
     "obiettivo realistico calcolati sugli elementi provati: non renderla più favorevole); le PRONUNCE DISPONIBILI, le "
     "sole che puoi citare (per ogni altro punto: «orientamento da verificare»); le NOTE DI INQUADRAMENTO dell'avvocato; "
-    "le OPZIONI STRAGIUDIZIALI. Non aggiungere tesi e non cambiarle: per ciascuna TESI CANDIDATA da argomentare (non "
-    "quelle segnate «argomentata dal codice») scrivi gli argomenti a favore e contrari, il realismo (alto, medio, "
-    "basso; per una tesi minoritaria: basso) e l'argomento in due-tre frasi. Gli argomenti di una tesi possono negare "
+    "le OPZIONI STRAGIUDIZIALI. Non aggiungere tesi e non cambiarle: valuta OGNI TESI CANDIDATA, con il suo id (T1, "
+    "T2…) come chiave, e indica per ciascuna il realismo (alto, medio, basso; per una tesi minoritaria: basso); per "
+    "quelle da argomentare (non quelle segnate «argomentata dal codice», di cui dai solo il realismo) scrivi anche gli "
+    "argomenti a favore e contrari e l'argomento in due-tre frasi. Gli argomenti di una tesi possono negare "
     "solo gli elementi che essa contesta: mai un altro elemento delle SCHEDE. La sintesi, le conclusioni, i passi successivi li scrive il codice dalla tesi scelta, e le obiezioni una "
     "chiamata successiva che la riceve. Rispondi SOLO con un JSON, in quest'ordine:\n"
     "{\"valutazioni\": {\"T1\": {\"pro\": \"…\", \"contro\": \"…\", \"realismo\": \"alto|medio|basso\", "
@@ -1164,6 +1165,12 @@ CODE_ARGUMENTS = {   # my drafts (v74): the argument of a thesis that contests n
                             "qualificazione e sulla misura della pena",
                      "contro": "Non evita la condanna per l'art. {art}: ne contiene l'esito",
                      "argomento": "Tutti gli elementi dell'art. {art} risultano integrati ({ids})"},
+    # v79.7 (my drafts): the containment line when the charge is not fully integrato -- the subordinate line
+    "contenimento_open": {"pro": "Non dipende dall'esito delle contestazioni sugli elementi: resta utile se "
+                                 "{what} risulta provato",
+                          "contro": "Presuppone l'accertamento della responsabilità per {what}",
+                          "argomento": "Se gli elementi contestati risultano provati, la difesa si sposta sulla "
+                                       "qualificazione e sulla misura della pena"},
     "attenuante": {"argomento": "L'attenuante dell'art. {art} si regge sugli elementi provati {ids}: {elements}",
                    "contro": "Incide sulla pena, non sulla responsabilità"},
     "scriminante": {"argomento": "La scriminante dell'art. {art} si regge sugli elementi provati {ids}: {elements}",
@@ -1227,17 +1234,21 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
     if c["kind"] == "contenimento":
         art = (ctx.get("assessment") or {}).get("article") or ""
         ids = ", ".join(c.get("poggia_su") or [])
+        if not (ctx.get("assessment") or {}).get("all_integrated"):     # v79.7 (item 2): offered on every charge
+            texts = CODE_ARGUMENTS["contenimento_open"]
         goal = str((posture.get("entry") or {}).get("goal") or "")
         riti = "; ".join(x.split(":")[0] for x in (ctx.get("riti") or [])[:2])
         att = [x for x, r in circ.items() if r.get("kind") == "attenuante"
                and any(q.get("status") == PROVATO for q in _live(r))]
-        arg = [texts["argomento"].format(art=art, ids=ids)]
+        what = f"l'art. {art}" if art else "l'addebito"
+        arg = [texts["argomento"].format(art=art, ids=ids, what=what)]
         arg += [CODE_ARGUMENTS["goal"].format(goal=goal)] if goal else []
         arg += [CODE_ARGUMENTS["riti"].format(riti=riti)] if riti else []
         arg += [CODE_ARGUMENTS["attenuanti"].format(items=", ".join(f"art. {x}" for x in att))] if att else []
-        return {"pro": _sentence_join([texts["pro"].format(ids=ids)]),
-                "contro": _sentence_join([texts["contro"].format(art=art)]),
-                "argomento": _sentence_join(arg), "realismo": ALTO}
+        return {"pro": _sentence_join([texts["pro"].format(ids=ids, what=what)]),
+                "contro": _sentence_join([texts["contro"].format(art=art, what=what)]),
+                "argomento": _sentence_join(arg),
+                "realismo": ALTO if (ctx.get("assessment") or {}).get("all_integrated") else MEDIO}
     rec = records.get(art) or circ.get(art) or {}
     live = _live(rec)
     proven = [r for r in live if r.get("status") == PROVATO and r.get("id")]
@@ -1291,40 +1302,52 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                     "label": label, **extra})
     fatt = lambda x: issue_records.counted(x, str((records.get(x) or {}).get("rubrica") or ""))   # v74: fattispecie only
     named = lambda rec: bool(rec.get("named_due") or rec.get("decomposed_for") == "nominata dall'utente")      # v76
+    role = str(posture.get("role") or "")
+    victim, civil_role = role in VICTIM_ROLES, role in CIVIL_ROLES
+    known_role = role in KNOWN_ROLES                # v79.6 (item 5): an unknown role gets neither side's wording
+    offender = known_role and not victim and not civil_role        # v75: the imputato's set
     threats = [charge] if (records.get(charge) or {}).get("side") == "threat" and fatt(charge) else []
     threats += [x for x, r in records.items() if r.get("side") == "threat" and x not in threats and fatt(x)]
+    trace: Dict[str, Any] = {"role": role, "charge": charge, "threats": list(threats), "threats_from": "side"}
+    if not threats and role in ACCUSED:     # v79.7 (item 2): no record marked «threat» -- the charged ones, else the
+        threats = [x for x in _charged(records) if fatt(x) and _live(records[x])]            # assessment's article
+        if not threats and charge in records and fatt(charge) and _live(records[charge]):
+            threats = [charge]
+        trace.update(threats=list(threats), threats_from="charged" if threats else "",
+                     no_threat=_no_threat_why(records, charge, fatt))
+    ctx["candidates_trace"] = trace
     contests = {"excluded": [], "open": [], "integrated": []}
+    in_order: List[Tuple[str, Dict[str, Any]]] = []
     for label in threats:
         for r in _live(records[label]):
             if not r.get("id"):
                 continue
             kind = {NON_RISULTA: "excluded", DA_PROVARE: "open", PROVATO: "integrated"}.get(r.get("status"), "open")
             contests[kind].append((label, r))
+            in_order.append((label, r))
     distinctive = next((r["id"] for r in _live(records.get(charge) or {}) if r.get("distinctive") and r.get("id")), "")
     known = elements_by_id(records, circ)
-    for label, r in contests["excluded"] + contests["open"]:
-        kind = "excluded" if r.get("status") == NON_RISULTA else "open"
+
+    def contest(label: str, r: Dict[str, Any]) -> None:
+        kind = {NON_RISULTA: "excluded", PROVATO: "integrated"}.get(r.get("status"), "open")
         add(f"contest_{kind}", CANDIDATE_TEXTS[kind].format(el=_short(r.get("text"), 80), id=r["id"], art=label),
-            contesta=[r["id"]])
-    role = str(posture.get("role") or "")
-    victim, civil_role = role in VICTIM_ROLES, role in CIVIL_ROLES
-    known_role = role in KNOWN_ROLES                # v79.6 (item 5): an unknown role gets neither side's wording
-    offender = known_role and not victim and not civil_role        # v75: the imputato's set
+            contesta=[r["id"]], label=MINORITY if kind == "integrated" else SUSTAINABLE)
+    # v79.7 (item 2): the imputato's contests in the elements' order (an «integrato» one labelled minoritaria);
+    # another role's as before -- the excluded and open ones first, the integrated ones last
+    for label, r in in_order if offender else contests["excluded"] + contests["open"]:
+        contest(label, r)
     if victim:                  # v75: the victim's set -- never the offender's circumstances
         _victim_candidates(ctx, add, fatt)
-    if a.get("all_integrated") and offender:
-        main = posture_fallback(posture)
-        if main:
-            add("contenimento", main[0].upper() + main[1:],
-                poggia_su=[r["id"] for r in _live(records.get(charge) or {}) if r.get("id")], fallback=True)
     for label, rec in records.items():
         if not offender:
             break
-        if label == charge or rec.get("side") == "threat" or not (rec.get("alternative") or rec.get("alternative_facts")
-                                                                  or rec.get("ranked_candidate")):     # v79 (D2)
+        if label == charge or label in threats or not (rec.get("alternative") or rec.get("alternative_facts")
+                                                       or rec.get("ranked_candidate")):     # v79 (D2)
             continue
-        if not issue_records.assertable(rec) or issue_records.contradicted(rec):    # v75b: the record decides, never
-            continue                                                                 # the read's «sì / no»
+        if issue_records.contradicted(rec):     # v75b: the record decides, never the read's «sì / no»; v79.7 (item
+            continue                            # 2): an alternative the first read listed, its elements open or proven
+        if not issue_records.assertable(rec) and not rec.get("alternative"):
+            continue
         if not fatt(label) or not issue_records.decomposed(rec):    # v74: a decomposed, sound fattispecie record only
             continue
         proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
@@ -1337,17 +1360,19 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             break
         if issue_records.justification(label):
             proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
-            if proven and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
+            ids = proven or (_ids(rec) if by_concept(rec) else [])     # v79.7 (item 3): named by the facts
+            if ids and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
                 add("scriminante", CANDIDATE_TEXTS["scriminante"].format(art=label, rubrica=_rubrica_tail(rec)),
-                    poggia_su=proven, article=label)
+                    poggia_su=ids, article=label)
     for label, rec in records.items():     # v79 (D1): a general-part defence (causation, fault, excess, attempt,
         if not offender:                    # aberratio, tenuità) with its elements proven and none excluded
             break
         if issue_records.defence_article(label) and not issue_records.justification(label):
             proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
-            if proven and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
+            ids = proven or (_ids(rec) if by_concept(rec) else [])     # v79.7 (item 3): named by the facts
+            if ids and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
                 add("defence", CANDIDATE_TEXTS["defence"].format(art=label, rubrica=_rubrica_tail(rec)),
-                    poggia_su=proven, article=label)
+                    poggia_su=ids, article=label)
     for label, rec in circ.items():
         if rec.get("kind") != "attenuante" or not offender:      # v75: the offender's attenuanti, the offender's only
             continue
@@ -1385,24 +1410,67 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         for r in (matter_of(claim).get("eccezioni") or []) if claim else []:     # v79.6: the eccezione di
             add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)   # prescrizione stays (E4:
             # claims only -- a prescription article is never a claim, issue_records.counted)
-    for label, r in contests["integrated"]:
-        add("contest_integrated", CANDIDATE_TEXTS["integrated"].format(el=_short(r.get("text"), 80), id=r["id"],
-                                                                       art=label),
-            contesta=[r["id"]], label=MINORITY)
+    if not offender:
+        for label, r in contests["integrated"]:
+            contest(label, r)
+    else:                       # v79.7 (item 2): the containment line, always the imputato's and always last -- the
+        main = posture_fallback(posture) or CONTAINMENT_LINE        # enumeration is never empty
+        add("contenimento", main[0].upper() + main[1:],         # resting on the charge's elements when they are
+            poggia_su=_ids(records.get(threats[0] if threats else charge) or {}) if a.get("all_integrated") else [],
+            fallback=True)                                          # all integrato; else on none (a subordinate line)
     if _family_key(posture) not in ("penale", ""):       # v76: a penal line never under a civil intake rito
         dropped = [c["kind"] for c in out if c["kind"] in PENAL_KINDS]
         out[:] = [c for c in out if c["kind"] not in PENAL_KINDS]
         if dropped:
             _log("penal_candidates_dropped", {"rito": _family_key(posture), "kinds": dropped})
     keep = [c for c in out if c.get("fallback")]
-    capped = keep + [c for c in out if not c.get("fallback")][:max(0, CANDIDATES_MAX - len(keep))]
+    rest = [c for c in out if not c.get("fallback")]
+    if offender:                # v79.7: past the cap, the minority contests go first, the containment line never
+        rest = sorted(rest, key=lambda c: CAP_PRIORITY.get(c["kind"], 3))
+    capped = keep + rest[:max(0, CANDIDATES_MAX - len(keep))]
     capped = [c for c in out if c in capped]
+    if not capped and offender:
+        _log("candidates_empty", trace)
     for i, c in enumerate(capped, 1):
         c["id"] = f"T{i}"
         c["argued"] = "model" if c["kind"] in MODEL_ARGUED else "code"      # v74: the model argues contests only
         if c["argued"] == "code":
             c["code_argument"] = code_argument(c, ctx)
     return capped
+
+
+CONTAINMENT_LINE = "Contenimento della pena: riti alternativi, attenuanti e commisurazione della pena"   # my draft
+CAP_PRIORITY = {"contest_excluded": 0, "contest_open": 0, "requalify": 1, "scriminante": 2, "defence": 2,
+                "attenuante": 3, "contest_integrated": 4}       # v79.7: what the cap keeps first (the containment always)
+NO_THREAT_WHY = {   # v79.7 (item 2): why no record is the charge's -- logged and counted, never printed
+    "no_record": "nessuna scheda dell'addebito (art. {art}) tra le schede del metodo",
+    "unmarked": "la scheda dell'art. {art} non è segnata come addebito (posture.mark_sides)",
+    "no_elements": "la scheda dell'art. {art} non ha elementi con id",
+    "no_charge": "nessun addebito: né dall'intake, né dal testo, né dalla prima lettura"}
+
+
+def _ids(rec: Dict[str, Any]) -> List[str]:
+    return [r["id"] for r in _live(rec) if r.get("id")]
+
+
+def by_concept(rec: Dict[str, Any]) -> bool:
+    """v79.7 (item 3): a general-part defence the first read or the facts name by its concept («legittima difesa»):
+    its line is offered with its elements still to prove (none excluded)."""
+    from . import issue_records
+    return rec.get("decomposed_for") == issue_records.DEFENCE_WHY and rec.get("defence_by") == "concetto"
+
+
+def _no_threat_why(records: Dict[str, Dict[str, Any]], charge: str, fatt: Callable[[str], bool]) -> str:
+    charged = _charged(records)
+    art = charge or (charged[0] if charged else "")
+    if not art:
+        return "no_charge"
+    rec = records.get(art)
+    if rec is None or not fatt(art):
+        return "no_record"
+    if not _ids(rec):
+        return "no_elements"
+    return "unmarked"
 
 
 def prescription_cited(text: str) -> bool:
@@ -1460,7 +1528,7 @@ def candidates_block(cands: Sequence[Dict[str, Any]]) -> str:
         if c.get("poggia_su"):
             ids.append("si regge su " + ", ".join(c["poggia_su"]))
         lines.append(f"- [{c['id']}] ({c['label']}) {c['tesi']}" + (f" — {'; '.join(ids)}" if ids else "")
-                     + (" [argomentata dal codice: non valutarla]" if c.get("argued") == "code" else ""))
+                     + (" [argomentata dal codice: indica solo il realismo]" if c.get("argued") == "code" else ""))
     return "\n".join(lines)
 
 
@@ -1528,57 +1596,86 @@ def clean_objections(value: Any) -> List[Dict[str, str]]:
     return out
 
 
-_CANDIDATE_KEY_RE = re.compile(r"^\W*T\s*(\d{1,2})\b", re.I)
+_CANDIDATE_KEY_RE = re.compile(r"^\W*(?:(?:tesi|candidat[ao]|t)[\W_]*)?(?:t[\W_]*)?(\d{1,2})(?!\d)", re.I)
+_VALUATION_FIELDS = ("realismo", "pro", "contro", "argomento")
 
 
 def candidate_key(key: Any) -> str:
-    """v79: a valuation's candidate id as the reply wrote it -- «T1», «t1», «[T1]», «T1 - Contestare …» -> «T1»; any
-    other key upper-cased as it is (so a thesis the model adds is still seen, and dropped)."""
-    m = _CANDIDATE_KEY_RE.match(str(key or ""))
-    return f"T{int(m.group(1))}" if m else str(key or "").strip().upper()
+    """v79: a valuation's candidate id as the reply wrote it -- «T1», «t1», «[T1]», «T1 - Contestare …» -> «T1»;
+    v79.7: «T 1», «T01», «Tesi 1», «tesi_T1», «candidata 1», «1» too. Any other key upper-cased as it is (so a thesis
+    the model adds is still seen, and dropped)."""
+    text = " ".join(str(key or "").split())
+    m = _CANDIDATE_KEY_RE.match(text)
+    return f"T{int(m.group(1))}" if m else text.upper()
 
 
-def valuations(raw: Any) -> Dict[str, Dict[str, Any]]:
-    """v79 (A1): the reply's «valutazioni» keyed by candidate id, in either shape the model gives them -- an object keyed
+def _valuation(v: Any) -> bool:
+    return isinstance(v, dict) and any(f in v for f in _VALUATION_FIELDS)
+
+
+def valuations(raw: Any, candidates: Sequence[Dict[str, Any]] = ()) -> Dict[str, Dict[str, Any]]:
+    """v79 (A1): the reply's «valutazioni» keyed by candidate id, in any shape the model gives them -- an object keyed
     by id, or a list of objects carrying their id («id», «tesi» or «candidata»); a value that is not an object dropped.
-    Before v79 the list shape and a decorated key («[T1]») were read as no valuation at all."""
-    vals = (raw or {}).get("valutazioni") if isinstance(raw, dict) else None
+    v79.7 (item 1): a key or an id that is the candidate's own text (its «tesi») is that candidate's; a list whose
+    items carry no id at all is in the candidates' order; a list of one-key objects ([{"T1": {…}}, …]); with no
+    «valutazioni», top-level keys that read as candidate ids."""
+    by_text = {_plain(c.get("tesi")).lower().rstrip("."): c["id"] for c in candidates or [] if c.get("id")}
+
+    def key_of(k: Any) -> str:
+        return by_text.get(_plain(k).lower().rstrip(".")) or candidate_key(k)
+    raw = raw if isinstance(raw, dict) else {}
+    vals = raw.get("valutazioni", raw.get("valutazione"))
+    if vals is None:
+        vals = {k: v for k, v in raw.items() if _CANDIDATE_KEY_RE.match(str(k)) and _valuation(v)} or None
     out: Dict[str, Dict[str, Any]] = {}
     if isinstance(vals, dict):
         for k, v in vals.items():
             if isinstance(v, dict):
-                out.setdefault(candidate_key(k), v)
+                out.setdefault(key_of(k), v)
     elif isinstance(vals, list):
-        for v in vals:
-            if isinstance(v, dict):
-                key = next((v[f] for f in ("id", "tesi", "candidata") if v.get(f)), "")
-                if key:
-                    out.setdefault(candidate_key(key), v)
+        items = [v for v in vals if isinstance(v, dict)]
+        named = [next((v[f] for f in ("id", "tesi", "candidata", "candidate") if v.get(f)), "") for v in items]
+        for i, (v, k) in enumerate(zip(items, named), 1):
+            if not k and len(v) == 1 and isinstance(next(iter(v.values())), dict):      # [{"T1": {…}}, …]
+                k, v = next(iter(v.items()))
+            elif not k and not any(named):          # no item names its candidate: the candidates' order
+                k = f"T{i}"
+            if k:
+                out.setdefault(key_of(k), v)
     return out
 
 
 def apply_valuations(raw: Any, candidates: Sequence[Dict[str, Any]], log: Optional[Dict[str, Any]] = None
                      ) -> List[Dict[str, Any]]:
     """v72: the soluzioni -- the code's candidates, each with the model's pro, contro, realismo and argument (a
-    minority one: realismo basso); a thesis the model adds (a key no candidate has) dropped, into log["dropped"]."""
+    minority one: realismo basso); a thesis the model adds (a key no candidate has) dropped, into log["dropped"].
+    v79.7 (item 1): every candidate's realismo is the model's -- a code-argued one keeps the code's text (v74: nothing
+    the model wrote can negate an element), never the code's fixed realismo; one the code rates «basso» (nothing proven
+    yet, an eccezione with no presupposto in the facts) at most «medio»; the code's when the model gave none."""
     raw = raw if isinstance(raw, dict) else {}
-    vals = valuations(raw)
+    vals = valuations(raw, candidates)
     ids = {c["id"] for c in candidates}
     dropped = [k for k in vals if k not in ids]
     if raw.get("soluzioni"):
         dropped.append("soluzioni")
     out = []
-    ignored = [c["id"] for c in candidates if c.get("code_argument") and c["id"] in vals]
+    ignored = [c["id"] for c in candidates if c.get("code_argument") and
+               any(_plain((vals.get(c["id"]) or {}).get(f)) for f in BIND_FIELDS)]
     for c in candidates:
-        v = c.get("code_argument") or vals.get(c["id"]) or {}       # v74: a code-argued candidate never the model's
-        real = _plain(v.get("realismo")).lower()
+        model = vals.get(c["id"]) or {}
+        code = c.get("code_argument") or {}
+        v = code or model                   # v74: a code-argued candidate's argument is never the model's
+        given = _plain(model.get("realismo")).lower()
+        real = given if given in REALISMO else _plain(code.get("realismo")).lower()
         real = real if real in REALISMO else (BASSO if c["label"] == MINORITY else MEDIO)
+        if code.get("realismo") == BASSO and real == ALTO:
+            real = MEDIO
         if c["label"] == MINORITY:
             real = BASSO
         out.append({"tesi": c["tesi"], "pro": _plain(v.get("pro")), "contro": _plain(v.get("contro")), "realismo": real,
                     "argomento": _plain(v.get("argomento")), "minoritaria": c["label"] == MINORITY,
                     "contesta": list(c["contesta"]), "poggia_su": list(c["poggia_su"]), "candidate": c["id"],
-                    "kind": c["kind"], "argued": c.get("argued") or "model",
+                    "kind": c["kind"], "argued": c.get("argued") or "model", "valued": given in REALISMO,
                     **({"fallback": True} if c.get("fallback") else {})})
     if log is not None:
         log["dropped"] = dropped
@@ -1593,9 +1690,9 @@ def score_sample(raw: Any, candidates: Sequence[Dict[str, Any]], known: Dict[str
     -inf. (v73: the objections are no longer the thesis call's -- objections_plan writes them after the selection.)"""
     if not isinstance(raw, dict) or not raw:
         return float("-inf"), ["reply not readable"]
-    vals = valuations(raw)
-    ids = {c["id"] for c in candidates if c.get("argued", "model") == "model"}    # v74: the code argues the rest
-    keys = set(vals) - {c["id"] for c in candidates if c.get("argued") == "code"}
+    vals = valuations(raw, candidates)
+    ids = {c["id"] for c in candidates}         # v79.7 (item 1): every candidate valued, the code-argued ones too
+    keys = set(vals)
     score, why = 0.0, []
     covered = len(keys & ids)
     score += 10.0 * covered / max(1, len(ids))
@@ -1905,16 +2002,16 @@ COUNT_KEYS = ("offered", "parsed", "valued", "barred", "unverifiable", "minorita
 
 def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None) -> Dict[str, Any]:
     """v79 (A2): where the candidates went -- offered (the code's), parsed (reached the selection as soluzioni), valued
-    (model-argued ones the kept reply valued), barred (contest an «integrato» element, unlabelled), unverifiable,
+    (v79.7: the candidates the kept reply gave a realismo, every kind), barred (contest an «integrato» element, unlabelled), unverifiable,
     minoritaria, the main line chosen (its candidate id, «fallback» when the selection inserted one) and whether it is
     the fallback (the posture's or the remedies table's line, no candidate of the code's)."""
     cands = ctx.get("candidates") or []
-    vals = valuations(raw)
+    vals = valuations(raw, cands)
     sols, main, _ = selection(ctx, plan)
     m = sols[main] if sols else {}
     inserted = bool(m.get("fallback")) and not m.get("candidate")
     return {"offered": len(cands), "parsed": sum(1 for t in plan.get("soluzioni") or [] if t.get("candidate")),
-            "valued": sum(1 for c in cands if c.get("argued", "model") == "model" and c["id"] in vals),
+            "valued": sum(1 for c in cands if _plain((vals.get(c["id"]) or {}).get("realismo")).lower() in REALISMO),
             "model_argued": sum(1 for c in cands if c.get("argued", "model") == "model"),
             "barred": sum(1 for t in sols if t.get("barred")),
             "unverifiable": sum(1 for t in sols if t.get("unverifiable")),
@@ -1922,6 +2019,10 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             "chosen": "fallback" if inserted else str(m.get("candidate") or ""),
             "chosen_kind": str(m.get("kind") or ("fallback" if inserted else "")),
             "main_is_fallback": inserted,
+            # v79.7 (item 2): where the charge's contests came from (a record marked «threat», else the charged
+            # records) and, when none was marked, why (NO_THREAT_WHY)
+            "threats_from": str((ctx.get("candidates_trace") or {}).get("threats_from") or ""),
+            "no_threat": str((ctx.get("candidates_trace") or {}).get("no_threat") or ""),
             # v79 (D4): the general part's defence lines, the ranked articles graded into candidates
             "defence_lines": sum(1 for c in cands if c.get("kind") in ("defence", "scriminante")),
             "ranked_candidates": sum(1 for c in cands
@@ -2148,7 +2249,7 @@ def fallback_thesis(a: Dict[str, Any], riti: Sequence[str], posture: Optional[Di
                 "realismo": MEDIO, "minoritaria": False, "contesta": [], "poggia_su": [], "fallback": True,
                 "kind": "civil_fallback"}
     if a.get("obiettivo") == CONTENIMENTO and _family_key(posture or {}) in ("penale", ""):
-        return {"tesi": "Contenimento della pena: riti alternativi, attenuanti e commisurazione della pena",
+        return {"tesi": CONTAINMENT_LINE,
                 "pro": "non contesta alcun elemento integrato" + (
                     f"; {'; '.join(x.split(':')[0] for x in riti[:3])}" if riti else ""),
                 "contro": "presuppone l'accertamento della responsabilità", "realismo": ALTO, "minoritaria": False,
@@ -3270,7 +3371,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     every = method_records(all_records, view_log)                   # v74: the decomposed fattispecie only
     # v79 (D2): the ranked candidates are graded and enumerated (ctx["records"]), never what the answer prints or
     # assesses (the record below: §2, §4, the assessment, the objections' fallback)
-    records = {x: r for x, r in every.items() if not r.get("ranked_candidate")}
+    records = {x: r for x, r in every.items() if not r.get("ranked_candidate") and not r.get("unprinted")}
     circ = circumstance_records(circumstance_candidates(case, records, posture or {}))
     circ_log: Dict[str, Any] = {}
     if circ and sentences:
@@ -3303,7 +3404,8 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "open_questions": [point_sentence(str(q.get("text") or "")) for q in questions or []      # v75b: §10
                               if isinstance(q, dict) and q.get("text")],
            "charged_prose": charged_prose(records, by_id),                    # v75b: from its sussunzione rows
-           "store_fields": _store_fields(rows)}                               # v79 (B1): a rule statement's sources
+           "store_fields": _store_fields(rows),                               # v79 (B1): a rule statement's sources
+           "records_view": view_log}                                          # v79.7: the ranked trace reads it
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti), "temporal": ctx["temporal"][:200],
@@ -3351,7 +3453,10 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
     noise = [x for x, r in out.items() if fact_free(r) and not kept_without_facts(r) and not r.get("ranked_candidate")]
     if noise and len(noise) < len(out):     # v78: tabled with «nessun fatto» rows only -- out, unless nothing else is left
         log["no_fact"] = noise
-        out = {x: r for x, r in out.items() if x not in noise}
+        for x in noise:     # v79.7 (item 2): an alternative the first read listed stays a riqualificazione candidate,
+            if out[x].get("alternative"):           # never printed (prepare's record leaves it out)
+                out[x]["unprinted"] = True
+        out = {x: r for x, r in out.items() if x not in noise or r.get("unprinted")}
     return out
 
 
@@ -3366,7 +3471,7 @@ def fact_free(rec: Dict[str, Any]) -> bool:
 def kept_without_facts(rec: Dict[str, Any]) -> bool:
     """v78: a record the method keeps with no fact: the charge or the claim (rec["charged"], or decomposed as one), the
     counterparty's claim (side threat), an article the user named."""
-    return bool(rec.get("charged") or rec.get("side") == "threat" or rec.get("named_due")
+    return bool(rec.get("charged") or rec.get("side") == "threat" or rec.get("named_due") or by_concept(rec)
                 or str(rec.get("decomposed_for") or "").startswith(("nominata dall'utente", "addebito", "domanda")))
 
 

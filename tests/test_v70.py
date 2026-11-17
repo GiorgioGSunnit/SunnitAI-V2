@@ -348,9 +348,9 @@ def test_call_chat_binds_the_thinking_body_under_per_call(monkeypatch):
 def test_the_thesis_selection_is_timed_and_cleaned(tmp_path, monkeypatch):
     monkeypatch.setenv(M.THESIS_LOG_ENV, str(tmp_path))       # v71: the thesis log, never into the repository
     ctx = _ctx(_charge("provato", "da provare"))
-    plan = M.method_plan(ctx, call=lambda messages: {"valutazioni": {"T1": {"realismo": "altissimo"}}})
-    first = plan["soluzioni"][0]                        # v72: the code's candidates, the model's valuations
-    assert first["candidate"] == "T1" and first["realismo"] == "medio" and first["contesta"] == ["R2"]
+    plan = M.method_plan(ctx, call=lambda messages: {"valutazioni": {"T2": {"realismo": "altissimo"}}})
+    first = plan["soluzioni"][1]                        # v72: the code's candidates, the model's valuations (v79.7:
+    assert first["candidate"] == "T2" and first["realismo"] == "medio" and first["contesta"] == ["R2"]   # elements' order
     assert "thesis_selection_s" in ctx["timings"]
     failed = M.method_plan(ctx, call=lambda m: (_ for _ in ()).throw(ValueError("x")))
     assert [t["candidate"] for t in failed["soluzioni"]] == [c["id"] for c in ctx["candidates"]]   # unargued, kept

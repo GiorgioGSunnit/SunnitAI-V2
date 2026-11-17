@@ -152,7 +152,7 @@ def test_the_counts_are_logged_in_the_plan_log_and_the_thesis_log(monkeypatch):
     plan_log = next(p for e, p in seen if e == "plan")
     counts = plan_log["counts"]
     assert set(M.COUNT_KEYS) <= set(counts)
-    assert counts["minoritaria"] == 2 and counts["barred"] == 0 and counts["chosen"] == "T1"
+    assert counts["minoritaria"] == 2 and counts["barred"] == 0 and counts["chosen"] == "T3"     # v79.7: last
     assert counts["chosen_kind"] == "contenimento" and counts["main_is_fallback"] is False     # a candidate, not inserted
     entry = json.loads(Path(ctx["thesis_log"]).read_text())
     assert entry["counts"] == counts and entry["choice"]["by"] == "score"

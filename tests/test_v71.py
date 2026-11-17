@@ -104,7 +104,7 @@ def test_the_prompt_lists_the_element_ids_and_asks_for_them():
     ctx["candidates"] = M.thesis_candidates(ctx)
     material = M.method_material(ctx)
     assert "· [R1] atti diretti a percuotere o ledere: integrato" in material
-    assert "- [T1] (sostenibile) L'elemento «la morte come conseguenza degli atti» (R2) dell'art. 584 c.p. non è " \
+    assert "- [T2] (sostenibile) L'elemento «la morte come conseguenza degli atti» (R2) dell'art. 584 c.p. non è " \
            "provato — contesta R2" in material                   # v72: the code's candidates, with their ids
     assert "Non aggiungere tesi e non cambiarle" in M.METHOD_SYSTEM and "la sezione la scrive il codice" in M.METHOD_SYSTEM
 
