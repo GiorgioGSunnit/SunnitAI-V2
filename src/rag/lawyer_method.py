@@ -360,7 +360,10 @@ def subsumption_rows(rec: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> L
             fact = _sentence_text(r.get("contradicting") or [], by_id) or "i fatti estratti lo escludono"
         else:
             fact = "nessun fatto del caso" + (f": manca {_short(r.get('missing'), 120)}" if r.get("missing") else "")
-        out.append((_short(r.get("text"), 160), fact, ESITO.get(status, status)))
+        text = _short(r.get("text"), 160)
+        if r.get("branch") and status == PROVATO:       # v79.6 (item 4): the branch that applies
+            text = f"{text} (alternativa che ricorre: «{_short(r['branch'], 80)}»)"
+        out.append((text, fact, ESITO.get(status, status)))
     return out
 
 
@@ -1123,6 +1126,7 @@ CANDIDATE_TEXTS = {   # my drafts: each candidate's line, from the record
     "defence": "Difesa sull'art. {art}{rubrica}",          # v79 (D1): a general-part defence with its elements proven
 }
 VICTIM_ROLES = ("persona_offesa", "parte_civile")
+KNOWN_ROLES = ("imputato", "indagato", "convenuto", "attore", "persona_offesa", "parte_civile", "terzo")     # v79.6
 PENAL_KINDS = ("contenimento", "requalify", "scriminante", "attenuante", "claim_offence", "parte_civile", "sequestro",
                "aggravante", "defence")
 CIVIL_ROLES = ("attore", "convenuto")
@@ -1304,7 +1308,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             contesta=[r["id"]])
     role = str(posture.get("role") or "")
     victim, civil_role = role in VICTIM_ROLES, role in CIVIL_ROLES
-    offender = not victim and not civil_role        # v75: the imputato's set (as before), the role unknown too
+    known_role = role in KNOWN_ROLES                # v79.6 (item 5): an unknown role gets neither side's wording
+    offender = known_role and not victim and not civil_role        # v75: the imputato's set
     if victim:                  # v75: the victim's set -- never the offender's circumstances
         _victim_candidates(ctx, add, fatt)
     if a.get("all_integrated") and offender:
@@ -1350,7 +1355,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         if proven and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
             add("attenuante", CANDIDATE_TEXTS["attenuante"].format(art=label, rubrica=_rubrica_tail(rec)),
                 poggia_su=proven, article=label)
-    if not victim and (role == "convenuto" or role not in ACCUSED):
+    if known_role and not victim and (role == "convenuto" or role not in ACCUSED):
         own_kind = "riconvenzionale" if role == "convenuto" else "claim"      # v75: the convenuto's own claim
         claims = []
         for label, rec in records.items():
@@ -1377,10 +1382,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                     add("remedy", CANDIDATE_TEXTS["remedy"].format(**r), poggia_su=proven, article=label, **r)
     if role == "convenuto":     # v75: the eccezioni of the claim's matter (the claim against the client)
         claim = next((x for x in threats if matter_of(x)), "")
-        for r in (matter_of(claim).get("eccezioni") or []) if claim else []:
-            if prescription_cited(str(r.get("articles") or "")):     # v79 (E4): never a candidate
-                continue
-            add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)
+        for r in (matter_of(claim).get("eccezioni") or []) if claim else []:     # v79.6: the eccezione di
+            add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)   # prescrizione stays (E4:
+            # claims only -- a prescription article is never a claim, issue_records.counted)
     for label, r in contests["integrated"]:
         add("contest_integrated", CANDIDATE_TEXTS["integrated"].format(el=_short(r.get("text"), 80), id=r["id"],
                                                                        art=label),
@@ -2805,6 +2809,94 @@ def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, 
     return out
 
 
+# --- v79.6 (item 1): the questions answered first --------------------------------------------------------------------------
+
+ANSWERS_TITLE = "**Risposte ai quesiti**"
+NO_SOURCE_ANSWER = "Non risulta dagli atti / dalle norme in registro."        # the PO's words
+ANSWER_SENTENCES = (2, 4)
+_PROCEDURAL_Q_RE = re.compile(r"\b(?:rit[oi]|procedur\w*|procediment\w*|termin[ei]|entro\s+quando|scadenz\w*|tempi\b|"
+                              r"impugn\w*|ricors\w*|appell\w*|competen\w*|giudice|tribunale|querela|udienz\w*|"
+                              r"notific\w*|mediazion\w*|negoziazion\w*|opposizion\w*|davanti\s+a\s+chi|come\s+si\s+procede|"
+                              r"prescri\w*|decadenz\w*)", re.IGNORECASE)
+_ANSWER_ITEM_RE = re.compile(r"^(\d+)\.\s+«(.+?)»\s+—\s+(.*)$")
+
+
+def _q_words(text: str) -> set:
+    return {w[:5] for w in re.findall(r"[a-zà-ü]{4,}", str(text or "").lower())} - {"quali", "quale", "come", "posso",
+                                                                                    "possi", "chied", "vorre", "sapere"}
+
+
+def _first_sentences(text: str, n: int) -> List[str]:
+    out = []
+    for line in (text or "").split("\n"):
+        line = _BOLD_HEAD_RE.sub("", line).strip().lstrip("-• ").strip()
+        if not line or line.startswith("|"):
+            continue
+        out += [x.strip() for x in _citation_rejoin(_SENT_SPLIT.split(line)) if x.strip()]
+    return out[:n]
+
+
+def procedural_answer(question: str, procedure: str) -> List[str]:
+    """The §8 sentences a procedural question asks about -- those sharing its words, in their order; ANSWER_SENTENCES
+    at most."""
+    want = _q_words(question)
+    pool = _first_sentences(procedure, 60)
+    hits = [x for x in pool if want & _q_words(x)]
+    return hits[:ANSWER_SENTENCES[1]]
+
+
+def answers_block(ctx: Dict[str, Any], quesiti: Sequence[Tuple[str, str]], procedure: str,
+                  sols: Sequence[Dict[str, Any]], main: int, a: Dict[str, Any], client: str,
+                  checked: Callable[[str], str], log: Optional[Dict[str, Any]] = None) -> Tuple[str, List[str]]:
+    """v79.6 (item 1): («Risposte ai quesiti», the code-written sentences) -- one numbered answer per question intake
+    extracted (ctx["asked"]), in order, two to four sentences: the writer's own section on that question (checked as
+    any written prose: Block B's grounding), a procedural question from §8, any other from the selection (the main line
+    and the forecast, code-written); nothing grounded -> NO_SOURCE_ANSWER. Never a guess, never an offer to go on."""
+    asked = [q for q in ctx.get("asked") or [] if str(q).strip()]
+    by_title = {t: x for t, x in quesiti}
+    for t, _ in quesiti:                # a writer's quesito intake did not list
+        if not any(same_line(t, q) for q in asked):
+            asked.append(t)
+    if not asked:
+        return "", []
+    who = client or "la parte assistita"
+    esito = {FAVOREVOLE: f"favorevole a {who}", SFAVOREVOLE: f"sfavorevole a {who}", INCERTO: "incerto"}.get(
+        a.get("esito"), str(a.get("esito") or ""))
+    strategy = [f"La linea principale è: {sols[main]['tesi'].rstrip('.')}.",
+                f"L'esito probabile è {esito}: {_plain(a.get('why')).rstrip('.')}."] if sols else []
+    items, how = [], []
+    for i, q in enumerate(asked, 1):
+        written = next((x for t, x in by_title.items() if same_line(t, q) or _plain(t) == _plain(q)), "")
+        if written:
+            got, kind = _first_sentences(checked(written), ANSWER_SENTENCES[1]), "writer"
+        elif _PROCEDURAL_Q_RE.search(q):
+            got, kind = procedural_answer(q, procedure), "procedura"
+            if len(got) < ANSWER_SENTENCES[0]:
+                got += strategy[:ANSWER_SENTENCES[0] - len(got)]
+        else:
+            got, kind = list(strategy), "selezione"
+        got = [x for x in got if x][:ANSWER_SENTENCES[1]]
+        if not got:
+            got, kind = [NO_SOURCE_ANSWER], "nessuna fonte"
+        how.append(kind)
+        items.append(f"{i}. «{_plain(q).rstrip()}» — {' '.join(got)}")
+    if log is not None:
+        log["answers"] = how
+    return ANSWERS_TITLE + "\n\n" + "\n".join(items), strategy
+
+
+def answers_of(answer: str) -> List[Tuple[str, str]]:
+    """v79.6: [(question, answer)] of the parere's «Risposte ai quesiti»."""
+    text = answer or ""
+    at = text.find(ANSWERS_TITLE)
+    if at < 0:
+        return []
+    block = text[at + len(ANSWERS_TITLE):]
+    end = _SECTION_RE.search(block)
+    block = block[:end.start()] if end else block
+    return [(m.group(2), m.group(3).strip()) for m in (_ANSWER_ITEM_RE.match(x.strip()) for x in block.split("\n")) if m]
+
+
 # --- v79 (E2): no internal wording reaches the reader ------------------------------------------------------------------------
 
 _ELEMENT_PAREN_RE = re.compile(r"\s*\(\s*(?:elementi?\s+)?([RCP]\d{1,3}(?:\s*(?:,|e|ed)\s*[RCP]\d{1,3})*)\s*\)")
@@ -2981,7 +3073,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     steps = steps_text(steps_from_selection(ctx, sols, main))
     if steps:
         conclusions.append(steps)
-    conclusions += [f"**{t}**\n\n{checked(x)}" for t, x in quesiti if x]
+    # v79.6 (item 1): the quesiti are answered first, in «Risposte ai quesiti» -- §9 no longer appends them
     fallback_objections = list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
     log["objections_from"] = {"model": len(plan.get("obiezioni") or []),
                               "fallback": max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
@@ -3026,13 +3118,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                 "obiettivo": a.get("obiettivo")})
     _log("compose", log)
     joined = "\n\n".join(f"**{i}. {t}**\n\n{x}" for i, (t, x) in enumerate(body, 1))
+    answers, strategy_lines = answers_block(ctx, quesiti, texts.get(title("processuali")) or procedure, sols, main, a,
+                                            client, checked, log)          # v79.6 (item 1): before §1
+    if answers:
+        joined = f"{answers}\n\n{joined}"
     # v79 (B3): what the nightly's output check reads -- the sources, the scope, and the code-written texts (built from
     # the sources: never a rule statement to trace)
     code_texts = [x for k, x in keyed if k in ("sintesi", "fatti", "conclusioni")] + \
         [f"{o.get('obiezione') or ''} {o.get('risposta') or ''}" for o in fallback_objections] + \
         [f"{t['tesi']} {t.get('pro') or ''} {t.get('contro') or ''}" for t in sols] + [ctx.get("subsumption") or ""] + \
         [ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""] + list(ctx.get("litisconsorzio") or []) + \
-        list(ctx.get("riti") or []) + list(points)
+        list(ctx.get("riti") or []) + list(points) + strategy_lines
     log["ledger"] = [e for e in removals.entries if e["kind"] in ("removed", "rewritten")]     # v79 (E3)
     ctx["compose_removals"] = log["ledger"]
     ctx["output_sources"] = {**rule_statements.serializable(rule_src), "element_ids": sorted(known_all),
@@ -3040,6 +3136,80 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                              "scope": sorted(scope | article_scope(ctx, code_texts + [head])),
                              "code": [_plain(x) for x in code_texts if _plain(x)]}
     return f"{head}\n\n{joined}" if head else joined
+
+
+# --- v79.6 (item 2): more than one client ----------------------------------------------------------------------------------
+
+CLIENT_HEAD = "**Nell'interesse di {name}**"
+SHARED_NOTE = "_Sezione comune a {names}: la loro posizione su questo punto è la stessa._"
+PER_CLIENT_ALWAYS = ("sintesi",)
+
+
+def _names(names: Sequence[str]) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " e " + names[-1]
+
+
+def compose_clients(sections: Sequence[Tuple[str, str]], items: Sequence[Tuple[str, Dict[str, Any], Dict[str, Any]]],
+                    profiles: Sequence[str] = (), log: Optional[Dict[str, Any]] = None) -> str:
+    """v79.6 (item 2): the parere for several clients -- each client's answer composed on its own context and plan
+    (compose), then merged section by section: §1 always per client («nell'interesse di …»); any other section shared
+    when every client's is the same (SHARED_NOTE says so), per client where their positions differ. The answers to the
+    quesiti likewise. The output check's sources are every client's."""
+    log = log if log is not None else {}
+    names = [n for n, _, _ in items]
+    composed = []
+    for name, ctx, plan in items:
+        own: Dict[str, Any] = {}
+        composed.append((name, compose(sections, ctx, plan, profiles, own), ctx))
+        log.setdefault("clients", {})[name] = {k: own.get(k) for k in ("main_thesis", "esito", "answers")}
+    heads, blocks, bodies = [], [], []
+    for name, text, _ in composed:
+        first = _SECTION_RE.search(text)
+        prefix, body = (text[:first.start()], text[first.start():]) if first else (text, "")
+        at = prefix.find(ANSWERS_TITLE)
+        heads.append(prefix[:at].strip() if at >= 0 else prefix.strip())
+        blocks.append(prefix[at:].strip() if at >= 0 else "")
+        bodies.append(answer_sections(body))
+
+    def merged(texts: Sequence[str], always: bool = False) -> str:
+        if not always and len(set(texts)) == 1:
+            return f"{texts[0]}\n\n{SHARED_NOTE.format(names=_names(names))}" if texts[0] else ""
+        return "\n\n".join(f"{CLIENT_HEAD.format(name=n)}\n\n{t}" for n, t in zip(names, texts) if t)
+    out = []
+    if heads[0]:
+        out.append(heads[0])
+    if any(blocks):
+        inner = [b[len(ANSWERS_TITLE):].strip() if b else "" for b in blocks]
+        out.append(f"{ANSWERS_TITLE}\n\n{merged(inner)}")
+    titles = [t for t, _ in bodies[0]]
+    shared = []
+    for i, t in enumerate(titles):
+        texts = [dict(b).get(t, "") for b in bodies]
+        always = t in [title(k) for k in PER_CLIENT_ALWAYS]
+        if not always and len(set(texts)) == 1:
+            shared.append(t)
+        out.append(f"**{i + 1}. {t}**\n\n{merged(texts, always)}")
+    log["shared_sections"] = shared
+    first_ctx = items[0][1]
+    first_ctx["output_sources"] = merge_sources([c.get("output_sources") or {} for _, _, c in composed])
+    first_ctx["compose_removals"] = [e for _, _, c in composed for e in c.get("compose_removals") or []]
+    _log("compose_clients", {"clients": names, "shared": shared})
+    return "\n\n".join(out)
+
+
+def merge_sources(sources: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """The output check's sources of several clients' answers, as one."""
+    out: Dict[str, Any] = {"elements": {}, "store": {}, "passages": {}, "element_ids": [], "scope": [], "code": [],
+                           "criminal": any(s.get("criminal", True) for s in sources) if sources else True}
+    for s in sources:
+        for key in ("elements", "passages"):
+            for label, items in (s.get(key) or {}).items():
+                out[key].setdefault(label, []).extend(items)
+        for label, fields in (s.get("store") or {}).items():
+            out["store"][label] = sorted(set(out["store"].get(label) or []) | set(fields))
+        for key in ("element_ids", "scope", "code"):
+            out[key] = list(dict.fromkeys(list(out[key]) + list(s.get(key) or [])))
+    return out
 
 
 # --- the context, before writing ------------------------------------------------------------------------------------------
@@ -3224,7 +3394,8 @@ def output_check(answer: str, out: Dict[str, Any]) -> Dict[str, List[str]]:
     code = [str(x) for x in (out or {}).get("code") or []]
     unsourced, outside, wording = [], [], []
     skip = title("orientamenti")
-    for t, text in answer_sections(version.strip_footer(answer or "")):
+    block = "\n".join(f"{a}" for _, a in answers_of(answer))           # v79.6: the answers are checked too
+    for t, text in [("risposte", block)] + answer_sections(version.strip_footer(answer or "")):
         if t == skip:
             continue
         wording += wording_hits(text, (out or {}).get("element_ids") or [], bool((out or {}).get("criminal", True)))
@@ -3242,12 +3413,17 @@ def output_check(answer: str, out: Dict[str, Any]) -> Dict[str, List[str]]:
     return {"unsourced": unsourced, "out_of_scope": list(dict.fromkeys(outside)), "wording": wording}
 
 
+_CLIENT_LAYOUT_RE = re.compile(r"(?m)^\*\*Nell'interesse di [^*\n]+\*\*\s*$|^_Sezione comune a [^\n]+_\s*$")
+
+
 def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:
     """[{check, ok, why}]: the ten sections present and non-empty, in order; §4's tables; §6's table with its realismo,
     the stragiudiziale option; three objections; §9's assessment lines; no «da verificare» outside §10; and by the
     cell: a civil claimant before filing has mediazione, ATP and 700 in §8, an imputato the riti alternativi."""
     cell = cell or {}
-    secs = answer_sections(answer)
+    raw_secs = answer_sections(answer)
+    # v79.6 (item 2): a several-client parere's per-client heads and shared notes are layout, not section text
+    secs = [(t, _CLIENT_LAYOUT_RE.sub("", x).strip()) for t, x in raw_secs]
     by = {t: x for t, x in secs}
     names = titles()
     out = []
@@ -3258,9 +3434,10 @@ def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List
     check("sections", [t for t, _ in secs] == names, f"found {[t for t, _ in secs]}")
     for t in names:
         check(f"non_empty:{t}", bool((by.get(t) or "").strip()), "empty or missing")
-    summary = by.get(title("sintesi")) or ""
-    check("summary_max_lines", len([x for x in _SENT_SPLIT.split(summary) if x.strip()]) <= SUMMARY_LINES,
-          f"more than {SUMMARY_LINES} sentences")
+    summary = dict(raw_secs).get(title("sintesi")) or ""
+    parts = [x for x in re.split(r"(?m)^\*\*Nell'interesse di [^*\n]+\*\*$", summary) if x.strip()] or [summary]
+    check("summary_max_lines", all(len([x for x in _SENT_SPLIT.split(p) if x.strip()]) <= SUMMARY_LINES
+                                   for p in parts), f"more than {SUMMARY_LINES} sentences")
     sub = by.get(title("norme")) or ""
     check("subsumption_table", "| Elemento | Fatto che lo integra | Esito |" in sub, "no element table")
     check("no_count_sentence", not re.search(r"requisiti provati:?\s*\d+\s+su\s+\d+", answer or "", re.I),

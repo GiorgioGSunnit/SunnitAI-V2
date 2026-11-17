@@ -31,6 +31,10 @@ orientations computed / to verify) and the penal cells' §5 verbatim.
 v79 (B3): check grounded_output -- in the delivered parere, no rule statement without a source (a record element, a
 store field, a registry passage: src/rag/rule_statements.py) and no article outside the answer's scope.
 
+v79.6: checks questions_answered (every question intake extracted answered in «Risposte ai quesiti», each answer
+grounded) and alternative_elements (an element with branches graded as its branches say); a sixth cell, two
+co-defendants, whose per-client thesis counts get a row each.
+
 v79 (F3): check rulings_printed -- no registry label («G1»), no «copia non ufficiale» stamp, no ruling cited
 without its head («Sez. 5, n. 12/2025» with no «Cass.»).
 
@@ -141,6 +145,11 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(wording_check(out["output_check"], result.get("state") or {}))     # v79 (E2)
         out["checks"].append(ledger_check(out["answer"], result.get("state") or {}))            # v79 (E3)
         out["checks"].append(printed_check(out["answer"]))                                      # v79 (F3)
+        out["checks"].append(questions_check(out["answer"], result.get("state") or {}))         # v79.6 (1)
+        out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
+        by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
+        if by_client:                                                                          # v79.6 (2)
+            out["thesis_counts_by_client"] = by_client
         from src.rag import rulings
         if rulings.enabled():
             record = (result.get("state") or {}).get("rulings_record")
@@ -207,6 +216,42 @@ def printed_check(answer: str) -> Dict[str, Any]:
     return {"check": "rulings_printed", "ok": not found, "why": "; ".join(found[:4])}
 
 
+def questions_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.6 (item 1): every question intake extracted has a non-empty answer in «Risposte ai quesiti», and every
+    answer passes the grounded output check (no rule statement without a source, no article outside the scope)."""
+    from src.rag import lawyer_method
+    asked = list(((state or {}).get("intake") or {}).get("questions") or [])
+    got = lawyer_method.answers_of(answer)
+    why = []
+    if len(got) < len(asked):
+        why.append(f"{len(asked)} questions, {len(got)} answers")
+    why += [f"empty answer to «{q[:60]}»" for q, a in got if not a.strip()]
+    out = (state or {}).get("output_sources")
+    if out and got:
+        found = lawyer_method.output_check(f"{lawyer_method.ANSWERS_TITLE}\n\n" + "\n".join(
+            f"{i}. «{q}» — {a}" for i, (q, a) in enumerate(got, 1)), out)
+        why += [f"answer without a source: {x[:80]}" for x in found["unsourced"]]
+        why += [f"answer cites outside the scope: {x}" for x in found["out_of_scope"]]
+    return {"check": "questions_answered", "ok": not why, "why": "; ".join(why[:4])}
+
+
+def alternatives_check(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.6 (item 4): every element with branches is graded as its branches say (issue_records.branch_combine) --
+    «integrato» if a branch is, «escluso» only if every branch is."""
+    from src.rag import issue_records
+    bad = []
+    for label, rec in ((state or {}).get("records") or {}).items():
+        for r in rec.get("requisites") or []:
+            got = r.get("branch_status") or {}
+            if not got or all(v == "da provare" for v in got.values()):
+                continue
+            want = issue_records.branch_combine(got.values())
+            if want == "provato" and r.get("status") != "provato" or want == "non risulta" and r.get("status") != want \
+                    or want != "non risulta" and r.get("status") == "non risulta":
+                bad.append(f"{label} {r.get('id')}: {r.get('status')} (alternative: {want})")
+    return {"check": "alternative_elements", "ok": not bad, "why": "; ".join(bad[:4])}
+
+
 def section5(answer: str) -> str:
     from src.rag import lawyer_method
     return dict(lawyer_method.answer_sections(answer)).get(lawyer_method.title("orientamenti")) or ""
@@ -255,7 +300,7 @@ COUNT_COLUMNS = ("offered", "parsed", "valued", "barred", "unverifiable", "minor
 
 def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]] = None) -> List[str]:
     """v79 (A2): per cell, the thesis selection's counts -- «before → now» where the baseline's differ."""
-    rows = [c for c in results if c.get("thesis_counts")]
+    rows = [c for c in results if c.get("thesis_counts") or c.get("thesis_counts_by_client")]
     if not rows:
         return []
     before = {c["id"]: c.get("thesis_counts") or {} for c in (baseline or {}).get("cells") or []}
@@ -270,8 +315,13 @@ def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any
     lines = ["", "## Thesis selection (per cell)", "", "| cell | " + " | ".join(COUNT_COLUMNS) + " |",
              "|---" * (len(COUNT_COLUMNS) + 1) + "|"]
     for c in rows:
-        t = c["thesis_counts"]
+        t = c.get("thesis_counts") or {}
         lines.append(f"| {c['id']} | " + " | ".join(cell(c["id"], k, t.get(k)) for k in COUNT_COLUMNS) + " |")
+        for name, tc in (c.get("thesis_counts_by_client") or {}).items():     # v79.6 (item 2): per client
+            key = f"{c['id']} / {name}"
+            before.setdefault(key, next((x.get("thesis_counts_by_client", {}).get(name) or {}
+                                         for x in (baseline or {}).get("cells") or [] if x.get("id") == c["id"]), {}))
+            lines.append(f"| {key} | " + " | ".join(cell(key, k, tc.get(k)) for k in COUNT_COLUMNS) + " |")
     gates = [c for c in rows if (c.get("defence_gate") or {}).get("dropped")]
     if gates:                   # v79 (D4): which defence articles the gate dropped (expected: the irrelevant ones)
         lines += ["", "Defence articles the general-part gate dropped: " + "; ".join(
@@ -328,7 +378,7 @@ def regressions(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]
 def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regressed: List[str], run_version: str = "",
            lawyer: Optional[List[str]] = None, baseline: Optional[Dict[str, Any]] = None, mode: str = "") -> str:
     names = list(dict.fromkeys(k["check"] for c in results for k in c["checks"]))
-    lines = ["# Nightly: five cells, structural checks", "", f"Version: {run_version or '—'}"
+    lines = [f"# Nightly: {len(results)} cells, structural checks", "", f"Version: {run_version or '—'}"
              + (f" (baseline {baseline.get('version') or '—'})" if baseline else "") + (f"; {mode}" if mode else ""), "",
              "| cell | " + " | ".join(names) + " | thesis s | writer s |", "|---" * (len(names) + 3) + "|"]
     for c in results:

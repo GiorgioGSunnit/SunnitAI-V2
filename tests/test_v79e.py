@@ -229,4 +229,5 @@ def test_no_prescription_candidate_for_a_claimant_or_a_convenuto():
     claim = {"2051 c.c.": {"rubrica": "Danno cagionato da cosa in custodia", "side": "threat", "charged": 1,
                            "requisites": [_req(3, "la cosa è in custodia")]}}
     eccezioni = [c for c in M.thesis_candidates(_ctx(claim, CONVENUTO)) if c["kind"] == "eccezione"]
-    assert eccezioni and not any(M.prescription_cited(str(c.get("articles"))) for c in eccezioni)
+    # v79.6: E4 applies to claims only -- the convenuto's eccezione di prescrizione stays a candidate
+    assert any(M.prescription_cited(str(c.get("articles"))) for c in eccezioni)

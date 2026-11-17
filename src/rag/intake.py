@@ -449,6 +449,28 @@ def quesiti(message: str) -> List[Tuple[int, str]]:
 
 
 _QUESTION_SPLIT_RE = re.compile(r"\?")
+# v79.6 (item 1): a request phrased as a question without «?» -- «chiedo se …», «vorrei sapere …», «quale … sia …»,
+# «è possibile …»
+_ASK_PHRASE_RE = re.compile(r"\b(?:chied(?:o|iamo)\s+(?:se|quale|quali|come|quando|di\s+sapere)|vorrei\s+sapere|vorremmo\s+"
+                            r"sapere|desidero\s+sapere|mi\s+(?:chiedo|domando)|(?:qual[ei]?|quale)\s+(?:[^.;]{0,80}?\s)?sia(?:no)?\b|"
+                            r"(?:^|[.;]\s*)è\s+possibile\b|\bse\s+sia\s+possibile)", re.IGNORECASE)
+
+
+def questions(message: str) -> List[str]:
+    """v79.6 (item 1): every explicit question of the request, in order -- a sentence ending in «?», or one phrased as
+    a request («chiedo se …», «vorrei sapere …», «quale … sia …», «è possibile …») --, one or more."""
+    out: List[str] = []
+    for sentence in sentences(message or ""):
+        text = _flat(sentence).strip()
+        if len(text.split()) < 2:
+            continue
+        if "?" in text:
+            parts = [p.strip() + "?" for p in text.split("?")[:-1] if len(p.split()) >= 2]
+            out += [re.sub(r"^.*?:\s*(?=[A-ZÀ-Üa-zà-ü])", "", p) if ":" in p[:-1] and len(p.split(":")[-1].split()) >= 2
+                    else p for p in parts]
+        elif _ASK_PHRASE_RE.search(text):
+            out.append(text)
+    return list(dict.fromkeys(x[:QUESITO_CHARS] for x in out))
 QUESTIONS_MIN = 2
 
 
@@ -1212,6 +1234,54 @@ def sued(text: str) -> bool:
     return bool(_SUED_RE.search(text or ""))
 
 
+# v79.6 (item 5): the client's side read from what the text says happens to it -- it resists a claim, a demand for
+# payment, a penalty or a charge (the defending role of the matter), or it brings or wants to bring one (the claiming role)
+_RESIST_RE = re.compile(
+    r"\b(?:ha(?:nno)?\s+ricevut[oa]|gli\s+è\s+stat[oa]|le\s+è\s+stat[oa]|è\s+stat[oa]|sono\s+stat[ie])\s+(?:\w+\s+){0,3}?"
+    r"(?:notificat\w*|contestat\w*|irrogat\w*|inflitt\w*|ingiunt\w*|intimat\w*|elevat\w*)|"
+    r"\bha(?:nno)?\s+ricevut[oa]\s+(?:una|un|la|il|l['’])\s*(?:diffida|richiesta|sollecit\w*|lettera|messa\s+in\s+mora|"
+    r"multa|sanzione|verbale|cartella|avviso|contestazione|ingiunzione|decreto|citazione|ricorso|querela|denuncia)|"
+    r"\b(?:chied\w*|pretend\w*|reclam\w*|intima\w*)\s+(?:a|al|alla|all['’]|ai|alle)\s*[^.;]{0,40}?(?:il\s+pagamento|di\s+"
+    r"pagare|la\s+restituzione|il\s+risarcimento|di\s+risarcire|di\s+rilasciare|lo\s+sgombero|il\s+saldo)|"
+    r"\b(?:accusat|denunciat|querelat|imputat|indagat|sanzionat|multat|citat|convenut)[oaie]\b", re.IGNORECASE)
+_CLAIM_RE = re.compile(
+    r"\b(?:vuole|vorrebbe|intende|desidera|vogliono|vorrebbero|intendono)\s+(?:\w+\s+){0,2}?(?:ottenere|recuperare|agire|"
+    r"chiedere|denunciare|querelare|far\s+valere|essere\s+risarcit\w*|citare|fare\s+causa|riavere|costituirsi)|"
+    r"\bcome\s+(?:può|possono|posso|possiamo)?\s*(?:recuperare|ottenere|far\s+valere|agire|tutelar\w*|riavere|essere\s+"
+    r"risarcit\w*)|\bnon\s+(?:gli|le|ci)?\s*(?:ha|hanno)\s+(?:mai\s+|ancora\s+)?(?:pagato|restituito|consegnato|versato|"
+    r"saldato|rimborsato)|\bè\s+stat[oa]\s+(?:aggredit|derubat|truffat|picchiat|minacciat|diffamat|licenziat|"
+    r"danneggiat)\w*|\bha\s+subito\b", re.IGNORECASE)
+_ENTITY_RE = re.compile(r"\b(?:difensore|legale|avvocat[oa])\s+(?:della|dell['’]|del|dello)\s*([a-zà-ù]{4,})|"
+                        r"\bassist(?:o|iamo)\s+(?:la|l['’]|il|lo|un['’]?|una|uno)\s*([a-zà-ù]{4,})", re.IGNORECASE)
+ROLE_SIDES = {"penale": ("imputato", "persona_offesa"), "civile": ("convenuto", "attore")}
+READING_WHY = {"penale": "nessun addebito al cliente risulta dal testo", "civile": "nessuna azione contro il cliente "
+                                                                                   "risulta dal testo"}
+
+
+def derive_role(text: str, rito: str = "") -> Tuple[str, str, str]:
+    """v79.6 (item 5): (role, why, reading) for a client whose role nobody stated -- the sentences about the entity the
+    lawyer names («difensore della società», «assisto l'impresa»), else the whole text: resisting a claim, a payment
+    demand, a penalty or a charge -> the matter's defending role (imputato, convenuto); bringing or wanting to bring
+    one -> its claiming role (persona offesa, attore); neither, or both -> a reading (the claiming role: nothing in the
+    text acts against the client), said in one line (reading)."""
+    family = "penale" if str(rito or "").startswith("penale") else "civile"
+    defending, claiming = ROLE_SIDES[family]
+    m = _ENTITY_RE.search(text or "")
+    entity = (m.group(1) or m.group(2)).lower() if m else ""
+    scope = text or ""
+    if entity:
+        about = [x for x in sentences(text or "") if entity[:5] in x.lower() and not _ENTITY_RE.search(x)]
+        scope = " ".join(about) or scope
+    resist, claim = _RESIST_RE.search(scope), _CLAIM_RE.search(scope)
+    who = f"«{entity}»: " if entity else ""
+    if resist and not claim:
+        return defending, f"{who}«{_flat(resist.group(0))}»: il cliente resiste", ""
+    if claim and not resist:
+        return claiming, f"{who}«{_flat(claim.group(0))}»: il cliente agisce", ""
+    why = READING_WHY[family]
+    return claiming, f"lettura: {why}", why
+
+
 def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (), *, model: bool = True,
            refers_to_upload: bool = False, upload_role: str = "") -> Dict[str, Any]:
     """The intake of one request (see the module's doc). message: the user's words; upload: the text of the document
@@ -1262,6 +1332,11 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
         take("deliverable", default, DEFAULT, "nessuna regola, nessuna risposta del modello")
     case = values["deliverable"] in CASE_DELIVERABLES
     take("stage", "pre_filing" if case else UNKNOWN, DEFAULT, "il testo non dice la fase")
+    reading = ""
+    if case and "role" not in values:       # v79.6 (item 5): no role stated nor read -- derived from the text
+        derived, derived_why, reading = derive_role(f"{message}\n{upload}", values.get("rito") or "")
+        if not reading:             # a definite reading here; the fallback waits for the analysis (resolve)
+            take("role", derived, RULE, derived_why)
     take("rito", UNKNOWN, DEFAULT, "l'area del caso la decide (frame)")
     take("role", UNKNOWN, DEFAULT, "la logica del cliente la decide")
     if not case and confidence.get("role") != RULE:
@@ -1275,6 +1350,8 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
         "deliverable": values["deliverable"],
         "requested_blocks": requested_blocks(message),
         "named_articles": named_articles(message, client["name"]),        # v65: with their verb and use
+        "questions": questions(message),                                  # v79.6 (item 1): every explicit question
+        "role_reading": "",                                               # v79.6 (item 5): resolve's reading
         "rito": values["rito"], "role": values["role"], "stage": values["stage"],
         "prior_decisions": prior_decisions(f"{message}\n{upload}"),
         "client": {"name": client["name"], "side": side_of(values["role"]),
@@ -1390,4 +1467,9 @@ def resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Optio
         if role:
             out["role"] = role
             out["client"] = {**(out.get("client") or {}), "side": side}
+        else:                           # v79.6 (item 5): never «sconosciuto» -- a reading of the text, said in one line
+            case = str((analysis or {}).get(interactive_flow.CASE_KEY) or "")
+            role, why, reading = derive_role(case, "penale" if penal else "civile")
+            out["role"], out["role_reading"] = role, reading
+            out["confidence"]["role"] = DEFAULT
     return out

@@ -194,4 +194,8 @@ def test_the_assumed_client_may_be_the_extractions_controparte(monkeypatch):
 def test_the_line_opens_the_single_shot_parere(monkeypatch):
     state, seen = _single(monkeypatch)
     text = flow.single_shot("Il caso.")["answer"]
-    assert text.startswith("Il parere è reso nell'interesse di Leonardo; controparte: Domitilla (convenuto).\n\n**1.")
+    head = "Il parere è reso nell'interesse di Leonardo; controparte: Domitilla (convenuto).\n\n"
+    assert text.startswith(head)
+    rest = text[len(head):]             # v79.6 (item 5): the role read, in one line, when nothing stated it
+    assert rest.startswith("**1.") or (rest.startswith("Il quesito non indica la posizione del cliente") and
+                                       rest.split("\n\n", 1)[1].startswith("**1."))

@@ -1,5 +1,5 @@
 {
- "_about": "v70: the nightly's five posture cells (scripts/nightly_sim.py) -- synthetic cases, none of the benchmark's, one per cell; «cell» is what intake must read and what the structural checks expect (lawyer_method.structure_checks).",
+ "_about": "v70: the nightly's five posture cells (scripts/nightly_sim.py) -- synthetic cases, none of the benchmark's, one per cell; «cell» is what intake must read and what the structural checks expect (lawyer_method.structure_checks). v79.6: a sixth, synthetic two-client cell (two co-defendants with different offences).",
  "cells": [
   {
    "id": "civile_attore_pre_filing",
@@ -50,6 +50,20 @@
     "stage": "pre_filing"
    },
    "text": "Laura, dipendente a tempo indeterminato della società Alfa S.r.l. dal 2018, è stata licenziata il 20 ottobre 2026 con una lettera che non indica alcuna motivazione e senza alcuna contestazione disciplinare. Assisto Laura: come impugnare il licenziamento?"
+  },
+  {
+   "id": "penale_coimputati_primo_grado",
+   "cell": {
+    "family": "penale",
+    "rito": "penale",
+    "role": "imputato",
+    "stage": "primo_grado"
+   },
+   "clients": [
+    "Tizio",
+    "Caio"
+   ],
+   "text": "Tizio e Caio sono imputati nello stesso processo: Tizio del reato di furto (art. 624 c.p.) per aver sottratto una bicicletta dal cortile di Sempronio il 4 aprile 2026; Caio del reato di ricettazione (art. 648 c.p.) per averla acquistata il giorno dopo, sapendo che era rubata. Il processo di primo grado è iniziato. Sono il difensore di Tizio e di Caio: quale strategia difensiva per ciascuno?"
   }
  ]
 }

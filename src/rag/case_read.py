@@ -29,6 +29,8 @@ _SYSTEM = (
     "Sei un avvocato esperto. Leggi il caso e la richiesta dell'utente PRIMA di cercare qualsiasi norma, e rispondi con "
     "un JSON con ESATTAMENTE queste chiavi:\n"
     "- cliente: {nome, ruolo} -- la parte che l'utente assiste se il testo lo dice, altrimenti nome \"\";\n"
+    "- clienti: [{nome, ruolo}] -- TUTTE le parti che l'utente assiste se il testo ne indica più d'una (es. due "
+    "coimputati difesi dallo stesso avvocato), altrimenti la sola del cliente o [];\n"
     "- obiettivo: che cosa vuole ottenere il cliente, in una frase;\n"
     "- fatti: i fatti del caso, uno per voce, come il testo li dice (al massimo 12; mai la domanda o la richiesta "
     "dell'utente);\n"
@@ -138,7 +140,15 @@ def clean(raw: Any, request: str = "") -> Dict[str, Any]:
         if name and not _ARTICLE_RE.search(name) and not _ARTICLE_RE.search(rubricated or ""):
             alternatives.append({"name": name, "rubricated": rubricated, "why": _cut(a.get("perche") or a.get("perché")),
                                  "facts": facts_verdict(a.get("fatti"))})      # v65: does a fact of the case hold it
+    clients = []                # v79.6 (item 2): every party the user assists; the single client the one-element case
+    for c in raw.get("clienti") or [] if isinstance(raw.get("clienti"), list) else []:
+        name = _cut(c.get("nome"), 80) if isinstance(c, dict) else _cut(c, 80)
+        if name and not any(same_party(name, x["name"]) for x in clients):
+            clients.append({"name": name, "role": _cut(c.get("ruolo"), 80) if isinstance(c, dict) else ""})
+    if not clients and _cut(client.get("nome"), 80):
+        clients = [{"name": _cut(client.get("nome"), 80), "role": _cut(client.get("ruolo"), 80)}]
     out = {"client": {"name": _cut(client.get("nome"), 80), "role": _cut(client.get("ruolo"), 80)},
+           "clients": clients[:MAX_PARTIES],
            "parties": parties[:MAX_PARTIES], "alternatives": alternatives[:MAX_ALTERNATIVES],
            "goal": _cut(raw.get("obiettivo")),
            "facts": [f for f in _list(raw.get("fatti"), MAX_FACTS) if not_request(f, request)],

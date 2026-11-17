@@ -215,6 +215,35 @@ def intake_family(posture: Optional[Dict[str, Any]]) -> str:
     return "lavoro" if rito == "lavoro" else family(rito)
 
 
+def _name_re(name: str) -> "re.Pattern":
+    words = [w for w in re.findall(r"[A-ZÀ-Ü][\wà-ÿ'’]+", name or "") if len(w) >= 3] or [str(name or "").strip()]
+    return re.compile(r"\b(?:" + "|".join(re.escape(w) for w in words if w) + r")\b")
+
+
+def client_text(case: str, scope: Optional[Dict[str, Any]]) -> str:
+    """v79.6 (item 2): the case as one client's charge reads it -- each sentence cut into its clauses (at «;», «:» and
+    before another client's name after a comma); a clause naming only other clients is dropped, one naming no client
+    goes with the clause before it (a sentence's first clause: everyone's). Never the whole case for a scope with no
+    other client."""
+    from . import intake
+    if not scope or not scope.get("others"):
+        return case or ""
+    mine = _name_re(scope["name"])
+    others = [_name_re(x) for x in scope["others"]]
+    kept: List[str] = []
+    for sentence in intake.sentences(case or ""):
+        owner, mine_ = "all", []
+        for clause in re.split(r"\s*[;:]\s*|,\s+(?=(?:mentre\s+|e\s+)?[A-ZÀ-Ü][\wà-ÿ]+\s)", sentence):
+            me = bool(mine.search(clause))
+            them = any(o.search(clause) for o in others)
+            owner = "me" if me else ("them" if them else owner)
+            if owner != "them" and clause.strip():
+                mine_.append(clause.strip().rstrip("."))
+        if mine_:                   # the sentence's clauses kept together: its charge verb stays with its articles
+            kept.append(", ".join(mine_))
+    return ". ".join(kept) + ("." if kept else "")
+
+
 def charge_labels(case: str) -> List[str]:
     """The articles the case's charge or claim sentences name («Il PM contesta a Sempronio l'art 584 cp», «imputato …
     a norma degli articoli 582 - 583 … del codice penale»), as labels. v73: the in-flow fallback reads the case's text
@@ -405,9 +434,14 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
         interactive_flow._restored_rows((state or {}).get("reserve"))
     # the charge's order: v71 -- intake's charge first («contesta / imputa / chiede la condanna ai sensi di art. N»)
     aliases = (state or {}).get("charge_aliases") or {}     # v79 (C3): a special law's label -> its store document's
-    from_intake = [aliases.get(x, x) for x in intake_charges(posture)]
+    scope = (state or {}).get("client_scope")                # v79.6 (item 2): one client's charge among several
+    if scope and scope.get("others"):
+        case = client_text(case, scope)
+    from_intake = [aliases.get(x, x) for x in (intake_charges(posture) if not scope else [])]
     from_case = [aliases.get(x, x) for x in charge_labels(case)]
     order = list(dict.fromkeys(from_intake + from_case + charged_by_name(case, records, rows)))
+    repealed = set((state or {}).get("abrogated") or [])    # v79.6 (item 3): a repealed article is never the charge
+    order = [x for x in order if x not in repealed]
     read_log: Dict[str, Any] = {}
     from_read = [] if order else claim_from_read(state, posture, (), read_log)   # v75: a civil claim naming no article
     hypothesis = bool(from_read) and str((posture or {}).get("family") or "") == "penale"     # v79 (C4)

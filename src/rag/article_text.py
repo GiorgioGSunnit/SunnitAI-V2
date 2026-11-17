@@ -139,11 +139,60 @@ _ABROGATED_ARTICLE_RE = re.compile(r"\b(?:l['’]\s*)?(?:articolo|art\.)\s+(?:è
                                    re.IGNORECASE)
 
 
+# v79.6 (item 3): a repeal stated by the text -- the whole text a repeal reference («abrogato dall'art. 3 della L. 15/1968»,
+# «soppresso», «Articolo abrogato da …»), or a repeal note at its head followed by the old text («[Abrogato dall'art. 12
+# …] Il testo previgente …»); a comma abrogated inside a live article is neither
+_REPEAL_HEAD_RE = re.compile(r"^\W*(?:\[\d+\]\s*)*[\[(]?\s*(?:(?:l['’]\s*)?(?:articolo|art\.)\s+(?:è\s+stato\s+|e'\s+stato\s+|è\s+)?)?"
+                             r"(abrogat[oa]|soppress[oa])\b", re.IGNORECASE)
+_REPEAL_REF_RE = re.compile(r"\b(?:dal(?:l['’]|la|lo)?|da|ad\s+opera\s+de\w*|per\s+effetto\s+de\w*|a\s+norma\s+de\w*|"
+                            r"ai\s+sensi\s+de\w*|con)\b|\bart(?:t|icol[oi])?\.?|\b(?:comma|co\.|n\.|num\.|lett\.)|\b(?:legge|"
+                            r"l\.|d\.\s?lgs\.?|d\.\s?l\.|d\.\s?p\.\s?r\.|r\.\s?d\.|decreto(?:\s+legislativo|\s+legge|\s+del\s+"
+                            r"presidente\s+della\s+repubblica)?|regio\s+decreto|testo\s+unico)|\b\d+(?:-\w+)?\b|\b(?:gennaio|"
+                            r"febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\b|"
+                            r"\b(?:del|della|dei|delle|di|il|la|lo|l['’]|e|a\s+decorrere)\b|\bsentenza\s+della\s+corte\s+"
+                            r"costituzionale\b", re.IGNORECASE)
+_REPEAL_NOTE_RE = re.compile(r"^\W*[\[(]?\s*((?:(?:l['’]\s*)?(?:articolo|art\.)\s+(?:è\s+stato\s+|è\s+)?)?(?:abrogat[oa]|"
+                             r"soppress[oa])[^\])\n]{0,160}?)(?:[\])]|\.(?=\s+[A-ZÀ-Ü][a-zà-ü]{2})|\.?\s*$)", re.IGNORECASE)
+
+
+def repeal_kind(text: Any) -> str:
+    """v79.6: «reference» -- the text is a repeal reference alone; «head_note» -- a repeal note opens a longer text;
+    "" otherwise."""
+    plain = " ".join(str(text or "").split())
+    m = _REPEAL_HEAD_RE.match(plain)
+    if not m:
+        return ""
+    rest = re.sub(r"[^\w\s]", " ", _REPEAL_REF_RE.sub(" ", re.sub(r"\(\d+\)", " ", plain[m.end():])))
+    rest = re.sub(r"\b(?:lgs|p|r|d|l|n)\b", " ", rest, flags=re.IGNORECASE)
+    return "reference" if len(rest.split()) <= 2 else "head_note"
+
+
+def repeal_note(text: Any) -> str:
+    """v79.6: the repeal as the text states it («abrogato dall'art. 1 del D.Lgs. 15 gennaio 2016, n. 7»), "" when none."""
+    m = _REPEAL_NOTE_RE.match(" ".join(str(text or "").split()))
+    return " ".join(m.group(1).split()).rstrip(" .;,") if m else ""
+
+
+# v79.6: a status property that marks the node repealed -- a boolean, or a status naming the repeal
+STATUS_PROPERTIES = ("abrogato", "abrogata", "abrogated", "repealed", "soppresso")
+STATUS_TEXT_PROPERTIES = ("status", "stato", "vigenza")
+
+
+def status_repealed(props: Any) -> bool:
+    props = props if isinstance(props, dict) else {}
+    if any(props.get(k) is True or str(props.get(k)).lower() in ("true", "1", "sì", "si") for k in STATUS_PROPERTIES):
+        return True
+    return any(re.search(r"\b(?:abrogat|soppress|repeal)", str(props.get(k) or ""), re.IGNORECASE)
+               for k in STATUS_TEXT_PROPERTIES)
+
+
 def is_abrogated(text: Any) -> bool:
     plain = " ".join(str(text or "").split())
     if not plain:
         return False
     if _ABROGATED_WHOLE_RE.match(plain) or _ABROGATED_ARTICLE_RE.search(plain):
+        return True
+    if repeal_kind(plain):          # v79.6: a repeal reference alone, or a repeal note at its head
         return True
     words = re.sub(r"\[[^\]]*\]|\(\d+\)", " ", plain)
     return len(words.split()) <= 6 and bool(re.search(r"\babrogat[oa]\b", words, re.IGNORECASE)) \
@@ -151,9 +200,11 @@ def is_abrogated(text: Any) -> bool:
 
 
 def row_abrogated(row: Dict[str, Any]) -> bool:
+    """The row's article is repealed: its text says so (is_abrogated), its rubrica does with no text, or (v79.6) a
+    status property of its node does."""
     s = (row or {}).get("s") or {}
-    return is_abrogated(s.get("plain_text") or s.get("abstract") or "") or is_abrogated(s.get("titolo_articolo") or "") \
-        and not (s.get("plain_text") or "").strip()
+    return is_abrogated(s.get("plain_text") or s.get("abstract") or "") or (
+        is_abrogated(s.get("titolo_articolo") or "") and not (s.get("plain_text") or "").strip()) or status_repealed(s)
 
 
 # v60e (ingestion misalignment: a node whose rubrica belongs to another article's text): the rubrica's content words

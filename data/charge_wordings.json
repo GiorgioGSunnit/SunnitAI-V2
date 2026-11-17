@@ -1,22 +1,77 @@
 {
  "_about": "v79 (C2): the wordings of a sentence that states the charge or the claim (src/rag/posture.py charge_re: charge_labels, charged_by_name). One regular expression each, case-insensitive, joined with «|». Before v79 these were posture._CHARGE_RE in code; the six marked v79 are new. A sentence matching one of them gives its articles to the charge (posture.sentence_articles: the codes' citations and the special laws' of data/special_laws.json).",
  "wordings": [
-  {"pattern": "\\bcontest\\w*", "since": "v63"},
-  {"pattern": "\\bimputat\\w*\\s+(?:di|del|della|dei|per)\\b", "since": "v63"},
-  {"pattern": "\\baccusat\\w*\\s+di\\b", "since": "v63"},
-  {"pattern": "\\bindagat\\w*\\s+per\\b", "since": "v63"},
-  {"pattern": "\\ba norma degli?\\s+art", "since": "v63"},
-  {"pattern": "\\bai sensi dell['’]?\\s*art", "since": "v63"},
-  {"pattern": "\\bper il (?:reato|delitto) di\\b", "since": "v63"},
-  {"pattern": "\\bchied\\w* (?:la condanna|il pagamento|il risarcimento|la risoluzione)", "since": "v63"},
-  {"pattern": "\\bdomanda di\\b", "since": "v63"},
-  {"pattern": "\\bcita\\w* in giudizio\\b", "since": "v63"},
-  {"pattern": "\\bconvien\\w* in giudizio\\b", "since": "v63"},
-  {"pattern": "\\barrestat\\w*\\s+(?:in\\s+flagranza\\s+(?:di\\s+reato\\s+)?)?per\\b", "since": "v79"},
-  {"pattern": "\\bgiudicat\\w*\\s+responsabil\\w*", "since": "v79"},
-  {"pattern": "\\bcondannat\\w*\\s+(?:in\\s+\\w+\\s+grado\\s+)?per\\b", "since": "v79"},
-  {"pattern": "\\brinviat\\w*\\s+a\\s+giudizio\\s+per\\b", "since": "v79"},
-  {"pattern": "\\bimputat\\w*\\s+del\\s+(?:delitto|reato)\\s+di\\b", "since": "v79"},
-  {"pattern": "\\btratt\\w*\\s+in\\s+arresto\\s+per\\b", "since": "v79"}
+  {
+   "pattern": "\\bcontest\\w*",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bimputat\\w*\\s+(?:di|del|della|dei|per)\\b",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\baccusat\\w*\\s+di\\b",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bindagat\\w*\\s+per\\b",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\ba norma degli?\\s+art",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bai sensi dell['’]?\\s*art",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bper il (?:reato|delitto) di\\b",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bchied\\w* (?:la condanna|il pagamento|il risarcimento|la risoluzione)",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bdomanda di\\b",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bcita\\w* in giudizio\\b",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\bconvien\\w* in giudizio\\b",
+   "since": "v63"
+  },
+  {
+   "pattern": "\\barrestat\\w*\\s+(?:in\\s+flagranza\\s+(?:di\\s+reato\\s+)?)?per\\b",
+   "since": "v79"
+  },
+  {
+   "pattern": "\\bgiudicat\\w*\\s+responsabil\\w*",
+   "since": "v79"
+  },
+  {
+   "pattern": "\\bcondannat\\w*\\s+(?:in\\s+\\w+\\s+grado\\s+)?per\\b",
+   "since": "v79"
+  },
+  {
+   "pattern": "\\brinviat\\w*\\s+a\\s+giudizio\\s+per\\b",
+   "since": "v79"
+  },
+  {
+   "pattern": "\\bimputat\\w*\\s+del\\s+(?:delitto|reato)\\s+di\\b",
+   "since": "v79"
+  },
+  {
+   "pattern": "\\btratt\\w*\\s+in\\s+arresto\\s+per\\b",
+   "since": "v79"
+  },
+  {
+   "pattern": "\\bimputat\\w*\\b[^.;]{0,80}?\\b(?:del|dei|per\\s+il|per\\s+i)\\s+(?:reat[oi]|delitt[oi])\\s+di\\b",
+   "since": "v79.6"
+  }
  ]
 }

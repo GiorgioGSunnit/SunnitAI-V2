@@ -192,6 +192,9 @@ def _parse_label(label: str) -> Tuple[str, str]:
     return number, code
 
 
+_STATUS_KEYS = ("abrogato", "abrogata", "abrogated", "repealed", "soppresso", "status", "stato", "vigenza")
+
+
 def _compact_row(row: Dict[str, Any]) -> Dict[str, Any]:
     """A pool row as the session keeps it: its article, its section's name, rubrica and text (cut), its document, and
     its simple tags."""
@@ -199,7 +202,8 @@ def _compact_row(row: Dict[str, Any]) -> Dict[str, Any]:
     out: Dict[str, Any] = {
         "_article": list(row["_article"]) if row.get("_article") else None,
         "s": {k: (str(s.get(k))[:ROW_TEXT_CHARS] if k in ("plain_text", "abstract") else s.get(k))
-              for k in ("name", "titolo_articolo", "title", "plain_text", "abstract") if s.get(k) is not None},
+              for k in ("name", "titolo_articolo", "title", "plain_text", "abstract", *_STATUS_KEYS)      # v79.6: the
+              if s.get(k) is not None},                                                                    # status kept
         "d": {k: d.get(k) for k in ("id", "name", "type") if d.get(k) is not None}}
     for k, v in row.items():
         if k.startswith("_") and k != "_article":
@@ -846,6 +850,18 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             gone = {x["article"] for x in gate_log.get("rows") or []}
             anchor_keep = [a for a in anchor_keep if a not in gone]
             must = [a for a in must if a not in gone]
+        if case_first:          # v79.6 (item 6): a keyword hit outside the case's matters, every book, before grading
+            from . import topic_groups
+            matter_log: Dict[str, Any] = {}
+            named_labels = [_label(_key(r)) for r in dg._refs_in(case) if len(r) == 2]
+            article_rows = _isolated("matter_gate", lambda: topic_groups.matter_gate(
+                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log), article_rows)
+            if matter_log.get("dropped"):
+                gone = {x["article"] for x in matter_log["dropped"]}
+                anchor_keep = [a for a in anchor_keep if a not in gone]
+                must = [a for a in must if a not in gone]
+                out["matter_gate"] = matter_log
+                _log("matter_gate", matter_log)
         if case_first:          # v64: a general-part article (c.p. Libro I) is never a grading candidate -- the user's
             from . import cenni                       # named ones aside (cenni: its own roads into the norms section)
             named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
@@ -5291,6 +5307,16 @@ def prepare_side(state: Dict[str, Any]) -> None:
         _isolated("reside", lambda: reside(state, client))
 
 
+def role_reading_line(state: Dict[str, Any], assumption: str = "") -> str:
+    """v79.6 (item 5): the one line saying which role the parere read and why, when nothing in the text decided it
+    (intake's role_reading); "" otherwise, or when the client line already states the role (CLIENT_DERIVED)."""
+    got = state.get("intake") or {}
+    why = str(got.get("role_reading") or "")
+    if not why or (assumption and "il parere è impostato per la parte" in assumption):
+        return ""
+    return C.fill(C.ROLE_READING, role=str(got.get("role") or "").replace("_", " "), why=why) or ""
+
+
 def lawyer_method_on() -> bool:
     from . import lawyer_method
     return lawyer_method.enabled()
@@ -5491,6 +5517,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     all_rows = _restored_rows(state.get("rows"))
     from .article_text import row_abrogated, row_misaligned     # v60c: an abrogated article is never written; v60e:
     dead = {_key(r["_article"]) for r in all_rows if r.get("_article") and (row_abrogated(r) or row_misaligned(r))}
+    state["abrogated"] = abrogated_labels(all_rows)         # v79.6 (item 3): never a charge, a line, a candidate
     records = state.get("records") or {}
     extra: List[str] = []
     if records and method_mode(state):      # v74: every record decomposed -- the charge, the alternatives, the named
@@ -5626,12 +5653,19 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         rendered = open_points_wording(rendered)
     method_ctx: Optional[Dict[str, Any]] = None
     method_plan: Dict[str, Any] = {}
+    method_clients = None
     if method_mode(state):      # v70: the lawyer's method -- his rules in every writer call, its context, the thesis
         from . import lawyer_method                                                       # selection (thinking on)
         lawyer_method.begin(posture.get("rito") or "", _areas(analysis))
         mark("method")
-        method_ctx, method_plan = _isolated("lawyer_method_plan", lambda: method_inputs(
-            state, posture, plan, topics, refs, all_rows, case), (None, {})) or (None, {})
+        clients = clients_of(state)             # v79.6 (item 2): more than one client -- a method per client
+        method_clients = _isolated("lawyer_method_clients", lambda: method_inputs_clients(
+            state, posture, plan, topics, refs, all_rows, case, clients), None) if clients else None
+        if method_clients:
+            method_ctx, method_plan = method_clients[0][1], method_clients[0][2]
+        else:
+            method_ctx, method_plan = _isolated("lawyer_method_plan", lambda: method_inputs(
+                state, posture, plan, topics, refs, all_rows, case), (None, {})) or (None, {})
         refused = _isolated("lawyer_method_refusal", lambda: lawyer_method.placeholder_main(
             method_ctx, method_plan), "") if method_ctx is not None else ""
         if refused:             # v75: a placeholder thesis is a failure state -- never printed: the standard body
@@ -5730,14 +5764,21 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         from . import lawyer_method
         rest = _isolated("other_profiles", lambda: single_profiles(state, numbers, analysis), []) or []
         compose_log: Dict[str, Any] = {}
-        draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
-            answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
+        if method_clients:                      # v79.6 (item 2): one §1 per client, the differing sections per client
+            draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose_clients(
+                answer_ledger.sections_of(draft), method_clients, rest, compose_log), draft) or draft
+        else:
+            draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
+                answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
         state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
         merge_removals(state, method_ctx.get("compose_removals") or [])       # v79 (E3): compose's, «removed»
         _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
     if state.get("method_refused"):             # v76: the method never steps aside silently -- the answer says so
         from . import lawyer_method
         draft = f"{lawyer_method.not_applied_note(state['method_refused'])}\n\n{draft}"
+    reading = role_reading_line(state, assumption)       # v79.6 (item 5): the role read, in one line
+    if reading:
+        draft = f"{reading}\n\n{draft}"
     if assumption:                              # v60 (D): the client assumed, said first
         draft = f"{assumption}\n\n{draft}"
     others = [C.fill(C.CLOSING_TOPIC, n=i, title=t["title"]) for i, t in enumerate(state["topics"], 1) if i not in numbers]
@@ -5762,6 +5803,70 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     return draft, citations
 
 
+def _row_text(row: Dict[str, Any]) -> str:
+    s = (row or {}).get("s") or {}
+    return str(s.get("plain_text") or s.get("abstract") or "")
+
+
+def abrogated_labels(rows: Sequence[Dict[str, Any]]) -> List[str]:
+    """v79.6 (item 3): the labels of the rows whose article is repealed (article_text.row_abrogated: the text a repeal
+    reference alone, a repeal note at its head, or a status property)."""
+    from .article_text import row_abrogated
+    return list(dict.fromkeys(_label(_key(r["_article"])) for r in rows or [] if r.get("_article") and row_abrogated(r)))
+
+
+_MULTI_CLIENT_RE = re.compile(r"\b(?i:assisto|assistiamo|difendo|difendiamo|rappresento|rappresentiamo|sono\s+il\s+(?:difensore|"
+                              r"legale)\s+di|sono\s+l['’]avvocato\s+di|siamo\s+i\s+difensori\s+di)\s+"
+                              r"([A-ZÀ-Ü][\wà-ÿ'’]+)\s+(?i:e)\s+(?i:di\s+)?([A-ZÀ-Ü][\wà-ÿ'’]+)")
+
+
+def clients_of(state: Dict[str, Any]) -> List[Dict[str, str]]:
+    """v79.6 (item 2): the parties the user assists, [{name, role}] -- the first read's «clienti», else the user's own
+    words («Sono il difensore di Tizio e di Caio»); fewer than two: [] (the single-client parere)."""
+    read = state.get("read") or {}
+    found = [c for c in read.get("clients") or [] if isinstance(c, dict) and c.get("name")]
+    if len(found) < 2:
+        m = _MULTI_CLIENT_RE.search(case_text(state))
+        found = [{"name": m.group(1), "role": ""}, {"name": m.group(2), "role": ""}] if m else []
+    return found if len(found) >= 2 else []
+
+
+def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any],
+                          topics: Sequence[Dict[str, Any]], refs: Sequence[tuple], rows: Sequence[Dict[str, Any]],
+                          case: str, clients: Sequence[Dict[str, str]]) -> List[Tuple[str, Dict[str, Any], Dict[str, Any]]]:
+    """v79.6 (item 2): one method per client -- each with its posture (its role when the read gives one), its records'
+    sides and charge marked on the clauses that name it (posture.client_text: another client's offence never enters
+    its charge), its candidates, its thesis call and its objections call; the rulings record is built once and shared.
+    Cost per extra client: the thesis call (one request, n samples), its argument binding review, the objections call
+    and its reply binding review -- four calls, five with circumstances to grade. [(name, ctx, plan)]."""
+    import copy
+    from . import intake as intake_mod, posture as posture_mod
+    names = [c["name"] for c in clients]
+    out: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
+    record: Optional[Dict[str, Any]] = None
+    counts: Dict[str, Any] = {}
+    articles: List[str] = []
+    for c in clients:
+        view = {**state, "records": copy.deepcopy(state.get("records") or {}),
+                "client_scope": {"name": c["name"], "others": [x for x in names if x != c["name"]]},
+                "case_id": f"{state.get('case_id') or 'caso'}_{re.sub(r'[^A-Za-z0-9]+', '_', c['name'])}"}
+        role = intake_mod._role_of_words(c.get("role") or "") if c.get("role") else ""
+        posture_c = {**posture, **({"role": role} if role and role in intake_mod.ROLES else {})}
+        posture_mod.mark_sides(view, posture_c)
+        ctx, mplan = method_inputs(view, posture_c, {**plan, "parte_assistita": c["name"]}, topics, refs, rows, case,
+                                   shared_record=record)
+        record = record if record is not None else view.get("rulings_record")
+        counts[c["name"]] = view.get("thesis_counts") or {}
+        articles += list(view.get("candidate_articles") or [])
+        out.append((c["name"], ctx, mplan))
+    state["thesis_counts_by_client"] = counts
+    state["candidate_articles"] = list(dict.fromkeys(articles))
+    if record is not None:
+        state["rulings_record"] = record
+    _log("method_clients", {"clients": names, "counts": counts})
+    return out
+
+
 def merge_removals(state: Dict[str, Any], entries: Sequence[Dict[str, Any]]) -> None:
     """v79 (E3): compose's removals into the answer's ledger -- compose runs last on the method's path, so they are
     «removed», never «proposed»; the counts by step updated."""
@@ -5777,8 +5882,8 @@ def merge_removals(state: Dict[str, Any], entries: Sequence[Dict[str, Any]]) -> 
 
 
 def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any], topics: Sequence[Dict[str, Any]],
-                  refs: Sequence[tuple], rows: Sequence[Dict[str, Any]], case: str
-                  ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                  refs: Sequence[tuple], rows: Sequence[Dict[str, Any]], case: str,
+                  shared_record: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """v70: the method's context (lawyer_method.prepare: the client, the main line's anchor, §3's order, the retrieved
     rulings with their document id and massima -- the only citable ones (v71) --, the open questions, the first read's
     lines, the named articles the ingestion marks abrogated, our
@@ -5800,14 +5905,20 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     lines = [f"linea {h.get('line')}: {h.get('claim')}" for t in topics for h in t.get("hypotheses") or []
              if h.get("claim")]
     named = {_key(k) for k in user_named(state)}
-    abrogated = [_label(_key(r["_article"])) for r in _restored_rows(state.get("rows")) if r.get("_article")
+    from .article_text import repeal_note
+    # v79.6 (item 3): a repealed article the user names is mentioned only as «abrogato», with the repealing law
+    abrogated = [_label(_key(r["_article"])) + (f", {repeal_note(_row_text(r))}" if repeal_note(_row_text(r)) else "")
+                 for r in _restored_rows(state.get("rows")) if r.get("_article")
                  and _key(r["_article"]) in named and row_abrogated(r)]
     areas = _areas(_restored_analysis(state["analysis"])) if state.get("analysis") else []
     ctx = lawyer_method.prepare(state, posture, rows, case, client, main, order, rulings, lines, abrogated,
                                 objections(state, topics, refs), frame_areas=areas, questions=unanswered(state),
                                 case_id_=str(state.get("case_id") or ""))
+    from . import intake as intake_mod
+    ctx["asked"] = list((state.get("intake") or {}).get("questions") or []) or intake_mod.questions(case)   # v79.6 (1)
     from . import rulings as rulings_mod
-    record = _isolated("rulings_for_record", lambda: rulings_record(ctx, rows), None) if rulings_mod.enabled() else None
+    record = shared_record if shared_record is not None else (    # v79.6 (item 2): one record for every client
+        _isolated("rulings_for_record", lambda: rulings_record(ctx, rows), None) if rulings_mod.enabled() else None)
     if record is not None:      # v78: the registry -- the only citable rulings, the material of every call
         ctx["rulings_record"], ctx["rulings"] = record, rulings_mod.citable(record)
         state["rulings_record"] = record
@@ -5991,6 +6102,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
     decomposed gets no record (an existing one marked «undecomposed»: the method leaves it out). The rows no row
     holds read in one call (fetch: the graph's). Returns (the labels to link, the rows fetched); logged."""
     from . import cenni, issue_records, lawyer_method, posture as posture_mod
+    from .article_text import row_abrogated as row_abrogated_
     records = state.get("records")
     if records is None:
         return [], []
@@ -6035,6 +6147,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         row = have.get(key)
         rubrica = str((rec or {}).get("rubrica") or (_row_rubrica(row) if row else ""))
         if key in dead:
+            continue
+        if row is not None and row_abrogated_(row):          # v79.6 (item 3): fetched now -- repealed, no record
+            log.setdefault("abrogated", []).append(label)
+            state["abrogated"] = list(dict.fromkeys(list(state.get("abrogated") or []) + [label]))
             continue
         if not issue_records.decomposed_by_gate(label, rubrica, defence=why == DECOMPOSE_WHY["defence"]):
             log["gated"].append(label)
@@ -6205,10 +6321,11 @@ def general_applications(state: Dict[str, Any], roads: Dict[str, List[Dict[str, 
     have = {_key(r["_article"]) for r in all_rows if r.get("_article")}
     keys = {_key(r) for r in refs}
     rows_out, refs_out, added = list(all_rows), list(refs), {}
+    from .article_text import row_abrogated
     for why, found in (roads or {}).items():
         for row in found or []:
             key = _key(row["_article"])
-            if key in dead:
+            if key in dead or row_abrogated(row):       # v79.6 (item 3): the general part's re-entry never repealed
                 continue
             if key not in have:
                 have.add(key)

@@ -268,6 +268,7 @@ UNKNOWN_MARK = " (da verificare: {point})"                                  # po
 # v60 (D, my draft): the client neither stated nor answered when the answer is asked for
 CLIENT_ASSUMED = ("Non mi hai indicato chi assisti: imposto il parere per {name} ({role}), la parte che il caso indica "
                   "come destinataria dell'azione. Se assisti un'altra parte, dimmelo e lo riscrivo.")   # name, role
+ROLE_READING = "Il quesito non indica la posizione del cliente: il parere la legge come {role}, perché {why}."   # v79.6
 CLIENT_DERIVED = "Il quesito non indica chi assisti: il parere è impostato per la parte {role}, come si ricava dal caso."   # v79
 CLIENT_UNKNOWN = ("Non mi hai indicato chi assisti e il caso non lo fa capire: il parere esamina la posizione delle parti "
                   "senza assumerne una. Dimmi chi assisti e lo riscrivo dal suo punto di vista.")

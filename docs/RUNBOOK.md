@@ -136,6 +136,16 @@ The default stays best-of-3. In both modes the reply kept is the highest score, 
 parsed reply, never to the order the replies arrived in. The thesis log records the choice (`choice`) and the counts
 (`counts`).
 
+## 4b. The repeal audit (v79.6)
+
+This is read-only. Run it before judging the repeal rule:
+
+```bash
+cd /opt/chatbot && venv/bin/python scripts/repeal_audit.py --env .env --out /root/repeal_audit
+```
+
+It counts, per code (c.p., c.c., c.p.c., c.p.p.): the articles a property flags as repealed; those whose text is a repeal reference alone or opens with a repeal note; and those the text marks but no property flags (listed in `repeal_audit.md` for the ingestion side).
+
 ## 5. The held-out loop
 
 Every case-first answer that the live copy or the test copy serves is saved to `/opt/chatbot/heldout/` by

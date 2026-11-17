@@ -346,6 +346,62 @@ def penal_provision(text: str) -> bool:
     return bool(_PENAL_PROVISION_RE.search(text or "")) and not refers_penalties(text)
 
 
+# --- v79.6 (item 4): alternative elements -- one element with branches, never several required ones ------------------------
+
+_DISJ = r"(?:o|od|ovvero|oppure)"
+_DISJ_HEAD_RE = re.compile(rf"^\s*{_DISJ}\b", re.IGNORECASE)
+_DISJ_IN_RE = re.compile(rf"\s{_DISJ}\s", re.IGNORECASE)
+_MARKER_HEAD_RE = re.compile(r"^\s*(?:con|mediante|in\s+modo\s+da|al\s+fine\s+di|allo\s+scopo\s+di|a\s+fine\s+di|per\s+"
+                             r"procurare|per\s+trarne|senza|salvo|se|quando|qualora|purch[ée])\b", re.IGNORECASE)
+BRANCH_LIST_WORDS = 6
+
+
+def join_branches(pieces: Sequence[str]) -> List[str]:
+    """v79.6: comma pieces with a branch list put back together -- a piece opening on «o / od / ovvero / oppure» (and «o,
+    in alternativa,»), a short piece (BRANCH_LIST_WORDS words at most, no means or purpose marker) holding one, and the
+    short items of an enumeration that ends in one («educazione, istruzione, cura, vigilanza o custodia») join the
+    piece before them: the alternatives are one element, never several required elements."""
+    items = [str(p or "").strip() for p in pieces]
+    out: List[str] = []
+    for i, p in enumerate(items):
+        if not p:
+            continue
+        words = len(p.split())
+        lead = bool(_DISJ_HEAD_RE.match(p)) or bool(re.match(r"^\s*in\s+alternativa\b", p, re.IGNORECASE))
+        tail = words <= BRANCH_LIST_WORDS and bool(_DISJ_IN_RE.search(f" {p} ")) and not _MARKER_HEAD_RE.match(p)
+        run = []                    # the short pieces after this one, up to the one that closes the list
+        for q in items[i + 1:]:
+            run.append(q)
+            if len(q.split()) > BRANCH_LIST_WORDS or _MARKER_HEAD_RE.match(q):
+                break
+        item = words <= 2 and not _MARKER_HEAD_RE.match(p) and any(
+            _DISJ_IN_RE.search(f" {q} ") or _DISJ_HEAD_RE.match(q) for q in run if len(q.split()) <= BRANCH_LIST_WORDS)
+        joinable = out and not _MARKER_HEAD_RE.match(out[-1])      # a means or purpose clause is its own element
+        if out and (lead or (joinable and (tail or item))):
+            out[-1] = f"{out[-1]}, {p}"
+        else:
+            out.append(p)
+    return out
+
+
+_BRANCH_SPLIT_RE = re.compile(rf"\s*,\s*(?:{_DISJ}\s+)?(?:in\s+alternativa\s*,?\s*)?|\s+{_DISJ}\s+(?:,?\s*in\s+alternativa"
+                              rf"\s*,?\s*)?", re.IGNORECASE)
+
+
+def fits(piece: str) -> bool:
+    """An element's length: REQUISITE_CHARS, twice that for one holding its alternatives (v79.6)."""
+    return len(piece or "") <= (2 * REQUISITE_CHARS if branches(piece) else REQUISITE_CHARS)
+
+
+def branches(text: str) -> List[str]:
+    """v79.6: an element's alternatives, when it holds a disjunction -- «una persona della famiglia o comunque
+    convivente» -> [«una persona della famiglia», «comunque convivente»]; [] for an element with none."""
+    if not _DISJ_IN_RE.search(f" {text or ''} "):
+        return []
+    parts = [x.strip(" ,;.") for x in _BRANCH_SPLIT_RE.split(text or "") if x and x.strip(" ,;.")]
+    return parts if len(parts) >= 2 else []
+
+
 def offence_elements(text: str) -> List[str]:
     """v58 (v57-p2 640: «Chiunque, con artifizi o raggiri, …» is the requisite set): the elements of an offence's first
     comma -- its words before «è punito», «Chiunque» left out, split on its commas; an element of fewer than two words
@@ -358,13 +414,13 @@ def offence_elements(text: str) -> List[str]:
                   flags=re.IGNORECASE)       # v76: a whole word -- never the first letters of the clause
     out: List[str] = []
     carry = ""
-    for piece in re.split(r"\s*,\s*", body):
+    for piece in join_branches(re.split(r"\s*,\s*", body)):          # v79.6: a branch list is one element
         piece = f"{carry} {piece}".strip() if carry else piece.strip()
         if len(piece.split()) < 2:
             carry = piece
             continue
         carry = ""
-        if requisite_kept(piece) and len(piece) <= REQUISITE_CHARS and element_kept(piece):
+        if requisite_kept(piece) and fits(piece) and element_kept(piece):
             out += _subjective_split(piece.strip(" .;:"))
     # v59 (v58-h7 322: «soggiace, qualora l'offerta o la promessa non sia accettata, alla pena …»): a condition set
     # inside the penalty clause is an element too
@@ -420,10 +476,10 @@ def penal_clauses(text: str) -> List[str]:
     if subject:
         out.append(subject)
         body = rest
-    for piece in re.split(r"\s*,\s*", body):
+    for piece in join_branches(re.split(r"\s*,\s*", body)):          # v79.6: a branch list is one element
         for part in _PENAL_MARK_RE.split(piece):
             part = part.strip(" ,;.")
-            if len(part.split()) >= 2 and requisite_kept(part) and len(part) <= REQUISITE_CHARS \
+            if len(part.split()) >= 2 and requisite_kept(part) and fits(part) \
                     and not PENALTY_RE.search(part) and element_kept(part):
                 out += _subjective_split(part)
     return list(dict.fromkeys(out))
@@ -446,7 +502,7 @@ def _fitting(reqs: List[str]) -> List[str]:
 def _clauses(text: str) -> List[str]:
     """A fattispecie's clauses: split on commas and relative pronouns, each of two words and up, its pronoun dropped."""
     out = []
-    for piece in re.split(r"\s*,\s*|\s+(?=(?:che|il quale|la quale|i quali|le quali)\s)", text or ""):
+    for piece in join_branches(re.split(r"\s*,\s*|\s+(?=(?:che|il quale|la quale|i quali|le quali)\s)", text or "")):
         piece = re.sub(r"^(?:che|il quale|la quale|i quali|le quali)\s+", "", piece.strip(" ,;."), flags=re.IGNORECASE)
         words = [w for w in piece.split() if not re.fullmatch(r"(?:il|lo|la|l['’]\w*|i|gli|le|un|uno|una)", w, re.I)]
         if len(words) >= 2 and requisite_kept(piece) and len(piece) <= REQUISITE_CHARS:
@@ -510,6 +566,7 @@ def civil_elements(text: str) -> List[str]:
 
 
 _DANGLING_RE = re.compile(r"\b(?:e|ed|o|od|ma|né|oppure|ovvero|nonché)\s*$", re.IGNORECASE)
+_DISJ_END_RE = re.compile(r"[;,]?\s*\b(?:o|od|oppure|ovvero)\s*$", re.IGNORECASE)       # v79.6
 
 
 # v58 (v57-p2 640, v57-h5 628): the c.p.'s footnote numbers «(3)» and the stray «]» of a removed passage
@@ -644,8 +701,26 @@ def requisites(text: str) -> List[str]:
             if main:                                             # il cliente ha diritto …»)
                 segment = segment[:main.start()]
         items = _ENUM_SPLIT_RE.split(segment)
+        pending = ""                # v79.6: an item ending on «o / ovvero / oppure» is a branch of the next one
+        join_next = ""
         for j, raw in enumerate(items):
             item = _clean_item(raw)
+            if pieces and j and _DISJ_HEAD_RE.match(raw.strip(" ,;:")):     # v79.6: «…; ovvero b) …» -- a branch
+                head = re.match(rf"^\s*({_DISJ})\b\s*", raw.strip(" ,;:"), re.IGNORECASE)
+                rest = _clean_item(raw.strip(" ,;:")[head.end():])
+                if rest:
+                    pieces[-1] = f"{pieces[-1]} {head.group(1).lower()} {rest}"
+                else:
+                    join_next = head.group(1).lower()        # a bare «ovvero»: the next item is the branch
+                continue
+            if join_next and pieces:
+                pieces[-1], join_next = f"{pieces[-1]} {join_next} {item}", ""
+                continue
+            if pending:
+                item, pending = f"{pending} {item}", ""
+            if _DISJ_END_RE.search(raw.strip(" ,;:")) and j + 1 < len(items):
+                pending = item
+                continue
             if _DANGLING_RE.search(raw.strip(" ,;:")) or PENALTY_RE.search(item) or not requisite_kept(item) \
                     or (cut and j == len(items) - 1 and raw.rstrip().endswith(",")):
                 continue                    # v57: cut on a conjunction, or on a comma where the text ends; the punishment

@@ -336,13 +336,35 @@ NAMES_ENV = "RULINGS_PARTY_NAMES"      # v79 (F2): «redact» (default) or «kee
 REDACTED = "[omissis]"
 _TITLE_NAME_RE = re.compile(r"\b(?:sig(?:\.|nor|nora)?|dott(?:\.|or)|avv\.|ing\.|geom\.)\s+([A-ZÀ-Ý][a-zà-ÿ']+)")
 _NAME_PAIR_RE = re.compile(r"(?<=[\w,;:)] )([A-ZÀ-Ý][a-zà-ÿ']+|[A-ZÀ-Ý]{2,})(\s+(?:[A-ZÀ-Ý][a-zà-ÿ']+|[A-ZÀ-Ý]{2,}))+")
-_NOT_NAMES = set("""Corte Cassazione Suprema Sezione Sezioni Unite Tribunale Appello Assise Stato Repubblica Codice Penale
-Civile Procura Procuratore Generale Pubblico Ministero Giudice Pace Costituzione Costituzionale Consiglio Ministro Legge
-Decreto Regione Comune Provincia Italia Italiana Italiano Europea Europeo Unione Convenzione Carta Diritti Uomo Testo
-Unico Polizia Carabinieri Guardia Finanza Agenzia Entrate Banca Lavoro Riesame Sorveglianza Minorenni Gip Gup Gup Pm
-Corti Territoriale Distrettuale Superiore Magistratura Collegio Presidente Relatore Consigliere Cedu Edu Inps Inail
-Spa Srl Sas Snc Ufficio Registro Imprese Camera Commercio Asl Usl Ente Fondo Istituto Nazionale Previdenza Sociale
-Penali Civili Sezione Feriale Unita""".split())
+REDACTION_STOPLIST_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                                       "data", "redaction_stoplist.json")
+
+
+@lru_cache(maxsize=1)
+def not_names() -> frozenset:
+    """v79.6: the stoplist of redact_names, from data/redaction_stoplist.json (it grows from the logged redactions)."""
+    try:
+        with open(REDACTION_STOPLIST_FILE, encoding="utf-8") as f:
+            return frozenset(str(w).capitalize() for w in json.load(f).get("words") or [])
+    except (OSError, ValueError) as exc:
+        logger.warning("rulings: %s not read: %s", REDACTION_STOPLIST_FILE, exc)
+        return frozenset()
+
+
+def log_redaction(replaced: Sequence[str], passage: str) -> None:
+    """v79.6: every redaction logged -- the verbose log and <state>/logs/redactions.jsonl -- never failing the answer."""
+    if not replaced:
+        return
+    entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "replaced": list(replaced), "passage": passage[:300]}
+    _log("redaction", entry)
+    try:
+        from .. import state_paths
+        folder = state_paths.logs_dir()
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, "redactions.jsonl"), "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as exc:          # noqa: BLE001 -- the log never fails the answer
+        logger.warning("rulings: redaction not logged: %s", exc)
 
 
 def redact_names(text: str) -> str:
@@ -351,12 +373,22 @@ def redact_names(text: str) -> str:
     «ROSSI Mario») -- as REDACTED; RULINGS_PARTY_NAMES=keep leaves them."""
     if (os.getenv(NAMES_ENV) or "redact").strip().lower() == "keep":
         return text or ""
-    out = _TITLE_NAME_RE.sub(lambda m: m.group(0)[:m.start(1) - m.start(0)] + REDACTED, text or "")
+    replaced: List[str] = []
+
+    def titled(m: "re.Match") -> str:
+        replaced.append(m.group(1))
+        return m.group(0)[:m.start(1) - m.start(0)] + REDACTED
+    out = _TITLE_NAME_RE.sub(titled, text or "")
 
     def pair(m: "re.Match") -> str:
         words = m.group(0).split()
-        return m.group(0) if any(w.capitalize().strip("'") in _NOT_NAMES for w in words) else REDACTED
-    return _NAME_PAIR_RE.sub(pair, out)
+        if any(w.capitalize().strip("'") in not_names() for w in words):
+            return m.group(0)
+        replaced.append(m.group(0).strip())
+        return REDACTED
+    out = _NAME_PAIR_RE.sub(pair, out)
+    log_redaction(replaced, text or "")         # v79.6: every redaction logged -- the stoplist grows from data
+    return out
 
 
 def printed(passage: str) -> str:

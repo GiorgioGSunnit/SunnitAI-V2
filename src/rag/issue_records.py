@@ -187,9 +187,11 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str,
             if not text or len(out) >= REQUISITES_PER_ARTICLE:
                 continue
             status = facts_status(text, analysis) if reqs else DA_PROVARE
+            alternatives = rule_quote.branches(text) if reqs else []     # v79.6: one element, its branches
             out.append({"id": "", "comma": k, "text": text, "kind": "requisito" if reqs else "comma",
                         "facts_status": status, "status": status, "why": "", "supporting": [], "contradicting": [],
-                        "missing": "", "question": "", **({"split": split_by} if split_by and reqs else {})})
+                        "missing": "", "question": "", **({"split": split_by} if split_by and reqs else {}),
+                        **({"branches": alternatives} if alternatives else {})})
     return out
 
 
@@ -397,6 +399,56 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
     else:
         status, why = DA_PROVARE, "nessun fatto del caso" + (f"; manca: {req['missing']}" if req.get("missing") else "")
     req["status"], req["why"] = status, why
+    if req.get("branches"):             # v79.6 (item 4): one element with branches
+        settle_branches(req, sup, sure_con)
+
+
+def branch_combine(statuses: Sequence[str]) -> str:
+    """v79.6: an element with branches -- «integrato» (provato) if any branch is, «escluso» (non risulta) only if every
+    branch is, else «da provare»."""
+    from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
+    statuses = list(statuses)
+    if any(x == PROVATO for x in statuses):
+        return PROVATO
+    if statuses and all(x == NON_RISULTA for x in statuses):
+        return NON_RISULTA
+    return DA_PROVARE
+
+
+def branch_hit(branch: str, sentence: Dict[str, Any]) -> bool:
+    """A sentence speaks of a branch: it holds one of the branch's own nouns."""
+    own = element_nouns(branch)
+    return bool(own) and bool(own & element_nouns(sentence.get("text") or ""))
+
+
+def settle_branches(req: Dict[str, Any], sup: Sequence[Dict[str, Any]], sure_con: Sequence[Dict[str, Any]]) -> None:
+    """v79.6 (item 4): the element's branches graded on the sentences the link found -- a branch a grounded supporting
+    sentence speaks of «provato», one a sure contradicting sentence speaks of (and no support) «non risulta», the others
+    «da provare» --, the element's status their combination (branch_combine) whenever a sentence speaks of a branch: a
+    contradiction of one branch never excludes the element while another holds or stays open. req["branch"]: the branch
+    that applies (the first «provato»)."""
+    from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
+    ground = [x for x in sup if grounded(x) and x.get("certainty") in (ACCERTATO, ALLEGATO)]
+    out = {}
+    for b in req.get("branches") or []:
+        if any(branch_hit(b, x) for x in ground):
+            out[b] = PROVATO
+        elif any(branch_hit(b, x) for x in sure_con):
+            out[b] = NON_RISULTA
+        else:
+            out[b] = DA_PROVARE
+    req["branch_status"] = out
+    spoken = any(v != DA_PROVARE for v in out.values())
+    if not spoken:
+        return
+    combined = branch_combine(out.values())
+    if req["status"] == NON_RISULTA and combined != NON_RISULTA:
+        req["status"] = combined
+        req["why"] = "un'alternativa è esclusa, un'altra resta" + (" ed è provata" if combined == PROVATO else
+                                                                   " da provare")
+    elif req["status"] == DA_PROVARE and combined == PROVATO:
+        req["status"], req["why"] = PROVATO, "un'alternativa dell'elemento è provata"
+    req["branch"] = next((b for b, v in out.items() if v == PROVATO), "")
 
 
 # v60h (5): an element's own nouns -- its content words (no function word, no verb form, none of the generic legal
@@ -836,7 +888,9 @@ _LINK_SYSTEM = (
     "R2…). Per ciascun requisito indica quali fatti lo affermano (sostiene) e quali lo negano (contraddice), citando "
     "solo i numeri dei fatti. Basta che il caso racconti il fatto come accaduto: non serve una prova (documenti, "
     "testimoni, perizie, sentenze) e non va chiesta. Un fatto sostiene un requisito solo se lo dice davvero; nessun "
-    "fatto: lista vuota. In «manca», in poche parole, che cosa il caso non dice di quel requisito (vuoto se lo dice). "
+    "fatto: lista vuota. Un requisito con alternative («… o …», «… ovvero …») è sostenuto se il caso ne afferma anche "
+    "una sola, contraddetto solo se le nega tutte. "
+    "In «manca», in poche parole, che cosa il caso non dice di quel requisito (vuoto se lo dice). "
     "Non inventare fatti. Rispondi SOLO con un JSON: "
     "{\"R1\": {\"sostiene\": [\"S3\"], \"contraddice\": [], \"manca\": \"…\"}, …}")
 
@@ -1032,6 +1086,11 @@ def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[st
         status = facts_status(element["text"], analysis)
         against = [by_id[i] for i in (link_ or {}).get("contradicting") or [] if i in by_id]
         sure = [x for x in against if x.get("certainty") == ACCERTATO]
+        from . import rule_quote
+        alternatives = rule_quote.branches(element["text"])
+        hit = [b for b in alternatives if any(branch_hit(b, x) for x in sure)] if sure else []
+        if hit and len(hit) < len(alternatives):
+            sure = []           # v79.6 (item 4): one branch contradicted while another holds never demotes
         if status == NON_RISULTA:
             reason, cited = DEMOTED_EXCLUDED, against
         elif status != PROVATO and sure:

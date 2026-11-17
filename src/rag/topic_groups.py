@@ -397,6 +397,76 @@ def out_of_scope(ref: Sequence[str], scope: Dict[str, Any]) -> Optional[str]:
     return f"Capo {capo[0]} – {capo[1]}: il contratto del caso non è questo"
 
 
+# --- v79.6 (item 6): the matter of an article, every book -- a keyword hit outside the case's matters is no candidate --------
+
+MATTER_SPANS = {   # (from, to, matter): the c.c. by Libro, Libri IV and VI by Titolo; the c.p. by Libro
+    "c.c.": ((1, 455, "c.c. I persone e famiglia"), (456, 809, "c.c. II successioni e donazioni"),
+             (810, 1172, "c.c. III proprietà"), (1173, 1320, "c.c. IV obbligazioni in generale"),
+             (1321, 1469, "c.c. IV contratti in generale"), (1470, 1986, "c.c. IV singoli contratti"),
+             (1987, 2059, "c.c. IV altre fonti e fatti illeciti"), (2060, 2642, "c.c. V lavoro e impresa"),
+             (2643, 2696, "c.c. VI trascrizione"), (2697, 2739, "c.c. VI prove"),
+             (2740, 2899, "c.c. VI responsabilità patrimoniale, privilegi e ipoteche"),
+             (2900, 2933, "c.c. VI tutela giurisdizionale dei diritti"), (2934, 2969, "c.c. VI prescrizione")),
+    "c.p.": ((1, 240, "c.p. I parte generale"), (241, 649, "c.p. II delitti"), (650, 734, "c.p. III contravvenzioni")),
+}
+
+
+def matter_of(ref: Sequence[str]) -> str:
+    """The matter an article belongs to (MATTER_SPANS); "" for a code the table does not split (procedure, special
+    laws): never gated."""
+    if not ref or len(ref) != 2:
+        return ""
+    spans = MATTER_SPANS.get(topic_step._code(ref[1]))
+    m = re.match(r"\d+", str(ref[0]))
+    if not spans or not m:
+        return ""
+    n = int(m.group(0))
+    return next((name for lo, hi, name in spans if lo <= n <= hi), "")
+
+
+def keyword_hit(row: Dict[str, Any]) -> bool:
+    """A row the first read's institution search reached by a word of its rubrica, not by the institution's whole name:
+    the rubrica lacks one of the institution's content words («riduzione della pena» -> «Riduzione delle ipoteche»)."""
+    from .posture import _stems
+    inst = str(row.get("_first_read") or "")
+    if not inst:
+        return False
+    want = _stems(inst)
+    return bool(want) and not want <= _stems(_rubrica(row))
+
+
+def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: Optional[Dict[str, Any]] = None
+                ) -> List[Dict[str, Any]]:
+    """v79.6 (item 6): the rows without the keyword hits (keyword_hit) whose matter is none of the case's -- the case's
+    matters are those of the rows reached by two signals or more, of the first read's whole-name hits and of the
+    articles kept by name or rule (keep: labels). With no matter known, nothing is dropped. log["dropped"]: each with
+    its matter."""
+    keep = set(keep or ())
+    matters = set()
+    for r in rows or []:
+        ref = _ref(r)
+        if not ref:
+            continue
+        if r.get("_multi_signal") or _label(ref) in keep or (r.get("_first_read") and not keyword_hit(r)):
+            matters.add(matter_of(ref))
+    matters.discard("")
+    if any(m.startswith("c.p. ") for m in matters):        # the general part serves every c.p. matter
+        matters.add("c.p. I parte generale")
+    out = []
+    for r in rows or []:
+        ref = _ref(r)
+        m = matter_of(ref) if ref else ""
+        if matters and ref and keyword_hit(r) and m and m not in matters and _label(ref) not in keep:
+            if log is not None:
+                log.setdefault("dropped", []).append({"article": _label(ref), "matter": m,
+                                                      "institution": str(r.get("_first_read"))})
+            continue
+        out.append(r)
+    if log is not None:
+        log["matters"] = sorted(matters)
+    return out
+
+
 def gate_rows(rows: Iterable[Dict[str, Any]], scope: Dict[str, Any], log: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The rows whose article the gate keeps; each dropped one in log["rows"] with its Capo."""
     out = []

@@ -128,7 +128,9 @@ def test_the_flow_writes_the_standard_body_when_the_method_refuses(monkeypatch):
     state["mode"] = "single_shot"
     monkeypatch.setenv("LAWYER_METHOD", "true")
     monkeypatch.setattr(M, "objections_plan", lambda ctx, plan: plan)
-    monkeypatch.setattr(M, "method_plan", lambda ctx, call=None: M.clean_method({}, M.thesis_candidates(ctx)))
+    # v79.6 (item 5): the role is never left unknown (a reading gives the attore's «provando …» line): the
+    # placeholder path is kept by a record with no candidate at all
+    monkeypatch.setattr(M, "method_plan", lambda ctx, call=None: M.clean_method({}, []))
     events = []
     real = flow._log
     monkeypatch.setattr(flow, "_log", lambda e, d, ms=None: (events.append((e, d)), real(e, d, ms)))
