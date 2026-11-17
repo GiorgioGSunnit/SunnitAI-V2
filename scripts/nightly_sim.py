@@ -117,7 +117,11 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(intake_line_check(seen, result.get("state") or {}, result.get("api_route") or ""))
         out["checks"].append(cell_check(detected, spec["cell"]))
         out["answer"] = result.get("answer") or ""
-        out["thesis_counts"] = (result.get("state") or {}).get("thesis_counts") or {}      # v79 (A2)
+        out["thesis_counts"] = dict((result.get("state") or {}).get("thesis_counts") or {})      # v79 (A2)
+        if spec["cell"].get("family") == "penale":      # v79 (D4): the defence articles the general-part gate dropped
+            gate = (result.get("state") or {}).get("defence_gate") or {}
+            out["thesis_counts"]["defence_gate_dropped"] = len(gate.get("dropped") or [])
+            out["defence_gate"] = gate
         timings = (result.get("state") or {}).get("timings") or {}
         out["timings"] = {"total_s": round(time.time() - t0, 1),
                           **{k: timings.get(k) for k in ("thesis_selection_s", "writer_s", "answer_s")}}
@@ -204,7 +208,8 @@ def rulings_lines(results: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
-COUNT_COLUMNS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback")
+COUNT_COLUMNS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback",
+                 "defence_lines", "defence_gate_dropped", "ranked_candidates")         # v79 (D4)
 
 
 def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]] = None) -> List[str]:
@@ -226,6 +231,10 @@ def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any
     for c in rows:
         t = c["thesis_counts"]
         lines.append(f"| {c['id']} | " + " | ".join(cell(c["id"], k, t.get(k)) for k in COUNT_COLUMNS) + " |")
+    gates = [c for c in rows if (c.get("defence_gate") or {}).get("dropped")]
+    if gates:                   # v79 (D4): which defence articles the gate dropped (expected: the irrelevant ones)
+        lines += ["", "Defence articles the general-part gate dropped: " + "; ".join(
+            f"{c['id']}: {', '.join(c['defence_gate']['dropped'])}" for c in gates)]
     return lines
 
 

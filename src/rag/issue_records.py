@@ -497,11 +497,27 @@ def justification(label: str) -> bool:
     return len(parts) == 2 and _code_key(parts[1]) == "c.p." and parts[0] in JUSTIFICATIONS
 
 
-def decomposed_by_gate(label: str, rubrica: str = "") -> bool:
+# v79 (D1): the general-part articles that can be a defence line -- causation (40, 41), fault (43), the scriminanti
+# (50-54), excess (55), attempt (56), aberratio delicti (83), particolare tenuità (131-bis)
+DEFENCE_ARTICLES = ("40", "41", "43", "50", "51", "52", "53", "54", "55", "56", "83", "131-bis")
+
+
+def defence_article(label: str) -> bool:
+    parts = str(label or "").split(" ", 1)
+    from .plan_then_write import _code_key
+    return len(parts) == 2 and _code_key(parts[1]) == "c.p." and parts[0] in DEFENCE_ARTICLES
+
+
+DEFENCE_WHY = "difesa di parte generale"      # v79 (D1): the route a defence article enters by (decompose_records)
+
+
+def decomposed_by_gate(label: str, rubrica: str = "", defence: bool = False) -> bool:
     """v74: the gate before any decomposition, every route -- a fattispecie (counted) or a cause di giustificazione
     gets elements; a procedural code's article, c.p. Libro I's, the general provisions, a definitional one never do
-    (they stay «applicazione» paragraphs and procedural lines)."""
-    return counted(label, rubrica) or justification(label)
+    (they stay «applicazione» paragraphs and procedural lines). v79 (D1): a general-part defence article
+    (DEFENCE_ARTICLES) gets elements too when it entered by its route (defence: the first read names its concept, or
+    the retrieval ranks it among the top) -- never a fattispecie (counted stays False), a defence line's."""
+    return counted(label, rubrica) or justification(label) or (defence and defence_article(label))
 
 
 def decomposed(rec: Dict[str, Any]) -> bool:

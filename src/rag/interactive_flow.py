@@ -849,6 +849,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         if case_first:          # v64: a general-part article (c.p. Libro I) is never a grading candidate -- the user's
             from . import cenni                       # named ones aside (cenni: its own roads into the norms section)
             named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
+            out["defence_gate"] = defence_ranked(article_rows)       # v79 (D1): before the gate drops them
             article_rows, general_out = cenni.general_part_gate(article_rows, named_keys)
             regime_rows, regime_out = cenni.general_part_gate(regime_rows, named_keys)
             if general_out or regime_out:
@@ -934,6 +935,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         topics = _isolated("topic_step", lambda: topic_step.build(analysis, article_rows + regime_rows, links, case,
                                                                    others=others), [])
         out["topics"], out["others"] = topics, others
+        out["ranked"] = ranked_labels(article_rows)     # v79 (D2): the retrieval step's top-ranked articles
         if case_first:          # v60 (B): the topics from the graded rows; the rules' and tables' attach to them
             from . import topic_groups
             stage_meter.mark("topic_groups")
@@ -1354,6 +1356,8 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         "topics": _jsonable(found["topics"]), "others": _jsonable(found.get("others") or []),
         "units": _jsonable(found.get("units") or {}),            # v60r (2): each article's Sezione / Capo
         "rows": [_compact_row(r) for r in found["topic_rows"]],
+        "ranked": list(found.get("ranked") or []),                         # v79 (D2)
+        "defence_gate": _jsonable(found.get("defence_gate") or {}),         # v79 (D1, D4)
         "tool_rows": [_compact_row(r) for r in found["regime_rows"]],
         "pool": [{"_article": list(r["_article"]), "_multi_signal": bool(r.get("_multi_signal")),
                   "rubrica": str((r.get("s") or {}).get("titolo_articolo") or "")}
@@ -3252,6 +3256,9 @@ def check_context(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], refs: S
     commi = {citations.label(rule["ref"]): {k for k, _ in rule.get("commi") or [] if isinstance(k, int)}
              for rule in rules or []}
     allowed_labels = {citations.label(r) for r in list(allowed) + list(refs) + list(dg._refs_in(case or "")) if len(r) == 2}
+    # v79 (D3): never removed for scope -- an article of the record, or one the thesis candidates rest on
+    allowed_labels |= {x for x, r in (state.get("records") or {}).items() if not r.get("dropped")} \
+        | set(state.get("candidate_articles") or [])
     return {"records": state.get("records") or {}, "sentences": state.get("sentences") or [],
             "open_questions": open_questions(state), "single_shot": single_mode(state), "allowed": allowed_labels,
             "glossed": {citations.label(r) for r in glossed}, "texts": texts, "rubriche": rubriche, "names": names,
@@ -5791,6 +5798,7 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
         state["rulings_record"] = record
     mplan = lawyer_method.method_plan(ctx)      # v79: the realism cap of v78 inside it, before the counts
     state["thesis_counts"] = ctx.get("selection_counts") or {}
+    state["candidate_articles"] = lawyer_method.candidate_articles(ctx)     # v79 (D3): the writer's check keeps them
     # v73: the objections written after the selection, given the selected line and the barred list
     mplan = _isolated("lawyer_method_objections", lambda: lawyer_method.objections_plan(ctx, mplan), mplan) or mplan
     for key in ("thesis_selection_s", "objections_s"):
@@ -5953,6 +5961,7 @@ def general_part_out(refs: Sequence[tuple], named: set) -> List[tuple]:
 
 
 DECOMPOSE_WHY = {"charge": "addebito", "alternative": "qualificazione alternativa", "named": "nominata dall'utente",
+                 "defence": "difesa di parte generale", "ranked": "candidata dalla classifica del recupero",   # v79
                  "claim": "domanda (ipotesi principale della prima lettura)",
                  "hypothesis": "addebito (ipotesi di reato della prima lettura)"}      # v79 (C4)
 
@@ -5983,6 +5992,11 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         wanted.setdefault(x, DECOMPOSE_WHY["alternative"])
     for ref in user_named(state):
         wanted.setdefault(_label(ref), DECOMPOSE_WHY["named"])
+    for x in defence_wanted(state) if str(posture.get("family") or "") != "civile" else []:   # v79 (D1): a penal
+        wanted.setdefault(x, DECOMPOSE_WHY["defence"])          # case's general-part defence, by concept or by rank
+    for x in state.get("ranked") or []:     # v79 (D2): a top-ranked article not in the record -- a candidate to grade
+        if x not in records:
+            wanted.setdefault(x, DECOMPOSE_WHY["ranked"])
     have = {_key(r["_article"]): r for r in rows if r.get("_article")}
     keys = {label: _key(_parse_label(label)) for label in wanted}
     missing = [k for k in dict.fromkeys(keys.values()) if k not in have and k not in dead]
@@ -6007,10 +6021,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         rubrica = str((rec or {}).get("rubrica") or (_row_rubrica(row) if row else ""))
         if key in dead:
             continue
-        if not issue_records.decomposed_by_gate(label, rubrica):
+        if not issue_records.decomposed_by_gate(label, rubrica, defence=why == DECOMPOSE_WHY["defence"]):
             log["gated"].append(label)
             continue
-        if rec and issue_records.decomposed(rec):
+        if rec and issue_records.decomposed(rec) and not rec.get("not_fattispecie"):
             log["already"].append(label)
             continue
         decisive = why in (DECOMPOSE_WHY["charge"], DECOMPOSE_WHY["claim"], DECOMPOSE_WHY["hypothesis"])
@@ -6030,6 +6044,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         if rec is None:
             rec = records[label] = {"article": label, "rubrica": rubrica, "topic": "", "grade": None, "issue": "",
                                     "kept": [why], "dropped": None, "linked": "", "answer": {}}
+            if why == DECOMPOSE_WHY["ranked"]:      # v79 (D2): graded as a candidate, never a record of the answer
+                rec["ranked_candidate"] = True
+        if why == DECOMPOSE_WHY["defence"]:         # v79 (D1): a topic's general-part record, a defence's now
+            rec.pop("not_fattispecie", None)
         rec.update(requisites=reqs, decomposed_for=why)
         if not rec.get("procedibilita"):        # v76: its d'ufficio conditions, graded by the link like the topics'
             rec["procedibilita"] = issue_records._conditions(row)
@@ -6042,6 +6060,51 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         issue_records.refresh(records, analysis, state.get("questions") or [], state.get("sentences") or [])
     _log("decompose_records", log)
     return link, fetched
+
+
+RANKED_TOP = 10          # v79 (D1, D2): the retrieval step's top-ranked articles
+
+
+def _rank_of(row: Dict[str, Any], position: int) -> tuple:
+    fused = row.get("_fused_rank")
+    return (fused if isinstance(fused, (int, float)) else 10 ** 6, position)
+
+
+def defence_ranked(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
+    """v79 (D1): the general-part defence articles (issue_records.DEFENCE_ARTICLES) among the retrieved rows, before the
+    general-part gate drops them: {"ranked": those among the RANKED_TOP of the retrieval's ranking -- they enter the
+    record --, "dropped": the others (the gate drops them; the nightly counts them)}."""
+    from . import issue_records
+    order = sorted(((_rank_of(r, i), r) for i, r in enumerate(rows or []) if r.get("_article")), key=lambda x: x[0])
+    top = {_label(_key(r["_article"])) for _, r in order[:RANKED_TOP]}
+    seen = list(dict.fromkeys(_label(_key(r["_article"])) for _, r in order
+                              if issue_records.defence_article(_label(_key(r["_article"])))))
+    return {"ranked": [x for x in seen if x in top], "dropped": [x for x in seen if x not in top]}
+
+
+def ranked_labels(rows: Sequence[Dict[str, Any]]) -> List[str]:
+    """v79 (D2): the RANKED_TOP graded articles of the case, best grade first, then the retrieval's rank -- fattispecie
+    only (issue_records.counted); a strong grade (2) at least."""
+    from . import issue_records
+    graded = [(i, r) for i, r in enumerate(rows or []) if r.get("_article") and isinstance(r.get("_grade"), int)
+              and r["_grade"] >= 2 and issue_records.counted(_label(_key(r["_article"])), _row_rubrica(r))]
+    graded.sort(key=lambda x: (-x[1]["_grade"], _rank_of(x[1], x[0])))
+    return list(dict.fromkeys(_label(_key(r["_article"])) for _, r in graded))[:RANKED_TOP]
+
+
+def defence_wanted(state: Dict[str, Any]) -> List[str]:
+    """v79 (D1): the defence articles that enter the record -- the first read names their concept
+    (data/general_concepts.json), or they are among the retrieval's top-ranked (state["defence_gate"]["ranked"])."""
+    from . import cenni, issue_records, special_laws
+    words = special_laws.read_text(state.get("read") or {})
+    out: List[str] = []
+    for c in cenni.concepts() if words else []:
+        if c.get("procedural") or str(c.get("code") or "") != "c.p.":
+            continue
+        if any(re.search(p, words, re.IGNORECASE) for p in c.get("patterns") or []):
+            out += [f"{a} c.p." for a in c.get("articles") or [] if issue_records.defence_article(f"{a} c.p.")]
+    out += list((state.get("defence_gate") or {}).get("ranked") or [])
+    return list(dict.fromkeys(out))
 
 
 def special_law_aliases(keys: Dict[str, tuple], have: Dict[tuple, Dict[str, Any]]) -> Dict[str, str]:

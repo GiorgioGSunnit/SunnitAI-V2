@@ -81,7 +81,7 @@ def test_a_victims_outcome_is_the_querela_offence_not_the_main_topic():
 
 
 def test_records_no_fact_touches_leave_the_method_unless_charged_threatening_or_named(monkeypatch):
-    monkeypatch.setattr(issue_records, "decomposed_by_gate", lambda label, rubrica="": True)
+    monkeypatch.setattr(issue_records, "decomposed_by_gate", lambda label, rubrica="", defence=False: True)
     monkeypatch.setattr(issue_records, "decomposed", lambda rec: True)
     records = {"582 c.p.": {"side": "weapon", "charged": 1, "requisites": [_req(1)]},
                "590-bis c.p.": {"side": "weapon", "requisites": [_req(2), _req(3)]},

@@ -646,8 +646,10 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
                 "why": f"la maggior parte degli elementi dell'art. {label} resta da provare"}
     # v78: a victim's outcome is the offence of the querela -- the charge (rec["charged"]), whatever the main topic
     victim_charge = next((x for x in _charged(records) if _live(records[x])), "") if role in VICTIM_ROLES else ""
+    from . import issue_records
     label = victim_charge or (main if main in records else next((x for x, r in records.items()
-                                                                if r.get("side") != "threat" and _live(r)), ""))
+                                                                if r.get("side") != "threat" and _live(r)
+                                                                and not issue_records.defence_article(x)), ""))
     if not label:
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
                 "why": f"i fatti narrati non indicano la norma su cui {who} fonda la pretesa"}
@@ -1077,10 +1079,11 @@ CANDIDATE_TEXTS = {   # my drafts: each candidate's line, from the record
     "remedy": "Chiedere {label} ({articles})",
     "eccezione": "Eccepire {label} ({articles})",
     "riconvenzionale": "Domanda riconvenzionale sull'art. {art}{rubrica}",
+    "defence": "Difesa sull'art. {art}{rubrica}",          # v79 (D1): a general-part defence with its elements proven
 }
 VICTIM_ROLES = ("persona_offesa", "parte_civile")
 PENAL_KINDS = ("contenimento", "requalify", "scriminante", "attenuante", "claim_offence", "parte_civile", "sequestro",
-               "aggravante")
+               "aggravante", "defence")
 CIVIL_ROLES = ("attore", "convenuto")
 REMEDIES_FILE = os.path.join(os.path.dirname(DATA_FILE), "remedies.json")
 _REMEDIES: Dict[str, Any] = {}
@@ -1120,6 +1123,8 @@ CODE_ARGUMENTS = {   # my drafts (v74): the argument of a thesis that contests n
                    "contro": "Incide sulla pena, non sulla responsabilità"},
     "scriminante": {"argomento": "La scriminante dell'art. {art} si regge sugli elementi provati {ids}: {elements}",
                     "contro": "{who} ne contesterà i presupposti"},
+    "defence": {"argomento": "La difesa sull'art. {art} si regge sugli elementi provati {ids}: {elements}",     # v79
+                "contro": "{who} ne contesterà i presupposti"},
     "claim": {"argomento": "La domanda sull'art. {art} si regge sugli elementi provati {ids}: {elements}",
               "contro": "{who} ne contesterà gli elementi"},
     # v75 (my drafts): the role sets' lines
@@ -1269,7 +1274,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     for label, rec in records.items():
         if not offender:
             break
-        if label == charge or rec.get("side") == "threat" or not (rec.get("alternative") or rec.get("alternative_facts")):
+        if label == charge or rec.get("side") == "threat" or not (rec.get("alternative") or rec.get("alternative_facts")
+                                                                  or rec.get("ranked_candidate")):     # v79 (D2)
             continue
         if not issue_records.assertable(rec) or issue_records.contradicted(rec):    # v75b: the record decides, never
             continue                                                                 # the read's «sì / no»
@@ -1287,6 +1293,14 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
             if proven and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
                 add("scriminante", CANDIDATE_TEXTS["scriminante"].format(art=label, rubrica=_rubrica_tail(rec)),
+                    poggia_su=proven, article=label)
+    for label, rec in records.items():     # v79 (D1): a general-part defence (causation, fault, excess, attempt,
+        if not offender:                    # aberratio, tenuità) with its elements proven and none excluded
+            break
+        if issue_records.defence_article(label) and not issue_records.justification(label):
+            proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
+            if proven and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
+                add("defence", CANDIDATE_TEXTS["defence"].format(art=label, rubrica=_rubrica_tail(rec)),
                     poggia_su=proven, article=label)
     for label, rec in circ.items():
         if rec.get("kind") != "attenuante" or not offender:      # v75: the offender's attenuanti, the offender's only
@@ -1310,7 +1324,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                 add(own_kind, CANDIDATE_TEXTS[own_kind].format(art=label, rubrica=_rubrica_tail(rec)),
                     poggia_su=proven, article=label)
                 claims.append((label, proven))
-            elif (role == "attore" or named(rec)) and open_:     # v75b: the attore's claim to prove; v76: a named
+            elif (role == "attore" or named(rec)) and open_ and not rec.get("ranked_candidate"):   # v75b; v76: named
                 add(own_kind, CANDIDATE_TEXTS[f"{own_kind}_open"].format(      # article always, when decomposed
                     art=label, rubrica=_rubrica_tail(rec),
                     open=", ".join(f"«{_short(r.get('text'), 60)}» ({r['id']})" for r in open_[:3])),
@@ -1342,6 +1356,15 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         if c["argued"] == "code":
             c["code_argument"] = code_argument(c, ctx)
     return capped
+
+
+def candidate_articles(ctx: Dict[str, Any]) -> List[str]:
+    """v79 (D3): the articles the thesis candidates rest on or cite -- the citation checks never remove them."""
+    from . import citations
+    out: List[str] = [c["article"] for c in ctx.get("candidates") or [] if c.get("article")]
+    for c in ctx.get("candidates") or []:
+        out += [citations.label(r) for r in citations.article_refs(f"{c.get('tesi') or ''} {c.get('articles') or ''}")]
+    return list(dict.fromkeys(_norm_label(x) for x in out))
 
 
 def _victim_candidates(ctx: Dict[str, Any], add: Callable[..., None], fatt: Callable[[str], bool]) -> None:
@@ -1845,7 +1868,11 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             "minoritaria": sum(1 for t in sols if t.get("minoritaria")),
             "chosen": "fallback" if inserted else str(m.get("candidate") or ""),
             "chosen_kind": str(m.get("kind") or ("fallback" if inserted else "")),
-            "main_is_fallback": inserted}
+            "main_is_fallback": inserted,
+            # v79 (D4): the general part's defence lines, the ranked articles graded into candidates
+            "defence_lines": sum(1 for c in cands if c.get("kind") in ("defence", "scriminante")),
+            "ranked_candidates": sum(1 for c in cands
+                                     if ((ctx.get("records") or {}).get(c.get("article") or "") or {}).get("ranked_candidate"))}
 
 
 # --- v73: the objections, written for the selected line --------------------------------------------------------------------
@@ -2943,7 +2970,10 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     by_id = {s["id"]: s for s in sentences}
     notes, note_sources = attach_notes(all_records, {}, rows)       # v72: the lawyer's notes, into the records
     view_log: Dict[str, List[str]] = {}
-    records = method_records(all_records, view_log)                 # v74: the decomposed fattispecie only
+    every = method_records(all_records, view_log)                   # v74: the decomposed fattispecie only
+    # v79 (D2): the ranked candidates are graded and enumerated (ctx["records"]), never what the answer prints or
+    # assesses (the record below: §2, §4, the assessment, the objections' fallback)
+    records = {x: r for x, r in every.items() if not r.get("ranked_candidate")}
     circ = circumstance_records(circumstance_candidates(case, records, posture or {}))
     circ_log: Dict[str, Any] = {}
     if circ and sentences:
@@ -2964,7 +2994,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     ctx = {"case": case, "case_id": case_id_, "client": client, "rito": (posture or {}).get("rito") or "",
            "posture": posture or {}, "areas": list(frame_areas or ()), "procedibilita": procedibilita,
            "notes": notes,
-           "posture_text": posture_text(posture or {}), "records": records, "circumstances": circ,
+           "posture_text": posture_text(posture or {}), "records": every, "circumstances": circ,
            "facts": facts, "assessment": a, "riti": riti,
            "subsumption": subsumption_section(records, order, by_id, circ, note),
            "temporal": when, "points": when_points,
@@ -3007,7 +3037,8 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
     log = log if log is not None else {}
     out: Dict[str, Dict[str, Any]] = {}
     for label, rec in (records or {}).items():
-        if rec.get("not_fattispecie") or not issue_records.decomposed_by_gate(label, str(rec.get("rubrica") or "")):
+        if rec.get("not_fattispecie") or not issue_records.decomposed_by_gate(
+                label, str(rec.get("rubrica") or ""), defence=rec.get("decomposed_for") == issue_records.DEFENCE_WHY):
             log.setdefault("gated", []).append(label)
             continue
         if rec.get("undecomposed") or not issue_records.decomposed(rec):
@@ -3015,7 +3046,12 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
                 log.setdefault("undecomposed", []).append(label)
             continue
         out[label] = {**rec, "requisites": [r for r in rec["requisites"] if r.get("kind") == "requisito"]}
-    noise = [x for x, r in out.items() if fact_free(r) and not kept_without_facts(r)]
+    for label in [x for x, r in out.items() if r.get("ranked_candidate")]:     # v79 (D2): a candidate that grades
+        live = _live(out[label])                                               # to nothing, gone without a word
+        if not any(r.get("status") == PROVATO for r in live) or any(r.get("status") == NON_RISULTA for r in live):
+            log.setdefault("ranked_dropped", []).append(label)
+            del out[label]
+    noise = [x for x, r in out.items() if fact_free(r) and not kept_without_facts(r) and not r.get("ranked_candidate")]
     if noise and len(noise) < len(out):     # v78: tabled with «nessun fatto» rows only -- out, unless nothing else is left
         log["no_fact"] = noise
         out = {x: r for x, r in out.items() if x not in noise}
