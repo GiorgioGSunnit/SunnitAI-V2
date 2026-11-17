@@ -1,8 +1,10 @@
 """Every test starts with every feature flag unset (v48): the suite passes whatever flags the environment sets -- a
 server's .env.v45 with them all on included -- and a test that needs a flag sets it (monkeypatch.setenv). The flags are
 the names src/rag reads with feature_flags.enabled() or keeps in a *_FLAG constant."""
+import os
 import pathlib
 import re
+import tempfile
 
 import pytest
 
@@ -20,6 +22,11 @@ def _flags() -> set:
 
 
 FLAGS = frozenset(_flags())
+
+# v77: no test writes the server's runtime state or held-out set (/opt/chatbot/state, /opt/chatbot/heldout) -- set before
+# any module computes its paths at import
+os.environ.setdefault("STATE_DIR", tempfile.mkdtemp(prefix="sunnit_state_"))
+os.environ.setdefault("HELDOUT_DIR", tempfile.mkdtemp(prefix="sunnit_heldout_"))
 
 
 @pytest.fixture(autouse=True)

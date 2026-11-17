@@ -305,12 +305,15 @@ def test_the_grid_on_the_rules_alone():
     assert len({w[0] for w in wrong}) <= len(grid) * 2 // 24, wrong        # the acceptance: ≥ 22/24, scaled
 
 
-def test_the_check_script_prints_the_tables_and_the_totals(capsys):
+def test_the_check_script_prints_the_grid_and_its_total(capsys):
+    """v77: the grid by default; the 31 sim cases only when asked (a diagnosis, no acceptance figure)."""
     import intake_check
     assert intake_check.main(["--rules-only", "--env", "/nonexistent"]) == 0
     out = capsys.readouterr().out
-    assert "## (a) the 31 sim cases" in out and "## (b) the grid" in out
-    assert "**sim 31/31 ·" in out and "| **total** |" in out
+    assert "## (b) the grid" in out and "| **total** |" in out and "**grid " in out
+    assert "## (a) the 31 sim cases" not in out and "sim 31" not in out
+    assert intake_check.main(["--rules-only", "--env", "/nonexistent", "--only", "sim"]) == 0
+    assert "## (a) the 31 sim cases" in capsys.readouterr().out
 
 
 # --- through /api/chat ---------------------------------------------------------------------------------------------------
@@ -389,7 +392,8 @@ def test_a_parere_runs_the_single_shot_with_the_intake_in_its_state(api_client, 
         return {"answer": "IL PARERE", "interaction": None, "state": state, "citations": [], "kind": "answer"}
     monkeypatch.setattr(flow, "single_shot", single_shot)
     body = client.post("/api/chat", json={"message": SEMPRONIO_ASK}).json()
-    assert body["answer"] == "IL PARERE" and body["status_messages"] == ["interactive_single_shot"]
+    from src import version             # v77: the answer ends with the version's footer
+    assert body["answer"] == version.with_footer("IL PARERE") and body["status_messages"] == ["interactive_single_shot"]
     assert got["intake"]["deliverable"] == "parere" and len(got["intake"]["requested_blocks"]) == 5
     assert len([e for e, _ in logged if e == "intake"]) == 1                                  # once per request
 
@@ -483,7 +487,8 @@ def test_an_upload_the_message_argues_is_the_case_of_the_single_shot(api_client,
     user = {"sub": "00000000-0000-0000-0000-000000000001", "tenant_id": "00000000-0000-0000-0000-000000000002"}
     message = "Sono il legale di Beta: come mi difendo da questa citazione?"
     body = asyncio.run(api._chat_impl(api.ChatRequest(message=message, document_id=doc.id), user, None))
-    assert body.answer == "IL PARERE" and got["text"] == citation and got["request"] == message
+    from src import version             # v77: the footer
+    assert body.answer == version.with_footer("IL PARERE") and got["text"] == citation and got["request"] == message
     assert got["intake"]["deliverable"] == "parere" and got["intake"]["case_in"] == "upload"
     assert [d["deliverable"] for e, d in logged if e == "intake"] == ["parere"]                # once, with the file
     assert any(e == "interactive_deferred" for e, _ in logged)

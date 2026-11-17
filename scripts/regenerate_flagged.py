@@ -9,7 +9,7 @@ regenerated files to confirm the fix actually worked before declaring
 them resolved.
 
 Usage:
-  python3 regenerate_flagged.py --templates-dir /opt/chatbot/data/system_templates
+  python3 regenerate_flagged.py --templates-dir /opt/chatbot/state/system_templates
 """
 
 import argparse
@@ -22,7 +22,7 @@ from scan_pqm_redundancy import scan_file
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--templates-dir", default="/opt/chatbot/data/system_templates")
+    parser.add_argument("--templates-dir", default="/opt/chatbot/state/system_templates")
     args = parser.parse_args()
 
     catalog_path = os.path.join(args.templates_dir, "catalog.json")

@@ -35,7 +35,9 @@ def test_no_points_block_by_default_and_every_missing_fact_stays_in_the_parere(m
     state, seen = _single(monkeypatch)
     text = flow.single_shot(CASE)["answer"]
     assert f"**{C.OPEN_POINTS_TITLE}**" not in text and "punti da precisare" not in text.lower()
-    assert text.rstrip().endswith(C.SINGLE_SHOT_CLOSING) and C.SINGLE_SHOT_CLOSING.count(".") == 1
+    from src import version             # v77: the closing line, then the version's footer
+    assert version.has_footer(text, version.current())
+    assert version.strip_footer(text).rstrip().endswith(C.SINGLE_SHOT_CLOSING) and C.SINGLE_SHOT_CLOSING.count(".") == 1
     points = _event(seen, "open_points")
     assert points["asked"] == [] and points["points"]
     assert any(d["reason"].startswith("nessun blocco") for d in points["dropped"])

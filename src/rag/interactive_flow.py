@@ -7475,8 +7475,9 @@ def single_shot(message: str, lang: str = "it", request: str = "", intake: Optio
     field = interaction(state, 3, ("deepen", "add_fact"))
     field["seconds"] = timings["total_s"]
     articles = _isolated("article_citations", lambda: article_citations(state, text), []) or []     # v60q
-    return {"answer": text, "interaction": field, "state": state, "citations": citations, "kind": "answer",
-            "article_citations": articles}
+    from .. import version          # v77: the answer ends with «SunnitAI <version>» (state["last_answer"] without it)
+    return {"answer": version.with_footer(text), "interaction": field, "state": state, "citations": citations,
+            "kind": "answer", "article_citations": articles}
 
 
 def article_citations(state: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
@@ -7758,7 +7759,9 @@ def _single_update(message: str, state: Dict[str, Any], parsed: Dict[str, Any], 
         state.setdefault("timings", {})[f"{kind}_s"] = field["seconds"]
         articles = (_isolated("article_citations", lambda: article_citations(state, answer), []) or []) \
             if kind == "regenerate" else []                                                         # v60q
-        return {"answer": answer, "interaction": field, "state": state, "citations": citations or [], "kind": kind,
+        from .. import version      # v77: the parere written again ends with the footer, as single_shot's
+        return {"answer": version.with_footer(answer) if kind == "regenerate" else answer, "interaction": field,
+                "state": state, "citations": citations or [], "kind": kind,
                 **({"article_citations": articles} if articles else {})}
     gives = bool(parsed.get("answers") or parsed.get("corrections") or parsed.get("statements") or parsed.get("client"))
     if "domanda_flusso" in intents and len(intents) == 1 and not gives:

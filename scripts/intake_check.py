@@ -11,9 +11,12 @@
 
 Prints, per set, a table prompt -> detected -> expected -> ✓/✗ and a totals row; then which fields the model filled.
 
-  python scripts/intake_check.py                  # the rules, then the model for the fields they leave empty
+v77: the grid by default. The 31 sim cases are retired as a measure (fixtures of the unit tests only): (a) runs only
+when asked (--only sim), for a diagnosis, and its total is no acceptance figure.
+
+  python scripts/intake_check.py                  # the grid: the rules, then the model for the fields they leave empty
   python scripts/intake_check.py --rules-only     # the rules and the defaults alone
-  python scripts/intake_check.py --only grid      # one set (sim | grid)
+  python scripts/intake_check.py --only sim       # the 31 fixtures (a diagnosis)
 """
 
 import argparse
@@ -118,7 +121,8 @@ def run_grid(intake, model: bool) -> tuple:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--rules-only", action="store_true", help="no model call: the rules and the defaults alone")
-    parser.add_argument("--only", choices=("sim", "grid"), help="one set")
+    parser.add_argument("--only", choices=("sim", "grid"), default="grid",
+                        help="the set (default grid; sim: the 31 fixtures, a diagnosis)")
     parser.add_argument("--env", default=".env", help="the environment file (the model's settings)")
     args = parser.parse_args(argv)
     if os.path.isfile(args.env):
@@ -128,11 +132,11 @@ def main(argv=None) -> int:
     model = not args.rules_only
     print(f"# intake check -- {'rules only' if args.rules_only else 'rules + model'}\n")
     totals, results = [], []
-    if args.only in (None, "sim"):
+    if args.only == "sim":
         p, n, r = run_sim(intake, model)
         totals.append(f"sim {p}/{n}")
         results += r
-    if args.only in (None, "grid"):
+    if args.only == "grid":
         p, n, r = run_grid(intake, model)
         totals.append(f"grid {p}/{n}")
         results += r

@@ -9,7 +9,7 @@ exactly what build_docx() wrote, just back into JSON form so the runtime
 generation code doesn't need to re-parse .docx files on every request.
 
 Usage:
-  python3 enrich_catalog_with_sections.py --templates-dir /opt/chatbot/data/system_templates
+  python3 enrich_catalog_with_sections.py --templates-dir /opt/chatbot/state/system_templates
 """
 
 import argparse
@@ -43,7 +43,7 @@ def extract_sections(path: str) -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--templates-dir", default="/opt/chatbot/data/system_templates")
+    parser.add_argument("--templates-dir", default="/opt/chatbot/state/system_templates")
     args = parser.parse_args()
 
     catalog_path = os.path.join(args.templates_dir, "catalog.json")

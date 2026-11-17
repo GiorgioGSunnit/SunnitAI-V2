@@ -38,7 +38,8 @@ _spec = importlib.util.spec_from_file_location("article_cards_prompt", os.path.j
 ac = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ac)
 
-DEFAULT_FILE = os.path.join("data", "article_cards.jsonl")
+DEFAULT_FILE = os.getenv("ARTICLE_CARDS_FILE") or os.path.join(   # v77: the runtime state folder (src/state_paths.py)
+    os.getenv("STATE_DIR") or ("/opt/chatbot/state" if os.path.isdir("/opt/chatbot") else "state"), "article_cards.jsonl")
 TOP = 500
 SHORTER = "\n\nLa risposta precedente è stata troncata: sii più compatto, senza omettere commi o voci."
 _ARTICLE_NAME_RE = re.compile(r"^(\d+(?:-[a-z]+)?)(?:[._]|$)", re.IGNORECASE)

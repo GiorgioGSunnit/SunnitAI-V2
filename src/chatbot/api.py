@@ -7,6 +7,7 @@ Endpoints:
     GET    /api/sessions/{id}     — Get session history
     DELETE /api/sessions/{id}     — Delete a session
     GET    /api/health            — Health check
+    GET    /api/version           — The release this copy runs (the VERSION file, v77)
     GET    /api/documents         — List all documents with section counts
     GET    /api/documents/{id}/sections/{name} — Get full section content
 """
@@ -68,6 +69,7 @@ from ..rag.document_generation import (
     _call_chat,
 )
 from ..rag import feature_flags, protected_sources
+from .. import state_paths
 from ..rag.answer_processing import _extract_citations
 from ..rag.prompts import legal_consultant_system_prefix, length_instruction
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -211,7 +213,7 @@ class ChatRequest(BaseModel):
 
 
 DEFAULT_LOGO_PATH = "/opt/chatbot/assets/studio_logo.jpeg"
-TENANT_LOGOS_BASE = "/opt/chatbot/data/tenant_logos"
+TENANT_LOGOS_BASE = state_paths.tenant_logos_dir()     # v77: /opt/chatbot/state/tenant_logos on the server
 ALLOWED_LOGO_EXTENSIONS = {".png", ".jpg", ".jpeg"}
 MAX_LOGO_SIZE_BYTES = 5 * 1024 * 1024  # 5MB
 
@@ -966,6 +968,13 @@ async def get_tenant_logo(
 @app.get("/api/health")
 def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/version")
+def version_check():
+    """v77: the VERSION file (scripts/release.sh): «<semver>+<git short sha>»."""
+    from .. import version
+    return {"version": version.current()}
 
 
 @app.get("/api/debug")
@@ -2134,11 +2143,28 @@ def _routed_intent(message: str, legal_intent: str, pending_calculation: Optiona
     return intent
 
 
+def _case_first_answer(result: dict) -> bool:
+    """v77: a case-first answer -- a single-shot parere (kind «answer») or the parere written again («regenerate»), a
+    topic answer of the rounds («answer», «deepen»): it ends with the version's footer and goes to the held-out set.
+    The help text, round 1's questions, a document request are not answers."""
+    return result.get("kind") in _INTERACTIVE_ANSWER_KINDS and bool((result.get("answer") or "").strip())
+
+
 def _interactive_reply(session, session_id: str, message: str, result: dict, mode: str,
-                       user_meta: Optional[dict] = None) -> "ChatResponse":
+                       user_meta: Optional[dict] = None, case: Optional[str] = None) -> "ChatResponse":
     """INTERACTIVE_FLOW: the turn recorded in the session (its state in the anchors, the messages tagged with the
-    round), the summarization contract honoured as the defensive branch does, the reply with its interaction field."""
+    round), the summarization contract honoured as the defensive branch does, the reply with its interaction field.
+    v77: a case-first answer ends with «SunnitAI <version>» and is saved to the held-out set (heldout.save: the
+    prompt, the upload's text when it is the case, the intake, the answer)."""
     from ..rag import interactive_flow
+    if _case_first_answer(result):
+        from .. import version
+        from . import heldout
+        from ..rag import intake as intake_mod
+        result = {**result, "answer": version.with_footer(result.get("answer") or "")}
+        read = (user_meta or {}).get("intake") or (intake_mod.log_view((result.get("state") or {}).get("intake"))
+                                                   if (result.get("state") or {}).get("intake") else {})
+        heldout.save(session_id, message, result, mode, read, case)
     session.anchors = interactive_flow.store(session.anchors, result["state"])
     session.add_message("user", message, metadata={"type": "interactive", **(user_meta or {})})
     if user_meta and user_meta.get("document_id"):
@@ -2285,7 +2311,7 @@ async def _interactive_start(session, session_id: str, message: str, lang: str, 
         except Exception as exc:
             logger.error("chat: single-shot case-first failed, the single-shot pipeline answers: %s", exc, exc_info=True)
             return None
-        return _interactive_reply(session, session_id, message, result, "single_shot", user_meta)
+        return _interactive_reply(session, session_id, message, result, "single_shot", user_meta, case)
     try:
         loop = asyncio.get_event_loop()
         reply, field, state = await loop.run_in_executor(
@@ -2340,7 +2366,8 @@ def _interactive_document(session, session_id: str, message: str, uid: Optional[
                  and (m.metadata or {}).get("kind") in _INTERACTIVE_ANSWER_KINDS), None)
     if last is None:
         return None
-    draft = last.content
+    from .. import version
+    draft = version.strip_footer(last.content)          # v77: the footer stays in the chat, not in the document
     citations = (last.metadata or {}).get("citations") or []
     doc_id, doc_name = (_persist_generated_docx(draft=draft, doc_type="defensive_parere", user_id=uid, tenant_id=tid)
                         if uid and tid else (None, None))

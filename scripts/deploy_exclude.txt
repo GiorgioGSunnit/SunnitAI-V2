@@ -1,0 +1,34 @@
+# v77: what scripts/deploy.sh (Mac -> /root/v38) and scripts/promote.sh (/root/v38 -> /opt/chatbot) never copy, and so
+# (rsync without --delete-excluded) never delete on the target either. rsync filter patterns, one per line.
+.git/
+.env
+.env.*
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+*.bak_*
+*.log
+*.pid
+*.tmp
+.tmp/
+# runtime state and outputs (src/state_paths.py, src/chatbot/heldout.py): the server's own
+state/
+heldout/
+logs/
+diagnose_long_runs/
+eval_runs/
+# runtime files that lived in data/ before v77 (scripts/promote.sh moves them to state/): never overwritten
+sessions.json
+tenant_logos/
+system_templates/
+system_templates_*/
+article_cards*.jsonl
+private_documents/
+new_templates/
+*.egg-info/

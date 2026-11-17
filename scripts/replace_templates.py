@@ -6,10 +6,10 @@ from datetime import datetime
 from rapidfuzz import fuzz, process
 from docx import Document
 
-CATALOG_PATH = Path('/opt/chatbot/data/system_templates/catalog_enriched.json')
-TEMPLATES_DIR = Path('/opt/chatbot/data/system_templates')
+CATALOG_PATH = Path('/opt/chatbot/state/system_templates/catalog_enriched.json')
+TEMPLATES_DIR = Path('/opt/chatbot/state/system_templates')
 NEW_TEMPLATES_DIR = Path('/opt/chatbot/data/new_templates')
-BACKUP_DIR = Path('/opt/chatbot/data/system_templates_backup')
+BACKUP_DIR = Path('/opt/chatbot/state/system_templates_backup')
 LOG_PATH = Path('/tmp/replace_templates.log')
 
 BACKUP_DIR.mkdir(parents=True, exist_ok=True)

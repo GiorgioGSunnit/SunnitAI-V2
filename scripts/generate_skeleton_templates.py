@@ -283,7 +283,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=None, help="Process only first N entries (pilot mode)")
     parser.add_argument("--workers", type=int, default=5, help="Concurrent LLM workers")
-    parser.add_argument("--output-dir", default="/opt/chatbot/data/system_templates_pilot", help="Where to save .docx files")
+    parser.add_argument("--output-dir", default="/opt/chatbot/state/system_templates_pilot", help="Where to save .docx files")
     parser.add_argument("--master-list", default=MASTER_LIST_PATH, help="Path to master_template_list.json")
     args = parser.parse_args()
 

@@ -14,13 +14,14 @@ import os
 import threading
 from typing import Any, Dict, Optional, Tuple
 
+from .. import state_paths
 from . import comma_material, feature_flags
 
 logger = logging.getLogger(__name__)
 
 FLAG = "ARTICLE_CARDS_ENABLED"
 FILE_ENV = "ARTICLE_CARDS_FILE"
-DEFAULT_FILE = os.path.join("data", "article_cards.jsonl")
+DEFAULT_FILE = state_paths.article_cards_file()     # v77: the runtime state folder (was data/article_cards.jsonl)
 SHORT_TEXT = 400          # the text beside the card, for an article within its budget
 CARD_ROOM = 2             # a card may take this many times the article's budget
 HEAD = "Scheda di sintesi (non è il testo ufficiale: non citarla tra virgolette):"

@@ -1,5 +1,11 @@
 """Read-only diagnosis of many long cases: which stage loses the expected articles, where unexpected ones come from.
 
+v77: a diagnosis, never an acceptance check. The 31 eval cases (TUNING_IDS, HELDOUT_IDS) are fixtures for the unit tests
+that already use them: no batch runs them by default (--only names the ones a diagnosis needs), no rule is validated
+against them, and --interactive-sim's report carries no topic recall against an earlier run and no MENTIONED, extras
+or misused counts. Acceptance is the five-cell nightly (scripts/nightly_sim.py) for structure and regressions and the
+lawyer's scores on the held-out set (scripts/heldout_export.py, scripts/heldout_score.py) for substance.
+
 Across many long narrative cases at once: which stage of the strategy pipeline loses the expected
 articles (understanding, finding, ranking/selection), and where the articles an answer cites
 without being expected come from.
@@ -46,9 +52,9 @@ Then one report: (A) loss funnel of the expected articles, (B) origins of the ar
 without being expected, by channel and by exemption, (C) the 20 most frequent of those,
 (D) per area -- plus the understanding, finding and ranking figures behind them, and a line per case.
 
-Cases by default: every case with expected articles among the 12 tuning ones (sempronio ... l4),
-h1-h11 and n1-n9. --only picks some of them; --file/--request add documents (one --request per
---file, in order; a --file without one gets the generic request).
+Cases: none by default (v77). --only picks eval cases by id (sempronio ... l4, h1-h11, n1-n9: fixtures, for a
+diagnosis); --file/--request add documents (one --request per --file, in order; a --file without one gets the
+generic request).
 
 Run from the app folder, with its venv and live .env:
     cd /opt/chatbot && venv/bin/python scripts/diagnose_long.py \\
@@ -97,6 +103,7 @@ from datetime import datetime
 from typing import Optional
 
 DEFAULT_REQUEST = "Delinea una strategia difensiva per il cliente sulla base del documento allegato."
+# v77: fixtures of the unit tests, no batch and no measure (the module's docstring)
 TUNING_IDS = ["sempronio_no_hint", "p1", "p2", "p3", "c1", "c2", "c3", "l1", "l2", "l3", "l4"]
 HELDOUT_IDS = [f"h{i}" for i in range(1, 12)] + [f"n{i}" for i in range(1, 10)]
 MAX_PARALLEL = 3
@@ -1013,7 +1020,9 @@ def run_interactive_sim(spec: dict, text: str, request: str, ev, llm_stats: dict
     (--single-shot): one call, interactive_flow.single_shot -- no oracle; its timings and funnel in the record."""
     from src.rag import interactive_flow
     case = _eval_case(spec["id"]) or {"expected": spec.get("expected") or []}
+    from src import version
     record = {"id": spec["id"], "kind": "interactive", "status": "ok", "expected": spec.get("expected"),
+              "version": version.current(),
               "flags": {f: os.getenv(f) for f in FLAGS + ["INTERACTIVE_FLOW", "CASE_FIRST_SINGLE_SHOT"]},
               "rounds": [], "errors": []}
     t0 = time.time()
@@ -1194,86 +1203,6 @@ def answer_extras(answer: str, expected: list, ev) -> dict:
             "fits": {label: {k: v[k] for k in ("rubrica", "compatibile", "perche")} for label, v in fits.items()}}
 
 
-def _v52_scores(run_dir: str, ev) -> dict:
-    """{case id: mentioned_score} of an earlier (single-shot) run's drafts, by the same scorer."""
-    out = {}
-    cases_dir = os.path.join(run_dir, "cases")
-    for name in sorted(os.listdir(cases_dir)) if os.path.isdir(cases_dir) else []:
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(cases_dir, name), encoding="utf-8") as fh:
-                r = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if r.get("kind") in ("eval", None) and r.get("draft") is not None:
-            case = _eval_case(r["id"]) or {"expected": r.get("expected") or []}
-            fits = r.get("fits") or {}
-            out[r["id"]] = {**mentioned_score(ev, case, r.get("draft") or ""), "seconds": r.get("seconds"),
-                            "extras": len(extras_of(r.get("draft") or "", r.get("expected") or [], ev)),
-                            "misused": sum(1 for v in fits.values() if isinstance(v, dict) and v.get("compatibile") is False)}
-    return out
-
-
-def _sim_recalls(run_dir: str, ev) -> dict:
-    """v60m: {case id: topic recall} of an earlier --interactive-sim run -- recomputed from its topics with today's
-    answer key (topic_recall), else as it recorded it."""
-    out = {}
-    cases_dir = os.path.join(run_dir, "cases")
-    for name in sorted(os.listdir(cases_dir)) if os.path.isdir(cases_dir) else []:
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(cases_dir, name), encoding="utf-8") as fh:
-                r = json.load(fh)
-        except (OSError, ValueError):
-            continue
-        if r.get("kind") != "interactive":
-            continue
-        rc = r.get("topic_recall")
-        if r.get("topics") is not None and r.get("expected"):
-            try:
-                rc = topic_recall(r["topics"], r["expected"], ev)
-            except Exception:           # noqa: BLE001 -- the recorded one
-                pass
-        if rc:
-            out[r["id"]] = rc
-    return out
-
-
-def recall_lines(records: list, base: dict, name: str, ev) -> list:
-    """v60m: «Topic recall vs <run>» -- per case this run's in_topics/expected (in the top 3) beside the earlier run's,
-    the difference, the totals over the cases both runs have, and the cases below it."""
-    if not base:
-        return ["", f"Topic recall vs {name}: {name} has no --interactive-sim records to compare."]
-    out = ["", f"## Topic recall vs {name}", "", f"| case | {name} | this run | Δ in topics | Δ top 3 |",
-           "|---|---|---|---|---|"]
-    tot = {"b": 0, "b3": 0, "n": 0, "n3": 0, "be": 0, "e": 0}
-    below = []
-    for r in records:
-        b = base.get(r["id"])
-        rc = r.get("topic_recall") or {}
-        if r.get("topics") is not None and r.get("expected"):
-            rc = topic_recall(r["topics"], r["expected"], ev)
-        if not b or not rc:
-            continue
-        d, d3 = (rc.get("in_topics") or 0) - (b.get("in_topics") or 0), (rc.get("in_top3") or 0) - (b.get("in_top3") or 0)
-        out.append(f"| {r['id']} | {b.get('in_topics')}/{b.get('expected')} ({b.get('in_top3')}) | "
-                   f"{rc.get('in_topics')}/{rc.get('expected')} ({rc.get('in_top3')}) | {d:+d} | {d3:+d} |")
-        tot["b"] += b.get("in_topics") or 0
-        tot["b3"] += b.get("in_top3") or 0
-        tot["be"] += b.get("expected") or 0
-        tot["n"] += rc.get("in_topics") or 0
-        tot["n3"] += rc.get("in_top3") or 0
-        tot["e"] += rc.get("expected") or 0
-        if d < 0 or d3 < 0:
-            below.append(f"{r['id']} ({d:+d}, top 3 {d3:+d})")
-    out.append(f"| **all** | {tot['b']}/{tot['be']} ({tot['b3']}) | {tot['n']}/{tot['e']} ({tot['n3']}) | "
-               f"{tot['n'] - tot['b']:+d} | {tot['n3'] - tot['b3']:+d} |")
-    out += ["", f"Below {name}: " + ("; ".join(below) if below else "none")]
-    return out
-
-
 def demotions_line(record: dict) -> str:
     """v60m: round 1's distinctive-element demotions of a case (the grading's distinctive log): each article, why, and
     the sentences (or the facts) behind it."""
@@ -1290,9 +1219,10 @@ def demotions_line(record: dict) -> str:
     return "; ".join(parts) or "-"
 
 
-def write_interactive_report(run_dir: str, ev, baseline: Optional[str] = None) -> str:
-    """interactive.md from cases/*.json of an --interactive-sim run: per case the oracle's choice, the questions asked,
-    the seconds per round, topic recall and the answer's MENTIONED score, with the baseline run's (v52) beside it."""
+def write_interactive_report(run_dir: str, ev=None) -> str:
+    """interactive.md from cases/*.json of an --interactive-sim run: per case the questions asked, the seconds per round,
+    the single shot's timings and funnel, the demotions, the rounds verbatim. v77: a diagnosis -- no topic recall, no
+    MENTIONED / extras / misused counts, no earlier run beside it (the module's docstring)."""
     cases_dir = os.path.join(run_dir, "cases")
     records = []
     for name in sorted(os.listdir(cases_dir)):
@@ -1301,79 +1231,32 @@ def write_interactive_report(run_dir: str, ev, baseline: Optional[str] = None) -
                 r = json.load(fh)
             if r.get("kind") == "interactive":
                 records.append(r)
-    base = _v52_scores(baseline, ev) if baseline else {}
-    name = os.path.basename(os.path.normpath(baseline)) if baseline else "baseline"
+    versions = sorted({r.get("version") or "unknown" for r in records})
     lines = ["# Interactive flow, simulated (--interactive-sim)", "",
-             f"Oracle user: the topic(s) whose anchors cover the most expected norms, no question answered, then "
-             f"«procedi». Score: MENTIONED (tests/eval_narrative.score) on the topic answer with its rendered block"
-             + (f"; beside it the same score on {name}'s single-shot drafts." if base else "."), "",
-             f"| case | status | topics | chosen | questions | round 1 s | round 2 s | answer s | topic recall (top 3) | "
-             f"mentioned | extras | misused | {name} mentioned | {name} extras | {name} misused | {name} s |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-    tot = {"exp": 0, "hit": 0, "bexp": 0, "bhit": 0, "rec": 0, "rec3": 0, "rexp": 0, "q": 0, "s1": 0.0, "s2": 0.0,
-           "sa": 0.0, "bs": 0.0, "n": 0, "nb": 0, "x": 0, "m": 0, "nm": 0, "bx": 0, "bm": 0}
+             f"Version: {', '.join(versions) or '-'}. A diagnosis of the cases named, not an acceptance measure: "
+             f"acceptance is the nightly (scripts/nightly_sim.py) and the held-out set scored by the lawyer.", "",
+             "| case | status | topics | chosen | questions | round 1 s | round 2 s | answer s |",
+             "|---|---|---|---|---|---|---|---|"]
+    tot = {"q": 0, "s1": 0.0, "s2": 0.0, "sa": 0.0, "n": 0}
     for r in records:
-        sc, rc, b = r.get("score") or {}, r.get("topic_recall") or {}, base.get(r["id"]) or {}
         secs = r.get("seconds_by_round") or {}
         tot["n"] += 1
-        tot["exp"] += sc.get("expected") or 0
-        tot["hit"] += sc.get("mentioned") or 0
-        tot["rec"] += rc.get("in_topics") or 0
-        tot["rec3"] += rc.get("in_top3") or 0
-        tot["rexp"] += rc.get("expected") or 0
         tot["q"] += len(r.get("questions") or [])
         tot["s1"] += secs.get("round1") or 0
         tot["s2"] += secs.get("round2") or 0
         tot["sa"] += secs.get("answer") or 0
-        extras = r.get("extras")
-        if extras is None and r.get("answer"):          # a run before the extras were recorded: from its answer
-            extras = extras_of(r["answer"], r.get("expected") or [], ev)
-        misused = r.get("misused")
-        tot["x"] += len(extras or [])
-        if misused is not None:
-            tot["m"] += len(misused)
-            tot["nm"] += 1
-        if b:
-            tot["bx"] += b.get("extras") or 0
-            tot["bm"] += b.get("misused") or 0
-        if b:
-            tot["nb"] += 1
-            tot["bexp"] += b.get("expected") or 0
-            tot["bhit"] += b.get("mentioned") or 0
-            tot["bs"] += b.get("seconds") or 0
         lines.append(f"| {r['id']} | {r['status']} | {len(r.get('topics') or [])} | "
                      f"{', '.join(map(str, (r.get('oracle') or {}).get('chosen') or [])) or '-'} | "
                      f"{len(r.get('questions') or [])} | {secs.get('round1', '-')} | {secs.get('round2', '-')} | "
-                     f"{secs.get('answer', '-')} | {rc.get('in_topics', '-')}/{rc.get('expected', '-')} "
-                     f"({rc.get('in_top3', '-')}) | {sc.get('mentioned', '-')}/{sc.get('expected', '-')} | "
-                     f"{len(extras or [])} | {len(misused) if misused is not None else '-'} | "
-                     + (f"{b.get('mentioned')}/{b.get('expected')} | {b.get('extras', '-')} | {b.get('misused', '-')} | "
-                        f"{b.get('seconds', '-')} |" if b else "- | - | - | - |"))
+                     f"{secs.get('answer', '-')} |")
     if tot["n"]:
         n = tot["n"]
         lines.append(f"| **all** | | | | {tot['q']} ({tot['q'] / n:.1f}/case) | {tot['s1'] / n:.0f} avg | "
-                     f"{tot['s2'] / n:.0f} avg | {tot['sa'] / n:.0f} avg | {tot['rec']}/{tot['rexp']} ({tot['rec3']}) | "
-                     f"{tot['hit']}/{tot['exp']} ({tot['hit'] / max(1, tot['exp']):.3f}) | "
-                     f"{tot['x']} ({tot['x'] / n:.1f}/answer) | "
-                     + (f"{tot['m']} ({tot['m'] / max(1, tot['nm']):.1f}/answer)" if tot["nm"] else "-") + " | "
-                     + (f"{tot['bhit']}/{tot['bexp']} ({tot['bhit'] / max(1, tot['bexp']):.3f}) | "
-                        f"{tot['bx']} ({tot['bx'] / max(1, tot['nb']):.1f}/answer) | "
-                        f"{tot['bm']} ({tot['bm'] / max(1, tot['nb']):.1f}/answer) | "
-                        f"{tot['bs'] / max(1, tot['nb']):.0f} avg |" if tot["nb"] else "- | - | - | - |"))
-    graded = [r for r in records if r.get("grading")]
-    if graded:          # v60 (G): what the grading prefilter dropped among the expected norms (regression only)
-        dropped = [(r["id"], x) for r in graded for x in r.get("prefilter_dropped_expected") or []]
-        lines += ["", f"Grading prefilter (regression only): {len(dropped)} expected norm(s) dropped across "
-                      f"{len(graded)} case(s)"
-                      + (": " + "; ".join(f"{cid} {x}" for cid, x in dropped) if dropped else ".")]
-    if baseline:                # v60m: the topic recall beside an earlier --interactive-sim run's, case by case
-        lines += recall_lines(records, _sim_recalls(baseline, ev), name, ev)
+                     f"{tot['s2'] / n:.0f} avg | {tot['sa'] / n:.0f} avg |")
     for r in records:
-        lines += ["", f"## {r['id']}", "", f"Extras: {', '.join(extras_of(r.get('answer') or '', r.get('expected') or [], ev)) or '-'}; "
-                  f"misused: {', '.join(r.get('misused') or []) or '-'}", "",
+        lines += ["", f"## {r['id']}", "",
                   f"Oracle: {(r.get('oracle') or {}).get('why', '-')}; covered: "
-                  + "; ".join(f"{k}: {', '.join(v) or '-'}" for k, v in ((r.get("oracle") or {}).get("covered") or {}).items()),
-                  "", "Missing in the answer: " + (", ".join((r.get("score") or {}).get("missing") or []) or "-")]
+                  + "; ".join(f"{k}: {', '.join(v) or '-'}" for k, v in ((r.get("oracle") or {}).get("covered") or {}).items())]
         if r.get("mode") == "single_shot":         # v60k: the one call's timings and funnel
             ss = r.get("single_shot") or {}
             t, fun, pts = ss.get("timings") or {}, ss.get("funnel") or {}, ss.get("open_points") or {}
@@ -3443,9 +3326,8 @@ def main() -> None:
                         help="with --interactive-sim: CASE_FIRST_SINGLE_SHOT -- one call per case, the complete parere "
                              "(no oracle: nothing to choose); the report adds the timings and the funnel")
     parser.add_argument("--interactive-sim", action="store_true",
-                        help="INTERACTIVE_FLOW, simulated: round 1, the oracle's topic choice, \"procedi\", the answer "
-                             "scored; writes interactive.md (with --compare RUN, RUN's single-shot drafts beside it; "
-                             "v60m: RUN an --interactive-sim run, its topic recall case by case)")
+                        help="INTERACTIVE_FLOW, simulated: round 1, the oracle's topic choice, \"procedi\"; writes "
+                             "interactive.md -- a diagnosis (v77: no recall, no MENTIONED, no earlier run beside it)")
     parser.add_argument("--child", help=argparse.SUPPRESS)
     args = parser.parse_args()
 
@@ -3495,8 +3377,11 @@ def main() -> None:
         if missing:
             parser.error(f"unknown case ids: {', '.join(missing)}")
         chosen = [by_id[i.strip()] for i in args.only.split(",")]
-    else:
-        chosen = [by_id[i] for i in TUNING_IDS + HELDOUT_IDS if i in by_id and by_id[i].get("expected")]
+    else:               # v77: the eval cases are no batch -- name them (--only) or bring a document (--file)
+        chosen = []
+        if not args.file:
+            parser.error("no cases: --only ID[,ID...] (eval fixtures, for a diagnosis) or --file; the 31-case batch is "
+                         "retired (v77: acceptance is scripts/nightly_sim.py and the held-out set)")
     if len(args.request) > len(args.file):
         parser.error("more --request than --file")
     for path in args.file:
@@ -3538,7 +3423,8 @@ def main() -> None:
             json.dump(spec, fh, ensure_ascii=False)
 
     parallel = max(1, min(args.parallel, MAX_PARALLEL))
-    print(f"{len(specs)} cases, {parallel} at a time, into {out_dir}", flush=True)
+    from src import version
+    print(f"{len(specs)} cases, {parallel} at a time, into {out_dir}; version {version.current()}", flush=True)
     t0 = time.time()
 
     def run(spec):
@@ -3560,7 +3446,7 @@ def main() -> None:
 
     print(f"\nAll cases in {time.time() - t0:.0f}s.")
     if args.interactive_sim:
-        path = write_interactive_report(out_dir, ev, _run_dir(args.compare[-1]) if args.compare else None)
+        path = write_interactive_report(out_dir, ev)
         print(open(path, encoding="utf-8").read().split("\n## ")[0])
         print(f"Report: {path}\nNothing was written to the database.")
         return

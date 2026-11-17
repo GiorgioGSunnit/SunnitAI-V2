@@ -39,7 +39,8 @@ def _project_root() -> str:
 
 
 def _log_dir() -> str:
-    return os.path.join(_project_root(), "data", "logs")
+    from .. import state_paths          # v77: the runtime state folder's logs/ (was data/logs)
+    return state_paths.logs_dir()
 
 
 def _log_path() -> str:

@@ -118,22 +118,21 @@ def _run(path, recalls, demoted=()):
         (path / "cases" / f"{cid}.json").write_text(json.dumps(record), encoding="utf-8")
 
 
-def test_the_sim_report_sets_topic_recall_beside_an_earlier_run_and_lists_the_demotions(tmp_path):
+def test_the_sim_report_lists_the_demotions_and_no_recall_against_an_earlier_run(tmp_path):
+    """v77: the 31-case sim is no measure -- its report has no «Topic recall vs <run>», no recall or MENTIONED column."""
     dl = _dl()
 
     class Ev:
         @staticmethod
         def mentions(answer):
             return []
-    _run(tmp_path / "v66", {"h3": (4, 3, 5), "h5": (3, 2, 4)})
     demoted = [{"article": "1062 c.c.", "reason": issue_records.DEMOTED_CONTRADICTED,
                 "sentences": [{"id": "S2", "text": "Domitilla ha chiuso il cancello nel 2016.", "certainty": "accertato"}]},
                {"article": "1051 c.c.", "reason": issue_records.DEMOTED_EXCLUDED, "facts": ["landlocked"], "sentences": []}]
     _run(tmp_path / "now", {"h3": (4, 3, 5), "h5": (2, 2, 4)}, demoted)
-    report = Path(dl.write_interactive_report(str(tmp_path / "now"), Ev(), str(tmp_path / "v66"))).read_text("utf-8")
-    assert "## Topic recall vs v66" in report
-    assert "| h3 | 4/5 (3) | 4/5 (3) | +0 | +0 |" in report and "| h5 | 3/4 (2) | 2/4 (2) | -1 | +0 |" in report
-    assert "| **all** | 7/9 (5) | 6/9 (5) | -1 | +0 |" in report and "Below v66: h5 (-1, top 3 +0)" in report
+    report = Path(dl.write_interactive_report(str(tmp_path / "now"), Ev())).read_text("utf-8")
+    assert "Topic recall" not in report and "recall" not in report.lower() and "mentioned" not in report.lower()
+    assert "misused" not in report.lower() and "not an acceptance measure" in report
     assert ("Demoted to grade 1 (distinctive element): 1062 c.c. — contraddetto da una frase del caso narrata come "
             "fatto: S2 «Domitilla ha chiuso il cancello nel 2016.» (accertato); 1051 c.c. — escluso dai fatti estratti "
             "[fatti: landlocked]") in report

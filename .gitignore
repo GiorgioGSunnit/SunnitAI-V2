@@ -37,3 +37,6 @@ server_check.sh
 eval_runs/
 # v71: runtime logs (logs/thesis_<case>.json, the thesis call's input and output)
 logs/
+# v77: runtime state (src/state_paths.py) and the held-out set (src/chatbot/heldout.py) -- the server's, never the repo's
+/state/
+/heldout/

@@ -25,11 +25,11 @@ What this script does:
 
 Run from /opt/chatbot:
   python3 scripts/migrate_legacy_templates.py \
-      --templates-dir /opt/chatbot/data/system_templates \
+      --templates-dir /opt/chatbot/state/system_templates \
       --dry-run          # preview without writing anything
 
   python3 scripts/migrate_legacy_templates.py \
-      --templates-dir /opt/chatbot/data/system_templates
+      --templates-dir /opt/chatbot/state/system_templates
 """
 
 import argparse
@@ -268,7 +268,7 @@ def build_docx(tipo_atto: str, sections: list[dict], fields: list[str], output_p
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--templates-dir", default="/opt/chatbot/data/system_templates")
+    parser.add_argument("--templates-dir", default="/opt/chatbot/state/system_templates")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 

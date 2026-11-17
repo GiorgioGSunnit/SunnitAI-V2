@@ -1422,7 +1422,7 @@ def clean_method(raw: Any, candidates: Optional[Sequence[Dict[str, Any]]] = None
 
 
 THESIS_LOG_ENV = "THESIS_LOG_DIR"
-THESIS_LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "logs")
+THESIS_LOG_DIR = None          # v77: the runtime state folder's logs/ (src/state_paths.py; was <checkout>/logs)
 
 
 def case_id(ctx: Dict[str, Any]) -> str:
@@ -1441,7 +1441,8 @@ def thesis_log(ctx: Dict[str, Any], messages: Sequence[Any], raw_reply: str, par
     answer."""
     try:
         from . import ai_chat
-        folder = os.getenv(THESIS_LOG_ENV) or THESIS_LOG_DIR
+        from .. import state_paths
+        folder = os.getenv(THESIS_LOG_ENV) or THESIS_LOG_DIR or state_paths.logs_dir()
         os.makedirs(folder, exist_ok=True)
         path = os.path.join(folder, f"thesis_{case_id(ctx)}.json")
         entry = {"case_id": case_id(ctx), "at": time.strftime("%Y-%m-%dT%H:%M:%S"),

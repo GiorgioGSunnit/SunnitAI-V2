@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # The interactive flow for a hand test (the PO drives h3): uvicorn from this checkout (/root/v38) on a spare port, with
-# the server's .env.v45 plus INTERACTIVE_FLOW, TOPIC_STEP, TOPIC_TABLES and INTERACTIVE_CASE_FIRST (v60) on. Nothing in /opt/chatbot is read or
-# written, the chatbot service is not touched, no LLM setting is overridden (the model is .env.v45's).
+# the server's .env.v45 plus INTERACTIVE_FLOW, TOPIC_STEP, TOPIC_TABLES and INTERACTIVE_CASE_FIRST (v60) on. The chatbot
+# service is not touched, no LLM setting is overridden (the model is .env.v45's). v77: its case-first answers go to the
+# held-out set, /opt/chatbot/heldout (source «test»), and it reads the runtime state of /opt/chatbot/state (sessions,
+# logos, templates) as it always read them from /opt/chatbot/data -- STATE_DIR=... in .env.v45 for a separate one.
 #
 #   scripts/serve_test.sh [start] [PORT]   start (default: the first free port of 8030-8049; never 8010)
 #   scripts/serve_test.sh stop       stop the server this script started

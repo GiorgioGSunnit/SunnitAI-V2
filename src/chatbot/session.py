@@ -58,7 +58,10 @@ class SessionExpiredError(LookupError):
     """
 
 
-SESSIONS_FILE = os.environ.get("SESSIONS_FILE", "/opt/chatbot/data/sessions.json")
+from .. import state_paths
+
+# v77: the runtime state folder (src/state_paths.py: /opt/chatbot/state/sessions.json on the server)
+SESSIONS_FILE = os.environ.get("SESSIONS_FILE", state_paths.sessions_file())
 
 MAX_HISTORY_TURNS = 20  # Max conversation turns to keep in memory
 MAX_CONTEXT_TURNS = 6   # Max recent turns to feed into query rewriting

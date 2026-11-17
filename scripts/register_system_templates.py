@@ -16,7 +16,7 @@ Run from /opt/chatbot so the existing src/ package imports resolve.
 
 Usage:
   python3 scripts/register_system_templates.py \
-      --templates-dir /opt/chatbot/data/system_templates \
+      --templates-dir /opt/chatbot/state/system_templates \
       --user-id f9ac7571-bda9-4b78-bd85-f312ec18d87b \
       --tenant-id 072c56c5-0757-4385-9655-3cc3d869fc4b
 """
@@ -37,7 +37,7 @@ from src.db.crud import create_user_document, get_user_documents
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--templates-dir", default="/opt/chatbot/data/system_templates")
+    parser.add_argument("--templates-dir", default="/opt/chatbot/state/system_templates")
     parser.add_argument("--user-id", required=True)
     parser.add_argument("--tenant-id", required=True)
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen without writing anything")

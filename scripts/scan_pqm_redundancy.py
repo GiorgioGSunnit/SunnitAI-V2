@@ -13,7 +13,7 @@ Does not call the LLM and does not modify any .docx — purely flags
 affected files in flagged_for_review.json for the lawyer review pass.
 
 Usage:
-  python3 scan_pqm_redundancy.py --templates-dir /opt/chatbot/data/system_templates
+  python3 scan_pqm_redundancy.py --templates-dir /opt/chatbot/state/system_templates
 """
 
 import argparse
@@ -39,7 +39,7 @@ def scan_file(path: str) -> bool:
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--templates-dir", default="/opt/chatbot/data/system_templates")
+    parser.add_argument("--templates-dir", default="/opt/chatbot/state/system_templates")
     args = parser.parse_args()
 
     catalog_path = os.path.join(args.templates_dir, "catalog.json")

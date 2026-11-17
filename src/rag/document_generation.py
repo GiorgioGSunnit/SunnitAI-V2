@@ -1739,9 +1739,11 @@ def _nota_contestazione_system(lang: str) -> str:
     )
 
 
-_SYSTEM_TEMPLATES_CATALOG_PATH = os.getenv(
+from .. import state_paths
+
+_SYSTEM_TEMPLATES_CATALOG_PATH = os.getenv(     # v77: the runtime state folder (src/state_paths.py)
     "SYSTEM_TEMPLATES_CATALOG_PATH",
-    "/opt/chatbot/data/system_templates/catalog_enriched.json",
+    state_paths.system_templates_catalog(),
 )
 
 

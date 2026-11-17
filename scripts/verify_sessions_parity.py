@@ -13,7 +13,7 @@ Nothing here writes to the sessions file or to the database:
 
 Usage (from the repository root):
     python scripts/verify_sessions_parity.py
-    python scripts/verify_sessions_parity.py --sessions-file /opt/chatbot/data/sessions.json
+    python scripts/verify_sessions_parity.py --sessions-file /opt/chatbot/state/sessions.json
     python scripts/verify_sessions_parity.py --report parity_report.json
 
 DATABASE_URL must be set (environment or --env-file). There is deliberately no
@@ -251,7 +251,7 @@ def print_report(result: Dict[str, Any], max_list: int) -> None:
 
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--sessions-file", default=os.environ.get("SESSIONS_FILE", "/opt/chatbot/data/sessions.json"))
+    ap.add_argument("--sessions-file", default=os.environ.get("SESSIONS_FILE", "/opt/chatbot/state/sessions.json"))
     ap.add_argument("--env-file", default="/opt/chatbot/.env", help="dotenv file to load DATABASE_URL from, if it exists")
     ap.add_argument("--max-list", type=int, default=20, help="ids to print per category")
     ap.add_argument("--report", help="write the full result as JSON to this path")

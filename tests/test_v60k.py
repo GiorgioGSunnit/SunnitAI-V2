@@ -290,13 +290,15 @@ def test_the_api_answers_a_case_in_one_parere_and_routes_its_follow_up(chat, mon
         "state": state, "citations": [], "kind": "answer"})
     body = client.post("/api/chat", json={"message": base.CASE}).json()
     assert calls["single_shot"] == 0 and body["status_messages"] == ["interactive_single_shot"]
-    assert body["answer"] == "IL PARERE COMPLETO"
+    from src import version
+    assert body["answer"] == version.with_footer("IL PARERE COMPLETO")             # v77: the footer
     monkeypatch.setattr(flow, "follow_up", lambda message, st: {
         "answer": "IL PARERE AGGIORNATO", "interaction": flow.interaction(st, 3, ("deepen",)), "state": st,
         "citations": [], "kind": "regenerate"})
     again = client.post("/api/chat", json={"message": "approfondisci il possesso",
                                            "session_id": body["session_id"]}).json()
-    assert again["answer"] == "IL PARERE AGGIORNATO" and again["status_messages"] == ["interactive_follow_up"]
+    assert again["answer"] == version.with_footer("IL PARERE AGGIORNATO")
+    assert again["status_messages"] == ["interactive_follow_up"]
 
 
 # --- the sim, single shot ---------------------------------------------------------------------------------------------------

@@ -1,7 +1,7 @@
 # DEJURE templates → chatbot catalog
 
 Scripts that turn the DEJURE PDF formulari into fill-ready Word templates and
-catalog entries for `/opt/chatbot/data/system_templates/`. They run on a
+catalog entries for `/opt/chatbot/state/system_templates/`. They run on a
 Windows PC; only `enrich_run.py` needs the model server.
 
 Working files (logs, name maps, the rename/drop plan, model results) live

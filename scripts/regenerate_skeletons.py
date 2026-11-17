@@ -36,13 +36,13 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/opt/chatbot/logs/skeleton_regen.log", mode="a"),
+        logging.FileHandler("/opt/chatbot/state/logs/skeleton_regen.log", mode="a"),
     ],
 )
 logger = logging.getLogger("skeleton_regen")
 
-CATALOG_PATH = Path("/opt/chatbot/data/system_templates/catalog_enriched.json")
-SKELETON_DIR = Path("/opt/chatbot/data/system_templates")
+CATALOG_PATH = Path("/opt/chatbot/state/system_templates/catalog_enriched.json")
+SKELETON_DIR = Path("/opt/chatbot/state/system_templates")
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://217.160.8.129:8000/v1")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_MODEL = "qwen2.5-32b-awq"

@@ -6,8 +6,8 @@ from docx import Document
 from openai import OpenAI
 import os
 
-CATALOG_PATH = Path('/opt/chatbot/data/system_templates/catalog_enriched.json')
-TEMPLATES_DIR = Path('/opt/chatbot/data/system_templates')
+CATALOG_PATH = Path('/opt/chatbot/state/system_templates/catalog_enriched.json')
+TEMPLATES_DIR = Path('/opt/chatbot/state/system_templates')
 NEW_DIR = Path('/opt/chatbot/data/new_templates')
 LOG_PATH = Path('/tmp/add_templates.log')
 

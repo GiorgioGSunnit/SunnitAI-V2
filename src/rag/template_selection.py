@@ -26,8 +26,10 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
-_DATA_DIR = os.path.dirname(os.getenv(
-    "SYSTEM_TEMPLATES_CATALOG_PATH", "/opt/chatbot/data/system_templates/catalog_enriched.json"))
+from .. import state_paths
+
+_DATA_DIR = os.path.dirname(os.getenv(          # v77: the runtime state folder (src/state_paths.py)
+    "SYSTEM_TEMPLATES_CATALOG_PATH", state_paths.system_templates_catalog()))
 VECTORS_PATH = os.getenv("TEMPLATE_VECTORS_PATH", os.path.join(_DATA_DIR, "template_vectors.npy"))
 INDEX_PATH = os.getenv("TEMPLATE_VECTORS_INDEX", os.path.join(_DATA_DIR, "template_index.json"))
 FLOOR = float(os.getenv("TEMPLATE_SELECT_FLOOR", "0.62"))
