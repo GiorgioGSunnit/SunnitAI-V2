@@ -57,6 +57,9 @@ EXTRA = (
     ("lawyer_method", "NO_CHARGE_WHY", "Metodo, «Conclusioni»: nessun addebito né domanda nel quesito"),
     ("lawyer_method", "TRANSAZIONE_ARGUMENT", "Metodo, «Soluzioni a confronto»: l'argomento della transazione del "
                                               "convenuto (v79.8)"),
+    ("lawyer_method", "PENAL_ROUTE_LINE", "Metodo, «Sintesi»: la via penale di un caso civile (v79.8)"),
+    ("lawyer_method", "PENAL_ROUTE_CONCLUSION", "Metodo, «Conclusioni»: la via penale di un caso civile (v79.8)"),
+    ("lawyer_method", "PENAL_ROUTE_UNKNOWN", "Metodo, la via penale: procedibilità non letta (v79.8)"),
     ("lawyer_method", "CONTAINMENT_LINE", "Metodo, «Soluzioni a confronto»: la linea di contenimento dell'imputato "
                                           "(v79.7: sempre offerta, ultima)"),
     ("lawyer_method", "ASSESSMENT_LINES", "Metodo, «Conclusioni»: esito probabile, grado di certezza, obiettivo"),

@@ -5883,11 +5883,36 @@ def clients_of(state: Dict[str, Any]) -> List[Dict[str, str]]:
     """v79.6 (item 2): the parties the user assists, [{name, role}] -- the first read's «clienti», else the user's own
     words («Sono il difensore di Tizio e di Caio»); fewer than two: [] (the single-client parere)."""
     read = state.get("read") or {}
+    case = case_text(state)
+    m = _MULTI_CLIENT_RE.search(case)
+    plural = bool(m) or bool(_BOTH_CLIENTS_RE.search(case))     # v79.8 (E2): only on the user's explicit plural
+    if not plural:
+        if len([c for c in read.get("clients") or [] if isinstance(c, dict) and c.get("name")]) >= 2:
+            _log("method_clients_refused", {"why": "nessun cliente plurale esplicito", "read": read.get("clients")})
+        return []
     found = [c for c in read.get("clients") or [] if isinstance(c, dict) and c.get("name")]
     if len(found) < 2:
-        m = _MULTI_CLIENT_RE.search(case_text(state))
         found = [{"name": m.group(1), "role": ""}, {"name": m.group(2), "role": ""}] if m else []
+    if len(found) >= 2 and adversaries(case, found[0]["name"], found[1]["name"]):
+        _log("method_clients_refused", {"why": "le due parti della lite", "clients": [c["name"] for c in found]})
+        return []                           # the two parties of a dispute are never both clients
     return found if len(found) >= 2 else []
+
+
+_BOTH_CLIENTS_RE = re.compile(r"\b(?:difensore|difensori|legale|avvocat[oi])\s+di\s+(?:entrambi|ambedue|tutti\s+e\s+due)\b|"
+                              r"\b(?:assisto|assistiamo|difendo|difendiamo|rappresento)\s+(?:entrambi|ambedue|tutti\s+e\s+"
+                              r"due)\b", re.IGNORECASE)
+_ADVERSE_RE = r"(?:ha\s+convenuto|ha\s+citato|cita|conviene|contro|nei\s+confronti\s+di|ha\s+denunciato|ha\s+querelato|" \
+              r"ha\s+sporto\s+(?:denuncia|querela)\s+(?:contro|nei\s+confronti\s+di)|chiede\s+a|agisce\s+contro)"
+
+
+def adversaries(case: str, a: str, b: str) -> bool:
+    """v79.8 (E2): a sentence of the case sets a against b (or b against a): one acts against the other."""
+    for x, y in ((a, b), (b, a)):
+        if re.search(rf"\b{re.escape(x)}\b[^.;]{{0,80}}?\b{_ADVERSE_RE}\b[^.;]{{0,40}}?\b{re.escape(y)}\b", case or "",
+                     re.IGNORECASE):
+            return True
+    return False
 
 
 def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any],
@@ -5941,6 +5966,24 @@ def merge_removals(state: Dict[str, Any], entries: Sequence[Dict[str, Any]]) -> 
         if e.get("kind") == "removed":
             by_step[e["step"]] = by_step.get(e["step"], 0) + 1
     ledger["removed_by_step"] = by_step
+
+
+def penal_route_text(route: Tuple[str, str], rows: Sequence[Dict[str, Any]], fetch=None) -> Dict[str, str]:
+    """v79.8 (E3): the penal route's line -- the offence's procedibilità from the store (the row's procedural facts,
+    the graph's when no row holds the article), «da verificare» when none is read."""
+    from . import cenni, lawyer_method, procedural_facts
+    art, name = route
+    key = _key(_parse_label(art))
+    row = next((r for r in rows or [] if r.get("_article") and _key(r["_article"]) == key), None)
+    if row is None:
+        fetch = fetch or cenni.graph_tools(_documents)[0]
+        row = next((r for r in _isolated("penal_route_fetch", lambda: fetch([key]), []) or [] if r.get("_article")),
+                   None)
+    facts = (row.get("_proc") or procedural_facts.from_row(row)) if row else {}
+    proc = procedural_facts.procedibilita_text(facts) if facts else ""
+    out = lawyer_method.penal_route_line(art, name, proc)
+    _log("penal_route", {"article": art, "row": row is not None, "procedibilita": proc[:160]})     # §1 and §9
+    return out
 
 
 def concurrently(jobs: Sequence[Callable[[], Any]]) -> List[Any]:
@@ -5997,6 +6040,10 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
                                 case_id_=str(state.get("case_id") or ""))
     from . import intake as intake_mod
     ctx["asked"] = list((state.get("intake") or {}).get("questions") or []) or intake_mod.questions(case)   # v79.6 (1)
+    route = lawyer_method.penal_route(state.get("sentences") or [], posture)      # v79.8 (E3): one line, §1 and §9
+    if route:
+        ctx["penal_route"] = _isolated("penal_route", lambda: penal_route_text(route, rows), {}) or {}
+        state.setdefault("block_counters", {})["penal_route"] = route[0]
     from . import rulings as rulings_mod
     record = shared_record if shared_record is not None else (    # v79.6 (item 2): one record for every client
         _isolated("rulings_for_record", lambda: rulings_record(ctx, rows), None) if rulings_mod.enabled() else None)

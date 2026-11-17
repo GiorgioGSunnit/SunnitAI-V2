@@ -140,7 +140,10 @@ def test_the_clients_are_read_from_the_first_read_or_the_users_words(monkeypatch
     monkeypatch.setattr(flow, "case_text", lambda s: s.get("case", ""))
     assert [c["name"] for c in flow.clients_of({"case": CO_DEFENDANTS})] == ["Tizio", "Caio"]
     read = {"clients": [{"name": "Alfa S.r.l.", "role": "attore"}, {"name": "Beta S.r.l.", "role": "attore"}]}
-    assert [c["name"] for c in flow.clients_of({"read": read, "case": ""})] == ["Alfa S.r.l.", "Beta S.r.l."]
+    # v79.8 (E2): the read's clients only with the user's explicit plural
+    assert flow.clients_of({"read": read, "case": ""}) == []
+    assert [c["name"] for c in flow.clients_of({"read": read, "case": "Sono il difensore di entrambi."})] == \
+        ["Alfa S.r.l.", "Beta S.r.l."]
     assert flow.clients_of({"case": "Assisto Tizio."}) == []
     from src.rag import case_read
     got = case_read.clean({"clienti": [{"nome": "Tizio", "ruolo": "imputato"}, {"nome": "Caio"}],

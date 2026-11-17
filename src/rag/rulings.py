@@ -81,7 +81,7 @@ _RULE_RE = re.compile(r"\b(?:richied\w*|si\s+configura\w*|configura(?:no)?\b|int
                       r"sussist\w*|(?:è|sia|sono|siano|risulta|risultano)\s+(?:necessari|sufficient|richiest|integrat|"
                       r"costituit|esclus|configurabil)\w*|presuppon\w*|si\s+realizza\w*|deve\s+ritenersi|va\s+ritenut\w*|va\s+esclus\w*|"
                       r"(?:è|resta|rimane)\s+esclus\w*|esclud\w*|rientra(?:no)?\b|costituisc\w*|si\s+intend\w*|"
-                      r"consist\w*|ricorr(?:e|ono)\b|"
+                      r"consist\w*|ricorr(?:e|ono)\b|configurabil\w*|"
                       # v79.7 (item 4): the forms a massima states its rule with, beyond v78's list -- to be checked
                       # against the corpus with scripts/rulings_filters.py (its «rule verb» column)
                       r"(?:è|sono|risulta|risultano)\s+(?:configurabil|ravvisabil|riconducibil|punibil|sussumibil|"
@@ -236,7 +236,8 @@ def rubrica_stems(rubrica: str) -> set:
 
 
 HEAD_STEM_CHARS = 8
-_RUBRICA_SKIP = _STOP | {"altri", "altre", "altro", "casi", "caso", "disposizioni", "disposizione", "norme", "norma",
+_RUBRICA_SKIP = _STOP | {"azione", "azioni",         # v79.8: «Azione di reintegrazione» -> «reintegr-»
+                         "altri", "altre", "altro", "casi", "caso", "disposizioni", "disposizione", "norme", "norma",
                          "fatto", "fatti", "delitto", "delitti", "reato", "reati", "particolari", "speciali", "generali"}
 
 
@@ -282,7 +283,24 @@ def element_noun_hit(sentence: str, element: Dict[str, Any]) -> bool:
 
 
 FILTERS = ("rubrica", "rank_demoted", "shortlist_cut", "length", "mid_reference", "rule_verb", "procedural",
-           "element_nouns", "no_principle", "off_element", "unrelated")    # v79.7 (item 4): the per-article counts
+           "element_nouns", "penal_on_civil", "no_principle", "off_element", "unrelated")    # v79.7 (item 4); v79.8
+PRESELECT_PER_ARTICLE = 30      # v79.8: the rulings per article whose text is read before the shortlist
+_INSTITUTION_SKIP = {"azione", "azioni", "diritto", "diritti", "danno", "danni", "responsabilità", "obbligo", "obblighi",
+                     "effetti", "contenuto", "nozione", "disposizioni"}
+
+
+def civil_label(label: str) -> bool:
+    return str(label or "").rstrip().endswith(" c.c.")
+
+
+def names_institution(sentence: str, rubrica: str) -> bool:
+    """v79.8: the sentence names the article's institution -- a word beginning with a stem of the rubrica's own nouns
+    (its generic ones aside: «Azione di reintegrazione» -> «reintegr-»)."""
+    stems_ = {re.sub(r"[aeiouàèéìòù]+$", "", w)[:HEAD_STEM_CHARS] for w in re.findall(r"[a-zàèéìòù]{4,}", (rubrica or "").lower())
+              if w not in _RUBRICA_SKIP and w not in _INSTITUTION_SKIP}
+    stems_ = {x for x in stems_ if len(x) >= 4}
+    words = re.findall(r"[a-zàèéìòù]{4,}", (sentence or "").lower())
+    return bool(stems_) and any(w.startswith(x) for x in stems_ for w in words)
 
 
 def sentence_filter(sentence: str, elements: Sequence[Dict[str, Any]]) -> str:
@@ -659,6 +677,7 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
                            "sections_confirmed": bool(sections_map().get("confirmed"))}
     t0 = time.time()
     shortlist: Dict[str, List[Dict[str, Any]]] = {}
+    preselected: Dict[str, Tuple[List[Dict[str, Any]], str]] = {}
     for label, rec in records.items():
         row = by_label_rows.get(_key(_parse_label(label)))
         art_log = log["articles"].setdefault(label, {"found": 0, "linked": 0, "unparsed": 0, "off_rubrica": 0,
@@ -693,20 +712,39 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
                           "su": sezioni_unite(p), "date": ruling_date(g["date_enacted"], p["year"]),
                           "score": overlap(g["abstract"], mine), "sections": g["sections"], "elements": mine,
                           "parsed": p})
-        ranked = sorted(cands, key=_order_key)
-        shortlist[label] = ranked[:GRADED_PER_ARTICLE]
-        art_log["filters"]["rank_demoted"] += sum(1 for r in ranked[GRADED_PER_ARTICLE:] if demoted(r.get("parsed")))
-        art_log["filters"]["shortlist_cut"] += sum(1 for r in ranked[GRADED_PER_ARTICLE:] if not demoted(r.get("parsed")))
+        preselected[label] = (sorted(cands, key=_order_key), str(rec.get("rubrica") or ""))
+    # v79.8: the shortlist from the rulings that hold a quotable sentence -- PRESELECT_PER_ARTICLE read, by rank, those
+    # with a candidate sentence first (before, the GRADED_PER_ARTICLE best abstracts were read and nothing else: 582's
+    # quotable sentences sat in rulings ranked lower, and §5 printed none)
+    body = texts(session, [x for ranked, _ in preselected.values() for r in ranked[:PRESELECT_PER_ARTICLE]
+                           for x in r["sections"]])
+    log["signatures_stripped"] = sum(len(SIGNATURE_RE.findall(t or "")) for t in body.values())     # v79.8
+    for label, (ranked, rubrica) in preselected.items():
+        counts = log["articles"][label]["filters"]
+        civil = civil_label(label)
+        for r in ranked[:PRESELECT_PER_ARTICLE]:
+            found = candidate_sentences(" ".join(body.get(x) or "" for x in r["sections"]), r["elements"],
+                                        r["article"], counts)
+            if civil and (r.get("parsed") or {}).get("archive") == "penale":   # v79.8: a criminal ruling on a civil
+                named = [x for x in found if names_institution(x, rubrica)]  # record only naming its institution
+                counts["penal_on_civil"] += len(found) - len(named)
+                found = named
+            r["candidates"] = found
+        head = ranked[:PRESELECT_PER_ARTICLE]
+        ordered = [r for r in head if r["candidates"]] + [r for r in head if not r["candidates"]] + \
+            ranked[PRESELECT_PER_ARTICLE:]
+        log["articles"][label]["with_sentences"] = sum(1 for r in head if r["candidates"])
+        shortlist[label] = ordered[:GRADED_PER_ARTICLE]
+        counts["rank_demoted"] += sum(1 for r in ordered[GRADED_PER_ARTICLE:] if demoted(r.get("parsed")))
+        counts["shortlist_cut"] += sum(1 for r in ordered[GRADED_PER_ARTICLE:] if not demoted(r.get("parsed")))
     short = round_robin(shortlist, SHORTLIST_MAX)
     for label, v in shortlist.items():          # v79.7: past the answer's shortlist, by rank or by the cap
         for r in v:
             if r not in short:
                 art_log = log["articles"][label]["filters"]
                 art_log["rank_demoted" if demoted(r.get("parsed")) else "shortlist_cut"] += 1
-    body = texts(session, [s for r in short for s in r["sections"]])
     for r in short:
-        r["candidates"] = candidate_sentences(" ".join(body.get(s) or "" for s in r["sections"]), r["elements"],
-                                              r["article"], log["articles"][r["article"]]["filters"])
+        r.setdefault("candidates", [])
     call_log = link(short, ctx.get("case") or "", call)
     log["link_call"] = call_log
     by_article: Dict[str, List[Dict[str, Any]]] = {}
@@ -725,7 +763,9 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     graded = {k: sorted(v, key=_order_key) for k, v in by_article.items()}         # the orientation's
     for k, v in graded.items():
         log["articles"][k]["graded"] = len(v)
-    kept = round_robin({k: graded[k][:PER_ARTICLE] for k in records if k in graded}, PER_ANSWER)     # the printed
+    # the printed: v79.8 -- a ruling with a quoted passage before one with the estremi alone (the order key after)
+    kept = round_robin({k: sorted(graded[k], key=lambda r: (not r.get("passage"), _order_key(r)))[:PER_ARTICLE]
+                        for k in records if k in graded}, PER_ANSWER)
     for r in kept:
         log["articles"][r["article"]]["kept"] += 1
         log["articles"][r["article"]]["passages"] += bool(r.get("passage"))

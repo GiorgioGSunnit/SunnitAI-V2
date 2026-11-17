@@ -491,6 +491,16 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
 - **D. Commi are fattispecie.**
   - D1: a comma after the first that states a special case («nei casi previsti …»), a presumption («si presume …», «si considera …») or an aggravation («la pena è aumentata …») has its elements marked `special` (`issue_records.special_comma`). The method's records split them into their own record, labelled `«2051 c.c. co. 2»` and carrying `comma_of` and its kind in the rubrica (`split_special`). The base rule's record keeps only its own elements, so its missing facts list only those. A fact-free special-comma record is v78's noise, as any record.
   - D2: the counter is `special_comma_records`.
+- **E. Confidence and roles.**
+  - E1: «grado di certezza» is computed on the main line's article alone: alto with none of its elements open, medio with one, basso otherwise; with no record article it is never alto. «Dipende da» lists only that article's open elements. Output check `certainty_depends`: never «alto» with a «dipende da». — `lawyer_method.certainty_of`, `main_open_ids`.
+  - E2: several clients only on the user's explicit plural («assisto X e Y», «difensore di entrambi»); the read's «clienti» alone no longer triggers it, and the two parties of a dispute (one acting against the other in a sentence of the case) are never both clients. — `interactive_flow.clients_of`, `adversaries`.
+  - E3: a civil case whose certain facts describe a reato (appropriazione indebita, minaccia, lesioni, danneggiamento, truffa) gets one line in §1 and one in §9, naming the offence and its procedibilità from the store (the row's procedural facts, the graph's when no row holds it). It is never a second parere. — `lawyer_method.penal_route`, `penal_route_line`, `interactive_flow.penal_route_text`.
+  - E4: the registry-label replacement runs once more over the whole composed parere of every client, §7 included.
+- **Small.**
+  - 582's passages: the live picker read only the 6 rulings with the best abstract overlap and printed the top 3 by rank, passage or not. The offline count read every linked ruling's sentences, with no element test. Now `PRESELECT_PER_ARTICLE` (30) rulings are read, those holding a quotable sentence are shortlisted first, and a ruling with a quoted passage is printed before one with the estremi alone.
+  - A criminal ruling on a civil record counts only when its sentence names the article's institution (`names_institution`; filter `penal_on_civil`), and the rubrica's head noun skips «azione».
+  - «configurabile» joins the rule verbs.
+  - The signature blocks stripped are counted per cell in the nightly (`signatures_stripped`).
 
 ## By version
 

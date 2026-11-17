@@ -302,12 +302,13 @@ def rulings_lines(results: List[Dict[str, Any]]) -> List[str]:
                          f"{a.get('kept', 0)} | {a.get('passages', '—')} | "
                          + " | ".join(str(f.get(k, '—')) for k in rulings.FILTERS) + " |")
     lines += ["", "| cell | estremi parsed | unparsed | section unmapped | passages quoted | none | orientations "
-                  "computed | to verify |", "|---|---|---|---|---|---|---|---|"]
+                  "computed | to verify | signatures stripped |", "|---|---|---|---|---|---|---|---|---|"]
     for c in rows:
         r = c["rulings"]
         e, p, o = r.get("estremi") or {}, r.get("passages") or {}, r.get("orientation") or {}
         lines.append(f"| {c['id']} | {e.get('parsed', 0)} | {e.get('unparsed', 0)} | {e.get('section_unmapped', 0)} | "
-                     f"{p.get('quoted', 0)} | {p.get('none', 0)} | {o.get('computed', 0)} | {o.get('da_verificare', 0)} |")
+                     f"{p.get('quoted', 0)} | {p.get('none', 0)} | {o.get('computed', 0)} | {o.get('da_verificare', 0)} | "
+                     f"{r.get('signatures_stripped', '—')} |")
     for c in results:
         if (c.get("cell") or {}).get("family") == "penale" and c.get("answer"):
             lines += ["", f"### §5 of {c['id']}", "", section5(c["answer"]) or "(no §5)"]

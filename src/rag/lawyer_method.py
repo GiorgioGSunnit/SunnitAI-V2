@@ -2931,6 +2931,64 @@ def _open_ids(ctx: Dict[str, Any]) -> List[str]:
     return [m["elemento"] for m in (ctx.get("facts") or {}).get("mancanti") or [] if m.get("elemento")]
 
 
+def _with_line(text: str, line: Optional[str]) -> str:
+    return f"{text}\n\n{line}" if line and text else (text or "")
+
+
+# v79.8 (E3): a civil case whose certain facts describe a reato -- one line in §1 and §9, never a second parere
+PENAL_ROUTES = (("646 c.p.", "appropriazione indebita", r"\bsi\s+(?:è\s+)?appropriat\w*|\btrattien\w*\s+(?:per\s+s[ée]\s+)?"
+                 r"(?:il|la|i|le|l['’])\s*(?:denar|somm|ben[ei]|merc|auto|vettur)|\bsi\s+rifiut\w*\s+di\s+restituir"),
+                ("612 c.p.", "minaccia", r"\bminacci(?:at|av|ò|a\b|ando)\w*"),
+                ("582 c.p.", "lesione personale", r"\b(?:ferit[oa]|aggredit[oa]|picchiat[oa]|frattur\w*|lesion[ie]\s+"
+                 r"personal\w*)\b"),
+                ("635 c.p.", "danneggiamento", r"\bha\s+(?:volontariamente\s+)?(?:distrutto|danneggiato|vandalizzat\w*)\b"),
+                ("640 c.p.", "truffa", r"\btruff\w*|\braggir\w*|\bartifiz\w*"))
+PENAL_ROUTE_LINE = ("I fatti narrati possono integrare anche il reato di {name} (art. {art}), {proc}: la via penale è "
+                    "distinta da questo parere.")       # my drafts (v79.8, E3): §1
+PENAL_ROUTE_CONCLUSION = "**Via penale**: {name} (art. {art}), {proc}; resta distinta dalle domande di questo parere."  # §9
+PENAL_ROUTE_UNKNOWN = "procedibilità non indicata dalle fonti consultate"
+
+
+def penal_route(sentences: Sequence[Dict[str, Any]], posture: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+    """v79.8 (E3): (article, name) of the first reato a civil case's certain facts describe; None in a criminal matter
+    or with none."""
+    from . import issue_records
+    if criminal(posture):
+        return None
+    facts = " ".join(str(x.get("text") or "") for x in sentences or [] if issue_records.certain_fact(x))
+    return next(((art, name) for art, name, rx in PENAL_ROUTES if re.search(rx, facts, re.IGNORECASE)), None)
+
+
+def penal_route_line(art: str, name: str, procedibilita: str) -> Dict[str, str]:
+    """v79.8 (E3): {"summary": §1's line, "conclusion": §9's} -- two wordings, so neither is taken for a repetition."""
+    proc = _plain(procedibilita).rstrip(".") or PENAL_ROUTE_UNKNOWN
+    proc = proc[:1].lower() + proc[1:]
+    return {"summary": PENAL_ROUTE_LINE.format(name=name, art=art, proc=proc),
+            "conclusion": PENAL_ROUTE_CONCLUSION.format(name=name, art=art, proc=proc)}
+
+
+def main_open_ids(records: Dict[str, Dict[str, Any]], article: str) -> List[str]:
+    """v79.8 (E1): the open elements of the main line's article -- «da provare», or «provato» on an allegazione alone
+    (C1 makes none) --, the only ones «dipende da» lists."""
+    return [r["id"] for r in _live((records or {}).get(article) or {}) if r.get("id") and
+            (r.get("status") == DA_PROVARE or "allegazione" in str(r.get("why") or ""))]
+
+
+def certainty_of(a: Dict[str, Any], records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, Any]] = None
+                 ) -> Dict[str, Any]:
+    """v79.8 (E1): «grado di certezza» on the main line's article alone -- alto with none of its elements open, medio
+    with one, basso otherwise; an assessment on no record article keeps its grado, never «alto» (nothing it depends on
+    can be named). a["open"]: the open elements («dipende da»)."""
+    art = str(a.get("article") or "")
+    if art not in (records or {}):
+        return {**a, "open": [], "grado": MEDIO if a.get("grado") == ALTO else a.get("grado")}
+    open_ = main_open_ids(records, art)
+    grado = ALTO if not open_ else MEDIO if len(open_) == 1 else BASSO
+    if log is not None and grado != a.get("grado"):
+        log["certainty"] = {"article": art, "was": a.get("grado"), "now": grado, "open": open_}
+    return {**a, "grado": grado, "open": open_}
+
+
 def conclusions_from_selection(a: Dict[str, Any], sols: Sequence[Dict[str, Any]], main: int, sub: Optional[int],
                                ctx: Dict[str, Any], client: str) -> str:
     """§9 from the selection: the record's assessment (what it depends on: the elements still to prove; the residual
@@ -2938,7 +2996,7 @@ def conclusions_from_selection(a: Dict[str, Any], sols: Sequence[Dict[str, Any]]
     the subordinate one, the theses barred or unverifiable."""
     penal = criminal(ctx.get("posture"))                          # v79 (E2)
     art = a.get("article") or ""
-    open_ = _open_ids(ctx)
+    open_ = list(a["open"]) if "open" in a else _open_ids(ctx)      # v79.8 (E1): the main line's article's only
     depends = f"la prova degli elementi {', '.join(open_)}" if open_ else ""
     if a.get("all_integrated") and art:
         risk = f"la condanna per l'art. {art}" if penal else f"l'accoglimento della domanda avversaria (art. {art})"
@@ -3274,6 +3332,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         _log("compose_refused", log["refused"])
         return ""
     a = settle_objective(forecast(ctx, sols[main], a, log), sols, records, circ)      # v79 (E1)
+    a = certainty_of(a, records, log)                       # v79.8 (E1): the main line's article alone
     scope = article_scope(ctx, [norms, procedure] + list(by_title.values()))       # v78: what record_check passed
 
     def planned(text: str, code: bool = False) -> str:     # v78: the plan's prose -- the checks above, then the
@@ -3315,7 +3374,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     orientation_points: List[str] = []
     layout_log: Dict[str, Any] = {}
     keyed = [
-        ("sintesi", summary_section({}, sols, main, a, client)),
+        ("sintesi", _with_line(summary_section({}, sols, main, a, client),
+                               (ctx.get("penal_route") or {}).get("summary"))),                 # v79.8 (E3)
         ("fatti", facts_section(ctx.get("facts") or {})),
         ("questione", question_section(plan, a, records, client)),
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
@@ -3324,7 +3384,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                                         layout_log)),
         ("obiezioni", objections_section(plan, fallback_objections)),
         ("processuali", procedure),
-        ("conclusioni", "\n\n".join(conclusions)),
+        ("conclusioni", _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
     ]
     known_all = elements_by_id(records, circ)          # v79 (E2): what the reader reads, outside the tables and §5
     crim = criminal(ctx.get("posture"))
@@ -3370,6 +3430,9 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                              "criminal": crim,
                              "scope": sorted(scope | article_scope(ctx, code_texts + [head])),
                              "code": [_plain(x) for x in code_texts if _plain(x)]}
+    if ctx.get("rulings_record"):           # v79.8 (E4): no registry label left in any section, §7 included
+        joined = "\n".join(rulings_mod.labels_out(line, ctx["rulings_record"], labels_log)
+                            if rulings_mod._LABEL_RE.search(line) else line for line in joined.split("\n"))
     return f"{head}\n\n{joined}" if head else joined
 
 
@@ -3393,9 +3456,17 @@ def compose_clients(sections: Sequence[Tuple[str, str]], items: Sequence[Tuple[s
     log = log if log is not None else {}
     names = [n for n, _, _ in items]
     composed = []
+    from . import rulings as rulings_mod
     for name, ctx, plan in items:
         own: Dict[str, Any] = {}
-        composed.append((name, compose(sections, ctx, plan, profiles, own), ctx))
+        text = compose(sections, ctx, plan, profiles, own)
+        record = ctx.get("rulings_record") or items[0][1].get("rulings_record")
+        labels: List[str] = []          # v79.8 (E4): a registry label left in any client's section (§7 too) replaced
+        text = "\n".join(rulings_mod.labels_out(line, record, labels) if rulings_mod._LABEL_RE.search(line) else line
+                          for line in text.split("\n"))
+        if labels:
+            own["registry_labels_out"] = labels
+        composed.append((name, text, ctx))
         log.setdefault("clients", {})[name] = {k: own.get(k) for k in ("main_thesis", "esito", "answers")}
     heads, blocks, bodies = [], [], []
     for name, text, _ in composed:
@@ -3715,6 +3786,9 @@ def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List
                       re.sub(rf"(?m)^- [^\n]*: {ORIENTATION_TO_VERIFY}$|^{ORIENTATION_TO_VERIFY}$", "", x))
                      if t == title("orientamenti") else x for t, x in secs if t != title("verificare"))
     check("markers_collected", not re.search(r"\bda verificare\b", body, re.I), "«da verificare» in the body")
+    # v79.8 (E1): «alto» never with something it depends on
+    check("certainty_depends", not re.search(r"\*\*Grado di certezza\*\*: alto\s*—\s*dipende da", answer or "", re.I),
+          "«Grado di certezza: alto» with a non-empty «dipende da»")
     if registry_layout:
         bad = rulings_mod.section_lines_ok(orient)
         check("orientations_code_rendered", not bad, f"lines not rendered by the code: {bad[:2]}")
