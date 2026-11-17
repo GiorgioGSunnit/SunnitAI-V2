@@ -488,6 +488,9 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - C2: a decomposed clause that states no condition is dropped at decomposition, its reason on the record (`fragments`) and in the log (`element_fragment`): a bare subject («il debitore», «uno dei contraenti»), a connective («con cui si conviene che»), a saving clause («salvo in ogni caso …»). — `rule_quote.fragment_why`.
   - C3: a d'ufficio condition the store cut at its connective is joined again (`rejoin_conditions`). A condition joined by «quando / se / qualora / purché / e» is «provato» only when the certain facts hold every part (`condition_parts`); otherwise «da provare», naming the missing part.
   - C4: the counters are `uncertain_integrated` (must be 0), `fragments_dropped` per article, `conditions_half` (must be 0) and `conditions_rejoined`. — `interactive_flow.grading_counters`.
+- **D. Commi are fattispecie.**
+  - D1: a comma after the first that states a special case («nei casi previsti …»), a presumption («si presume …», «si considera …») or an aggravation («la pena è aumentata …») has its elements marked `special` (`issue_records.special_comma`). The method's records split them into their own record, labelled `«2051 c.c. co. 2»` and carrying `comma_of` and its kind in the rubrica (`split_special`). The base rule's record keeps only its own elements, so its missing facts list only those. A fact-free special-comma record is v78's noise, as any record.
+  - D2: the counter is `special_comma_records`.
 
 ## By version
 

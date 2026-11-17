@@ -190,8 +190,10 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any], fragments: Option
     split_by = "clausole penali" if rule.get("how") == "offence_clauses" else ""      # v76: logged
     texts = dict(rule.get("commi") or [])
     out: List[Dict[str, Any]] = []
-    for k in (rule.get("selected") or [])[:COMMI_MAX]:
+    selected = (rule.get("selected") or [])[:COMMI_MAX]
+    for k in selected:
         reqs = (rule.get("requisites") or {}).get(k)
+        special = special_comma(texts.get(k) or "") if selected and k != selected[0] else ""     # v79.8 (D1)
         if not reqs and not rule_quote.offence(tuple(row["_article"])) and texts.get(k):
             one = rule_quote.civil_split(texts[k], single=True)     # v76b: a record's one condition is an element
             reqs = one if len(one) == 1 else reqs
@@ -210,7 +212,56 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any], fragments: Option
             out.append({"id": "", "comma": k, "text": text, "kind": "requisito" if reqs else "comma",
                         "facts_status": status, "status": status, "why": "", "supporting": [], "contradicting": [],
                         "missing": "", "question": "", **({"split": split_by} if split_by and reqs else {}),
-                        **({"branches": alternatives} if alternatives else {})})
+                        **({"branches": alternatives} if alternatives else {}),
+                        **({"special": special} if special else {})})
+    return out
+
+
+# v79.8 (D1): a comma that states a special case, a presumption or an aggravation of the base rule -- its own record
+_SPECIAL_COMMA_RE = re.compile(r"^\W*(?:\d+\.\s*)?(?:nei\s+casi\s+previst\w*|nel\s+caso\s+previst\w*|nei\s+casi\s+di\b|"
+                               r"(?:la|le)\s+(?:pena|pene)\s+(?:è|sono)\s+(?:aumentat|diminuit|ridott)\w*|"
+                               r"(?:la|le)\s+(?:stessa|stesse)\s+pen[ae]\b|alla\s+stessa\s+pena\b|"
+                               r"se\s+il\s+fatto\s+è\s+commess\w*|agli\s+effetti\s+del)|"
+                               r"\bsi\s+(?:consider\w*|presum\w*|reput\w*|ha\s+per)\b|\b(?:è|sono)\s+presunt\w*\b|"
+                               r"\bla\s+pena\s+è\s+aumentat\w*", re.IGNORECASE)
+SPECIAL_KINDS = (("presunzione", re.compile(r"\bsi\s+(?:presum|reput|ha\s+per)|\bpresunt", re.I)),
+                 ("aggravamento", re.compile(r"\bpen[ae]\b[^.]{0,40}\b(?:aumentat|diminuit|ridott)|stess[ae]\s+pen", re.I)),
+                 ("equiparazione", re.compile(r"\bsi\s+consider|\bagli\s+effetti\s+del", re.I)),
+                 ("caso speciale", re.compile(r".", re.S)))
+
+
+def special_comma(text: str) -> str:
+    """v79.8 (D1): the kind of a comma that states a special case («nei casi previsti …»), a presumption («si
+    presume …», «si considera …»), an aggravation («la pena è aumentata …») -- "" for the base rule's own commi."""
+    t = " ".join(str(text or "").split())
+    if not t or not _SPECIAL_COMMA_RE.search(t):
+        return ""
+    return next(kind for kind, rx in SPECIAL_KINDS if rx.search(t))
+
+
+def comma_label(label: str, comma: Any) -> str:
+    """v79.8 (D1): a special comma's record label -- «2051 c.c. co. 2»."""
+    return f"{label} co. {comma}"
+
+
+def split_special(label: str, rec: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """v79.8 (D1): {label: record} -- the base rule's record with its own elements only, and one record per special
+    comma (its elements, labelled with its comma, «comma_of» the base): a special comma never adds elements to the
+    base rule's record, nor its open ones to the base's missing facts. A record with no special comma: as it is."""
+    reqs = rec.get("requisites") or []
+    by_comma: Dict[Any, List[Dict[str, Any]]] = {}
+    for r in reqs:
+        if r.get("special"):
+            by_comma.setdefault(r.get("comma"), []).append(r)
+    if not by_comma:
+        return {label: rec}
+    out = {label: {**rec, "requisites": [r for r in reqs if not r.get("special")]}}
+    for k, own in by_comma.items():
+        base = {x: v for x, v in rec.items() if x not in ("charged", "named_due", "anchor_due", "requisites",
+                                                         "procedibilita", "alternative", "alternative_facts")}
+        out[comma_label(label, k)] = {**base, "requisites": own, "comma_of": label, "comma": k,
+                                      "special": own[0]["special"],
+                                      "rubrica": f"{rec.get('rubrica') or ''} (co. {k}: {own[0]['special']})".strip()}
     return out
 
 

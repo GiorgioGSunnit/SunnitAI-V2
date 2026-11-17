@@ -3588,7 +3588,13 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
             if rec.get("requisites") or rec.get("undecomposed"):
                 log.setdefault("undecomposed", []).append(label)
             continue
-        out[label] = {**rec, "requisites": [r for r in rec["requisites"] if r.get("kind") == "requisito"]}
+        # v79.8 (D1): a special comma is a record of its own, never elements of the base rule's
+        for x, part in issue_records.split_special(label, {**rec, "requisites": [
+                r for r in rec["requisites"] if r.get("kind") == "requisito"]}).items():
+            if part["requisites"]:
+                out[x] = part
+            if x != label:
+                log.setdefault("special_commi", []).append(x)
     for label in [x for x, r in out.items() if r.get("ranked_candidate")]:     # v79 (D2): a candidate that grades
         live = _live(out[label])                                               # to nothing, gone without a word
         if not any(r.get("status") == PROVATO for r in live) or any(r.get("status") == NON_RISULTA for r in live):

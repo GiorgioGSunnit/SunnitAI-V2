@@ -5720,6 +5720,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         else:
             method_ctx, method_plan = _isolated("lawyer_method_plan", lambda: method_inputs(
                 state, posture, plan, topics, refs, all_rows, case), (None, {})) or (None, {})
+        if method_ctx is not None:      # v79.8 (D1): the special commi made records of their own
+            state.setdefault("block_counters", {})["special_comma_records"] = len(
+                (method_ctx.get("records_view") or {}).get("special_commi") or [])
         state["ranked_trace"] = _isolated("ranked_trace", lambda: ranked_trace(state, method_ctx), []) or []
         _log("ranked_trace", state["ranked_trace"])     # v79.7 (item 3): the retrieval's top-ranked, each one's fate
         refused = _isolated("lawyer_method_refusal", lambda: lawyer_method.placeholder_main(
