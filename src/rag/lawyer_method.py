@@ -2903,7 +2903,11 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     rules_log: List[Dict[str, str]] = []        # v79 (B1): the rule statements removed, with their reason
     objections_dropped: List[str] = []          # v79 (B2): an objection or a reply the checks emptied
 
+    from . import rulings as rulings_mod
+    labels_log: List[str] = []                  # v79 (F1): a registry label that names no registry ruling
+
     def prose(text: str, rules: bool = True) -> str:   # every written paragraph: no orientation of its own, retrieved
+        text = rulings_mod.labels_out(text, ctx.get("rulings_record"), labels_log)     # v79 (F1): «[G1]» -> estremi
         text = orientation_claims_out(text, orientation_claims)            # rulings only, circumstances with their
         text = unretrieved_rulings_out(text, rulings, rulings_out)         # requisites, no remissione for a d'ufficio
         text = rulings_scope_out(text, rulings, scope_log)                 # charge; v78: on its article and element
@@ -3000,6 +3004,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     keyed = [(k, x if k == "orientamenti" else tracked("wording", x, reader_wording(x, known_all, crim)))
              for k, x in keyed]
     log.update({"rule_statements_removed": rules_log, "objections_dropped": objections_dropped,
+                "registry_labels_out": labels_log,
                 "coherence": coherence, "rulings_out": rulings_out, "circumstance_claims": claims,
                 "rulings_scope_out": scope_log, "articles_out_of_scope": articles_log,
                 "fact_wording": fact_wording, "charged_prose": charged_log,

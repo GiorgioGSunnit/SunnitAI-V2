@@ -31,6 +31,9 @@ orientations computed / to verify) and the penal cells' §5 verbatim.
 v79 (B3): check grounded_output -- in the delivered parere, no rule statement without a source (a record element, a
 store field, a registry passage: src/rag/rule_statements.py) and no article outside the answer's scope.
 
+v79 (F3): check rulings_printed -- no registry label («G1»), no «copia non ufficiale» stamp, no ruling cited
+without its head («Sez. 5, n. 12/2025» with no «Cass.»).
+
 v79 (E2, E3): check reader_wording -- no element code outside the tables, no «registro», no «l'accusa» or
 «aggravante» outside a criminal matter; check ledger_removed_absent -- every sentence the ledger logs as removed is
 absent from the parere. v79 (D4): the selection table adds the defence lines, the defence articles the general-part gate
@@ -137,6 +140,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["output_check"] = grounded.get("found") or {}
         out["checks"].append(wording_check(out["output_check"], result.get("state") or {}))     # v79 (E2)
         out["checks"].append(ledger_check(out["answer"], result.get("state") or {}))            # v79 (E3)
+        out["checks"].append(printed_check(out["answer"]))                                      # v79 (F3)
         from src.rag import rulings
         if rulings.enabled():
             record = (result.get("state") or {}).get("rulings_record")
@@ -194,6 +198,13 @@ def ledger_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
         if e.get("kind") == "removed" and len(norm) >= 25 and norm in final:
             present.append(f"{e.get('step')}: {str(e.get('sentence'))[:80]}")
     return {"check": "ledger_removed_absent", "ok": not present, "why": "; ".join(present[:3])}
+
+
+def printed_check(answer: str) -> Dict[str, Any]:
+    """v79 (F3): the rulings as printed -- no registry label («G1»), no PDF stamp, no citation without its head."""
+    from src.rag import rulings
+    found = rulings.printed_problems(answer)
+    return {"check": "rulings_printed", "ok": not found, "why": "; ".join(found[:4])}
 
 
 def section5(answer: str) -> str:
@@ -286,6 +297,7 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
         return out
     out["answer"] = path.read_text(encoding="utf-8")
     out["checks"] = lawyer_method.structure_checks(out["answer"], spec["cell"])
+    out["checks"].append(printed_check(out["answer"]))         # v79 (F3): needs no state
     from src.rag import rulings
     check = ruling_check(out["answer"], spec["cell"], None) if rulings.enabled() else None
     if check:           # v78: offline, the penal cells only (the record is not in a file)

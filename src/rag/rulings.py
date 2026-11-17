@@ -310,9 +310,119 @@ def texts(session, section_ids: Sequence[str]) -> Dict[str, str]:
 _SPLIT_RE = re.compile(r"(?<=[.;:])\s+(?=[A-ZÀÈÉÌÒÙ«\"(])")
 
 
+# --- v79 (F2): a passage as the reader gets it ------------------------------------------------------------------------------
+
+# the stamp the PDF leaves on every page («Corte di Cassazione - copia non ufficiale», its page count) and page counts
+STAMP_RE = re.compile(r"\s*corte\s+di\s+cassazione\s*[-–—]?\s*copia\s+non\s+ufficiale(?:\s*[-–—]?\s*\d{1,4}(?!\s*/))?",
+                      re.IGNORECASE)
+PAGE_RE = re.compile(r"\s*\b(?:pag(?:ina|\.)?|p\.)\s*\d{1,4}(?:\s*(?:di|/)\s*\d{1,4})?\b", re.IGNORECASE)
+# a sentence that starts inside a reference («n. 1234/2025, ha affermato …», «Rv. 2811», «, che …») is never quoted
+_MID_REFERENCE_RE = re.compile(r"^(?:[a-zà-ù0-9,;:.)\]/-]|(?:n|nn|rv|dep|sez|cit|pag|cfr)\.\s)", re.IGNORECASE)
+_UPPER_START_RE = re.compile(r"^[«\"“(]?[A-ZÀÈÉÌÒÙ]")
+
+
+def strip_stamp(text: str) -> str:
+    """v79 (F2): the text without the PDF's stamp and its page counts."""
+    return " ".join(PAGE_RE.sub(" ", STAMP_RE.sub(" ", text or "")).split())
+
+
+def starts_clean(sentence: str) -> bool:
+    """v79 (F2): the sentence starts a sentence -- a capital (or an opening quote), never inside a reference."""
+    s = (sentence or "").strip()
+    return bool(_UPPER_START_RE.match(s)) and not re.match(r"^(?:Sez|Rv|Cfr|Pag|Dep|Nn?)\.\s", s)
+
+
+NAMES_ENV = "RULINGS_PARTY_NAMES"      # v79 (F2): «redact» (default) or «keep» -- the decision is the PO's, pending
+REDACTED = "[omissis]"
+_TITLE_NAME_RE = re.compile(r"\b(?:sig(?:\.|nor|nora)?|dott(?:\.|or)|avv\.|ing\.|geom\.)\s+([A-ZÀ-Ý][a-zà-ÿ']+)")
+_NAME_PAIR_RE = re.compile(r"(?<=[\w,;:)] )([A-ZÀ-Ý][a-zà-ÿ']+|[A-ZÀ-Ý]{2,})(\s+(?:[A-ZÀ-Ý][a-zà-ÿ']+|[A-ZÀ-Ý]{2,}))+")
+_NOT_NAMES = set("""Corte Cassazione Suprema Sezione Sezioni Unite Tribunale Appello Assise Stato Repubblica Codice Penale
+Civile Procura Procuratore Generale Pubblico Ministero Giudice Pace Costituzione Costituzionale Consiglio Ministro Legge
+Decreto Regione Comune Provincia Italia Italiana Italiano Europea Europeo Unione Convenzione Carta Diritti Uomo Testo
+Unico Polizia Carabinieri Guardia Finanza Agenzia Entrate Banca Lavoro Riesame Sorveglianza Minorenni Gip Gup Gup Pm
+Corti Territoriale Distrettuale Superiore Magistratura Collegio Presidente Relatore Consigliere Cedu Edu Inps Inail
+Spa Srl Sas Snc Ufficio Registro Imprese Camera Commercio Asl Usl Ente Fondo Istituto Nazionale Previdenza Sociale
+Penali Civili Sezione Feriale Unita""".split())
+
+
+def redact_names(text: str) -> str:
+    """v79 (F2): the parties' names out of a quoted passage -- a name after a title («sig. Rossi»), and a run of two or
+    more capitalised words inside a sentence none of which is an office, a court or an act («Mario Rossi»,
+    «ROSSI Mario») -- as REDACTED; RULINGS_PARTY_NAMES=keep leaves them."""
+    if (os.getenv(NAMES_ENV) or "redact").strip().lower() == "keep":
+        return text or ""
+    out = _TITLE_NAME_RE.sub(lambda m: m.group(0)[:m.start(1) - m.start(0)] + REDACTED, text or "")
+
+    def pair(m: "re.Match") -> str:
+        words = m.group(0).split()
+        return m.group(0) if any(w.capitalize().strip("'") in _NOT_NAMES for w in words) else REDACTED
+    return _NAME_PAIR_RE.sub(pair, out)
+
+
+def printed(passage: str) -> str:
+    """v79 (F2): a kept passage as §5 prints it -- no stamp, no party's name."""
+    return redact_names(strip_stamp(passage))
+
+
+# --- v79 (F1): the registry's labels as the reader gets them --------------------------------------------------------------
+
+_LABEL_RE = re.compile(r"\[(G\d{1,2})\]|\((G\d{1,2})\)|(?<![\w/.-])(G\d{1,2})(?![\w/-])")
+
+
+def reference(r: Dict[str, Any]) -> str:
+    """The ruling's reference for the prose -- «Cass. pen., Sez. 5, n. 1234/2025, 12.03.2025», its date when held."""
+    e = str(r.get("estremi") or "")
+    e = re.sub(r"\s*\(data n\.d\.\)$", "", e)
+    return re.sub(r"\s*\((\d{2}\.\d{2}\.\d{4})\)$", r", \1", e)
+
+
+def labels_out(text: str, record: Optional[Dict[str, Any]], log: Optional[List[str]] = None) -> str:
+    """v79 (F1): every registry label the writer emits («[G1]», «(G1)», «G1») replaced by its ruling's reference; a
+    label no registry ruling holds drops its sentence (logged)."""
+    from .lawyer_method import _by_sentence
+    if not text or not _LABEL_RE.search(text):
+        return text or ""
+    kept = (record or {}).get("kept") or []
+
+    def ruling(label: str) -> Optional[Dict[str, Any]]:
+        i = int(label[1:])
+        return kept[i - 1] if 1 <= i <= len(kept) else None
+
+    def review(sentence: str) -> str:
+        found = [next(g for g in m.groups() if g) for m in _LABEL_RE.finditer(sentence)]
+        if not found:
+            return sentence
+        if any(ruling(x) is None for x in found):
+            if log is not None:
+                log.append(f"{', '.join(found)}: {sentence[:120]}")
+            return ""
+        return _LABEL_RE.sub(lambda m: f"({reference(ruling(m.group(2)))})" if m.group(2)
+                             else reference(ruling(m.group(1) or m.group(3))), sentence)
+    return _by_sentence(text, review)
+
+
+# --- v79 (F3): the nightly's check of the rulings as printed ---------------------------------------------------------------
+
+_HEADLESS_RE = re.compile(r"\bSez\.\s*(?:Un\.|\d{1,2})|\bn\.\s*\d{1,6}\s*/\s*(?:19|20)\d{2}\b")
+_ACT_BEFORE_RE = re.compile(r"(?:d\.\s?lgs\.?|d\.\s?p\.\s?r\.|d\.\s?l\.|legge|l\.|decreto|reg\.|regolamento|dpr|"
+                            r"direttiva|\(ue\)|\(ce\))[^.;]{0,12}$", re.IGNORECASE)
+
+
+def printed_problems(answer: str) -> List[str]:
+    """v79 (F3): what the parere must not show -- a registry label («G1»), the PDF's stamp, a ruling's citation without
+    its head («Sez. 5, n. 12/2025» with no «Cass.» before it)."""
+    out = [f"etichetta {m.group(0)}" for m in _LABEL_RE.finditer(answer or "")]
+    out += ["timbro «copia non ufficiale»" for _ in STAMP_RE.finditer(answer or "")]
+    for m in _HEADLESS_RE.finditer(answer or ""):
+        before = (answer or "")[max(0, m.start() - 45):m.start()]
+        if "Cass." not in before and not _ACT_BEFORE_RE.search(before):
+            out.append(f"citazione senza la testa: «{(answer or '')[m.start():m.end() + 10].strip()}»")
+    return out
+
+
 def sentences(text: str) -> List[str]:
     from . import sentence_split
-    return [s for s in (_plain(x) for x in sentence_split.split(text or "", _SPLIT_RE)) if s]
+    return [s for s in (_plain(x) for x in sentence_split.split(strip_stamp(text or ""), _SPLIT_RE)) if s]
 
 
 def candidate_sentences(text: str, elements: Sequence[Dict[str, Any]], article: str) -> List[str]:
@@ -322,7 +432,8 @@ def candidate_sentences(text: str, elements: Sequence[Dict[str, Any]], article: 
     named = re.compile(rf"\bart(?:icol[oi]|t?\.)\s*{number}\b", re.I)
     lo, hi = SENTENCE_CHARS
     scored = [(overlap(s, elements) + (1 if named.search(s) else 0), i, s) for i, s in enumerate(sentences(text))
-              if lo <= len(s) <= hi and quotable(s) and any(element_noun_hit(s, e) for e in elements)]
+              if lo <= len(s) <= hi and starts_clean(s) and quotable(s)        # v79 (F2): never mid-reference
+              and any(element_noun_hit(s, e) for e in elements)]
     best = sorted(scored, key=lambda x: (-x[0], x[1]))[:SENTENCES_PER_RULING]
     return [s for _, _, s in sorted((x for x in best if x[0] > 0), key=lambda x: x[1])]
 
@@ -517,7 +628,7 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
 # --- 6. what is printed, and what the calls receive ----------------------------------------------------------------------------
 
 def ruling_line(r: Dict[str, Any]) -> str:
-    return f"- {r['estremi']}" + (f", {PASSAGE_LABEL}: «{r['passage']}»" if r.get("passage") else "") + "."
+    return f"- {r['estremi']}" + (f", {PASSAGE_LABEL}: «{printed(r['passage'])}»" if r.get("passage") else "") + "."
 
 
 def landmark_lines(landmarks: Dict[str, List[Dict[str, str]]]) -> List[str]:
@@ -557,10 +668,10 @@ def citable(record: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     check reads them."""
     if not record:
         return []
-    out = [{"id": r["id"], "label": r["estremi"], "massima": r.get("passage") or "", "article": r["article"],
+    out = [{"id": r["id"], "label": r["estremi"], "massima": printed(r.get("passage") or ""), "article": r["article"],
             "element": r.get("element") or "" if r.get("passage") else ""} for r in record.get("kept") or []]
-    printed = {r["estremi"] for r in record.get("kept") or []}
-    listed = {x: o for o in record.get("orientations") or [] for x in o.get("rulings") or [] if x not in printed}
+    shown = {r["estremi"] for r in record.get("kept") or []}
+    listed = {x: o for o in record.get("orientations") or [] for x in o.get("rulings") or [] if x not in shown}
     out += [{"id": f"orientamento:{i}", "label": x, "massima": "", "article": o["article"], "element": o["element"]}
             for i, (x, o) in enumerate(listed.items())]          # graded on the point, listed in §5
     out += [{"id": f"consulente:{label}:{i}", "label": x["estremi"], "massima": x["principio"], "article": label,
@@ -576,7 +687,7 @@ def registry_block(record: Optional[Dict[str, Any]]) -> str:
     lines = []
     for i, r in enumerate(record.get("kept") or [], 1):
         on = f", elemento [{r['element_id']}] «{_plain(r.get('element'))[:120]}»" if r.get("element_id") else ""
-        quote = f": {PASSAGE_LABEL} «{r['passage']}» (verso l'integrazione: {r.get('verso')})" if r.get("passage") \
+        quote = f": {PASSAGE_LABEL} «{printed(r['passage'])}» (verso l'integrazione: {r.get('verso')})" if r.get("passage") \
             else ": nessun passaggio sull'elemento (citabile solo con gli estremi)"
         lines.append(f"- [G{i}] {r['estremi']} — art. {r['article']}{on}{quote}")
     orients = [orientation_line(o) for o in record.get("orientations") or []]
