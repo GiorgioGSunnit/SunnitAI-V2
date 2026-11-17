@@ -627,8 +627,10 @@ def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main
                            f"la maggior parte degli elementi dell'art. {label} risulta provata"}
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PIENO, "article": label,
                 "why": f"la maggior parte degli elementi dell'art. {label} resta da provare"}
-    label = main if main in records else next((x for x, r in records.items() if r.get("side") != "threat"
-                                               and _live(r)), "")
+    # v78: a victim's outcome is the offence of the querela -- the charge (rec["charged"]), whatever the main topic
+    victim_charge = next((x for x in _charged(records) if _live(records[x])), "") if role in VICTIM_ROLES else ""
+    label = victim_charge or (main if main in records else next((x for x, r in records.items()
+                                                                if r.get("side") != "threat" and _live(r)), ""))
     if not label:
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
                 "why": f"il registro non contiene la norma su cui {who} fonda la pretesa"}
@@ -899,6 +901,111 @@ def unretrieved_rulings_out(text: str, allowed: Sequence[str], log: Optional[Lis
             log.append(m.group(0))
         return ORIENTATION_TO_VERIFY
     return _RULING_CITE_RE.sub(swap, text or "")
+
+
+# --- v78: the scope of what the plan's prose cites -------------------------------------------------------------------------
+# §6 and §7 are written from the plan after record_check ran on the writer's draft: their sentences are reviewed here
+# the same way -- an article outside the answer's scope removes its sentence (record_check's fuori_dal_record) --, and a
+# registry ruling is cited only for the article it was fetched for and on the element its passage was graded on
+
+def _norm_label(label: str) -> str:
+    from . import citations
+    number, _, code = str(label or "").partition(" ")
+    return citations.label((number, code)) if code else str(label or "")
+
+
+def article_scope(ctx: Dict[str, Any], texts: Sequence[str] = ()) -> set:
+    """The articles the plan's prose may cite: the records, the circumstances, the notes', the lawyer's landmark
+    rulings' articles, and every article the checked or code-written texts cite (the norms and the procedure, which
+    record_check passed; the ratione temporis, the litisconsorzio, the riti, the stragiudiziale option; the case)."""
+    from . import citations
+    labels = list((ctx.get("records") or {})) + list((ctx.get("circumstances") or {})) + list(ctx.get("notes") or {})
+    labels += list(((ctx.get("rulings_record") or {}).get("landmarks") or {}))
+    written = [ctx.get("case") or "", ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""]
+    written += list(ctx.get("litisconsorzio") or []) + list(ctx.get("riti") or []) + list(texts or [])
+    return {_norm_label(x) for x in labels} | {citations.label(r) for t in written for r in citations.article_refs(t)}
+
+
+_CITATION_ABBREV_RE = re.compile(r"\b(?:Sez|Cass|n|nn|art|artt|co|pen|civ|Un|sent|ord|Rv|dep|cfr)\.$", re.IGNORECASE)
+
+
+def _citation_rejoin(pieces: Sequence[str]) -> List[str]:
+    """The splitter's pieces with a cut inside a citation («… Cass. pen., Sez.» + «5, n. 3/2025.») joined; a sentence
+    ending on a code («… c.p.p.») stays a sentence."""
+    out: List[str] = []
+    for piece in pieces:
+        if out and _CITATION_ABBREV_RE.search(out[-1].rstrip()):
+            out[-1] = f"{out[-1]} {piece}"
+        else:
+            out.append(piece)
+    return out
+
+
+def _by_sentence(text: str, review: Callable[[str], str]) -> str:
+    """review(sentence) -> the sentence, changed or "" (removed), line by line; the text unchanged when nothing is."""
+    lines, changed = [], False
+    for line in (text or "").split("\n"):
+        parts = _citation_rejoin(_SENT_SPLIT.split(line)) if line.strip() else [line]
+        done = [review(x) if x.strip() else x for x in parts]
+        changed = changed or done != parts
+        kept = [x for x in done if x.strip()]
+        if kept or not line.strip():
+            lines.append(" ".join(kept) if line.strip() else line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() if changed else (text or "")
+
+
+def articles_out(text: str, allowed: set, log: Optional[List[str]] = None) -> str:
+    """The sentences citing an article outside the scope, removed (logged with the articles)."""
+    from . import citations
+    if not text or not allowed:
+        return text or ""
+
+    def review(sentence: str) -> str:
+        outside = [citations.label(r) for r in citations.article_refs(sentence) if citations.label(r) not in allowed]
+        if outside and log is not None:
+            log.append(f"{', '.join(dict.fromkeys(outside))}: {sentence[:120]}")
+        return "" if outside else sentence
+    return _by_sentence(text, review)
+
+
+def _removed_note(objection: Dict[str, Any]) -> str:
+    """The log line of an objection the scope review emptied."""
+    return "objection removed: " + str(objection.get("obiezione") or "")[:120]
+
+
+def _ruling_entry(cite: str, allowed: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    return next((x for x in allowed if isinstance(x, dict) and "article" in x and ruling_ok(cite, [x])), None)
+
+
+def rulings_scope_out(text: str, allowed: Sequence[Dict[str, Any]], log: Optional[List[str]] = None) -> str:
+    """v78: a registry ruling cited in a sentence about another article, or not on the element its passage was graded on
+    (its nouns absent; a ruling with no passage is on no element) -- the citation removed: its parenthesis, else its
+    sentence. The lawyer's landmark rulings: only their article's sentences."""
+    from . import citations, rulings
+    if not text or not any(isinstance(x, dict) and "article" in x for x in allowed or []):
+        return text or ""
+
+    def review(sentence: str) -> str:
+        for m in list(_RULING_CITE_RE.finditer(sentence)):
+            entry = _ruling_entry(m.group(0), allowed)
+            if entry is None:
+                continue
+            own = _norm_label(entry["article"])
+            others = [citations.label(r) for r in citations.article_refs(sentence) if citations.label(r) != own]
+            landmark = str(entry.get("id") or "").startswith("consulente:")
+            on_element = landmark or (bool(entry.get("element"))
+                                      and rulings.element_noun_hit(sentence, {"text": entry["element"]}))
+            if not others and on_element:
+                continue
+            if log is not None:
+                log.append(f"{m.group(0)} [{own}" + (f"; cita {', '.join(others)}" if others else "; fuori elemento")
+                           + f"]: {sentence[:120]}")
+            paren = re.search(r"\([^()]*" + re.escape(m.group(0)) + r"[^()]*\)", sentence)
+            sentence = (sentence[:paren.start()].rstrip() + sentence[paren.end():]) if paren else ""
+            if not sentence:
+                break
+        return sentence
+    return _by_sentence(text, review)
 
 
 # --- the method plan: thesis selection (thinking on) ----------------------------------------------------------------------
@@ -2531,9 +2638,13 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     accused = (ctx.get("posture") or {}).get("role") in ACCUSED
     fact_wording: List[Dict[str, Any]] = []
 
+    scope_log: List[str] = []           # v78: rulings outside their article / element
+    articles_log: List[str] = []        # v78: the plan's sentences citing an article outside the scope
+
     def prose(text: str) -> str:            # every written paragraph: no orientation of its own, retrieved rulings only,
         text = orientation_claims_out(text, orientation_claims)            # circumstances with their requisites, no
         text = unretrieved_rulings_out(text, rulings, rulings_out)         # remissione for a d'ufficio charge
+        text = rulings_scope_out(text, rulings, scope_log)                 # v78: on its article and element
         text = procedibility_out(text, procedibilita, a.get("article") or "", procedural_out)
         text = fact_terms.apply(text, certi, ctx.get("case") or "", client, accused, fact_wording)     # v74
         return circumstance_claims(text, circ, claims)
@@ -2566,16 +2677,27 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         _log("compose_refused", log["refused"])
         return ""
     a = settle_objective(a, sols, records, circ)
+    scope = article_scope(ctx, [norms, procedure] + list(by_title.values()))       # v78: what record_check passed
+
+    def planned(text: str) -> str:          # v78: the plan's prose -- the checks above, then the articles' scope
+        return articles_out(prose(text), scope, articles_log)
     for t in sols:                          # the table's cells are prose too
-        t["pro"], t["contro"] = prose(t.get("pro") or ""), prose(t.get("contro") or "")
+        t["pro"], t["contro"] = planned(t.get("pro") or ""), planned(t.get("contro") or "")
     for t in sols:
-        t["argomento"] = prose(coherent_text(t.get("argomento") or "", records, a, coherence))
+        t["argomento"] = planned(coherent_text(t.get("argomento") or "", records, a, coherence))
     sub = subordinate_of(sols, main)        # v72: the subordinate line, the summary, the conclusions and the next steps
+    objections_reviewed = []                # v78: the objection itself reviewed too, not only its answer
+    for o in plan.get("obiezioni") or []:
+        said = planned(o.get("obiezione") or "")
+        if not said:
+            articles_log.append(_removed_note(o))
+            continue
+        objections_reviewed.append({**o, "obiezione": said,
+                                    "risposta": planned(coherent_text(o.get("risposta") or "", records, a, coherence))})
     plan = {**plan, "subordinata": sols[sub]["tesi"] if sub is not None else "",      # are the selection's -- never
-            "stragiudiziale": prose(plan.get("stragiudiziale") or ""),                   # the model's plan
-            "obiezioni": [{**o, "risposta": prose(coherent_text(o.get("risposta") or "", records, a, coherence))}
-                          for o in plan.get("obiezioni") or []],
-            "questione_giuridica": prose(plan.get("questione_giuridica") or "")}
+            "stragiudiziale": planned(plan.get("stragiudiziale") or ""),                 # the model's plan
+            "obiezioni": objections_reviewed,
+            "questione_giuridica": planned(plan.get("questione_giuridica") or "")}
     conclusions = [conclusions_from_selection(a, sols, main, sub, ctx, client)]
     steps = steps_text(steps_from_selection(ctx, sols, main))
     if steps:
@@ -2599,6 +2721,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("conclusioni", "\n\n".join(conclusions)),
     ]
     log.update({"coherence": coherence, "rulings_out": rulings_out, "circumstance_claims": claims,
+                "rulings_scope_out": scope_log, "articles_out_of_scope": articles_log,
                 "fact_wording": fact_wording, "charged_prose": charged_log,
                 "orientation_claims_out": orientation_claims, "procedibility_out": procedural_out, **layout_log})
     log["controllo_finale"] = final_check(dict(keyed), ctx, log, plan)
@@ -2738,7 +2861,26 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
                 log.setdefault("undecomposed", []).append(label)
             continue
         out[label] = {**rec, "requisites": [r for r in rec["requisites"] if r.get("kind") == "requisito"]}
+    noise = [x for x, r in out.items() if fact_free(r) and not kept_without_facts(r)]
+    if noise and len(noise) < len(out):     # v78: tabled with «nessun fatto» rows only -- out, unless nothing else is left
+        log["no_fact"] = noise
+        out = {x: r for x, r in out.items() if x not in noise}
     return out
+
+
+def fact_free(rec: Dict[str, Any]) -> bool:
+    """v78: no case sentence touches any of the record's elements -- none supports, none contradicts, none «provato»
+    or «non risulta» (590-bis, 583-quater, 2044 c.c. on a victim's lesioni: «nessun fatto» on every row)."""
+    live = _live(rec)
+    return bool(live) and all(r.get("status") == DA_PROVARE and not r.get("supporting") and not r.get("contradicting")
+                              for r in live)
+
+
+def kept_without_facts(rec: Dict[str, Any]) -> bool:
+    """v78: a record the method keeps with no fact: the charge or the claim (rec["charged"], or decomposed as one), the
+    counterparty's claim (side threat), an article the user named."""
+    return bool(rec.get("charged") or rec.get("side") == "threat" or rec.get("named_due")
+                or str(rec.get("decomposed_for") or "").startswith(("nominata dall'utente", "addebito", "domanda")))
 
 
 # --- the nightly's yardstick: the answer's structure ----------------------------------------------------------------------

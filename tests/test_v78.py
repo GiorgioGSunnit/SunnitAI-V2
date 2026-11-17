@@ -150,11 +150,11 @@ def test_an_article_whose_row_is_not_read_is_logged_unread():
 # --- 3. ranking -----------------------------------------------------------------------------------------------------------------
 
 def test_sezioni_unite_first_then_score_then_date_three_per_article():
-    rows = [_ruling(1, abstract="nulla di pertinente qui", when="2025-06-01"),
-            _ruling(2, abstract="volontà percuotere prevedibilità morte", when="2025-02-01"),
-            _ruling(3, section="U0", abstract="nulla", when="2025-01-01"),
-            _ruling(4, abstract="volontà percuotere prevedibilità morte", when="2025-09-01"),
-            _ruling(5, abstract="nulla", when="2025-03-01")]
+    rows = [_ruling(1, abstract="omicidio preterintenzionale, nulla sul punto", when="2025-06-01"),
+            _ruling(2, abstract="omicidio preterintenzionale: volontà percuotere prevedibilità morte", when="2025-02-01"),
+            _ruling(3, section="U0", abstract="omicidio preterintenzionale", when="2025-01-01"),
+            _ruling(4, abstract="omicidio preterintenzionale: volontà percuotere prevedibilità morte", when="2025-09-01"),
+            _ruling(5, abstract="omicidio preterintenzionale", when="2025-03-01")]
     session = Session({("CP", "584"): rows}, {f"S{i}": TEXT for i in range(1, 6)})
     record = rulings.build(_ctx(), ROWS, session, call=_call(_all_for(5, pertinenza=1)))
     order = [r["id"] for r in record["kept"]]

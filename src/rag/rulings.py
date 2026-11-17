@@ -74,6 +74,21 @@ UNANIMOUS = "orientamento prevalente: elemento {side} ({n} pronunce su {tot})"
 TO_VERIFY = "orientamento da verificare"
 SIDES = {FOR: "integrato", AGAINST: "non integrato"}
 
+# v78 (the PO's review): a quotable sentence states a rule -- one of these verbs --, holds the graded element's nouns,
+# and holds none of the procedural markers (a motivo, the court below, a party's complaint, a reference's «dep.»/«Rv.»)
+_RULE_RE = re.compile(r"\b(?:richied\w*|si\s+configura\w*|configura(?:no)?\b|integra(?:no)?\b|(?:non\s+)?occorr\w*|"
+                      r"sussist\w*|(?:è|sia|sono|siano|risulta|risultano)\s+(?:necessari|sufficient|richiest|integrat|"
+                      r"costituit|esclus|configurabil)\w*|presuppon\w*|si\s+realizza\w*|deve\s+ritenersi|va\s+ritenut\w*|va\s+esclus\w*|"
+                      r"(?:è|resta|rimane)\s+esclus\w*|esclud\w*|rientra(?:no)?\b|costituisc\w*|si\s+intend\w*|"
+                      r"consist\w*|ricorr(?:e|ono)\b)", re.IGNORECASE)
+_PROCEDURAL_RE = re.compile(r"\bmotiv[oi]\s+di\s+ricorso|\b(?:primo|secondo|terzo|quarto|quinto|sesto|unico)\s+motivo\b|"
+                            r"\bcorte\s+territoriale\b|\bcorte\s+d['’]\s?appello\b|\bricorrent[ei]\b|\blament\w*|"
+                            r"\bsi\s+duol\w*|\bdeduc[eo]\w*|\bdep\.|\brv\.|\baddebito\s+mosso|\b(?:sentenza|ordinanza)\s+"
+                            r"impugnata\b|\bil\s+difensore\b|\bricorso\s+per\s+cassazione\b|\b(?:è|era)\s+stat[oa]\s+"
+                            r"condannat\w*|\bimputat[oa]\s+(?:del|di)\s+(?:reato|delitto)", re.IGNORECASE)
+DEMOTED_SECTIONS = ("7",)       # Sez. 7 (inammissibilità) -- last, with the ordinanze
+DEMOTED_ACTS = ("O", "I")
+
 _ITALGIURE_RE = re.compile(r"(snpen|snciv)[@_ ]s(\w)(\w)[@_ ]a((?:19|20)\d{2})[@_ ]n0*(\d+)[@_ ]t([a-z])", re.I)
 _DATE_RES = (re.compile(r"((?:19|20)\d{2})-(\d{1,2})-(\d{1,2})"), re.compile(r"(\d{1,2})[/.-](\d{1,2})[/.-]((?:19|20)\d{2})"))
 _WORD_RE = re.compile(r"[a-zàèéìòù]{4,}", re.I)
@@ -191,9 +206,44 @@ def overlap(text: str, elements: Sequence[Dict[str, Any]]) -> int:
     return len(stems(text) & set().union(*[stems(e.get("text") or "") for e in elements])) if elements else 0
 
 
+def demoted(p: Optional[Dict[str, Any]]) -> bool:
+    """v78: a Sez. 7 ruling or an ordinanza -- ranked after every other."""
+    return bool(p) and (p["section"][:1] in DEMOTED_SECTIONS or p["act"] in DEMOTED_ACTS)
+
+
 def _order_key(r: Dict[str, Any]) -> Tuple:
     when = r.get("date")
-    return (0 if r.get("su") else 1, -(r.get("score") or 0), -(when.toordinal() if when else 0), r["id"])
+    return (0 if r.get("su") else 1, 1 if demoted(r.get("parsed")) else 0, -(r.get("score") or 0),
+            -(when.toordinal() if when else 0), r["id"])
+
+
+def rubrica_stems(rubrica: str) -> set:
+    return stems(rubrica)
+
+
+def on_rubrica(abstract: str, rubrica: str) -> bool:
+    """v78: the citing section's abstract shares the article's rubrica nouns -- all of them (two at most: «lesione
+    personale»), two of a longer one; an article with no rubrica: True."""
+    own = rubrica_stems(rubrica)
+    if not own:
+        return True
+    return len(own & stems(abstract)) >= min(2, len(own))
+
+
+def element_noun_hit(sentence: str, element: Dict[str, Any]) -> bool:
+    """v78: the sentence holds the element's nouns (issue_records.element_nouns: one of one or two, two of more)."""
+    from . import issue_records
+    own = issue_records.element_nouns(element.get("text") or "")
+    if not own:
+        return False
+    return len(own & issue_records.element_nouns(sentence)) >= (1 if len(own) <= 2 else 2)
+
+
+def quotable(sentence: str, element: Optional[Dict[str, Any]] = None) -> bool:
+    """v78: a sentence that states a rule, names no procedural step, and (with an element) holds its nouns."""
+    if not _RULE_RE.search(sentence or "") or _PROCEDURAL_RE.search(sentence or ""):
+        return False
+    return element is None or element_noun_hit(sentence, element)
 
 
 def round_robin(by_article: Dict[str, List[Dict[str, Any]]], cap: int) -> List[Dict[str, Any]]:
@@ -271,7 +321,7 @@ def candidate_sentences(text: str, elements: Sequence[Dict[str, Any]], article: 
     named = re.compile(rf"\bart(?:icol[oi]|t?\.)\s*{number}\b", re.I)
     lo, hi = SENTENCE_CHARS
     scored = [(overlap(s, elements) + (1 if named.search(s) else 0), i, s) for i, s in enumerate(sentences(text))
-              if lo <= len(s) <= hi]
+              if lo <= len(s) <= hi and quotable(s) and any(element_noun_hit(s, e) for e in elements)]
     best = sorted(scored, key=lambda x: (-x[0], x[1]))[:SENTENCES_PER_RULING]
     return [s for _, _, s in sorted((x for x in best if x[0] > 0), key=lambda x: x[1])]
 
@@ -314,6 +364,9 @@ def link(short: List[Dict[str, Any]], case: str = "", call: Optional[Callable] =
         ids = {e["id"] for e in r["elements"]}
         el = str(got.get("elemento") or "").strip().strip("[]").upper()
         r["element_id"] = el if el in ids else (r["elements"][0]["id"] if r["passage"] and len(ids) == 1 else "")
+        graded_on = next((e for e in r["elements"] if e["id"] == r["element_id"]), None)
+        if r["passage"] and (graded_on is None or not quotable(r["passage"], graded_on)):
+            r["passage"], r["element_id"] = "", ""          # v78: no rule on that element -- the estremi alone
         try:
             r["pertinenza"] = max(0, min(2, int(got.get("pertinenza"))))
         except (TypeError, ValueError):
@@ -391,7 +444,8 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     shortlist: Dict[str, List[Dict[str, Any]]] = {}
     for label, rec in records.items():
         row = by_label_rows.get(_key(_parse_label(label)))
-        art_log = log["articles"].setdefault(label, {"found": 0, "linked": 0, "unparsed": 0, "graded": 0, "kept": 0})
+        art_log = log["articles"].setdefault(label, {"found": 0, "linked": 0, "unparsed": 0, "off_rubrica": 0,
+                                                            "graded": 0, "kept": 0})
         if row is None:
             art_log["unread"] = True
             continue
@@ -411,6 +465,9 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
                 log["estremi"]["unparsed"] += 1
                 continue
             log["estremi"]["parsed"] += 1
+            if not on_rubrica(g["abstract"], str(rec.get("rubrica") or "")):
+                art_log["off_rubrica"] += 1          # v78: its abstract is not on the article: dropped for it
+                continue
             if not chamber(p):
                 log["estremi"]["section_unmapped"] += 1
             cands.append({"id": g["id"], "article": label, "estremi": render_estremi(p, g["date_enacted"]),
@@ -499,11 +556,14 @@ def citable(record: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     check reads them."""
     if not record:
         return []
-    out = [{"id": r["id"], "label": r["estremi"], "massima": r.get("passage") or ""} for r in record.get("kept") or []]
+    out = [{"id": r["id"], "label": r["estremi"], "massima": r.get("passage") or "", "article": r["article"],
+            "element": r.get("element") or "" if r.get("passage") else ""} for r in record.get("kept") or []]
     printed = {r["estremi"] for r in record.get("kept") or []}
-    listed = dict.fromkeys(x for o in record.get("orientations") or [] for x in o.get("rulings") or [] if x not in printed)
-    out += [{"id": f"orientamento:{i}", "label": x, "massima": ""} for i, x in enumerate(listed)]     # graded, listed in §5
-    out += [{"id": f"consulente:{label}:{i}", "label": x["estremi"], "massima": x["principio"]}
+    listed = {x: o for o in record.get("orientations") or [] for x in o.get("rulings") or [] if x not in printed}
+    out += [{"id": f"orientamento:{i}", "label": x, "massima": "", "article": o["article"], "element": o["element"]}
+            for i, (x, o) in enumerate(listed.items())]          # graded on the point, listed in §5
+    out += [{"id": f"consulente:{label}:{i}", "label": x["estremi"], "massima": x["principio"], "article": label,
+             "element": ""}
             for label, items in (record.get("landmarks") or {}).items() for i, x in enumerate(items)]
     return out
 

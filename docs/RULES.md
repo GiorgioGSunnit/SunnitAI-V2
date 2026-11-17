@@ -395,6 +395,17 @@ No `v60a` tag appears anywhere in `src/` or `data/`.
 - The lawyer's pronunce di riferimento (his file, imported onto the article's Section) printed in §5 only when written — v78 — `src/rag/landmark_rulings.py`.
 - No case-law search into the v1 pool, no REFERS_TO neighbours into a topic's articles, no EDGE_EXPAND — v78 — `defensive_generation.py:_select_articles`, `topic_step.py:articles_split`, `edge_expand.py:enabled`.
 
+### 10.1 v78b (the PO's review of the first answers)
+
+- A quotable sentence states a rule (richiede, si configura, è integrato, non è necessario, sussiste …), holds the graded element's nouns and none of the procedural markers (motivo di ricorso, Corte territoriale, ricorrente, lamenta, addebito mosso, dep., Rv. …); the call's pick is checked again on its element — v78b — `rulings.py:quotable`, `candidate_sentences`, `link`.
+- A citing abstract that does not share the article's rubrica nouns (both of «lesione personale») drops the ruling for that article (`off_rubrica`) — v78b — `rulings.py:on_rubrica`.
+- Sez. 7 and the ordinanze rank after every other ruling (Sezioni Unite still first) — v78b — `rulings.py:demoted`, `_order_key`.
+- A registry ruling is cited only in a sentence about its own article and on its graded element (its nouns present; a ruling with no passage, nowhere): otherwise its parenthesis, else its sentence, is removed — v78b — `lawyer_method.py:rulings_scope_out`.
+- §6 and §7 (built from the plan after record_check) are reviewed: a sentence citing an article outside the answer's scope (records, circumstances, notes, the checked norms and procedure, the code-written lines, the case) is removed; an objection left empty is removed and the fallback fills §7 — v78b — `lawyer_method.py:article_scope`, `articles_out`, `compose`.
+- A reported claim («apprendeva che», «aveva negato», «sostenendo che») is «allegato», never narrated fact: it can never make an element «non risulta» (v60t) — v78b — `issue_records.py:_ALLEGED_RE`, `interactive_flow.py:_SAYS_RE`.
+- A victim's (persona offesa, parte civile) outcome is the querela's offence, the record marked «charged», whatever the main topic — v78b — `lawyer_method.py:assessment`.
+- A record no case sentence touches (every element «da provare», nothing supporting or contradicting) leaves the method's records, unless it is the charge or the claim, the counterparty's, named by the user, or the only one left — v78b — `lawyer_method.py:method_records`, `fact_free`, `kept_without_facts`.
+
 ## By version
 
 | Tag | What it introduced |

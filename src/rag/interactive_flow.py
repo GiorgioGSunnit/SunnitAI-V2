@@ -2909,8 +2909,8 @@ def case_sentences(state: Dict[str, Any]) -> List[Dict[str, str]]:
 # v60t: an attributed sentence's speaker -- a party named just before an alleging verb («Sempronio sostiene che…») or
 # after «secondo» / «a detta di»; one other than the client speaks for the counterparty (issue_records.COUNTERPARTY:
 # never support, the contradiction path); the client's own, or no speaker named, is the client's account
-_SAYS_RE = (r"(?:sostien|sostenut|afferm|lament|riferisc|riferit|dichiar|ritien|pretend|eccepi|contest|denunci|accus|"
-            r"asseris|asserit)\w*")
+_SAYS_RE = (r"(?:sosten(?:endo|eva|evano|ne|nero)\b|(?:sostien|sosteng|sostenut|afferm|lament|riferisc|riferit|dichiar|ritien|pretend|eccepi|contest|denunci|accus|"
+            r"asseris|asserit)\w*|neg(?:a|ano|ava|avano|ato|ata|ando|ò|arono)\b)")     # v78: «sostenendo», «aveva negato»
 
 
 def attributed_to(sentence: str, names: Sequence[str]) -> str:

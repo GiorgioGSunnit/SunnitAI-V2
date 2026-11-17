@@ -64,8 +64,12 @@ LINK_REQUISITES_MAX = 36
 
 ACCERTATO, ALLEGATO, IPOTIZZATO, ASSUNTO = "accertato", "allegato", "ipotizzato", "assunto"
 COUNTERPARTY = "controparte"        # v60t: a sentence's side when it is attributed to a party other than the client
-_ALLEGED_RE = re.compile(r"\b(?:sostien\w*|afferm\w*|lament\w*|contest\w*|dichiar\w*|riferisc\w*|riferit\w*|asseris\w*|"
-                         r"asserit\w*|denunci\w*|accus\w*|ritien\w*|pretend\w*|eccepi\w*|secondo (?:il|la|lo|i|le|gli|"
+# v78: «sostenendo», «sosteneva», the forms of «negare», «apprendeva che» -- a reported claim («il difensore apprendeva
+# che Tizio aveva negato…, sostenendo che…») was read as narrated fact and made an element «non risulta» (v60t forbids it)
+_ALLEGED_RE = re.compile(r"\b(?:sostien\w*|sosteng\w*|sosten(?:endo|eva|evano|ne|nero)\b|sosten(?:ut[oa]|ere)\s+che|afferm\w*|lament\w*|contest\w*|dichiar\w*|riferisc\w*|riferit\w*|"
+                         r"asseris\w*|asserit\w*|denunci\w*|accus\w*|ritien\w*|pretend\w*|eccepi\w*|"
+                         r"neg(?:a|ano|ava|avano|ato|ata|ati|ando|herebbe|ò|arono)|apprend\w*\s+che|appres[oa]\s+che|"
+                         r"venut[oa]\s+a\s+sapere|a\s+sua\s+versione|nella\s+sua\s+versione|secondo (?:il|la|lo|i|le|gli|"
                          r"[A-ZÀ-Ü])|a (?:suo|loro) dire|a detta d\w*|avrebbe\w*|sarebbe\w* stat\w*|presunt\w*)\b",
                          re.IGNORECASE)
 _HEDGED_RE = re.compile(r"\b(?:forse|probabilmente|sembra\w*|pare(?:va)?|potrebbe\w*|presumibilmente|non è chiaro|"
