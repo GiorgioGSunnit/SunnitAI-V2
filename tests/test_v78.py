@@ -399,7 +399,7 @@ def test_the_nightly_fails_a_penal_cell_without_a_quoted_passage_and_a_cc_civil_
     assert not nightly.ruling_check(bare, {"family": "civile"}, {"charge_cc_fattispecie": True, "kept": []})["ok"]
     lines = "\n".join(nightly.rulings_lines([{"id": "penale_x", "cell": penal, "answer": good,
                                               "rulings": record["log"], "checks": []}]))
-    assert "| penale_x | 584 c.p. | 3 | 3 | 3 |" in lines and "### §5 of penale_x" in lines and PASSAGE in lines
+    assert "| penale_x | 584 c.p. | 3 | 3 | 3 | 3 |" in lines and "### §5 of penale_x" in lines and PASSAGE in lines
 
 
 def test_the_structure_check_reads_the_registry_layout():
@@ -480,3 +480,34 @@ def test_without_the_flag_nothing_changes(monkeypatch):
     ctx, _ = flow.method_inputs(state, {}, {}, [], [], ROWS, "il caso")
     assert "rulings_record" not in state and lawyer_method.registry(ctx) == ""
     assert lawyer_method.orientations_text(ctx, {"orientamenti": []}, []) == lawyer_method.NO_POINTS_LINE
+
+
+# --- six graded per article for the orientation, three printed -------------------------------------------------------------
+
+def test_the_orientation_counts_six_graded_while_three_are_printed():
+    session = Session({("CP", "584"): [_ruling(i) for i in range(1, 8)]}, {f"S{i}": TEXT for i in range(1, 8)})
+    verdicts = _all_for(6)
+    verdicts["P5"]["verso"] = "contro"
+    verdicts["P6"]["pertinenza"] = 0                                   # graded unrelated: neither printed nor counted
+    record = rulings.build(_ctx(), ROWS, session, call=_call(verdicts))
+    art = record["log"]["articles"]["584 c.p."]
+    assert (art["found"], art["graded"], art["kept"]) == (7, 5, 3) and len(record["kept"]) == 3
+    o = record["orientations"][0]
+    assert o["status"] == "prevalente" and (o["for"], o["against"]) == (4, 1)
+    assert "elemento integrato (4 pronunce su 5); orientamento minoritario: elemento non integrato (1 su 5)" in \
+        rulings.orientation_line(o)
+
+
+def test_a_graded_ruling_listed_but_not_printed_is_citable():
+    session = Session({("CP", "584"): [_ruling(i) for i in range(1, 6)]}, {f"S{i}": TEXT for i in range(1, 6)})
+    verdicts = _all_for(5)
+    for k in ("P2", "P4"):
+        verdicts[k]["verso"] = "contro"
+    verdicts["P5"]["verso"] = "neutro"                                 # 2 for, 2 against: no majority
+    record = rulings.build(_ctx(), ROWS, session, call=_call(verdicts))
+    o = record["orientations"][0]
+    assert o["status"] == "da_verificare" and len(o["rulings"]) == 5 and len(record["kept"]) == 3
+    unprinted = [x for x in o["rulings"] if x not in {r["estremi"] for r in record["kept"]}]
+    assert len(unprinted) == 2
+    labels = [c["label"] for c in rulings.citable(record)]
+    assert all(x in labels for x in o["rulings"]) and len(labels) == len(set(labels))

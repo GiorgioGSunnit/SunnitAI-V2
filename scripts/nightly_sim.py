@@ -158,10 +158,11 @@ def rulings_lines(results: List[Dict[str, Any]]) -> List[str]:
     if not rows:
         return []
     lines = ["", "## Rulings in the record (per cell, per article)", "",
-             "| cell | article | found | linked | kept |", "|---|---|---|---|---|"]
+             "| cell | article | found | linked | graded | kept |", "|---|---|---|---|---|---|"]
     for c in rows:
         for label, a in (c["rulings"].get("articles") or {}).items():
-            lines.append(f"| {c['id']} | {label} | {a.get('found', 0)} | {a.get('linked', 0)} | {a.get('kept', 0)} |")
+            lines.append(f"| {c['id']} | {label} | {a.get('found', 0)} | {a.get('linked', 0)} | {a.get('graded', 0)} | "
+                         f"{a.get('kept', 0)} |")
     lines += ["", "| cell | estremi parsed | unparsed | section unmapped | passages quoted | none | orientations "
                   "computed | to verify |", "|---|---|---|---|---|---|---|---|"]
     for c in rows:

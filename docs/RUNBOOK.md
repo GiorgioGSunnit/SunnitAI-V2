@@ -163,5 +163,5 @@ Next, import the lawyer's landmark rulings, once he has written any:
 
 Then set `RULINGS_RECORD=true` in `/root/v38/.env.v45`, hand-test, promote (`promote.sh` copies the flag) and run
 the nightly. The nightly adds `ruling_passage`: every penal cell, and every civil cell charged with a c.c.
-fattispecie, must quote at least one passage in §5. It also adds the per-article found / linked / kept table and
+fattispecie, must quote at least one passage in §5. It also adds the per-article found / linked / graded / kept table and
 the penal cells' §5 verbatim.

@@ -13,12 +13,13 @@ Section) written by scripts/link_ruling_citations.py, which stamps Document.cite
   3. rank      the abstract is a tag and a quoted passage: it only ranks -- its noun overlap with the elements in
                dispute shortlists, then the linking call grades each shortlisted ruling (pertinenza 0-2, as the
                applicability grader does an article); the order: Sezioni Unite first, then that score, then the date.
-               PER_ARTICLE per article, PER_ANSWER per answer (round robin over the articles); pertinenza 0 dropped.
+               GRADED_PER_ARTICLE graded per article (pertinenza 0 dropped), of which PER_ARTICLE printed and
+               PER_ANSWER per answer (round robin over the articles).
   4. passage   the same call picks, among the citing section's own sentences, the one that states the principle on the
                element (its id; the sentence printed is ours, verbatim); none -> the estremi alone, no quote. The word
                «massima» is never printed.
-  5. orientamento  per controverted point (an element a candidate thesis contests): the call's «verso» of each kept
-               passage on that element -- for or against its integration; MIN_ORIENTATION or more with a majority ->
+  5. orientamento  per controverted point (an element a candidate thesis contests): the call's «verso» of each graded
+               passage on that element (up to GRADED_PER_ARTICLE, printed or not) -- for or against its integration; MIN_ORIENTATION or more with a majority ->
                «orientamento prevalente» / «minoritario» with the counts, else «orientamento da verificare» with the
                rulings listed.
   6. §5        section_text: the rulings by article, the orientations, the lawyer's pronunce di riferimento
@@ -54,12 +55,14 @@ PER_ARTICLE = 3
 PER_ANSWER = 8
 FETCH_PER_ARTICLE = 1000        # citing sections read per article (metadata and abstract only), the Sezioni Unite
                                 # first, then the newest (FETCH_QUERY's order): a cap never drops a Sezioni Unite
-SHORTLIST_PER_ARTICLE = 5       # rulings per article sent to the linking call
-SHORTLIST_MAX = 16
+GRADED_PER_ARTICLE = 6          # rulings per article graded by the linking call: the orientation counts them all,
+                                # the top PER_ARTICLE are printed (with 3 graded, an orientation needed all three)
+SHORTLIST_MAX = 18
+
 SENTENCES_PER_RULING = 5        # candidate sentences per ruling in the call (16 x 5 x 500 chars: the call's material)
 SENTENCE_CHARS = (40, 500)      # a candidate sentence's length, min and max
 MIN_ORIENTATION = 3
-LINK_TOKENS = 1600
+LINK_TOKENS = 2000
 FOR, AGAINST, NEUTRAL = "a favore", "contro", "neutro"
 
 SECTION_TITLES = {"rulings": "**Pronunce del registro**", "orientations": "**Orientamenti sui punti controversi**",
@@ -388,7 +391,7 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     shortlist: Dict[str, List[Dict[str, Any]]] = {}
     for label, rec in records.items():
         row = by_label_rows.get(_key(_parse_label(label)))
-        art_log = log["articles"].setdefault(label, {"found": 0, "linked": 0, "unparsed": 0, "kept": 0})
+        art_log = log["articles"].setdefault(label, {"found": 0, "linked": 0, "unparsed": 0, "graded": 0, "kept": 0})
         if row is None:
             art_log["unread"] = True
             continue
@@ -414,7 +417,7 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
                           "su": sezioni_unite(p), "date": ruling_date(g["date_enacted"], p["year"]),
                           "score": overlap(g["abstract"], mine), "sections": g["sections"], "elements": mine,
                           "parsed": p})
-        shortlist[label] = sorted(cands, key=_order_key)[:SHORTLIST_PER_ARTICLE]
+        shortlist[label] = sorted(cands, key=_order_key)[:GRADED_PER_ARTICLE]
     short = round_robin(shortlist, SHORTLIST_MAX)
     body = texts(session, [s for r in short for s in r["sections"]])
     for r in short:
@@ -432,12 +435,14 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
         if not call_log.get("ok"):
             r.update(passage="", element_id="", verso=NEUTRAL)
         by_article.setdefault(r["article"], []).append(r)
-    by_article = {k: sorted(v, key=_order_key)[:PER_ARTICLE] for k, v in by_article.items()}
-    kept = round_robin({k: by_article[k] for k in records if k in by_article}, PER_ANSWER)
+    graded = {k: sorted(v, key=_order_key) for k, v in by_article.items()}         # the orientation's
+    for k, v in graded.items():
+        log["articles"][k]["graded"] = len(v)
+    kept = round_robin({k: graded[k][:PER_ARTICLE] for k in records if k in graded}, PER_ANSWER)     # the printed
     for r in kept:
         log["articles"][r["article"]]["kept"] += 1
         log["passages"]["quoted" if r.get("passage") else "none"] += 1
-    orientations = [orientation(e, kept) for e in disputed]
+    orientations = [orientation(e, [r for v in graded.values() for r in v]) for e in disputed]
     for o in orientations:
         log["orientation"]["computed" if o["status"] == "prevalente" else "da_verificare"] += 1
     log["dropped_unrelated"] = dropped
@@ -495,6 +500,9 @@ def citable(record: Optional[Dict[str, Any]]) -> List[Dict[str, str]]:
     if not record:
         return []
     out = [{"id": r["id"], "label": r["estremi"], "massima": r.get("passage") or ""} for r in record.get("kept") or []]
+    printed = {r["estremi"] for r in record.get("kept") or []}
+    listed = dict.fromkeys(x for o in record.get("orientations") or [] for x in o.get("rulings") or [] if x not in printed)
+    out += [{"id": f"orientamento:{i}", "label": x, "massima": ""} for i, x in enumerate(listed)]     # graded, listed in §5
     out += [{"id": f"consulente:{label}:{i}", "label": x["estremi"], "massima": x["principio"]}
             for label, items in (record.get("landmarks") or {}).items() for i, x in enumerate(items)]
     return out

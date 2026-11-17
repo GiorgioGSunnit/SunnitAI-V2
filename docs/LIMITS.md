@@ -151,10 +151,10 @@ These rules apply under the lawyer's method (`src/rag/lawyer_method.py:orientati
 **With `RULINGS_RECORD` (v78, `src/rag/rulings.py`)** §5 is the registry's instead:
 
 - **Corpus:** Cassazione 2025–2026 only, and only the rulings the linker stamped (`cites_linked_at`). Older landmark rulings appear only when the lawyer writes them in `docs/lawyer/pronunce_di_riferimento.md`. §5 always ends with «Corpus giurisprudenziale disponibile: Cassazione 2025–2026.»
-- **Caps:** at most `PER_ARTICLE` = 3 rulings per article and `PER_ANSWER` = 8 per answer. `FETCH_PER_ARTICLE` = 1000 citing sections are read per article, Sezioni Unite first, then the newest.
+- **Caps:** `GRADED_PER_ARTICLE` = 6 rulings per article are graded, of which at most `PER_ARTICLE` = 3 are printed, and `PER_ANSWER` = 8 per answer. The linking call grades at most `SHORTLIST_MAX` = 18 rulings per answer. `FETCH_PER_ARTICLE` = 1000 citing sections are read per article, Sezioni Unite first, then the newest.
 - **Estremi:** from the file name only. The chamber comes from `data/ruling_sections.json`, which is provisional until Antonelo confirms it, and an unmapped code prints no chamber. The date comes from `date_enacted`, else «data n.d.».
 - **Passages:** a quote is a sentence of the ruling's own text, chosen by one model call. When none states the principle on the element, the ruling shows its estremi only.
-- **Orientamento:** computed only on the kept rulings of a controverted element (≥ 3 with a majority). Otherwise it is «orientamento da verificare». With 3 kept per article, a computed orientation needs all three on the same element.
+- **Orientamento:** computed on the graded rulings of a controverted element, up to 6 per article, printed or not, when there are ≥ 3 with a majority. Otherwise it is «orientamento da verificare», listing every graded ruling on the point; those it lists without printing them are citable too.
 
 ### Theses (lawyer's method)
 
