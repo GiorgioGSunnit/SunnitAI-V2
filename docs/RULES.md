@@ -501,6 +501,10 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - A criminal ruling on a civil record counts only when its sentence names the article's institution (`names_institution`; filter `penal_on_civil`), and the rubrica's head noun skips «azione».
   - «configurabile» joins the rule verbs.
   - The signature blocks stripped are counted per cell in the nightly (`signatures_stripped`).
+- **v79.8.5 (the PO's review of 79.8).**
+  - C1, restated: only an attributed sentence is an allegazione. That covers reported speech («sostiene», «afferma che», «lamenta che», «dichiara che», «accusa X di», «contesta a X»), a party's version («secondo Caio», «secondo la controparte»), «aveva negato», «apprendeva che» and a claim letter. A fact narrated in the quesito stays certain whatever word it uses: «lamenta forti dolori», «ha sporto denuncia», «il medico ha dichiarato una prognosi», «secondo il contratto», «accusa un malore».
+  - B1's hole: a claimant whose facts give no norm conferring an action gets the main line «Nessuna norma d'azione individuata nel registro per <istituto>». It is the PO's wording, exempt from the «registro» rule, and comes with a code-written argument naming the articles read. Never an empty main line, the standard body or another fallback. Counter: `no_action_lines`.
+  - Draft modules for the lawyer's review (`"draft": true`): famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio.
 
 ## By version
 

@@ -1232,6 +1232,11 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
         "La difesa dell'imputato" if posture.get("role") in VICTIM_ROLES else "L'accusa")
     art = c.get("article") or ""
     texts = CODE_ARGUMENTS.get(c["kind"]) or {}
+    if c["kind"] == "nessuna_azione":           # v79.8.5 (B1): no claim -- what the record lacks, said
+        arts = ", ".join(f"art. {x}" for x in c.get("refused") or [])
+        arg = NO_ACTION_ARGUMENT["argomento"].format(articles=arts) if arts else NO_ACTION_ARGUMENT["argomento_none"]
+        return {"pro": _sentence_join([NO_ACTION_ARGUMENT["pro"]]), "contro": _sentence_join([NO_ACTION_ARGUMENT["contro"]]),
+                "argomento": _sentence_join([arg]), "realismo": BASSO}
     if c["kind"] == "transazione":              # v79.8 (B3): the convenuto's way out of the claim
         return {"pro": _sentence_join([TRANSAZIONE_ARGUMENT["pro"]]),
                 "contro": _sentence_join([TRANSAZIONE_ARGUMENT["contro"]]),
@@ -1434,6 +1439,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                     poggia_su=[r["id"] for r in open_], article=label, admitted_by=rule)
                 claims.append((label, []))
         ctx["claims_refused"] = refused
+        # v79.8.5: does any article of the client's confer an action, whatever its elements' status?
+        ctx["claims_any_admitted"] = bool(admitted) or any(
+            claim_admission(x, modules)[0] for x, r in records.items() if r.get("side") != "threat" and fatt(x))
         if refused:
             _log("claims_refused", refused)
         if role == "attore":    # v75: the remedies of the claim's matter
@@ -1448,6 +1456,11 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)   # prescrizione stays (E4:
             # claims only -- a prescription article is never a claim, issue_records.counted)
         add("transazione", CANDIDATE_TEXTS["transazione"], article=claim or charge)    # v79.8 (B3): its set
+    if known_role and not victim and role not in ACCUSED and not out and not ctx.get("claims_any_admitted"):
+        # v79.8.5 (B1): no norm confers an action -- said, never a fallback (a norm that does, with an element
+        # excluded, keeps v76's note: the facts give no line)
+        add("nessuna_azione", NO_ACTION_LINE.format(istituto=action_subject(ctx)), poggia_su=[],
+            refused=sorted(ctx.get("claims_refused") or {}))
     if not offender:
         for label, r in contests["integrated"]:
             contest(label, r)
@@ -1477,6 +1490,29 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     return capped
 
 
+# v79.8.5 (B1, the PO's words): a claimant with no norm conferring an action -- the main line says so, never empty
+NO_ACTION_PREFIX = "Nessuna norma d'azione individuata nel registro"
+NO_ACTION_LINE = NO_ACTION_PREFIX + " per {istituto}"
+NO_ACTION_ARGUMENT = {   # my drafts (v79.8.5)
+    "pro": "Non fonda la domanda su norme che non conferiscono un'azione al cliente",
+    "contro": "Prima di agire va individuata la norma che conferisce l'azione",
+    "argomento": "Le norme lette sui fatti ({articles}) non conferiscono al cliente un'azione verso la controparte",
+    "argomento_none": "Nessuna norma letta sui fatti conferisce al cliente un'azione verso la controparte"}
+NO_ACTION_SUBJECT = "i fatti narrati"
+
+
+def action_subject(ctx: Dict[str, Any]) -> str:
+    """v79.8.5: the institution the no-action line names -- the first read's, else the active module's, else the
+    remedies matter of the refused articles, else «i fatti narrati»."""
+    inst = [x for x in ctx.get("institutions") or [] if x.strip()]
+    if inst:
+        return inst[0].strip()
+    if ctx.get("claim_modules"):
+        return str(ctx["claim_modules"][0])
+    matter = next((matter_of(x).get("id") for x in ctx.get("claims_refused") or {} if matter_of(x)), "")
+    return matter or NO_ACTION_SUBJECT
+
+
 # v79.8 (B1): every candidate records the rule that admits it -- a claim, a riconvenzionale and a remedy theirs
 # (claim_admission, remedies.json); the others by their kind. A candidate with none is counted (must be 0).
 ADMITTED_BY = {"contest_excluded": "elemento dell'addebito o della domanda", "contest_open": "elemento dell'addebito o "
@@ -1486,7 +1522,8 @@ ADMITTED_BY = {"contest_excluded": "elemento dell'addebito o della domanda", "co
                "contenimento": "linea dell'imputato (tabella delle posizioni)",
                "claim_offence": "persona offesa: il reato contestato", "parte_civile": "persona offesa: artt. 74-79 c.p.p.",
                "sequestro": "persona offesa: artt. 253, 321, 262 c.p.p.", "aggravante": "persona offesa: aggravante provata",
-               "eccezione": "remedies.json: eccezioni della materia", "transazione": "convenuto: art. 1965 c.c."}
+               "eccezione": "remedies.json: eccezioni della materia", "transazione": "convenuto: art. 1965 c.c.",
+               "nessuna_azione": "nessuna norma d'azione (B1)"}
 CLAIM_REFUSED = {   # v79.8 (B1, B2): why an article is no claim -- logged, never printed
     "limiting": "norma che limita o misura la domanda ({why}): non conferisce un'azione",
     "none": "nessuna regola la ammette: non conferisce un'azione al ruolo del cliente",
@@ -2154,6 +2191,7 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             "samples": len((ctx.get("thesis_choice") or {}).get("scores") or []),      # v79.8 (A5): replies used
             # v79.8 (B4): candidates no rule admits (must be 0); the main line's norm outside the read's institution
             "unadmitted": sum(1 for c in cands if not c.get("admitted_by")),
+            "no_action": sum(1 for c in cands if c.get("kind") == "nessuna_azione"),      # v79.8.5
             "main_outside_institution": main_outside(ctx, m),
             "threats_from": str((ctx.get("candidates_trace") or {}).get("threats_from") or ""),
             "no_threat": str((ctx.get("candidates_trace") or {}).get("no_threat") or ""),
@@ -3209,7 +3247,7 @@ def wording_hits(text: str, known_ids: Sequence[str], criminal_matter: bool) -> 
         if line.lstrip().startswith("|"):
             continue
         out += [f"codice {m.group(1)}" for m in _ELEMENT_TOKEN_RE.finditer(line) if m.group(1) in ids]
-        out += [f"«{m.group(0)}»" for m in _REGISTRO_RE.finditer(line)]
+        out += [f"«{m.group(0)}»" for m in _REGISTRO_RE.finditer(line.replace(NO_ACTION_PREFIX, ""))]
         if not criminal_matter:
             out += [f"«{m.group(0)}»" for m in _ACCUSA_RE.finditer(line)]
             out += [f"«{m.group(0)}…»" for m in _AGGRAVANTE_RE.finditer(line)]
@@ -3228,6 +3266,8 @@ def reader_wording(text: str, known: Dict[str, Dict[str, Any]], criminal_matter:
         return "" if ids and all(x in known for x in ids) else m.group(0)
 
     def review(sentence: str) -> str:
+        if NO_ACTION_PREFIX in sentence:        # v79.8.5: the PO's fixed line, «registro» and all
+            return sentence
         if _REGISTRO_RE.search(sentence) or (not criminal_matter and _AGGRAVANTE_RE.search(sentence)):
             return ""
         return sentence

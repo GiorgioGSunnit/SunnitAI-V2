@@ -8061,6 +8061,7 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     counts = list(by_client.values()) or [state.get("thesis_counts") or {}]
     out["unadmitted_candidates"] = sum(int(c.get("unadmitted") or 0) for c in counts)              # v79.8 (B4)
     out["main_outside_institution"] = sum(1 for c in counts if c.get("main_outside_institution"))
+    out["no_action_lines"] = sum(int(c.get("no_action") or 0) for c in counts)                    # v79.8.5
     out.update(grading_counters(state))                                                             # v79.8 (C4)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out

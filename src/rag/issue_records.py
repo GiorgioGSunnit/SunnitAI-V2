@@ -66,11 +66,21 @@ ACCERTATO, ALLEGATO, IPOTIZZATO, ASSUNTO = "accertato", "allegato", "ipotizzato"
 COUNTERPARTY = "controparte"        # v60t: a sentence's side when it is attributed to a party other than the client
 # v78: «sostenendo», «sosteneva», the forms of «negare», «apprendeva che» -- a reported claim («il difensore apprendeva
 # che Tizio aveva negato…, sostenendo che…») was read as narrated fact and made an element «non risulta» (v60t forbids it)
-_ALLEGED_RE = re.compile(r"\b(?:sostien\w*|sosteng\w*|sosten(?:endo|eva|evano|ne|nero)\b|sosten(?:ut[oa]|ere)\s+che|afferm\w*|lament\w*|contest\w*|dichiar\w*|riferisc\w*|riferit\w*|"
-                         r"asseris\w*|asserit\w*|denunci\w*|accus\w*|ritien\w*|pretend\w*|eccepi\w*|"
+# v79.8.5 (C1, the PO's line): only an attributed sentence -- reported speech, a party's version -- is an allegazione; a
+# narrated fact stays certain even with one of these words («Luca lamenta forti dolori», «ha sporto denuncia», «secondo il
+# contratto», «accusa un malore», «il medico ha dichiarato una prognosi»): each verb counts only as it reports content
+_PARTY = (r"(?:client\w*|controparte|difes\w*|ricorrent\w*|attor\w*|convenut\w*|imputat\w*|indagat\w*|testimon\w*|"
+          r"test[ei]\b|denunciant\w*|querelant\w*|vittim\w*|persona\s+offesa|perit\w*|consulent\w*|accusa\b)")
+_ALLEGED_RE = re.compile(r"\b(?:sostien\w*|sosteng\w*|sosten(?:endo|eva|evano|ne|nero)\b|sosten(?:ut[oa]|ere)\s+che|afferm\w*|"
+                         r"lament\w*\s+(?:che|di\s+(?:aver|essere|non))|contest\w*\s+(?:che|di\s+aver|a\s+(?-i:[A-ZÀ-Ü])\w+)|"
+                         r"dichiar(?:a|ano|ava|avano|ò|ato|ata)\s+(?:che|di)\b|riferisc\w*\s+che|riferit\w*\s+che|"
+                         r"asseris\w*|asserit\w*|denunci\w*\s+che|accus\w*\s+(?:\w+\s+){0,2}?di\b|ritien\w*\s+(?:che|di)\b|"
+                         r"pretend\w*\s+che|eccepi\w*|"
                          r"neg(?:a|ano|ava|avano|ato|ata|ati|ando|herebbe|ò|arono)|apprend\w*\s+che|appres[oa]\s+che|"
-                         r"venut[oa]\s+a\s+sapere|a\s+sua\s+versione|nella\s+sua\s+versione|secondo (?:il|la|lo|i|le|gli|"
-                         r"[A-ZÀ-Ü])|a (?:suo|loro) dire|a detta d\w*|avrebbe\w*|sarebbe\w* stat\w*|presunt\w*)\b",
+                         r"venut[oa]\s+a\s+sapere|a\s+sua\s+versione|nella\s+sua\s+versione|"
+                         r"secondo\s+(?:quanto\s+(?:riferit|dichiarat|sostenut|affermat)\w*|la\s+(?:sua|loro)\s+versione|"
+                         r"(?-i:[A-ZÀ-Ü])\w+|(?:il|la|lo|i|le|gli|l['’])\s*" + _PARTY + r")|"
+                         r"a (?:suo|loro) dire|a detta d\w*|avrebbe\w*|sarebbe\w* stat\w*|presunt\w*)\b",
                          re.IGNORECASE)
 _HEDGED_RE = re.compile(r"\b(?:forse|probabilmente|sembra\w*|pare(?:va)?|potrebbe\w*|presumibilmente|non è chiaro|"
                         r"non si sa|non risulta chiaro|verosimilmente|ipotizz\w*|"
