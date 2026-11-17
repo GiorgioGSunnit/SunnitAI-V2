@@ -1490,9 +1490,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     return capped
 
 
-# v79.8.5 (B1, the PO's words): a claimant with no norm conferring an action -- the main line says so, never empty
-NO_ACTION_PREFIX = "Nessuna norma d'azione individuata nel registro"
-NO_ACTION_LINE = NO_ACTION_PREFIX + " per {istituto}"
+# v79.8.5 (B1, the PO's words): a claimant with no norm conferring an action -- the main line says so, never empty;
+# v79.8.6: reworded, the E2 rule (no «registro») absolute
+NO_ACTION_LINE = "Tra le norme esaminate per {istituto} nessuna attribuisce un'azione al cliente"
 NO_ACTION_ARGUMENT = {   # my drafts (v79.8.5)
     "pro": "Non fonda la domanda su norme che non conferiscono un'azione al cliente",
     "contro": "Prima di agire va individuata la norma che conferisce l'azione",
@@ -3143,7 +3143,7 @@ def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, 
 # --- v79.6 (item 1): the questions answered first --------------------------------------------------------------------------
 
 ANSWERS_TITLE = "**Risposte ai quesiti**"
-NO_SOURCE_ANSWER = "Non risulta dagli atti / dalle norme in registro."        # the PO's words
+NO_SOURCE_ANSWER = "Non risulta dagli atti né dalle norme esaminate."        # the PO's words (v79.8.6)
 ANSWER_SENTENCES = (2, 4)
 _PROCEDURAL_Q_RE = re.compile(r"\b(?:rit[oi]|procedur\w*|procediment\w*|termin[ei]|entro\s+quando|scadenz\w*|tempi\b|"
                               r"impugn\w*|ricors\w*|appell\w*|competen\w*|giudice|tribunale|querela|udienz\w*|"
@@ -3238,6 +3238,16 @@ _ACCUSA_RE = re.compile(r"\b([Ll])['’]accusa\b")
 _AGGRAVANTE_RE = re.compile(r"\baggravant", re.IGNORECASE)
 
 
+_ANY_REGISTRO_RE = re.compile(r"\bregistr[oi]\b", re.IGNORECASE)
+
+
+def registro_hits(answer: str) -> List[str]:
+    """v79.8.6: every «registro» in a delivered answer, any form, any section, tables included -- the nightly wants
+    none."""
+    text = answer or ""
+    return [" ".join(text[max(0, m.start() - 40):m.end() + 40].split()) for m in _ANY_REGISTRO_RE.finditer(text)]
+
+
 def wording_hits(text: str, known_ids: Sequence[str], criminal_matter: bool) -> List[str]:
     """v79 (E2): the internal wording a text shows the reader outside its tables -- an element code, the «registro»,
     and in a matter that is not criminal «l'accusa» and «aggravante»."""
@@ -3247,7 +3257,7 @@ def wording_hits(text: str, known_ids: Sequence[str], criminal_matter: bool) -> 
         if line.lstrip().startswith("|"):
             continue
         out += [f"codice {m.group(1)}" for m in _ELEMENT_TOKEN_RE.finditer(line) if m.group(1) in ids]
-        out += [f"«{m.group(0)}»" for m in _REGISTRO_RE.finditer(line.replace(NO_ACTION_PREFIX, ""))]
+        out += [f"«{m.group(0)}»" for m in _REGISTRO_RE.finditer(line)]
         if not criminal_matter:
             out += [f"«{m.group(0)}»" for m in _ACCUSA_RE.finditer(line)]
             out += [f"«{m.group(0)}…»" for m in _AGGRAVANTE_RE.finditer(line)]
@@ -3266,8 +3276,6 @@ def reader_wording(text: str, known: Dict[str, Dict[str, Any]], criminal_matter:
         return "" if ids and all(x in known for x in ids) else m.group(0)
 
     def review(sentence: str) -> str:
-        if NO_ACTION_PREFIX in sentence:        # v79.8.5: the PO's fixed line, «registro» and all
-            return sentence
         if _REGISTRO_RE.search(sentence) or (not criminal_matter and _AGGRAVANTE_RE.search(sentence)):
             return ""
         return sentence

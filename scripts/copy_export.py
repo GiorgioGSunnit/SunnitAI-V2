@@ -60,7 +60,7 @@ EXTRA = (
     ("lawyer_method", "PENAL_ROUTE_LINE", "Metodo, «Sintesi»: la via penale di un caso civile (v79.8)"),
     ("lawyer_method", "PENAL_ROUTE_CONCLUSION", "Metodo, «Conclusioni»: la via penale di un caso civile (v79.8)"),
     ("lawyer_method", "PENAL_ROUTE_UNKNOWN", "Metodo, la via penale: procedibilità non letta (v79.8)"),
-    ("lawyer_method", "NO_ACTION_PREFIX", "Metodo, linea principale: nessuna norma d'azione (le parole del PO, v79.8.5)"),
+    ("lawyer_method", "NO_ACTION_LINE", "Metodo, linea principale: nessuna norma d'azione (le parole del PO, v79.8.6)"),
     ("lawyer_method", "NO_ACTION_ARGUMENT", "Metodo, «Soluzioni a confronto»: la linea senza norma d'azione (v79.8.5)"),
     ("lawyer_method", "NO_ACTION_SUBJECT", "Metodo, la linea senza norma d'azione: nessun istituto nominato (v79.8.5)"),
     ("lawyer_method", "CONTAINMENT_LINE", "Metodo, «Soluzioni a confronto»: la linea di contenimento dell'imputato "

@@ -43,6 +43,8 @@ v79 (E2, E3): check reader_wording -- no element code outside the tables, no «r
 absent from the parere. v79 (D4): the selection table adds the defence lines, the defence articles the general-part gate
 dropped (criminal cells), the ranked candidates.
 
+v79.8.6: check no_registro -- zero occurrences of «registro» in any answer, any section (the E2 rule, absolute).
+
 v79.8: per cell, every block's counters as the interactive_single_shot_timings line carries them (A: graded_articles,
 samples_used, llm_calls, total_s, the grading funnel; B-E: theirs), «before → now» against the baseline.
 
@@ -159,6 +161,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(wording_check(out["output_check"], result.get("state") or {}))     # v79 (E2)
         out["checks"].append(ledger_check(out["answer"], result.get("state") or {}))            # v79 (E3)
         out["checks"].append(printed_check(out["answer"]))                                      # v79 (F3)
+        out["checks"].append(registro_check(out["answer"]))                                     # v79.8.6
         out["checks"].append(questions_check(out["answer"], result.get("state") or {}))         # v79.6 (1)
         out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
@@ -228,6 +231,14 @@ def printed_check(answer: str) -> Dict[str, Any]:
     from src.rag import rulings
     found = rulings.printed_problems(answer)
     return {"check": "rulings_printed", "ok": not found, "why": "; ".join(found[:4])}
+
+
+def registro_check(answer: str) -> Dict[str, Any]:
+    """v79.8.6: zero occurrences of «registro» in the answer -- any form, any section (the E2 wording rule, absolute)."""
+    from src.rag import lawyer_method
+    found = lawyer_method.registro_hits(answer)
+    return {"check": "no_registro", "ok": not found,
+            "why": f"{len(found)}: " + " | ".join(f"…{x}…" for x in found[:3]) if found else ""}
 
 
 def questions_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -415,6 +426,7 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
     out["answer"] = path.read_text(encoding="utf-8")
     out["checks"] = lawyer_method.structure_checks(out["answer"], spec["cell"])
     out["checks"].append(printed_check(out["answer"]))         # v79 (F3): needs no state
+    out["checks"].append(registro_check(out["answer"]))        # v79.8.6
     from src.rag import rulings
     check = ruling_check(out["answer"], spec["cell"], None) if rulings.enabled() else None
     if check:           # v78: offline, the penal cells only (the record is not in a file)

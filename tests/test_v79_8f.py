@@ -4,7 +4,8 @@ C1 restated: only an attributed sentence (reported speech, a party's version, a 
     narrated in the quesito stays certain, whatever word it uses («lamenta forti dolori», «ha sporto denuncia», «il
     medico ha dichiarato una prognosi», «secondo il contratto») -- a lesione's elements proven by the narrative
 B1's hole: a claimant whose facts give no norm conferring an action gets the explicit main line «Nessuna norma d'azione
-    individuata nel registro per <istituto>» -- never an empty main line, never the standard body or another fallback
+    individuata nel registro per <istituto>» (v79.8.6: «Tra le norme esaminate per <istituto> nessuna attribuisce
+    un'azione al cliente») -- never an empty main line, never the standard body or another fallback
 data: the draft modules (famiglia, consumo, lavoro, successioni, condominio), for the lawyer's review
 """
 
@@ -103,7 +104,7 @@ def test_a_claimant_with_no_norm_of_action_gets_the_explicit_line():
     cands = M.thesis_candidates(ctx)
     assert [c["kind"] for c in cands] == ["nessuna_azione"]
     line = cands[0]
-    assert line["tesi"] == "Nessuna norma d'azione individuata nel registro per comodato"
+    assert line["tesi"] == "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente"
     assert line["admitted_by"] and line["argued"] == "code" and line["code_argument"]["realismo"] == "basso"
     assert "art. 1225 c.c., art. 1476 c.c." in line["code_argument"]["argomento"]
 
@@ -118,18 +119,18 @@ def test_the_line_is_the_main_line_and_survives_the_wording_pass():
     assert M.placeholder_main(ctx, plan) == ""                      # never the standard body
     out = M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan)
     by = dict(M.answer_sections(out))
-    assert "Nessuna norma d'azione individuata nel registro per comodato" in by[M.title("sintesi")]
-    assert "Nessuna norma d'azione individuata nel registro per comodato" in by[M.title("soluzioni")]
-    assert not any("registro" in x for x in M.wording_hits(out, [], False))
+    assert "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente" in by[M.title("sintesi")]
+    assert "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente" in by[M.title("soluzioni")]
+    assert M.registro_hits(out) == [] and not any("registro" in x for x in M.wording_hits(out, [], False))
 
 
 def test_with_no_institution_named_the_line_names_the_matter_or_the_facts():
     from src.rag import lawyer_method as M
     ctx = {**_ctx(), "institutions": [], "case": "Tizio chiede un consiglio."}
     cands = M.thesis_candidates(ctx)
-    assert cands[0]["tesi"] == "Nessuna norma d'azione individuata nel registro per contratti"
+    assert cands[0]["tesi"] == "Tra le norme esaminate per contratti nessuna attribuisce un'azione al cliente"
     ctx = {**ctx, "records": {}}
-    assert M.thesis_candidates(ctx)[0]["tesi"].endswith("per i fatti narrati")
+    assert M.thesis_candidates(ctx)[0]["tesi"].startswith("Tra le norme esaminate per i fatti narrati")
 
 
 def test_a_norm_of_action_with_an_element_excluded_is_not_the_no_action_line():
@@ -160,3 +161,36 @@ def test_the_draft_modules_admit_their_actions(case, module, article):
     assert module in [m["id"] for m in mods] and all(m.get("draft") for m in mods if m["id"] == module)
     rule, group, _ = M.claim_admission(article, mods)
     assert rule == f"modulo {module}" and group == "module"
+
+
+# --- v79.8.6: the E2 rule absolute ------------------------------------------------------------------------------------------
+
+def test_no_sentence_on_the_registro_is_exempt_and_the_fixed_lines_never_say_it():
+    from src.rag import lawyer_method as M
+    old = "Nessuna norma d'azione individuata nel registro per comodato."
+    assert M.reader_wording(old, {}, False) == ""                  # the 79.8.5 exemption is gone
+    assert M.wording_hits(old, [], False) == ["«nel registro»"]
+    for line in (M.NO_ACTION_LINE.format(istituto="comodato"), M.NO_SOURCE_ANSWER):
+        assert "registr" not in line.lower() and M.reader_wording(line, {}, False) == line
+    assert M.NO_SOURCE_ANSWER == "Non risulta dagli atti né dalle norme esaminate."
+
+
+def test_the_nightly_fails_any_registro_in_an_answer():
+    import importlib.util
+    from pathlib import Path
+    spec = importlib.util.spec_from_file_location("nightly_sim", Path(__file__).resolve().parents[1] / "scripts" /
+                                                  "nightly_sim.py")
+    nightly = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(nightly)
+    assert nightly.registro_check("Testo pulito.")["ok"] is True
+    for text in ("Il registro non dà altro.", "| a | Registri delle imprese |", "come da registro"):
+        bad = nightly.registro_check(text)
+        assert bad["ok"] is False and bad["check"] == "no_registro"
+
+
+def test_the_stage_lines_never_say_registro():
+    import json
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "data" / "stage_procedure.json").read_text(encoding="utf-8")
+    assert "registro" not in text.lower() and "art. 335, co. 3, c.p.p." in text
+    json.loads(text)
