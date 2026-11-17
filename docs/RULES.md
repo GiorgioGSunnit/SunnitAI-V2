@@ -473,6 +473,16 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - A3: the thesis call takes one sample. `score_sample` gave every reply the same score, so best-of-3 only spent two calls; it returns only with a scorer that discriminates.
   - A4: the clients' objections calls (each with its reply binding) run concurrently (`interactive_flow.concurrently`, `method_objections`). The rubrica stamp still follows the writer review, because it reads the text that review produces.
   - A5: `case_counters` (graded_articles, samples_used, llm_calls, total_s, funnel) goes into the `single_shot_timings` line and into the nightly's counters table.
+- **B. Claims that confer an action.**
+  - B1: a claim («Fondare la domanda sull'art. X») or a riconvenzionale is built only on an article a rule admits:
+    - an action of the institution module the first read names (`data/institution_modules.json`);
+    - an action of a `remedies.json` matter (`actions`);
+    - general obligations law (1218, 1453, 2043).
+
+    A limiting rule (mora, prevedibilità, misura del danno, 1455, 1460 …), the other party's duty and a definitional or procedural article never are. Every candidate records the rule that admitted it (`admitted_by`), and each refusal is logged (`claims_refused`).
+  - B2: the module's articles come first, in its order (2053 before 2051). 1218, 1453 and 2043 are subordinate: offered only when the module proves nothing. With a module active, nothing outside it is offered.
+  - B3: a convenuto gets contests, eccezioni, a riconvenzionale and a transazione, never a claim.
+  - B4: the counters are `unadmitted_candidates` (must be 0) and `main_outside_institution`. — `lawyer_method.py:claim_admission`, `active_modules`, `same_article`, `main_outside`.
 
 ## By version
 

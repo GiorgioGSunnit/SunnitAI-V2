@@ -1125,6 +1125,7 @@ CANDIDATE_TEXTS = {   # my drafts: each candidate's line, from the record
     "eccezione": "Eccepire {label} ({articles})",
     "riconvenzionale": "Domanda riconvenzionale sull'art. {art}{rubrica}",
     "defence": "Difesa sull'art. {art}{rubrica}",          # v79 (D1): a general-part defence with its elements proven
+    "transazione": "Proporre una transazione che chiuda la lite (artt. 1965 ss. c.c.)",     # v79.8 (B3)
 }
 VICTIM_ROLES = ("persona_offesa", "parte_civile")
 KNOWN_ROLES = ("imputato", "indagato", "convenuto", "attore", "persona_offesa", "parte_civile", "terzo")     # v79.6
@@ -1206,6 +1207,13 @@ CODE_ARGUMENTS = {   # my drafts (v74): the argument of a thesis that contests n
 }
 
 
+TRANSAZIONE_ARGUMENT = {   # my drafts (v79.8, B3)
+    "pro": "Non dipende dall'esito del giudizio sulla domanda",
+    "contro": "Richiede reciproche concessioni (art. 1965 c.c.)",
+    "argomento": "La transazione chiude la lite sulla domanda ({art}) con reciproche concessioni ed evita il rischio "
+                 "e i tempi del giudizio"}
+
+
 def _sentence_join(parts: Sequence[str]) -> str:
     return " ".join(p.rstrip(".") + "." for p in parts if p)
 
@@ -1222,7 +1230,12 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
     who = "La controparte" if not criminal(posture) else (       # v79 (E2): «l'accusa» in a criminal matter only
         "La difesa dell'imputato" if posture.get("role") in VICTIM_ROLES else "L'accusa")
     art = c.get("article") or ""
-    texts = CODE_ARGUMENTS[c["kind"]]
+    texts = CODE_ARGUMENTS.get(c["kind"]) or {}
+    if c["kind"] == "transazione":              # v79.8 (B3): the convenuto's way out of the claim
+        return {"pro": _sentence_join([TRANSAZIONE_ARGUMENT["pro"]]),
+                "contro": _sentence_join([TRANSAZIONE_ARGUMENT["contro"]]),
+                "argomento": _sentence_join([TRANSAZIONE_ARGUMENT["argomento"].format(
+                    art=f"art. {art}" if art else "la domanda")]), "realismo": MEDIO}
     if c["kind"] == "eccezione":                # v75: no element of its own -- what it needs, from the table
         label = str(c.get("label") or "")
         return {"pro": _sentence_join([f"Non nega i fatti narrati: ne trae un'eccezione ({c.get('articles')})"]),
@@ -1298,8 +1311,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
 
     def add(kind: str, tesi: str, contesta=(), poggia_su=(), label: str = SUSTAINABLE, **extra):
+        rule = extra.pop("admitted_by", "") or ADMITTED_BY.get(kind, "")     # v79.8 (B1): the rule that admits it
         out.append({"kind": kind, "tesi": tesi, "contesta": list(contesta), "poggia_su": list(poggia_su),
-                    "label": label, **extra})
+                    "label": label, "admitted_by": rule, **extra})
     fatt = lambda x: issue_records.counted(x, str((records.get(x) or {}).get("rubrica") or ""))   # v74: fattispecie only
     named = lambda rec: bool(rec.get("named_due") or rec.get("decomposed_for") == "nominata dall'utente")      # v76
     role = str(posture.get("role") or "")
@@ -1382,7 +1396,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                 poggia_su=proven, article=label)
     if known_role and not victim and (role == "convenuto" or role not in ACCUSED):
         own_kind = "riconvenzionale" if role == "convenuto" else "claim"      # v75: the convenuto's own claim
-        claims = []
+        modules = active_modules(ctx)                       # v79.8 (B2): the first read's institution
+        ctx["claim_modules"] = [m["id"] for m in modules]
+        admitted, refused = [], {}
         for label, rec in records.items():
             if rec.get("side") == "threat" or (own_kind == "riconvenzionale" and rec.get("alternative")):
                 continue
@@ -1391,25 +1407,46 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             open_ = [r for r in live if r.get("status") == DA_PROVARE and r.get("id")]
             if any(r.get("status") == NON_RISULTA for r in live) or not fatt(label):
                 continue
+            rule, group, rank = claim_admission(label, modules)        # v79.8 (B1): a norm conferring an action
+            if not rule:
+                refused[label] = group
+                continue
+            if modules and group == "matter":                           # B2: nothing outside the institution
+                refused[label] = CLAIM_REFUSED["outside"]
+                continue
+            admitted.append((rank, label, rec, rule, group, proven, open_))
+        admitted.sort(key=lambda x: x[0])
+        module_proven = any(g == "module" and p for _, _, _, _, g, p, _ in admitted)
+        claims = []
+        for _, label, rec, rule, group, proven, open_ in admitted:
+            if group == "general" and module_proven:     # B2: general obligations law, subordinate to the module
+                refused[label] = CLAIM_REFUSED["subordinate"]
+                continue
             if proven:
                 add(own_kind, CANDIDATE_TEXTS[own_kind].format(art=label, rubrica=_rubrica_tail(rec)),
-                    poggia_su=proven, article=label)
+                    poggia_su=proven, article=label, admitted_by=rule)
                 claims.append((label, proven))
             elif (role == "attore" or named(rec)) and open_ and not rec.get("ranked_candidate"):   # v75b; v76: named
                 add(own_kind, CANDIDATE_TEXTS[f"{own_kind}_open"].format(      # article always, when decomposed
                     art=label, rubrica=_rubrica_tail(rec),
                     open=", ".join(f"«{_short(r.get('text'), 60)}» ({r['id']})" for r in open_[:3])),
-                    poggia_su=[r["id"] for r in open_], article=label)
+                    poggia_su=[r["id"] for r in open_], article=label, admitted_by=rule)
                 claims.append((label, []))
+        ctx["claims_refused"] = refused
+        if refused:
+            _log("claims_refused", refused)
         if role == "attore":    # v75: the remedies of the claim's matter
             for label, proven in claims[:1]:
-                for r in (matter_of(label).get("remedies") or []):
-                    add("remedy", CANDIDATE_TEXTS["remedy"].format(**r), poggia_su=proven, article=label, **r)
+                matter = matter_of(label)
+                for r in (matter.get("remedies") or []):
+                    add("remedy", CANDIDATE_TEXTS["remedy"].format(**r), poggia_su=proven, article=label,
+                        admitted_by=f"remedies.json: {matter.get('id')}", **r)
     if role == "convenuto":     # v75: the eccezioni of the claim's matter (the claim against the client)
         claim = next((x for x in threats if matter_of(x)), "")
         for r in (matter_of(claim).get("eccezioni") or []) if claim else []:     # v79.6: the eccezione di
             add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)   # prescrizione stays (E4:
             # claims only -- a prescription article is never a claim, issue_records.counted)
+        add("transazione", CANDIDATE_TEXTS["transazione"], article=claim or charge)    # v79.8 (B3): its set
     if not offender:
         for label, r in contests["integrated"]:
             contest(label, r)
@@ -1437,6 +1474,86 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         if c["argued"] == "code":
             c["code_argument"] = code_argument(c, ctx)
     return capped
+
+
+# v79.8 (B1): every candidate records the rule that admits it -- a claim, a riconvenzionale and a remedy theirs
+# (claim_admission, remedies.json); the others by their kind. A candidate with none is counted (must be 0).
+ADMITTED_BY = {"contest_excluded": "elemento dell'addebito o della domanda", "contest_open": "elemento dell'addebito o "
+               "della domanda", "contest_integrated": "elemento dell'addebito o della domanda (tesi minoritaria)",
+               "requalify": "qualificazione alternativa", "scriminante": "difesa di parte generale",
+               "defence": "difesa di parte generale", "attenuante": "circostanza con elementi provati",
+               "contenimento": "linea dell'imputato (tabella delle posizioni)",
+               "claim_offence": "persona offesa: il reato contestato", "parte_civile": "persona offesa: artt. 74-79 c.p.p.",
+               "sequestro": "persona offesa: artt. 253, 321, 262 c.p.p.", "aggravante": "persona offesa: aggravante provata",
+               "eccezione": "remedies.json: eccezioni della materia", "transazione": "convenuto: art. 1965 c.c."}
+CLAIM_REFUSED = {   # v79.8 (B1, B2): why an article is no claim -- logged, never printed
+    "limiting": "norma che limita o misura la domanda ({why}): non conferisce un'azione",
+    "none": "nessuna regola la ammette: non conferisce un'azione al ruolo del cliente",
+    "outside": "fuori dall'istituto della prima lettura",
+    "subordinate": "norma generale, subordinata: il modulo dell'istituto dà una linea provata"}
+MODULES_FILE = os.path.join(os.path.dirname(DATA_FILE), "institution_modules.json")
+_MODULES: Dict[str, Any] = {}
+
+
+def institution_modules() -> Dict[str, Any]:
+    """data/institution_modules.json (read once; {} when missing, logged)."""
+    if "d" not in _MODULES:
+        try:
+            with open(MODULES_FILE, encoding="utf-8") as f:
+                _MODULES["d"] = json.load(f)
+        except (OSError, ValueError) as exc:
+            logger.warning("lawyer_method: %s not read: %s", MODULES_FILE, exc)
+            _MODULES["d"] = {}
+    return _MODULES["d"]
+
+
+_LAW_TOKEN_RE = re.compile(r"(\d{1,4})\s*/\s*((?:19|20)\d{2})")
+
+
+def same_article(label: str, spec: str) -> bool:
+    """v79.8: the record's label is the module's article -- the same number and code; a special law's by its
+    number/year («2 l. 604/1966» matches «2 L. 15 luglio 1966, n. 604» only through «604/1966» in the label)."""
+    a_num, _, a_code = str(label or "").partition(" ")
+    b_num, _, b_code = str(spec or "").partition(" ")
+    if a_num.lower() != b_num.lower():
+        return False
+    law = _LAW_TOKEN_RE.search(b_code)
+    if law:
+        return any(m.groups() == law.groups() for m in _LAW_TOKEN_RE.finditer(a_code))
+    return _norm_label(label) == _norm_label(spec)
+
+
+def active_modules(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v79.8 (B2): the institution modules of the case -- those whose patterns the first read's institutions name
+    (ctx["institutions"]), else the case's own words."""
+    mods = institution_modules().get("modules") or []
+    for text in (" ".join(ctx.get("institutions") or []), ctx.get("case") or ""):
+        hit = [m for m in mods if text and any(re.search(p, text, re.IGNORECASE) for p in m.get("patterns") or [])]
+        if hit:
+            return hit
+    return []
+
+
+def claim_admission(label: str, modules: Sequence[Dict[str, Any]]) -> Tuple[str, str, Tuple]:
+    """v79.8 (B1): (the rule admitting a claim on the article, its group, its rank) -- an active module's action
+    (group «module», the module's order), «general» obligations law (1218, 1453, 2043: subordinate), a remedies.json
+    matter's action («matter»); a limiting rule or none: ("", why, ())."""
+    d = institution_modules()
+    for spec, why in (d.get("limiting") or {}).items():
+        if same_article(label, spec):
+            return "", CLAIM_REFUSED["limiting"].format(why=why), ()
+    for i, m in enumerate(modules):
+        for j, spec in enumerate(m.get("actions") or []):
+            if same_article(label, spec):
+                return f"modulo {m['id']}", "module", (0, i, j)
+    matter = matter_of(label)
+    if any(same_article(label, spec) for spec in matter.get("actions") or []) and \
+            not any(same_article(label, g) for g in d.get("general") or []):
+        return f"remedies.json: {matter.get('id')}", "matter", (1, 0, 0)
+    for j, spec in enumerate(d.get("general") or []):
+        if same_article(label, spec):
+            return "norma generale delle obbligazioni", "general", (2, 0, j)
+    return "", CLAIM_REFUSED["none"], ()
 
 
 CONTAINMENT_LINE = "Contenimento della pena: riti alternativi, attenuanti e commisurazione della pena"   # my draft
@@ -2002,6 +2119,16 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
 COUNT_KEYS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback")
 
 
+def main_outside(ctx: Dict[str, Any], main: Dict[str, Any]) -> bool:
+    """v79.8 (B4): the main line is a claim (or a remedy) on an article outside the first read's institution modules,
+    while one is active."""
+    mods = [m for m in institution_modules().get("modules") or [] if m["id"] in (ctx.get("claim_modules") or [])]
+    cand = next((c for c in ctx.get("candidates") or [] if c.get("id") == main.get("candidate")), {})
+    if not mods or cand.get("kind") not in ("claim", "riconvenzionale", "remedy"):
+        return False
+    return not any(same_article(cand.get("article") or "", a) for m in mods for a in m.get("actions") or [])
+
+
 def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None) -> Dict[str, Any]:
     """v79 (A2): where the candidates went -- offered (the code's), parsed (reached the selection as soluzioni), valued
     (v79.7: the candidates the kept reply gave a realismo, every kind), barred (contest an «integrato» element, unlabelled), unverifiable,
@@ -2024,6 +2151,9 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             # v79.7 (item 2): where the charge's contests came from (a record marked «threat», else the charged
             # records) and, when none was marked, why (NO_THREAT_WHY)
             "samples": len((ctx.get("thesis_choice") or {}).get("scores") or []),      # v79.8 (A5): replies used
+            # v79.8 (B4): candidates no rule admits (must be 0); the main line's norm outside the read's institution
+            "unadmitted": sum(1 for c in cands if not c.get("admitted_by")),
+            "main_outside_institution": main_outside(ctx, m),
             "threats_from": str((ctx.get("candidates_trace") or {}).get("threats_from") or ""),
             "no_threat": str((ctx.get("candidates_trace") or {}).get("no_threat") or ""),
             # v79 (D4): the general part's defence lines, the ranked articles graded into candidates
@@ -3408,7 +3538,8 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
                               if isinstance(q, dict) and q.get("text")],
            "charged_prose": charged_prose(records, by_id),                    # v75b: from its sussunzione rows
            "store_fields": _store_fields(rows),                               # v79 (B1): a rule statement's sources
-           "records_view": view_log}                                          # v79.7: the ranked trace reads it
+           "records_view": view_log,                                          # v79.7: the ranked trace reads it
+           "institutions": read_institutions(state.get("read") or {})}        # v79.8 (B2)
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti), "temporal": ctx["temporal"][:200],
@@ -3416,6 +3547,15 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
                      "facts_excluded": facts_log, "procedibilita": procedibilita, "rulings": len(ctx["rulings"]),
                      "notes": note_sources, "records": view_log})
     return ctx
+
+
+def read_institutions(read: Dict[str, Any]) -> List[str]:
+    """v79.8 (B2): the first read's institutions and claims, as words."""
+    out: List[str] = []
+    for h in (read or {}).get("hypotheses") or []:
+        if isinstance(h, dict):
+            out += [str(x) for x in h.get("institutions") or []] + [str(h.get("claim") or "")]
+    return [x for x in out if x.strip()]
 
 
 def _store_fields(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:

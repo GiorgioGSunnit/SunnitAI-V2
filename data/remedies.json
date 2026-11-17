@@ -1,5 +1,5 @@
 {
- "_about": "v75 (my drafts, for the lawyer's review): the candidate lines by role that come from the matter, not from a record of their own (src/rag/lawyer_method.py thesis_candidates). «matters»: a civil claim's matter by its article's place in the c.c. (range: first and last article); the attore's remedies, the convenuto's eccezioni -- each line offered on the claim record's elements. «penal_property»: the c.p. range of the offences against property, whose victim is offered sequestro and restituzione. v76: «fallback» -- the civil role's line when the record offers none (never the penal containment).",
+ "_about": "v75 (my drafts, for the lawyer's review): the candidate lines by role that come from the matter, not from a record of their own (src/rag/lawyer_method.py thesis_candidates). «matters»: a civil claim's matter by its article's place in the c.c. (range: first and last article); the attore's remedies, the convenuto's eccezioni -- each line offered on the claim record's elements. «penal_property»: the c.p. range of the offences against property, whose victim is offered sequestro and restituzione. v76: «fallback» -- the civil role's line when the record offers none (never the penal containment). v79.8 (B1): «actions» -- the matter's articles that confer an action (the norms that confer an action or ground the right the claim asserts -- 1062, 1158; a claim candidate is built only on one of them or on an institution module's: data/institution_modules.json).",
  "matters": [
   {
    "id": "obbligazioni",
@@ -30,6 +30,9 @@
      "articles": "art. 2946 c.c.",
      "requires": "le date dell'inadempimento e degli atti interruttivi"
     }
+   ],
+   "actions": [
+    "1218 c.c."
    ]
   },
   {
@@ -65,6 +68,29 @@
      "articles": "art. 2946 c.c.",
      "requires": "le date dell'inadempimento e degli atti interruttivi"
     }
+   ],
+   "actions": [
+    "1453 c.c.",
+    "1418 c.c.",
+    "1427 c.c.",
+    "1439 c.c.",
+    "1447 c.c.",
+    "1448 c.c.",
+    "1490 c.c.",
+    "1492 c.c.",
+    "1494 c.c.",
+    "1497 c.c.",
+    "1578 c.c.",
+    "1585 c.c.",
+    "1591 c.c.",
+    "1667 c.c.",
+    "1668 c.c.",
+    "1669 c.c.",
+    "1804 c.c.",
+    "1809 c.c.",
+    "1810 c.c.",
+    "1813 c.c.",
+    "1820 c.c."
    ]
   },
   {
@@ -95,6 +121,17 @@
      "articles": "art. 2947 c.c.",
      "requires": "la data del fatto illecito e degli atti interruttivi"
     }
+   ],
+   "actions": [
+    "2043 c.c.",
+    "2047 c.c.",
+    "2048 c.c.",
+    "2049 c.c.",
+    "2050 c.c.",
+    "2051 c.c.",
+    "2052 c.c.",
+    "2053 c.c.",
+    "2054 c.c."
    ]
   },
   {
@@ -120,6 +157,17 @@
      "articles": "art. 1158 c.c.",
      "requires": "un possesso continuato per vent'anni"
     }
+   ],
+   "actions": [
+    "948 c.c.",
+    "949 c.c.",
+    "950 c.c.",
+    "951 c.c.",
+    "844 c.c.",
+    "1158 c.c.",
+    "1159 c.c.",
+    "1160 c.c.",
+    "1161 c.c."
    ]
   },
   {
@@ -141,6 +189,13 @@
      "articles": "art. 1073 c.c.",
      "requires": "vent'anni di non uso"
     }
+   ],
+   "actions": [
+    "1079 c.c.",
+    "1051 c.c.",
+    "1052 c.c.",
+    "1062 c.c.",
+    "1031 c.c."
    ]
   },
   {
@@ -166,6 +221,12 @@
      "articles": "artt. 1168 e 1170 c.c.",
      "requires": "la data dello spoglio o della molestia"
     }
+   ],
+   "actions": [
+    "1168 c.c.",
+    "1170 c.c.",
+    "1171 c.c.",
+    "1172 c.c."
    ]
   }
  ],

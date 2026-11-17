@@ -268,12 +268,16 @@ def test_the_convenuto_contests_the_claim_and_gets_the_eccezioni_and_the_riconve
     recs = {"1218 c.c.": {"rubrica": "Responsabilità del debitore", "side": "threat", "charged": 1,
                           "requisites": [_req(1, "l'inadempimento", "da provare"), _req(2, "il danno", "provato")]},
             "1460 c.c.": {"rubrica": "Eccezione d'inadempimento", "side": "weapon",
-                          "requisites": [_req(3, "l'inadempimento della controparte", "provato")]}}
+                          "requisites": [_req(3, "l'inadempimento della controparte", "provato")]},
+            # v79.8 (B1): the riconvenzionale on a norm conferring an action (1460 is an eccezione, never a claim)
+            "1453 c.c.": {"rubrica": "Risolubilità del contratto per inadempimento", "side": "weapon",
+                          "requisites": [_req(4, "l'inadempimento di non scarsa importanza", "provato")]}}
     cands = M.thesis_candidates({"records": recs, "circumstances": {}, "posture": CONVENUTO,
                                  "assessment": {"article": "1218 c.c."}})
     kinds = [c["kind"] for c in cands]
     assert kinds[0] == "contest_open" and "eccezione" in kinds and "riconvenzionale" in kinds
-    assert "claim" not in kinds and "remedy" not in kinds
+    assert "claim" not in kinds and "remedy" not in kinds and "transazione" in kinds
+    assert [c["article"] for c in cands if c["kind"] == "riconvenzionale"] == ["1453 c.c."]
     ecc = next(c for c in cands if c["kind"] == "eccezione")
     assert ecc["code_argument"]["realismo"] == "basso" and "richiede, nei fatti" in ecc["code_argument"]["argomento"]
 

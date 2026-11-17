@@ -1,0 +1,38 @@
+{
+  "_about": "v79.8 (Block B): the norms that confer an action. A claim candidate («Fondare la domanda sull'art. X», a riconvenzionale) is built only on an article one of these rules admits: an institution module's «actions» (the institution the first read names, or the case's words: «patterns») or a remedies.json matter's «actions». A module's articles come first, in its order (the specific norm before the general one: 2053 before 2051); «general» (1218, 1453, 2043) are subordinate -- offered with a module only when the module yields nothing proven. «limiting» are never a claim (they measure or condition a claim, they confer none). Edit here; lawyer_method.claim_admission reads it.",
+  "general": ["1218 c.c.", "1453 c.c.", "2043 c.c."],
+  "limiting": {
+    "1219 c.c.": "costituzione in mora",
+    "1223 c.c.": "misura del danno",
+    "1224 c.c.": "danni nelle obbligazioni pecuniarie",
+    "1225 c.c.": "prevedibilità del danno",
+    "1226 c.c.": "valutazione equitativa",
+    "1227 c.c.": "concorso del fatto colposo del creditore",
+    "1455 c.c.": "importanza dell'inadempimento",
+    "1460 c.c.": "eccezione di inadempimento",
+    "2056 c.c.": "valutazione dei danni",
+    "2697 c.c.": "onere della prova"
+  },
+  "modules": [
+    {"id": "comodato", "patterns": ["\\bcomodat"],
+     "actions": ["1809 c.c.", "1810 c.c.", "1804 c.c.", "1805 c.c.", "1812 c.c."]},
+    {"id": "appalto", "patterns": ["\\bappalt", "\\baffid\\w*\\s+(?:\\S+\\s+){0,5}?(?:il |la |i |l.)?(?:rifaciment|lavor|ristruttur|riparaz|costruz|realizzaz)"],
+     "actions": ["1667 c.c.", "1668 c.c.", "1669 c.c.", "1662 c.c.", "1671 c.c.", "1665 c.c."]},
+    {"id": "vendita", "patterns": ["\\bcompravendit", "\\bvenditor", "\\bacquirent", "\\bvendut[oa]\\b"],
+     "actions": ["1490 c.c.", "1492 c.c.", "1494 c.c.", "1497 c.c.", "1479 c.c.", "1480 c.c.", "1483 c.c."]},
+    {"id": "custodia", "patterns": ["\\bcustod", "\\bcroll", "\\brovin", "\\bcornicion", "\\bcalcinacc", "\\bcadut[oa]\\s+(?:di|del|della|dal|dalla)", "\\bcedut[oa]\\b"],
+     "actions": ["2053 c.c.", "2051 c.c.", "2052 c.c."]},
+    {"id": "locazione", "patterns": ["\\blocazion", "\\blocator", "\\bconduttor", "\\baffitt"],
+     "actions": ["1575 c.c.", "1578 c.c.", "1581 c.c.", "1585 c.c.", "1590 c.c.", "1591 c.c."]},
+    {"id": "mutuo", "patterns": ["\\bmutu[oi]\\b", "\\bprestit"],
+     "actions": ["1813 c.c.", "1819 c.c.", "1820 c.c."]},
+    {"id": "licenziamento", "patterns": ["\\blicenzia"],
+     "actions": ["2 l. 604/1966", "8 l. 604/1966", "18 l. 300/1970", "2 d.lgs. 23/2015", "3 d.lgs. 23/2015", "4 d.lgs. 23/2015", "2119 c.c."]},
+    {"id": "possesso", "patterns": ["\\bspogli", "\\bpossess", "\\bturbativ"],
+     "actions": ["1168 c.c.", "1170 c.c.", "1171 c.c.", "1172 c.c."]},
+    {"id": "proprieta", "patterns": ["\\brivendic", "\\bimmission", "\\bnegatori", "\\busucapion"],
+     "actions": ["948 c.c.", "949 c.c.", "844 c.c.", "1158 c.c.", "1159 c.c."]},
+    {"id": "servitu", "patterns": ["\\bservit", "\\bpassaggio\\b", "\\bintercluso"],
+     "actions": ["1079 c.c.", "1062 c.c.", "1051 c.c.", "1052 c.c."]}
+  ]
+}

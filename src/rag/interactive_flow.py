@@ -7986,7 +7986,10 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
                            "llm_calls": num("round1_llm", "first_read_llm", "answer_llm"),
                            "total_s": total_s if total_s is not None else t.get("single_shot_s"),
                            "funnel": {k: (len(v) if isinstance(v, list) else v) for k, v in funnel.items()}}
-    out.update(state.get("block_counters") or {})          # v79.8 B-E: their counters, set where they are computed
+    counts = list(by_client.values()) or [state.get("thesis_counts") or {}]
+    out["unadmitted_candidates"] = sum(int(c.get("unadmitted") or 0) for c in counts)              # v79.8 (B4)
+    out["main_outside_institution"] = sum(1 for c in counts if c.get("main_outside_institution"))
+    out.update(state.get("block_counters") or {})          # v79.8 C-E: their counters, set where they are computed
     return out
 
 

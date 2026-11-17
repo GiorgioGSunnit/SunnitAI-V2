@@ -55,6 +55,8 @@ EXTRA = (
     ("lawyer_method", "_assessment", "Metodo, «Conclusioni»: il perché dell'esito probabile"),     # v79: the body
     ("lawyer_method", "HYPOTHESIS_LABEL", "Metodo, «Sintesi» e «Conclusioni»: l'addebito ricavato dalla prima lettura"),
     ("lawyer_method", "NO_CHARGE_WHY", "Metodo, «Conclusioni»: nessun addebito né domanda nel quesito"),
+    ("lawyer_method", "TRANSAZIONE_ARGUMENT", "Metodo, «Soluzioni a confronto»: l'argomento della transazione del "
+                                              "convenuto (v79.8)"),
     ("lawyer_method", "CONTAINMENT_LINE", "Metodo, «Soluzioni a confronto»: la linea di contenimento dell'imputato "
                                           "(v79.7: sempre offerta, ultima)"),
     ("lawyer_method", "ASSESSMENT_LINES", "Metodo, «Conclusioni»: esito probabile, grado di certezza, obiettivo"),
