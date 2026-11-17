@@ -81,7 +81,7 @@ def test_a_special_law_charge_gets_a_record_under_the_stores_name(monkeypatch):
     monkeypatch.setattr(flow, "_restored_analysis", lambda a: {})
     monkeypatch.setattr(flow, "user_named", lambda s: [])
     monkeypatch.setattr(posture, "alternative_labels", lambda s, rows=(): [])
-    monkeypatch.setattr(issue_records, "_requisites", lambda r, a: [
+    monkeypatch.setattr(issue_records, "_requisites", lambda r, a, *_: [
         {"id": "", "comma": 1, "kind": "requisito", "text": "detiene sostanze stupefacenti", "status": "da provare"}])
     monkeypatch.setattr(issue_records, "refresh", lambda *a, **k: None)
     seen = {}

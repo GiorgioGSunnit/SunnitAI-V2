@@ -263,6 +263,36 @@ _NOT_ELEMENT_RE = re.compile(r"^\W*(?:fuori\s+de[il]\s+casi|salvo\s+che\s+il\s+f
                              r"disposto)\s+(?:altrimenti|diversamente))\b", re.IGNORECASE)
 
 
+# v79.8 (C2): a decomposition fragment that states no condition -- never an element (dropped with its reason, logged)
+_ROLE_NOUN = (r"(?:debitor\w*|creditor\w*|contraent\w*|parte|parti|vendit\w*|compratore|acquirente|locat\w*|"
+              r"conduttore|comodant\w*|comodatario|appaltatore|committente|mandant\w*|mandatario|datore(?:\s+di\s+"
+              r"lavoro)?|lavorator\w*|proprietari\w*|possessore|custode|danneggiat\w*|danneggiante|colpevole|agente|"
+              r"terz[oi]|soggett\w*|person[ae]|interessat\w*|titolare|obbligat\w*)")
+_BARE_SUBJECT_RE = re.compile(r"^(?:(?:il|lo|la|l['’]|i|gli|le|un|uno|una|ciascun[oa]|ognun[oa])\s*)?(?:(?:dei|degli|delle|"
+                              r"di|del|della)\s+)?" + _ROLE_NOUN + r"(?:\s+(?:di|del|della|dei|delle)?\s*" + _ROLE_NOUN
+                              + r")?$", re.IGNORECASE)
+_CONNECTIVE_RE = re.compile(r"^(?:con|per|in|nel|nella|mediante|secondo)\s+(?:cui|il\s+quale|la\s+quale|i\s+quali|"
+                            r"le\s+quali)\b(?:\s+(?:si|le\s+parti|esse|essi)?\s*\w+){0,2}(?:\s+che)?$|"
+                            r"^(?:\w+\s+){0,3}(?:che|cui|quale|qualora|se|quando)$", re.IGNORECASE)
+_SAVING_RE = re.compile(r"^\W*(?:salvo\b|in\s+ogni\s+caso\b|fatt[oaie]\s+salv|ferm[oaie]\s+rest|"
+                        r"tranne\s+che|eccetto\s+che|a\s+meno\s+che)", re.IGNORECASE)
+FRAGMENT_WHY = {"subject": "soggetto senza condizione", "connective": "connettivo senza condizione",
+                "saving": "clausola di salvezza"}
+
+
+def fragment_why(text: str) -> str:
+    """v79.8 (C2): why a decomposed clause is no element -- a bare subject («il debitore», «uno dei contraenti»), a
+    connective («con cui si conviene che»), a saving clause («salvo in ogni caso …»); "" for a condition."""
+    t = " ".join(str(text or "").split()).strip(" ,.;:")
+    if _SAVING_RE.match(t):
+        return FRAGMENT_WHY["saving"]
+    if _BARE_SUBJECT_RE.match(t):
+        return FRAGMENT_WHY["subject"]
+    if _CONNECTIVE_RE.match(t):
+        return FRAGMENT_WHY["connective"]
+    return ""
+
+
 def element_kept(text: str) -> bool:
     """v76b: a clause that is an element -- never a clausola di riserva nor a default clause."""
     return not _NOT_ELEMENT_RE.search(text or "")

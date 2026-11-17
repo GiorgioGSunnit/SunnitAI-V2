@@ -225,7 +225,7 @@ def test_the_charge_the_alternatives_and_the_named_articles_get_decomposed_recor
 # --- 3. the non-fattispecie gates ------------------------------------------------------------------------------------------
 
 def test_procedural_codes_and_libro_i_are_never_fattispecie_records(monkeypatch):
-    monkeypatch.setattr(issue_records, "_requisites", lambda row, analysis: [
+    monkeypatch.setattr(issue_records, "_requisites", lambda row, analysis, *_: [
         {"id": "", "comma": 1, "text": "un requisito", "kind": "requisito", "status": "da provare"}])
     topic = {"title": "T", "articles": ["575 c.p.", "41 c.p.", "52 c.p.", "405 c.p.p.", "700 c.p.c."]}
     rows = [_row(n, c, "testo", "") for n, c in (("575", "c.p."), ("41", "c.p."), ("52", "c.p."), ("405", "c.p.p."),

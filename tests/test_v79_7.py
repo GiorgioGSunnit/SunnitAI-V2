@@ -218,7 +218,7 @@ def _decompose(monkeypatch, state, posture, rows, reqs_by_label, charges=(), cas
     monkeypatch.setattr(posture_mod, "charge_labels", lambda c: list(charges))
     monkeypatch.setattr(posture_mod, "claim_from_read", lambda *a, **k: [])
     monkeypatch.setattr(posture_mod, "alternative_labels", lambda s, rows=(): [])
-    monkeypatch.setattr(issue_records, "_requisites", lambda r, a: [dict(x) for x in reqs_by_label.get(
+    monkeypatch.setattr(issue_records, "_requisites", lambda r, a, *_: [dict(x) for x in reqs_by_label.get(
         flow._label(flow._key(r["_article"])), [])])
     monkeypatch.setattr(issue_records, "refresh", lambda *a, **k: None)
     monkeypatch.setattr(issue_records, "seed", lambda rec, row: None)

@@ -89,7 +89,7 @@ def _decompose(monkeypatch, state, posture, rows, reqs):
     monkeypatch.setattr(posture_mod, "charge_labels", lambda case: [])
     monkeypatch.setattr(posture_mod, "claim_from_read", lambda *a, **k: [])
     monkeypatch.setattr(posture_mod, "alternative_labels", lambda s, rows=(): [])
-    monkeypatch.setattr(issue_records, "_requisites", lambda r, a: [dict(x) for x in reqs])
+    monkeypatch.setattr(issue_records, "_requisites", lambda r, a, *_: [dict(x) for x in reqs])
     monkeypatch.setattr(issue_records, "refresh", lambda *a, **k: None)
     monkeypatch.setattr(issue_records, "seed", lambda rec, row: None)
     return flow.decompose_records(state, posture, rows, set(), fetch=lambda keys: [])

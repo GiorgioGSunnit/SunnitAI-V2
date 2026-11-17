@@ -77,14 +77,26 @@ _HEDGED_RE = re.compile(r"\b(?:forse|probabilmente|sembra\w*|pare(?:va)?|potrebb
                         r"(?:se|qualora|ove) (?:fosse|fossero|avesse|avessero)\b)\b", re.IGNORECASE)   # v60t: «se fosse»
 
 
+# v79.8 (C1): the client's own claim letter («con diffida del 3 marzo Tizio chiedeva …») is an allegazione, never a fact
+_CLAIM_LETTER_RE = re.compile(r"\b(?:lettera|diffida|raccomandata|pec|messa\s+in\s+mora|missiva|reclamo|atto\s+di\s+"
+                              r"citazione|ricorso)\b[^.;]{0,120}?\b(?:chied|richied|intim|contest|lament|diffid|invit|"
+                              r"sollecit|pretend|domand)\w*", re.IGNORECASE)
+
+
 def certainty(sentence: str) -> str:
     """How the case states it: ipotizzato (hedged or hypothetical -- v60t: first, an attributed hypothesis is one too),
-    allegato (attributed or reported), else accertato."""
+    allegato (attributed or reported; v79.8: a claim letter's content too), else accertato."""
     if _HEDGED_RE.search(sentence or ""):
         return IPOTIZZATO
-    if _ALLEGED_RE.search(sentence or ""):
+    if _ALLEGED_RE.search(sentence or "") or _CLAIM_LETTER_RE.search(sentence or ""):
         return ALLEGATO
     return ACCERTATO
+
+
+def certain_fact(sentence: Dict[str, Any]) -> bool:
+    """v79.8 (C1): a fatto certo -- the case's own words (grounded), stated as accertato: the one source of §2's «fatti
+    certi» and of every «provato» in §4. An allegazione, a counterparty's statement, a claim letter: never."""
+    return grounded(sentence) and sentence.get("certainty") == ACCERTATO
 
 
 _SENTENCE_RE = re.compile(r"(?<=[.;!?])\s+(?=[A-ZÀ-Ü«\"(])")
@@ -161,7 +173,8 @@ def _label(ref: Sequence[str]) -> str:
     return f"{ref[0]} {_code(ref[1])}"
 
 
-def _requisites(row: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _requisites(row: Dict[str, Any], analysis: Dict[str, Any], fragments: Optional[List[Dict[str, str]]] = None
+                ) -> List[Dict[str, Any]]:
     """The writer's own reading of the article (rule_quote.article_rules, no plan): per selected comma its requisites,
     a comma with none as one element; each with the facts' status (facts_status). v60g: the row's text cleaned as the
     answer step cleans it (rule_quote.clean_text), so the requisites' words are the answer's."""
@@ -186,6 +199,12 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str,
         for text in items:
             if not text or len(out) >= REQUISITES_PER_ARTICLE:
                 continue
+            why = rule_quote.fragment_why(text) if reqs else ""       # v79.8 (C2): a fragment is no element
+            if why:
+                if fragments is not None:
+                    fragments.append({"comma": str(k), "text": text[:120], "why": why})
+                _log_fragment(row, text, why)
+                continue
             status = facts_status(text, analysis) if reqs else DA_PROVARE
             alternatives = rule_quote.branches(text) if reqs else []     # v79.6: one element, its branches
             out.append({"id": "", "comma": k, "text": text, "kind": "requisito" if reqs else "comma",
@@ -193,6 +212,16 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any]) -> List[Dict[str,
                         "missing": "", "question": "", **({"split": split_by} if split_by and reqs else {}),
                         **({"branches": alternatives} if alternatives else {})})
     return out
+
+
+def _log_fragment(row: Dict[str, Any], text: str, why: str) -> None:
+    """v79.8 (C2): the fragment dropped at decomposition, logged with its reason; never fails the decomposition."""
+    try:
+        from .interactive_flow import _log
+        _log("element_fragment", {"article": " ".join(str(x) for x in row.get("_article") or ()), "text": text[:120],
+                                  "why": why})
+    except Exception:           # noqa: BLE001
+        pass
 
 
 def _question_for(requisite: Dict[str, Any], questions: Sequence[Dict[str, Any]]) -> str:
@@ -245,12 +274,15 @@ def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], anal
             writable = ref in _topic_refs(t)
             rubrica = str(s.get("titolo_articolo") or t.get("rubrica") or "")
             gated = not decomposed_by_gate(label, rubrica)          # v74: never a fattispecie record, any route
+            frags: List[Dict[str, str]] = []                        # v79.8 (C2): the fragments dropped
             out[label] = {"article": label, "rubrica": rubrica,
                           "topic": t.get("title") or "", "grade": grade if isinstance(grade, int) else None,
                           "issue": str(row.get("_grade_issue") or ""), "kept": kept or ["elencato nel tema"],
                           "dropped": None if writable else "elencato, non scrivibile (né graduato né del tema)",
-                          "requisites": _requisites(row, analysis) if row and writable and not gated else [],
+                          "requisites": _requisites(row, analysis, frags) if row and writable and not gated else [],
                           "linked": "", "answer": {}}
+            if frags:
+                out[label]["fragments"] = frags
             if gated:
                 out[label]["not_fattispecie"] = NOT_FATTISPECIE
             seed(out[label], row)
@@ -298,7 +330,45 @@ def _conditions(row: Dict[str, Any]) -> List[Dict[str, Any]]:
         conds = procedural_facts.from_row(row).get("ufficio_condizioni") or []
     return [{"id": "", "comma": c.get("comma"), "text": c.get("text") or "", "opener": c.get("opener") or "",
              "kind": "procedibilita", "facts_status": DA_PROVARE, "status": DA_PROVARE, "why": "", "supporting": [],
-             "contradicting": [], "missing": "", "question": ""} for c in conds if c.get("text")]
+             "contradicting": [], "missing": "", "question": "", **({"rejoined": True} if c.get("rejoined") else {})}
+            for c in rejoin_conditions(conds) if c.get("text")]
+
+
+# v79.8 (C3): a condition the store cut at its connective («… e», «quando …») is one condition again; a condition joined
+# by «quando / se / qualora / purché / e» holds only when every part does
+_DANGLING_HEAD_RE = re.compile(r"^\s*(?:e|ed|quando|qualora|se|purch[ée]|ove|nonch[ée])\b", re.IGNORECASE)
+_DANGLING_TAIL_RE = re.compile(r"\b(?:e|ed|quando|qualora|se|purch[ée]|ove|nonch[ée]|che)\s*[,;]?\s*$", re.IGNORECASE)
+_PART_SPLIT_RE = re.compile(r",?\s+(?:quando|qualora|purch[ée]|ove)\s+|,?\s+(?:e|ed)\s+(?=(?:se|quando|qualora|purch|il|"
+                            r"la|lo|l['’]|i|gli|le|ricorr\w*|sussist\w*|vi|ci|si|sia|siano|abbia|abbiano|risult\w*)\b)|"
+                            r",?\s+se\s+", re.IGNORECASE)
+
+
+def dangling(text: str) -> bool:
+    """v79.8 (C3): a condition's text that begins or ends on a connective -- half of a condition."""
+    return bool(_DANGLING_HEAD_RE.match(text or "") or _DANGLING_TAIL_RE.search(text or ""))
+
+
+def rejoin_conditions(conds: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v79.8 (C3): the store's conditions with every half joined to its other half (same comma, the first ending on a
+    connective or the second beginning with one) -- marked «rejoined»."""
+    out: List[Dict[str, Any]] = []
+    for c in conds or []:
+        c = dict(c)
+        text = " ".join(str(c.get("text") or "").split())
+        prev = out[-1] if out else None
+        if prev is not None and prev.get("comma") == c.get("comma") and \
+                (_DANGLING_TAIL_RE.search(prev["text"]) or _DANGLING_HEAD_RE.match(text)):
+            prev["text"] = f"{prev['text'].rstrip(' ,;')} {text}".strip()
+            prev["rejoined"] = True
+            continue
+        out.append({**c, "text": text})
+    return out
+
+
+def condition_parts(text: str) -> List[str]:
+    """v79.8 (C3): the parts a connective joins in a condition (each holding a noun of its own); [] for one part."""
+    parts = [p.strip(" ,;") for p in _PART_SPLIT_RE.split(text or "") if p and element_nouns(p)]
+    return parts if len(parts) >= 2 else []
 
 
 def elements(rec: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -347,7 +417,7 @@ def _trigger(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> Optional[
     if not own:
         return None
     for s in sorted(by_id.values(), key=lambda x: x.get("source") != "precisazione"):
-        if s.get("source") == "sistema" or s.get("certainty") not in (ACCERTATO, ALLEGATO) or not grounded(s):
+        if s.get("source") == "sistema" or not certain_fact(s):      # v79.8 (C1): a fatto certo only
             continue
         need = 1 if s.get("source") == "precisazione" else min(2, len(own))
         if len(own & element_nouns(s.get("text") or "")) >= need:
@@ -369,10 +439,11 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
     sup = [by_id[i] for i in req["supporting"] if i in by_id]
     con = [by_id[i] for i in req["contradicting"] if i in by_id]
     sure_con = [s for s in con if s.get("certainty") == ACCERTATO]
-    # v60t (1): «provato» needs a supporting sentence that is the case's own words (grounded) -- the client's account,
-    # narrated or attributed (a parere rests on the facts as the client gives them); a hedged or hypothetical one never.
-    # v60h's condition (the sentence holding the element's own nouns) is gone
-    ground = [s for s in sup if grounded(s) and s.get("certainty") in (ACCERTATO, ALLEGATO)]
+    # v60t (1): «provato» needs a supporting sentence that is the case's own words (grounded); a hedged or hypothetical
+    # one never. v79.8 (C1): a fatto certo only -- an allegazione, a counterparty's statement, a claim letter leave the
+    # element «da provare» (certain_fact: §2's «fatti certi» are the same sentences)
+    ground = [s for s in sup if certain_fact(s)]
+    alleged = [s for s in sup if grounded(s) and s.get("certainty") == ALLEGATO]
     # v76: a status needs a sentence -- «provato» only with a case sentence that holds it (the link's, grounded), «non
     # risulta» only with one that says the contrary; what the extracted facts or a signal read with no such sentence
     # stays «da provare» (its why says so)
@@ -393,11 +464,22 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
         status, why = NON_RISULTA, f"il caso dice il contrario ({sure_con[0]['id']})"
     elif ground:
         status, why = PROVATO, f"lo dice il caso ({ground[0]['id']}, {ground[0].get('certainty') or ''})".replace(", )", ")")
+    elif alleged:
+        status, why = DA_PROVARE, f"lo afferma solo un'allegazione ({alleged[0]['id']}): non è un fatto certo"
     elif sup:
         how = sup[0].get("source") if sup[0].get("source") == "sistema" else sup[0].get("certainty")
         status, why = DA_PROVARE, f"nessuna frase del caso a sostegno, solo {how} ({sup[0]['id']})"
     else:
         status, why = DA_PROVARE, "nessun fatto del caso" + (f"; manca: {req['missing']}" if req.get("missing") else "")
+    if req.get("kind") == "procedibilita" and status == PROVATO:      # v79.8 (C3): every part of the condition
+        parts = condition_parts(req.get("text") or "")
+        if parts:
+            facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])]
+            held = {p: any(element_nouns(p) & element_nouns(x.get("text") or "") for x in facts) for p in parts}
+            req["parts"] = held
+            missing = [p for p, ok in held.items() if not ok]
+            if missing:
+                status, why = DA_PROVARE, f"provata solo una parte della condizione: manca «{missing[0][:80]}»"
     req["status"], req["why"] = status, why
     if req.get("branches"):             # v79.6 (item 4): one element with branches
         settle_branches(req, sup, sure_con)
@@ -428,7 +510,7 @@ def settle_branches(req: Dict[str, Any], sup: Sequence[Dict[str, Any]], sure_con
     contradiction of one branch never excludes the element while another holds or stays open. req["branch"]: the branch
     that applies (the first «provato»)."""
     from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
-    ground = [x for x in sup if grounded(x) and x.get("certainty") in (ACCERTATO, ALLEGATO)]
+    ground = [x for x in sup if certain_fact(x)]           # v79.8 (C1)
     out = {}
     for b in req.get("branches") or []:
         if any(branch_hit(b, x) for x in ground):

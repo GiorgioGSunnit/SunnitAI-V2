@@ -483,6 +483,11 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - B2: the module's articles come first, in its order (2053 before 2051). 1218, 1453 and 2043 are subordinate: offered only when the module proves nothing. With a module active, nothing outside it is offered.
   - B3: a convenuto gets contests, eccezioni, a riconvenzionale and a transazione, never a claim.
   - B4: the counters are `unadmitted_candidates` (must be 0) and `main_outside_institution`. — `lawyer_method.py:claim_admission`, `active_modules`, `same_article`, `main_outside`.
+- **C. Grading from facts.**
+  - C1: only a fatto certo integrates an element (`issue_records.certain_fact`: grounded, stated as accertato). An allegazione, a counterparty's statement («sostiene», «afferma», «apprendeva che», «aveva negato») and the client's own claim letter («con diffida … chiedeva») leave it «da provare», saying so. §2's «fatti certi» read the same predicate, so §2 and §4 agree by construction. This reverses v60t's «grounded, an allegation too».
+  - C2: a decomposed clause that states no condition is dropped at decomposition, its reason on the record (`fragments`) and in the log (`element_fragment`): a bare subject («il debitore», «uno dei contraenti»), a connective («con cui si conviene che»), a saving clause («salvo in ogni caso …»). — `rule_quote.fragment_why`.
+  - C3: a d'ufficio condition the store cut at its connective is joined again (`rejoin_conditions`). A condition joined by «quando / se / qualora / purché / e» is «provato» only when the certain facts hold every part (`condition_parts`); otherwise «da provare», naming the missing part.
+  - C4: the counters are `uncertain_integrated` (must be 0), `fragments_dropped` per article, `conditions_half` (must be 0) and `conditions_rejoined`. — `interactive_flow.grading_counters`.
 
 ## By version
 

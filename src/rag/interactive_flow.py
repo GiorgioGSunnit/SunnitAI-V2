@@ -6256,7 +6256,8 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             if decisive:            # v76: the charge or the claim unread -- the method cannot be applied, said
                 state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["unread"].format(art=label)
             continue
-        reqs = [r for r in issue_records._requisites(row, analysis) if r.get("kind") == "requisito"]
+        frags: List[Dict[str, str]] = []
+        reqs = [r for r in issue_records._requisites(row, analysis, frags) if r.get("kind") == "requisito"]
         if not reqs:
             log["undecomposed"].append(label)
             outcome[label] = "undecomposed"
@@ -6273,7 +6274,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         if why == DECOMPOSE_WHY["defence"]:         # v79 (D1): a topic's general-part record, a defence's now
             rec.pop("not_fattispecie", None)
             rec["defence_by"] = routes.get(label, "")       # v79.7: concetto / rango / addebito
-        rec.update(requisites=reqs, decomposed_for=why)
+        rec.update(requisites=reqs, decomposed_for=why, **({"fragments": frags} if frags else {}))
         if not rec.get("procedibilita"):        # v76: its d'ufficio conditions, graded by the link like the topics'
             rec["procedibilita"] = issue_records._conditions(row)
         rec.pop("undecomposed", None)
@@ -7972,6 +7973,27 @@ def article_citations(state: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
     return out
 
 
+def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.8 (C4): elements «provato» with no fatto certo among their supporting sentences (must be 0), the fragments
+    dropped at decomposition per article, the d'ufficio conditions graded on half a condition (must be 0) and those
+    the store had split and the code rejoined."""
+    from . import issue_records
+    by_id = {s["id"]: s for s in state.get("sentences") or [] if s.get("id")}
+    uncertain, fragments, half, rejoined = 0, {}, 0, 0
+    for label, rec in (state.get("records") or {}).items():
+        for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
+            if r.get("status") == PROVATO and not any(issue_records.certain_fact(by_id[i])
+                                                      for i in r.get("supporting") or [] if i in by_id):
+                uncertain += 1
+        if rec.get("fragments"):
+            fragments[label] = len(rec["fragments"])
+        for c in rec.get("procedibilita") or []:
+            half += issue_records.dangling(c.get("text") or "")
+            rejoined += bool(c.get("rejoined"))
+    return {"uncertain_integrated": uncertain, "fragments_dropped": fragments, "conditions_half": half,
+            "conditions_rejoined": rejoined}
+
+
 def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dict[str, Any]:
     """v79.8: the counters each block adds -- in the timings line and the nightly. A: graded_articles (round 1's and the
     answer's grading), samples_used (thesis samples, every client), llm_calls (round 1, the first read, the answer),
@@ -7989,7 +8011,8 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     counts = list(by_client.values()) or [state.get("thesis_counts") or {}]
     out["unadmitted_candidates"] = sum(int(c.get("unadmitted") or 0) for c in counts)              # v79.8 (B4)
     out["main_outside_institution"] = sum(1 for c in counts if c.get("main_outside_institution"))
-    out.update(state.get("block_counters") or {})          # v79.8 C-E: their counters, set where they are computed
+    out.update(grading_counters(state))                                                             # v79.8 (C4)
+    out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out
 
 

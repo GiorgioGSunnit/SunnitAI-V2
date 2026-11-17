@@ -257,7 +257,7 @@ def test_a_fetched_repealed_charge_gets_no_record(monkeypatch):
     monkeypatch.setattr(flow, "_restored_analysis", lambda a: {})
     monkeypatch.setattr(flow, "user_named", lambda s: [])
     monkeypatch.setattr(posture, "alternative_labels", lambda s, rows=(): [])
-    monkeypatch.setattr(issue_records, "_requisites", lambda r, a: pytest.fail("a repealed row decomposed"))
+    monkeypatch.setattr(issue_records, "_requisites", lambda r, a, *_: pytest.fail("a repealed row decomposed"))
     row = {"_article": ("594", "c.p."), "s": {"plain_text": "Abrogato dall'art. 1 del D.Lgs. 15 gennaio 2016, n. 7."}}
     link, _ = flow.decompose_records(state, IMPUTATO, [], set(), fetch=lambda keys: [row])
     assert link == [] and state["records"] == {} and state["abrogated"] == ["594 c.p."]

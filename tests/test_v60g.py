@@ -67,7 +67,7 @@ def test_the_records_status_settles_the_facts_and_the_link():
     req = lambda **kw: {"kind": "requisito", "facts_status": C.STATUS_DA_PROVARE, "supporting": [], "contradicting": [],
                         "text": "la chiusura del cancello del fondo", **kw}
     cases = [(req(supporting=["S1"]), C.STATUS_PROVATO),
-             (req(supporting=["S2"]), C.STATUS_PROVATO),            # v60t (1): grounded -- an allegation too
+             (req(supporting=["S2"]), C.STATUS_DA_PROVARE),         # v79.8 (C1): an allegation never proves
              (req(supporting=["S9"]), C.STATUS_DA_PROVARE),         # a sentence the case does not hold
              (req(contradicting=["S1"], supporting=["S1"]), C.STATUS_NON_RISULTA),
              (req(facts_status=C.STATUS_PROVATO, contradicting=["S1"]), C.STATUS_NON_RISULTA),   # v76: a sentence

@@ -102,13 +102,15 @@ def test_the_three_outcomes_of_a_linked_element():
                "link": {"supporting": list(sup), "contradicting": list(con)}}
         issue_records.settle(req, by_id)
         return req
-    assert settled(["S1"])["status"] == PROVATO                              # the client's account
+    # v79.8 (C1): the client's account attributed («sostiene») is an allegazione -- never «provato»
+    mine = settled(["S1"])
+    assert mine["status"] == DA_PROVARE and "allegazione" in mine["why"]
     assert settled(["S3"])["status"] == DA_PROVARE and "solo ipotizzato" in settled(["S3"])["why"]
     theirs = settled(["S2"])                                                 # the counterparty's version, linked as support
     assert theirs["status"] == DA_PROVARE and theirs["supporting"] == [] and theirs["contradicting"] == ["S2"]
-    assert settled(["S1", "S2"])["status"] == PROVATO                        # the client's account stands
+    assert settled(["S1", "S2"])["status"] == DA_PROVARE
     flow.mark_sides(sents, {**PARTIES, "client": {"name": "Sempronio Rossi"}})   # the other side's parere
-    assert settled(["S2"])["status"] == PROVATO and settled(["S1"])["contradicting"] == ["S1"]
+    assert settled(["S2"])["status"] == DA_PROVARE and settled(["S1"])["contradicting"] == ["S1"]
 
 
 # --- 2. single shot: a block needs a proven element; the main line's anchor always written --------------------------------

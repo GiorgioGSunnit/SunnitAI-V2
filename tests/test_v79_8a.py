@@ -127,7 +127,8 @@ def test_the_counters_in_the_timings_line():
     c = flow.case_counters(state, 212.4)
     assert c == {"graded_articles": 32, "samples_used": 2, "llm_calls": 24, "total_s": 212.4,
                  "funnel": {"retrieved": 90, "matter_gated": 12, "hits": 61, "capped": 31, "graded": 30},
-                 "unadmitted_candidates": 0, "main_outside_institution": 0, "b_unadmitted": 0}
+                 "unadmitted_candidates": 0, "main_outside_institution": 0, "uncertain_integrated": 0,
+                 "fragments_dropped": {}, "conditions_half": 0, "conditions_rejoined": 0, "b_unadmitted": 0}
 
 
 def test_the_nightly_prints_the_counters_before_and_after():
