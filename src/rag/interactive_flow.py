@@ -5705,6 +5705,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         compose_log: Dict[str, Any] = {}
         draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
             answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
+        state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
         _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
     if state.get("method_refused"):             # v76: the method never steps aside silently -- the answer says so
         from . import lawyer_method

@@ -921,7 +921,9 @@ def article_scope(ctx: Dict[str, Any], texts: Sequence[str] = ()) -> set:
     from . import citations
     labels = list((ctx.get("records") or {})) + list((ctx.get("circumstances") or {})) + list(ctx.get("notes") or {})
     labels += list(((ctx.get("rulings_record") or {}).get("landmarks") or {}))
+    labels += [c["article"] for c in ctx.get("candidates") or [] if c.get("article")]      # v79: the candidates'
     written = [ctx.get("case") or "", ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""]
+    written += [f"{c.get('tesi') or ''} {c.get('articles') or ''}" for c in ctx.get("candidates") or []]
     written += list(ctx.get("litisconsorzio") or []) + list(ctx.get("riti") or []) + list(texts or [])
     return {_norm_label(x) for x in labels} | {citations.label(r) for t in written for r in citations.article_refs(t)}
 
@@ -968,9 +970,9 @@ def articles_out(text: str, allowed: set, log: Optional[List[str]] = None) -> st
     return _by_sentence(text, review)
 
 
-def _removed_note(objection: Dict[str, Any]) -> str:
-    """The log line of an objection the scope review emptied."""
-    return "objection removed: " + str(objection.get("obiezione") or "")[:120]
+def _removed_note(objection: Dict[str, Any], what: str = "objection") -> str:
+    """The log line of an objection the scope review emptied (v79: or whose reply it emptied, what="reply")."""
+    return f"{what} removed: " + str(objection.get("obiezione") or "")[:120]
 
 
 def _ruling_entry(cite: str, allowed: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
@@ -2740,13 +2742,19 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     scope_log: List[str] = []           # v78: rulings outside their article / element
     articles_log: List[str] = []        # v78: the plan's sentences citing an article outside the scope
 
-    def prose(text: str) -> str:            # every written paragraph: no orientation of its own, retrieved rulings only,
-        text = orientation_claims_out(text, orientation_claims)            # circumstances with their requisites, no
-        text = unretrieved_rulings_out(text, rulings, rulings_out)         # remissione for a d'ufficio charge
-        text = rulings_scope_out(text, rulings, scope_log)                 # v78: on its article and element
+    from . import rule_statements
+    rule_src = rule_statements.sources(ctx)
+    rules_log: List[Dict[str, str]] = []        # v79 (B1): the rule statements removed, with their reason
+    objections_dropped: List[str] = []          # v79 (B2): an objection or a reply the checks emptied
+
+    def prose(text: str, rules: bool = True) -> str:   # every written paragraph: no orientation of its own, retrieved
+        text = orientation_claims_out(text, orientation_claims)            # rulings only, circumstances with their
+        text = unretrieved_rulings_out(text, rulings, rulings_out)         # requisites, no remissione for a d'ufficio
+        text = rulings_scope_out(text, rulings, scope_log)                 # charge; v78: on its article and element
         text = procedibility_out(text, procedibilita, a.get("article") or "", procedural_out)
         text = fact_terms.apply(text, certi, ctx.get("case") or "", client, accused, fact_wording)     # v74
-        return circumstance_claims(text, circ, claims)
+        text = circumstance_claims(text, circ, claims)
+        return rule_statements.check(text, rule_src, rules_log) if rules else text      # v79 (B1): grounded rules
     charged_log: List[str] = []         # v75b: the charged article's paragraph from its sussunzione rows only
     norms = prose(charged_blocks(next((by_title[t] for t in NORMS_FROM if by_title.get(t)), ""),
                                  ctx.get("charged_prose") or {}, charged_log))
@@ -2778,21 +2786,26 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     a = settle_objective(a, sols, records, circ)
     scope = article_scope(ctx, [norms, procedure] + list(by_title.values()))       # v78: what record_check passed
 
-    def planned(text: str) -> str:          # v78: the plan's prose -- the checks above, then the articles' scope
-        return articles_out(prose(text), scope, articles_log)
-    for t in sols:                          # the table's cells are prose too
-        t["pro"], t["contro"] = planned(t.get("pro") or ""), planned(t.get("contro") or "")
-    for t in sols:
-        t["argomento"] = planned(coherent_text(t.get("argomento") or "", records, a, coherence))
+    def planned(text: str, code: bool = False) -> str:     # v78: the plan's prose -- the checks above, then the
+        return articles_out(prose(text, rules=not code), scope, articles_log)      # articles' scope (v79: a code-
+    for t in sols:                          # the table's cells are prose too          # written text: its sources)
+        code = t.get("argued") == "code" or (bool(t.get("fallback")) and not t.get("candidate"))
+        t["pro"], t["contro"] = planned(t.get("pro") or "", code), planned(t.get("contro") or "", code)
+        t["argomento"] = planned(coherent_text(t.get("argomento") or "", records, a, coherence), code)
     sub = subordinate_of(sols, main)        # v72: the subordinate line, the summary, the conclusions and the next steps
     objections_reviewed = []                # v78: the objection itself reviewed too, not only its answer
     for o in plan.get("obiezioni") or []:
         said = planned(o.get("obiezione") or "")
         if not said:
             articles_log.append(_removed_note(o))
+            objections_dropped.append(_removed_note(o))
             continue
-        objections_reviewed.append({**o, "obiezione": said,
-                                    "risposta": planned(coherent_text(o.get("risposta") or "", records, a, coherence))})
+        reply = o.get("risposta") or ""
+        answered = planned(coherent_text(reply, records, a, coherence))
+        if reply.strip() and not answered:  # v79 (B2): a reply the checks emptied drops its objection -- the
+            objections_dropped.append(_removed_note({"obiezione": said}, "reply"))      # the fallback fills §7
+            continue
+        objections_reviewed.append({**o, "obiezione": said, "risposta": answered})
     plan = {**plan, "subordinata": sols[sub]["tesi"] if sub is not None else "",      # are the selection's -- never
             "stragiudiziale": planned(plan.get("stragiudiziale") or ""),                 # the model's plan
             "obiezioni": objections_reviewed,
@@ -2819,7 +2832,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("processuali", procedure),
         ("conclusioni", "\n\n".join(conclusions)),
     ]
-    log.update({"coherence": coherence, "rulings_out": rulings_out, "circumstance_claims": claims,
+    log.update({"rule_statements_removed": rules_log, "objections_dropped": objections_dropped,
+                "coherence": coherence, "rulings_out": rulings_out, "circumstance_claims": claims,
                 "rulings_scope_out": scope_log, "articles_out_of_scope": articles_log,
                 "fact_wording": fact_wording, "charged_prose": charged_log,
                 "orientation_claims_out": orientation_claims, "procedibility_out": procedural_out, **layout_log})
@@ -2840,6 +2854,16 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                 "obiettivo": a.get("obiettivo")})
     _log("compose", log)
     joined = "\n\n".join(f"**{i}. {t}**\n\n{x}" for i, (t, x) in enumerate(body, 1))
+    # v79 (B3): what the nightly's output check reads -- the sources, the scope, and the code-written texts (built from
+    # the sources: never a rule statement to trace)
+    code_texts = [x for k, x in keyed if k in ("sintesi", "fatti", "conclusioni")] + \
+        [f"{o.get('obiezione') or ''} {o.get('risposta') or ''}" for o in fallback_objections] + \
+        [f"{t['tesi']} {t.get('pro') or ''} {t.get('contro') or ''}" for t in sols] + [ctx.get("subsumption") or ""] + \
+        [ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""] + list(ctx.get("litisconsorzio") or []) + \
+        list(ctx.get("riti") or []) + list(points)
+    ctx["output_sources"] = {**rule_statements.serializable(rule_src),
+                             "scope": sorted(scope | article_scope(ctx, code_texts + [head])),
+                             "code": [_plain(x) for x in code_texts if _plain(x)]}
     return f"{head}\n\n{joined}" if head else joined
 
 
@@ -2930,7 +2954,8 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "objections_fallback": objections_fallback(records, a, penal, by_id, objections),
            "open_questions": [point_sentence(str(q.get("text") or "")) for q in questions or []      # v75b: §10
                               if isinstance(q, dict) and q.get("text")],
-           "charged_prose": charged_prose(records, by_id)}                    # v75b: from its sussunzione rows
+           "charged_prose": charged_prose(records, by_id),                    # v75b: from its sussunzione rows
+           "store_fields": _store_fields(rows)}                               # v79 (B1): a rule statement's sources
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti), "temporal": ctx["temporal"][:200],
@@ -2938,6 +2963,15 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
                      "facts_excluded": facts_log, "procedibilita": procedibilita, "rulings": len(ctx["rulings"]),
                      "notes": note_sources, "records": view_log})
     return ctx
+
+
+def _store_fields(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
+    try:
+        from . import rule_statements
+        return rule_statements.store_fields(rows)
+    except Exception as exc:          # noqa: BLE001 -- no store fields: a rule traces to the elements or passages
+        logger.warning("lawyer_method: store fields not read: %s", exc)
+        return {}
 
 
 def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, List[str]]] = None
@@ -2990,6 +3024,37 @@ _SECTION_RE = re.compile(r"(?m)^\*\*(\d+)\.\s+([^*\n]+)\*\*\s*$")
 def answer_sections(answer: str) -> List[Tuple[str, str]]:
     parts = _SECTION_RE.split(answer or "")
     return [(parts[i + 1].strip(), parts[i + 2].strip()) for i in range(1, len(parts) - 2, 3)]
+
+
+_BOLD_HEAD_RE = re.compile(r"\*\*[^*]{1,80}\*\*\s*")
+
+
+def output_check(answer: str, out: Dict[str, Any]) -> Dict[str, List[str]]:
+    """v79 (B3): the delivered parere checked as the nightly reads it -- {"unsourced": the rule statements with no
+    source, "out_of_scope": the articles cited outside the answer's scope}, from compose's ctx["output_sources"]; §5
+    (the code's rulings and passages), the tables, the footer and the code-written sentences are not read."""
+    from . import citations, rule_statements
+    from .. import version
+    src = rule_statements.from_serializable(out or {})
+    scope = set((out or {}).get("scope") or [])
+    code = [str(x) for x in (out or {}).get("code") or []]
+    unsourced, outside = [], []
+    skip = title("orientamenti")
+    for t, text in answer_sections(version.strip_footer(answer or "")):
+        if t == skip:
+            continue
+        for line in (text or "").split("\n"):
+            if line.lstrip().startswith("|"):
+                continue
+            for piece in _citation_rejoin(_SENT_SPLIT.split(line)):
+                sentence = _BOLD_HEAD_RE.sub("", piece).strip().lstrip("-• ").strip()
+                if not sentence or any(_plain(sentence) in c for c in code):
+                    continue
+                if rule_statements.is_rule(sentence) and not rule_statements.source_of(sentence, src):
+                    unsourced.append(sentence)
+                outside += [citations.label(r) for r in citations.article_refs(sentence)
+                            if scope and citations.label(r) not in scope]
+    return {"unsourced": unsourced, "out_of_scope": list(dict.fromkeys(outside))}
 
 
 def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:

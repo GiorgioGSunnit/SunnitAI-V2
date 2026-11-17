@@ -1,4 +1,4 @@
-# Pipeline rules catalogue (v59 – v76b)
+# Pipeline rules catalogue (v59 – v79)
 
 This is a catalogue of the deterministic rules the case-first pipeline applies, from v59 to v76b. Its readers are the
 engineers who maintain the pipeline. Check it before you add a rule, so that you don't add one that already exists or
@@ -406,6 +406,19 @@ No `v60a` tag appears anywhere in `src/` or `data/`.
 - A victim's (persona offesa, parte civile) outcome is the querela's offence, the record marked «charged», whatever the main topic — v78b — `lawyer_method.py:assessment`.
 - A record no case sentence touches (every element «da provare», nothing supporting or contradicting) leaves the method's records, unless it is the charge or the claim, the counterparty's, named by the user, or the only one left — v78b — `lawyer_method.py:method_records`, `fact_free`, `kept_without_facts`.
 
+## 11. v79 (measurement and grounded statements)
+
+Each rule below has synthetic tests only. None of them was tuned on a real or evaluation case.
+
+- **79.0, A1.** A candidate the code enumerated is verifiable by construction, even when it declares no element (an eccezione, a remedy with nothing proven yet). Only a thesis of the model's own that declares no element is «unverifiable». — `lawyer_method.py:coherent_solutions`.
+- **79.0, A1.** The reply's «valutazioni» are read in either shape the model gives: an object keyed by id, or a list of objects carrying their id. Decorated keys («[T1]», «T1 - …») count as that candidate. — `lawyer_method.py:valuations`, `candidate_key`.
+- **79.0, A2.** The thesis selection's counts are logged in `lawyer_method_plan`, in the thesis log and in the state: offered, parsed, valued, barred, unverifiable, minoritaria, chosen, and whether the main line is the fallback the selection inserted. The v78 realism cap runs inside `method_plan`, before the counts. — `lawyer_method.py:selection_counts`.
+- **79.0, A3.** The reply kept is the one with the highest score. Ties go to the smallest sha1 of the parsed reply, and both are logged. `THESIS_DETERMINISTIC` sends one sample at temperature 0. — `lawyer_method.py:choose`, `sampling`.
+- **79.1, B1.** A rule statement says what a norm requires, permits, excludes or punishes, or when it applies (richiede, si configura, è integrato, non è necessario, prevede, punisce, si applica, esclude, decorre …). It stays only when it traces to one of three sources: an element of the record of the article it names, a store field of that article (procedibilità, termini, pena, competenza), or a registry ruling's quoted passage on it. A statement naming no article may trace to any of the answer's sources. Otherwise it is removed and logged with the sentence and the reason (`rule_statements_removed`). This applies to every written section, including §6's cells and §7's objections and replies. Code-written text is built from those sources and is not checked. — `src/rag/rule_statements.py`, `lawyer_method.py:compose`.
+- **79.1, B2.** An objection the checks empty is dropped, and so is an objection whose reply they empty (`objections_dropped`). The standard fallback fills §7 back to three. — `lawyer_method.py:compose`, `objections_section`.
+- **79.1, B2/D3.** The candidates' articles are in the answer's scope, so a sentence citing one is never removed for scope. — `lawyer_method.py:article_scope`.
+- **79.1, B3.** The nightly's `grounded_output` check reads the delivered parere, minus §5, the tables and the code-written sentences. It must find no rule statement without a source and no article outside the scope. A parere the method did not write fails the check, with the reason «no sources». — `lawyer_method.py:output_check`, `scripts/nightly_sim.py:grounded_check`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -450,3 +463,4 @@ No `v60a` tag appears anywhere in `src/` or `data/`.
 | v76 | Method never silent, status needs a sentence, general penal splitter, ranking by realism and proof, civil fallback, pleaded claim, c.c. Libro IV Titoli, giudice di pace by article |
 | v76b | Element splitting: riserva and default clauses, qualified subjects, means and purpose markers, civil split, special-law penal provisions, non-fattispecie rubriche |
 | v77 | No pipeline rule: version footer and `/api/version`, held-out set, acceptance on the nightly plus the lawyer's held-out scores |
+| v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

@@ -28,6 +28,9 @@ least one ruling printed with its quoted passage in §5 (check ruling_passage; a
 the rulings record per cell (per article found / linked / kept, estremi parsed / unparsed, passages quoted / none,
 orientations computed / to verify) and the penal cells' §5 verbatim.
 
+v79 (B3): check grounded_output -- in the delivered parere, no rule statement without a source (a record element, a
+store field, a registry passage: src/rag/rule_statements.py) and no article outside the answer's scope.
+
 v79 (A2, A3): per cell, the thesis selection's counts (candidates offered / parsed / valued / barred / unverifiable /
 minoritaria, the main line chosen, whether it is the fallback) in their own table, compared with the baseline's;
 --deterministic runs the thesis call once at temperature 0 (THESIS_DETERMINISTIC) for a version-to-version comparison
@@ -120,6 +123,9 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
                           **{k: timings.get(k) for k in ("thesis_selection_s", "writer_s", "answer_s")}}
         out["checks"] += lawyer_method.structure_checks(out["answer"], spec["cell"])
         out["checks"].append(footer_check(out["answer"]))
+        grounded = grounded_check(out["answer"], result.get("state") or {})      # v79 (B3)
+        out["checks"].append(grounded)
+        out["output_check"] = grounded.get("found") or {}
         from src.rag import rulings
         if rulings.enabled():
             record = (result.get("state") or {}).get("rulings_record")
@@ -139,6 +145,21 @@ def footer_check(answer: str) -> Dict[str, Any]:
     ok = version.has_footer(answer, version.current())
     last = (answer or "").rstrip().rsplit("\n", 1)[-1].strip()[:80]
     return {"check": "version_footer", "ok": ok, "why": "" if ok else f"last line «{last}», not «{version.footer()}»"}
+
+
+def grounded_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79 (B3): no rule statement without a source, no article outside the scope, in the delivered parere
+    (lawyer_method.output_check, on the sources compose kept in the state). A parere the method did not write has no
+    sources: the check fails, saying so."""
+    from src.rag import lawyer_method
+    out = (state or {}).get("output_sources")
+    if not out:
+        return {"check": "grounded_output", "ok": False, "why": "no sources: the method was not applied", "found": {}}
+    found = lawyer_method.output_check(answer, out)
+    why = "; ".join([f"{len(found['unsourced'])} rule statements without a source: "
+                     + " | ".join(x[:100] for x in found["unsourced"][:3])] * bool(found["unsourced"])
+                    + [f"articles outside the scope: {', '.join(found['out_of_scope'][:6])}"] * bool(found["out_of_scope"]))
+    return {"check": "grounded_output", "ok": not why, "why": why, "found": found}
 
 
 def section5(answer: str) -> str:
