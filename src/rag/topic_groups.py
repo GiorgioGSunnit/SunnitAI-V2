@@ -435,12 +435,13 @@ def keyword_hit(row: Dict[str, Any]) -> bool:
     return bool(want) and not want <= _stems(_rubrica(row))
 
 
-def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: Optional[Dict[str, Any]] = None
-                ) -> List[Dict[str, Any]]:
+def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: Optional[Dict[str, Any]] = None,
+                every: bool = False) -> List[Dict[str, Any]]:
     """v79.6 (item 6): the rows without the keyword hits (keyword_hit) whose matter is none of the case's -- the case's
     matters are those of the rows reached by two signals or more, of the first read's whole-name hits and of the
     articles kept by name or rule (keep: labels). With no matter known, nothing is dropped. log["dropped"]: each with
-    its matter."""
+    its matter. v79.8 (A1): every -- any retrieval hit outside the case's matters goes (a vector hit as a keyword one:
+    another code's institution, another Libro's or Titolo's article), before the applicability grading."""
     keep = set(keep or ())
     matters = set()
     for r in rows or []:
@@ -456,10 +457,12 @@ def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: O
     for r in rows or []:
         ref = _ref(r)
         m = matter_of(ref) if ref else ""
-        if matters and ref and keyword_hit(r) and m and m not in matters and _label(ref) not in keep:
+        if matters and ref and (every or keyword_hit(r)) and m and m not in matters and _label(ref) not in keep \
+                and not r.get("_multi_signal") and not (r.get("_first_read") and not keyword_hit(r)):
             if log is not None:
                 log.setdefault("dropped", []).append({"article": _label(ref), "matter": m,
-                                                      "institution": str(r.get("_first_read"))})
+                                                      "institution": str(r.get("_first_read") or ""),
+                                                      "hit": "keyword" if keyword_hit(r) else "vector"})
             continue
         out.append(r)
     if log is not None:

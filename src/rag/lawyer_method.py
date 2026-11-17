@@ -1804,7 +1804,9 @@ def thesis_log(ctx: Dict[str, Any], messages: Sequence[Any], raw_reply: str, par
         return None
 
 
-SAMPLES = 3                    # v72: best-of-3 on the thesis call
+SAMPLES = 1                    # v72: best-of-3 on the thesis call; v79.8 (A3): one -- score_sample cannot tell the
+                               # samples apart (every one valued, the same score), so two of three replies were waste.
+                               # best-of-3 comes back only with a scorer that discriminates between them
 SAMPLE_TEMPERATURE = 0.7
 DETERMINISTIC_ENV = "THESIS_DETERMINISTIC"     # v79 (A3): one sample at temperature 0 (nightly / replay --deterministic)
 
@@ -1814,7 +1816,7 @@ def deterministic() -> bool:
 
 
 def sampling() -> Tuple[int, float]:
-    """(replies, temperature) of the thesis call: best-of-SAMPLES at SAMPLE_TEMPERATURE; v79 (A3): one at 0 under
+    """(replies, temperature) of the thesis call: SAMPLES at SAMPLE_TEMPERATURE (v79.8: one); v79 (A3): one at 0 under
     THESIS_DETERMINISTIC, for comparing two versions on the same input."""
     return (1, 0.0) if deterministic() else (SAMPLES, SAMPLE_TEMPERATURE)
 
@@ -2021,6 +2023,7 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             "main_is_fallback": inserted,
             # v79.7 (item 2): where the charge's contests came from (a record marked «threat», else the charged
             # records) and, when none was marked, why (NO_THREAT_WHY)
+            "samples": len((ctx.get("thesis_choice") or {}).get("scores") or []),      # v79.8 (A5): replies used
             "threats_from": str((ctx.get("candidates_trace") or {}).get("threats_from") or ""),
             "no_threat": str((ctx.get("candidates_trace") or {}).get("no_threat") or ""),
             # v79 (D4): the general part's defence lines, the ranked articles graded into candidates

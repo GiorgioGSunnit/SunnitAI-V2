@@ -438,7 +438,8 @@ def test_a_word_naming_two_institutions_in_two_books_keeps_only_the_cases():
     kept = topic_groups.matter_gate(rows, [], log)
     assert [r["_article"][0] for r in kept] == ["624", "62", "625"]
     assert log["dropped"] == [{"article": "2872 c.c.", "matter": "c.c. VI responsabilità patrimoniale, privilegi e "
-                                                                 "ipoteche", "institution": "riduzione della pena"}]
+                                                                 "ipoteche", "institution": "riduzione della pena",
+                               "hit": "keyword"}]
 
 
 def test_a_whole_name_hit_and_a_named_article_stay_and_no_matter_drops_nothing():

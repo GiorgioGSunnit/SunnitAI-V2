@@ -43,6 +43,9 @@ v79 (E2, E3): check reader_wording -- no element code outside the tables, no «r
 absent from the parere. v79 (D4): the selection table adds the defence lines, the defence articles the general-part gate
 dropped (criminal cells), the ranked candidates.
 
+v79.8: per cell, every block's counters as the interactive_single_shot_timings line carries them (A: graded_articles,
+samples_used, llm_calls, total_s, the grading funnel; B-E: theirs), «before → now» against the baseline.
+
 v79.7: per cell, the retrieval's top-ranked articles and what became of each (in record / candidate / dropped, with the
 reason: interactive_flow.ranked_trace); the rulings table adds, per article, how many rulings each filter dropped (the
 rubrica's noun, the rule verb, the procedural marker, the element's nouns, the Sez. 7 / ordinanza rank); the counts add
@@ -142,6 +145,9 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
             out["thesis_counts"]["defence_gate_dropped"] = len(gate.get("dropped") or [])
             out["defence_gate"] = gate
         out["ranked_trace"] = list((result.get("state") or {}).get("ranked_trace") or [])        # v79.7 (item 3)
+        st = result.get("state") or {}                  # v79.8: every block's counters, the timings line's
+        out["counters"] = dict((st.get("single_shot_timings") or {}).get("counters") or
+                               interactive_flow.case_counters(st, round(time.time() - t0, 1)))
         timings = (result.get("state") or {}).get("timings") or {}
         out["timings"] = {"total_s": round(time.time() - t0, 1),
                           **{k: timings.get(k) for k in ("thesis_selection_s", "writer_s", "answer_s")}}
@@ -344,6 +350,37 @@ def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any
     return lines
 
 
+def _flat(d: Dict[str, Any], head: str = "") -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k, v in (d or {}).items():
+        if isinstance(v, dict):
+            out.update(_flat(v, f"{head}{k}."))
+        else:
+            out[f"{head}{k}"] = v
+    return out
+
+
+def counter_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]] = None) -> List[str]:
+    """v79.8: per cell, every block's counters (interactive_flow.case_counters, the timings line's) -- «before → now»
+    where the baseline had the counter and it changed."""
+    rows = [c for c in results if c.get("counters")]
+    if not rows:
+        return []
+    before = {c["id"]: _flat(c.get("counters") or {}) for c in (baseline or {}).get("cells") or []}
+    now = {c["id"]: _flat(c["counters"]) for c in rows}
+    keys = list(dict.fromkeys(k for c in rows for k in now[c["id"]]))
+    lines = ["", "## Counters (per cell; the timings line's)", "", "| counter | " + " | ".join(c["id"] for c in rows)
+             + " |", "|---" * (len(rows) + 1) + "|"]
+    for k in keys:
+        cells = []
+        for c in rows:
+            v, was = now[c["id"]].get(k), before.get(c["id"], {}).get(k)
+            cells.append(f"{was} → {v}" if k in before.get(c["id"], {}) and was != v else str(v if v is not None
+                                                                                              else "—"))
+        lines.append(f"| {k} | " + " | ".join(cells) + " |")
+    return lines
+
+
 def ranked_lines(results: List[Dict[str, Any]]) -> List[str]:
     """v79.7 (item 3): per cell, the retrieval's top-ranked articles -- in record / candidate / dropped, with why."""
     rows = [c for c in results if c.get("ranked_trace")]
@@ -449,6 +486,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     if stages is not None:
         lines += ["", "## Stage lists against v59 (default cell)", "", stages["report"]]
     lines += counts_lines(results, baseline)
+    lines += counter_lines(results, baseline)
     lines += ranked_lines(results)
     lines += rulings_lines(results)
     lines += lawyer or []

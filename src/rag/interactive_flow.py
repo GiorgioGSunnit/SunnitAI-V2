@@ -694,6 +694,30 @@ def procedural_institutions(searches: Sequence[Dict[str, Any]], pairs: Sequence[
 CUTTING_SHARE = 0.8         # v60d: of the prefilter's N kept, more than this share graded 2+: the prefilter is cutting
 
 
+GRADE_CAP = 30           # v79.8 (A2): the articles round 1 grades, at most
+
+
+def grade_cap(rows: Sequence[Dict[str, Any]], keep: Sequence[str], cap: int = GRADE_CAP
+              ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """v79.8 (A2): the rows the applicability grading reads -- every row of a kept label (grading_keep: the articles
+    the user names, the rules' and tables' anchors, the first read's institution articles: always inside the cap),
+    then the others by the retrieval's rank until cap articles. (rows, {"kept": n, "dropped": [labels]})."""
+    want = {_key(_parse_label(x)) for x in keep or ()}
+    order = sorted(((_rank_of(r, i), r) for i, r in enumerate(rows or []) if r.get("_article")), key=lambda x: x[0])
+    chosen = [k for k in dict.fromkeys(_key(r["_article"]) for _, r in order) if k in want]
+    for _, r in order:
+        k = _key(r["_article"])
+        if len(chosen) >= cap:
+            break
+        if k not in chosen:
+            chosen.append(k)
+    kept = set(chosen)
+    out = [r for r in rows or [] if not r.get("_article") or _key(r["_article"]) in kept]
+    dropped = list(dict.fromkeys(_label(_key(r["_article"])) for r in rows or []
+                                 if r.get("_article") and _key(r["_article"]) not in kept))
+    return out, {"kept": len(kept), "dropped": dropped}
+
+
 def grading_keep(rows: Sequence[Dict[str, Any]], case: str, anchors: Sequence[str], first_read: Sequence[str]
                  ) -> List[str]:
     """v60o: the labels round 1 grades first, past the prefilter -- the candidates the user's text names, then the
@@ -861,7 +885,7 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             matter_log: Dict[str, Any] = {}
             named_labels = [_label(_key(r)) for r in dg._refs_in(case) if len(r) == 2]
             article_rows = _isolated("matter_gate", lambda: topic_groups.matter_gate(
-                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log), article_rows)
+                article_rows, list(anchor_keep) + list(must) + named_labels, matter_log, every=True), article_rows)
             track_gate(top, gates, "matter_gate", article_rows)
             if matter_log.get("dropped"):
                 gone = {x["article"] for x in matter_log["dropped"]}
@@ -908,6 +932,16 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 must = [a for a in must if _key(_parse_label(a)) not in gone]
                 out["labour_gate"] = {"dropped": labour_out + labour_regime}
                 _log("labour_gate", out["labour_gate"])
+        if case_first:          # v79.8 (A2): at most GRADE_CAP articles graded -- the user's, the anchors' and the first
+            keep_now = grading_keep(article_rows, case, anchor_keep, must)       # read's always, then by retrieval rank
+            hits_n = len({_key(r["_article"]) for r in article_rows if r.get("_article")})
+            article_rows, cap_log = grade_cap(article_rows, keep_now)
+            track_gate(top, gates, "grade_cap", article_rows)
+            out["grade_funnel"] = {"retrieved": len({_key(r["_article"]) for r in picked["article_rows"]
+                                                     if r.get("_article")}),
+                                   "matter_gated": len((out.get("matter_gate") or {}).get("dropped") or []),
+                                   "hits": hits_n, "capped": cap_log["dropped"], "graded": cap_log["kept"]}
+            _log("grade_funnel", out["grade_funnel"])
         stage_meter.mark("grading")
         if case_first:          # v60 (G): round 1's graded check -- the embedding prefilter's top N
             # v60o: every kept candidate graded (grade_kept) -- the user-named articles, the rules' and tables' anchors
@@ -1394,7 +1428,10 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
                  for r in found["article_rows"] if r.get("_article")],
         "rendered": rendered, "answered": {}, "chosen": [], "angle": "", "changes": [], "answers": {},
         "timings": {"analysis_s": round(t1 - t0, 1), "retrieval_s": round(t2 - t1, 1),
-                    "round1_stages": {k: v for k, v in round1_stages.items() if k.endswith("_s")}}}
+                    "round1_stages": {k: v for k, v in round1_stages.items() if k.endswith("_s")},
+                    "round1_llm": round1_stages.get("total_llm"),                   # v79.8 (A5)
+                    "graded_round1": (found.get("grading") or {}).get("graded")},
+        "grade_funnel": _jsonable(found.get("grade_funnel") or {})}
     if pending is not None:     # v60: the first read, the hypotheses no topic anchors, the rows for the answer step
         state.update(read=_jsonable(read), unanchored=_jsonable(unanchored), read_side=read_side,
                      procedural=list((found.get("first_read_search") or {}).get("procedural") or []),   # v60n
@@ -1402,7 +1439,8 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
                      grading=_jsonable(found.get("grading") or {}), lost_rules=list(found.get("lost_rules") or []),
                      capo_gate=_jsonable(found.get("capo_gate") or {}),                 # v60q
                      area_gate=_jsonable(found.get("area_gate") or {}))
-        state["timings"].update(first_read_s=round(pending.ms / 1000, 1) if pending.ms is not None else None,
+        state["timings"].update(first_read_llm=pending.llm if isinstance(pending.llm, int) else None,       # v79.8
+                                first_read_s=round(pending.ms / 1000, 1) if pending.ms is not None else None,
                                 first_read_wait_s=round((pending.wait_ms or 0) / 1000, 1),
                                 grading_s=(found.get("grading") or {}).get("s"),
                                 topics_s=(found.get("grading") or {}).get("topics_s"))
@@ -5290,6 +5328,7 @@ def grade_chosen(state: Dict[str, Any], topics: Sequence[Dict[str, Any]]) -> Lis
     done = {_key(r["_article"]) for r in mine if r.get("_article")}
     state["reserve"] = [r for r in state.get("reserve") or [] if not r.get("_article") or _key(r["_article"]) not in done]
     _log("answer_grading", {"candidates": len(mine), "added": added, "graded": limits.get("graded_n")})
+    state.setdefault("timings", {})["graded_answer"] = limits.get("graded_n")          # v79.8 (A5)
     return added
 
 
@@ -5502,6 +5541,7 @@ def write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, Li
             _log("answer_stages", stages)
             state.setdefault("timings", {})["answer_stages"] = {k: v for k, v in stages.items()
                                                                  if k.endswith("_s")}      # v60k
+            state["timings"]["answer_llm"] = stages.get("total_llm")                        # v79.8 (A5)
 
 
 def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, List[Dict[str, Any]]]:
@@ -5870,11 +5910,14 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
         posture_c = {**posture, **({"role": role} if role and role in intake_mod.ROLES else {})}
         posture_mod.mark_sides(view, posture_c)
         ctx, mplan = method_inputs(view, posture_c, {**plan, "parte_assistita": c["name"]}, topics, refs, rows, case,
-                                   shared_record=record)
+                                   shared_record=record, with_objections=False)
         record = record if record is not None else view.get("rulings_record")
         counts[c["name"]] = view.get("thesis_counts") or {}
         articles += list(view.get("candidate_articles") or [])
         out.append((c["name"], ctx, mplan))
+    # v79.8 (A4): the clients' objections calls (each with its reply binding review) are independent -- concurrently
+    out = [(name, ctx, mplan) for (name, ctx, _), mplan in zip(out, concurrently(
+        [(lambda ctx=ctx, mplan=mplan: method_objections(ctx, mplan)) for _, ctx, mplan in out]))]
     state["thesis_counts_by_client"] = counts
     state["candidate_articles"] = list(dict.fromkeys(articles))
     if record is not None:
@@ -5897,9 +5940,28 @@ def merge_removals(state: Dict[str, Any], entries: Sequence[Dict[str, Any]]) -> 
     ledger["removed_by_step"] = by_step
 
 
+def concurrently(jobs: Sequence[Callable[[], Any]]) -> List[Any]:
+    """v79.8 (A4): independent jobs at once, each in a copy of this context (the stage meter, the ledger), the results
+    in the jobs' order; one job: run here."""
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+    if len(jobs) <= 1:
+        return [j() for j in jobs]
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = [pool.submit(contextvars.copy_context().run, j) for j in jobs]
+        return [f.result() for f in futures]
+
+
+def method_objections(ctx: Dict[str, Any], mplan: Dict[str, Any]) -> Dict[str, Any]:
+    """v73: the objections written after the selection, given the selected line and the barred list."""
+    from . import lawyer_method
+    return _isolated("lawyer_method_objections", lambda: lawyer_method.objections_plan(ctx, mplan), mplan) or mplan
+
+
 def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any], topics: Sequence[Dict[str, Any]],
                   refs: Sequence[tuple], rows: Sequence[Dict[str, Any]], case: str,
-                  shared_record: Optional[Dict[str, Any]] = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+                  shared_record: Optional[Dict[str, Any]] = None, with_objections: bool = True
+                  ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """v70: the method's context (lawyer_method.prepare: the client, the main line's anchor, §3's order, the retrieved
     rulings with their document id and massima -- the only citable ones (v71) --, the open questions, the first read's
     lines, the named articles the ingestion marks abrogated, our
@@ -5941,8 +6003,8 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     mplan = lawyer_method.method_plan(ctx)      # v79: the realism cap of v78 inside it, before the counts
     state["thesis_counts"] = ctx.get("selection_counts") or {}
     state["candidate_articles"] = lawyer_method.candidate_articles(ctx)     # v79 (D3): the writer's check keeps them
-    # v73: the objections written after the selection, given the selected line and the barred list
-    mplan = _isolated("lawyer_method_objections", lambda: lawyer_method.objections_plan(ctx, mplan), mplan) or mplan
+    if with_objections:         # v79.8 (A4): the several clients' run concurrently (method_inputs_clients)
+        mplan = method_objections(ctx, mplan)
     for key in ("thesis_selection_s", "objections_s"):
         state.setdefault("timings", {})[key] = (ctx.get("timings") or {}).get(key)
     return ctx, mplan
@@ -7910,6 +7972,24 @@ def article_citations(state: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
     return out
 
 
+def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dict[str, Any]:
+    """v79.8: the counters each block adds -- in the timings line and the nightly. A: graded_articles (round 1's and the
+    answer's grading), samples_used (thesis samples, every client), llm_calls (round 1, the first read, the answer),
+    total_s; the grading funnel (retrieved / matter-gated / hits / capped / graded)."""
+    t = state.get("timings") or {}
+    num = lambda *keys: sum(int(t.get(k) or 0) for k in keys)
+    by_client = state.get("thesis_counts_by_client") or {}
+    samples = sum(int(c.get("samples") or 0) for c in by_client.values()) if by_client else \
+        int((state.get("thesis_counts") or {}).get("samples") or 0)
+    funnel = state.get("grade_funnel") or {}
+    out: Dict[str, Any] = {"graded_articles": num("graded_round1", "graded_answer"), "samples_used": samples,
+                           "llm_calls": num("round1_llm", "first_read_llm", "answer_llm"),
+                           "total_s": total_s if total_s is not None else t.get("single_shot_s"),
+                           "funnel": {k: (len(v) if isinstance(v, list) else v) for k, v in funnel.items()}}
+    out.update(state.get("block_counters") or {})          # v79.8 B-E: their counters, set where they are computed
+    return out
+
+
 def single_shot_timings(state: Dict[str, Any], t0: float, t1: float) -> Dict[str, Any]:
     """[VERBOSE:interactive_single_shot_timings]: round 1's steps and stages, the answer's, the total against
     SINGLE_SHOT_TARGET_S."""
@@ -7924,6 +8004,7 @@ def single_shot_timings(state: Dict[str, Any], t0: float, t1: float) -> Dict[str
                       not isinstance(v, dict)},
            "answer_stages": timings.get("answer_stages") or {}}
     out["over_target"] = out["total_s"] > SINGLE_SHOT_TARGET_S
+    out["counters"] = case_counters(state, out["total_s"])         # v79.8: every block's counter, one place
     timings["single_shot_s"] = out["total_s"]
     state["single_shot_timings"] = out
     _log("single_shot_timings", out)

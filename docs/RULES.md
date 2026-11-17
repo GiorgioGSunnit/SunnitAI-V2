@@ -465,6 +465,15 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - The digital signature block («Firmato Da: … Emesso Da: … Serial#: …») is stripped from passages, and the printed check flags it.
   - The custody rule (`danno_cosa_in_custodia`) never fires on works entrusted to a contractor («affida … il rifacimento», an appalto).
 
+### 11.3 v79.8
+
+- **A. Latency.** Target: ≤ 240 s single-client, ≤ 330 s two-client.
+  - A1: the matter gate before the applicability grading drops every retrieval hit outside the case's matters, a vector hit as well as a keyword one. A multi-signal row, a first-read whole-name hit and a kept article stay. (`topic_groups.matter_gate(every=True)`)
+  - A2: at most `GRADE_CAP` (30) articles are graded per case. The articles the user names, the anchors and the first read's institution articles are always inside the cap; the others follow by retrieval rank. (`interactive_flow.grade_cap`, logged as `grade_funnel`)
+  - A3: the thesis call takes one sample. `score_sample` gave every reply the same score, so best-of-3 only spent two calls; it returns only with a scorer that discriminates.
+  - A4: the clients' objections calls (each with its reply binding) run concurrently (`interactive_flow.concurrently`, `method_objections`). The rubrica stamp still follows the writer review, because it reads the text that review produces.
+  - A5: `case_counters` (graded_articles, samples_used, llm_calls, total_s, funnel) goes into the `single_shot_timings` line and into the nightly's counters table.
+
 ## By version
 
 | Tag | What it introduced |
