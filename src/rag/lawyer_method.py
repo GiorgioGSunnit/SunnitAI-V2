@@ -599,20 +599,20 @@ NO_CHARGE_WHY = {"penale": "l'addebito non è indicato nel quesito e i fatti nar
                  "civile": "la domanda avversaria non è indicata nel quesito e i fatti narrati non ne individuano una"}
 
 
-def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = ""
-               ) -> Dict[str, Any]:
+def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = "",
+               article: str = "") -> Dict[str, Any]:
     """v79 (C4): a charge the first read's hypothesis gave (rec["charge_hypothesis"]) is labelled HYPOTHESIS_LABEL in
     the why -- §1 and §9 print it --; no charge at all is said in the reader's words (NO_CHARGE_WHY), never «il
     registro non contiene …»."""
-    a = _assessment(records, posture, main, client)
+    a = _assessment(records, posture, main, client, article)
     rec = (records or {}).get(a.get("article") or "") or {}
     if rec.get("charge_hypothesis"):
         a = {**a, "hypothesis": True, "why": f"{HYPOTHESIS_LABEL}: art. {a['article']}; {a['why']}"}
     return a
 
 
-def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = ""
-                ) -> Dict[str, Any]:
+def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = "",
+                article: str = "") -> Dict[str, Any]:
     """{"esito", "grado", "obiettivo", "why", "article"}: the probable outcome read from the record, not from the side
     we write for. Defending (imputato, convenuto): the charge's or the claim's main article -- every element proven:
     unfavourable, the goal is containing it; most proven: unfavourable, a partial outcome (another qualification,
@@ -622,7 +622,7 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
     role = str((posture or {}).get("role") or "")
     records = records or {}
     if role in ACCUSED:
-        label = main_threat(records)
+        label = article if article in records else main_threat(records)       # v79 (E1): the main line's article
         if not label:                   # v71: no charge on the record -- never «esito pieno»
             return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": "",
                     "why": NO_CHARGE_WHY["civile" if (posture or {}).get("family") == "civile" else "penale"]}
@@ -640,12 +640,14 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
         if total and proved * 2 >= total:
             return {"esito": SFAVOREVOLE, "grado": MEDIO, "obiettivo": PARZIALE, "article": label,
                     "why": f"{proved} elementi su {total} dell'art. {label} risultano provati, gli altri restano da "
-                           "provare per l'accusa" if (posture or {}).get("family") != "civile" else
+                           "provare per l'accusa" if criminal(posture) else
                            f"la maggior parte degli elementi dell'art. {label} risulta provata"}
         return {"esito": INCERTO, "grado": BASSO, "obiettivo": PIENO, "article": label,
                 "why": f"la maggior parte degli elementi dell'art. {label} resta da provare"}
     # v78: a victim's outcome is the offence of the querela -- the charge (rec["charged"]), whatever the main topic
     victim_charge = next((x for x in _charged(records) if _live(records[x])), "") if role in VICTIM_ROLES else ""
+    if article in records and role not in VICTIM_ROLES:          # v79 (E1): the main line's article
+        victim_charge = article
     from . import issue_records
     label = victim_charge or (main if main in records else next((x for x, r in records.items()
                                                                 if r.get("side") != "threat" and _live(r)
@@ -665,6 +667,35 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
                 "why": f"{proved} elementi su {total} dell'art. {label} risultano provati; gli altri vanno provati"}
     return {"esito": INCERTO, "grado": BASSO, "obiettivo": PARZIALE, "article": label,
             "why": f"nessun elemento dell'art. {label} risulta ancora provato"}
+
+
+def main_article(t: Dict[str, Any], records: Dict[str, Dict[str, Any]], known: Dict[str, Dict[str, Any]]) -> str:
+    """v79 (E1): the article a selected line is about -- its own (a riqualificazione, a claim, a remedy's), else the
+    article of the elements it contests or rests on; a fattispecie of the record only ("" otherwise: the containment
+    line, a defence of the general part)."""
+    from . import issue_records
+    ids = list(t.get("contesta") or []) + list(t.get("poggia_su") or [])
+    art = str(t.get("article") or "") or next(((known.get(x) or {}).get("article") for x in ids if known.get(x)), "")
+    rec = (records or {}).get(art or "") or {}
+    return art if rec and issue_records.counted(art, str(rec.get("rubrica") or "")) else ""
+
+
+def forecast(ctx: Dict[str, Any], t: Dict[str, Any], a: Dict[str, Any], log: Optional[Dict[str, Any]] = None
+             ) -> Dict[str, Any]:
+    """v79 (E1): the assessment computed on the chosen main line's article -- a victim's or a parte civile's stays on
+    the querela's offence (v78b); a line on no fattispecie (the containment, a general-part defence) keeps the
+    charge's. Logged (log["forecast"])."""
+    posture = ctx.get("posture") or {}
+    if posture.get("role") in VICTIM_ROLES:
+        return a
+    records = ctx.get("records") or {}
+    art = main_article(t, records, elements_by_id(records, ctx.get("circumstances")))
+    if not art or art == a.get("article"):
+        return a
+    b = assessment(records, posture, client=ctx.get("client") or "", article=art)
+    if log is not None:
+        log["forecast"] = {"was": a.get("article"), "now": art, "esito": b.get("esito")}
+    return b
 
 
 def settle_objective(a: Dict[str, Any], sols: Sequence[Dict[str, Any]], records: Dict[str, Dict[str, Any]],
@@ -814,6 +845,16 @@ def fact_date(case: str) -> Optional[Tuple[date, str]]:
                 words = re.sub(r"^(?:nel(?:l['’])?\s*|a\s+|di\s+|del\s+|in\s+)", "", words, flags=re.I)
                 found.append((d, words))
     return min(found, key=lambda x: x[0]) if found else None
+
+
+CRIMINAL_ROLES = ("imputato", "indagato", "persona_offesa", "parte_civile")
+
+
+def criminal(posture: Optional[Dict[str, Any]]) -> bool:
+    """v79 (E2): a criminal matter -- the penal family, or no family and a criminal role: «l'accusa», «aggravante»
+    and the penal lines only then."""
+    family = str((posture or {}).get("family") or "")
+    return family == "penale" or (not family and str((posture or {}).get("role") or "") in CRIMINAL_ROLES)
 
 
 def _family_key(posture: Dict[str, Any]) -> str:
@@ -1115,7 +1156,7 @@ def matter_of(label: str) -> Dict[str, Any]:
 
 MODEL_ARGUED = ("contest_excluded", "contest_open", "contest_integrated", "requalify")    # v74: the model argues these
 CODE_ARGUMENTS = {   # my drafts (v74): the argument of a thesis that contests no element, written from the record
-    "contenimento": {"pro": "Non nega gli elementi che il registro dà per integrati ({ids}): sposta la difesa sulla "
+    "contenimento": {"pro": "Non nega gli elementi che i fatti integrano ({ids}): sposta la difesa sulla "
                             "qualificazione e sulla misura della pena",
                      "contro": "Non evita la condanna per l'art. {art}: ne contiene l'esito",
                      "argomento": "Tutti gli elementi dell'art. {art} risultano integrati ({ids})"},
@@ -1167,7 +1208,7 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
     records = ctx.get("records") or {}
     circ = ctx.get("circumstances") or {}
     posture = ctx.get("posture") or {}
-    who = "La controparte" if posture.get("family") == "civile" else (
+    who = "La controparte" if not criminal(posture) else (       # v79 (E2): «l'accusa» in a criminal matter only
         "La difesa dell'imputato" if posture.get("role") in VICTIM_ROLES else "L'accusa")
     art = c.get("article") or ""
     texts = CODE_ARGUMENTS[c["kind"]]
@@ -1337,6 +1378,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     if role == "convenuto":     # v75: the eccezioni of the claim's matter (the claim against the client)
         claim = next((x for x in threats if matter_of(x)), "")
         for r in (matter_of(claim).get("eccezioni") or []) if claim else []:
+            if prescription_cited(str(r.get("articles") or "")):     # v79 (E4): never a candidate
+                continue
             add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)
     for label, r in contests["integrated"]:
         add("contest_integrated", CANDIDATE_TEXTS["integrated"].format(el=_short(r.get("text"), 80), id=r["id"],
@@ -1356,6 +1399,12 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         if c["argued"] == "code":
             c["code_argument"] = code_argument(c, ctx)
     return capped
+
+
+def prescription_cited(text: str) -> bool:
+    """v79 (E4): the text cites a prescription or decadenza article (c.c. 2934-2969)."""
+    from . import citations, issue_records
+    return any(issue_records.prescription(citations.label(r)) for r in citations.article_refs(text or ""))
 
 
 def candidate_articles(ctx: Dict[str, Any]) -> List[str]:
@@ -1933,7 +1982,7 @@ def objections_material(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], mai
 NOT_APPLIED = ("Nota: il metodo di analisi per elementi non è stato applicato a questo parere: {why}. Il parere segue "
                "la struttura ordinaria.")      # my draft (v76): the method never steps aside silently
 NOT_APPLIED_WHY = {   # my drafts (v76)
-    "placeholder": "il registro non offre una linea fondata sugli elementi dei fatti narrati",
+    "placeholder": "i fatti narrati non offrono una linea fondata sugli elementi delle norme",
     "undecomposed": "l'art. {art} (l'addebito o la domanda) non si scompone in elementi verificabili",
     "unread": "il testo dell'art. {art} (l'addebito o la domanda) non è stato recuperato",
 }
@@ -1960,7 +2009,7 @@ def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Ca
     from langchain_core.messages import HumanMessage, SystemMessage
     from .llm_reply import parse_json_reply
     sols, main, sub = selection(ctx, plan)
-    penal = (ctx.get("posture") or {}).get("family") != "civile"
+    penal = criminal(ctx.get("posture"))                          # v79 (E2)
     system = OBJECTIONS_SYSTEM.format(who="l'accusa" if penal else "la controparte")
     rules = writer_rules_text(ctx.get("rito") or "", ctx.get("areas") or ())
     messages = [SystemMessage(content=system + ("\n\n" + rules if rules else "")),
@@ -2648,14 +2697,14 @@ def conclusions_from_selection(a: Dict[str, Any], sols: Sequence[Dict[str, Any]]
     """§9 from the selection: the record's assessment (what it depends on: the elements still to prove; the residual
     risk: the charge or the claim when it is fully integrato, else those elements), the main line with its argument,
     the subordinate one, the theses barred or unverifiable."""
-    penal = (ctx.get("posture") or {}).get("family") != "civile"
+    penal = criminal(ctx.get("posture"))                          # v79 (E2)
     art = a.get("article") or ""
     open_ = _open_ids(ctx)
     depends = f"la prova degli elementi {', '.join(open_)}" if open_ else ""
     if a.get("all_integrated") and art:
         risk = f"la condanna per l'art. {art}" if penal else f"l'accoglimento della domanda avversaria (art. {art})"
     elif open_:
-        risk = (f"che l'accusa provi gli elementi {', '.join(open_)}" if (ctx.get("posture") or {}).get("role") in ACCUSED
+        risk = (f"che l'accusa provi gli elementi {', '.join(open_)}" if penal and (ctx.get("posture") or {}).get("role") in ACCUSED
                 else f"che non si provino gli elementi {', '.join(open_)}")
     else:
         risk = ""
@@ -2695,7 +2744,7 @@ def steps_from_selection(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], ma
     content, the riti and the attenuanti. An article without decomposed elements yields none; nothing from the other
     theses, nor from the record's other missing facts."""
     m = sols[main]
-    penal = (ctx.get("posture") or {}).get("family") != "civile"
+    penal = criminal(ctx.get("posture"))                          # v79 (E2)
     who = "l'accusa" if penal else "la controparte"
     known = elements_by_id(ctx.get("records") or {}, ctx.get("circumstances"))
     missing = {x["elemento"]: x for x in (ctx.get("facts") or {}).get("mancanti") or [] if x.get("elemento")}
@@ -2732,7 +2781,7 @@ def steps_from_selection(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], ma
 def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, Any]) -> List[Dict[str, str]]:
     """v72: objections from the selection, when the model's and the record's are fewer than three -- the main line's
     own weak point, the counterparty against the main line, the integrated elements it will lean on."""
-    penal = (ctx.get("posture") or {}).get("family") != "civile"
+    penal = criminal(ctx.get("posture"))                          # v79 (E2)
     who = "L'accusa" if penal else "La controparte"
     m = sols[main]
     out = []
@@ -2754,6 +2803,59 @@ def thesis_objections(sols: Sequence[Dict[str, Any]], main: int, ctx: Dict[str, 
                 "risposta": "Sono i fatti come il cliente li riferisce: vanno provati con i mezzi indicati nei passi "
                             "successivi."})
     return out
+
+
+# --- v79 (E2): no internal wording reaches the reader ------------------------------------------------------------------------
+
+_ELEMENT_PAREN_RE = re.compile(r"\s*\(\s*(?:elementi?\s+)?([RCP]\d{1,3}(?:\s*(?:,|e|ed)\s*[RCP]\d{1,3})*)\s*\)")
+_ELEMENT_TOKEN_RE = re.compile(r"(?<![\w./«-])([RCP]\d{1,3})(?![\w/-])")
+_REGISTRO_RE = re.compile(r"\b(?:il|dal|nel|del|al|sul)\s+registro\b|\bregistro\s+(?:delle\s+pronunce|non\b|dà\b)",
+                          re.IGNORECASE)
+_ACCUSA_RE = re.compile(r"\b([Ll])['’]accusa\b")
+_AGGRAVANTE_RE = re.compile(r"\baggravant", re.IGNORECASE)
+
+
+def wording_hits(text: str, known_ids: Sequence[str], criminal_matter: bool) -> List[str]:
+    """v79 (E2): the internal wording a text shows the reader outside its tables -- an element code, the «registro»,
+    and in a matter that is not criminal «l'accusa» and «aggravante»."""
+    out = []
+    ids = set(known_ids)
+    for line in (text or "").split("\n"):
+        if line.lstrip().startswith("|"):
+            continue
+        out += [f"codice {m.group(1)}" for m in _ELEMENT_TOKEN_RE.finditer(line) if m.group(1) in ids]
+        out += [f"«{m.group(0)}»" for m in _REGISTRO_RE.finditer(line)]
+        if not criminal_matter:
+            out += [f"«{m.group(0)}»" for m in _ACCUSA_RE.finditer(line)]
+            out += [f"«{m.group(0)}…»" for m in _AGGRAVANTE_RE.finditer(line)]
+    return out
+
+
+def reader_wording(text: str, known: Dict[str, Dict[str, Any]], criminal_matter: bool) -> str:
+    """v79 (E2): the text as the reader gets it, outside its tables -- an element code's parenthesis gone, a bare code
+    its element's words («…»); in a matter that is not criminal «l'accusa» is «la controparte» and a sentence on an
+    «aggravante» goes; a sentence on the «registro» goes."""
+    def element(m: "re.Match") -> str:
+        return f"«{_short(known[m.group(1)]['text'], 80)}»" if m.group(1) in known else m.group(0)
+
+    def paren(m: "re.Match") -> str:
+        ids = re.findall(r"[RCP]\d{1,3}", m.group(1))
+        return "" if ids and all(x in known for x in ids) else m.group(0)
+
+    def review(sentence: str) -> str:
+        if _REGISTRO_RE.search(sentence) or (not criminal_matter and _AGGRAVANTE_RE.search(sentence)):
+            return ""
+        return sentence
+    out = []
+    for line in (text or "").split("\n"):
+        if line.lstrip().startswith("|"):
+            out.append(line)
+            continue
+        line = _ELEMENT_TOKEN_RE.sub(element, _ELEMENT_PAREN_RE.sub(paren, line))
+        if not criminal_matter:
+            line = _ACCUSA_RE.sub(lambda m: "La controparte" if m.group(1) == "L" else "la controparte", line)
+        out.append(_by_sentence(line, review) if line.strip() else line)
+    return "\n".join(out)
 
 
 def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict[str, Any],
@@ -2790,7 +2892,13 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     scope_log: List[str] = []           # v78: rulings outside their article / element
     articles_log: List[str] = []        # v78: the plan's sentences citing an article outside the scope
 
-    from . import rule_statements
+    from . import answer_ledger, rule_statements
+    removals = answer_ledger.Ledger()           # v79 (E3): compose is the last check -- its removals are «removed»
+
+    def tracked(step: str, before: str, after: str) -> str:
+        if before and before != after:
+            removals.record(f"compose:{step}", [("", before)], [("", after)])
+        return after
     rule_src = rule_statements.sources(ctx)
     rules_log: List[Dict[str, str]] = []        # v79 (B1): the rule statements removed, with their reason
     objections_dropped: List[str] = []          # v79 (B2): an objection or a reply the checks emptied
@@ -2803,13 +2911,16 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         text = fact_terms.apply(text, certi, ctx.get("case") or "", client, accused, fact_wording)     # v74
         text = circumstance_claims(text, circ, claims)
         return rule_statements.check(text, rule_src, rules_log) if rules else text      # v79 (B1): grounded rules
+
+    def checked(text: str, rules: bool = True) -> str:     # v79 (E3): prose, its removals into the ledger
+        return tracked("prose", text, prose(text, rules))
     charged_log: List[str] = []         # v75b: the charged article's paragraph from its sussunzione rows only
-    norms = prose(charged_blocks(next((by_title[t] for t in NORMS_FROM if by_title.get(t)), ""),
+    norms = checked(charged_blocks(next((by_title[t] for t in NORMS_FROM if by_title.get(t)), ""),
                                  ctx.get("charged_prose") or {}, charged_log))
     quesiti = [(t, x) for t, x in others if t.endswith("?")]
     normative = [(t, x) for t, x in others if not t.endswith("?")]
     norms_parts = [norms] if norms else []
-    norms_parts += [f"**{t}**\n\n{prose(x)}" for t, x in normative if x]
+    norms_parts += [f"**{t}**\n\n{checked(x)}" for t, x in normative if x]
     if ctx.get("subsumption"):
         norms_parts.append(f"{ANALYSIS_TITLE}\n\n{ctx['subsumption']}")
     if profiles:
@@ -2817,7 +2928,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         norms_parts.append(f"**{C.OTHER_PROFILES_SECTION}**\n\n" + "\n".join(profiles))
     procedure = next((by_title[t] for t in PROCEDURE_FROM if by_title.get(t)), "")
     extra = [x for x in [ctx.get("temporal")] + [f"Litisconsorzio: {x}" for x in ctx.get("litisconsorzio") or []] if x]
-    procedure = "\n\n".join([p for p in [prose(procedure)] + extra if p]) or "Nessun profilo processuale calcolato sul caso."
+    procedure = "\n\n".join([p for p in [checked(procedure)] + extra if p]) or "Nessun profilo processuale calcolato sul caso."
     coherence: List[Dict[str, Any]] = []
     sols, main = coherent_solutions(plan, records, a, ctx.get("riti") or [], coherence, ctx.get("posture") or {}, circ)
     if any(t.get("candidate") for t in sols):   # v76: a thesis the model added (no candidate id) is never displayed
@@ -2831,15 +2942,17 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         log["refused"] = {"why": "placeholder", "tesi": sols[main]["tesi"]}
         _log("compose_refused", log["refused"])
         return ""
-    a = settle_objective(a, sols, records, circ)
+    a = settle_objective(forecast(ctx, sols[main], a, log), sols, records, circ)      # v79 (E1)
     scope = article_scope(ctx, [norms, procedure] + list(by_title.values()))       # v78: what record_check passed
 
     def planned(text: str, code: bool = False) -> str:     # v78: the plan's prose -- the checks above, then the
-        return articles_out(prose(text, rules=not code), scope, articles_log)      # articles' scope (v79: a code-
+        done = checked(text, rules=not code)                                      # articles' scope (v79: a code-
+        return tracked("scope", done, articles_out(done, scope, articles_log))
     for t in sols:                          # the table's cells are prose too          # written text: its sources)
         code = t.get("argued") == "code" or (bool(t.get("fallback")) and not t.get("candidate"))
         t["pro"], t["contro"] = planned(t.get("pro") or "", code), planned(t.get("contro") or "", code)
-        t["argomento"] = planned(coherent_text(t.get("argomento") or "", records, a, coherence), code)
+        arg = t.get("argomento") or ""
+        t["argomento"] = planned(tracked("coherence", arg, coherent_text(arg, records, a, coherence)), code)
     sub = subordinate_of(sols, main)        # v72: the subordinate line, the summary, the conclusions and the next steps
     objections_reviewed = []                # v78: the objection itself reviewed too, not only its answer
     for o in plan.get("obiezioni") or []:
@@ -2847,11 +2960,13 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         if not said:
             articles_log.append(_removed_note(o))
             objections_dropped.append(_removed_note(o))
+            tracked("objections", f"{o.get('obiezione') or ''} {o.get('risposta') or ''}".strip(), "")
             continue
         reply = o.get("risposta") or ""
-        answered = planned(coherent_text(reply, records, a, coherence))
+        answered = planned(tracked("coherence", reply, coherent_text(reply, records, a, coherence)))
         if reply.strip() and not answered:  # v79 (B2): a reply the checks emptied drops its objection -- the
             objections_dropped.append(_removed_note({"obiezione": said}, "reply"))      # the fallback fills §7
+            tracked("objections", said, "")
             continue
         objections_reviewed.append({**o, "obiezione": said, "risposta": answered})
     plan = {**plan, "subordinata": sols[sub]["tesi"] if sub is not None else "",      # are the selection's -- never
@@ -2862,7 +2977,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     steps = steps_text(steps_from_selection(ctx, sols, main))
     if steps:
         conclusions.append(steps)
-    conclusions += [f"**{t}**\n\n{prose(x)}" for t, x in quesiti if x]
+    conclusions += [f"**{t}**\n\n{checked(x)}" for t, x in quesiti if x]
     fallback_objections = list(ctx.get("objections_fallback") or []) + thesis_objections(sols, main, ctx)
     log["objections_from"] = {"model": len(plan.get("obiezioni") or []),
                               "fallback": max(0, OBJECTIONS - len(plan.get("obiezioni") or []))}
@@ -2880,6 +2995,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("processuali", procedure),
         ("conclusioni", "\n\n".join(conclusions)),
     ]
+    known_all = elements_by_id(records, circ)          # v79 (E2): what the reader reads, outside the tables and §5
+    crim = criminal(ctx.get("posture"))
+    keyed = [(k, x if k == "orientamenti" else tracked("wording", x, reader_wording(x, known_all, crim)))
+             for k, x in keyed]
     log.update({"rule_statements_removed": rules_log, "objections_dropped": objections_dropped,
                 "coherence": coherence, "rulings_out": rulings_out, "circumstance_claims": claims,
                 "rulings_scope_out": scope_log, "articles_out_of_scope": articles_log,
@@ -2909,7 +3028,10 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         [f"{t['tesi']} {t.get('pro') or ''} {t.get('contro') or ''}" for t in sols] + [ctx.get("subsumption") or ""] + \
         [ctx.get("temporal") or "", ctx.get("stragiudiziale") or ""] + list(ctx.get("litisconsorzio") or []) + \
         list(ctx.get("riti") or []) + list(points)
-    ctx["output_sources"] = {**rule_statements.serializable(rule_src),
+    log["ledger"] = [e for e in removals.entries if e["kind"] in ("removed", "rewritten")]     # v79 (E3)
+    ctx["compose_removals"] = log["ledger"]
+    ctx["output_sources"] = {**rule_statements.serializable(rule_src), "element_ids": sorted(known_all),
+                             "criminal": crim,
                              "scope": sorted(scope | article_scope(ctx, code_texts + [head])),
                              "code": [_plain(x) for x in code_texts if _plain(x)]}
     return f"{head}\n\n{joined}" if head else joined
@@ -2966,7 +3088,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     stragiudiziale option it allows. rulings: the retrieved ones, {id, label, massima} -- the only citable."""
     all_records = state.get("records") or {}
     sentences = state.get("sentences") or []
-    penal = (posture or {}).get("family") != "civile"
+    penal = criminal(posture)                                     # v79 (E2): the penal wording only then
     by_id = {s["id"]: s for s in sentences}
     notes, note_sources = attach_notes(all_records, {}, rows)       # v72: the lawyer's notes, into the records
     view_log: Dict[str, List[str]] = {}
@@ -2989,7 +3111,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     article_texts = [str((r.get("s") or {}).get("plain_text") or "") for r in rows or [] if r.get("_article")]
     facts_log: Dict[str, Any] = {}
     facts = facts_split(sentences, records, penal, questions, article_texts, facts_log)
-    note = aggravante_note(circ, records)
+    note = aggravante_note(circ, records) if penal else ""          # v79 (E2): never in a civil matter
     when, when_points = temporal(case, posture or {}, abrogated)
     ctx = {"case": case, "case_id": case_id_, "client": client, "rito": (posture or {}).get("rito") or "",
            "posture": posture or {}, "areas": list(frame_areas or ()), "procedibilita": procedibilita,
@@ -3095,11 +3217,12 @@ def output_check(answer: str, out: Dict[str, Any]) -> Dict[str, List[str]]:
     src = rule_statements.from_serializable(out or {})
     scope = set((out or {}).get("scope") or [])
     code = [str(x) for x in (out or {}).get("code") or []]
-    unsourced, outside = [], []
+    unsourced, outside, wording = [], [], []
     skip = title("orientamenti")
     for t, text in answer_sections(version.strip_footer(answer or "")):
         if t == skip:
             continue
+        wording += wording_hits(text, (out or {}).get("element_ids") or [], bool((out or {}).get("criminal", True)))
         for line in (text or "").split("\n"):
             if line.lstrip().startswith("|"):
                 continue
@@ -3111,7 +3234,7 @@ def output_check(answer: str, out: Dict[str, Any]) -> Dict[str, List[str]]:
                     unsourced.append(sentence)
                 outside += [citations.label(r) for r in citations.article_refs(sentence)
                             if scope and citations.label(r) not in scope]
-    return {"unsourced": unsourced, "out_of_scope": list(dict.fromkeys(outside))}
+    return {"unsourced": unsourced, "out_of_scope": list(dict.fromkeys(outside)), "wording": wording}
 
 
 def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List[Dict[str, Any]]:

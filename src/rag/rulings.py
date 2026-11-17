@@ -65,9 +65,10 @@ MIN_ORIENTATION = 3
 LINK_TOKENS = 2000
 FOR, AGAINST, NEUTRAL = "a favore", "contro", "neutro"
 
-SECTION_TITLES = {"rulings": "**Pronunce del registro**", "orientations": "**Orientamenti sui punti controversi**",
+# v79 (E2): the reader never sees «registro» -- «Pronunce sulle norme applicate»
+SECTION_TITLES = {"rulings": "**Pronunce sulle norme applicate**", "orientations": "**Orientamenti sui punti controversi**",
                   "landmarks": "**Pronunce di riferimento indicate dal consulente**"}
-NO_RULINGS_LINE = "Nessuna pronuncia del corpus cita le norme del registro."
+NO_RULINGS_LINE = "Nessuna pronuncia del corpus cita le norme applicate."
 PREVALENT = ("orientamento prevalente: elemento {side} ({n} pronunce su {tot}); orientamento minoritario: elemento "
              "{other} ({m} su {tot})")
 UNANIMOUS = "orientamento prevalente: elemento {side} ({n} pronunce su {tot})"

@@ -181,7 +181,7 @@ def test_compose_keeps_the_sources_for_the_nightly_and_its_check_passes():
     ctx = _compose_ctx()
     out = M.compose([("", "Testa.")], ctx, _plan(ctx, []), (), {})
     got = M.output_check(out, ctx["output_sources"])
-    assert got == {"unsourced": [], "out_of_scope": []}
+    assert got == {"unsourced": [], "out_of_scope": [], "wording": []}
 
 
 def test_the_output_check_finds_what_the_checks_would_have_removed():

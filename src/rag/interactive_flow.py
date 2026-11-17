@@ -5733,6 +5733,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
             answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
         state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
+        merge_removals(state, method_ctx.get("compose_removals") or [])       # v79 (E3): compose's, «removed»
         _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
     if state.get("method_refused"):             # v76: the method never steps aside silently -- the answer says so
         from . import lawyer_method
@@ -5759,6 +5760,20 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     state.setdefault("timings", {})["answer_s"] = round(time.time() - t0, 1)
     _log("answer_timings", {k: v for k, v in state["timings"].items() if k.startswith("answer") or k == "records_link_s"})
     return draft, citations
+
+
+def merge_removals(state: Dict[str, Any], entries: Sequence[Dict[str, Any]]) -> None:
+    """v79 (E3): compose's removals into the answer's ledger -- compose runs last on the method's path, so they are
+    «removed», never «proposed»; the counts by step updated."""
+    if not entries:
+        return
+    ledger = state.setdefault("ledger", {})
+    ledger["entries"] = list(ledger.get("entries") or []) + [dict(e) for e in entries]
+    by_step = dict(ledger.get("removed_by_step") or {})
+    for e in entries:
+        if e.get("kind") == "removed":
+            by_step[e["step"]] = by_step.get(e["step"], 0) + 1
+    ledger["removed_by_step"] = by_step
 
 
 def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str, Any], topics: Sequence[Dict[str, Any]],

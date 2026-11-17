@@ -16,7 +16,7 @@ def _env(monkeypatch):
     for name, value in (("LLM_API_KEY", "k"), ("OPENAI_API_KEY", "k"), ("EMBEDDING_PROVIDER", "openai"),
                         ("EMBEDDING_API_KEY", "k"), ("NEO4J_URI", "bolt://localhost:7687")):
         monkeypatch.setenv(name, value)
-    monkeypatch.delenv("LLM_REASONING_EFFORT", raising=False)
+    monkeypatch.setenv("LLM_REASONING_EFFORT", "")      # v79: set (empty = unset) so a script's override is undone
 
 
 def _script(name):

@@ -198,12 +198,14 @@ def test_the_conclusions_and_steps_come_from_the_selection_not_the_plan():
     by = dict(M.answer_sections(answer))
     con = by["Conclusioni e valutazione del rischio"]
     assert "Assoluzione certa" not in answer and "Passo del modello" not in answer and "Sintesi del modello" not in answer
-    assert "**Linea principale**: L'elemento «la morte come conseguenza degli atti» (R2) dell'art. 584 c.p. non è " \
-           "provato — arg T1." in con
-    assert "dipende da: la prova degli elementi R2" in con and "che l'accusa provi gli elementi R2" in con
+    # v79 (E2): outside the tables an element is its words, never its code
+    el = "«la morte come conseguenza degli atti»"
+    assert f"**Linea principale**: L'elemento {el} dell'art. 584 c.p. non è provato — arg T1." in con
+    assert f"dipende da: la prova degli elementi {el}" in con and f"che l'accusa provi gli elementi {el}" in con
     # v73: the main line contests R2 -- its step is the accusa's proof of it, from the line's own element
-    assert "- Verificare quale prova l'accusa ha di: la causa della morte — scopo: decide l'elemento R2 dell'art. " \
+    assert f"- Verificare quale prova l'accusa ha di: la causa della morte — scopo: decide l'elemento {el} dell'art. " \
            "584 c.p., che la linea principale contesta e il caso non prova." in con
+    assert "R2" not in con.split("|")[0]
     assert by["Sintesi della soluzione"].startswith("Linea principale: L'elemento")
 
 

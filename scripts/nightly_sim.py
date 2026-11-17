@@ -31,6 +31,11 @@ orientations computed / to verify) and the penal cells' §5 verbatim.
 v79 (B3): check grounded_output -- in the delivered parere, no rule statement without a source (a record element, a
 store field, a registry passage: src/rag/rule_statements.py) and no article outside the answer's scope.
 
+v79 (E2, E3): check reader_wording -- no element code outside the tables, no «registro», no «l'accusa» or
+«aggravante» outside a criminal matter; check ledger_removed_absent -- every sentence the ledger logs as removed is
+absent from the parere. v79 (D4): the selection table adds the defence lines, the defence articles the general-part gate
+dropped (criminal cells), the ranked candidates.
+
 v79 (A2, A3): per cell, the thesis selection's counts (candidates offered / parsed / valued / barred / unverifiable /
 minoritaria, the main line chosen, whether it is the fallback) in their own table, compared with the baseline's;
 --deterministic runs the thesis call once at temperature 0 (THESIS_DETERMINISTIC) for a version-to-version comparison
@@ -130,6 +135,8 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         grounded = grounded_check(out["answer"], result.get("state") or {})      # v79 (B3)
         out["checks"].append(grounded)
         out["output_check"] = grounded.get("found") or {}
+        out["checks"].append(wording_check(out["output_check"], result.get("state") or {}))     # v79 (E2)
+        out["checks"].append(ledger_check(out["answer"], result.get("state") or {}))            # v79 (E3)
         from src.rag import rulings
         if rulings.enabled():
             record = (result.get("state") or {}).get("rulings_record")
@@ -164,6 +171,29 @@ def grounded_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
                      + " | ".join(x[:100] for x in found["unsourced"][:3])] * bool(found["unsourced"])
                     + [f"articles outside the scope: {', '.join(found['out_of_scope'][:6])}"] * bool(found["out_of_scope"]))
     return {"check": "grounded_output", "ok": not why, "why": why, "found": found}
+
+
+def wording_check(found: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79 (E2): no internal wording in the delivered parere -- no element code outside the tables, no «registro»,
+    no «l'accusa» or «aggravante» outside a criminal matter (lawyer_method.output_check's "wording")."""
+    if not (state or {}).get("output_sources"):
+        return {"check": "reader_wording", "ok": False, "why": "no sources: the method was not applied"}
+    hits = list((found or {}).get("wording") or [])
+    return {"check": "reader_wording", "ok": not hits, "why": "; ".join(hits[:6])}
+
+
+def ledger_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79 (E3): every sentence the removal ledger logs as «removed» is absent from the delivered parere (a sentence
+    under 25 characters is not checked: too short to tell)."""
+    from src.rag import answer_ledger
+    entries = ((state or {}).get("ledger") or {}).get("entries") or []
+    final = answer_ledger._norm(answer or "")
+    present = []
+    for e in entries:
+        norm = answer_ledger._norm(e.get("sentence") or "")
+        if e.get("kind") == "removed" and len(norm) >= 25 and norm in final:
+            present.append(f"{e.get('step')}: {str(e.get('sentence'))[:80]}")
+    return {"check": "ledger_removed_absent", "ok": not present, "why": "; ".join(present[:3])}
 
 
 def section5(answer: str) -> str:

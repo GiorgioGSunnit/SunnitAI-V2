@@ -481,7 +481,25 @@ def counted(label: str, rubrica: str = "") -> bool:
     m = re.match(r"\d+", parts[0])
     if code == "c.p." and m and int(m.group(0)) < OFFENCES_FROM:
         return False
+    if prescription(label, rubrica):        # v79 (E4): never a claim, never a candidate
+        return False
     return not _DEFINITIONAL_RE.match(str(rubrica or ""))
+
+
+# v79 (E4): prescription and decadenza -- c.c. Libro VI, Titolo V (artt. 2934-2969) and any rubrica on them («Decorrenza
+# della prescrizione», «Cause che impediscono la decadenza») -- are never a claim or a candidate
+PRESCRIPTION_SPAN = (2934, 2969)
+_PRESCRIPTION_RE = re.compile(r"\bprescrizion\w*|\bdecadenz\w*", re.IGNORECASE)
+
+
+def prescription(label: str, rubrica: str = "") -> bool:
+    from .plan_then_write import _code_key
+    parts = str(label or "").split(" ", 1)
+    m = re.match(r"\d+", parts[0]) if parts else None
+    if len(parts) == 2 and _code_key(parts[1]) == "c.c." and m and \
+            PRESCRIPTION_SPAN[0] <= int(m.group(0)) <= PRESCRIPTION_SPAN[1]:
+        return True
+    return bool(_PRESCRIPTION_RE.search(str(rubrica or "")))
 
 
 JUSTIFICATIONS = ("50", "51", "52", "53", "54")    # c.p. cause di giustificazione: graded, never a fattispecie
