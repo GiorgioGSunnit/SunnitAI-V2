@@ -39,8 +39,11 @@ bash /root/v38/scripts/promote.sh            # to live
 - `data/` is added to and updated, never `--delete`: files that exist only on the server stay.
 - `VERSION` is copied.
 
-`scripts/deploy_exclude.txt` lists what is never copied and therefore never deleted: env files, venvs, `__pycache__`,
-`state/`, `heldout/`, logs, and the runtime files that `data/` held before v77. The script refuses a dirty tree
+`scripts/deploy_exclude.txt` lists what is never copied and therefore never deleted. It starts with the PO's list:
+`.env*`, `__pycache__`, `*.pyc`, `logs/`, `diagnose_reports/`, `.git/`, `state/`, `data/private_documents/`,
+`data/institutions_*.json` (built on the server) and `article_cards.jsonl`. It then adds the install metadata
+(`*.egg-info/`), venvs and caches, `heldout/`, and the runtime files that `data/` held before v77. Each directory is its
+own rsync, so a `data/` entry is written without `data/` (`/private_documents/`). The script refuses a dirty tree
 (`ALLOW_DIRTY=1` overrides) and warns when HEAD is not a release commit. It then runs `scripts/import_check.py --env .env.v45`
 on the server and prints the server's `VERSION`. It never touches `/opt/chatbot`.
 
@@ -133,7 +136,7 @@ venv/bin/python scripts/heldout_score.py --summary                              
 ```
 
 - The pack holds the newest unscored first pareri. Cases already sent in a pack that hasn't been scored are skipped (`exports.jsonl`; `--include-pending` lists them). `--with-updates` adds the regenerated pareri.
-- The seven sections come from his critique: tesi centrale, errori di categoria, contraddizioni e incongruenze interne, profili processuali, cosa manca, pregi, strategia. Each takes a score from 0 to 5; a blank means not applicable.
+- The seven sections come from his critique: tesi centrale, errori di categoria, contraddizioni e incongruenze interne, profili processuali, cosa manca, pregi, strategia. Each takes a score from 0 to 5; a blank means not applicable. The labels are his own headings and still need his confirmation. If he renames one, change only the label in `heldout.SECTIONS`; the key stays, so scores already recorded remain comparable.
 - `heldout_score.py` stops before writing anything if any score is out of range or not a number. A case with no score at all is listed as not scored yet. A case scored again counts once, with its later score.
 - A version's mean is the mean of its case means. Compare versions only when each has several scored cases.
 

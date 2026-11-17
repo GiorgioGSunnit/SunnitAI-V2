@@ -1,34 +1,49 @@
 # v77: what scripts/deploy.sh (Mac -> /root/v38) and scripts/promote.sh (/root/v38 -> /opt/chatbot) never copy, and so
 # (rsync without --delete-excluded) never delete on the target either. rsync filter patterns, one per line.
-.git/
-.env
-.env.*
-venv/
-.venv/
+# Each directory is its own rsync (src/ scripts/ docs/ tests/ data/): a pattern is matched against the path inside that
+# directory, so data/'s files are written without «data/» -- «/private_documents/» is data/private_documents/ (a
+# leading «/» anchors the pattern at the top of each synced directory).
+#
+# --- the PO's list (17 Nov 2026) ---
+.env*
 __pycache__/
 *.pyc
+logs/
+diagnose_reports/
+.git/
+state/
+# data/private_documents/ (user uploads, stay in data/, never deleted)
+/private_documents/
+# data/institutions_*.json (built on the server by scripts/build_institutions.py)
+/institutions_*.json
+# article_cards.jsonl (and its variants)
+article_cards*.jsonl
+#
+# --- kept beyond that list ---
+# the server's install metadata under src/: src/ is mirrored with --delete, the Mac's copy must neither replace nor
+# delete it
+*.egg-info/
+# venvs and tool caches, should one sit inside a synced directory
+venv/
+.venv/
 *.pyo
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 .DS_Store
+# the dated .bak copies tracked in src/ (never shipped, never deleted on the server)
 *.bak_*
 *.log
 *.pid
 *.tmp
 .tmp/
-# runtime state and outputs (src/state_paths.py, src/chatbot/heldout.py): the server's own
-state/
+# the held-out set and run outputs: the server's own
 heldout/
-logs/
 diagnose_long_runs/
 eval_runs/
-# runtime files that lived in data/ before v77 (scripts/promote.sh moves them to state/): never overwritten
+# runtime files data/ held before v77 (promote.sh moves them to state/ on its first run): never overwritten meanwhile
 sessions.json
 tenant_logos/
 system_templates/
 system_templates_*/
-article_cards*.jsonl
-private_documents/
 new_templates/
-*.egg-info/

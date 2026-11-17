@@ -266,6 +266,17 @@ def test_the_nightly_checks_the_footer_and_ends_with_the_lawyers_means(tmp_path,
     assert "- none recorded" in "\n".join(nightly.lawyer_lines(tmp_path / "missing"))
 
 
+# --- the deploy exclude list -----------------------------------------------------------------------------------------------
+
+def test_the_exclude_list_holds_the_pos_entries_in_the_form_rsync_matches_per_directory():
+    """The PO's list (17 Nov 2026); data/'s entries without «data/»: each directory is its own rsync."""
+    lines = {ln.strip() for ln in (HERE.parent / "scripts" / "deploy_exclude.txt").read_text().splitlines()
+             if ln.strip() and not ln.startswith("#")}
+    assert {".env*", "__pycache__/", "*.pyc", "logs/", "diagnose_reports/", ".git/", "state/", "/private_documents/",
+            "/institutions_*.json", "article_cards*.jsonl", "*.egg-info/"} <= lines
+    assert not any(ln.startswith("data/") for ln in lines)
+
+
 # --- 5. the 31-case sim, retired ---------------------------------------------------------------------------------------------
 
 def test_the_sim_runs_no_default_batch(monkeypatch, capsys):

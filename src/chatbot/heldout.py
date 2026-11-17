@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 ENV = "HELDOUT_DIR"
 EXPORTS = "exports.jsonl"
 # The lawyer's seven sections, as his critique of the Sempronio parere is built (docs/lawyer/critica_penale_v2.md,
-# docs/lawyer/critiques/sempronio_no_hint.critique.json): each scored 0-5 on the parere, 5 the best
+# docs/lawyer/critiques/sempronio_no_hint.critique.json): each scored 0-5 on the parere, 5 the best. The labels are his
+# own headings, generalised; pending his confirmation (17 Nov 2026) -- a change of label keeps the key
 SECTIONS = (("tesi", "Tesi centrale"),
             ("categoria", "Errori di categoria (qualificazione, elemento soggettivo, norme fuori posto)"),
             ("coerenza", "Contraddizioni e incongruenze interne"),

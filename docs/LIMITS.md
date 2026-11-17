@@ -266,7 +266,8 @@ These rules apply under the lawyer's method (`src/rag/lawyer_method.py:orientati
 - **Promote never deletes in `data/`.** `scripts/deploy.sh` and `scripts/promote.sh` sync one directory at a time:
   `src/ scripts/ docs/ tests/` mirrored with `--delete`, `data/` added to and updated only. So a data file removed
   from the repository stays on the server until someone deletes it by hand. `scripts/deploy_exclude.txt` (env
-  files, venvs, `state/`, `heldout/`, logs, the runtime files `data/` used to hold) is never copied and never deleted.
+  files, `state/`, `heldout/`, logs, `diagnose_reports/`, the server-built `data/institutions_*.json`, the article
+  cards, the uploads, the runtime files `data/` used to hold) is never copied and never deleted.
   `data/private_documents/` (uploads) stays in `data/` and is copied into every promote snapshot.
 - **Version footer.** Each case-first answer ends with «SunnitAI <version>», read from the `VERSION` file written by
   `scripts/release.sh` (`src/version.py`). A copy without that file reports `unknown`, and its answers cannot be told
