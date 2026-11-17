@@ -6,6 +6,10 @@ contesting an «integrato» element barred), the main line that results, the dec
 
   python scripts/thesis_replay.py --log logs/thesis_sempronio_no_hint.json --base-url http://host:port/v1 --model NAME
   python scripts/thesis_replay.py --log ... --base-url ... --model ... --thinking off --out ab.json
+  python scripts/thesis_replay.py --log ... --base-url ... --model ... --reasoning-effort low
+
+v78.1.1: with thinking on, reasoning_effort goes beside enable_thinking -- --reasoning-effort, else LLM_REASONING_EFFORT,
+else none; the replay's output records it beside the log's own.
 
 --base-url and --model are required (no default endpoint); the key from --api-key-env (default LLM_API_KEY).
 """
@@ -60,15 +64,25 @@ def check(plan_raw: Any, log: Dict[str, Any]) -> Dict[str, Any]:
             "declared": sum(1 for s in plan["soluzioni"] if s.get("contesta") or s.get("poggia_su"))}
 
 
+def template_kwargs(thinking: str, effort: str = "") -> Dict[str, Any]:
+    """The extra body: none for «default»; enable_thinking, and reasoning_effort when thinking is on and one is given."""
+    if thinking == "default":
+        return {}
+    kwargs: Dict[str, Any] = {"enable_thinking": thinking == "on"}
+    if thinking == "on" and effort:
+        kwargs["reasoning_effort"] = effort
+    return {"chat_template_kwargs": kwargs}
+
+
 def call(log: Dict[str, Any], base_url: str, model: str, api_key: str, thinking: str, max_tokens: int,
-         n: int = 1, temperature: float = 0.0) -> Dict[str, Any]:
+         n: int = 1, temperature: float = 0.0, effort: str = "") -> Dict[str, Any]:
     """The logged messages to the other model; v72: n replies (the log's best-of-n at its temperature), the best by
     the code's score kept."""
     from openai import OpenAI
     from src.rag.llm_reply import parse_json_reply
     from src.rag import lawyer_method as M
     client = OpenAI(base_url=base_url, api_key=api_key)
-    extra = {} if thinking == "default" else {"chat_template_kwargs": {"enable_thinking": thinking == "on"}}
+    extra = template_kwargs(thinking, effort)
     t0 = time.time()
     reply = client.chat.completions.create(model=model, messages=log["messages"], max_tokens=max_tokens,
                                            temperature=temperature, n=n, **({"extra_body": extra} if extra else {}))
@@ -95,6 +109,8 @@ def main(argv=None) -> int:
     ap.add_argument("--model", required=True)
     ap.add_argument("--api-key-env", default="LLM_API_KEY")
     ap.add_argument("--thinking", choices=("on", "off", "default"), default="on")
+    ap.add_argument("--reasoning-effort", help="with thinking on: chat_template_kwargs reasoning_effort (overrides "
+                                               "LLM_REASONING_EFFORT for this run)")
     ap.add_argument("--max-tokens", type=int, help="default: the logged max_tokens (+ the thinking allowance when on)")
     ap.add_argument("--samples", type=int, help="replies per call (default: the log's n, else 1)")
     ap.add_argument("--out", type=Path)
@@ -104,14 +120,19 @@ def main(argv=None) -> int:
     tokens = args.max_tokens or int(log.get("max_tokens") or 2600) + (
         ai_chat.THINKING_EXTRA_TOKENS if args.thinking == "on" else 0)
     n = args.samples or int(log.get("n") or 1)
+    if args.reasoning_effort is not None:
+        os.environ[ai_chat.REASONING_EFFORT_ENV] = args.reasoning_effort
+    effort = ai_chat.reasoning_effort() if args.thinking == "on" else ""
     got = call(log, args.base_url, args.model, os.getenv(args.api_key_env) or "k", args.thinking, tokens, n,
-               float(log.get("temperature") or 0.0) if n > 1 else 0.0)
+               float(log.get("temperature") or 0.0) if n > 1 else 0.0, effort)
     parsed = got.pop("parsed_best") or {}
     original = check(log.get("parsed") or {}, log)
     replay = check(parsed, log)
     out = {"case_id": log.get("case_id"), "original": {"model": log.get("model"), "seconds": log.get("seconds"),
+                                                       "reasoning_effort": log.get("reasoning_effort") or "",
                                                        **original},
-           "replay": {"model": args.model, "base_url": args.base_url, "thinking": args.thinking, "max_tokens": tokens,
+           "replay": {"model": args.model, "base_url": args.base_url, "thinking": args.thinking,
+                      "reasoning_effort": effort, "max_tokens": tokens,
                       **got, "parsed": parsed, **replay},
            "same_main": original["main"] == replay["main"]}
     path = args.out or args.log.with_name(f"{args.log.stem}.replay.{args.model.replace('/', '_')}.json")

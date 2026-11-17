@@ -1563,7 +1563,9 @@ def thesis_log(ctx: Dict[str, Any], messages: Sequence[Any], raw_reply: str, par
         path = os.path.join(folder, f"thesis_{case_id(ctx)}.json")
         entry = {"case_id": case_id(ctx), "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                  "model": ai_chat._chat_kwargs.get("model"), "llm_thinking": os.getenv("LLM_THINKING") or "",
-                 "thinking": thinking_supported() and ai_chat.per_call(), "max_tokens": METHOD_TOKENS,
+                 "thinking": thinking_supported() and ai_chat.per_call(),
+                 "reasoning_effort": ai_chat.reasoning_effort() if thinking_supported() and ai_chat.per_call() else "",
+                 "max_tokens": METHOD_TOKENS,
                  "messages": [{"role": "system" if i == 0 else "user", "content": getattr(m, "content", str(m))}
                               for i, m in enumerate(messages)],
                  "raw_reply": raw_reply, "parsed": parsed if isinstance(parsed, (dict, list)) else None,

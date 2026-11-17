@@ -252,10 +252,13 @@ def main(argv=None) -> int:
     ap.add_argument("--baseline")
     ap.add_argument("--no-stages", action="store_true", help="skip the stage lists' diff against v59")
     ap.add_argument("--heldout-dir", type=Path, help="the held-out folder whose scores the report ends with")
+    ap.add_argument("--reasoning-effort", help="v78.1.1: LLM_REASONING_EFFORT for this run (the calls with thinking on)")
     args = ap.parse_args(argv)
     if not args.answers and os.path.isfile(args.env):
         from dotenv import load_dotenv
         load_dotenv(args.env)
+    if args.reasoning_effort is not None:       # v78.1.1: over the env file's, for this run
+        os.environ["LLM_REASONING_EFFORT"] = args.reasoning_effort
     specs = [c for c in cells() if not args.only or c["id"] in args.only]
     results = [offline_cell(s, args.answers) if args.answers else run_cell(s) for s in specs]
     stages = None if args.no_stages else stage_check()

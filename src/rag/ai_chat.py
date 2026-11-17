@@ -48,6 +48,10 @@ _OFF = {"false", "0", "no", "off"}
 # nothing (OpenAI's API rejects the field).
 _PER_CALL = {"per_call", "per-call", "call"}
 _THINKING = {"chat_template_kwargs": {"enable_thinking": True}}
+# v78.1.1: LLM_REASONING_EFFORT (unset by default) -- when set, a call with thinking on sends it as
+# chat_template_kwargs["reasoning_effort"] beside enable_thinking (a model whose template ignores the key: no change);
+# read at call time, so a script's --reasoning-effort (thesis_replay, nightly_sim) overrides it for its run
+REASONING_EFFORT_ENV = "LLM_REASONING_EFFORT"
 THINKING_EXTRA_TOKENS = int(os.getenv("LLM_THINKING_EXTRA_TOKENS", "2000") or 2000)
 
 
@@ -65,12 +69,26 @@ def per_call(setting: Optional[str] = None) -> bool:
     return (value or "").strip().lower() in _PER_CALL
 
 
+def reasoning_effort() -> str:
+    """v78.1.1: LLM_REASONING_EFFORT, stripped; "" when unset."""
+    return (os.getenv(REASONING_EFFORT_ENV) or "").strip()
+
+
+def thinking_body() -> dict:
+    """The body of a call with thinking on: enable_thinking, and reasoning_effort when LLM_REASONING_EFFORT is set."""
+    effort = reasoning_effort()
+    if not effort:
+        return _THINKING
+    return {"chat_template_kwargs": {**_THINKING["chat_template_kwargs"], "reasoning_effort": effort}}
+
+
 def thinking_bind(thinking: Optional[bool], max_tokens: Optional[int], setting: Optional[str] = None) -> dict:
     """v70 (3): the bind kwargs a call's thinking choice adds -- under per_call only: thinking=True the reasoning body and
-    THINKING_EXTRA_TOKENS more max_tokens; anything else nothing (the model's global body stands)."""
+    THINKING_EXTRA_TOKENS more max_tokens; anything else nothing (the model's global body stands). v78.1.1: the body
+    carries reasoning_effort when LLM_REASONING_EFFORT is set (thinking_body)."""
     if not thinking or not per_call(setting):
         return {}
-    out: dict = {"extra_body": _THINKING}
+    out: dict = {"extra_body": thinking_body()}
     if max_tokens is not None:
         out["max_tokens"] = max_tokens + THINKING_EXTRA_TOKENS
     return out
