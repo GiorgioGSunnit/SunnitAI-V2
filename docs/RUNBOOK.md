@@ -119,6 +119,23 @@ cd /opt/chatbot && cp -f /var/log/maint/nightly.json /var/log/maint/nightly.prev
 The report's first line after the title is `Version: <VERSION>`. The JSON carries `"version"`. Exit 1 means at least
 one failure.
 
+From v79 the report also has a «Thesis selection (per cell)» table. For each cell it gives the candidates offered,
+parsed, valued, barred, unverifiable and minoritaria, the main line chosen, and whether that line is the fallback.
+A count that differs from the baseline shows as «before → now».
+
+To compare two versions on the same input, run both with `--deterministic`. That makes the thesis call one sample at
+temperature 0 (`THESIS_DETERMINISTIC=1`). Keep a separate baseline for this mode:
+
+```bash
+cd /opt/chatbot && cp -f /var/log/maint/nightly_det.json /var/log/maint/nightly_det.prev.json; \
+  venv/bin/python scripts/nightly_sim.py --env .env --deterministic --out /var/log/maint/nightly_det.md \
+  --json-out /var/log/maint/nightly_det.json --baseline /var/log/maint/nightly_det.prev.json
+```
+
+The default stays best-of-3. In both modes the reply kept is the highest score, and ties go to the smallest sha1 of the
+parsed reply, never to the order the replies arrived in. The thesis log records the choice (`choice`) and the counts
+(`counts`).
+
 ## 5. The held-out loop
 
 Every case-first answer that the live copy or the test copy serves is saved to `/opt/chatbot/heldout/` by

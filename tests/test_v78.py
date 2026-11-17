@@ -437,7 +437,7 @@ def test_the_dates_stay_dates():
 
 # --- the wiring: the record before the thesis call, the cap before the objections, §5 from the registry -------------------
 
-def test_method_inputs_builds_the_record_first_and_caps_before_the_objections(monkeypatch, on):
+def test_method_inputs_builds_the_record_first_and_caps_before_the_objections(monkeypatch, on, tmp_path):
     from src.rag import interactive_flow as flow
     record = _record()
     seen = {}
@@ -448,14 +448,23 @@ def test_method_inputs_builds_the_record_first_and_caps_before_the_objections(mo
     monkeypatch.setattr(flow, "rulings_record", lambda ctx, rows: record)
     monkeypatch.setattr(lawyer_method, "prepare", lambda *a, **k: {**_ctx(), "rulings": [{"id": "old"}]})
 
+    def samples(messages, call):        # v79: the real method_plan (its realism cap inside), the reply stubbed
+        seen["material_has_registry"] = rulings.REGISTRY_TITLE in messages[1].content
+        return [("{}", {"valutazioni": {"T1": {"realismo": "alto", "pro": "p"}}})]
+    real_plan = lawyer_method.method_plan
+
     def plan(ctx):
-        seen["material_has_registry"] = rulings.REGISTRY_TITLE in lawyer_method.registry(ctx)
         seen["citable"] = [r["label"] for r in ctx["rulings"]]
-        return {"soluzioni": [{"tesi": "Contestare R2", "contesta": ["R2"], "realismo": "alto"}]}
+        return real_plan(ctx)
 
     def objections_plan(ctx, mplan):
         seen["realismo_at_objections"] = mplan["soluzioni"][0]["realismo"]
         return mplan
+    monkeypatch.setenv("THESIS_LOG_DIR", str(tmp_path))
+    monkeypatch.setattr(lawyer_method, "thesis_candidates", lambda ctx: [dict(c, argued="model")
+                                                                         for c in _ctx()["candidates"]])
+    monkeypatch.setattr(lawyer_method, "_samples", samples)
+    monkeypatch.setattr(lawyer_method, "bind_arguments", lambda sols, known, call=None: {})
     monkeypatch.setattr(lawyer_method, "method_plan", plan)
     monkeypatch.setattr(lawyer_method, "objections_plan", objections_plan)
     state = {"records": _ctx()["records"]}

@@ -5768,12 +5768,8 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     if record is not None:      # v78: the registry -- the only citable rulings, the material of every call
         ctx["rulings_record"], ctx["rulings"] = record, rulings_mod.citable(record)
         state["rulings_record"] = record
-    mplan = lawyer_method.method_plan(ctx)
-    if record is not None:      # v78: a prevailing line for an element's integration: its contest «basso»
-        capped: List[Dict[str, Any]] = []
-        rulings_mod.cap_realism(mplan, record, capped)
-        if capped:
-            _log("rulings_realism", capped)
+    mplan = lawyer_method.method_plan(ctx)      # v79: the realism cap of v78 inside it, before the counts
+    state["thesis_counts"] = ctx.get("selection_counts") or {}
     # v73: the objections written after the selection, given the selected line and the barred list
     mplan = _isolated("lawyer_method_objections", lambda: lawyer_method.objections_plan(ctx, mplan), mplan) or mplan
     for key in ("thesis_selection_s", "objections_s"):

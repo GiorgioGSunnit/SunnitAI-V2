@@ -7,6 +7,10 @@ contesting an «integrato» element barred), the main line that results, the dec
   python scripts/thesis_replay.py --log logs/thesis_sempronio_no_hint.json --base-url http://host:port/v1 --model NAME
   python scripts/thesis_replay.py --log ... --base-url ... --model ... --thinking off --out ab.json
   python scripts/thesis_replay.py --log ... --base-url ... --model ... --reasoning-effort low
+  python scripts/thesis_replay.py --log ... --base-url ... --model ... --deterministic
+
+v79 (A3): the reply kept is lawyer_method.choose's (the score, then the smallest digest of the parsed reply -- never the
+order of arrival), both logged; --deterministic sends one sample at temperature 0, for a version-to-version comparison.
 
 v78.1.1: with thinking on, reasoning_effort goes beside enable_thinking -- --reasoning-effort, else LLM_REASONING_EFFORT,
 else none; the replay's output records it beside the log's own.
@@ -57,7 +61,8 @@ def check(plan_raw: Any, log: Dict[str, Any]) -> Dict[str, Any]:
     score = M.score_sample(plan_raw, candidates, known) if candidates else (None, [])
     sols, main = M.coherent_solutions(plan, records_from(known), log.get("assessment") or {}, (), None,
                                       log.get("posture") or {})
-    return {"plan": plan, "main": sols[main]["tesi"], "main_is_fallback": bool(sols[main].get("fallback")),
+    return {"plan": plan, "main": sols[main]["tesi"],
+            "main_is_fallback": bool(sols[main].get("fallback")) and not sols[main].get("candidate"),
             "barred": [{"tesi": s["tesi"], "contesta": s["barred"]} for s in sols if s.get("barred")],
             "unknown_ids": unknown, "theses": len(plan["soluzioni"]), "dropped": clean_log.get("dropped") or [],
             "score": score[0] if score[0] != float("-inf") else None, "score_why": score[1],
@@ -97,9 +102,10 @@ def call(log: Dict[str, Any], base_url: str, model: str, api_key: str, thinking:
             if log.get("candidates") else (0.0, [])
         samples.append({"raw_reply": text, "parsed": parsed, "score": None if value == float("-inf") else value,
                         "why": why})
-    best = max(range(len(samples)), key=lambda i: samples[i]["score"] if samples[i]["score"] is not None else -1e9)
+    best, choice = M.choose(samples)
     return {"raw_reply": samples[best]["raw_reply"], "parsed_best": samples[best]["parsed"], "samples": samples,
-            "best": best, "finish_reason": reply.choices[best].finish_reason, "seconds": round(time.time() - t0, 1)}
+            "best": best, "choice": choice, "finish_reason": reply.choices[best].finish_reason,
+            "seconds": round(time.time() - t0, 1)}
 
 
 def main(argv=None) -> int:
@@ -113,18 +119,19 @@ def main(argv=None) -> int:
                                                "LLM_REASONING_EFFORT for this run)")
     ap.add_argument("--max-tokens", type=int, help="default: the logged max_tokens (+ the thinking allowance when on)")
     ap.add_argument("--samples", type=int, help="replies per call (default: the log's n, else 1)")
+    ap.add_argument("--deterministic", action="store_true", help="v79: one reply at temperature 0")
     ap.add_argument("--out", type=Path)
     args = ap.parse_args(argv)
     from src.rag import ai_chat
     log = json.loads(args.log.read_text(encoding="utf-8"))
     tokens = args.max_tokens or int(log.get("max_tokens") or 2600) + (
         ai_chat.THINKING_EXTRA_TOKENS if args.thinking == "on" else 0)
-    n = args.samples or int(log.get("n") or 1)
+    n = 1 if args.deterministic else args.samples or int(log.get("n") or 1)
     if args.reasoning_effort is not None:
         os.environ[ai_chat.REASONING_EFFORT_ENV] = args.reasoning_effort
     effort = ai_chat.reasoning_effort() if args.thinking == "on" else ""
     got = call(log, args.base_url, args.model, os.getenv(args.api_key_env) or "k", args.thinking, tokens, n,
-               float(log.get("temperature") or 0.0) if n > 1 else 0.0, effort)
+               0.0 if args.deterministic else float(log.get("temperature") or 0.0) if n > 1 else 0.0, effort)
     parsed = got.pop("parsed_best") or {}
     original = check(log.get("parsed") or {}, log)
     replay = check(parsed, log)
@@ -132,7 +139,7 @@ def main(argv=None) -> int:
                                                        "reasoning_effort": log.get("reasoning_effort") or "",
                                                        **original},
            "replay": {"model": args.model, "base_url": args.base_url, "thinking": args.thinking,
-                      "reasoning_effort": effort, "max_tokens": tokens,
+                      "reasoning_effort": effort, "max_tokens": tokens, "deterministic": args.deterministic,
                       **got, "parsed": parsed, **replay},
            "same_main": original["main"] == replay["main"]}
     path = args.out or args.log.with_name(f"{args.log.stem}.replay.{args.model.replace('/', '_')}.json")

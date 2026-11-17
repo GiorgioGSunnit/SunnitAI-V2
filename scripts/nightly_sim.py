@@ -28,7 +28,13 @@ least one ruling printed with its quoted passage in §5 (check ruling_passage; a
 the rulings record per cell (per article found / linked / kept, estremi parsed / unparsed, passages quoted / none,
 orientations computed / to verify) and the penal cells' §5 verbatim.
 
+v79 (A2, A3): per cell, the thesis selection's counts (candidates offered / parsed / valued / barred / unverifiable /
+minoritaria, the main line chosen, whether it is the fallback) in their own table, compared with the baseline's;
+--deterministic runs the thesis call once at temperature 0 (THESIS_DETERMINISTIC) for a version-to-version comparison
+-- the default stays best-of-3.
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
+  python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --answers DIR      # offline: DIR/<cell id>.md, the checks only (no model, no DB)
 
 Needs the server's environment (Neo4j, the model, LAWYER_METHOD=true, CASE_FIRST_SINGLE_SHOT=true, ...) except with
@@ -108,6 +114,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(intake_line_check(seen, result.get("state") or {}, result.get("api_route") or ""))
         out["checks"].append(cell_check(detected, spec["cell"]))
         out["answer"] = result.get("answer") or ""
+        out["thesis_counts"] = (result.get("state") or {}).get("thesis_counts") or {}      # v79 (A2)
         timings = (result.get("state") or {}).get("timings") or {}
         out["timings"] = {"total_s": round(time.time() - t0, 1),
                           **{k: timings.get(k) for k in ("thesis_selection_s", "writer_s", "answer_s")}}
@@ -176,6 +183,31 @@ def rulings_lines(results: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+COUNT_COLUMNS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback")
+
+
+def counts_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]] = None) -> List[str]:
+    """v79 (A2): per cell, the thesis selection's counts -- «before → now» where the baseline's differ."""
+    rows = [c for c in results if c.get("thesis_counts")]
+    if not rows:
+        return []
+    before = {c["id"]: c.get("thesis_counts") or {} for c in (baseline or {}).get("cells") or []}
+
+    def cell(cid: str, key: str, now: Any) -> str:
+        was = before.get(cid, {}).get(key)
+        now_s = ("yes" if now else "no") if isinstance(now, bool) else str(now if now is not None else "—")
+        if cid in before and key in before[cid] and was != now:
+            was_s = ("yes" if was else "no") if isinstance(was, bool) else str(was)
+            return f"{was_s} → {now_s}"
+        return now_s
+    lines = ["", "## Thesis selection (per cell)", "", "| cell | " + " | ".join(COUNT_COLUMNS) + " |",
+             "|---" * (len(COUNT_COLUMNS) + 1) + "|"]
+    for c in rows:
+        t = c["thesis_counts"]
+        lines.append(f"| {c['id']} | " + " | ".join(cell(c["id"], k, t.get(k)) for k in COUNT_COLUMNS) + " |")
+    return lines
+
+
 def lawyer_lines(folder: Optional[Path]) -> List[str]:
     """v77: the lawyer's latest mean per version on the held-out set (src/chatbot/heldout.py)."""
     from src.chatbot import heldout
@@ -222,9 +254,10 @@ def regressions(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]
 
 
 def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regressed: List[str], run_version: str = "",
-           lawyer: Optional[List[str]] = None) -> str:
+           lawyer: Optional[List[str]] = None, baseline: Optional[Dict[str, Any]] = None, mode: str = "") -> str:
     names = list(dict.fromkeys(k["check"] for c in results for k in c["checks"]))
-    lines = ["# Nightly: five cells, structural checks", "", f"Version: {run_version or '—'}", "",
+    lines = ["# Nightly: five cells, structural checks", "", f"Version: {run_version or '—'}"
+             + (f" (baseline {baseline.get('version') or '—'})" if baseline else "") + (f"; {mode}" if mode else ""), "",
              "| cell | " + " | ".join(names) + " | thesis s | writer s |", "|---" * (len(names) + 3) + "|"]
     for c in results:
         by = {k["check"]: k["ok"] for k in c["checks"]}
@@ -237,6 +270,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     lines += ["", "## Regressions (passed in the baseline, fail now)", ""] + ([f"- {x}" for x in regressed] or ["- none"])
     if stages is not None:
         lines += ["", "## Stage lists against v59 (default cell)", "", stages["report"]]
+    lines += counts_lines(results, baseline)
     lines += rulings_lines(results)
     lines += lawyer or []
     return "\n".join(lines) + "\n"
@@ -253,12 +287,16 @@ def main(argv=None) -> int:
     ap.add_argument("--no-stages", action="store_true", help="skip the stage lists' diff against v59")
     ap.add_argument("--heldout-dir", type=Path, help="the held-out folder whose scores the report ends with")
     ap.add_argument("--reasoning-effort", help="v78.1.1: LLM_REASONING_EFFORT for this run (the calls with thinking on)")
+    ap.add_argument("--deterministic", action="store_true",
+                    help="v79: the thesis call once at temperature 0 (THESIS_DETERMINISTIC), for version-to-version runs")
     args = ap.parse_args(argv)
     if not args.answers and os.path.isfile(args.env):
         from dotenv import load_dotenv
         load_dotenv(args.env)
     if args.reasoning_effort is not None:       # v78.1.1: over the env file's, for this run
         os.environ["LLM_REASONING_EFFORT"] = args.reasoning_effort
+    if args.deterministic:                      # v79 (A3): over the env file's, for this run
+        os.environ["THESIS_DETERMINISTIC"] = "1"
     specs = [c for c in cells() if not args.only or c["id"] in args.only]
     results = [offline_cell(s, args.answers) if args.answers else run_cell(s) for s in specs]
     stages = None if args.no_stages else stage_check()
@@ -268,11 +306,12 @@ def main(argv=None) -> int:
     from src import version
     run_version = version.current()
     print(f"nightly: version {run_version}", file=sys.stderr)
-    text = report(results, stages, regressed, run_version, lawyer_lines(args.heldout_dir))
+    mode = "deterministic (one thesis sample, temperature 0)" if os.getenv("THESIS_DETERMINISTIC") else "best-of-3"
+    text = report(results, stages, regressed, run_version, lawyer_lines(args.heldout_dir), baseline, mode)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     if args.json_out:
-        Path(args.json_out).write_text(json.dumps({"version": run_version, "cells": results,
+        Path(args.json_out).write_text(json.dumps({"version": run_version, "mode": mode, "cells": results,
                                                    "stages_ok": None if stages is None else stages["ok"]},
                                                   ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(text)

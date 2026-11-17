@@ -1433,17 +1433,45 @@ def clean_objections(value: Any) -> List[Dict[str, str]]:
     return out
 
 
+_CANDIDATE_KEY_RE = re.compile(r"^\W*T\s*(\d{1,2})\b", re.I)
+
+
+def candidate_key(key: Any) -> str:
+    """v79: a valuation's candidate id as the reply wrote it -- «T1», «t1», «[T1]», «T1 - Contestare …» -> «T1»; any
+    other key upper-cased as it is (so a thesis the model adds is still seen, and dropped)."""
+    m = _CANDIDATE_KEY_RE.match(str(key or ""))
+    return f"T{int(m.group(1))}" if m else str(key or "").strip().upper()
+
+
+def valuations(raw: Any) -> Dict[str, Dict[str, Any]]:
+    """v79 (A1): the reply's «valutazioni» keyed by candidate id, in either shape the model gives them -- an object keyed
+    by id, or a list of objects carrying their id («id», «tesi» or «candidata»); a value that is not an object dropped.
+    Before v79 the list shape and a decorated key («[T1]») were read as no valuation at all."""
+    vals = (raw or {}).get("valutazioni") if isinstance(raw, dict) else None
+    out: Dict[str, Dict[str, Any]] = {}
+    if isinstance(vals, dict):
+        for k, v in vals.items():
+            if isinstance(v, dict):
+                out.setdefault(candidate_key(k), v)
+    elif isinstance(vals, list):
+        for v in vals:
+            if isinstance(v, dict):
+                key = next((v[f] for f in ("id", "tesi", "candidata") if v.get(f)), "")
+                if key:
+                    out.setdefault(candidate_key(key), v)
+    return out
+
+
 def apply_valuations(raw: Any, candidates: Sequence[Dict[str, Any]], log: Optional[Dict[str, Any]] = None
                      ) -> List[Dict[str, Any]]:
     """v72: the soluzioni -- the code's candidates, each with the model's pro, contro, realismo and argument (a
     minority one: realismo basso); a thesis the model adds (a key no candidate has) dropped, into log["dropped"]."""
     raw = raw if isinstance(raw, dict) else {}
-    vals = raw.get("valutazioni") if isinstance(raw.get("valutazioni"), dict) else {}
+    vals = valuations(raw)
     ids = {c["id"] for c in candidates}
-    dropped = [k for k in vals if str(k).strip().upper() not in ids]
+    dropped = [k for k in vals if k not in ids]
     if raw.get("soluzioni"):
         dropped.append("soluzioni")
-    vals = {str(k).strip().upper(): v for k, v in vals.items() if isinstance(v, dict)}
     out = []
     ignored = [c["id"] for c in candidates if c.get("code_argument") and c["id"] in vals]
     for c in candidates:
@@ -1470,9 +1498,9 @@ def score_sample(raw: Any, candidates: Sequence[Dict[str, Any]], known: Dict[str
     -inf. (v73: the objections are no longer the thesis call's -- objections_plan writes them after the selection.)"""
     if not isinstance(raw, dict) or not raw:
         return float("-inf"), ["reply not readable"]
-    vals = raw.get("valutazioni") if isinstance(raw.get("valutazioni"), dict) else {}
+    vals = valuations(raw)
     ids = {c["id"] for c in candidates if c.get("argued", "model") == "model"}    # v74: the code argues the rest
-    keys = {str(k).strip().upper() for k in vals} - {c["id"] for c in candidates if c.get("argued") == "code"}
+    keys = set(vals) - {c["id"] for c in candidates if c.get("argued") == "code"}
     score, why = 0.0, []
     covered = len(keys & ids)
     score += 10.0 * covered / max(1, len(ids))
@@ -1484,7 +1512,7 @@ def score_sample(raw: Any, candidates: Sequence[Dict[str, Any]], known: Dict[str
         why.append(f"added {sorted(added)}")
     by = {c["id"]: c for c in candidates}
     for k, v in vals.items():
-        c = by.get(str(k).strip().upper())
+        c = by.get(k)
         if not c or not isinstance(v, dict):
             continue
         real = _plain(v.get("realismo")).lower()
@@ -1572,7 +1600,8 @@ def thesis_log(ctx: Dict[str, Any], messages: Sequence[Any], raw_reply: str, par
                  "plan": plan, "seconds": seconds, "error": error,
                  "candidates": ctx.get("candidates") or [], "samples": list(samples), "best": best,
                  "argument_binding": ctx.get("argument_binding") or {},
-                 "n": SAMPLES, "temperature": SAMPLE_TEMPERATURE,
+                 "n": sampling()[0], "temperature": sampling()[1], "deterministic": deterministic(),
+                 "choice": ctx.get("thesis_choice") or {}, "counts": ctx.get("selection_counts") or {},
                  "elements": elements_by_id(ctx.get("records") or {}, ctx.get("circumstances")),
                  "assessment": ctx.get("assessment") or {}, "posture": ctx.get("posture") or {}}
         with open(path, "w", encoding="utf-8") as f:
@@ -1585,10 +1614,43 @@ def thesis_log(ctx: Dict[str, Any], messages: Sequence[Any], raw_reply: str, par
 
 SAMPLES = 3                    # v72: best-of-3 on the thesis call
 SAMPLE_TEMPERATURE = 0.7
+DETERMINISTIC_ENV = "THESIS_DETERMINISTIC"     # v79 (A3): one sample at temperature 0 (nightly / replay --deterministic)
+
+
+def deterministic() -> bool:
+    return (os.getenv(DETERMINISTIC_ENV) or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def sampling() -> Tuple[int, float]:
+    """(replies, temperature) of the thesis call: best-of-SAMPLES at SAMPLE_TEMPERATURE; v79 (A3): one at 0 under
+    THESIS_DETERMINISTIC, for comparing two versions on the same input."""
+    return (1, 0.0) if deterministic() else (SAMPLES, SAMPLE_TEMPERATURE)
+
+
+def reply_digest(parsed: Any) -> str:
+    """v79 (A3): the fixed tie-break -- the sha1 of the parsed reply, keys sorted: the same replies, the same choice,
+    whatever order the server returns them in."""
+    import hashlib
+    return hashlib.sha1(json.dumps(parsed if isinstance(parsed, (dict, list)) else {}, ensure_ascii=False,
+                                   sort_keys=True, default=str).encode("utf-8")).hexdigest()
+
+
+def choose(scored: Sequence[Dict[str, Any]]) -> Tuple[Optional[int], Dict[str, Any]]:
+    """v79 (A3): the reply kept -- the highest score (an unreadable one last), ties broken by the smallest digest of the
+    parsed reply, never by the order the replies arrived in. (index, {by, tie_break, scores, digests, tied})."""
+    if not scored:
+        return None, {"by": "score", "tie_break": "sha1 of the parsed reply, smallest", "scores": [], "tied": []}
+    value = lambda i: scored[i]["score"] if scored[i]["score"] is not None else -1e9
+    digests = [reply_digest(x.get("parsed")) for x in scored]
+    top = max(value(i) for i in range(len(scored)))
+    tied = [i for i in range(len(scored)) if value(i) == top]
+    best = min(tied, key=lambda i: (digests[i], i))
+    return best, {"by": "score", "tie_break": "sha1 of the parsed reply, smallest", "scores": [x["score"] for x in scored],
+                  "digests": [d[:12] for d in digests], "tied": tied if len(tied) > 1 else []}
 
 
 def _samples(messages: Sequence[Any], call: Optional[Callable]) -> List[Tuple[str, Any]]:
-    """[(raw reply, parsed)] of the thesis call's SAMPLES replies (one request, n=SAMPLES); call (tests, the replay): a
+    """[(raw reply, parsed)] of the thesis call's replies (one request, n from sampling()); call (tests, the replay): a
     stand-in taking the messages and returning one parsed reply or a list of them."""
     from . import ai_chat
     from .llm_reply import parse_json_reply
@@ -1596,7 +1658,8 @@ def _samples(messages: Sequence[Any], call: Optional[Callable]) -> List[Tuple[st
         got = call(messages)
         got = got if isinstance(got, list) else [got]
         return [(json.dumps(g, ensure_ascii=False) if not isinstance(g, str) else g, g) for g in got]
-    texts = ai_chat.call_chat_n(list(messages), SAMPLES, max_tokens=METHOD_TOKENS, temperature=SAMPLE_TEMPERATURE,
+    n, temperature = sampling()
+    texts = ai_chat.call_chat_n(list(messages), n, max_tokens=METHOD_TOKENS, temperature=temperature,
                                 thinking=True if thinking_supported() else None)
     out = []
     for text in texts:
@@ -1718,21 +1781,52 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
         value, why = score_sample(parsed, ctx["candidates"], known)
         scored.append({"raw_reply": text, "parsed": parsed if isinstance(parsed, (dict, list)) else None,
                        "score": value if value != float("-inf") else None, "why": why})
-    best = max(range(len(scored)), key=lambda i: scored[i]["score"] if scored[i]["score"] is not None else -1e9) \
-        if scored else None
+    best, ctx["thesis_choice"] = choose(scored)          # v79 (A3): score, then a fixed tie-break
     raw = scored[best]["parsed"] if best is not None else {}
     seconds = round(time.time() - t0, 1)
     ctx.setdefault("timings", {})["thesis_selection_s"] = seconds
     clean_log: Dict[str, Any] = {}
     plan = clean_method(raw, ctx["candidates"], clean_log)
     ctx["argument_binding"] = bind_arguments(plan["soluzioni"], known)       # v74: no negation beyond «contesta»
+    if ctx.get("rulings_record"):       # v78: a prevailing line for an element's integration: its contest «basso»
+        from . import rulings           # (v79: here, so the counts below are the selection compose makes)
+        capped: List[Dict[str, Any]] = []
+        rulings.cap_realism(plan, ctx["rulings_record"], capped)
+        if capped:
+            _log("rulings_realism", capped)
+    ctx["selection_counts"] = selection_counts(ctx, plan, raw)
     ctx["thesis_log"] = thesis_log(ctx, messages, scored[best]["raw_reply"] if best is not None else "", raw, plan,
                                    seconds, error, scored, best)
     _log("plan", {"candidates": len(ctx["candidates"]), "samples": [x["score"] for x in scored], "best": best,
+                  "choice": ctx["thesis_choice"], "counts": ctx["selection_counts"],
                   "dropped": clean_log.get("dropped"),
                   "orientamenti": len(plan["orientamenti"]), "seconds": seconds, "log": ctx["thesis_log"]},
          seconds * 1000)
     return plan
+
+
+COUNT_KEYS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback")
+
+
+def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None) -> Dict[str, Any]:
+    """v79 (A2): where the candidates went -- offered (the code's), parsed (reached the selection as soluzioni), valued
+    (model-argued ones the kept reply valued), barred (contest an «integrato» element, unlabelled), unverifiable,
+    minoritaria, the main line chosen (its candidate id, «fallback» when the selection inserted one) and whether it is
+    the fallback (the posture's or the remedies table's line, no candidate of the code's)."""
+    cands = ctx.get("candidates") or []
+    vals = valuations(raw)
+    sols, main, _ = selection(ctx, plan)
+    m = sols[main] if sols else {}
+    inserted = bool(m.get("fallback")) and not m.get("candidate")
+    return {"offered": len(cands), "parsed": sum(1 for t in plan.get("soluzioni") or [] if t.get("candidate")),
+            "valued": sum(1 for c in cands if c.get("argued", "model") == "model" and c["id"] in vals),
+            "model_argued": sum(1 for c in cands if c.get("argued", "model") == "model"),
+            "barred": sum(1 for t in sols if t.get("barred")),
+            "unverifiable": sum(1 for t in sols if t.get("unverifiable")),
+            "minoritaria": sum(1 for t in sols if t.get("minoritaria")),
+            "chosen": "fallback" if inserted else str(m.get("candidate") or ""),
+            "chosen_kind": str(m.get("kind") or ("fallback" if inserted else "")),
+            "main_is_fallback": inserted}
 
 
 # --- v73: the objections, written for the selected line --------------------------------------------------------------------
@@ -1979,7 +2073,10 @@ def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]],
     known = elements_by_id(records, circ)
     sols = [dict(s_) for s_ in plan.get("soluzioni") or []]
     for t in sols:
-        if not (t.get("contesta") or t.get("poggia_su")):
+        # v79 (A1): a thesis the code enumerated is verifiable by construction -- its ids, or none, are the code's (an
+        # eccezione, a remedy with nothing proven yet); only a thesis of the model's own (no candidate id) declaring
+        # no element is unverifiable. Before v79 those candidates were lost here, and the fallback led.
+        if not (t.get("contesta") or t.get("poggia_su")) and not t.get("candidate"):
             t["unverifiable"] = True
             if log is not None:
                 log.append({"tesi": t["tesi"][:160], "unverifiable": True})
