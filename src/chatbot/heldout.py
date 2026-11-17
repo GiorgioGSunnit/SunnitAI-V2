@@ -66,7 +66,15 @@ def record(session_id: str, prompt: str, result: Dict[str, Any], mode: str, inta
             "kind": result.get("kind") or "", "prompt": prompt or "",
             **({"case_text": case_text} if case_text else {}),
             "intake": intake or {}, "answer": result.get("answer") or "",
-            "article_citations": result.get("article_citations") or [], "timings": timings(state)}
+            "article_citations": result.get("article_citations") or [], "timings": timings(state),
+            **({"rulings": rulings_used(state)} if state.get("rulings_record") else {})}
+
+
+def rulings_used(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v78: the rulings the answer used (RULINGS_RECORD) -- the kept ones with their passage, the orientations, the
+    lawyer's pronunce di riferimento."""
+    record = state.get("rulings_record") or {}
+    return {k: record.get(k) for k in ("kept", "orientations", "landmarks")}
 
 
 def save(session_id: str, prompt: str, result: Dict[str, Any], mode: str, intake: Optional[Dict[str, Any]] = None,

@@ -995,6 +995,9 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         _isolated("procedural_facts", lambda: procedural_facts.attach(session, rows))
         from . import article_notes             # v72: the lawyer's note di inquadramento, from the store
         _isolated("article_notes", lambda: article_notes.attach(session, rows))
+        from . import landmark_rulings, rulings  # v78: his pronunce di riferimento, from the store
+        if rulings.enabled():
+            _isolated("landmark_rulings", lambda: landmark_rulings.attach(session, rows))
         stage_meter.mark("commi")
         if comma_material.enabled():
             _isolated("commi", lambda: comma_material.attach(session, rows, "strategy", store=store_))
@@ -4572,6 +4575,9 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
     lines_of_case = hypotheses_block(topics)          # v60 (A): the first read's lines the chosen topics anchor
     people = relationships_block(state, analysis)     # v60d: the relationships the case states, the deceased
     no_rulings = " Non citare pronunce."
+    if rulings_writer_block(state):     # v78: the registry's rulings, with their estremi -- the only ones
+        from . import rulings
+        no_rulings = rulings.WRITER_RULE
     main_topic = main_line_topic(topics)          # v60s (4): §1's norms; v60t (3): the main line's anchor among them
     main_anchor = issue_records._label(_parse_label(main_topic["anchor"])) if main_topic and main_topic.get("anchor") \
         else ""
@@ -4612,7 +4618,7 @@ def _jobs(state, plan, analysis, rows, refs, topics, rendered, documents) -> Lis
           "già scritto sopra il paragrafo: non ripeterlo e non contraddirlo. Solo le norme dell'elenco: le altre norme "
           "dell'argomento hanno già il loro titolo e non vanno commentate.") + shape + no_rulings,
          material(case, fixed, to_sue, people, facts, schede, rules, block("TESTI DELLE NORME", texts),
-                  method_notes(state)), budget["norms"]),
+                  method_notes(state), rulings_writer_block(state)), budget["norms"]),
         (ANSWER_TITLES[2],
          f"SEZIONE: Obiezioni e repliche. Per ciascuna delle OBIEZIONI DELLA CONTROPARTE DA TRATTARE, nell'ordine e senza "
          f"aggiungerne: solo la replica di {who}, in due-tre frasi, sui fatti del caso e sulle norme fornite, aperta dal "
@@ -5757,12 +5763,45 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     ctx = lawyer_method.prepare(state, posture, rows, case, client, main, order, rulings, lines, abrogated,
                                 objections(state, topics, refs), frame_areas=areas, questions=unanswered(state),
                                 case_id_=str(state.get("case_id") or ""))
+    from . import rulings as rulings_mod
+    record = _isolated("rulings_for_record", lambda: rulings_record(ctx, rows), None) if rulings_mod.enabled() else None
+    if record is not None:      # v78: the registry -- the only citable rulings, the material of every call
+        ctx["rulings_record"], ctx["rulings"] = record, rulings_mod.citable(record)
+        state["rulings_record"] = record
     mplan = lawyer_method.method_plan(ctx)
+    if record is not None:      # v78: a prevailing line for an element's integration: its contest «basso»
+        capped: List[Dict[str, Any]] = []
+        rulings_mod.cap_realism(mplan, record, capped)
+        if capped:
+            _log("rulings_realism", capped)
     # v73: the objections written after the selection, given the selected line and the barred list
     mplan = _isolated("lawyer_method_objections", lambda: lawyer_method.objections_plan(ctx, mplan), mplan) or mplan
     for key in ("thesis_selection_s", "objections_s"):
         state.setdefault("timings", {})[key] = (ctx.get("timings") or {}).get(key)
     return ctx, mplan
+
+
+def rulings_record(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], call=None) -> Dict[str, Any]:
+    """v78 (RULINGS_RECORD): the answer's rulings record (rulings.build, on the graph, read-only), the lawyer's pronunce
+    di riferimento of its articles (landmark_rulings: the store's, else his file's), and what the nightly reads: the
+    charge, and whether it is a c.c. fattispecie of the record."""
+    import neo4j
+    from . import landmark_rulings, rulings
+    from .main import NEO4J_DATABASE, driver
+    records = ctx.get("records") or {}
+    marks, sources = landmark_rulings.for_records(list(records), rows)
+    with driver.session(database=NEO4J_DATABASE, default_access_mode=neo4j.READ_ACCESS) as session:
+        record = rulings.build(ctx, rows, session, call=call, landmarks=marks)
+    charge = str((ctx.get("assessment") or {}).get("article") or "")
+    record.update(charge=charge, charge_cc_fattispecie=charge.endswith(" c.c.") and charge in records,
+                  landmark_sources=sources)
+    return record
+
+
+def rulings_writer_block(state: Optional[Dict[str, Any]]) -> str:
+    """v78: the registry for the norms writer ("" without one)."""
+    from . import rulings
+    return rulings.registry_block((state or {}).get("rulings_record")) if method_mode(state) else ""
 
 
 # --- v62: the requested blocks (intake's requested_blocks), sections in the asked order -----------------------------------

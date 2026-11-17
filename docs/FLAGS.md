@@ -359,6 +359,12 @@ and the nightly report carry it. No environment variable changes it.
 
 ---
 
+## 5b. v78 addition
+
+| Name | Default | Read in | What it does |
+|---|---|---|---|
+| `RULINGS_RECORD` | false | `src/rag/rulings.py:enabled` (`FLAG`) | The Cassazione rulings into the record (`src/rag/rulings.py`): the rulings citing each record article, with estremi parsed from the file name, ranked, a quoted «passaggio della motivazione» picked by one linking call, computed orientations, §5 rendered by the code with the fixed corpus line, the lawyer's pronunce di riferimento (`src/rag/landmark_rulings.py`). The writer cites only the registry. The thesis and objections calls receive it, and a prevailing line against a contest lowers its realismo to basso. With it on, `select:v1_case_law` (`defensive_generation._select_articles`), the REFERS_TO neighbours in a topic's articles (`topic_step.articles_split`) and `EDGE_EXPAND` stop feeding the pool. Keep it off until `scripts/rulings_parse_rate.py` has been reported and `data/ruling_sections.json` is confirmed. |
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the

@@ -1277,6 +1277,15 @@ def records_block(records: Dict[str, Dict[str, Any]], circ: Optional[Dict[str, D
     return "\n".join(lines)
 
 
+def registry(ctx: Dict[str, Any]) -> str:
+    """v78 (RULINGS_RECORD): the answer's rulings registry -- the kept passages, the computed orientations, the lawyer's
+    pronunce di riferimento -- as the calls receive it; "" without one."""
+    if not ctx.get("rulings_record"):
+        return ""
+    from . import rulings
+    return rulings.registry_block(ctx["rulings_record"])
+
+
 def method_material(ctx: Dict[str, Any]) -> str:
     a = ctx.get("assessment") or {}
     parts = [f"CASO:\n{ctx.get('case') or ''}",
@@ -1284,7 +1293,7 @@ def method_material(ctx: Dict[str, Any]) -> str:
              f"SCHEDE:\n{records_block(ctx.get('records') or {}, ctx.get('circumstances')) or '(nessuna)'}",
              "VALUTAZIONE DAL REGISTRO: " + f"esito probabile {a.get('esito')}; grado di certezza {a.get('grado')}; "
              f"obiettivo realistico {a.get('obiettivo')} ({a.get('why')})",
-             "PRONUNCE DISPONIBILI:\n" + ("\n".join(
+             "PRONUNCE DISPONIBILI:\n" + (registry(ctx) or "\n".join(
                  f"- [{r.get('id')}] {r.get('label')}: {_short(r.get('massima'), 300)}" if isinstance(r, dict) else f"- {r}"
                  for r in ctx.get("rulings") or []) or "(nessuna)"),
              f"OPZIONI STRAGIUDIZIALI: {ctx.get('stragiudiziale') or '(nessuna)'}"]
@@ -1581,6 +1590,9 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
     from langchain_core.messages import HumanMessage, SystemMessage
     ctx["candidates"] = thesis_candidates(ctx)
     system = METHOD_SYSTEM + "\n\n" + method_text(ctx.get("rito") or "", ctx.get("areas") or ())
+    if ctx.get("rulings_record"):       # v78: a passage on a contested element can lower a thesis' realism
+        from . import rulings
+        system += rulings.REALISM_RULE
     messages = [SystemMessage(content=system), HumanMessage(content=method_material(ctx))]
     known = elements_by_id(ctx.get("records") or {}, ctx.get("circumstances"))
     t0 = time.time()
@@ -1664,6 +1676,8 @@ def objections_material(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], mai
     out.append("TESI ESCLUSE:\n" + ("\n".join(
         f"- {t['tesi'].rstrip('.')}: " + (f"contesta {', '.join(t['barred'])}, integrato" if t.get("barred")
                                           else "non dichiara gli elementi") for t in barred_) or "(nessuna)"))
+    if registry(ctx):                   # v78: the kept passages, material of the objections too
+        out.append(registry(ctx))
     return "\n\n".join(out)
 
 
@@ -2276,6 +2290,16 @@ def orientations_section(plan: Dict[str, Any], rulings: Sequence[Any], log: Opti
     return "\n".join(lines) if lines else NO_POINTS_LINE
 
 
+def orientations_text(ctx: Dict[str, Any], plan: Dict[str, Any], rulings: Sequence[Any], log: Optional[List[str]] = None,
+                      points: Optional[List[str]] = None) -> str:
+    """§5: v78 (RULINGS_RECORD), the registry's -- the rulings with their quoted passage, the computed orientations, the
+    lawyer's pronunce di riferimento, the corpus line (rulings.section_text); else v71's (orientations_section)."""
+    if ctx.get("rulings_record"):
+        from . import rulings as rulings_mod
+        return rulings_mod.section_text(ctx["rulings_record"], points)
+    return orientations_section(plan, rulings, log, points)
+
+
 def question_section(plan: Dict[str, Any], a: Dict[str, Any], records: Dict[str, Dict[str, Any]], client: str) -> str:
     if plan.get("questione_giuridica"):
         return plan["questione_giuridica"]
@@ -2567,7 +2591,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         ("fatti", facts_section(ctx.get("facts") or {})),
         ("questione", question_section(plan, a, records, client)),
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
-        ("orientamenti", orientations_section(plan, rulings, rulings_out, orientation_points)),
+        ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points)),
         ("soluzioni", solutions_section(sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "",
                                         layout_log)),
         ("obiezioni", objections_section(plan, fallback_objections)),
@@ -2761,14 +2785,22 @@ def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List
         check(f"conclusions:{line.strip('*')}", line in con, "missing")
     check("obiettivo_label", bool(re.search(r"\*\*Obiettivo realistico\*\*: (?:esito pieno|esito parziale|contenimento)",
                                             con)), "no esito pieno / parziale / contenimento")
-    body = "\n".join(re.sub(rf"(?m)^- [^\n]*: {ORIENTATION_TO_VERIFY}$|^{ORIENTATION_TO_VERIFY}$", "", x)
+    from . import rulings as rulings_mod
+    orient = by.get(title("orientamenti")) or ""
+    registry_layout = rulings_mod.CORPUS_LINE in orient         # v78: §5 the registry's (rulings.section_text)
+    body = "\n".join(("" if registry_layout else
+                      re.sub(rf"(?m)^- [^\n]*: {ORIENTATION_TO_VERIFY}$|^{ORIENTATION_TO_VERIFY}$", "", x))
                      if t == title("orientamenti") else x for t, x in secs if t != title("verificare"))
     check("markers_collected", not re.search(r"\bda verificare\b", body, re.I), "«da verificare» in the body")
-    orient = by.get(title("orientamenti")) or ""
-    check("orientations_code_rendered", all(re.match(rf"^- [^\n]*: (?:{ORIENTATION_TO_VERIFY}|.+\(documento [^)]+\): «.+»)$",
-                                                     ln) for ln in orient.split("\n") if ln.strip()
-                                            and ln.strip() != ORIENTATION_TO_VERIFY),
-          "an orientation line not rendered by the code")
+    if registry_layout:
+        bad = rulings_mod.section_lines_ok(orient)
+        check("orientations_code_rendered", not bad, f"lines not rendered by the code: {bad[:2]}")
+        check("no_massima", not re.search(r"\bmassim[ae]\b", answer or "", re.I), "the word «massima» in the answer")
+    else:
+        check("orientations_code_rendered",
+              all(re.match(rf"^- [^\n]*: (?:{ORIENTATION_TO_VERIFY}|.+\(documento [^)]+\): «.+»)$", ln)
+                  for ln in orient.split("\n") if ln.strip() and ln.strip() != ORIENTATION_TO_VERIFY),
+              "an orientation line not rendered by the code")
     proc = by.get(title("processuali")) or ""
     family, role, stage = cell.get("family"), cell.get("role"), cell.get("stage")
     if cell.get("rito", "civile") in ("civile", "famiglia") and family == "civile" and role == "attore" \

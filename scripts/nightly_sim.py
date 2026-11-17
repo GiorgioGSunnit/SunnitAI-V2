@@ -23,6 +23,11 @@ measure any more. Each run records the VERSION it ran (the report's first line, 
 answer must end with that version's footer (check version_footer); the report ends with the lawyer's latest mean per
 version (the held-out folder's scores.jsonl: --heldout-dir, else HELDOUT_DIR, else /opt/chatbot/heldout).
 
+v78 (RULINGS_RECORD on): every penal cell, and every civil cell whose charge is a c.c. fattispecie of the record, has at
+least one ruling printed with its quoted passage in §5 (check ruling_passage; a cell with none fails); the report adds
+the rulings record per cell (per article found / linked / kept, estremi parsed / unparsed, passages quoted / none,
+orientations computed / to verify) and the penal cells' §5 verbatim.
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --answers DIR      # offline: DIR/<cell id>.md, the checks only (no model, no DB)
 
@@ -108,6 +113,14 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
                           **{k: timings.get(k) for k in ("thesis_selection_s", "writer_s", "answer_s")}}
         out["checks"] += lawyer_method.structure_checks(out["answer"], spec["cell"])
         out["checks"].append(footer_check(out["answer"]))
+        from src.rag import rulings
+        if rulings.enabled():
+            record = (result.get("state") or {}).get("rulings_record")
+            out["rulings"] = (record or {}).get("log") or {}
+            out["rulings"].update({k: (record or {}).get(k) for k in ("charge", "charge_cc_fattispecie")})
+            check = ruling_check(out["answer"], spec["cell"], record)
+            if check:
+                out["checks"].append(check)
     except Exception as exc:          # noqa: BLE001 -- a failed cell is a failed check, the others still run
         out["checks"].append({"check": "run", "ok": False, "why": f"{type(exc).__name__}: {exc}"[:300]})
     return out
@@ -119,6 +132,47 @@ def footer_check(answer: str) -> Dict[str, Any]:
     ok = version.has_footer(answer, version.current())
     last = (answer or "").rstrip().rsplit("\n", 1)[-1].strip()[:80]
     return {"check": "version_footer", "ok": ok, "why": "" if ok else f"last line «{last}», not «{version.footer()}»"}
+
+
+def section5(answer: str) -> str:
+    from src.rag import lawyer_method
+    return dict(lawyer_method.answer_sections(answer)).get(lawyer_method.title("orientamenti")) or ""
+
+
+def ruling_check(answer: str, cell: Dict[str, Any], record: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """v78: a penal cell, or a civil cell charged with a c.c. fattispecie, needs a ruling quoted in §5; None when the
+    cell is neither (no check)."""
+    from src.rag import rulings
+    penal = cell.get("family") == "penale"
+    if not penal and not (record or {}).get("charge_cc_fattispecie"):
+        return None
+    n = rulings.quoted(section5(answer))
+    why = "" if n else ("no rulings record" if record is None else
+                        f"§5 quotes no passage (kept {len(record.get('kept') or [])}, charge {record.get('charge')})")
+    return {"check": "ruling_passage", "ok": bool(n), "why": why}
+
+
+def rulings_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v78: per cell, the rulings record's counts; then the penal cells' §5 verbatim."""
+    rows = [c for c in results if c.get("rulings") is not None]
+    if not rows:
+        return []
+    lines = ["", "## Rulings in the record (per cell, per article)", "",
+             "| cell | article | found | linked | kept |", "|---|---|---|---|---|"]
+    for c in rows:
+        for label, a in (c["rulings"].get("articles") or {}).items():
+            lines.append(f"| {c['id']} | {label} | {a.get('found', 0)} | {a.get('linked', 0)} | {a.get('kept', 0)} |")
+    lines += ["", "| cell | estremi parsed | unparsed | section unmapped | passages quoted | none | orientations "
+                  "computed | to verify |", "|---|---|---|---|---|---|---|---|"]
+    for c in rows:
+        r = c["rulings"]
+        e, p, o = r.get("estremi") or {}, r.get("passages") or {}, r.get("orientation") or {}
+        lines.append(f"| {c['id']} | {e.get('parsed', 0)} | {e.get('unparsed', 0)} | {e.get('section_unmapped', 0)} | "
+                     f"{p.get('quoted', 0)} | {p.get('none', 0)} | {o.get('computed', 0)} | {o.get('da_verificare', 0)} |")
+    for c in results:
+        if (c.get("cell") or {}).get("family") == "penale" and c.get("answer"):
+            lines += ["", f"### §5 of {c['id']}", "", section5(c["answer"]) or "(no §5)"]
+    return lines
 
 
 def lawyer_lines(folder: Optional[Path]) -> List[str]:
@@ -139,6 +193,10 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
         return out
     out["answer"] = path.read_text(encoding="utf-8")
     out["checks"] = lawyer_method.structure_checks(out["answer"], spec["cell"])
+    from src.rag import rulings
+    check = ruling_check(out["answer"], spec["cell"], None) if rulings.enabled() else None
+    if check:           # v78: offline, the penal cells only (the record is not in a file)
+        out["checks"].append(check)
     return out
 
 
@@ -178,6 +236,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     lines += ["", "## Regressions (passed in the baseline, fail now)", ""] + ([f"- {x}" for x in regressed] or ["- none"])
     if stages is not None:
         lines += ["", "## Stage lists against v59 (default cell)", "", stages["report"]]
+    lines += rulings_lines(results)
     lines += lawyer or []
     return "\n".join(lines) + "\n"
 

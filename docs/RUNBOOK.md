@@ -145,3 +145,23 @@ venv/bin/python scripts/heldout_score.py --summary                              
 - Before `release.sh`: the full test suite in both modes, plain and all flags on (`tests/conftest.py`). It pins `STATE_DIR` and `HELDOUT_DIR` to temporary folders, so a test run never writes into `/opt/chatbot`.
 - After `deploy.sh`: the import check line and the server's VERSION. Then a hand test on `serve_test.sh`.
 - After `promote.sh`: `is-active` is `active`, `/api/version` is the new version, and the nightly passes with the new version in its report.
+
+## 7. v78: turning the rulings record on
+
+`RULINGS_RECORD` stays off until both of these are done:
+
+1. **The parse rate is reported** on a sample of 1,000 rulings (read-only):
+   `cd /opt/chatbot && venv/bin/python scripts/rulings_parse_rate.py --env .env --json-out /root/parse_rate.json`.
+   It prints the parse rate from the file names, the share stamped by the linker, the dates read, whether
+   `document_number` agrees with the file name, the section codes found with the chamber each one prints, and the
+   unparsed shapes.
+2. **Antonelo confirms `data/ruling_sections.json`**, in particular which code is Sezioni Unite. Then set
+   `"confirmed": true`.
+
+Next, import the lawyer's landmark rulings, once he has written any:
+`venv/bin/python scripts/fill_procedural_store.py --pronunce docs/lawyer/pronunce_di_riferimento.md --write`.
+
+Then set `RULINGS_RECORD=true` in `/root/v38/.env.v45`, hand-test, promote (`promote.sh` copies the flag) and run
+the nightly. The nightly adds `ruling_passage`: every penal cell, and every civil cell charged with a c.c.
+fattispecie, must quote at least one passage in §5. It also adds the per-article found / linked / kept table and
+the penal cells' §5 verbatim.

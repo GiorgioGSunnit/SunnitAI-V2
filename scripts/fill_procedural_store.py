@@ -26,6 +26,12 @@ PROPERTY, JSON {"nota", "numeri"}); dry run by default, --write stores; an artic
 
   python scripts/fill_procedural_store.py --notes docs/lawyer/note_inquadramento.md --write
 
+v78: --pronunce FILE imports the lawyer's «pronunce di riferimento» (docs/lawyer/pronunce_di_riferimento.md: «## art. N
+codice», under it «- estremi — principio») onto each article's Section node (src/rag/landmark_rulings: PROPERTY, JSON
+[{"estremi", "principio"}]), the same way: dry run by default, --write stores, an article the graph lacks is listed.
+
+  python scripts/fill_procedural_store.py --pronunce docs/lawyer/pronunce_di_riferimento.md --write
+
 v67 (procedural_facts.VERSION 4): each term's subject is the act that owns its number (procedural_facts.owner), a
 «1-bis.» comma is its own; a v3 entry is read with its terms computed from the text again. --text (with --show)
 prints each comma's text as the store reads it, and how the text was split.
@@ -60,9 +66,13 @@ def main(argv=None) -> None:
                                        "(nothing written)")
     parser.add_argument("--text", action="store_true", help="with --show: each comma's text as the store reads it (v67)")
     parser.add_argument("--notes", help="v72: import the lawyer's notes from this file (article -> note)")
+    parser.add_argument("--pronunce", help="v78: import the lawyer's pronunce di riferimento from this file")
     args = parser.parse_args(argv)
     if args.notes:
         import_notes(args.notes, args.write)
+        return
+    if args.pronunce:
+        import_notes(args.pronunce, args.write, kind="pronunce")
         return
     codes = [c.strip() for c in args.codes.split(",") if c.strip()]
     mode = neo4j.WRITE_ACCESS if args.write else neo4j.READ_ACCESS
@@ -136,17 +146,19 @@ def main(argv=None) -> None:
     vlog("procedural_store_coverage", {code: c for code, c in coverage.items()})
 
 
-def import_notes(path: str, write: bool) -> dict:
-    """v72: the file's notes onto their Section nodes (article_notes.WRITE_QUERY); the counts, each article not found."""
+def import_notes(path: str, write: bool, kind: str = "notes") -> dict:
+    """v72: the file's notes onto their Section nodes (article_notes.WRITE_QUERY); the counts, each article not found.
+    v78: kind «pronunce» -- the lawyer's pronunce di riferimento (landmark_rulings), the same way."""
     import neo4j
-    from src.rag import article_notes, article_text, defensive_generation as dg
+    from src.rag import article_notes, article_text, defensive_generation as dg, landmark_rulings
     from src.rag.main import NEO4J_DATABASE, driver
-    notes = article_notes.parse(Path(path).read_text(encoding="utf-8"))
+    module = landmark_rulings if kind == "pronunce" else article_notes
+    notes = module.parse(Path(path).read_text(encoding="utf-8"))
     report = {"notes": len(notes), "written": 0, "missing": [], "codes": {}}
     mode = neo4j.WRITE_ACCESS if write else neo4j.READ_ACCESS
     with driver.session(database=NEO4J_DATABASE, default_access_mode=mode) as session:
         store = article_text.ArticleStore()
-        for code, items in article_notes.store_items(notes).items():
+        for code, items in module.store_items(notes).items():
             prefix = dg._CODE_PREFIXES.get(code)
             if not prefix:
                 report["missing"] += [f"{n} {code} (no document prefix)" for n, _ in items]
@@ -163,7 +175,7 @@ def import_notes(path: str, write: bool) -> dict:
                 print(f"art. {number} {code}: {note[:160]}")
             report["codes"][code] = len(rows)
             if write and rows:
-                report["written"] += session.run(article_notes.WRITE_QUERY, items=rows).single()["n"]
+                report["written"] += session.run(module.WRITE_QUERY, items=rows).single()["n"]
     print(json.dumps(report, ensure_ascii=False))
     return report
 

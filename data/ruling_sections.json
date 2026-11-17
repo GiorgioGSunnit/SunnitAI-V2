@@ -1,0 +1,20 @@
+{
+ "_about": "v78: the Italgiure section code of a Cassazione file name (snpen|snciv _ s<C><S> _ a<YYYY> _ n<N> _ t<act>: C the section, S its sub-section, 0 when none) -> the chamber as the estremi print it (src/rag/rulings.py render_estremi). PROVISIONAL: these are the readings src/rag/defensive_generation.py already used (_ITALGIURE_SECTIONS: U = Sezioni Unite, digits = the numbered sections, F feriale, L lavoro, T tributaria), written in the form the PO asked for («Sez. Un.», «Sez. 3»). To be confirmed by Antonelo -- in particular which code is the Sezioni Unite -- then set confirmed to true. A code missing here prints no chamber (the estremi stay court, number and year) and is counted as unmapped by scripts/rulings_parse_rate.py.",
+ "confirmed": false,
+ "source": "defensive_generation._ITALGIURE_SECTIONS (v59); pending Antonelo",
+ "sezioni_unite": ["U"],
+ "codes": {
+  "U": "Sez. Un.",
+  "1": "Sez. 1",
+  "2": "Sez. 2",
+  "3": "Sez. 3",
+  "4": "Sez. 4",
+  "5": "Sez. 5",
+  "6": "Sez. 6",
+  "7": "Sez. 7",
+  "F": "Sez. fer.",
+  "L": "Sez. L",
+  "T": "Sez. T"
+ },
+ "acts": {"S": "sentenza", "O": "ordinanza", "I": "ordinanza interlocutoria", "D": "decreto"}
+}

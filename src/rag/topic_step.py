@@ -772,7 +772,8 @@ def articles_split(ref: tuple, links, pool: Dict[tuple, Dict[str, Any]], codes: 
         near = {r for r in ordered[max(0, at - NEAR_WINDOW):at + NEAR_WINDOW + 1] if r != ref}
         sezione = sorted((r for r in mates if r in near or wanted & _content_stems(rubriche.get((str(r[0]), _code(r[1])), ""))),
                          key=lambda r: (abs(_number(r[0]) - _number(ref[0])), _number(r[0])))
-        cites = links.refers_out(ref) if hasattr(links, "refers_out") else []
+        from . import rulings     # v78 (RULINGS_RECORD): no primary-to-primary expansion into a topic's articles
+        cites = links.refers_out(ref) if hasattr(links, "refers_out") and not rulings.enabled() else []
         own = _code(ref[1])
         book = _book(ref, links)
         cited = [r for r, n in sorted(cites, key=lambda x: (x[1], x[0])) if r != ref and n <= HUB_INBOUND

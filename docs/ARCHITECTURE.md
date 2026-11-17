@@ -350,6 +350,18 @@ the state has records, and the method was not refused. Under it, `_write_answer`
   copies `/root/v38` to `/opt/chatbot` (snapshot, per-directory rsync with `data/` never `--delete`, boolean flags
   from `.env.v45`, import check, restart). It leaves the state folder alone. See `docs/RUNBOOK.md`.
 
+## 6b. v78: rulings in the record (`RULINGS_RECORD`)
+
+`interactive_flow.method_inputs` builds the answer's rulings record (`rulings_record` → `src/rag/rulings.py:build`)
+after `lawyer_method.prepare` and before the thesis call. It fetches the rulings citing each record article,
+parses the estremi from the file names, and shortlists by noun overlap. One linking call then grades each
+shortlisted ruling, picks the sentence to quote and reads its direction. The step ends with the computed orientations.
+The record goes to `ctx["rulings_record"]` and `state["rulings_record"]`, and `ctx["rulings"]` becomes the citable
+list (`rulings.citable`). The thesis call, the objections call and the norms writer receive `rulings.registry_block`.
+`rulings.cap_realism` runs between the thesis and the objections call, and `lawyer_method.orientations_text`
+renders §5 from the record. The lawyer's landmark rulings (`landmark_rulings`) are attached from the store
+beside his notes. The held-out record carries the rulings used, and the nightly checks that §5 quotes a passage.
+
 ## 7. The two server copies
 
 | | `/opt/chatbot` (live) | `/root/v38` (test) |

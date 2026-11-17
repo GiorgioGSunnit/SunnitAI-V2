@@ -3442,7 +3442,11 @@ def _select_articles(session, driver, database: str, facts: str, request: str,
     # (_select_articles_fusion), never a channel of their own here; their searches are skipped.
     hybrid = source_tiers.hybrid_enabled(analysis.get("route"))
     _mark("select:v1_case_law")
-    first_rulings = [] if hybrid else _search_case_law(session, analysis)
+    from . import rulings as rulings_mod      # v78 (RULINGS_RECORD): the rulings go to the record, not to the pool
+    no_case_law = rulings_mod.enabled()
+    first_rulings = [] if hybrid or no_case_law else _search_case_law(session, analysis)
+    if no_case_law:
+        vlog("select_v1_case_law_off", {"why": "RULINGS_RECORD"})
     _mark("select:v1_similar_facts")
     similar = [] if hybrid else _search_similar_facts(session, analysis,
                                                       {(r.get("d") or {}).get("id") for r in first_rulings})

@@ -383,6 +383,18 @@ No `v60a` tag appears anywhere in `src/` or `data/`.
 
 ---
 
+## 10. Rulings in the record (v78, `RULINGS_RECORD`)
+
+- Per record article, the interpretation sections that CITES its Section, grouped by ruling, linked ones only (`cites_linked_at`); found / linked / kept logged per article — v78 — `src/rag/rulings.py:build`.
+- Estremi from the file name only (`snpen|snciv`, section code, year, number, act); the chamber from `data/ruling_sections.json` (provisional); `date_enacted` else «data n.d.»; `document_number` never used — v78 — `rulings.py:parse_estremi`, `render_estremi`.
+- The abstract only ranks: noun overlap with the elements in dispute, then the linking call's pertinenza (0 dropped); order Sezioni Unite, score, date; 3 per article, 8 per answer round robin — v78 — `rulings.py:_order_key`, `round_robin`.
+- The printed passage is the sentence the linking call names among the ruling's own candidate sentences, verbatim, as «passaggio della motivazione»; none → estremi only; never «massima» — v78 — `rulings.py:link`, `ruling_line`.
+- Orientamento per controverted point (an element a candidate thesis contests): ≥ 3 kept passages with a majority → prevalente / minoritario with counts; else «orientamento da verificare» with the rulings listed; §5 ends with the corpus line — v78 — `rulings.py:orientation`, `section_text`.
+- The writer's «Non citare pronunce» becomes «cita solo le pronunce del registro, con gli estremi indicati» (method mode); the prose check keeps only the registry's and the lawyer's rulings — v78 — `interactive_flow.py:_jobs`, `rulings.py:citable`, `lawyer_method.py:unretrieved_rulings_out`.
+- The thesis and the objections calls receive the registry; a prevailing line for an element's integration lowers every thesis contesting it to «basso» — v78 — `lawyer_method.py:method_material`, `objections_material`, `rulings.py:cap_realism`.
+- The lawyer's pronunce di riferimento (his file, imported onto the article's Section) printed in §5 only when written — v78 — `src/rag/landmark_rulings.py`.
+- No case-law search into the v1 pool, no REFERS_TO neighbours into a topic's articles, no EDGE_EXPAND — v78 — `defensive_generation.py:_select_articles`, `topic_step.py:articles_split`, `edge_expand.py:enabled`.
+
 ## By version
 
 | Tag | What it introduced |

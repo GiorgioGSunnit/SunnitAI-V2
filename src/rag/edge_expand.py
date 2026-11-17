@@ -63,7 +63,8 @@ _local = threading.local()
 
 
 def enabled() -> bool:
-    return feature_flags.enabled(FLAG)
+    """v78: never with RULINGS_RECORD (no primary-to-primary expansion into the pool)."""
+    return feature_flags.enabled(FLAG) and not feature_flags.enabled("RULINGS_RECORD")
 
 
 def key(ref: Sequence[str]) -> Tuple[str, str]:
