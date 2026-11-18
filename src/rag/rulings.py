@@ -449,6 +449,13 @@ _PLURAL_TITLE_RE = re.compile(r"(?i)^(?:sigg\.|signori|dott\.ri|avv\.ti|avvocati
 # v79.10.5 (E2): a run of two or more adjacent capitalised tokens, anywhere in the passage
 _NAME_RUN_RE = re.compile(rf"(?<![\w'’.\[])({_CAP}(?:\s+{_CAP})+)(?![\w'’])")
 _SENTENCE_START_RE = re.compile(r"(?:^|[.!?\n])[\s«\"“(']*$")
+# v79.12.1 (E2): a surname printed alone right before the saving clause on whose title it is («… privata dimora del
+# Bianchi, a prescindere dalla titolarità …») -- title case or capitals («di ROSSI»), a capitalised particle part of it
+# («Dell'Orto»), a lowercase elided article or preposition before it («dell'Esposito») left out of the span
+_LONE = r"(?:[A-ZÀ-Ý][a-zà-ÿ]{0,3}['’])?(?:[A-ZÀ-Ý][a-zà-ÿ]{2,}|[A-ZÀ-Ý]{4,})(?:-(?:[A-ZÀ-Ý][a-zà-ÿ]+|[A-ZÀ-Ý]{2,}))?"
+_SAVING_CLAUSE = r"\s*,\s*a\s+prescindere\s+dall[ae]?\s*['’]?\s*titolarit"
+_ELIDED_BEFORE = "|".join(rf"(?<=\b{p}['’])" for p in ("d", "l", "all", "dall", "dell", "nell", "sull", "coll"))
+_SAVING_SURNAME_RE = re.compile(rf"(?:(?<![\w'’.\[-])|{_ELIDED_BEFORE})({_LONE})(?![\w'’-])(?={_SAVING_CLAUSE})")
 REDACTION_STOPLIST_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                                        "data", "redaction_stoplist.json")
 
@@ -458,10 +465,11 @@ def _stoplist() -> Dict[str, frozenset]:
     try:
         with open(REDACTION_STOPLIST_FILE, encoding="utf-8") as f:
             raw = json.load(f)
-        return {k: frozenset(str(w).capitalize() for w in raw.get(k) or []) for k in ("words", "openers")}
+        return {k: frozenset(str(w).capitalize() for w in raw.get(k) or [])
+                for k in ("words", "openers", "role_nouns")}
     except (OSError, ValueError) as exc:
         logger.warning("rulings: %s not read: %s", REDACTION_STOPLIST_FILE, exc)
-        return {"words": frozenset(), "openers": frozenset()}
+        return {"words": frozenset(), "openers": frozenset(), "role_nouns": frozenset()}
 
 
 def not_names() -> frozenset:
@@ -474,6 +482,26 @@ def openers() -> frozenset:
     """v79.10.5 (E2): the words that open a sentence capitalised and are never a name («Il», «Nella», «Pertanto»), from
     data/redaction_stoplist.json -- dropped from a run that opens a sentence before it is read as a name."""
     return _stoplist()["openers"]
+
+
+def role_nouns() -> frozenset:
+    """v79.12.1 (E2): the capitalised words before the saving clause that are never a surname -- a party's or an
+    office's role, an act, a body, a region (data/redaction_stoplist.json «role_nouns»)."""
+    return _stoplist().get("role_nouns") or frozenset()
+
+
+def lone_surnames(text: str) -> List[Tuple[int, int, str]]:
+    """v79.12.1 (E2): the spans of a surname printed alone right before «, a prescindere dalla titolarità» (rule
+    «saving»: «del Bianchi», «di ROSSI», «dell'Esposito» -- the elided article left out) -- never a gazetteer word, an
+    opener or a role noun (data/redaction_stoplist.json). A surname alone elsewhere («il Rossi») is not read: a
+    capitalised role after an article («il Ricorrente», «del Ctu») cannot be told from it without a lexicon."""
+    out = []
+    for m in _SAVING_SURNAME_RE.finditer(text or ""):
+        w = m.group(1)
+        if _gazetteer(w) or w.capitalize() in openers() or w.capitalize() in role_nouns():
+            continue
+        out.append((m.start(1), m.end(1), "saving"))
+    return out
 
 
 def _gazetteer(word: str) -> bool:
@@ -544,6 +572,9 @@ def name_spans(text: str) -> Tuple[List[Tuple[int, int, str, str]], List[str]]:
             s, e = min([s] + [spans[i][0] for i in hit]), max([e] + [spans[i][1] for i in hit])
             spans = [x for i, x in enumerate(spans) if i not in hit]
         spans.append((s, e, text[s:e], "particle"))
+    for s, e, rule in lone_surnames(text):     # v79.12.1 (E2): «del Bianchi, a prescindere dalla titolarità»
+        if not any(a < e and s < b for a, b, _, _ in spans):
+            spans.append((s, e, text[s:e], rule))
     return sorted(spans), kept
 
 
@@ -627,6 +658,9 @@ _LIT_PLURAL_RE = re.compile(r"(?i)^(?:sigg\.|signori|dott\.ri|avv\.ti|avvocati)$
 # a first name and a surname's lowercase particles and surname, no title («Mario de Luca», «Anna dell'Orto»)
 _LIT_PARTICLE_NAME_RE = re.compile(r"(?<![\w'’\[\]-])([A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]*)\s+((?:(?:d[aei]|de[il]|dell[ao]|dall[ao]|"
                                    r"degli|van|von)\s+|(?:d|dell|dall)['’])+)([A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]*)")
+# v79.12.1 (E2): a surname alone right before the saving clause on whose title it is
+_LIT_SAVING_RE = re.compile(r"\s*,\s*a\s+prescindere\s+dall[ae]?\s*['’]?\s*titolarit")
+_LIT_ELIDED_RE = re.compile(r"[a-z]{1,4}['’]")
 # what a redaction left of a hyphenated name («[omissis]-Bianchi», «Rossi-[omissis]»)
 _LIT_GLUED_RE = re.compile(r"\[omissis\][-'’][A-ZÀ-Ý][\w'’-]*|[A-ZÀ-Ý][\w'’]*-\[omissis\]")
 
@@ -671,6 +705,18 @@ def names_left(passage: str) -> List[str]:
         spans.append((m.start(1), m.start(3) + len(last)))
     spans += [(g.start(), g.end()) for g in _LIT_GLUED_RE.finditer(text)]
     tokens = [(t.group(0), t.start(), t.end()) for t in re.finditer(r"\S+", text)]
+    # v79.12.1 (E2): a surname alone right before «, a prescindere dalla titolarità» -- in capitals too, after a lowercase
+    # elided article or preposition too («dell'Esposito»); not a gazetteer word, an opener or a role noun
+    for raw, s0, _ in tokens:
+        lead = len(raw) - len(raw.lstrip(_LIT_OPEN))
+        elided = _LIT_ELIDED_RE.match(raw, lead)
+        lead = elided.end() if elided else lead
+        word = raw[lead:].rstrip(_LIT_CLOSE + ".,;:!?")
+        if len(word) < 3 or not _LIT_CAP_RE.match(word) or (word.isupper() and len(word) < 4) or _gazetteer(word) \
+                or word.capitalize() in openers() or word.capitalize() in role_nouns():
+            continue
+        if _LIT_SAVING_RE.match(text, s0 + lead + len(word)):
+            spans.append((s0 + lead, s0 + lead + len(word)))
 
     def core(raw: str) -> str:
         return raw.lstrip(_LIT_OPEN).rstrip(_LIT_CLOSE + ".,;:!?")
@@ -982,10 +1028,12 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
         for r in ranked[PRESELECT_PER_ARTICLE:]:        # past the read ones: never read, so never naming it
             if civil and penal_ruling(r):
                 r["penal_off"] = True
-        ranked = [r for r in ranked if not r.get("penal_off")]
-        head = ranked[:PRESELECT_PER_ARTICLE]
-        ordered = [r for r in head if r["candidates"]] + [r for r in head if not r["candidates"]] + \
-            ranked[PRESELECT_PER_ARTICLE:]
+        # v79.12.1: filtered inside the read set and inside the rest, never re-sliced after filtering -- before, a
+        # dropped read ruling let an unread one slide into head without its "candidates" (KeyError; the isolated step
+        # lost the whole rulings record)
+        head = [r for r in ranked[:PRESELECT_PER_ARTICLE] if not r.get("penal_off")]
+        tail = [r for r in ranked[PRESELECT_PER_ARTICLE:] if not r.get("penal_off")]
+        ordered = [r for r in head if r["candidates"]] + [r for r in head if not r["candidates"]] + tail
         log["articles"][label]["with_sentences"] = sum(1 for r in head if r["candidates"])
         shortlist[label] = ordered[:GRADED_PER_ARTICLE]
         counts["rank_demoted"] += sum(1 for r in ordered[GRADED_PER_ARTICLE:] if demoted(r.get("parsed")))

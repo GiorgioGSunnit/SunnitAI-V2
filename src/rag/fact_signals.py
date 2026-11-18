@@ -1633,9 +1633,23 @@ _MEDIATION_SUBJECTS: Tuple[Tuple[str, str, Tuple[str, ...], str], ...] = (
 
 
 def mediation(facts: Optional[Dict[str, Any]], fired: List[Dict[str, Any]], article: str = "") -> Optional[Dict[str, Any]]:
-    """{"required", "subject", "text"}: is mediation a condition of the action here? None with no facts."""
+    """{"required", "subject", "text"}: is mediation a condition of the action here? None with no facts. v79.12.1: a
+    contract type outside art. 5, co. 1 (render_computed.contract_reading: appalto, preliminare di vendita) is
+    «facoltativa» (optional True) -- never made mandatory by a word of its parties or clauses («mutuo», «polizza»), nor
+    by a fired rule's area alone. Review: the client's request naming a listed matter (render_computed.request_matter:
+    the condominio's delibera, the usucapione, the lesione della legittima) is «obbligatoria» beside it; a contract type
+    in the list (a professional's prestazione: contratto d'opera) is the matter when no subject below is found."""
     if not facts:
         return None
+    from . import render_computed
+    reading = render_computed.contract_reading(facts)
+    if reading["optional"] and not reading["listed"]:
+        asked, _ = render_computed.request_matter(facts)
+        if not asked:
+            return render_computed.optional_mediation(reading["optional"])
+        return {"required": True, "subject": asked,
+                "text": f"Mediazione obbligatoria ({MEDIATION_REF}): la materia è {asked}, il suo esperimento è "
+                        "condizione di procedibilità della domanda."}
     marks = {str(r.get("area")) for r in fired} | {str(r.get("id")) for r in fired}
     text, low = _texts(facts, ("contracts", "requests")), _low(article)
     for name, word, rules, pattern in _MEDIATION_SUBJECTS:
@@ -1643,6 +1657,10 @@ def mediation(facts: Optional[Dict[str, Any]], fired: List[Dict[str, Any]], arti
             return {"required": True, "subject": name,
                     "text": f"Mediazione obbligatoria ({MEDIATION_REF}): la materia è {name}, il suo esperimento è condizione "
                             "di procedibilità della domanda."}
+    if reading["listed"]:                           # v79.12.1 (review): the listed contract type itself
+        return {"required": True, "subject": reading["listed"],
+                "text": f"Mediazione obbligatoria ({MEDIATION_REF}): la materia è {reading['listed']}, il suo esperimento "
+                        "è condizione di procedibilità della domanda."}
     return {"required": False, "subject": "", "text": ""}
 
 

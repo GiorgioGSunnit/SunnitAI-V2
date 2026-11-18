@@ -243,10 +243,121 @@ def _live(rec: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [r for r in rec.get("requisites") or [] if issue_records.element_status(rec, r) != NOT_RELEVANT]
 
 
+# --- v79.12.1: a defence record is never written with the charge template ----------------------------------------------
+
+# the general-part records that are a defence line, never a charge: issue_records.DEFENCE_ARTICLES (the scriminanti
+# 50-54, excess, attempt, aberratio, tenuità) and the putative scriminante (59) and art. 384 c.p. -- review: never
+# causation (40, 41) nor fault (43): their elements integrated establish the charge, so they keep the charge's
+# template; only 41 co. 2 (a later cause sufficient by itself, which breaks the causal link) is a defence record
+DEFENCE_RECORDS = ("59", "384")
+NOT_DEFENCE_RECORDS = ("40", "41", "43")
+DEFENCE_COMMAS = {"41": "2"}
+EXCULPATORY = ("41", "50", "51", "52", "53", "54", "59", "384", "131-bis")   # all integrato: the full outcome
+DEFENCE_WORDS = {   # my drafts (v79.12.1): a defence record's own wording -- never «per l'accusa», never a conviction
+    "kind": {"41": "interruzione del nesso causale", "50": "scriminante", "51": "scriminante", "52": "scriminante",
+             "53": "scriminante", "54": "scriminante",
+             "59": "scriminante putativa", "55": "eccesso colposo", "384": "causa di non punibilità",
+             "131-bis": "particolare tenuità del fatto"},
+    "kind_default": "difesa di parte generale",
+    "effect": {"scriminante": "il fatto è scriminato e non è punibile",
+               "scriminante putativa": "la scriminante, anche solo erroneamente supposta, esclude la punibilità",
+               "eccesso colposo": "il fatto si punisce solo a titolo di colpa, se la legge lo prevede come delitto "
+                                  "colposo",
+               "causa di non punibilità": "il fatto non è punibile",
+               "interruzione del nesso causale": "il nesso causale con l'evento è interrotto",
+               "particolare tenuità del fatto": "la punibilità è esclusa per la particolare tenuità del fatto"},
+    "effect_default": "la difesa sull'art. {art} regge",
+    "all": "tutti gli elementi dell'art. {art} ({kind}) risultano integrati: {effect}",
+    "excluded": "un elemento dell'art. {art} ({kind}) è escluso dai fatti: la difesa su questa norma non regge",
+    "partly": "{proved} elementi su {total} dell'art. {art} ({kind}) risultano provati; gli altri restano da provare "
+              "dalla difesa",
+    "open": "gli elementi dell'art. {art} ({kind}) restano da provare dalla difesa",
+    "depends": "la prova, da parte della difesa, degli elementi {ids}",
+    "risk_all": "che il giudice non riconosca i presupposti dell'art. {art}{charge}",
+    "risk_open": "che la difesa non provi gli elementi {ids} dell'art. {art}{charge}",
+    "risk_excluded": "che l'addebito{charge_paren} resti senza la difesa dell'art. {art}",
+    "risk_charge": " (resterebbe l'addebito dell'art. {charge})",
+    "changes": "{head}: da provare dalla difesa; se provato la difesa sull'art. {art} regge, se escluso cade",
+    "obj_proven": ("L'accusa contesterà che ricorra l'elemento «{el}» dell'art. {art}",
+                   "I fatti narrati lo sostengono: {fact}."),
+    "obj_open": ("L'accusa negherà l'elemento «{el}» dell'art. {art}", "Va provato dalla difesa: {missing}."),
+    "prose_open": "restano da provare dalla difesa {items}",
+}
+_COMMA_TAIL_RE = re.compile(r"\s+co(?:mma|\.)\s*\d+.*$", re.IGNORECASE)
+
+
+def defence_base(label: str) -> str:
+    """v79.12.1: the c.p. number of a defence record («52» for «52 c.p.» and «52 c.p. co. 2»), "" for any other --
+    review: "" for causation and fault (NOT_DEFENCE_RECORDS) but the defence comma of one («41 c.p. co. 2»)."""
+    from . import issue_records
+    from .plan_then_write import _code_key
+    label = str(label or "").strip()
+    number, _, code = _COMMA_TAIL_RE.sub("", label).partition(" ")
+    if _code_key(code.strip()) != "c.p.":
+        return ""
+    if number in NOT_DEFENCE_RECORDS:
+        comma = re.search(r"\bco(?:mma|\.)\s*(\d+)", label, re.IGNORECASE)
+        return number if comma and DEFENCE_COMMAS.get(number) == comma.group(1) else ""
+    return number if number in issue_records.DEFENCE_ARTICLES or number in DEFENCE_RECORDS else ""
+
+
+def defence_record(label: str, rec: Optional[Dict[str, Any]] = None) -> bool:
+    """v79.12.1: a defence record (52-55, 59, 384, 131-bis …, a later comma of one too): its outcome, its open elements
+    and its risk are written with DEFENCE_WORDS, never with the charge's template."""
+    return bool(defence_base(label) or defence_base(str((rec or {}).get("comma_of") or "")))
+
+
+def defence_kind(label: str) -> str:
+    return DEFENCE_WORDS["kind"].get(defence_base(label), DEFENCE_WORDS["kind_default"])
+
+
+def defence_assessment(records: Dict[str, Dict[str, Any]], label: str, client: str = "", charge: str = ""
+                       ) -> Dict[str, Any]:
+    """v79.12.1: the outcome read on a defence record -- every element integrato: favourable (the full outcome for an
+    exculpatory one, EXCULPATORY; partial for the excess, the attempt, the aberratio); one excluded: unfavourable (the
+    defence does not hold); some proven: uncertain, the rest «da provare dalla difesa»; none: uncertain. a["defence"]
+    marks it (the risk and what it depends on are DEFENCE_WORDS' too); a["charge"] the charge it answers, if any."""
+    rec = (records or {}).get(label) or {}
+    number = defence_base(label) or defence_base(str(rec.get("comma_of") or ""))
+    kind = DEFENCE_WORDS["kind"].get(number, DEFENCE_WORDS["kind_default"])
+    proved, excluded, total = _counts(rec)
+    full = PIENO if number in EXCULPATORY else PARZIALE
+    charge = charge if charge and charge != label and not defence_record(charge) else ""
+    base = {"article": label, "defence": True, "charge": charge}
+    if excluded:
+        return {**base, "esito": SFAVOREVOLE, "grado": MEDIO, "obiettivo": PARZIALE,
+                "why": DEFENCE_WORDS["excluded"].format(art=label, kind=kind)}
+    if total and proved == total:
+        effect = DEFENCE_WORDS["effect"].get(kind) or DEFENCE_WORDS["effect_default"].format(art=label)
+        return {**base, "esito": FAVOREVOLE, "grado": ALTO if total > 1 else MEDIO, "obiettivo": full,
+                "defence_integrated": True,
+                "why": DEFENCE_WORDS["all"].format(art=label, kind=kind, effect=effect)}
+    if proved:
+        return {**base, "esito": INCERTO, "grado": MEDIO, "obiettivo": full,
+                "why": DEFENCE_WORDS["partly"].format(proved=proved, total=total, art=label, kind=kind)}
+    return {**base, "esito": INCERTO, "grado": BASSO, "obiettivo": full,
+            "why": DEFENCE_WORDS["open"].format(art=label, kind=kind)}
+
+
+def defence_risk(a: Dict[str, Any], open_: Sequence[str]) -> Tuple[str, str]:
+    """v79.12.1: (depends, risk) of a defence assessment -- never a conviction under the defence article."""
+    art, charge = str(a.get("article") or ""), str(a.get("charge") or "")
+    tail = DEFENCE_WORDS["risk_charge"].format(charge=charge) if charge else ""
+    depends = DEFENCE_WORDS["depends"].format(ids=", ".join(open_)) if open_ else ""
+    if a.get("esito") == SFAVOREVOLE:
+        return depends, DEFENCE_WORDS["risk_excluded"].format(art=art, charge_paren=f" (art. {charge})" if charge
+                                                              else "")
+    if open_:
+        return depends, DEFENCE_WORDS["risk_open"].format(ids=", ".join(open_), art=art, charge=tail)
+    return depends, DEFENCE_WORDS["risk_all"].format(art=art, charge=tail)
+
+
 def changes(label: str, rec: Dict[str, Any], req: Dict[str, Any], penal: bool) -> str:
     """What a missing fact would change, by the element's id: for the charge or the claim against the client, whether
     that element of the article stands; else whether the client's norm applies."""
     head = f"l'elemento {req.get('id')} dell'art. {label} («{_short(req.get('text'), 90)}»)"
+    if defence_record(label, rec):          # v79.12.1: a defence record's own words, never the charge's
+        return DEFENCE_WORDS["changes"].format(head=head, art=label)
     if rec.get("side") == "threat":
         return (f"{head}: se provato è integrato, se escluso l'addebito su questa norma cade" if penal else
                 f"{head}: se provato la domanda avversaria si regge, se escluso cade")
@@ -391,7 +502,9 @@ def charged_prose(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str,
             items = [f"«{_short(r.get('text'), 90)}» ({r.get('id')})" for r in live if (r.get("status") or DA_PROVARE)
                      == status]
             if items:
-                parts.append(CHARGED_PROSE[status].format(items=", ".join(items)))
+                parts.append(DEFENCE_WORDS["prose_open"].format(items=", ".join(items))
+                             if status == DA_PROVARE and defence_record(label, records[label])      # v79.12.1
+                             else CHARGED_PROSE[status].format(items=", ".join(items)))
         out[label] = f"{CHARGED_PROSE['head'].format(art=label)} {'; '.join(parts)} {CHARGED_PROSE['tail']}."
     return out
 
@@ -460,8 +573,9 @@ CIRC_PREFIX = "C"
 
 
 def _charged(records: Dict[str, Dict[str, Any]]) -> List[str]:
-    out = sorted(((rec.get("charged"), label) for label, rec in (records or {}).items() if rec.get("charged")),
-                 key=lambda x: x[0])
+    """The charged records, in their order -- v79.12.1: never a defence record (a scriminante is no charge)."""
+    out = sorted(((rec.get("charged"), label) for label, rec in (records or {}).items() if rec.get("charged")
+                  and not defence_record(label, rec)), key=lambda x: x[0])
     return [label for _, label in out]
 
 
@@ -610,6 +724,9 @@ def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main
     registro non contiene …». v79.10.3 (C2, review): event -- the certain facts' (event_of); the qualification
     alternative the outcome names fits it (event_mismatch)."""
     a = _assessment(records, posture, main, client, article, event)
+    if a.get("article") and defence_record(a["article"], (records or {}).get(a["article"])):
+        # v79.12.1: a defence record's outcome is never the charge template's (all integrato -> favourable)
+        a = defence_assessment(records, a["article"], client, main_threat(records or {}))
     rec = (records or {}).get(a.get("article") or "") or {}
     if rec.get("charge_hypothesis"):
         a = {**a, "hypothesis": True, "why": f"{HYPOTHESIS_LABEL}: art. {a['article']}; {a['why']}"}
@@ -699,6 +816,15 @@ def forecast(ctx: Dict[str, Any], t: Dict[str, Any], a: Dict[str, Any], log: Opt
         b = reduction_assessment(cand, records, ctx.get("client") or "")     # v79.10.2 (B1): on the reduction's article
         if log is not None:
             log["forecast"] = {"was": a.get("article"), "now": b["article"], "esito": b.get("esito"), "reduction": True}
+        return b
+    if cand.get("kind") in ("scriminante", "defence") and _live(records.get(cand.get("article") or "") or {}) \
+            and defence_record(cand["article"], records.get(cand["article"])):
+        # v79.12.1: a defence main line is assessed on its own record with its own words -- every element integrato,
+        # the outcome is favourable; never the charge's template, never left on the charge's outcome
+        b = defence_assessment(records, cand["article"], ctx.get("client") or "",
+                               a.get("article") if a.get("article") and not a.get("defence") else "")
+        if log is not None:
+            log["forecast"] = {"was": a.get("article"), "now": b["article"], "esito": b.get("esito"), "defence": True}
         return b
     art = main_article(t, records, elements_by_id(records, ctx.get("circumstances")))
     if not art or art == a.get("article"):
@@ -2075,7 +2201,7 @@ NO_ACTION_SUBJECT = "i fatti narrati"
 def action_subject(ctx: Dict[str, Any]) -> str:
     """v79.8.5: the institution the no-action line names -- the first read's, else the active module's, else the
     remedies matter of the refused articles, else «i fatti narrati»."""
-    inst = [x for x in ctx.get("institutions") or [] if x.strip()]
+    inst = institution_names(ctx.get("institutions") or [])      # v79.12.1: read_institutions' dicts too
     if inst:
         return inst[0].strip()
     if ctx.get("claim_modules"):
@@ -2212,11 +2338,13 @@ def staged(module: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {**module, "actions": actions, "stage": stage, "conditions_met": [c["id"] for c in met]}
 
 
-def module_hit(module: Dict[str, Any], text: str) -> List[str]:
+def module_hit(module: Dict[str, Any], text: str, context: bool = True) -> List[str]:
     """v79.10 (A4): the words of the text that activate the module -- one of its «patterns»; with «weak_patterns», else
     at least «weak_min» (default 2) different weak patterns' words. [] when none: a module without weak patterns is
-    active on any pattern, as before («il Comune» alone never activates the amministrativo module)."""
-    for p in module.get("patterns") or []:
+    active on any pattern, as before («il Comune» alone never activates the amministrativo module). v79.12.1: its
+    «context_patterns» (the words a damage or a claim also uses: the hospital, the surgeon) only with context -- the
+    first read's institution names; never the user's words alone (context False)."""
+    for p in list(module.get("patterns") or []) + (list(module.get("context_patterns") or []) if context else []):
         m = re.search(p, text or "", re.IGNORECASE)
         if m:
             return [m.group(0)]
@@ -2226,24 +2354,113 @@ def module_hit(module: Dict[str, Any], text: str) -> List[str]:
     return weak if weak and len(weak) >= need else []
 
 
+# v79.12.1: the signals that switch a module on, in their order -- the first read's institution (its name and rubricated
+# name), the user's words (never a context pattern), a module article the request names (review: after the user's
+# words, the brief's order -- an incidental article the user cites never replaces the module the case's words name);
+# then a reviewed schema's rapporto (v79.11, ELEMENT_SCHEMAS). Never a claim sentence or a damage word alone.
+MODULE_SIGNALS = ("istituto", "parole dell'utente", "articolo", "schema")
+
+
+def institution_names(items: Sequence[Any]) -> List[str]:
+    """v79.12.1: the first read's institutions as names -- a read_institutions dict (interactive_flow) by its name and
+    its rubricated name, never its claim (the hypothesis sentence: «risarcimento del danno per le cure in ospedale»); a
+    string as it is (a name)."""
+    out: List[str] = []
+    for x in items or []:
+        parts = [x.get("name"), x.get("rubricated")] if isinstance(x, dict) else [x]
+        for part in parts:
+            text = " ".join(str(part or "").split())
+            if text and text not in out:
+                out.append(text)
+    return out
+
+
+_SPECIAL_ACTION_RE = re.compile(r"^(\d+(?:-[a-z]+)?)\s+(?:l\.|d\.lgs\.|d\.l\.|d\.p\.r\.)\s*(\d+)/(\d{4})$", re.IGNORECASE)
+# v79.12.1 (review): a character of the citation's sentence -- a dot too, unless it ends the sentence (a dot before a
+# capital or at the end): «art. 7 l. 241/1990», «art. 2 d.lgs. 23/2015», «art. 31 del d.P.R. n. 380/2001»
+_CITATION_CHAR = r"(?:[^.;\n]|\.(?!\s+(?-i:[A-ZÀ-Ý])|\s*$))"
+
+
+def named_module_articles(module: Dict[str, Any], text: str) -> List[str]:
+    """v79.12.1: the module's action articles the text names (a code article by its citation, same_article; a special
+    law's «7 l. 24/2017» by «art. 7» and «24/2017» or «n. 24 … 2017» within the sentence) -- never a «general» one
+    (1218, 1453, 2043 confer an action in every matter: naming one names no institution). Review: the abbreviated
+    special-law forms too («l.», «d.lgs.», «d.P.R.»: _CITATION_CHAR crosses their dots)."""
+    if not text:
+        return []
+    from . import citations
+    general = institution_modules().get("general") or []
+    cited = [citations.label(r) for r in citations.article_refs(text)]
+    out = []
+    for spec in module.get("actions") or []:
+        if any(same_article(spec, g) for g in general):
+            continue
+        m = _SPECIAL_ACTION_RE.match(str(spec))
+        if m:
+            art, num, year = (re.escape(x) for x in m.groups())
+            law = rf"(?:\b{num}\s*/\s*{year}\b|\bn\.?\s*{num}\b{_CITATION_CHAR}{{0,40}}?\b{year}\b|\b{year}\s*,\s*n\.?\s*{num}\b)"
+            if re.search(rf"\bart(?:icol[oi]|t?\.)?\s*{art}(?![\w-]){_CITATION_CHAR}{{0,60}}?{law}", text, re.IGNORECASE):
+                out.append(str(spec))
+        elif any(same_article(c, spec) for c in cited):
+            out.append(str(spec))
+    return out
+
+
+def module_input(case: str, institutions: Sequence[Any]) -> Dict[str, Any]:
+    """v79.12.1: what active_modules reads, the same at the retrieval stage (family_gate.context) and the answer stage
+    (prepare): the case's text and the first read's institutions as interactive_flow.read_institutions gives them
+    (dicts: name, rubricated, claim -- never names only)."""
+    return {"case": case or "", "institutions": list(institutions or [])}
+
+
+def _module_signal(mods: Sequence[Dict[str, Any]], ctx: Dict[str, Any]) -> Tuple[str, List[Tuple[Dict[str, Any],
+                                                                                                   List[str]]]]:
+    """v79.12.1: (the signal, [(module, its words)]) -- the first of MODULE_SIGNALS but the schema that finds a module (a
+    module requiring a professional counterparty only with one); ("", []) when none does."""
+    listed = institution_names(ctx.get("institutions") or [])
+    names = " ".join(listed)
+    case = str(ctx.get("case") or "")
+
+    def by_institution(m: Dict[str, Any]) -> List[str]:     # the institutions that name it (else the words that hit)
+        words = module_hit(m, names, context=True) if names else []
+        return ([n for n in listed if module_hit(m, n, context=True)] or words) if words else []
+    readers = (("istituto", by_institution),
+               ("parole dell'utente", lambda m: module_hit(m, case, context=False) if case else []),
+               ("articolo", lambda m: named_module_articles(m, case)))
+    for signal, read in readers:
+        hit = [(m, words) for m, words in ((m, read(m)) for m in mods) if words]
+        hit = [(m, w) for m, w in hit if m.get("requires") != "professional_counterparty" or professional_counterparty(ctx)]
+        if hit:
+            return signal, hit
+    return "", []
+
+
 def active_modules(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     """v79.8 (B2): the institution modules of the case -- those whose patterns the first read's institutions name
     (ctx["institutions"]), else the case's own words. v79.9 (B1, B3): each staged (its stage's actions first, its
-    conditional ones when met); a module requiring a professional counterparty only with one."""
+    conditional ones when met); a module requiring a professional counterparty only with one. v79.12.1: the signals in
+    their order (MODULE_SIGNALS) -- the first read's institution by its names (never its claim sentence), the user's
+    words without the context patterns (never a damage word alone), a module article the request names; each module
+    carries «signal» and «signal_words» (the counter modules_active)."""
     mods = institution_modules().get("modules") or []
-    for text in (" ".join(str(x) for x in ctx.get("institutions") or []), ctx.get("case") or ""):
-        hit = [m for m in mods if text and module_hit(m, text)]
-        hit = [m for m in hit if m.get("requires") != "professional_counterparty" or professional_counterparty(ctx)]
-        if hit:
-            schema_module_disagree(ctx, mods, hit)          # v79.11 (6): logged only, ELEMENT_SCHEMAS
-            return [staged(m, ctx) for m in hit]
+    signal, hit = _module_signal(mods, ctx)
+    if hit:
+        schema_module_disagree(ctx, mods, [m for m, _ in hit])          # v79.11 (6): logged only, ELEMENT_SCHEMAS
+        return [{**staged(m, ctx), "signal": signal, "signal_words": list(words)} for m, words in hit]
     found = schema_modules(ctx, mods)                       # v79.11 (6): ELEMENT_SCHEMAS only; [] off
     if found:
         _log("schema_modules", {"modules": [m["id"] for m in found], "rapporti": schema_rapporti(ctx, True)})
     shadow = [m["id"] for m in schema_modules(ctx, mods, reviewed_only=False) if m not in found]
     if shadow:                                              # an unreviewed schema's module: logged, never active
         _log("schema_modules_shadow", {"modules": shadow, "rapporti": schema_rapporti(ctx)})
-    return [staged(m, ctx) for m in found]
+    rapporti = schema_rapporti(ctx, True) if found else {}
+    return [{**staged(m, ctx), "signal": "schema", "signal_words": list(rapporti.get(m["id"]) or [])} for m in found]
+
+
+def modules_active(modules: Sequence[Dict[str, Any]]) -> Dict[str, str]:
+    """v79.12.1: the counter modules_active -- {module id: «signal: words»} (the signal that switched each on)."""
+    return {str(m["id"]): f"{m.get('signal') or '?'}: " + ", ".join(f"«{w}»" for w in m.get("signal_words") or [])
+            for m in modules or []}
 
 
 def schema_rapporti(ctx: Dict[str, Any], reviewed_only: bool = False) -> Dict[str, List[str]]:
@@ -3045,6 +3262,8 @@ COUNT_KEYS = ("offered", "parsed", "valued", "barred", "unverifiable", "minorita
 def main_outside(ctx: Dict[str, Any], main: Dict[str, Any]) -> bool:
     """v79.8 (B4): the main line is a claim (or a remedy) on an article outside the first read's institution modules,
     while one is active."""
+    if (line_pertinence(main, ctx) or (0, 0))[0]:      # v79.12.1 (row 16): its norm outside the first read's
+        return True                                     # institution (must be 0: a line inside it is promoted)
     mods = [m for m in institution_modules().get("modules") or [] if m["id"] in (ctx.get("claim_modules") or [])]
     cand = next((c for c in ctx.get("candidates") or [] if c.get("id") == main.get("candidate")), {})
     if not mods or cand.get("kind") not in ("claim", "riconvenzionale", "remedy"):
@@ -3086,6 +3305,9 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             # v79.10.2 (B1): the resisting party's reductions offered (1384 for a penalty)
             "reductions_offered": sum(1 for c in cands if c.get("reduction")),
             "main_outside_institution": main_outside(ctx, m),
+            # v79.12.1 (row 16): the main line promoted over realismo's by pertinence (where it stood: from)
+            "promoted_by_pertinence": int(bool(m.get("promoted_by_pertinence"))),
+            "promoted_from": str((m.get("promoted_by_pertinence") or {}).get("from") or ""),
             "threats_from": str((ctx.get("candidates_trace") or {}).get("threats_from") or ""),
             "no_threat": str((ctx.get("candidates_trace") or {}).get("no_threat") or ""),
             # v79 (D4): the general part's defence lines, the ranked articles graded into candidates
@@ -3137,7 +3359,8 @@ def selection(ctx: Dict[str, Any], plan: Dict[str, Any]) -> Tuple[List[Dict[str,
     a copy (the plan untouched)."""
     import copy
     sols, main = coherent_solutions(copy.deepcopy(plan), ctx.get("records") or {}, ctx.get("assessment") or {},
-                                    ctx.get("riti") or [], [], ctx.get("posture") or {}, ctx.get("circumstances"))
+                                    ctx.get("riti") or [], [], ctx.get("posture") or {}, ctx.get("circumstances"),
+                                    ctx=ctx)                    # v79.12.1 (row 16): pertinence before realismo
     return sols, main, subordinate_of(sols, main)
 
 
@@ -3181,6 +3404,15 @@ NOT_APPLIED_WHY = {   # my drafts (v76)
     "undecomposed": "l'art. {art} (l'addebito o la domanda) non si scompone in elementi verificabili",
     "unread": "il testo dell'art. {art} (l'addebito o la domanda) non è stato recuperato",
 }   # v79.10.1 (A1): with no norm conferring an action, the why is the no-action sentence (method_refusal)
+
+# v79.12.1: a damages-measure article (1223-1227 c.c.: misura, obbligazioni pecuniarie, prevedibilità, valutazione
+# equitativa, concorso del creditore) measures a claim -- it is never «l'addebito o la domanda» whose unread or
+# undecomposed text makes the method step aside
+DAMAGES_MEASURE = tuple(f"{n} c.c." for n in range(1223, 1228))
+
+
+def damages_measure(label: str) -> bool:
+    return _norm_label(label) in {_norm_label(x) for x in DAMAGES_MEASURE}
 
 
 def not_applied_note(why: str) -> str:
@@ -3457,8 +3689,8 @@ def never_main(sols: Sequence[Dict[str, Any]], eligible: Sequence[int], known: D
 
 def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]], a: Dict[str, Any],
                        riti: Sequence[str] = (), log: Optional[List[Dict[str, Any]]] = None,
-                       posture: Optional[Dict[str, Any]] = None, circ: Optional[Dict[str, Dict[str, Any]]] = None
-                       ) -> Tuple[List[Dict[str, Any]], int]:
+                       posture: Optional[Dict[str, Any]] = None, circ: Optional[Dict[str, Dict[str, Any]]] = None,
+                       ctx: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], int]:
     """(solutions, index of the main one), by the ids each thesis declares (v71, rule 1 as the PO restated it):
       - a thesis declaring no element (contesta and poggia_su empty) is unverifiable (UNVERIFIABLE_LABEL): never main;
       - a thesis contesting an element the record marks «integrato» must say it is a minority one: labelled
@@ -3467,7 +3699,11 @@ def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]],
         fully integrato the posture's «ammettere la condotta … contenere la pena» always is one (posture_fallback);
       - among the eligible, the model's choice when it is one, else the most realistic; none: the fallback line;
       - v79.10.1 (A3): never main -- a circumstance or an «elemento escluso» fragment while a contest, a defence or a
-        riqualificazione is eligible, an attenuante while any other line is (never_main; marked «main_demoted»)."""
+        riqualificazione is eligible, an attenuante while any other line is (never_main; marked «main_demoted»);
+      - v79.12.1 (row 16): pertinence before realismo (ctx given: promote_by_pertinence) -- a line on a norm of the
+        client's own outside the first read's institution, or a general one (1218, 2043, 1453), never leads over an
+        eligible line inside it or more specific (a module article, a special comma): that line is promoted, marked
+        «promoted_by_pertinence» with where it stood (subordinata, obiezione, risposta, soluzioni)."""
     known = elements_by_id(records, circ)
     sols = [dict(s_) for s_ in plan.get("soluzioni") or []]
     for t in sols:
@@ -3502,7 +3738,8 @@ def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]],
     proven = lambda t: sum(1 for x in t.get("poggia_su") or [] if (known.get(x) or {}).get("status") == PROVATO)
     # v76: by realism, then by the proven elements it rests on, then the candidates' order -- a line with nothing
     # proven never leads over an «alto» one; the model's own pick only in the old path (no code candidates)
-    rank = lambda pool: sorted(pool, key=lambda i: (REALISMO.index(sols[i]["realismo"]), -proven(sols[i]), i))
+    by_realism = lambda i: (REALISMO.index(sols[i]["realismo"]), -proven(sols[i]), i)
+    rank = lambda pool: sorted(pool, key=by_realism)
     if any(t.get("candidate") for t in sols):
         wanted = -1
 
@@ -3513,13 +3750,136 @@ def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]],
         return 0
     if majority:
         main = wanted if wanted in majority else rank(majority)[0]
+        main = promote_by_pertinence(sols, main, majority, plan, ctx, log, by_realism)       # v79.12.1 (row 16)
     elif a.get("all_integrated"):           # the containment line is a sustainable non-minority one: it goes first
         main = add_fallback()
     elif eligible:
         main = wanted if wanted in eligible else rank(eligible)[0]
+        main = promote_by_pertinence(sols, main, eligible, plan, ctx, log, by_realism)       # v79.12.1 (row 16)
     else:
         main = add_fallback()
     return sols, main
+
+
+# --- v79.12.1 (row 16): pertinence before realismo -----------------------------------------------------------------------
+
+# the lines judged by pertinence: those resting on a norm of the client's own (a claim, a riconvenzionale, a remedy on
+# the claim's article); a contest, a riqualificazione, a defence, the containment line, an eccezione are on the charge
+# or the claim against the client -- the case's own institution by construction -- and are never moved by it
+PERTINENCE_KINDS = ("claim", "riconvenzionale", "remedy")
+PROMOTED_FROM = ("subordinata", "obiezione", "risposta", "soluzioni")
+
+
+def first_institution_names(ctx: Dict[str, Any]) -> List[str]:
+    """v79.12.1: the first read's institution -- its first institution and those of the same hypothesis (the same claim
+    sentence), by name and rubricated name; a plain list of names: its first. [] with none."""
+    items = [x for x in ctx.get("institutions") or [] if x]
+    if not items:
+        return []
+    first = items[0]
+    same = [x for x in items if isinstance(x, dict) and isinstance(first, dict) and not x.get("alternative")
+            and str(x.get("claim") or "") == str(first.get("claim") or "")] if isinstance(first, dict) else [first]
+    return institution_names(same or [first])
+
+
+def _pertinence_modules(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
+    ids = list(ctx.get("claim_modules") or [])
+    return [m for m in institution_modules().get("modules") or [] if m.get("id") in ids]
+
+
+def inside_institution(label: str, ctx: Dict[str, Any]) -> Optional[bool]:
+    """v79.12.1: the article is inside the first read's institution -- an action of an active module, a record the
+    first read brought for it («primo esame: …»), filed under a topic of its name, rubricated as it, or of its family
+    (article_families in the institution's read_families); None when neither an institution nor a module is known."""
+    from .topic_step import name_match
+    names = first_institution_names(ctx)
+    mods = _pertinence_modules(ctx)
+    if not names and not mods:
+        return None
+    if any(same_article(label, a) for m in mods for a in m.get("actions") or []):
+        return True
+    low = {_plain(n).lower() for n in names}
+    rec = (ctx.get("records") or {}).get(label) or {}
+    for k in rec.get("kept") or []:
+        k = str(k)
+        if k.startswith("primo esame:") and _plain(k.split(":", 1)[1]).lower() in low:
+            return True
+    if _plain(rec.get("topic")).lower() in low:
+        return True
+    if rec.get("rubrica") and any(name_match(n, str(rec.get("rubrica"))) for n in names):
+        return True
+    if names:
+        fams = read_families({"institutions": names}) or []
+        if set(article_families(label)) & set(fams):
+            return True
+    return False
+
+
+def specificity(label: str, ctx: Dict[str, Any]) -> int:
+    """v79.12.1: 0 a special comma's record or an active module's action, 2 a general norm (1218, 2043, 1453: lex
+    generalis), 1 the rest."""
+    rec = (ctx.get("records") or {}).get(label) or {}
+    if rec.get("comma_of"):
+        return 0
+    group = claim_admission(label, _pertinence_modules(ctx))[1]
+    return 0 if group == "module" else 2 if group == "general" or any(
+        same_article(label, g) for g in institution_modules().get("general") or []) else 1
+
+
+def line_pertinence(t: Dict[str, Any], ctx: Optional[Dict[str, Any]]) -> Optional[Tuple[int, int]]:
+    """v79.12.1: (outside, specificity) of a line judged by pertinence (PERTINENCE_KINDS) -- outside 1 when the first
+    read's institution is known and the line's article is not inside it; None for a line it does not judge."""
+    if not ctx:
+        return None
+    cand = next((c for c in ctx.get("candidates") or [] if t.get("candidate") and c.get("id") == t.get("candidate")), {})
+    kind = cand.get("kind") or t.get("kind")
+    art = str(cand.get("article") or t.get("article") or "")
+    if kind not in PERTINENCE_KINDS or not art:
+        return None
+    return (1 if inside_institution(art, ctx) is False else 0, specificity(art, ctx))
+
+
+def _named_in(text: str, t: Dict[str, Any], ctx: Dict[str, Any]) -> bool:
+    cand = next((c for c in ctx.get("candidates") or [] if t.get("candidate") and c.get("id") == t.get("candidate")), {})
+    art = str(cand.get("article") or t.get("article") or "")
+    number = art.split(" ", 1)[0]
+    return bool(number) and bool(re.search(rf"\b(?:art(?:icolo|t)?\.?\s*)?{re.escape(number)}\b", str(text or "")))
+
+
+def promote_by_pertinence(sols: List[Dict[str, Any]], main: int, pool: Sequence[int], plan: Dict[str, Any],
+                          ctx: Optional[Dict[str, Any]], log: Optional[List[Dict[str, Any]]] = None,
+                          by_realism: Optional[Callable[[int], Any]] = None) -> int:
+    """v79.12.1 (row 16): the main line chosen first by pertinence -- when the line realismo chose is judged
+    (line_pertinence) and another eligible line of the pool is more pertinent (inside the first read's institution
+    against outside, then more specific), the most pertinent one leads -- review: among equally pertinent ones,
+    realismo, then the proven count, then the pool's order decide (by_realism, coherent_solutions' rank key); it is
+    marked «promoted_by_pertinence» {over, from} -- where it stood: the subordinate line, an
+    objection or a reply of the plan naming its article, else among the soluzioni -- and logged."""
+    if not ctx or main not in pool:
+        return main
+    have = line_pertinence(sols[main], ctx)
+    if have is None:
+        return main
+    order = by_realism or (lambda i: pool.index(i))
+    better = [(line_pertinence(sols[i], ctx), order(i), i) for i in pool if i != main]
+    better = [(p, n, i) for p, n, i in better if p is not None and p < have]
+    if not better:
+        return main
+    new = min(better)[2]
+    where = "soluzioni"
+    if subordinate_of(sols, main) == new:
+        where = "subordinata"
+    elif any(_named_in(o.get("obiezione") or "", sols[new], ctx) for o in plan.get("obiezioni") or []):
+        where = "obiezione"
+    elif any(_named_in(o.get("risposta") or "", sols[new], ctx) for o in plan.get("obiezioni") or []):
+        where = "risposta"
+    sols[new]["promoted_by_pertinence"] = {"over": sols[main].get("candidate") or sols[main]["tesi"][:80],
+                                           "from": where}
+    entry = {"tesi": sols[new]["tesi"][:160], "promoted_by_pertinence": where, "over": sols[main]["tesi"][:160]}
+    if log is not None:
+        log.append(entry)
+    _log("promoted_by_pertinence", entry)
+    return new
 
 
 def coherent_text(text: str, records: Dict[str, Dict[str, Any]], a: Dict[str, Any],
@@ -3848,9 +4208,21 @@ def objections_fallback(records: Dict[str, Dict[str, Any]], a: Dict[str, Any], p
     label = a.get("article") or ""
     rec = (records or {}).get(label) or {}
     family = "penale" if penal else "civile"
+    defence = defence_record(label, rec)            # v79.12.1: the defence record's own objections
     for r in _live(rec):
         el = _short(r.get("text"), 100)
-        if rec.get("side") == "threat" and r.get("status") == PROVATO:
+        if defence and r.get("status") == PROVATO:
+            q, ans = DEFENCE_WORDS["obj_proven"]
+            out.append({"obiezione": q.format(el=el, art=label),
+                        "risposta": ans.format(fact=(_sentence_text(r.get("supporting") or [], by_id)
+                                                     or "i fatti narrati").rstrip("."))})
+        elif defence and r.get("status") == DA_PROVARE:
+            q, ans = DEFENCE_WORDS["obj_open"]
+            out.append({"obiezione": q.format(el=el, art=label),
+                        "risposta": ans.format(missing=_short(r.get("missing") or r.get("text"), 120).rstrip("."))})
+        elif defence:
+            continue
+        elif rec.get("side") == "threat" and r.get("status") == PROVATO:
             q, ans = OBJ_PROVEN[family]
             out.append({"obiezione": q.format(el=el, fact=_sentence_text(r.get("supporting") or [], by_id)
                                               or "i fatti narrati").rstrip("."), "risposta": ans})
@@ -4102,19 +4474,47 @@ def _with_line(text: str, line: Optional[str]) -> str:
     return f"{text}\n\n{line}" if line and text else (text or "")
 
 
-# v79.9 (B2): a module whose special laws the graph lacks -- one fixed line in §1 and §9 (the PO's words)
+# v79.9 (B2): a module whose special laws the graph lacks -- one fixed line in §1 and §9 (the PO's words). v79.12.1:
+# once per answer (§1, or the step-aside prose's lines) and only for a module that fits (module_fits)
 MISSING_LAWS_LINE = ("La disciplina speciale di {istituto} ({leggi}) non è nell'archivio: il parere si limita alle "
                      "norme del codice")
 
 
+def module_fits(module: Dict[str, Any], ctx: Dict[str, Any]) -> str:
+    """v79.12.1: "" when an active module fits the case, else why not -- switched on by the first read's institution or
+    a module article the request names, it fits; by the user's words or a schema only outside a criminal matter (a
+    penal narrative's words are its facts, not the institution) and, when the first read names institution families
+    (read_families), only as one of them."""
+    if module.get("signal") in ("istituto", "articolo"):
+        return ""
+    if criminal(ctx.get("posture")):
+        return "materia penale: il modulo viene dalle sole parole del caso"
+    families = read_families(ctx)
+    if families and str(module.get("id")) not in families:
+        return f"fuori dall'istituto della prima lettura ({', '.join(families)})"
+    return ""
+
+
 def missing_laws(ctx: Dict[str, Any], known: Optional[Sequence[str]] = None) -> Dict[str, Any]:
     """v79.9 (B2): {"istituto", "leggi"} of the first active module with a law the graph lacks (corpus_laws); {} with
-    none or when the graph's names are unknown."""
+    none or when the graph's names are unknown. v79.12.1: only a module that fits (module_fits; the others logged,
+    missing_laws_unfit), with the signal that switched it on."""
     from . import corpus_laws
+    unfit = {}
     for m in active_modules(ctx):
         gone = corpus_laws.missing(m.get("laws") or [], known) if m.get("laws") else []
-        if gone:
-            return {"istituto": str(m.get("name") or m["id"]), "leggi": list(gone), "module": m["id"]}
+        if not gone:
+            continue
+        why = module_fits(m, ctx)
+        if why:
+            unfit[m["id"]] = why
+            continue
+        if unfit:
+            _log("missing_laws_unfit", unfit)
+        return {"istituto": str(m.get("name") or m["id"]), "leggi": list(gone), "module": m["id"],
+                "signal": str(m.get("signal") or "")}
+    if unfit:
+        _log("missing_laws_unfit", unfit)
     return {}
 
 
@@ -4224,7 +4624,9 @@ def conclusions_from_selection(a: Dict[str, Any], sols: Sequence[Dict[str, Any]]
     art = a.get("article") or ""
     open_ = list(a["open"]) if "open" in a else _open_ids(ctx)      # v79.8 (E1): the main line's article's only
     depends = f"la prova degli elementi {', '.join(open_)}" if open_ else ""
-    if a.get("all_integrated") and art:
+    if a.get("defence") or defence_record(art, (ctx.get("records") or {}).get(art)):
+        depends, risk = defence_risk(a, open_)          # v79.12.1: never a conviction under the defence article
+    elif a.get("all_integrated") and art:
         risk = f"la condanna per l'art. {art}" if penal else f"l'accoglimento della domanda avversaria (art. {art})"
     elif open_:
         risk = (f"che l'accusa provi gli elementi {', '.join(open_)}" if penal and (ctx.get("posture") or {}).get("role") in ACCUSED
@@ -4560,7 +4962,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     extra += [precluded] if precluded else []
     procedure = "\n\n".join([p for p in [checked(procedure)] + extra if p]) or "Nessun profilo processuale calcolato sul caso."
     coherence: List[Dict[str, Any]] = []
-    sols, main = coherent_solutions(plan, records, a, ctx.get("riti") or [], coherence, ctx.get("posture") or {}, circ)
+    sols, main = coherent_solutions(plan, records, a, ctx.get("riti") or [], coherence, ctx.get("posture") or {}, circ,
+                                    ctx=ctx)                    # v79.12.1 (row 16): pertinence before realismo
     if any(t.get("candidate") for t in sols):   # v76: a thesis the model added (no candidate id) is never displayed
         added = [t["tesi"][:160] for i, t in enumerate(sols) if not t.get("candidate") and not t.get("fallback")
                  and i != main]
@@ -4628,8 +5031,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                                         layout_log)),
         ("obiezioni", objections_section(plan, fallback_objections)),
         ("processuali", procedure),
-        ("conclusioni", _with_line(_with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion")),
-                                   missing_laws_line(ctx))),                                     # v79.9 (B2)
+        # v79.12.1: the missing-laws line once per answer -- §1's, never again in §9
+        ("conclusioni", _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
     ]
     known_all = elements_by_id(records, circ)          # v79 (E2): what the reader reads, outside the tables and §5
     crim = criminal(ctx.get("posture"))
@@ -4936,13 +5339,12 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
     return ctx
 
 
-def read_institutions(read: Dict[str, Any]) -> List[str]:
-    """v79.8 (B2): the first read's institutions and claims, as words."""
-    out: List[str] = []
-    for h in (read or {}).get("hypotheses") or []:
-        if isinstance(h, dict):
-            out += [str(x) for x in h.get("institutions") or []] + [str(h.get("claim") or "")]
-    return [x for x in out if x.strip()]
+def read_institutions(read: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v79.8 (B2): the first read's institutions. v79.12.1: as the retrieval stage reads them
+    (interactive_flow.read_institutions: {name, rubricated, claim}, the main line's first, the alternatives after) --
+    active_modules gets the same input at both stages (module_input), institutions and not names only."""
+    from .interactive_flow import read_institutions as flow_read_institutions
+    return flow_read_institutions(read or {})
 
 
 def _store_fields(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:

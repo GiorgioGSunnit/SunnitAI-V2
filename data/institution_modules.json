@@ -1,5 +1,5 @@
 {
-  "_about": "v79.8 (Block B): the norms that confer an action. A claim candidate («Fondare la domanda sull'art. X», a riconvenzionale) is built only on an article one of these rules admits: an institution module's «actions» (the institution the first read names, or the case's words: «patterns») or a remedies.json matter's «actions». A module's articles come first, in its order (the specific norm before the general one: 2053 before 2051); «general» (1218, 1453, 2043) are subordinate -- offered with a module only when the module yields nothing proven. «limiting» are never a claim (they measure or condition a claim, they confer none). Edit here; lawyer_method.claim_admission reads it. v79.8.5: modules marked «draft» are Code's proposal, for the lawyer's review (famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio). v79.9 (Block B): a module may carry «stages» (the stage its articles differ by, read from the case's certain facts -- «patterns» -- or the events the terms read -- «events»: consegna, fine lavori, scoperta vizio, denuncia/reclamo; the first stage that matches puts its «actions» first), «conditional» actions (offered only when a certain fact matches their patterns: 1439 on a false description), «non_actions» (code articles that are no claim norm for the client: 2118, 2119 for a dismissed worker), «laws» (the special laws that govern it, checked against the graph's primary documents: data/corpus_expected.json holds the same list, with how each is matched), «requires» («professional_counterparty»: the consumer module only with a business as a certain fact) and «name». v79.10 (A4): a module may carry «weak_patterns» and «weak_min» (default 2): with them, the module is active on one of its «patterns» (the strong ones) or on «weak_min» different weak patterns -- «il Comune» alone never activates the amministrativo module (a 2051 custodia case naming the Comune as custodian); a module without «weak_patterns» activates as before, on any pattern. The amministrativo module (draft): L. 241/1990, c.p.a., TU edilizia d.P.R. 380/2001; its «laws» hold L. 241/1990 and the d.P.R. 380/2001 only -- the c.p.a. is a code, always admitted by the family gate (src/rag/family_gate.py). v79.10 (A4, review): «autotutela» is strong only in its administrative form (annullamento / revoca in autotutela, autotutela amministrativa, the Comune's or the administration's in the same sentence) -- never the civil self-help (1460, the tenant's, autotutela contrattuale / possessoria); the weak act needs the ente: a provvedimento the Comune / PA adopts in the same sentence (no judge word in it, never disciplinare) or «del Comune» / comunale / dirigenziale, a diniego of a permesso / autorizzazione / licenza / concessione / istanza / accesso, an ordinanza sindacale, a delibera comunale; «nel Comune di X» (an address) and «(PA)» (a province) are no ente. v79.10 (A4, archive names): the licenziamento module's «laws» hold the Fornero reform L. 92/2012 (in the archive: «Riforma del Lavoro Fornero 2026») beside L. 604/1966, L. 300/1970, d.lgs. 23/2015 and d.lgs. 81/2015 (not in the archive: the missing-laws line names them). A special law's action («7 l. 241/1990») matches the label the pipeline builds for that article of its archive document («7 Legge sul Procedimento Amministrativo 2026»): the action's law is resolved through data/corpus_expected.json «archive_names» (lawyer_method.same_article).",
+  "_about": "v79.8 (Block B): the norms that confer an action. A claim candidate («Fondare la domanda sull'art. X», a riconvenzionale) is built only on an article one of these rules admits: an institution module's «actions» (the institution the first read names, or the case's words: «patterns») or a remedies.json matter's «actions». A module's articles come first, in its order (the specific norm before the general one: 2053 before 2051); «general» (1218, 1453, 2043) are subordinate -- offered with a module only when the module yields nothing proven. «limiting» are never a claim (they measure or condition a claim, they confer none). Edit here; lawyer_method.claim_admission reads it. v79.8.5: modules marked «draft» are Code's proposal, for the lawyer's review (famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio). v79.9 (Block B): a module may carry «stages» (the stage its articles differ by, read from the case's certain facts -- «patterns» -- or the events the terms read -- «events»: consegna, fine lavori, scoperta vizio, denuncia/reclamo; the first stage that matches puts its «actions» first), «conditional» actions (offered only when a certain fact matches their patterns: 1439 on a false description), «non_actions» (code articles that are no claim norm for the client: 2118, 2119 for a dismissed worker), «laws» (the special laws that govern it, checked against the graph's primary documents: data/corpus_expected.json holds the same list, with how each is matched), «requires» («professional_counterparty»: the consumer module only with a business as a certain fact) and «name». v79.10 (A4): a module may carry «weak_patterns» and «weak_min» (default 2): with them, the module is active on one of its «patterns» (the strong ones) or on «weak_min» different weak patterns -- «il Comune» alone never activates the amministrativo module (a 2051 custodia case naming the Comune as custodian); a module without «weak_patterns» activates as before, on any pattern. The amministrativo module (draft): L. 241/1990, c.p.a., TU edilizia d.P.R. 380/2001; its «laws» hold L. 241/1990 and the d.P.R. 380/2001 only -- the c.p.a. is a code, always admitted by the family gate (src/rag/family_gate.py). v79.10 (A4, review): «autotutela» is strong only in its administrative form (annullamento / revoca in autotutela, autotutela amministrativa, the Comune's or the administration's in the same sentence) -- never the civil self-help (1460, the tenant's, autotutela contrattuale / possessoria); the weak act needs the ente: a provvedimento the Comune / PA adopts in the same sentence (no judge word in it, never disciplinare) or «del Comune» / comunale / dirigenziale, a diniego of a permesso / autorizzazione / licenza / concessione / istanza / accesso, an ordinanza sindacale, a delibera comunale; «nel Comune di X» (an address) and «(PA)» (a province) are no ente. v79.10 (A4, archive names): the licenziamento module's «laws» hold the Fornero reform L. 92/2012 (in the archive: «Riforma del Lavoro Fornero 2026») beside L. 604/1966, L. 300/1970, d.lgs. 23/2015 and d.lgs. 81/2015 (not in the archive: the missing-laws line names them). A special law's action («7 l. 241/1990») matches the label the pipeline builds for that article of its archive document («7 Legge sul Procedimento Amministrativo 2026»): the action's law is resolved through data/corpus_expected.json «archive_names» (lawyer_method.same_article). v79.12.1: a module switches on only from the first read's institution (its name and rubricated name, never its claim sentence), a module article named in the request (lawyer_method.named_module_articles: never a «general» one) or the user's words -- the institution first, then the user's words, then a named article (review: an incidental article never replaces the module the case's words name), the first that finds one; «context_patterns» are the words a damage or a claim also uses (the hospital, the surgeon, the pronto soccorso after a slap; the heirs' «a titolo ereditario», «coeredi … parte civile», «per successione», «erede legittima» in a homicide; a fall «dalla sedia» after a slap; a «passaggio pedonale»): they count from the first read's institution only, never from the user's words alone -- the module's strong «patterns» name it (testamento, quota di legittima, the coeredi's divisione, a vase fallen from a balcony, a slip on a pothole, the diritto di passaggio, a surgeon's or an operation's harm, an infezione nosocomiale, a claim against the clinic or the ASL); «legittima» is never the legittima difesa and «successione» never the «iure successionis» of a damage claim. Each active module records the signal that switched it on (lawyer_method.active_modules: «signal», «signal_words»).",
   "general": [
     "1218 c.c.",
     "1453 c.c.",
@@ -136,8 +136,12 @@
         "\\brovin",
         "\\bcornicion",
         "\\bcalcinacc",
-        "\\bcadut[oa]\\s+(?:di|del|della|dal|dalla)",
-        "\\bcedut[oa]\\b"
+        "\\bcedut[oa]\\b",
+        "\\b(?:vas[oi]|tegol\\w*|intonac\\w*|ram[oi]|alber[oi]|insegn\\w*|lastr\\w*|pezz[oi]|cancell[oi]|lampion\\w*|pannell\\w*|vetr[oi]|grondai\\w*|balaustr\\w*|ringhier\\w*)\\s+(?:[\\w'’]+\\s+){0,4}?(?:è\\s+|sono\\s+|era\\s+)?(?:cadut|precipitat|staccat)\\w*",
+        "\\b(?:scivolat|inciampat|cadut)\\w*\\s+(?:[\\w'’]+\\s+){0,6}?(?:buc[ah]e?\\b|tombin|pavimento|marciapied|gradin|scalin|dissest|chiazz|bagnat|sconness|radic)"
+      ],
+      "context_patterns": [
+        "\\bcadut[oa]\\s+(?:di|del|della|dal|dalla)"
       ],
       "actions": [
         "2053 c.c.",
@@ -217,12 +221,20 @@
         "\\bmalpractice\\b",
         "\\berrore\\s+medic",
         "\\bresponsabilit\\w*\\s+(?:medic|sanitari)",
+        "\\b(?:diagnos\\w*\\s+(?:errat|sbagliat|tardiv|omess)\\w*|(?:errat|sbagliat|tardiv|omess|mancat)\\w*\\s+diagnos\\w*|(?:intervent|operazion)\\w*\\s+(?:[\\w'’]+\\s+){0,3}?(?:sbagliat|errat|mal\\s+eseguit)\\w*|negligenz\\w*\\s+(?:medic|sanitari|del\\s+(?:medico|chirurgo|personale\\s+sanitario)))",
+        "\\bnosocomial",
+        "\\b(?:chirurg\\w*|medic[oi]|anestesist\\w*|ginecolog\\w*|ortoped\\w*|dentist\\w*|odontoiatr\\w*|infermier\\w*|personale\\s+(?:medico|sanitario))\\b(?:(?!\\b(?:schiaff|pugn|percoss|aggre)\\w*)[^.;\\n]){0,60}?\\b(?:recis|les[oi]\\b|lesionat|perforat|danneggiat|dimenticat|amputat|ustionat|infettat|garz)\\w*",
+        "\\bdurante\\s+(?:l['’]\\s*|il\\s+|un\\s+|un['’]\\s*)?(?:intervent\\w*|operazion\\w*|parto|ricovero|anestesi\\w*)\\b[^.;\\n]{0,80}?\\b(?:recis|les[oi]\\b|lesionat|perforat|danneggiat|dimenticat|amputat|ustionat|infettat|garz)\\w*",
+        "\\b(?:risarciment\\w*|dann[oi]\\b|agire|citare|causa)[^.;\\n]{0,40}?\\b(?:contro\\s+|nei\\s+confronti\\s+(?:del|della|dello|dell['’]|degli|dei)\\s*|all['’]\\s*|alla\\s+|allo\\s+|al\\s+)(?:la\\s+|il\\s+|l['’]\\s*)?(?:clinic|ospedal|asl\\b|azienda\\s+(?:sanitari|ospedalier)|struttura\\s+sanitari|chirurg|medic[oi]\\b|casa\\s+di\\s+cura)"
+      ],
+      "context_patterns": [
         "\\bintervento\\s+chirurgic",
         "\\bstruttura\\s+sanitari",
         "\\bospedal",
         "\\bclinic[ah]\\b",
         "\\bchirurg",
         "\\bmedico\\s+(?:curante|di\\s+base|del\\s+pronto)",
+        "\\bpronto\\s+soccorso",
         "\\basl\\b"
       ],
       "actions": [
@@ -271,8 +283,11 @@
       "id": "servitu",
       "patterns": [
         "\\bservit",
-        "\\bpassaggio\\b",
-        "\\bintercluso"
+        "\\bintercluso",
+        "\\bdiritto\\s+di\\s+passaggio|\\bpassaggio\\s+(?:coattiv|carrabil|carrai|pedonale\\s+(?:sul|attraverso)\\s+(?:il\\s+)?(?:mio\\s+|suo\\s+|loro\\s+)?(?:fondo|terreno|cortile)|sul\\s+(?:mio\\s+|suo\\s+|loro\\s+)?(?:fondo|terreno)|attraverso\\s+(?:il\\s+)?(?:mio\\s+|suo\\s+|loro\\s+)?(?:fondo|terreno))|\\bfondo\\s+(?:servente|dominante)"
+      ],
+      "context_patterns": [
+        "\\bpassaggio\\b"
       ],
       "actions": [
         "1079 c.c.",
@@ -359,12 +374,18 @@
       "id": "successioni",
       "draft": true,
       "patterns": [
-        "\\bereditari",
         "\\beredit[àa]\\b",
-        "\\bsuccession",
         "\\btestament",
-        "\\blegittim[ai]\\b",
         "\\bcollazion",
+        "\\b(?:asse|comunione|divisione|quot[ae]|ben[ei]|massa|patrimonio|vocazione|delazione)\\s+ereditari",
+        "\\bsuccessione\\s+(?:ereditari|testamentari|legittim|necessari|mortis)|\\bapertura\\s+della\\s+successione|\\bdichiarazione\\s+di\\s+successione|\\bsuccessione\\s+(?:del|della|dello|di)\\s+(?!(?:diritt|contratt|legg|norm|rapport|termin)\\w*)(?:padre|madre|nonn|zi|fratell|sorell|coniug|marito|moglie|figli|de\\s+cuius|defunt|(?-i:[A-Z]))",
+        "\\bquota\\s+(?:di\\s+)?legittima\\b|\\blesione\\s+(?:della\\s+)?(?:quota\\s+(?:di\\s+)?)?legittima\\b|\\blegittimari",
+        "\\bcoered\\w*\\b(?:[^.;\\n]){0,60}?\\b(?:division|scioglim|comunion|testament|collazion|asse\\b|eredit[àa]\\b)|\\b(?:division|scioglim|comunion|testament|collazion)\\w*\\b[^.;\\n]{0,60}?\\bcoered"
+      ],
+      "context_patterns": [
+        "\\bereditari",
+        "\\bsuccession(?!is\\b)",
+        "(?<!difesa\\s)(?<!\\bera\\s)(?<!\\bè\\s)(?<!\\bfu\\s)(?<!\\bsia\\s)(?<!fosse\\s)\\blegittim[ai]\\b(?!\\s+(?:difes|aspettativ|interess|sospett|impediment|affidament|motiv|ragion|titolar|proprietari|possessor|detentor))",
         "\\bcoered"
       ],
       "actions": [

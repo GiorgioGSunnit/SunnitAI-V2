@@ -106,6 +106,18 @@ redactor's name_spans; ledger_removed_absent counts a removed sentence only wher
 (answer_ledger.misplaced: the one check's section, a repetition's later occurrences, the client's own text) -- the
 entries are never relabelled to read 0; charge_thesis_refused counts §1's refused summary too.
 
+v79.12.1 (modules, code scope): the counters modules_active (per cell, one row per module active: «signal: words» --
+the signal that switched it on: istituto / articolo / parole dell'utente / schema, the answer stage's, else the
+retrieval's; never a claim sentence or a damage word alone) and code_articles_out_of_scope (the code articles of a
+Titolo / Capo outside the case's institutions kept from grading: topic_groups.code_scope_gate) in the counters table
+(interactive_flow.case_counters; the run's state only).
+
+v79.12.1 (defence records, negated elements, pertinence): the counters negated_integrated_by_presence (must be 0: an
+absence-phrased element «provato» with no supporting fatto certo stating the absence) and negated_elements
+(issue_records.negated_counters), promoted_by_pertinence (the main line promoted over realismo's choice by pertinence:
+lawyer_method.promote_by_pertinence) and main_outside_institution (a main line on the client's own norm outside the
+first read's institution -- must be 0) in the counters table (interactive_flow.case_counters).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json

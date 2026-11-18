@@ -375,11 +375,29 @@ def _question_for(requisite: Dict[str, Any], questions: Sequence[Dict[str, Any]]
     return ""
 
 
+def own_rubrica(label: str, row: Dict[str, Any], topic: Dict[str, Any],
+               rubriche: Optional[Dict[str, str]] = None) -> str:
+    """v79.12.1: a record's rubrica is the article's own heading -- its row's (the store's «titolo_articolo»), else the
+    store's heading read for it elsewhere (rubriche: {label: heading}, the pool's and the rows'), and the topic's rubrica
+    only for the topic's own anchor (it is the anchor's heading); never the heading of the topic the article is filed
+    under (52 and 55 c.p. filed under «Omicidio colposo», 61 c.p. under «Furto»). "" when none is known."""
+    s = (row or {}).get("s") or {}
+    own = str(s.get("titolo_articolo") or "").strip()
+    if own:
+        return own
+    stored = str((rubriche or {}).get(label) or "").strip()
+    if stored:
+        return stored
+    return str(topic.get("rubrica") or "") if label == str(topic.get("anchor") or "") else ""
+
+
 def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], analysis: Dict[str, Any],
           questions: Sequence[Dict[str, Any]] = (), others: Sequence[Dict[str, Any]] = (),
-          grading: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
+          grading: Optional[Dict[str, Any]] = None, rubriche: Optional[Dict[str, str]] = None
+          ) -> Dict[str, Dict[str, Any]]:
     """{label: record} for every article of the listed topics (kept: why), the altri profili (dropped: grado 1 / beyond
-    the topics' number) and the prefilter's drops (dropped: prefiltro)."""
+    the topics' number) and the prefilter's drops (dropped: prefiltro). v79.12.1: each record's rubrica is its own
+    (own_rubrica; rubriche: the store's headings by label), never its topic's."""
     from .interactive_flow import _key, _parse_label, _topic_refs
     by_key = {_key(r["_article"]): r for r in rows or [] if r.get("_article")}
     out: Dict[str, Dict[str, Any]] = {}
@@ -408,7 +426,7 @@ def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], anal
             if row.get("_first_read"):
                 kept.append(f"primo esame: {row['_first_read']}")
             writable = ref in _topic_refs(t)
-            rubrica = str(s.get("titolo_articolo") or t.get("rubrica") or "")
+            rubrica = own_rubrica(label, row, t, rubriche)          # v79.12.1: never the topic's heading
             line, line_why = schema_line(row)                       # v79.11 (6): (None, "off") with the flag off
             gated = not decomposed_by_gate(label, rubrica,          # v74: never a fattispecie record, any route
                                            **({"schema": line} if line is not None else {}))
@@ -625,6 +643,7 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
         if req.get("schema_kind") and req["status"] == PROVATO:     # v79.11: a branch never overturns the C3 check
             req["status"], req["why"] = condition_check(req, by_id, req["status"], req["why"])
     polarity(req, by_id, sure_con)      # v79.9 (A1, A2): a mental element, a duty element; v79.11: a termine
+    negated_check(req, by_id)           # v79.12.1: an absence-phrased element only on a fact stating the absence
     if req.get("schema_kind"):          # v79.11 (6): a schema element -- its rule recorded and logged
         rule, source = element_rule(req)
         req["grading_rule"] = {"rule": rule, "source": source, "before": before, "after": req["status"]}
@@ -1320,6 +1339,204 @@ def client_bindings(records: Dict[str, Dict[str, Any]], client_roles: Sequence[s
             rec["verdict"] = verdict(rec)
             out["rebound"].append(label)
     return out
+
+
+# v79.12.1: a negated element -- one phrased as an absence («non vi è desistenza», «non ha autorizzato», «senza il
+# consenso», «in mancanza del titolo») -- is integrato only by a fatto certo stating that absence; a fact stating the
+# presence of the thing (the noun the trigger shares: «ha desistito», «ha autorizzato») or no fact leaves it «da
+# provare». A prohibition («non può», «non deve»: deontic, v79.10.4) and a mental or a termine element keep their rules.
+_ARTS = r"(?:il|lo|la|l['’]\s*|i|gli|le|un|una|uno|alcun\w*|previ[oaie]|su[oaie]|propri[oaie]|dett[oaie])"
+_NEGATED_ELEMENT_RE = re.compile(
+    r"\bnon\s+(?:vi|v['’]|ci|c['’])\s*(?:è|e|sia|siano|sono|era|fosse|sia\s+stat[oaie]|è\s+stat[oaie])\b|"
+    r"\bnon\s+(?:ha|abbia|hanno|abbiano|aveva|avevano|avesse|avessero)\s+(?:(?:mai|previamente|espressamente)\s+)?"
+    r"[a-zà-ü]+(?:at|ut|it|ess|ost)[oaie]\b|"
+    r"\bnon\s+(?:sia|siano|è|sono|fosse|risult\w*)\s+(?:stat[oaie]\s+)?(?:autorizzat|consentit|prestat|rilasciat|"
+    r"concess|dat|richiest|voluti?|dovut|giustificat|ricevut)\w*|"
+    r"\bnon\s+(?:autorizzat|consentit|voluti?\b|richiest|dovut|giustificat|accettat|approvat)\w*|"
+    r"\bsenza\s+(?:" + _ARTS + r"\s*)*[a-zà-ü]{4,}|"
+    r"\b(?:in\s+)?(?:assenza|mancanza|difetto)\s+d(?:i|el|ello|ella|ell['’]|ei|egli|elle)\b", re.IGNORECASE)
+_ABSENCE_RE = re.compile(r"\b(?:non|senza|mai|nessun\w*|né|alcun\w*|privo|priva|privi|prive|assenza|mancanza|"
+                         r"mancav\w*|mancat\w*|assente|assenti|negat\w*|rifiutat\w*|rifiut\w*|dinieg\w*)\b",
+                         re.IGNORECASE)
+_THING_STOP = {"non", "senza", "vi", "ci", "è", "sia", "siano", "sono", "era", "fosse", "stato", "stata", "stati",
+               "state", "ha", "abbia", "hanno", "abbiano", "aveva", "avevano", "avesse", "avessero", "mai", "il", "lo",
+               "la", "i", "gli", "le", "un", "una", "uno", "di", "del", "dello", "della", "dei", "degli", "delle",
+               "in", "assenza", "mancanza", "difetto", "previo", "previa", "suo", "sua", "suoi", "sue", "proprio",
+               "propria", "alcun", "alcuno", "alcuna", "che", "per", "con", "da", "dal", "dalla", "nel", "nella",
+               "titolare", "parte", "fatto", "previamente", "espressamente"}
+# review (v79.12.1): an auxiliary or a light verb is never the thing («senza essere autorizzato» -> the authorisation,
+# «non ha prestato il consenso» -> the consent); the same words may sit between a negation and the thing it governs
+_LIGHT = {"essere", "esser", "avere", "aver", "averne", "avendo", "essendo", "avuto", "prestato", "prestata",
+          "prestare", "dato", "data", "dare", "rilasciato", "rilasciata", "rilasciare", "concesso", "concessa",
+          "concedere", "fornito", "fornita", "fornire", "manifestato", "manifestata", "espresso", "espressa",
+          "ottenuto", "ottenuta", "ottenere", "ricevuto", "ricevuta", "ricevere", "richiesto", "richiesta",
+          "richiedere", "chiesto", "chiesta", "chiedere"}
+_FILLER = _LIGHT | {"ha", "ho", "hai", "abbiamo", "hanno", "abbia", "abbiano", "aveva", "avevano", "avesse",
+                    "avessero", "ebbe", "è", "era", "erano", "fosse", "fossero", "sia", "siano", "sono", "fu", "furono",
+                    "sarà", "sarebbe", "venne", "viene", "stato", "stata", "stati", "state", "vi", "ci", "v", "c", "si",
+                    "lo", "la", "li", "le", "gli", "ne", "mi", "ti", "l", "il", "i", "un", "una", "uno", "alcun",
+                    "alcuna", "alcuno", "più", "affatto", "ancora", "previamente", "espressamente", "preventivamente",
+                    "formalmente", "validamente", "qualsiasi", "qualunque", "di", "del", "della", "dello", "dell", "dei", "degli", "delle", "a",
+                    "ad", "in", "modo", "suo", "sua", "suoi", "sue", "proprio", "propria", "loro", "previo", "previa"}
+_GENITIVE = {"di", "del", "della", "dello", "dell", "dei", "degli", "delle"}
+_BREAK = {"e", "ed", "ma", "o", "od", "oppure", "però", "perché", "poiché", "quando", "mentre", "che", "se", "dopo",
+          "prima", "anche", "pur", "benché", "sebbene", "quindi"}
+_NEG_STRONG = {"non", "senza", "né"}
+_NEG_CONCORD_RE = re.compile(r"(?:mai|nessun\w*|niente|nulla)")
+_NEG_WORD_RE = re.compile(r"(?:privo|priva|privi|prive|assenza|mancanza|difetto|manca\w*|mancò|assente|assenti|"
+                          r"neg(?:a|ò|are|ava|avano|ando|arono|at[oaie])|rifiut\w*|dinieg\w*|revoc\w*)")
+_NOT_A_NEGATION = {"appena", "solo", "soltanto", "sempre"}      # «non appena», «non solo»: no negation of the thing
+_TOKEN_RE = re.compile(r"[a-zà-ü]+|[,;:.()!?«»\"\[\]–-]")
+# the same thing in other words (prefixes): the consent, the authorisation, the performance (adempiere: pagare,
+# versare, saldare, corrispondere), the restitution (restituire, riconsegnare)
+_THING_GROUPS = (("consen", "accons", "assens"), ("autoriz", "permes", "licenz"),
+                 ("adempi", "adempu", "paga", "pagò", "versat", "saldat", "corrispos"),
+                 ("restitu", "riconsegn", "ridat"))
+NEGATED_PRESENCE_WHY = "elemento negativo: il fatto ne afferma la presenza, non l'assenza ({sid})"
+NEGATED_SILENT_WHY = "elemento negativo: nessun fatto ne afferma l'assenza"
+
+
+def _thing_stems(words: Sequence[str]) -> set:
+    """The thing's prefixes: each word's first six letters (the whole word when shorter), with its group's
+    (_THING_GROUPS) when it belongs to one."""
+    out = set()
+    for w in words:
+        if len(w) < 4 or w in _THING_STOP:
+            continue
+        out.add(w[:6])
+        for group in _THING_GROUPS:
+            if any(w.startswith(g) for g in group):
+                out |= set(group)
+    return out
+
+
+def negated_element(text: str) -> Optional[set]:
+    """v79.12.1: the prefixes of the thing an absence-phrased element says is missing -- its first content word
+    (never an auxiliary or a light verb, _LIGHT: «senza essere autorizzato» -> «autori…», «non ha prestato il
+    consenso» -> «consen…»), with its other words (_THING_GROUPS); None when the element is not phrased as an absence
+    (or is a prohibition, a mental or a termine element)."""
+    text = str(text or "")
+    m = _NEGATED_ELEMENT_RE.search(text)
+    if not m or _PROHIBIT_RE.search(text) or mental_element(text) or term_of(text):
+        return None
+    words = re.findall(r"[a-zà-ü]+", (m.group(0) + " " + text[m.end():]).lower())[:8]
+    first = next((w for w in words if len(w) >= 4 and w not in _THING_STOP and w not in _LIGHT), "") or \
+        next((w for w in words if len(w) >= 4 and w not in _THING_STOP), "")
+    return _thing_stems([first]) if first else set()
+
+
+def _is_thing(word: str, thing: set) -> bool:
+    return len(word) >= 4 and any(word.startswith(p) for p in thing)
+
+
+def _negation_parity(tokens: Sequence[str], i: int, step: int) -> int:
+    """The negations governing tokens[i] on one side (step -1: before it, +1: after it): the chain of negations,
+    auxiliaries, clitics, articles and light verbs (_FILLER) reaching it, stopped by any other word, a punctuation
+    mark or a conjunction (after the thing, a «di …» complement of up to two words is crossed). A strong negation
+    («non», «senza», «né») and a negating word («negato», «rifiutato», «revocato», «mancava», «privo») count one
+    each; «mai», «nessun» count one only with no strong negation (negative concord: «non … mai» is one negation);
+    after the thing only a «non» before an auxiliary or a light verb counts («il consenso non è stato dato», never
+    «… non opponendosi», never «il consenso senza riserve»)."""
+    strong = verbs = concord = 0
+    gen = 0
+    j = i + step
+    while 0 <= j < len(tokens):
+        t = tokens[j]
+        nxt = tokens[j + 1] if j + 1 < len(tokens) else ""
+        if not t[0].isalpha() or t in _BREAK:
+            break
+        if t in _NEG_STRONG:
+            if t == "non" and nxt in _NOT_A_NEGATION:
+                break
+            if step > 0 and (t != "non" or nxt not in _FILLER):     # after the thing: «senza …» governs what follows
+                break
+            strong += 1
+        elif _NEG_CONCORD_RE.fullmatch(t):
+            if step > 0 and nxt not in _FILLER:
+                break
+            concord += 1
+        elif _NEG_WORD_RE.fullmatch(t):
+            verbs += 1
+        elif t in _FILLER:
+            if step > 0 and t in _GENITIVE:
+                gen = 2
+        elif step > 0 and gen > 0:
+            gen -= 1
+        else:
+            break
+        j += step
+    return strong + verbs + (1 if concord and not strong else 0)
+
+
+def thing_mentions(text: str, thing: set) -> List[bool]:
+    """review (v79.12.1): each mention of the thing in the sentence, True when a negation governs it (an odd number of
+    negations in the chain before it, or after it: «non ha autorizzato», «senza il suo consenso», «nessun consenso»,
+    «il consenso non fu dato», «ha rifiutato di restituire»; «non ha rifiutato il consenso» is two -- the presence).
+    A «non» or «senza» elsewhere in the sentence («ha autorizzato l'accesso e non ha sollevato obiezioni», «ha dato il
+    consenso senza riserve») governs nothing."""
+    tokens = _TOKEN_RE.findall(str(text or "").lower())
+    return [bool(_negation_parity(tokens, i, -1) % 2 or _negation_parity(tokens, i, 1) % 2)
+            for i, w in enumerate(tokens) if w[0].isalpha() and _is_thing(w, thing)]
+
+
+def states_absence(sentence: Dict[str, Any], thing: set) -> bool:
+    """v79.12.1: the sentence states the absence of the thing -- review: a negation governs one of its mentions
+    (thing_mentions), never an absence word merely near it (with no thing read, any absence word)."""
+    text = str(sentence.get("text") or "")
+    if not thing:
+        return any(_ABSENCE_RE.fullmatch(w) for w in re.findall(r"[a-zà-ü]+", text.lower()))
+    return any(thing_mentions(text, thing))
+
+
+def states_presence(sentence: Dict[str, Any], thing: set) -> bool:
+    """review (v79.12.1): the sentence names the thing and no negation governs any of its mentions."""
+    marks = thing_mentions(str(sentence.get("text") or ""), thing) if thing else []
+    return bool(marks) and not any(marks)
+
+
+def negated_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> None:
+    """v79.12.1, in place after polarity: a negated element (negated_element) «provato» stays so only when a supporting
+    fatto certo states the absence (states_absence); else «da provare» -- the presence of the thing, or no such fact
+    (req["negated"] marks it; req["negated_presence"] the fact that stated the presence)."""
+    from .interactive_flow import DA_PROVARE, PROVATO
+    if req.get("kind") not in ("requisito", "procedibilita") or element_rule(req)[0] in ("mental", "termine"):
+        return
+    thing = negated_element(req.get("text") or "")
+    if thing is None:
+        return
+    req["negated"] = True
+    if req.get("status") != PROVATO:
+        return
+    facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])]
+    if any(states_absence(s, thing) for s in facts):
+        return
+    presence = next((s for s in facts if states_presence(s, thing)), None)
+    if presence:
+        req["negated_presence"] = presence.get("id")
+        req["status"], req["why"] = DA_PROVARE, NEGATED_PRESENCE_WHY.format(sid=presence.get("id"))
+    else:
+        req["status"], req["why"] = DA_PROVARE, NEGATED_SILENT_WHY
+
+
+def negated_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+    """v79.12.1: negated_integrated_by_presence -- a negated element «provato» with no supporting fatto certo stating
+    the absence (must be 0); negated_elements -- the negated elements graded."""
+    from .interactive_flow import PROVATO
+    wrong = seen = 0
+    for rec in (records or {}).values():
+        for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
+            if r.get("kind", "requisito") not in ("requisito", "procedibilita") or \
+                    element_rule(r)[0] in ("mental", "termine"):
+                continue
+            thing = negated_element(r.get("text") or "")
+            if thing is None:
+                continue
+            seen += 1
+            if r.get("status") == PROVATO and not any(
+                    certain_fact(by_id[i]) and states_absence(by_id[i], thing)
+                    for i in r.get("supporting") or [] if i in by_id):
+                wrong += 1
+    return {"negated_integrated_by_presence": wrong, "negated_elements": seen}
 
 
 def polarity_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str, Any]]) -> Dict[str, int]:

@@ -449,6 +449,23 @@ def rule_named(rule_topics: Sequence[Dict[str, Any]]) -> Dict[Tuple[str, str], s
     return out
 
 
+def code_scope(rows: Sequence[Dict[str, Any]], case: str, first_read: Optional[Dict[str, Any]],
+               anchors: Sequence[str] = ()) -> Dict[str, Any]:
+    """v79.12.1: the Capo-scope gate on every book (topic_groups.code_scope_gate) -- the first read's institutions by
+    their names and rubricated names (lawyer_method.institution_names of read_institutions), the articles the user
+    names and the actions of the modules active on the same input as the answer stage's (lawyer_method.module_input)
+    in scope; anchors (the rules' and tables'): kept, never widening the scope. The gate's log with «_rows» (the rows
+    kept) and «modules» (the modules' ids with their signal)."""
+    from . import defensive_generation as dg, lawyer_method, topic_groups
+    insts = read_institutions(first_read) if first_read else []
+    mods = lawyer_method.active_modules(lawyer_method.module_input(case, insts)) if insts else []
+    named = [_label(_key(r)) for r in dg._refs_in(case or "") if len(r) == 2]
+    keep = list(dict.fromkeys(named + [str(a) for m in mods for a in m.get("actions") or []]))
+    log: Dict[str, Any] = {"modules": lawyer_method.modules_active(mods)}
+    kept = topic_groups.code_scope_gate(rows, lawyer_method.institution_names(insts), keep, anchors, log)
+    return {**log, "_rows": kept}
+
+
 def area_gate(rows: Sequence[Dict[str, Any]], analysis: Dict[str, Any], case: str,
               named_by_rules: Optional[Dict[Tuple[str, str], str]] = None, log: Optional[Dict[str, Any]] = None
               ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -919,6 +936,16 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             gone = {x["article"] for x in gate_log.get("rows") or []}
             anchor_keep = [a for a in anchor_keep if a not in gone]
             must = [a for a in must if a not in gone]
+        if case_first:          # v79.12.1: the Capo-scope gate on every book -- a code article of a Titolo / Capo outside
+            code_log = _isolated("code_scope", lambda: code_scope(article_rows, case, first_read,           # the case's
+                                                                  anchor_keep), None)                    # institutions
+            if code_log is not None:
+                article_rows = code_log.pop("_rows")
+                track_gate(top, gates, "code_scope_gate", article_rows)
+                gone = {x["article"] for x in code_log.get("dropped") or []}
+                must = [a for a in must if a not in gone]
+                out["code_scope"] = code_log
+                _log("code_scope_gate", code_log)
         if case_first:          # v79.6 (item 6): a keyword hit outside the case's matters, every book, before grading
             from . import topic_groups
             matter_log: Dict[str, Any] = {}
@@ -973,7 +1000,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             _log("special_law_gate", out["special_law_gate"])
         # v79.9 (C1): the document-level allowlist per matter family -- every row, the first read's and the rules'
         # anchors' included, and the area gate's «altri profili» rows (family_gate)
-        fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": [], "overrides": list(special_overrides)}
+        fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": [], "overrides": list(special_overrides),
+               "modules_active": dict(fam_ctx.get("modules_active") or {})}        # v79.12.1: each with its signal
         if special_overrides:
             _log("family_override", {"source": "special_law_gate", "overrides": special_overrides})
         # v79.10 (A5): the retrieval's rows the gate dropped (shadow) -- (review) the special-law gate's too
@@ -1597,6 +1625,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         "retrieval_top": _jsonable(found.get("retrieval_top") or []),      # v79.7 (item 3)
         "defence_gate": _jsonable(found.get("defence_gate") or {}),         # v79 (D1, D4)
         "family_gate": _jsonable(found.get("family_gate") or {}),           # v79.9 (C1, C2)
+        "code_scope": _jsonable(found.get("code_scope") or {}),             # v79.12.1: the Capo-scope gate, every book
         "tool_rows": [_compact_row(r) for r in found["regime_rows"]],
         "pool": [{"_article": list(r["_article"]), "_multi_signal": bool(r.get("_multi_signal")),
                   "rubrica": str((r.get("s") or {}).get("titolo_articolo") or "")}
@@ -3189,7 +3218,8 @@ def build_records(state: Dict[str, Any], rows: Sequence[Dict[str, Any]]) -> None
     t0 = time.time()
     analysis = _restored_analysis(state["analysis"])
     records = issue_records.build(state.get("topics") or [], rows, analysis, state.get("questions") or [],
-                                  state.get("others") or [], state.get("grading") or {})
+                                  state.get("others") or [], state.get("grading") or {},
+                                  rubriche=_isolated("record_rubriche", lambda: _pool_rubriche_labels(state), {}) or {})
     state["sentences"] = case_sentences(state)
     issue_records.refresh(records, analysis, state.get("questions") or [], state["sentences"])   # v60g: round 1's links
     state["records"] = issue_records.jsonable(records)
@@ -6055,6 +6085,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
                       draft) or draft
     if state.get("method_refused"):             # v76: the method never steps aside silently -- the answer says so
         from . import lawyer_method
+        # v79.12.1: the step-aside prose keeps Block B's grounded-rule check and prints §5 for the articles it cites
+        draft = _isolated("step_aside_answer", lambda: step_aside_answer(state, draft, all_rows, case, rendered or ""),
+                          draft) or draft
         draft = "\n\n".join([lawyer_method.not_applied_note(state["method_refused"])]     # v79.10.1 (A1): the
                               + list(state.get("method_refused_lines") or []) + [draft])    # missing-laws line too
     elif state.get("method_refused_clients"):   # v79.10.1 (A1, review): the clients with no line, said; the others'
@@ -6249,6 +6282,12 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
     # v79.8 (A4): the clients' objections calls (each with its reply binding review) are independent -- concurrently
     out = [(name, ctx, mplan) for (name, ctx, _), mplan in zip(out, concurrently(
         [(lambda ctx=ctx, mplan=mplan: method_objections(ctx, mplan)) for _, ctx, mplan in out]))]
+    said = False                # v79.12.1: the missing-laws line once per answer -- the first client's §1 only
+    for _, ctx, _ in out:
+        if ctx.get("missing_laws"):
+            if said:
+                ctx["missing_laws"] = {}
+            said = True
     state["thesis_counts_by_client"] = counts
     if shadows:
         state["schema_shadow_by_client"] = shadows
@@ -6459,6 +6498,9 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     ctx["missing_laws"] = _isolated("missing_laws", lambda: lawyer_method.missing_laws(ctx), {}) or {}    # v79.9 (B2)
     counters = state.setdefault("block_counters", {})
     counters["missing_laws_lines"] = max(int(counters.get("missing_laws_lines") or 0), int(bool(ctx["missing_laws"])))
+    if "modules_active" not in counters:        # v79.12.1: the answer stage's modules, each with the signal that
+        counters["modules_active"] = _isolated("modules_active", lambda: lawyer_method.modules_active(   # switched it on
+            lawyer_method.active_modules(ctx)), {}) or {}
     from . import rulings as rulings_mod
     record = shared_record if shared_record is not None else (    # v79.6 (item 2): one record for every client
         _isolated("rulings_for_record", lambda: rulings_record(ctx, rows), None) if rulings_mod.enabled() else None)
@@ -6492,6 +6534,81 @@ def rulings_record(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], call=Non
     record.update(charge=charge, charge_cc_fattispecie=charge.endswith(" c.c.") and charge in records,
                   landmark_sources=sources)
     return record
+
+
+STEP_ASIDE_NO_CANDIDATE = {"id": "step_aside", "contesta": []}     # v79.12.1: no selection, so no controverted point
+
+
+def _same_spacing(old: str, new: str) -> str:
+    """new with old's leading and trailing whitespace (a section's body as answer_ledger.rejoin puts it back)."""
+    old = old or ""
+    return old[:len(old) - len(old.lstrip())] + (new or "").strip() + old[len(old.rstrip()):]
+
+
+def step_aside_cited(state: Dict[str, Any], draft: str) -> List[str]:
+    """v79.12.1: the record labels the prose cites, in the prose's order."""
+    from . import citations
+    records = state.get("records") or {}
+    by_key = {_key(_parse_label(label)): label for label in records}
+    return list(dict.fromkeys(by_key[_key(ref)] for ref in citations.article_refs(draft or "") if _key(ref) in by_key))
+
+
+def step_aside_own(state: Dict[str, Any], case: str = "") -> List[str]:
+    """v79.12.1 (review): the case's own articles on the step-aside path -- the records', the one the method stepped
+    aside on (its why and lines), the ones the case text names."""
+    from . import citations
+    texts = [str(state.get("method_refused") or "")] + [str(x) for x in state.get("method_refused_lines") or []] + \
+        [case or ""]
+    return list(dict.fromkeys(list(state.get("records") or {})
+                              + [citations.label(r) for t in texts for r in citations.article_refs(t)]))
+
+
+def step_aside_answer(state: Dict[str, Any], draft: str, rows: Sequence[Dict[str, Any]], case: str = "",
+                      rendered: str = "", build: Optional[Callable] = None) -> str:
+    """v79.12.1: the method stepped aside (state["method_refused"]) -- the prose answer keeps the method's checks:
+    Block B's grounded-rule check on every written section (the rendered procedural section, code-written, aside), in
+    the form a plain opinion allows (rule_statements.check_declared): the decisive article has no record elements here,
+    so the full check would strip every rule on the case's own norms -- only a sentence declaring another norm
+    applicable («applicabile», «si applica», «configurabile», «ricorre la fattispecie», «integra il reato») and naming
+    an article outside the case's own (step_aside_own) with no record element or registry passage on it is removed,
+    «removed» in the ledger; then §5 (rulings.section_text) from the rulings record built for the record articles the
+    prose cites (rulings_for_record; build: rulings_record), after the «Norme e giurisprudenza» section (or last). No
+    thesis was selected: no point is controverted, so no orientation -- each ruling is graded on its article's elements.
+    Logged (step_aside_answer)."""
+    from . import answer_ledger, plan_then_write as ptw, rule_statements, rulings as rulings_mod
+    records = state.get("records") or {}
+    cited = step_aside_cited(state, draft)
+    record = None
+    if cited and rulings_mod.enabled():
+        ctx = {"records": {k: records[k] for k in cited}, "circumstances": {}, "case": case,
+               "candidates": [dict(STEP_ASIDE_NO_CANDIDATE)], "assessment": {}}
+        record = _isolated("rulings_for_record", lambda: (build or rulings_record)(ctx, rows), None)
+    if record is not None:
+        state["rulings_record"] = record
+    src = rule_statements.sources({"records": records, "circumstances": {}, "rulings_record": record or {}}, rows)
+    skip = {ptw.SECTION_TITLES[4]} if rendered else set()
+    rules_log: List[Dict[str, str]] = []
+    before = answer_ledger.sections_of(draft)
+    own = step_aside_own(state, case)
+    after = [(t, x if t in skip else _same_spacing(x, rule_statements.check_declared(x, src, own, rules_log)))
+             for t, x in before]
+    if rules_log:
+        ledger = answer_ledger.Ledger()
+        ledger.record("step_aside:rules", before, after)
+        merge_removals(state, [e for e in ledger.entries if e["kind"] in ("removed", "rewritten")])
+        draft = answer_ledger.rejoin(draft, after)
+    if record is not None:
+        section = rulings_mod.section_text(record)
+        parts = answer_ledger.sections_of(draft)
+        norms = ptw.SECTION_TITLES[2]
+        if any(t == norms for t, _ in parts):
+            draft = answer_ledger.rejoin(draft, [(t, _same_spacing(x, f"{x.strip()}\n\n{section}") if t == norms
+                                                  else x) for t, x in parts])
+        else:
+            draft = f"{draft.rstrip()}\n\n{section}"
+    _log("step_aside_answer", {"cited": cited, "own": own, "kept": len((record or {}).get("kept") or []),
+                               "rule_statements_removed": rules_log})
+    return draft
 
 
 def rulings_writer_block(state: Optional[Dict[str, Any]]) -> str:
@@ -6698,7 +6815,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         key = keys[label]
         rec = records.get(label)
         row = have.get(key)
-        rubrica = str((rec or {}).get("rubrica") or (_row_rubrica(row) if row else ""))
+        # v79.12.1: the article's own heading (its row's, the store's) before what a record built from a topic holds
+        rubrica = str((_row_rubrica(row) if row else "") or (rec or {}).get("rubrica") or "")
+        if rec is not None and rubrica and rec.get("rubrica") != rubrica:
+            rec["rubrica"] = rubrica
         if key in dead:
             outcome[label] = "abrogated"
             continue
@@ -6719,7 +6839,8 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             if why == DECOMPOSE_WHY["defence"] and not rec.get("defence_by"):
                 rec["defence_by"] = routes.get(label, "")
             continue
-        decisive = why in (DECOMPOSE_WHY["charge"], DECOMPOSE_WHY["claim"], DECOMPOSE_WHY["hypothesis"])
+        decisive = why in (DECOMPOSE_WHY["charge"], DECOMPOSE_WHY["claim"], DECOMPOSE_WHY["hypothesis"]) \
+            and not lawyer_method.damages_measure(label)        # v79.12.1: 1223-1227 measure a claim, never one
         if row is None:
             log["unread"].append(label)
             outcome[label] = "unread"
@@ -8524,6 +8645,7 @@ def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
            "conditions_rejoined": rejoined}
     out.update(issue_records.polarity_counters(state.get("records") or {}, by_id))                  # v79.9 (A4)
     out.update(issue_records.termine_counters(state.get("records") or {}, by_id))                   # v79.10.4 (D1)
+    out.update(issue_records.negated_counters(state.get("records") or {}, by_id))                   # v79.12.1
     out["fragments_in_tables"] = len(surviving_fragments(state))                                    # v79.9 (D2)
     out.update(element_counters(state))                                                            # v79.11 (6)
     return out
@@ -8607,7 +8729,8 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     # v79.10.1 (A1): v79.8.5's no_action_lines is gone (the no-action line is never a candidate): no_action_prose, set
     # where the method steps aside (block_counters); (A2) the matter articles refused outside the read's family; (A3)
     # the circumstances and «elemento escluso» fragments kept out of the main line
-    for k in ("claims_refused_family", "main_demoted", "reductions_offered"):     # v79.10.2 (B1): the reductions
+    for k in ("claims_refused_family", "main_demoted", "reductions_offered",     # v79.10.2 (B1): the reductions
+              "promoted_by_pertinence"):                                          # v79.12.1 (row 16)
         out[k] = sum(int(c.get(k) or 0) for c in counts)
     # v79.10.2 (B1): the client read as resisting a demand (its role the defending one, never the claimant); the
     # answer's posture sets it (block_counters), else the intake's
@@ -8619,6 +8742,11 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     # v79.10.3 (C3, review): the prose path's alternatives section printing one the event does not fit
     out["requalify_event_mismatch"] += int((state.get("block_counters") or {}).get("alternatives_event_mismatch") or 0)
     fam = state.get("family_gate") or {}                                                            # v79.9 (C2)
+    # v79.12.1: the modules active with the signal that switched each on -- the answer stage's (block_counters, set
+    # below), else the retrieval's; code_articles_out_of_scope: the code articles of a Titolo / Capo outside the
+    # case's institutions kept from grading (topic_groups.code_scope_gate)
+    out["modules_active"] = dict(fam.get("modules_active") or {})
+    out["code_articles_out_of_scope"] = len((state.get("code_scope") or {}).get("dropped") or [])
     out["family_gate_dropped"] = len(fam.get("dropped") or [])
     out["family_admitted_outside_codes"] = len(fam.get("admitted") or [])
     out["family_overrides"] = len(fam.get("overrides") or [])                                       # v79.10 (A5)

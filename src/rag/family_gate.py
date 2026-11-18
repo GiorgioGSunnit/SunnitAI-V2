@@ -172,14 +172,17 @@ def context(case: str, words: str = "", institutions: Sequence[Any] = ()) -> Dic
     """The case's family context: the words the signals are read in (the first read's, else the case's), the active
     modules' laws, the professional counterparty (B3), the case's own text (a law the user names). v79.10 (A5): the
     first read's institutions as words («institutions»: the «istituto» override door; a read_institutions dict is read
-    by its name, rubricated name and claim -- v79.9 joined the dicts themselves)."""
+    by its name, rubricated name and claim -- v79.9 joined the dicts themselves). v79.12.1: the modules from
+    lawyer_method.module_input -- the institutions as given (a dict's claim never switches a module on), the same input
+    as the answer stage's; «modules_active» each with the signal that switched it on."""
     from . import lawyer_method, special_laws
     insts = institution_texts(institutions)
-    mctx = {"case": case or "", "institutions": insts}
+    mctx = lawyer_method.module_input(case, institutions)     # v79.12.1: the answer stage's input, institutions whole
     mods = lawyer_method.active_modules(mctx)
     return {"case": case or "", "words": words or case or "", "signals": special_laws.signals(words or case or ""),
             "module_laws": sorted({x for m in mods for x in m.get("laws") or []}),
             "modules": [m["id"] for m in mods], "professional": lawyer_method.professional_counterparty(mctx),
+            "modules_active": lawyer_method.modules_active(mods),                  # v79.12.1: each with its signal
             "institutions": insts}
 
 

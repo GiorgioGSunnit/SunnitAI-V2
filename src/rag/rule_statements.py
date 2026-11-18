@@ -163,6 +163,58 @@ def check(text: str, src: Dict[str, Any], log: Optional[List[Dict[str, str]]] = 
     return re.sub(r"\n{3,}", "\n\n", out).strip() if out != text else text
 
 
+# v79.12.1 (review): a sentence declaring a norm applicable to the case -- «si applica», «è (inoltre) applicabile»,
+# «trova applicazione», «è (altresì) configurabile», «si configura», «ricorre la fattispecie», «è integrato il reato»,
+# «integra il reato» (up to two words between the verb and its predicate)
+_GAP = r"(?:[\w'’]+\s+){0,2}?"
+APPLIES_RE = re.compile(
+    r"\bsi\s+applica(?:no)?\b|\bsi\s+configura(?:no)?\b"
+    rf"|\b(?:è|sono|risulta|risultano|appare|appaiono)\s+{_GAP}(?:applicabil[ei]|configurabil[ei]|integrat[oaie])\b"
+    rf"|\btrova(?:no)?\s+{_GAP}applicazione\b"
+    rf"|\bricorr(?:e|ono)\s+{_GAP}(?:la|le|il|i|gli|lo|l['’]|un[ao]?)\s*(?:fattispecie|reat[oi]|delitt[oi]|"
+    r"contravvenzion[ei]|ipotesi)\b"
+    rf"|\bintegra(?:no)?\s+{_GAP}(?:il|la|lo|gli|i|le|l['’]|un[ao]?)\s*(?:reat[oi]|delitt[oi]|fattispecie|"
+    r"contravvenzion[ei]|ipotesi)\b",
+    re.IGNORECASE)
+
+
+def declares_applicable(sentence: str) -> bool:
+    return bool(APPLIES_RE.search(sentence or ""))
+
+
+def check_declared(text: str, src: Dict[str, Any], own: Sequence[str],
+                   log: Optional[List[Dict[str, str]]] = None) -> str:
+    """v79.12.1 (review): the check for a plain opinion -- the method stepped aside, so its decisive article has no
+    record elements and Block B's full check would strip every rule on the case's own norms. Only a sentence declaring
+    another norm applicable (declares_applicable) and naming an article outside own (the case's: its records, the
+    article the method stepped aside on, the user's) is checked: it stays when it traces to an element of that article's
+    record or to a quoted registry passage on it (never a store field: a penalty or a term grounds no applicability);
+    otherwise removed and logged {sentence, reason}. A sentence naming no article is left as it is."""
+    from .lawyer_method import _by_sentence, _norm_label
+    if not text:
+        return text or ""
+    mine = {_norm_label(x) for x in own}
+
+    def review(sentence: str) -> str:
+        s = sentence.strip()
+        if s.startswith("|") or s.startswith("#") or not declares_applicable(s):
+            return sentence
+        others = [x for x in (_norm_label(y) for y in _labels(s)) if x not in mine]
+        if not others:
+            return sentence
+        words = stems(s)
+        if any(_overlap(words, e) for x in others
+               for e in list(src["elements"].get(x) or []) + list(src["passages"].get(x) or [])):
+            return sentence
+        if log is not None:
+            log.append({"sentence": s[:300], "reason": "norma dichiarata applicabile senza fonte: nessun elemento del "
+                        f"registro né passaggio del registro delle pronunce per {', '.join(others)}"})
+        return ""
+    out = "\n".join(_by_sentence(line, review) if not line.lstrip().startswith("|") else line
+                    for line in text.split("\n"))
+    return re.sub(r"\n{3,}", "\n\n", out).strip() if out != text else text
+
+
 def unsourced(text: str, src: Dict[str, Any]) -> List[str]:
     """B3: the rule statements of a text that trace to no source (the nightly's output check: none)."""
     log: List[Dict[str, str]] = []

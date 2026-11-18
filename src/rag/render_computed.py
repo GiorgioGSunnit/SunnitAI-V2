@@ -577,15 +577,23 @@ def case_matter(analysis: Dict[str, Any]) -> Dict[str, Any]:
         if isinstance(facts, dict) else []
     words = fact_signals._texts(facts, ("contracts", "requests", "events")) if isinstance(facts, dict) else ""
     areas = [str(a) for a in _areas(analysis or {})]
-    out = {"contracts": contracts, "areas": areas, "matter": "", "by": "", "never": ""}
+    out = {"contracts": contracts, "areas": areas, "matter": "", "by": "", "never": "", "optional": ""}
     matters = [(name, e.get("case") or {}) for name, e in (lists.get("matters") or {}).items() if isinstance(e, dict)]
-    for name, case in matters:
+    reading = contract_reading(facts)               # v79.12.1: the contract's type decides first
+    asked, word = request_matter(facts) if reading["optional"] and not reading["listed"] else ("", "")
+    if reading["listed"]:
+        out.update(matter=reading["listed"], by=f"contratto «{reading['type'][:80]}»")
+    elif asked:                                     # review: an art. 5 matter the client's request names, beside a
+        out.update(matter=asked, by=f"domanda «{word[:80]}»")          # named contract outside the list: obbligatoria
+    elif reading["optional"]:                       # a named contract outside art. 5, co. 1: facoltativa -- never the
+        out.update(optional=reading["optional"], by=f"contratto «{reading['type'][:80]}»")     # area, never a clause
+    for name, case in matters if not (reading["listed"] or reading["optional"]) else []:     # (asked: optional too)
         hit = next((c for c in contracts if case.get("contracts") and re.search(case["contracts"], c, re.IGNORECASE)),
                    None)
         if hit:
             out.update(matter=name, by=f"contratto «{hit[:80]}»")
             break
-    if not out["matter"]:
+    if not out["matter"] and not out["optional"]:
         for name, case in sorted(matters, key=lambda m: not m[1].get("words")):
             area = next((a for a in areas if a in (case.get("areas") or ())), None)
             if area and (not case.get("words") or re.search(case["words"], words, re.IGNORECASE)):
@@ -600,12 +608,78 @@ def case_matter(analysis: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
+def request_matter(facts: Any) -> Tuple[str, str]:
+    """v79.12.1 (review): (the art. 5, co. 1 matter the client's own request names, the words) -- the first listed
+    matter whose «case.request_words» (data/mediation_matters.json: the condominio's delibera, the usucapione, the
+    divisione, the lesione della legittima, the errore medico) the extraction's requests hold; never the contract's
+    type, parties or clauses. ("", "") when none."""
+    from . import fact_signals
+    text = fact_signals._texts(facts, ("requests",)) if isinstance(facts, dict) else ""
+    if not text:
+        return "", ""
+    for name, entry in ((matters_list().get("mediazione") or {}).get("matters") or {}).items():
+        pattern = ((entry or {}).get("case") or {}).get("request_words") if isinstance(entry, dict) else ""
+        m = re.search(pattern, text, re.IGNORECASE) if pattern else None
+        if m:
+            return name, m.group(0)
+    return "", ""
+
+
+def contract_types_of(facts: Any) -> List[str]:
+    """v79.12.1: the extraction's contract types -- each contract's «type» (a contract given as a string, the string);
+    never its parties, clauses or object."""
+    out = []
+    for c in (facts or {}).get("contracts") or [] if isinstance(facts, dict) else []:
+        value = c.get("type") if isinstance(c, dict) else c
+        if str(value or "").strip():
+            out.append(" ".join(str(value).split()))
+    return out
+
+
+def contract_reading(facts: Any) -> Dict[str, str]:
+    """v79.12.1: {"listed": the art. 5, co. 1 matter a contract type is (data/mediation_matters.json «matters»: their
+    «case.contracts»), "optional": else the named contract outside the list a type is («facoltativa.contracts»: appalto,
+    preliminare di vendita, compravendita …), "type": the type read} -- "" each when no type is either (the old reading
+    then: every string of the contracts, the areas)."""
+    lists = matters_list().get("mediazione") or {}
+    types = contract_types_of(facts)
+    for name, entry in (lists.get("matters") or {}).items():
+        pattern = ((entry or {}).get("case") or {}).get("contracts") if isinstance(entry, dict) else ""
+        hit = next((t for t in types if pattern and re.search(pattern, t, re.IGNORECASE)), None)
+        if hit:
+            return {"listed": name, "optional": "", "type": hit}
+    for name, pattern in ((lists.get("facoltativa") or {}).get("contracts") or {}).items():
+        hit = next((t for t in types if pattern and re.search(pattern, t, re.IGNORECASE)), None)
+        if hit:
+            return {"listed": "", "optional": name, "type": hit}
+    return {"listed": "", "optional": "", "type": ""}
+
+
+# v79.12.1: a named contract outside art. 5, co. 1 -- the mediazione facoltativa (my draft, for the PO)
+MEDIATION_OPTIONAL = ("Mediazione facoltativa ({ref}): la materia del caso ({matter}) non è tra quelle dell'art. 5, co. "
+                      "1, d.lgs. 28/2010, sicché la mediazione non è condizione di procedibilità della domanda; resta una "
+                      "via facoltativa per una soluzione concordata.")
+
+
+def optional_mediation(matter: str, seen: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """v79.12.1: {"required": False, "optional": True, "subject", "text"} for a named contract outside the list."""
+    ref = ((matters_list().get("mediazione") or {}).get("facoltativa") or {}).get("ref") or "art. 2 d.lgs. 28/2010"
+    out = {"required": False, "optional": True, "subject": matter, "text": MEDIATION_OPTIONAL.format(ref=ref,
+                                                                                                    matter=matter)}
+    return {**out, "matters": seen} if seen is not None else out
+
+
 def listed_mediation(analysis: Dict[str, Any]) -> Dict[str, Any]:
     """{"required", "subject", "text", "matters"}: the mediazione of the case's own matter (case_matter: its contract
-    type and area, the closed list); "matters" is that reading, for the log."""
+    type and area, the closed list); "matters" is that reading, for the log. v79.12.1: «obbligatoria» only for a matter
+    of art. 5, co. 1 (the list); a named contract outside it (case_matter «optional»: appalto, preliminare di vendita)
+    «facoltativa» (optional True)."""
     lists = matters_list().get("mediazione") or {}
     ref_text = lists.get("ref") or "art. 5, co. 1, d.lgs. 28/2010"
     seen = case_matter(analysis)
+    if seen.get("optional") and not seen["matter"]:     # review: never beside a «never» matter (reati, rito del lavoro)
+        return {"required": False, "subject": "", "text": "", "matters": seen} if seen["never"] else \
+            optional_mediation(seen["optional"], seen)
     if not seen["matter"] or (seen["never"] and not seen["by"].startswith("contratto")):
         return {"required": False, "subject": "", "text": "", "matters": seen}
     return {"required": True, "subject": seen["matter"], "matters": seen,
@@ -622,6 +696,12 @@ def mediation_of(analysis: Dict[str, Any]) -> Dict[str, Any]:
     from .plan_then_write import _code_key
     if store_only(analysis):
         return listed_mediation(analysis)
+    facts = _signals(analysis).get("facts") or {}
+    reading = contract_reading(facts)               # v79.12.1: a named contract outside the list is «facoltativa»,
+    if reading["optional"] and not reading["listed"]:          # whatever word or article -- review: unless the
+        if case_matter(analysis)["never"]:                     # client's request names a listed matter (the facts'
+            return {"required": False, "subject": "", "text": ""}    # reading, fact_signals.mediation); never beside a
+        return fact_signals.mediation(facts, []) or optional_mediation(reading["optional"])    # «never» matter
     mediation = _signals(analysis).get("mediation") or {}
     if mediation.get("required"):
         return mediation
@@ -944,6 +1024,8 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     if negotiation.get("required"):         # v60e: instead of the mediazione
         out.append((NEGOTIATION_TITLE, _sentence(negotiation["text"])))
     elif mediation.get("required") and mediation.get("text"):
+        out.append(("Mediazione", _sentence(mediation["text"])))
+    elif mediation.get("optional") and mediation.get("text"):     # v79.12.1: appalto, preliminare: «facoltativa»
         out.append(("Mediazione", _sentence(mediation["text"])))
     labour = labour_of(analysis) if store_only(analysis) else {}
     if labour.get("lines"):                 # v60i (9): the labour dispute's closed list

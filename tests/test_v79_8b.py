@@ -142,5 +142,16 @@ def test_the_counters_say_no_candidate_is_unadmitted_and_flag_a_main_line_outsid
     plan = M.clean_method({"valutazioni": {c["id"]: {"realismo": "alto" if c is general else "basso"}
                                            for c in ctx["candidates"]}}, ctx["candidates"])
     counts = M.selection_counts(ctx, plan, {})
-    assert counts["unadmitted"] == 0 and counts["chosen"] == general["id"]
-    assert counts["main_outside_institution"] is True
+    # v79.12.1 (row 16): pertinence before realismo -- the module's line (1667) is promoted over the general one
+    module = next(c for c in ctx["candidates"] if c.get("article") == "1667 c.c." and c["kind"] == "claim")
+    assert counts["unadmitted"] == 0 and counts["chosen"] == module["id"] != general["id"]
+    assert counts["promoted_by_pertinence"] == 1 and counts["main_outside_institution"] is False
+    # with no line inside the institution eligible, the general one leads and is flagged
+    recs["1667 c.c."]["requisites"][0]["status"] = "non risulta"
+    ctx = _ctx(recs, case)
+    ctx["candidates"] = M.thesis_candidates(ctx)
+    general = next(c for c in ctx["candidates"] if c.get("article") == "1218 c.c." and c["kind"] == "claim")
+    plan = M.clean_method({"valutazioni": {c["id"]: {"realismo": "alto"} for c in ctx["candidates"]}},
+                          ctx["candidates"])
+    counts = M.selection_counts(ctx, plan, {})
+    assert counts["chosen"] == general["id"] and counts["main_outside_institution"] is True

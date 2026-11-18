@@ -470,6 +470,182 @@ def matter_gate(rows: Sequence[Dict[str, Any]], keep: Sequence[str] = (), log: O
     return out
 
 
+# --- v79.12.1: the Capo-scope gate on every book of the codes ------------------------------------------------------------
+# Libro IV Titolo III c.c. keeps its own gate (CONTRACT_CAPI, the case's contract type). Every other article of the c.c.
+# and the c.p. belongs to a Titolo (a Capo where a Titolo holds several institutions: c.p. Titoli XII and XIII, Libro
+# III); within the codes an article whose unit is none of the case's institutions' enters grading only through an
+# institution match or the first read -- 2873 c.c. (Riduzione delle ipoteche) for a penalty clause, 890 / 892 c.c. (the
+# distances) in an administrative case, 699 / 518-bis / 610 c.p. in a homicide. The general parts serve every
+# institution and are never gated (CODE_GENERAL); the procedural codes and the special laws neither. A unit: (first
+# number, suffixed, last number, suffixed, name) -- «suffixed» 1 takes the -bis … articles of that number in (518 is
+# Titolo VIII, 518-bis Titolo VIII-bis).
+CODE_GENERAL: Dict[str, Tuple[Tuple[int, int], ...]] = {
+    "c.c.": ((1173, 1469), (2043, 2059), (2697, 2739), (2907, 2969)),   # obbligazioni e contratti in generale, fatti
+    "c.p.": ((1, 240),)}                                                # illeciti, prove, tutela e prescrizione; c.p. I
+CODE_UNITS: Dict[str, Tuple[Tuple[int, int, int, int, str], ...]] = {
+    "c.c.": (
+        (1, 0, 10, 1, "Libro I, Titolo I – persone fisiche"),
+        (11, 0, 42, 1, "Libro I, Titolo II – persone giuridiche"),
+        (43, 0, 73, 1, "Libro I, Titoli III-IV – domicilio, residenza, assenza e morte presunta"),
+        (74, 0, 342, 1, "Libro I, Titoli V-IX-bis – famiglia: parentela, matrimonio, filiazione, adozione, "
+                        "responsabilità genitoriale"),
+        (343, 0, 432, 1, "Libro I, Titoli X-XII – tutela, emancipazione, misure di protezione"),
+        (433, 0, 448, 1, "Libro I, Titolo XIII – alimenti"),
+        (449, 0, 455, 1, "Libro I, Titolo XIV – atti dello stato civile"),
+        (456, 0, 768, 1, "Libro II, Titoli I-IV – successioni e divisione"),
+        (769, 0, 809, 1, "Libro II, Titolo V – donazioni"),
+        (810, 0, 831, 1, "Libro III, Titolo I – beni"),
+        (832, 0, 951, 1, "Libro III, Titolo II – proprietà"),
+        (952, 0, 956, 1, "Libro III, Titolo III – superficie"),
+        (957, 0, 977, 1, "Libro III, Titolo IV – enfiteusi"),
+        (978, 0, 1026, 1, "Libro III, Titolo V – usufrutto, uso e abitazione"),
+        (1027, 0, 1099, 1, "Libro III, Titolo VI – servitù prediali"),
+        (1100, 0, 1139, 1, "Libro III, Titolo VII – comunione e condominio"),
+        (1140, 0, 1172, 1, "Libro III, Titolo VIII – possesso"),
+        (1987, 0, 1991, 1, "Libro IV, Titolo IV – promesse unilaterali"),
+        (1992, 0, 2027, 1, "Libro IV, Titolo V – titoli di credito"),
+        (2028, 0, 2032, 1, "Libro IV, Titolo VI – gestione di affari"),
+        (2033, 0, 2040, 1, "Libro IV, Titolo VII – pagamento dell'indebito"),
+        (2041, 0, 2042, 1, "Libro IV, Titolo VIII – arricchimento senza causa"),
+        (2060, 0, 2081, 1, "Libro V, Titolo I – attività professionali"),
+        (2082, 0, 2221, 1, "Libro V, Titolo II – lavoro nell'impresa"),
+        (2222, 0, 2238, 1, "Libro V, Titolo III – lavoro autonomo"),
+        (2239, 0, 2246, 1, "Libro V, Titolo IV – lavoro subordinato in particolari rapporti"),
+        (2247, 0, 2510, 1, "Libro V, Titolo V – società"),
+        (2511, 0, 2548, 1, "Libro V, Titolo VI – imprese cooperative e mutue assicuratrici"),
+        (2549, 0, 2554, 1, "Libro V, Titolo VII – associazione in partecipazione"),
+        (2555, 0, 2574, 1, "Libro V, Titolo VIII – azienda"),
+        (2575, 0, 2594, 1, "Libro V, Titolo IX – opere dell'ingegno e invenzioni industriali"),
+        (2595, 0, 2620, 1, "Libro V, Titolo X – concorrenza e consorzi"),
+        (2621, 0, 2642, 1, "Libro V, Titolo XI – disposizioni penali in materia di società"),
+        (2643, 0, 2696, 1, "Libro VI, Titolo I – trascrizione"),
+        (2740, 0, 2906, 1, "Libro VI, Titolo III – responsabilità patrimoniale, cause di prelazione, conservazione "
+                           "della garanzia")),
+    "c.p.": (
+        (241, 0, 313, 1, "Libro II, Titolo I – delitti contro la personalità dello Stato"),
+        (314, 0, 360, 1, "Libro II, Titolo II – delitti contro la pubblica amministrazione"),
+        (361, 0, 401, 1, "Libro II, Titolo III – delitti contro l'amministrazione della giustizia"),
+        (402, 0, 413, 1, "Libro II, Titolo IV – delitti contro il sentimento religioso e la pietà dei defunti"),
+        (414, 0, 421, 1, "Libro II, Titolo V – delitti contro l'ordine pubblico"),
+        (422, 0, 452, 0, "Libro II, Titolo VI – delitti contro l'incolumità pubblica"),
+        (452, 1, 452, 1, "Libro II, Titolo VI-bis – delitti contro l'ambiente"),
+        (453, 0, 498, 1, "Libro II, Titolo VII – delitti contro la fede pubblica"),
+        (499, 0, 518, 0, "Libro II, Titolo VIII – delitti contro l'economia pubblica, l'industria e il commercio"),
+        (518, 1, 518, 1, "Libro II, Titolo VIII-bis – delitti contro il patrimonio culturale"),
+        (519, 0, 544, 0, "Libro II, Titolo IX – delitti contro la moralità pubblica e il buon costume"),
+        (544, 1, 544, 1, "Libro II, Titolo IX-bis – delitti contro il sentimento per gli animali"),
+        (545, 0, 555, 1, "Libro II, Titolo X – delitti contro l'integrità e la sanità della stirpe"),
+        (556, 0, 574, 1, "Libro II, Titolo XI – delitti contro la famiglia"),
+        (575, 0, 593, 1, "Libro II, Titolo XII, Capo I – delitti contro la vita e l'incolumità individuale"),
+        (594, 0, 599, 1, "Libro II, Titolo XII, Capo II – delitti contro l'onore"),
+        (600, 0, 623, 1, "Libro II, Titolo XII, Capo III – delitti contro la libertà individuale"),
+        (624, 0, 639, 1, "Libro II, Titolo XIII, Capo I – delitti contro il patrimonio mediante violenza"),
+        (640, 0, 649, 1, "Libro II, Titolo XIII, Capo II – delitti contro il patrimonio mediante frode"),
+        (650, 0, 705, 1, "Libro III, Titolo I, Capo I – contravvenzioni di polizia di sicurezza"),
+        (706, 0, 730, 1, "Libro III, Titolo I, Capo II – contravvenzioni di polizia amministrativa sociale"),
+        (731, 0, 734, 1, "Libro III, Titolo II – contravvenzioni concernenti l'attività sociale della pubblica "
+                         "amministrazione")),
+}
+
+
+def _number_key(number: Any) -> Optional[Tuple[int, int]]:
+    """(the article's number, 1 when it carries a suffix -- 518-bis -- else 0); None without a number."""
+    m = re.match(r"\s*(\d+)\s*(?:-?\s*([a-z]+))?", str(number or ""), re.IGNORECASE)
+    return (int(m.group(1)), 1 if m.group(2) else 0) if m else None
+
+
+def code_unit(ref: Sequence[str]) -> Optional[str]:
+    """v79.12.1: «c.p. Libro II, Titolo XII, Capo I – …», the Titolo or Capo of a c.c. / c.p. article (CODE_UNITS); None
+    for a general part (CODE_GENERAL), Libro IV Titolo III c.c. (its own Capo gate, capo_of), another code or a number
+    outside the table -- never gated."""
+    if not ref or len(ref) != 2:
+        return None
+    code = topic_step._code(ref[1])
+    units = CODE_UNITS.get(code)
+    key = _number_key(ref[0])
+    if not units or key is None or capo_of((str(ref[0]), code)):
+        return None
+    if any(lo <= key[0] <= hi for lo, hi in CODE_GENERAL.get(code, ())):
+        return None
+    return next((f"{code} {name}" for lo, los, hi, his, name in units if (lo, los) <= key <= (hi, his)), None)
+
+
+def institution_match(row: Dict[str, Any], names: Sequence[str]) -> str:
+    """v79.12.1: the institution (a first-read name or rubricated name) whose every content word the row's rubrica holds,
+    "" when none."""
+    from .posture import _stems
+    rubrica = _stems(_rubrica(row))
+    if not rubrica:
+        return ""
+    for name in names or []:
+        want = _stems(name)
+        if want and want <= rubrica:
+            return str(name)
+    return ""
+
+
+def code_scope_gate(rows: Sequence[Dict[str, Any]], institutions: Sequence[str], keep: Sequence[str] = (),
+                    pass_only: Sequence[str] = (), log: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    """v79.12.1: the rows without the code articles of a Titolo / Capo (code_unit) outside the case's institutions. The
+    case's units: those of the rows in scope -- an institution match (institution_match on the first read's names and
+    rubricated names), a first-read whole-name hit (never a keyword hit: keyword_hit), an article in keep (the user's,
+    an active module's action) -- and, for an institution none of whose rows is a match, its first-read rows whose
+    rubrica names nothing the institution does not (review: every content word of the rubrica is the institution's --
+    «Truffa» for «truffa aggravata», «Riduzione della penale» for «riduzione equitativa della penale»; one shared word is
+    a keyword hit, never scope: «Riduzione delle ipoteche», «Porto abusivo di armi»). A row outside them stays only in scope itself or in pass_only (the rules'
+    and tables' anchors: kept, never widening the scope). No first-read institution: off, nothing dropped (log «off»).
+    log: «units» (the case's), «dropped» ({article, unit, hit}), «kept_by» ({article: why} for a row kept outside the
+    units)."""
+    from .posture import _stems
+    log = log if log is not None else {}
+    names = [str(n) for n in institutions or [] if str(n or "").strip()]
+    if not names:
+        log["off"] = "nessun istituto dalla prima lettura"
+        return list(rows or [])
+    keep_set, passing = set(keep or ()), set(pass_only or ())
+
+    def in_scope(r: Dict[str, Any]) -> str:
+        ref = _ref(r)
+        if not ref:
+            return ""
+        if _label(ref) in keep_set:
+            return "articolo dell'utente o del modulo"
+        inst = institution_match(r, names)
+        if inst:
+            return f"istituto «{inst}»"
+        if r.get("_first_read") and not keyword_hit(r):
+            return f"prima lettura «{r['_first_read']}»"
+        return ""
+    reasons = {id(r): in_scope(r) for r in rows or []}
+    units = {code_unit(_ref(r)) for r in rows or [] if reasons[id(r)] and _ref(r)}
+    matched = {str(r.get("_first_read")) for r in rows or [] if reasons[id(r)] and r.get("_first_read")}
+    for r in rows or []:          # an institution with no matching row: its first-read rows whose rubrica it covers
+        inst = str(r.get("_first_read") or "")
+        ref = _ref(r)
+        rubrica = _stems(_rubrica(r))
+        if inst and ref and inst not in matched and rubrica and rubrica <= _stems(inst):
+            units.add(code_unit(ref))
+            reasons[id(r)] = reasons[id(r)] or f"prima lettura «{inst}» (rubrica nell'istituto)"
+    units.discard(None)
+    out, dropped, kept_by = [], {}, {}
+    for r in rows or []:
+        ref = _ref(r)
+        unit = code_unit(ref) if ref else None
+        if unit is None or unit in units:
+            out.append(r)
+            continue
+        why = reasons[id(r)] or ("ancora di una regola" if _label(ref) in passing else "")
+        if why:
+            kept_by[_label(ref)] = why
+            out.append(r)
+            continue
+        hit = ("prima lettura, per parola" if r.get("_first_read") else
+               "più segnali" if r.get("_multi_signal") else "recupero")
+        dropped.setdefault(_label(ref), {"article": _label(ref), "unit": unit, "hit": hit})
+    log.update(units=sorted(units), dropped=list(dropped.values()), kept_by=kept_by)
+    return out
+
+
 def gate_rows(rows: Iterable[Dict[str, Any]], scope: Dict[str, Any], log: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The rows whose article the gate keeps; each dropped one in log["rows"] with its Capo."""
     out = []
