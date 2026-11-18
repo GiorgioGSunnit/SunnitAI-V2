@@ -128,7 +128,7 @@ def apply_plan(plan: Dict[str, Any], posture: Optional[Dict[str, Any]],
     plan itself, unchanged, without an entry (the default cell: today's plan exactly). v79.10.3 (C1): with the charge's
     riti (lawyer_method.charge_rites), an entry's subordinate line naming a rito the charge does not admit is that
     rito's own line instead -- «da verificare sulla pena edittale» when the pena is unknown, none when it precludes
-    it."""
+    it; v79.10.7: the patteggiamento's «possibile, dipende dalla pena in concreto» likewise."""
     entry = (posture or {}).get("entry")
     if not entry or not plan:
         return plan
@@ -156,7 +156,7 @@ def entry_subordinate(entry: Dict[str, Any], rites: Optional[Sequence[Dict[str, 
         rite = by_id.get(lawyer_method.rite_of(line))
         if not rite or rite.get("status") == lawyer_method.AVAILABLE:
             out.append(line)
-        elif rite.get("status") == lawyer_method.TO_VERIFY_RITE:
+        elif rite.get("status") in (lawyer_method.TO_VERIFY_RITE, lawyer_method.POSSIBLE):   # v79.10.7: its own words
             out.append(str(rite.get("line") or ""))
     return [x for x in out if x]
 

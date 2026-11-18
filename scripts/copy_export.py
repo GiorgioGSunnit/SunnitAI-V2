@@ -75,6 +75,11 @@ EXTRA = (
     ("lawyer_method", "RITI_PRECLUDED_HEAD", "Metodo, «Profili processuali»: i riti preclusi dalla pena (v79.10.3)"),
     ("lawyer_method", "RITI_PRECLUDED_TITLE", "Metodo, materiale dello scrittore: i riti da non proporre (v79.10.3)"),
     ("lawyer_method", "RITE_POINT", "Metodo, «Punti da verificare»: la pena edittale che decide un rito (v79.10.3)"),
+    ("lawyer_method", "BEST_CASE", "Metodo, il patteggiamento: il caso più favorevole della pena in concreto (v79.10.7)"),
+    ("lawyer_method", "BEST_CASE_ATTENUANTI", "Metodo, il patteggiamento: le attenuanti contate nel caso più "
+                                              "favorevole (v79.10.7)"),
+    ("lawyer_method", "BEST_CASE_NONE", "Metodo, il patteggiamento: nessuna attenuante integrata o da provare "
+                                        "(v79.10.7)"),
     ("lawyer_method", "TEMPORAL_LINE", "Metodo, «Profili processuali»: la disciplina applicabile"),
     ("lawyer_method", "TEMPORAL_UNKNOWN", "Metodo, «Profili processuali»: la data dei fatti non indicata"),
     ("lawyer_method", "TEMPORAL_ABROGATED", "Metodo, «Profili processuali»: norme abrogate"),
@@ -390,7 +395,8 @@ def method_rows(data, stem, where):
         rows += [(f"data/{stem}.circumstances[{c['label']}].{i}", e, where) for i, e in enumerate(c.get("elements") or [], 1)]
     rows += [(f"data/{stem}.riti_alternativi[{r['id']}]", r["line"], where) for r in data.get("riti_alternativi") or []]
     for r in data.get("riti_alternativi") or []:           # v79.10.3 (C1): a listed offence's line, the pena unknown
-        rows += [(f"data/{stem}.riti_alternativi[{r['id']}].{k}", r[k], where) for k in ("listed_line", "to_verify")
+        rows += [(f"data/{stem}.riti_alternativi[{r['id']}].{k}", r[k], where)       # v79.10.7: the possible lines
+                 for k in ("listed_line", "to_verify", "possible_line", "possible_pecuniary_line", "provisional")
                  if r.get(k)]
     return rows
 

@@ -1,5 +1,5 @@
 {
-  "_about": "v70: the lawyer's method as protocol (src/rag/lawyer_method.py, LAWYER_METHOD). From «ruolo» to «modules» the lawyer's own words, verbatim from docs/lawyer/metodo.md (scripts/lawyer_method_import.py: re-run it when he changes his text; tests/test_v70.py checks the sync): ruolo, fasi (his FASI 1-10), sections (the titles of his STRUTTURA DELL'OUTPUT, each line's parenthesis as «note»; the keys are the code's), stile, honesty_rules (his REGOLE DI ONESTÀ, in every writer call with his FASE 7, his STILE and the modules), controllo_finale (his CONTROLLO FINALE: the coherence checklist), modules (one per ambito, «MODULO: …»; loaded by modules_by_rito and modules_by_area -- the code's choice). The tables after them are Code's drafts, not his (listed in docs/copy_review.md for the PO): reforms (ratione temporis), litisconsorzio (by matter), stragiudiziale (by family and role), circumstances (aggravanti and attenuanti as fattispecie, each element graded against the case's sentences; 62 n. 6 with both alternatives of the article's text), riti_alternativi (the imputato's subordinate line, gated on the charged offence's pena edittale). v79.10.3 (C1): each rito's gate on the charge's pena from the procedural store (riti_alternativi: «always», «max_years_after_reduction», «max_edittale_years», «listed_offences» -- art. 550, co. 2, c.p.p., my draft of the list, for the lawyer's review against the text in force -- and «to_verify», the line printed when the pena is unknown); stragiudiziale's «penale_offesa_ufficio», the victim's option with no remissione when the store does not say querela.",
+  "_about": "v70: the lawyer's method as protocol (src/rag/lawyer_method.py, LAWYER_METHOD). From «ruolo» to «modules» the lawyer's own words, verbatim from docs/lawyer/metodo.md (scripts/lawyer_method_import.py: re-run it when he changes his text; tests/test_v70.py checks the sync): ruolo, fasi (his FASI 1-10), sections (the titles of his STRUTTURA DELL'OUTPUT, each line's parenthesis as «note»; the keys are the code's), stile, honesty_rules (his REGOLE DI ONESTÀ, in every writer call with his FASE 7, his STILE and the modules), controllo_finale (his CONTROLLO FINALE: the coherence checklist), modules (one per ambito, «MODULO: …»; loaded by modules_by_rito and modules_by_area -- the code's choice). The tables after them are Code's drafts, not his (listed in docs/copy_review.md for the PO): reforms (ratione temporis), litisconsorzio (by matter), stragiudiziale (by family and role), circumstances (aggravanti and attenuanti as fattispecie, each element graded against the case's sentences; 62 n. 6 with both alternatives of the article's text), riti_alternativi (the imputato's subordinate line, gated on the charged offence's pena edittale). v79.10.3 (C1): each rito's gate on the charge's pena from the procedural store (riti_alternativi: «always», «max_years_after_reduction», «max_edittale_years», «listed_offences» -- art. 550, co. 2, c.p.p., my draft of the list, for the lawyer's review against the text in force -- and «to_verify», the line printed when the pena is unknown); stragiudiziale's «penale_offesa_ufficio», the victim's option with no remissione when the store does not say querela. v79.10.7: the patteggiamento judged on its best case (the minimum less each attenuante the record holds as integrato or da provare, by its «max_reduction» in the order of art. 63 c.p., then the rite's third: «possible_line»); the abbreviato excluded for an offence punished with the ergastolo (art. 438, co. 1-bis, c.p.p.: «excluded_ergastolo»); the messa alla prova's «listed_offences» carry their «status»: a draft for the lawyer.",
   "ruolo": "Sei un giurista italiano esperto di [diritto penale / civile / amministrativo / altro]. Il tuo obiettivo è individuare la soluzione più corretta secondo diritto vigente e giurisprudenza prevalente, non quella più suggestiva o favorevole a una parte.",
   "fasi": [
     {
@@ -652,7 +652,10 @@
         "il reato è commesso in stato d'ira",
         "lo stato d'ira è determinato da un fatto ingiusto altrui",
         "il nesso tra il fatto ingiusto e la reazione"
-      ]
+      ],
+      "max_reduction": "1/3",
+      "effect": "comune",
+      "measure_source": "art. 65 n. 3 c.p."
     },
     {
       "label": "62 n. 6 c.p.",
@@ -666,7 +669,10 @@
       "elements": [
         "prima del giudizio",
         "la riparazione integrale del danno, mediante il risarcimento e, quando possibile, le restituzioni, oppure l'essersi adoperato spontaneamente ed efficacemente per elidere o attenuare le conseguenze dannose o pericolose del reato"
-      ]
+      ],
+      "max_reduction": "1/3",
+      "effect": "comune",
+      "measure_source": "art. 65 n. 3 c.p."
     },
     {
       "label": "62-bis c.p.",
@@ -680,20 +686,28 @@
       ],
       "elements": [
         "circostanze diverse da quelle previste dall'art. 62 c.p., tali da giustificare una diminuzione della pena (art. 133 c.p.)"
-      ]
+      ],
+      "max_reduction": "1/3",
+      "effect": "comune",
+      "measure_source": "art. 62-bis, co. 1, e art. 65 n. 3 c.p."
     }
   ],
   "riti_alternativi": [
     {
       "id": "abbreviato",
       "line": "Giudizio abbreviato (artt. 438 ss. c.p.p.): riduzione di un terzo della pena per i delitti (art. 442, co. 2, c.p.p.) e di un ulteriore sesto se l'imputato non impugna la sentenza (art. 442, co. 2-bis, c.p.p.).",
-      "always": true
+      "excluded_ergastolo": true,
+      "excluded_source": "art. 438, co. 1-bis, c.p.p.",
+      "precluded_word": "precluso",
+      "to_verify": "non è ammesso per i delitti puniti con l'ergastolo, art. 438, co. 1-bis, c.p.p."
     },
     {
       "id": "patteggiamento",
-      "line": "Applicazione della pena su richiesta (art. 444 c.p.p.): ammessa se la pena in concreto, diminuita fino a un terzo, non supera cinque anni.",
+      "line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile se la pena in concreto, dopo le circostanze e diminuita fino a un terzo, non supera cinque anni.",
       "max_years_after_reduction": 5,
-      "to_verify": "richiede che la pena in concreto, diminuita fino a un terzo, non superi cinque anni"
+      "to_verify": "richiede che la pena in concreto, dopo le circostanze e diminuita fino a un terzo, non superi cinque anni",
+      "possible_line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile, dipende dalla pena in concreto (nel caso più favorevole {best}, entro i cinque anni).",
+      "possible_pecuniary_line": "Applicazione della pena su richiesta (art. 444 c.p.p.): possibile, dipende dalla pena in concreto (il reato contestato è punito con la sola pena pecuniaria)."
     },
     {
       "id": "messa_alla_prova",
@@ -709,9 +723,11 @@
         "625",
         "648"
       ],
+      "status": "bozza — da verificare dall'avvocato, incluse le aggiunte della riforma Cartabia",
       "listed_source": "art. 550, co. 2, c.p.p.",
-      "listed_line": "Sospensione del procedimento con messa alla prova (art. 168-bis c.p.): ammessa per il reato contestato, tra i delitti indicati dall'art. 550, co. 2, c.p.p.",
-      "to_verify": "richiede una pena edittale non superiore nel massimo a quattro anni o un delitto indicato dall'art. 550, co. 2, c.p.p."
+      "listed_line": "Sospensione del procedimento con messa alla prova (art. 168-bis c.p.): ammessa per il reato contestato, che figura tra i delitti indicati dall'art. 550, co. 2, c.p.p. secondo l'elenco interno, ancora in bozza per il controllo dell'avvocato.",
+      "to_verify": "richiede una pena edittale non superiore nel massimo a quattro anni o un delitto indicato dall'art. 550, co. 2, c.p.p.",
+      "provisional": "secondo l'elenco interno, ancora in bozza per il controllo dell'avvocato"
     },
     {
       "id": "commisurazione",

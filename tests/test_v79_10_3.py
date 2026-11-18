@@ -2,8 +2,10 @@
 and store entries and the nightly cells only:
 
 C1. the riti under the main line only when the charge's pena from the procedural store allows them: patteggiamento
-    (444 c.p.p.) only if the minimum reduced by a third can be within five years; messa alla prova (168-bis c.p.) only
-    for a maximum within four years or a delitto of art. 550, co. 2, c.p.p. (data); abbreviato always; the pena
+    (444 c.p.p.) only if the minimum reduced by a third can be within five years (v79.10.7: its best case, the
+    attenuanti held counted, «possibile» -- tests/test_v79_10_7.py); messa alla prova (168-bis c.p.) only for a maximum
+    within four years or a delitto of art. 550, co. 2, c.p.p. (data); abbreviato always (v79.10.7: but the ergastolo,
+    art. 438, co. 1-bis, c.p.p.; «da verificare» on an unknown pena); the pena
     unknown, «da verificare sulla pena edittale», never as admitted; a precluded rito is §8's line, never the
     strategy's; remissione della querela and 162-ter only when the store says querela
 C2. an alternative qualification fits the event of the certain facts: a death, never 590 (589, 584, 586 are); injuries
@@ -69,33 +71,43 @@ def _by_id(statuses):
 
 # --- C1: the riti by the charge's pena ----------------------------------------------------------------------------------------
 
+# v79.10.7: the patteggiamento «possibile» (never «ammesso») when its best case is within five years -- here with no
+# attenuante held; the abbreviato «ammesso» unless the ergastolo (art. 438, co. 1-bis, c.p.p.), «da verificare» on an
+# unknown pena like the others
 @pytest.mark.parametrize("pena, number, want", [
     # the nightly cells' charges: maltrattamenti (572), furto (624), ricettazione (648, listed in art. 550, co. 2)
-    ("reclusione da tre a sette anni (co. 1)", "572", {"patteggiamento": "ammesso", "messa_alla_prova": "precluso"}),
+    ("reclusione da tre a sette anni (co. 1)", "572", {"abbreviato": "ammesso", "patteggiamento": "possibile",
+                                                       "messa_alla_prova": "precluso"}),
     ("reclusione da sei mesi a tre anni e con la multa da euro 154 a euro 516 (co. 1)", "624",
-     {"patteggiamento": "ammesso", "messa_alla_prova": "ammesso"}),
+     {"abbreviato": "ammesso", "patteggiamento": "possibile", "messa_alla_prova": "ammesso"}),
     ("reclusione da due a otto anni e con la multa da euro 516 a euro 10.329 (co. 1)", "648",
-     {"patteggiamento": "ammesso", "messa_alla_prova": "ammesso"}),
-    ("reclusione non inferiore ad anni ventuno (co. 1)", "575", {"patteggiamento": "precluso",
+     {"abbreviato": "ammesso", "patteggiamento": "possibile", "messa_alla_prova": "ammesso"}),
+    ("reclusione non inferiore ad anni ventuno (co. 1)", "575", {"abbreviato": "ammesso", "patteggiamento": "precluso",
                                                                  "messa_alla_prova": "precluso"}),
-    ("reclusione da dodici a venti anni (co. 1)", "999", {"patteggiamento": "precluso", "messa_alla_prova": "precluso"}),
-    # (review) the pena in concreto can be the minimum less the generiche's third: 584 (10 x 2/3 x 2/3 = 4.4) admitted
-    ("reclusione da dieci a diciotto anni (co. 1)", "584", {"patteggiamento": "ammesso",
+    ("reclusione da dodici a venti anni (co. 1)", "999", {"abbreviato": "ammesso", "patteggiamento": "precluso",
+                                                          "messa_alla_prova": "precluso"}),
+    # v79.10.7: no attenuante held -- 584's 10 years less the rite's third is 6 years and 8 months: precluded
+    ("reclusione da dieci a diciotto anni (co. 1)", "584", {"abbreviato": "ammesso", "patteggiamento": "precluso",
                                                             "messa_alla_prova": "precluso"}),
-    ("reclusione da otto a venti anni (co. 1)", "999", {"patteggiamento": "ammesso", "messa_alla_prova": "precluso"}),
-    ("reclusione da sette a quindici anni (co. 1)", "999", {"patteggiamento": "ammesso",
+    ("reclusione da otto a venti anni (co. 1)", "999", {"abbreviato": "ammesso", "patteggiamento": "precluso",
+                                                        "messa_alla_prova": "precluso"}),
+    ("reclusione da sette a quindici anni (co. 1)", "999", {"abbreviato": "ammesso", "patteggiamento": "possibile",
                                                             "messa_alla_prova": "precluso"}),
-    ("ergastolo (co. 1)", "999", {"patteggiamento": "precluso", "messa_alla_prova": "precluso"}),
-    ("multa fino a euro 309 (co. 1)", "999", {"patteggiamento": "ammesso", "messa_alla_prova": "ammesso"}),
-    ("arresto fino a un anno (co. 1)", "999", {"patteggiamento": "ammesso", "messa_alla_prova": "ammesso"}),
-    ("", "999", {"patteggiamento": "da verificare", "messa_alla_prova": "da verificare"}),
-    ("", "337", {"patteggiamento": "da verificare", "messa_alla_prova": "ammesso"}),     # listed: whatever its pena
+    ("ergastolo (co. 1)", "999", {"abbreviato": "precluso", "patteggiamento": "precluso",
+                                  "messa_alla_prova": "precluso"}),
+    ("multa fino a euro 309 (co. 1)", "999", {"abbreviato": "ammesso", "patteggiamento": "possibile",
+                                              "messa_alla_prova": "ammesso"}),
+    ("arresto fino a un anno (co. 1)", "999", {"abbreviato": "ammesso", "patteggiamento": "possibile",
+                                               "messa_alla_prova": "ammesso"}),
+    ("", "999", {"abbreviato": "da verificare", "patteggiamento": "da verificare", "messa_alla_prova": "da verificare"}),
+    ("", "337", {"abbreviato": "da verificare", "patteggiamento": "da verificare",
+                 "messa_alla_prova": "ammesso"}),                                   # listed: whatever its pena
 ])
 def test_each_rito_is_gated_on_the_charges_pena(pena, number, want):
     from src.rag import lawyer_method as M
     got = _by_id(M.rite_statuses(pena, number))
-    assert got["abbreviato"]["status"] == M.AVAILABLE                       # abbreviato always
     assert {k: got[k]["status"] for k in want} == want
+    assert got["commisurazione"]["status"] == M.AVAILABLE                   # the sentencing line: no rito
 
 
 def test_the_listed_offences_are_data():
@@ -114,15 +126,17 @@ def test_the_pena_unknown_is_never_admitted():
     unknown = [x for x in lines if "444" in x or "168-bis" in x]
     assert len(unknown) == 2 and all(M.RITE_TO_VERIFY in x for x in unknown)
     assert not any(x.split(":", 1)[1].strip().startswith("ammess") for x in unknown)
-    assert M.riti_names(lines, 3) == ("Giudizio abbreviato (artt. 438 ss. c.p.p.); Commisurazione della pena "
-                                      "(art. 133 c.p.) e attenuanti generiche (art. 62-bis c.p.)")
+    # v79.10.7: the abbreviato too (art. 438, co. 1-bis, c.p.p.: the ergastolo cannot be ruled out), never named
+    abbreviato = next(x for x in lines if "abbreviato" in x)
+    assert M.RITE_TO_VERIFY in abbreviato and "438, co. 1-bis, c.p.p.)" in abbreviato
+    assert M.riti_names(lines, 3) == "Commisurazione della pena (art. 133 c.p.) e attenuanti generiche (art. 62-bis c.p.)"
 
 
 def test_the_charges_pena_comes_from_the_procedural_store():
     from src.rag import lawyer_method as M
     recs = _charge("572 c.p.", "Maltrattamenti contro familiari e conviventi")
     got = _by_id(M.charge_rites(recs, [_row("572", "reclusione da tre a sette anni (co. 1)")], IMPUTATO))
-    assert got["patteggiamento"]["status"] == M.AVAILABLE and got["messa_alla_prova"]["status"] == M.PRECLUDED
+    assert got["patteggiamento"]["status"] == M.POSSIBLE and got["messa_alla_prova"]["status"] == M.PRECLUDED
     assert got["patteggiamento"]["charge"] == "572 c.p." and got["patteggiamento"]["pena"].startswith("reclusione")
     # no store entry: computed from the row's text, as the store's own reader does
     text = "Chiunque maltratta una persona della famiglia è punito con la reclusione da tre a sette anni."
@@ -150,7 +164,9 @@ def test_a_precluded_rito_is_never_under_the_strategy_and_is_said_in_8():
 
 def test_the_containment_line_names_only_the_admitted_riti():
     from src.rag import lawyer_method as M
-    riti = M.riti_lines(IMPUTATO, "")
+    unknown = M.fallback_thesis({"obiettivo": M.CONTENIMENTO}, M.riti_lines(IMPUTATO, ""), IMPUTATO)
+    assert "abbreviato" not in unknown["pro"] and "444" not in unknown["pro"]          # v79.10.7: none admitted
+    riti = M.riti_lines(IMPUTATO, "reclusione da dieci a diciotto anni (co. 1)", "584")
     thesis = M.fallback_thesis({"obiettivo": M.CONTENIMENTO}, riti, IMPUTATO)
     assert "Giudizio abbreviato" in thesis["pro"] and "444" not in thesis["pro"] and "168-bis" not in thesis["pro"]
     ctx = {"riti": riti, "posture": IMPUTATO, "records": {}, "circumstances": {}, "facts": {}}
@@ -350,7 +366,8 @@ def test_the_counters_reach_the_case_counters():
     assert state["ledger"]["removed_by_step"].get("rites_out") == 1
     ctx = {"rites": M.rite_statuses("", "")}                       # the method's own statuses first
     flow.rites_checked(state, "Il patteggiamento è la via più rapida.", statuses, method_ctx=ctx)
-    assert state["block_counters"]["rites_to_verify"] == 2 and state["block_counters"]["rites_precluded"] == 0
+    # v79.10.7: the abbreviato too is «da verificare» on an unknown pena
+    assert state["block_counters"]["rites_to_verify"] == 3 and state["block_counters"]["rites_precluded"] == 0
 
 
 def test_the_nightly_check_and_table_of_c():
@@ -423,7 +440,7 @@ def test_a_background_death_is_no_event_and_the_victim_always_keeps_a_main_offen
 
 def test_dropping_a_rito_leaves_no_orphan_number_nor_an_empty_cell():
     from src.rag import lawyer_method as M
-    unknown = M.rite_statuses("", "")
+    unknown = M.rite_statuses("reclusione non inferiore ad anni ventuno (co. 1)", "575")    # v79.10.7: abbreviato admitted
     text = ("1. Contestare il dolo.\n2. Patteggiamento (art. 444 c.p.p.) con pena contenuta.\n3. Giudizio abbreviato.\n\n"
             "| Opzione | Esito |\n|---|---|\n| Messa alla prova | ammessa |\n| Abbreviato | riduzione |")
     out = M.rites_out(text, unknown)
@@ -500,9 +517,13 @@ def test_remissione_needs_a_querela_also_with_no_charge_and_on_the_prose_path():
     assert pf._conflict(denied, {"procedibilita": "d'ufficio", "querela": False}) == ""
 
 
-def test_444_counts_the_generiche_for_the_pena_in_concreto():
+def test_444_is_judged_on_the_best_case_of_the_pena_in_concreto():
+    """v79.10.7 (the user's ruling): the minimum less each attenuante the record holds as integrato or da provare, then
+    the rite's third; precluded only when even that exceeds five years, otherwise «possibile, dipende dalla pena in
+    concreto» (never «ammesso»)."""
     from src.rag import lawyer_method as M
-    omicidio_pret = _by_id(M.rite_statuses("reclusione da dieci a diciotto anni (co. 1)", "584"))
-    assert omicidio_pret["patteggiamento"]["status"] == M.AVAILABLE
-    heavy = _by_id(M.rite_statuses("reclusione da dodici a venti anni (co. 1)", "999"))["patteggiamento"]
-    assert heavy["status"] == M.PRECLUDED and "attenuanti generiche" in heavy["line"]
+    heavy = _by_id(M.rite_statuses("reclusione da dodici a venti anni (co. 1)", "999", ["62-bis c.p."]))["patteggiamento"]
+    assert heavy["status"] == M.PRECLUDED and "62-bis" in heavy["line"] and "oltre 5 anni" in heavy["line"]
+    ok = _by_id(M.rite_statuses("reclusione da sette a quindici anni (co. 1)", "999"))["patteggiamento"]
+    assert ok["status"] == M.POSSIBLE and "possibile, dipende dalla pena in concreto" in ok["line"]
+    assert "4 anni e 8 mesi" in ok["line"] and "ammess" not in ok["line"]

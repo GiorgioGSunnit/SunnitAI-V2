@@ -774,7 +774,7 @@ def term_of(text: str) -> Optional[Dict[str, Any]]:
     anchor = a.group(1).lower()[:5] if a else ""
     phrase = " ".join(((text or "")[m.start():m.end()] + (a.group(0) if a else "")).split()).strip(" ,")
     return {"n": n, "unit": unit, "days": n * _UNIT_DAYS[unit], "anchor": anchor, "phrase": phrase,
-            "negated": _negated((text or "")[:m.start()])}
+            "negated": _negated((text or "")[:m.start()]), "before": (text or "")[:m.start()]}
 
 
 # the act the term governs negated: «(se) non denunzia i vizi entro otto giorni» -- the decadence is integrated by the
@@ -807,6 +807,7 @@ _LOWER = ("oltre", "più di", "almeno", "ben")
 _UPPER = ("meno di", "quasi", "nel giro di", "entro")
 _STRICT = ("oltre", "più di")
 _STATE_WORDS = ("da", "per")         # «in attività da quindici anni», «per tre anni»: how long a state lasts
+_AGO_RE = re.compile(r"\s+fa\b", re.IGNORECASE)     # v79.10.7: «oltre un anno fa» -- a before-word span counted to today
 # a sentence stipulating a deadline («il contratto prevedeva il compimento entro due anni»): its «entro» is no time elapsed
 _STIPULATION_RE = re.compile(r"\b(?:prevede\w*|prevista|previst[oie]|dovev\w*|dovr[àaeo]\w*|deve|devono|pattuit\w*|"
                              r"stabilit\w*|concordat\w*|convenut\w*|impegn\w*|termine|scadenz\w*|obblig\w*)\b",
@@ -815,11 +816,14 @@ _STIPULATION_RE = re.compile(r"\b(?:prevede\w*|prevista|previst[oie]|dovev\w*|do
 
 def spans_of(text: str) -> List[Dict[str, Any]]:
     """v79.10.4 (D1): the spans a sentence states -- [{days, bound ("exact" | "lower" | "upper"), strict, phrase,
-    word}]; a number with a unit and no span word around it («un bambino di dieci anni») is no span, nor an «entro» in a
-    sentence stipulating a deadline («il contratto prevedeva il compimento entro due anni»)."""
+    word, ago}]; a number with a unit and no span word around it («un bambino di dieci anni») is no span, nor an
+    «entro» in a sentence stipulating a deadline («il contratto prevedeva il compimento entro due anni»). v79.10.7:
+    «ago» -- a span counted to today («tre mesi fa», «oltre un anno fa»): it dates an event, never the time between
+    two (term_durations)."""
     out: List[Dict[str, Any]] = []
     num = _num_re()
     stipulated = bool(_STIPULATION_RE.search(text or ""))
+    taken: List[Tuple[int, int]] = []
     for m in re.finditer(_SPAN_BEFORE + num + r"\s+" + _UNIT, text or "", re.IGNORECASE):
         n = _number(m.group(2))
         if not n:
@@ -828,13 +832,18 @@ def spans_of(text: str) -> List[Dict[str, Any]]:
         if word == "entro" and stipulated:
             continue
         bound = "lower" if word in _LOWER else ("upper" if word in _UPPER else "exact")
+        ago = bool(_AGO_RE.match((text or "")[m.end():]))
         out.append({"days": n * _UNIT_DAYS[m.group(3).lower()], "bound": bound, "strict": word in _STRICT,
-                    "phrase": " ".join(m.group(0).split()), "word": word})
+                    "phrase": " ".join(m.group(0).split()), "word": word, "ago": ago})
+        taken.append((m.start(2), m.end()))
     for m in re.finditer(r"\b" + num + r"\s+" + _UNIT + _SPAN_AFTER, text or "", re.IGNORECASE):
         n = _number(m.group(1))
+        if any(lo < m.end(2) and m.start(1) < hi for lo, hi in taken):     # v79.10.7: «oltre un anno fa» is one span
+            continue
         if n and not any(m.group(0) in x["phrase"] or x["phrase"] in m.group(0) for x in out):
             out.append({"days": n * _UNIT_DAYS[m.group(2).lower()], "bound": "exact", "strict": False,
-                        "phrase": " ".join(m.group(0).split()), "word": m.group(3).lower()})
+                        "phrase": " ".join(m.group(0).split()), "word": m.group(3).lower(),
+                        "ago": m.group(3).lower() == "fa"})
     return out
 
 
@@ -910,7 +919,9 @@ def term_durations(term: Dict[str, Any], req: Dict[str, Any], by_id: Dict[str, D
     outside the linked ones); the dated events from the anchor's date (the term with none: the earliest) to the date of
     the act (the anchor's own sentence, a linked fact, a fact naming the act): an unrelated later date never measures it,
     and with the act's date not found only a verdict every later date agrees on stands. A negated act («non denunzia …
-    entro otto giorni») turns the verdict (verdict inside: the element integrated). Only fatti certi count."""
+    entro otto giorni») turns the verdict (verdict inside: the element integrated). Only fatti certi count. v79.10.7: a
+    span counted to today («tre mesi fa») is read only by ago_durations; with the act's date not found the dated
+    events give «inside» alone (every later date inside the term), never «beyond»."""
     facts = [s for s in by_id.values() if certain_fact(s)]
     linked = set(req.get("supporting") or []) | set(req.get("contradicting") or []) | \
         set((req.get("link") or {}).get("supporting") or []) | set((req.get("link") or {}).get("contradicting") or [])
@@ -928,11 +939,14 @@ def term_durations(term: Dict[str, Any], req: Dict[str, Any], by_id: Dict[str, D
         if not read:
             continue
         for sp in spans_of(text):
+            if sp.get("ago"):           # v79.10.7: counted to today -- read below (ago_durations), never here
+                continue
             if not anchor and s["id"] not in linked and sp.get("word") in _STATE_WORDS:
                 continue
             verdict = _span_verdict(sp, term)
             if verdict:
                 out.append({"verdict": flip.get(verdict, verdict), "span": sp["phrase"], "sid": s["id"]})
+    out += [{**x, "verdict": flip.get(x["verdict"], x["verdict"])} for x in ago_durations(term, facts)]
     dated = [(lo, hi, s["id"]) for s in facts for lo, hi in dates_of(s.get("text") or "")]
     if len(dated) >= 2:
         starts = [d for d in dated if _has_stem(by_id[d[2]].get("text") or "", anchor)] if anchor else \
@@ -946,10 +960,8 @@ def term_durations(term: Dict[str, Any], req: Dict[str, Any], by_id: Dict[str, D
             own = act - element_nouns(by_id[sid].get("text") or "")
             ends = [d for d in later if d[2] == sid or d[2] in linked
                     or (own and own & element_nouns(by_id[d[2]].get("text") or ""))]
-            if not ends:
-                first, last = min(later, key=lambda d: d[0]), max(later, key=lambda d: d[1])
-                ends = [last] if last[1] <= _after(lo, term["n"], term["unit"]) else \
-                    ([first] if first[0] > _after(hi, term["n"], term["unit"]) else [])
+            if not ends:                # v79.10.7: the act undated, never «escluso» -- only every later date inside
+                ends = []
             for e_lo, e_hi, e_sid in ends:
                 span = f"dal {lo.strftime('%d/%m/%Y') if lo == hi else lo.year} al " \
                        f"{e_hi.strftime('%d/%m/%Y') if e_lo == e_hi else e_hi.year}"
@@ -959,6 +971,61 @@ def term_durations(term: Dict[str, Any], req: Dict[str, Any], by_id: Dict[str, D
                     out.append({"verdict": flip.get(BEYOND, BEYOND), "span": span, "sid": e_sid})
     return out
 
+
+
+# v79.10.7: a sentence's clauses for the spans counted to today -- «scoperto tre mesi fa e denunciato un mese fa»
+_AGO_CLAUSE_SPLIT = re.compile(r"[,;:]|\s+(?:e|ed|ma|mentre|poi|quindi)\s+", re.IGNORECASE)
+# v79.10.7: the stems that never name the act a term governs -- the parties by their role («il compratore deve
+# denunziare»: the act is «denunziare», never «compratore») and the verbs of duty or doing («deve», «va fatta»)
+_NOT_ACT_STEMS = frozenset({"compr", "acqui", "vendi", "alien", "condu", "inqui", "locat", "commi", "appal", "lavor",
+                            "dator", "credi", "debit", "clien", "attor", "conve", "imput", "quere", "danne", "offes",
+                            "parte", "titol", "propr", "mutua", "assic", "deve", "devon", "fatta", "fatto", "fatte",
+                            "fatti", "esser", "stato", "stata"})
+
+
+def _word_stems(text: str) -> set:
+    """v79.10.7: the five-letter stems of a text's words of four letters or more, verbs included, stopwords aside."""
+    from .topic_step import _STOPWORDS
+    return {w[:5] for w in re.findall(r"[a-zà-ü]{4,}", str(text or "").lower()) if w not in _STOPWORDS}
+
+
+def ago_durations(term: Dict[str, Any], facts: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v79.10.7 (the user's ruling on D1): a span counted to today («scoperto tre mesi fa») dates the event of its
+    clause, not the time between the term's starting event and the act the term governs -- so it establishes a duration
+    only between those two. The act: the words of the element before its term (term_of's «before»: «il compratore
+    deve denunziare i vizi»), the parties' roles and the verbs of duty aside (_NOT_ACT_STEMS), and those the start's
+    clause shares (four letters alike: «vizi» / «vizio»); a clause names it when it shares one of them and does not name
+    the anchor.
+      - A clause naming the term's anchor («la scoperta è avvenuta tre mesi fa») dates the start. With the act named
+        as done in the facts (a clause naming it), the act lies within that span: an upper bound, «inside» when the span
+        («tre mesi», «meno di tre mesi») is within the term; nothing when it is beyond, and nothing with the act not
+        named (the act undated: never «beyond», never a duration).
+      - With the act dated the same way too («denunciato un mese fa», in the same sentence or another certain fact),
+        the difference between the two exact spans is the duration and grades either way.
+    A term with no anchor: nothing (its starting event is not named, so a span to today never measures it). Only fatti
+    certi (facts); [{verdict, span, sid}] unflipped (term_durations turns them for a negated act)."""
+    anchor = term.get("anchor") or ""
+    if not anchor:
+        return []
+    clauses = [(c, s["id"]) for s in facts for c in _AGO_CLAUSE_SPLIT.split(s.get("text") or "") if c.strip()]
+    starts = [(sp, sid, c) for c, sid in clauses if _has_stem(c, anchor) for sp in spans_of(c) if sp.get("ago")]
+    out: List[Dict[str, Any]] = []
+    act = {x for x in _word_stems(term.get("before") or "") if x not in _NOT_ACT_STEMS and x != anchor}
+    for sp, sid, start_clause in starts:
+        shared = {x[:4] for x in _word_stems(start_clause)}
+        own = {x for x in act if x[:4] not in shared}
+        named = [(c, csid) for c, csid in clauses if not _has_stem(c, anchor) and own & _word_stems(c)]
+        if named and sp["bound"] in ("exact", "upper") and sp["days"] <= term["days"]:
+            out.append({"verdict": INSIDE, "span": sp["phrase"], "sid": sid})
+        if sp["bound"] != "exact":
+            continue
+        for c, csid in named:
+            for ap in spans_of(c):
+                gap = sp["days"] - ap["days"]
+                if ap.get("ago") and ap["bound"] == "exact" and gap >= 0:
+                    out.append({"verdict": INSIDE if gap <= term["days"] else BEYOND,
+                                "span": f"{sp['phrase']} – {ap['phrase']}", "sid": csid})
+    return out
 
 
 def _source(by_schema: bool, by_regex: bool) -> str:

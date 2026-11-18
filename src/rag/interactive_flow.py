@@ -6259,11 +6259,17 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
 def charge_rites(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]]
                  ) -> List[Dict[str, Any]]:
     """v79.10.3 (C1): the riti's statuses for the case's charge (lawyer_method.charge_rites: the records' main threat,
-    else the intake's charge; the pena from the procedural store) -- [] outside a penal matter; logged."""
+    else the intake's charge; the pena from the procedural store) -- [] outside a penal matter; logged. v79.10.7: the
+    attenuanti the case's circumstance candidates hold, ungraded here (each «da provare»: the method grades them and
+    computes its own statuses) -- the patteggiamento's best case."""
     from . import lawyer_method
-    out = lawyer_method.charge_rites(state.get("records") or {}, rows, posture)
+    records = state.get("records") or {}
+    circ = lawyer_method.circumstance_records(lawyer_method.circumstance_candidates(case_text(state), records,
+                                                                                    posture or {}))
+    out = lawyer_method.charge_rites(records, rows, posture, circumstances=circ)
     if out:
         _log("charge_rites", {"charge": out[0].get("charge"), "pena": out[0].get("pena"),
+                              "attenuanti": out[0].get("attenuanti"),
                               "rites": {x["id"]: [x["status"], x["why"]] for x in out}})
     return out
 
