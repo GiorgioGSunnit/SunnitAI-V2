@@ -8,6 +8,8 @@ writes only the latter (--edit, --import-notes), never Neo4j, never a model. Run
     venv/bin/python scripts/schema_show.py --import-notes                  # docs/lawyer/note_inquadramento.md -> overlay
     venv/bin/python scripts/schema_show.py --stale | --coverage | --quality
     venv/bin/python scripts/schema_show.py --top 50 --out schemi_da_leggere.md
+    venv/bin/python scripts/schema_show.py --recheck [--dry-run]                 # v79.12.2: checks re-run, no model
+    venv/bin/python scripts/schema_show.py --unusable 20                         # v79.12.2: rejected, with reasons
 
 --article (--doc to choose the document): header (label, rubrica, tipo, roles with their conditions, rapporto, source
 generated/reviewed, stale, version, model, date), the elements, the logic as an outline (TUTTI / ALMENO UNO / NON / SE …
@@ -32,6 +34,15 @@ which article_cards_bulk --schemas records for a reviewed label, else its source
 --top N --out FILE: the N most used articles (article_cards_bulk.frequency over --runs; the generated file's order when
 there are none), each as --markdown with the official text first. --quality: the measures of element_schemas.
 quality_report over the reviewed lines.
+--recheck (v79.12.2): the checks re-run over the existing generated file with today's rules, no regeneration -- each
+line with its text gets fresh checks (failed/cut kept) and "dropped" (element_schemas.repair: what is dropped or fixed
+when the line is read), a line without its text the checks that need none (invalid, logic: element_schemas.
+current_checks) -- the schema itself never touched; the file rewritten atomically (--dry-run: nothing written).
+Prints the usable schemas before (an older line by the v79.12.1 rule, BLOCKING_79_12_1) and after (the last line of
+each article), the elements dropped and fixed by check, the unusable by check; the lawyer's reviewed schemas only
+reported (structurally sound before / now), never rewritten.
+--unusable N (v79.12.2): N rejected generated schemas with their reasons (the blocking checks as the runtime reads them:
+re-run on the line's text when it has one, else the text-free ones re-run -- current_checks) and the first messages.
 """
 
 import argparse
@@ -192,12 +203,24 @@ def outline(node: Any, texts: Dict[str, str], depth: int = 0, markdown: bool = F
     if op == "not":
         return [pad + "NON:"] + outline(node.get("arg"), texts, depth + 1, markdown)
     if op == "conditional":
-        out = [pad + "SE:"] + outline(node.get("if"), texts, depth + 1, markdown)
-        out += [pad + "ALLORA:"] + outline(node.get("then"), texts, depth + 1, markdown)
+        missing = ["  " * (depth + 1) + ("- " if markdown else "") + "(manca)"]   # v79.12.2: a pruned branch
+        out = [pad + "SE:"] + (outline(node.get("if"), texts, depth + 1, markdown) if node.get("if") is not None
+                               else missing)
+        out += [pad + "ALLORA:"] + (outline(node.get("then"), texts, depth + 1, markdown)
+                                    if node.get("then") is not None else missing)
         if node.get("else") is not None:
             out += [pad + "ALTRIMENTI:"] + outline(node.get("else"), texts, depth + 1, markdown)
         return out
     return [pad + f"(op sconosciuto: {op!r})"]
+
+
+ACTION_IT = {"dropped": "tolto", "fixed": "corretto"}
+
+
+def _action(a: Dict[str, Any]) -> str:
+    """One repair action as a line: «E1 tolto (ungrounded): parole assenti dal testo (grave)»."""
+    eid = f"co{a.get('scope')}.{a.get('id')}" if a.get("scope") else str(a.get("id"))
+    return f"{eid} {ACTION_IT.get(a.get('action'), a.get('action'))} ({a.get('check')}): {_cell(a.get('why'))}"
 
 
 def _heading(title: str, markdown: bool, level: int = 3) -> List[str]:
@@ -281,18 +304,25 @@ def render(v: Dict[str, Any], markdown: bool = False, text_first: bool = False, 
             L += _schema_body(sub, markdown, line.get("origin") or {}, k, level + 3)
         L += _heading("Articoli collegati", markdown, level + 1)
         L.append(", ".join(schema.get("collegati") or []) or "(nessuno)")
-        checks = es.check(schema, v["text"]) if v.get("text") else (line.get("checks") or {})
+        checks = es.current_checks(schema, line.get("checks"), v.get("text"))
         raised = [(k, checks.get(k)) for k in es.BLOCKING + es.NON_BLOCKING if checks.get(k)]
         L += _heading("Controlli", markdown, level + 1)
         if not v.get("text"):
-            L.append("(testo non disponibile: i controlli sono quelli registrati con la riga)")
+            L.append("(testo non disponibile: i controlli che leggono il testo sono quelli registrati con la riga)")
         if raised:
             for k, items in raised:
-                kind = "bloccante" if k in es.BLOCKING else "segnalato"
+                kind = "bloccante" if k in es.BLOCKING else \
+                    ("elemento tolto o corretto" if k in es.ELEMENT_CHECKS and v["source"] == "generated" else
+                     "segnalato")
                 values = items if isinstance(items, list) else [items]
                 L.append(f"{'- ' if markdown else ''}{k} ({kind}): " + "; ".join(_cell(x) for x in values))
         else:
             L.append("nessun controllo sollevato")
+        if v["source"] == "generated":            # v79.12.2: what the pipeline drops or fixes when it reads the line
+            actions = es.repair(schema, v["text"])[1] if v.get("text") else list(line.get("dropped") or [])
+            if actions:
+                L += _heading("Elementi tolti o corretti", markdown, level + 1)
+                L += [f"{'- ' if markdown else ''}{_action(a)}" for a in actions]
     L += _heading("Note dell'avvocato", markdown, level + 1)
     if v["notes"]:
         for n in v["notes"]:
@@ -683,6 +713,132 @@ def top_pack(n: int, out_path: Optional[str], runs: str = RUNS) -> str:
     return text
 
 
+# --- v79.12.2: the checks re-run and the rejected schemas ---------------------------------------------------------------
+
+def _usable_before(line: Dict[str, Any]) -> bool:
+    """A line as it stood: one already rechecked or made by v79.12.2 ("dropped" or "rechecked_at" in it) by today's
+    rule, an older one by v79.12.1's (BLOCKING_79_12_1: the element checks blocked)."""
+    es = _es()
+    if "dropped" in line or "rechecked_at" in line:
+        return es.usable(line)
+    bad = es.blocking(line)
+    return not bad and not es.raised(line.get("checks"), es.BLOCKING_79_12_1)
+
+
+def _line_key(line: Dict[str, Any]) -> Tuple[str, str]:
+    return (str(line.get("doc") or ""), str(line.get("article") or "").strip().lower())
+
+
+def recheck(path: Optional[str] = None, write: bool = True, now: Optional[str] = None) -> Dict[str, Any]:
+    """v79.12.2: the checks re-run over the generated file (module docstring, --recheck); the counts over the last line
+    of each article: {"path", "lines", "schemas", "usable_before", "usable_after", "without_text", "dropped":
+    {check: n}, "fixed": {check: n}, "unusable_after": {check: n}, "reviewed", "reviewed_sound_before",
+    "reviewed_sound_after", "written"}. The schemas and the reviewed overlay are never changed."""
+    es = _es()
+    from datetime import datetime, timezone
+    path = path or es.schema_file()
+    when = now or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    raw = _read_raw(path)
+    out: List[str] = []
+    last: Dict[Tuple[str, str], Tuple[bool, bool, List[Dict[str, Any]], bool, Dict[str, Any]]] = {}
+    for text_line, rec in raw:
+        if rec is None or not isinstance(rec.get("schema"), dict):
+            out.append(text_line)
+            if rec is not None:
+                last[_line_key(rec)] = (False, False, [], False, rec)
+            continue
+        before = _usable_before(rec)
+        text = str(rec.get("text") or "")
+        checks = es.current_checks(rec["schema"], rec.get("checks"), text)
+        if text.strip():
+            rec = {**rec, "checks": checks, "dropped": es.repair(rec["schema"], text)[1], "rechecked_at": when}
+        else:                                   # no text: the checks that read it kept as recorded, those that do not
+            rec = {**rec, "checks": checks, "rechecked_at": when}    # (invalid, logic) re-run by today's rules
+        out.append(json.dumps(rec, ensure_ascii=False))
+        last[_line_key(rec)] = (before, es.usable(rec), list(rec.get("dropped") or []), bool(text.strip()), rec)
+    dropped, fixed, unusable = Counter(), Counter(), Counter()
+    for before, after, actions, _, rec in last.values():
+        for a in actions:
+            (dropped if a.get("action") == "dropped" else fixed)[str(a.get("check"))] += 1
+        if not after:
+            unusable.update(es.blocking(rec)[:1])
+    reviewed = [x for x in es.reviewed().values() if is_reviewed(x)]
+    sound_before = sum(1 for x in reviewed if not es.raised(x.get("checks"), es.STRUCTURAL))
+    sound_after = sum(1 for x in reviewed if not es.raised(es.current_checks(x["schema"], x.get("checks"),
+                                                                             x.get("text")), es.STRUCTURAL))
+    written = False
+    if write and raw:
+        with open(path + ".tmp", "w", encoding="utf-8") as fh:
+            fh.write("".join(x + "\n" for x in out))
+        os.replace(path + ".tmp", path)
+        written = True
+    return {"path": path, "lines": len(raw), "schemas": sum(1 for v in last.values() if isinstance(v[4].get("schema"),
+                                                                                                  dict)),
+            "articles": len(last), "usable_before": sum(1 for v in last.values() if v[0]),
+            "usable_after": sum(1 for v in last.values() if v[1]),
+            "without_text": sum(1 for v in last.values() if isinstance(v[4].get("schema"), dict) and not v[3]),
+            "dropped": dict(dropped), "fixed": dict(fixed), "unusable_after": dict(unusable),
+            "reviewed": len(reviewed), "reviewed_sound_before": sound_before, "reviewed_sound_after": sound_after,
+            "written": written}
+
+
+def _counts(c: Dict[str, int]) -> str:
+    return ", ".join(f"{k} {v}" for k, v in sorted(c.items(), key=lambda kv: (-kv[1], kv[0]))) or "nessuno"
+
+
+def recheck_lines(r: Dict[str, Any]) -> List[str]:
+    delta = r["usable_after"] - r["usable_before"]
+    return [f"Ricontrollo di {r['path']}: {r['lines']} righe, {r['articles']} articoli, {r['schemas']} con uno schema.",
+            f"Schemi usabili: prima {r['usable_before']}, dopo {r['usable_after']} ({delta:+d}).",
+            f"Elementi tolti per controllo: {_counts(r['dropped'])}.",
+            f"Correzioni per controllo: {_counts(r['fixed'])}.",
+            f"Inutilizzabili dopo, per controllo: {_counts(r['unusable_after'])}.",
+            f"Senza testo (controlli sul testo registrati tenuti, logica e validità ricontrollate): "
+            f"{r['without_text']}.",
+            f"Rivisti dall'avvocato (mai riscritti): {r['reviewed']}, strutturalmente validi prima "
+            f"{r['reviewed_sound_before']}, ora {r['reviewed_sound_after']}.",
+            "File riscritto." if r["written"] else "Nessun file scritto (--dry-run o file vuoto)."]
+
+
+def unusable(n: int) -> Tuple[List[Dict[str, Any]], int]:
+    """v79.12.2: (the first n rejected generated schemas -- {"label", "reasons", "details"} --, how many there are):
+    the last line of each article, its blocking checks re-run on its text when it has one (failed/cut as recorded)."""
+    es = _es()
+    found: List[Dict[str, Any]] = []
+    for line in es.generated().values():
+        label = _label_of_line(line) or str(line.get("article") or "")
+        stored = line.get("checks") or {}
+        bad = es.blocking(line)
+        details: List[str] = []
+        if bad == ["schema"]:
+            details = [str(stored.get("failed") or "nessuno schema")]
+        elif bad == ["schema_version"]:
+            details = [f"schema_version {line.get('schema_version')}"]
+        else:
+            own = [k for k in bad if k in ("failed", "cut")]
+            checks = es.current_checks(line["schema"], stored, line.get("text"))   # what the runtime reads
+            bad = own or es.raised(checks)
+            if "failed" in own:
+                details.append(str(stored.get("failed")))
+            if "cut" in own:
+                details.append("risposta troncata")
+            for k in bad:
+                if k not in ("failed", "cut"):
+                    details += [str(m) for m in checks.get(k) or []]
+        if bad:
+            found.append({"label": label, "reasons": bad, "details": details})
+    return found[:max(n, 0)], len(found)
+
+
+def unusable_lines(n: int, markdown: bool = False) -> List[str]:
+    found, total = unusable(n)
+    if not total:
+        return ["Nessuno schema inutilizzabile."]
+    head = [f"{total} schemi inutilizzabili; i primi {len(found)}:"]
+    return head + table(["Articolo", "Motivi", "Dettaglio"],
+                        [[x["label"], ", ".join(x["reasons"]), "; ".join(x["details"][:4])] for x in found], markdown)
+
+
 QUALITY_ROWS = (("element_precision", "precisione degli elementi"), ("element_recall", "richiamo degli elementi"),
                 ("logic_accuracy", "logica esatta"), ("exception_recall", "richiamo delle eccezioni"),
                 ("comma_accuracy", "comma esatto"), ("grounding_accuracy", "fondamento esatto"),
@@ -711,6 +867,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     action.add_argument("--coverage", action="store_true")
     action.add_argument("--top", type=int, metavar="N")
     action.add_argument("--quality", action="store_true")
+    action.add_argument("--recheck", action="store_true", help="v79.12.2: the checks re-run over the generated file")
+    action.add_argument("--unusable", type=int, metavar="N", help="v79.12.2: N rejected schemas with their reasons")
+    parser.add_argument("--dry-run", action="store_true", help="--recheck: report only, nothing written")
     parser.add_argument("--doc", help="--article: the document's exact name")
     parser.add_argument("--markdown", action="store_true")
     parser.add_argument("--out", help="--top: the markdown file to write (default: printed)")
@@ -762,6 +921,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
     if args.coverage:
         print("\n".join(coverage_lines(coverage(args.cards), args.markdown)))
+        return 0
+    if args.recheck:
+        print("\n".join(recheck_lines(recheck(write=not args.dry_run))))
+        return 0
+    if args.unusable is not None:
+        print("\n".join(unusable_lines(args.unusable, args.markdown)))
         return 0
     if args.top is not None:
         text = top_pack(args.top, args.out, args.runs)

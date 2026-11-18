@@ -256,7 +256,8 @@ def test_coverage_by_code_from_tmp_files(tmp_path):
                                       {"doc": "Codice Civile", "article": "2043", "card": "x"},
                                       {"doc": "Codice Civile", "article": "2043", "card": "y"}])
     _write(tmp_path / "schemas.jsonl", [_line("Codice Penale", "582", "c.p.", _schema()),
-                                        _line("Codice Penale", "583", "c.p.", _schema(), ungrounded=["E1: x"]),
+                                        _line("Codice Penale", "583", "c.p.", _schema(),
+                                              logic_errors=["logic.all_of[1]: ref E9 senza elemento"]),
                                         _line("Codice Civile", "1218", "c.c.", _schema())])
     _write(tmp_path / "reviewed.jsonl", [{"label": "582 c.p.", "reviewed": True, "schema": _schema()},
                                          {"label": "584 c.p.", "reviewed": False, "note_di_inquadramento": []}])
@@ -264,7 +265,7 @@ def test_coverage_by_code_from_tmp_files(tmp_path):
     assert "| c.c. | 1 | 0 | 1 | 0 |" in text          # 1218 generated (not carded), 2043 carded without
     assert "| c.p. | 1 | 1 | 1 | 1 |" in text          # 582 usable and reviewed, 583 unusable, 584 without
     assert "| all | 2 | 1 | 2 | 1 |" in text
-    assert "Unusable by blocking check: ungrounded 1" in text
+    assert "Unusable by blocking check: logic_errors 1" in text      # v79.12.2: ungrounded no longer blocks
 
 
 def test_coverage_with_no_files_is_an_empty_row(tmp_path):

@@ -144,12 +144,12 @@ def test_a_explicit_grounding_words_and_passage():
     s = _penal()
     s["elementi"][0] = _el("E1", "cagiona ad alcuno una lesione grave", fonte="cagiona ad alcuno una lesione personale")
     s["elementi"][1]["fonte"]["testo"] = "dalla quale deriva una malattia nel corpo e nella mente"
-    ung = E.check(s, PENAL)["ungrounded"]
-    assert any(m.startswith("E1: parole assenti") and "grave" in m for m in ung)
-    assert any(m == "E2: fonte.testo non trovato nel testo" for m in ung)
-    s = _penal()
+    checks = E.check(s, PENAL)
+    assert checks["ungrounded"] == ["E1: parole assenti dal testo (grave)"]
+    assert checks["fonte_unlocated"] == ["E2: fonte.testo non trovato nel testo"]    # v79.12.2: reported, E2's
+    s = _penal()                                                                   # words are all in the text
     s["elementi"][0]["fonte"] = {"comma": "1", "testo": None}
-    assert E.check(s, PENAL)["ungrounded"] == ["E1: fonte.testo mancante"]
+    assert E.check(s, PENAL)["ungrounded"] == [] and E.check(s, PENAL)["fonte_unlocated"] == ["E1: fonte.testo mancante"]
 
 
 def test_a_passage_found_whatever_its_case_spacing_and_end_punctuation():
@@ -238,22 +238,27 @@ def test_a_logic_nested_trees_are_valid():
     assert E.check(s, CIVIL)["logic_errors"] == []
 
 
-@pytest.mark.parametrize("logic,needle", [
-    ({"op": "xor", "args": [{"ref": "E1"}]}, "op sconosciuto"),
-    ({"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}, {"ref": "E9"}]}, "ref E9 senza elemento"),
+@pytest.mark.parametrize("logic,key,needle", [
+    ({"op": "xor", "args": [{"ref": "E1"}]}, "invalid", "op sconosciuto"),
+    ({"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}, {"ref": "E9"}]}, "logic_errors",
+     "ref E9 senza elemento"),
     ({"op": "all_of", "args": [{"op": "any_of", "args": [{"ref": "E1"}]}, {"ref": "E2"}, {"ref": "E3"}]},
-     "any_of con meno di due args"),
-    ({"op": "all_of", "args": [{"op": "not"}, {"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}]}, "not senza arg"),
+     "logic_incomplete", "any_of con meno di due args"),
+    ({"op": "all_of", "args": [{"op": "not"}, {"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}]}, "logic_incomplete",
+     "not senza arg"),
     ({"op": "conditional", "if": {"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}]}, "then": None,
-      "else": {"ref": "E3"}}, "conditional senza if/then"),
-    ({"op": "all_of", "args": []}, "all_of senza args"),
-    ({"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}]}, "E3: mai citato nella logic"),
-    (None, "logic mancante"),
+      "else": {"ref": "E3"}}, "logic_incomplete", "conditional senza if/then"),
+    ({"op": "all_of", "args": []}, "logic_incomplete", "all_of senza args"),
+    ({"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}]}, "logic_incomplete", "E3: mai citato nella logic"),
+    (None, "logic_incomplete", "logic mancante"),
 ])
-def test_a_logic_errors(logic, needle):
+def test_a_logic_errors(logic, key, needle):
+    """v79.12.2: only a dangling ref is a logic error (blocking) and a node that is no node an invalid schema; empty
+    nodes, a one-arg any_of, an incomplete conditional, an uncited element and no logic are reported."""
     from src.rag import element_schemas as E
-    errors = E.check(_penal(logic=logic), PENAL)["logic_errors"]
-    assert any(needle in m for m in errors), errors
+    checks = E.check(_penal(logic=logic), PENAL)
+    assert any(needle in m for m in checks[key]), checks
+    assert bool(_blocking(checks)) == (key in ("invalid", "logic_errors"))
 
 
 def test_a_unreferenced_id_inside_a_special_comma():
@@ -261,7 +266,7 @@ def test_a_unreferenced_id_inside_a_special_comma():
     s = _civil()
     sub = s["commi_speciali"][0]["schema"]
     sub["elementi"].append(_el("E2", "il bene è restituito", kind="condizione", comma="3"))
-    assert E.check(s, CIVIL)["logic_errors"] == ["co.3/E2: mai citato nella logic"]
+    assert E.check(s, CIVIL)["logic_incomplete"] == ["co.3/E2: mai citato nella logic"]
 
 
 def test_a_comma_unknown_is_reported_not_blocking():
@@ -386,7 +391,12 @@ def test_a_unusable_reasons(monkeypatch, tmp_path):
     bad = _penal()
     bad["elementi"][0]["testo"] = "cagiona ad alcuno una lesione gravissima"
     _write(tmp_path / "schemas.jsonl", [_gen(bad)])
-    assert E.for_row(_row()) == (None, "unusable:ungrounded")
+    line, why = E.for_row(_row())                                 # v79.12.2: the element dropped, the schema used
+    assert why == "schema" and [e["id"] for e in line["schema"]["elementi"]] == ["E2", "E3"]
+    assert [(a["id"], a["check"], a["action"]) for a in line["dropped"]][0] == ("E1", "ungrounded", "dropped")
+    dangling = _penal(logic={"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}, {"ref": "E7"}]})
+    _write(tmp_path / "schemas.jsonl", [_gen(dangling)])
+    assert E.for_row(_row()) == (None, "unusable:logic_errors")
     _write(tmp_path / "schemas.jsonl", [_gen(checks={**E.empty_checks(), "failed": "timeout"})])
     assert E.for_row(_row()) == (None, "unusable:failed")
     no_schema = _gen()
@@ -400,7 +410,7 @@ def test_a_unusable_reasons(monkeypatch, tmp_path):
 def test_a_stored_checks_clean_but_the_check_rerun_on_reading(monkeypatch, tmp_path):
     from src.rag import element_schemas as E
     _on(monkeypatch)
-    bad = _penal(logic={"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}]})
+    bad = _penal(logic={"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}, {"ref": "E9"}]})
     _write(tmp_path / "schemas.jsonl", [_gen(bad, checks=E.empty_checks())])     # a line claiming clean checks
     assert E.for_row(_row()) == (None, "unusable:logic_errors")
 
@@ -729,7 +739,7 @@ def test_a_make_line():
                        s, seconds=12.34, usage={"prompt_tokens": 10, "completion_tokens": 5}, doc=DOC)
     assert list(line) == ["doc", "article", "code", "label", "rubrica", "schema_version", "source_hash", "text_hash",
                           "prompt_hash", "generation_hash", "model", "created_at", "seconds", "usage", "schema",
-                          "checks", "text"]
+                          "checks", "dropped", "text"]
     assert (line["doc"], line["article"], line["code"], line["label"]) == (DOC, "582", "c.p.", "582 c.p.")
     assert line["rubrica"] == "Lesione personale" and line["text"] == PENAL and line["seconds"] == 12.3
     assert line["source_hash"] == line["text_hash"] == E.text_hash(PENAL)
@@ -737,7 +747,7 @@ def test_a_make_line():
     assert line["generation_hash"] != E.generation_hash(E.text_hash(PENAL), "other-model")
     assert line["usage"] == {"prompt_tokens": 10, "completion_tokens": 5}
     assert line["schema"]["elementi"][0]["fonte"]["start"] == 9 and E.usable(line)
-    assert line["checks"] == E.empty_checks()
+    assert line["checks"] == E.empty_checks() and line["dropped"] == []
     failed = E.make_line({"number": "582", "code": "c.p.", "text": PENAL}, "qwen-x", None, failed="json", cut=True)
     assert failed["schema"] is None and failed["checks"]["failed"] == "json" and failed["checks"]["cut"] is True
     assert not E.usable(failed)

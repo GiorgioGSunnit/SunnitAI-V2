@@ -293,15 +293,16 @@ def test_b2_the_accounting(monkeypatch, capsys, bulk):
     monkeypatch.setattr(bulk.ac, "call", _fake_call([json.dumps(_schema()), json.dumps(ungrounded),
                                                      ValueError("HTTP 400: bad")], seen))
     out = bulk.run_schemas(_items("901", "902", "903"), END, _gen_file(), {}, 1, bulk.Throttle(0), every=1)
-    assert out["made"] == 2 and out["failed"] == 1 and out["unusable"] == {"ungrounded": 1}
+    assert out["made"] == 2 and out["failed"] == 1 and out["unusable"] == {}     # v79.12.2: E1 dropped, schema kept
     assert out["prompt_tokens"] == 300 and out["completion_tokens"] == 150 and out["calls"] == 3
     assert out["per_hour"] > 0 and out["mean_call_seconds"] >= 0
     printed = capsys.readouterr().out.splitlines()
-    assert len(printed) == 3 and "3/3: 2 made, 1 failed, unusable by check: ungrounded 1" in printed[-1]
+    assert len(printed) == 3 and "3/3: 2 made, 1 failed, unusable by check: none" in printed[-1]
     assert "articles an hour" in printed[-1] and "s a call (3 calls)" in printed[-1]
     have = {(x["doc"], x["article"]): x for x in map(json.loads, open(_gen_file(), encoding="utf-8"))}
     cov = bulk.schema_coverage(_items("901", "902", "903", "904"), have)
-    assert cov == {"c.p.": {"usable": 1, "unusable": 1, "without": 2}}
+    assert cov == {"c.p.": {"usable": 2, "without": 2}}
+    assert [(a["id"], a["action"]) for a in have[(DOC, "902")]["dropped"]] == [("E1", "dropped"), ("logic", "fixed")]
     summary = "\n".join(bulk.schema_summary(list(have.values()), cov))
     assert "c.p." in summary and "ungrounded" in summary and "300 prompt + 150 completion tokens" in summary
 
@@ -391,13 +392,14 @@ note: "rivisto in udienza"
     assert any(c.get("element") == "E3" and c.get("field") == "spiegazione" for c in corr)
     assert any(c.get("element") == "E4" and c["from"] is None for c in corr)
     assert line["origin"] == {"E1": "modello", "E2": "modello", "E3": "avvocato", "E4": "avvocato"}
-    assert line["text"] == PENAL and line["checks"]["logic_errors"] == ["E4: mai citato nella logic"]
-    assert any(w.startswith("controllo logic_errors") for w in warnings)        # warned, saved all the same
+    assert line["text"] == PENAL and line["checks"]["logic_incomplete"] == ["E4: mai citato nella logic"]
+    assert line["checks"]["logic_errors"] == []
+    assert any(w.startswith("controllo logic_incomplete") for w in warnings)    # warned, saved all the same
     saved = [json.loads(x) for x in open(_rev_file(), encoding="utf-8")]
     assert len(saved) == 1 and saved[0]["label"] == "901 c.p."
-    # a structural problem keeps the reviewed schema off the pipeline (the text path), never a crash
+    # v79.12.2: an element the logic never cites is reported, not structural -- the reviewed schema is read
     monkeypatch.setenv("ELEMENT_SCHEMAS", "true")
-    assert es.for_label("901 c.p.", PENAL) == (None, "unusable:logic_errors")
+    assert es.for_label("901 c.p.", PENAL)[1] == "reviewed"
     # a clean re-edit: from the reviewed line, the model's schema kept verbatim, corrections accumulated
     path = _yaml(tmp_path, """
 article: 901 c.p.
@@ -499,8 +501,7 @@ def test_b3_import_of_the_lawyer_notes_file_gives_its_six_articles(show):
 
 def test_b3_stale_coverage_and_quality(monkeypatch, tmp_path, show, capsys):
     from src.rag import element_schemas as es
-    bad = _schema()
-    bad["elementi"][0] = _el("E1", "cagiona ad alcuno una frattura", fonte="frattura")
+    bad = _schema(logic={"op": "all_of", "args": [{"ref": "E1"}, {"ref": "E2"}, {"ref": "E3"}, {"ref": "E9"}]})
     failed = es.make_line(_article("903"), "qwen38-27b", None, failed="HTTP 500", doc=DOC)
     _write(_gen_file(), [_gen_line("901"), _gen_line("902", schema=bad), failed])
     _write(os.environ["ARTICLE_CARDS_FILE"], [{"doc": DOC, "article": "901", "card": "x"},

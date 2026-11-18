@@ -6,7 +6,10 @@ here, so the generator and the tests share them) and reviewed by the lawyer (scr
 Files (read at call time, cached on (path, size, mtime), re-read when they change; a missing file is empty):
 - data/article_schemas.jsonl (ARTICLE_SCHEMAS_FILE): generated, one line per article, keyed (doc, article); the last
   line of a key wins. Each line carries the source_hash (article_cards.text_hash of the RAW article text) and the
-  checks run on it (check); a line with a blocking check is never used (usable).
+  checks run on it (check); a line with a blocking check is never used (usable). v79.12.2: only an invalid schema
+  and a logic tree with dangling refs block (BLOCKING); the element checks (ELEMENT_CHECKS: ungrounded on Italian
+  stems, fragments, branches without an alternative) fix or drop the offending element and keep the schema (repair,
+  applied when the line is read; "dropped" logs it); a logic node with no args is removed, an empty tree is no logic.
 - data/article_schemas_reviewed.jsonl (ARTICLE_SCHEMAS_REVIEWED_FILE): the lawyer's overlay, keyed by label («582
   c.p.»): a reviewed schema (reviewed: true) wins over the generated one while its source_hash is the article's; the
   lawyer's notes (note_di_inquadramento) are merged into whichever line is used. Never written by the generator.
@@ -50,9 +53,15 @@ CONNECTIVES = ("e", "o", None)
 SPECIAL_KINDS = ("presunzione", "aggravamento", "attenuazione", "equiparazione", "caso speciale", "scriminante",
                  "procedibilità", "other")
 CHECK_KEYS = ("invalid", "ungrounded", "fragments", "branches_without_alternative", "logic_errors",
-              "inferred_unexplained", "comma_unknown", "kind_other_unexplained")
-BLOCKING = ("failed", "cut", "invalid", "ungrounded", "fragments", "branches_without_alternative", "logic_errors")
-NON_BLOCKING = ("inferred_unexplained", "comma_unknown", "kind_other_unexplained")
+              "logic_incomplete", "fonte_unlocated", "inferred_unexplained", "comma_unknown", "kind_other_unexplained")
+# v79.12.2: only an invalid schema and a logic tree with dangling references (logic_errors) make a schema unusable;
+# the element checks (ELEMENT_CHECKS) fix or drop the offending element (repair) and keep the schema
+BLOCKING = ("failed", "cut", "invalid", "logic_errors")
+ELEMENT_CHECKS = ("ungrounded", "fragments", "branches_without_alternative")
+NON_BLOCKING = ELEMENT_CHECKS + ("logic_incomplete", "fonte_unlocated", "inferred_unexplained", "comma_unknown",
+                                 "kind_other_unexplained")
+BLOCKING_79_12_1 = ("failed", "cut", "invalid", "ungrounded", "fragments", "branches_without_alternative",
+                    "logic_errors")     # the rule before v79.12.2 -- schema_show --recheck's «before» on old lines
 STRUCTURAL = ("invalid", "logic_errors")        # what even a reviewed schema must pass to be read safely
 NOT_REQUISITE_KINDS = ("quantificazione", "competenza", "onere_della_prova")   # kept in the summary, never requisites
 DECOMPOSABLE_TIPI = ("sanction", "claim-conferring", "defence", "scriminante")
@@ -212,6 +221,128 @@ def content_words(text: Any) -> List[str]:
     return [w for w in re.findall(r"[^\W\d_]+", _fold(text)) if len(w) >= 3 and w not in _STOP]
 
 
+# v79.12.2: the function words grounding ignores (accent-folded) -- articles and prepositions (_STOP), pronouns,
+# determiners, conjunctions, auxiliaries and modals: an element is grounded on its content words only. Never a word
+# that carries the element's polarity or direction (non, senza, salvo, più/meno, molto/poco, prima/dopo/entro,
+# sopra/sotto): an element saying the opposite of the text («senza il consenso» against «con il consenso») stays
+# ungrounded, as under v79.12.1
+FUNCTION_WORDS = _STOP | frozenset((
+    "che", "chi", "cui", "nonche", "anche", "come", "quale", "quali", "quanto", "quanta", "quanti", "quante",
+    "questo", "questa", "questi", "queste", "quello", "quella", "quelli", "quelle", "quel", "quei", "quegli",
+    "suo", "sua", "suoi", "sue", "loro", "esso", "essa", "essi", "esse", "egli", "ella", "lui", "lei", "nei", "ogni",
+    "alcuno", "alcuna", "alcuni", "alcune", "taluno", "taluna", "altro", "altra", "altri", "altre", "tale", "tali",
+    "stesso", "stessa", "stessi", "stesse", "medesimo", "medesima", "medesimi", "medesime", "proprio", "propria",
+    "propri", "proprie", "ovvero", "oppure", "ossia", "ovverosia", "ancorche", "sebbene", "purche", "qualora",
+    "quando", "mentre", "dove", "ove", "verso", "presso", "contro", "mediante", "tutto", "tutta", "tutti", "tutte",
+    "sia", "siano", "essere", "sono", "era", "erano", "fosse", "fossero", "stato", "stata", "stati", "state",
+    "avere", "aver", "abbia", "abbiano", "avesse", "avessero", "avuto", "viene", "vengono", "venga", "vengano", "puo",
+    "possono", "possa", "possano", "deve", "devono", "debba", "debbano"))
+
+_ACCENTED = "àèéìíòóùú"
+_STEM_SUFFIXES = (re.compile(r"(?:are|ere|ire)$"),        # the infinitive: the verb stem
+                  re.compile(r"[aiu]t[aeio]$"),            # the participle -ato/-ito/-uto and its -a/-i/-e
+                  re.compile(r"[aeio]$"))                  # the inflection -e/-i/-o/-a
+_VERB_FORM = re.compile(r"(?:[aiu]t[aeio]|are|ere|ire)$")  # a participle or an infinitive
+
+
+def _accented(word: Any) -> bool:
+    return unicodedata.normalize("NFC", str(word or "").strip().lower())[-1:] in _ACCENTED
+
+
+def stem(word: Any, accented: bool = False) -> str:
+    """v79.12.2: an Italian word's stem for grounding -- accent-folded, lowercased; the infinitive's -are/-ere/-ire,
+    else a participle's -ato/-ito/-uto (-a/-i/-e), else the final -e/-i/-o/-a stripped, each only when 3 letters stay
+    («cagionata», «cagiona», «cagionare» -> «cagion»; «lesioni», «lesione» -> «lesion»). A word ending accented
+    («qualità», «città», or «qualita'» -- accented=True) keeps its last letter: no inflection there («autorità» is
+    no «autore»). A short verb's participle meets its verb by verb_base."""
+    w = _fold(word)
+    if accented or _accented(word):
+        return w
+    for suffix in _STEM_SUFFIXES:
+        m = suffix.search(w)
+        if m and m.start() >= 3:
+            return w[:m.start()]
+    return w
+
+
+def verb_base(word: Any, accented: bool = False) -> str:
+    """v79.12.2: a participle's or an infinitive's verb base, down to 2 letters («usata», «usato», «usare» -> «us»);
+    "" for any other word. It meets another verb form's base or a plain word less its final vowel («usa», «uso»)."""
+    w = _fold(word)
+    if accented or _accented(word):
+        return ""
+    m = _VERB_FORM.search(w)
+    return w[:m.start()] if m and m.start() >= 2 else ""
+
+
+def _bare(word: str, accented: bool) -> str:
+    """A word less its final -e/-i/-o/-a (2 letters at least), matched only against a verb_base («usa» -> «us»)."""
+    return word[:-1] if not accented and word[-1:] in "aeio" and len(word) >= 3 else ""
+
+
+def _tokens(text: Any) -> List[Tuple[str, bool]]:
+    """(the accent-folded word, whether it ends accented) of each word of 3 letters or more not in _STOP --
+    content_words with the accent kept in view: «qualità» and «qualita'» end accented, «dell'atto»'s «dell» not."""
+    s = unicodedata.normalize("NFC", str(text or "").lower())
+    out: List[Tuple[str, bool]] = []
+    for m in re.finditer(r"[^\W\d_]+", s):
+        w = _fold(m.group())
+        if len(w) < 3 or w in _STOP:
+            continue
+        after = s[m.end():m.end() + 2]
+        out.append((w, m.group()[-1] in _ACCENTED or (after[:1] in ("'", "’") and not after[1:2].isalpha())))
+    return out
+
+
+class _Lexicon:
+    """A text's words for grounding: every word as such; the content words (FUNCTION_WORDS never ground by stem:
+    «dove» is no «dovere») by stem, by verb base and less their final vowel."""
+
+    def __init__(self, tokens: Iterable[Tuple[str, bool]]):
+        tokens = list(tokens)
+        content = [(w, a) for w, a in tokens if w not in FUNCTION_WORDS]
+        self.words = {w for w, _ in tokens}
+        self.stems = {stem(w, a) for w, a in content}
+        self.verbs = {verb_base(w, a) for w, a in content} - {""}
+        self.bares = {_bare(w, a) for w, a in content} - {""}
+
+    def has(self, word: str, accented: bool = False) -> bool:
+        if word in self.words or stem(word, accented) in self.stems:
+            return True
+        vb = verb_base(word, accented)
+        if vb and (vb in self.verbs or vb in self.bares):
+            return True
+        bare = _bare(word, accented)
+        return bool(bare) and bare in self.verbs
+
+
+def lexicon(text: Any) -> _Lexicon:
+    """v79.12.2: the grounding lexicon of an article's text (accents read from the text itself)."""
+    return _Lexicon(_tokens(text))
+
+
+def grounding_words(text: Any) -> List[str]:
+    """v79.12.2: the words grounding compares -- content_words without FUNCTION_WORDS."""
+    return [w for w in content_words(text) if w not in FUNCTION_WORDS]
+
+
+def missing_words(passage: Any, text_words: Any) -> List[str]:
+    """v79.12.2: the passage's grounding words found in the text neither as such, nor by stem, nor a participle by its
+    verb (usata / usa); [] when every content word matches -- the element is explicit. text_words: the text (a
+    string, read by lexicon), its lexicon, or its content_words."""
+    if isinstance(text_words, _Lexicon):
+        lex = text_words
+    elif isinstance(text_words, str):
+        lex = lexicon(text_words)
+    else:
+        lex = _Lexicon((w, False) for w in text_words)
+    seen: Dict[str, bool] = {}
+    for w, a in _tokens(passage):
+        if w not in FUNCTION_WORDS and w not in seen:
+            seen[w] = a
+    return [w for w, a in seen.items() if not lex.has(w, a)]
+
+
 def _norm_passage(text: Any) -> str:
     return " ".join(str(text or "").replace("’", "'").split()).strip(" ,;:.")
 
@@ -323,7 +454,7 @@ def empty_checks() -> Dict[str, Any]:
 class _Text:
     def __init__(self, text: str):
         self.text = str(text or "")
-        self.words = set(content_words(self.text))
+        self.lex = lexicon(self.text)
         self.commi = commi(self.text)
 
     def span(self, passage: Any) -> Tuple[Optional[int], Optional[int]]:
@@ -344,63 +475,91 @@ def _refs(node: Any, out: List[str], depth: int = 0) -> None:
             _refs(node.get(key), out, depth + 1)
 
 
-def _logic(node: Any, ids: Sequence[str], where: str, errors: List[str], any_nodes: List[Dict[str, Any]],
+def _logic(node: Any, ids: Sequence[str], where: str, out: Dict[str, Any], any_nodes: List[Dict[str, Any]],
            depth: int = 0) -> None:
+    """v79.12.2: a ref to no element is a logic error (blocking: the tree dangles); a node that is no node or an
+    unknown op is invalid; a node with no args (all_of / any_of without args, not without arg) is logic_incomplete --
+    repair removes it, recursively, and an empty tree is no logic --, as are an any_of of one arg (read as its arg)
+    and a conditional without if or then."""
     if depth > 60:
-        errors.append(f"{where}: albero troppo profondo")
+        out["invalid"].append(f"{where}: albero troppo profondo")
         return
     if not isinstance(node, dict):
-        errors.append(f"{where}: nodo non valido")
+        out["invalid"].append(f"{where}: nodo non valido")
         return
     if "ref" in node and "op" not in node:
         if str(node.get("ref")) not in ids:
-            errors.append(f"{where}: ref {node.get('ref')} senza elemento")
+            out["logic_errors"].append(f"{where}: ref {node.get('ref')} senza elemento")
         return
     op = node.get("op")
     if op not in LOGIC_OPS:
-        errors.append(f"{where}: op sconosciuto {op!r}")
+        out["invalid"].append(f"{where}: op sconosciuto {op!r}")
         return
     if op in ("all_of", "any_of"):
         args = node.get("args")
-        if not isinstance(args, list) or not args:
-            errors.append(f"{where}: {op} senza args")
+        if args is not None and not isinstance(args, list):
+            out["invalid"].append(f"{where}: {op} con args non in lista")
+            return
+        if not args:
+            out["logic_incomplete"].append(f"{where}: {op} senza args")
             return
         if op == "any_of":
             if len(args) < 2:
-                errors.append(f"{where}: any_of con meno di due args")
-            any_nodes.append(node)
+                out["logic_incomplete"].append(f"{where}: any_of con meno di due args")
+            else:
+                any_nodes.append(node)
         for i, a in enumerate(args):
-            _logic(a, ids, f"{where}.{op}[{i}]", errors, any_nodes, depth + 1)
+            _logic(a, ids, f"{where}.{op}[{i}]", out, any_nodes, depth + 1)
     elif op == "not":
         if node.get("arg") is None:
-            errors.append(f"{where}: not senza arg")
+            out["logic_incomplete"].append(f"{where}: not senza arg")
             return
-        _logic(node["arg"], ids, f"{where}.not", errors, any_nodes, depth + 1)
+        _logic(node["arg"], ids, f"{where}.not", out, any_nodes, depth + 1)
     else:
         if node.get("if") is None or node.get("then") is None:
-            errors.append(f"{where}: conditional senza if/then")
+            out["logic_incomplete"].append(f"{where}: conditional senza if/then")
         for key in ("if", "then", "else"):
             if node.get(key) is not None:
-                _logic(node[key], ids, f"{where}.{key}", errors, any_nodes, depth + 1)
+                _logic(node[key], ids, f"{where}.{key}", out, any_nodes, depth + 1)
 
 
 def _grounded(name: str, item: Dict[str, Any], ctx: _Text, out: Dict[str, Any]) -> None:
-    """An explicit item: its content words in the text, its fonte.testo found there; an inferred one: a spiegazione
-    and a fonte.comma (never rejected for its wording)."""
+    """An explicit item: its content words found in the text, as such or by stem (missing_words: ungrounded -- repair
+    drops it); its fonte.testo found there (fonte_unlocated, reported: repair takes the item's own words when the text
+    holds them). An inferred one: a spiegazione and a fonte.comma (never rejected for its wording)."""
     fonte = item.get("fonte") if isinstance(item.get("fonte"), dict) else {}
     if item.get("grounding") == "explicit":
-        missing = [w for w in dict.fromkeys(content_words(item.get("testo"))) if w not in ctx.words]
+        missing = missing_words(item.get("testo"), ctx.lex)
         if missing:
             out["ungrounded"].append(f"{name}: parole assenti dal testo ({', '.join(missing[:6])})")
         if not str(fonte.get("testo") or "").strip():
-            out["ungrounded"].append(f"{name}: fonte.testo mancante")
+            out["fonte_unlocated"].append(f"{name}: fonte.testo mancante")
         elif ctx.span(fonte.get("testo"))[0] is None:
-            out["ungrounded"].append(f"{name}: fonte.testo non trovato nel testo")
+            out["fonte_unlocated"].append(f"{name}: fonte.testo non trovato nel testo")
     elif item.get("grounding") == "inferred":
         if not str(item.get("spiegazione") or "").strip():
             out["inferred_unexplained"].append(f"{name}: spiegazione mancante")
         if not norm_comma(fonte.get("comma")):
             out["inferred_unexplained"].append(f"{name}: fonte.comma mancante")
+
+
+def _fragment_why(testo: Any) -> str:
+    """v79.10.4 (D4): v79.9's fragment kinds (rule_quote.fragment_kind, wider=False) -- what check() reports and
+    repair drops; requisites() still drops D4's wider ones alone."""
+    if not isinstance(testo, str) or not testo.strip():
+        return ""
+    from .rule_quote import FRAGMENT_WHY, fragment_kind
+    kind = fragment_kind(testo, wider=False)
+    return FRAGMENT_WHY[kind] if kind else ""
+
+
+def _branches_bad(el: Dict[str, Any]) -> bool:
+    """Two or more branches and no «o» in the element's passage (its fonte.testo, else its testo)."""
+    branches = el.get("branches")
+    if not isinstance(branches, list) or len([b for b in branches if str(b or "").strip()]) < 2:
+        return False
+    fonte = el.get("fonte") if isinstance(el.get("fonte"), dict) else {}
+    return not has_alternative(fonte.get("testo") or el.get("testo"))
 
 
 def _comma_known(name: str, value: Any, ctx: _Text, out: Dict[str, Any]) -> None:
@@ -501,29 +660,23 @@ def _check_one(schema: Dict[str, Any], ctx: _Text, out: Dict[str, Any], prefix: 
             out["invalid"].append(f"{name}: fonte non è un oggetto")
         _comma_known(name, el.get("comma"), ctx, out)
         _grounded(name, el, ctx, out)
-        if isinstance(el.get("testo"), str) and el["testo"].strip():
-            # v79.10.4 (D4): v79.9's fragment kinds block a schema; D4's do not -- requisites() drops such an element
-            # alone, the schema stands
-            from .rule_quote import FRAGMENT_WHY, fragment_kind
-            kind = fragment_kind(el["testo"], wider=False)
-            if kind:
-                out["fragments"].append(f"{name}: {FRAGMENT_WHY[kind]}")
-        if len([b for b in branches or [] if str(b).strip()]) >= 2:
-            fonte = el.get("fonte") if isinstance(el.get("fonte"), dict) else {}
-            if not has_alternative(fonte.get("testo") or el.get("testo")):
-                out["branches_without_alternative"].append(f"{name}: alternative senza «o» nel testo")
+        why = _fragment_why(el.get("testo"))        # v79.12.2: reported; repair drops the element, the schema stands
+        if why:
+            out["fragments"].append(f"{name}: {why}")
+        if branches and _branches_bad(el):
+            out["branches_without_alternative"].append(f"{name}: alternative senza «o» nel testo")
     logic = schema.get("logic")
     any_nodes: List[Dict[str, Any]] = []
     if logic is None:
         if ids:
-            out["logic_errors"].append(f"{p}logic mancante")
+            out["logic_incomplete"].append(f"{p}logic mancante")
     else:
-        _logic(logic, ids, f"{p}logic", out["logic_errors"], any_nodes)
+        _logic(logic, ids, f"{p}logic", out, any_nodes)
         referenced: List[str] = []
         _refs(logic, referenced)
         for eid in ids:
             if eid not in referenced:
-                out["logic_errors"].append(f"{p}{eid}: mai citato nella logic")
+                out["logic_incomplete"].append(f"{p}{eid}: mai citato nella logic")
     for node in any_nodes:
         if not has_alternative(_any_span(node, by_id, ctx)):
             refs: List[str] = []
@@ -550,7 +703,9 @@ def _check_one(schema: Dict[str, Any], ctx: _Text, out: Dict[str, Any], prefix: 
 
 def check(schema: Any, text: str) -> Dict[str, Any]:
     """v79.11 (A): the checks of a schema against its article's text (spec §4), over the schema and every
-    commi_speciali sub-schema; each problem a short string naming the id. failed/cut are the generator's."""
+    commi_speciali sub-schema; each problem a short string naming the id. failed/cut are the generator's. v79.12.2:
+    BLOCKING (invalid, logic_errors = dangling refs) make it unusable; ELEMENT_CHECKS are what repair() fixes or
+    drops; the rest is reported."""
     out = empty_checks()
     if not isinstance(schema, dict):
         out["invalid"].append("schema non è un oggetto")
@@ -575,6 +730,152 @@ def check(schema: Any, text: str) -> Dict[str, Any]:
             continue
         _check_one(cs["schema"], ctx, out, f"{name}/", False)
     return out
+
+
+# --- the repair (v79.12.2) --------------------------------------------------------------------------------------------
+
+def prune_logic(node: Any, dropped: Iterable[str] = (), depth: int = 0) -> Any:
+    """v79.12.2: the logic tree without the refs to the dropped ids and without the nodes left with no args, removed
+    recursively (an all_of / any_of with no args, a not with no arg, a conditional with no if, then or else left -- a
+    pruned branch's key left out, a live else kept with its node); an any_of
+    of one arg read as its arg. None when nothing is left -- no logic, not an error. A node that is no node, an unknown
+    op or a dangling ref is left as it is (check() says so)."""
+    gone = dropped if isinstance(dropped, (set, frozenset)) else set(dropped)
+    if depth > 60 or not isinstance(node, dict):
+        return node
+    if "ref" in node and "op" not in node:
+        return None if str(node.get("ref")) in gone else node
+    op = node.get("op")
+    if op in ("all_of", "any_of"):
+        args = node.get("args")
+        if args is not None and not isinstance(args, list):
+            return node
+        kept = [x for x in (prune_logic(a, gone, depth + 1) for a in args or []) if x is not None]
+        if not kept:
+            return None
+        if op == "any_of" and len(kept) == 1:
+            return kept[0]
+        return {**node, "args": kept}
+    if op == "not":
+        arg = prune_logic(node.get("arg"), gone, depth + 1) if node.get("arg") is not None else None
+        return None if arg is None else {**node, "arg": arg}
+    if op == "conditional":
+        out = dict(node)
+        for key in ("if", "then", "else"):
+            if node.get(key) is not None:
+                out[key] = prune_logic(node[key], gone, depth + 1)
+            if out.get(key) is None:
+                out.pop(key, None)              # a branch pruned away is left out, never kept as null
+        if not any(k in out for k in ("if", "then", "else")):
+            return None                         # no branch left: the node has no args
+        return out                              # a live branch kept (a missing if/then: logic_incomplete)
+    return node
+
+
+def _any_to_all(node: Any, by_id: Dict[str, Dict[str, Any]], ctx: _Text, scope: str,
+                actions: List[Dict[str, Any]], depth: int = 0) -> Any:
+    """An any_of whose passage holds no alternative (has_alternative over _any_span) read as an all_of, logged."""
+    if depth > 60 or not isinstance(node, dict) or "op" not in node:
+        return node
+    out = dict(node)
+    if isinstance(node.get("args"), list):
+        out["args"] = [_any_to_all(a, by_id, ctx, scope, actions, depth + 1) for a in node["args"]]
+    for key in ("arg", "if", "then", "else"):
+        if isinstance(node.get(key), dict):
+            out[key] = _any_to_all(node[key], by_id, ctx, scope, actions, depth + 1)
+    if out.get("op") == "any_of" and len(out.get("args") or []) >= 2 and not has_alternative(_any_span(out, by_id, ctx)):
+        refs: List[str] = []
+        _refs(out, refs)
+        out["op"] = "all_of"
+        actions.append({"scope": scope, "id": f"any_of({', '.join(refs)})", "check": "branches_without_alternative",
+                        "action": "fixed", "why": "nessuna alternativa nel testo: letto come all_of", "testo": "",
+                        "comma": scope})
+    return out
+
+
+def _repair_one(sc: Dict[str, Any], ctx: _Text, scope: str, actions: List[Dict[str, Any]]) -> None:
+    def act(item: Dict[str, Any], eid: str, check_key: str, action: str, why: str) -> None:
+        actions.append({"scope": scope, "id": eid, "check": check_key, "action": action, "why": why,
+                        "testo": " ".join(str(item.get("testo") or "").split()),
+                        "comma": norm_comma(item.get("comma")) or scope or "1"})
+    elementi = sc.get("elementi")
+    dropped: set = set()
+    if isinstance(elementi, list):
+        kept = []
+        for i, el in enumerate(elementi):
+            if not isinstance(el, dict):
+                kept.append(el)                 # invalid: check() says so, nothing to repair
+                continue
+            eid = str(el.get("id") or "").strip() or f"elementi[{i}]"
+            why = _fragment_why(el.get("testo"))
+            if why:
+                act(el, eid, "fragments", "dropped", why)
+                dropped.add(eid)
+                continue
+            if el.get("grounding") == "explicit":
+                missing = missing_words(el.get("testo"), ctx.lex)
+                if missing:
+                    act(el, eid, "ungrounded", "dropped", f"parole assenti dal testo ({', '.join(missing[:6])})")
+                    dropped.add(eid)
+                    continue
+                fonte = el.get("fonte")
+                if fonte is None or isinstance(fonte, dict):
+                    passage = str((fonte or {}).get("testo") or "")
+                    if not passage.strip() or ctx.span(passage)[0] is None:
+                        s, e = ctx.span(el.get("testo"))
+                        if s is not None:
+                            el["fonte"] = {**(fonte or {}), "comma": (fonte or {}).get("comma") or el.get("comma"),
+                                           "testo": " ".join(str(el.get("testo")).split()), "start": s, "end": e}
+                            act(el, eid, "fonte_unlocated", "fixed", "fonte.testo preso dal testo dell'elemento")
+            if isinstance(el.get("branches"), list) and _branches_bad(el):
+                el["branches"] = []
+                if el.get("connective") == "o":
+                    el["connective"] = None
+                act(el, eid, "branches_without_alternative", "fixed", "alternative tolte: nessuna «o» nel testo")
+            kept.append(el)
+        sc["elementi"] = kept
+    eccezioni = sc.get("eccezioni")
+    if isinstance(eccezioni, list):
+        kept_ex = []
+        for i, ex in enumerate(eccezioni):
+            if isinstance(ex, dict) and ex.get("grounding") == "explicit":
+                missing = missing_words(ex.get("testo"), ctx.lex)
+                if missing:
+                    act(ex, f"eccezione {i + 1}", "ungrounded", "dropped",
+                        f"parole assenti dal testo ({', '.join(missing[:6])})")
+                    continue
+            kept_ex.append(ex)
+        sc["eccezioni"] = kept_ex
+    logic = sc.get("logic")
+    if logic is not None:
+        pruned = prune_logic(logic, dropped)
+        if pruned != logic:
+            actions.append({"scope": scope, "id": "logic", "check": "logic_incomplete", "action": "fixed",
+                            "why": "albero vuoto: nessuna logica" if pruned is None else
+                            "nodi vuoti o riferimenti a elementi tolti rimossi", "testo": "", "comma": scope})
+        by_id = {str(e.get("id")): e for e in sc.get("elementi") or [] if isinstance(e, dict)}
+        sc["logic"] = _any_to_all(pruned, by_id, ctx, scope, actions)
+
+
+def repair(schema: Any, text: str) -> Tuple[Any, List[Dict[str, Any]]]:
+    """v79.12.2: (a copy of the schema with each offending element fixed or dropped, what was done) -- over the schema
+    and every commi_speciali sub-schema: a fragment (fragments) and an explicit element or eccezione whose content words
+    are not all in the text by stem (ungrounded) dropped; branches with no «o» in the passage cleared, an any_of over no
+    alternative read as an all_of (branches_without_alternative); an explicit element's unlocated fonte.testo replaced
+    by its own words when the text holds them (fonte_unlocated); the logic pruned of the dropped elements' refs and of
+    the nodes left empty (prune_logic). Each action {"scope", "id", "check", "action": "dropped" | "fixed", "why",
+    "testo", "comma"}. The schema is kept; only invalid and a dangling ref make it unusable. Never the reviewed
+    schemas' (the lawyer's word)."""
+    if not isinstance(schema, dict):
+        return schema, []
+    out = json.loads(json.dumps(schema, ensure_ascii=False))
+    ctx = _Text(text)
+    actions: List[Dict[str, Any]] = []
+    _repair_one(out, ctx, "", actions)
+    for cs in out.get("commi_speciali") if isinstance(out.get("commi_speciali"), list) else []:
+        if isinstance(cs, dict) and isinstance(cs.get("schema"), dict):
+            _repair_one(cs["schema"], ctx, norm_comma(cs.get("comma")) or "?", actions)
+    return out, actions
 
 
 def raised(checks: Optional[Dict[str, Any]], names: Sequence[str] = BLOCKING) -> List[str]:
@@ -624,17 +925,59 @@ def ground(schema: Any, text: str) -> Any:
 # --- the lookup -------------------------------------------------------------------------------------------------------
 
 _FRESH: Dict[Tuple[str, str], Dict[str, Any]] = {}
+_REPAIRED: Dict[Tuple[str, str], Tuple[Any, List[Dict[str, Any]]]] = {}
+
+
+def _memo_key(schema: Any, text: str) -> Tuple[str, str]:
+    return (hashlib.sha1(json.dumps(schema, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
+            text_hash(text))
 
 
 def _fresh(schema: Dict[str, Any], text: str) -> Dict[str, Any]:
-    """check() re-run on the line as read (memoised): a stricter check than the one the line was made with applies."""
-    key = (hashlib.sha1(json.dumps(schema, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest(),
-           text_hash(text))
+    """check() re-run on the line as read (memoised): the checks of today's rules apply, whatever the line was made
+    with -- a stricter one blocks it, a laxer one (v79.12.2's element checks) no longer does."""
+    key = _memo_key(schema, text)
     if key not in _FRESH:
         if len(_FRESH) > 4096:
             _FRESH.clear()
         _FRESH[key] = check(schema, text)
     return _FRESH[key]
+
+
+TEXT_FREE = ("invalid", "logic_errors", "logic_incomplete")     # the checks that read no article text
+
+
+def current_checks(schema: Any, stored: Optional[Dict[str, Any]], text: Optional[str] = None) -> Dict[str, Any]:
+    """v79.12.2: a line's checks by today's rules -- re-run on its text when there is one; without it, the recorded
+    ones with the checks that need no text (TEXT_FREE) re-run, so an older line's «mai citato» or «any_of con meno di
+    due args», once filed under logic_errors, no longer blocks it. failed/cut always the generator's, as recorded."""
+    stored = stored if isinstance(stored, dict) else {}
+    if not isinstance(schema, dict):
+        out = {**empty_checks(), **stored}
+    elif str(text or "").strip():
+        out = dict(_fresh(schema, str(text)))
+    else:
+        out = {**empty_checks(), **stored}
+        fresh = _fresh(schema, "")
+        for k in TEXT_FREE:
+            out[k] = list(fresh[k])
+    out["failed"], out["cut"] = str(stored.get("failed") or ""), bool(stored.get("cut"))
+    return out
+
+
+def _repaired(schema: Dict[str, Any], text: str, label: str = "") -> Tuple[Any, List[Dict[str, Any]]]:
+    """repair() memoised; what it dropped or fixed logged once."""
+    key = _memo_key(schema, text)
+    if key not in _REPAIRED:
+        if len(_REPAIRED) > 4096:
+            _REPAIRED.clear()
+        _REPAIRED[key] = repair(schema, text)
+        actions = _REPAIRED[key][1]
+        if actions:
+            logger.info("element schemas: %s -- %s", label or "?", "; ".join(
+                f"{a['check']} {a['action']} {('co' + a['scope'] + '.') if a['scope'] else ''}{a['id']}"
+                for a in actions))
+    return _REPAIRED[key]
 
 
 def _notes(*lines: Optional[Dict[str, Any]]) -> List[Any]:
@@ -663,8 +1006,7 @@ def _pick(label: str, gen: Optional[Dict[str, Any]], text: Optional[str]) -> Tup
         base = h if known else ((gen or {}).get("current_source_hash") or  # v79.11: the generator records the text
                                 (gen or {}).get("source_hash", overlay.get("source_hash")))  # now beside a reviewed label
         if base and overlay.get("source_hash") == base:
-            bad = raised(_fresh(overlay["schema"], text), STRUCTURAL) if known else \
-                raised(overlay.get("checks"), STRUCTURAL)
+            bad = raised(current_checks(overlay["schema"], overlay.get("checks"), text), STRUCTURAL)
             if bad:
                 return None, f"unusable:{bad[0]}"
             return {**overlay, "source": "reviewed", "note_di_inquadramento": _notes(overlay)}, "reviewed"
@@ -674,11 +1016,16 @@ def _pick(label: str, gen: Optional[Dict[str, Any]], text: Optional[str]) -> Tup
     if known and gen.get("source_hash") != h:
         return None, "hash_mismatch"
     bad = blocking(gen)
-    if not bad and known:
-        bad = raised(_fresh(gen["schema"], text))
+    if bad not in (["schema"], ["schema_version"]):
+        # v79.12.2: the generator's own (failed, cut) as recorded; the rest re-checked with today's rules -- on the
+        # text (the row's, else the line's own), without one the checks that need no text (current_checks)
+        bad = raised(current_checks(gen["schema"], gen.get("checks"), text if known else gen.get("text")))
     if bad:
         return None, f"unusable:{bad[0]}"
-    return {**gen, "source": "schema", "reviewed": False, "note_di_inquadramento": _notes(gen, overlay)}, "schema"
+    base = text if known else str(gen.get("text") or "")
+    schema, dropped = _repaired(gen["schema"], base, label) if base.strip() else (gen["schema"], [])
+    return {**gen, "schema": schema, "dropped": dropped, "base_comma": base_comma(gen["schema"]), "source": "schema",
+            "reviewed": False, "note_di_inquadramento": _notes(gen, overlay)}, "schema"
 
 
 def for_row(row: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], str]:
@@ -715,6 +1062,14 @@ def _int_comma(value: Any) -> int:
     return int(k) if k.isdigit() else 1
 
 
+def base_comma(schema: Any) -> str:
+    """The article's base comma: the comma of the top schema's first element ("1" when none)."""
+    elementi = schema.get("elementi") if isinstance(schema, dict) else None
+    if not isinstance(elementi, list):
+        return "1"
+    return next((norm_comma(e.get("comma")) for e in elementi if isinstance(e, dict)), "") or "1"
+
+
 def _schemas(line: Dict[str, Any]) -> List[Tuple[Dict[str, Any], str, str]]:
     """[(schema, special kind, scope)] -- the top schema ("" kind) and every commi_speciali sub-schema."""
     schema = line.get("schema") if isinstance(line, dict) else None
@@ -740,8 +1095,19 @@ def requisites(row: Dict[str, Any], line: Dict[str, Any], analysis: Optional[Dic
     parts = _schemas(line)
     if not parts:
         return []
-    top = parts[0][0]
-    first = next((norm_comma(e.get("comma")) for e in top.get("elementi") or [] if isinstance(e, dict)), "") or "1"
+    for a in line.get("dropped") or []:           # v79.12.2: what repair dropped, logged as the fragments always were
+        if not isinstance(a, dict) or a.get("action") != "dropped":
+            continue
+        if a.get("check") == "fragments":
+            k = _int_comma(a.get("comma"))
+            if fragments is not None:
+                fragments.append({"comma": str(k), "text": str(a.get("testo") or "")[:120], "why": a.get("why") or ""})
+            _log_fragment(row, str(a.get("testo") or ""), str(a.get("why") or ""))
+        else:
+            _log_dropped(row, a)
+    # v79.12.2: the base comma as the model's schema had it -- a repair that drops the top's comma-1 elements never
+    # makes a special comma (an aggravamento) the base and its elements plain requisites
+    first = norm_comma(line.get("base_comma")) or base_comma(parts[0][0])
     special_of = {scope: kind for _, kind, scope in parts[1:] if scope and scope != first}
     out: List[Dict[str, Any]] = []
     seen = set()
@@ -782,6 +1148,17 @@ def requisites(row: Dict[str, Any], line: Dict[str, Any], analysis: Optional[Dic
     return out
 
 
+def _log_dropped(row: Dict[str, Any], action: Dict[str, Any]) -> None:
+    """v79.12.2: an element the repair dropped (ungrounded), logged; never fails the decomposition."""
+    try:
+        from .interactive_flow import _log
+        _log("schema_element_dropped", {"article": " ".join(str(x) for x in (row or {}).get("_article") or ()),
+                                         "id": action.get("id"), "check": action.get("check"),
+                                         "text": str(action.get("testo") or "")[:120], "why": action.get("why")})
+    except Exception:           # noqa: BLE001
+        pass
+
+
 def summary(line: Dict[str, Any]) -> Dict[str, Any]:
     """v79.11 (A): what the record keeps of its schema (rec["schema"])."""
     schema = (line or {}).get("schema") or {}
@@ -801,7 +1178,11 @@ def summary(line: Dict[str, Any]) -> Dict[str, Any]:
             "note_di_inquadramento": list((line or {}).get("note_di_inquadramento") or []),
             "commi_speciali": [{"comma": norm_comma(cs.get("comma")), "kind": cs.get("kind")}
                                for cs in schema.get("commi_speciali") or [] if isinstance(cs, dict)],
-            "altri_elementi": others}
+            "altri_elementi": others,
+            **({"dropped": [{"id": f"co{a.get('scope')}.{a.get('id')}" if a.get("scope") else a.get("id"),
+                             "check": a.get("check"), "action": a.get("action")}
+                            for a in (line or {}).get("dropped") or [] if isinstance(a, dict)]}
+               if (line or {}).get("dropped") else {})}
 
 
 def kind_rule(kind: Any) -> str:
@@ -1229,14 +1610,16 @@ def make_line(article: Dict[str, Any], endpoint_model: str, schema: Optional[Dic
               cut: bool = False, seconds: float = 0.0, usage: Optional[Dict[str, Any]] = None,
               doc: Optional[str] = None) -> Dict[str, Any]:
     """v79.11 (A): the generated file's line (spec §2) for one article: its keys and hashes, the schema with the
-    fonte offsets computed by the code (ground), the checks (check; failed/cut the generator's), and "text" (the raw
-    article text, for the review tool)."""
+    fonte offsets computed by the code (ground) -- the model's, kept --, the checks (check; failed/cut the
+    generator's), "dropped" (v79.12.2: what repair drops or fixes when the line is read) and "text" (the raw article
+    text, for the review tool)."""
     text = str(article.get("text") or "")
     number = str(article.get("number") or article.get("article") or "").strip()
     code = str(article.get("code") or "")
     source = text_hash(text)
     grounded = ground(schema, text) if isinstance(schema, dict) else None
     checks = check(grounded, text) if isinstance(grounded, dict) else empty_checks()
+    dropped = repair(grounded, text)[1] if isinstance(grounded, dict) else []
     checks["failed"] = str(failed or "") or ("" if isinstance(grounded, dict) else "nessuno schema")
     checks["cut"] = bool(cut)
     usage = usage or {}
@@ -1249,4 +1632,4 @@ def make_line(article: Dict[str, Any], endpoint_model: str, schema: Optional[Dic
             "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "seconds": round(float(seconds or 0), 1),
             "usage": {"prompt_tokens": int(usage.get("prompt_tokens") or 0),
                       "completion_tokens": int(usage.get("completion_tokens") or 0)},
-            "schema": grounded, "checks": checks, "text": text}
+            "schema": grounded, "checks": checks, "dropped": dropped, "text": text}
