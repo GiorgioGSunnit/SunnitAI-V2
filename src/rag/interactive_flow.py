@@ -5934,6 +5934,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             method_ctx, method_plan, method_clients = None, {}, None
             _log("lawyer_method_refused", {"why": "no_action" if refusal.get("no_action") else "placeholder",
                                            "tesi": refusal["tesi"]})
+        if method_ctx is not None:      # v79.10.7 (review): the plan's and §8's riti the method's (graded)
+            plan, rites, analysis_p = _isolated("method_rites", lambda: method_rites(
+                plan, posture, rites, method_ctx, analysis_p), None) or (plan, rites, analysis_p)
     mark("jobs")
     analysis_p = {**analysis_p, CASE_KEY: analysis.get(CASE_KEY) or case}
     context = ptw.statement_context(analysis_p)
@@ -6260,8 +6263,9 @@ def charge_rites(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[
                  ) -> List[Dict[str, Any]]:
     """v79.10.3 (C1): the riti's statuses for the case's charge (lawyer_method.charge_rites: the records' main threat,
     else the intake's charge; the pena from the procedural store) -- [] outside a penal matter; logged. v79.10.7: the
-    attenuanti the case's circumstance candidates hold, ungraded here (each «da provare»: the method grades them and
-    computes its own statuses) -- the patteggiamento's best case."""
+    case's circumstance candidates, ungraded here -- (review) so none is held (held_attenuanti needs a fact of the
+    case): the patteggiamento's best case on the minimum alone; the method grades them and its statuses replace these
+    (method_rites)."""
     from . import lawyer_method
     records = state.get("records") or {}
     circ = lawyer_method.circumstance_records(lawyer_method.circumstance_candidates(case_text(state), records,
@@ -6272,6 +6276,24 @@ def charge_rites(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[
                               "attenuanti": out[0].get("attenuanti"),
                               "rites": {x["id"]: [x["status"], x["why"]] for x in out}})
     return out
+
+
+def method_rites(plan: Dict[str, Any], posture: Dict[str, Any], rites: Sequence[Dict[str, Any]],
+                 method_ctx: Optional[Dict[str, Any]], analysis_p: Dict[str, Any]
+                 ) -> Tuple[Dict[str, Any], List[Dict[str, Any]], Dict[str, Any]]:
+    """v79.10.7 (review): the riti statuses of the method when it ran (prepare's charge_rites, with the circumstances it
+    graded: the patteggiamento's best case on the attenuanti the record holds) replace the flow's earlier ones
+    (charge_rites, before any grading) -- in the plan's subordinate lines (posture.reapply_rites) and §8
+    (analysis_p["rites"]), so the plan, §8 and the sweep say the same of each rito. (plan, rites, analysis_p), unchanged when the method computed none
+    or the same lines; logged."""
+    from . import posture as posture_mod
+    new = [dict(x) for x in (method_ctx or {}).get("rites") or []]
+    if not new or [x.get("line") for x in new] == [x.get("line") for x in rites or []]:
+        return plan, list(rites or []), analysis_p
+    _log("method_rites", {"before": {x.get("id"): x.get("status") for x in rites or []},
+                          "after": {x.get("id"): x.get("status") for x in new},
+                          "attenuanti": new[0].get("attenuanti")})
+    return posture_mod.reapply_rites(plan, posture, rites, new), new, {**analysis_p, "rites": new}
 
 
 def rites_checked(state: Dict[str, Any], draft: str, rites: Sequence[Dict[str, Any]], method_ctx=None,

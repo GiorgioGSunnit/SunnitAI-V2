@@ -47,12 +47,14 @@ def _charge(label, rubrica="Reato contestato"):
                                     "status": PROVATO}]}}
 
 
-def _attenuante(label, status):
-    """A synthetic circumstance record (circumstance_records' shape) with every element at the status given."""
+def _attenuante(label, status, sup=("S1",)):
+    """A synthetic circumstance record (circumstance_records' shape) with every element at the status given, each
+    supported by the sentence ids given (a fact of the case: the record holds it); sup=() an element no fact touches."""
     table = {c["label"]: c for c in M.data()["circumstances"]}
     rec = M.circumstance_records([table[label]])[label]
     for r in rec["requisites"]:
         r["status"] = status
+        r["supporting"] = list(sup)
     return {label: rec}
 
 
@@ -75,7 +77,8 @@ def test_584_stays_precluded_without_an_attenuante_held():
 
 def test_an_attenuante_held_da_provare_turns_the_old_precluso_into_possibile():
     """8-20 years: the old rule (the minimum less a third, attenuanti ignored) gives 5 years and 4 months, precluded; the
-    62-bis held «da provare» (ungraded) brings the best case to 8 x 2/3 x 2/3 = 3 years, 6 months and 20 days."""
+    62-bis held «da provare» (a fact of the case supports it) brings the best case to 8 x 2/3 x 2/3 = 3 years, 6
+    months and 20 days."""
     rows = [_row("999", "reclusione da otto a venti anni (co. 1)")]
     recs = _charge("999 c.p.")
     assert _by_id(M.charge_rites(recs, rows, IMPUTATO))["patteggiamento"]["status"] == M.PRECLUDED
@@ -157,16 +160,69 @@ def test_possibile_is_admitted_for_the_sweep_and_said_in_its_own_words():
     assert pat and all("possibile, dipende dalla pena in concreto" in x for x in pat)
 
 
-def test_the_flows_own_statuses_count_the_imputatos_ungraded_generiche():
-    """The flow's statuses (before the method grades the circumstances): the imputato's 62-bis candidate, ungraded,
-    is held «da provare»."""
-    state = {"text": "Tizio è imputato del reato contestato. Il PM contesta il fatto.", "request": "",
-             "records": _charge("999 c.p.")}
-    out = _by_id(flow.charge_rites(state, IMPUTATO, [_row("999", "reclusione da otto a venti anni (co. 1)")]))
-    assert out["patteggiamento"]["status"] == M.POSSIBLE and out["patteggiamento"]["attenuanti"] == ["62-bis c.p."]
-    offesa = _posture("persona_offesa", "pre_filing")
-    assert flow.charge_rites(state, offesa, [_row("999", "reclusione da otto a venti anni (co. 1)")])[0][
-        "attenuanti"] == []
+CASE_584 = "Tizio è imputato di omicidio preterintenzionale: ha spinto la vittima, che è caduta ed è morta."
+ROW_584 = _row("584", "reclusione da dieci a diciotto anni (co. 1)")
+
+
+def test_584_stays_precluded_on_the_imputatos_real_paths():
+    """(review) The imputato's posture always lists the 62-bis as a candidate: ungraded, or graded with no fact of the
+    case for it, the record does not hold it -- 584 c.p. precluded on the method's path and on the flow's."""
+    recs = _charge("584 c.p.", "Omicidio preterintenzionale")
+    circ = M.circumstance_records(M.circumstance_candidates(CASE_584, recs, IMPUTATO))
+    assert list(circ) == ["62-bis c.p."] and M.held_attenuanti(circ) == []
+    pat = _by_id(M.charge_rites(recs, [ROW_584], IMPUTATO, circumstances=circ))["patteggiamento"]
+    assert pat["status"] == M.PRECLUDED and "6 anni e 8 mesi" in pat["line"]
+    state = {"text": CASE_584, "request": "", "records": recs}
+    flow_pat = _by_id(flow.charge_rites(state, IMPUTATO, [ROW_584]))["patteggiamento"]
+    assert flow_pat["status"] == M.PRECLUDED and flow_pat["attenuanti"] == []
+    plan = posture.apply_plan({"subordinate": []}, IMPUTATO, flow.charge_rites(state, IMPUTATO, [ROW_584]))
+    assert not [x for x in plan["subordinate"] if M.rite_of(x) == "patteggiamento"]
+    # a fact of the case for the generiche (graded «da provare» on it): the record holds it, the best case decides
+    held = _attenuante("62-bis c.p.", DA_PROVARE)
+    got = _by_id(M.charge_rites(recs, [ROW_584], IMPUTATO, circumstances=held))
+    assert got["patteggiamento"]["status"] == M.POSSIBLE
+    # graded with no supporting sentence: still not held
+    bare = _attenuante("62-bis c.p.", DA_PROVARE, sup=())
+    assert M.held_attenuanti(bare) == []
+    bare["62-bis c.p."]["requisites"][0]["link"] = {"supporting": ["S2"], "contradicting": []}
+    assert M.held_attenuanti(bare) == ["62-bis c.p."]
+
+
+def test_the_plan_and_section_8_take_the_methods_graded_statuses():
+    """(review) The plan's subordinate lines and §8 (computed before the method grades the circumstances) are replaced
+    by the method's statuses -- either way: the method holding the generiche, or excluding them."""
+    rows = [_row("999", "reclusione da otto a venti anni (co. 1)")]
+    recs = _charge("999 c.p.")
+    flow_rites = M.charge_rites(recs, rows, IMPUTATO)                                  # nothing held: precluded
+    held = M.charge_rites(recs, rows, IMPUTATO, circumstances=_attenuante("62-bis c.p.", DA_PROVARE))
+    plan = posture.apply_plan({"subordinate": ["Linea del modello."]}, IMPUTATO, flow_rites)
+    assert not [x for x in plan["subordinate"] if M.rite_of(x) == "patteggiamento"]
+    new_plan, rites, analysis_p = flow.method_rites(plan, IMPUTATO, flow_rites, {"rites": held}, {"rites": flow_rites})
+    pat = [x for x in new_plan["subordinate"] if M.rite_of(x) == "patteggiamento"]
+    assert pat and all("possibile, dipende dalla pena in concreto" in x for x in pat)
+    assert new_plan["subordinate"][0] == "Linea del modello." and rites == held and analysis_p["rites"] == held
+    # the reverse: the plan said «possibile», the method graded the 62-bis «non risulta» -- the line goes
+    excluded = M.charge_rites(recs, rows, IMPUTATO, circumstances=_attenuante("62-bis c.p.", NON_RISULTA))
+    back, _, back_p = flow.method_rites(new_plan, IMPUTATO, held, {"rites": excluded}, analysis_p)
+    assert not [x for x in back["subordinate"] if M.rite_of(x) == "patteggiamento"]
+    assert _by_id(back_p["rites"])["patteggiamento"]["status"] == M.PRECLUDED
+    # the method computed none (not the imputato's answer) or the same: unchanged
+    assert flow.method_rites(plan, IMPUTATO, flow_rites, {"rites": []}, {"rites": flow_rites})[0] is plan
+
+
+def test_a_rito_only_possibile_is_never_written_as_simply_admitted():
+    """(review) «possibile, dipende dalla pena in concreto» is never «ammesso»: a sentence saying so without a condition
+    is dropped (and counted); one with the condition, or a plain offer, is kept."""
+    statuses = M.rite_statuses("reclusione da otto a venti anni (co. 1)", "999", ["62-bis c.p."])
+    assert _by_id(statuses)["patteggiamento"]["status"] == M.POSSIBLE
+    bare = "In via subordinata, il patteggiamento (art. 444 c.p.p.) è ammesso e consente di definire il processo."
+    assert M.rites_offered_unavailable(bare, statuses) and M.rites_out(bare + " Altro.", statuses) == "Altro."
+    for kept in ("Il patteggiamento è ammesso se la pena in concreto, con le generiche, resta entro cinque anni.",
+                 "Si potrà chiedere il patteggiamento.",
+                 _by_id(statuses)["patteggiamento"]["line"]):
+        assert M.rites_offered_unavailable(kept, statuses) == [] and M.rites_out(kept, statuses) == kept
+    # a rito simply admitted (the abbreviato here): «ammesso» stays
+    assert M.rites_out("Il giudizio abbreviato è ammesso.", statuses) == "Il giudizio abbreviato è ammesso."
 
 
 # --- 2. abbreviato: art. 438, co. 1-bis, c.p.p. --------------------------------------------------------------------------
@@ -262,13 +318,78 @@ def test_both_the_start_and_the_act_dated_grade_normally():
 
 
 def test_a_start_to_today_inside_the_term_with_the_act_done_is_inside():
-    """The act done by today lies within the span: within the term, it was on time (an upper bound, never «beyond»)."""
+    """The act stated as done by today lies within the span: within the term, it was on time (an upper bound, never
+    «beyond»)."""
     req = _settled(TERM, "La scoperta è avvenuta cinquanta giorni fa. Il compratore ha poi denunciato il vizio.")
     assert req["status"] == PROVATO and req["termine"]["span"] == "cinquanta giorni fa"
     assert _settled(TERM, "La scoperta è avvenuta cinquanta giorni fa.")["status"] == DA_PROVARE    # act not named
+    # the start's longest calendar reading beyond the term: nothing («due mesi» may be 62 days)
+    assert _settled(TERM, "La scoperta è avvenuta due mesi fa. Il compratore ha denunciato il vizio.")["status"] \
+        == DA_PROVARE
+
+
+ELEMENT = "il compratore deve denunziare il vizio entro sessanta giorni dalla scoperta"
+
+
+@pytest.mark.parametrize("case", [
+    "La scoperta è avvenuta tre mesi fa. Il vizio è stato riparato dieci giorni fa.",
+    "La scoperta è avvenuta tre mesi fa. Il vizio si è aggravato un mese fa.",
+    "La scoperta è avvenuta tre mesi fa, il vizio è ricomparso venti giorni fa.",
+])
+def test_an_event_of_the_acts_object_is_no_act(case):
+    """(review) The act is the verb («denunziare»), never its object: an event about the vizio dates no denunzia."""
+    req = _settled(ELEMENT, case, sup=["S1"])
+    assert req["status"] == DA_PROVARE and req["termine"]["verdict"] == ""
+
+
+@pytest.mark.parametrize("element,case", [
+    (ELEMENT, "La scoperta è avvenuta cinquanta giorni fa. Il vizio era evidente."),
+    (TERM, "La scoperta è avvenuta cinquanta giorni fa. Il compratore non ha mai denunciato il vizio."),
+    (TERM, "La scoperta è avvenuta cinquanta giorni fa. Il compratore non ha ancora denunciato il vizio."),
+    (TERM, "La scoperta è avvenuta cinquanta giorni fa. Il compratore vuole denunciare il vizio."),
+    (TERM, "La scoperta è avvenuta cinquanta giorni fa. La denuncia è pronta."),
+])
+def test_the_start_dated_with_no_act_done_is_da_provare(element, case):
+    """(review) Only the start dated, the act not stated as done (absent, denied, not yet done, intended): no
+    duration -- never «integrato» on the start's span alone."""
+    req = _settled(element, case, sup=["S1"])
+    assert req["status"] == DA_PROVARE and req["termine"]["verdict"] == ""
+
+
+def test_the_act_done_named_by_its_verb_is_the_upper_bound():
+    assert _settled("il vizio è denunziato entro sessanta giorni dalla scoperta",
+                    "Mario ha scoperto il vizio cinquanta giorni fa e lo ha denunciato subito.")["status"] == PROVATO
+    assert _settled(TERM, "La scoperta è avvenuta cinquanta giorni fa. Il compratore denunciò il vizio.")["status"] \
+        == PROVATO
+    assert I.act_stems("il compratore deve denunziare il vizio ") == {"denun"}
+    assert I.act_stems("la denunzia va fatta ") == {"denun"}
+    assert I.act_stems("il vizio deve essere denunziato ") == {"denun"}
+    assert I.act_stems("il ricorso va proposto ", "notif") == {"ricor", "propo"}
+
+
+@pytest.mark.parametrize("element,case", [
+    (TERM, "La scoperta del vizio è avvenuta tre mesi fa. Il compratore ha denunciato il vizio un mese fa."),
+    ("il ricorso va proposto entro sessanta giorni dalla notifica",
+     "La notifica è avvenuta tre mesi fa. Il ricorso è stato depositato un mese fa."),
+])
+def test_two_spans_to_today_that_round_across_the_term_are_da_provare(element, case):
+    """(review) «tre mesi fa – un mese fa» is 53 to 65 days on the calendar: against sixty days neither inside nor
+    beyond -- «da provare», never «escluso» by a month's rounding."""
+    req = _settled(element, case)
+    assert req["status"] == DA_PROVARE and req["termine"]["verdict"] == ""
+    # well past the term on every reading: beyond
+    late = _settled(element, case.replace("un mese fa", "dieci giorni fa"))
+    assert late["status"] == NON_RISULTA and late["termine"]["verdict"] == I.BEYOND
 
 
 def test_dated_events_with_the_act_undated_never_exclude():
     case = "Il vizio è stato scoperto il 1 marzo 2024. Il 5 dicembre 2024 è arrivata una lettera."
+    req = _settled("il diritto si esercita entro sessanta giorni dalla scoperta", case)
+    assert req["status"] == DA_PROVARE and req["termine"]["verdict"] == ""
+
+
+def test_dated_events_with_the_act_undated_never_integrate():
+    """(review) An unrelated later date inside the term is no act either: «da provare», never «integrato»."""
+    case = "Il vizio è stato scoperto il 1 marzo 2024. Il 10 marzo 2024 è arrivata una lettera."
     req = _settled("il diritto si esercita entro sessanta giorni dalla scoperta", case)
     assert req["status"] == DA_PROVARE and req["termine"]["verdict"] == ""

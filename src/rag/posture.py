@@ -143,6 +143,19 @@ def apply_plan(plan: Dict[str, Any], posture: Optional[Dict[str, Any]],
     return out
 
 
+def reapply_rites(plan: Dict[str, Any], posture: Optional[Dict[str, Any]], before: Optional[Sequence[Dict[str, Any]]],
+                  after: Optional[Sequence[Dict[str, Any]]]) -> Dict[str, Any]:
+    """v79.10.7 (review): the plan's subordinate lines re-read on other riti statuses (the method's, with the attenuanti
+    it graded) -- the entry's lines apply_plan added for «before» replaced by those «after» gives; the model's own
+    lines kept. The plan unchanged without an entry's subordinate lines."""
+    entry = (posture or {}).get("entry") or {}
+    if not plan or not entry.get("subordinate"):
+        return plan
+    old, new = entry_subordinate(entry, before), entry_subordinate(entry, after)
+    kept = [str(x) for x in plan.get("subordinate") or [] if x not in old or x in new]
+    return {**plan, "subordinate": kept + [x for x in new if x not in kept]}
+
+
 def entry_subordinate(entry: Dict[str, Any], rites: Optional[Sequence[Dict[str, Any]]] = None) -> List[str]:
     """v79.10.3 (C1): the entry's subordinate lines with the charge's riti applied (apply_plan) -- unchanged without
     them (rites None: no penal charge read)."""

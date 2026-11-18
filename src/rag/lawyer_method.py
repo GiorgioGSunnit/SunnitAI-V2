@@ -1023,15 +1023,21 @@ def rite_statuses(pena_text: str = "", number: str = "", attenuanti: Sequence[st
 
 
 def held_attenuanti(circumstances: Optional[Dict[str, Dict[str, Any]]]) -> List[str]:
-    """v79.10.7: the attenuanti the record holds as integrato or da provare -- each attenuante circumstance record whose
-    verdict is not «non applicabile» (an element «non risulta»: escluso, never counted); graded or not (an ungraded one
-    is «da provare»)."""
+    """v79.10.7: the attenuanti the record holds as integrato or da provare -- each attenuante circumstance record that
+    is not excluded (an element «non risulta»: its verdict «non applicabile», never counted) and that the record holds:
+    (review) one of its elements «provato» or with a supporting sentence of the case. A candidate no fact touches --
+    the 62-bis the imputato's posture always lists, or any ungraded one -- is not held: the record says nothing of it,
+    and the best case is the minimum without it (584 c.p. precluded without a fact for the generiche)."""
     from . import issue_records
     out = []
     for label, rec in (circumstances or {}).items():
         if (rec or {}).get("kind") != "attenuante":
             continue
-        if issue_records.verdict(rec) != issue_records.NOT_APPLICABLE:
+        if issue_records._verdict(rec) == issue_records.NOT_APPLICABLE:
+            continue
+        reqs = [r for r in rec.get("requisites") or [] if r.get("kind", "requisito") == "requisito"]
+        if any(r.get("status") == PROVATO or r.get("supporting") or (r.get("link") or {}).get("supporting")
+               for r in reqs):
             out.append(str(label))
     return out
 
@@ -1109,11 +1115,35 @@ def unavailable_rites(statuses: Sequence[Dict[str, Any]]) -> set:
     return unavailable - admitted
 
 
-def _offers(sentence: str, bad: set) -> bool:
+# v79.10.7 (review): a rito only «possibile» (the patteggiamento's best case within the limit) is never written as
+# simply available -- a clause saying so («è ammesso», «è sicuramente accessibile») without a condition goes
+_UNCONDITIONAL_RE = re.compile(r"\b(?:ammess\w*|ammissibil\w*|disponibil\w*|accessibil\w*|consentit\w*|esperibil\w*|"
+                               r"praticabil\w*|garantit\w*|certament\w*|sicurament\w*|senz['’]altro)\b", re.I)
+_CONDITIONAL_RE = re.compile(r"\bpossibil\w*|\bdipend\w*|\bin\s+concreto\b|\bse\b|\bqualora\b|\bove\b|\beventual\w*|"
+                             r"\bsubordinat\w*\s+(?:a|al|alla|all['’]|ai|alle)\b|\bcondizion\w*|"
+                             r"\bda\s+verificare\b", re.I)
+
+
+def possible_only_rites(statuses: Sequence[Dict[str, Any]]) -> set:
+    """v79.10.7 (review): the riti (RITE_NAMES ids) some status holds «possibile» and none simply admits."""
+    possible = {x.get("id") for x in statuses or [] if x.get("status") == POSSIBLE and x.get("id") in RITE_NAMES}
+    return possible - {x.get("id") for x in statuses or [] if x.get("status") == AVAILABLE}
+
+
+def _offers(sentence: str, bad: set, possible: set = frozenset()) -> bool:
     """A clause naming a rito not admitted that neither says it is not (_NOT_OFFERED_RE) nor «da verificare sulla
-    pena edittale» -- (review) per clause, the negation or the words in the rito's own clause."""
-    return any(any(RITE_NAMES[k].search(c) for k in bad) and not _NOT_OFFERED_RE.search(c)
-               and RITE_TO_VERIFY not in c.lower() for c in _CLAUSE_SPLIT.split(sentence))
+    pena edittale» -- (review) per clause, the negation or the words in the rito's own clause. v79.10.7 (review): or a
+    clause naming a rito only «possibile» as simply available (_UNCONDITIONAL_RE) with no condition
+    (_CONDITIONAL_RE)."""
+    for c in _CLAUSE_SPLIT.split(sentence):
+        if _NOT_OFFERED_RE.search(c) or RITE_TO_VERIFY in c.lower():
+            continue
+        if any(RITE_NAMES[k].search(c) for k in bad):
+            return True
+        if any(RITE_NAMES[k].search(c) for k in possible) and _UNCONDITIONAL_RE.search(c) \
+                and not _CONDITIONAL_RE.search(c):
+            return True
+    return False
 
 
 def _pieces_of(line: str) -> List[str]:
@@ -1127,10 +1157,11 @@ def rites_offered_unavailable(text: str, statuses: Sequence[Dict[str, Any]]) -> 
     """v79.10.3 (C1): the sentences of the text naming a rito the charge does not admit (precluded, or its pena
     unknown) without saying so (_NOT_OFFERED_RE: «preclusa», «non è ammesso», «da verificare» …) -- the counter
     rites_unavailable_offered; must be none."""
-    bad = unavailable_rites(statuses)
-    if not bad:
+    bad, possible = unavailable_rites(statuses), possible_only_rites(statuses)
+    if not bad and not possible:
         return []
-    return [x.strip()[:200] for line in (text or "").split("\n") for x in _pieces_of(line) if _offers(x, bad)]
+    return [x.strip()[:200] for line in (text or "").split("\n") for x in _pieces_of(line)
+            if _offers(x, bad, possible)]
 
 
 _BARE_ITEM_RE = re.compile(r"^\s*(?:[-•*]|\d+[.)])?\s*(?:\*\*)?\s*$")
@@ -1140,12 +1171,12 @@ def rites_out(text: str, statuses: Sequence[Dict[str, Any]], log: Optional[List[
     """v79.10.3 (C1): a written sentence offering a rito the charge does not admit (rites_offered_unavailable) dropped,
     each logged -- the code's own lines say what is precluded or still to verify; in a table row, the cell's sentence
     alone."""
-    bad = unavailable_rites(statuses)
-    if not bad or not rites_offered_unavailable(text, statuses):
+    bad, possible = unavailable_rites(statuses), possible_only_rites(statuses)
+    if not (bad or possible) or not rites_offered_unavailable(text, statuses):
         return text
 
     def kept(piece: str) -> bool:
-        if _offers(piece, bad):
+        if _offers(piece, bad, possible):
             if log is not None:
                 log.append(piece.strip()[:200])
             return False
@@ -1154,7 +1185,7 @@ def rites_out(text: str, statuses: Sequence[Dict[str, Any]], log: Optional[List[
     for line in (text or "").split("\n"):
         if line.lstrip().startswith("|"):
             cells = [(" " + " ".join(x.strip() for x in _SENT_SPLIT.split(cell) if kept(x)) + " ", True)
-                     if _offers(cell, bad) else (cell, False) for cell in line.split("|")]
+                     if _offers(cell, bad, possible) else (cell, False) for cell in line.split("|")]
             if not any(hit and not c.strip() for c, hit in cells):      # (review) a cell left empty: the row goes
                 out.append("|".join(c for c, _ in cells))
             continue

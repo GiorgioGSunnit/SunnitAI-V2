@@ -79,8 +79,10 @@ def test_dated_events_from_the_anchor_beyond_the_term_exclude():
     assert req["status"] == NON_RISULTA and req["termine"]["verdict"] == I.BEYOND
     assert "S2" in req["contradicting"] and "S2" not in req["supporting"]
     inside = case.replace("2022", "2020")
-    req = _settled(text, inside)
+    req = _settled(text, inside, sup=["S2"])      # v79.10.7: the act's sentence linked -- its date measures the term
     assert req["status"] == PROVATO and req["termine"]["span"] == "dal 03/03/2019 al 05/04/2020"
+    # v79.10.7 (the user's ruling on D1): the act's date not found, a later date never measures it -- «da provare»
+    assert _settled(text, inside)["status"] == DA_PROVARE
 
 
 def test_an_inside_duration_wins_over_a_beyond_one():
