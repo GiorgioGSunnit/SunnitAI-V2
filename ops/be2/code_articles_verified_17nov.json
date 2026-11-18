@@ -1,0 +1,116 @@
+{
+ "_about": "Verified 17 Nov 2026 by a web check of all 88 suspects of ops/be2/repealed_articles.py. Status rests on Brocardi (one page per article, pages dated 31/10/2026; c.p.c. 20/02/2026), on Normattiva for the repealing acts and on the Corte costituzionale's own judgments. Normattiva's article pages could not be fetched. Keys are the document name prefixes used on be2.",
+ "not_in_force": {
+  "Codice Penale": {
+   "519": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "520": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "521": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "522": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "523": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "524": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "525": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "526": "repealed: L. 15 febbraio 1996, n. 66, art. 1",
+   "545": "repealed: L. 22 maggio 1978, n. 194, art. 22",
+   "546": "repealed: L. 22 maggio 1978, n. 194, art. 22",
+   "555": "repealed: L. 22 maggio 1978, n. 194, art. 22",
+   "402": "struck down: Corte cost., sent. n. 508/2000",
+   "502": "struck down: Corte cost., sent. n. 29/1960",
+   "559": "struck down: Corte cost., sent. n. 126/1968 e n. 147/1969",
+   "560": "struck down: Corte cost., sent. n. 147/1969",
+   "561": "struck down: Corte cost., sent. n. 147/1969",
+   "563": "struck down: Corte cost., sent. n. 147/1969",
+   "322-quater": "struck down: Corte cost., sent. n. 108/2026 (whole article; not expected, to double-check before marking)"
+  },
+  "Codice Civile": {
+   "1469-ter": "replaced: D.Lgs. 6 settembre 2005, n. 206, art. 142",
+   "1469-quater": "replaced: D.Lgs. 6 settembre 2005, n. 206, art. 142",
+   "1469-quinquies": "replaced: D.Lgs. 6 settembre 2005, n. 206, art. 142",
+   "1469-sexies": "replaced: D.Lgs. 6 settembre 2005, n. 206, art. 142",
+   "2409-ter": "repealed: D.Lgs. 27 gennaio 2010, n. 39, art. 37, comma 9"
+  }
+ },
+ "leave_as_is": {
+  "Codice Penale": {
+   "562": "struck down only in part (Corte cost., sent. n. 147/1969: commi 2-3 in full, comma 1 only for concubinato): do not mark as repealed"
+  }
+ },
+ "in_force_heading": {
+  "Codice Penale": {
+   "3-bis": "Principio della riserva di codice",
+   "32-quater": "Casi nei quali alla condanna consegue l'incapacità di contrattare con la pubblica amministrazione",
+   "131-bis": "Esclusione della punibilità per particolare tenuità del fatto",
+   "158": "Decorrenza del termine della prescrizione",
+   "161-bis": "Cessazione del corso della prescrizione",
+   "289-ter": "Sequestro di persona a scopo di coazione",
+   "341-bis": "Oltraggio a pubblico ufficiale",
+   "348": "Esercizio abusivo di una professione",
+   "423-quater": "Confisca",
+   "452-quaterdecies": "Attività organizzate per il traffico illecito di rifiuti",
+   "493-ter": "Indebito utilizzo e falsificazione di strumenti di pagamento diversi dai contanti",
+   "493-quater": "Detenzione e diffusione di apparecchiature, dispositivi o programmi informatici diretti a commettere reati riguardanti strumenti di pagamento diversi dai contanti",
+   "558-bis": "Costrizione o induzione al matrimonio",
+   "570": "Violazione degli obblighi di assistenza familiare",
+   "570-bis": "Violazione degli obblighi di assistenza familiare in caso di separazione o di scioglimento del matrimonio",
+   "586-bis": "Utilizzo o somministrazione di farmaci o di altre sostanze al fine di alterare le prestazioni agonistiche degli atleti",
+   "593-bis": "Interruzione colposa di gravidanza",
+   "600-octies": "Impiego di minori nell'accattonaggio. Organizzazione e favoreggiamento dell'accattonaggio. Induzione e costrizione all'accattonaggio",
+   "601": "Tratta di persone",
+   "601-bis": "Traffico di organi prelevati da persona vivente",
+   "602-ter": "Circostanze aggravanti",
+   "604-bis": "Propaganda e istigazione a delinquere per motivi di discriminazione razziale etnica e religiosa",
+   "604-ter": "Circostanza aggravante",
+   "609-duodecies": "Circostanze aggravanti",
+   "615": "Violazione di domicilio commessa da un pubblico ufficiale",
+   "617-ter": "Falsificazione, alterazione o soppressione del contenuto di comunicazioni o conversazioni telegrafiche o telefoniche",
+   "617-septies": "Diffusione di riprese e registrazioni fraudolente",
+   "669-bis": "Esercizio molesto dell'accattonaggio"
+  },
+  "Codice di procedura penale": {
+   "103": "Garanzie di libertà del difensore",
+   "114": "Divieto di pubblicazione di atti e di immagini",
+   "115-bis": "Garanzia della presunzione di innocenza",
+   "242": "Traduzione di documenti. Trascrizione di registrazioni",
+   "266-bis": "Intercettazioni di comunicazioni informatiche o telematiche",
+   "267": "Presupposti e forme del provvedimento",
+   "268": "Esecuzione delle operazioni",
+   "269": "Conservazione della documentazione",
+   "270": "Utilizzazione in altri procedimenti",
+   "271": "Divieti di utilizzazione",
+   "289-bis": "Divieto temporaneo di contrattare con la pubblica amministrazione",
+   "454": "Presentazione della richiesta del pubblico ministero",
+   "472": "Casi in cui si procede a porte chiuse",
+   "578-bis": "Decisione sulla confisca in casi particolari nel caso di estinzione del reato per amnistia o per prescrizione"
+  },
+  "Codice di procedura civile": {
+   "840-bis": "Ambito di applicazione",
+   "840-ter": "Forma e ammissibilità della domanda",
+   "840-quater": "Pluralità delle azioni di classe",
+   "840-quinquies": "Procedimento",
+   "840-sexies": "Sentenza di accoglimento",
+   "840-septies": "Modalità di adesione all'azione di classe",
+   "840-octies": "Progetto dei diritti individuali omogenei degli aderenti",
+   "840-nonies": "Spese del procedimento",
+   "840-decies": "Impugnazione della sentenza",
+   "840-undecies": "Impugnazione del decreto",
+   "840-duodecies": "Adempimento spontaneo",
+   "840-terdecies": "Esecuzione forzata collettiva",
+   "840-quaterdecies": "Accordi di natura transattiva",
+   "840-quinquiesdecies": "Chiusura della procedura di adesione",
+   "840-sexiesdecies": "Azione inibitoria collettiva"
+  },
+  "Codice Civile": {
+   "42-bis": "Trasformazione, fusione e scissione",
+   "147": "Doveri verso i figli",
+   "148": "Concorso negli oneri",
+   "155": "Provvedimenti riguardo ai figli",
+   "170": "Esecuzione sui beni e sui frutti",
+   "171": "Cessazione del fondo",
+   "463-bis": "Sospensione dalla successione"
+  }
+ },
+ "_notes": [
+  "840-nonies is the name stored on be2; the code spells it 840-novies.",
+  "131-bis and 586-bis c.p. and 114 c.p.p. are in force with partial unconstitutionality rulings only.",
+  "The app's guard (src/rag/article_text.py, is_abrogated) recognises «Articolo abrogato ...» at the start of the text; it does not recognise a declaration of unconstitutionality."
+ ]
+}
