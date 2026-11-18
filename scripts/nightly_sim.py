@@ -100,6 +100,12 @@ counters charge_rule (the rule that chose the charge: user_article / read_hypoth
 charge_thesis_refused (the thesis call's legal question naming another charge, replaced), names_redacted,
 names_unredacted (0), ledger_struck, ledger_kept and ledger_removed_present (0) in the counters table.
 
+v79.10.6 (E review): names_redacted counts the passages' names with its own literal reading (rulings.names_left: a
+title and the name after it, particles included; two adjacent capitalised words outside the gazetteer), never the
+redactor's name_spans; ledger_removed_absent counts a removed sentence only where its rule says it is absent
+(answer_ledger.misplaced: the one check's section, a repetition's later occurrences, the client's own text) -- the
+entries are never relabelled to read 0; charge_thesis_refused counts §1's refused summary too.
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -265,7 +271,8 @@ def wording_check(found: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any
 def ledger_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
     """v79 (E3): every sentence the removal ledger logs as «removed» is absent from the delivered parere (a sentence
     under 25 characters is not checked: too short to tell). v79.10.5 (E3): the test is answer_ledger.removed_present,
-    the one the flow's settle reads (the count must be 0)."""
+    the one the flow's settle reads (the count must be 0). v79.10.6 (E3): read where each removal holds
+    (answer_ledger.misplaced)."""
     from src.rag import answer_ledger
     entries = ((state or {}).get("ledger") or {}).get("entries") or []
     present = [f"{e.get('step')}: {str(e.get('sentence'))[:80]}"
@@ -275,8 +282,9 @@ def ledger_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def names_check(answer: str) -> Dict[str, Any]:
-    """v79.10.5 (E2): no party's name left in a quoted passage -- the capitalised tokens after a title, the pairs of
-    capitalised tokens outside the gazetteer (rulings.unredacted_names, redact_names' own reading); counted, must be 0.
+    """v79.10.5 (E2): no party's name left in a quoted passage -- the name after a title (its particles too), the pairs
+    of capitalised tokens outside the gazetteer; counted, must be 0. v79.10.6 (E2): rulings.unredacted_names reads them
+    literally (rulings.names_left), never through the redactor's own name_spans, so a redactor's miss is counted.
     Needs no state."""
     from src.rag import rulings
     found = rulings.unredacted_names(answer or "")

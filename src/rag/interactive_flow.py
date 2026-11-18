@@ -6038,8 +6038,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
                 answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
         state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
         # v79.10.5 (E1): the thesis call's legal question naming another charge, refused (the code's on the charge)
-        refused = [compose_log.get("charge_refused")] + [c.get("charge_refused") for c in
-                                                          (compose_log.get("clients") or {}).values()]
+        # v79.10.6 (E1): §1's summary too, wherever a thesis text could replace the charge
+        refused = [log_.get(k) for log_ in [compose_log] + list((compose_log.get("clients") or {}).values())
+                   for k in ("charge_refused", "charge_refused_summary")]
         state.setdefault("block_counters", {})["charge_thesis_refused"] = sum(1 for x in refused if x)
         # v79 (E3): compose's, «removed» -- v79.10.5 (E3): with several clients every client's, each tagged with its
         # client by compose_clients (another client's own block may keep the sentence)
@@ -6297,8 +6298,9 @@ def ledger_settled(state: Dict[str, Any], draft: str) -> str:
     """v79.10.5 (E3): the final text with every sentence the ledger logs as «removed» absent -- removal and logging in
     one function (answer_ledger.settle): a sentence a later step reprinted is struck again where the removal held (the
     one check's section, the client's own text); one it cannot strike (part of a longer sentence or a heading, the
-    code's own text, a copy in another section or another client's block, the sentence a repetition repeated) is «kept»,
-    never «removed». The counters ledger_struck, ledger_kept and ledger_removed_present (what is still there after it:
+    code's own text) is «kept», never «removed». v79.10.6 (E3): a copy outside the removal's scope (another section for
+    the one check's per-section rules, another client's block, the sentence a repetition repeated) is no presence
+    (answer_ledger.misplaced): never struck, never relabelled -- the entry stays «removed». The counters ledger_struck, ledger_kept and ledger_removed_present (what is still there after it:
     must be 0, the nightly's ledger_removed_absent); logged (ledger_settle)."""
     from . import answer_ledger
     ledger = state.get("ledger")

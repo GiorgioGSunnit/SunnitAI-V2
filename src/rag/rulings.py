@@ -423,20 +423,28 @@ def starts_clean(sentence: str) -> bool:
 
 NAMES_ENV = "RULINGS_PARTY_NAMES"      # v79 (F2): «redact» (default) or «keep» -- the decision is the PO's, pending
 REDACTED = "[omissis]"
-# v79.10.5 (E2): a capitalised token -- «Rossi», «ROSSI», «D'Amico», «De» (a surname's particle)
-_CAP = r"(?:[A-ZÀ-Ý]['’][A-ZÀ-Ý][a-zà-ÿ'’]+|[A-ZÀ-Ý][a-zà-ÿ'’]+|[A-ZÀ-Ý]{2,})"
+# v79.10.5 (E2): a capitalised token -- «Rossi», «ROSSI», «D'Amico», «De» (a surname's particle). v79.10.6 (E2): a
+# hyphenated surname is one token («Rossi-Bianchi»), and an elided article before a lowercase word is none («L'imputato»,
+# «All'udienza»: its apostrophe never reads a lowercase letter after it); «Dell'Orto» is one token, as «D'Amico»)
+_CAP_PART = r"(?:[A-ZÀ-Ý][a-zà-ÿ]{0,3}['’][A-ZÀ-Ý][a-zà-ÿ'’]+|[A-ZÀ-Ý](?:[a-zà-ÿ]|['’](?![a-zà-ÿ]))+|[A-ZÀ-Ý]{2,})"
+_CAP = rf"(?:{_CAP_PART}(?:-{_CAP_PART})*)"
 _CAP_RE = re.compile(_CAP)
-_CAP_RUN_RE = re.compile(rf"{_CAP}(?:\s+{_CAP})*")
 # v79.10.5 (E2): a surname's lowercase particle before a capitalised token, after a title («dott. di Pietro», «sig.
 # dell'Orto», «avv. Mario de Luca»)
 _PARTICLE = r"(?:(?:d[aei]|de[il]|dell[ao]|dall[ao]|degli|lo|la|van|von)\s+|(?:d|dell|dall)['’])"
 _NAME_TOKEN = rf"(?:{_PARTICLE})?{_CAP}"
 _NAME_TOKEN_RE = re.compile(rf"(?:{_PARTICLE})?({_CAP})")
+_NAME_TOKEN_RUN_RE = re.compile(rf"{_NAME_TOKEN}(?:\s+{_NAME_TOKEN})*")
+# v79.10.6 (E2): a name with a lowercase surname particle and no title («Mario de Luca», «Luca di Pietro», «Anna
+# dell'Orto») -- «la»/«lo» left out, an article far more often than a particle
+_SURNAME_PARTICLE = r"(?:(?:d[aei]|de[il]|dell[ao]|dall[ao]|degli|van|von)\s+|(?:d|dell|dall)['’])"
+_PARTICLE_NAME_RE = re.compile(rf"(?<![\w'’.\[-])({_CAP})\s+({_SURNAME_PARTICLE}+)({_CAP})(?![\w'’])")
 # v79.10.5 (E2): a title, any case («sig.», «Sig.ra», «sigg.», «dott.ssa», «avv.to», «avvocato», «ing.», «geom.»,
 # «rag.», «prof.»), then the run of capitalised tokens it names -- every one of them, the surname too
 _TITLE_NAME_RE = re.compile(r"(?<![\w.])(?P<title>(?i:sig(?:\.(?:ra|na)?|g\.|nor[ei]?\b|nora\b)|dott(?:\.(?:ssa|ri)?|or\b|"
-                            r"oressa\b)|avv(?:\.(?:ti|to)?|ocat[oaie]\b)|ing\.|geom\.|rag\.|prof(?:\.(?:ssa)?)))\s*"
-                            rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN})*)(?P<more>(?:\s+e\s+{_CAP}(?:\s+{_CAP})*)*)")
+                            r"oressa\b)|dr\.(?:ssa)?|avv(?:\.(?:ti|to)?|ocat[oaie]\b)|ing\.|geom\.|rag\.|prof(?:\.(?:ssa)?)))\s*"
+                            rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN})*)"
+                            rf"(?P<more>(?:\s+e\s+{_NAME_TOKEN}(?:\s+{_NAME_TOKEN})*)*)")     # v79.10.6: «e de Luca», «dr.»
 _PLURAL_TITLE_RE = re.compile(r"(?i)^(?:sigg\.|signori|dott\.ri|avv\.ti|avvocati)$")      # «dei sigg. Rossi e Bianchi»
 # v79.10.5 (E2): a run of two or more adjacent capitalised tokens, anywhere in the passage
 _NAME_RUN_RE = re.compile(rf"(?<![\w'’.\[])({_CAP}(?:\s+{_CAP})+)(?![\w'’])")
@@ -488,7 +496,7 @@ def name_spans(text: str) -> Tuple[List[Tuple[int, int, str, str]], List[str]]:
     for m in _TITLE_NAME_RE.finditer(text):
         runs = [(m.start(2), m.end(2))]
         if m.group("more") and _PLURAL_TITLE_RE.match(m.group("title")):
-            runs += [(x.start(), x.end()) for x in _CAP_RUN_RE.finditer(text, m.start("more"), m.end("more"))]
+            runs += [(x.start(), x.end()) for x in _NAME_TOKEN_RUN_RE.finditer(text, m.start("more"), m.end("more"))]
         for a, b in runs:
             tokens = list(_NAME_TOKEN_RE.finditer(text, a, b))
             named = []
@@ -521,6 +529,21 @@ def name_spans(text: str) -> Tuple[List[Tuple[int, int, str, str]], List[str]]:
         for g in groups:
             if len(g) >= 2 and not any(g[0].start() < b and a < g[-1].end() for a, b in taken):
                 spans.append((g[0].start(), g[-1].end(), text[g[0].start():g[-1].end()], "pair"))
+    # v79.10.6 (E2): a first name and a surname with its lowercase particle, no title («Mario de Luca») -- neither in
+    # the gazetteer, the first not a sentence's opener; joined to a pair it continues («Anna Maria de Luca»)
+    for m in _PARTICLE_NAME_RE.finditer(text):
+        if _gazetteer(m.group(1)) or _gazetteer(m.group(3)):
+            continue
+        if _SENTENCE_START_RE.search(text[:m.start(1)]) and m.group(1).capitalize() in openers():
+            continue
+        s, e = m.start(1), m.end(3)
+        hit = [i for i, (a, b, _, _) in enumerate(spans) if a < e and s < b]
+        if any(spans[i][3] == "titled" for i in hit):
+            continue
+        if hit:
+            s, e = min([s] + [spans[i][0] for i in hit]), max([e] + [spans[i][1] for i in hit])
+            spans = [x for i, x in enumerate(spans) if i not in hit]
+        spans.append((s, e, text[s:e], "particle"))
     return sorted(spans), kept
 
 
@@ -573,12 +596,105 @@ def passages_in(answer: str) -> List[str]:
 
 
 def unredacted_names(answer: str) -> List[str]:
-    """v79.10.5 (E2): the names left in the answer's quoted passages -- what redact_names would still replace (a title's
-    capitalised tokens, a pair outside the gazetteer); the nightly's count, the flow's counter. With
+    """v79.10.5 (E2): the names left in the answer's quoted passages (a title's name, a pair outside the gazetteer);
+    the nightly's count, the flow's counter. v79.10.6 (E2): read by names_left, independently of the redactor. With
     RULINGS_PARTY_NAMES=keep the names stay by choice: [] then."""
     if (os.getenv(NAMES_ENV) or "redact").strip().lower() == "keep":
         return []
-    return [w for p in passages_in(answer) for _, _, w, _ in name_spans(p)[0]]
+    return [w for p in passages_in(answer) for w in names_left(p)]
+
+
+# v79.10.6 (E2): the nightly's own reading of a passage -- written apart from name_spans, so a redactor's miss shows up.
+# A capitalised word, read literally: an upper-case letter and lower-case ones, or two or more upper-case letters
+# («Rossi», «ROSSI»), joined by a hyphen or an apostrophe to more of them («Rossi-Bianchi», «D'Amico», «Dell'Orto»).
+# Never one letter («Tabella A», «lettera B», «D Lgs»), an inner capital («UnipolSai»), or an elided article before
+# a lower-case word («L'imputato», «All'udienza»).
+_LIT_WORD = r"(?:[A-ZÀ-Ý][a-zà-ÿ]+|[A-ZÀ-Ý]{2,})"
+_LIT_CAP_RE = re.compile(rf"^(?:[A-ZÀ-Ý][a-zà-ÿ]{{0,3}}['’])?{_LIT_WORD}(?:[-'’]{_LIT_WORD})*['’]?$")
+_LIT_OPEN = "«\"“‘("
+_LIT_CLOSE = "»\"”’)"
+_LIT_PARTICLES = r"(?:(?:d[aei]|de[il]|dell[ao]|dall[ao]|degli|la|lo|van|von)\s+|(?:d|dell|dall)['’])*"
+_LIT_TITLE_RE = re.compile(
+    r"(?<![\w.])(?P<title>(?i:sig\.ra|sig\.na|sigg\.|sig\.|signor[ae]?|signori|dott\.ssa|dott\.ri|dott\.|"
+    r"dottor(?:essa)?|dr\.ssa|dr\.|avv\.ti|avv\.to|avv\.|avvocat[oaie]|prof\.ssa|prof\.|professor(?:e|essa)?|ing\.|"
+    r"geom\.|rag\.))"
+    rf"\s*({_LIT_PARTICLES})(\[omissis\]|[A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]*)")
+# after the title's first name: the rest of it -- more names, each with its particles («Mario de Luca»), and for a
+# plural title the next one after «e» («sigg. Rossi e Bianchi»)
+_LIT_MORE_RE = re.compile(rf"\s+({_LIT_PARTICLES})([A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]*)")
+_LIT_PLURAL_MORE_RE = re.compile(rf"\s+e\s+({_LIT_PARTICLES})([A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]*)")
+_LIT_PLURAL_RE = re.compile(r"(?i)^(?:sigg\.|signori|dott\.ri|avv\.ti|avvocati)$")
+# a first name and a surname's lowercase particles and surname, no title («Mario de Luca», «Anna dell'Orto»)
+_LIT_PARTICLE_NAME_RE = re.compile(r"(?<![\w'’\[\]-])([A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]*)\s+((?:(?:d[aei]|de[il]|dell[ao]|dall[ao]|"
+                                   r"degli|van|von)\s+|(?:d|dell|dall)['’])+)([A-ZÀ-Ý][A-Za-zÀ-ÿ'’-]*)")
+# what a redaction left of a hyphenated name («[omissis]-Bianchi», «Rossi-[omissis]»)
+_LIT_GLUED_RE = re.compile(r"\[omissis\][-'’][A-ZÀ-Ý][\w'’-]*|[A-ZÀ-Ý][\w'’]*-\[omissis\]")
+
+
+def names_left(passage: str) -> List[str]:
+    """v79.10.6 (E2): the names a quoted passage still prints, read literally and independently of name_spans (the
+    redactor's reading) -- the nightly's names_redacted and the flow's names_unredacted count these. A name is
+      a title («sig.», «sig.ra», «dott.», «dott.ssa», «avv.», «prof.», «ing.» …) and the name after it, its lowercase
+      particles with it («dott. di Pietro», «sig. dell'Orto»), unless that word is in the gazetteer;
+      two adjacent capitalised words (no punctuation between them) neither of which is in the gazetteer
+      (data/redaction_stoplist.json «words»), the first not an opener at a sentence's start («Il», «Nella»);
+      v79.10.6: a first name and a surname with its lowercase particle («Mario de Luca»), the same way; what a
+      redaction left of a hyphenated name («[omissis]-Bianchi»); «dr.», «dr.ssa» among the titles.
+    Overlapping hits are one name; [omissis] is no name."""
+    text = passage or ""
+    spans: List[Tuple[int, int]] = []
+    for m in _LIT_TITLE_RE.finditer(text):
+        word = m.group(3).rstrip("'’-")
+        redacted = word == REDACTED         # what follows a redacted name is still read («sigg. [omissis] e de Luca»)
+        if not redacted and (not _LIT_CAP_RE.match(word) or _gazetteer(word)):
+            continue
+        start = None if redacted else (m.start(2) if m.group(2) else m.start(3))
+        end = m.start(3) + len(word)
+        while True:
+            more = _LIT_MORE_RE.match(text, end) or \
+                (_LIT_PLURAL_RE.match(m.group("title")) and _LIT_PLURAL_MORE_RE.match(text, end))
+            nxt = more.group(2).rstrip("'’-") if more else ""
+            if not more or not _LIT_CAP_RE.match(nxt) or _gazetteer(nxt):
+                break
+            if start is None:
+                start = more.start(1) if more.group(1) else more.start(2)
+            end = more.start(2) + len(nxt)
+        if start is not None:
+            spans.append((start, end))
+    for m in _LIT_PARTICLE_NAME_RE.finditer(text):
+        first, last = m.group(1).rstrip("'’-"), m.group(3).rstrip("'’-.,;:!?»)\"”")
+        if not (_LIT_CAP_RE.match(first) and _LIT_CAP_RE.match(last)) or _gazetteer(first) or _gazetteer(last):
+            continue
+        before = text[:m.start(1)].rstrip().rstrip(_LIT_OPEN).rstrip()
+        if (not before or before[-1] in ".!?:") and first.capitalize() in openers():
+            continue
+        spans.append((m.start(1), m.start(3) + len(last)))
+    spans += [(g.start(), g.end()) for g in _LIT_GLUED_RE.finditer(text)]
+    tokens = [(t.group(0), t.start(), t.end()) for t in re.finditer(r"\S+", text)]
+
+    def core(raw: str) -> str:
+        return raw.lstrip(_LIT_OPEN).rstrip(_LIT_CLOSE + ".,;:!?")
+
+    def cap(raw: str) -> bool:
+        c = core(raw)
+        return bool(c) and bool(_LIT_CAP_RE.match(c)) and not _gazetteer(c)
+
+    for i in range(len(tokens) - 1):
+        (a, sa, ea), (b, sb, eb) = tokens[i], tokens[i + 1]
+        if not (cap(a) and cap(b)) or a.rstrip(_LIT_CLOSE) != a.rstrip(_LIT_CLOSE + ".,;:!?") \
+                or a[-1:] in _LIT_CLOSE or b[:1] in _LIT_OPEN:
+            continue
+        start = i == 0 or tokens[i - 1][0].rstrip(_LIT_CLOSE)[-1:] in ".!?:"
+        if start and core(a).capitalize() in openers():
+            continue
+        spans.append((sa + (len(a) - len(a.lstrip(_LIT_OPEN))), sb + len(b.rstrip(_LIT_CLOSE + ".,;:!?"))))
+    merged: List[List[int]] = []
+    for s, e in sorted(spans):
+        if merged and s <= merged[-1][1] + 1:
+            merged[-1][1] = max(merged[-1][1], e)
+        else:
+            merged.append([s, e])
+    return [text[s:e] for s, e in merged]
 
 
 def printed(passage: str) -> str:

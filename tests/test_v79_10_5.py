@@ -321,18 +321,20 @@ def test_every_sentence_logged_as_removed_is_absent_from_the_final_text():
                                                                 "compose:wording": 1, "compose:scope": 2}},
              "output_sources": {"code": [code_line]}}
     before = nightly.ledger_check(draft, state)
-    assert before["ok"] is False and before["count"] == 4
+    assert before["ok"] is False and before["count"] == 3          # Beta's removal: only Alfa's block holds it
     out = flow.ledger_settled(state, draft)
     assert SENT not in out and code_line in out and "Frase proposta e rimasta nel testo finale." in out
     assert "Inoltre, il compratore può chiedere la risoluzione del contratto." in out
     assert nightly.ledger_check(out, state) == {"check": "ledger_removed_absent", "ok": True, "count": 0, "why": ""}
-    assert state["block_counters"] == {"ledger_struck": 1, "ledger_kept": 3, "ledger_removed_present": 0}
+    assert state["block_counters"] == {"ledger_struck": 1, "ledger_kept": 2, "ledger_removed_present": 0}
     assert entries[0]["kind"] == "removed" and entries[0]["settled"] == "struck"
-    assert [e.get("kept_why") for e in entries[1:4]] == ["code", "client", "contained"]
-    assert all(e["kind"] == "kept" and e["was"] == "removed" for e in entries[1:4])
+    assert [e.get("kept_why") for e in (entries[1], entries[3])] == ["code", "contained"]
+    assert all(e["kind"] == "kept" and e["was"] == "removed" for e in (entries[1], entries[3]))
+    # v79.10.6 (E3): Beta's removal, in Alfa's block only, is no presence -- never relabelled «kept»
+    assert entries[2]["kind"] == "removed" and "kept_why" not in entries[2] and "settled" not in entries[2]
     assert entries[3]["now"].startswith("Inoltre, il compratore")
     assert entries[4]["kind"] == "removed" and entries[5]["kind"] == "proposed"
-    assert state["ledger"]["removed_by_step"] == {"record_check": 1, "compose:prose": 0, "compose:wording": 0,
+    assert state["ledger"]["removed_by_step"] == {"record_check": 1, "compose:prose": 0, "compose:wording": 1,
                                                   "compose:scope": 1}
 
 
@@ -365,13 +367,14 @@ def test_a_repetitions_removal_keeps_the_sentence_it_repeated():
     draft = f"**1. Sintesi**\n\n{DUP} La domanda appare fondata.\n\n**2. Fatti**\n\nAltro testo dei fatti."
     entries = [_check(DUP, "Sintesi", "ripetizione")]
     out, report = L.settle(draft, entries)
-    assert out == draft and report["struck"] == [] and entries[0]["kept_why"] == "ripetizione"
-    assert L.removed_present(out, entries) == []
+    assert out == draft and report == {"struck": [], "kept": [], "present": []}
+    assert entries[0]["kind"] == "removed" and L.removed_present(out, entries) == []
     # reprinted by a later step: the repeat goes again, the first stays
     again = f"**1. Sintesi**\n\n{DUP} La domanda appare fondata. {DUP}\n\n**2. Fatti**\n\nAltro testo dei fatti."
     entries = [_check(DUP, "Sintesi", "ripetizione")]
     out, _ = L.settle(again, entries)
-    assert out == draft and entries[0]["struck"] == 1 and entries[0]["kept_why"] == "ripetizione"
+    assert out == draft and entries[0]["struck"] == 1 and entries[0]["settled"] == "struck"
+    assert entries[0]["kind"] == "removed"
 
 
 def test_the_one_checks_removal_is_its_sections_only():
@@ -379,11 +382,11 @@ def test_the_one_checks_removal_is_its_sections_only():
     entries = [_check(DUP, "Sintesi", "alternativa_senza_fatti")]
     out, report = L.settle(draft, entries)
     assert out == "**1. Sintesi**\n\nIn apertura.\n\n**2. Fatti**\n\n" + f"{DUP} Altro testo dei fatti."
-    assert entries[0]["kind"] == "kept" and entries[0]["kept_why"] == "section" and entries[0]["struck"] == 1
+    assert entries[0]["kind"] == "removed" and entries[0]["settled"] == "struck" and entries[0]["struck"] == 1
     # its section gone (compose's ten sections): a per-section rule's copy elsewhere is kept, another rule's struck
     gone = f"**1. Premessa**\n\n{DUP} Altro testo dei fatti."
     entries = [_check(DUP, "Sintesi", "requisito_non_registrato"), ]
-    assert L.settle(gone, entries)[0] == gone and entries[0]["kept_why"] == "section"
+    assert L.settle(gone, entries)[0] == gone and entries[0]["kind"] == "removed" and "kept_why" not in entries[0]
     entries = [_check(DUP, "Sintesi", "frammento")]
     assert L.settle(gone, entries)[0] == "**1. Premessa**\n\nAltro testo dei fatti."
     assert entries[0]["settled"] == "struck"
@@ -397,7 +400,7 @@ def test_a_clients_removal_is_struck_in_its_own_text_kept_in_another_clients():
     out, _ = L.settle(draft, entries)
     assert out == (f"**1. Sintesi**\n\n**Nell'interesse di Alfa**\n\nAltro testo resta qui.\n\n"
                    f"**Nell'interesse di Beta**\n\n{own} Testo di Beta.\n\n**2. Norme**\n\nTesto comune.")
-    assert entries[0]["kept_why"] == "client" and entries[0]["struck"] == 1
+    assert entries[0]["kind"] == "removed" and entries[0]["settled"] == "struck" and entries[0]["struck"] == 1
     # a section shared by every client (no client's head) is the client's own text too
     shared = f"**1. Norme**\n\nTesto comune. {own}"
     entries = [{"step": "compose", "kind": "removed", "sentence": own, "client": "Alfa", "articles": []}]

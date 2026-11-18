@@ -423,10 +423,49 @@ def _norm_map(text: str) -> Tuple[str, List[int]]:
 
 def removed_present(answer: str, entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """v79.10.5 (E3): the ledger's «removed» entries whose sentence (MIN_CHECKED characters or more, as _norm reads it)
-    is still in the answer -- the nightly's ledger_removed_absent and settle read it alike; must be none."""
-    final = _norm(answer or "")
+    is still in the answer -- the nightly's ledger_removed_absent and settle read it alike; must be none. v79.10.6 (E3):
+    only where the removing rule says it is absent (misplaced: the one check's section, a repetition's occurrences
+    after the first, the client's own text) -- a copy the rule never removed is no presence, and the entry stays
+    «removed»."""
     return [e for e in entries or [] if e.get("kind") == "removed"
-            and len(_norm(e.get("sentence") or "")) >= MIN_CHECKED and _norm(e.get("sentence") or "") in final]
+            and len(_norm(e.get("sentence") or "")) >= MIN_CHECKED and misplaced(answer or "", e)]
+
+
+def misplaced(text: str, entry: Dict[str, Any]) -> List[int]:
+    """v79.10.6 (E3): the positions in text of the entry's sentence (as _norm reads it) where its removal says it is
+    absent: inside its scope (_scope: the one check's section, the client's own text; anywhere for another step), and
+    for a repetition («ripetizione») every in-scope occurrence after the first -- the first is the sentence it
+    repeated, which the rule keeps."""
+    needle = _norm(entry.get("sentence") or "")
+    if not needle:
+        return []
+    hay, where = _norm_map(text or "")
+    allow = _scope(entry, text or "")
+    out = [where[k] for k in _finds(hay, needle) if allow is None or allow(text, where[k])]
+    return out[1:] if out and _keeps_first(text, entry, out[0]) else out
+
+
+def _keeps_first(text: str, entry: Dict[str, Any], first: int) -> bool:
+    """v79.10.6 (E3): a repetition's removal keeps the first in-scope occurrence of its sentence only when that one is
+    the sentence it repeated -- an exact copy, no earlier sentence of its section repeating it (record_check._repeats'
+    measure: repetition_guard's stems, refs and numbers). A near-match the check removed («tutta la merce» after «la
+    merce») repeated another sentence: every occurrence of it is the repetition, none is kept."""
+    if entry.get("rule") != REPEAT_RULE:
+        return False
+    from . import repetition_guard as rg
+    sentence = entry.get("sentence") or ""
+    mine = rg.stems(sentence)
+    if len(mine) < rg.MIN_STEMS:
+        return True
+    refs, numbers = rg._refs(sentence), rg._numbers(sentence)
+    floor = max((m.end() for m in _SECTION_RE.finditer(text) if m.start() <= first), default=0)
+    for other in re.split(r"(?<=[.!?;:])\s+|\n+", text[floor:first]):
+        if not other.strip():
+            continue
+        if len(mine & rg.stems(other)) >= rg.OVERLAP * len(mine) and refs <= rg._refs(other) \
+                and numbers <= rg._numbers(other):
+            return False
+    return True
 
 
 def _whole(text: str, s: int, e: int) -> Optional[Tuple[int, int]]:
@@ -490,10 +529,11 @@ def strike(text: str, sentence: str, allow: Optional[Callable[[str, int], bool]]
         while k >= 0:
             spans.append((where[k], where[k + len(needle) - 1] + 1))
             k = hay.find(needle, k + 1)
-        whole = [w for w in (_whole(text, s, e) for s, e in spans if allow is None or allow(text, s)) if w]
+        spans = [(s, e) for s, e in spans if allow is None or allow(text, s)]
+        if keep_first:          # v79.10.6 (E3): the first occurrence in scope is the one it repeated (_keeps_first)
+            spans = spans[1:]
+        whole = [w for w in (_whole(text, s, e) for s, e in spans) if w]
         held = [_line(text, s, e)[:200] for (s, e) in spans if not _whole(text, s, e)]
-        if keep_first:
-            whole = whole[1:]
         if not whole:
             break
         s, e = whole[-1]
@@ -531,8 +571,10 @@ def _section_at(text: str, pos: int) -> str:
     return title
 
 
-def _clients_at(text: str, pos: int) -> Optional[List[str]]:
-    """The clients the «**Nell'interesse di …**» block holding pos is for (its section's), None outside any."""
+def _client_in_head(text: str, pos: int, name: str) -> bool:
+    """v79.10.6 (E3): the client is one the block holding pos is for -- or pos is outside any client's block (a
+    section every client shares). Read on the header's own words, so a name holding «e» or a comma («Rossi e Figli
+    S.n.c.») is found whole, never split at its «e»."""
     floor = max((m.start() for m in _SECTION_RE.finditer(text) if m.start() <= pos), default=0)
     head = None
     for m in _CLIENT_HEAD_RE.finditer(text, floor):
@@ -540,61 +582,59 @@ def _clients_at(text: str, pos: int) -> Optional[List[str]]:
             break
         head = m
     if head is None:
-        return None
-    return [x.strip() for x in re.split(r",\s*|\s+e\s+", head.group(1)) if x.strip()]
+        return True
+    names = " ".join(head.group(1).split())
+    return bool(re.search(rf"(?:^|,\s*|\s+e\s+){re.escape(' '.join(name.split()))}(?=$|\s*,|\s+e\s+)", names))
 
 
-def _scope(entry: Dict[str, Any], text: str) -> Tuple[Optional[Callable[[str, int], bool]], str]:
-    """(allow, why) for strike: the one check's removal is its section's (a copy in another section is that section's,
-    «section»; with its section gone, a SECTION_RULES copy is kept, another struck anywhere); a client's compose removal
-    is that client's text's (another client's own block keeps its copy, «client»)."""
+def _scope(entry: Dict[str, Any], text: str) -> Optional[Callable[[str, int], bool]]:
+    """Where an entry's removal holds (allow(text, pos)), None for anywhere: a client's compose removal, that client's
+    own text (its «Nell'interesse di …» block, or a section every client shares); the one check's removal, its
+    section -- with its section gone from the text, a SECTION_RULES removal holds nowhere (its copies are other
+    sections'), another rule's anywhere. v79.10.6 (E3): the one scope removed_present, misplaced and strike read."""
     if entry.get("client"):
         name = str(entry["client"]).strip()
-        return (lambda t, p: name in (_clients_at(t, p) or [name])), "client"
+        return lambda t, p: _client_in_head(t, p, name)
     if entry.get("step") == CHECK_STEP and entry.get("section"):
         title = str(entry["section"]).strip()
         if any(m.group(1).strip() == title for m in _SECTION_RE.finditer(text)):
-            return (lambda t, p: _section_at(t, p) == title), "section"
+            return lambda t, p: _section_at(t, p) == title
         if entry.get("rule") in SECTION_RULES:
-            return (lambda t, p: False), "section"
-    return None, ""
+            return lambda t, p: False
+    return None
 
 
 def settle(text: str, entries: List[Dict[str, Any]], code_texts: Sequence[str] = ()) -> Tuple[str, Dict[str, Any]]:
-    """v79.10.5 (E3): the final text and the ledger made to agree -- for each «removed» entry still in the text
-    (removed_present): struck again where the removal held (strike: a later step reprinted it) and marked settled
-    «struck»; what it cannot strike is «kept» with why, never «removed»: part of a longer sentence or a heading
-    («contained»), a sentence the code itself writes (code_texts: the method's sources, «code»), a copy outside the
-    removal's scope (_scope: another section for the one check's per-section rules, «section»; another client's own
-    block, «client»), the sentence a repetition repeated («ripetizione»). After it, removed_present(text, entries) is
-    empty. The report: {"struck", "kept", "present"} (the sentences)."""
+    """v79.10.5 (E3): the final text and the ledger made to agree -- for each «removed» entry still in the text where
+    its removal holds (removed_present / misplaced): struck again there (strike: a later step reprinted it) and marked
+    settled «struck»; what it cannot strike is «kept» with why, never «removed»: part of a longer sentence or a heading
+    («contained»), a sentence the code itself writes (code_texts: the method's sources, «code»). v79.10.6 (E3): a copy
+    outside the removal's scope (another section for the one check's per-section rules, another client's own block,
+    the first occurrence a repetition repeated) is never struck and never relabelled: the entry stays «removed» --
+    misplaced does not count it. After it, removed_present(text, entries) is empty. The report: {"struck", "kept",
+    "present"} (the sentences)."""
     report: Dict[str, List[str]] = {"struck": [], "kept": [], "present": []}
     code = [_norm(x) for x in code_texts or [] if x]
     for e in removed_present(text, entries):
-        needle = _norm(e.get("sentence") or "")
-        if needle not in _norm(text):       # an earlier entry's strike took it
+        if not misplaced(text, e):          # an earlier entry's strike took it
             continue
+        needle = _norm(e.get("sentence") or "")
         report["present"].append(str(e.get("sentence"))[:200])
-        why = "code" if any(needle in c for c in code) else ""
         held: List[str] = []
-        if not why:
-            allow, outside = _scope(e, text)
-            repeat = e.get("rule") == REPEAT_RULE
-            text, n, held = strike(text, e.get("sentence") or "", allow, repeat)
-            if needle not in _norm(text):
+        if any(needle in c for c in code):
+            why = "code"
+        else:
+            allow = _scope(e, text)
+            first = misplaced(text, {**e, "rule": ""})
+            text, n, held = strike(text, e.get("sentence") or "", allow,
+                                   bool(first) and _keeps_first(text, e, first[0]))
+            if n:
+                e["struck"] = n
+            if not misplaced(text, e):
                 e["settled"] = "struck"
                 report["struck"].append(str(e.get("sentence"))[:200])
                 continue
-            if n:
-                e["struck"] = n
-            hay, where = _norm_map(text)
-            starts = [where[k] for k in _finds(hay, needle)]
-            if repeat and any(allow is None or allow(text, p) for p in starts):
-                why = REPEAT_RULE           # the sentence it repeated, kept by the rule itself
-            elif allow is not None and any(not allow(text, p) for p in starts):
-                why = outside
-            else:
-                why = "contained"
+            why = "contained"
         e.update({"kind": "kept", "was": "removed", "kept_why": why})
         if held:
             e["now"] = held[0]

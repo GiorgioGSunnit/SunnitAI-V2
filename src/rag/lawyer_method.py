@@ -3777,13 +3777,24 @@ def orientations_text(ctx: Dict[str, Any], plan: Dict[str, Any], rulings: Sequen
     return orientations_section(plan, rulings, log, points)
 
 
+# v79.10.6 (E1): a question put as a riqualificazione of the charge («sia qualificabile come percosse», «derubricazione»,
+# «anziché», «in luogo del») -- the only way the read's alternative stands as the question without naming the charge
+_REQUALIFY_RE = re.compile(r"(?i)\b(?:ri)?qualific|\bderubric|\banzich[eé]\b|\bin\s+luogo\s+d|\bin\s+alternativa\b|"
+                           r"\bdiversa\s+(?:fattispecie|ipotesi)\b")
+
+
 def other_charge(text: str, charge: str, records: Dict[str, Dict[str, Any]]) -> List[str]:
     """v79.10.5 (E1): the fattispecie a text names as its question that are not the held charge, when it does not name
     the charge -- [] when it names the charge (an alternative beside it is no replacement) or names no fattispecie.
     Named by number, or in words by a record's rubrica («il reato di truffa»). The client's own line beside the charge
     is no replacement either: a qualification the read put forward (rec["alternative"], a riqualificazione) and, outside
     the codes of offences, an article on the other side from the charge (the convenuto's exception to the claim, the
-    other side's exception to the client's)."""
+    other side's exception to the client's). v79.10.6 (E1): only a replacement of the charge for the same conduct is
+    named -- a defence never: a riqualificazione the record carries (rec["alternative"] or rec["alternative_facts"]) when
+    the text puts it as one (_REQUALIFY_RE: «qualificabile come», «derubricazione» -- «se i fatti integrino il reato di
+    truffa» with the charge on 646 is a replacement, refused), a norm that only limits or measures a claim
+    (data/institution_modules.json «limiting»: 1460, 1227, 1455 ...), and a scriminante or another uncounted article
+    (issue_records.counted) pass through."""
     from . import issue_records, posture as posture_mod
     from .topic_step import GENERIC_STEMS
     if not charge or not text:
@@ -3802,8 +3813,12 @@ def other_charge(text: str, charge: str, records: Dict[str, Dict[str, Any]]) -> 
 
     def defence(label: str) -> bool:
         rec = records.get(label) or {}
-        return bool(rec.get("alternative")) or (not posture_mod.penal_article(label) and bool(rec.get("side"))
-                                                and bool(held.get("side")) and rec.get("side") != held.get("side"))
+        if (rec.get("alternative") or rec.get("alternative_facts")) and _REQUALIFY_RE.search(text):
+            return True             # v79.10.6 (E1): put as a riqualificazione, not as the question on its own
+        if any(same_article(label, spec) for spec in (institution_modules().get("limiting") or {})):
+            return True
+        return not posture_mod.penal_article(label) and bool(rec.get("side")) and bool(held.get("side")) \
+            and rec.get("side") != held.get("side")
     named = list(dict.fromkeys(cited + [x for x in records if x != charge and in_words(x)]))
     return [x for x in named if issue_records.counted(x, str((records.get(x) or {}).get("rubrica") or ""))
             and (x in records or label_code(x) == label_code(charge)) and not defence(x)]
@@ -3840,11 +3855,18 @@ SUMMARY_LINES = 5          # his «Sintesi della soluzione (max 5 righe)»
 
 
 def summary_section(plan: Dict[str, Any], sols: List[Dict[str, Any]], main: int, a: Dict[str, Any],
-                    client: str) -> str:
+                    client: str, charge: str = "", records: Optional[Dict[str, Dict[str, Any]]] = None,
+                    log: Optional[Dict[str, Any]] = None) -> str:
     """The method plan's summary, at most SUMMARY_LINES sentences; without one, the main line and the record's
-    assessment."""
+    assessment. v79.10.6 (E1): with a charge held by rule (charge, in records), a plan's summary naming another
+    fattispecie and not the charge (other_charge) is refused like §3's question -- the code's summary instead, logged in
+    log["charge_refused_summary"]. (compose passes no plan: §1 is the code's.)"""
     text = _plain(plan.get("sintesi"))
-    if text:
+    held = charge if charge and charge in (records or {}) else ""
+    replaced = other_charge(text, held, records or {}) if text else []
+    if replaced and log is not None:
+        log["charge_refused_summary"] = {"charge": held, "named": replaced, "text": text[:200]}
+    if text and not replaced:
         return " ".join(_SENT_SPLIT.split(text)[:SUMMARY_LINES])
     who = client or "la parte assistita"
     esito = {FAVOREVOLE: f"favorevole a {who}", SFAVOREVOLE: f"sfavorevole a {who}", INCERTO: "incerto"}.get(
@@ -4446,7 +4468,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     orientation_points: List[str] = []
     layout_log: Dict[str, Any] = {}
     keyed = [
-        ("sintesi", _with_line(_with_line(summary_section({}, sols, main, a, client),
+        ("sintesi", _with_line(_with_line(summary_section({}, sols, main, a, client,
+                                                          (ctx.get("charge") or {}).get("article") or "", records, log),
                                           (ctx.get("penal_route") or {}).get("summary")),       # v79.8 (E3)
                                missing_laws_line(ctx))),                                         # v79.9 (B2)
         ("fatti", facts_section(ctx.get("facts") or {})),
@@ -4572,7 +4595,8 @@ def compose_clients(sections: Sequence[Tuple[str, str]], items: Sequence[Tuple[s
             own["registry_labels_out"] = labels
         composed.append((name, text, ctx))
         log.setdefault("clients", {})[name] = {k: own.get(k) for k in ("main_thesis", "esito", "answers",
-                                                                       "charge_refused")}     # v79.10.5 (E1)
+                                                                       "charge_refused",     # v79.10.5 (E1)
+                                                                       "charge_refused_summary")}
     heads, blocks, bodies = [], [], []
     for name, text, _ in composed:
         first = _SECTION_RE.search(text)
