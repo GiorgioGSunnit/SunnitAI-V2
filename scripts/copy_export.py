@@ -60,11 +60,11 @@ EXTRA = (
     ("lawyer_method", "PENAL_ROUTE_LINE", "Metodo, «Sintesi»: la via penale di un caso civile (v79.8)"),
     ("lawyer_method", "PENAL_ROUTE_CONCLUSION", "Metodo, «Conclusioni»: la via penale di un caso civile (v79.8)"),
     ("lawyer_method", "PENAL_ROUTE_UNKNOWN", "Metodo, la via penale: procedibilità non letta (v79.8)"),
-    ("lawyer_method", "NO_ACTION_LINE", "Metodo, linea principale: nessuna norma d'azione (le parole del PO, v79.8.6)"),
+    ("lawyer_method", "NO_ACTION_LINE", "Risposta, la nota del metodo non applicato: nessuna norma d'azione (le parole "
+                                        "del PO, v79.8.6; v79.10.1: mai linea principale)"),
     ("lawyer_method", "MISSING_LAWS_LINE", "Metodo, «Sintesi» e «Conclusioni»: la disciplina speciale assente "
      "dall'archivio (le parole del PO, v79.9)"),
-    ("lawyer_method", "NO_ACTION_ARGUMENT", "Metodo, «Soluzioni a confronto»: la linea senza norma d'azione (v79.8.5)"),
-    ("lawyer_method", "NO_ACTION_SUBJECT", "Metodo, la linea senza norma d'azione: nessun istituto nominato (v79.8.5)"),
+    ("lawyer_method", "NO_ACTION_SUBJECT", "Risposta, la nota senza norma d'azione: nessun istituto nominato (v79.8.5)"),
     ("lawyer_method", "CONTAINMENT_LINE", "Metodo, «Soluzioni a confronto»: la linea di contenimento dell'imputato "
                                           "(v79.7: sempre offerta, ultima)"),
     ("lawyer_method", "ASSESSMENT_LINES", "Metodo, «Conclusioni»: esito probabile, grado di certezza, obiettivo"),
@@ -101,6 +101,8 @@ EXTRA = (
     ("lawyer_method", "CHARGED_PROSE", "Metodo, «Norme e analisi per elementi»: il paragrafo della norma contestata "
                                        "dalle righe di sussunzione (v75b)"),
     ("lawyer_method", "NOT_APPLIED", "Risposta: il metodo dell'avvocato non applicato (v76)"),
+    ("lawyer_method", "NOT_APPLIED_CLIENT", "Risposta, più clienti: il metodo non applicato alla posizione di uno di "
+                                            "loro, gli altri con le sezioni del metodo (v79.10.1)"),
     ("lawyer_method", "NOT_APPLIED_WHY", "Risposta: perché il metodo non è stato applicato (v76)"),
     ("issue_records", "NOT_FATTISPECIE", "Registro: una norma di parte generale o processuale (v74, nel log)"),
     ("interactive_flow", "DECOMPOSE_WHY", "Registro: perché una norma ha un registro scomposto (v74, nel log)"),

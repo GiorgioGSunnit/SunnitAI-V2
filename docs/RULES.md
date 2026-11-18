@@ -503,7 +503,7 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - The signature blocks stripped are counted per cell in the nightly (`signatures_stripped`).
 - **v79.8.5 (the PO's review of 79.8).**
   - C1, restated: only an attributed sentence is an allegazione. That covers reported speech («sostiene», «afferma che», «lamenta che», «dichiara che», «accusa X di», «contesta a X»), a party's version («secondo Caio», «secondo la controparte»), «aveva negato», «apprendeva che» and a claim letter. A fact narrated in the quesito stays certain whatever word it uses: «lamenta forti dolori», «ha sporto denuncia», «il medico ha dichiarato una prognosi», «secondo il contratto», «accusa un malore».
-  - B1's hole: a claimant whose facts give no norm conferring an action gets the main line «Tra le norme esaminate per <istituto> nessuna attribuisce un'azione al cliente» (v79.8.6's wording), with a code-written argument naming the articles read. Never an empty main line, the standard body or another fallback. Counter: `no_action_lines`.
+  - B1's hole: a claimant whose facts give no norm conferring an action gets the main line «Tra le norme esaminate per <istituto> nessuna attribuisce un'azione al cliente» (v79.8.6's wording), with a code-written argument naming the articles read. Never an empty main line, the standard body or another fallback. Counter: `no_action_lines`. *Reversed in 79.10.1 (A1): the method steps aside to the prose answer; see 11.7.*
   - Draft modules for the lawyer's review (`"draft": true`): famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio.
 - **v79.8.6.** The E2 wording rule is absolute: no sentence containing «registro» is exempt, and the 79.8.5 exemption is gone. The two fixed lines are reworded: the no-action main line is «Tra le norme esaminate per <istituto> nessuna attribuisce un'azione al cliente», and the ungrounded answer is «Non risulta dagli atti né dalle norme esaminate.» The stage line on art. 335, co. 3, c.p.p. no longer says «registro». The nightly check `no_registro` fails on any «registro» in an answer, in any form, any section, tables included. — `lawyer_method.registro_hits`, `scripts/nightly_sim.py:registro_check`.
 
@@ -592,6 +592,38 @@ Element schemas: what an article requires, element by element, made once from it
   - Module actions: «7 l. 241/1990» matches the label the pipeline builds for an article of the archive document, «7 Legge sul Procedimento Amministrativo 2026» (`issue_records._label`, `topic_step._code`: a non-codice document keeps its name), or the same law's citation; a c.p.a. action its sigla or the code's archive name. The consumer-code check reads the same way. — `lawyer_method.same_article`, `claim_admission`, `consumer_code`.
   - `scripts/corpus_gaps.py --env .env` reads the primary documents' names live (read-only), prints the count (expected 87), per module, the defaults and the codes each law → archive names → present / NOT IN ARCHIVE / UNMAPPED, and the names no law, code or table entry maps; exit 1 when a module's law is not present. `--selftest` without a database.
 
+### 11.7 79.10.1 (Block A: the three regressions)
+
+From the blind grading of 79.8.6 against 79.6. No flag.
+
+- **A1. No claim, no method.** When no claim is admitted for the client (a claimant with no candidate at all), the method steps aside to the prose answer exactly as 79.6 did: the selection's main line is the placeholder, `method_refused` is set, and the standard body is written with v76's note. This reverses v79.8.5's B1 main line.
+  - The no-action sentence («Tra le norme esaminate per <istituto> nessuna attribuisce un'azione al cliente») is never a candidate, never «Linea principale» and never paired with a forecast. When no norm confers an action (`ctx["no_action"]`), it is the note's why, so it appears exactly once: «Nota: il metodo di analisi per elementi non è stato applicato a questo parere: tra le norme esaminate per … nessuna attribuisce un'azione al cliente. Il parere segue la struttura ordinaria.» A norm that confers an action but has an element excluded keeps v76's own why.
+  - The missing-laws line (v79.9 B2) goes beside the note, so a dismissal whose special laws are not in the archive still says so (`method_refusal` "lines").
+  - Every client's selection is read (`client_refusal`). A several-client parere steps aside only when no client has a line (`method_refusal`). When some do, they keep the method's sections, and the clients with the placeholder are said in one note per why, before the answer: «Nota: il metodo di analisi per elementi non è stato applicato alla posizione di <names>: <why>.», then their missing-laws line (`refused_clients_notes`). Before, only the first client was read, and another client's sections vanished silently.
+  - The kind `nessuna_azione`, its code argument (`NO_ACTION_ARGUMENT`), its `admitted_by` and the counter `no_action_lines` are gone.
+  - Counter `no_action_prose` (`block_counters`, 1 when the note carries the sentence). The nightly check `no_action_prose` fails on the sentence more than once, on a «Linea principale» line, or in a paragraph with «Esito probabile».
+
+  — `lawyer_method.client_refusal`, `method_refusal`, `refused_clients_notes`, `no_action_problems`; `interactive_flow` (the refusal after the method plan); `scripts/nightly_sim.py:no_action_check`.
+- **A2. The matter table inside the read's family.** An article admitted only through a `remedies.json` matter's actions (group «matter») is a claim candidate only when its family is one the first read's institutions name. An article's family is the module whose actions hold it, active or not (1490 → vendita, 2051 → custodia), else its matter (1418 → contratti) (`article_family`). A module a matter lists among its «member_modules» belongs to that matter's family too (`article_families`): custodia is inside the fatti illeciti (2051–2053 are its special regimes), so a tort read admits 2052 for a dog's bite. A typed contract's module (vendita, locazione, appalto, comodato, mutuo) is no member of «contratti»: a generic contract read never makes a sale article a claim.
+  - The fatti illeciti «patterns» do not include «responsabilità civile», «danno non patrimoniale» or «danno biologico», which a professional-liability read uses as much as a tort read; they include «danno cagionato da animali».
+  - The read's families are the modules its institutions name (`module_hit`, never filtered by «requires») and the matters whose new «patterns» its words hold (`read_families`). Where the read's institution has a module, only that module's articles pass, even when the module is not active (the consumer module without a professional counterparty).
+  - With a module active, v79.8's B2 stands: the matter table admits nothing outside it.
+  - With no first-read institution, there is no family to bound the table, which admits as in v79.8. The case's own words are not used instead: a party descriptor such as «proprietario» would name the proprietà family and refuse a servitù claim.
+  - A refusal is logged with its family (`claims_refused_family`, reason «fuori dalla famiglia dell'istituto della prima lettura»). `claims_any_admitted` reads the same admission, so an article refused here or by B2 confers no action, and the no-action sentence (A1) can follow.
+  - A sale article and a custody article no longer lead a professional-liability case; 1218 (general) still does.
+  - Counter `claims_refused_family`.
+
+  — `lawyer_method.family_admission`, `read_families`, `article_family`, `article_families`; `data/remedies.json` «patterns», «member_modules».
+- **A3. The main line by kind first.** With one sample the realism is the model's alone, so an attenuante's code argument («alto») could lead a contest («medio»). `coherent_solutions` now sets lines aside before ranking (`never_main`):
+  - While a contest (excluded, open or integrated), a defence, a scriminante or a riqualificazione is eligible, no circumstance (attenuante, aggravante) and no «elemento escluso» fragment leads. A fragment is a contest of an «escluso» element whose text `rule_quote.fragment_why` names.
+  - An attenuante never leads while any other line is eligible: for the imputato, the containment line always is.
+  - With the charge not fully integrato, the containment line (v79.7's subordinate line there) does not lead while a non-minority contest, defence or riqualificazione is eligible, so the brief's test holds whatever realism the one sample gives.
+  - The lines set aside stay among the soluzioni, marked `main_demoted`, and can be the subordinate line.
+  - A charge with one contestable element and a 62-bis candidate yields the contest as principale.
+  - Counter `main_demoted`.
+
+  — `lawyer_method.never_main`, `escluso_fragment`, `coherent_solutions`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -639,5 +671,6 @@ Element schemas: what an article requires, element by element, made once from it
 | v79.6 | Questions answered first, several clients, repealed articles, alternative elements, role derived, keyword hits by matter |
 | v79.9 | Mental and duty elements graded by polarity, riqualificazione in the same code naming the differing element (A); module stages, special laws and the missing-laws line, the consumer's professional counterparty (B); the family allowlist on every candidate source (C); allegations by attribution only, more fragments, fraud indicators, whole citations, scriminante commi (D) |
 | v79.10 (A4–A5) | The amministrativo family and module (L. 241/1990, c.p.a., TU edilizia) with strong and weak signals; the family gate's override doors and its alarm (dropped rows graded in shadow, the nightly's first section) |
+| v79.10.1 | The three regressions: no claim admitted, the method steps aside to the prose answer with the no-action sentence once in v76's note, never «Linea principale» (A1, reverses 79.8.5's B1 line); matter-table claims only inside the first read's institution family, only its module's where it has one (A2); circumstances and «elemento escluso» fragments never the main line while a contest, defence or riqualificazione exists, attenuanti always subordinate (A3) |
 | v79.11 | Element schemas (`ELEMENT_SCHEMAS`): per-article schemas checked against the text and reviewed by the lawyer; schema elements in place of the text split, the path per record; the schema's tipo in the general-part gate within the hard invariants; one rule selector for grading (mental by kind, a condition's parts, a termine's date); admission and module stage in shadow; the counters |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

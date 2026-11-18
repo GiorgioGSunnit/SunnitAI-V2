@@ -5691,6 +5691,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
                    text_tidy)
     t0 = time.time()
     state.pop("method_refused", None)       # v75: each answer decides it again
+    state.pop("method_refused_lines", None)     # v79.10.1 (A1): likewise
+    state.pop("method_refused_clients", None)   # v79.10.1 (A1, review): likewise
     lang = state.get("lang") or "it"
     analysis = _restored_analysis(state["analysis"])
     topics = [state["topics"][n - 1] for n in numbers if 0 < n <= len(state.get("topics") or [])]
@@ -5866,13 +5868,30 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
                 (method_ctx.get("records_view") or {}).get("special_commi") or [])
         state["ranked_trace"] = _isolated("ranked_trace", lambda: ranked_trace(state, method_ctx), []) or []
         _log("ranked_trace", state["ranked_trace"])     # v79.7 (item 3): the retrieval's top-ranked, each one's fate
-        refused = _isolated("lawyer_method_refusal", lambda: lawyer_method.placeholder_main(
-            method_ctx, method_plan), "") if method_ctx is not None else ""
-        if refused:             # v75: a placeholder thesis is a failure state -- never printed: the standard body
-            state["method_refused"] = lawyer_method.NOT_APPLIED_WHY["placeholder"]       # v76: said in the answer
+        # v79.10.1 (A1): every client's selection read (client_refusal); with no norm conferring an action the why is
+        # the no-action sentence -- the method steps aside to the prose answer as 79.6 did, never «Linea principale»;
+        # (review) with several clients only when none has a line -- else the refused ones are said, the others kept
+        items = list(method_clients) if method_clients else [("", method_ctx, method_plan)]
+        refusals = _isolated("lawyer_method_refusal", lambda: [lawyer_method.client_refusal(c, p) for _, c, p in items],
+                             []) if method_ctx is not None else []
+        refusals = list(refusals or []) + [{}] * (len(items) - len(refusals or []))
+        refusal = refusals[0] if refusals and all(refusals) else {}
+        state.setdefault("block_counters", {})["no_action_prose"] = int(any(r.get("no_action") for r in refusals))
+        if method_clients and not refusal and any(refusals):
+            kept = [x for x, r in zip(items, refusals) if not r]
+            refused = [(x[0], r) for x, r in zip(items, refusals) if r]
+            state["method_refused_clients"] = lawyer_method.refused_clients_notes(refused)
+            method_clients = kept if len(kept) > 1 else None
+            method_ctx, method_plan = kept[0][1], kept[0][2]
+            _log("lawyer_method_refused_clients", {n: {"why": "no_action" if r.get("no_action") else "placeholder",
+                                                       "tesi": r["tesi"]} for n, r in refused})
+        if refusal:             # v75: a placeholder thesis is a failure state -- never printed: the standard body
+            state["method_refused"] = refusal["why"]                    # v76: said in the answer
+            state["method_refused_lines"] = list(refusal.get("lines") or [])     # v79.10.1 (A1): kept in the prose
             lawyer_method.end()
-            method_ctx, method_plan = None, {}
-            _log("lawyer_method_refused", {"why": "placeholder", "tesi": refused})
+            method_ctx, method_plan, method_clients = None, {}, None
+            _log("lawyer_method_refused", {"why": "no_action" if refusal.get("no_action") else "placeholder",
+                                           "tesi": refusal["tesi"]})
     mark("jobs")
     analysis_p = {**analysis_p, CASE_KEY: analysis.get(CASE_KEY) or case}
     context = ptw.statement_context(analysis_p)
@@ -5975,7 +5994,10 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
     if state.get("method_refused"):             # v76: the method never steps aside silently -- the answer says so
         from . import lawyer_method
-        draft = f"{lawyer_method.not_applied_note(state['method_refused'])}\n\n{draft}"
+        draft = "\n\n".join([lawyer_method.not_applied_note(state["method_refused"])]     # v79.10.1 (A1): the
+                              + list(state.get("method_refused_lines") or []) + [draft])    # missing-laws line too
+    elif state.get("method_refused_clients"):   # v79.10.1 (A1, review): the clients with no line, said; the others'
+        draft = "\n\n".join(list(state["method_refused_clients"]) + [draft])      # sections kept
     reading = role_reading_line(state, assumption)       # v79.6 (item 5): the role read, in one line
     if reading:
         draft = f"{reading}\n\n{draft}"
@@ -8287,7 +8309,11 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     counts = list(by_client.values()) or [state.get("thesis_counts") or {}]
     out["unadmitted_candidates"] = sum(int(c.get("unadmitted") or 0) for c in counts)              # v79.8 (B4)
     out["main_outside_institution"] = sum(1 for c in counts if c.get("main_outside_institution"))
-    out["no_action_lines"] = sum(int(c.get("no_action") or 0) for c in counts)                    # v79.8.5
+    # v79.10.1 (A1): v79.8.5's no_action_lines is gone (the no-action line is never a candidate): no_action_prose, set
+    # where the method steps aside (block_counters); (A2) the matter articles refused outside the read's family; (A3)
+    # the circumstances and «elemento escluso» fragments kept out of the main line
+    for k in ("claims_refused_family", "main_demoted"):
+        out[k] = sum(int(c.get(k) or 0) for c in counts)
     for k in ("riqualificazione_out_of_code", "requalify_refused_code", "requalify_unnamed",       # v79.9 (A3)
               "candidates_out_of_family", "candidates_family_dropped"):                            # v79.9 (C2)
         out[k] = sum(int(c.get(k) or 0) for c in counts)

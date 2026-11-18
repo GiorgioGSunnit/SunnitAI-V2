@@ -1232,11 +1232,6 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
         "La difesa dell'imputato" if posture.get("role") in VICTIM_ROLES else "L'accusa")
     art = c.get("article") or ""
     texts = CODE_ARGUMENTS.get(c["kind"]) or {}
-    if c["kind"] == "nessuna_azione":           # v79.8.5 (B1): no claim -- what the record lacks, said
-        arts = ", ".join(f"art. {x}" for x in c.get("refused") or [])
-        arg = NO_ACTION_ARGUMENT["argomento"].format(articles=arts) if arts else NO_ACTION_ARGUMENT["argomento_none"]
-        return {"pro": _sentence_join([NO_ACTION_ARGUMENT["pro"]]), "contro": _sentence_join([NO_ACTION_ARGUMENT["contro"]]),
-                "argomento": _sentence_join([arg]), "realismo": BASSO}
     if c["kind"] == "transazione":              # v79.8 (B3): the convenuto's way out of the claim
         return {"pro": _sentence_join([TRANSAZIONE_ARGUMENT["pro"]]),
                 "contro": _sentence_join([TRANSAZIONE_ARGUMENT["contro"]]),
@@ -1466,6 +1461,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         ctx["claim_modules"] = [m["id"] for m in modules]
         ctx["module_stages"] = {m["id"]: m.get("stage") or "" for m in modules}           # v79.9 (B1)
         consumer = professional_counterparty(ctx)                                          # v79.9 (B3)
+        families = read_families(ctx)                       # v79.10.1 (A2): the first read's institution families
+        ctx["claim_families"] = families
         admitted, refused = [], {}
         for label, rec in records.items():
             if rec.get("side") == "threat" or (own_kind == "riconvenzionale" and rec.get("alternative")):
@@ -1475,12 +1472,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             open_ = [r for r in live if r.get("status") == DA_PROVARE and r.get("id")]
             if any(r.get("status") == NON_RISULTA for r in live) or not fatt(label):
                 continue
-            rule, group, rank = claim_admission(label, modules, consumer)    # v79.8 (B1): a norm conferring an action
+            rule, group, rank = family_admission(label, modules, consumer, families)    # v79.8 (B1); v79.10.1 (A2)
             if not rule:
                 refused[label] = group
-                continue
-            if modules and group == "matter":                           # B2: nothing outside the institution
-                refused[label] = CLAIM_REFUSED["outside"]
                 continue
             admitted.append((rank, label, rec, rule, group, proven, open_))
         admitted.sort(key=lambda x: x[0])
@@ -1501,11 +1495,17 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                     poggia_su=[r["id"] for r in open_], article=label, admitted_by=rule)
                 claims.append((label, []))
         ctx["claims_refused"] = refused
-        # v79.8.5: does any article of the client's confer an action, whatever its elements' status?
+        ctx["claims_refused_family"] = sorted(x for x, why in refused.items() if why.startswith(FAMILY_REFUSED_HEAD))
+        # v79.8.5: does any article of the client's confer an action, whatever its elements' status? v79.10.1 (A2):
+        # admitted as the claims are -- an article outside the institution or its family confers none here
         ctx["claims_any_admitted"] = bool(admitted) or any(
-            claim_admission(x, modules, consumer)[0] for x, r in records.items() if r.get("side") != "threat" and fatt(x))
+            family_admission(x, modules, consumer, families)[0] for x, r in records.items()
+            if r.get("side") != "threat" and fatt(x))
         if refused:
             _log("claims_refused", refused)
+        if ctx["claims_refused_family"]:
+            _log("claims_refused_family", {"families": families, "articles": {
+                x: article_family(x) for x in ctx["claims_refused_family"]}})
         if role == "attore":    # v75: the remedies of the claim's matter
             for label, proven in claims[:1]:
                 matter = matter_of(label)
@@ -1518,11 +1518,13 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)   # prescrizione stays (E4:
             # claims only -- a prescription article is never a claim, issue_records.counted)
         add("transazione", CANDIDATE_TEXTS["transazione"], article=claim or charge)    # v79.8 (B3): its set
+    ctx.pop("no_action", None)
     if known_role and not victim and role not in ACCUSED and not out and not ctx.get("claims_any_admitted"):
-        # v79.8.5 (B1): no norm confers an action -- said, never a fallback (a norm that does, with an element
-        # excluded, keeps v76's note: the facts give no line)
-        add("nessuna_azione", NO_ACTION_LINE.format(istituto=action_subject(ctx)), poggia_su=[],
-            refused=sorted(ctx.get("claims_refused") or {}))
+        # v79.8.5 (B1): no norm confers an action. v79.10.1 (A1): never a candidate, never «Linea principale» -- the
+        # method steps aside to the prose answer as 79.6 did (no candidate: the placeholder, method_refusal), and the
+        # sentence is said once, in v76's note (a norm that does, with an element excluded, keeps v76's own why)
+        ctx["no_action"] = NO_ACTION_LINE.format(istituto=action_subject(ctx))
+        _log("no_action", {"line": ctx["no_action"], "refused": sorted(ctx.get("claims_refused") or {})})
     if not offender:
         for label, r in contests["integrated"]:
             contest(label, r)
@@ -1561,14 +1563,10 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     return capped
 
 
-# v79.8.5 (B1, the PO's words): a claimant with no norm conferring an action -- the main line says so, never empty;
-# v79.8.6: reworded, the E2 rule (no «registro») absolute
+# v79.8.5 (B1, the PO's words): a claimant with no norm conferring an action -- said; v79.8.6: reworded, the E2 rule
+# (no «registro») absolute; v79.10.1 (A1): never the main line -- the sentence of v76's note in the prose answer, once
 NO_ACTION_LINE = "Tra le norme esaminate per {istituto} nessuna attribuisce un'azione al cliente"
-NO_ACTION_ARGUMENT = {   # my drafts (v79.8.5)
-    "pro": "Non fonda la domanda su norme che non conferiscono un'azione al cliente",
-    "contro": "Prima di agire va individuata la norma che conferisce l'azione",
-    "argomento": "Le norme lette sui fatti ({articles}) non conferiscono al cliente un'azione verso la controparte",
-    "argomento_none": "Nessuna norma letta sui fatti conferisce al cliente un'azione verso la controparte"}
+NO_ACTION_CORE = "nessuna attribuisce un'azione al cliente"
 NO_ACTION_SUBJECT = "i fatti narrati"
 
 
@@ -1593,15 +1591,16 @@ ADMITTED_BY = {"contest_excluded": "elemento dell'addebito o della domanda", "co
                "contenimento": "linea dell'imputato (tabella delle posizioni)",
                "claim_offence": "persona offesa: il reato contestato", "parte_civile": "persona offesa: artt. 74-79 c.p.p.",
                "sequestro": "persona offesa: artt. 253, 321, 262 c.p.p.", "aggravante": "persona offesa: aggravante provata",
-               "eccezione": "remedies.json: eccezioni della materia", "transazione": "convenuto: art. 1965 c.c.",
-               "nessuna_azione": "nessuna norma d'azione (B1)"}
+               "eccezione": "remedies.json: eccezioni della materia", "transazione": "convenuto: art. 1965 c.c."}
 CLAIM_REFUSED = {   # v79.8 (B1, B2): why an article is no claim -- logged, never printed
     "limiting": "norma che limita o misura la domanda ({why}): non conferisce un'azione",
     "none": "nessuna regola la ammette: non conferisce un'azione al ruolo del cliente",
     "outside": "fuori dall'istituto della prima lettura",
     "subordinate": "norma generale, subordinata: il modulo dell'istituto dà una linea provata",
     "non_action": "{why}: non conferisce un'azione al cliente",             # v79.9 (B2)
-    "consumer": "codice del consumo: nessuna controparte professionale tra i fatti certi"}     # v79.9 (B3)
+    "consumer": "codice del consumo: nessuna controparte professionale tra i fatti certi",     # v79.9 (B3)
+    "family": "fuori dalla famiglia dell'istituto della prima lettura ({family}; prima lettura: {read})"}  # v79.10.1 (A2)
+FAMILY_REFUSED_HEAD = CLAIM_REFUSED["family"].split(" (")[0]
 MODULES_FILE = os.path.join(os.path.dirname(DATA_FILE), "institution_modules.json")
 _MODULES: Dict[str, Any] = {}
 
@@ -1817,7 +1816,65 @@ def claim_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: boo
     return "", CLAIM_REFUSED["none"], ()
 
 
-CONTAINMENT_LINE = "Contenimento della pena: riti alternativi, attenuanti e commisurazione della pena"   # my draft
+def article_family(label: str) -> str:
+    """v79.10.1 (A2): a claim article's institution family -- the module whose actions hold it (any module, active or
+    not: 1490 is «vendita», 2051 «custodia»), else its remedies.json matter (1418 «contratti»); "" when neither."""
+    for m in institution_modules().get("modules") or []:
+        if any(same_article(label, spec) for spec in m.get("actions") or []):
+            return str(m["id"])
+    return str(matter_of(label).get("id") or "")
+
+
+def article_families(label: str) -> List[str]:
+    """v79.10.1 (A2, review): the families an article belongs to -- its own (article_family), then the remedies.json
+    matters holding that module among their «member_modules» (custodia inside the fatti illeciti: a read naming the
+    tort admits 2052 for a dog's bite); a typed contract's module is no member of «contratti» (1490 stays «vendita»)."""
+    family = article_family(label)
+    if not family:
+        return []
+    return [family] + [str(m["id"]) for m in remedies().get("matters") or []
+                       if family in (m.get("member_modules") or []) and str(m["id"]) != family]
+
+
+def read_families(ctx: Dict[str, Any]) -> Optional[List[str]]:
+    """v79.10.1 (A2): the first read's institution families -- the modules its institutions name (module_hit, never
+    filtered by «requires»: the institution has its module even when the module is not active), then the remedies.json
+    matters whose «patterns» its words hold ([] when they name none: no matter article is then a claim). None with no
+    first-read institution (the read failed or named none): there is no family to bound the matter table, which admits
+    as in v79.8 (the case's own words are no family: «proprietario» names a party, not the proprietà)."""
+    from . import family_gate
+    insts = family_gate.institution_texts(ctx.get("institutions") or [])
+    if not insts:
+        return None
+    text = " ".join(insts)
+    out = [str(m["id"]) for m in institution_modules().get("modules") or [] if module_hit(m, text)]
+    out += [str(m["id"]) for m in remedies().get("matters") or []
+            if any(re.search(p, text, re.IGNORECASE) for p in m.get("patterns") or [])]
+    return list(dict.fromkeys(out))
+
+
+def family_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: bool = True,
+                     families: Optional[Sequence[str]] = None) -> Tuple[str, str, Tuple]:
+    """v79.10.1 (A2): claim_admission, then the institution's bounds on what a remedies.json matter's actions admit
+    («matter»): with a module active, nothing (v79.8 B2: «outside»); else only an article of the first read's family
+    (article_families in read_families) -- and where the read's institution has a module (named, not active), only
+    that module's; with no first-read institution (families None) as v79.8. ("", why, ()) when refused."""
+    rule, group, rank = claim_admission(label, modules, consumer)
+    if not rule or group != "matter":
+        return rule, group, rank
+    if modules:                                                     # v79.8 (B2): nothing outside the institution
+        return "", CLAIM_REFUSED["outside"], ()
+    if families is None:
+        return rule, group, rank
+    mod_ids = {str(m["id"]) for m in institution_modules().get("modules") or []}
+    allowed = [f for f in families if f in mod_ids] or list(families)
+    if any(f in allowed for f in article_families(label)):
+        return rule, group, rank
+    return "", CLAIM_REFUSED["family"].format(family=article_family(label) or "nessuna",
+                                              read=", ".join(families) or "nessuna"), ()
+
+
+CONTAINMENT_LINE ="Contenimento della pena: riti alternativi, attenuanti e commisurazione della pena"   # my draft
 CAP_PRIORITY = {"contest_excluded": 0, "contest_open": 0, "requalify": 1, "scriminante": 2, "defence": 2,
                 "attenuante": 3, "contest_integrated": 4}       # v79.7: what the cap keeps first (the containment always)
 NO_THREAT_WHY = {   # v79.7 (item 2): why no record is the charge's -- logged and counted, never printed
@@ -2515,7 +2572,10 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             "samples": len((ctx.get("thesis_choice") or {}).get("scores") or []),      # v79.8 (A5): replies used
             # v79.8 (B4): candidates no rule admits (must be 0); the main line's norm outside the read's institution
             "unadmitted": sum(1 for c in cands if not c.get("admitted_by")),
-            "no_action": sum(1 for c in cands if c.get("kind") == "nessuna_azione"),      # v79.8.5
+            # v79.10.1 (A2): the client's articles a matter's actions admitted, refused outside the read's family
+            "claims_refused_family": len(ctx.get("claims_refused_family") or []),
+            # v79.10.1 (A3): the lines never_main kept out of the main line (circumstances, «elemento escluso» fragments)
+            "main_demoted": sum(1 for t in sols if t.get("main_demoted")),
             "main_outside_institution": main_outside(ctx, m),
             "threats_from": str((ctx.get("candidates_trace") or {}).get("threats_from") or ""),
             "no_threat": str((ctx.get("candidates_trace") or {}).get("no_threat") or ""),
@@ -2605,7 +2665,7 @@ NOT_APPLIED_WHY = {   # my drafts (v76)
     "placeholder": "i fatti narrati non offrono una linea fondata sugli elementi delle norme",
     "undecomposed": "l'art. {art} (l'addebito o la domanda) non si scompone in elementi verificabili",
     "unread": "il testo dell'art. {art} (l'addebito o la domanda) non è stato recuperato",
-}
+}   # v79.10.1 (A1): with no norm conferring an action, the why is the no-action sentence (method_refusal)
 
 
 def not_applied_note(why: str) -> str:
@@ -2618,6 +2678,66 @@ def placeholder_main(ctx: Dict[str, Any], plan: Dict[str, Any]) -> str:
     logged); "" otherwise."""
     sols, main, _ = selection(ctx, plan)
     return sols[main]["tesi"] if sols[main].get("placeholder") else ""
+
+
+def client_refusal(ctx: Optional[Dict[str, Any]], plan: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.10.1 (A1): one client's refusal -- {"tesi", "why", "no_action", "lines"} when its main line is the
+    placeholder, {} otherwise. The why: with no norm conferring an action on the claimant (ctx["no_action"]) the
+    no-action sentence -- its one appearance in the answer, never «Linea principale», never with a forecast -- else
+    v76's placeholder why. "lines": the lines the method would have printed that the prose keeps (the missing-laws
+    line, v79.9 B2: a dismissal with its special laws out of the archive)."""
+    if ctx is None:
+        return {}
+    tesi = placeholder_main(ctx, plan)
+    if not tesi:
+        return {}
+    line = str(ctx.get("no_action") or "")
+    why = (line[:1].lower() + line[1:]) if line else NOT_APPLIED_WHY["placeholder"]
+    return {"tesi": tesi, "why": why, "no_action": bool(line), "lines": [x for x in [missing_laws_line(ctx)] if x]}
+
+
+def method_refusal(items: Sequence[Tuple[Dict[str, Any], Dict[str, Any]]]) -> Dict[str, Any]:
+    """v79.10.1 (A1): the method steps aside to the prose answer (v76's note, the standard body) as 79.6 did -- the
+    first client's refusal (client_refusal) when every client's main line is the placeholder, {} otherwise. Review:
+    with several clients, one with a line keeps the method for its own; the others are said by
+    refused_clients_notes, never dropped silently and never at the cost of another client's sections."""
+    got = [client_refusal(ctx, plan) for ctx, plan in items if ctx is not None]
+    return got[0] if got and all(got) else {}
+
+
+NOT_APPLIED_CLIENT = "Nota: il metodo di analisi per elementi non è stato applicato alla posizione di {names}: {why}."
+# my draft (v79.10.1, A1 review): a several-client parere where only some clients have a line
+
+
+def refused_clients_notes(refused: Sequence[Tuple[str, Dict[str, Any]]]) -> List[str]:
+    """v79.10.1 (A1, review): the notes for the clients of a several-client parere whose main line is the placeholder
+    while another client's is not -- one note per why (the no-action sentence once), naming its clients, then their
+    kept lines (the missing-laws line), each once."""
+    by_why: Dict[str, List[str]] = {}
+    lines: List[str] = []
+    for name, r in refused:
+        by_why.setdefault(str(r.get("why") or NOT_APPLIED_WHY["placeholder"]).rstrip("."), []).append(name)
+        lines += [x for x in r.get("lines") or [] if x not in lines]
+    return [NOT_APPLIED_CLIENT.format(names=_names(names), why=why) for why, names in by_why.items()] + lines
+
+
+def no_action_problems(answer: str) -> List[str]:
+    """v79.10.1 (A1): the no-action sentence at most once, never on a «Linea principale» line, never in a paragraph with
+    a forecast («Esito probabile») -- [] when the answer keeps the rule (the nightly's check no_action_prose)."""
+    text = answer or ""
+    low = text.lower()
+    out = []
+    n = low.count(NO_ACTION_CORE)
+    if n > 1:
+        out.append(f"{n} volte")
+    for para in re.split(r"\n\s*\n", text):
+        if NO_ACTION_CORE not in para.lower():
+            continue
+        if any(NO_ACTION_CORE in ln.lower() and "linea principale" in ln.lower() for ln in para.split("\n")):
+            out.append("come «Linea principale»")
+        if re.search(r"esito\s+probabile", para, re.IGNORECASE):
+            out.append("con una previsione")
+    return out
 
 
 def objections_plan(ctx: Dict[str, Any], plan: Dict[str, Any], call: Optional[Callable] = None,
@@ -2774,6 +2894,52 @@ def fallback_thesis(a: Dict[str, Any], riti: Sequence[str], posture: Optional[Di
             "poggia_su": [], "fallback": True, "placeholder": True}     # v75: a failure state, never printed
 
 
+# v79.10.1 (A3): the lines that hold the main line against a circumstance -- a contest, a defence, a riqualificazione
+LEAD_KINDS = ("contest_excluded", "contest_open", "contest_integrated", "defence", "scriminante", "requalify")
+CIRCUMSTANCE_KINDS = ("attenuante", "aggravante")
+MAIN_DEMOTED_WHY = {"circumstance": "circostanza: mai linea principale finché esiste una contestazione, una difesa o "
+                                    "una riqualificazione",
+                    "fragment": "frammento di norma come «elemento escluso»: mai linea principale finché esiste una "
+                                "contestazione, una difesa o una riqualificazione",
+                    "attenuante": "attenuante: sempre subordinata",
+                    # review: v79.7's containment line on a charge not fully integrato is the subordinate line
+                    "containment": "contenimento con l'addebito non integrato: subordinato a una contestazione, a una "
+                                   "difesa o a una riqualificazione sostenibile"}
+
+
+def escluso_fragment(t: Dict[str, Any], known: Dict[str, Dict[str, Any]]) -> bool:
+    """v79.10.1 (A3): a contest of an «escluso» element whose text is a fragment, no condition (rule_quote.fragment_why:
+    a bare subject or object, a connective, a saving or scope clause, a modal permission)."""
+    from . import rule_quote
+    return t.get("kind") == "contest_excluded" and any(
+        rule_quote.fragment_why((known.get(x) or {}).get("text") or "") for x in t.get("contesta") or [])
+
+
+def never_main(sols: Sequence[Dict[str, Any]], eligible: Sequence[int], known: Dict[str, Dict[str, Any]],
+               all_integrated: bool = True) -> Dict[int, str]:
+    """v79.10.1 (A3): {index: why} of the eligible lines kept out of the main line -- with one sample the realism is the
+    model's alone (an attenuante's code argument «alto» led over a contest «medio»), so the kind decides first: while a
+    contest, a defence or a riqualificazione is eligible, no circumstance (attenuante, aggravante) and no «elemento
+    escluso» fragment leads; an attenuante never leads while any other line is eligible (the imputato's containment
+    line always is). They stay among the soluzioni, subordinate. Review: with the charge not fully integrato
+    (all_integrated False) the containment line -- v79.7's subordinate line there -- never leads over a non-minority
+    contest, defence or riqualificazione either: the brief's test holds whatever the one sample's realism."""
+    circ = {i for i in eligible if sols[i].get("kind") in CIRCUMSTANCE_KINDS}
+    frag = {i for i in eligible if escluso_fragment(sols[i], known)}
+    lead = [i for i in eligible if sols[i].get("kind") in LEAD_KINDS and i not in frag]
+    out: Dict[int, str] = {}
+    if lead:
+        out.update({i: MAIN_DEMOTED_WHY["circumstance"] for i in circ})
+        out.update({i: MAIN_DEMOTED_WHY["fragment"] for i in frag})
+    if not all_integrated and any(not sols[i].get("minoritaria") for i in lead):
+        out.update({i: MAIN_DEMOTED_WHY["containment"] for i in eligible if sols[i].get("kind") == "contenimento"})
+    others = [i for i in eligible if i not in circ and i not in out]
+    if others:
+        out.update({i: MAIN_DEMOTED_WHY["attenuante"] for i in circ
+                    if sols[i].get("kind") == "attenuante" and i not in out})
+    return out
+
+
 def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]], a: Dict[str, Any],
                        riti: Sequence[str] = (), log: Optional[List[Dict[str, Any]]] = None,
                        posture: Optional[Dict[str, Any]] = None, circ: Optional[Dict[str, Dict[str, Any]]] = None
@@ -2784,7 +2950,9 @@ def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]],
         «minoritaria», it stays, realismo basso (INTEGRATED_NOTE); unlabelled, it is barred (BARRED_LABEL), never main;
       - a minority thesis is main only when the record offers no sustainable non-minority line -- and with the charge
         fully integrato the posture's «ammettere la condotta … contenere la pena» always is one (posture_fallback);
-      - among the eligible, the model's choice when it is one, else the most realistic; none: the fallback line."""
+      - among the eligible, the model's choice when it is one, else the most realistic; none: the fallback line;
+      - v79.10.1 (A3): never main -- a circumstance or an «elemento escluso» fragment while a contest, a defence or a
+        riqualificazione is eligible, an attenuante while any other line is (never_main; marked «main_demoted»)."""
     known = elements_by_id(records, circ)
     sols = [dict(s_) for s_ in plan.get("soluzioni") or []]
     for t in sols:
@@ -2808,7 +2976,13 @@ def coherent_solutions(plan: Dict[str, Any], records: Dict[str, Dict[str, Any]],
             if log is not None:
                 log.append({"tesi": t["tesi"][:160], "barred": hit, "elements": {x: known[x]["text"] for x in hit}})
     eligible = [i for i, t in enumerate(sols) if not t.get("barred") and not t.get("unverifiable")]
-    majority = [i for i in eligible if not sols[i].get("minoritaria")]
+    out_of_main = never_main(sols, eligible, known, bool(a.get("all_integrated")))     # v79.10.1 (A3): kind first
+    for i, why in out_of_main.items():
+        sols[i]["main_demoted"] = why
+        if log is not None:
+            log.append({"tesi": sols[i]["tesi"][:160], "main_demoted": why})
+    eligible = [i for i in eligible if i not in out_of_main]
+    majority =[i for i in eligible if not sols[i].get("minoritaria")]
     wanted = (plan.get("tesi_principale") or 1) - 1
     proven = lambda t: sum(1 for x in t.get("poggia_su") or [] if (known.get(x) or {}).get("status") == PROVATO)
     # v76: by realism, then by the proven elements it rests on, then the candidates' order -- a line with nothing

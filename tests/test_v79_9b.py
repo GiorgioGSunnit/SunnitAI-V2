@@ -131,11 +131,13 @@ def test_a_dismissal_with_the_laws_absent_gets_the_line_and_no_2119_main_line():
     assert not [c for c in ctx["candidates"] if c.get("article") in ("2119 c.c.", "2118 c.c.")]
     assert "non conferisce un'azione al cliente" in ctx["claims_refused"]["2119 c.c."]
     plan = M.clean_method({"valutazioni": {c["id"]: {"realismo": "basso"} for c in ctx["candidates"]}}, ctx["candidates"])
-    out = M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan)
-    by = dict(M.answer_sections(out))
     line = ("La disciplina speciale di licenziamento (L. 604/1966, L. 300/1970, d.lgs. 23/2015, d.lgs. 81/2015) non è "
             "nell'archivio: il parere si limita alle norme del codice")
-    assert line in by[M.title("sintesi")] and line in by[M.title("conclusioni")]
+    # v79.10.1 (A1): no norm confers an action -- the method steps aside to the prose answer; the missing-laws line
+    # goes with v76's note (method_refusal's lines), never lost
+    assert M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan) == ""
+    refusal = M.method_refusal([(ctx, plan)])
+    assert refusal["no_action"] and refusal["lines"] == [line + "."]
     sols, main, _ = M.selection(ctx, plan)
     assert "2119" not in sols[main]["tesi"] and "2118" not in sols[main]["tesi"]
 

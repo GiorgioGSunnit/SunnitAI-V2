@@ -5,7 +5,9 @@ C1 restated: only an attributed sentence (reported speech, a party's version, a 
     medico ha dichiarato una prognosi», «secondo il contratto») -- a lesione's elements proven by the narrative
 B1's hole: a claimant whose facts give no norm conferring an action gets the explicit main line «Nessuna norma d'azione
     individuata nel registro per <istituto>» (v79.8.6: «Tra le norme esaminate per <istituto> nessuna attribuisce
-    un'azione al cliente») -- never an empty main line, never the standard body or another fallback
+    un'azione al cliente») -- never an empty main line, never the standard body or another fallback. v79.10.1 (A1)
+    reverses it: never a candidate nor «Linea principale» -- the method steps aside to the prose answer (v76's note,
+    whose why is the sentence; tests/test_v79_10_1.py)
 data: the draft modules (famiglia, consumo, lavoro, successioni, condominio), for the lawyer's review
 """
 
@@ -102,35 +104,34 @@ def test_a_claimant_with_no_norm_of_action_gets_the_explicit_line():
     from src.rag import lawyer_method as M
     ctx = _ctx()
     cands = M.thesis_candidates(ctx)
-    assert [c["kind"] for c in cands] == ["nessuna_azione"]
-    line = cands[0]
-    assert line["tesi"] == "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente"
-    assert line["admitted_by"] and line["argued"] == "code" and line["code_argument"]["realismo"] == "basso"
-    assert "art. 1225 c.c., art. 1476 c.c." in line["code_argument"]["argomento"]
+    assert cands == []                          # v79.10.1 (A1): never a candidate -- the sentence, for the prose's note
+    assert ctx["no_action"] == "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente"
 
 
 def test_the_line_is_the_main_line_and_survives_the_wording_pass():
+    # v79.10.1 (A1): reversed -- the method steps aside (the placeholder, the standard body) and v76's note says the
+    # sentence once; it is never the main line
     from src.rag import lawyer_method as M
     ctx = _ctx()
     ctx["candidates"] = M.thesis_candidates(ctx)
-    plan = M.clean_method({"valutazioni": {"T1": {"realismo": "basso"}}}, ctx["candidates"])
-    counts = M.selection_counts(ctx, plan, {"valutazioni": {"T1": {"realismo": "basso"}}})
-    assert counts["chosen_kind"] == "nessuna_azione" and counts["main_is_fallback"] is False and counts["no_action"] == 1
-    assert M.placeholder_main(ctx, plan) == ""                      # never the standard body
-    out = M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan)
-    by = dict(M.answer_sections(out))
-    assert "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente" in by[M.title("sintesi")]
-    assert "Tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente" in by[M.title("soluzioni")]
-    assert M.registro_hits(out) == [] and not any("registro" in x for x in M.wording_hits(out, [], False))
+    plan = M.clean_method({}, ctx["candidates"])
+    counts = M.selection_counts(ctx, plan, {})
+    assert counts["main_is_fallback"] is True and "no_action" not in counts
+    assert M.placeholder_main(ctx, plan)                            # the standard body
+    assert M.compose([("Norme applicate ai fatti", "Regola.")], ctx, plan) == ""
+    note = M.not_applied_note(M.method_refusal([(ctx, plan)])["why"])
+    assert "tra le norme esaminate per comodato nessuna attribuisce un'azione al cliente" in note
+    assert M.registro_hits(note) == [] and not any("registro" in x for x in M.wording_hits(note, [], False))
 
 
 def test_with_no_institution_named_the_line_names_the_matter_or_the_facts():
     from src.rag import lawyer_method as M
     ctx = {**_ctx(), "institutions": [], "case": "Tizio chiede un consiglio."}
-    cands = M.thesis_candidates(ctx)
-    assert cands[0]["tesi"] == "Tra le norme esaminate per contratti nessuna attribuisce un'azione al cliente"
+    assert M.thesis_candidates(ctx) == []
+    assert ctx["no_action"] == "Tra le norme esaminate per contratti nessuna attribuisce un'azione al cliente"
     ctx = {**ctx, "records": {}}
-    assert M.thesis_candidates(ctx)[0]["tesi"].startswith("Tra le norme esaminate per i fatti narrati")
+    M.thesis_candidates(ctx)
+    assert ctx["no_action"].startswith("Tra le norme esaminate per i fatti narrati")
 
 
 def test_a_norm_of_action_with_an_element_excluded_is_not_the_no_action_line():
@@ -143,7 +144,7 @@ def test_a_norm_of_action_with_an_element_excluded_is_not_the_no_action_line():
 def test_a_defendant_never_gets_the_line():
     from src.rag import lawyer_method as M
     ctx = {**_ctx(), "posture": _posture("civile", "convenuto", "primo_grado")}
-    assert "nessuna_azione" not in [c["kind"] for c in M.thesis_candidates(ctx)]
+    assert "nessuna_azione" not in [c["kind"] for c in M.thesis_candidates(ctx)] and not ctx.get("no_action")
 
 
 # --- the draft modules ------------------------------------------------------------------------------------------------------

@@ -183,6 +183,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(ledger_check(out["answer"], result.get("state") or {}))            # v79 (E3)
         out["checks"].append(printed_check(out["answer"]))                                      # v79 (F3)
         out["checks"].append(registro_check(out["answer"]))                                     # v79.8.6
+        out["checks"].append(no_action_check(out["answer"]))                                    # v79.10.1 (A1)
         out["checks"].append(questions_check(out["answer"], result.get("state") or {}))         # v79.6 (1)
         out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
@@ -260,6 +261,14 @@ def registro_check(answer: str) -> Dict[str, Any]:
     found = lawyer_method.registro_hits(answer)
     return {"check": "no_registro", "ok": not found,
             "why": f"{len(found)}: " + " | ".join(f"…{x}…" for x in found[:3]) if found else ""}
+
+
+def no_action_check(answer: str) -> Dict[str, Any]:
+    """v79.10.1 (A1): the no-action sentence at most once, never as «Linea principale», never with a forecast
+    (lawyer_method.no_action_problems)."""
+    from src.rag import lawyer_method
+    found = lawyer_method.no_action_problems(answer)
+    return {"check": "no_action_prose", "ok": not found, "why": "; ".join(found)}
 
 
 def questions_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
@@ -812,6 +821,7 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
     out["checks"] = lawyer_method.structure_checks(out["answer"], spec["cell"])
     out["checks"].append(printed_check(out["answer"]))         # v79 (F3): needs no state
     out["checks"].append(registro_check(out["answer"]))        # v79.8.6
+    out["checks"].append(no_action_check(out["answer"]))       # v79.10.1 (A1)
     from src.rag import rulings
     check = ruling_check(out["answer"], spec["cell"], None) if rulings.enabled() else None
     if check:           # v78: offline, the penal cells only (the record is not in a file)

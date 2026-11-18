@@ -1,5 +1,5 @@
 {
- "_about": "v75 (my drafts, for the lawyer's review): the candidate lines by role that come from the matter, not from a record of their own (src/rag/lawyer_method.py thesis_candidates). «matters»: a civil claim's matter by its article's place in the c.c. (range: first and last article); the attore's remedies, the convenuto's eccezioni -- each line offered on the claim record's elements. «penal_property»: the c.p. range of the offences against property, whose victim is offered sequestro and restituzione. v76: «fallback» -- the civil role's line when the record offers none (never the penal containment). v79.8 (B1): «actions» -- the matter's articles that confer an action (the norms that confer an action or ground the right the claim asserts -- 1062, 1158; a claim candidate is built only on one of them or on an institution module's: data/institution_modules.json).",
+ "_about": "v75 (my drafts, for the lawyer's review): the candidate lines by role that come from the matter, not from a record of their own (src/rag/lawyer_method.py thesis_candidates). «matters»: a civil claim's matter by its article's place in the c.c. (range: first and last article); the attore's remedies, the convenuto's eccezioni -- each line offered on the claim record's elements. «penal_property»: the c.p. range of the offences against property, whose victim is offered sequestro and restituzione. v76: «fallback» -- the civil role's line when the record offers none (never the penal containment). v79.8 (B1): «actions» -- the matter's articles that confer an action (the norms that confer an action or ground the right the claim asserts -- 1062, 1158; a claim candidate is built only on one of them or on an institution module's: data/institution_modules.json). v79.10.1 (A2): «patterns» -- the institution words that name the matter as a family of the first read (lawyer_method.read_families): an article only a matter's «actions» admit is a claim only when its family (the module whose actions hold it, else its matter: lawyer_method.article_family) is one the first read's institutions name; where the institution has a module, only that module's (a sale or a custody article never leads a professional-liability case). «member_modules» -- the modules inside the matter's own family (custodia: 2051-2053 are special regimes of the fatti illeciti), whose articles the matter lists among its «actions»: a read naming the matter admits them; a typed contract's module (vendita, locazione, appalto, comodato, mutuo) is no member of «contratti» -- a contract read never makes a sale article a claim. My drafts, for the lawyer's review.",
  "matters": [
   {
    "id": "obbligazioni",
@@ -7,6 +7,14 @@
    "range": [
     1173,
     1320
+   ],
+   "patterns": [
+    "\\bobbligazion",
+    "\\binadempiment",
+    "\\badempiment",
+    "\\bdebit",
+    "\\bcredit[oi]\\b|\\bcreditor",
+    "\\bmora\\b"
    ],
    "remedies": [
     {
@@ -41,6 +49,22 @@
    "range": [
     1321,
     1986
+   ],
+   "patterns": [
+    "\\bcontratt",
+    "\\bnegozi\\w*\\s+giuridic",
+    "\\bnullit",
+    "\\bannullabil",
+    "\\brescission",
+    "\\brisoluzion",
+    "\\bvizi\\w*\\s+del\\s+consenso",
+    "\\berrore\\s+(?:essenziale|ostativo|vizio)",
+    "\\bdolo\\s+(?:contrattual|determinant|incident)",
+    "\\bmandat[oi]\\b",
+    "\\bdeposit[oi]\\b",
+    "\\bsomministrazion",
+    "\\bfideiussion",
+    "\\btransazion"
    ],
    "remedies": [
     {
@@ -100,6 +124,22 @@
     2043,
     2059
    ],
+   "patterns": [
+    "\\bfatt[oi]\\s+illecit",
+    "\\billecit\\w*\\s+(?:civil|aquilian|extracontrattual)",
+    "\\bextracontrattual",
+    "\\baquilian",
+    "\\bresponsabilit\\w*\\s+(?:oggettiv|dei\\s+genitori|dei\\s+padroni|del\\s+committente|dei\\s+precettori)",
+    "\\battivit\\w*\\s+pericolos",
+    "\\bcircolazion\\w*\\s+(?:dei\\s+|di\\s+)?veicol",
+    "\\bsinistr\\w*\\s+stradal",
+    "\\bincidente\\s+stradal",
+    "\\bdanno\\s+ingiust",
+    "\\bdann\\w*\\s+(?:cagionat\\w*\\s+)?da\\s+animal"
+   ],
+   "member_modules": [
+    "custodia"
+   ],
    "remedies": [
     {
      "label": "il risarcimento del danno patrimoniale e non patrimoniale",
@@ -141,6 +181,15 @@
     832,
     951
    ],
+   "patterns": [
+    "\\bpropriet",
+    "\\brivendic",
+    "\\bimmission",
+    "\\bnegatori",
+    "\\busucapion",
+    "\\bconfin[ei]\\b|\\bregolamento\\s+di\\s+confini",
+    "\\bdistanz\\w*\\s+(?:legal|tra\\s+(?:le\\s+)?costruzion|nelle\\s+costruzion)"
+   ],
    "remedies": [
     {
      "label": "l'azione di rivendicazione",
@@ -177,6 +226,11 @@
     1027,
     1099
    ],
+   "patterns": [
+    "\\bservit",
+    "\\bpassaggio\\s+coattiv",
+    "\\bintercluso|\\binterclusion"
+   ],
    "remedies": [
     {
      "label": "l'azione confessoria",
@@ -204,6 +258,13 @@
    "range": [
     1140,
     1172
+   ],
+   "patterns": [
+    "\\bpossess",
+    "\\bspogli",
+    "\\bturbativ",
+    "\\breintegrazion|\\breintegra\\b",
+    "\\bmanutenzion\\w*\\s+(?:nel\\s+)?possess"
    ],
    "remedies": [
     {
