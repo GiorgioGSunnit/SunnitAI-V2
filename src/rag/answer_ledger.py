@@ -384,3 +384,227 @@ def draft_step(step: str, draft: str, run: Callable[[str], str]) -> str:
     if kept is not None and kept != after:
         out = rejoin(out, kept)
     return out
+
+
+# --- v79.10.5 (E3): every sentence logged as removed is absent from the final text --------------------------------------
+
+MIN_CHECKED = 25                # the nightly's ledger_removed_absent: a shorter sentence is too short to tell
+_OPEN_MARKUP = "*_«\"“"
+_CLOSE_MARKUP = "*_»\"”"
+_BOUNDARY_LEFT_RE = re.compile(r"(?:^|[.!?|]|^(?:[-•*]|\d{1,2}[.)])|^\[\d{1,2}\])$")
+_TABLE_ROW_RE = re.compile(r"^\s*\|")
+_BARE_LINE_RE = re.compile(r"^\s*(?:[-•*]|\d{1,2}[.)]|\[\d{1,2}\])?\s*[.;:]?\s*$")
+
+
+def _norm_map(text: str) -> Tuple[str, List[int]]:
+    """text as _norm reads it (the «[N]» mark at its head and the status markers out, the markup out, lower case, the
+    spaces collapsed), with each kept character's position in text."""
+    skip: Set[int] = set()
+    head = _MARK_RE.match(text or "")
+    if head:
+        skip.update(range(head.start(), head.end()))
+    for m in _MARKERS_RE.finditer(text or ""):
+        skip.update(range(m.start(), m.end()))
+    chars: List[str] = []
+    where: List[int] = []
+    for i, c in enumerate(text or ""):
+        if i in skip or c in "*_«»\"“”":
+            continue
+        if c.isspace():
+            if chars and chars[-1] != " ":
+                chars.append(" ")
+                where.append(i)
+            continue
+        low = c.lower()
+        chars.append(low[0] if low else c)
+        where.append(i)
+    return "".join(chars), where
+
+
+def removed_present(answer: str, entries: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v79.10.5 (E3): the ledger's «removed» entries whose sentence (MIN_CHECKED characters or more, as _norm reads it)
+    is still in the answer -- the nightly's ledger_removed_absent and settle read it alike; must be none."""
+    final = _norm(answer or "")
+    return [e for e in entries or [] if e.get("kind") == "removed"
+            and len(_norm(e.get("sentence") or "")) >= MIN_CHECKED and _norm(e.get("sentence") or "") in final]
+
+
+def _whole(text: str, s: int, e: int) -> Optional[Tuple[int, int]]:
+    """The span to strike for an occurrence text[s:e] of a logged sentence -- widened over its markup, its closing
+    punctuation, a status marker after it and the spaces that follow -- when it is a whole sentence (a line's, a list
+    item's, a table cell's, or one between two sentences); None when it is part of a longer one or of a heading."""
+    line_start = text.rfind("\n", 0, s) + 1
+    line_end = text.find("\n", e)
+    line_end = len(text) if line_end < 0 else line_end
+    line = text[line_start:line_end]
+    from .plan_then_write import _HEADING_LINE_RE
+    h = _HEADING_LINE_RE.match(line)
+    if h and not h.group(2).strip(" .:;–-"):
+        return None
+    start = s
+    while start > line_start and text[start - 1] in _OPEN_MARKUP:
+        start -= 1
+    left = text[line_start:start].rstrip()
+    while left and left[-1] in _OPEN_MARKUP:
+        left = left[:-1].rstrip()
+    if not _BOUNDARY_LEFT_RE.search(left.strip()):
+        return None
+    end, closed = e, False
+    while True:
+        m = _MARKERS_RE.match(text, end, line_end)
+        if m and m.end() > end:
+            end = m.end()
+            continue
+        if end < line_end and text[end] in _CLOSE_MARKUP + ".;:!?":
+            closed = closed or text[end] in ".;:!?"
+            end += 1
+            continue
+        break
+    rest = text[end:line_end].lstrip()
+    if rest and not rest.startswith("|") and not (closed and (rest[0].isupper() or rest[0] in "«\"“[*")):
+        return None
+    while end < line_end and text[end] in " \t":
+        end += 1
+    return start, end
+
+
+def _line(text: str, s: int, e: int) -> str:
+    end = text.find("\n", e)
+    return " ".join(text[text.rfind("\n", 0, s) + 1:len(text) if end < 0 else end].split())
+
+
+def strike(text: str, sentence: str, allow: Optional[Callable[[str, int], bool]] = None,
+           keep_first: bool = False) -> Tuple[str, int, List[str]]:
+    """v79.10.5 (E3): the removal and its account in one place -- (text, how many occurrences struck, the longer
+    sentences or headings that still hold it). Every whole-sentence occurrence of the sentence (as _norm reads it) goes;
+    a line, list item or «[N]» left bare goes with it; a table cell it emptied reads «—» (the row stays).
+    allow(text, start): only the occurrences it admits (the removal's own section, the client's own text) are struck;
+    keep_first: the first of them stays (a repetition's removal keeps the sentence it repeated)."""
+    needle = _norm(sentence or "")
+    if not needle:
+        return text, 0, []
+    struck, held = 0, []
+    while True:
+        hay, where = _norm_map(text)
+        spans, k = [], hay.find(needle)
+        while k >= 0:
+            spans.append((where[k], where[k + len(needle) - 1] + 1))
+            k = hay.find(needle, k + 1)
+        whole = [w for w in (_whole(text, s, e) for s, e in spans if allow is None or allow(text, s)) if w]
+        held = [_line(text, s, e)[:200] for (s, e) in spans if not _whole(text, s, e)]
+        if keep_first:
+            whole = whole[1:]
+        if not whole:
+            break
+        s, e = whole[-1]
+        line_start = text.rfind("\n", 0, s) + 1
+        line_end = text.find("\n", e)
+        line_end = len(text) if line_end < 0 else line_end
+        line = text[line_start:s] + text[e:line_end]
+        if _TABLE_ROW_RE.match(line):   # a table cell it emptied keeps its row: «—»
+            line = "|".join(c if c.strip() or i in (0, len(line.split("|")) - 1) else " — "
+                            for i, c in enumerate(line.split("|")))
+        if _BARE_LINE_RE.match(line) or not line.strip():
+            text = (text[:line_start] + text[line_end + 1:]).lstrip("\n") if line_start == 0 else \
+                text[:line_start] + text[line_end + 1:] if line_end < len(text) else text[:max(0, line_start - 1)]
+        else:
+            text = text[:line_start] + line.rstrip() + text[line_end:]
+        struck += 1
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text, struck, held
+
+
+# v79.10.5 (E3): the rules of the one check whose removal holds in its section only -- the lead's alternative, the
+# asserting sections' requirement, a repetition of its section's earlier sentence: a copy elsewhere is no removal of theirs
+SECTION_RULES = ("alternativa_senza_fatti", "requisito_non_registrato", "ripetizione")
+REPEAT_RULE = "ripetizione"
+_CLIENT_HEAD_RE = re.compile(r"(?m)^\*\*Nell'interesse di ([^*\n]+)\*\*\s*$")
+
+
+def _section_at(text: str, pos: int) -> str:
+    """The title of the «**N. Title**» section holding pos ("" before the first)."""
+    title = ""
+    for m in _SECTION_RE.finditer(text):
+        if m.start() > pos:
+            break
+        title = m.group(1).strip()
+    return title
+
+
+def _clients_at(text: str, pos: int) -> Optional[List[str]]:
+    """The clients the «**Nell'interesse di …**» block holding pos is for (its section's), None outside any."""
+    floor = max((m.start() for m in _SECTION_RE.finditer(text) if m.start() <= pos), default=0)
+    head = None
+    for m in _CLIENT_HEAD_RE.finditer(text, floor):
+        if m.start() > pos:
+            break
+        head = m
+    if head is None:
+        return None
+    return [x.strip() for x in re.split(r",\s*|\s+e\s+", head.group(1)) if x.strip()]
+
+
+def _scope(entry: Dict[str, Any], text: str) -> Tuple[Optional[Callable[[str, int], bool]], str]:
+    """(allow, why) for strike: the one check's removal is its section's (a copy in another section is that section's,
+    «section»; with its section gone, a SECTION_RULES copy is kept, another struck anywhere); a client's compose removal
+    is that client's text's (another client's own block keeps its copy, «client»)."""
+    if entry.get("client"):
+        name = str(entry["client"]).strip()
+        return (lambda t, p: name in (_clients_at(t, p) or [name])), "client"
+    if entry.get("step") == CHECK_STEP and entry.get("section"):
+        title = str(entry["section"]).strip()
+        if any(m.group(1).strip() == title for m in _SECTION_RE.finditer(text)):
+            return (lambda t, p: _section_at(t, p) == title), "section"
+        if entry.get("rule") in SECTION_RULES:
+            return (lambda t, p: False), "section"
+    return None, ""
+
+
+def settle(text: str, entries: List[Dict[str, Any]], code_texts: Sequence[str] = ()) -> Tuple[str, Dict[str, Any]]:
+    """v79.10.5 (E3): the final text and the ledger made to agree -- for each «removed» entry still in the text
+    (removed_present): struck again where the removal held (strike: a later step reprinted it) and marked settled
+    «struck»; what it cannot strike is «kept» with why, never «removed»: part of a longer sentence or a heading
+    («contained»), a sentence the code itself writes (code_texts: the method's sources, «code»), a copy outside the
+    removal's scope (_scope: another section for the one check's per-section rules, «section»; another client's own
+    block, «client»), the sentence a repetition repeated («ripetizione»). After it, removed_present(text, entries) is
+    empty. The report: {"struck", "kept", "present"} (the sentences)."""
+    report: Dict[str, List[str]] = {"struck": [], "kept": [], "present": []}
+    code = [_norm(x) for x in code_texts or [] if x]
+    for e in removed_present(text, entries):
+        needle = _norm(e.get("sentence") or "")
+        if needle not in _norm(text):       # an earlier entry's strike took it
+            continue
+        report["present"].append(str(e.get("sentence"))[:200])
+        why = "code" if any(needle in c for c in code) else ""
+        held: List[str] = []
+        if not why:
+            allow, outside = _scope(e, text)
+            repeat = e.get("rule") == REPEAT_RULE
+            text, n, held = strike(text, e.get("sentence") or "", allow, repeat)
+            if needle not in _norm(text):
+                e["settled"] = "struck"
+                report["struck"].append(str(e.get("sentence"))[:200])
+                continue
+            if n:
+                e["struck"] = n
+            hay, where = _norm_map(text)
+            starts = [where[k] for k in _finds(hay, needle)]
+            if repeat and any(allow is None or allow(text, p) for p in starts):
+                why = REPEAT_RULE           # the sentence it repeated, kept by the rule itself
+            elif allow is not None and any(not allow(text, p) for p in starts):
+                why = outside
+            else:
+                why = "contained"
+        e.update({"kind": "kept", "was": "removed", "kept_why": why})
+        if held:
+            e["now"] = held[0]
+        report["kept"].append(str(e.get("sentence"))[:200])
+    return text, report
+
+
+def _finds(hay: str, needle: str) -> List[int]:
+    out, k = [], hay.find(needle)
+    while k >= 0:
+        out.append(k)
+        k = hay.find(needle, k + 1)
+    return out

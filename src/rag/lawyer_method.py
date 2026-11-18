@@ -3777,10 +3777,52 @@ def orientations_text(ctx: Dict[str, Any], plan: Dict[str, Any], rulings: Sequen
     return orientations_section(plan, rulings, log, points)
 
 
-def question_section(plan: Dict[str, Any], a: Dict[str, Any], records: Dict[str, Dict[str, Any]], client: str) -> str:
+def other_charge(text: str, charge: str, records: Dict[str, Dict[str, Any]]) -> List[str]:
+    """v79.10.5 (E1): the fattispecie a text names as its question that are not the held charge, when it does not name
+    the charge -- [] when it names the charge (an alternative beside it is no replacement) or names no fattispecie.
+    Named by number, or in words by a record's rubrica («il reato di truffa»). The client's own line beside the charge
+    is no replacement either: a qualification the read put forward (rec["alternative"], a riqualificazione) and, outside
+    the codes of offences, an article on the other side from the charge (the convenuto's exception to the claim, the
+    other side's exception to the client's)."""
+    from . import issue_records, posture as posture_mod
+    from .topic_step import GENERIC_STEMS
+    if not charge or not text:
+        return []
+    cited = posture_mod.sentence_articles(text)
+    if any(x == charge or same_article(x, charge) for x in cited):
+        return []
+    words = posture_mod._stems(text)
+
+    def in_words(label: str) -> bool:
+        stems = posture_mod._stems(str((records.get(label) or {}).get("rubrica") or ""))
+        return bool(stems - GENERIC_STEMS) and stems <= words
+    if in_words(charge):
+        return []
+    held = records.get(charge) or {}
+
+    def defence(label: str) -> bool:
+        rec = records.get(label) or {}
+        return bool(rec.get("alternative")) or (not posture_mod.penal_article(label) and bool(rec.get("side"))
+                                                and bool(held.get("side")) and rec.get("side") != held.get("side"))
+    named = list(dict.fromkeys(cited + [x for x in records if x != charge and in_words(x)]))
+    return [x for x in named if issue_records.counted(x, str((records.get(x) or {}).get("rubrica") or ""))
+            and (x in records or label_code(x) == label_code(charge)) and not defence(x)]
+
+
+def question_section(plan: Dict[str, Any], a: Dict[str, Any], records: Dict[str, Dict[str, Any]], client: str,
+                     charge: str = "", log: Optional[Dict[str, Any]] = None) -> str:
+    """§3, the legal question: the thesis call's, else the code's on the article. v79.10.5 (E1): with a charge held by
+    rule (charge, in the records), the code's question is on it -- never on the main line's article the forecast moved
+    to --, and the thesis call's question naming another fattispecie and not the charge is refused (other_charge: the
+    code's question instead, logged in log["charge_refused"])."""
+    held = charge if charge and charge in (records or {}) else ""
     if plan.get("questione_giuridica"):
-        return plan["questione_giuridica"]
-    label = a.get("article") or ""
+        replaced = other_charge(str(plan["questione_giuridica"]), held, records or {})
+        if not replaced:
+            return plan["questione_giuridica"]
+        if log is not None:
+            log["charge_refused"] = {"charge": held, "named": replaced, "text": str(plan["questione_giuridica"])[:200]}
+    label = held or a.get("article") or ""
     rec = (records or {}).get(label) or {}
     if not label:
         return "La questione giuridica è da verificare: i fatti narrati non indicano la norma principale."
@@ -4408,7 +4450,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                                           (ctx.get("penal_route") or {}).get("summary")),       # v79.8 (E3)
                                missing_laws_line(ctx))),                                         # v79.9 (B2)
         ("fatti", facts_section(ctx.get("facts") or {})),
-        ("questione", question_section(plan, a, records, client)),
+        ("questione", question_section(plan, a, records, client, (ctx.get("charge") or {}).get("article") or "",
+                                       log)),                                            # v79.10.5 (E1)
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
         ("orientamenti", orientations_text(ctx, plan, rulings, rulings_out, orientation_points)),
         ("soluzioni", solutions_section(sols, main, plan, ctx.get("riti") or [], ctx.get("stragiudiziale") or "",
@@ -4528,7 +4571,8 @@ def compose_clients(sections: Sequence[Tuple[str, str]], items: Sequence[Tuple[s
         if labels:
             own["registry_labels_out"] = labels
         composed.append((name, text, ctx))
-        log.setdefault("clients", {})[name] = {k: own.get(k) for k in ("main_thesis", "esito", "answers")}
+        log.setdefault("clients", {})[name] = {k: own.get(k) for k in ("main_thesis", "esito", "answers",
+                                                                       "charge_refused")}     # v79.10.5 (E1)
     heads, blocks, bodies = [], [], []
     for name, text, _ in composed:
         first = _SECTION_RE.search(text)
@@ -4571,7 +4615,9 @@ def compose_clients(sections: Sequence[Tuple[str, str]], items: Sequence[Tuple[s
     log["grouped_sections"] = grouped           # v79.10.2 (B3): some clients' text the same, printed once for them
     first_ctx = items[0][1]
     first_ctx["output_sources"] = merge_sources([c.get("output_sources") or {} for _, _, c in composed])
-    first_ctx["compose_removals"] = [e for _, _, c in composed for e in c.get("compose_removals") or []]
+    # v79.10.5 (E3): each client's removals tagged with its client (answer_ledger.settle strikes them in its own text)
+    first_ctx["compose_removals"] = [{**e, "client": name} for name, _, c in composed
+                                     for e in c.get("compose_removals") or []]
     _log("compose_clients", {"clients": names, "shared": shared})
     return "\n\n".join(out)
 
@@ -4707,7 +4753,8 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            # v79.9 (B1): the stage's sources -- the certain facts and the events the terms read
            "certain_text": certain,
            "events": fact_events(state),
-           "family_words": family_words(state, case)}                        # v79.9 (C1)
+           "family_words": family_words(state, case),                        # v79.9 (C1)
+           "charge": dict(state.get("charge") or {})}                         # v79.10.5 (E1): held, by its rule
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti),

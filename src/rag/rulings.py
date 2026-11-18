@@ -423,28 +423,119 @@ def starts_clean(sentence: str) -> bool:
 
 NAMES_ENV = "RULINGS_PARTY_NAMES"      # v79 (F2): «redact» (default) or «keep» -- the decision is the PO's, pending
 REDACTED = "[omissis]"
-_TITLE_NAME_RE = re.compile(r"\b(?:sig(?:\.|nor|nora)?|dott(?:\.|or)|avv\.|ing\.|geom\.)\s+([A-ZÀ-Ý][a-zà-ÿ']+)")
-_NAME_PAIR_RE = re.compile(r"(?<=[\w,;:)] )([A-ZÀ-Ý][a-zà-ÿ']+|[A-ZÀ-Ý]{2,})(\s+(?:[A-ZÀ-Ý][a-zà-ÿ']+|[A-ZÀ-Ý]{2,}))+")
+# v79.10.5 (E2): a capitalised token -- «Rossi», «ROSSI», «D'Amico», «De» (a surname's particle)
+_CAP = r"(?:[A-ZÀ-Ý]['’][A-ZÀ-Ý][a-zà-ÿ'’]+|[A-ZÀ-Ý][a-zà-ÿ'’]+|[A-ZÀ-Ý]{2,})"
+_CAP_RE = re.compile(_CAP)
+_CAP_RUN_RE = re.compile(rf"{_CAP}(?:\s+{_CAP})*")
+# v79.10.5 (E2): a surname's lowercase particle before a capitalised token, after a title («dott. di Pietro», «sig.
+# dell'Orto», «avv. Mario de Luca»)
+_PARTICLE = r"(?:(?:d[aei]|de[il]|dell[ao]|dall[ao]|degli|lo|la|van|von)\s+|(?:d|dell|dall)['’])"
+_NAME_TOKEN = rf"(?:{_PARTICLE})?{_CAP}"
+_NAME_TOKEN_RE = re.compile(rf"(?:{_PARTICLE})?({_CAP})")
+# v79.10.5 (E2): a title, any case («sig.», «Sig.ra», «sigg.», «dott.ssa», «avv.to», «avvocato», «ing.», «geom.»,
+# «rag.», «prof.»), then the run of capitalised tokens it names -- every one of them, the surname too
+_TITLE_NAME_RE = re.compile(r"(?<![\w.])(?P<title>(?i:sig(?:\.(?:ra|na)?|g\.|nor[ei]?\b|nora\b)|dott(?:\.(?:ssa|ri)?|or\b|"
+                            r"oressa\b)|avv(?:\.(?:ti|to)?|ocat[oaie]\b)|ing\.|geom\.|rag\.|prof(?:\.(?:ssa)?)))\s*"
+                            rf"({_NAME_TOKEN}(?:\s+{_NAME_TOKEN})*)(?P<more>(?:\s+e\s+{_CAP}(?:\s+{_CAP})*)*)")
+_PLURAL_TITLE_RE = re.compile(r"(?i)^(?:sigg\.|signori|dott\.ri|avv\.ti|avvocati)$")      # «dei sigg. Rossi e Bianchi»
+# v79.10.5 (E2): a run of two or more adjacent capitalised tokens, anywhere in the passage
+_NAME_RUN_RE = re.compile(rf"(?<![\w'’.\[])({_CAP}(?:\s+{_CAP})+)(?![\w'’])")
+_SENTENCE_START_RE = re.compile(r"(?:^|[.!?\n])[\s«\"“(']*$")
 REDACTION_STOPLIST_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                                        "data", "redaction_stoplist.json")
 
 
 @lru_cache(maxsize=1)
-def not_names() -> frozenset:
-    """v79.6: the stoplist of redact_names, from data/redaction_stoplist.json (it grows from the logged redactions)."""
+def _stoplist() -> Dict[str, frozenset]:
     try:
         with open(REDACTION_STOPLIST_FILE, encoding="utf-8") as f:
-            return frozenset(str(w).capitalize() for w in json.load(f).get("words") or [])
+            raw = json.load(f)
+        return {k: frozenset(str(w).capitalize() for w in raw.get(k) or []) for k in ("words", "openers")}
     except (OSError, ValueError) as exc:
         logger.warning("rulings: %s not read: %s", REDACTION_STOPLIST_FILE, exc)
-        return frozenset()
+        return {"words": frozenset(), "openers": frozenset()}
 
 
-def log_redaction(replaced: Sequence[str], passage: str) -> None:
-    """v79.6: every redaction logged -- the verbose log and <state>/logs/redactions.jsonl -- never failing the answer."""
-    if not replaced:
+def not_names() -> frozenset:
+    """v79.6: the stoplist of redact_names -- the gazetteer -- from data/redaction_stoplist.json (it grows from the
+    logged redactions)."""
+    return _stoplist()["words"]
+
+
+def openers() -> frozenset:
+    """v79.10.5 (E2): the words that open a sentence capitalised and are never a name («Il», «Nella», «Pertanto»), from
+    data/redaction_stoplist.json -- dropped from a run that opens a sentence before it is read as a name."""
+    return _stoplist()["openers"]
+
+
+def _gazetteer(word: str) -> bool:
+    """A gazetteer word -- also after an elided article or preposition («L'Agenzia», «Dell'Ufficio»)."""
+    word = word.strip("'’")
+    return word.capitalize() in not_names() or re.sub(r"^[^'’]{1,4}['’]", "", word).capitalize() in not_names()
+
+
+def name_spans(text: str) -> Tuple[List[Tuple[int, int, str, str]], List[str]]:
+    """v79.10.5 (E2): the parties' names in a quoted passage -- ([(start, end, words, rule)], [runs kept]):
+    «titled», the capitalised tokens after a title, each up to the first gazetteer word, a surname's lowercase particle
+    with them («sig. Mario Rossi», «dott.ssa De Luca», «avv. ROSSI», «dott. di Pietro»); «pair», two or more adjacent
+    capitalised tokens none of which is in the gazetteer (data/redaction_stoplist.json «words»: an office, a court, an
+    act) -- inside a sentence, after a quote or a parenthesis, and at a sentence's start once a leading opener («Il»,
+    «Nella») is set aside. A run holding a gazetteer word is split at it: the office's words stay (the run listed as
+    kept), two adjacent tokens outside it are still a name («il Giudice Mario Rossi»)."""
+    text = text or ""
+    spans: List[Tuple[int, int, str, str]] = []
+    kept: List[str] = []
+    for m in _TITLE_NAME_RE.finditer(text):
+        runs = [(m.start(2), m.end(2))]
+        if m.group("more") and _PLURAL_TITLE_RE.match(m.group("title")):
+            runs += [(x.start(), x.end()) for x in _CAP_RUN_RE.finditer(text, m.start("more"), m.end("more"))]
+        for a, b in runs:
+            tokens = list(_NAME_TOKEN_RE.finditer(text, a, b))
+            named = []
+            for t in tokens:
+                if _gazetteer(t.group(1)):
+                    break
+                named.append(t)
+            if named:
+                spans.append((named[0].start(), named[-1].end(), text[named[0].start():named[-1].end()], "titled"))
+            elif tokens:
+                kept.append(text[a:b])
+    taken = [(s, e) for s, e, _, _ in spans]
+    for m in _NAME_RUN_RE.finditer(text):
+        tokens = list(_CAP_RE.finditer(text, m.start(1), m.end(1)))
+        if _SENTENCE_START_RE.search(text[:m.start(1)]) and tokens[0].group(0).capitalize() in openers():
+            tokens = tokens[1:]
+        if len(tokens) < 2:
+            continue
+        s, e = tokens[0].start(), tokens[-1].end()
+        # v79.10.5 (E2): two adjacent capitalised tokens outside the gazetteer are a name wherever they stand -- the
+        # run is split at its gazetteer words («Il Giudice Mario Rossi»: «Mario Rossi»), the office's name kept
+        groups: List[List["re.Match"]] = [[]]
+        for t in tokens:
+            if _gazetteer(t.group(0)):
+                groups.append([])
+            else:
+                groups[-1].append(t)
+        if len(groups) > 1:
+            kept.append(text[s:e])
+        for g in groups:
+            if len(g) >= 2 and not any(g[0].start() < b and a < g[-1].end() for a, b in taken):
+                spans.append((g[0].start(), g[-1].end(), text[g[0].start():g[-1].end()], "pair"))
+    return sorted(spans), kept
+
+
+def log_redaction(replaced: Sequence[str], passage: str, rules: Optional[Sequence[str]] = None,
+                  kept: Sequence[str] = ()) -> None:
+    """v79.6: every redaction logged -- the verbose log and <state>/logs/redactions.jsonl -- never failing the answer.
+    v79.10.5 (E2): each replacement with its rule («titled», «pair»), and the runs a gazetteer word kept (the stoplist
+    reviewed both ways)."""
+    if not replaced and not kept:
         return
     entry = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "replaced": list(replaced), "passage": passage[:300]}
+    if rules is not None:
+        entry["items"] = [{"words": w, "rule": r} for w, r in zip(replaced, rules)]
+        entry["rules"] = {r: list(rules).count(r) for r in dict.fromkeys(rules)}
+        entry["kept"] = list(kept)
     _log("redaction", entry)
     try:
         from .. import state_paths
@@ -459,25 +550,35 @@ def log_redaction(replaced: Sequence[str], passage: str) -> None:
 def redact_names(text: str) -> str:
     """v79 (F2): the parties' names out of a quoted passage -- a name after a title («sig. Rossi»), and a run of two or
     more capitalised words inside a sentence none of which is an office, a court or an act («Mario Rossi»,
-    «ROSSI Mario») -- as REDACTED; RULINGS_PARTY_NAMES=keep leaves them."""
+    «ROSSI Mario») -- as REDACTED; RULINGS_PARTY_NAMES=keep leaves them. v79.10.5 (E2): the spans are name_spans' --
+    the whole run after a title (the surname too: «sig. Mario Rossi»), a run after a quote or at a sentence's start --
+    and the log carries each one's rule."""
     if (os.getenv(NAMES_ENV) or "redact").strip().lower() == "keep":
         return text or ""
-    replaced: List[str] = []
-
-    def titled(m: "re.Match") -> str:
-        replaced.append(m.group(1))
-        return m.group(0)[:m.start(1) - m.start(0)] + REDACTED
-    out = _TITLE_NAME_RE.sub(titled, text or "")
-
-    def pair(m: "re.Match") -> str:
-        words = m.group(0).split()
-        if any(w.capitalize().strip("'") in not_names() for w in words):
-            return m.group(0)
-        replaced.append(m.group(0).strip())
-        return REDACTED
-    out = _NAME_PAIR_RE.sub(pair, out)
-    log_redaction(replaced, text or "")         # v79.6: every redaction logged -- the stoplist grows from data
+    text = text or ""
+    spans, kept = name_spans(text)
+    out = text
+    for s, e, _, _ in reversed(spans):
+        out = out[:s] + REDACTED + out[e:]
+    log_redaction([w for _, _, w, _ in spans], text, [r for _, _, _, r in spans], kept)    # the stoplist grows from data
     return out
+
+
+_PASSAGE_RE = re.compile(rf"{PASSAGE_LABEL}:?\s*«([^»\n]*)»")
+
+
+def passages_in(answer: str) -> List[str]:
+    """v79.10.5 (E2): the quoted passages an answer prints («passaggio della motivazione: «…»»)."""
+    return [m.group(1) for m in _PASSAGE_RE.finditer(answer or "")]
+
+
+def unredacted_names(answer: str) -> List[str]:
+    """v79.10.5 (E2): the names left in the answer's quoted passages -- what redact_names would still replace (a title's
+    capitalised tokens, a pair outside the gazetteer); the nightly's count, the flow's counter. With
+    RULINGS_PARTY_NAMES=keep the names stay by choice: [] then."""
+    if (os.getenv(NAMES_ENV) or "redact").strip().lower() == "keep":
+        return []
+    return [w for p in passages_in(answer) for _, _, w, _ in name_spans(p)[0]]
 
 
 def printed(passage: str) -> str:

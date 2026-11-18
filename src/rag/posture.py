@@ -20,6 +20,9 @@ answer, and what it drives:
                              v65: an article the user names with its verb (intake's named_articles) takes the side
                              the verb gives -- weapon when the client invokes it, threat when it is used against the
                              client --, whatever the role.
+  choose_charge(...)         v79.10.5 (E1): the charge by rule, held across the pipeline -- the user's article, else the
+                             first read's hypothesis with most elements integrato, else the store's rubrica match;
+                             logged with its rule (charge_rule), kept in state["charge"].
   counterparty_label(...)    v65: the counterparty's label, the opposite of the client's role (attore <-> convenuto,
                              imputato <-> persona offesa / parte civile).
   alternative_rows(state)    v63: the first read's alternative qualifications, each with the row of its article (its
@@ -368,6 +371,130 @@ def claim_from_read(state: Dict[str, Any], posture: Optional[Dict[str, Any]], ro
     return out
 
 
+# v79.10.5 (E1): the rules that choose the charge, in their order
+CHARGE_RULES = ("user_article", "read_hypothesis", "rubrica_match")
+NO_CHARGE_RULE = "none"
+_LINE_RANK = {"principale": 0, "subordinata": 1, "controparte": 2}
+
+
+def read_hypotheses(state: Dict[str, Any], posture: Optional[Dict[str, Any]], rows: Sequence[Dict[str, Any]] = (),
+                    log: Optional[Dict[str, Any]] = None) -> List[Tuple[Dict[str, Any], List[str]]]:
+    """v79.10.5 (E1): the first read's hypotheses a charge can come from, each with its articles (the rows the read's
+    search found for its institutions, fattispecie only: claim_from_read's) -- a criminal case: every hypothesis; a
+    civil one: those of the role's line (CLAIM_ROLES), or only the one matching the pleaded claim (v76) when the case
+    pleads one; [] for another family."""
+    from . import interactive_flow as flow, issue_records
+    fam = str((posture or {}).get("family") or "")
+    hyps = [h for h in ((state or {}).get("read") or {}).get("hypotheses") or [] if isinstance(h, dict)]
+    if fam == "civile":
+        principal = claim_from_read(state, posture, rows, log)
+        if (log or {}).get("pleaded"):          # v76: the pleaded claim decides, as claim_from_read reads it
+            return [({"line": "controparte", "claim": "", "institutions": []}, principal)] if principal else []
+        line = CLAIM_ROLES.get(str((posture or {}).get("role") or ""))
+        hyps = [h for h in hyps if line and h.get("line") == line]
+    elif fam != "penale":
+        return []
+    pool = [r for r in list(rows or []) + flow._restored_rows((state or {}).get("rows"))
+            + flow._restored_rows((state or {}).get("reserve")) if r.get("_article") and r.get("_first_read")]
+    out: List[Tuple[Dict[str, Any], List[str]]] = []
+    for h in hyps:
+        labels: List[str] = []
+        for inst in h.get("institutions") or []:
+            for r in pool:
+                label = flow._label(flow._key(r["_article"]))
+                if flow._low(r["_first_read"]) == flow._low(" ".join(str(inst).split())) and label not in labels \
+                        and issue_records.counted(label, flow._row_rubrica(r)) and (fam != "penale" or penal_article(label)):
+                    labels.append(label)
+        out.append((h, labels))
+    return out
+
+
+def element_score(rec: Optional[Dict[str, Any]]) -> Tuple[int, int, int]:
+    """v79.10.5 (E1): a record's (integrato, escluso, elements) -- its live elements as the reader gets them."""
+    from . import lawyer_method
+    live = lawyer_method._live(rec or {}) if rec else []
+    return (sum(1 for r in live if r.get("status") == lawyer_method.PROVATO),
+            sum(1 for r in live if r.get("status") == lawyer_method.NON_RISULTA), len(live))
+
+
+def rubricated_match(state: Dict[str, Any], records: Dict[str, Dict[str, Any]]) -> List[str]:
+    """v79.10.5 (E1): the records whose rubrica (the store's) holds every content stem of a name the first read gave a
+    hypothesis's institution as rubricated («Lesione personale»), in the read's order."""
+    from .topic_step import GENERIC_STEMS
+    out: List[str] = []
+    for h in ((state or {}).get("read") or {}).get("hypotheses") or []:
+        for name in (h.get("rubricated") or []) if isinstance(h, dict) else []:
+            stems = _stems(str(name))
+            if not stems or not (stems - GENERIC_STEMS):
+                continue
+            for label, rec in (records or {}).items():
+                if label not in out and stems <= _stems(str((rec or {}).get("rubrica") or "")):
+                    out.append(label)
+    return out
+
+
+def choose_charge(state: Dict[str, Any], posture: Optional[Dict[str, Any]], records: Dict[str, Dict[str, Any]],
+                  case: str, rows: Sequence[Dict[str, Any]] = (), user: Sequence[str] = (),
+                  repealed: Sequence[str] = (), read_log: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """v79.10.5 (E1): the charge (or the claim) by rule, the same for the same facts -- {"article", "rule", "order",
+    "scores", "by_name", "from_read"}:
+      user_article     the user's article (intake's charge, the case's charge or claim sentences: user, in order), else
+                       the charge those sentences name in words, a record by its rubrica («imputato di furto»:
+                       charged_by_name, by_name) -- the user's charge, never displaced by the read;
+      read_hypothesis  else the first read's hypothesis whose articles hold most elements integrato (read_hypotheses;
+                       an article with a record): the most integrato, then the fewest escluso, then one with elements,
+                       then the line (principale, subordinata, controparte), then the label -- never the read's order,
+                       so the same facts read twice give the same charge;
+      rubrica_match    else the store's rubrica: a record whose rubrica holds a name the read gave a hypothesis as
+                       rubricated (rubricated_match);
+      none             else nothing.
+    order: the charge first, then the other charged articles (the user's, the chosen hypothesis's, those named by
+    rubrica). Logged (charge_rule) and kept in state["charge"] {article, rule}; the counter charge_rule."""
+    from . import issue_records
+    repealed = set(repealed or [])
+    records = records or {}
+    user = [x for x in dict.fromkeys(user or []) if x not in repealed]
+    by_name = [x for x in charged_by_name(case, records, rows) if x not in repealed]
+    scores: Dict[str, List[int]] = {}
+    article, rule, extra = "", NO_CHARGE_RULE, []
+    if user or by_name:
+        article, rule = (user or by_name)[0], "user_article"
+    hyps = [] if article else read_hypotheses(state, posture, (), read_log)
+    best: Optional[Tuple] = None
+    for h, labels in hyps:
+        for label in labels:
+            rec = records.get(label)
+            if label in repealed or not rec or not issue_records.counted(label, str(rec.get("rubrica") or "")):
+                continue
+            proved, excluded, total = element_score(rec)
+            scores[label] = [proved, excluded, total]
+            key = (-proved, excluded, 0 if total else 1, _LINE_RANK.get(str(h.get("line") or ""), 3), label)
+            if best is None or key < best[0]:
+                best = (key, label, [x for x in labels if x in records and x not in repealed])
+    if not article and best is not None:
+        article, rule, extra = best[1], "read_hypothesis", best[2]
+    if not article:
+        named = [x for x in rubricated_match(state, records) if x not in repealed
+                            and issue_records.counted(x, str(records[x].get("rubrica") or ""))
+                            and (str((posture or {}).get("family") or "") != "penale" or penal_article(x))]
+        if named:
+            article, rule, extra = named[0], "rubrica_match", named
+    order = list(dict.fromkeys(([article] if article else []) + user + extra + by_name))
+    out = {"article": article, "rule": rule, "order": order, "scores": scores, "by_name": by_name,
+           "from_read": list(dict.fromkeys([article] + extra)) if rule == "read_hypothesis" else []}
+    if isinstance(state, dict):
+        state["charge"] = {"article": article, "rule": rule}
+        counters = state.setdefault("block_counters", {})
+        if not (state.get("client_scope") or {}).get("others") or "charge_rule" not in counters:
+            counters["charge_rule"] = rule
+    from . import interactive_flow
+    interactive_flow._log("charge_rule", {"article": article, "rule": rule, "order": order, "scores": scores,
+                                          "user": user, "by_name": by_name,
+                                          "client": (state.get("client_scope") or {}).get("name", "")
+                                          if isinstance(state, dict) else ""})
+    return out
+
+
 def penal_article(label: str) -> bool:
     """v79 (C4): an article a criminal charge can be -- the c.p.'s, or a special law's (data/special_laws.json)."""
     from . import special_laws
@@ -468,13 +595,15 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
         case = client_text(case, scope)
     from_intake = [aliases.get(x, x) for x in (intake_charges(posture) if not scope else [])]
     from_case = [aliases.get(x, x) for x in charge_labels(case)]
-    order = list(dict.fromkeys(from_intake + from_case + charged_by_name(case, records, rows)))
     repealed = set((state or {}).get("abrogated") or [])    # v79.6 (item 3): a repealed article is never the charge
-    order = [x for x in order if x not in repealed]
     read_log: Dict[str, Any] = {}
-    from_read = [] if order else claim_from_read(state, posture, (), read_log)   # v75: a civil claim naming no article
-    hypothesis = bool(from_read) and str((posture or {}).get("family") or "") == "penale"     # v79 (C4)
-    order = order or [x for x in from_read if x in records]
+    # v79.10.5 (E1): the charge by rule -- the user's article, the read's hypothesis with most elements integrato, the
+    # store's rubrica match -- logged with its rule; the order's first is it, whatever a later step says
+    choice = choose_charge(state, posture, records, case, rows, from_intake + from_case, repealed, read_log)
+    order = list(choice["order"])
+    from_read = list(choice.get("from_read") or [])
+    hypothesis = choice["rule"] == "read_hypothesis" and str((posture or {}).get("family") or "") == "penale" \
+        and choice["article"] not in choice.get("by_name", [])            # v79 (C4): no charge the user stated
     charged = set(order)
     first = order[0] if order else ""
     alternatives = ((state or {}).get("read") or {}).get("alternatives") or []
@@ -515,7 +644,8 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
                                                "first_read": from_read, **read_log,               # v75, v76
                                                **({"hypothesis": True} if hypothesis else {}),    # v79
                                                **({"aliases": aliases} if aliases else {})},
-           "charge_unmarked": [x for x in from_intake + from_case if x not in records]}
+           "charge_unmarked": [x for x in from_intake + from_case if x not in records],
+           "charge_rule": {k: choice.get(k) for k in ("article", "rule", "scores")}}               # v79.10.5 (E1)
     # v79.10.4 (D3): on the client's records, whose each deontic element is -- the counterparty's never contradicted
     try:
         from . import issue_records

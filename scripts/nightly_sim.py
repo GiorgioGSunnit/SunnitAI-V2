@@ -93,6 +93,13 @@ have cut), counterparty_elements, counterparty_breaches and counterparty_contrad
 duty «non risulta» on its breach, on the client's record) in the counters table; the fragments list reads D4's kinds
 (a category, a confiscation or medicinal clause, a modal permission).
 
+v79.10.5 (E): check names_redacted -- the names left in the quoted passages (the capitalised tokens after «sig.»,
+«dott.», «avv.», the pairs of capitalised tokens outside the gazetteer: rulings.unredacted_names), counted, must be 0,
+offline too; ledger_removed_absent reads answer_ledger.removed_present, the flow's settle's own test, and must be 0. The
+counters charge_rule (the rule that chose the charge: user_article / read_hypothesis / rubrica_match / none),
+charge_thesis_refused (the thesis call's legal question naming another charge, replaced), names_redacted,
+names_unredacted (0), ledger_struck, ledger_kept and ledger_removed_present (0) in the counters table.
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -199,6 +206,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(wording_check(out["output_check"], result.get("state") or {}))     # v79 (E2)
         out["checks"].append(ledger_check(out["answer"], result.get("state") or {}))            # v79 (E3)
         out["checks"].append(printed_check(out["answer"]))                                      # v79 (F3)
+        out["checks"].append(names_check(out["answer"]))                                        # v79.10.5 (E2)
         out["checks"].append(registro_check(out["answer"]))                                     # v79.8.6
         out["checks"].append(no_action_check(out["answer"]))                                    # v79.10.1 (A1)
         out["checks"].append(questions_check(out["answer"], result.get("state") or {}))         # v79.6 (1)
@@ -256,16 +264,24 @@ def wording_check(found: Dict[str, Any], state: Dict[str, Any]) -> Dict[str, Any
 
 def ledger_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
     """v79 (E3): every sentence the removal ledger logs as «removed» is absent from the delivered parere (a sentence
-    under 25 characters is not checked: too short to tell)."""
+    under 25 characters is not checked: too short to tell). v79.10.5 (E3): the test is answer_ledger.removed_present,
+    the one the flow's settle reads (the count must be 0)."""
     from src.rag import answer_ledger
     entries = ((state or {}).get("ledger") or {}).get("entries") or []
-    final = answer_ledger._norm(answer or "")
-    present = []
-    for e in entries:
-        norm = answer_ledger._norm(e.get("sentence") or "")
-        if e.get("kind") == "removed" and len(norm) >= 25 and norm in final:
-            present.append(f"{e.get('step')}: {str(e.get('sentence'))[:80]}")
-    return {"check": "ledger_removed_absent", "ok": not present, "why": "; ".join(present[:3])}
+    present = [f"{e.get('step')}: {str(e.get('sentence'))[:80]}"
+               for e in answer_ledger.removed_present(answer or "", entries)]
+    return {"check": "ledger_removed_absent", "ok": not present, "count": len(present),
+            "why": f"{len(present)}: " + "; ".join(present[:3]) if present else ""}
+
+
+def names_check(answer: str) -> Dict[str, Any]:
+    """v79.10.5 (E2): no party's name left in a quoted passage -- the capitalised tokens after a title, the pairs of
+    capitalised tokens outside the gazetteer (rulings.unredacted_names, redact_names' own reading); counted, must be 0.
+    Needs no state."""
+    from src.rag import rulings
+    found = rulings.unredacted_names(answer or "")
+    return {"check": "names_redacted", "ok": not found, "count": len(found),
+            "why": f"{len(found)}: " + "; ".join(found[:5]) if found else ""}
 
 
 def printed_check(answer: str) -> Dict[str, Any]:
@@ -867,6 +883,7 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
     out["answer"] = path.read_text(encoding="utf-8")
     out["checks"] = lawyer_method.structure_checks(out["answer"], spec["cell"])
     out["checks"].append(printed_check(out["answer"]))         # v79 (F3): needs no state
+    out["checks"].append(names_check(out["answer"]))           # v79.10.5 (E2): needs no state
     out["checks"].append(registro_check(out["answer"]))        # v79.8.6
     out["checks"].append(no_action_check(out["answer"]))       # v79.10.1 (A1)
     out["checks"].append(questions_extracted_check(spec["text"]))       # v79.10.2 (B2): from the cell's text

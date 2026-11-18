@@ -6037,7 +6037,13 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
                 answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
         state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
-        merge_removals(state, method_ctx.get("compose_removals") or [])       # v79 (E3): compose's, «removed»
+        # v79.10.5 (E1): the thesis call's legal question naming another charge, refused (the code's on the charge)
+        refused = [compose_log.get("charge_refused")] + [c.get("charge_refused") for c in
+                                                          (compose_log.get("clients") or {}).values()]
+        state.setdefault("block_counters", {})["charge_thesis_refused"] = sum(1 for x in refused if x)
+        # v79 (E3): compose's, «removed» -- v79.10.5 (E3): with several clients every client's, each tagged with its
+        # client by compose_clients (another client's own block may keep the sentence)
+        merge_removals(state, method_ctx.get("compose_removals") or [])
         _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
     # v79.10.3 (C1): no rito the charge does not admit offered anywhere (the prose path's writer, the method's §8 as
     # written) -- dropped into the ledger, «removed»; what is left counted (rites_unavailable_offered, must be 0)
@@ -6065,6 +6071,9 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         closing = C.SINGLE_SHOT_CLOSING
     if closing:
         draft += "\n\n" + closing
+    # v79.10.5 (E3): the ledger and the final text agree -- every sentence logged as removed is absent (settled)
+    draft = _isolated("ledger_settle", lambda: ledger_settled(state, draft), draft) or draft
+    _isolated("names_counted", lambda: names_counted(state, draft))         # v79.10.5 (E2): names left in passages
     for n in numbers:
         state.setdefault("answers", {})[str(n)] = {"version": state.get("version"), "chars": len(draft)}
     mark("citations")
@@ -6282,6 +6291,49 @@ def rites_checked(state: Dict[str, Any], draft: str, rites: Sequence[Dict[str, A
     counters["rites_precluded"] = len({x["id"] for x in statuses if x.get("status") == lawyer_method.PRECLUDED})
     counters["rites_to_verify"] = len({x["id"] for x in statuses if x.get("status") == lawyer_method.TO_VERIFY_RITE})
     return out
+
+
+def ledger_settled(state: Dict[str, Any], draft: str) -> str:
+    """v79.10.5 (E3): the final text with every sentence the ledger logs as «removed» absent -- removal and logging in
+    one function (answer_ledger.settle): a sentence a later step reprinted is struck again where the removal held (the
+    one check's section, the client's own text); one it cannot strike (part of a longer sentence or a heading, the
+    code's own text, a copy in another section or another client's block, the sentence a repetition repeated) is «kept»,
+    never «removed». The counters ledger_struck, ledger_kept and ledger_removed_present (what is still there after it:
+    must be 0, the nightly's ledger_removed_absent); logged (ledger_settle)."""
+    from . import answer_ledger
+    ledger = state.get("ledger")
+    entries = (ledger or {}).get("entries") or []
+    counters = state.setdefault("block_counters", {})
+    if not entries:
+        counters.update({"ledger_struck": 0, "ledger_kept": 0, "ledger_removed_present": 0})
+        return draft
+    code = ((state.get("output_sources") or {}).get("code") or [])
+    removed = [e for e in entries if e.get("kind") == "removed"]
+    out, report = answer_ledger.settle(draft, entries, code)
+    by_step = dict(ledger.get("removed_by_step") or {})
+    for e in removed:
+        if e.get("kind") == "kept" and by_step.get(e.get("step")):
+            by_step[e["step"]] -= 1             # no longer a removal: the counts by step say so
+    ledger["removed_by_step"] = by_step
+    counters["ledger_struck"] = len(report["struck"])
+    counters["ledger_kept"] = len(report["kept"])
+    counters["ledger_removed_present"] = len(answer_ledger.removed_present(out, entries))
+    if report["present"]:
+        _log("ledger_settle", {**report, "removed_present": counters["ledger_removed_present"]})
+    return out
+
+
+def names_counted(state: Dict[str, Any], draft: str) -> None:
+    """v79.10.5 (E2): the counters names_redacted (the «[omissis]» in the answer's quoted passages) and
+    names_unredacted (the names left there: rulings.unredacted_names -- must be 0)."""
+    from . import rulings
+    passages = rulings.passages_in(draft)
+    counters = state.setdefault("block_counters", {})
+    counters["names_redacted"] = sum(p.count(rulings.REDACTED) for p in passages)
+    left = rulings.unredacted_names(draft)
+    counters["names_unredacted"] = len(left)
+    if left:
+        _log("names_unredacted", {"names": left[:10]})
 
 
 def merge_removals(state: Dict[str, Any], entries: Sequence[Dict[str, Any]]) -> None:
