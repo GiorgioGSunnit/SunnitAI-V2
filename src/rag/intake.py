@@ -458,7 +458,8 @@ _ASK_PHRASE_RE = re.compile(r"\b(?:chied(?:o|iamo)\s+(?:se|quale|quali|come|quan
 
 def questions(message: str) -> List[str]:
     """v79.6 (item 1): every explicit question of the request, in order -- a sentence ending in «?», or one phrased as
-    a request («chiedo se …», «vorrei sapere …», «quale … sia …», «è possibile …») --, one or more."""
+    a request («chiedo se …», «vorrei sapere …», «quale … sia …», «è possibile …») --, one or more. v79.10.2 (B2): a
+    question written as a task counts too (task_question: «Illustra …», «valuti …», «valutando se …», «indichi …»)."""
     out: List[str] = []
     for sentence in sentences(message or ""):
         text = _flat(sentence).strip()
@@ -470,7 +471,95 @@ def questions(message: str) -> List[str]:
                     else p for p in parts]
         elif _ASK_PHRASE_RE.search(text):
             out.append(text)
+        else:
+            task = task_question(text)
+            if task:
+                out.append(task)
     return list(dict.fromkeys(x[:QUESITO_CHARS] for x in out))
+
+
+# v79.10.2 (B2): a question written as a task addressed to the lawyer -- the second person's imperative («illustra»,
+# «valuta», «indica», «esamina», «individua», «spiega», «verifica» …), the courtesy or exam form («illustri», «valuti»,
+# «indichi» …, «il candidato illustri»), the plural («illustrate»), an infinitive asked for («si chiede di valutare», «ti
+# chiedo di indicare»), at the head of a sentence or of a clause after «:» / «;»; a gerund («valutando se …») in a
+# sentence that asks. A drafting verb («redigi», «prepara») asks for a deliverable, a role verb («difendi», «assisti»)
+# says whom the lawyer assists: neither is a question.
+_TASK_STEMS = (r"illustr|valut|indic|esamin|individu|spieg|analizz|verific|chiar|stabil|precis|descriv|elenc|"
+               r"prospett|deline|qualific|motiv|approfond")
+_TASK_IMPERATIVE = (r"(?:illustr[ai]|illustrate|valut[ai]|valutate|indic(?:a|hi|ate)|esamin[ai]|esaminate|individu[ai]|"
+                    r"individuate|spieg(?:a|ami|aci|hi|ate)|analizz[ai]|analizzate|verific(?:a|hi|ate)|"
+                    r"chiarisc[ia]|chiarite|stabilisc[ia]|stabilite|precis[ai]|precisate|descriv[ia]|descrivete|"
+                    r"elenc(?:a|hi|ate)|prospett[ai]|prospettate|deline[ai]|delineate|"
+                    r"qualific(?:a|hi|ate)|motiv[ai]|motivate|approfondisc[ia]|approfondite|dimmi|mi\s+dica|ci\s+dica|"
+                    r"dicci|"
+                    # v79.10.2 (B2, review): more imperatives to the lawyer, and the enclitic forms («illustrami»)
+                    r"determin[ai]|determinate|consider[ai]|considerate|accert[ai]|accertate|suggerisc[ia]|suggerite|"
+                    r"propon(?:i|ga|ete)|espon(?:i|ga|ete)|(?:illustr|indic|elenc|precis)ami|(?:chiarisc|descriv|"
+                    r"suggerisc|propon|espon)imi)")
+_TASK_INFINITIVE = rf"(?:{_TASK_STEMS})(?:are|ere|ire)\b"
+_TASK_HEAD_RE = re.compile(
+    r"^(?:(?:avv(?:ocat[oa])?\.?|collega|dottor[ea]?|dott\.(?:ssa)?)\s*,\s*)?"
+    r"(?:(?:e|ed|poi|quindi|inoltre|infine|ora|dunque|in\s+particolare|in\s+seguito|altresì)\s*,?\s+)?"
+    r"(?:(?:il|la)\s+candidat[oa]\s+(?:[^.;:]{0,120}?,\s*)?|(?:si\s+chiede|ti\s+chiedo|le\s+chiedo|vi\s+chiedo|"
+    rf"la\s+prego|ti\s+prego|chiedo)\s+(?:al\s+candidat[oa]\s+)?di\s+(?={_TASK_INFINITIVE}))?"
+    rf"((?:(?:mi|ci)\s+)?(?:{_TASK_IMPERATIVE}\b|{_TASK_INFINITIVE}))", re.IGNORECASE)
+# v79.10.2 (B2, review): what follows a task verb -- its object (an article, «se», «quali» …), an adverb, a preposition;
+# «Verifica fiscale», «Determina dirigenziale n. 5» are nouns. A verb with a party or a document after it and «che»
+# («Precisa il cliente che …», «Indica la lettera che …») is the narrative's, its subject postposed.
+_TASK_OBJECT_RE = re.compile(
+    r"\s*(?:[,:]|(?:il|lo|la|l['’]|i|gli|le|un|uno|una|un['’]|se|che|quale|quali|quanto|quant[aie]|come|quando|dove|"
+    r"perch[ée]|chi|cosa|eventual\w+|possibil\w+|tutt[oaie]|ogni|ciascun\w*|entramb[ie]|quest[oaie]|tal[ei]|mi|ci|ti|"
+    r"anche|altresì|inoltre|brevemente|sinteticamente|dettagliatamente|analiticamente|motivatamente|compiutamente|"
+    r"separatamente|preliminarmente|innanzitutto|anzitutto|poi|quindi|ora|in|nel|nella|nei|nelle|nello|negli|al|alla|"
+    r"alle|ai|agli|allo|con|per|sul|sulla|sui|sulle|su|sia|loro|suo|sua|suoi|sue)\b)", re.IGNORECASE)
+_TASK_NARRATIVE_RE = re.compile(
+    r"\s*(?:(?:il|la|lo|l['’])\s*(?:mi[oa]\s+|nostr[oa]\s+)?(?:cliente|assistit[oa]|lettera|contratto|diffida|"
+    r"controparte|società|ricorrente|resistente|attore|convenut[oa]|giudice|tribunale|corte|sentenza|perizia|ctu|"
+    r"consulente|documento|atto|banca|comune|datore(?:\s+di\s+lavoro)?|lavorator[ea]|venditor[ea]|acquirente|"
+    r"conduttor[ea]|locator[ea]|teste|testimone|verbale|querela|denuncia|fattura|e-?mail|missiva|nota|comunicazione|"
+    r"relazione)|[A-ZÀ-Ü][\w'’-]+)\s+che\b")
+_PLURAL_HEAD_RE = re.compile(r"(?:ate|ite|ete)$", re.IGNORECASE)
+_FINITE_AUX_RE = re.compile(r"\b(?:ha|hanno|è|era|erano|sono|aveva|avevano|fu|furono|viene|venne|vengono)\b",
+                            re.IGNORECASE)
+
+
+def _task_head(clause: str) -> Optional["re.Match"]:
+    """v79.10.2 (B2, review): the task verb heading the clause (_TASK_HEAD_RE) when it is one -- followed by its object
+    (_TASK_OBJECT_RE), not by a postposed subject and «che» (_TASK_NARRATIVE_RE), and a plural form («Esaminate le carte,
+    il tribunale ha …») not a participle opening a narrative clause; None otherwise."""
+    m = _TASK_HEAD_RE.match(clause)
+    if not m:
+        return None
+    after = clause[m.end(1):]
+    if not _TASK_OBJECT_RE.match(after) or _TASK_NARRATIVE_RE.match(after):
+        return None
+    if _PLURAL_HEAD_RE.search(m.group(1)) and "," in after:
+        tail = after.split(",", 1)[1].strip()
+        if not _TASK_HEAD_RE.match(tail) and _FINITE_AUX_RE.search(tail):
+            return None                                 # «Indicate le somme dovute, Alfa ha agito …»: a participle
+    return m
+_TASK_GERUND_RE = re.compile(rf"\b((?:anche\s+)?(?:{_TASK_STEMS})(?:ando|endo)\b)", re.IGNORECASE)
+_PROGRESSIVE_RE = re.compile(r"\b(?:sto|stai|sta|stiamo|state|stanno|stava|stavano|stavo|stavamo)\s*$", re.IGNORECASE)
+
+
+def task_question(sentence: str) -> str:
+    """v79.10.2 (B2): the question a sentence written as a task asks («Assisto Tizio: illustra le azioni possibili.» ->
+    «illustra le azioni possibili»; «Redigi un parere, valutando se Tizio possa recedere.» -> «valutando se Tizio possa
+    recedere»), "" when it asks none. The task's clause is the head of the sentence or of a clause after «:» or «;»."""
+    text = _flat(sentence).strip()
+    for clause in [text] + [x.strip() for x in re.split(r"[:;]\s*", text)[1:]]:
+        m = _task_head(clause)
+        if m and len(clause[m.start(1):].split()) >= 2:
+            return clause[m.start(1):].rstrip(" .;").strip()
+    for m in _TASK_GERUND_RE.finditer(text):
+        before = text[:m.start(1)].rstrip(" ,")
+        rest = text[:m.start(1)] + text[m.end(1):]
+        if _PROGRESSIVE_RE.search(before):          # «il giudice sta valutando»: a narrative, no question
+            continue
+        if (m.start(1) == 0 or _ASK_MARK_RE.search(rest) or re.search(r"\bparer\w*", rest, re.IGNORECASE)) \
+                and len(text[m.start(1):].split()) >= 3:
+            return text[m.start(1):].rstrip(" .;").strip()
+    return ""
 QUESTIONS_MIN = 2
 
 
@@ -971,11 +1060,15 @@ def client_rule(message: str, upload: str = "", penal: bool = False) -> Dict[str
         other = re.search(_OTHER_QUERELA_RE.format(name=_NAME_WORD), text)
         if other and other.group(1).lower() not in name.lower():
             role, why = "imputato", f"«{_flat(other.group(0))[:60]}»: la querela è di un'altra parte"
+    stated_role = bool(role)                    # a role word, a current status, what the text says the client does
     if not role and not penal and has_client:
         m = _ACT_ASK_RE.search(ask_part(message or ""))
         if m:
             role, why = "attore", f"«{_flat(m.group(0))}»: il cliente agisce"
-    return {"name": name, "role": role, "why": why}
+    resist = "" if penal else resisting(text, name)
+    if resist and not stated_role:      # v79.10.2 (B1): the party resisting a demand is never the claimant -- «come
+        role, why = "convenuto", RESIST_WHY.format(words=resist)        # contestare la penale?» is no action of its own
+    return {"name": name, "role": role, "why": why, "resisting": resist if role == "convenuto" else ""}
 
 
 _CONSTITUTED_RE = re.compile(r"\bcostitu\w*\s+(?:\w+\s+){0,2}parte civile\b", re.IGNORECASE)
@@ -1258,6 +1351,152 @@ READING_WHY = {"penale": "nessun addebito al cliente risulta dal testo", "civile
                                                                                    "risulta dal testo"}
 
 
+# v79.10.2 (B1): the client resists a demand -- a payment, a penalty, a decree, a release asked of it: «chiede il
+# pagamento a <cliente>», «intima a <cliente>», «pretende da <cliente>», «notifica a <cliente>», the client's «eccepire»,
+# the client named as the debtor or the recipient («Tizio, debitore», «destinatario della diffida è Tizio», «assisto il
+# debitore»); first person too («mi chiede il pagamento», «mi intima», «mi è stato notificato»). Such a party is never
+# the claimant: its role is the matter's defending one (convenuto) and its lines contests, eccezioni and reductions.
+_MY_REF = r"(?:(?:il|la)\s+(?:mi[oa]\s+)?(?:cliente|assistit[oa])|l['’]\s*assistit[oa]|(?:il\s+)?mi[oa]\s+(?:cliente|assistit[oa]))"
+_DEMAND_OBJECT = (r"(?:il\s+pagamento|il\s+saldo|il\s+versamento|la\s+(?:somma|penale|restituzione)|l['’]\s*importo|"
+                  r"il\s+risarcimento|gli\s+interessi|i\s+canoni|lo\s+sfratto|il\s+rilascio|di\s+(?:pagare|versare|"
+                  r"restituire|risarcire|rilasciare|corrispondere|saldare)|(?:una|la)\s+somma|euro\b|€)")
+# v79.10.2 (B1, review): what a notice serves on the client when it is a demand -- a dismissal, an ordinance, a tax
+# assessment served is challenged by the client (ricorrente), never resisted as a claim
+_DEMAND_DOC = (r"(?:diffida|intimazion\w*|decreto\s+ingiuntivo|ingiunzion\w*\s+di\s+pagamento|(?:atto\s+di\s+)?precetto|"
+               r"richiesta\s+di\s+pagamento|messa\s+in\s+mora|lettera\s+di\s+(?:diffida|messa\s+in\s+mora)|sollecito|"
+               r"(?:intimazione\s+di\s+)?sfratto)")
+_DEMAND_WHAT = rf"(?:{_DEMAND_DOC}|{_DEMAND_OBJECT})"
+# the verbs of a demand, the narrative past too («ha chiesto», «ha richiesto», «ha preteso», «ha intimato»)
+_DEMAND_VERB = r"(?:chied\w*|richied\w*|chiest[oaie]|richiest[oaie]|pretend\w*|pretes[oaie]|reclam\w*|sollecit\w*|intim\w*)"
+_RESIST_TEMPLATES = (
+    # «Alfa chiede il pagamento della penale a Tizio», «ha chiesto a Tizio», «intima il pagamento a Tizio»
+    rf"\b{_DEMAND_VERB}\s+(?:(?:a|al|alla|all['’])\s*{{ref}}\b[^.;]{{{{0,60}}}}?"
+    rf"{_DEMAND_OBJECT}|{_DEMAND_OBJECT}(?:[^.;]|(?<=\d)\.(?=\d)){{{{0,100}}}}?\b(?:a|al|alla|all['’]|da|dal|dalla)\s*"
+    r"{ref}\b)",
+    r"\b(?:pretend\w*|pretes[oaie])\s+(?:da|dal|dalla)\s*{ref}\b",
+    # «Alfa pretende che Tizio paghi la penale»
+    rf"\b{_DEMAND_VERB}\s+che\s+{{ref}}\s+(?:\w+\s+)?(?:paghi|versi|restituisca|risarcisca|rilasci|corrisponda|saldi|"
+    r"pagasse|versasse|restituisse|risarcisse|rilasciasse|corrispondesse|saldasse)\b",
+    r"\b(?:ingiung\w*|diffid\w*)\s+(?:(?:a|al|alla|all['’])\s*)?{ref}\b",
+    # a notice served on the client: only a demand's (a decree, a precetto, a diffida, a payment asked)
+    rf"\bnotific\w*\s+[^.;]{{{{0,40}}}}?\b{_DEMAND_WHAT}[^.;]{{{{0,40}}}}?\s(?:a|al|alla|all['’])\s*{{ref}}\b",
+    rf"\bnotific\w*\s+(?:a|al|alla|all['’])\s*{{ref}}\b[^.;]{{{{0,20}}}}?\s(?:(?:un|una|il|la|lo|l['’])\s*)?{_DEMAND_WHAT}",
+    r"\b{ref}\b[^.;]{{0,60}}?\b(?:ha\s+ricevut[oa]|riceve|riceveva|si\s+(?:è|e')\s+vist[oa]\s+notificare|si\s+vede\s+"
+    rf"notificare)\s+(?:la\s+notifica\s+(?:di|del|della|dell['’])\s*)?(?:un|una|il|la|l['’])?\s*{_DEMAND_DOC}",
+    # the client the debtor or the recipient: «Tizio, debitore», «Tizio è (il) debitore», «Tizio è il destinatario»
+    r"\b{ref}\b,?\s+(?:(?:è|era|risulta|resta)\s+)?(?:(?:il|la|quale|in\s+qualità\s+di)\s+)?(?:debitor[ei]|debitrice|"
+    r"obbligat[oa]\s+(?:principale|in\s+solido)|destinatari[oa]|ingiunt[oa]|intimat[oa])\b",
+    r"\b(?:debitor[ei]|debitrice|destinatari[oa]|ingiunt[oa])\s+(?:(?:della|del|dell['’])\s*[^.;,]{{0,40}}?\s+)?(?:è\s+)?"
+    r"{ref}\b",
+)
+# first person: a demand made of the user («la società mi chiede il pagamento», «mi è stato notificato un decreto
+# ingiuntivo») -- never the client asking the lawyer to act («mi ha chiesto di recuperare la somma»: an infinitive of
+# the client's own action; _resist_self drops a clause whose subject is the client)
+_DEMAND_INF = r"(?:pagare|versare|restituire|risarcire|rilasciare|corrispondere|saldare)"
+_RESIST_SELF_RE = re.compile(
+    r"\b(?:mi|ci)\s+(?:(?:ha|hanno)\s+)?(?:chied\w*|richied\w*|chiest[oa]|richiest[oa]|pretend\w*|pretes[oa]|"
+    rf"reclam\w*|intim\w*)\s+(?!(?:di|a)\s+(?!{_DEMAND_INF}\b)\w+(?:are|ere|ire)\b)[^.;]{{0,30}}?{_DEMAND_OBJECT}|"
+    r"\b(?:mi|ci)\s+(?:(?:ha|hanno)\s+)?(?:ingiunt\w*|ingiung\w*|diffid\w*)\b|"
+    rf"\b(?:mi|ci)\s+(?:(?:ha|hanno)\s+)?(?:notificat\w*|notific\w+|intimat\w*)\b[^.;]{{0,30}}?{_DEMAND_WHAT}|"
+    rf"\b(?:mi|ci)\s+(?:è|sono)\s+stat[oaie]\s+(?:notificat|intimat|contestat)\w*[^.;]{{0,30}}?{_DEMAND_WHAT}|"
+    r"\b(?:mi|ci)\s+(?:è|sono)\s+stat[oaie]\s+ingiunt\w*|\bpretend\w*\s+da\s+(?:me|noi)\b|"
+    rf"\b(?:ho|abbiamo)\s+ricevut[oa]\s+(?:un|una|il|la|l['’])?\s*{_DEMAND_DOC}",
+    re.IGNORECASE)
+_CLIENT_SUBJECT_RE = re.compile(r"\b(?:cliente|assistit[oa])\b", re.IGNORECASE)
+_RESIST_ROLE_RE = re.compile(r"\b(?:difensore|legale|avvocat[oa]|assist(?:o|iamo|i))\s+(?:del|della|dell['’]|il|la|l['’])\s*"
+                             r"(?:debitor[ei]|debitrice|destinatari[oa]|ingiunt[oa]|intimat[oa])\b", re.IGNORECASE)
+_ECCEPIRE_RE = re.compile(r"\becce(?:pire|pisc\w*|pit\w*|piamo)\b|\bquali\s+eccezioni\b", re.IGNORECASE)
+# v79.10.2 (B1, review): whose «eccepire» -- the subject after the verb («cosa può eccepire Tizio ad Alfa?», «quali
+# eccezioni potrebbe sollevare la banca?») or before the modal («Tizio può eccepire»): a name or a party word
+_PARTY_WORD = (r"(?i:controparte|altra\s+parte|banca|società|ditta|impresa|creditor\w*|debitor\w*|attor[ei]|convenut\w*|"
+               r"ricorrent\w*|resistent\w*|datore(?:\s+di\s+lavoro)?|comune|amministrazione|venditor\w*|acquirent\w*|"
+               r"conduttor\w*|locator\w*|committent\w*|appaltator\w*|assicurazion\w*|compagnia|condominio|cliente|"
+               r"assistit[oa])")
+_ECC_SUBJECT = (r"(?:(?i:il|la|lo|l['’])\s*(?i:(?:mi[oa]|nostr[oa])\s+)?" + _PARTY_WORD +
+                r"|(?!(?:Cosa|Quali|Quale|Come|Che|Chi|Se|Non|Si|Ci|Mi|Lei|Egli|Ella|Il|La|Lo|Le|Gli|I|E|Ed|In|Per)\b)"
+                r"[A-ZÀ-Ü][\w'’-]+)")
+_ECC_VERB = r"(?i:eccepire|sollevare|opporre|proporre|formulare|far\s+valere)"
+_ECC_SUBJECT_RE = re.compile(
+    rf"{_ECC_VERB}\s+(?P<a>{_ECC_SUBJECT})|(?P<b>{_ECC_SUBJECT})\s+(?i:può|potrà|potrebbe|possa|potesse|deve|dovrà|"
+    rf"dovrebbe|intende|vuole|ha\s+intenzione\s+di)\s+(?:\w+\s+)?(?:{_ECC_VERB}|(?i:eccepi\w*))|"
+    r"(?P<c>" + _ECC_SUBJECT + r")\s+(?i:eccepisc\w*|ha\s+eccepito)")
+# the demand's kind, for the module's reductions (data/remedies.json «eccezioni» with «demand»): a contractual penalty
+DEMAND_KINDS = (
+    ("penale", re.compile(r"\bclausol\w*\s+penal\w*|\bpenal[ei]\s+(?:contrattual\w*|pattuit\w*|previst\w*|convenut\w*|"
+                          r"per\s+(?:il\s+)?ritard\w*|per\s+(?:l['’])?inadempiment\w*|di\s+\d|da\s+\d)|\b(?:la|una|della|"
+                          r"alla|dalla|sulla|di|a\s+titolo\s+di)\s+penale\b(?!\s+(?:di\s+)?procedur)", re.IGNORECASE)),
+    ("pagamento", re.compile(r"\b(?:pagamento|saldo|somma|importo|canon[ei]|fattur\w*)\b", re.IGNORECASE)),
+    ("decreto", re.compile(r"\bdecreto\s+ingiuntivo\b|\bingiunzion\w*\s+di\s+pagamento\b", re.IGNORECASE)),
+)
+
+
+_PENAL_HINT_RE = re.compile(r"\b(?:imputat\w*|indagat\w*|reat[oi]|querel\w*|avviso\s+di\s+garanzia|pubblico\s+ministero|"
+                            r"procura\s+della\s+repubblica|codice\s+penale)\b|\bc\.\s?p\.(?!\s?[cp]\.)", re.IGNORECASE)
+
+
+def _client_refs(name: str) -> List[str]:
+    words = (name or "").split()
+    refs = ([re.escape(name)] if name else []) + ([re.escape(words[0])] if len(words) > 1 else [])
+    return refs + [_MY_REF]
+
+
+def resisting(text: str, name: str = "") -> str:
+    """v79.10.2 (B1): the words that show the client resisting a demand (see _RESIST_TEMPLATES: a payment, a penalty, a
+    decree asked of it, served on it; its «eccepire»; the client the debtor or the recipient), "" with none -- and ""
+    in a criminal matter (_PENAL_HINT_RE: an avviso di garanzia served is no civil demand)."""
+    text = text or ""
+    if _PENAL_HINT_RE.search(text):
+        return ""
+    for ref in _client_refs(name):
+        for template in _RESIST_TEMPLATES:
+            m = re.search(template.format(ref=ref), text, re.IGNORECASE)
+            if m and not hypothetical(text, m.start(), m.end()):
+                return _flat(m.group(0))[:100]
+    for m in _RESIST_SELF_RE.finditer(text):
+        clause = text[max(text.rfind(c, 0, m.start()) for c in ".;:!?\n") + 1:m.start()]
+        if not hypothetical(text, m.start(), m.end()) and not _CLIENT_SUBJECT_RE.search(clause) \
+                and not (name and re.search(rf"\b{re.escape(name.split()[0])}\b", clause)):
+            return _flat(m.group(0))[:100]              # «il cliente mi ha chiesto …»: the client asks the lawyer
+    m = _actual(_RESIST_ROLE_RE, text)
+    if m:
+        return _flat(m.group(0))[:100]
+    for sentence in sentences(ask_part(text)):          # the client's «eccepire» -- never another party's
+        m = _ECCEPIRE_RE.search(sentence)
+        if m and _eccepire_is_clients(sentence, name):
+            return _flat(m.group(0))[:100]
+    return ""
+
+
+def _eccepire_is_clients(sentence: str, name: str) -> bool:
+    """v79.10.2 (B1, review): the sentence's «eccepire» is the client's -- its stated subject the client («cosa può
+    eccepire Tizio ad Alfa?», «il mio cliente può eccepire»), else no subject and no other name in it except as an object
+    («cosa possiamo eccepire ad Alfa?»); never another party's («quali eccezioni potrebbe sollevare la banca?»)."""
+    def own(words: str) -> bool:
+        w = words.lower()
+        return bool(re.search(r"\b(?:cliente|assistit[oa])\b", w)) or bool(name and any(
+            x.lower() in w.split() for x in name.split()))
+    m = _ECC_SUBJECT_RE.search(sentence)
+    if m:
+        return own(m.group("a") or m.group("b") or m.group("c") or "")
+    sentence = sentence.strip()
+    for w in re.finditer(r"\b[A-ZÀ-Ü][\w'’-]+", sentence):
+        before = sentence[:w.start()]
+        if not before.strip() or re.search(r"[.?!:]\s*$", before) or (name and w.group(0).lower() in name.lower()):
+            continue
+        if not re.search(r"\b(?:a|ad|al|alla|allo|ai|verso|contro|di|da|confronti\s+di)\s+$", before, re.IGNORECASE):
+            return False                                # another party named, not as the object
+    return True
+
+
+def demand_kind(text: str) -> str:
+    """v79.10.2 (B1): the kind of the demand the case is about -- «penale» (a contractual penalty), «decreto», «pagamento»
+    -- the first of DEMAND_KINDS the text names, "" with none."""
+    return next((kind for kind, pattern in DEMAND_KINDS if pattern.search(text or "")), "")
+
+
+RESIST_WHY = "«{words}»: il cliente resiste a una pretesa (non è mai l'attore)"
+
+
 def derive_role(text: str, rito: str = "") -> Tuple[str, str, str]:
     """v79.6 (item 5): (role, why, reading) for a client whose role nobody stated -- the sentences about the entity the
     lawyer names («difensore della società», «assisto l'impresa»), else the whole text: resisting a claim, a payment
@@ -1352,6 +1591,7 @@ def detect(message: str, upload: str = "", history: Sequence[Dict[str, Any]] = (
         "named_articles": named_articles(message, client["name"]),        # v65: with their verb and use
         "questions": questions(message),                                  # v79.6 (item 1): every explicit question
         "role_reading": "",                                               # v79.6 (item 5): resolve's reading
+        "resisting": client.get("resisting") or "",                        # v79.10.2 (B1): the client resists a demand
         "rito": values["rito"], "role": values["role"], "stage": values["stage"],
         "prior_decisions": prior_decisions(f"{message}\n{upload}"),
         "client": {"name": client["name"], "side": side_of(values["role"]),
@@ -1462,8 +1702,14 @@ def resolve(result: Optional[Dict[str, Any]], analysis: Dict[str, Any]) -> Optio
         penal = (out.get("rito") or "").startswith("penale") or family == "penale"
         role = {"accused": "imputato" if penal else "convenuto",
                 "victim": "persona_offesa" if penal else "attore"}.get(side, "")
-        if role == "convenuto" and not sued(str((analysis or {}).get(interactive_flow.CASE_KEY) or "")):
+        case = str((analysis or {}).get(interactive_flow.CASE_KEY) or "")
+        resist = "" if penal else (out.get("resisting") or resisting(case, str((out.get("client") or {}).get("name")
+                                                                                 or "")))
+        if role == "convenuto" and not sued(case) and not resist:
             role = "attore"             # v79 (C5): «convenuto» only when the text shows an action against the client
+        if resist and role in ("attore", ""):   # v79.10.2 (B1): a demand resisted -- never the claimant, never a
+            role, side = "convenuto", "accused"         # reading's default
+            out["resisting"] = resist
         if role:
             out["role"] = role
             out["client"] = {**(out.get("client") or {}), "side": side}

@@ -1216,9 +1216,17 @@ _QUESTION_STOP = {"richiesta", "richiesto", "possibile", "esserci", "essere", "a
 
 
 def explicit_questions(request: str, facts: str = "") -> List[str]:
-    """The questions the request asks, each sentence ending with "?" (else the facts' own, when the request has none)."""
+    """The questions the request asks, each sentence ending with "?" (else the facts' own, when the request has none).
+    v79.10.2 (B2): a question written as a task counts too («Illustra …», «valutando se …»: intake.task_question), in
+    the text's order."""
+    from .intake import sentences, task_question
     for text in (request, facts):
         found = [" ".join(q.split()) for q in re.findall(r"[^.?!\n]*\?", text or "")]
+        tasks = [task_question(x) for x in sentences(text or "") if "?" not in x]
+        if any(tasks):
+            at = {q: (text or "").find(q.split(":")[-1].strip()[:30]) for q in found}
+            at.update({q: (text or "").find(q[:30]) for q in tasks if q})
+            found = sorted(dict.fromkeys(found + [q for q in tasks if q]), key=lambda q: at.get(q, 0))
         found = [q for q in found if len(_question_stems(q)) >= 2]
         if found:
             return list(dict.fromkeys(found))

@@ -105,7 +105,14 @@ def of(state: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
     stage = str(resolved.get("stage") or "") or UNKNOWN
     case = str((analysis or {}).get(interactive_flow.CASE_KEY) or (state or {}).get("text") or "")
     read = str((raw or {}).get("rito") or "")
-    out = {"rito": rito, "family": family(rito), "role": role, "stage": stage,
+    resist = str(resolved.get("resisting") or "") if role == "convenuto" else ""
+    if role == "attore" and family(rito) == "civile" and (resolved.get("confidence") or {}).get("role") != "rule":
+        # v79.10.2 (B1): the party resisting a demand is never the claimant -- a model's or a default's «attore» on a
+        # case (the precisazioni too) that shows the client resisting is the defending role
+        resist = resist or intake_mod.resisting(case, str((resolved.get("client") or {}).get("name") or ""))
+        if resist:
+            role = "convenuto"
+    out = {"rito": rito, "family": family(rito), "role": role, "stage": stage, "resisting": resist,
            "querela_stated": querela_stated(case), "prior_decisions": list(resolved.get("prior_decisions") or []),
            "from_intake": bool(raw), "intake_rito": read if read != UNKNOWN else ""}      # v75: the tables' key
     out["entry"] = entry_for(rito, role, stage)

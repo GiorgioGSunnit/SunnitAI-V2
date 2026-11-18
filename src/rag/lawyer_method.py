@@ -693,6 +693,12 @@ def forecast(ctx: Dict[str, Any], t: Dict[str, Any], a: Dict[str, Any], log: Opt
     if posture.get("role") in VICTIM_ROLES:
         return a
     records = ctx.get("records") or {}
+    cand = next((c for c in ctx.get("candidates") or [] if t.get("candidate") and c.get("id") == t.get("candidate")), {})
+    if cand.get("kind") == "eccezione" and cand.get("reduction") and cand.get("article"):
+        b = reduction_assessment(cand, records, ctx.get("client") or "")     # v79.10.2 (B1): on the reduction's article
+        if log is not None:
+            log["forecast"] = {"was": a.get("article"), "now": b["article"], "esito": b.get("esito"), "reduction": True}
+        return b
     art = main_article(t, records, elements_by_id(records, ctx.get("circumstances")))
     if not art or art == a.get("article"):
         return a
@@ -700,6 +706,39 @@ def forecast(ctx: Dict[str, Any], t: Dict[str, Any], a: Dict[str, Any], log: Opt
     if log is not None:
         log["forecast"] = {"was": a.get("article"), "now": art, "esito": b.get("esito")}
     return b
+
+
+# v79.10.2 (B1), my drafts: the forecast of a reduction line, on the reduction's own article
+REDUCTION_WHY = {"excluded": "un presupposto della riduzione (art. {art}) è escluso dai fatti",
+                 "proven": "i presupposti della riduzione (art. {art}) risultano provati: {demand} si riduce",
+                 "partly": "{proved} presupposti su {total} della riduzione (art. {art}) risultano provati",
+                 "needs": "{demand} resta; la sua riduzione (art. {art}) dipende da {need}",
+                 "open": "{demand} resta; la sua riduzione (art. {art}) dipende dai fatti ancora da provare",
+                 "demand": "la pretesa", "demand_art": "la pretesa (art. {claim})"}
+
+
+def reduction_assessment(c: Dict[str, Any], records: Dict[str, Dict[str, Any]], client: str = "") -> Dict[str, Any]:
+    """v79.10.2 (B1): the forecast of a reduction line (1384 c.c. for a penalty) on its own article -- the demand stays,
+    the goal is its reduction (esito parziale): the reduction's record with every element proven -> favourable; one
+    excluded -> unfavourable; else uncertain; no record -> uncertain, what it needs from the table («requires»)."""
+    art = str(c.get("article") or "")
+    claim = str(c.get("claim") or "")
+    demand = REDUCTION_WHY["demand_art"].format(claim=claim) if claim else REDUCTION_WHY["demand"]
+    base = {"obiettivo": PARZIALE, "article": art, "reduction": True}
+    rec = (records or {}).get(art) or {}
+    if _live(rec):
+        proved, excluded, total = _counts(rec)
+        if excluded:
+            return {**base, "esito": SFAVOREVOLE, "grado": MEDIO, "why": REDUCTION_WHY["excluded"].format(art=art)}
+        if total and proved == total:
+            return {**base, "esito": FAVOREVOLE, "grado": MEDIO,
+                    "why": REDUCTION_WHY["proven"].format(art=art, demand=demand)}
+        return {**base, "esito": INCERTO, "grado": MEDIO,
+                "why": REDUCTION_WHY["partly"].format(proved=proved, total=total, art=art)}
+    need = _plain(c.get("requires")).rstrip(".")
+    why = REDUCTION_WHY["needs"].format(demand=demand, art=art, need=need) if need else \
+        REDUCTION_WHY["open"].format(demand=demand, art=art)
+    return {**base, "esito": INCERTO, "grado": BASSO, "why": why}
 
 
 def settle_objective(a: Dict[str, Any], sols: Sequence[Dict[str, Any]], records: Dict[str, Dict[str, Any]],
@@ -1124,6 +1163,7 @@ CANDIDATE_TEXTS = {   # my drafts: each candidate's line, from the record
     "aggravante": "Far valere l'aggravante dell'art. {art}{rubrica}",
     "remedy": "Chiedere {label} ({articles})",
     "eccezione": "Eccepire {label} ({articles})",
+    "riduzione": "Chiedere {label} ({articles})",          # v79.10.2 (B1): a reduction, the resisting party's (kind eccezione)
     "riconvenzionale": "Domanda riconvenzionale sull'art. {art}{rubrica}",
     "defence": "Difesa sull'art. {art}{rubrica}",          # v79 (D1): a general-part defence with its elements proven
     "transazione": "Proporre una transazione che chiuda la lite (artt. 1965 ss. c.c.)",     # v79.8 (B3)
@@ -1159,6 +1199,30 @@ def _in_range(label: str, code: str, span: Sequence[int]) -> bool:
 def matter_of(label: str) -> Dict[str, Any]:
     """v75: the claim's matter by its article's place in the code (remedies.json «matters»); {} when none holds it."""
     return next((m for m in remedies().get("matters") or [] if _in_range(label, m["code"], m["range"])), {})
+
+
+def _fits(r: Dict[str, Any], claim: str, demand: str) -> bool:
+    """v79.10.2 (B1): an eccezioni entry answers this claim or this demand -- always, without «on» and «demand»."""
+    on, want = list(r.get("on") or []), str(r.get("demand") or "")
+    if not on and not want:
+        return True
+    return bool(claim and any(same_article(claim, x) or claim == x for x in on)) or bool(want and want == demand)
+
+
+def resisting_eccezioni(claim: str, case: str) -> List[Tuple[Dict[str, Any], str]]:
+    """v79.10.2 (B1): [(entry, its own article or "")] -- the convenuto's eccezioni: the claim's matter's entries that fit
+    it (_fits), and every matter's reduction («kind»: «riduzione») the claim or the case's demand (intake.demand_kind)
+    calls for, the reductions first; each entry once."""
+    from . import intake as intake_mod
+    demand = intake_mod.demand_kind(case)
+    own = [r for r in (matter_of(claim).get("eccezioni") or []) if _fits(r, claim, demand)] if claim else []
+    reductions = [r for m in remedies().get("matters") or [] for r in m.get("eccezioni") or []
+                  if r.get("kind") == "riduzione" and (r.get("on") or r.get("demand")) and _fits(r, claim, demand)]
+    out: List[Tuple[Dict[str, Any], str]] = []
+    for r in reductions + [r for r in own if r.get("kind") != "riduzione"]:
+        if not any(r is x for x, _ in out):
+            out.append((r, str(r.get("article") or "") if r.get("kind") == "riduzione" else ""))
+    return out
 
 
 MODEL_ARGUED = ("contest_excluded", "contest_open", "contest_integrated", "requalify")    # v74: the model argues these
@@ -1514,9 +1578,13 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
                         admitted_by=f"remedies.json: {matter.get('id')}", **r)
     if role == "convenuto":     # v75: the eccezioni of the claim's matter (the claim against the client)
         claim = next((x for x in threats if matter_of(x)), "")
-        for r in (matter_of(claim).get("eccezioni") or []) if claim else []:     # v79.6: the eccezione di
-            add("eccezione", CANDIDATE_TEXTS["eccezione"].format(**r), article=claim, **r)   # prescrizione stays (E4:
-            # claims only -- a prescription article is never a claim, issue_records.counted)
+        # v79.6: the eccezione di prescrizione stays (E4: claims only -- a prescription article is never a claim,
+        # issue_records.counted). v79.10.2 (B1): the party resisting a demand -- its reductions first (1384 for a
+        # penalty: the claim one of «on», or the case's demand the entry's), with no claim record too; an entry with
+        # «on» or «demand» only then; a reduction's line is on its own article, the forecast's (reduction_assessment)
+        for r, own in resisting_eccezioni(claim, str(ctx.get("case") or "")):
+            add("eccezione", CANDIDATE_TEXTS["riduzione" if own else "eccezione"].format(**r), article=own or claim,
+                claim=claim, reduction=bool(own), **{k: r[k] for k in ("label", "articles", "requires") if k in r})
         add("transazione", CANDIDATE_TEXTS["transazione"], article=claim or charge)    # v79.8 (B3): its set
     ctx.pop("no_action", None)
     if known_role and not victim and role not in ACCUSED and not out and not ctx.get("claims_any_admitted"):
@@ -2576,6 +2644,8 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             "claims_refused_family": len(ctx.get("claims_refused_family") or []),
             # v79.10.1 (A3): the lines never_main kept out of the main line (circumstances, «elemento escluso» fragments)
             "main_demoted": sum(1 for t in sols if t.get("main_demoted")),
+            # v79.10.2 (B1): the resisting party's reductions offered (1384 for a penalty)
+            "reductions_offered": sum(1 for c in cands if c.get("reduction")),
             "main_outside_institution": main_outside(ctx, m),
             "threats_from": str((ctx.get("candidates_trace") or {}).get("threats_from") or ""),
             "no_threat": str((ctx.get("candidates_trace") or {}).get("no_threat") or ""),
@@ -4089,7 +4159,31 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
 
 CLIENT_HEAD = "**Nell'interesse di {name}**"
 SHARED_NOTE = "_Sezione comune a {names}: la loro posizione su questo punto è la stessa._"
-PER_CLIENT_ALWAYS = ("sintesi",)
+# v79.10.2 (B3): no section is per client whatever its text -- v79.6's §1 «always per client» is gone: a section
+# identical for every client prints once with the note, never twice
+PER_CLIENT_ALWAYS: Tuple[str, ...] = ()
+
+
+def _section_key(text: str) -> str:
+    """v79.10.2 (B3): a section's text as the merge compares it -- spaces and line breaks collapsed."""
+    return " ".join(str(text or "").split())
+
+
+def printed_twice(answer: str) -> List[str]:
+    """v79.10.2 (B3): the client blocks («Nell'interesse di …») of a several-client parere whose text another client's
+    block of the same section repeats -- [] when no section prints twice (the nightly's check clients_sections_once)."""
+    out: List[str] = []
+    text = answer or ""
+    first = _SECTION_RE.search(text)
+    prefix, body = (text[:first.start()], text[first.start():]) if first else (text, "")
+    at = prefix.find(ANSWERS_TITLE)
+    parts = [(ANSWERS_TITLE.strip("*"), prefix[at + len(ANSWERS_TITLE):])] if at >= 0 else []
+    for t, section in parts + list(answer_sections(body)):
+        blocks = re.split(r"\*\*Nell'interesse di [^*\n]+\*\*", section or "")
+        seen = [_section_key(b) for b in blocks[1:] if _section_key(b)]
+        if len(seen) != len(set(seen)):
+            out.append(t)
+    return out
 
 
 def _names(names: Sequence[str]) -> str:
@@ -4127,24 +4221,36 @@ def compose_clients(sections: Sequence[Tuple[str, str]], items: Sequence[Tuple[s
         bodies.append(answer_sections(body))
 
     def merged(texts: Sequence[str], always: bool = False) -> str:
-        if not always and len(set(texts)) == 1:
-            return f"{texts[0]}\n\n{SHARED_NOTE.format(names=_names(names))}" if texts[0] else ""
-        return "\n\n".join(f"{CLIENT_HEAD.format(name=n)}\n\n{t}" for n, t in zip(names, texts) if t)
+        # v79.10.2 (B3): the clients grouped by their text (spaces aside, _section_key) -- one group: once, with the
+        # note; else each group's text once, under its clients' names («Nell'interesse di Alfa e Beta»): never twice
+        keys = [_section_key(t) for t in texts]
+        if not always and len(set(keys)) == 1:
+            return f"{texts[0]}\n\n{SHARED_NOTE.format(names=_names(names))}" if keys[0] else ""
+        groups: Dict[str, List[int]] = {}
+        for i, k in enumerate(keys):
+            if k:
+                groups.setdefault(k, []).append(i)
+        return "\n\n".join(f"{CLIENT_HEAD.format(name=_names([names[i] for i in ix]))}\n\n{texts[ix[0]]}"
+                            for ix in groups.values())
     out = []
     if heads[0]:
         out.append(heads[0])
     if any(blocks):
         inner = [b[len(ANSWERS_TITLE):].strip() if b else "" for b in blocks]
         out.append(f"{ANSWERS_TITLE}\n\n{merged(inner)}")
-    titles = [t for t, _ in bodies[0]]
-    shared = []
+    titles = list(dict.fromkeys(t for b in bodies for t, _ in b))       # v79.10.2 (B3): every client's sections
+    shared, grouped = [], []
     for i, t in enumerate(titles):
         texts = [dict(b).get(t, "") for b in bodies]
         always = t in [title(k) for k in PER_CLIENT_ALWAYS]
-        if not always and len(set(texts)) == 1:
+        keys = [_section_key(x) for x in texts]
+        if not always and len(set(keys)) == 1:
             shared.append(t)
+        elif len({k for k in keys if k}) < len([k for k in keys if k]):
+            grouped.append(t)
         out.append(f"**{i + 1}. {t}**\n\n{merged(texts, always)}")
     log["shared_sections"] = shared
+    log["grouped_sections"] = grouped           # v79.10.2 (B3): some clients' text the same, printed once for them
     first_ctx = items[0][1]
     first_ctx["output_sources"] = merge_sources([c.get("output_sources") or {} for _, _, c in composed])
     first_ctx["compose_removals"] = [e for _, _, c in composed for e in c.get("compose_removals") or []]

@@ -5709,6 +5709,8 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         persist_client(state, client, assumption)                           # v60f (B8)
     from . import posture as posture_mod      # v62: the client's posture (intake's rito, role, stage) and its consumers
     posture = _isolated("posture", lambda: posture_mod.of(state, analysis), None) or {}
+    # v79.10.2 (B1): the client read as resisting a demand -- the defending role, never the claimant
+    state.setdefault("block_counters", {})["role_resisting"] = int(bool(posture.get("resisting")))
     state["posture"] = _jsonable(posture)
     _log("posture", posture)
     all_rows = _restored_rows(state.get("rows"))
@@ -5856,6 +5858,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         lawyer_method.begin(posture.get("rito") or "", _areas(analysis))
         mark("method")
         clients = clients_of(state)             # v79.6 (item 2): more than one client -- a method per client
+        state.setdefault("block_counters", {})["clients_detected"] = len(clients)       # v79.10.2 (B3)
         method_clients = _isolated("lawyer_method_clients", lambda: method_inputs_clients(
             state, posture, plan, topics, refs, all_rows, case, clients), None) if clients else None
         if method_clients:
@@ -5986,6 +5989,11 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         if method_clients:                      # v79.6 (item 2): one §1 per client, the differing sections per client
             draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose_clients(
                 answer_ledger.sections_of(draft), method_clients, rest, compose_log), draft) or draft
+            # v79.10.2 (B3): the sections printed once for every client (with the note), and any printed twice (0)
+            counters = state.setdefault("block_counters", {})
+            counters["clients_shared_sections"] = len(compose_log.get("shared_sections") or [])
+            counters["clients_sections_twice"] = len(_isolated("printed_twice", lambda: lawyer_method.printed_twice(
+                draft), []) or [])
         else:
             draft = _isolated("lawyer_method_compose", lambda: lawyer_method.compose(
                 answer_ledger.sections_of(draft), method_ctx, method_plan, rest, compose_log), draft) or draft
@@ -6037,34 +6045,106 @@ def abrogated_labels(rows: Sequence[Dict[str, Any]]) -> List[str]:
     return list(dict.fromkeys(_label(_key(r["_article"])) for r in rows or [] if r.get("_article") and row_abrogated(r)))
 
 
-_MULTI_CLIENT_RE = re.compile(r"\b(?i:assisto|assistiamo|difendo|difendiamo|rappresento|rappresentiamo|sono\s+il\s+(?:difensore|"
-                              r"legale)\s+di|sono\s+l['’]avvocato\s+di|siamo\s+i\s+difensori\s+di)\s+"
+# v79.10.2 (B3): the second person and the role forms too -- «sei l'avvocato di X e Y», «difendi X e Y», «assisti X e
+# Y», «in qualità di difensore di X e di Y»
+_MULTI_CLIENT_RE = re.compile(r"\b(?i:assisto|assistiamo|assisti|assistete|difendo|difendiamo|difendi|difendete|rappresento|"
+                              r"rappresentiamo|rappresenti|rappresentate|(?:lei|ella)\s+(?:assiste|difende|rappresenta)|"
+                              r"(?:sono|sei|siamo|siete|(?:lei|ella)\s+è|come|quale|in\s+qualità\s+di|"
+                              r"nelle\s+vesti\s+di)\s+(?:il\s+|la\s+|l['’]\s*|i\s+|gli\s+)?(?:avvocat[oaei]\s+)?(?:difensor[ei]|"
+                              r"legal[ei]|avvocat[oaei])\s+(?:di\s+fiducia\s+)?di)\s+"
                               r"([A-ZÀ-Ü][\wà-ÿ'’]+)\s+(?i:e)\s+(?i:di\s+)?([A-ZÀ-Ü][\wà-ÿ'’]+)")
 
 
 def clients_of(state: Dict[str, Any]) -> List[Dict[str, str]]:
     """v79.6 (item 2): the parties the user assists, [{name, role}] -- the first read's «clienti», else the user's own
-    words («Sono il difensore di Tizio e di Caio»); fewer than two: [] (the single-client parere)."""
+    words («Sono il difensore di Tizio e di Caio»); fewer than two: [] (the single-client parere). v79.10.2 (B3): the
+    plural also in the second person and the role forms («sei l'avvocato di X e Y», «difendi X e Y», «assisti X e Y»,
+    «avvocato di entrambi»), or a first read listing two parties on the same side when the request addresses both
+    (same_side_clients)."""
     read = state.get("read") or {}
     case = case_text(state)
     m = _MULTI_CLIENT_RE.search(case)
     plural = bool(m) or bool(_BOTH_CLIENTS_RE.search(case))     # v79.8 (E2): only on the user's explicit plural
     if not plural:
+        same = same_side_clients(read, case)
+        if same:
+            _log("method_clients_same_side", {"clients": [c["name"] for c in same]})
+            return same
         if len([c for c in read.get("clients") or [] if isinstance(c, dict) and c.get("name")]) >= 2:
             _log("method_clients_refused", {"why": "nessun cliente plurale esplicito", "read": read.get("clients")})
         return []
     found = [c for c in read.get("clients") or [] if isinstance(c, dict) and c.get("name")]
     if len(found) < 2:
         found = [{"name": m.group(1), "role": ""}, {"name": m.group(2), "role": ""}] if m else []
+    if len(found) < 2:      # v79.10.2 (B3, review): «avvocato di entrambi» -- the read's same-side parties
+        found = same_side_clients(read, case, addressed=True)
     if len(found) >= 2 and adversaries(case, found[0]["name"], found[1]["name"]):
         _log("method_clients_refused", {"why": "le due parti della lite", "clients": [c["name"] for c in found]})
         return []                           # the two parties of a dispute are never both clients
     return found if len(found) >= 2 else []
 
 
-_BOTH_CLIENTS_RE = re.compile(r"\b(?:difensore|difensori|legale|avvocat[oi])\s+di\s+(?:entrambi|ambedue|tutti\s+e\s+due)\b|"
-                              r"\b(?:assisto|assistiamo|difendo|difendiamo|rappresento)\s+(?:entrambi|ambedue|tutti\s+e\s+"
-                              r"due)\b", re.IGNORECASE)
+_BOTH_CLIENTS_RE = re.compile(r"\b(?:difensore|difensori|legale|legali|avvocat[oaei])\s+di\s+(?:entramb[ie]|ambedue|"
+                              r"tutt[ie]\s+e\s+due)\b|\b(?:assisto|assistiamo|assisti|difendo|difendiamo|difendi|rappresento|"
+                              r"rappresenti|(?:lei|ella)\s+(?:assiste|difende|rappresenta))\s+(?:entramb[ie]|ambedue|"
+                              r"tutt[ie]\s+e\s+due)\b", re.IGNORECASE)
+# v79.10.2 (B3): the request addresses several parties at once
+_ADDRESSES_ALL_RE = re.compile(r"\b(?:ciascun[oa]|ognun[oa]|entramb[ie]|ambedue|tutt[ie]\s+e\s+due|per\s+(?:i|le)\s+due|"
+                               r"di\s+(?:i|le)\s+due)\b", re.IGNORECASE)
+# v79.10.2 (B3, review): ... about the parties -- «per ciascuno», «ciascuno dei due», «entrambi gli imputati», never
+# «per ciascuno dei due reati»: the noun after the word, when there is one, names persons
+_ALL_NOUN_RE = re.compile(r"\s+(?:(?:di|dei|degli|delle|de['’]|tra|fra)\s+)?(?:(?:i|gli|le|l['’])\s*)?(?:due\s+)?"
+                          r"([a-zà-ü]{3,})", re.IGNORECASE)
+_PERSON_NOUN_RE = re.compile(r"(?:imputat|indagat|client|assistit|soci|coniug|eredi|convenut|attor|ricorrent|resistent|"
+                             r"part[ie]$|fratell|sorell|genitor|lavorator|debitor|creditor|condebitor|person|interessat|"
+                             r"societ|aziend|impres|danneggiat|vittim|offes|figl|minor|amic|loro|voi|noi|due$|quest)",
+                             re.IGNORECASE)
+
+
+def _addresses_all(ask: str) -> bool:
+    """v79.10.2 (B3, review): the ask speaks to all the parties (_ADDRESSES_ALL_RE), its word not about things."""
+    for m in _ADDRESSES_ALL_RE.finditer(ask or ""):
+        noun = _ALL_NOUN_RE.match(ask, m.end())
+        if not noun or _PERSON_NOUN_RE.match(noun.group(1)):
+            return True
+    return False
+
+
+def _party_side(party: Dict[str, Any]) -> str:
+    from . import intake as intake_mod
+    return intake_mod.side_of(intake_mod._role_of_words(str(party.get("role") or "")))
+
+
+def same_side_clients(read: Dict[str, Any], case: str, addressed: bool = False) -> List[Dict[str, str]]:
+    """v79.10.2 (B3): two or more parties the first read lists (its «clienti», else its «parti») on the same side
+    (intake.side_of their role: accused, victim, terzo), when the request addresses them all -- names each in its
+    request (the sentences that ask: «?», an imperative, a wish -- intake's ask marks) or speaks to all of them («per
+    ciascuno», «entrambi»); [] otherwise, and never two parties of the same dispute (adversaries). Review: from the
+    read's «parti», the group must hold the client the read or the user already names (never its counterparties);
+    addressed -- the user's explicit «avvocato di entrambi» (clients_of) -- stands for the ask's address."""
+    from . import intake as intake_mod
+    ask = " ".join(x for x in intake_mod.sentences(case or "") if intake_mod._ASK_MARK_RE.search(x))
+    to_all = addressed or _addresses_all(ask)
+    one = str(stated(case or "").get("client") or "")       # «Assisto Tizio»: one client, unless the ask speaks to all
+    if one and not to_all:
+        return []
+    known = {str(c["name"]).split()[0].lower() for c in read.get("clients") or [] if isinstance(c, dict) and c.get("name")}
+    known |= {one.split()[0].lower()} if one else set()
+    for key in ("clients", "parties"):
+        listed = [c for c in read.get(key) or [] if isinstance(c, dict) and c.get("name")]
+        by_side: Dict[str, List[Dict[str, Any]]] = {}
+        for c in listed:
+            side = _party_side(c)
+            if side:
+                by_side.setdefault(side, []).append(c)
+        for side, group in by_side.items():
+            named = [c for c in group if re.search(rf"\b{re.escape(str(c['name']).split()[0])}\b", ask)]
+            chosen = named if len(named) >= 2 else group if len(group) >= 2 and to_all else []
+            if key == "parties" and known and not any(str(c["name"]).split()[0].lower() in known for c in chosen):
+                continue                        # the known client's counterparties, never its co-clients
+            if len(chosen) >= 2 and not adversaries(case, chosen[0]["name"], chosen[1]["name"]):
+                return [{"name": str(c["name"]), "role": str(c.get("role") or "")} for c in chosen]
+    return []
 _ADVERSE_RE = r"(?:ha\s+convenuto|ha\s+citato|cita|conviene|contro|nei\s+confronti\s+di|ha\s+denunciato|ha\s+querelato|" \
               r"ha\s+sporto\s+(?:denuncia|querela)\s+(?:contro|nei\s+confronti\s+di)|chiede\s+a|agisce\s+contro)"
 
@@ -8312,8 +8392,11 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     # v79.10.1 (A1): v79.8.5's no_action_lines is gone (the no-action line is never a candidate): no_action_prose, set
     # where the method steps aside (block_counters); (A2) the matter articles refused outside the read's family; (A3)
     # the circumstances and «elemento escluso» fragments kept out of the main line
-    for k in ("claims_refused_family", "main_demoted"):
+    for k in ("claims_refused_family", "main_demoted", "reductions_offered"):     # v79.10.2 (B1): the reductions
         out[k] = sum(int(c.get(k) or 0) for c in counts)
+    # v79.10.2 (B1): the client read as resisting a demand (its role the defending one, never the claimant); the
+    # answer's posture sets it (block_counters), else the intake's
+    out["role_resisting"] = int(bool((state.get("intake") or {}).get("resisting")))
     for k in ("riqualificazione_out_of_code", "requalify_refused_code", "requalify_unnamed",       # v79.9 (A3)
               "candidates_out_of_family", "candidates_family_dropped"):                            # v79.9 (C2)
         out[k] = sum(int(c.get(k) or 0) for c in counts)
@@ -8330,8 +8413,21 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
         _family_alarm(fam.get("dropped_graded") or {}))
     out.update(grading_counters(state))                                                             # v79.8 (C4)
     out.update(shadow_counters(counts))                                                             # v79.11 (6)
+    out["questions_extracted"] = len(asked_questions(state))                                        # v79.10.2 (B2)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out
+
+
+def asked_questions(state: Dict[str, Any]) -> List[str]:
+    """v79.10.2 (B2): the request's questions as the answer reads them (the method's ctx["asked"]) -- the intake's,
+    else the case's own (intake.questions: a sentence with «?», a request phrased as one, a task); [] on any failure."""
+    try:
+        from . import intake as intake_mod
+        got = list((state.get("intake") or {}).get("questions") or [])
+        return got or intake_mod.questions(case_text(state) if (state.get("text") or state.get("request")) else "")
+    except Exception as exc:          # noqa: BLE001 -- a counter never fails the answer
+        _log("asked_questions_failed", {"error": f"{type(exc).__name__}: {exc}"[:200]})
+        return []
 
 
 def _family_alarm(dropped_graded: Dict[str, Any]) -> List[Dict[str, Any]]:

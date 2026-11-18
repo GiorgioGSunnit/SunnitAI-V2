@@ -76,6 +76,11 @@ any promote. The run sets FAMILY_GATE_SHADOW_GRADE=true (the dropped rows graded
 --no-family-shadow-grade skips it: a proxy count, «stima (non graduati)»). The alarm alone never fails the run; the
 header line says «ALLARME presente». The family table lists the override doors (door and signal).
 
+v79.10.2 (B): per cell, questions_extracted (one question at least: a «?», a request phrased as one, a task -- «illustra»,
+«valutando se» …; the run's counter, else the cell's text) and clients_sections_once (no section of a several-client
+parere printed twice, lawyer_method.printed_twice), both offline too; the counters role_resisting, reductions_offered,
+questions_extracted, clients_detected, clients_shared_sections, clients_sections_twice in the counters table.
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -185,6 +190,8 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(registro_check(out["answer"]))                                     # v79.8.6
         out["checks"].append(no_action_check(out["answer"]))                                    # v79.10.1 (A1)
         out["checks"].append(questions_check(out["answer"], result.get("state") or {}))         # v79.6 (1)
+        out["checks"].append(questions_extracted_check(spec["text"], out["counters"]))          # v79.10.2 (B2)
+        out["checks"].append(clients_once_check(out["answer"]))                                 # v79.10.2 (B3)
         out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
         if by_client:                                                                          # v79.6 (2)
@@ -288,6 +295,23 @@ def questions_check(answer: str, state: Dict[str, Any]) -> Dict[str, Any]:
         why += [f"answer without a source: {x[:80]}" for x in found["unsourced"]]
         why += [f"answer cites outside the scope: {x}" for x in found["out_of_scope"]]
     return {"check": "questions_answered", "ok": not why, "why": "; ".join(why[:4])}
+
+
+def questions_extracted_check(text: str, counters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """v79.10.2 (B2): the cell yields one question at least -- the run's counter questions_extracted, else the cell's
+    text read as the intake reads it (intake.questions: «?», a request phrased as a question, a task)."""
+    from src.rag import intake
+    got = (counters or {}).get("questions_extracted")
+    n = int(got) if isinstance(got, int) else len(intake.questions(text or ""))
+    return {"check": "questions_extracted", "ok": n >= 1, "why": "" if n >= 1 else "no question extracted"}
+
+
+def clients_once_check(answer: str) -> Dict[str, Any]:
+    """v79.10.2 (B3): no section of a several-client parere prints the same text twice -- identical for the clients, it
+    prints once with the note (lawyer_method.printed_twice); a single-client parere passes."""
+    from src.rag import lawyer_method
+    found = lawyer_method.printed_twice(answer)
+    return {"check": "clients_sections_once", "ok": not found, "why": "; ".join(found[:4])}
 
 
 def alternatives_check(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -822,6 +846,8 @@ def offline_cell(spec: Dict[str, Any], folder: Path) -> Dict[str, Any]:
     out["checks"].append(printed_check(out["answer"]))         # v79 (F3): needs no state
     out["checks"].append(registro_check(out["answer"]))        # v79.8.6
     out["checks"].append(no_action_check(out["answer"]))       # v79.10.1 (A1)
+    out["checks"].append(questions_extracted_check(spec["text"]))       # v79.10.2 (B2): from the cell's text
+    out["checks"].append(clients_once_check(out["answer"]))             # v79.10.2 (B3): needs no state
     from src.rag import rulings
     check = ruling_check(out["answer"], spec["cell"], None) if rulings.enabled() else None
     if check:           # v78: offline, the penal cells only (the record is not in a file)

@@ -104,6 +104,8 @@ EXTRA = (
     ("lawyer_method", "NOT_APPLIED_CLIENT", "Risposta, più clienti: il metodo non applicato alla posizione di uno di "
                                             "loro, gli altri con le sezioni del metodo (v79.10.1)"),
     ("lawyer_method", "NOT_APPLIED_WHY", "Risposta: perché il metodo non è stato applicato (v76)"),
+    ("lawyer_method", "REDUCTION_WHY", "Metodo, «Conclusioni»: l'esito probabile della linea di riduzione, sul suo "
+                                       "articolo (v79.10.2)"),
     ("issue_records", "NOT_FATTISPECIE", "Registro: una norma di parte generale o processuale (v74, nel log)"),
     ("interactive_flow", "DECOMPOSE_WHY", "Registro: perché una norma ha un registro scomposto (v74, nel log)"),
     ("lawyer_method", "thesis_objections", "Metodo, «Obiezioni e risposte»: dalla tesi scelta"),

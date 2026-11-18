@@ -1,5 +1,5 @@
 {
- "_about": "v75 (my drafts, for the lawyer's review): the candidate lines by role that come from the matter, not from a record of their own (src/rag/lawyer_method.py thesis_candidates). «matters»: a civil claim's matter by its article's place in the c.c. (range: first and last article); the attore's remedies, the convenuto's eccezioni -- each line offered on the claim record's elements. «penal_property»: the c.p. range of the offences against property, whose victim is offered sequestro and restituzione. v76: «fallback» -- the civil role's line when the record offers none (never the penal containment). v79.8 (B1): «actions» -- the matter's articles that confer an action (the norms that confer an action or ground the right the claim asserts -- 1062, 1158; a claim candidate is built only on one of them or on an institution module's: data/institution_modules.json). v79.10.1 (A2): «patterns» -- the institution words that name the matter as a family of the first read (lawyer_method.read_families): an article only a matter's «actions» admit is a claim only when its family (the module whose actions hold it, else its matter: lawyer_method.article_family) is one the first read's institutions name; where the institution has a module, only that module's (a sale or a custody article never leads a professional-liability case). «member_modules» -- the modules inside the matter's own family (custodia: 2051-2053 are special regimes of the fatti illeciti), whose articles the matter lists among its «actions»: a read naming the matter admits them; a typed contract's module (vendita, locazione, appalto, comodato, mutuo) is no member of «contratti» -- a contract read never makes a sale article a claim. My drafts, for the lawyer's review.",
+ "_about": "v75 (my drafts, for the lawyer's review): the candidate lines by role that come from the matter, not from a record of their own (src/rag/lawyer_method.py thesis_candidates). «matters»: a civil claim's matter by its article's place in the c.c. (range: first and last article); the attore's remedies, the convenuto's eccezioni -- each line offered on the claim record's elements. «penal_property»: the c.p. range of the offences against property, whose victim is offered sequestro and restituzione. v76: «fallback» -- the civil role's line when the record offers none (never the penal containment). v79.8 (B1): «actions» -- the matter's articles that confer an action (the norms that confer an action or ground the right the claim asserts -- 1062, 1158; a claim candidate is built only on one of them or on an institution module's: data/institution_modules.json). v79.10.1 (A2): «patterns» -- the institution words that name the matter as a family of the first read (lawyer_method.read_families): an article only a matter's «actions» admit is a claim only when its family (the module whose actions hold it, else its matter: lawyer_method.article_family) is one the first read's institutions name; where the institution has a module, only that module's (a sale or a custody article never leads a professional-liability case). «member_modules» -- the modules inside the matter's own family (custodia: 2051-2053 are special regimes of the fatti illeciti), whose articles the matter lists among its «actions»: a read naming the matter admits them; a typed contract's module (vendita, locazione, appalto, comodato, mutuo) is no member of «contratti» -- a contract read never makes a sale article a claim. My drafts, for the lawyer's review. v79.10.2 (B1): an «eccezioni» entry may be a reduction («kind»: «riduzione») with its own «article», the demand it answers («demand»: the kind lawyer_method reads from the case -- «penale» for a contractual penalty, intake.demand_kind) and the claims it answers («on»): it is offered to the party resisting a demand whenever the claim is one of «on» or the case's demand is its «demand» -- even with no claim record --, first among the eccezioni; with the reduction the main line, the forecast is on its article (lawyer_method.reduction_assessment). An entry with «demand» or «on» is offered only then. 1384 c.c. for a penalty: my draft, for the lawyer's review.",
  "matters": [
   {
    "id": "obbligazioni",
@@ -77,6 +77,20 @@
     }
    ],
    "eccezioni": [
+    {
+     "label": "la riduzione della penale manifestamente eccessiva o per l'obbligazione in parte eseguita",
+     "articles": "art. 1384 c.c.",
+     "requires": "l'ammontare della penale rispetto all'interesse del creditore all'adempimento, o l'esecuzione parziale dell'obbligazione",
+     "kind": "riduzione",
+     "article": "1384 c.c.",
+     "demand": "penale",
+     "on": [
+      "1382 c.c.",
+      "1383 c.c.",
+      "1384 c.c.",
+      "1386 c.c."
+     ]
+    },
     {
      "label": "l'eccezione di inadempimento",
      "articles": "art. 1460 c.c.",
