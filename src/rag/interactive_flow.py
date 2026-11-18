@@ -702,25 +702,59 @@ CUTTING_SHARE = 0.8         # v60d: of the prefilter's N kept, more than this sh
 GRADE_CAP = 30           # v79.8 (A2): the articles round 1 grades, at most
 
 
-def grade_cap(rows: Sequence[Dict[str, Any]], keep: Sequence[str], cap: int = GRADE_CAP
+def grade_cap(rows: Sequence[Dict[str, Any]], keep: Sequence[str], cap: int = GRADE_CAP, anchors: Sequence[str] = ()
               ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
     """v79.8 (A2): the rows the applicability grading reads -- every row of a kept label (grading_keep: the articles
     the user names, the rules' and tables' anchors, the first read's institution articles: always inside the cap),
-    then the others by the retrieval's rank until cap articles. (rows, {"kept": n, "dropped": [labels]})."""
+    then the others by the retrieval's rank until cap articles. (rows, {"kept": n, "dropped": [labels]}). v79.10.4
+    (D2): anchors (cap_anchors: what the similar rulings point to, the anchor's own section) are inside the cap too,
+    whatever their rank; "anchors_kept" lists those the rank alone would have dropped."""
+    def chosen_by(want: set) -> List[Tuple[str, str]]:
+        picked = [k for k in dict.fromkeys(_key(r["_article"]) for _, r in order) if k in want]
+        for _, r in order:
+            k = _key(r["_article"])
+            if len(picked) >= cap:
+                break
+            if k not in picked:
+                picked.append(k)
+        return picked
     want = {_key(_parse_label(x)) for x in keep or ()}
+    held = {_key(_parse_label(x)) for x in anchors or ()}
     order = sorted(((_rank_of(r, i), r) for i, r in enumerate(rows or []) if r.get("_article")), key=lambda x: x[0])
-    chosen = [k for k in dict.fromkeys(_key(r["_article"]) for _, r in order) if k in want]
-    for _, r in order:
-        k = _key(r["_article"])
-        if len(chosen) >= cap:
-            break
-        if k not in chosen:
-            chosen.append(k)
+    chosen = chosen_by(want | held)
+    by_rank = set(chosen_by(want)) if held else set(chosen)
     kept = set(chosen)
     out = [r for r in rows or [] if not r.get("_article") or _key(r["_article"]) in kept]
     dropped = list(dict.fromkeys(_label(_key(r["_article"])) for r in rows or []
                                  if r.get("_article") and _key(r["_article"]) not in kept))
-    return out, {"kept": len(kept), "dropped": dropped}
+    saved = [_label(k) for k in chosen if k in held and k not in want and k not in by_rank]
+    return out, {"kept": len(kept), "dropped": dropped, "anchors_kept": saved}
+
+
+def cap_anchors(rows: Sequence[Dict[str, Any]], rule_topics: Sequence[Dict[str, Any]] = (),
+                anchors: Sequence[str] = ()) -> List[str]:
+    """v79.10.4 (D2): the labels the grade cap keeps whatever their rank, among the rows -- those the similar-rulings
+    step points to (a row the similar rulings voted, `_vote`; a confirmed map hypothesis, `_map`; one MIN_RULINGS or
+    more similar rulings apply, `_vote_stats`) and the planned articles of a rule topic whose anchor is still a kept
+    anchor (anchors: the rules' and tables' anchors past the gates) -- its own Sezione's and what it cites
+    (topic_step.articles_split)."""
+    from . import evidence_tiers
+    have = {_key(r["_article"]): f"{r['_article'][0]} {r['_article'][1]}" for r in rows or [] if r.get("_article")}
+    out: List[str] = []
+    for r in rows or []:
+        if not r.get("_article"):
+            continue
+        voted = int((r.get("_vote_stats") or {}).get("rulings") or 0) >= evidence_tiers.MIN_RULINGS
+        if r.get("_vote") or r.get("_map") or voted:
+            out.append(have[_key(r["_article"])])
+    live = {_key(_parse_label(a)) for a in anchors or ()}
+    for t in rule_topics or []:
+        if not t.get("anchor") or _key(_parse_label(t["anchor"])) not in live:
+            continue
+        for k in [_key(x) for x in _topic_refs(t)]:
+            if k in have:
+                out.append(have[k])
+    return list(dict.fromkeys(out))
 
 
 def grading_keep(rows: Sequence[Dict[str, Any]], case: str, anchors: Sequence[str], first_read: Sequence[str]
@@ -991,12 +1025,14 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         if case_first:          # v79.8 (A2): at most GRADE_CAP articles graded -- the user's, the anchors' and the first
             keep_now = grading_keep(article_rows, case, anchor_keep, must)       # read's always, then by retrieval rank
             hits_n = len({_key(r["_article"]) for r in article_rows if r.get("_article")})
-            article_rows, cap_log = grade_cap(article_rows, keep_now)
+            held = _isolated("cap_anchors", lambda: cap_anchors(article_rows, pre, anchor_keep), []) or []   # v79.10.4
+            article_rows, cap_log = grade_cap(article_rows, keep_now, anchors=held)                        # (D2)
             track_gate(top, gates, "grade_cap", article_rows)
             out["grade_funnel"] = {"retrieved": len({_key(r["_article"]) for r in picked["article_rows"]
                                                      if r.get("_article")}),
                                    "matter_gated": len((out.get("matter_gate") or {}).get("dropped") or []),
-                                   "hits": hits_n, "capped": cap_log["dropped"], "graded": cap_log["kept"]}
+                                   "hits": hits_n, "capped": cap_log["dropped"], "graded": cap_log["kept"],
+                                   "anchors_kept": cap_log["anchors_kept"]}            # v79.10.4 (D2)
             _log("grade_funnel", out["grade_funnel"])
         stage_meter.mark("grading")
         if case_first:          # v60 (G): round 1's graded check -- the embedding prefilter's top N
@@ -1004,7 +1040,8 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             # and the first read's hits first, past the prefilter and in a call of their own; the invariant graded == kept
             limits = {"graded": True, "grade_kept": True, "grade_all": True, "rounds": ROUND1_GRADE_ROUNDS,
                       "prefilter": dg.grade_prefilter_n(),
-                      "prefilter_keep": grading_keep(article_rows, case, anchor_keep, must)}
+                      "prefilter_keep": list(dict.fromkeys(grading_keep(article_rows, case, anchor_keep, must)
+                                                           + list(held)))}     # v79.10.4 (D2): past the prefilter too
             t_grade = time.time()
             with dg.grading_limits(limits):
                 graded = _isolated("grading", lambda: dg._filter_applicable_articles(text, request, article_rows, analysis),
@@ -8386,7 +8423,8 @@ def article_citations(state: Dict[str, Any], text: str) -> List[Dict[str, Any]]:
 def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
     """v79.8 (C4): elements «provato» with no fatto certo among their supporting sentences (must be 0), the fragments
     dropped at decomposition per article, the d'ufficio conditions graded on half a condition (must be 0) and those
-    the store had split and the code rejoined."""
+    the store had split and the code rejoined. v79.10.4 (D1): the terms graded by outcome and termine_excluded_inside
+    (must be 0)."""
     from . import issue_records
     by_id = {s["id"]: s for s in state.get("sentences") or [] if s.get("id")}
     uncertain, fragments, half, rejoined = 0, {}, 0, 0
@@ -8403,6 +8441,7 @@ def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
     out = {"uncertain_integrated": uncertain, "fragments_dropped": fragments, "conditions_half": half,
            "conditions_rejoined": rejoined}
     out.update(issue_records.polarity_counters(state.get("records") or {}, by_id))                  # v79.9 (A4)
+    out.update(issue_records.termine_counters(state.get("records") or {}, by_id))                   # v79.10.4 (D1)
     out["fragments_in_tables"] = len(surviving_fragments(state))                                    # v79.9 (D2)
     out.update(element_counters(state))                                                            # v79.11 (6)
     return out
@@ -8452,9 +8491,10 @@ def element_counters(state: Dict[str, Any]) -> Dict[str, Any]:
 
 def surviving_fragments(state: Dict[str, Any]) -> List[str]:
     """v79.9 (D2): every element still in a record (what §4's tables print) that is a fragment by rule_quote.fragment_why
-    -- «<article>: <text> (<why>)»; must be none."""
+    -- «<article>: <text> (<why>)»; must be none. v79.10.4 (D4): fragment_why's new kinds (a category, a confiscation
+    or medicinal clause, a modal permission in its wider forms: rule_quote.fragment_kind), each with its kind."""
     from . import rule_quote
-    out = []
+    out: List[str] = []
     for label, rec in (state.get("records") or {}).items():
         for r in rec.get("requisites") or []:
             if r.get("kind", "requisito") != "requisito":
@@ -8508,6 +8548,7 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     out["family_alarm"] = len(fam["alarm"]) if isinstance(fam.get("alarm"), list) else len(
         _family_alarm(fam.get("dropped_graded") or {}))
     out.update(grading_counters(state))                                                             # v79.8 (C4)
+    out["cap_anchors_kept"] = len(funnel.get("anchors_kept") or [])                                 # v79.10.4 (D2)
     out.update(shadow_counters(counts))                                                             # v79.11 (6)
     out["questions_extracted"] = len(asked_questions(state))                                        # v79.10.2 (B2)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed

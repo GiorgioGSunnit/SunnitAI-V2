@@ -516,8 +516,47 @@ def mark_sides(state: Dict[str, Any], posture: Dict[str, Any]) -> Dict[str, Any]
                                                **({"hypothesis": True} if hypothesis else {}),    # v79
                                                **({"aliases": aliases} if aliases else {})},
            "charge_unmarked": [x for x in from_intake + from_case if x not in records]}
+    # v79.10.4 (D3): on the client's records, whose each deontic element is -- the counterparty's never contradicted
+    try:
+        from . import issue_records
+        by_id = {x["id"]: x for x in (state or {}).get("sentences") or [] if isinstance(x, dict) and x.get("id")}
+        bound = issue_records.client_bindings(records, issue_records.role_stems(client_role_words(state)), by_id,
+                                              role)
+        out["bindings"] = bound
+        counters = state.setdefault("block_counters", {}) if isinstance(state, dict) else {}
+        scoped = bool((state or {}).get("client_scope"))       # several clients: the highest client's
+        for key, value in (("counterparty_elements", bound["counterparty_elements"]),
+                           ("counterparty_breaches", bound["counterparty_breaches"]),
+                           ("counterparty_contradicted", issue_records.counterparty_contradicted(records, by_id))):
+            counters[key] = max(int(counters.get(key) or 0), value) if scoped else value
+    except Exception as exc:        # noqa: BLE001 -- the sides stand without the bindings
+        interactive_flow._log("record_bindings_failed", {"error": f"{type(exc).__name__}: {exc}"[:200]})
     interactive_flow._log("record_sides", out)
     return out
+
+
+def client_role_words(state: Dict[str, Any]) -> List[str]:
+    """v79.10.4 (D3): the client's own role words -- the first read's client role and each listed client's, the
+    extracted parties' role for the client's name («acquirente», «committente»); with several clients (client_scope)
+    the scoped client's only; [] when none is known."""
+    from . import interactive_flow
+    st = state or {}
+    read = st.get("read") or {}
+    scoped = interactive_flow._low((st.get("client_scope") or {}).get("name"))
+    try:
+        client = scoped or (interactive_flow._low(interactive_flow.client_of(st))
+                            if st.get("analysis") or st.get("client") else "")
+        facts = interactive_flow._facts(interactive_flow._restored_analysis(st["analysis"])) if st.get("analysis") else {}
+    except Exception:               # noqa: BLE001
+        client, facts = scoped, {}
+    same = lambda name: bool(client) and bool(name) and (name == client or name in client or client in name)  # noqa: E731
+    out = [] if scoped else [str((read.get("client") or {}).get("role") or "")]
+    out += [str(c.get("role") or "") for c in read.get("clients") or [] if isinstance(c, dict)
+            and (not scoped or same(interactive_flow._low(c.get("name"))))]
+    for p in (facts or {}).get("parties") or [] if isinstance(facts, dict) else []:
+        if isinstance(p, dict) and same(interactive_flow._low(p.get("name"))):
+            out.append(str(p.get("role") or ""))
+    return [x for x in out if x.strip()]
 
 
 def procedure_offences(records: Dict[str, Dict[str, Any]], offences: Sequence[Tuple[str, str]],

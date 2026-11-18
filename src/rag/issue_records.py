@@ -692,12 +692,273 @@ def duty_element(text: str) -> bool:
 # v79.11 (6): the rule grading an element -- one selector (element_rule) for settle, polarity and the counters
 RULES = ("mental", "duty", "condition", "termine", "branches", "plain")
 RULE_SOURCES = ("schema", "regex", "both")
-TERMINE_OPEN_WHY = "termine: nessuna data accertata nei fatti"
-# v79.11 (6, the 79.10-D1 stand-in): a fact stating a date or a duration -- digits, giorni/mesi/anni, a month, «entro»,
-# «dal … al …»
+# v79.10.4 (D1): a time condition graded on the durations the facts give (termine_check) -- it replaces v79.11's stand-in
+TERMINE_OPEN_WHY = "termine: nessuna durata accertata nei fatti"
+TERMINE_INSIDE_WHY = "termine rispettato: {span} nei fatti ({sid}), nel termine «{term}»"
+TERMINE_BEYOND_WHY = "termine superato: {span} nei fatti ({sid}), oltre il termine «{term}»"
+TERMINE_UNREAD_WHY = "termine: la sua durata non si legge nel testo dell'elemento"
+INSIDE, BEYOND = "inside", "beyond"
+# v79.11 (6): a fact stating a date or a duration -- digits, giorni/mesi/anni, a month, «entro», «dal … al …»; v79.10.4
+# (D1): read only for a schema «termine» whose own text states no duration
 _DATED_RE = re.compile(r"\d|\b(?:giorn[oi]|mes[ei]|ann[oi]|settiman[ae]|gennaio|febbraio|marzo|aprile|maggio|giugno|"
                        r"luglio|agosto|settembre|ottobre|novembre|dicembre|entro)\b|\bdal\b.{1,80}?\bal\b",
                        re.IGNORECASE)
+_MONTHS = ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio", "agosto", "settembre", "ottobre",
+           "novembre", "dicembre")
+_UNIT_DAYS = {"giorn": 1.0, "settiman": 7.0, "mes": 30.4375, "ann": 365.25}
+_UNIT = r"(giorn|settiman|mes|ann)\w*"
+
+
+_NUMBER_CACHE: Dict[str, Any] = {}
+
+
+def _number_words() -> Dict[str, int]:
+    """The I7 durations' words («otto», «sessanta», «vent'») and every number word from one to centonovantanove
+    («tredici», «cinquanta», «venticinque», «settantadue»)."""
+    if "words" not in _NUMBER_CACHE:
+        from .answer_invariants import _NUMBERS
+        units = ("", "uno", "due", "tre", "quattro", "cinque", "sei", "sette", "otto", "nove")
+        teens = ("dieci", "undici", "dodici", "tredici", "quattordici", "quindici", "sedici", "diciassette", "diciotto",
+                 "diciannove")
+        tens = {20: "venti", 30: "trenta", 40: "quaranta", 50: "cinquanta", 60: "sessanta", 70: "settanta",
+                80: "ottanta", 90: "novanta"}
+        base: Dict[str, int] = {w: i for i, w in enumerate(units) if w}
+        base.update({w: 10 + i for i, w in enumerate(teens)})
+        for t, word in tens.items():
+            base[word] = t
+            for u in range(1, 10):
+                head = word[:-1] if u in (1, 8) else word           # ventuno, ventotto
+                base[head + units[u]] = t + u
+                if u == 3:
+                    base[head + "tré"] = t + u
+        out = dict(base)
+        out["cento"] = 100
+        for w, n in base.items():
+            out[("cent" if w.startswith("o") else "cento") + w] = 100 + n
+        out.update(_NUMBERS)
+        _NUMBER_CACHE["words"] = out
+        _NUMBER_CACHE["re"] = r"(\d+|" + "|".join(sorted((re.escape(w) for w in out), key=len, reverse=True)) + r")"
+    return _NUMBER_CACHE["words"]
+
+
+def _num_re() -> str:
+    _number_words()
+    return _NUMBER_CACHE["re"]
+
+
+def _number(word: str) -> Optional[int]:
+    w = str(word or "").lower()
+    return int(w) if w.isdigit() else _number_words().get(w)
+
+
+# the term an element states: «entro dieci anni», «entro due anni dalla consegna», «entro il termine di sessanta giorni
+# dalla scoperta», «nel corso di dieci anni dal compimento», «non oltre trenta giorni»; its anchor the noun after «dal»
+_TERM_OPEN = r"\b(?:entro|nel\s+corso\s+di|non\s+oltre|nel\s+termine\s+(?:perentorio\s+)?di)\s+(?:il\s+termine\s+di\s+)?"
+_ANCHOR_RE = re.compile(r"^\s*,?\s*(?:a\s+decorrere\s+)?(?:dal|dalla|dallo|dall['’]|dai|dalle|dagli|da)\s*"
+                        r"(?:(?:giorno|momento|data)\s+(?:della|del|dello|dell['’]|dei|delle|in\s+cui)\s*)?"
+                        r"(?:(?:sua|suo|loro)\s+)?([a-zà-ù]{4,})", re.IGNORECASE)
+
+
+def term_of(text: str) -> Optional[Dict[str, Any]]:
+    """v79.10.4 (D1): the term an element states -- {n, unit, days, anchor (the stem of the event it runs from, "" for
+    none), phrase} -- or None: «entro dieci anni», «entro due anni dalla consegna», «entro sessanta giorni dalla
+    scoperta»; «entro un anno» is one year."""
+    m = re.search(_TERM_OPEN + _num_re() + r"\s+" + _UNIT, text or "", re.IGNORECASE)
+    if not m:
+        return None
+    n = _number(m.group(1))
+    if not n:
+        return None
+    unit = m.group(2).lower()
+    a = _ANCHOR_RE.match((text or "")[m.end():])
+    anchor = a.group(1).lower()[:5] if a else ""
+    phrase = " ".join(((text or "")[m.start():m.end()] + (a.group(0) if a else "")).split()).strip(" ,")
+    return {"n": n, "unit": unit, "days": n * _UNIT_DAYS[unit], "anchor": anchor, "phrase": phrase,
+            "negated": _negated((text or "")[:m.start()])}
+
+
+# the act the term governs negated: «(se) non denunzia i vizi entro otto giorni» -- the decadence is integrated by the
+# late act; never «se non entro» (only within), nor a «non» of another clause or another verb before the term
+_TERM_NOT_RE = re.compile(r"\bnon\s+((?:[^\s,;:]+\s+){0,8})$", re.IGNORECASE)
+_TERM_NOT_STOP_RE = re.compile(r"\b(?:che|cui|chi|quando|qualora|se|deve|devono|va|vanno|può|possono|è\s+tenut\w*|"
+                               r"sono\s+tenut\w*)\b", re.IGNORECASE)
+
+
+def _negated(before: str) -> bool:
+    m = _TERM_NOT_RE.search(before or "")
+    return bool(m) and bool(m.group(1).strip()) and not _TERM_NOT_STOP_RE.search(m.group(1))
+
+
+def termine_rule(req: Dict[str, Any]) -> str:
+    """v79.10.4 (D1): the termine rule's selection -- a schema element by its kind alone («termine»: "schema"), any other
+    element by its text stating a term (term_of: "regex"); "" for neither."""
+    if req.get("schema_kind"):
+        return "schema" if req.get("schema_kind") == "termine" else ""
+    return "regex" if term_of(req.get("text") or "") else ""
+
+
+# the durations the facts give: a stated span («oltre sei anni», «dopo tre mesi», «da otto anni», «due mesi fa») and the
+# dated events («il 3 marzo 2019», «03/03/2019», «marzo 2019», «nel 2015»)
+_SPAN_BEFORE = (r"\b(oltre|più\s+di|almeno|ben|dopo(?:\s+circa)?|a\s+distanza\s+di|circa|quasi|meno\s+di|nel\s+giro\s+di|"
+                r"entro|da|per|trascors[oiae]|decors[oiae]|passat[oiae]|(?:sono|erano|siano)\s+(?:passat|trascors|"
+                r"decors)\w*)\s+(?:(?:circa|ben|oltre|più\s+di|quasi)\s+)?")
+_SPAN_AFTER = r"\s+(fa|dopo|più\s+tardi)\b"
+_LOWER = ("oltre", "più di", "almeno", "ben")
+_UPPER = ("meno di", "quasi", "nel giro di", "entro")
+_STRICT = ("oltre", "più di")
+_STATE_WORDS = ("da", "per")         # «in attività da quindici anni», «per tre anni»: how long a state lasts
+# a sentence stipulating a deadline («il contratto prevedeva il compimento entro due anni»): its «entro» is no time elapsed
+_STIPULATION_RE = re.compile(r"\b(?:prevede\w*|prevista|previst[oie]|dovev\w*|dovr[àaeo]\w*|deve|devono|pattuit\w*|"
+                             r"stabilit\w*|concordat\w*|convenut\w*|impegn\w*|termine|scadenz\w*|obblig\w*)\b",
+                             re.IGNORECASE)
+
+
+def spans_of(text: str) -> List[Dict[str, Any]]:
+    """v79.10.4 (D1): the spans a sentence states -- [{days, bound ("exact" | "lower" | "upper"), strict, phrase,
+    word}]; a number with a unit and no span word around it («un bambino di dieci anni») is no span, nor an «entro» in a
+    sentence stipulating a deadline («il contratto prevedeva il compimento entro due anni»)."""
+    out: List[Dict[str, Any]] = []
+    num = _num_re()
+    stipulated = bool(_STIPULATION_RE.search(text or ""))
+    for m in re.finditer(_SPAN_BEFORE + num + r"\s+" + _UNIT, text or "", re.IGNORECASE):
+        n = _number(m.group(2))
+        if not n:
+            continue
+        word = " ".join(m.group(1).lower().split())
+        if word == "entro" and stipulated:
+            continue
+        bound = "lower" if word in _LOWER else ("upper" if word in _UPPER else "exact")
+        out.append({"days": n * _UNIT_DAYS[m.group(3).lower()], "bound": bound, "strict": word in _STRICT,
+                    "phrase": " ".join(m.group(0).split()), "word": word})
+    for m in re.finditer(r"\b" + num + r"\s+" + _UNIT + _SPAN_AFTER, text or "", re.IGNORECASE):
+        n = _number(m.group(1))
+        if n and not any(m.group(0) in x["phrase"] or x["phrase"] in m.group(0) for x in out):
+            out.append({"days": n * _UNIT_DAYS[m.group(2).lower()], "bound": "exact", "strict": False,
+                        "phrase": " ".join(m.group(0).split()), "word": m.group(3).lower()})
+    return out
+
+
+_FULL_DATE_RE = re.compile(r"\b(\d{1,2})(?:°|º)?\s+(" + "|".join(_MONTHS) + r")\s+((?:19|20)\d{2})\b", re.IGNORECASE)
+_NUM_DATE_RE = re.compile(r"\b(\d{1,2})[/.-](\d{1,2})[/.-]((?:19|20)\d{2})\b")
+_MONTH_DATE_RE = re.compile(r"\b(" + "|".join(_MONTHS) + r")\s+(?:del\s+)?((?:19|20)\d{2})\b", re.IGNORECASE)
+_YEAR_RE = re.compile(r"\b(?:nel|nell['’]\w+\s+del|del|dal|al|fino\s+al|entro\s+il|anno)\s+((?:19|20)\d{2})\b",
+                      re.IGNORECASE)
+
+
+def dates_of(text: str) -> List[Tuple[Any, Any]]:
+    """v79.10.4 (D1): the dates a sentence states, each as its (earliest, latest) day: a full date one day, «marzo 2019»
+    its month, «nel 2015» its year; a number in an article or a ruling («n. 92/2012») is no date."""
+    import calendar
+    from datetime import date
+    out: List[Tuple[Any, Any]] = []
+    rest = text or ""
+
+    def blank(m):
+        return " " * (m.end() - m.start())
+    for m in _FULL_DATE_RE.finditer(rest):
+        with contextlib.suppress(ValueError):
+            d = date(int(m.group(3)), _MONTHS.index(m.group(2).lower()) + 1, int(m.group(1)))
+            out.append((d, d))
+    rest = _FULL_DATE_RE.sub(blank, rest)
+    for m in _NUM_DATE_RE.finditer(rest):
+        with contextlib.suppress(ValueError):
+            d = date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+            out.append((d, d))
+    rest = _NUM_DATE_RE.sub(blank, rest)
+    for m in _MONTH_DATE_RE.finditer(rest):
+        y, mo = int(m.group(2)), _MONTHS.index(m.group(1).lower()) + 1
+        out.append((date(y, mo, 1), date(y, mo, calendar.monthrange(y, mo)[1])))
+    rest = _MONTH_DATE_RE.sub(blank, rest)
+    for m in _YEAR_RE.finditer(rest):
+        y = int(m.group(1))
+        out.append((date(y, 1, 1), date(y, 12, 31)))
+    return out
+
+
+def _after(start: Any, n: int, unit: str) -> Any:
+    """The day a term of n units from start ends (calendar months and years; the day clamped to the month's last)."""
+    import calendar
+    from datetime import timedelta
+    if unit in ("giorn", "settiman"):
+        return start + timedelta(days=n * int(_UNIT_DAYS[unit]))
+    months = n * (12 if unit == "ann" else 1)
+    y, m = divmod(start.month - 1 + months, 12)
+    year, month = start.year + y, m + 1
+    return start.replace(year=year, month=month, day=min(start.day, calendar.monthrange(year, month)[1]))
+
+
+def _span_verdict(span: Dict[str, Any], term: Dict[str, Any]) -> str:
+    """inside / beyond / "" -- a stated span against the term: exact by its figure; a lower bound («oltre sei anni»)
+    beyond only from the term up (the stated figure inside the term is inside); an upper bound inside only within it."""
+    d, t = span["days"], term["days"]
+    if span["bound"] == "lower":
+        return BEYOND if d > t or (d >= t and span["strict"]) else INSIDE
+    if span["bound"] == "upper":
+        return INSIDE if d <= t else ""
+    return INSIDE if d <= t else BEYOND
+
+
+def _has_stem(text: str, stem: str) -> bool:
+    return bool(stem) and bool(re.search(r"\b" + re.escape(stem), text or "", re.IGNORECASE))
+
+
+def term_durations(term: Dict[str, Any], req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]
+                   ) -> List[Dict[str, Any]]:
+    """v79.10.4 (D1): the durations of the facts read against the term -- [{verdict, span, sid}]: the spans stated in
+    the element's own linked sentences, and in the certain facts naming the term's anchor (the term with none: the
+    certain facts naming the act it governs -- every one for a bare term --, never a state's length «da/per N anni»
+    outside the linked ones); the dated events from the anchor's date (the term with none: the earliest) to the date of
+    the act (the anchor's own sentence, a linked fact, a fact naming the act): an unrelated later date never measures it,
+    and with the act's date not found only a verdict every later date agrees on stands. A negated act («non denunzia …
+    entro otto giorni») turns the verdict (verdict inside: the element integrated). Only fatti certi count."""
+    facts = [s for s in by_id.values() if certain_fact(s)]
+    linked = set(req.get("supporting") or []) | set(req.get("contradicting") or []) | \
+        set((req.get("link") or {}).get("supporting") or []) | set((req.get("link") or {}).get("contradicting") or [])
+    anchor = term.get("anchor") or ""
+    # the act the term governs, by the element's own nouns («denunzia», «azione»), the term's words aside
+    act = element_nouns(req.get("text") or "") - element_nouns(term.get("phrase") or "") - {anchor}
+    flip = {INSIDE: BEYOND, BEYOND: INSIDE} if term.get("negated") else {}
+    out: List[Dict[str, Any]] = []
+    for s in facts:
+        text = s.get("text") or ""
+        if anchor:
+            read = s["id"] in linked or _has_stem(text, anchor)
+        else:       # no anchor: the linked facts, and those of the act (any, for a bare term) -- never a state's length
+            read = s["id"] in linked or (bool(act & element_nouns(text)) if act else True)
+        if not read:
+            continue
+        for sp in spans_of(text):
+            if not anchor and s["id"] not in linked and sp.get("word") in _STATE_WORDS:
+                continue
+            verdict = _span_verdict(sp, term)
+            if verdict:
+                out.append({"verdict": flip.get(verdict, verdict), "span": sp["phrase"], "sid": s["id"]})
+    dated = [(lo, hi, s["id"]) for s in facts for lo, hi in dates_of(s.get("text") or "")]
+    if len(dated) >= 2:
+        starts = [d for d in dated if _has_stem(by_id[d[2]].get("text") or "", anchor)] if anchor else \
+            [min(dated, key=lambda d: d[0])]
+        for lo, hi, sid in starts:
+            later = [d for d in dated if d[0] > hi]
+            if not later:                       # the anchor's date is the latest: no span after it
+                continue
+            # the act's dates: the start's own sentence, the linked facts, the facts naming the act (its nouns the
+            # start's sentence does not share); found, each is measured -- else only a verdict every later date agrees on
+            own = act - element_nouns(by_id[sid].get("text") or "")
+            ends = [d for d in later if d[2] == sid or d[2] in linked
+                    or (own and own & element_nouns(by_id[d[2]].get("text") or ""))]
+            if not ends:
+                first, last = min(later, key=lambda d: d[0]), max(later, key=lambda d: d[1])
+                ends = [last] if last[1] <= _after(lo, term["n"], term["unit"]) else \
+                    ([first] if first[0] > _after(hi, term["n"], term["unit"]) else [])
+            for e_lo, e_hi, e_sid in ends:
+                span = f"dal {lo.strftime('%d/%m/%Y') if lo == hi else lo.year} al " \
+                       f"{e_hi.strftime('%d/%m/%Y') if e_lo == e_hi else e_hi.year}"
+                if e_hi <= _after(lo, term["n"], term["unit"]):
+                    out.append({"verdict": flip.get(INSIDE, INSIDE), "span": span, "sid": e_sid})
+                elif e_lo > _after(hi, term["n"], term["unit"]):
+                    out.append({"verdict": flip.get(BEYOND, BEYOND), "span": span, "sid": e_sid})
+    return out
+
 
 
 def _source(by_schema: bool, by_regex: bool) -> str:
@@ -727,19 +988,23 @@ def condition_rule(req: Dict[str, Any]) -> Tuple[List[str], str]:
 def element_rule(req: Dict[str, Any]) -> Tuple[str, str]:
     """v79.11 (6): (the rule grading the element, its source) -- rule in RULES: "mental" (schema kind «elemento
     soggettivo» or mental_element), "duty" (duty_element, regex as v79.9), "condition" (condition_rule), "termine"
-    (schema kind «termine»), "branches" (req["branches"]), else "plain"; source "schema" / "regex" / "both". With no
-    schema key on the element it selects exactly what v79.9's regexes do. The kind only chooses which check runs: every
-    check keeps its own validation, and none sets a status by itself."""
+    (termine_rule), "branches" (req["branches"]), else "plain"; source "schema" / "regex" / "both". With no schema key
+    on the element it selects exactly what v79.9's regexes do, a term aside. The kind only chooses which check runs:
+    every check keeps its own validation, and none sets a status by itself -- the termine's durations aside. v79.10.4
+    (D1): "termine" right after "mental", for a schema element of kind «termine» ("schema") and for any element without
+    a schema kind whose text states a term (term_of: "regex") -- a term that is also a duty or a condition is graded on
+    its durations."""
     mental = mental_rule(req)
     if mental:
         return "mental", mental
+    termine = termine_rule(req)
+    if termine:
+        return "termine", termine
     if duty_element(req.get("text") or ""):
         return "duty", "regex"
     parts, source = condition_rule(req)
     if parts:
         return "condition", source
-    if req.get("schema_kind") == "termine":
-        return "termine", "schema"
     schema = bool(req.get("schema_kind"))
     if req.get("branches"):
         return "branches", "schema" if schema else "regex"
@@ -747,16 +1012,57 @@ def element_rule(req: Dict[str, Any]) -> Tuple[str, str]:
 
 
 def termine_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> None:
-    """v79.11 (6, the 79.10-D1 stand-in): a termine element «provato» stays so only on a supporting fatto certo stating
-    a date or a duration (_DATED_RE) or when the computed terms decide it (its facts_status already «provato»);
-    otherwise «da provare» (TERMINE_OPEN_WHY). It only lowers a status, never raises one."""
-    from .interactive_flow import DA_PROVARE, PROVATO
-    if req.get("status") != PROVATO or req.get("facts_status") == PROVATO:
+    """v79.10.4 (D1, replacing v79.11's stand-in): an element stating a term (termine_rule) graded on the durations of
+    the facts (term_durations) -- one inside the term «provato» (integrato), else one beyond it «non risulta» (escluso),
+    none «da provare»: never «non risulta» while a fact gives a duration inside the term. The fact behind it joins the
+    element's supporting (inside) or contradicting (beyond) sentences; req["termine"] {term, verdict, span, sid}. With no
+    duration the computed terms keep a «provato» they decided (facts_status). A schema «termine» whose text states no
+    duration keeps v79.11's check: «provato» only on a dated supporting fatto certo."""
+    from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
+    term = term_of(req.get("text") or "") or term_of(" ".join(str(p) for p in req.get("schema_parti") or []))
+    if not term:
+        if req.get("status") == PROVATO and req.get("facts_status") != PROVATO and not any(
+                i in by_id and certain_fact(by_id[i]) and _DATED_RE.search(by_id[i].get("text") or "")
+                for i in req.get("supporting") or []):
+            req["status"], req["why"] = DA_PROVARE, TERMINE_UNREAD_WHY
         return
-    if any(i in by_id and certain_fact(by_id[i]) and _DATED_RE.search(by_id[i].get("text") or "")
-           for i in req.get("supporting") or []):
-        return
-    req["status"], req["why"] = DA_PROVARE, TERMINE_OPEN_WHY
+    found = term_durations(term, req, by_id)
+    hit = next((x for x in found if x["verdict"] == INSIDE), None) or \
+        next((x for x in found if x["verdict"] == BEYOND), None)
+    req["termine"] = {"term": term["phrase"], "verdict": hit["verdict"] if hit else "", "span": hit["span"] if hit else "",
+                      "sid": hit["sid"] if hit else ""}
+    sup, con = list(req.get("supporting") or []), list(req.get("contradicting") or [])
+    inside_why, beyond_why = (TERMINE_BEYOND_WHY, TERMINE_INSIDE_WHY) if term.get("negated") else \
+        (TERMINE_INSIDE_WHY, TERMINE_BEYOND_WHY)        # a negated act («non denunzia … entro»): late integrates it
+    if hit and hit["verdict"] == INSIDE:
+        req["supporting"] = list(dict.fromkeys(sup + [hit["sid"]]))
+        req["contradicting"] = [i for i in con if i != hit["sid"]]
+        req["status"], req["why"] = PROVATO, inside_why.format(span=hit["span"], sid=hit["sid"], term=term["phrase"])
+    elif hit:
+        req["contradicting"] = list(dict.fromkeys(con + [hit["sid"]]))
+        req["supporting"] = [i for i in sup if i != hit["sid"]]
+        req["status"], req["why"] = NON_RISULTA, beyond_why.format(span=hit["span"], sid=hit["sid"],
+                                                                   term=term["phrase"])
+    elif not (req.get("status") == PROVATO and req.get("facts_status") == PROVATO):
+        req["status"], req["why"] = DA_PROVARE, TERMINE_OPEN_WHY
+
+
+def termine_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.10.4 (D1): the elements graded by the termine rule, by outcome {integrato, escluso, da provare}, and
+    termine_excluded_inside -- one «non risulta» while a fact gives a duration inside its term (must be 0)."""
+    from .interactive_flow import NON_RISULTA, PROVATO
+    graded = {"integrato": 0, "escluso": 0, "da provare": 0}
+    wrong = 0
+    for rec in (records or {}).values():
+        for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
+            if element_rule(r)[0] != "termine":
+                continue
+            graded[{PROVATO: "integrato", NON_RISULTA: "escluso"}.get(r.get("status"), "da provare")] += 1
+            term = term_of(r.get("text") or "")
+            if term and r.get("status") == NON_RISULTA and any(
+                    x["verdict"] == INSIDE for x in term_durations(term, r, by_id)):
+                wrong += 1
+    return {"termini_graded": graded, "termine_excluded_inside": wrong}
 
 
 def _log_rule(req: Dict[str, Any], rule: str, source: str, before: str) -> None:
@@ -776,12 +1082,18 @@ def polarity(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], sure_con: Se
     """v79.9 (A1, A2), in place after settle: a mental element «provato» only on a fatto certo stating the state of mind
     (else «da provare», marked mental_conduct when a conduct fact was its support), «non risulta» only on one stating the
     contrary; a duty element «non risulta» on a breach is «provato» on that breach (the sentences move to its support).
-    v79.11 (6): the element's rule is element_rule's (a schema's «elemento soggettivo» is a mental element too); a
-    schema «termine» only on a dated fact (termine_check)."""
+    v79.11 (6): the element's rule is element_rule's (a schema's «elemento soggettivo» is a mental element too).
+    v79.10.4 (D1): a term graded on the facts' durations (termine_check). (D3): on the client's record (req["binds"],
+    client_bindings) an element the counterparty must satisfy is never «non risulta» on a breach -- the breach integrates
+    it, whatever its wording (a prohibition too) --; one the client must satisfy keeps the contradiction (no v79.9-A2
+    conversion: the client's own duty contradicted is not met)."""
     from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
     if req.get("kind") not in ("requisito", "procedibilita"):
         return
     rule = element_rule(req)[0]
+    if rule == "termine":               # v79.10.4 (D1): replaces v79.11's stand-in
+        termine_check(req, by_id)
+        return
     if rule == "mental":
         req["mental"] = True
         mind = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])
@@ -791,21 +1103,107 @@ def polarity(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], sure_con: Se
         elif req["status"] == NON_RISULTA and not any(states_mind(s) for s in sure_con):
             req["status"], req["why"] = DA_PROVARE, MENTAL_OPEN_WHY
         return
-    if rule == "duty" and req["status"] == NON_RISULTA:
+    bound = req.get("binds")            # v79.10.4 (D3): whose element it is on the client's record
+    if req["status"] == NON_RISULTA and (bound == COUNTERPARTY_BINDS or rule == "duty" and bound != CLIENT_BINDS):
         breach = [s for s in sure_con if not _NO_DUTY_RE.search(s.get("text") or "")]
         if breach:
             ids = [s["id"] for s in breach]
             req["supporting"] = list(dict.fromkeys(list(req.get("supporting") or []) + ids))
             req["contradicting"] = [i for i in req.get("contradicting") or [] if i not in ids]
             req["status"], req["why"], req["duty_breach"] = PROVATO, f"{DUTY_BREACH_WHY} ({ids[0]})", True
-    elif rule == "termine":             # v79.11 (6): the 79.10-D1 stand-in
-        termine_check(req, by_id)
+            if bound == COUNTERPARTY_BINDS:
+                req["counterparty_breach"] = True
+
+
+# v79.10.4 (D3): whose element it is on the client's record -- a duty or a prohibition (deontic) binds the party its
+# subject names: the client when the subject is one of the client's own role words, else the counterparty (the norm the
+# client invokes binds the other side); a term (D1) and a mental element are no one's here
+COUNTERPARTY_BINDS, CLIENT_BINDS = "controparte", "cliente"
+_PROHIBIT_RE = re.compile(r"\b(?:è\s+vietat\w*|è\s+fatto\s+divieto|è\s+proibit\w*|non\s+(?:può|possono|deve|devono)\b|"
+                          r"è\s+tenut\w*\s+a\s+non\b|si\s+astien\w*|deve\s+astenersi)", re.IGNORECASE)
+_DEONTIC_RE = re.compile(_DUTY_RE.pattern + "|" + _PROHIBIT_RE.pattern, re.IGNORECASE)
+_NOT_ROLE = {"clien", "parte", "attor", "conve", "ricor", "resis", "assis", "imput", "indag", "perso", "offes", "civil",
+             "avvoc", "sogge"}
+
+
+def deontic(text: str) -> bool:
+    """v79.10.4 (D3): a duty (v79.9's duty_element) or a prohibition («è vietato», «non può», «non deve»)."""
+    return (duty_element(text) or bool(_PROHIBIT_RE.search(text or ""))) and not mental_element(text)
+
+
+# the code's names for the same party («acquirente» is the «compratore» of art. 1470 ss.): a role word brings its group
+_ROLE_SYNONYMS = ({"acqui", "compr"}, {"vendi", "alien"}, {"condu", "inqui"})
+
+
+def role_stems(words: Sequence[str]) -> set:
+    """v79.10.4 (D3): the client's role words as five-letter stems («acquirente», «compratore»), never the procedural
+    ones (cliente, attore, convenuto, imputato …); each with its synonyms in the code (_ROLE_SYNONYMS: the «acquirente»
+    is the «compratore», the «inquilino» the «conduttore»)."""
+    out = set()
+    for w in words or ():
+        out |= {x for x in element_nouns(str(w or "")) if x not in _NOT_ROLE}
+    for group in _ROLE_SYNONYMS:
+        if out & group:
+            out |= group
+    return out
+
+
+def binds(req: Dict[str, Any], client_roles: Sequence[str] = ()) -> str:
+    """v79.10.4 (D3): on the client's record, who must satisfy the element -- CLIENT_BINDS when its deontic verb's
+    subject (the words before it) names one of the client's role stems (role_stems), COUNTERPARTY_BINDS for another
+    deontic element, "" for the rest (a term, a mental element, a descriptive one: as before) and for every element
+    while the client's role is not known (no role stems: who must satisfy it cannot be told -- as before)."""
+    text = req.get("text") or ""
+    if not client_roles or req.get("kind", "requisito") != "requisito" or not deontic(text) \
+            or element_rule(req)[0] in ("termine", "mental"):
+        return ""
+    m = _DEONTIC_RE.search(text)
+    subject = text[:m.start()] if m else ""
+    if set(client_roles or ()) & element_nouns(subject):
+        return CLIENT_BINDS
+    return COUNTERPARTY_BINDS
+
+
+ACCUSED_PENAL = ("imputato", "indagato")
+
+
+def client_bindings(records: Dict[str, Dict[str, Any]], client_roles: Sequence[str] = (),
+                    by_id: Optional[Dict[str, Dict[str, Any]]] = None, role: str = "") -> Dict[str, Any]:
+    """v79.10.4 (D3), in place once the sides are marked (posture.mark_sides): each element of a client's record (side
+    «weapon») gets req["binds"] (binds); a threat's elements none, nor any record of an accused client (role imputato or
+    indagato: his weapons are his own alternatives, norms he would violate, never the counterparty's). An element whose
+    binding changed is settled again on by_id (none given: only marked) and its record's verdict recomputed. The counts
+    {counterparty_elements,
+    client_elements, counterparty_breaches, rebound}."""
+    out = {"counterparty_elements": 0, "client_elements": 0, "counterparty_breaches": 0, "rebound": []}
+    for label, rec in (records or {}).items():
+        mine = rec.get("side") == "weapon" and role not in ACCUSED_PENAL
+        changed = False
+        for r in rec.get("requisites") or []:
+            b = binds(r, client_roles) if mine else ""
+            if b != (r.get("binds") or ""):
+                changed = True
+                if b:
+                    r["binds"] = b
+                else:
+                    r.pop("binds", None)
+                r.pop("counterparty_breach", None)
+                if by_id and (r.get("link") or r.get("supporting") or r.get("contradicting")):
+                    settle(r, by_id)
+            out["counterparty_elements"] += b == COUNTERPARTY_BINDS
+            out["client_elements"] += b == CLIENT_BINDS
+            out["counterparty_breaches"] += bool(r.get("counterparty_breach"))
+        if changed:
+            rec["verdict"] = verdict(rec)
+            out["rebound"].append(label)
+    return out
 
 
 def polarity_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
     """v79.9 (A4): a mental element «provato» with no supporting fatto certo stating the state of mind; a duty element
     «non risulta» on a certain contradicting fact that is a breach (not a denial of the duty). Both must be 0. v79.11
-    (6): the elements selected by element_rule, as polarity grades them."""
+    (6): the elements selected by element_rule, as polarity grades them. v79.10.4 (D3): a duty the client must satisfy
+    (req["binds"] «cliente») is contradicted by its breach -- not counted."""
     from .interactive_flow import NON_RISULTA, PROVATO
     mental = duty = 0
     for rec in (records or {}).values():
@@ -814,7 +1212,7 @@ def polarity_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[
             if rule == "mental" and r.get("status") == PROVATO and not any(
                     certain_fact(by_id[i]) and states_mind(by_id[i]) for i in r.get("supporting") or [] if i in by_id):
                 mental += 1
-            if rule == "duty" and r.get("status") == NON_RISULTA and any(
+            if rule == "duty" and r.get("binds") != CLIENT_BINDS and r.get("status") == NON_RISULTA and any(
                     certain_fact(by_id[i]) and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
                     for i in r.get("contradicting") or [] if i in by_id):
                 duty += 1
@@ -1076,10 +1474,23 @@ def defence_items(rec: Dict[str, Any], penal: bool = True) -> List[str]:
 
 def contradicted(rec: Dict[str, Any]) -> bool:
     """v65: an element of the record the facts contradict -- «non risulta» in its anchor comma (element_status), or a
-    sentence of the case against an element not proven."""
+    sentence of the case against an element not proven. v79.10.4 (D3): on the client's record a sentence against an
+    element the counterparty must satisfy (req["binds"] «controparte») is its breach, never a contradiction: only
+    «non risulta» counts for it (the duty itself denied: no contract, no sale)."""
     from .interactive_flow import NON_RISULTA, PROVATO
-    return any(element_status(rec, r) == NON_RISULTA or (r.get("contradicting") and r.get("status") != PROVATO)
+    return any(element_status(rec, r) == NON_RISULTA or (r.get("contradicting") and r.get("status") != PROVATO
+                                                         and r.get("binds") != COUNTERPARTY_BINDS)
                for r in rec.get("requisites") or [])
+
+
+def counterparty_contradicted(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str, Any]]) -> int:
+    """v79.10.4 (D3): elements the counterparty must satisfy on the client's record left «non risulta» on a certain
+    contradicting fact that is a breach (not a denial of the duty) -- must be 0."""
+    from .interactive_flow import NON_RISULTA
+    return sum(1 for rec in (records or {}).values() for r in rec.get("requisites") or []
+               if r.get("binds") == COUNTERPARTY_BINDS and r.get("status") == NON_RISULTA and any(
+                   certain_fact(by_id[i]) and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
+                   for i in r.get("contradicting") or [] if i in by_id))
 
 
 def threat_elements(rec: Dict[str, Any]) -> List[str]:
@@ -1457,6 +1868,25 @@ DEMOTED_CONTRADICTED = "contraddetto da una frase del caso narrata come fatto"
 DEMOTED_EXCLUDED = "escluso dai fatti estratti"
 
 
+def analysis_client_roles(analysis: Dict[str, Any]) -> set:
+    """v79.10.4 (D3): before the sides, the client's role stems (role_stems) from the extraction -- the role in its
+    client_side («Mario Rossi (acquirente)») and the parties named as the client --; none for an accused client
+    (imputato, indagato: his norms are the ones he would violate) or when no role is given."""
+    try:
+        from .interactive_flow import _client_names, _facts, _low
+        facts = _facts(analysis or {})
+        side = str(facts.get("client_side") or "")
+        words = re.findall(r"\(([^)]*)\)", side)
+        names = [_low(n) for n in _client_names(facts) if n]
+        words += [str(p.get("role") or "") for p in facts.get("parties") or [] if isinstance(p, dict)
+                  and _low(p.get("name")) and any(n in _low(p.get("name")) or _low(p.get("name")) in n for n in names)]
+        if any(re.search(r"\b(?:imputat|indagat)\w*", _low(w)) for w in words):
+            return set()
+        return role_stems([w for w in words if w.strip()])
+    except Exception:           # noqa: BLE001 -- no role: no binding, the demotion as before
+        return set()
+
+
 def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[str, Any], keep: Sequence[str] = (),
                         call=None, seconds: float = DISTINCTIVE_SECONDS) -> Dict[str, Any]:
     """In place, before the topics: each graded (2+) row's distinctive element (distinctive) linked to the case's
@@ -1467,7 +1897,11 @@ def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[st
     first) --; an element the case is silent on never demotes: the article keeps its grade and the earned-block rule
     (block_due) decides whether it is written. keep: labels never demoted (the articles the case names). A call that
     fails or times out demotes nothing by contradiction (the facts still exclude). The log: each demotion with its
-    reason and the sentences (and, excluded, the facts) behind it."""
+    reason and the sentences (and, excluded, the facts) behind it. v79.10.4 (D3): a duty or a prohibition (deontic) the
+    counterparty must satisfy (binds, on the client's role words the extraction gives: analysis_client_roles) «contradicted»
+    by a certain fact that is its breach (not a denial of the duty) never demotes -- the norm violated is found, not lost
+    (log kept_breach); the client's own duty, an accused client's norms and any while the client's role is unknown
+    demote as before."""
     from .interactive_flow import NON_RISULTA, PROVATO, excluding_facts, facts_status
     call = call or _link_call
     t0 = time.time()
@@ -1516,6 +1950,7 @@ def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[st
     log["complete"] = not log["unassessed"]
     keep = set(keep or ())
     by_id = {s["id"]: s for s in sents}
+    roles = analysis_client_roles(analysis)
     for row in rows or []:
         if not row.get("_article"):
             continue
@@ -1536,6 +1971,10 @@ def demote_contradicted(rows: List[Dict[str, Any]], case: str, analysis: Dict[st
         hit = [b for b in alternatives if any(branch_hit(b, x) for x in sure)] if sure else []
         if hit and len(hit) < len(alternatives):
             sure = []           # v79.6 (item 4): one branch contradicted while another holds never demotes
+        if sure and roles and binds({"kind": "requisito", "text": element["text"]}, roles) == COUNTERPARTY_BINDS \
+                and any(not _NO_DUTY_RE.search(x.get("text") or "") for x in sure) and status != NON_RISULTA:
+            log.setdefault("kept_breach", []).append(label)     # v79.10.4 (D3): a breach is no contradiction
+            continue
         if status == NON_RISULTA:
             reason, cited = DEMOTED_EXCLUDED, against
         elif status != PROVATO and sure:

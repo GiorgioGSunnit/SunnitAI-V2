@@ -81,7 +81,8 @@ def test_the_grading_reads_at_most_thirty_and_the_kept_ones_always():
 
 def test_the_cap_runs_before_the_grading_in_the_flow():
     src = (HERE.parent / "src" / "rag" / "interactive_flow.py").read_text(encoding="utf-8")
-    assert src.index("grade_cap(article_rows, keep_now)") < src.index('graded = _isolated("grading"')
+    # v79.10.4 (D2): the call carries the anchors kept whatever their rank (anchors=held)
+    assert src.index("grade_cap(article_rows, keep_now") < src.index('graded = _isolated("grading"')
     assert "every=True" in src
 
 

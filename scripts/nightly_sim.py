@@ -87,6 +87,12 @@ edittale») and requalify_event_mismatch (a riqualificazione the certain facts' 
 injuries and no death and 575/589) both 0; the counters, with rites_precluded, rites_to_verify and
 requalify_refused_event, in the counters table (the run's state only: offline cells have no counters).
 
+v79.10.4 (D): the counters termini_graded and termine_excluded_inside (must be 0: a term «escluso» while a fact gives a
+duration inside it), cap_anchors_kept (the similar rulings' articles and the anchor's own section the rank alone would
+have cut), counterparty_elements, counterparty_breaches and counterparty_contradicted (must be 0: the counterparty's
+duty «non risulta» on its breach, on the client's record) in the counters table; the fragments list reads D4's kinds
+(a category, a confiscation or medicinal clause, a modal permission).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -541,8 +547,9 @@ def family_alarm_lines(results: List[Dict[str, Any]]) -> List[str]:
 
 
 def fragment_lines(results: List[Dict[str, Any]]) -> List[str]:
-    """v79.9 (D2): per cell, any fragment (a modal permission, a bare object, a scope or saving clause, a bare subject)
-    that survived decomposition into a record §4's tables print -- must be none."""
+    """v79.9 (D2): per cell, any fragment (a modal permission, a bare object, a scope or saving clause, a bare subject;
+    v79.10.4 D4: a category, a confiscation or medicinal clause) that survived decomposition into a record §4's tables
+    print -- must be none."""
     rows = [(c["id"], x) for c in results for x in c.get("fragments_surviving") or []]
     return ["", "## Fragments that survived into a table", ""] + [f"- {cid}: {x}" for cid, x in rows] if rows else []
 

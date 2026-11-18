@@ -291,28 +291,87 @@ _SCOPE_RE = re.compile(r"^\W*(?:riguardo\s+(?:a|al|alla|ai|alle|agli|all['’])|
                        r"ai\s+sensi\s+d|a\s+norma\s+d|agli\s+effetti\s+d|per\s+gli\s+effetti\s+d)", re.IGNORECASE)
 FRAGMENT_WHY = {"subject": "soggetto senza condizione", "connective": "connettivo senza condizione",
                 "saving": "clausola di salvezza", "modal": "facoltà, non condizione",                  # v79.9 (D2)
-                "object": "oggetto senza condizione", "scope": "clausola di ambito"}
+                "object": "oggetto senza condizione", "scope": "clausola di ambito",
+                "category": "categoria di soggetti o di attività, non condizione",                     # v79.10.4 (D4)
+                "confiscation": "clausola di confisca, non condizione",
+                "medicinal": "clausola sui medicinali, non condizione"}
+# v79.10.4 (D4): statutory wording naming a category -- persons by their plural («i precettori», «i genitori e i
+# tutori»), «coloro che» with an activity, a trade or an art («un mestiere o un'arte») -- with no condition in it
+_DET = r"(?:(?:i|gli|le|il|lo|la|l['’]|un|uno|una|un['’])\s*)"
+_TRADE = r"(?:mestier[ei]|art[ei]|professio\w+|industri[ae]|commerci[oa]?|attività|impres[ae]|uffici[oa]?)"
+_PERSONS = r"(?:(?:i|gli|le)\s+[a-zà-ù]{4,}i\b)"
+_COLORO = r"(?:coloro|quelli|quanti)\s+che\s+[a-zà-ù]+(?:\s+(?:a\s+)?" + _DET + r"?" + _TRADE + \
+    r"(?:\s*(?:,|e|ed|o|od)\s*" + _DET + r"?" + _TRADE + r")*)?"
+_TRADES = _DET + r"?" + _TRADE + r"(?:\s*(?:,|e|ed|o|od)\s*" + _DET + r"?" + _TRADE + r")*"
+_CATEGORY_RE = re.compile(r"^(?:" + _TRADES + r"|(?:" + _PERSONS + r"|" + _COLORO + r")(?:\s*(?:,|e|ed|o|od)\s*(?:"
+                          + _PERSONS + r"|" + _COLORO + r"))*)$", re.IGNORECASE)
+# a confiscation clause (the consequence: «è sempre ordinata la confisca», «sono confiscati», «la confisca di …»); goods
+# a conduct names as confiscated («sottrae cose sottoposte a sequestro o confiscate») are an element
+_CONFISCATION_RE = re.compile(r"\b(?:è|sono)\s+(?:sempre\s+|altresì\s+)?(?:(?:ordinat|dispost)\w*\s+(?:la\s+)?confisc|"
+                              r"confiscat[oaie]\b)|^\W*(?:(?:la|alla|della)\s+)?confisca\b|\bsi\s+procede\s+(?:alla\s+|a\s+)?"
+                              r"confisca|\b(?:ordina|dispone)\s+(?:sempre\s+)?(?:la\s+)?confisca", re.IGNORECASE)
+# a medicinal clause: the clause opens on the medicinals (or on their table or section) and names them by their table,
+# section, prescription or therapeutic use («i medicinali compresi nella tabella …», «la vendita di medicinali dietro
+# presentazione di ricetta»); a conduct on medicinals («vende medicinali senza ricetta», «detiene medicinali …
+# previsti dalla tabella») is an element
+_MED_HEAD = r"^\W*(?:(?:i|gli|le|l['’]|la|il|dei|delle|degli|per\s+i|per\s+le|ai|alle)\s*)?" \
+    r"(?:(?:vendita|dispensazione|somministrazione|prescrizione|detenzione|impiego|uso|elenco|fornitura)\s+(?:di|dei|delle)\s+)?"
+_MEDICINAL_RE = re.compile(_MED_HEAD + r"(?:medicinal\w*|farmac[io]\b)(?=[^.;]*\b(?:tabell\w*|sezion\w*|ricett\w*|"
+                           r"prescrizion\w*\s+medic\w*|uso\s+terapeutic\w*))|"
+                           r"^\W*(?:(?:la|le|nella|nelle|della|delle|alla|alle)\s+)?(?:tabell\w*|sezion\w*)\b[^.;]*\bmedicinal\w*",
+                           re.IGNORECASE)
+# a modal permission in its wider forms: «può essere disposta», «possono esserne», «è consentito», «è in facoltà di», «ha
+# facoltà di»
+# (an event that may follow -- «può derivarne un pericolo», «possono verificarsi» -- is a condition; what the law allows --
+# «il fatto è consentito dalla legge» -- a scriminante's condition: neither is a permission)
+_EVENT_VERB = r"(?!(?:deriv|consegu|risult|verific|sorg|nasc|produr|accad|aver|esser)\w*\b)"
+_PERMISSION_MORE_RE = re.compile(r"\b(?:può|possono|potrà|potranno)\s+(?:anche\s+|altresì\s+|sempre\s+)?essere\s+\w+(?:at|ut|it|ss|st)"
+                                 r"[oaie]\b|\b(?:può|possono|potrà|potranno)\s+(?:anche\s+|altresì\s+|sempre\s+)?" + _EVENT_VERB +
+                                 r"\w+(?:ar|er|ir)(?:l[oaie]|ne|si|gli|ci|vi)\b|\b(?:è|sono)\s+(?:altresì\s+|sempre\s+)?"
+                                 r"(?:consentit|permess)[oaie]\b(?!\s+(?:dalla|dal|dallo|dall['’]|dai|dalle|dagli|da|per\s+legge)\b)|"
+                                 r"\b(?:è\s+in|ha|hanno)\s+facoltà\s+d", re.IGNORECASE)
+
+
+def fragment_kind(text: str, wider: bool = True) -> str:
+    """v79.10.4 (D4): fragment_why's kind -- a FRAGMENT_WHY key, "" for a condition. wider=False: v79.9's kinds only
+    (no category, confiscation or medicinal clause, the modal permission in its v79.9 form) -- what a generated schema
+    is checked on (element_schemas.check): D4's fragments are dropped one by one, never the schema."""
+    t = " ".join(str(text or "").split()).strip(" ,.;:")
+    if _SAVING_RE.match(t):
+        return "saving"
+    if _SCOPE_RE.match(t):                                  # v79.9 (D2)
+        return "scope"
+    if wider and _CONFISCATION_RE.search(t):                # v79.10.4 (D4)
+        return "confiscation"
+    if wider and _MEDICINAL_RE.search(t):
+        return "medicinal"
+    if not wider:
+        if _PERMISSION_RE.search(t) and not _CONDITION_RE.search(t):
+            return "modal"
+    elif (_PERMISSION_RE.search(t) or _PERMISSION_MORE_RE.search(t)) and not _CONDITION_RE.search(t) \
+            and not re.search(r"\bnon\s+(?:può|possono|potrà|potranno|è|sono|ha|hanno)\b", t, re.IGNORECASE):
+        return "modal"
+    if _BARE_OBJECT_RE.match(t):
+        return "object"
+    if _BARE_SUBJECT_RE.match(t):
+        return "subject"
+    if wider and _CATEGORY_RE.match(t):                     # v79.10.4 (D4)
+        return "category"
+    if _CONNECTIVE_RE.match(t):
+        return "connective"
+    return ""
 
 
 def fragment_why(text: str) -> str:
     """v79.8 (C2): why a decomposed clause is no element -- a bare subject («il debitore», «uno dei contraenti»), a
     connective («con cui si conviene che»), a saving clause («salvo in ogni caso …»); v79.9 (D2): a modal permission
     («può chiedere …», with no condition in it), a bare object («il danno»), a scope clause («riguardo ai quali …»,
-    «nei limiti di …»); "" for a condition."""
-    t = " ".join(str(text or "").split()).strip(" ,.;:")
-    if _SAVING_RE.match(t):
-        return FRAGMENT_WHY["saving"]
-    if _SCOPE_RE.match(t):                                  # v79.9 (D2)
-        return FRAGMENT_WHY["scope"]
-    if _PERMISSION_RE.search(t) and not _CONDITION_RE.search(t):
-        return FRAGMENT_WHY["modal"]
-    if _BARE_OBJECT_RE.match(t):
-        return FRAGMENT_WHY["object"]
-    if _BARE_SUBJECT_RE.match(t):
-        return FRAGMENT_WHY["subject"]
-    if _CONNECTIVE_RE.match(t):
-        return FRAGMENT_WHY["connective"]
-    return ""
+    «nei limiti di …»); v79.10.4 (D4): statutory wording naming a category («i precettori e coloro che insegnano un
+    mestiere o un'arte», «un mestiere o un'arte»), a confiscation clause («è sempre ordinata la confisca»), a medicinal
+    clause («i medicinali compresi nella tabella …»), a modal permission in its wider forms («può essere disposta», «è
+    consentito», «ha facoltà di»; a negated «non può», «non è consentito» is a prohibition, never one); "" for a condition."""
+    kind = fragment_kind(text)
+    return FRAGMENT_WHY[kind] if kind else ""
 
 
 def element_kept(text: str) -> bool:

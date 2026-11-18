@@ -502,10 +502,12 @@ def _check_one(schema: Dict[str, Any], ctx: _Text, out: Dict[str, Any], prefix: 
         _comma_known(name, el.get("comma"), ctx, out)
         _grounded(name, el, ctx, out)
         if isinstance(el.get("testo"), str) and el["testo"].strip():
-            from .rule_quote import fragment_why
-            why = fragment_why(el["testo"])
-            if why:
-                out["fragments"].append(f"{name}: {why}")
+            # v79.10.4 (D4): v79.9's fragment kinds block a schema; D4's do not -- requisites() drops such an element
+            # alone, the schema stands
+            from .rule_quote import FRAGMENT_WHY, fragment_kind
+            kind = fragment_kind(el["testo"], wider=False)
+            if kind:
+                out["fragments"].append(f"{name}: {FRAGMENT_WHY[kind]}")
         if len([b for b in branches or [] if str(b).strip()]) >= 2:
             fonte = el.get("fonte") if isinstance(el.get("fonte"), dict) else {}
             if not has_alternative(fonte.get("testo") or el.get("testo")):

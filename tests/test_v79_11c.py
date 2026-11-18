@@ -7,7 +7,8 @@ C2. the general-part gate: a schema never decomposes past the hard invariants (c
     procedural code's article too); an unreviewed limiting schema never gates out, a reviewed one does; the three sites
 C3. grading: element_rule (today's regexes when no schema key); a schema «elemento soggettivo» with a conduct fact
     stays «da provare» (79.9-A by construction) without the mental words; the regex still applies under kind condotta;
-    a «condizione» joined by «e» half proven names the missing part; a «termine» needs a dated certain fact; the kind
+    a «condizione» joined by «e» half proven names the missing part; a «termine» graded on the facts' durations
+    (v79.10.4 D1, replacing the stand-in); the kind
     never upgrades; grading_rule only on schema elements
 C4. admission in shadow: schema_shadow never changes the candidates and reports agree / false_exclusions / extra /
     recall; main_admitted_by; active_modules from a schema rapporto only when the patterns find none
@@ -372,19 +373,33 @@ def test_a_branch_found_never_overturns_the_per_part_check():
     assert plain["status"] == "provato" and "parts" not in plain
 
 
-def test_a_termine_needs_a_dated_certain_fact():
+def test_a_termine_is_graded_on_the_durations_of_the_facts():
+    """v79.10.4 (D1, replacing v79.11's stand-in): a term is graded against the facts' durations, on the text path and
+    on a schema «termine» alike -- inside «provato», beyond «non risulta», no duration «da provare» (a supporting sentence
+    with no duration no longer proves it; a fact denying the act, with no duration, no longer excludes it)."""
     from src.rag import issue_records
     text = "ne chiede il risarcimento entro un anno dalla restituzione"
     plain = issue_records.sentences("Tizio chiede il risarcimento al custode.")
     assert plain[0]["certainty"] == "accertato"
-    assert _settled(text, plain, ["S1"])["status"] == "provato"                # no schema: as today
-    req = _settled(text, plain, ["S1"], schema_kind="termine")
-    assert req["status"] == "da provare" and req["why"] == issue_records.TERMINE_OPEN_WHY
-    dated = issue_records.sentences("Tizio chiede il risarcimento al custode il 3 marzo 2025.")
-    assert _settled(text, dated, ["S1"], schema_kind="termine")["status"] == "provato"
-    # never upgrades: contradicted stays non risulta
+    for kind in ({}, {"schema_kind": "termine"}):
+        req = _settled(text, plain, ["S1"], **kind)
+        assert req["status"] == "da provare" and req["why"] == issue_records.TERMINE_OPEN_WHY
+    assert issue_records.element_rule({"kind": "requisito", "text": text}) == ("termine", "regex")
+    inside = issue_records.sentences("La cosa è stata restituita il 3 marzo 2025. Tizio chiede il risarcimento al custode "
+                                     "il 10 settembre 2025.")
+    req = _settled(text, inside, ["S2"], schema_kind="termine")
+    assert req["status"] == "provato" and req["termine"]["verdict"] == "inside"
+    beyond = issue_records.sentences("La cosa è stata restituita il 3 marzo 2023. Tizio chiede il risarcimento al custode "
+                                     "il 10 settembre 2025.")
+    req = _settled(text, beyond, ["S2"], schema_kind="termine")
+    assert req["status"] == "non risulta" and "S2" in req["contradicting"] and "S2" not in req["supporting"]
     no = issue_records.sentences("Tizio non ha mai chiesto il risarcimento al custode.")
-    assert _settled(text, no, [], ["S1"], schema_kind="termine")["status"] == "non risulta"
+    assert _settled(text, no, [], ["S1"], schema_kind="termine")["status"] == "da provare"
+    # a schema «termine» whose text states no duration keeps the stand-in's check: a dated certain fact
+    unread = "nel termine stabilito dal contratto"
+    assert _settled(unread, plain, ["S1"], schema_kind="termine")["why"] == issue_records.TERMINE_UNREAD_WHY
+    dated = issue_records.sentences("Tizio chiede il risarcimento al custode il 3 marzo 2025.")
+    assert _settled(unread, dated, ["S1"], schema_kind="termine")["status"] == "provato"
 
 
 @pytest.mark.parametrize("kind", ["condotta", "evento", "elemento soggettivo", "condizione", "termine",
