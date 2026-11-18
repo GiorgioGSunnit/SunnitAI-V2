@@ -276,16 +276,38 @@ _CONNECTIVE_RE = re.compile(r"^(?:con|per|in|nel|nella|mediante|secondo)\s+(?:cu
                             r"^(?:\w+\s+){0,3}(?:che|cui|quale|qualora|se|quando)$", re.IGNORECASE)
 _SAVING_RE = re.compile(r"^\W*(?:salvo\b|in\s+ogni\s+caso\b|fatt[oaie]\s+salv|ferm[oaie]\s+rest|"
                         r"tranne\s+che|eccetto\s+che|a\s+meno\s+che)", re.IGNORECASE)
+# v79.9 (D2): a modal permission («può chiedere la risoluzione»: the consequence, no condition), a bare object
+# («il danno», «la cosa»: one noun), a scope clause («riguardo ai quali …», «nei limiti di …», «ai sensi di …»)
+_PERMISSION_RE = re.compile(r"\b(?:può|possono|potrà|potranno|potrebbe|potrebbero)\s+(?:anche\s+|altresì\s+|sempre\s+)?"
+                       r"(?:\w+(?:are|ere|ire|rre|arsi|ersi|irsi))\b", re.IGNORECASE)
+_CONDITION_RE = re.compile(r"\b(?:se|quando|qualora|purch[ée]|ove|allorch[ée]|nel\s+caso|nei\s+casi|in\s+caso)\b",
+                           re.IGNORECASE)
+# a remedy's object, never a status: «il cittadino», «l'operatore» are qualified subjects, elements (v76b)
+_BARE_OBJECT_RE = re.compile(r"^(?:il|lo|la|l['’]|i|gli|le|un|uno|una)\s*(?:dann[oi]|cos[ae]|prezzo|ben[ei]|somm[ae]|denaro|"
+                             r"risarciment[oi]|indennit[àa]|interessi|spese|rimborso|compenso|corrispettivo|pagament[oi]|"
+                             r"restituzion[ei]|risoluzione|riduzione|frutti|canon[ei]|pen[ae])$", re.IGNORECASE)
+_SCOPE_RE = re.compile(r"^\W*(?:riguardo\s+(?:a|al|alla|ai|alle|agli|all['’])|relativamente\s+a|per\s+quanto\s+riguarda|"
+                       r"in\s+ordine\s+a|con\s+riferimento\s+a|nei\s+limiti|entro\s+i\s+limiti|limitatamente\s+a|"
+                       r"ai\s+sensi\s+d|a\s+norma\s+d|agli\s+effetti\s+d|per\s+gli\s+effetti\s+d)", re.IGNORECASE)
 FRAGMENT_WHY = {"subject": "soggetto senza condizione", "connective": "connettivo senza condizione",
-                "saving": "clausola di salvezza"}
+                "saving": "clausola di salvezza", "modal": "facoltà, non condizione",                  # v79.9 (D2)
+                "object": "oggetto senza condizione", "scope": "clausola di ambito"}
 
 
 def fragment_why(text: str) -> str:
     """v79.8 (C2): why a decomposed clause is no element -- a bare subject («il debitore», «uno dei contraenti»), a
-    connective («con cui si conviene che»), a saving clause («salvo in ogni caso …»); "" for a condition."""
+    connective («con cui si conviene che»), a saving clause («salvo in ogni caso …»); v79.9 (D2): a modal permission
+    («può chiedere …», with no condition in it), a bare object («il danno»), a scope clause («riguardo ai quali …»,
+    «nei limiti di …»); "" for a condition."""
     t = " ".join(str(text or "").split()).strip(" ,.;:")
     if _SAVING_RE.match(t):
         return FRAGMENT_WHY["saving"]
+    if _SCOPE_RE.match(t):                                  # v79.9 (D2)
+        return FRAGMENT_WHY["scope"]
+    if _PERMISSION_RE.search(t) and not _CONDITION_RE.search(t):
+        return FRAGMENT_WHY["modal"]
+    if _BARE_OBJECT_RE.match(t):
+        return FRAGMENT_WHY["object"]
     if _BARE_SUBJECT_RE.match(t):
         return FRAGMENT_WHY["subject"]
     if _CONNECTIVE_RE.match(t):

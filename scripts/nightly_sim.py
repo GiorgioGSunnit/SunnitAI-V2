@@ -148,6 +148,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
             out["defence_gate"] = gate
         out["ranked_trace"] = list((result.get("state") or {}).get("ranked_trace") or [])        # v79.7 (item 3)
         out["family_gate"] = dict((result.get("state") or {}).get("family_gate") or {})          # v79.9 (C2)
+        out["fragments_surviving"] = interactive_flow.surviving_fragments(result.get("state") or {})   # v79.9 (D2)
         st = result.get("state") or {}                  # v79.8: every block's counters, the timings line's
         out["counters"] = dict((st.get("single_shot_timings") or {}).get("counters") or
                                interactive_flow.case_counters(st, round(time.time() - t0, 1)))
@@ -412,6 +413,13 @@ def family_lines(results: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+def fragment_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.9 (D2): per cell, any fragment (a modal permission, a bare object, a scope or saving clause, a bare subject)
+    that survived decomposition into a record §4's tables print -- must be none."""
+    rows = [(c["id"], x) for c in results for x in c.get("fragments_surviving") or []]
+    return ["", "## Fragments that survived into a table", ""] + [f"- {cid}: {x}" for cid, x in rows] if rows else []
+
+
 def ranked_lines(results: List[Dict[str, Any]]) -> List[str]:
     """v79.7 (item 3): per cell, the retrieval's top-ranked articles -- in record / candidate / dropped, with why."""
     rows = [c for c in results if c.get("ranked_trace")]
@@ -521,6 +529,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     lines += counter_lines(results, baseline)
     lines += ranked_lines(results)
     lines += family_lines(results)                  # v79.9 (C2)
+    lines += fragment_lines(results)                # v79.9 (D2)
     lines += rulings_lines(results)
     lines += lawyer or []
     return "\n".join(lines) + "\n"

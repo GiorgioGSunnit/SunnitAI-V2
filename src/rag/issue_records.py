@@ -80,8 +80,11 @@ _ALLEGED_RE = re.compile(r"\b(?:sostien\w*|sosteng\w*|sosten(?:endo|eva|evano|ne
                          r"venut[oa]\s+a\s+sapere|a\s+sua\s+versione|nella\s+sua\s+versione|"
                          r"secondo\s+(?:quanto\s+(?:riferit|dichiarat|sostenut|affermat)\w*|la\s+(?:sua|loro)\s+versione|"
                          r"(?-i:[A-ZÀ-Ü])\w+|(?:il|la|lo|i|le|gli|l['’])\s*" + _PARTY + r")|"
-                         r"a (?:suo|loro) dire|a detta d\w*|avrebbe\w*|sarebbe\w* stat\w*|presunt\w*)\b",
+                         r"a (?:suo|loro) dire|a detta d\w*)\b",
                          re.IGNORECASE)
+# v79.9 (D1): an allegazione only on an attribution verb or «secondo <parte>» -- the conditional («avrebbero dovuto
+# concludersi», «sarebbe stato restituito»), the tense and «presunto» no longer make one; a sentence with no attribution
+# is a fatto certo whatever its grammar (a hedge -- «forse», «potrebbe», «se fosse» -- stays ipotizzato, as v60t)
 _HEDGED_RE = re.compile(r"\b(?:forse|probabilmente|sembra\w*|pare(?:va)?|potrebbe\w*|presumibilmente|non è chiaro|"
                         r"non si sa|non risulta chiaro|verosimilmente|ipotizz\w*|"
                         r"(?:se|qualora|ove) (?:fosse|fossero|avesse|avessero)\b)\b", re.IGNORECASE)   # v60t: «se fosse»

@@ -188,7 +188,9 @@ def test_a_criminal_ruling_on_a_civil_record_only_naming_its_institution():
                                                                               "pertinenza": 2, "verso": "a favore"}
                                                                     for i in range(1, 3)})
     quoted = [r["passage"] for r in record["kept"] if r["passage"]]
-    assert quoted == [named] and record["log"]["articles"]["1168 c.c."]["filters"]["penal_on_civil"] == 1
+    # v79.9 (D4): the sentence dropped, and the ruling with it (never printed with its estremi alone)
+    assert quoted == [named] and record["log"]["articles"]["1168 c.c."]["filters"]["penal_on_civil"] == 2
+    assert [r["id"] for r in record["kept"]] == ["X2"]
     assert rulings.names_institution(named, "Azione di reintegrazione") and not rulings.names_institution(
         plain, "Azione di reintegrazione")
 

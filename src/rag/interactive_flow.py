@@ -8073,6 +8073,22 @@ def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
     out = {"uncertain_integrated": uncertain, "fragments_dropped": fragments, "conditions_half": half,
            "conditions_rejoined": rejoined}
     out.update(issue_records.polarity_counters(state.get("records") or {}, by_id))                  # v79.9 (A4)
+    out["fragments_in_tables"] = len(surviving_fragments(state))                                    # v79.9 (D2)
+    return out
+
+
+def surviving_fragments(state: Dict[str, Any]) -> List[str]:
+    """v79.9 (D2): every element still in a record (what §4's tables print) that is a fragment by rule_quote.fragment_why
+    -- «<article>: <text> (<why>)»; must be none."""
+    from . import rule_quote
+    out = []
+    for label, rec in (state.get("records") or {}).items():
+        for r in rec.get("requisites") or []:
+            if r.get("kind", "requisito") != "requisito":
+                continue
+            why = rule_quote.fragment_why(r.get("text") or "")
+            if why:
+                out.append(f"{label}: {str(r.get('text') or '')[:80]} ({why})")
     return out
 
 

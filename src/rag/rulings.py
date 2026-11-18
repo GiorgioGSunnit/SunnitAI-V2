@@ -293,6 +293,11 @@ def civil_label(label: str) -> bool:
     return str(label or "").rstrip().endswith(" c.c.")
 
 
+def penal_ruling(r: Dict[str, Any]) -> bool:
+    """A criminal ruling -- its estremi's archive («snpen»), else its rendered estremi («Cass. pen.»)."""
+    return (r.get("parsed") or {}).get("archive") == "penale" or str(r.get("estremi") or "").startswith("Cass. pen.")
+
+
 def names_institution(sentence: str, rubrica: str) -> bool:
     """v79.8: the sentence names the article's institution -- a word beginning with a stem of the rubrica's own nouns
     (its generic ones aside: «Azione di reintegrazione» -> «reintegr-»)."""
@@ -521,7 +526,34 @@ def labels_out(text: str, record: Optional[Dict[str, Any]], log: Optional[List[s
 
 _HEADLESS_RE = re.compile(r"\bSez\.\s*(?:Un\.|\d{1,2})|\bn\.\s*\d{1,6}\s*/\s*(?:19|20)\d{2}\b")
 _ACT_BEFORE_RE = re.compile(r"(?:d\.\s?lgs\.?|d\.\s?p\.\s?r\.|d\.\s?l\.|legge|l\.|decreto|reg\.|regolamento|dpr|"
-                            r"direttiva|\(ue\)|\(ce\))[^.;]{0,12}$", re.IGNORECASE)
+                            r"direttiva|circolare|delibera|provvedimento|\(ue\)|\(ce\))[^.;]{0,12}$", re.IGNORECASE)
+
+
+# v79.9 (D4): a court's head before the number -- the Cassazione's, and the other courts' a writer may cite whole
+_COURT_HEAD_RE = re.compile(r"Cass\.|Cassazione|Corte\s+cost|C\.\s*cost|Cons\.\s*St|Consiglio\s+di\s+Stato|C\.\s*giust|"
+                            r"Corte\s+(?:di\s+giustizia|EDU|europea|d['’]appello|dei\s+conti)|CGUE|T\.?\s?A\.?\s?R\.?\b|"
+                            r"Trib\.|Tribunale|App\.\s", re.IGNORECASE)
+# the whole headless reference, to remove: «(Sez. 4, n. 29558/2025, Rv. 123-01)», «4, n. 29558/2025», «Sez. 5»
+_HEADLESS_SPAN_RE = re.compile(
+    r"\s*[(\[]?\s*(?:(?:Sez\.\s*(?:Un\.|\d{1,2}(?:-\d)?)|\d{1,2}(?:-\d)?)\s*,\s*)?n\.\s*\d{1,6}\s*/\s*(?:19|20)\d{2}"
+    r"(?:\s*\([^)]{0,24}\))?(?:\s*,\s*(?:Rv\.?\s*[\d-]+|dep\.\s*[\d./]+))*\s*[)\]]?(?:\s*,(?=\s))?|"
+    r"\s*[(\[]?\s*Sez\.\s*(?:Un\.|\d{1,2}(?:-\d)?)\s*[)\]]?(?=[\s,.;:]|$)")
+
+
+def headless(text: str) -> List[Tuple[int, int]]:
+    """v79.9 (D4): the spans of every ruling reference printed without its head («Sez. 4, n. 29558/2025» with no
+    «Cass. pen.» before it; a law's number -- «d.lgs. n. 23/2015» -- is none)."""
+    spans = []
+    for m in _HEADLESS_SPAN_RE.finditer(text or ""):
+        core = _HEADLESS_RE.search(m.group(0))
+        if not core:
+            continue
+        at = m.start() + core.start()
+        before = (text or "")[max(0, at - 45):at]
+        if _COURT_HEAD_RE.search(before) or _ACT_BEFORE_RE.search(before):
+            continue
+        spans.append((m.start(), m.end()))
+    return spans
 
 
 def printed_problems(answer: str) -> List[str]:
@@ -530,10 +562,7 @@ def printed_problems(answer: str) -> List[str]:
     out = [f"etichetta {m.group(0)}" for m in _LABEL_RE.finditer(answer or "")]
     out += ["timbro «copia non ufficiale»" for _ in STAMP_RE.finditer(answer or "")]
     out += [f"timbro della firma «{m.group(0).strip()[:40]}»" for m in SIGNATURE_RE.finditer(answer or "")]
-    for m in _HEADLESS_RE.finditer(answer or ""):
-        before = (answer or "")[max(0, m.start() - 45):m.start()]
-        if "Cass." not in before and not _ACT_BEFORE_RE.search(before):
-            out.append(f"citazione senza la testa: «{(answer or '')[m.start():m.end() + 10].strip()}»")
+    out += [f"citazione senza la testa: «{(answer or '')[a:b + 10].strip()}»" for a, b in headless(answer or "")]
     return out
 
 
@@ -725,11 +754,18 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
         for r in ranked[:PRESELECT_PER_ARTICLE]:
             found = candidate_sentences(" ".join(body.get(x) or "" for x in r["sections"]), r["elements"],
                                         r["article"], counts)
-            if civil and (r.get("parsed") or {}).get("archive") == "penale":   # v79.8: a criminal ruling on a civil
-                named = [x for x in found if names_institution(x, rubrica)]  # record only naming its institution
+            if civil and penal_ruling(r):         # v79.8: a criminal ruling on a civil record only naming its institution
+                named = [x for x in found if names_institution(x, rubrica)]
                 counts["penal_on_civil"] += len(found) - len(named)
                 found = named
+                if not named:           # v79.9 (D4): nor printed with its estremi alone -- the ruling goes, counted
+                    r["penal_off"] = True       # too (1458's leak: its sentences were dropped, the ruling stayed
+                    counts["penal_on_civil"] += 1       # ranked and was printed bare)
             r["candidates"] = found
+        for r in ranked[PRESELECT_PER_ARTICLE:]:        # past the read ones: never read, so never naming it
+            if civil and penal_ruling(r):
+                r["penal_off"] = True
+        ranked = [r for r in ranked if not r.get("penal_off")]
         head = ranked[:PRESELECT_PER_ARTICLE]
         ordered = [r for r in head if r["candidates"]] + [r for r in head if not r["candidates"]] + \
             ranked[PRESELECT_PER_ARTICLE:]
@@ -764,6 +800,13 @@ def build(ctx: Dict[str, Any], rows: Sequence[Dict[str, Any]], session, call: Op
     for k, v in graded.items():
         log["articles"][k]["graded"] = len(v)
     # the printed: v79.8 -- a ruling with a quoted passage before one with the estremi alone (the order key after)
+    for k in list(graded):                      # v79.9 (D4): the printed passage itself names the civil institution
+        if civil_label(k):
+            rubrica = str((records.get(k) or {}).get("rubrica") or "")
+            off = [r for r in graded[k] if penal_ruling(r) and not (r.get("passage") and
+                                                                     names_institution(r["passage"], rubrica))]
+            log["articles"][k]["filters"]["penal_on_civil"] += len(off)
+            graded[k] = [r for r in graded[k] if r not in off]
     kept = round_robin({k: sorted(graded[k], key=lambda r: (not r.get("passage"), _order_key(r)))[:PER_ARTICLE]
                         for k in records if k in graded}, PER_ANSWER)
     for r in kept:

@@ -1433,7 +1433,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     for label, rec in records.items():
         if not offender:
             break
-        if issue_records.justification(label):
+        if issue_records.justification(rec.get("comma_of") or label):
+            if rec.get("comma_of") and not touched(rec):    # v79.9 (D5): a later comma, a thesis of its own only when
+                continue                                    # a fact touches it
             proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
             ids = proven or (_ids(rec) if by_concept(rec) else [])     # v79.7 (item 3): named by the facts
             if ids and not any(r.get("status") == NON_RISULTA for r in _live(rec)):
@@ -3122,6 +3124,25 @@ def _open_ids(ctx: Dict[str, Any]) -> List[str]:
     return [m["elemento"] for m in (ctx.get("facts") or {}).get("mancanti") or [] if m.get("elemento")]
 
 
+def whole_citations(text: str, log: Optional[List[str]] = None) -> str:
+    """v79.9 (D4): a ruling's reference printed whole or not at all -- every reference without its court's head
+    («Sez. 4, n. 29558/2025», «4, n. 29558/2025») removed from the sentence it sits in (logged); §5 prints the
+    record's estremi whole by construction."""
+    from . import rulings as rulings_mod
+    spans = rulings_mod.headless(text or "")
+    if not spans:
+        return text or ""
+    out = text
+    for a, b in reversed(spans):
+        if log is not None:
+            log.append(out[a:b].strip())
+        out = out[:a] + out[b:]
+    out = re.sub(r"\(\s*\)|\[\s*\]", "", out)
+    out = re.sub(r"[ \t]+([,.;:])", r"\1", out)
+    out = re.sub(r"[,:;]\s*([.;:])", r"\1", out)
+    return re.sub(r"[ \t]{2,}", " ", out)
+
+
 def _with_line(text: str, line: Optional[str]) -> str:
     return f"{text}\n\n{line}" if line and text else (text or "")
 
@@ -3161,13 +3182,51 @@ PENAL_ROUTE_CONCLUSION = "**Via penale**: {name} (art. {art}), {proc}; resta dis
 PENAL_ROUTE_UNKNOWN = "procedibilità non indicata dalle fonti consultate"
 
 
+# v79.9 (D3): the fraud indicators -- a false description or quality stated as certain, the thing never delivered, the
+# counterparty vanished («profilo disattivato», «annuncio cancellato», «irreperibile»): a false description with either
+# of the others, or the two others together, is a truffa; a thing lent and not returned, an appropriazione indebita
+_FALSE_DESCRIPTION_RE = re.compile(
+    r"\b(?:descritt|presentat|spacciat|pubblicizzat|garantit)[oaie]\s+(?:[\w'’]+\s+){0,3}?come\b|\bfalsament\w*|"
+    r"\bin\s+realt[àa]\b|\bcontrariamente\s+a\s+quanto\s+(?:dichiarat|indicat|scritt|descritt)\w*|\bfals[oaie]\s+"
+    r"(?:document|fattur|ricevut|certificat|dichiarazion|attestazion|garanzi)\w*|\bcontraffatt\w*|\bmai\s+incidentat\w*",
+    re.IGNORECASE)
+_NOT_DELIVERED_RE = re.compile(
+    r"\bnon\s+(?:è\s+|sono\s+)?(?:mai\s+)?(?:stat[oaie]\s+)?(?:consegnat|spedit|inviat|arrivat|ricevut|recapitat)\w*|"
+    r"\bnon\s+(?:ha\s+)?(?:mai\s+)?(?:consegna|spedisce|invia|riceve)\b|\bnon\s+(?:arriva|arrivano|è\s+mai\s+arrivat\w*)\b|"
+    r"\bmai\s+(?:arrivat|consegnat|spedit|ricevut)\w*|\bmerce\s+mai\b", re.IGNORECASE)
+_VANISHED_RE = re.compile(
+    r"\bprofil\w*\s+(?:[\w'’]+\s+){0,3}?(?:è\s+stato\s+|risulta\s+|viene\s+)?(?:disattivat|cancellat|chius|rimoss|"
+    r"eliminat)\w*|\bannunc\w*\s+(?:[\w'’]+\s+){0,3}?(?:è\s+stato\s+|risulta\s+|viene\s+)?(?:cancellat|rimoss|eliminat)\w*|"
+    r"\birreperibil\w*|\bnon\s+risponde\w*\s+(?:più|al\s+telefono)|"
+    r"\bsparit[oaie]\b|\bsi\s+(?:è|sono)\s+(?:resi?\s+)?(?:irreperibil|dileguat)\w*|\b(?:numero|utenza)\s+(?:è\s+)?"
+    r"(?:disattivat|inesistent|staccat)\w*|\baccount\s+(?:è\s+stato\s+)?(?:chius|disattivat|cancellat)\w*|"
+    r"\bl['’]?ha\s+bloccat[oa]|\bbloccat[oa]\s+su\s+(?:whatsapp|telegram|instagram|facebook)", re.IGNORECASE)
+_LENT_RE = re.compile(r"\b(?:comodat\w*|prestat[oaie]|in\s+prestito|affidat[oaie]\s+in\s+custodia|dat[oaie]\s+in\s+"
+                      r"(?:uso|custodia|deposito)|lasciat[oaie]\s+in\s+custodia)\b", re.IGNORECASE)
+_NOT_RETURNED_RE = re.compile(r"\b(?:si\s+rifiut\w*\s+di\s+(?:restituir|ridar|riconsegnar)\w*|non\s+(?:l[aoie]\s+|l['’]\s*|"
+                              r"gli\s+|le\s+)?(?:ha\s+)?(?:più\s+|mai\s+)?(?:restitui|ridat|riconsegna|resa|reso)\w*|"
+                              r"(?:l[aoie]\s+)?tien\w*\s+per\s+s[ée])", re.IGNORECASE)
+
+
+def fraud_indicators(facts: str) -> List[str]:
+    """v79.9 (D3): which indicators the certain facts hold -- descrizione falsa, mancata consegna, controparte sparita."""
+    return [name for name, rx in (("descrizione falsa", _FALSE_DESCRIPTION_RE), ("mancata consegna", _NOT_DELIVERED_RE),
+                                  ("controparte sparita", _VANISHED_RE)) if rx.search(facts or "")]
+
+
 def penal_route(sentences: Sequence[Dict[str, Any]], posture: Dict[str, Any]) -> Optional[Tuple[str, str]]:
     """v79.8 (E3): (article, name) of the first reato a civil case's certain facts describe; None in a criminal matter
-    or with none."""
+    or with none. v79.9 (D3): the fraud indicators first (a false description with a non-delivery or a vanished
+    counterparty, or those two together: 640), a thing lent and not returned (646), then the table."""
     from . import issue_records
     if criminal(posture):
         return None
     facts = " ".join(str(x.get("text") or "") for x in sentences or [] if issue_records.certain_fact(x))
+    found = fraud_indicators(facts)
+    if len(found) >= 2:
+        return "640 c.p.", "truffa"
+    if _LENT_RE.search(facts) and _NOT_RETURNED_RE.search(facts):
+        return "646 c.p.", "appropriazione indebita"
     return next(((art, name) for art, name, rx in PENAL_ROUTES if re.search(rx, facts, re.IGNORECASE)), None)
 
 
@@ -3614,12 +3673,16 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     crim = criminal(ctx.get("posture"))
     keyed = [(k, x if k == "orientamenti" else tracked("wording", x, reader_wording(x, known_all, crim)))
              for k, x in keyed]
+    headless_log: List[str] = []        # v79.9 (D4): a ruling's reference whole or not at all, every written section
+    keyed = [(k, x if k == "orientamenti" else tracked("citations", x, whole_citations(x, headless_log)))
+             for k, x in keyed]
     log.update({"rule_statements_removed": rules_log, "objections_dropped": objections_dropped,
                 "registry_labels_out": labels_log,
                 "coherence": coherence, "rulings_out": rulings_out, "circumstance_claims": claims,
                 "rulings_scope_out": scope_log, "articles_out_of_scope": articles_log,
                 "fact_wording": fact_wording, "charged_prose": charged_log,
-                "orientation_claims_out": orientation_claims, "procedibility_out": procedural_out, **layout_log})
+                "orientation_claims_out": orientation_claims, "procedibility_out": procedural_out,
+                "headless_citations_out": headless_log, **layout_log})
     log["controllo_finale"] = final_check(dict(keyed), ctx, log, plan)
     # «orientamento da verificare» stays where the section prints it (v71); its point is collected all the same
     exempt = title("orientamenti")
@@ -3888,6 +3951,27 @@ def _store_fields(rows: Sequence[Dict[str, Any]]) -> Dict[str, List[str]]:
         return {}
 
 
+SCRIMINANTE_COMMA = "comma della scriminante"        # v79.9 (D5)
+
+
+def scriminante_commi(reqs: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """v79.9 (D5): a cause di giustificazione's elements -- every one past its base comma (the first) marked special
+    (copies), so split_special gives it a record of its own («52 c.p. co. 2»)."""
+    def n(r):
+        try:
+            return int(str(r.get("comma") or 1).split()[0])
+        except ValueError:
+            return 1
+    base = min((n(r) for r in reqs), default=1)
+    return [r if n(r) == base or r.get("special") else {**r, "special": SCRIMINANTE_COMMA} for r in reqs]
+
+
+def touched(rec: Dict[str, Any]) -> bool:
+    """v79.9 (D5): a fact of the case touches the record -- an element proven or excluded, or a sentence linked to one."""
+    return any(r.get("status") in (PROVATO, NON_RISULTA) or r.get("supporting") or r.get("contradicting")
+               for r in _live(rec))
+
+
 def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, List[str]]] = None
                    ) -> Dict[str, Dict[str, Any]]:
     """v74: the records the method reasons on -- every one split into elements as the charge is: a fattispecie (or a
@@ -3908,9 +3992,12 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
             if rec.get("requisites") or rec.get("undecomposed"):
                 log.setdefault("undecomposed", []).append(label)
             continue
-        # v79.8 (D1): a special comma is a record of its own, never elements of the base rule's
-        for x, part in issue_records.split_special(label, {**rec, "requisites": [
-                r for r in rec["requisites"] if r.get("kind") == "requisito"]}).items():
+        # v79.8 (D1): a special comma is a record of its own, never elements of the base rule's; v79.9 (D5): a
+        # scriminante's every comma after its base one too (52 co. 2-4) -- its thesis lists the base comma's elements
+        reqs = [r for r in rec["requisites"] if r.get("kind") == "requisito"]
+        if issue_records.justification(label):
+            reqs = scriminante_commi(reqs)
+        for x, part in issue_records.split_special(label, {**rec, "requisites": reqs}).items():
             if part["requisites"]:
                 out[x] = part
             if x != label:
