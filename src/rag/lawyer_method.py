@@ -1300,6 +1300,33 @@ def _rubrica_tail(rec: Dict[str, Any]) -> str:
     return f" ({rubrica})" if rubrica else ""
 
 
+def label_code(label: str) -> str:
+    """v79.9 (A3): an article label's code («582 c.p.» -> «c.p.»; «2 l. 604/1966» -> «l. 604/1966»)."""
+    return str(label or "").strip().partition(" ")[2].strip().lower()
+
+
+def differing_elements(charge: Dict[str, Any], alt: Dict[str, Any]) -> List[str]:
+    """v79.9 (A3): the elements that tell the alternative from the charge -- each live element of either record whose
+    own nouns the other record's elements do not hold (the charge's distinctive element first)."""
+    from . import issue_records
+    nouns = lambda rec: set().union(*[issue_records.element_nouns(r.get("text") or "") for r in _live(rec)] or [set()])
+    mine, theirs = nouns(charge), nouns(alt)
+    out = [r.get("text") or "" for r in _live(charge) if r.get("distinctive")]
+    for rec, other in ((alt, mine), (charge, theirs)):
+        for r in _live(rec):
+            own = issue_records.element_nouns(r.get("text") or "")
+            if own and not own <= other and (r.get("text") or "") not in out:
+                out.append(r.get("text") or "")
+    return [x for x in out if x]
+
+
+def names_element(argument: str, elements: Sequence[str]) -> bool:
+    """v79.9 (A3): the model's argument names one of the differing elements -- shares one of its own nouns."""
+    from . import issue_records
+    said = issue_records.element_nouns(argument or "")
+    return any(said & issue_records.element_nouns(e) for e in elements or [])
+
+
 def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     """The candidate lines, from the record (v72) -- each with its ids (contesta / poggia_su) and its label, the
     code's: for the charge or the claim against the client, each element contested (excluded: sustainable; not proven:
@@ -1370,11 +1397,20 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         if not fatt(label) or not issue_records.decomposed(rec):    # v74: a decomposed, sound fattispecie record only
             continue
+        base = charge if charge in records else (threats[0] if threats else charge)
+        if label_code(label) != label_code(base):       # v79.9 (A3): into an offence of the charge's own code only
+            trace.setdefault("requalify_out_of_code", []).append(label)
+            continue
+        differs = differing_elements(records.get(base) or {}, rec)
+        if not differs:                                 # v79.9 (A3): nothing to name -- the same fattispecie
+            trace.setdefault("requalify_no_difference", []).append(label)
+            continue
         proven = [r["id"] for r in _live(rec) if r.get("status") == PROVATO and r.get("id")]
         contesta = [distinctive] if distinctive else []
         minority = any((known.get(x) or {}).get("status") == PROVATO for x in contesta)
         add("requalify", CANDIDATE_TEXTS["requalify"].format(art=label, rubrica=_rubrica_tail(rec)), contesta=contesta,
-            poggia_su=proven, label=MINORITY if minority else SUSTAINABLE, article=label)
+            poggia_su=proven, label=MINORITY if minority else SUSTAINABLE, article=label, charge=base,
+            differs=differs)
     for label, rec in records.items():
         if not offender:
             break
@@ -1683,7 +1719,10 @@ def candidates_block(cands: Sequence[Dict[str, Any]]) -> str:
         if c.get("poggia_su"):
             ids.append("si regge su " + ", ".join(c["poggia_su"]))
         lines.append(f"- [{c['id']}] ({c['label']}) {c['tesi']}" + (f" — {'; '.join(ids)}" if ids else "")
-                     + (" [argomentata dal codice: indica solo il realismo]" if c.get("argued") == "code" else ""))
+                     + (" [argomentata dal codice: indica solo il realismo]" if c.get("argued") == "code" else "")
+                     + (" [l'argomento deve nominare l'elemento che distingue le due fattispecie: "     # v79.9 (A3)
+                        + "; ".join(f"«{_short(x, 80)}»" for x in c["differs"][:3]) + "]"
+                        if c.get("kind") == "requalify" and c.get("differs") else ""))
     return "\n".join(lines)
 
 
@@ -1816,9 +1855,14 @@ def apply_valuations(raw: Any, candidates: Sequence[Dict[str, Any]], log: Option
     out = []
     ignored = [c["id"] for c in candidates if c.get("code_argument") and
                any(_plain((vals.get(c["id"]) or {}).get(f)) for f in BIND_FIELDS)]
+    unnamed = []
     for c in candidates:
         model = vals.get(c["id"]) or {}
         code = c.get("code_argument") or {}
+        if c["kind"] == "requalify" and not code and not names_element(
+                " ".join(_plain(model.get(f)) for f in ("argomento", "pro")), c.get("differs") or []):
+            unnamed.append(c["id"])     # v79.9 (A3): an argument that names no differing element: not offered
+            continue
         v = code or model                   # v74: a code-argued candidate's argument is never the model's
         given = _plain(model.get("realismo")).lower()
         real = given if given in REALISMO else _plain(code.get("realismo")).lower()
@@ -1835,6 +1879,7 @@ def apply_valuations(raw: Any, candidates: Sequence[Dict[str, Any]], log: Option
     if log is not None:
         log["dropped"] = dropped
         log["code_argued_ignored"] = ignored
+        log["requalify_unnamed"] = unnamed
     return out
 
 
@@ -2198,7 +2243,14 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             # v79 (D4): the general part's defence lines, the ranked articles graded into candidates
             "defence_lines": sum(1 for c in cands if c.get("kind") in ("defence", "scriminante")),
             "ranked_candidates": sum(1 for c in cands
-                                     if ((ctx.get("records") or {}).get(c.get("article") or "") or {}).get("ranked_candidate"))}
+                                     if ((ctx.get("records") or {}).get(c.get("article") or "") or {}).get("ranked_candidate")),
+            # v79.9 (A3): a riqualificazione into another code than the charge's (must be 0); those the gate refused;
+            # those whose argument named no differing element (not offered)
+            "riqualificazione_out_of_code": sum(1 for c in cands if c.get("kind") == "requalify" and
+                                                label_code(c.get("article")) != label_code(c.get("charge"))),
+            "requalify_refused_code": len((ctx.get("candidates_trace") or {}).get("requalify_out_of_code") or []),
+            "requalify_unnamed": sum(1 for c in cands if c.get("kind") == "requalify" and c.get("id") not in
+                                     {t.get("candidate") for t in plan.get("soluzioni") or []})}
 
 
 # --- v73: the objections, written for the selected line --------------------------------------------------------------------

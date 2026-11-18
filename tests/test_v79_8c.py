@@ -132,5 +132,5 @@ def test_the_grading_counters():
                          "582 c.p.": {"requisites": [], "procedibilita": [
                              {"status": "da provare", "text": "il fatto è commesso e", "supporting": []},
                              {"status": "da provare", "text": "x y", "rejoined": True}]}}}
-    assert flow.grading_counters(state) == {"uncertain_integrated": 1, "fragments_dropped": {"1453 c.c.": 2},
-                                            "conditions_half": 1, "conditions_rejoined": 1}
+    assert flow.grading_counters(state).items() >= {"uncertain_integrated": 1, "fragments_dropped": {"1453 c.c.": 2},
+                                                    "conditions_half": 1, "conditions_rejoined": 1}.items()

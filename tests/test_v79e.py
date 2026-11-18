@@ -95,9 +95,9 @@ def test_compose_prints_the_forecast_of_the_selected_line():
     ctx = _ctx(_penal_records())
     ctx["candidates"] = [{"id": "T1", "kind": "requalify", "tesi": "Riqualificazione nell'art. 646 c.p.",
                           "contesta": [], "poggia_su": ["R3", "R4"], "label": M.SUSTAINABLE, "argued": "model",
-                          "article": "646 c.p."}]
-    plan = M.clean_method({"valutazioni": {"T1": {"realismo": "alto", "pro": "p", "contro": "c", "argomento": "a"}}},
-                          ctx["candidates"])
+                          "article": "646 c.p.", "differs": ["si appropria della cosa altrui"]}]     # v79.9 (A3)
+    plan = M.clean_method({"valutazioni": {"T1": {"realismo": "alto", "pro": "p", "contro": "c",
+                                                  "argomento": "Tizio si appropria della cosa"}}}, ctx["candidates"])
     log = {}
     out = M.compose([("", "Testa.")], ctx, plan, (), log)
     assert log["forecast"]["now"] == "646 c.p." and "dell'art. 646 c.p." in dict(M.answer_sections(out))[

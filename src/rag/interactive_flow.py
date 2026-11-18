@@ -8040,8 +8040,10 @@ def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
         for c in rec.get("procedibilita") or []:
             half += issue_records.dangling(c.get("text") or "")
             rejoined += bool(c.get("rejoined"))
-    return {"uncertain_integrated": uncertain, "fragments_dropped": fragments, "conditions_half": half,
-            "conditions_rejoined": rejoined}
+    out = {"uncertain_integrated": uncertain, "fragments_dropped": fragments, "conditions_half": half,
+           "conditions_rejoined": rejoined}
+    out.update(issue_records.polarity_counters(state.get("records") or {}, by_id))                  # v79.9 (A4)
+    return out
 
 
 def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dict[str, Any]:
@@ -8062,6 +8064,8 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     out["unadmitted_candidates"] = sum(int(c.get("unadmitted") or 0) for c in counts)              # v79.8 (B4)
     out["main_outside_institution"] = sum(1 for c in counts if c.get("main_outside_institution"))
     out["no_action_lines"] = sum(int(c.get("no_action") or 0) for c in counts)                    # v79.8.5
+    for k in ("riqualificazione_out_of_code", "requalify_refused_code", "requalify_unnamed"):       # v79.9 (A3)
+        out[k] = sum(int(c.get(k) or 0) for c in counts)
     out.update(grading_counters(state))                                                             # v79.8 (C4)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out

@@ -544,6 +544,92 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
     req["status"], req["why"] = status, why
     if req.get("branches"):             # v79.6 (item 4): one element with branches
         settle_branches(req, sup, sure_con)
+    polarity(req, by_id, sure_con)      # v79.9 (A1, A2): a mental element, a duty element
+
+
+# v79.9 (A1): a culpability or state-of-mind element -- integrato only by a fact that states the state of mind or its
+# recognised indicators (an admission, a warning ignored, a false statement knowingly made, a precautionary rule broken);
+# a conduct fact («spinge», «colpisce», «vende») leaves it «da provare», never integrato, never escluso
+_MENTAL_RE = re.compile(r"\b(?:per\s+colpa|colpos[oaie]|con\s+dolo|dolo\b|dolos[oaie]|mala\s+fede|malafede|buona\s+fede|"
+                        r"negligen\w*|imprudenz\w*|imprudent\w*|imperizi\w*|consapevol\w*|intenzion\w*|scientemente)\b",
+                        re.IGNORECASE)
+_MIND_FACT_RE = re.compile(r"\b(?:ammett\w*|ammess[oa]\s+di|ha\s+ammesso|ammissione|confess\w*|riconosc\w*\s+di|"
+                           r"riconosciuto\s+di|sapev\w*|sapendo|consapevol\w*|a\s+conoscenza|conoscev\w*|"
+                           r"intenzional\w*|di\s+proposito|deliberatamente|volontariamente|apposta|con\s+l['’]intento|"
+                           r"allo\s+scopo\s+di|premeditat\w*|avvertit[oaie]|avvisat[oaie]|diffidat[oaie]|ignorando|"
+                           r"nonostante\s+(?:\w+\s+){0,2}?(?:avvis|avvert|diffid|segnalaz|richiam|divieto|divieti)\w*|"
+                           r"malgrado\s+(?:\w+\s+){0,2}?(?:avvis|avvert|diffid|segnalaz|richiam|divieto)\w*|falsamente|"
+                           r"mentendo|ha\s+mentito|il\s+falso|pur\s+sapendo|ben\s+sapendo|in\s+violazione|violando|"
+                           r"senza\s+rispettare|col\s+rosso|con\s+il\s+rosso|semaforo\s+rosso|eccesso\s+di\s+velocit\w*|"
+                           r"distratt\w*|disattent\w*|ubriac\w*|in\s+stato\s+di\s+ebbrezza|ignorav\w*|non\s+sapev\w*|"
+                           r"in\s+buona\s+fede|in\s+mala\s+fede|involontariamente|accidentalmente|inavvertitamente|"
+                           r"per\s+errore|per\s+sbaglio)\b", re.IGNORECASE)
+# v79.9 (A2): a duty-phrased element -- graded on its breach: the fact that breaches the duty integrates it (the
+# claimant's cause of action), never excludes it; a fact denying the duty itself (no contract, no sale) still can
+_DUTY_RE = re.compile(r"\b(?:sia|siano)\s+(?:immun\w*|esent\w*|priv[oaie]|conform\w*|idone\w*)\b|\bdev(?:e|ono)\s+\w+|"
+                      r"\b(?:è|sono)\s+tenut[oaie]\b|\bobbligat[oaie]\s+a\b|\bha\s+l['’]obbligo\b|\bgarantire\s+che\b",
+                      re.IGNORECASE)
+_NO_DUTY_RE = re.compile(r"\b(?:nessun\w*\s+(?:contratto|accordo|vendita|obbligo|incarico)|non\s+(?:è|era|fu)\s+(?:mai\s+)?"
+                         r"(?:stat[oa]\s+)?(?:stipulat|conclus|firmat|sottoscritt)\w*|non\s+esiste\w*)", re.IGNORECASE)
+MENTAL_CONDUCT_WHY = "elemento psicologico: i fatti narrano una condotta, non lo stato soggettivo"
+MENTAL_OPEN_WHY = "elemento psicologico: nessun fatto ne dice lo stato soggettivo"
+DUTY_BREACH_WHY = "l'obbligo risulta violato: la violazione lo integra"
+
+
+def mental_element(text: str) -> bool:
+    return bool(_MENTAL_RE.search(text or ""))
+
+
+def states_mind(sentence: Dict[str, Any]) -> bool:
+    return bool(_MIND_FACT_RE.search(sentence.get("text") or ""))
+
+
+def duty_element(text: str) -> bool:
+    return bool(_DUTY_RE.search(text or "")) and not mental_element(text)
+
+
+def polarity(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], sure_con: Sequence[Dict[str, Any]]) -> None:
+    """v79.9 (A1, A2), in place after settle: a mental element «provato» only on a fatto certo stating the state of mind
+    (else «da provare», marked mental_conduct when a conduct fact was its support), «non risulta» only on one stating the
+    contrary; a duty element «non risulta» on a breach is «provato» on that breach (the sentences move to its support)."""
+    from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
+    if req.get("kind") not in ("requisito", "procedibilita"):
+        return
+    text = req.get("text") or ""
+    if mental_element(text):
+        req["mental"] = True
+        mind = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])
+                and states_mind(by_id[i])]
+        if req["status"] == PROVATO and not mind:
+            req["status"], req["why"], req["mental_conduct"] = DA_PROVARE, MENTAL_CONDUCT_WHY, True
+        elif req["status"] == NON_RISULTA and not any(states_mind(s) for s in sure_con):
+            req["status"], req["why"] = DA_PROVARE, MENTAL_OPEN_WHY
+        return
+    if duty_element(text) and req["status"] == NON_RISULTA:
+        breach = [s for s in sure_con if not _NO_DUTY_RE.search(s.get("text") or "")]
+        if breach:
+            ids = [s["id"] for s in breach]
+            req["supporting"] = list(dict.fromkeys(list(req.get("supporting") or []) + ids))
+            req["contradicting"] = [i for i in req.get("contradicting") or [] if i not in ids]
+            req["status"], req["why"], req["duty_breach"] = PROVATO, f"{DUTY_BREACH_WHY} ({ids[0]})", True
+
+
+def polarity_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
+    """v79.9 (A4): a mental element «provato» with no supporting fatto certo stating the state of mind; a duty element
+    «non risulta» on a certain contradicting fact that is a breach (not a denial of the duty). Both must be 0."""
+    from .interactive_flow import NON_RISULTA, PROVATO
+    mental = duty = 0
+    for rec in (records or {}).values():
+        for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
+            text = r.get("text") or ""
+            if mental_element(text) and r.get("status") == PROVATO and not any(
+                    certain_fact(by_id[i]) and states_mind(by_id[i]) for i in r.get("supporting") or [] if i in by_id):
+                mental += 1
+            if duty_element(text) and r.get("status") == NON_RISULTA and any(
+                    certain_fact(by_id[i]) and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
+                    for i in r.get("contradicting") or [] if i in by_id):
+                duty += 1
+    return {"mental_integrated_by_conduct": mental, "duty_polarity_errors": duty}
 
 
 def branch_combine(statuses: Sequence[str]) -> str:

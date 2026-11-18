@@ -507,6 +507,14 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - Draft modules for the lawyer's review (`"draft": true`): famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio.
 - **v79.8.6.** The E2 wording rule is absolute: no sentence containing «registro» is exempt, and the 79.8.5 exemption is gone. The two fixed lines are reworded: the no-action main line is «Tra le norme esaminate per <istituto> nessuna attribuisce un'azione al cliente», and the ungrounded answer is «Non risulta dagli atti né dalle norme esaminate.» The stage line on art. 335, co. 3, c.p.p. no longer says «registro». The nightly check `no_registro` fails on any «registro» in an answer, in any form, any section, tables included. — `lawyer_method.registro_hits`, `scripts/nightly_sim.py:registro_check`.
 
+### 11.4 v79.9
+
+- **A. Grading: mental elements and polarity.**
+  - A1: a culpability or state-of-mind element («per colpa», «con dolo», «doloso / colposo», «in mala fede», «buona fede», «negligenza», «imprudenza», «imperizia», «consapevolezza», «intenzione») is never integrated by a conduct fact. It is «integrato» only on a fatto certo that states the state of mind or a recognised indicator of it: an admission, a warning ignored, a false statement knowingly made, a precautionary rule broken. A conduct fact («spinge», «colpisce», «vende») leaves it «da provare» (`mental_conduct`). It is «escluso» only on a fact stating the contrary state of mind («non sapeva», «per errore»). — `issue_records.polarity`, `mental_element`, `states_mind`.
+  - A2: a duty-phrased element («sia immune da vizi», «deve consegnare», «è tenuto a», «garantire che») is graded on its breach. A certain fact contradicting it is the breach and makes it «integrato», moving to its support (`duty_breach`). Only a fact denying the duty itself (no contract concluded) can still exclude it. — `issue_records.duty_element`.
+  - A3: a riqualificazione is a candidate only into an offence of the charge's own code (`label_code`) and only when the two records differ in an element (`differing_elements`: the charge's distinctive element first). The thesis call is told which element to name. A model argument naming none of them drops the candidate (`requalify_unnamed`). The refusals are logged in the candidates' trace.
+  - A4: the counters are `mental_integrated_by_conduct` (must be 0), `duty_polarity_errors` (must be 0), `riqualificazione_out_of_code` (must be 0), `requalify_refused_code` and `requalify_unnamed`. — `issue_records.polarity_counters`, `lawyer_method.selection_counts`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -552,4 +560,5 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
 | v76b | Element splitting: riserva and default clauses, qualified subjects, means and purpose markers, civil split, special-law penal provisions, non-fattispecie rubriche |
 | v77 | No pipeline rule: version footer and `/api/version`, held-out set, acceptance on the nightly plus the lawyer's held-out scores |
 | v79.6 | Questions answered first, several clients, repealed articles, alternative elements, role derived, keyword hits by matter |
+| v79.9 | Mental and duty elements graded by polarity, riqualificazione in the same code naming the differing element (A) |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |
