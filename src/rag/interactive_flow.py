@@ -5736,6 +5736,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             return C.NO_TOPIC_TO_ANSWER, []
     if records:                 # v60p: each covered topic's anchor earns its §2 block
         _isolated("anchor_blocks", lambda: anchor_blocks(state, topics))
+    rites = _isolated("charge_rites", lambda: charge_rites(state, posture, all_rows), []) or []     # v79.10.3 (C1)
     cap_dropped: List[Tuple[str, str]] = []
     single = single_mode(state)
     cap = SINGLE_SHOT_ARTICLES if single else TOPIC_ARTICLES          # v60k: the single-shot answer's cap
@@ -5792,7 +5793,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
     if client:                  # v60 (D): the client settled (stated, answered or assumed) is the plan's
         plan = {**plan, "parte_assistita": client}
     if posture.get("entry"):    # v62: the main line's act and goal from the posture (the default cell: today's plan)
-        plan = posture_mod.apply_plan(plan, posture)
+        plan = posture_mod.apply_plan(plan, posture, rites)     # v79.10.3 (C1): the riti the charge admits
         _log("plan_posture", {"atto": plan.get("atto"), "obiettivo": plan.get("obiettivo")})
     blocks = (state.get("intake") or {}).get("requested_blocks") or []
     if blocks:                  # v61: the explicit asks the intake read, passed through (not consumed yet)
@@ -5824,6 +5825,7 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
             {"comma": c.get("comma"), "text": c.get("text", "")[:160], "status": c.get("status"), "why": c.get("why")}
             for c in f.get("ufficio_condizioni") or []]} for n, f in offence_facts.items() if f.get("querela")})
     analysis_p = {**analysis_p, "posture": posture,     # v62: §4 by the stage (render_computed.stage_blocks)
+                  "rites": rites,                       # v79.10.3 (C1): §8's riti, the charge's
                   "own_analysis": own_analysis(state, topics),   # v60p: §4's terms by the parere's own
                   "offences": offences,          # v58 (J): §4's delitti
                   "procedure_focus": [n for n, _ in offences] if focus_log else [],      # v63: the charge's, the table's
@@ -6000,6 +6002,10 @@ def _write_answer(state: Dict[str, Any], numbers: Sequence[int]) -> Tuple[str, L
         state["output_sources"] = method_ctx.get("output_sources") or {}       # v79 (B3): the nightly's output check
         merge_removals(state, method_ctx.get("compose_removals") or [])       # v79 (E3): compose's, «removed»
         _log("method_timings", {k: state.get("timings", {}).get(k) for k in ("thesis_selection_s", "writer_s")})
+    # v79.10.3 (C1): no rito the charge does not admit offered anywhere (the prose path's writer, the method's §8 as
+    # written) -- dropped into the ledger, «removed»; what is left counted (rites_unavailable_offered, must be 0)
+    draft = _isolated("rites_out", lambda: rites_checked(state, draft, rites, method_ctx, method_clients, posture),
+                      draft) or draft
     if state.get("method_refused"):             # v76: the method never steps aside silently -- the answer says so
         from . import lawyer_method
         draft = "\n\n".join([lawyer_method.not_applied_note(state["method_refused"])]     # v79.10.1 (A1): the
@@ -6200,6 +6206,44 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
     if record is not None:
         state["rulings_record"] = record
     _log("method_clients", {"clients": names, "counts": counts})
+    return out
+
+
+def charge_rites(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]]
+                 ) -> List[Dict[str, Any]]:
+    """v79.10.3 (C1): the riti's statuses for the case's charge (lawyer_method.charge_rites: the records' main threat,
+    else the intake's charge; the pena from the procedural store) -- [] outside a penal matter; logged."""
+    from . import lawyer_method
+    out = lawyer_method.charge_rites(state.get("records") or {}, rows, posture)
+    if out:
+        _log("charge_rites", {"charge": out[0].get("charge"), "pena": out[0].get("pena"),
+                              "rites": {x["id"]: [x["status"], x["why"]] for x in out}})
+    return out
+
+
+def rites_checked(state: Dict[str, Any], draft: str, rites: Sequence[Dict[str, Any]], method_ctx=None,
+                  method_clients=None, posture: Optional[Dict[str, Any]] = None) -> str:
+    """v79.10.3 (C1): the answer with no sentence offering a rito the charge does not admit (lawyer_method.rites_out:
+    precluded by the pena, or the pena unknown and not said «da verificare»), each removal into the ledger
+    («rites_out», removed); the counters rites_unavailable_offered (what is left: must be 0), rites_precluded and
+    rites_to_verify. The method's statuses when it ran (each client's), else the answer's own. (review) Only the
+    imputato's answer before the sentence is gated (lawyer_method._rites_posture, the method's ctx["rites"] likewise):
+    the persona offesa's, an appeal's or the execution's may describe any rito."""
+    from . import answer_ledger, lawyer_method
+    ctxs = [c for _, c, _ in method_clients or []] or ([method_ctx] if method_ctx else [])
+    statuses = [x for c in ctxs for x in (c or {}).get("rites") or []] if ctxs else \
+        list(rites or []) if posture is None or lawyer_method._rites_posture(posture) else []
+    removed: List[str] = []
+    out = lawyer_method.rites_out(draft, statuses, removed)
+    if removed:
+        ledger = answer_ledger.Ledger()
+        ledger.record("rites_out", [("", draft)], [("", out)])
+        merge_removals(state, [e for e in ledger.entries if e["kind"] in ("removed", "rewritten")])
+        _log("rites_out", {"removed": removed})
+    counters = state.setdefault("block_counters", {})
+    counters["rites_unavailable_offered"] = len(lawyer_method.rites_offered_unavailable(out, statuses))
+    counters["rites_precluded"] = len({x["id"] for x in statuses if x.get("status") == lawyer_method.PRECLUDED})
+    counters["rites_to_verify"] = len({x["id"] for x in statuses if x.get("status") == lawyer_method.TO_VERIFY_RITE})
     return out
 
 
@@ -6908,23 +6952,31 @@ def parse_alternatives(written: str, alternatives: Sequence[Tuple[Dict[str, Any]
 
 
 def alternatives_text(written: str, alternatives: Sequence[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]],
-                      log: Optional[Dict[str, Any]] = None) -> str:
+                      log: Optional[Dict[str, Any]] = None, event: str = "") -> str:
     """v63: the alternatives section as the code writes it -- per alternative with an article, «art. N — rubrica» and
     the writer's one sentence numbered for it (its first sentence; v64: its «SÌ»/«NO» verdict read and left out); the
     writer's text under no number is dropped, and so is an alternative with no article or no sentence. None left:
-    ALTERNATIVES_NONE."""
+    ALTERNATIVES_NONE. v79.10.3 (C2, review): event -- the certain facts' (certain_event); an alternative the event does
+    not fit (lawyer_method.event_mismatch) is printed only as the writer's «NO», never offered (log["refused_event"])."""
+    from . import lawyer_method
     items, orphan = parse_alternatives(written, alternatives)
-    out, dropped = [], []
+    out, dropped, refused = [], [], []
     for item in items:
         if not item["sentence"]:
             dropped.append(str(item["alt"].get("name") or ""))
             continue
-        number, code = _parse_label(_label(_key(item["row"]["_article"])))
+        label = _label(_key(item["row"]["_article"]))
+        if item["verdict"] != REJECTED and lawyer_method.event_mismatch(label, event):
+            refused.append(label)
+            continue
+        number, code = _parse_label(label)
         out.append(C.fill(C.ALTERNATIVE_ITEM, number=number, code=code, rubrica=_row_rubrica(item["row"]),
                           sentence=item["sentence"]))
     if log is not None:
         log.update(written=len(out), dropped=dropped + [str(a.get("name") or "") for a, r in alternatives if not r],
                    orphan=orphan, verdicts={_label(_key(i["row"]["_article"])): i["verdict"] for i in items})
+        if refused:
+            log["refused_event"] = {"event": event, "articles": refused}
     return "\n\n".join(x for x in out if x) or C.ALTERNATIVES_NONE
 
 
@@ -6932,6 +6984,37 @@ def sound_alternative(rec: Optional[Dict[str, Any]]) -> bool:
     """v65: a «SÌ» stands only on a record with no contradicted element (issue_records.contradicted)."""
     from . import issue_records
     return bool(rec) and not issue_records.contradicted(rec)
+
+
+def certain_event(state: Dict[str, Any]) -> str:
+    """v79.10.3 (C2): the event the case's certain facts narrate (lawyer_method.event_of: «morte», «lesioni», "")."""
+    from . import issue_records, lawyer_method
+    return lawyer_method.event_of(" ".join(str(x.get("text") or "") for x in state.get("sentences") or []
+                                           if issue_records.certain_fact(x)))
+
+
+def alternatives_event_counted(state: Dict[str, Any], text: str, written: str,
+                               alternatives: Sequence[Tuple[Dict[str, Any], Optional[Dict[str, Any]]]], event: str
+                               ) -> None:
+    """v79.10.3 (C3, review): the prose path's alternatives section into requalify_event_mismatch -- an alternative the
+    certain facts' event does not fit printed under its «Art. N» heading, unless the writer's verdict (written) was
+    «NO» (block_counters «alternatives_event_mismatch», case_counters adds it); must be 0."""
+    from . import lawyer_method
+    rejected = {_label(_key(i["row"]["_article"])) for i in parse_alternatives(written or "", alternatives)[0]
+                if i["verdict"] == REJECTED}
+    printed = 0
+    for _, row in alternatives or []:
+        if not row:
+            continue
+        label = _label(_key(row["_article"]))
+        if label in rejected:
+            continue
+        number, code = _parse_label(label)
+        if lawyer_method.event_mismatch(label, event) and re.search(
+                rf"\bArt\.\s*{re.escape(str(number))}\s+{re.escape(str(code))}", text or ""):
+            printed += 1
+    counters = state.setdefault("block_counters", {})
+    counters["alternatives_event_mismatch"] = int(counters.get("alternatives_event_mismatch") or 0) + printed
 
 
 def write_alternatives(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], case: str, write
@@ -6946,11 +7029,18 @@ def write_alternatives(state: Dict[str, Any], rows: Sequence[Dict[str, Any]], ca
     written = dict(write(jobs) or []) if jobs else {}
     raw = next((str(x) for x in written.values() if x and str(x).strip()), "")
     log: Dict[str, Any] = {}
-    text = fixed.get(0) or alternatives_text(raw, alternatives, log)
+    event = certain_event(state)            # v79.10.3 (C2): never an alternative the certain facts' event does not fit
+    text = fixed.get(0) or alternatives_text(raw, alternatives, log, event)     # (review): nor printed as one
     items = parse_alternatives(raw, alternatives)[0] if raw else []
     records = state.get("records") or {}
     fits = [_label(_key(i["row"]["_article"])) for i in items if i["verdict"] == FITS and i["sentence"]
             and sound_alternative(records.get(_label(_key(i["row"]["_article"]))))]
+    from . import lawyer_method
+    unfit = [x for x in fits if lawyer_method.event_mismatch(x, event)]
+    if unfit:
+        log["refused_event"] = {"event": event, "articles": unfit}
+        fits = [x for x in fits if x not in unfit]
+    alternatives_event_counted(state, text, raw, alternatives, event)
     _log("alternatives_written", {**log, "fits": fits})
     return {"text": text, "fits": fits, "log": log}
 
@@ -6995,7 +7085,10 @@ def requested_sections(state: Dict[str, Any], draft: str, blocks: Sequence[Dict[
         if k == "alternative" and alternatives_done:
             texts[i] = str(alternatives_done.get("text") or C.ALTERNATIVES_NONE)
         elif k == "alternative" and i not in fixed:
-            texts[i] = alternatives_text(str(texts.get(i) or ""), alternatives, alt_log)
+            event = certain_event(state)    # v79.10.3 (C2, review): never an alternative the event does not fit
+            written_alt = str(texts.get(i) or "")
+            texts[i] = alternatives_text(written_alt, alternatives, alt_log, event)
+            alternatives_event_counted(state, texts[i], written_alt, alternatives, event)
     sections = answer_ledger.sections_of(draft)
     head = "".join(x for t, x in sections if not t).strip("\n")
     body = [(t, x.strip("\n")) for t, x in sections if t]
@@ -8398,8 +8491,11 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     # answer's posture sets it (block_counters), else the intake's
     out["role_resisting"] = int(bool((state.get("intake") or {}).get("resisting")))
     for k in ("riqualificazione_out_of_code", "requalify_refused_code", "requalify_unnamed",       # v79.9 (A3)
-              "candidates_out_of_family", "candidates_family_dropped"):                            # v79.9 (C2)
+              "candidates_out_of_family", "candidates_family_dropped",                             # v79.9 (C2)
+              "requalify_event_mismatch", "requalify_refused_event"):                              # v79.10.3 (C2)
         out[k] = sum(int(c.get(k) or 0) for c in counts)
+    # v79.10.3 (C3, review): the prose path's alternatives section printing one the event does not fit
+    out["requalify_event_mismatch"] += int((state.get("block_counters") or {}).get("alternatives_event_mismatch") or 0)
     fam = state.get("family_gate") or {}                                                            # v79.9 (C2)
     out["family_gate_dropped"] = len(fam.get("dropped") or [])
     out["family_admitted_outside_codes"] = len(fam.get("admitted") or [])

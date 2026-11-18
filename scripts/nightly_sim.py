@@ -81,6 +81,12 @@ v79.10.2 (B): per cell, questions_extracted (one question at least: a «?», a r
 parere printed twice, lawyer_method.printed_twice), both offline too; the counters role_resisting, reductions_offered,
 questions_extracted, clients_detected, clients_shared_sections, clients_sections_twice in the counters table.
 
+v79.10.3 (C): per cell, rites_and_alternatives_fit -- the counters rites_unavailable_offered (a sentence offering a rito
+the charge's pena from the store does not admit, or one whose pena is unknown without «da verificare sulla pena
+edittale») and requalify_event_mismatch (a riqualificazione the certain facts' event does not fit: a death and 590,
+injuries and no death and 575/589) both 0; the counters, with rites_precluded, rites_to_verify and
+requalify_refused_event, in the counters table (the run's state only: offline cells have no counters).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
@@ -192,6 +198,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["checks"].append(questions_check(out["answer"], result.get("state") or {}))         # v79.6 (1)
         out["checks"].append(questions_extracted_check(spec["text"], out["counters"]))          # v79.10.2 (B2)
         out["checks"].append(clients_once_check(out["answer"]))                                 # v79.10.2 (B3)
+        out["checks"].append(rites_fit_check(out["counters"]))                                  # v79.10.3 (C3)
         out["checks"].append(alternatives_check(result.get("state") or {}))                     # v79.6 (4)
         by_client = (result.get("state") or {}).get("thesis_counts_by_client") or {}
         if by_client:                                                                          # v79.6 (2)
@@ -312,6 +319,15 @@ def clients_once_check(answer: str) -> Dict[str, Any]:
     from src.rag import lawyer_method
     found = lawyer_method.printed_twice(answer)
     return {"check": "clients_sections_once", "ok": not found, "why": "; ".join(found[:4])}
+
+
+def rites_fit_check(counters: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """v79.10.3 (C3): no rito the charge does not admit offered (rites_unavailable_offered) and no riqualificazione the
+    event does not fit (requalify_event_mismatch) -- both 0; a counter the run did not set reads 0."""
+    counters = counters or {}
+    why = [f"{k}={counters.get(k)}" for k in ("rites_unavailable_offered", "requalify_event_mismatch")
+           if int(counters.get(k) or 0)]
+    return {"check": "rites_and_alternatives_fit", "ok": not why, "why": "; ".join(why)}
 
 
 def alternatives_check(state: Dict[str, Any]) -> Dict[str, Any]:

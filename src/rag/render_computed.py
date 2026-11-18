@@ -427,14 +427,16 @@ def _stage_family(posture: Dict[str, Any]) -> str:
     return "civile" if rito in ("civile", "lavoro", "famiglia", "esecuzione") else ""
 
 
-def stage_blocks(posture: Dict[str, Any], store: Optional[Dict[str, Dict[str, Any]]] = None, rendered: str = ""
-                 ) -> List[Tuple[str, str]]:
+def stage_blocks(posture: Dict[str, Any], store: Optional[Dict[str, Dict[str, Any]]] = None, rendered: str = "",
+                 rites: Optional[Sequence[Dict[str, Any]]] = None) -> List[Tuple[str, str]]:
     """[(title, body)] of the stage's closed list for the posture's family, stage and role: each block's lines, the
     act ({act}: the posture's entry) and a prior decision's date ({date}) filled; the term's date stated, else flagged
     «da verificare». [] for a cell the list does not hold. v66: a block naming «store» articles takes its terms and their
     decorrenza from the store (procedural_facts.term_lines, from_lines; store: {label: facts}) -- the list carries no
     number of its own; an article not read, STORE_TERM_UNREAD. v70 (10): a block whose «unless» pattern the section
-    already shows (rendered: the blocks before it) is left out -- never the same tool twice."""
+    already shows (rendered: the blocks before it) is left out -- never the same tool twice. v79.10.3 (C1): a «rites»
+    block is the charge's riti (rites: lawyer_method.charge_rites) -- each admitted, «da verificare sulla pena edittale»
+    or precluded with why; its own lines only when no penal charge was read (rites empty)."""
     from . import interaction_copy as C, procedural_facts
     posture = posture or {}
     blocks_ = (stage_list().get(_stage_family(posture)) or {}).get(str(posture.get("stage") or "")) or []
@@ -460,7 +462,13 @@ def stage_blocks(posture: Dict[str, Any], store: Optional[Dict[str, Dict[str, An
                               "ambiguous": bool(info.get("ambiguous"))})
         if store_log:
             _store_log(f"lista chiusa: {block.get('title')}", store_log)
-        for line in block.get("lines") or []:
+        if block.get("rites") and rites:            # v79.10.3 (C1): never a rito the charge's pena does not admit
+            from . import lawyer_method
+            lines += lawyer_method.rite_stage_lines(rites)
+            _store_log(f"lista chiusa: {block.get('title')}", [{"rito": x.get("id"), "status": x.get("status"),
+                                                                "why": x.get("why"), "charge": x.get("charge")}
+                                                               for x in rites])
+        for line in ([] if block.get("rites") and rites else block.get("lines") or []):
             if "{act}" in line:
                 line = C.capital(line.replace("{act}", act) if act else line.replace("{act}: ", "").replace("{act}", ""))
             lines.append(line)
@@ -924,7 +932,7 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
     from . import fact_signals
     posture = (analysis or {}).get("posture") or {}
     if posture.get("stage") in LATE_STAGES:
-        late = stage_blocks(posture, (analysis or {}).get("store_terms"))
+        late = stage_blocks(posture, (analysis or {}).get("store_terms"), rites=(analysis or {}).get("rites"))
         if late:
             _stage_log(posture, [t for t, _ in late], "closed list")
             return late
@@ -1012,12 +1020,13 @@ def blocks(analysis: Dict[str, Any], party: str = "") -> List[Tuple[str, str]]:
         out.append((title, damages.strip()))
     if posture.get("stage") == "pre_filing" and mediation_rito(posture):     # v70 (10): v59's mediazione, ATP, 700;
         shown = "\n".join(f"{t}\n{b}" for t, b in out)                                 # ATP and 700, restored
-        before = stage_blocks(posture, (analysis or {}).get("store_terms"), rendered=shown)
+        before = stage_blocks(posture, (analysis or {}).get("store_terms"), rendered=shown,
+                              rites=(analysis or {}).get("rites"))
         out += before
         if before:
             _stage_log(posture, [t for t, _ in before], "pre-filing list after today's")
     if posture.get("stage") in OPEN_STAGES:     # v62: the trial's closed list after today's blocks; v65: the indagini's
-        trial = stage_blocks(posture, (analysis or {}).get("store_terms"))
+        trial = stage_blocks(posture, (analysis or {}).get("store_terms"), rites=(analysis or {}).get("rites"))
         out += trial
         _stage_log(posture, [t for t, _ in trial], "after today's")
     if triggers:

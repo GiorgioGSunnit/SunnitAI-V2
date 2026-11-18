@@ -108,7 +108,7 @@ No `v60a` tag appears anywhere in `src/` or `data/`.
 
 - The posture is built once per answer. Rito and role come from the intake when its rules or the model read them, otherwise from the existing logic. The stage is the intake's — v62 — `src/rag/posture.py:of`
 - The posture cell (rito, role, stage) gives the main line's act and goal from `data/posture_acts.json`. A cell with no entry keeps today's plan — v62 — `src/rag/posture.py:entry_for`, `apply_plan`
-- The entry's «subordinate» lines are always added to the plan: the imputato's riti alternativi and sentencing — v70 — `src/rag/posture.py:apply_plan`
+- The entry's «subordinate» lines are always added to the plan: the imputato's riti alternativi and sentencing. *Since 79.10.3 (C1), a line naming a rito the charge does not admit is that rito's own line («da verificare sulla pena edittale») or none; see 11.9.* — v70 — `src/rag/posture.py:apply_plan`, `entry_subordinate`
 - Each record gets a side. It is a «threat» when the client is imputato or convenuto and the article is the charge or the claim (named in the charge sentences or relied on by the other side). Otherwise it is a «weapon» — v62 — `src/rag/posture.py:mark_sides`
 - The client's own alternative qualification is a weapon, never the charge. `rec["charged"]` marks the charge whoever the client is — v63 — `src/rag/posture.py:mark_sides`, `alternative_rows`
 - An article the user names takes the side its verb gives, whatever the client's role — v65 — `src/rag/posture.py:mark_sides`
@@ -127,8 +127,8 @@ No `v60a` tag appears anywhere in `src/` or `data/`.
 - In the stage blocks, a charge is not a prior decision (it gives no {date}) — v71 — `src/rag/render_computed.py:stage_blocks`
 - Mediazione and the pre-filing list follow the rito the intake read — v75 — `src/rag/render_computed.py:mediation_rito`
 - «Procedibilità e competenza», «Profilo penale» and the querela term appear only when the intake read a penal rito — v75b — `src/rag/render_computed.py:penal_rito`, `rito_terms`
-- The imputato's riti alternativi apply to a penal intake rito before the sentence, each gated on the charged offence's pena — v70, v75 — `src/rag/lawyer_method.py:riti_lines`
-- For an imputato charged with a d'ufficio offence, the stragiudiziale option has no remissione and no 162-ter. When the intake read no rito, there is no line from another rito's table — v71, v75 — `src/rag/lawyer_method.py:stragiudiziale_line`
+- The imputato's riti alternativi apply to a penal intake rito before the sentence, each gated on the charged offence's pena — v70, v75 — `src/rag/lawyer_method.py:riti_lines`. *Changed in 79.10.3 (C1): a rito the pena precludes is §8's line, never the strategy's; the pena unknown, «da verificare sulla pena edittale»; see 11.9.*
+- For an imputato charged with a d'ufficio offence, the stragiudiziale option has no remissione and no 162-ter. When the intake read no rito, there is no line from another rito's table — v71, v75 — `src/rag/lawyer_method.py:stragiudiziale_line`. *Since 79.10.3 (C1), only a querela offence by the store has them, for the imputato and the persona offesa alike; see 11.9.*
 
 ## 4. Retrieval, grading & demotion
 
@@ -373,7 +373,7 @@ No `v60a` tag appears anywhere in `src/` or `data/`.
 - A requested section with no sentence stating a requirement that a record holds is checked too — v68 — `src/rag/interactive_flow.py:requirement_out`
 - Negation review element by element: an argument may not negate an element its thesis does not contest. When the review call fails, a word test is used — v74 — `src/rag/plan_then_write.py:negation_review`, `src/rag/record_check.py:negated_elements`
 - The writer's procedural sentences are checked against the article's text — v60 (C) — `src/rag/procedural_facts.py:consistency`, `src/rag/interactive_flow.py:_reviewed`
-- No remissione or 162-ter for a d'ufficio offence — v71 — `src/rag/lawyer_method.py:procedibility_out`
+- No remissione or 162-ter for a d'ufficio offence — v71 — `src/rag/lawyer_method.py:procedibility_out`. *Since 79.10.3 (C1), in a criminal matter, none unless the store says querela; see 11.9.*
 - A writer sentence attributing an orientation to the case law is removed, because orientations are the code's — v71 — `src/rag/lawyer_method.py:orientation_claims_out`
 - His CONTROLLO FINALE is answered from the code's own checks and logged — v72 — `src/rag/lawyer_method.py:final_check`
 - Every «da verificare» marker is moved to §10 as a whole sentence (never a clause), and duplicates are merged. Since v75b §10 holds only open questions, an orientamento to verify stays in §5, and no sentence means no point — v74, v75b — `src/rag/lawyer_method.py:collect_points`, `point_sentence`, `same_point`
@@ -682,6 +682,49 @@ No flag.
 
   — `interactive_flow.clients_of`, `same_side_clients`; `lawyer_method.compose_clients`, `printed_twice`; `scripts/nightly_sim.py:clients_once_check`.
 
+### 11.9 79.10.3 (Block C: rites and alternatives that fit the charge)
+
+No flag.
+
+- **C1. The riti under the main line only when the charge's pena allows them.**
+  - The charge is the records' main threat, else the assessment's article, else the intake's first charge. Its pena is the procedural store's «pena» (`procedural_facts.by_number`: the store's entry, else computed from the row's text; the first comma's). Another code's article (a special law) has no store pena: the pena is unknown. — `lawyer_method.charge_rites`, `charge_pena`, `pena_of`.
+  - The pena read: the first reclusione or arresto with its bounds, «non inferiore a» up to 24 years (art. 23 c.p.), the ergastolo, a multa or ammenda alone; a «fino a» detention has the general minimum.
+  - Each rito of `data/lawyer_method.json` (`riti_alternativi`) gets a status, `ammesso`, `da verificare` or `precluso` (`rite_statuses`, `_rite_gate`):
+    - abbreviato (438 c.p.p.): always (`always`).
+    - patteggiamento (444 c.p.p.): admitted when the pena in concreto can be within five years after the rite's third: the minimum less a third for the attenuanti generiche (art. 62-bis c.p., `GENERICHE`) and a third for the rite (`max_years_after_reduction`); precluded otherwise, or with the ergastolo. Other attenuanti are not counted. *(79.10.3 review: 584 c.p., minimum 10 years, is admitted.)*
+    - messa alla prova (168-bis c.p.): admitted when the maximum is within four years (`max_edittale_years`), a pecuniary pena alone, or the charge is a delitto of art. 550, co. 2, c.p.p. (`listed_offences`: 336, 337, 343, 349, 588, 590-bis, 625, 648 c.p., my draft for the lawyer's review against the text in force) whatever its pena.
+    - The pena unknown: «<rito>: da verificare sulla pena edittale del reato contestato (<its condition>).» (`RITE_TO_VERIFY_LINE`, the table's `to_verify`), never as admitted. A listed offence stays admitted.
+    - The sentencing line (133, 62-bis) is no rito (`sentencing`) and stays.
+  - Where they are written:
+    - The strategy (§6): the admitted riti and those to verify, under the containment main line or the subordinate one. A precluded rito is never there (`riti_lines`). The containment line's «pro», its argument and its next step name only the admitted ones (`riti_names`).
+    - §8: the stage list's «Riti alternativi» block (`data/stage_procedure.json`, `rites: true`) is the charge's riti, each with its status and why (`render_computed.stage_blocks`, `rite_stage_lines`); its generic line only with no penal charge read. The method adds «Riti alternativi preclusi dalla pena edittale» for those §8 does not already say precluded (`precluded_block`).
+    - The prose path's plan: the posture entry's subordinate lines naming a rito not admitted become its own line, or none when precluded (`posture.entry_subordinate`).
+    - The writer's material: «RITI ALTERNATIVI» (the offered) and «RITI PRECLUSI … (non proporli)».
+    - §10: the pena unknown, «L'accesso a <riti>: da verificare sulla pena edittale del reato contestato.» (`RITE_POINT`; in the rito's own words, so the sweep below never drops it).
+  - The rito's «da verificare sulla pena edittale» stays on its line: `collect_points` leaves it there, and `structure_checks`' `markers_collected` does not read it. *This narrows v74's «every «da verificare» out of the body» for that phrase alone.*
+  - A written sentence offering a rito not admitted (precluded, or its pena unknown) without saying so is dropped: in compose's prose (`rites_out`, logged `rites_out`) and, on every path, over the whole answer (`interactive_flow.rites_checked`, into the ledger as step `rites_out`, «removed»). It says so with «preclusa», «esclusa», «non è ammesso», a negated access («non può chiedere», never «non può essere revocato») or «da verificare sulla pena edittale» (never another «da verificare»), in the rito's own clause (clauses split at «;», «, ma», «, però», «, mentre»). In a table row the cell's sentence goes, and the row with it when the cell is left empty; a list item's number never stays alone. With several clients, a rito any client is admitted to is kept (`unavailable_rites`). *(79.10.3 review: the sweep, and the method's `ctx["rites"]`, apply only to the imputato before the sentence, `_rites_posture`, as the strategy's riti do; the persona offesa's, an appeal's or the execution's answer may describe any rito.)*
+  - Remissione della querela and 162-ter only when the store says the offence is a querela offence:
+    - `procedibility` reads an irrevocable querela (the store's «remissione») as `querela irrevocabile`.
+    - `stragiudiziale_line`: the imputato's line with remissione and 162-ter only for «querela»; d'ufficio, irrevocable or nothing read, «penale_imputato_ufficio». The persona offesa's likewise («penale_offesa_ufficio», new).
+    - `procedibility_out(penal=True)`: in a criminal matter a sentence on remissione or 162-ter is dropped unless every offence it is about is «querela» by the store; no charge read and no offence named, dropped too. Outside one, as before.
+    - The prose path: `procedural_facts.consistency` (`_conflict`) reads a sentence offering remissione or 162-ter against a d'ufficio offence, or an irrevocable querela, as a conflict (the offence's procedural line in its place); a sentence denying it stays.
+  - Counters `rites_unavailable_offered` (what is left after the drop: must be 0), `rites_precluded`, `rites_to_verify`.
+
+  — `lawyer_method.pena_of`, `rite_statuses`, `charge_rites`, `riti_lines`, `riti_precluded`, `riti_names`, `precluded_block`, `rite_stage_lines`, `rites_out`, `rites_offered_unavailable`, `procedibility`, `procedibility_out`, `stragiudiziale_line`, `collect_points`, `structure_checks`; `posture.apply_plan`; `render_computed.stage_blocks`; `interactive_flow.charge_rites`, `rites_checked`.
+- **C2. An alternative qualification fits the event.**
+  - The event is read from the certain facts (`ctx["certain_text"]`, the sentences `issue_records.certain_fact` keeps) by `data/event_offences.json`: «morte», then «lesioni» unless a death. A threat of death, a danger of death or an attempt to kill is no event (`not_events`). A death dated by its year alone, earlier than the latest year the facts state («il padre, morto nel 2015, …»), is background and no event (`background_deaths`). — `lawyer_method.event_of`.
+  - Families: omicidio (575–579, 584, 589, 589-bis), lesioni (582, 583, 583-bis, 583-quater, 590, 590-bis). An article in no family (586, 588 …) fits any event.
+  - A death: the lesioni family is never offered (590 never; 589, 584, 586 are). Injuries and no death: the omicidio family is never offered (575, 589 never). — `event_mismatch`.
+  - Where: the imputato's riqualificazione candidates (`thesis_candidates`, refused into `candidates_trace["requalify_refused_event"]`); the qualification alternative the outcome names («resta la qualificazione alternativa», `assessment(event=)`); the persona offesa's offence when no charge is stated (`_victim_candidates`: one the event fits preferred, never none for the gate); the prose path's alternatives section, where one the event does not fit is printed only as the writer's «NO» (`interactive_flow.alternatives_text(event=)`, `write_alternatives`, `requested_sections`, `certain_event`).
+  - Counters `requalify_event_mismatch` (a riqualificazione offered, the outcome's alternative or a prose-path alternative printed that the event does not fit: must be 0; `alternatives_event_counted`) and `requalify_refused_event`.
+
+  — `lawyer_method.event_table`, `event_of`, `offence_family`, `event_mismatch`, `assessment`, `thesis_candidates`, `_victim_candidates`, `selection_counts`; `interactive_flow.certain_event`, `alternatives_text`, `alternatives_event_counted`, `write_alternatives`.
+- **C3. The counters and the nightly.**
+  - `rites_unavailable_offered`, `rites_precluded`, `rites_to_verify` (block_counters), `requalify_event_mismatch`, `requalify_refused_event` (thesis counts) reach `case_counters` and the nightly's counters table.
+  - The nightly's check `rites_and_alternatives_fit` fails a cell with `rites_unavailable_offered` or `requalify_event_mismatch` above 0 (online cells; offline cells have no counters).
+
+  — `interactive_flow.case_counters`; `scripts/nightly_sim.py:rites_fit_check`.
+
 ## By version
 
 | Tag | What it introduced |
@@ -731,5 +774,6 @@ No flag.
 | v79.10 (A4–A5) | The amministrativo family and module (L. 241/1990, c.p.a., TU edilizia) with strong and weak signals; the family gate's override doors and its alarm (dropped rows graded in shadow, the nightly's first section) |
 | v79.10.1 | The three regressions: no claim admitted, the method steps aside to the prose answer with the no-action sentence once in v76's note, never «Linea principale» (A1, reverses 79.8.5's B1 line); matter-table claims only inside the first read's institution family, only its module's where it has one (A2); circumstances and «elemento escluso» fragments never the main line while a contest, defence or riqualificazione exists, attenuanti always subordinate (A3) |
 | v79.10.2 | The user's request: the party resisting a demand is never the claimant, its lines contests, eccezioni and reductions (1384 c.c. for a penalty) with the forecast on the reduction's article (B1); questions written as tasks are questions, «Risposte ai quesiti» with one, each nightly cell yields one (B2); the plural in the second person and the role forms, a same-side first read when the request addresses both, a section identical for the clients printed once with the note, never twice (B3, ends v79.6's §1 always per client) |
+| v79.10.3 | Rites and alternatives that fit the charge: each rito gated on the charge's pena from the procedural store (444 with the minimum less the generiche's third and the rite's within five years, 168-bis with a maximum within four years or a delitto of art. 550, co. 2, c.p.p., abbreviato always), «da verificare sulla pena edittale» when the pena is unknown, a precluded rito §8's line and never the strategy's, any sentence offering one dropped; remissione and 162-ter only for a querela offence by the store (C1, ends v70's precluded line under the strategy); a riqualificazione fits the certain facts' event, a death never 590, injuries and no death never 575 / 589 (C2); counters rites_unavailable_offered and requalify_event_mismatch, both 0, and the nightly's check (C3) |
 | v79.11 | Element schemas (`ELEMENT_SCHEMAS`): per-article schemas checked against the text and reviewed by the lawyer; schema elements in place of the text split, the path per record; the schema's tipo in the general-part gate within the hard invariants; one rule selector for grading (mental by kind, a condition's parts, a termine's date); admission and module stage in shadow; the counters |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

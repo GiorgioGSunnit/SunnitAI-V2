@@ -1,0 +1,61 @@
+{
+ "_about": "v79.10.3 (C2): the event an alternative qualification must fit (src/rag/lawyer_method.py:event_of, event_mismatch). The certain facts (the case's sentences narrated as fact, issue_records.certain_fact) are read for each event's patterns, in this order; an event listed in another's «unless» is not read when that one is (injuries with a death are the death's). The event's «unfit» families are never offered as a riqualificazione (thesis_candidates; the counter requalify_event_mismatch, must be 0, and requalify_refused_event); its «fits» families are. A family is a list of c.p. article numbers; an article in no family (586, 588, 593 …: a death or an injury alike) fits any event. «not_events» are the wordings that name the event without its having happened (a threat of death, a danger, an attempt) and are cut out of the sentence before the patterns are read. The table is Code's draft, for the lawyer's review. (review) «background_deaths»: a death dated by its year alone (named group «year»), earlier than the latest year the certain facts state, is the story's background and no event (lawyer_method.event_of).",
+ "families": {
+  "omicidio": ["575", "576", "577", "578", "579", "584", "589", "589-bis"],
+  "lesioni": ["582", "583", "583-bis", "583-quater", "590", "590-bis"]
+ },
+ "events": [
+  {
+   "event": "morte",
+   "patterns": [
+    "\\bmort[eoi]\\b",
+    "\\bmorta\\b",
+    "\\bdeced\\w*",
+    "\\bdecess\\w*",
+    "\\bperso\\s+la\\s+vita\\b",
+    "\\bperdeva\\s+la\\s+vita\\b",
+    "\\bperde\\s+la\\s+vita\\b",
+    "\\buccis[aoie]\\b",
+    "\\bmuore\\b",
+    "\\bmor[iì]\\b",
+    "\\bmorirono\\b",
+    "\\bcadavere\\b",
+    "\\bsalma\\b",
+    "\\bdecesso\\b"
+   ],
+   "fits": ["omicidio"],
+   "unfit": ["lesioni"]
+  },
+  {
+   "event": "lesioni",
+   "unless": ["morte"],
+   "patterns": [
+    "\\blesion[ei]\\b",
+    "\\bferit[aoie]\\b",
+    "\\bferiment\\w*",
+    "\\bfrattur\\w*",
+    "\\bcontusion\\w*",
+    "\\becchimos\\w*",
+    "\\bescoriazion\\w*",
+    "\\btrauma\\w*",
+    "\\bprognosi\\b",
+    "\\bguarit[aoie]\\b",
+    "\\bpronto\\s+soccorso\\b",
+    "\\bricoverat\\w*"
+   ],
+   "fits": ["lesioni"],
+   "unfit": ["omicidio"]
+  }
+ ],
+ "not_events": [
+  "\\bminacc\\w*(?:\\s+\\S+){0,4}?\\s+di\\s+morte\\b",
+  "\\bpericolo\\s+di\\s+(?:morte|vita)\\b",
+  "\\brischi\\w*\\s+di\\s+(?:morte|morire)\\b",
+  "\\bpena\\s+di\\s+morte\\b",
+  "\\b(?:tentat\\w*|cercat\\w*|volut\\w*|voleva|intendeva)\\s+(?:di\\s+)?ucciderl\\w*"
+ ],
+ "background_deaths": [
+  "\\b(?:mort[oaie]|decedut[oaie]|defunt[oaie])\\s+(?:nel(?:l'anno)?\\s+)(?P<year>(?:19|20)\\d{2})\\b",
+  "\\b(?:morte|decesso|scomparsa)\\s+(?:\\S+\\s+){0,4}?avvenut[oa]\\s+nel(?:l'anno)?\\s+(?P<year>(?:19|20)\\d{2})\\b"
+ ]
+}

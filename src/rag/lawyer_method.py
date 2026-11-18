@@ -604,11 +604,12 @@ NO_CHARGE_WHY = {"penale": "l'addebito non è indicato nel quesito e i fatti nar
 
 
 def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = "",
-               article: str = "") -> Dict[str, Any]:
+               article: str = "", event: str = "") -> Dict[str, Any]:
     """v79 (C4): a charge the first read's hypothesis gave (rec["charge_hypothesis"]) is labelled HYPOTHESIS_LABEL in
     the why -- §1 and §9 print it --; no charge at all is said in the reader's words (NO_CHARGE_WHY), never «il
-    registro non contiene …»."""
-    a = _assessment(records, posture, main, client, article)
+    registro non contiene …». v79.10.3 (C2, review): event -- the certain facts' (event_of); the qualification
+    alternative the outcome names fits it (event_mismatch)."""
+    a = _assessment(records, posture, main, client, article, event)
     rec = (records or {}).get(a.get("article") or "") or {}
     if rec.get("charge_hypothesis"):
         a = {**a, "hypothesis": True, "why": f"{HYPOTHESIS_LABEL}: art. {a['article']}; {a['why']}"}
@@ -616,7 +617,7 @@ def assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main
 
 
 def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], main: str = "", client: str = "",
-                article: str = "") -> Dict[str, Any]:
+                article: str = "", event: str = "") -> Dict[str, Any]:
     """{"esito", "grado", "obiettivo", "why", "article"}: the probable outcome read from the record, not from the side
     we write for. Defending (imputato, convenuto): the charge's or the claim's main article -- every element proven:
     unfavourable, the goal is containing it; most proven: unfavourable, a partial outcome (another qualification,
@@ -632,7 +633,7 @@ def _assessment(records: Dict[str, Dict[str, Any]], posture: Dict[str, Any], mai
                     "why": NO_CHARGE_WHY["civile" if (posture or {}).get("family") == "civile" else "penale"]}
         proved, excluded, total = _counts(records[label])
         weapons = [x for x, r in records.items() if r.get("side") == "weapon" and r.get("alternative")
-                   and _counts(r)[0] and not _counts(r)[1]]
+                   and _counts(r)[0] and not _counts(r)[1] and not event_mismatch(x, event)]     # v79.10.3 (C2)
         if excluded:
             return {"esito": FAVOREVOLE, "grado": MEDIO, "obiettivo": PIENO, "article": label,
                     "why": f"un elemento dell'art. {label} è escluso dai fatti"}
@@ -702,7 +703,8 @@ def forecast(ctx: Dict[str, Any], t: Dict[str, Any], a: Dict[str, Any], log: Opt
     art = main_article(t, records, elements_by_id(records, ctx.get("circumstances")))
     if not art or art == a.get("article"):
         return a
-    b = assessment(records, posture, client=ctx.get("client") or "", article=art)
+    b = assessment(records, posture, client=ctx.get("client") or "", article=art,
+                   event=event_of(certain_text(ctx)))           # v79.10.3 (C2, review): the event's alternative only
     if log is not None:
         log["forecast"] = {"was": a.get("article"), "now": art, "esito": b.get("esito")}
     return b
@@ -796,55 +798,270 @@ def steps_text(steps: Sequence[Dict[str, str]]) -> str:
 
 # --- the imputato's subordinate line: riti alternativi and sentencing -----------------------------------------------------
 
-_QTY = r"(\d+|uno|una|due|tre|quattro|cinque|sei|sette|otto|nove|dieci|undici|dodici|quindici|venti|ventiquattro|trenta)"
-_NUM = {"uno": 1, "una": 1, "due": 2, "tre": 3, "quattro": 4, "cinque": 5, "sei": 6, "sette": 7, "otto": 8, "nove": 9,
-        "dieci": 10, "undici": 11, "dodici": 12, "quindici": 15, "venti": 20, "ventiquattro": 24, "trenta": 30}
-_RANGE_RE = re.compile(r"reclusione da " + _QTY + r"(?: (mesi|anni|giorni))? a " + _QTY + r" (mesi|anni)", re.I)
-_UPTO_RE = re.compile(r"reclusione fino a " + _QTY + r" (mesi|anni)", re.I)
+# v79.10.3 (C1): the charge's pena as the procedural store states it (procedural_facts.extract: the first comma's) --
+# the reclusione or the arresto with its bounds, «non inferiore a» up to the general maximum (art. 23 c.p.), the
+# ergastolo, a pecuniary pena alone; the general minimum where the text states none (artt. 23, 25 c.p.)
+_DETENTION_MIN = {"reclusione": 15 / 365, "arresto": 5 / 365}
 
 
-def _years(qty: str, unit: str) -> Optional[float]:
-    n = int(qty) if qty.isdigit() else _NUM.get(qty.lower())
-    if n is None:
-        return None
-    unit = (unit or "").lower()
-    return float(n) if unit.startswith("ann") else n / 12 if unit.startswith("mes") else n / 365
-
-
-def pena_range(text: str) -> Tuple[Optional[float], Optional[float]]:
-    """(minimum, maximum) of the first reclusione the text states, in years; (None, None) when it states none."""
-    m = _RANGE_RE.search(text or "")
+def pena_of(text: str) -> Dict[str, Any]:
+    """v79.10.3 (C1): {known, low, high, ergastolo, pecuniary, text} of the first pena the text states, in years -- the
+    first detention or ergastolo it names, a pecuniary pena only when it names neither; known False when it states
+    none (the rite then «da verificare sulla pena edittale»)."""
+    from . import procedural_facts as pf
+    t = " ".join(str(text or "").split())
+    out: Dict[str, Any] = {"known": False, "low": None, "high": None, "ergastolo": False, "pecuniary": False,
+                           "text": t}
+    q, unit = pf._QTY, r"(mes[ei]|ann[oi]|giorni)"
+    found = []
+    m = re.search(r"\bergastolo\b", t, re.I)
     if m:
-        return _years(m.group(1), m.group(2) or m.group(4)), _years(m.group(3), m.group(4))
-    m = _UPTO_RE.search(text or "")
+        found.append((m.start(), {"known": True, "ergastolo": True}))
+    m = re.search(r"\b(reclusione|arresto) da " + q + r"(?: " + unit + r")? a " + q + r" " + unit, t, re.I)
     if m:
-        return None, _years(m.group(1), m.group(2))
-    return None, None
+        found.append((m.start(), {"known": True, "low": pf._years(m.group(2), m.group(3) or m.group(5)),
+                                  "high": pf._years(m.group(4), m.group(5))}))
+    m = re.search(r"\b(reclusione|arresto) fino a " + q + r" " + unit, t, re.I)
+    if m:
+        found.append((m.start(), {"known": True, "low": _DETENTION_MIN[m.group(1).lower()],
+                                  "high": pf._years(m.group(2), m.group(3))}))
+    m = re.search(r"\breclusione non inferiore (?:a " + q + r" " + unit + r"|ad? (anni|mesi) " + q + r")", t, re.I)
+    if m:
+        low = pf._years(m.group(1), m.group(2)) if m.group(1) else pf._years(m.group(4), m.group(3))
+        found.append((m.start(), {"known": True, "low": low, "high": float(pf.MAX_RECLUSIONE)}))
+    if found:
+        got = min(found, key=lambda x: x[0])[1]
+        return {**out, **got} if got.get("ergastolo") or got.get("high") is not None else out
+    if re.search(r"\b(?:multa|ammenda)\s+(?:da|fino\s+a|non\s+inferiore)\b", t, re.I):
+        return {**out, "known": True, "pecuniary": True, "low": 0.0, "high": 0.0}
+    return out
 
 
-def riti_lines(posture: Dict[str, Any], charged_text: str = "") -> List[str]:
-    """The imputato's subordinate line (penal postures, imputato, before the sentence): every rito of the table, each
-    gated on the charged offence's pena where the table says so -- precluded by the pena, a line saying so; the pena
-    unknown, the line as the table gives it."""
-    if (posture or {}).get("role") != "imputato" or (posture or {}).get("stage") in ("impugnazione", "esecuzione") \
-            or _family_key(posture) != "penale":            # v75: the intake rito's, never the frame's area
-        return []
-    low, high = pena_range(charged_text)
+AVAILABLE, TO_VERIFY_RITE, PRECLUDED = "ammesso", "da verificare", "precluso"
+RITE_TO_VERIFY = "da verificare sulla pena edittale"            # the brief's words: never «ammesso» without the pena
+RITE_TO_VERIFY_LINE = "{name}: da verificare sulla pena edittale del reato contestato ({condition})."   # my draft
+RITI_PRECLUDED_TITLE = "RITI PRECLUSI DALLA PENA DEL REATO CONTESTATO (non proporli):"     # my draft (writer material)
+RITI_PRECLUDED_HEAD = "Riti alternativi preclusi dalla pena edittale"                       # my draft (§8)
+# my draft (§10); (review) in the rito's own words -- a §10 point naming a rito without them is one rites_out drops
+RITE_POINT = "L'accesso a {names}: da verificare sulla pena edittale del reato contestato."
+RITE_PRECLUDED = {"max": "{name}: preclusa, il massimo edittale del reato contestato supera {n} anni.",
+                  "max_listed": "{name}: preclusa, il massimo edittale del reato contestato supera {n} anni e il reato "
+                                "non è tra quelli indicati dall'{source}.",
+                  "min": "{name}: preclusa, il minimo edittale, ridotto di un terzo per le attenuanti generiche e di "
+                         "un ulteriore terzo per il rito, supera {n} anni.",
+                  "ergastolo": "{name}: preclusa, il reato contestato è punito con l'ergastolo."}
+# a rito named in a sentence, by its id; what says it is not available (a sentence naming it with one of these words
+# does not offer it)
+RITE_NAMES = {"patteggiamento": re.compile(r"\b444(?:\s+ss\.)?\s*(?:,\s*co(?:mma|\.)\s*\d+(?:-bis)?\s*,?\s*)?c\.p\.p\.|"
+                                           r"\bpatteggia\w*|\bapplicazione\s+della\s+pena\s+su\s+richiesta", re.I),
+              "messa_alla_prova": re.compile(r"\b168-bis\b|\b464-bis\b|\bmessa\s+alla\s+prova\b", re.I),
+              "abbreviato": re.compile(r"\b(?:giudizio|rito)\s+abbreviato\b", re.I)}
+# (review) a modal negation counts only on the rito's access («non può chiedere», «non può essere ammessa»), never on
+# something else the sentence says of it («che non può essere revocato»); «da verificare» only as the rito's own words
+_NOT_OFFERED_RE = re.compile(r"\bpreclus\w*|\besclus\w*|\binammissibil\w*|"
+                             r"\bnon\s+(?:è\s+|sono\s+|risulta\s+|appare\s+)?(?:ammess\w*|ammissibil\w*|consentit\w*|possibil\w*|praticabil\w*|accessibil\w*|"
+                             r"esperibil\w*|applicabil\w*|percorribil\w*)|\bnon\s+(?:può|possono|potrà|potranno|potrebbe|"
+                             r"potrebbero)\s+(?:essere\s+)?(?:\w+\s+){0,2}?(?:chie\w*|richie\w*|propo\w*|ammess\w*|applica\w*|"
+                             r"concess\w*|acced\w*|otten\w*|accordat\w*|dispo\w*|benefic\w*|fruir\w*|avvaler\w*)|"
+                             r"\bnon\s+(?:consente|ammette)\b", re.I)
+# (review) the clauses a sentence joins with «;», «, ma», «, però», «, mentre»: each clause offering a rito on its own
+_CLAUSE_SPLIT = re.compile(r";|,\s*(?=(?:ma|però|mentre)\b)|\s(?=ma\s)", re.I)
+
+
+GENERICHE = 2 / 3     # (review) art. 62-bis with art. 65 n. 3 c.p.: the pena in concreto down to a third less
+
+
+def _rite_gate(r: Dict[str, Any], p: Dict[str, Any], number: str) -> Tuple[str, str]:
+    """v79.10.3 (C1): (status, why) of one rito of the table for the charge's pena (pena_of) and article number --
+    abbreviato always; a listed offence (art. 550, co. 2, c.p.p.) admitted to the messa alla prova whatever its pena;
+    the pena unknown, «da verificare»; else the table's bounds."""
+    caps = ("max_edittale_years", "max_years_after_reduction")
+    if r.get("always") or not any(r.get(k) is not None for k in caps):
+        return AVAILABLE, "always"
+    if number and number in {str(x) for x in r.get("listed_offences") or []}:
+        return AVAILABLE, "listed"
+    if not p.get("known"):
+        return TO_VERIFY_RITE, "unknown"
+    if p.get("ergastolo"):
+        return PRECLUDED, "ergastolo"
+    if p.get("pecuniary"):
+        return AVAILABLE, "pecuniary"
+    cap = r.get("max_edittale_years")
+    if cap is not None:
+        if p.get("high") is None:
+            return TO_VERIFY_RITE, "unknown"
+        if p["high"] > cap:
+            return PRECLUDED, "max_listed" if r.get("listed_offences") else "max"
+    limit = r.get("max_years_after_reduction")
+    if limit is not None:
+        if p.get("low") is None:
+            return TO_VERIFY_RITE, "unknown"
+        if p["low"] * GENERICHE * 2 / 3 > limit:   # (review) the pena in concreto can be the minimum less 62-bis's third
+            return PRECLUDED, "min"
+    return AVAILABLE, "pena"
+
+
+def rite_statuses(pena_text: str = "", number: str = "") -> List[Dict[str, Any]]:
+    """v79.10.3 (C1): every rito of the table (data/lawyer_method.json, riti_alternativi) with its status for the
+    charge -- {id, name, status (AVAILABLE / TO_VERIFY_RITE / PRECLUDED), why, line, rite}: the table's line when
+    admitted, RITE_TO_VERIFY_LINE when the pena is unknown, a RITE_PRECLUDED line when the pena precludes it. pena_text:
+    the store's «pena» of the charge (or its article's text); number: the charge's c.p. article ("" for another
+    code)."""
+    p = pena_of(pena_text)
     out = []
     for r in data().get("riti_alternativi") or []:
         line = str(r.get("line") or "")
-        cap = r.get("max_edittale_years")
-        if cap is not None and high is not None and high > cap:
-            out.append(f"{line.split(':')[0]}: preclusa, il massimo edittale del reato contestato supera {int(cap)} "
-                       "anni.")
-            continue
-        limit = r.get("max_years_after_reduction")
-        if limit is not None and low is not None and low * 2 / 3 > limit:
-            out.append(f"{line.split(':')[0]}: preclusa, il minimo edittale ridotto di un terzo supera {int(limit)} "
-                       "anni.")
-            continue
-        out.append(line)
+        name = line.split(":")[0]
+        status, why = _rite_gate(r, p, str(number or ""))
+        if status == AVAILABLE:
+            text = str(r.get("listed_line") or line) if why == "listed" else line
+        elif status == TO_VERIFY_RITE:
+            text = RITE_TO_VERIFY_LINE.format(name=name, condition=str(r.get("to_verify") or "").rstrip("."))
+        else:
+            n = r.get("max_edittale_years") if why.startswith("max") else r.get("max_years_after_reduction")
+            text = RITE_PRECLUDED[why].format(name=name, n=int(n) if n is not None else "",
+                                              source=r.get("listed_source") or "")
+        out.append({"id": str(r.get("id") or ""), "name": name, "status": status, "why": why, "line": text,
+                    "rite": not r.get("sentencing")})
     return out
+
+
+def _rites_posture(posture: Optional[Dict[str, Any]]) -> bool:
+    """The imputato's subordinate line: penal intake rito, imputato, before the sentence (v70, v75)."""
+    return (posture or {}).get("role") == "imputato" and (posture or {}).get("stage") not in ("impugnazione",
+                                                                                              "esecuzione") \
+        and _family_key(posture or {}) == "penale"          # v75: the intake rito's, never the frame's area
+
+
+def riti_lines(posture: Dict[str, Any], charged_text: str = "", number: str = "") -> List[str]:
+    """The imputato's subordinate line (penal postures, imputato, before the sentence): the riti the charge's pena
+    allows. v79.10.3 (C1): a rito the pena precludes is no longer a line here (riti_precluded: §8 says so); the pena unknown,
+    the rito «da verificare sulla pena edittale», never as admitted."""
+    if not _rites_posture(posture):
+        return []
+    return [x["line"] for x in rite_statuses(charged_text, number) if x["status"] != PRECLUDED]
+
+
+def riti_precluded(posture: Dict[str, Any], charged_text: str = "", number: str = "") -> List[str]:
+    """v79.10.3 (C1): the riti the charge's pena precludes, each with why -- §8's lines, never under a strategy line."""
+    if not _rites_posture(posture):
+        return []
+    return [x["line"] for x in rite_statuses(charged_text, number) if x["status"] == PRECLUDED]
+
+
+def riti_names(riti: Sequence[str], n: int) -> str:
+    """v79.10.3 (C1): the first n riti admitted, by name («; ») -- one «da verificare sulla pena edittale» is never
+    named among what the containment line offers."""
+    return "; ".join([x.split(":")[0] for x in riti or [] if RITE_TO_VERIFY not in x][:n])
+
+
+def charge_pena(label: str, rows: Sequence[Dict[str, Any]]) -> Tuple[str, str]:
+    """v79.10.3 (C1): (the charge's pena from the procedural store, its c.p. number) -- procedural_facts.by_number (the
+    store's entry, else computed from the row's text); ("", "") for no charge, ("", number) when the store holds none,
+    ("", "") for another code's article (the store reads the c.p. alone: the pena then unknown)."""
+    from . import procedural_facts
+    number, _, code = str(label or "").partition(" ")
+    if not number or code.strip() != "c.p.":
+        return "", ""
+    facts = procedural_facts.by_number(rows or []).get(number) or {}
+    return str(facts.get("pena") or ""), number
+
+
+def charge_rites(records: Dict[str, Dict[str, Any]], rows: Sequence[Dict[str, Any]], posture: Dict[str, Any],
+                 article: str = "") -> List[Dict[str, Any]]:
+    """v79.10.3 (C1): the riti's statuses for the case's charge (main_threat, else the given article, else the intake's
+    first charge) in a penal matter; [] outside one. One computation for the method's lines (prepare), §8's block
+    (render_computed.stage_blocks) and the plan's subordinate lines (posture.apply_plan)."""
+    if _family_key(posture or {}) != "penale":
+        return []
+    from . import posture as posture_mod
+    label = main_threat(records or {}) or article or next(iter(posture_mod.intake_charges(posture)), "")
+    pena_text, number = charge_pena(label, rows)
+    return [{**x, "charge": label, "pena": pena_text} for x in rite_statuses(pena_text, number)]
+
+
+def rite_of(text: str) -> str:
+    """v79.10.3 (C1): the rito a line names (RITE_NAMES), "" for none."""
+    return next((k for k, rx in RITE_NAMES.items() if rx.search(text or "")), "")
+
+
+def unavailable_rites(statuses: Sequence[Dict[str, Any]]) -> set:
+    """v79.10.3 (C1): the riti (RITE_NAMES ids) no status admits -- several clients' statuses together: a rito one of
+    them is admitted to is never removed from the shared text."""
+    admitted = {x.get("id") for x in statuses or [] if x.get("status") == AVAILABLE}
+    unavailable = {x.get("id") for x in statuses or [] if x.get("status") != AVAILABLE and x.get("id") in RITE_NAMES}
+    return unavailable - admitted
+
+
+def _offers(sentence: str, bad: set) -> bool:
+    """A clause naming a rito not admitted that neither says it is not (_NOT_OFFERED_RE) nor «da verificare sulla
+    pena edittale» -- (review) per clause, the negation or the words in the rito's own clause."""
+    return any(any(RITE_NAMES[k].search(c) for k in bad) and not _NOT_OFFERED_RE.search(c)
+               and RITE_TO_VERIFY not in c.lower() for c in _CLAUSE_SPLIT.split(sentence))
+
+
+def _pieces_of(line: str) -> List[str]:
+    """A line's sentences -- a table row's cells' sentences (its «|» kept apart)."""
+    if line.lstrip().startswith("|"):
+        return [x for cell in line.split("|") for x in _SENT_SPLIT.split(cell)]
+    return _SENT_SPLIT.split(line)
+
+
+def rites_offered_unavailable(text: str, statuses: Sequence[Dict[str, Any]]) -> List[str]:
+    """v79.10.3 (C1): the sentences of the text naming a rito the charge does not admit (precluded, or its pena
+    unknown) without saying so (_NOT_OFFERED_RE: «preclusa», «non è ammesso», «da verificare» …) -- the counter
+    rites_unavailable_offered; must be none."""
+    bad = unavailable_rites(statuses)
+    if not bad:
+        return []
+    return [x.strip()[:200] for line in (text or "").split("\n") for x in _pieces_of(line) if _offers(x, bad)]
+
+
+_BARE_ITEM_RE = re.compile(r"^\s*(?:[-•*]|\d+[.)])?\s*(?:\*\*)?\s*$")
+
+
+def rites_out(text: str, statuses: Sequence[Dict[str, Any]], log: Optional[List[str]] = None) -> str:
+    """v79.10.3 (C1): a written sentence offering a rito the charge does not admit (rites_offered_unavailable) dropped,
+    each logged -- the code's own lines say what is precluded or still to verify; in a table row, the cell's sentence
+    alone."""
+    bad = unavailable_rites(statuses)
+    if not bad or not rites_offered_unavailable(text, statuses):
+        return text
+
+    def kept(piece: str) -> bool:
+        if _offers(piece, bad):
+            if log is not None:
+                log.append(piece.strip()[:200])
+            return False
+        return True
+    out = []
+    for line in (text or "").split("\n"):
+        if line.lstrip().startswith("|"):
+            cells = [(" " + " ".join(x.strip() for x in _SENT_SPLIT.split(cell) if kept(x)) + " ", True)
+                     if _offers(cell, bad) else (cell, False) for cell in line.split("|")]
+            if not any(hit and not c.strip() for c, hit in cells):      # (review) a cell left empty: the row goes
+                out.append("|".join(c for c, _ in cells))
+            continue
+        split = _SENT_SPLIT.split(line)
+        pieces = [x for x in split if kept(x)]
+        if not line.strip() or pieces and not (len(pieces) < len(split) and _BARE_ITEM_RE.match(" ".join(pieces))):
+            out.append(" ".join(pieces))                # (review) never an orphan «2.» where its item went
+    return "\n".join(out)
+
+
+def precluded_block(lines: Sequence[str], procedure: str = "") -> str:
+    """v79.10.3 (C1): §8's line of the riti the charge's pena precludes (each with why) -- those the section does not
+    already say precluded; "" with none."""
+    said = [x for x in lines or [] if x and not any(rx.search(ln) and re.search(r"\bpreclus", ln, re.I)
+                                                    for ln in (procedure or "").split("\n")
+                                                    for rx in [RITE_NAMES.get(rite_of(x)) or re.compile(r"$^")])]
+    return f"{RITI_PRECLUDED_HEAD}:\n" + "\n".join(f"- {x}" for x in said) if said else ""
+
+
+def rite_stage_lines(statuses: Sequence[Dict[str, Any]]) -> List[str]:
+    """v79.10.3 (C1): §8's «Riti alternativi» block for the charge -- each rito's line as its status gives it (admitted,
+    «da verificare sulla pena edittale», precluded with why); the sentencing line is no rito."""
+    return [x["line"] for x in statuses or [] if x.get("rite", True)]
 
 
 # --- ratione temporis -----------------------------------------------------------------------------------------------------
@@ -960,14 +1177,17 @@ def litisconsorzio_lines(case: str, records: Dict[str, Dict[str, Any]], posture:
 
 def stragiudiziale_line(posture: Dict[str, Any], charge_procedibilita: str = "") -> str:
     """The table's option for the family and role; v71: for an imputato charged with a d'ufficio offence, the variant
-    with no remissione and no 162-ter («penale_imputato_ufficio»)."""
+    with no remissione and no 162-ter («penale_imputato_ufficio»). v79.10.3 (C1): the remissione and 162-ter only when
+    the store says the charge is a querela offence -- d'ufficio, an irrevocable querela or nothing read, the variant
+    without them; the victim's likewise («penale_offesa_ufficio»)."""
     table = data().get("stragiudiziale") or {}
     family, role = _family_key(posture), str((posture or {}).get("role") or "")
+    querela = charge_procedibilita == "querela"
     if family == "penale":
         if role in ("imputato", "sconosciuto", ""):
-            key = "penale_imputato_ufficio" if charge_procedibilita == "ufficio" else "penale_imputato"
+            key = "penale_imputato" if querela else "penale_imputato_ufficio"
             return table.get(key) or table.get("penale_imputato") or ""
-        return table.get("penale_offesa") or ""
+        return table.get("penale_offesa" if querela else "penale_offesa_ufficio") or table.get("penale_offesa") or ""
     if not family:              # v75: intake read no rito -- no line from another rito's table
         return ""
     return table.get(family) or (table.get("civile") if family in ("civile", "lavoro") else "") or ""
@@ -1189,6 +1409,67 @@ def remedies() -> Dict[str, Any]:
     return _REMEDIES["d"]
 
 
+# --- v79.10.3 (C2): an alternative qualification fits the event --------------------------------------------------------------
+
+EVENTS_FILE = os.path.join(os.path.dirname(DATA_FILE), "event_offences.json")
+_EVENTS: Dict[str, Any] = {}
+
+
+def event_table() -> Dict[str, Any]:
+    """v79.10.3 (C2): data/event_offences.json (read once; {} when missing, logged)."""
+    if "d" not in _EVENTS:
+        try:
+            with open(EVENTS_FILE, encoding="utf-8") as f:
+                _EVENTS["d"] = json.load(f)
+        except (OSError, ValueError) as exc:
+            logger.warning("lawyer_method: %s not read: %s", EVENTS_FILE, exc)
+            _EVENTS["d"] = {}
+    return _EVENTS["d"]
+
+
+def event_of(certain_text: str) -> str:
+    """v79.10.3 (C2): the event the certain facts narrate (data/event_offences.json, in its order: «morte», then
+    «lesioni» unless a death) -- the wordings that name it without its happening (a threat of death, a danger, an
+    attempt) cut out first; "" for none."""
+    table = event_table()
+    text = str(certain_text or "")
+    for rx in table.get("not_events") or []:
+        text = re.sub(rx, " ", text, flags=re.I)
+    # (review) a death dated by its year alone before the latest year the facts state is the story's background («il
+    # padre, morto nel 2015, …»), never the event
+    latest = max([int(y) for y in re.findall(r"\b(?:19|20)\d{2}\b", text)] or [0])
+    for rx in table.get("background_deaths") or []:
+        text = re.sub(rx, lambda m: " " if int(m.group("year")) < latest else m.group(0), text, flags=re.I)
+    seen: List[str] = []
+    for e in table.get("events") or []:
+        if any(re.search(rx, text, re.I) for rx in e.get("patterns") or []):
+            seen.append(str(e.get("event") or ""))
+    for e in table.get("events") or []:
+        name = str(e.get("event") or "")
+        if name in seen and not set(e.get("unless") or []) & set(seen):
+            return name
+    return ""
+
+
+def offence_family(label: str) -> str:
+    """v79.10.3 (C2): the table's family of a c.p. article («575 c.p.» -> «omicidio»); "" for none or another code."""
+    number, _, code = str(label or "").partition(" ")
+    if code.strip() != "c.p.":
+        return ""
+    return next((f for f, arts in (event_table().get("families") or {}).items() if number in {str(x) for x in arts}),
+                "")
+
+
+def event_mismatch(label: str, event: str) -> bool:
+    """v79.10.3 (C2): the article's family is among the event's «unfit» ones -- with a death, no lesioni (590 …); with
+    injuries and no death, no omicidio (575, 589 …). An article in no family, or no event, never mismatches."""
+    if not event:
+        return False
+    family = offence_family(label)
+    entry = next((e for e in event_table().get("events") or [] if e.get("event") == event), {})
+    return bool(family) and family in (entry.get("unfit") or [])
+
+
 def _in_range(label: str, code: str, span: Sequence[int]) -> bool:
     from .plan_then_write import _code_key
     parts = str(label or "").split(" ", 1)
@@ -1315,7 +1596,7 @@ def code_argument(c: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, str]:
         if not (ctx.get("assessment") or {}).get("all_integrated"):     # v79.7 (item 2): offered on every charge
             texts = CODE_ARGUMENTS["contenimento_open"]
         goal = str((posture.get("entry") or {}).get("goal") or "")
-        riti = "; ".join(x.split(":")[0] for x in (ctx.get("riti") or [])[:2])
+        riti = riti_names(ctx.get("riti") or [], 2)          # v79.10.3 (C1): the admitted ones only
         att = [x for x, r in circ.items() if r.get("kind") == "attenuante"
                and any(q.get("status") == PROVATO for q in _live(r))]
         what = f"l'art. {art}" if art else "l'addebito"
@@ -1455,6 +1736,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             in_order.append((label, r))
     distinctive = next((r["id"] for r in _live(records.get(charge) or {}) if r.get("distinctive") and r.get("id")), "")
     known = elements_by_id(records, circ)
+    event = event_of(ctx.get("certain_text") or "") if offender else ""      # v79.10.3 (C2): the certain facts' event
+    if event:
+        trace["event"] = event
 
     def contest(label: str, r: Dict[str, Any]) -> None:
         kind = {NON_RISULTA: "excluded", PROVATO: "integrated"}.get(r.get("status"), "open")
@@ -1481,6 +1765,9 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         base = charge if charge in records else (threats[0] if threats else charge)
         if label_code(label) != label_code(base):       # v79.9 (A3): into an offence of the charge's own code only
             trace.setdefault("requalify_out_of_code", []).append(label)
+            continue
+        if event_mismatch(label, event):                # v79.10.3 (C2): never an offence the event does not fit
+            trace.setdefault("requalify_refused_event", []).append(label)
             continue
         differs = differing_elements(records.get(base) or {}, rec)
         if not differs:                                 # v79.9 (A3): nothing to name -- the same fattispecie
@@ -2000,8 +2287,11 @@ def _victim_candidates(ctx: Dict[str, Any], add: Callable[..., None], fatt: Call
     circ = ctx.get("circumstances") or {}
     posture = ctx.get("posture") or {}
     charged = [x for x in _charged(records) if fatt(x) and _live(records[x])]
-    main = charged[0] if charged else next((x for x, r in records.items() if fatt(x) and r.get("side") != "threat"
-                                            and any(q.get("status") == PROVATO for q in _live(r))), "")
+    event = event_of(ctx.get("certain_text") or "")          # v79.10.3 (C2): an uncharged offence fits the event --
+    proven = [x for x, r in records.items() if fatt(x) and r.get("side") != "threat"       # (review) preferred, never
+              and any(q.get("status") == PROVATO for q in _live(r))]                     # the victim left with none
+    main = charged[0] if charged else next((x for x in proven if not event_mismatch(x, event)), proven[0] if proven
+                                           else "")
     if not main:
         return
     rec = records[main]
@@ -2079,6 +2369,8 @@ def method_material(ctx: Dict[str, Any]) -> str:
         parts.append(f"{NOTES_TITLE}:\n" + "\n".join(f"- art. {x}: {n}" for x, n in ctx["notes"].items()))
     if ctx.get("riti"):
         parts.append("RITI ALTERNATIVI:\n" + "\n".join(f"- {x}" for x in ctx["riti"]))
+    if ctx.get("riti_precluded"):           # v79.10.3 (C1): never proposed -- the pena of the charge precludes them
+        parts.append(RITI_PRECLUDED_TITLE + "\n" + "\n".join(f"- {x}" for x in ctx["riti_precluded"]))
     if ctx.get("lines"):
         parts.append("LINEE DELLA PRIMA LETTURA:\n" + "\n".join(f"- {x}" for x in ctx["lines"]))
     return "\n\n".join(parts)
@@ -2658,6 +2950,12 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
             "riqualificazione_out_of_code": sum(1 for c in cands if c.get("kind") == "requalify" and
                                                 label_code(c.get("article")) != label_code(c.get("charge"))),
             "requalify_refused_code": len((ctx.get("candidates_trace") or {}).get("requalify_out_of_code") or []),
+            # v79.10.3 (C2): a riqualificazione the certain facts' event does not fit (a death: never 590; injuries and
+            # no death: never 575 / 589) -- must be 0; those the gate refused
+            "requalify_event_mismatch": sum(1 for c in cands if c.get("kind") == "requalify" and event_mismatch(
+                c.get("article") or "", event_of(ctx.get("certain_text") or ""))) + int(event_mismatch(   # (review) and
+                (ctx.get("assessment") or {}).get("alternative") or "", event_of(ctx.get("certain_text") or ""))),  # §9's
+            "requalify_refused_event": len((ctx.get("candidates_trace") or {}).get("requalify_refused_event") or []),
             "requalify_unnamed": sum(1 for c in cands if c.get("kind") == "requalify" and c.get("id") not in
                                      {t.get("candidate") for t in plan.get("soluzioni") or []}),
             # v79.9 (C2): a candidate from a document outside the case's families (must be 0); those the gate dropped
@@ -2944,7 +3242,7 @@ def fallback_thesis(a: Dict[str, Any], riti: Sequence[str], posture: Optional[Di
     main = posture_fallback(posture or {})
     if main:
         return {"tesi": main[0].upper() + main[1:], "pro": "non contesta alcun elemento integrato" + (
-                    f"; {'; '.join(x.split(':')[0] for x in riti[:3])}" if riti else ""),
+                    f"; {riti_names(riti, 3)}" if riti_names(riti, 3) else ""),       # v79.10.3 (C1): admitted only
                 "contro": "presuppone l'accertamento della condotta", "realismo": ALTO, "minoritaria": False,
                 "contesta": [], "poggia_su": [], "fallback": True}
     civil = remedies().get("fallback", {}).get(str((posture or {}).get("role") or "")) \
@@ -2956,7 +3254,7 @@ def fallback_thesis(a: Dict[str, Any], riti: Sequence[str], posture: Optional[Di
     if a.get("obiettivo") == CONTENIMENTO and _family_key(posture or {}) in ("penale", ""):
         return {"tesi": CONTAINMENT_LINE,
                 "pro": "non contesta alcun elemento integrato" + (
-                    f"; {'; '.join(x.split(':')[0] for x in riti[:3])}" if riti else ""),
+                    f"; {riti_names(riti, 3)}" if riti_names(riti, 3) else ""),       # v79.10.3 (C1): admitted only
                 "contro": "presuppone l'accertamento della responsabilità", "realismo": ALTO, "minoritaria": False,
                 "contesta": [], "poggia_su": [], "fallback": True}
     return {"tesi": "Tesi da costruire sugli elementi ancora da provare", "pro": "gli elementi aperti",
@@ -3123,9 +3421,13 @@ _OFFENCE_REF_RE = re.compile(r"\b(\d{3}(?:-(?:bis|ter|quater|quinquies))?)\s*(?:
 _REMISSION_ARTICLES = {"152", "162-ter", "62", "62-bis", "133"}
 
 
+IRREVOCABLE = "querela irrevocabile"
+
+
 def procedibility(records: Dict[str, Dict[str, Any]], rows: Sequence[Dict[str, Any]]) -> Dict[str, str]:
-    """{label: «ufficio» | «querela»} of the record's offences, from the procedural store (procedural_facts): a querela
-    offence whose d'ufficio condition the record proves is d'ufficio."""
+    """{label: «ufficio» | «querela» | IRREVOCABLE} of the record's offences, from the procedural store
+    (procedural_facts): a querela offence whose d'ufficio condition the record proves is d'ufficio; v79.10.3 (C1) one
+    whose querela the store reads irrevocable is IRREVOCABLE (no remissione, no 162-ter)."""
     from . import procedural_facts
     facts = procedural_facts.by_number(rows or [])
     out = {}
@@ -3138,15 +3440,21 @@ def procedibility(records: Dict[str, Dict[str, Any]], rows: Sequence[Dict[str, A
             f = procedural_facts.with_statuses(f, rec["procedibilita"])
         if f.get("querela") is False or (f.get("querela") and f.get("ufficio_esito") == PROVATO):
             out[label] = "ufficio"
+        elif f.get("querela") and str(f.get("remissione") or "").startswith("querela irrevocabile"):
+            out[label] = IRREVOCABLE        # v79.10.3 (C1): a querela no remissione extinguishes -- no 162-ter either
         elif f.get("querela"):
             out[label] = "querela"
     return out
 
 
-def procedibility_out(text: str, procedibilita: Dict[str, str], charge: str, log: Optional[List[str]] = None) -> str:
+def procedibility_out(text: str, procedibilita: Dict[str, str], charge: str, log: Optional[List[str]] = None,
+                      penal: bool = False) -> str:
     """A line or sentence on remissione / 162-ter dropped when it is about a d'ufficio offence: the offences it names
-    (the remissione's own articles aside), else the charge."""
-    if not procedibilita:
+    (the remissione's own articles aside), else the charge. v79.10.3 (C1): in a criminal matter (penal), dropped unless
+    the store says every offence it is about is a querela offence (procedibility: «querela») -- d'ufficio, an
+    irrevocable querela or nothing read alike, and no charge read at all; outside one, as before (only a d'ufficio
+    offence's)."""
+    if not procedibilita and not penal:
         return text
     out = []
     for line in (text or "").split("\n"):
@@ -3158,7 +3466,8 @@ def procedibility_out(text: str, procedibilita: Dict[str, str], charge: str, log
             if _REMISSION_RE.search(sentence):
                 named = [f"{n} c.p." for n in _OFFENCE_REF_RE.findall(sentence) if n not in _REMISSION_ARTICLES]
                 about = named or ([charge] if charge else [])
-                if about and all(procedibilita.get(x) == "ufficio" for x in about):
+                if (not about or any(procedibilita.get(x) != "querela" for x in about)) if penal \
+                        else about and all(procedibilita.get(x) == "ufficio" for x in about):   # (review) no charge read
                     if log is not None:
                         log.append(sentence[:200])
                     continue
@@ -3196,6 +3505,7 @@ _ITEM_RE = re.compile(r"^\s*(?:[-•*]\s+|\d+[.)]\s+)?(?:\*\*)?")
 # the marker as the sentence's predicate («la data è da verificare»): the point keeps it, the body loses the verb with it
 _COPULA_RE = re.compile(r"\s+\b(?:è|sono|resta|restano|rimane|rimangono|va|vanno)\s+(?:ancora\s+)?da verificare\b", re.I)
 _KEEP = "\x00"
+_RITE_KEEP = "\x01"
 
 
 def _sentence_at(text: str, start: int, end: int) -> str:
@@ -3290,9 +3600,11 @@ def collect_points(sections: List[Tuple[str, str]], points: Optional[List[str]] 
         def copula(m):
             return ref(m, " ({ref})")
 
+        text = text.replace(RITE_TO_VERIFY, _RITE_KEEP)     # v79.10.3 (C1): the rito's own words stay on its line
         for pattern, repl in ((_PAREN_RE, paren), (_COLON_RE, colon), (_TAIL_RE, tail), (_COPULA_RE, copula),
                               (_BARE_RE, bare)):
             text = pattern.sub(repl, text)
+        text = text.replace(_RITE_KEEP, RITE_TO_VERIFY)
         text = re.sub(r"\.\s*\.", ".", text)
         text = re.sub(r"[ \t]+([.,;])", r"\1", text)
         out.append((heading, text))
@@ -3754,8 +4066,8 @@ def steps_from_selection(ctx: Dict[str, Any], sols: Sequence[Dict[str, Any]], ma
         passo, scopo = STEP_TEXTS[key]
         steps.append({"passo": passo.format(**kw), "scopo": scopo.format(**kw)})
     if m.get("fallback") or m.get("kind") == "contenimento":      # v75b: its own content, no element to prove
-        if ctx.get("riti"):
-            add("riti", riti="; ".join(x.split(":")[0] for x in ctx["riti"][:2]))
+        if riti_names(ctx.get("riti") or [], 2):          # v79.10.3 (C1): the admitted ones only
+            add("riti", riti=riti_names(ctx["riti"], 2))
         return steps[:STEPS_MAX]
     for eid in m.get("poggia_su") or []:
         e = known.get(eid)
@@ -4003,13 +4315,16 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
 
     from . import rulings as rulings_mod
     labels_log: List[str] = []                  # v79 (F1): a registry label that names no registry ruling
+    rites_log: List[str] = []                   # v79.10.3 (C1): a written sentence offering a rito not admitted
 
     def prose(text: str, rules: bool = True) -> str:   # every written paragraph: no orientation of its own, retrieved
         text = rulings_mod.labels_out(text, ctx.get("rulings_record"), labels_log)     # v79 (F1): «[G1]» -> estremi
         text = orientation_claims_out(text, orientation_claims)            # rulings only, circumstances with their
         text = unretrieved_rulings_out(text, rulings, rulings_out)         # requisites, no remissione for a d'ufficio
         text = rulings_scope_out(text, rulings, scope_log)                 # charge; v78: on its article and element
-        text = procedibility_out(text, procedibilita, a.get("article") or "", procedural_out)
+        text = procedibility_out(text, procedibilita, a.get("article") or "", procedural_out,
+                                 penal=criminal(ctx.get("posture")))     # v79.10.3 (C1): querela only, from the store
+        text = rites_out(text, ctx.get("rites") or [], rites_log)      # v79.10.3 (C1): no rito the charge refuses
         text = fact_terms.apply(text, certi, ctx.get("case") or "", client, accused, fact_wording)     # v74
         text = circumstance_claims(text, circ, claims)
         return rule_statements.check(text, rule_src, rules_log) if rules else text      # v79 (B1): grounded rules
@@ -4030,6 +4345,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
         norms_parts.append(f"**{C.OTHER_PROFILES_SECTION}**\n\n" + "\n".join(profiles))
     procedure = next((by_title[t] for t in PROCEDURE_FROM if by_title.get(t)), "")
     extra = [x for x in [ctx.get("temporal")] + [f"Litisconsorzio: {x}" for x in ctx.get("litisconsorzio") or []] if x]
+    precluded = precluded_block(ctx.get("riti_precluded") or [], procedure)       # v79.10.3 (C1): §8 says them
+    extra += [precluded] if precluded else []
     procedure = "\n\n".join([p for p in [checked(procedure)] + extra if p]) or "Nessun profilo processuale calcolato sul caso."
     coherence: List[Dict[str, Any]] = []
     sols, main = coherent_solutions(plan, records, a, ctx.get("riti") or [], coherence, ctx.get("posture") or {}, circ)
@@ -4114,6 +4431,7 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                 "rulings_scope_out": scope_log, "articles_out_of_scope": articles_log,
                 "fact_wording": fact_wording, "charged_prose": charged_log,
                 "orientation_claims_out": orientation_claims, "procedibility_out": procedural_out,
+                "rites_out": rites_log,                                                      # v79.10.3 (C1)
                 "headless_citations_out": headless_log, **layout_log})
     log["controllo_finale"] = final_check(dict(keyed), ctx, log, plan)
     # «orientamento da verificare» stays where the section prints it (v71); its point is collected all the same
@@ -4301,19 +4619,6 @@ def posture_text(posture: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def charged_text(records: Dict[str, Dict[str, Any]], rows: Sequence[Dict[str, Any]]) -> str:
-    """The main charged article's text (its pena), from the rows."""
-    label = main_threat(records)
-    if not label:
-        return ""
-    number = label.split()[0]
-    for r in rows or []:
-        ref = r.get("_article") or ()
-        if ref and str(ref[0]) == number and "c.p" in str(ref[1]) and "c.p.p" not in str(ref[1]):
-            return str((r.get("s") or {}).get("plain_text") or "")
-    return ""
-
-
 def issue_records_certain(sentence: Dict[str, Any]) -> bool:
     from . import issue_records
     return issue_records.certain_fact(sentence)
@@ -4362,19 +4667,29 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
             circ_log = {"error": f"{type(exc).__name__}: {exc}"[:200]}
     circ_notes, circ_sources = attach_notes({}, circ, rows)
     notes, note_sources = {**notes, **circ_notes}, {**note_sources, **circ_sources}
-    a = assessment(records, posture or {}, main, client)
-    riti = riti_lines(posture or {}, charged_text(records, rows))
+    certain = " ".join(str(x.get("text") or "") for x in sentences if issue_records_certain(x))
+    a = assessment(records, posture or {}, main, client, event=event_of(certain))      # v79.10.3 (C2, review)
+    # v79.10.3 (C1): the riti the charge's pena from the procedural store admits (charge_rites); a precluded one is §8's.
+    # (review) the gate on what is written (ctx["rites"]: compose's rites_out) is the imputato's before the sentence
+    # alone -- the persona offesa's, an appeal's or the execution's answer may describe any rito
+    rites = charge_rites(records, rows, posture or {}, a.get("article") or "") if _rites_posture(posture) else []
+    riti = [x["line"] for x in rites if x["status"] != PRECLUDED] if _rites_posture(posture) else []
+    riti_out = [x["line"] for x in rites if x["status"] == PRECLUDED] if _rites_posture(posture) else []
     procedibilita = procedibility(records, rows)
     article_texts = [str((r.get("s") or {}).get("plain_text") or "") for r in rows or [] if r.get("_article")]
     facts_log: Dict[str, Any] = {}
     facts = facts_split(sentences, records, penal, questions, article_texts, facts_log)
     note = aggravante_note(circ, records) if penal else ""          # v79 (E2): never in a civil matter
     when, when_points = temporal(case, posture or {}, abrogated)
+    unknown = [x["name"] for x in rites if x["status"] == TO_VERIFY_RITE] if riti else []
+    if unknown:                 # v79.10.3 (C1): the rito «da verificare sulla pena edittale» -- its point in §10
+        when_points = list(when_points) + [RITE_POINT.format(names=" e ".join(unknown))]
     ctx = {"case": case, "case_id": case_id_, "client": client, "rito": (posture or {}).get("rito") or "",
            "posture": posture or {}, "areas": list(frame_areas or ()), "procedibilita": procedibilita,
            "notes": notes,
            "posture_text": posture_text(posture or {}), "records": every, "circumstances": circ,
            "facts": facts, "assessment": a, "riti": riti,
+           "rites": rites, "riti_precluded": riti_out,                        # v79.10.3 (C1)
            "subsumption": subsumption_section(records, order, by_id, circ, note),
            "temporal": when, "points": when_points,
            "litisconsorzio": litisconsorzio_lines(case, records, posture or {}),
@@ -4390,12 +4705,13 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "institutions": read_institutions(state.get("read") or {}),        # v79.8 (B2)
            "family_overrides": list((state.get("family_gate") or {}).get("overrides") or []),   # v79.10 (A5, review)
            # v79.9 (B1): the stage's sources -- the certain facts and the events the terms read
-           "certain_text": " ".join(str(x.get("text") or "") for x in sentences if issue_records_certain(x)),
+           "certain_text": certain,
            "events": fact_events(state),
            "family_words": family_words(state, case)}                        # v79.9 (C1)
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
-                     "aggravante_note": note, "riti": len(riti), "temporal": ctx["temporal"][:200],
+                     "aggravante_note": note, "riti": len(riti),
+                     "rites": {x["id"]: [x["status"], x["why"]] for x in rites}, "temporal": ctx["temporal"][:200],
                      "litisconsorzio": len(ctx["litisconsorzio"]), "facts": {k: len(v) for k, v in ctx["facts"].items()},
                      "facts_excluded": facts_log, "procedibilita": procedibilita, "rulings": len(ctx["rulings"]),
                      "notes": note_sources, "records": view_log})
@@ -4592,6 +4908,7 @@ def structure_checks(answer: str, cell: Optional[Dict[str, str]] = None) -> List
     body = "\n".join(("" if registry_layout else
                       re.sub(rf"(?m)^- [^\n]*: {ORIENTATION_TO_VERIFY}$|^{ORIENTATION_TO_VERIFY}$", "", x))
                      if t == title("orientamenti") else x for t, x in secs if t != title("verificare"))
+    body = body.replace(RITE_TO_VERIFY, "")     # v79.10.3 (C1): a rito's «da verificare sulla pena edittale»: its own
     check("markers_collected", not re.search(r"\bda verificare\b", body, re.I), "«da verificare» in the body")
     # v79.8 (E1): «alto» never with something it depends on
     check("certainty_depends", not re.search(r"\*\*Grado di certezza\*\*: alto\s*—\s*dipende da", answer or "", re.I),

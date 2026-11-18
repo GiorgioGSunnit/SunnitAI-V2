@@ -248,11 +248,15 @@ def test_a_circumstance_is_a_record_with_its_requisites_and_the_aggravante_check
 # --- the imputato's subordinate line, ratione temporis, litisconsorzio, stragiudiziale --------------------------------------
 
 def test_the_riti_alternativi_are_gated_on_the_charged_pena():
+    # v79.10.3 (C1): a rito the pena precludes is no longer a line under the strategy -- riti_precluded, §8's
     lines = M.riti_lines(IMPUTATO, "è punito con la reclusione da due a sei anni")
-    assert lines[0].startswith("Giudizio abbreviato") and "preclusa" in next(x for x in lines if "messa alla prova" in x)
+    assert lines[0].startswith("Giudizio abbreviato") and not any("messa alla prova" in x for x in lines)
+    assert "preclusa" in next(x for x in M.riti_precluded(IMPUTATO, "è punito con la reclusione da due a sei anni")
+                              if "messa alla prova" in x)
     assert "preclusa" not in next(x for x in lines if "444" in x)
-    heavy = M.riti_lines(IMPUTATO, "è punito con la reclusione da otto a venti anni")
-    assert "preclusa" in next(x for x in heavy if "444" in x)
+    heavy = "è punito con la reclusione da dodici a venti anni"     # (79.10.3 review) 12 x 2/3 (62-bis) x 2/3 > 5
+    assert not any("444" in x for x in M.riti_lines(IMPUTATO, heavy))
+    assert "preclusa" in next(x for x in M.riti_precluded(IMPUTATO, heavy) if "444" in x)
     assert M.riti_lines({**IMPUTATO, "stage": "impugnazione"}, "") == [] and M.riti_lines(ATTORE, "") == []
 
 
@@ -279,7 +283,8 @@ def test_litisconsorzio_by_matter_and_the_stragiudiziale_option():
     lines = M.litisconsorzio_lines("Tizio chiede la divisione della comunione ereditaria con i coeredi.", {}, ATTORE)
     assert lines == [next(m["line"] for m in M.data()["litisconsorzio"] if m["matter"] == "divisione")]
     assert M.litisconsorzio_lines("divisione", {}, IMPUTATO) == []
-    assert "162-ter" in M.stragiudiziale_line(IMPUTATO)
+    assert "162-ter" in M.stragiudiziale_line(IMPUTATO, "querela")     # v79.10.3 (C1): only when the store says querela
+    assert "162-ter" not in M.stragiudiziale_line(IMPUTATO)
     assert "1219" in M.stragiudiziale_line(ATTORE)
     assert "410" in M.stragiudiziale_line({"rito": "lavoro", "family": "civile", "role": "attore"})
 

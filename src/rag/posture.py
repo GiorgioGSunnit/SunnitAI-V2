@@ -119,9 +119,13 @@ def of(state: Dict[str, Any], analysis: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def apply_plan(plan: Dict[str, Any], posture: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def apply_plan(plan: Dict[str, Any], posture: Optional[Dict[str, Any]],
+               rites: Optional[Sequence[Dict[str, Any]]] = None) -> Dict[str, Any]:
     """The plan's main line from the posture's entry -- the act (plan["atto"]) and the goal (plan["obiettivo"]); the
-    plan itself, unchanged, without an entry (the default cell: today's plan exactly)."""
+    plan itself, unchanged, without an entry (the default cell: today's plan exactly). v79.10.3 (C1): with the charge's
+    riti (lawyer_method.charge_rites), an entry's subordinate line naming a rito the charge does not admit is that
+    rito's own line instead -- «da verificare sulla pena edittale» when the pena is unknown, none when it precludes
+    it."""
     entry = (posture or {}).get("entry")
     if not entry or not plan:
         return plan
@@ -132,8 +136,26 @@ def apply_plan(plan: Dict[str, Any], posture: Optional[Dict[str, Any]]) -> Dict[
         out["obiettivo"] = entry["goal"]
     if entry.get("subordinate"):        # v70: the imputato's riti alternativi and sentencing, whatever the model planned
         have = [str(x) for x in out.get("subordinate") or []]
-        out["subordinate"] = have + [x for x in entry["subordinate"] if x not in have]
+        out["subordinate"] = have + [x for x in entry_subordinate(entry, rites) if x not in have]
     return out
+
+
+def entry_subordinate(entry: Dict[str, Any], rites: Optional[Sequence[Dict[str, Any]]] = None) -> List[str]:
+    """v79.10.3 (C1): the entry's subordinate lines with the charge's riti applied (apply_plan) -- unchanged without
+    them (rites None: no penal charge read)."""
+    lines = [str(x) for x in entry.get("subordinate") or []]
+    if not rites:
+        return lines
+    from . import lawyer_method
+    by_id = {str(x.get("id") or ""): x for x in rites}
+    out: List[str] = []
+    for line in lines:
+        rite = by_id.get(lawyer_method.rite_of(line))
+        if not rite or rite.get("status") == lawyer_method.AVAILABLE:
+            out.append(line)
+        elif rite.get("status") == lawyer_method.TO_VERIFY_RITE:
+            out.append(str(rite.get("line") or ""))
+    return [x for x in out if x]
 
 
 # the case's sentences stating the charge or the claim: «il PM contesta …», «imputato di …», «a norma degli articoli …»,

@@ -837,6 +837,11 @@ def line(number: str, rubrica: str, facts: Dict[str, Any], procedibilita: bool =
 _CLAIM_UFFICIO = re.compile(r"procedibil\w* d['’]ufficio|si procede d['’]ufficio|perseguibil\w* d['’]ufficio", re.IGNORECASE)
 _CLAIM_QUERELA = re.compile(r"(?:procedibil|perseguibil|punibil)\w* a querela|si procede a querela", re.IGNORECASE)
 _EXCEPTION = re.compile(r"\b(?:aggravant|salvo|tranne|eccett|nei casi)", re.IGNORECASE)
+# v79.10.3 (C1, review): a sentence offering the remissione della querela or the 162-ter extinction -- only a querela
+# offence's, the store's (lawyer_method.procedibility_out on the method's path); one denying it is left alone
+_CLAIM_REMISSION = re.compile(r"\bremission\w*\s+(?:della\s+|di\s+)?querel\w*|\b162-ter\b|\bcondotte\s+riparatorie\b",
+                              re.IGNORECASE)
+_REMISSION_DENIED = re.compile(r"\bnon\b|\besclus\w*|\bpreclus\w*|\binammissibil\w*|\birrevocabil\w*", re.IGNORECASE)
 _COURTS = (("assise", "Corte d'assise"), ("giudice di pace", "giudice di pace"), ("tribunale", "tribunale"))
 _TERM_CLAIM = re.compile(r"querela[^.]{0,60}?entro (?:il termine di )?" + _QTY + r" (giorni|mesi)", re.IGNORECASE)
 _SENTENCE_RE = re.compile(r"[^.!?\n]+(?:[.!?]+|$)")
@@ -853,6 +858,11 @@ def _conflict(sentence: str, facts: Dict[str, Any]) -> str:
             return "d'ufficio, il testo: a querela"
         if not facts.get("querela") and _CLAIM_QUERELA.search(sentence):
             return "a querela, il testo: d'ufficio"
+        irrevocable = str(facts.get("remissione") or "").startswith("querela irrevocabile")
+        if (not facts.get("querela") or proved or irrevocable) and _CLAIM_REMISSION.search(sentence) \
+                and not _REMISSION_DENIED.search(sentence):          # v79.10.3 (C1, review): the prose path too
+            return "remissione o 162-ter, il testo: " + ("querela irrevocabile" if irrevocable and not proved
+                                                         and facts.get("querela") else "d'ufficio")
     court = str(facts.get("competenza") or "").lower()
     if court and re.search(r"competen", sentence, re.IGNORECASE):
         said = next((name for key, name in _COURTS if key in sentence.lower()), "")

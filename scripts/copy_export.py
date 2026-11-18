@@ -68,7 +68,13 @@ EXTRA = (
     ("lawyer_method", "CONTAINMENT_LINE", "Metodo, «Soluzioni a confronto»: la linea di contenimento dell'imputato "
                                           "(v79.7: sempre offerta, ultima)"),
     ("lawyer_method", "ASSESSMENT_LINES", "Metodo, «Conclusioni»: esito probabile, grado di certezza, obiettivo"),
-    ("lawyer_method", "riti_lines", "Metodo, «Soluzioni a confronto»: un rito alternativo precluso dalla pena"),
+    ("lawyer_method", "RITE_PRECLUDED", "Metodo, «Profili processuali»: un rito alternativo precluso dalla pena del "
+                                        "reato contestato (v79.10.3: mai sotto la strategia)"),
+    ("lawyer_method", "RITE_TO_VERIFY_LINE", "Metodo, «Soluzioni a confronto» e «Profili processuali»: un rito con la "
+                                             "pena edittale non letta (v79.10.3)"),
+    ("lawyer_method", "RITI_PRECLUDED_HEAD", "Metodo, «Profili processuali»: i riti preclusi dalla pena (v79.10.3)"),
+    ("lawyer_method", "RITI_PRECLUDED_TITLE", "Metodo, materiale dello scrittore: i riti da non proporre (v79.10.3)"),
+    ("lawyer_method", "RITE_POINT", "Metodo, «Punti da verificare»: la pena edittale che decide un rito (v79.10.3)"),
     ("lawyer_method", "TEMPORAL_LINE", "Metodo, «Profili processuali»: la disciplina applicabile"),
     ("lawyer_method", "TEMPORAL_UNKNOWN", "Metodo, «Profili processuali»: la data dei fatti non indicata"),
     ("lawyer_method", "TEMPORAL_ABROGATED", "Metodo, «Profili processuali»: norme abrogate"),
@@ -383,6 +389,9 @@ def method_rows(data, stem, where):
         rows.append((f"data/{stem}.circumstances[{c['label']}]", f"{c['kind']}: {c['name']}", where))
         rows += [(f"data/{stem}.circumstances[{c['label']}].{i}", e, where) for i, e in enumerate(c.get("elements") or [], 1)]
     rows += [(f"data/{stem}.riti_alternativi[{r['id']}]", r["line"], where) for r in data.get("riti_alternativi") or []]
+    for r in data.get("riti_alternativi") or []:           # v79.10.3 (C1): a listed offence's line, the pena unknown
+        rows += [(f"data/{stem}.riti_alternativi[{r['id']}].{k}", r[k], where) for k in ("listed_line", "to_verify")
+                 if r.get(k)]
     return rows
 
 

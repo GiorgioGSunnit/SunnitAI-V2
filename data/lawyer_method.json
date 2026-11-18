@@ -1,5 +1,5 @@
 {
-  "_about": "v70: the lawyer's method as protocol (src/rag/lawyer_method.py, LAWYER_METHOD). From «ruolo» to «modules» the lawyer's own words, verbatim from docs/lawyer/metodo.md (scripts/lawyer_method_import.py: re-run it when he changes his text; tests/test_v70.py checks the sync): ruolo, fasi (his FASI 1-10), sections (the titles of his STRUTTURA DELL'OUTPUT, each line's parenthesis as «note»; the keys are the code's), stile, honesty_rules (his REGOLE DI ONESTÀ, in every writer call with his FASE 7, his STILE and the modules), controllo_finale (his CONTROLLO FINALE: the coherence checklist), modules (one per ambito, «MODULO: …»; loaded by modules_by_rito and modules_by_area -- the code's choice). The tables after them are Code's drafts, not his (listed in docs/copy_review.md for the PO): reforms (ratione temporis), litisconsorzio (by matter), stragiudiziale (by family and role), circumstances (aggravanti and attenuanti as fattispecie, each element graded against the case's sentences; 62 n. 6 with both alternatives of the article's text), riti_alternativi (the imputato's subordinate line, gated on the charged offence's pena edittale).",
+  "_about": "v70: the lawyer's method as protocol (src/rag/lawyer_method.py, LAWYER_METHOD). From «ruolo» to «modules» the lawyer's own words, verbatim from docs/lawyer/metodo.md (scripts/lawyer_method_import.py: re-run it when he changes his text; tests/test_v70.py checks the sync): ruolo, fasi (his FASI 1-10), sections (the titles of his STRUTTURA DELL'OUTPUT, each line's parenthesis as «note»; the keys are the code's), stile, honesty_rules (his REGOLE DI ONESTÀ, in every writer call with his FASE 7, his STILE and the modules), controllo_finale (his CONTROLLO FINALE: the coherence checklist), modules (one per ambito, «MODULO: …»; loaded by modules_by_rito and modules_by_area -- the code's choice). The tables after them are Code's drafts, not his (listed in docs/copy_review.md for the PO): reforms (ratione temporis), litisconsorzio (by matter), stragiudiziale (by family and role), circumstances (aggravanti and attenuanti as fattispecie, each element graded against the case's sentences; 62 n. 6 with both alternatives of the article's text), riti_alternativi (the imputato's subordinate line, gated on the charged offence's pena edittale). v79.10.3 (C1): each rito's gate on the charge's pena from the procedural store (riti_alternativi: «always», «max_years_after_reduction», «max_edittale_years», «listed_offences» -- art. 550, co. 2, c.p.p., my draft of the list, for the lawyer's review against the text in force -- and «to_verify», the line printed when the pena is unknown); stragiudiziale's «penale_offesa_ufficio», the victim's option with no remissione when the store does not say querela.",
   "ruolo": "Sei un giurista italiano esperto di [diritto penale / civile / amministrativo / altro]. Il tuo obiettivo è individuare la soluzione più corretta secondo diritto vigente e giurisprudenza prevalente, non quella più suggestiva o favorevole a una parte.",
   "fasi": [
     {
@@ -549,7 +549,8 @@
     "amministrativo": "Prima del ricorso: istanza di autotutela all'amministrazione e accesso agli atti (l. 241/1990).",
     "penale_imputato": "Fuori dal processo: il risarcimento integrale del danno e le condotte riparatorie (art. 162-ter c.p. per i reati a querela rimettibile; art. 62, n. 6, c.p. come attenuante se integrale e prima del giudizio), un accordo con la persona offesa che porti alla remissione della querela dove ammessa (art. 152 c.p.), l'accesso alla giustizia riparativa (art. 129-bis c.p.p.).",
     "penale_imputato_ufficio": "Fuori dal processo: il risarcimento integrale del danno prima del giudizio (attenuante dell'art. 62, n. 6, c.p.) e l'accesso alla giustizia riparativa (art. 129-bis c.p.p.).",
-    "penale_offesa": "Fuori dal processo: un accordo risarcitorio con l'autore del fatto, che può accompagnare la remissione della querela dove ammessa (art. 152 c.p.), da valutare contro la tutela offerta dal processo."
+    "penale_offesa": "Fuori dal processo: un accordo risarcitorio con l'autore del fatto, che può accompagnare la remissione della querela dove ammessa (art. 152 c.p.), da valutare contro la tutela offerta dal processo.",
+    "penale_offesa_ufficio": "Fuori dal processo: un accordo risarcitorio con l'autore del fatto, da valutare contro la tutela offerta dal processo."
   },
   "circumstances": [
     {
@@ -685,21 +686,38 @@
   "riti_alternativi": [
     {
       "id": "abbreviato",
-      "line": "Giudizio abbreviato (artt. 438 ss. c.p.p.): riduzione di un terzo della pena per i delitti (art. 442, co. 2, c.p.p.) e di un ulteriore sesto se l'imputato non impugna la sentenza (art. 442, co. 2-bis, c.p.p.)."
+      "line": "Giudizio abbreviato (artt. 438 ss. c.p.p.): riduzione di un terzo della pena per i delitti (art. 442, co. 2, c.p.p.) e di un ulteriore sesto se l'imputato non impugna la sentenza (art. 442, co. 2-bis, c.p.p.).",
+      "always": true
     },
     {
       "id": "patteggiamento",
       "line": "Applicazione della pena su richiesta (art. 444 c.p.p.): ammessa se la pena in concreto, diminuita fino a un terzo, non supera cinque anni.",
-      "max_years_after_reduction": 5
+      "max_years_after_reduction": 5,
+      "to_verify": "richiede che la pena in concreto, diminuita fino a un terzo, non superi cinque anni"
     },
     {
       "id": "messa_alla_prova",
-      "line": "Sospensione del procedimento con messa alla prova (art. 168-bis c.p.): per i reati puniti con pena edittale non superiore nel massimo a quattro anni.",
-      "max_edittale_years": 4
+      "line": "Sospensione del procedimento con messa alla prova (art. 168-bis c.p.): per i reati puniti con pena edittale non superiore nel massimo a quattro anni e per i delitti indicati dall'art. 550, co. 2, c.p.p.",
+      "max_edittale_years": 4,
+      "listed_offences": [
+        "336",
+        "337",
+        "343",
+        "349",
+        "588",
+        "590-bis",
+        "625",
+        "648"
+      ],
+      "listed_source": "art. 550, co. 2, c.p.p.",
+      "listed_line": "Sospensione del procedimento con messa alla prova (art. 168-bis c.p.): ammessa per il reato contestato, tra i delitti indicati dall'art. 550, co. 2, c.p.p.",
+      "to_verify": "richiede una pena edittale non superiore nel massimo a quattro anni o un delitto indicato dall'art. 550, co. 2, c.p.p."
     },
     {
       "id": "commisurazione",
-      "line": "Commisurazione della pena (art. 133 c.p.) e attenuanti generiche (art. 62-bis c.p.): gli elementi favorevoli della personalità e della condotta successiva al reato."
+      "line": "Commisurazione della pena (art. 133 c.p.) e attenuanti generiche (art. 62-bis c.p.): gli elementi favorevoli della personalità e della condotta successiva al reato.",
+      "always": true,
+      "sentencing": true
     }
   ]
 }
