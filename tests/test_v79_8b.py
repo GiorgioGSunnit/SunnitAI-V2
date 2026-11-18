@@ -122,7 +122,8 @@ def test_a_defendant_never_gets_a_claim_and_has_the_transazione():
 
 # --- B1 / B4 -------------------------------------------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("label, spec, same", [("2 L. 15 luglio 1966, n. 604/1966", "2 l. 604/1966", True),
+@pytest.mark.parametrize("label, spec, same", [("2 L. 604/1966", "2 l. 604/1966", True),
+                                               ("2 L. 15 luglio 1966, n. 604/1966", "2 l. 604/1966", False),
                                                ("2 d.lgs. 23/2015", "2 l. 604/1966", False),
                                                ("1809 c.c.", "1809 c.c.", True), ("1809 c.c.", "1810 c.c.", False)])
 def test_a_special_laws_article_is_matched_by_number_and_law(label, spec, same):

@@ -43,8 +43,9 @@ NOISE = [_row("1", "Circolare n. 285 della Banca d'Italia", "Circolare n. 285 de
          _row("1", "Codice della nautica da diporto", "Decreto legislativo 18 luglio 2005, n. 171"),
          _row("1", "Codice dei contratti pubblici", "Decreto legislativo 31 marzo 2023, n. 36"),
          _row("3", "Legge 4 maggio 1983, n. 184")]
+MEDIAZIONE_DOC = "Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025"
 CODES = [_row("1453", "c.c."), _row("1218", "c.c."), _row("640", "c.p."), _row("163", "c.p.c."),
-         _row("5", "D.lgs. 28/2010", "Decreto legislativo 4 marzo 2010, n. 28")]
+         _row("5", "D.lgs. 28/2010", MEDIAZIONE_DOC)]          # v79.10 (A4): the archive's name
 
 
 def test_a_civil_contract_case_admits_the_codes_and_mediazione_only():
@@ -55,7 +56,7 @@ def test_a_civil_contract_case_admits_the_codes_and_mediazione_only():
     assert {x["family"] for x in dropped} == {"Banca d'Italia", "protezione dei dati", "assicurativo", "istruzione",
                                               "bancario", "DORA", "antiriciclaggio", "nautica", "appalti pubblici",
                                               family_gate.OTHER}
-    assert outside == [{"doc": "Decreto legislativo 4 marzo 2010, n. 28", "family": "mediazione", "by": "default"}]
+    assert outside == [{"doc": MEDIAZIONE_DOC, "family": "mediazione", "by": "default"}]
 
 
 @pytest.mark.parametrize("case, doc, family", [
@@ -88,10 +89,12 @@ def test_the_user_naming_the_law_admits_it():
 def test_an_active_modules_laws_and_the_consumer_code_with_a_professional():
     from src.rag import family_gate
     dismissal = "Laura, dipendente della società Alfa, è stata licenziata senza motivazione."
-    row = _row("18", "Legge 20 maggio 1970, n. 300")
+    row = _row("1", "Riforma del Lavoro Fornero 2026")                  # v79.10: by its archive name only
     assert family_gate.gate([row], family_gate.context(dismissal), set())[0] == [row]
     assert family_gate.gate([row], family_gate.context(CONTRACT), set())[0] == []
-    consumer = _row("128", "Codice del consumo", "Decreto legislativo 6 settembre 2005, n. 206")
+    numbered = _row("18", "Legge 20 maggio 1970, n. 300")                 # L. 300/1970: unmapped, never by number
+    assert family_gate.gate([numbered], family_gate.context(dismissal), set())[0] == []
+    consumer = _row("128", "Codice del Consumo 2026")
     shop = "Il consumatore Tizio ha comprato una lavatrice nel negozio Alfa s.r.l.; si è guastata dopo un mese."
     private = "Tizio ha comprato una lavatrice usata da un venditore privato; si è guastata dopo un mese."
     assert family_gate.gate([consumer], family_gate.context(shop), set())[0] == [consumer]
@@ -101,7 +104,8 @@ def test_an_active_modules_laws_and_the_consumer_code_with_a_professional():
 @pytest.mark.parametrize("code, family", [("c.c.", "codice"), ("c.p.p.", "codice"), ("Costituzione", "codice"),
                                           ("c.d.s.", "strada"), ("D.P.R. 309/1990", "stupefacenti"),
                                           ("Regolamento (UE) 2016/679", "protezione dei dati"),
-                                          ("Legge 15 luglio 1966, n. 604", "modulo")])
+                                          ("Riforma del Lavoro Fornero 2026", "modulo"),
+                                          ("Legge 15 luglio 1966, n. 604", "altra legge speciale")])
 def test_classify(code, family):
     from src.rag import family_gate
     assert family_gate.classify(code)[0] == family

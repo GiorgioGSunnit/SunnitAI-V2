@@ -122,6 +122,22 @@ def own(meter: "Meter"):
         _ACTIVE.reset(token)
 
 
+@contextlib.contextmanager
+def side():
+    """v79.10 (A5, review): a side task run inline that must not count on the request's meter (the family gate's
+    shadow grading, interactive_flow): a fresh Meter, active for the task and the worker threads' fallback (_LAST)
+    meanwhile -- the request's fallback restored after; yields it (its total("llm"))."""
+    meter = Meter()
+    last = _LAST[0]
+    try:
+        with meter.active():
+            meter.mark("side")
+            yield meter
+    finally:
+        _LAST[0] = last
+        meter.stop()
+
+
 def current() -> Optional[Meter]:
     return _ACTIVE.get() or _LAST[0]
 

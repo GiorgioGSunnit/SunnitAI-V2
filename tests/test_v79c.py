@@ -71,7 +71,7 @@ def test_an_act_outside_the_special_laws_table_is_not_a_charge():
 
 def test_a_special_law_charge_gets_a_record_under_the_stores_name(monkeypatch):
     from src.rag import interactive_flow as flow, issue_records, posture
-    store_name = "Testo unico in materia di stupefacenti (d.P.R. 9 ottobre 1990, n. 309)"
+    store_name = "Testo Unico sugli Stupefacenti 2026"             # v79.10: the archive's exact name
     row = {"_article": ("73", store_name), "d": {"id": "TU", "name": store_name},
            "s": {"name": "73", "rubrica": "Produzione, traffico e detenzione illeciti di sostanze stupefacenti",
                  "plain_text": "Chiunque, senza l'autorizzazione, detiene sostanze stupefacenti è punito con la "

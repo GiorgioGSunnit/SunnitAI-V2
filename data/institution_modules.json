@@ -1,5 +1,5 @@
 {
-  "_about": "v79.8 (Block B): the norms that confer an action. A claim candidate («Fondare la domanda sull'art. X», a riconvenzionale) is built only on an article one of these rules admits: an institution module's «actions» (the institution the first read names, or the case's words: «patterns») or a remedies.json matter's «actions». A module's articles come first, in its order (the specific norm before the general one: 2053 before 2051); «general» (1218, 1453, 2043) are subordinate -- offered with a module only when the module yields nothing proven. «limiting» are never a claim (they measure or condition a claim, they confer none). Edit here; lawyer_method.claim_admission reads it. v79.8.5: modules marked «draft» are Code's proposal, for the lawyer's review (famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio). v79.9 (Block B): a module may carry «stages» (the stage its articles differ by, read from the case's certain facts -- «patterns» -- or the events the terms read -- «events»: consegna, fine lavori, scoperta vizio, denuncia/reclamo; the first stage that matches puts its «actions» first), «conditional» actions (offered only when a certain fact matches their patterns: 1439 on a false description), «non_actions» (code articles that are no claim norm for the client: 2118, 2119 for a dismissed worker), «laws» (the special laws that govern it, checked against the graph's primary documents: data/corpus_expected.json holds the same list, with how each is matched), «requires» («professional_counterparty»: the consumer module only with a business as a certain fact) and «name».",
+  "_about": "v79.8 (Block B): the norms that confer an action. A claim candidate («Fondare la domanda sull'art. X», a riconvenzionale) is built only on an article one of these rules admits: an institution module's «actions» (the institution the first read names, or the case's words: «patterns») or a remedies.json matter's «actions». A module's articles come first, in its order (the specific norm before the general one: 2053 before 2051); «general» (1218, 1453, 2043) are subordinate -- offered with a module only when the module yields nothing proven. «limiting» are never a claim (they measure or condition a claim, they confer none). Edit here; lawyer_method.claim_admission reads it. v79.8.5: modules marked «draft» are Code's proposal, for the lawyer's review (famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio). v79.9 (Block B): a module may carry «stages» (the stage its articles differ by, read from the case's certain facts -- «patterns» -- or the events the terms read -- «events»: consegna, fine lavori, scoperta vizio, denuncia/reclamo; the first stage that matches puts its «actions» first), «conditional» actions (offered only when a certain fact matches their patterns: 1439 on a false description), «non_actions» (code articles that are no claim norm for the client: 2118, 2119 for a dismissed worker), «laws» (the special laws that govern it, checked against the graph's primary documents: data/corpus_expected.json holds the same list, with how each is matched), «requires» («professional_counterparty»: the consumer module only with a business as a certain fact) and «name». v79.10 (A4): a module may carry «weak_patterns» and «weak_min» (default 2): with them, the module is active on one of its «patterns» (the strong ones) or on «weak_min» different weak patterns -- «il Comune» alone never activates the amministrativo module (a 2051 custodia case naming the Comune as custodian); a module without «weak_patterns» activates as before, on any pattern. The amministrativo module (draft): L. 241/1990, c.p.a., TU edilizia d.P.R. 380/2001; its «laws» hold L. 241/1990 and the d.P.R. 380/2001 only -- the c.p.a. is a code, always admitted by the family gate (src/rag/family_gate.py). v79.10 (A4, review): «autotutela» is strong only in its administrative form (annullamento / revoca in autotutela, autotutela amministrativa, the Comune's or the administration's in the same sentence) -- never the civil self-help (1460, the tenant's, autotutela contrattuale / possessoria); the weak act needs the ente: a provvedimento the Comune / PA adopts in the same sentence (no judge word in it, never disciplinare) or «del Comune» / comunale / dirigenziale, a diniego of a permesso / autorizzazione / licenza / concessione / istanza / accesso, an ordinanza sindacale, a delibera comunale; «nel Comune di X» (an address) and «(PA)» (a province) are no ente. v79.10 (A4, archive names): the licenziamento module's «laws» hold the Fornero reform L. 92/2012 (in the archive: «Riforma del Lavoro Fornero 2026») beside L. 604/1966, L. 300/1970, d.lgs. 23/2015 and d.lgs. 81/2015 (not in the archive: the missing-laws line names them). A special law's action («7 l. 241/1990») matches the label the pipeline builds for that article of its archive document («7 Legge sul Procedimento Amministrativo 2026»): the action's law is resolved through data/corpus_expected.json «archive_names» (lawyer_method.same_article).",
   "general": [
     "1218 c.c.",
     "1453 c.c.",
@@ -204,7 +204,8 @@
         "L. 604/1966",
         "L. 300/1970",
         "d.lgs. 23/2015",
-        "d.lgs. 81/2015"
+        "d.lgs. 81/2015",
+        "L. 92/2012"
       ],
       "name": "licenziamento"
     },
@@ -394,6 +395,49 @@
         "1120 c.c."
       ],
       "name": "condominio"
+    },
+    {
+      "id": "amministrativo",
+      "name": "provvedimento amministrativo",
+      "draft": true,
+      "patterns": [
+        "\\bpermess\\w*\\s+(?:di\\s+)?costruire\\b",
+        "(?-i:(?<![.\\w])S\\.?C\\.?I\\.?A\\.?(?![\\w]))|\\b(?:la|una|della|alla|nella|con\\s+la)\\s+scia\\b(?!\\s+(?:di|del|dell|della|dello|dei|degli|delle)\\b)|\\bsegnalazion\\w*\\s+certificat\\w*\\s+(?:di\\s+)?inizio\\s+(?:di\\s+)?attivit",
+        "\\bannullament\\w*\\s+d['’]\\s*ufficio|\\bannullat\\w*\\s+d['’]\\s*ufficio",
+        "\\b(?:annullament\\w*|annullat\\w*|revoc\\w*|ritir\\w*|riesam\\w*)\\s+(?:[\\w'’]+\\s+){0,3}?in\\s+(?:via\\s+di\\s+)?autotutela\\b|\\bautotutela\\s+(?:amministrativ|decisori|pubblicistic)\\w*|(?:(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\bsindac[oi]\\b|(?<!consiglio\\sdi\\s)\\bamministrazion\\w*|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b)(?:(?!\\bautotutela\\b)[^.;\\n]){0,80}?\\bautotutela\\b(?!\\s+(?:contrattual|privat|possessori|negozial|esecutiv|stragiudizial)\\w*)|\\bautotutela\\b(?!\\s+(?:contrattual|privat|possessori|negozial|esecutiv|stragiudizial)\\w*)[^.;\\n]{0,60}?(?:dell['’]\\s*amministrazion|della\\s+(?:pubblica\\s+amministrazione|(?-i:P\\.?A\\.?))|del\\s+(?-i:Comune))",
+        "\\bprovvediment\\w*\\s+amministrativ",
+        "(?-i:(?<![.\\w])T(?:AR|ar|\\.A\\.R\\.?)(?![\\w]))|\\btribunal\\w*\\s+amministrativ|\\bgiudice\\s+amministrativ|\\bconsiglio\\s+di\\s+stato\\b",
+        "\\bricors\\w*\\s+(?:straordinari\\w*|gerarchic\\w*|amministrativ\\w*)|\\bricors\\w*\\b[^.;\\n]{0,40}?(?:(?-i:(?<![.\\w])T(?:AR|ar|\\.A\\.R\\.?)(?![\\w]))|\\btribunal\\w*\\s+amministrativ|\\bconsiglio\\s+di\\s+stato\\b|\\bgiudice\\s+amministrativ)",
+        "\\bsilenzio[\\s-]+(?:assenso|rifiuto|inadempimento|diniego)\\b|\\bsilenzio\\s+(?:serbato\\s+)?(?:dell['’]\\s*amministrazion|della\\s+(?:pubblica\\s+amministrazione|p\\.?\\s?a\\.?)|del\\s+comune\\b)",
+        "\\bpreavviso\\s+di\\s+rigetto|\\bmotivi\\s+ostativi|\\b21[\\s-]?(?:nonies|quinquies|octies)\\b"
+      ],
+      "weak_patterns": [
+        "(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\b(?:il|al|dal|del|sul|col|un|ogni)\\s+comune\\b(?!\\s+(?:accordo|denominatore|sentire|interesse|consenso|uso|amico))|\\bamministrazion\\w*\\s+(?:comunal|pubblic|regional|provincial|statal)\\w*|\\bpubblica\\s+amministrazione\\b|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b",
+        "\\bprovvediment[oi]\\s+(?:comunal|dirigenzial|sindacal|regional|prefettizi)\\w*|\\bprovvediment[oi]\\s+(?:del|della|dell['’]|dal|dalla|dall['’])\\s*(?:(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\bsindac[oi]\\b|(?<!consiglio\\sdi\\s)\\bamministrazion\\w*|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b)|(?:(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\bsindac[oi]\\b|(?<!consiglio\\sdi\\s)\\bamministrazion\\w*|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b)(?:(?!\\b(?:giudic|tribunal|cort[ei]\\b|magistrat|decret|ingiunzion|sentenz|udienz|g\\.?i\\.?p\\b))[^.;\\n]){0,80}?\\bprovvediment[oi]\\b(?!\\s+(?:disciplinar\\w*|giudizi\\w*|giurisdizional\\w*|cautelar\\w*|d['’]urgenza|del\\s+(?:giudice|tribunale|magistrat\\w*)|di\\s+(?:sequestro|condanna|convalida|ingiunzione)))(?=(?:(?!\\b(?:giudic|tribunal|cort[ei]\\b|magistrat|decret|ingiunzion|sentenz|udienz|g\\.?i\\.?p\\b))[^.;\\n])*(?:[.;\\n]|$))|\\bdiniego\\s+(?:(?:del|della|dell['’]|di|dei|delle)\\s*)?(?:\\w+\\s+){0,1}?(?:permess|autorizzazion|concession|licenz|istanz|accesso|nulla\\s*-?osta|agibilit|condono|sanatori)|\\bordinanz\\w*\\s+(?:sindacal\\w*|comunal\\w*|del\\s+sindaco)|\\bdelibera\\w*\\s+(?:comunal\\w*|della\\s+giunta|del\\s+consiglio\\s+comunal\\w*)"
+      ],
+      "weak_min": 2,
+      "actions": [
+        "7 l. 241/1990",
+        "10-bis l. 241/1990",
+        "21-quinquies l. 241/1990",
+        "21-octies l. 241/1990",
+        "21-nonies l. 241/1990",
+        "29 c.p.a.",
+        "30 c.p.a.",
+        "41 c.p.a.",
+        "55 c.p.a.",
+        "119 c.p.a.",
+        "10 d.P.R. 380/2001",
+        "11 d.P.R. 380/2001",
+        "22 d.P.R. 380/2001",
+        "31 d.P.R. 380/2001",
+        "36 d.P.R. 380/2001",
+        "38 d.P.R. 380/2001"
+      ],
+      "laws": [
+        "L. 241/1990",
+        "d.P.R. 380/2001"
+      ]
     }
   ]
 }

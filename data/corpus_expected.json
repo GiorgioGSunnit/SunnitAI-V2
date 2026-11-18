@@ -1,29 +1,33 @@
 {
-  "_about": "v79.9 (B4): per institution module, the special laws expected in the graph -- the same list as the module's «laws» in data/institution_modules.json (a test keeps them equal). A law is present when a primary document's name holds its number and year («n. 604» and «1966», or «604/1966») or one of its aliases. scripts/corpus_gaps.py --env .env prints the missing ones for ingestion; the parere prints one fixed line in §1 and §9 when a case's module has one missing (lawyer_method.MISSING_LAWS_LINE). «defaults»: the laws admitted for every civil or criminal case (Block C's family allowlist), checked the same way.",
+  "_about": "v79.9 (B4): per institution module, the special laws expected in the graph -- the same list as the module's «laws» in data/institution_modules.json (a test keeps them equal). scripts/corpus_gaps.py --env .env prints the missing ones for ingestion; the parere prints one fixed line in §1 and §9 when a case's module has one missing (lawyer_method.MISSING_LAWS_LINE). «defaults»: the laws admitted for every civil or criminal case (Block C's family allowlist), checked the same way. v79.10 (A4): the amministrativo module -- L. 241/1990 and the TU edilizia d.P.R. 380/2001 (the c.p.a. is a code: always admitted, not a module law). v79.10 (A4, archive names): the archive's document names carry no law numbers -- each law maps to «archive_names», the exact names of its primary documents (a list: an edition changes the name), matched by whitespace-normalised equality only, never by number, expression or substring (src/rag/corpus_laws.py); [] when the law is not in the archive (unmapped: always missing, never guessed). «number», «year» and «aliases» only read the user's own words (family_gate.user_named, the «istituto» door). «codes»: the codes a module names by sigla (the c.p.a.), mapped the same way. The mappings are the user's (BRIEF 79.10).",
   "laws": {
     "L. 604/1966": {
       "number": "604",
       "year": "1966",
-      "aliases": []
+      "aliases": [],
+      "archive_names": []
     },
     "L. 300/1970": {
       "number": "300",
       "year": "1970",
       "aliases": [
         "statuto dei lavoratori"
-      ]
+      ],
+      "archive_names": []
     },
     "d.lgs. 23/2015": {
       "number": "23",
       "year": "2015",
       "aliases": [
         "jobs act"
-      ]
+      ],
+      "archive_names": []
     },
     "d.lgs. 81/2015": {
       "number": "81",
       "year": "2015",
-      "aliases": []
+      "aliases": [],
+      "archive_names": []
     },
     "L. 24/2017": {
       "number": "24",
@@ -31,13 +35,17 @@
       "aliases": [
         "gelli-bianco",
         "legge gelli"
-      ]
+      ],
+      "archive_names": []
     },
     "d.lgs. 206/2005": {
       "number": "206",
       "year": "2005",
       "aliases": [
         "codice del consumo"
+      ],
+      "archive_names": [
+        "Codice del Consumo 2026"
       ]
     },
     "L. 898/1970": {
@@ -45,18 +53,27 @@
       "year": "1970",
       "aliases": [
         "legge sul divorzio"
+      ],
+      "archive_names": [
+        "Legge sul divorzio 2024"
       ]
     },
     "d.lgs. 28/2010": {
       "number": "28",
       "year": "2010",
-      "aliases": []
+      "aliases": [],
+      "archive_names": [
+        "Mediazione civile (Decreto Legislativo n. 28/2010) Edizione 2025"
+      ]
     },
     "d.lgs. 285/1992": {
       "number": "285",
       "year": "1992",
       "aliases": [
         "codice della strada"
+      ],
+      "archive_names": [
+        "Codice della strada 2026"
       ]
     },
     "d.P.R. 309/1990": {
@@ -64,6 +81,9 @@
       "year": "1990",
       "aliases": [
         "testo unico stupefacenti"
+      ],
+      "archive_names": [
+        "Testo Unico sugli Stupefacenti 2026"
       ]
     },
     "L. 392/1978": {
@@ -71,12 +91,58 @@
       "year": "1978",
       "aliases": [
         "equo canone"
-      ]
+      ],
+      "archive_names": []
     },
     "L. 431/1998": {
       "number": "431",
       "year": "1998",
-      "aliases": []
+      "aliases": [],
+      "archive_names": [
+        "Legge sulle locazioni abitative 2023"
+      ]
+    },
+    "L. 241/1990": {
+      "number": "241",
+      "year": "1990",
+      "aliases": [
+        "procedimento amministrativo",
+        "legge sul procedimento amministrativo"
+      ],
+      "archive_names": [
+        "Legge sul Procedimento Amministrativo 2026"
+      ]
+    },
+    "d.P.R. 380/2001": {
+      "number": "380",
+      "year": "2001",
+      "aliases": [
+        "testo unico edilizia",
+        "testo unico dell'edilizia",
+        "t.u. edilizia"
+      ],
+      "archive_names": [
+        "Testo unico in materia edilizia Edizione 2025"
+      ]
+    },
+    "L. 92/2012": {
+      "number": "92",
+      "year": "2012",
+      "aliases": [
+        "riforma fornero",
+        "legge fornero"
+      ],
+      "archive_names": [
+        "Riforma del Lavoro Fornero 2026"
+      ]
+    }
+  },
+  "codes": {
+    "c.p.a.": {
+      "name": "Codice del processo amministrativo",
+      "archive_names": [
+        "Codice del processo amministrativo 2025"
+      ]
     }
   },
   "modules": {
@@ -88,7 +154,8 @@
       "L. 604/1966",
       "L. 300/1970",
       "d.lgs. 23/2015",
-      "d.lgs. 81/2015"
+      "d.lgs. 81/2015",
+      "L. 92/2012"
     ],
     "responsabilita_sanitaria": [
       "L. 24/2017"
@@ -98,6 +165,10 @@
     ],
     "consumo": [
       "d.lgs. 206/2005"
+    ],
+    "amministrativo": [
+      "L. 241/1990",
+      "d.P.R. 380/2001"
     ]
   },
   "defaults": [

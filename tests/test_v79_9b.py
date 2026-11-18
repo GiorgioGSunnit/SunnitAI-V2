@@ -104,7 +104,8 @@ def test_vendita_adds_1439_only_on_a_certain_false_description():
 def test_every_module_with_special_laws_names_them():
     from src.rag import lawyer_method as M
     mods = {m["id"]: m for m in M.institution_modules()["modules"]}
-    assert mods["licenziamento"]["laws"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015"]
+    assert mods["licenziamento"]["laws"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015",
+                                             "L. 92/2012"]                      # v79.10: the Fornero reform
     assert mods["responsabilita_sanitaria"]["laws"] == ["L. 24/2017"]
     assert {"1218 c.c.", "1228 c.c.", "2043 c.c."} <= set(mods["responsabilita_sanitaria"]["actions"])
     assert mods["consumo"]["laws"] == ["d.lgs. 206/2005"] and mods["consumo"]["requires"] == "professional_counterparty"
@@ -124,7 +125,7 @@ def _dismissal_ctx():
 def test_a_dismissal_with_the_laws_absent_gets_the_line_and_no_2119_main_line():
     from src.rag import lawyer_method as M
     ctx = _dismissal_ctx()
-    ctx["missing_laws"] = M.missing_laws(ctx, known=["Codice civile"])
+    ctx["missing_laws"] = M.missing_laws(ctx, known=["Codice Civile 2026", "Riforma del Lavoro Fornero 2026"])
     assert ctx["missing_laws"]["leggi"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015", "d.lgs. 81/2015"]
     ctx["candidates"] = M.thesis_candidates(ctx)
     assert not [c for c in ctx["candidates"] if c.get("article") in ("2119 c.c.", "2118 c.c.")]
@@ -142,9 +143,13 @@ def test_a_dismissal_with_the_laws_absent_gets_the_line_and_no_2119_main_line():
 def test_with_the_laws_present_or_unknown_no_line():
     from src.rag import corpus_laws, lawyer_method as M
     ctx = _dismissal_ctx()
-    names = ["Legge 15 luglio 1966, n. 604", "Legge 20 maggio 1970, n. 300", "Decreto legislativo 4 marzo 2015, n. 23",
-             "Decreto legislativo 15 giugno 2015, n. 81"]
-    assert M.missing_laws(ctx, known=names) == {}
+    # v79.10: the archive names only -- the licenziamento's four are unmapped, missing whatever the graph holds
+    names = ["Legge 15 luglio 1966, n. 604", "Legge 20 maggio 1970, n. 300", "Riforma del Lavoro Fornero 2026"]
+    assert M.missing_laws(ctx, known=names)["leggi"] == ["L. 604/1966", "L. 300/1970", "d.lgs. 23/2015",
+                                                         "d.lgs. 81/2015"]
+    divorce = _ctx({}, "Maria chiede il divorzio da Paolo.", ["divorzio"])
+    assert M.missing_laws(divorce, known=["Legge sul divorzio 2024"]) == {}
+    assert M.missing_laws(divorce, known=["Legge 1 dicembre 1970, n. 898"])["leggi"] == ["L. 898/1970"]
     assert M.missing_laws(ctx) == {}                         # the graph's names unknown: nothing said missing
     corpus_laws.set_names(["Codice civile"])
     try:
@@ -203,10 +208,11 @@ def test_corpus_expected_is_the_modules_laws():
     assert all(law in exp["laws"] for law in exp["defaults"])
 
 
-@pytest.mark.parametrize("law, name, there", [
-    ("L. 604/1966", "Legge 15 luglio 1966, n. 604", True), ("L. 604/1966", "Legge 604/1966", True),
-    ("L. 24/2017", "Decreto 24 marzo 2017, n. 50", False), ("L. 24/2017", "Legge 8 marzo 2017, n. 24", True),
-    ("d.lgs. 206/2005", "Codice del Consumo", True), ("L. 300/1970", "Legge 20 maggio 1970, n. 3000", False)])
+@pytest.mark.parametrize("law, name, there", [            # v79.10: by the exact archive names only
+    ("L. 604/1966", "Legge 15 luglio 1966, n. 604", False), ("L. 604/1966", "Legge 604/1966", False),
+    ("L. 24/2017", "Legge 8 marzo 2017, n. 24", False), ("d.lgs. 206/2005", "Codice del Consumo 2026", True),
+    ("d.lgs. 206/2005", "Codice del Consumo", False), ("d.lgs. 206/2005", "Codice del consumo 2026", False),
+    ("L. 92/2012", "Riforma del Lavoro Fornero 2026", True), ("L. 92/2012", " Riforma  del Lavoro\tFornero 2026 ", True)])
 def test_a_law_is_matched_by_number_and_year_or_alias(law, name, there):
     from src.rag import corpus_laws
     assert corpus_laws.present(law, [name]) is there

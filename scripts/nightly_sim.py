@@ -60,6 +60,12 @@ minoritaria, the main line chosen, whether it is the fallback) in their own tabl
 --deterministic runs the thesis call once at temperature 0 (THESIS_DETERMINISTIC) for a version-to-version comparison
 -- the default stays best-of-3.
 
+v79.10 (A5): the family gate's alarm, FIRST in the report (right after the header): per cell, every document the gate
+dropped that held FAMILY_ALARM_MIN (5) or more graded-relevant articles -- «we just cut the governing law»; read it before
+any promote. The run sets FAMILY_GATE_SHADOW_GRADE=true (the dropped rows graded in shadow, recorded only;
+--no-family-shadow-grade skips it: a proxy count, «stima (non graduati)»). The alarm alone never fails the run; the
+header line says «ALLARME presente». The family table lists the override doors (door and signal).
+
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
   python scripts/nightly_sim.py --answers DIR      # offline: DIR/<cell id>.md, the checks only (no model, no DB)
@@ -410,6 +416,65 @@ def family_lines(results: List[Dict[str, Any]]) -> List[str]:
     if gone:
         lines += ["", "Dropped by the family gate: " + "; ".join(
             f"{cid}: {x.get('article')} ({x.get('family')}, {x.get('source')})" for cid, x in gone)]
+    doors = [(c["id"], x) for c in rows for x in c["family_gate"].get("overrides") or []]      # v79.10 (A5)
+    if doors:
+        lines += ["", "Admitted by an override door (family_override): " + "; ".join(
+            f"{cid}: {x.get('article')} — {x.get('doc')} (porta {x.get('door')}, segnale {x.get('signal')})"
+            for cid, x in doors)]
+    return lines
+
+
+ALARM_TITLE = "ALLARME: legge di disciplina tagliata — da leggere prima di ogni promote"
+FAMILY_ALARM_MIN = 5                # src/rag/family_gate.FAMILY_ALARM_MIN, kept here so the report reads a JSON alone
+
+
+def family_alarm(c: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """v79.10 (A5): a cell's alarmed documents -- its family_gate «alarm», else computed from «dropped_graded» (graded:
+    graded_relevant >= 5; proxy: dropped_articles >= 5); [] for a cell (or a baseline) without them."""
+    fam = c.get("family_gate") or {}
+    if isinstance(fam.get("alarm"), list):
+        return [x for x in fam["alarm"] if isinstance(x, dict)]
+    out = []
+    for doc, x in (fam.get("dropped_graded") or {}).items():
+        if not isinstance(x, dict):
+            continue
+        proxy = bool(x.get("proxy"))
+        n = int((x.get("dropped_articles") if proxy else x.get("graded_relevant")) or 0)
+        if n >= FAMILY_ALARM_MIN:
+            out.append({"doc": doc, "n": n, "articles": list(x.get("articles") or []), "proxy": proxy})
+    return sorted(out, key=lambda a: -a["n"])
+
+
+def alarm_state(results: List[Dict[str, Any]]) -> str:
+    """v79.10 (A5): «ALLARME presente» when a cell has a graded alarm; «ALLARME presente (stima, non graduati)» when only
+    proxy ones; "" when none."""
+    found = [a for c in results for a in family_alarm(c)]
+    if any(not a.get("proxy") for a in found):
+        return "ALLARME presente"
+    return "ALLARME presente (stima, non graduati)" if found else ""
+
+
+def family_alarm_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.10 (A5): the report's first section -- per cell, each document the family gate dropped holding 5 or more
+    graded-relevant articles (the articles listed), or «nessuna»; a proxy (the shadow grading off) labelled «stima (non
+    graduati)»; a cell without the family gate's record «nessun dato»."""
+    lines = ["", f"## {ALARM_TITLE}", ""]
+    if not results:
+        return lines + ["- nessuna"]
+    for c in results:
+        fam = c.get("family_gate")
+        alarms = family_alarm(c)
+        if not fam:
+            lines.append(f"- {c.get('id')}: nessun dato (nessun family gate registrato)")
+        elif not alarms:
+            graded = fam.get("dropped_graded") or {}
+            proxy = any(isinstance(x, dict) and x.get("proxy") for x in graded.values())
+            lines.append(f"- {c.get('id')}: nessuna" + (" (stima (non graduati))" if proxy else ""))
+        else:
+            for a in alarms:
+                what = "articoli scartati, stima (non graduati)" if a.get("proxy") else "articoli rilevanti (grado ≥ 2)"
+                lines.append(f"- {c.get('id')}: {a.get('doc')} — {a.get('n')} {what}: "
+                             + (", ".join(a.get("articles") or []) or "—"))
     return lines
 
 
@@ -511,9 +576,12 @@ def regressions(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]
 def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regressed: List[str], run_version: str = "",
            lawyer: Optional[List[str]] = None, baseline: Optional[Dict[str, Any]] = None, mode: str = "") -> str:
     names = list(dict.fromkeys(k["check"] for c in results for k in c["checks"]))
-    lines = [f"# Nightly: {len(results)} cells, structural checks", "", f"Version: {run_version or '—'}"
-             + (f" (baseline {baseline.get('version') or '—'})" if baseline else "") + (f"; {mode}" if mode else ""), "",
-             "| cell | " + " | ".join(names) + " | thesis s | writer s |", "|---" * (len(names) + 3) + "|"]
+    alarm = alarm_state(results)                    # v79.10 (A5): the header says it, the alarm section comes first
+    lines = [f"# Nightly: {len(results)} cells, structural checks" + (f" — {alarm}" if alarm else ""), "",
+             f"Version: {run_version or '—'}"
+             + (f" (baseline {baseline.get('version') or '—'})" if baseline else "") + (f"; {mode}" if mode else "")]
+    lines += family_alarm_lines(results)
+    lines += ["", "| cell | " + " | ".join(names) + " | thesis s | writer s |", "|---" * (len(names) + 3) + "|"]
     for c in results:
         by = {k["check"]: k["ok"] for k in c["checks"]}
         t = c.get("timings") or {}
@@ -548,6 +616,8 @@ def main(argv=None) -> int:
     ap.add_argument("--reasoning-effort", help="v78.1.1: LLM_REASONING_EFFORT for this run (the calls with thinking on)")
     ap.add_argument("--deterministic", action="store_true",
                     help="v79: the thesis call once at temperature 0 (THESIS_DETERMINISTIC), for version-to-version runs")
+    ap.add_argument("--no-family-shadow-grade", action="store_true",
+                    help="v79.10 (A5): skip the family gate's shadow grading (the alarm on a proxy count)")
     args = ap.parse_args(argv)
     if not args.answers and os.path.isfile(args.env):
         from dotenv import load_dotenv
@@ -556,6 +626,8 @@ def main(argv=None) -> int:
         os.environ["LLM_REASONING_EFFORT"] = args.reasoning_effort
     if args.deterministic:                      # v79 (A3): over the env file's, for this run
         os.environ["THESIS_DETERMINISTIC"] = "1"
+    # v79.10 (A5): the family gate's dropped rows graded in shadow, for the alarm -- over the env file's, for this run
+    os.environ["FAMILY_GATE_SHADOW_GRADE"] = "false" if args.no_family_shadow_grade else "true"
     baseline = read_baseline(args.baseline)             # v79.7: before any cell runs
     specs = [c for c in cells() if not args.only or c["id"] in args.only]
     results = [offline_cell(s, args.answers) if args.answers else run_cell(s) for s in specs]

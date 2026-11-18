@@ -1301,11 +1301,14 @@ def _rubrica_tail(rec: Dict[str, Any]) -> str:
 
 
 def family_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
-    """v79.9 (C1): the case's family context (family_gate.context), once per ctx."""
+    """v79.9 (C1): the case's family context (family_gate.context), once per ctx. v79.10 (A5, review): with the
+    retrieval gate's overrides (ctx["family_overrides"], prepare: state["family_gate"]["overrides"]) -- a candidate on a
+    document the retrieval admitted through a door is not out of family (family_gate.carried_override)."""
     if "family_ctx" not in ctx:
         from . import family_gate
         ctx["family_ctx"] = family_gate.context(ctx.get("case") or "", ctx.get("family_words") or "",
                                                 ctx.get("institutions") or [])
+        ctx["family_ctx"]["overrides"] = list(ctx.get("family_overrides") or [])     # v79.10 (A5, review)
     return ctx["family_ctx"]
 
 
@@ -1615,20 +1618,33 @@ def institution_modules() -> Dict[str, Any]:
     return _MODULES["d"]
 
 
-_LAW_TOKEN_RE = re.compile(r"(\d{1,4})\s*/\s*((?:19|20)\d{2})")
-
-
 def same_article(label: str, spec: str) -> bool:
-    """v79.8: the record's label is the module's article -- the same number and code; a special law's by its
-    number/year («2 l. 604/1966» matches «2 L. 15 luglio 1966, n. 604» only through «604/1966» in the label)."""
+    """v79.8: the record's label is the module's article -- the same number and code. v79.10 (A4, archive names): a
+    special law's action («7 l. 241/1990») through its data/corpus_expected.json law: the label's code is one of the
+    law's archive names («7 Legge sul Procedimento Amministrativo 2026», the label the pipeline builds for an article of
+    the archive document) or the same law's citation («7 L. 241/1990») -- never by a number in a name («7 Legge 7
+    agosto 1990, n. 241» is not it); an unmapped law's action matches its citation only. A code the corpus_expected
+    «codes» map («29 c.p.a.»): by its sigla, or the label's code one of its archive names."""
+    from . import corpus_laws
     a_num, _, a_code = str(label or "").partition(" ")
     b_num, _, b_code = str(spec or "").partition(" ")
     if a_num.lower() != b_num.lower():
         return False
-    law = _LAW_TOKEN_RE.search(b_code)
+    law = corpus_laws.law_for(b_code)
     if law:
-        return any(m.groups() == law.groups() for m in _LAW_TOKEN_RE.finditer(a_code))
+        return corpus_laws.law_for(a_code) == law
+    if corpus_laws.cited(b_code)[0]:                # a law no corpus_expected entry holds: its citation, as before
+        return _norm_label(label) == _norm_label(spec)
+    code = " ".join(b_code.split())
+    if code in archive_codes() and corpus_laws.law_of_name(a_code) == code:
+        return True
     return _norm_label(label) == _norm_label(spec)
+
+
+def archive_codes() -> List[str]:
+    """v79.10 (A4): the codes data/corpus_expected.json maps to archive names («c.p.a.»)."""
+    from . import corpus_laws
+    return list((corpus_laws.expected().get("codes") or {}))
 
 
 def certain_text(ctx: Dict[str, Any]) -> str:
@@ -1652,7 +1668,16 @@ _PROFESSIONAL_RE = re.compile(
 _PRIVATE_RE = re.compile(r"\b(?:venditore\s+privato|venditrice\s+privata|un\s+privato|una\s+privata|da\s+(?:un\s+)?privat[oi]|"
                          r"tra\s+privati|privato\s+cittadino|non\s+(?:è|era)\s+(?:un\s+)?(?:professionista|commerciante|"
                          r"un['’]impresa)|annunci\w*\s+(?:di|tra)\s+privat\w*)\b", re.IGNORECASE)
-CONSUMER_CODE_RE = re.compile(r"\b206\s*/\s*2005\b|codice\s+del\s+consumo", re.IGNORECASE)
+
+
+def consumer_code(label: str) -> bool:
+    """v79.9 (B3): a consumer-code article. v79.10 (A4, archive names): its code is the d.lgs. 206/2005 by the archive
+    name or the citation (corpus_laws.law_for), never by an expression on a document's name."""
+    from . import corpus_laws
+    return corpus_laws.law_for(str(label or "").partition(" ")[2]) == CONSUMER_LAW
+
+
+CONSUMER_LAW = "d.lgs. 206/2005"
 
 
 def professional_counterparty(ctx: Dict[str, Any]) -> bool:
@@ -1686,13 +1711,27 @@ def staged(module: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {**module, "actions": actions, "stage": stage, "conditions_met": [c["id"] for c in met]}
 
 
+def module_hit(module: Dict[str, Any], text: str) -> List[str]:
+    """v79.10 (A4): the words of the text that activate the module -- one of its «patterns»; with «weak_patterns», else
+    at least «weak_min» (default 2) different weak patterns' words. [] when none: a module without weak patterns is
+    active on any pattern, as before («il Comune» alone never activates the amministrativo module)."""
+    for p in module.get("patterns") or []:
+        m = re.search(p, text or "", re.IGNORECASE)
+        if m:
+            return [m.group(0)]
+    weak = [m.group(0) for m in (re.search(p, text or "", re.IGNORECASE) for p in module.get("weak_patterns") or [])
+            if m]
+    need = max(1, int(module.get("weak_min") or 2))
+    return weak if weak and len(weak) >= need else []
+
+
 def active_modules(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     """v79.8 (B2): the institution modules of the case -- those whose patterns the first read's institutions name
     (ctx["institutions"]), else the case's own words. v79.9 (B1, B3): each staged (its stage's actions first, its
     conditional ones when met); a module requiring a professional counterparty only with one."""
     mods = institution_modules().get("modules") or []
-    for text in (" ".join(ctx.get("institutions") or []), ctx.get("case") or ""):
-        hit = [m for m in mods if text and any(re.search(p, text, re.IGNORECASE) for p in m.get("patterns") or [])]
+    for text in (" ".join(str(x) for x in ctx.get("institutions") or []), ctx.get("case") or ""):
+        hit = [m for m in mods if text and module_hit(m, text)]
         hit = [m for m in hit if m.get("requires") != "professional_counterparty" or professional_counterparty(ctx)]
         if hit:
             return [staged(m, ctx) for m in hit]
@@ -1712,7 +1751,7 @@ def claim_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: boo
         for spec, why in (m.get("non_actions") or {}).items():
             if same_article(label, spec):
                 return "", CLAIM_REFUSED["non_action"].format(why=why), ()
-    if not consumer and CONSUMER_CODE_RE.search(label):             # v79.9 (B3)
+    if not consumer and consumer_code(label):                       # v79.9 (B3)
         return "", CLAIM_REFUSED["consumer"], ()
     for i, m in enumerate(modules):
         for j, spec in enumerate(m.get("actions") or []):
@@ -3920,6 +3959,7 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "store_fields": _store_fields(rows),                               # v79 (B1): a rule statement's sources
            "records_view": view_log,                                          # v79.7: the ranked trace reads it
            "institutions": read_institutions(state.get("read") or {}),        # v79.8 (B2)
+           "family_overrides": list((state.get("family_gate") or {}).get("overrides") or []),   # v79.10 (A5, review)
            # v79.9 (B1): the stage's sources -- the certain facts and the events the terms read
            "certain_text": " ".join(str(x.get("text") or "") for x in sentences if issue_records_certain(x)),
            "events": fact_events(state),

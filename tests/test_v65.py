@@ -296,8 +296,8 @@ def test_the_first_read_search_gates_its_rubrica_channel_and_the_index_ignores_g
 # --- 10. the special laws: only with their domain signal --------------------------------------------------------------------
 
 def test_a_special_law_needs_its_domain_signal_in_the_first_read():
-    cds = {"_article": ("141", "Codice della Strada 2026"), "s": {}}
-    consumo = {"_article": ("130", "Codice del Consumo"), "s": {}}
+    cds = {"_article": ("141", "c.d.s."), "s": {}}              # v79.10: the labels the pipeline builds for the
+    consumo = {"_article": ("130", "Codice del Consumo 2026"), "s": {}}     # archive's documents (their exact names)
     cc = {"_article": ("2043", "c.c."), "s": {}}
     kept, dropped = special_laws.gate([cds, consumo, cc], "Tizio scivola sul pavimento di un negozio.", set())
     assert kept == [cc] and len(dropped) == 2
@@ -305,7 +305,7 @@ def test_a_special_law_needs_its_domain_signal_in_the_first_read():
     assert kept == [cds]
     kept, _ = special_laws.gate([consumo], "Caio, privato consumatore, acquista una lavatrice in un negozio.", set())
     assert kept == [consumo]
-    kept, _ = special_laws.gate([consumo], "Il negozio vende a un'altra società.", {("130", "Codice del Consumo")})
+    kept, _ = special_laws.gate([consumo], "Il negozio vende a un'altra società.", {("130", "Codice del Consumo 2026")})
     assert kept == [consumo]                                                            # the user names it
     read = {"facts": ["Caio acquista online da un rivenditore"], "parties": [{"name": "Caio", "role": "consumatore"}]}
     assert special_laws.signals(special_laws.read_text(read))["codice_del_consumo"]

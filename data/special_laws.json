@@ -1,5 +1,5 @@
 {
- "_about": "v65: the special-law codes (src/rag/special_laws.py) a case admits only with their domain signal in the first read (its facts, goal, hypotheses, parties, alternatives): an article of one of them is no candidate, and none of their computed term lines is shown, unless the signal is there or the user names the article. code: a regular expression on the row's code or document name; signal: one expression that must match, or signal_all: every expression must match (the consumer code: a professional seller AND a consumer). The list and the expressions are Code's draft; the corpus' document names are to be checked on the server. v75: a regulation (Reg. / Regolamento (UE) nn/yyyy) needs an entry of its own -- its own domain signal, never the sector's (DORA: ICT risk, not «banca»); a regulation with no entry never reaches grading unless the user names it (special_laws.gate). v75b: the store's other regulations -- Reg. 692/2014, Direttiva 94/25/CE, the Regolamento generale and the Provvedimento 2022/1917 of the Banca d'Italia -- each with its own signal. v79.9 (Block C): every law carries its «family» (and, where known, «number»/«year»: a document named «… n. 385» of 1993 is the TUB). The family gate (src/rag/family_gate.py) admits a document only by its family: the codes always; the defaults (strada, stupefacenti, mediazione, consumo with a professional counterparty); a family law with its signal; an active module's laws (data/corpus_expected.json); a law the user names. New entries: antiriciclaggio, the privacy code, the insurance code, the schools TU, the nautica code, the public contracts code, the Banca d'Italia circulars.",
+ "_about": "v65: the special-law codes (src/rag/special_laws.py) a case admits only with their domain signal in the first read (its facts, goal, hypotheses, parties, alternatives): an article of one of them is no candidate, and none of their computed term lines is shown, unless the signal is there or the user names the article. code: a regular expression on the row's code or document name; signal: one expression that must match, or signal_all: every expression must match (the consumer code: a professional seller AND a consumer). The list and the expressions are Code's draft; the corpus' document names are to be checked on the server. v75: a regulation (Reg. / Regolamento (UE) nn/yyyy) needs an entry of its own -- its own domain signal, never the sector's (DORA: ICT risk, not «banca»); a regulation with no entry never reaches grading unless the user names it (special_laws.gate). v75b: the store's other regulations -- Reg. 692/2014, Direttiva 94/25/CE, the Regolamento generale and the Provvedimento 2022/1917 of the Banca d'Italia -- each with its own signal. v79.9 (Block C): every law carries its «family» (and, where known, «number»/«year»: a document named «… n. 385» of 1993 is the TUB). The family gate (src/rag/family_gate.py) admits a document only by its family: the codes always; the defaults (strada, stupefacenti, mediazione, consumo with a professional counterparty); a family law with its signal; an active module's laws (data/corpus_expected.json); a law the user names. New entries: antiriciclaggio, the privacy code, the insurance code, the schools TU, the nautica code, the public contracts code, the Banca d'Italia circulars. v79.10 (A4): «families» -- a family's own signal, shared by its laws: «strong» (one expression suffices) or «weak» (at least «weak_min» of them, default 2, each a different expression): «il Comune», «la PA» or a bare «provvedimento» alone never admit an administrative law (a 2051 custodia case naming the Comune as the road's custodian stays civil). A law without «signal»/«signal_all» whose family has a «families» entry takes the family's signal; «signal_families» adds a family's signal to a law's own (the TU edilizia keeps its family «edilizia» and its own signal -- private building works, appalto -- and is admitted by the amministrativo signal too). New entry: L. 241/1990 (family amministrativo). v79.10 (A4, archive names): an entry matched to the archive by its documents' exact names -- «expected» (the data/corpus_expected.json law it is: its «archive_names») or its own «archive_names» (the d.lgs. 81/2008, «Testo Unico sulla Sicurezza del Lavoro 2026»; the d.lgs. 231/2001, «Responsabilità Amministrativa di Società ed Enti 2026») -- is found on a row's code or document name only by those names (whitespace-normalised equality) or by its own citation («d.P.R. 309/1990», the whole text); its «code» expression and number/year read the user's words only. The other entries match as before.",
  "laws": [
   {
    "id": "codice_della_strada",
@@ -8,7 +8,8 @@
    "signal": "\\bveicol|\\bautomobil|\\bautovettur|\\bauto\\b|\\bmoto\\b|\\bmotocicl|\\bciclomotor|\\bcamion|\\bfurgon|\\bautocarr|\\bautobus|\\bguid[aeo]|\\bconducent|\\bpatente|\\bsinistr\\w*\\s+strad|\\bincident\\w*\\s+strad|\\bcircolazion|\\bstrad[ae]\\b|\\bparcheggi|\\bsemafor|\\bincroci|\\bpedon|\\balcoltest|\\btasso\\s+alcolemic|\\bbicicl|\\bmonopattin|\\bcarreggiat",
    "family": "strada",
    "number": "285",
-   "year": "1992"
+   "year": "1992",
+   "expected": "d.lgs. 285/1992"
   },
   {
    "id": "codice_del_consumo",
@@ -20,7 +21,8 @@
    ],
    "family": "consumo",
    "number": "206",
-   "year": "2005"
+   "year": "2005",
+   "expected": "d.lgs. 206/2005"
   },
   {
    "id": "testo_unico_bancario",
@@ -47,7 +49,20 @@
    "signal": "\\bedili|\\bcostruzion|\\bpermesso\\s+di\\s+costruire|\\babus\\w*\\s+edili|\\bcantier|\\bristruttur|\\bsanatori|\\bcondon|\\bfabbricat|\\bsopraelevaz|\\bscia\\b|\\bdia\\b",
    "family": "edilizia",
    "number": "380",
-   "year": "2001"
+   "year": "2001",
+   "signal_families": [
+    "amministrativo"
+   ],
+   "expected": "d.P.R. 380/2001"
+  },
+  {
+   "id": "legge_241_1990",
+   "name": "L. 241/1990 (procedimento amministrativo)",
+   "family": "amministrativo",
+   "number": "241",
+   "year": "1990",
+   "code": "\\b241\\s*/\\s*1990\\b|(?:legge\\s+sul|nuove\\s+norme\\s+in\\s+materia\\s+di)\\s+procedimento\\s+amministrativo",
+   "expected": "L. 241/1990"
   },
   {
    "id": "testo_unico_immigrazione",
@@ -65,7 +80,8 @@
    "signal": "\\bstupefacent|\\bdrog|\\bhashish|\\bcocain|\\beroin|\\bmarijuana|\\bcannabis|\\bspaccio|\\bsostanz\\w*\\s+(?:stupefacent|psicotrop)",
    "family": "stupefacenti",
    "number": "309",
-   "year": "1990"
+   "year": "1990",
+   "expected": "d.P.R. 309/1990"
   },
   {
    "id": "testo_unico_sicurezza_lavoro",
@@ -74,7 +90,10 @@
    "signal": "\\binfortun|\\bsicurezza\\s+sul\\s+lavoro|\\bcantier|\\bdatore\\s+di\\s+lavoro|\\blavorator|\\bdispositiv\\w*\\s+di\\s+protezione|\\brspp\\b|\\bmacchinar",
    "family": "sicurezza sul lavoro",
    "number": "81",
-   "year": "2008"
+   "year": "2008",
+   "archive_names": [
+    "Testo Unico sulla Sicurezza del Lavoro 2026"
+   ]
   },
   {
    "id": "testo_unico_enti_locali",
@@ -101,7 +120,10 @@
    "signal": "\\bsociet[àa]\\b|\\bent[ei]\\b|\\bdatore\\s+di\\s+lavoro\\b|\\bdatori\\s+di\\s+lavoro\\b",
    "family": "responsabilità degli enti",
    "number": "231",
-   "year": "2001"
+   "year": "2001",
+   "archive_names": [
+    "Responsabilità Amministrativa di Società ed Enti 2026"
+   ]
   },
   {
    "id": "dora",
@@ -219,5 +241,26 @@
    "code": "circolare\\s+(?:n\\.\\s*\\d+\\s+)?(?:della\\s+)?banca\\s+d['’]\\s*italia|banca\\s+d['’]\\s*italia.{0,40}circolare|disposizioni\\s+di\\s+vigilanza",
    "signal": "\\bvigilanz\\w*\\s+(?:bancari|prudenzial)\\w*|\\bsegnalazion\\w*\\s+(?:di\\s+vigilanza|alla\\s+banca\\s+d['’]\\s*italia)|\\bBanca\\s+d['’]\\s*Italia\\b"
   }
- ]
+ ],
+ "families": {
+  "amministrativo": {
+   "_about": "v79.10 (A4): the ten signals of the administrative matter -- permesso di costruire, SCIA, annullamento d'ufficio, autotutela, provvedimento amministrativo, TAR (and the Consiglio di Stato), ricorso only with an administrative word (straordinario, gerarchico, al TAR), silenzio only as silenzio-assenso/-rifiuto/-inadempimento or the administration's, the preavviso di rigetto and the 21-quinquies/octies/nonies are strong; the Comune / PA / ente pubblico and a bare provvedimento (not the judge's) are weak, two needed. The same expressions as the module's (data/institution_modules.json «amministrativo»). v79.10 (A4, review): «autotutela» is strong only in its administrative form (annullamento / revoca in autotutela, autotutela amministrativa, the Comune's or the administration's in the same sentence) -- never the civil self-help (1460, the tenant's, autotutela contrattuale / possessoria); the weak act needs the ente: a provvedimento the Comune / PA adopts in the same sentence (no judge word in it, never disciplinare) or «del Comune» / comunale / dirigenziale, a diniego of a permesso / autorizzazione / licenza / concessione / istanza / accesso, an ordinanza sindacale, a delibera comunale; «nel Comune di X» (an address) and «(PA)» (a province) are no ente.",
+   "strong": [
+    "\\bpermess\\w*\\s+(?:di\\s+)?costruire\\b",
+    "(?-i:(?<![.\\w])S\\.?C\\.?I\\.?A\\.?(?![\\w]))|\\b(?:la|una|della|alla|nella|con\\s+la)\\s+scia\\b(?!\\s+(?:di|del|dell|della|dello|dei|degli|delle)\\b)|\\bsegnalazion\\w*\\s+certificat\\w*\\s+(?:di\\s+)?inizio\\s+(?:di\\s+)?attivit",
+    "\\bannullament\\w*\\s+d['’]\\s*ufficio|\\bannullat\\w*\\s+d['’]\\s*ufficio",
+    "\\b(?:annullament\\w*|annullat\\w*|revoc\\w*|ritir\\w*|riesam\\w*)\\s+(?:[\\w'’]+\\s+){0,3}?in\\s+(?:via\\s+di\\s+)?autotutela\\b|\\bautotutela\\s+(?:amministrativ|decisori|pubblicistic)\\w*|(?:(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\bsindac[oi]\\b|(?<!consiglio\\sdi\\s)\\bamministrazion\\w*|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b)(?:(?!\\bautotutela\\b)[^.;\\n]){0,80}?\\bautotutela\\b(?!\\s+(?:contrattual|privat|possessori|negozial|esecutiv|stragiudizial)\\w*)|\\bautotutela\\b(?!\\s+(?:contrattual|privat|possessori|negozial|esecutiv|stragiudizial)\\w*)[^.;\\n]{0,60}?(?:dell['’]\\s*amministrazion|della\\s+(?:pubblica\\s+amministrazione|(?-i:P\\.?A\\.?))|del\\s+(?-i:Comune))",
+    "\\bprovvediment\\w*\\s+amministrativ",
+    "(?-i:(?<![.\\w])T(?:AR|ar|\\.A\\.R\\.?)(?![\\w]))|\\btribunal\\w*\\s+amministrativ|\\bgiudice\\s+amministrativ|\\bconsiglio\\s+di\\s+stato\\b",
+    "\\bricors\\w*\\s+(?:straordinari\\w*|gerarchic\\w*|amministrativ\\w*)|\\bricors\\w*\\b[^.;\\n]{0,40}?(?:(?-i:(?<![.\\w])T(?:AR|ar|\\.A\\.R\\.?)(?![\\w]))|\\btribunal\\w*\\s+amministrativ|\\bconsiglio\\s+di\\s+stato\\b|\\bgiudice\\s+amministrativ)",
+    "\\bsilenzio[\\s-]+(?:assenso|rifiuto|inadempimento|diniego)\\b|\\bsilenzio\\s+(?:serbato\\s+)?(?:dell['’]\\s*amministrazion|della\\s+(?:pubblica\\s+amministrazione|p\\.?\\s?a\\.?)|del\\s+comune\\b)",
+    "\\bpreavviso\\s+di\\s+rigetto|\\bmotivi\\s+ostativi|\\b21[\\s-]?(?:nonies|quinquies|octies)\\b"
+   ],
+   "weak": [
+    "(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\b(?:il|al|dal|del|sul|col|un|ogni)\\s+comune\\b(?!\\s+(?:accordo|denominatore|sentire|interesse|consenso|uso|amico))|\\bamministrazion\\w*\\s+(?:comunal|pubblic|regional|provincial|statal)\\w*|\\bpubblica\\s+amministrazione\\b|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b",
+    "\\bprovvediment[oi]\\s+(?:comunal|dirigenzial|sindacal|regional|prefettizi)\\w*|\\bprovvediment[oi]\\s+(?:del|della|dell['’]|dal|dalla|dall['’])\\s*(?:(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\bsindac[oi]\\b|(?<!consiglio\\sdi\\s)\\bamministrazion\\w*|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b)|(?:(?-i:(?<![Nn]el\\s)(?<!\\bin\\s)\\bComun[ei]\\b)|\\bsindac[oi]\\b|(?<!consiglio\\sdi\\s)\\bamministrazion\\w*|(?-i:(?<![.\\w(])P\\.?A\\.?(?![\\w.)]))|\\bent[ei]\\s+(?:pubblic|local|territorial)\\w*|\\bufficio\\s+tecnico\\b)(?:(?!\\b(?:giudic|tribunal|cort[ei]\\b|magistrat|decret|ingiunzion|sentenz|udienz|g\\.?i\\.?p\\b))[^.;\\n]){0,80}?\\bprovvediment[oi]\\b(?!\\s+(?:disciplinar\\w*|giudizi\\w*|giurisdizional\\w*|cautelar\\w*|d['’]urgenza|del\\s+(?:giudice|tribunale|magistrat\\w*)|di\\s+(?:sequestro|condanna|convalida|ingiunzione)))(?=(?:(?!\\b(?:giudic|tribunal|cort[ei]\\b|magistrat|decret|ingiunzion|sentenz|udienz|g\\.?i\\.?p\\b))[^.;\\n])*(?:[.;\\n]|$))|\\bdiniego\\s+(?:(?:del|della|dell['’]|di|dei|delle)\\s*)?(?:\\w+\\s+){0,1}?(?:permess|autorizzazion|concession|licenz|istanz|accesso|nulla\\s*-?osta|agibilit|condono|sanatori)|\\bordinanz\\w*\\s+(?:sindacal\\w*|comunal\\w*|del\\s+sindaco)|\\bdelibera\\w*\\s+(?:comunal\\w*|della\\s+giunta|del\\s+consiglio\\s+comunal\\w*)"
+   ],
+   "weak_min": 2
+  }
+ }
 }

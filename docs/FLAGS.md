@@ -25,7 +25,7 @@ Every environment variable the server code (`src/`) reads, plus those read by th
 - `ROLE_FIT` also accepts `shadow` (see below).
 - The test suite starts every test with every boolean flag unset. `tests/conftest.py:_flags()` builds its `FLAGS` set
   by scanning `src/rag/**/*.py` for `enabled("NAME"` / `_enabled("NAME"` and for module constants matching
-  `^[A-Z_]*FLAG[A-Z_]* = "NAME"`. That finds 83 flags, and all of them are listed below. Four boolean flags are
+  `^[A-Z_]*FLAG[A-Z_]* = "NAME"`. That finds 85 flags, and all of them are listed below. Four boolean flags are
   outside that scan, and the suite does not unset them: `CHAT_KEEPALIVE_ENABLED` (it lives in `src/chatbot/`),
   `FACT_ISSUES_RESOLVER_V2_ENABLED` (its constant `RESOLVER_V2_FLAG` contains a digit),
   `RULING_CARDS_CIVIL_STRONG_ONLY` (its constant is `CIVIL_STRONG_ENV`) and `STRIPE_AUTOMATIC_TAX_ENABLED` (it does
@@ -368,6 +368,12 @@ and the nightly report carry it. No environment variable changes it.
 |---|---|---|---|
 | `RULINGS_RECORD` | false | `src/rag/rulings.py:enabled` (`FLAG`) | The Cassazione rulings into the record (`src/rag/rulings.py`): the rulings citing each record article, with estremi parsed from the file name, ranked, a quoted «passaggio della motivazione» picked by one linking call, computed orientations, §5 rendered by the code with the fixed corpus line, the lawyer's pronunce di riferimento (`src/rag/landmark_rulings.py`). The writer cites only the registry. The thesis and objections calls receive it, and a prevailing line against a contest lowers its realismo to basso. With it on, `select:v1_case_law` (`defensive_generation._select_articles`), the REFERS_TO neighbours in a topic's articles (`topic_step.articles_split`) and `EDGE_EXPAND` stop feeding the pool. Keep it off until `scripts/rulings_parse_rate.py` has been reported and `data/ruling_sections.json` is confirmed. |
 
+## 5d. v79.10 addition (addendum A5)
+
+| Name | Default | Read in | What it does |
+|---|---|---|---|
+| `FAMILY_GATE_SHADOW_GRADE` | false | `src/rag/interactive_flow.py:family_shadow_grade` (`FAMILY_SHADOW_GRADE_FLAG`) | The family gate's alarm (`docs/RULES.md` 11.6). After round 1's grading, the retrieval rows the family gate dropped (distinct articles, at most 40, by retrieval order) are graded by the same grader in their own isolated call, and the result is only recorded: `state["family_gate"]["dropped_graded"]` {doc: {graded_relevant, articles}}; nothing else reads it. Off: a proxy count, never graded ({doc: {dropped_articles, articles, proxy: true}}, «stima (non graduati)»). `scripts/nightly_sim.py` sets it to true for its run (`--no-family-shadow-grade` skips it). It costs one more grading call per case when a document was dropped, so leave it off on the live copy. |
+
 ## 6. Which copy sets what
 
 This section covers which file sets the flags in each copy. Only the code defaults are documented here; check the
@@ -380,4 +386,4 @@ files on the server for the values actually set.
 | `scripts/promote.sh` (live ← test) | Copies the boolean flags of `/root/v38/.env.v45` into `/opt/chatbot/.env`. That means lines `KEY=true\|false\|yes\|no\|on\|off` whose key does not start with `LLM_`, `EMBEDDING_`, `NEO4J_` or `STRIPE_`. It never copies LLM settings. Each change is printed (`scripts/promote.sh` step 3). |
 | `scripts/nightly_sim.py` | Loads `--env` (default `.env`). The docstring requires the server's environment with `LAWYER_METHOD=true`, `CASE_FIRST_SINGLE_SHOT=true` and `LLM_THINKING=per_call` (except in `--answers` mode, which needs no model and no database). |
 | `scripts/diagnose_long.py` | Loads `--env`, then applies `--set NAME=VALUE`. `--interactive-sim` defaults `INTERACTIVE_FLOW=true` and `INTERACTIVE_CASE_FIRST=true`. `--interactive-sim --single-shot` defaults `CASE_FIRST_SINGLE_SHOT=true` and `INTERACTIVE_CASE_FIRST=true`. A `--set` of the same name wins. With `VOTE_POOL_ENABLED` and no readable `VOTE_POOL_IDF_FILE`, it computes the counts once and sets `VOTE_POOL_IDF_FILE` for its child processes. |
-| Tests (`tests/conftest.py`) | Every name in `FLAGS` (the 83 from `_flags()`) is unset before each test. A test that needs a flag sets it with `monkeypatch.setenv`. |
+| Tests (`tests/conftest.py`) | Every name in `FLAGS` (the 85 from `_flags()`) is unset before each test. A test that needs a flag sets it with `monkeypatch.setenv`. |

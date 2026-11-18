@@ -96,6 +96,11 @@ CASE_FIRST_FLAG = "INTERACTIVE_CASE_FIRST"
 ROUND1_GRADE_ROUNDS = 2         # G: expansion rounds; the answer step grades the chosen topics' rest. v60o: never the
                                 # kept set's limit -- round 1 grades every candidate the prefilter keeps (grade_kept)
 RESERVE_MAX = 12                # G: ungraded rows kept for the answer step (the chosen topics' Sezione / Capo)
+# v79.10 (A5): the family gate's dropped retrieval rows graded in shadow after round 1's grading -- recorded only
+# (out["family_gate"]["dropped_graded"], the nightly's alarm); off: a proxy count, never graded
+FAMILY_SHADOW_GRADE_FLAG = "FAMILY_GATE_SHADOW_GRADE"
+FAMILY_SHADOW_MAX = 40          # distinct dropped articles graded in shadow, by retrieval order
+FAMILY_SHADOW_STAGE = "family_shadow"   # (review) its round-1 stage: out of round1_llm, its seconds out of total_s
 
 
 def case_first_enabled() -> bool:
@@ -910,8 +915,20 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         from . import special_laws             # v65: a special law only with its domain signal in the first read
         named_keys = {_key(r) for r in dg._refs_in(case) if len(r) == 2}
         words = special_laws.read_text(first_read) if first_read else case
-        article_rows, special_out = special_laws.gate(article_rows, words, named_keys)
-        regime_rows, special_regime = special_laws.gate(regime_rows, words, named_keys)
+        # v79.10 (A5, review): the family context before the special-law gate -- its override doors reach the table's
+        # laws (a row special_laws.gate drops stays when a door admits it), its dropped rows reach the alarm
+        from . import family_gate
+        fam_ctx = family_gate.context(case, words, read_institutions(first_read) if first_read else [])
+        special_overrides: List[Dict[str, Any]] = []
+
+        def special_door(row: Dict[str, Any]) -> bool:
+            return bool(_isolated("family_override", lambda: family_gate.rescued(
+                row, fam_ctx, named_keys, "special_law_gate", special_overrides), False))
+        special_before = list(article_rows)
+        article_rows, special_out = special_laws.gate(article_rows, words, named_keys, special_door)
+        regime_rows, special_regime = special_laws.gate(regime_rows, words, named_keys, special_door)
+        special_kept = {id(r) for r in article_rows}
+        special_dropped_rows = [r for r in special_before if id(r) not in special_kept]
         track_gate(top, gates, "special_law_gate", article_rows)
         if special_out or special_regime:
             gone = {_key(_parse_label(x.split(" (", 1)[0])) for x in special_out + special_regime}
@@ -922,15 +939,28 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             _log("special_law_gate", out["special_law_gate"])
         # v79.9 (C1): the document-level allowlist per matter family -- every row, the first read's and the rules'
         # anchors' included, and the area gate's «altri profili» rows (family_gate)
-        from . import family_gate
-        fam_ctx = family_gate.context(case, words, read_institutions(first_read) if first_read else [])
-        fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": []}
+        fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": [], "overrides": list(special_overrides)}
+        if special_overrides:
+            _log("family_override", {"source": "special_law_gate", "overrides": special_overrides})
+        # v79.10 (A5): the retrieval's rows the gate dropped (shadow) -- (review) the special-law gate's too
+        fam_dropped_rows: List[Dict[str, Any]] = list(special_dropped_rows)
         for name, part in (("retrieval", "article_rows"), ("regimes", "regime_rows"), ("altri profili", "outside")):
             rows_now = {"article_rows": article_rows, "regime_rows": regime_rows, "outside": outside}[part]
-            got = _isolated("family_gate", lambda: family_gate.gate(rows_now, fam_ctx, named_keys, name), None)
+            call_overrides: List[Dict[str, Any]] = []
+            got = _isolated("family_gate", lambda: family_gate.gate(rows_now, fam_ctx, named_keys, name,
+                                                                    call_overrides), None)
             if got is None:
                 continue
             kept_rows, gone_rows, admitted_docs = got
+            seen = {(x["doc"], x["article"], x["door"]) for x in fam["overrides"]}      # (review) a row the special-
+            call_overrides = [x for x in call_overrides                                 # law gate's doors kept: once
+                              if (x["doc"], x["article"], x["door"]) not in seen]
+            if call_overrides:                          # v79.10 (A5): each override door, logged per gate call
+                fam["overrides"] += call_overrides
+                _log("family_override", {"source": name, "overrides": call_overrides})
+            if part == "article_rows" and gone_rows:
+                kept_ids = {id(r) for r in kept_rows}
+                fam_dropped_rows += [r for r in rows_now if id(r) not in kept_ids]
             fam["dropped"] += gone_rows
             fam["admitted"] += [x for x in admitted_docs if x not in fam["admitted"]]
             if part == "article_rows":
@@ -996,6 +1026,15 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             _log("grading_breadth", out["grading"]["breadth"])
             _log("grading_invariant", out["grading"]["invariant"])
             _log("grading_calls", {**out["grading"]["calls"], "grading_s": out["grading"]["s"]})
+            # v79.10 (A5): the shadow grading -- (review) on a meter of its own, its seconds a stage of their own: never
+            # the request's grading_s, round1_llm, llm_calls or total_s (the nightly's counters measure the pipeline)
+            t_shadow = time.time()
+            stage_meter.mark(FAMILY_SHADOW_STAGE)
+            with stage_meter.side() as shadow_meter:
+                fam["dropped_graded"] = _isolated("family_shadow_grade", lambda: family_shadow_grade(
+                    text, request, fam_dropped_rows, analysis), {}) or {}
+            fam["shadow_grading"] = {"calls": int(shadow_meter.total("llm")), "s": round(time.time() - t_shadow, 1)}
+            stage_meter.mark("grading")
             if search_log:
                 grades = {f"{r['_article'][0]} {r['_article'][1]}": r.get("_grade") for r in article_rows
                           if r.get("_article") and r.get("_first_read")}
@@ -1004,6 +1043,12 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
                 search_log["graded_2plus"] = sum(1 for g in grades.values() if isinstance(g, int) and g >= 2)
                 out["first_read_search"] = search_log
                 _log("first_read_search", search_log)
+        if "dropped_graded" not in fam:         # v79.10 (A5): no round-1 grading -- the proxy count
+            fam["dropped_graded"] = _isolated("family_shadow_proxy", lambda: family_shadow_proxy(fam_dropped_rows),
+                                              {}) or {}
+        fam["alarm"] = _isolated("family_alarm", lambda: family_gate.alarm(fam["dropped_graded"]), []) or []
+        if fam["alarm"]:
+            _log("family_alarm", fam["alarm"])
         if case_first and graded is not None:   # v60g (1), v60m: an article whose distinctive element the case
             from . import issue_records        # contradicts or the facts exclude: grade 1 (never one the case is silent on)
             stage_meter.mark("distinctive_link")
@@ -1093,6 +1138,72 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
         if comma_material.enabled():
             _isolated("commi", lambda: comma_material.attach(session, rows, "strategy", store=store_))
         out["topic_rows"] = rows
+    return out
+
+
+def family_shadow_rows(rows: Sequence[Dict[str, Any]], top: int = FAMILY_SHADOW_MAX) -> List[Dict[str, Any]]:
+    """v79.10 (A5): the family gate's dropped retrieval rows to grade in shadow -- distinct articles, at most top, by
+    retrieval order; copies (the shadow grading never touches a row of the pipeline)."""
+    out, seen = [], set()
+    for r in rows or []:
+        ref = r.get("_article")
+        if not ref or len(ref) != 2 or _key(ref) in seen:
+            continue
+        seen.add(_key(ref))
+        out.append(copy.copy(r))
+        if len(out) >= top:
+            break
+    return out
+
+
+def _shadow_doc(row: Dict[str, Any]) -> str:
+    return str((row.get("d") or {}).get("name") or (row.get("_article") or ("", ""))[1])
+
+
+def family_shadow_proxy(rows: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.10 (A5): FAMILY_GATE_SHADOW_GRADE off (or no grading) -- per dropped document, its distinct dropped articles,
+    never graded: {doc: {"dropped_articles": n, "articles": [labels], "proxy": True}} («stima (non graduati)»)."""
+    out: Dict[str, Any] = {}
+    for r in family_shadow_rows(rows, top=10 ** 6):
+        x = out.setdefault(_shadow_doc(r), {"dropped_articles": 0, "articles": [], "proxy": True})
+        x["articles"].append(_label(r["_article"]))
+        x["dropped_articles"] = len(x["articles"])
+    return out
+
+
+def family_shadow_grade(text: str, request: str, rows: Sequence[Dict[str, Any]], analysis: Dict[str, Any]
+                        ) -> Dict[str, Any]:
+    """v79.10 (A5): the alarm's grading -- with FAMILY_GATE_SHADOW_GRADE on, the family gate's dropped retrieval rows
+    (family_shadow_rows: distinct, at most FAMILY_SHADOW_MAX, retrieval order) graded by round 1's grader
+    (dg._filter_applicable_articles under the same grading_limits shape, in its own _isolated call), recorded ONLY:
+    {doc: {"graded_relevant": n (grade >= 2), "articles": [the labels graded 2 or more]}} -- every graded document,
+    nothing else reads it. Off, the grader failing, or nothing dropped: the proxy (family_shadow_proxy)."""
+    rows = list(rows or [])
+    if not rows:
+        return {}
+    if not feature_flags.enabled(FAMILY_SHADOW_GRADE_FLAG):
+        return family_shadow_proxy(rows)
+    from . import defensive_generation as dg
+    shadow = family_shadow_rows(rows)
+    limits = {"graded": True, "grade_kept": True, "grade_all": True, "rounds": ROUND1_GRADE_ROUNDS,
+              "prefilter": dg.grade_prefilter_n(),
+              "prefilter_keep": [f"{r['_article'][0]} {r['_article'][1]}" for r in shadow]}
+    with dg.grading_limits(limits):
+        graded = _isolated("family_shadow_grading", lambda: dg._filter_applicable_articles(
+            text, request, shadow, analysis), None)
+    if graded is None:
+        return family_shadow_proxy(rows)
+    out: Dict[str, Any] = {}
+    for r in shadow:
+        out.setdefault(_shadow_doc(r), {"graded_relevant": 0, "articles": []})
+    for g in graded or []:
+        if not g.get("_article") or not isinstance(g.get("_grade"), int) or g["_grade"] < 2:
+            continue
+        x = out.setdefault(_shadow_doc(g), {"graded_relevant": 0, "articles": []})
+        label = _label(g["_article"])
+        if label not in x["articles"]:
+            x["articles"].append(label)
+            x["graded_relevant"] = len(x["articles"])
     return out
 
 
@@ -6504,7 +6615,7 @@ def special_law_aliases(keys: Dict[str, tuple], have: Dict[tuple, Dict[str, Any]
             continue
         for k, row in have.items():
             doc = str((row.get("d") or {}).get("name") or "")
-            if k[0] == key[0] and (special_laws.law_of(k[1]) or special_laws.law_of(doc) or {}).get("id") == law["id"]:
+            if k[0] == key[0] and (special_laws.law_of_row(k[1], doc) or {}).get("id") == law["id"]:   # v79.10 (A4)
                 out[label] = _label(k)
                 break
     return out
@@ -8116,9 +8227,22 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     fam = state.get("family_gate") or {}                                                            # v79.9 (C2)
     out["family_gate_dropped"] = len(fam.get("dropped") or [])
     out["family_admitted_outside_codes"] = len(fam.get("admitted") or [])
+    out["family_overrides"] = len(fam.get("overrides") or [])                                       # v79.10 (A5)
+    shadow_run = fam.get("shadow_grading") or {}            # (review) the shadow grading's own cost, never the pipeline's
+    out["family_shadow_llm"] = int(shadow_run.get("calls") or 0)
+    out["family_shadow_s"] = float(shadow_run.get("s") or 0)
+    if isinstance(out.get("total_s"), (int, float)) and out["family_shadow_s"]:
+        out["total_s"] = round(max(0.0, out["total_s"] - out["family_shadow_s"]), 1)
+    out["family_alarm"] = len(fam["alarm"]) if isinstance(fam.get("alarm"), list) else len(
+        _family_alarm(fam.get("dropped_graded") or {}))
     out.update(grading_counters(state))                                                             # v79.8 (C4)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out
+
+
+def _family_alarm(dropped_graded: Dict[str, Any]) -> List[Dict[str, Any]]:
+    from . import family_gate
+    return family_gate.alarm(dropped_graded)
 
 
 def single_shot_timings(state: Dict[str, Any], t0: float, t1: float) -> Dict[str, Any]:

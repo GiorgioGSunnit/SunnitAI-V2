@@ -33,6 +33,10 @@ cd /root/v38 && scripts/serve_test.sh        # hand test; scripts/serve_test.sh 
 bash /root/v38/scripts/promote.sh            # to live
 ```
 
+**Before every promote, read the nightly's family alarm** (v79.10 A5: the report's first section, «ALLARME: legge di
+disciplina tagliata»; the header line says «ALLARME presente»): a document the family gate dropped with 5 or more
+graded-relevant articles in one cell is a governing law cut out -- do not promote until it is understood.
+
 **`deploy.sh`** (Mac to `/root/v38`) syncs one directory at a time:
 
 - `src/ scripts/ docs/ tests/` are mirrored (`--delete`): a file removed from the repo is removed from the copy.
