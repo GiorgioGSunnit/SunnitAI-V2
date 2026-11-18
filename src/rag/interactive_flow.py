@@ -6044,6 +6044,9 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
     if route:
         ctx["penal_route"] = _isolated("penal_route", lambda: penal_route_text(route, rows), {}) or {}
         state.setdefault("block_counters", {})["penal_route"] = route[0]
+    ctx["missing_laws"] = _isolated("missing_laws", lambda: lawyer_method.missing_laws(ctx), {}) or {}    # v79.9 (B2)
+    counters = state.setdefault("block_counters", {})
+    counters["missing_laws_lines"] = max(int(counters.get("missing_laws_lines") or 0), int(bool(ctx["missing_laws"])))
     from . import rulings as rulings_mod
     record = shared_record if shared_record is not None else (    # v79.6 (item 2): one record for every client
         _isolated("rulings_for_record", lambda: rulings_record(ctx, rows), None) if rulings_mod.enabled() else None)

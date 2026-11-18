@@ -131,6 +131,8 @@ async def _lifespan(app: FastAPI):
     logger.info("Cypher query log file: %s", log_path)
     # Section vectors are written by BE on upload (post_process step 3); BE's
     # scripts/backfill_embeddings_v2.py fills any gaps. V2 writes none.
+    from ..rag import corpus_laws       # v79.9 (B2): the primary documents' names, cached for the missing-laws line
+    asyncio.get_running_loop().run_in_executor(None, corpus_laws.warm)
     expiry_task = asyncio.create_task(_background_doc_expiry_job())
     session_expiry_task = asyncio.create_task(_background_session_expiry_job())
     yield

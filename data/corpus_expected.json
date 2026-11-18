@@ -1,0 +1,93 @@
+{
+  "_about": "v79.9 (B4): per institution module, the special laws expected in the graph -- the same list as the module's «laws» in data/institution_modules.json (a test keeps them equal). A law is present when a primary document's name holds its number and year («n. 604» and «1966», or «604/1966») or one of its aliases. scripts/corpus_gaps.py --env .env prints the missing ones for ingestion; the parere prints one fixed line in §1 and §9 when a case's module has one missing (lawyer_method.MISSING_LAWS_LINE). «defaults»: the laws admitted for every civil or criminal case (Block C's family allowlist), checked the same way.",
+  "laws": {
+    "L. 604/1966": {
+      "number": "604",
+      "year": "1966",
+      "aliases": []
+    },
+    "L. 300/1970": {
+      "number": "300",
+      "year": "1970",
+      "aliases": [
+        "statuto dei lavoratori"
+      ]
+    },
+    "d.lgs. 23/2015": {
+      "number": "23",
+      "year": "2015",
+      "aliases": [
+        "jobs act"
+      ]
+    },
+    "d.lgs. 81/2015": {
+      "number": "81",
+      "year": "2015",
+      "aliases": []
+    },
+    "L. 24/2017": {
+      "number": "24",
+      "year": "2017",
+      "aliases": [
+        "gelli-bianco",
+        "legge gelli"
+      ]
+    },
+    "d.lgs. 206/2005": {
+      "number": "206",
+      "year": "2005",
+      "aliases": [
+        "codice del consumo"
+      ]
+    },
+    "L. 898/1970": {
+      "number": "898",
+      "year": "1970",
+      "aliases": [
+        "legge sul divorzio"
+      ]
+    },
+    "d.lgs. 28/2010": {
+      "number": "28",
+      "year": "2010",
+      "aliases": []
+    },
+    "d.lgs. 285/1992": {
+      "number": "285",
+      "year": "1992",
+      "aliases": [
+        "codice della strada"
+      ]
+    },
+    "d.P.R. 309/1990": {
+      "number": "309",
+      "year": "1990",
+      "aliases": [
+        "testo unico stupefacenti"
+      ]
+    }
+  },
+  "modules": {
+    "licenziamento": [
+      "L. 604/1966",
+      "L. 300/1970",
+      "d.lgs. 23/2015",
+      "d.lgs. 81/2015"
+    ],
+    "responsabilita_sanitaria": [
+      "L. 24/2017"
+    ],
+    "famiglia": [
+      "L. 898/1970"
+    ],
+    "consumo": [
+      "d.lgs. 206/2005"
+    ]
+  },
+  "defaults": [
+    "d.lgs. 28/2010",
+    "d.lgs. 285/1992",
+    "d.P.R. 309/1990",
+    "d.lgs. 206/2005"
+  ]
+}

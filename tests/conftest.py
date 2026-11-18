@@ -41,3 +41,11 @@ def _intake_without_model(monkeypatch):
     as with the model unavailable. A test of the model's part stubs ask_model itself."""
     from src.rag import intake
     monkeypatch.setattr(intake, "ask_model", lambda *a, **k: {})
+
+
+@pytest.fixture(autouse=True)
+def _corpus_names_unknown(monkeypatch):
+    """v79.9 (B2): no test reads the graph's document names -- unknown, so no missing-laws line, unless a test sets them
+    (corpus_laws.set_names, or missing_laws(ctx, known))."""
+    from src.rag import corpus_laws
+    monkeypatch.setitem(corpus_laws._NAMES, "names", None)

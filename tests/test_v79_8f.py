@@ -152,7 +152,8 @@ def test_a_defendant_never_gets_the_line():
     ("Tizio impugna la delibera dell'assemblea condominiale.", "condominio", "1137 c.c."),
     ("Laura chiede le differenze retributive per il lavoro straordinario.", "lavoro", "2099 c.c."),
     ("Tizio, coerede, chiede la divisione dell'eredità.", "successioni", "713 c.c."),
-    ("Il consumatore chiede il ripristino del bene in garanzia legale.", "consumo", "135-bis d.lgs. 206/2005"),
+    ("Il consumatore chiede al negozio Alfa s.r.l. il ripristino del bene in garanzia legale.", "consumo",
+     "135-bis d.lgs. 206/2005"),                        # v79.9 (B3): a professional counterparty, a certain fact
     ("Tizia chiede l'assegno di mantenimento dopo la separazione.", "famiglia", "156 c.c."),
 ])
 def test_the_draft_modules_admit_their_actions(case, module, article):

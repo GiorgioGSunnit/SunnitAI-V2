@@ -1,5 +1,5 @@
 {
-  "_about": "v79.8 (Block B): the norms that confer an action. A claim candidate («Fondare la domanda sull'art. X», a riconvenzionale) is built only on an article one of these rules admits: an institution module's «actions» (the institution the first read names, or the case's words: «patterns») or a remedies.json matter's «actions». A module's articles come first, in its order (the specific norm before the general one: 2053 before 2051); «general» (1218, 1453, 2043) are subordinate -- offered with a module only when the module yields nothing proven. «limiting» are never a claim (they measure or condition a claim, they confer none). Edit here; lawyer_method.claim_admission reads it. v79.8.5: modules marked «draft» are Code's proposal, for the lawyer's review (famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio).",
+  "_about": "v79.8 (Block B): the norms that confer an action. A claim candidate («Fondare la domanda sull'art. X», a riconvenzionale) is built only on an article one of these rules admits: an institution module's «actions» (the institution the first read names, or the case's words: «patterns») or a remedies.json matter's «actions». A module's articles come first, in its order (the specific norm before the general one: 2053 before 2051); «general» (1218, 1453, 2043) are subordinate -- offered with a module only when the module yields nothing proven. «limiting» are never a claim (they measure or condition a claim, they confer none). Edit here; lawyer_method.claim_admission reads it. v79.8.5: modules marked «draft» are Code's proposal, for the lawyer's review (famiglia, consumo, lavoro beyond the licenziamento, successioni, condominio). v79.9 (Block B): a module may carry «stages» (the stage its articles differ by, read from the case's certain facts -- «patterns» -- or the events the terms read -- «events»: consegna, fine lavori, scoperta vizio, denuncia/reclamo; the first stage that matches puts its «actions» first), «conditional» actions (offered only when a certain fact matches their patterns: 1439 on a false description), «non_actions» (code articles that are no claim norm for the client: 2118, 2119 for a dismissed worker), «laws» (the special laws that govern it, checked against the graph's primary documents: data/corpus_expected.json holds the same list, with how each is matched), «requires» («professional_counterparty»: the consumer module only with a business as a certain fact) and «name».",
   "general": [
     "1218 c.c.",
     "1453 c.c.",
@@ -29,7 +29,8 @@
         "1804 c.c.",
         "1805 c.c.",
         "1812 c.c."
-      ]
+      ],
+      "name": "comodato"
     },
     {
       "id": "appalto",
@@ -44,7 +45,49 @@
         "1662 c.c.",
         "1671 c.c.",
         "1665 c.c."
-      ]
+      ],
+      "stages": [
+        {
+          "id": "in_corso",
+          "patterns": [
+            "\\bin\\s+corso\\b",
+            "\\bnon\\s+(?:sono\\s+|è\\s+)?(?:stat[oiae]\\s+)?(?:ancora\\s+)?(?:terminat|ultimat|conclus|complet|consegnat|finit)\\w*",
+            "\\bincomplet\\w*",
+            "\\bsospes[oi]\\b",
+            "\\bsospend\\w*\\s+(?:i\\s+)?lavori",
+            "\\babbandon\\w*\\s+(?:il\\s+)?cantier\\w*",
+            "\\bavrebbe\\w*\\s+dovuto\\s+(?:concluder|terminar|finir|ultimar|consegnar)\\w*"
+          ],
+          "events": [],
+          "actions": [
+            "1662 c.c.",
+            "1453 c.c."
+          ]
+        },
+        {
+          "id": "consegnata",
+          "patterns": [
+            "\\bconsegnat[oaie]\\b",
+            "\\bconsegna\\s+(?:dell['’]opera|dei\\s+lavori|del\\s+(?:tetto|bagno|lavoro))",
+            "\\bultimat[oaie]\\b",
+            "\\b(?:lavori|opera)\\s+(?:sono\\s+|è\\s+)?(?:stat[oiae]\\s+)?(?:terminat|conclus|finit)\\w*",
+            "\\bfine\\s+(?:dei\\s+)?lavori\\b",
+            "\\bcollaud\\w*",
+            "\\baccettat[oa]\\s+l['’]opera"
+          ],
+          "events": [
+            "consegna",
+            "fine lavori",
+            "scoperta vizio"
+          ],
+          "actions": [
+            "1667 c.c.",
+            "1668 c.c.",
+            "1669 c.c."
+          ]
+        }
+      ],
+      "name": "appalto"
     },
     {
       "id": "vendita",
@@ -56,13 +99,34 @@
       ],
       "actions": [
         "1490 c.c.",
+        "1491 c.c.",
         "1492 c.c.",
+        "1493 c.c.",
         "1494 c.c.",
+        "1495 c.c.",
         "1497 c.c.",
         "1479 c.c.",
         "1480 c.c.",
         "1483 c.c."
-      ]
+      ],
+      "conditional": [
+        {
+          "id": "descrizione_falsa",
+          "actions": [
+            "1439 c.c."
+          ],
+          "patterns": [
+            "\\b(?:descritt|presentat|spacciat|dichiarat|indicat|pubblicizzat|garantit)[oaie]\\s+(?:\\w+\\s+){0,3}?come\\b",
+            "\\bfalsament\\w*",
+            "\\bin\\s+realt[àa]\\b",
+            "\\bcontrariamente\\s+a\\s+quanto\\s+(?:dichiarat|indicat|scritt|descritt)\\w*",
+            "\\bmai\\s+incidentat\\w*",
+            "\\bchilometraggio\\s+(?:alterat|scalat|manomess)\\w*",
+            "\\bcontachilometri\\s+(?:alterat|scalat|manomess)\\w*"
+          ]
+        }
+      ],
+      "name": "vendita"
     },
     {
       "id": "custodia",
@@ -79,7 +143,8 @@
         "2053 c.c.",
         "2051 c.c.",
         "2052 c.c."
-      ]
+      ],
+      "name": "custodia"
     },
     {
       "id": "locazione",
@@ -96,7 +161,8 @@
         "1585 c.c.",
         "1590 c.c.",
         "1591 c.c."
-      ]
+      ],
+      "name": "locazione"
     },
     {
       "id": "mutuo",
@@ -108,7 +174,8 @@
         "1813 c.c.",
         "1819 c.c.",
         "1820 c.c."
-      ]
+      ],
+      "name": "mutuo"
     },
     {
       "id": "licenziamento",
@@ -118,11 +185,49 @@
       "actions": [
         "2 l. 604/1966",
         "8 l. 604/1966",
+        "6 l. 604/1966",
         "18 l. 300/1970",
         "2 d.lgs. 23/2015",
         "3 d.lgs. 23/2015",
         "4 d.lgs. 23/2015",
-        "2119 c.c."
+        "9 d.lgs. 23/2015"
+      ],
+      "non_actions": {
+        "2118 c.c.": "recesso dal contratto a tempo indeterminato: il potere della controparte",
+        "2119 c.c.": "recesso per giusta causa: il potere della controparte"
+      },
+      "laws": [
+        "L. 604/1966",
+        "L. 300/1970",
+        "d.lgs. 23/2015",
+        "d.lgs. 81/2015"
+      ],
+      "name": "licenziamento"
+    },
+    {
+      "id": "responsabilita_sanitaria",
+      "name": "responsabilità sanitaria",
+      "draft": true,
+      "patterns": [
+        "\\bmalpractice\\b",
+        "\\berrore\\s+medic",
+        "\\bresponsabilit\\w*\\s+(?:medic|sanitari)",
+        "\\bintervento\\s+chirurgic",
+        "\\bstruttura\\s+sanitari",
+        "\\bospedal",
+        "\\bclinic[ah]\\b",
+        "\\bchirurg",
+        "\\bmedico\\s+(?:curante|di\\s+base|del\\s+pronto)",
+        "\\basl\\b"
+      ],
+      "actions": [
+        "7 l. 24/2017",
+        "1218 c.c.",
+        "1228 c.c.",
+        "2043 c.c."
+      ],
+      "laws": [
+        "L. 24/2017"
       ]
     },
     {
@@ -137,7 +242,8 @@
         "1170 c.c.",
         "1171 c.c.",
         "1172 c.c."
-      ]
+      ],
+      "name": "possesso"
     },
     {
       "id": "proprieta",
@@ -153,7 +259,8 @@
         "844 c.c.",
         "1158 c.c.",
         "1159 c.c."
-      ]
+      ],
+      "name": "proprieta"
     },
     {
       "id": "servitu",
@@ -167,7 +274,8 @@
         "1062 c.c.",
         "1051 c.c.",
         "1052 c.c."
-      ]
+      ],
+      "name": "servitu"
     },
     {
       "id": "famiglia",
@@ -189,7 +297,11 @@
         "269 c.c.",
         "3 l. 898/1970",
         "5 l. 898/1970"
-      ]
+      ],
+      "laws": [
+        "L. 898/1970"
+      ],
+      "name": "famiglia"
     },
     {
       "id": "consumo",
@@ -207,7 +319,12 @@
         "135-bis d.lgs. 206/2005",
         "135-ter d.lgs. 206/2005",
         "1469-bis c.c."
-      ]
+      ],
+      "laws": [
+        "d.lgs. 206/2005"
+      ],
+      "requires": "professional_counterparty",
+      "name": "consumo"
     },
     {
       "id": "lavoro",
@@ -230,7 +347,8 @@
         "2109 c.c.",
         "2120 c.c.",
         "2126 c.c."
-      ]
+      ],
+      "name": "lavoro"
     },
     {
       "id": "successioni",
@@ -252,7 +370,8 @@
         "624 c.c.",
         "713 c.c.",
         "737 c.c."
-      ]
+      ],
+      "name": "successioni"
     },
     {
       "id": "condominio",
@@ -269,7 +388,8 @@
         "1102 c.c.",
         "1122 c.c.",
         "1120 c.c."
-      ]
+      ],
+      "name": "condominio"
     }
   ]
 }

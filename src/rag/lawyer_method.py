@@ -1440,6 +1440,8 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         own_kind = "riconvenzionale" if role == "convenuto" else "claim"      # v75: the convenuto's own claim
         modules = active_modules(ctx)                       # v79.8 (B2): the first read's institution
         ctx["claim_modules"] = [m["id"] for m in modules]
+        ctx["module_stages"] = {m["id"]: m.get("stage") or "" for m in modules}           # v79.9 (B1)
+        consumer = professional_counterparty(ctx)                                          # v79.9 (B3)
         admitted, refused = [], {}
         for label, rec in records.items():
             if rec.get("side") == "threat" or (own_kind == "riconvenzionale" and rec.get("alternative")):
@@ -1449,7 +1451,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
             open_ = [r for r in live if r.get("status") == DA_PROVARE and r.get("id")]
             if any(r.get("status") == NON_RISULTA for r in live) or not fatt(label):
                 continue
-            rule, group, rank = claim_admission(label, modules)        # v79.8 (B1): a norm conferring an action
+            rule, group, rank = claim_admission(label, modules, consumer)    # v79.8 (B1): a norm conferring an action
             if not rule:
                 refused[label] = group
                 continue
@@ -1477,7 +1479,7 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         ctx["claims_refused"] = refused
         # v79.8.5: does any article of the client's confer an action, whatever its elements' status?
         ctx["claims_any_admitted"] = bool(admitted) or any(
-            claim_admission(x, modules)[0] for x, r in records.items() if r.get("side") != "threat" and fatt(x))
+            claim_admission(x, modules, consumer)[0] for x, r in records.items() if r.get("side") != "threat" and fatt(x))
         if refused:
             _log("claims_refused", refused)
         if role == "attore":    # v75: the remedies of the claim's matter
@@ -1564,7 +1566,9 @@ CLAIM_REFUSED = {   # v79.8 (B1, B2): why an article is no claim -- logged, neve
     "limiting": "norma che limita o misura la domanda ({why}): non conferisce un'azione",
     "none": "nessuna regola la ammette: non conferisce un'azione al ruolo del cliente",
     "outside": "fuori dall'istituto della prima lettura",
-    "subordinate": "norma generale, subordinata: il modulo dell'istituto dà una linea provata"}
+    "subordinate": "norma generale, subordinata: il modulo dell'istituto dà una linea provata",
+    "non_action": "{why}: non conferisce un'azione al cliente",             # v79.9 (B2)
+    "consumer": "codice del consumo: nessuna controparte professionale tra i fatti certi"}     # v79.9 (B3)
 MODULES_FILE = os.path.join(os.path.dirname(DATA_FILE), "institution_modules.json")
 _MODULES: Dict[str, Any] = {}
 
@@ -1597,25 +1601,89 @@ def same_article(label: str, spec: str) -> bool:
     return _norm_label(label) == _norm_label(spec)
 
 
+def certain_text(ctx: Dict[str, Any]) -> str:
+    """v79.9 (B1): the case's certain facts as one text -- prepare's (the record's sentences, certain_fact), else the
+    case's sentences stated as accertato."""
+    if ctx.get("certain_text") is not None:
+        return str(ctx["certain_text"])
+    from . import issue_records
+    return " ".join(str(x.get("text") or "") for x in issue_records.sentences(ctx.get("case") or "")
+                    if x.get("certainty") == issue_records.ACCERTATO)
+
+
+# v79.9 (B3): a professional counterparty -- a business named as a certain fact; a private seller negates it
+_PROFESSIONAL_RE = re.compile(
+    r"\b(?:impres[ae]|societ[àa]|s\.?r\.?l\.?|s\.?p\.?a\.?|ditta|negozi\w*|concessionari\w*|rivendit\w*|commerciant\w*|"
+    r"aziend\w*|professionist\w*|venditore\s+professional\w*|e-?commerce|catena\s+di\s+negozi|grande\s+distribuzione|"
+    r"supermercat\w*|ipermercat\w*|operatore\s+(?:telefonic|di\s+telefonia)\w*|compagnia\s+(?:telefonic|aere)\w*|gestore\s+"
+    r"(?:telefonic|di\s+(?:luce|gas|energia))\w*|fornitore\s+di\s+(?:energia|luce|gas|servizi)|banca|istituto\s+di\s+credito|"
+    r"compagnia\s+(?:di\s+)?assicura\w*|agenzia\s+(?:di\s+)?viaggi|negozio\s+online|sito\s+(?:di\s+)?(?:vendita|e-?commerce)|"
+    r"store\s+online|piattaforma\s+(?:di\s+)?(?:vendita|e-?commerce))\b", re.IGNORECASE)
+_PRIVATE_RE = re.compile(r"\b(?:venditore\s+privato|venditrice\s+privata|un\s+privato|una\s+privata|da\s+(?:un\s+)?privat[oi]|"
+                         r"tra\s+privati|privato\s+cittadino|non\s+(?:è|era)\s+(?:un\s+)?(?:professionista|commerciante|"
+                         r"un['’]impresa)|annunci\w*\s+(?:di|tra)\s+privat\w*)\b", re.IGNORECASE)
+CONSUMER_CODE_RE = re.compile(r"\b206\s*/\s*2005\b|codice\s+del\s+consumo", re.IGNORECASE)
+
+
+def professional_counterparty(ctx: Dict[str, Any]) -> bool:
+    """v79.9 (B3): the consumer qualification's condition -- a business as a certain fact, no sign of a private seller."""
+    text = certain_text(ctx)
+    return bool(_PROFESSIONAL_RE.search(text)) and not _PRIVATE_RE.search(text)
+
+
+def module_stage(module: Dict[str, Any], ctx: Dict[str, Any]) -> str:
+    """v79.9 (B1): the module's stage -- the first whose patterns a certain fact matches, else the first whose events
+    the facts' events hold (consegna, fine lavori, scoperta vizio, denuncia/reclamo: what the terms read); "" with none."""
+    text = certain_text(ctx)
+    stages = module.get("stages") or []
+    for st in stages:
+        if any(re.search(p, text, re.IGNORECASE) for p in st.get("patterns") or []):
+            return str(st["id"])
+    events = set(ctx.get("events") or [])
+    return next((str(st["id"]) for st in stages if events & set(st.get("events") or [])), "")
+
+
+def staged(module: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.9 (B1): the module as the case reads it -- its stage's actions first, then the rest in its order, then the
+    conditional actions a certain fact triggers; the stage and the conditions met recorded."""
+    stage = module_stage(module, ctx)
+    first = next((list(st.get("actions") or []) for st in module.get("stages") or [] if st["id"] == stage), [])
+    text = certain_text(ctx)
+    met = [c for c in module.get("conditional") or []
+           if any(re.search(p, text, re.IGNORECASE) for p in c.get("patterns") or [])]
+    actions = list(dict.fromkeys(first + list(module.get("actions") or []) +
+                                 [a for c in met for a in c.get("actions") or []]))
+    return {**module, "actions": actions, "stage": stage, "conditions_met": [c["id"] for c in met]}
+
+
 def active_modules(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
     """v79.8 (B2): the institution modules of the case -- those whose patterns the first read's institutions name
-    (ctx["institutions"]), else the case's own words."""
+    (ctx["institutions"]), else the case's own words. v79.9 (B1, B3): each staged (its stage's actions first, its
+    conditional ones when met); a module requiring a professional counterparty only with one."""
     mods = institution_modules().get("modules") or []
     for text in (" ".join(ctx.get("institutions") or []), ctx.get("case") or ""):
         hit = [m for m in mods if text and any(re.search(p, text, re.IGNORECASE) for p in m.get("patterns") or [])]
+        hit = [m for m in hit if m.get("requires") != "professional_counterparty" or professional_counterparty(ctx)]
         if hit:
-            return hit
+            return [staged(m, ctx) for m in hit]
     return []
 
 
-def claim_admission(label: str, modules: Sequence[Dict[str, Any]]) -> Tuple[str, str, Tuple]:
+def claim_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: bool = True) -> Tuple[str, str, Tuple]:
     """v79.8 (B1): (the rule admitting a claim on the article, its group, its rank) -- an active module's action
     (group «module», the module's order), «general» obligations law (1218, 1453, 2043: subordinate), a remedies.json
-    matter's action («matter»); a limiting rule or none: ("", why, ())."""
+    matter's action («matter»); a limiting rule or none: ("", why, ()). v79.9: an active module's «non_actions» (2118,
+    2119 for a dismissed worker) never; a consumer-code article only with a professional counterparty (consumer)."""
     d = institution_modules()
     for spec, why in (d.get("limiting") or {}).items():
         if same_article(label, spec):
             return "", CLAIM_REFUSED["limiting"].format(why=why), ()
+    for m in modules:                                               # v79.9 (B2)
+        for spec, why in (m.get("non_actions") or {}).items():
+            if same_article(label, spec):
+                return "", CLAIM_REFUSED["non_action"].format(why=why), ()
+    if not consumer and CONSUMER_CODE_RE.search(label):             # v79.9 (B3)
+        return "", CLAIM_REFUSED["consumer"], ()
     for i, m in enumerate(modules):
         for j, spec in enumerate(m.get("actions") or []):
             if same_article(label, spec):
@@ -3025,6 +3093,27 @@ def _with_line(text: str, line: Optional[str]) -> str:
     return f"{text}\n\n{line}" if line and text else (text or "")
 
 
+# v79.9 (B2): a module whose special laws the graph lacks -- one fixed line in §1 and §9 (the PO's words)
+MISSING_LAWS_LINE = ("La disciplina speciale di {istituto} ({leggi}) non è nell'archivio: il parere si limita alle "
+                     "norme del codice")
+
+
+def missing_laws(ctx: Dict[str, Any], known: Optional[Sequence[str]] = None) -> Dict[str, Any]:
+    """v79.9 (B2): {"istituto", "leggi"} of the first active module with a law the graph lacks (corpus_laws); {} with
+    none or when the graph's names are unknown."""
+    from . import corpus_laws
+    for m in active_modules(ctx):
+        gone = corpus_laws.missing(m.get("laws") or [], known) if m.get("laws") else []
+        if gone:
+            return {"istituto": str(m.get("name") or m["id"]), "leggi": list(gone), "module": m["id"]}
+    return {}
+
+
+def missing_laws_line(ctx: Dict[str, Any]) -> str:
+    gone = ctx.get("missing_laws") or {}
+    return MISSING_LAWS_LINE.format(istituto=gone["istituto"], leggi=", ".join(gone["leggi"])) + "." if gone else ""
+
+
 # v79.8 (E3): a civil case whose certain facts describe a reato -- one line in §1 and §9, never a second parere
 PENAL_ROUTES = (("646 c.p.", "appropriazione indebita", r"\bsi\s+(?:è\s+)?appropriat\w*|\btrattien\w*\s+(?:per\s+s[ée]\s+)?"
                  r"(?:il|la|i|le|l['’])\s*(?:denar|somm|ben[ei]|merc|auto|vettur)|\bsi\s+rifiut\w*\s+di\s+restituir"),
@@ -3474,8 +3563,9 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
     orientation_points: List[str] = []
     layout_log: Dict[str, Any] = {}
     keyed = [
-        ("sintesi", _with_line(summary_section({}, sols, main, a, client),
-                               (ctx.get("penal_route") or {}).get("summary"))),                 # v79.8 (E3)
+        ("sintesi", _with_line(_with_line(summary_section({}, sols, main, a, client),
+                                          (ctx.get("penal_route") or {}).get("summary")),       # v79.8 (E3)
+                               missing_laws_line(ctx))),                                         # v79.9 (B2)
         ("fatti", facts_section(ctx.get("facts") or {})),
         ("questione", question_section(plan, a, records, client)),
         ("norme", "\n\n".join(norms_parts) or "Nessuna norma applicabile nel materiale recuperato."),
@@ -3484,7 +3574,8 @@ def compose(sections: Sequence[Tuple[str, str]], ctx: Dict[str, Any], plan: Dict
                                         layout_log)),
         ("obiezioni", objections_section(plan, fallback_objections)),
         ("processuali", procedure),
-        ("conclusioni", _with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion"))),
+        ("conclusioni", _with_line(_with_line("\n\n".join(conclusions), (ctx.get("penal_route") or {}).get("conclusion")),
+                                   missing_laws_line(ctx))),                                     # v79.9 (B2)
     ]
     known_all = elements_by_id(records, circ)          # v79 (E2): what the reader reads, outside the tables and §5
     crim = criminal(ctx.get("posture"))
@@ -3659,6 +3750,20 @@ def charged_text(records: Dict[str, Dict[str, Any]], rows: Sequence[Dict[str, An
     return ""
 
 
+def issue_records_certain(sentence: Dict[str, Any]) -> bool:
+    from . import issue_records
+    return issue_records.certain_fact(sentence)
+
+
+def fact_events(state: Dict[str, Any]) -> List[str]:
+    """v79.9 (B1): the kinds of the events the facts extraction read (fact_signals: consegna, fine lavori, scoperta
+    vizio, denuncia/reclamo …) -- the ones the terms of §8 start from."""
+    analysis = state.get("analysis") or {}
+    facts = ((analysis.get("fact_signals") or {}).get("facts") or {}) if isinstance(analysis, dict) else {}
+    return sorted({str(e.get("kind") or "").strip().lower() for e in facts.get("events") or []
+                   if isinstance(e, dict) and e.get("kind")})
+
+
 def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[str, Any]], case: str, client: str,
             main: str = "", order: Sequence[str] = (), rulings: Sequence[str] = (), lines: Sequence[str] = (),
             abrogated: Sequence[str] = (), objections: Sequence[str] = (), link_call=None,
@@ -3711,7 +3816,10 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "charged_prose": charged_prose(records, by_id),                    # v75b: from its sussunzione rows
            "store_fields": _store_fields(rows),                               # v79 (B1): a rule statement's sources
            "records_view": view_log,                                          # v79.7: the ranked trace reads it
-           "institutions": read_institutions(state.get("read") or {})}        # v79.8 (B2)
+           "institutions": read_institutions(state.get("read") or {}),        # v79.8 (B2)
+           # v79.9 (B1): the stage's sources -- the certain facts and the events the terms read
+           "certain_text": " ".join(str(x.get("text") or "") for x in sentences if issue_records_certain(x)),
+           "events": fact_events(state)}
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti), "temporal": ctx["temporal"][:200],
