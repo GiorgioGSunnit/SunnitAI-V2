@@ -193,6 +193,9 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any], fragments: Option
     answer step cleans it (rule_quote.clean_text), so the requisites' words are the answer's."""
     from . import rule_quote
     from .interactive_flow import facts_status, DA_PROVARE
+    schema_reqs = _schema_requisites(row, analysis, fragments)          # v79.11 (6): ELEMENT_SCHEMAS only
+    if schema_reqs is not None:
+        return schema_reqs
     sec = row.get("s") or {}
     if sec.get("plain_text"):
         row = {**row, "s": {**sec, "plain_text": rule_quote.clean_text(sec.get("plain_text"))}}
@@ -228,6 +231,75 @@ def _requisites(row: Dict[str, Any], analysis: Dict[str, Any], fragments: Option
                         **({"branches": alternatives} if alternatives else {}),
                         **({"special": special} if special else {})})
     return out
+
+
+def schema_line(row: Optional[Dict[str, Any]]) -> Tuple[Optional[Dict[str, Any]], str]:
+    """v79.11 (6): (the article's schema line, why) -- element_schemas.for_row; (None, "off") with ELEMENT_SCHEMAS
+    off, nothing read."""
+    from . import element_schemas
+    if not element_schemas.enabled():
+        return None, "off"
+    if not row:
+        return None, "no_schema"
+    return element_schemas.for_row(row)
+
+
+def _schema_requisites(row: Dict[str, Any], analysis: Dict[str, Any],
+                       fragments: Optional[List[Dict[str, str]]] = None) -> Optional[List[Dict[str, Any]]]:
+    """v79.11 (6): ELEMENT_SCHEMAS -- the article's elements from its schema (element_schemas.requisites) when for_row
+    gives a line; None -- the text path, unchanged -- with the flag off, no usable schema, or a schema that yields no
+    element (its fragments then left to the text path's own)."""
+    line, _ = schema_line(row)
+    if line is None:
+        return None
+    from . import element_schemas
+    own: List[Dict[str, str]] = []
+    reqs = element_schemas.requisites(row, line, analysis, own)
+    if not reqs:
+        return None
+    if fragments is not None:
+        fragments.extend(own)
+    return reqs
+
+
+def element_path(row: Optional[Dict[str, Any]], reqs: Sequence[Dict[str, Any]] = (),
+                 line: Optional[Dict[str, Any]] = None, why: str = "") -> Optional[Dict[str, str]]:
+    """v79.11 (6): how the record's elements were read -- {"path": "schema" | "reviewed" | "text", "why": for_row's
+    reason ("schema_empty" when the schema gave no element)}; None with ELEMENT_SCHEMAS off. line/why: for_row's, when
+    the caller has them."""
+    from . import element_schemas
+    if not element_schemas.enabled():
+        return None
+    if not why:
+        line, why = schema_line(row)
+    if line is not None:
+        if any(r.get("split") == "schema" for r in reqs or []):
+            return {"path": "reviewed" if why == "reviewed" else "schema", "why": why}
+        return {"path": "text", "why": "schema_empty"}
+    return {"path": "text", "why": why}
+
+
+def schema_summary(line: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """v79.11 (6): what the record keeps of its schema (element_schemas.summary); None without one."""
+    if not isinstance(line, dict):
+        return None
+    from . import element_schemas
+    return element_schemas.summary(line)
+
+
+def _log_event(event: str, data: Dict[str, Any]) -> None:
+    """v79.11: an interactive_<event> log line; never fails the caller."""
+    try:
+        from .interactive_flow import _log
+        _log(event, data)
+    except Exception:           # noqa: BLE001
+        pass
+
+
+def log_element_path(label: str, path: Optional[Dict[str, str]]) -> None:
+    """v79.11 (6): one element_path event per record {article, path, why} (ELEMENT_SCHEMAS only: path is None off)."""
+    if path:
+        _log_event("element_path", {"article": label, **path})
 
 
 # v79.8 (D1): a comma that states a special case, a presumption or an aggravation of the base rule -- its own record
@@ -337,16 +409,25 @@ def build(topics: Sequence[Dict[str, Any]], rows: Sequence[Dict[str, Any]], anal
                 kept.append(f"primo esame: {row['_first_read']}")
             writable = ref in _topic_refs(t)
             rubrica = str(s.get("titolo_articolo") or t.get("rubrica") or "")
-            gated = not decomposed_by_gate(label, rubrica)          # v74: never a fattispecie record, any route
+            line, line_why = schema_line(row)                       # v79.11 (6): (None, "off") with the flag off
+            gated = not decomposed_by_gate(label, rubrica,          # v74: never a fattispecie record, any route
+                                           **({"schema": line} if line is not None else {}))
             frags: List[Dict[str, str]] = []                        # v79.8 (C2): the fragments dropped
+            split = bool(row and writable and not gated)
             out[label] = {"article": label, "rubrica": rubrica,
                           "topic": t.get("title") or "", "grade": grade if isinstance(grade, int) else None,
                           "issue": str(row.get("_grade_issue") or ""), "kept": kept or ["elencato nel tema"],
                           "dropped": None if writable else "elencato, non scrivibile (né graduato né del tema)",
-                          "requisites": _requisites(row, analysis, frags) if row and writable and not gated else [],
+                          "requisites": _requisites(row, analysis, frags) if split else [],
                           "linked": "", "answer": {}}
             if frags:
                 out[label]["fragments"] = frags
+            path = element_path(row, out[label]["requisites"], line, line_why) if split else None
+            if path:                                                # v79.11 (6): ELEMENT_SCHEMAS only
+                out[label]["element_path"] = path
+                log_element_path(label, path)
+            if line is not None:
+                out[label]["schema"] = schema_summary(line)
             if gated:
                 out[label]["not_fattispecie"] = NOT_FATTISPECIE
             seed(out[label], row)
@@ -535,19 +616,36 @@ def settle(req: Dict[str, Any], by_id: Dict[str, Dict[str, str]]) -> None:
         status, why = DA_PROVARE, f"nessuna frase del caso a sostegno, solo {how} ({sup[0]['id']})"
     else:
         status, why = DA_PROVARE, "nessun fatto del caso" + (f"; manca: {req['missing']}" if req.get("missing") else "")
-    if req.get("kind") == "procedibilita" and status == PROVATO:      # v79.8 (C3): every part of the condition
-        parts = condition_parts(req.get("text") or "")
-        if parts:
-            facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])]
-            held = {p: any(element_nouns(p) & element_nouns(x.get("text") or "") for x in facts) for p in parts}
-            req["parts"] = held
-            missing = [p for p, ok in held.items() if not ok]
-            if missing:
-                status, why = DA_PROVARE, f"provata solo una parte della condizione: manca «{missing[0][:80]}»"
+    before = status                     # v79.11 (6): the status before the element's rule (grading_rule)
+    if status == PROVATO:               # v79.8 (C3): every part of the condition (v79.11: element_rule's condition)
+        status, why = condition_check(req, by_id, status, why)
     req["status"], req["why"] = status, why
     if req.get("branches"):             # v79.6 (item 4): one element with branches
         settle_branches(req, sup, sure_con)
-    polarity(req, by_id, sure_con)      # v79.9 (A1, A2): a mental element, a duty element
+        if req.get("schema_kind") and req["status"] == PROVATO:     # v79.11: a branch never overturns the C3 check
+            req["status"], req["why"] = condition_check(req, by_id, req["status"], req["why"])
+    polarity(req, by_id, sure_con)      # v79.9 (A1, A2): a mental element, a duty element; v79.11: a termine
+    if req.get("schema_kind"):          # v79.11 (6): a schema element -- its rule recorded and logged
+        rule, source = element_rule(req)
+        req["grading_rule"] = {"rule": rule, "source": source, "before": before, "after": req["status"]}
+        _log_rule(req, rule, source, before)
+
+
+def condition_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], status: str, why: str) -> Tuple[str, str]:
+    """v79.8 (C3): a «provato» condition stays so only when a supporting fatto certo holds every part (condition_rule's
+    parts; req["parts"] records which); else «da provare». v79.11: also run after settle_branches on a schema element,
+    so a branch found never raises a condition with a missing part back to «provato». Only lowers a status."""
+    from .interactive_flow import DA_PROVARE
+    parts = condition_rule(req)[0]
+    if not parts:
+        return status, why
+    facts = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])]
+    held = {p: any(element_nouns(p) & element_nouns(x.get("text") or "") for x in facts) for p in parts}
+    req["parts"] = held
+    missing = [p for p, ok in held.items() if not ok]
+    if missing:
+        return DA_PROVARE, f"provata solo una parte della condizione: manca «{missing[0][:80]}»"
+    return status, why
 
 
 # v79.9 (A1): a culpability or state-of-mind element -- integrato only by a fact that states the state of mind or its
@@ -591,15 +689,100 @@ def duty_element(text: str) -> bool:
     return bool(_DUTY_RE.search(text or "")) and not mental_element(text)
 
 
+# v79.11 (6): the rule grading an element -- one selector (element_rule) for settle, polarity and the counters
+RULES = ("mental", "duty", "condition", "termine", "branches", "plain")
+RULE_SOURCES = ("schema", "regex", "both")
+TERMINE_OPEN_WHY = "termine: nessuna data accertata nei fatti"
+# v79.11 (6, the 79.10-D1 stand-in): a fact stating a date or a duration -- digits, giorni/mesi/anni, a month, «entro»,
+# «dal … al …»
+_DATED_RE = re.compile(r"\d|\b(?:giorn[oi]|mes[ei]|ann[oi]|settiman[ae]|gennaio|febbraio|marzo|aprile|maggio|giugno|"
+                       r"luglio|agosto|settembre|ottobre|novembre|dicembre|entro)\b|\bdal\b.{1,80}?\bal\b",
+                       re.IGNORECASE)
+
+
+def _source(by_schema: bool, by_regex: bool) -> str:
+    return "both" if by_schema and by_regex else ("schema" if by_schema else ("regex" if by_regex else ""))
+
+
+def mental_rule(req: Dict[str, Any]) -> str:
+    """v79.11 (6): the 79.9-A1 check's selection -- "schema" (kind «elemento soggettivo»), "regex" (mental_element),
+    "both", "" for neither: the union (a schema adds the check, never removes it)."""
+    return _source(req.get("schema_kind") == "elemento soggettivo", mental_element(req.get("text") or ""))
+
+
+def condition_rule(req: Dict[str, Any]) -> Tuple[List[str], str]:
+    """v79.11 (6): the 79.8-C3 per-part check's selection -- (the parts, source): a schema «condizione» joined by «e»
+    with two parts or more (schema_parti, else condition_parts of its text), or (as today) a d'ufficio condition whose
+    text condition_parts splits; ([], "") for neither. The schema's parts first when both select it."""
+    text = req.get("text") or ""
+    schema: List[str] = []
+    if req.get("schema_kind") == "condizione" and req.get("schema_connective") == "e":
+        schema = [" ".join(str(p).split()) for p in req.get("schema_parti") or [] if str(p or "").strip()]
+        if len(schema) < 2:
+            schema = condition_parts(text)
+    regex = condition_parts(text) if req.get("kind") == "procedibilita" else []
+    return (schema or regex), _source(bool(schema), bool(regex))
+
+
+def element_rule(req: Dict[str, Any]) -> Tuple[str, str]:
+    """v79.11 (6): (the rule grading the element, its source) -- rule in RULES: "mental" (schema kind «elemento
+    soggettivo» or mental_element), "duty" (duty_element, regex as v79.9), "condition" (condition_rule), "termine"
+    (schema kind «termine»), "branches" (req["branches"]), else "plain"; source "schema" / "regex" / "both". With no
+    schema key on the element it selects exactly what v79.9's regexes do. The kind only chooses which check runs: every
+    check keeps its own validation, and none sets a status by itself."""
+    mental = mental_rule(req)
+    if mental:
+        return "mental", mental
+    if duty_element(req.get("text") or ""):
+        return "duty", "regex"
+    parts, source = condition_rule(req)
+    if parts:
+        return "condition", source
+    if req.get("schema_kind") == "termine":
+        return "termine", "schema"
+    schema = bool(req.get("schema_kind"))
+    if req.get("branches"):
+        return "branches", "schema" if schema else "regex"
+    return "plain", "schema" if schema else "regex"
+
+
+def termine_check(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]]) -> None:
+    """v79.11 (6, the 79.10-D1 stand-in): a termine element «provato» stays so only on a supporting fatto certo stating
+    a date or a duration (_DATED_RE) or when the computed terms decide it (its facts_status already «provato»);
+    otherwise «da provare» (TERMINE_OPEN_WHY). It only lowers a status, never raises one."""
+    from .interactive_flow import DA_PROVARE, PROVATO
+    if req.get("status") != PROVATO or req.get("facts_status") == PROVATO:
+        return
+    if any(i in by_id and certain_fact(by_id[i]) and _DATED_RE.search(by_id[i].get("text") or "")
+           for i in req.get("supporting") or []):
+        return
+    req["status"], req["why"] = DA_PROVARE, TERMINE_OPEN_WHY
+
+
+def _log_rule(req: Dict[str, Any], rule: str, source: str, before: str) -> None:
+    """v79.11 (6): the element_rule event, ELEMENT_SCHEMAS only; never fails the grading."""
+    try:
+        from . import element_schemas
+        if not element_schemas.enabled():
+            return
+        _log_event("element_rule", {"id": req.get("id"), "text": (req.get("text") or "")[:120], "rule": rule,
+                                    "source": source, "before": before, "status": req.get("status"),
+                                    "why": req.get("why")})
+    except Exception:           # noqa: BLE001
+        pass
+
+
 def polarity(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], sure_con: Sequence[Dict[str, Any]]) -> None:
     """v79.9 (A1, A2), in place after settle: a mental element «provato» only on a fatto certo stating the state of mind
     (else «da provare», marked mental_conduct when a conduct fact was its support), «non risulta» only on one stating the
-    contrary; a duty element «non risulta» on a breach is «provato» on that breach (the sentences move to its support)."""
+    contrary; a duty element «non risulta» on a breach is «provato» on that breach (the sentences move to its support).
+    v79.11 (6): the element's rule is element_rule's (a schema's «elemento soggettivo» is a mental element too); a
+    schema «termine» only on a dated fact (termine_check)."""
     from .interactive_flow import DA_PROVARE, NON_RISULTA, PROVATO
     if req.get("kind") not in ("requisito", "procedibilita"):
         return
-    text = req.get("text") or ""
-    if mental_element(text):
+    rule = element_rule(req)[0]
+    if rule == "mental":
         req["mental"] = True
         mind = [by_id[i] for i in req.get("supporting") or [] if i in by_id and certain_fact(by_id[i])
                 and states_mind(by_id[i])]
@@ -608,27 +791,30 @@ def polarity(req: Dict[str, Any], by_id: Dict[str, Dict[str, Any]], sure_con: Se
         elif req["status"] == NON_RISULTA and not any(states_mind(s) for s in sure_con):
             req["status"], req["why"] = DA_PROVARE, MENTAL_OPEN_WHY
         return
-    if duty_element(text) and req["status"] == NON_RISULTA:
+    if rule == "duty" and req["status"] == NON_RISULTA:
         breach = [s for s in sure_con if not _NO_DUTY_RE.search(s.get("text") or "")]
         if breach:
             ids = [s["id"] for s in breach]
             req["supporting"] = list(dict.fromkeys(list(req.get("supporting") or []) + ids))
             req["contradicting"] = [i for i in req.get("contradicting") or [] if i not in ids]
             req["status"], req["why"], req["duty_breach"] = PROVATO, f"{DUTY_BREACH_WHY} ({ids[0]})", True
+    elif rule == "termine":             # v79.11 (6): the 79.10-D1 stand-in
+        termine_check(req, by_id)
 
 
 def polarity_counters(records: Dict[str, Dict[str, Any]], by_id: Dict[str, Dict[str, Any]]) -> Dict[str, int]:
     """v79.9 (A4): a mental element «provato» with no supporting fatto certo stating the state of mind; a duty element
-    «non risulta» on a certain contradicting fact that is a breach (not a denial of the duty). Both must be 0."""
+    «non risulta» on a certain contradicting fact that is a breach (not a denial of the duty). Both must be 0. v79.11
+    (6): the elements selected by element_rule, as polarity grades them."""
     from .interactive_flow import NON_RISULTA, PROVATO
     mental = duty = 0
     for rec in (records or {}).values():
         for r in list(rec.get("requisites") or []) + list(rec.get("procedibilita") or []):
-            text = r.get("text") or ""
-            if mental_element(text) and r.get("status") == PROVATO and not any(
+            rule = element_rule(r)[0]           # v79.11 (6): the grading's own selector
+            if rule == "mental" and r.get("status") == PROVATO and not any(
                     certain_fact(by_id[i]) and states_mind(by_id[i]) for i in r.get("supporting") or [] if i in by_id):
                 mental += 1
-            if duty_element(text) and r.get("status") == NON_RISULTA and any(
+            if rule == "duty" and r.get("status") == NON_RISULTA and any(
                     certain_fact(by_id[i]) and not _NO_DUTY_RE.search(by_id[i].get("text") or "")
                     for i in r.get("contradicting") or [] if i in by_id):
                 duty += 1
@@ -813,13 +999,40 @@ def defence_article(label: str) -> bool:
 DEFENCE_WHY = "difesa di parte generale"      # v79 (D1): the route a defence article enters by (decompose_records)
 
 
-def decomposed_by_gate(label: str, rubrica: str = "", defence: bool = False) -> bool:
+def decomposed_by_gate(label: str, rubrica: str = "", defence: bool = False,
+                       schema: Optional[Dict[str, Any]] = None) -> bool:
     """v74: the gate before any decomposition, every route -- a fattispecie (counted) or a cause di giustificazione
     gets elements; a procedural code's article, c.p. Libro I's, the general provisions, a definitional one never do
     (they stay «applicazione» paragraphs and procedural lines). v79 (D1): a general-part defence article
     (DEFENCE_ARTICLES) gets elements too when it entered by its route (defence: the first read names its concept, or
-    the retrieval ranks it among the top) -- never a fattispecie (counted stays False), a defence line's."""
-    return counted(label, rubrica) or justification(label) or (defence and defence_article(label))
+    the retrieval ranks it among the top) -- never a fattispecie (counted stays False), a defence line's.
+    v79.11 (6): schema -- the article's schema line (or a record's rec["schema"] summary), ELEMENT_SCHEMAS only
+    (element_schemas.decide): a sanction / claim-conferring / defence / scriminante tipo decomposes it, except where the
+    hard invariants hold (a procedural code's article, the general provisions, c.p. Libro I but 50-54: the current gate
+    stays); a tipo only limiting / definitional / procedural / other gates it out only when the schema is REVIEWED (an
+    unreviewed one: the current gate decides). A disagreement is logged (schema_gate_disagree)."""
+    current = counted(label, rubrica) or justification(label) or (defence and defence_article(label))
+    if schema is None:
+        return current
+    from . import element_schemas
+    if not element_schemas.enabled():
+        return current
+    line = gate_line(schema)
+    decided, by, disagree = element_schemas.decide(label, line, bool(current))
+    if disagree:
+        _log_event("schema_gate_disagree", {"article": label, "current": bool(current), "schema":
+                                            element_schemas.opinion(line), "tipo": (line.get("schema") or {}).get("tipo"),
+                                            "reviewed": bool(line.get("reviewed")), "by": by, "decided": decided})
+    return decided
+
+
+def gate_line(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.11 (6): what element_schemas.gate reads -- a schema line as it is; a record's summary (rec["schema"]) as a
+    line holding its tipo and whether it is reviewed."""
+    if not isinstance(schema, dict) or isinstance(schema.get("schema"), dict):
+        return schema if isinstance(schema, dict) else {}
+    return {"schema": {"tipo": list(schema.get("tipo") or [])}, "reviewed": schema.get("reviewed") is True,
+            "source": schema.get("source") or ""}
 
 
 def decomposed(rec: Dict[str, Any]) -> bool:

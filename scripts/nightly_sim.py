@@ -60,6 +60,16 @@ minoritaria, the main line chosen, whether it is the fallback) in their own tabl
 --deterministic runs the thesis call once at temperature 0 (THESIS_DETERMINISTIC) for a version-to-version comparison
 -- the default stays best-of-3.
 
+v79.11: --element-schemas runs the cells with ELEMENT_SCHEMAS on (the per-article element schemas,
+src/rag/element_schemas.py; the mode says so), to be compared with a flag-off run passed as --baseline. Per cell, the
+records by element path (schema / reviewed / text, with why the text path ran: state["element_paths"]) and the shadow
+admission (agree, false exclusions with their reasons, extra, candidate recall: state["schema_shadow"]); the «v79.11
+headline» table, «before → now» side by side: elements_per_article, fragments_in_tables, mental_integrated_by_conduct,
+duty_polarity_errors, unadmitted_candidates, main_lines_by_rule, candidate_recall, false_exclusions. With the flag on,
+the schemas' coverage by code (usable / unusable / carded without one: the generated file against the cards file) and
+their quality against the lawyer's reviews (element_schemas.quality_report: «nessuna revisione» when none). A baseline
+without these keys renders («—»).
+
 v79.10 (A5): the family gate's alarm, FIRST in the report (right after the header): per cell, every document the gate
 dropped that held FAMILY_ALARM_MIN (5) or more graded-relevant articles -- «we just cut the governing law»; read it before
 any promote. The run sets FAMILY_GATE_SHADOW_GRADE=true (the dropped rows graded in shadow, recorded only;
@@ -68,6 +78,7 @@ header line says «ALLARME presente». The family table lists the override doors
 
   python scripts/nightly_sim.py --env .env --out nightly.md --json-out nightly.json --baseline last.json
   python scripts/nightly_sim.py --env .env --deterministic --out det.md --json-out det.json --baseline det.prev.json
+  python scripts/nightly_sim.py --env .env --element-schemas --out es.md --json-out es.json --baseline nightly.json
   python scripts/nightly_sim.py --answers DIR      # offline: DIR/<cell id>.md, the checks only (no model, no DB)
 
 Needs the server's environment (Neo4j, the model, LAWYER_METHOD=true, CASE_FIRST_SINGLE_SHOT=true, ...) except with
@@ -83,7 +94,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -156,6 +167,8 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
         out["family_gate"] = dict((result.get("state") or {}).get("family_gate") or {})          # v79.9 (C2)
         out["fragments_surviving"] = interactive_flow.surviving_fragments(result.get("state") or {})   # v79.9 (D2)
         st = result.get("state") or {}                  # v79.8: every block's counters, the timings line's
+        out["element_paths"] = dict(st.get("element_paths") or {})                              # v79.11
+        out.update(shadow_of(st))                                                               # v79.11
         out["counters"] = dict((st.get("single_shot_timings") or {}).get("counters") or
                                interactive_flow.case_counters(st, round(time.time() - t0, 1)))
         timings = (result.get("state") or {}).get("timings") or {}
@@ -499,6 +512,286 @@ def ranked_lines(results: List[Dict[str, Any]]) -> List[str]:
     return lines
 
 
+# --- v79.11: element schemas ----------------------------------------------------------------------------------------------
+
+HEADLINE = ("elements_per_article", "fragments_in_tables", "mental_integrated_by_conduct", "duty_polarity_errors",
+            "unadmitted_candidates", "main_lines_by_rule", "candidate_recall", "false_exclusions")
+
+
+def shadow_of(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.11: the shadow admission the run kept (lawyer_method's ctx["schema_shadow"]: state["schema_shadow"] whole,
+    else the thesis counts' numbers -- selection_counts keeps counts, not lists), and each client's in a multi-client
+    cell (state["schema_shadow_by_client"], else the clients' thesis counts) -- {} when there is none (flag off)."""
+    st = state or {}
+    out: Dict[str, Any] = {}
+    shadow = st.get("schema_shadow") or (st.get("thesis_counts") or {}).get("schema_shadow")
+    if isinstance(shadow, dict) and shadow:
+        out["schema_shadow"] = shadow
+    by_client = {name: sh for name, sh in (st.get("schema_shadow_by_client") or {}).items()
+                 if isinstance(sh, dict) and sh} or \
+        {name: tc.get("schema_shadow") for name, tc in (st.get("thesis_counts_by_client") or {}).items()
+         if isinstance(tc, dict) and isinstance(tc.get("schema_shadow"), dict) and tc.get("schema_shadow")}
+    if by_client:
+        out["schema_shadow_by_client"] = by_client
+    return out
+
+
+def _count(v: Any) -> Any:
+    """A count from a number, a list (its length) or a bool; None stays None."""
+    if isinstance(v, bool):
+        return int(v)
+    if isinstance(v, (list, tuple, set, dict)):
+        return len(v)
+    return v
+
+
+def _pairs(items: Any) -> List[Tuple[str, str]]:
+    """(article, category) pairs from a shadow's current/schema maps ({cat: [articles]}) or a list of pairs; [] from
+    a count (selection_counts' numbers)."""
+    if isinstance(items, dict):
+        return [(str(a), str(cat)) for cat, arts in items.items() if isinstance(arts, (list, tuple)) for a in arts]
+    if not isinstance(items, (list, tuple)):
+        return []
+    return [(str(x[0]), str(x[1])) for x in items or [] if isinstance(x, (list, tuple)) and len(x) >= 2]
+
+
+def shadow_recall(shadow: Dict[str, Any]) -> Optional[float]:
+    """v79.11 (§6): the current admission's article-categories the schema admits too, over the current ones whose
+    article has a schema -- the shadow's own figure when it gives one; None when no current one has a schema."""
+    shadow = shadow or {}
+    if "candidate_recall" in shadow:
+        return shadow.get("candidate_recall")
+    if isinstance(shadow.get("recall_of"), int) and not isinstance(shadow.get("recall_of"), bool):  # the counts' shape
+        of = shadow["recall_of"]
+        return round(int(shadow.get("recall_hit") or 0) / of, 3) if of else None
+    if not isinstance(shadow.get("current"), dict) or not shadow.get("current"):
+        return None
+    no_schema = {str(a) for a in shadow.get("no_schema") or []}
+    current = [p for p in _pairs(shadow.get("current")) if p[0] not in no_schema]
+    admitted = set(_pairs(shadow.get("schema")))
+    return round(sum(1 for p in current if p in admitted) / len(current), 3) if current else None
+
+
+def _why(why: Any) -> str:
+    return "; ".join(str(x) for x in why) if isinstance(why, (list, tuple)) else str(why or "")
+
+
+def false_exclusions(shadow: Dict[str, Any]) -> List[str]:
+    """«article (category): why» for each article-category the current admission admits and the schema refuses; []
+    when the shadow kept only their count."""
+    out = []
+    items = (shadow or {}).get("false_exclusions")
+    for x in items if isinstance(items, (list, tuple)) else []:
+        if isinstance(x, dict):
+            out.append(f"{x.get('article')} ({x.get('cat') or x.get('category')}): {_why(x.get('why'))}")
+        elif isinstance(x, (list, tuple)) and x:
+            out.append(f"{x[0]}" + (f" ({x[1]})" if len(x) > 1 else "") + (f": {_why(x[2])}" if len(x) > 2 else ""))
+        else:
+            out.append(str(x))
+    return out
+
+
+def headline_value(c: Dict[str, Any], key: str) -> Any:
+    """v79.11: one headline counter of a cell's result -- the counters' (the timings line's), else what the cell kept
+    (the shadow admission, the thesis counts' main_admitted_by); None when the run did not have it."""
+    counters = c.get("counters") or {}
+    shadow_counts = counters.get("schema_shadow") if isinstance(counters.get("schema_shadow"), dict) else {}
+    if key in ("candidate_recall", "false_exclusions"):
+        if key in shadow_counts:
+            return _count(shadow_counts.get(key))
+        shadow = c.get("schema_shadow")
+        if not isinstance(shadow, dict):
+            return None
+        return shadow_recall(shadow) if key == "candidate_recall" else (_count(shadow.get("false_exclusions")) or 0)
+    if key == "main_lines_by_rule" and key not in counters:
+        tcs = list((c.get("thesis_counts_by_client") or {}).values()) or [c.get("thesis_counts") or {}]
+        rules = [str(t.get("main_admitted_by") or "—") for t in tcs if isinstance(t, dict) and "main_admitted_by" in t]
+        if not rules:
+            return None
+        return {r: rules.count(r) for r in dict.fromkeys(rules)}
+    return counters.get(key)
+
+
+def _show(v: Any) -> str:
+    if v is None:
+        return "—"
+    if isinstance(v, bool):
+        return "yes" if v else "no"
+    if isinstance(v, dict):
+        return ", ".join(f"{k}: {x}" for k, x in v.items()) if v else "none"
+    if isinstance(v, (list, tuple)):
+        return str(len(v))
+    return str(v)
+
+
+def headline_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]] = None) -> List[str]:
+    """v79.11: per cell, the counters the element schemas are judged on, «before → now» side by side wherever the
+    baseline ran the cell (a baseline without a counter shows «—» before the arrow)."""
+    rows = [c for c in results if any(headline_value(c, k) is not None for k in HEADLINE)]
+    if not rows:
+        return []
+    before = {c.get("id"): c for c in (baseline or {}).get("cells") or [] if isinstance(c, dict)}
+    lines = ["", "## v79.11 headline (per cell; before → now)", "", "| cell | " + " | ".join(HEADLINE) + " |",
+             "|---" * (len(HEADLINE) + 1) + "|"]
+    for c in rows:
+        cells = []
+        for k in HEADLINE:
+            now = _show(headline_value(c, k))
+            cells.append(f"{_show(headline_value(before[c['id']], k))} → {now}" if c["id"] in before else now)
+        lines.append(f"| {c['id']} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def _path(entry: Any) -> Tuple[str, str]:
+    if isinstance(entry, dict):
+        return str(entry.get("path") or "text"), str(entry.get("why") or "")
+    return str(entry or "text"), ""
+
+
+def schema_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.11: per cell, the records by element path (schema / reviewed / text, the text path's reasons) and the shadow
+    admission (agree, false exclusions with their reasons, extra, candidate recall, articles with no schema)."""
+    paths = [c for c in results if c.get("element_paths") or (c.get("counters") or {}).get("element_paths")]
+    shadows = [(c["id"], s) for c in results for s in [c.get("schema_shadow")] if isinstance(s, dict) and s] + [
+        (f"{c['id']} / {name}", s) for c in results for name, s in (c.get("schema_shadow_by_client") or {}).items()
+        if isinstance(s, dict) and s]
+    if not paths and not shadows:
+        return []
+    lines: List[str] = []
+    if paths:
+        lines += ["", "## Element paths (per cell; v79.11)", "",
+                  "| cell | schema | reviewed | text | elements per article (schema · reviewed · text) | text path: why |",
+                  "|---|---|---|---|---|---|"]
+        detail = []
+        for c in paths:
+            got = c.get("element_paths") or {}
+            if got:
+                by: Dict[str, List[str]] = {}
+                whys: Dict[str, int] = {}
+                for label, entry in got.items():
+                    path, why = _path(entry)
+                    by.setdefault(path, []).append(f"{label}" + (f" ({why})" if path == "text" and why else ""))
+                    if path == "text":
+                        whys[why or "—"] = whys.get(why or "—", 0) + 1
+                n = {p: len(by.get(p) or []) for p in ("schema", "reviewed", "text")}
+                detail.append(f"- {c['id']}: " + "; ".join(f"{p}: {', '.join(v)}" for p, v in by.items()))
+            else:               # only the counters' {path: n}
+                counted = (c.get("counters") or {}).get("element_paths") or {}
+                n = {p: counted.get(p, 0) for p in ("schema", "reviewed", "text")}
+                whys = dict((c.get("counters") or {}).get("schema_rejected") or {})
+            epa = (c.get("counters") or {}).get("elements_per_article_by_path") or {}
+            lines.append(f"| {c['id']} | {n['schema']} | {n['reviewed']} | {n['text']} | "
+                         + " · ".join(_show(epa.get(p)) for p in ("schema", "reviewed", "text")) + " | "
+                         + (", ".join(f"{w}: {k}" for w, k in whys.items()) or "—") + " |")
+        lines += [""] + detail if detail else []
+    if shadows:
+        lines += ["", "## Shadow admission by the schemas (per cell; v79.11, never authoritative)", "",
+                  "| cell | agree | false exclusions | extra | candidate recall | no schema |", "|---|---|---|---|---|---|"]
+        for cid, s in shadows:
+            lines.append(f"| {cid} | {_show(_count(s.get('agree')))} | {_count(s.get('false_exclusions')) or 0} | "
+                         f"{_count(s.get('extra')) or 0} | {_show(shadow_recall(s))} | "
+                         f"{_count(s.get('no_schema')) or 0} |")
+        gone = [(cid, x) for cid, s in shadows for x in false_exclusions(s)]
+        if gone:
+            lines += ["", "False exclusions (admitted now, refused by the schema): "
+                      + "; ".join(f"{cid}: {x}" for cid, x in gone)]
+        extra = [(cid, f"{a} ({cat})") for cid, s in shadows for a, cat in _pairs(s.get("extra"))]
+        if extra:
+            lines += ["", "Extra (admitted by the schema only): " + "; ".join(f"{cid}: {x}" for cid, x in extra)]
+    return lines
+
+
+def _card_keys(path: Optional[str] = None) -> List[Tuple[str, str]]:
+    """The cards file's (doc, article) keys, in its order, each once (ARTICLE_CARDS_FILE, else article_cards'
+    default); [] when the file is missing."""
+    if path is None:
+        from src.rag import article_cards
+        path = os.getenv(article_cards.FILE_ENV) or article_cards.DEFAULT_FILE
+    if not path or not os.path.isfile(path):
+        return []
+    keys: Dict[Tuple[str, str], None] = {}
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            try:
+                record = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(record, dict) and record.get("article") is not None:
+                keys[(str(record.get("doc") or ""), str(record["article"]).strip().lower())] = None
+    return list(keys)
+
+
+def schema_coverage_lines(cards_path: Optional[str] = None) -> List[str]:
+    """v79.11: the schemas' coverage by code -- carded or generated articles with a usable schema, with an unusable one
+    (and which blocking checks raised), carded without one; the lawyer's reviewed overlays beside them
+    (element_schemas.generated() against the cards file)."""
+    from src.rag import element_schemas as es
+    gen = es.generated()
+    cards = _card_keys(cards_path)
+    table: Dict[str, Dict[str, int]] = {}
+    checks: Dict[str, int] = {}
+
+    def row(code: str) -> Dict[str, int]:
+        return table.setdefault(code or "—", {"usable": 0, "unusable": 0, "without": 0, "reviewed": 0})
+    for key in list(dict.fromkeys(cards + list(gen))):
+        line = gen.get(key)
+        code = es._code((line or {}).get("code") or key[0])
+        if line is None:
+            row(code)["without"] += 1
+        elif es.usable(line):
+            row(code)["usable"] += 1
+        else:
+            row(code)["unusable"] += 1
+            for k in es.blocking(line):
+                checks[k] = checks.get(k, 0) + 1
+    for label, line in es.reviewed().items():
+        if line.get("reviewed") is True and isinstance(line.get("schema"), dict):
+            row(label.split(" ", 1)[1] if " " in label else "")["reviewed"] += 1
+    lines = ["", "## Element schemas: coverage (by code; v79.11)", "",
+             f"Generated {es.schema_file()}, cards {cards_path or 'ARTICLE_CARDS_FILE / default'}.", "",
+             "| code | usable | unusable | carded without | reviewed |", "|---|---|---|---|---|"]
+    if not table:
+        return lines + ["| — | 0 | 0 | 0 | 0 |"]
+    total = {k: sum(r[k] for r in table.values()) for k in ("usable", "unusable", "without", "reviewed")}
+    for code, r in sorted(table.items()):
+        lines.append(f"| {code} | {r['usable']} | {r['unusable']} | {r['without']} | {r['reviewed']} |")
+    lines.append(f"| all | {total['usable']} | {total['unusable']} | {total['without']} | {total['reviewed']} |")
+    if checks:
+        lines += ["", "Unusable by blocking check: " + ", ".join(f"{k} {n}" for k, n in
+                                                                  sorted(checks.items(), key=lambda kv: -kv[1]))]
+    return lines
+
+
+QUALITY_MEASURES = ("n", "element_precision", "element_recall", "logic_accuracy", "exception_recall", "comma_accuracy",
+                    "grounding_accuracy", "correction_rate", "grounding_rate_auto")
+
+
+def quality_lines(lines: Optional[List[Dict[str, Any]]] = None,
+                  generated_lines: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """v79.11 (§9): the generated schemas against the lawyer's reviews (element_schemas.quality_report over the
+    reviewed overlay) -- the nine measures; «nessuna revisione» when none is reviewed."""
+    from src.rag import element_schemas as es
+    q = es.quality_report(lines, generated_lines)
+    out = ["", "## Element schemas: quality against the lawyer's reviews (v79.11)", ""]
+    if q.get("note"):
+        out += [f"- {q['note']} ({q.get('reviewed', 0)} reviewed lines)", ""]
+    out += ["| measure | value |", "|---|---|"]
+    out += [f"| {k} | {_show(q.get(k))}" + (f" (of {q.get('explicit_elements', 0)} explicit elements)"
+                                            if k == "grounding_rate_auto" else "") + " |" for k in QUALITY_MEASURES]
+    return out
+
+
+def schema_sections() -> List[str]:
+    """v79.11: coverage and quality, for a run with ELEMENT_SCHEMAS on; a failure is a line, never the run's end."""
+    out: List[str] = []
+    for part in (schema_coverage_lines, quality_lines):
+        try:
+            out += part()
+        except Exception as exc:          # noqa: BLE001 -- a measurement, the cells' results stand
+            out += ["", f"- {part.__name__}: not computed ({type(exc).__name__}: {exc})"[:300]]
+    return out
+
+
 def lawyer_lines(folder: Optional[Path]) -> List[str]:
     """v77: the lawyer's latest mean per version on the held-out set (src/chatbot/heldout.py)."""
     from src.chatbot import heldout
@@ -574,7 +867,8 @@ def regressions(results: List[Dict[str, Any]], baseline: Optional[Dict[str, Any]
 
 
 def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regressed: List[str], run_version: str = "",
-           lawyer: Optional[List[str]] = None, baseline: Optional[Dict[str, Any]] = None, mode: str = "") -> str:
+           lawyer: Optional[List[str]] = None, baseline: Optional[Dict[str, Any]] = None, mode: str = "",
+           schemas: Optional[List[str]] = None) -> str:
     names = list(dict.fromkeys(k["check"] for c in results for k in c["checks"]))
     alarm = alarm_state(results)                    # v79.10 (A5): the header says it, the alarm section comes first
     lines = [f"# Nightly: {len(results)} cells, structural checks" + (f" — {alarm}" if alarm else ""), "",
@@ -595,9 +889,12 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
         lines += ["", "## Stage lists against v59 (default cell)", "", stages["report"]]
     lines += counts_lines(results, baseline)
     lines += counter_lines(results, baseline)
+    lines += headline_lines(results, baseline)      # v79.11
     lines += ranked_lines(results)
     lines += family_lines(results)                  # v79.9 (C2)
     lines += fragment_lines(results)                # v79.9 (D2)
+    lines += schema_lines(results)                  # v79.11
+    lines += schemas or []                          # v79.11: coverage and quality (flag on)
     lines += rulings_lines(results)
     lines += lawyer or []
     return "\n".join(lines) + "\n"
@@ -616,6 +913,8 @@ def main(argv=None) -> int:
     ap.add_argument("--reasoning-effort", help="v78.1.1: LLM_REASONING_EFFORT for this run (the calls with thinking on)")
     ap.add_argument("--deterministic", action="store_true",
                     help="v79: the thesis call once at temperature 0 (THESIS_DETERMINISTIC), for version-to-version runs")
+    ap.add_argument("--element-schemas", action="store_true",
+                    help="v79.11: ELEMENT_SCHEMAS on for this run (compare with a flag-off run as --baseline)")
     ap.add_argument("--no-family-shadow-grade", action="store_true",
                     help="v79.10 (A5): skip the family gate's shadow grading (the alarm on a proxy count)")
     args = ap.parse_args(argv)
@@ -626,6 +925,8 @@ def main(argv=None) -> int:
         os.environ["LLM_REASONING_EFFORT"] = args.reasoning_effort
     if args.deterministic:                      # v79 (A3): over the env file's, for this run
         os.environ["THESIS_DETERMINISTIC"] = "1"
+    if args.element_schemas:                    # v79.11: over the env file's, for this run
+        os.environ["ELEMENT_SCHEMAS"] = "true"
     # v79.10 (A5): the family gate's dropped rows graded in shadow, for the alarm -- over the env file's, for this run
     os.environ["FAMILY_GATE_SHADOW_GRADE"] = "false" if args.no_family_shadow_grade else "true"
     baseline = read_baseline(args.baseline)             # v79.7: before any cell runs
@@ -637,7 +938,12 @@ def main(argv=None) -> int:
     run_version = version.current()
     print(f"nightly: version {run_version}", file=sys.stderr)
     mode = "deterministic (one thesis sample, temperature 0)" if os.getenv("THESIS_DETERMINISTIC") else "best-of-3"
-    text = report(results, stages, regressed, run_version, lawyer_lines(args.heldout_dir), baseline, mode)
+    from src.rag import element_schemas
+    schemas = None
+    if element_schemas.enabled():               # v79.11: the flag on, by --element-schemas or the env file
+        mode += "; element schemas on (ELEMENT_SCHEMAS)"
+        schemas = schema_sections()
+    text = report(results, stages, regressed, run_version, lawyer_lines(args.heldout_dir), baseline, mode, schemas)
     if args.out:
         Path(args.out).write_text(text, encoding="utf-8")
     if args.json_out:

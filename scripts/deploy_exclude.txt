@@ -18,6 +18,9 @@ state/
 /institutions_*.json
 # article_cards.jsonl (and its variants)
 article_cards*.jsonl
+# v79.11: data/article_schemas.jsonl, generated on the server (never the laptop's copy); the lawyer's
+# article_schemas_reviewed.jsonl is tracked and shipped
+article_schemas.jsonl
 #
 # --- kept beyond that list ---
 # the server's install metadata under src/: src/ is mirrored with --delete, the Mac's copy must neither replace nor

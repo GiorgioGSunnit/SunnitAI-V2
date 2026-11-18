@@ -3156,6 +3156,9 @@ def build_records(state: Dict[str, Any], rows: Sequence[Dict[str, Any]]) -> None
     state["sentences"] = case_sentences(state)
     issue_records.refresh(records, analysis, state.get("questions") or [], state["sentences"])   # v60g: round 1's links
     state["records"] = issue_records.jsonable(records)
+    paths = {x: r["element_path"] for x, r in records.items() if r.get("element_path")}
+    if paths:                                   # v79.11 (6): ELEMENT_SCHEMAS only -- for the nightly
+        state["element_paths"] = {**(state.get("element_paths") or {}), **paths}
     ms = round((time.time() - t0) * 1000)
     state.setdefault("timings", {})["records_s"] = round(ms / 1000, 2)
     _log("records_built", {"articles": len(records), "requisites": sum(len(r["requisites"]) for r in records.values()),
@@ -6067,11 +6070,13 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
     out: List[Tuple[str, Dict[str, Any], Dict[str, Any]]] = []
     record: Optional[Dict[str, Any]] = None
     counts: Dict[str, Any] = {}
+    shadows: Dict[str, Any] = {}
     articles: List[str] = []
     for c in clients:
         view = {**state, "records": copy.deepcopy(state.get("records") or {}),
                 "client_scope": {"name": c["name"], "others": [x for x in names if x != c["name"]]},
                 "case_id": f"{state.get('case_id') or 'caso'}_{re.sub(r'[^A-Za-z0-9]+', '_', c['name'])}"}
+        view.pop("schema_shadow", None)     # v79.11: the client's own shadow admission only (method_inputs sets it)
         role = intake_mod._role_of_words(c.get("role") or "") if c.get("role") else ""
         posture_c = {**posture, **({"role": role} if role and role in intake_mod.ROLES else {})}
         posture_mod.mark_sides(view, posture_c)
@@ -6079,12 +6084,16 @@ def method_inputs_clients(state: Dict[str, Any], posture: Dict[str, Any], plan: 
                                    shared_record=record, with_objections=False)
         record = record if record is not None else view.get("rulings_record")
         counts[c["name"]] = view.get("thesis_counts") or {}
+        if isinstance(view.get("schema_shadow"), dict):         # v79.11 (6): ELEMENT_SCHEMAS only
+            shadows[c["name"]] = view["schema_shadow"]
         articles += list(view.get("candidate_articles") or [])
         out.append((c["name"], ctx, mplan))
     # v79.8 (A4): the clients' objections calls (each with its reply binding review) are independent -- concurrently
     out = [(name, ctx, mplan) for (name, ctx, _), mplan in zip(out, concurrently(
         [(lambda ctx=ctx, mplan=mplan: method_objections(ctx, mplan)) for _, ctx, mplan in out]))]
     state["thesis_counts_by_client"] = counts
+    if shadows:
+        state["schema_shadow_by_client"] = shadows
     state["candidate_articles"] = list(dict.fromkeys(articles))
     if record is not None:
         state["rulings_record"] = record
@@ -6193,6 +6202,8 @@ def method_inputs(state: Dict[str, Any], posture: Dict[str, Any], plan: Dict[str
         state["rulings_record"] = record
     mplan = lawyer_method.method_plan(ctx)      # v79: the realism cap of v78 inside it, before the counts
     state["thesis_counts"] = ctx.get("selection_counts") or {}
+    if isinstance(ctx.get("schema_shadow"), dict):     # v79.11 (6): ELEMENT_SCHEMAS only -- the shadow admission whole
+        state["schema_shadow"] = shadow_state(ctx["schema_shadow"])  # (the nightly's reasons; the counts keep numbers)
     state["candidate_articles"] = lawyer_method.candidate_articles(ctx)     # v79 (D3): the writer's check keeps them
     if with_objections:         # v79.8 (A4): the several clients' run concurrently (method_inputs_clients)
         mplan = method_objections(ctx, mplan)
@@ -6417,6 +6428,7 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
                            "aliases": aliases, "defence_routes": routes}
     link: List[str] = []
     outcome: Dict[str, str] = {}        # v79.7 (item 3): what became of each, for the ranked trace
+    paths: Dict[str, Dict[str, str]] = {}       # v79.11 (6): ELEMENT_SCHEMAS only
     for label, why in wanted.items():
         key = keys[label]
         rec = records.get(label)
@@ -6430,7 +6442,9 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             state["abrogated"] = list(dict.fromkeys(list(state.get("abrogated") or []) + [label]))
             outcome[label] = "abrogated"
             continue
-        if not issue_records.decomposed_by_gate(label, rubrica, defence=why == DECOMPOSE_WHY["defence"]):
+        line, line_why = issue_records.schema_line(row) if row is not None else (None, "")     # v79.11 (6)
+        if not issue_records.decomposed_by_gate(label, rubrica, defence=why == DECOMPOSE_WHY["defence"],
+                                                **({"schema": line} if line is not None else {})):
             log["gated"].append(label)
             outcome[label] = "gated"
             continue
@@ -6449,6 +6463,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             continue
         frags: List[Dict[str, str]] = []
         reqs = [r for r in issue_records._requisites(row, analysis, frags) if r.get("kind") == "requisito"]
+        path = issue_records.element_path(row, reqs, line, line_why)        # v79.11 (6): None with the flag off
+        if path:
+            paths[label] = path
+            issue_records.log_element_path(label, path)
         if not reqs:
             log["undecomposed"].append(label)
             outcome[label] = "undecomposed"
@@ -6466,6 +6484,10 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
             rec.pop("not_fattispecie", None)
             rec["defence_by"] = routes.get(label, "")       # v79.7: concetto / rango / addebito
         rec.update(requisites=reqs, decomposed_for=why, **({"fragments": frags} if frags else {}))
+        if path:                                    # v79.11 (6): how its elements were read, and its schema
+            rec["element_path"] = path
+            if line is not None:
+                rec["schema"] = issue_records.schema_summary(line)
         if not rec.get("procedibilita"):        # v76: its d'ufficio conditions, graded by the link like the topics'
             rec["procedibilita"] = issue_records._conditions(row)
         rec.pop("undecomposed", None)
@@ -6476,6 +6498,8 @@ def decompose_records(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequ
         issue_records.number(records)
         issue_records.refresh(records, analysis, state.get("questions") or [], state.get("sentences") or [])
     state["decompose_why"] = outcome
+    if paths:                                   # v79.11 (6): for the nightly
+        state["element_paths"] = {**(state.get("element_paths") or {}), **paths}
     _log("decompose_records", log)
     return link, fetched
 
@@ -8185,6 +8209,49 @@ def grading_counters(state: Dict[str, Any]) -> Dict[str, Any]:
            "conditions_rejoined": rejoined}
     out.update(issue_records.polarity_counters(state.get("records") or {}, by_id))                  # v79.9 (A4)
     out["fragments_in_tables"] = len(surviving_fragments(state))                                    # v79.9 (D2)
+    out.update(element_counters(state))                                                            # v79.11 (6)
+    return out
+
+
+ELEMENT_PATHS = ("schema", "reviewed", "text")
+
+
+def element_counters(state: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.11 (6): ELEMENT_SCHEMAS -- elements_per_article (the mean «requisito» elements of a decomposed record, one
+    decimal; None with none), the same by path (schema / reviewed / text), element_paths {path: n} (every decomposition
+    tried: state["element_paths"]), schema_rejected {why: n} (a schema there but not used: hash_mismatch, unusable:<check>,
+    reviewed_stale, schema_empty), rules_selected {rule: n} (the schema elements' grading_rule). Neutral (None / {})
+    with the flag off."""
+    from . import element_schemas
+    out: Dict[str, Any] = {"elements_per_article": None, "elements_per_article_by_path": {}, "element_paths": {},
+                           "schema_rejected": {}, "rules_selected": {}}
+    if not element_schemas.enabled():
+        return out
+    sizes: Dict[str, List[int]] = {}
+    rules: Dict[str, int] = {}
+    for rec in (state.get("records") or {}).values():
+        reqs = [r for r in rec.get("requisites") or [] if r.get("kind") == "requisito"]
+        for r in reqs:
+            rule = (r.get("grading_rule") or {}).get("rule")
+            if rule:
+                rules[rule] = rules.get(rule, 0) + 1
+        if not reqs:
+            continue
+        sizes.setdefault("", []).append(len(reqs))
+        path = (rec.get("element_path") or {}).get("path")
+        if path:
+            sizes.setdefault(path, []).append(len(reqs))
+    mean = lambda xs: round(sum(xs) / len(xs), 1) if xs else None
+    paths: Dict[str, int] = {}
+    rejected: Dict[str, int] = {}
+    for p in (state.get("element_paths") or {}).values():
+        paths[p.get("path") or "text"] = paths.get(p.get("path") or "text", 0) + 1
+        why = str(p.get("why") or "")
+        if p.get("path") == "text" and why not in ("", "no_schema", "off"):
+            rejected[why] = rejected.get(why, 0) + 1
+    out.update(elements_per_article=mean(sizes.get("", [])),
+               elements_per_article_by_path={k: mean(sizes[k]) for k in ELEMENT_PATHS if sizes.get(k)},
+               element_paths=paths, schema_rejected=rejected, rules_selected=rules)
     return out
 
 
@@ -8236,6 +8303,7 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     out["family_alarm"] = len(fam["alarm"]) if isinstance(fam.get("alarm"), list) else len(
         _family_alarm(fam.get("dropped_graded") or {}))
     out.update(grading_counters(state))                                                             # v79.8 (C4)
+    out.update(shadow_counters(counts))                                                             # v79.11 (6)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out
 
@@ -8243,6 +8311,34 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
 def _family_alarm(dropped_graded: Dict[str, Any]) -> List[Dict[str, Any]]:
     from . import family_gate
     return family_gate.alarm(dropped_graded)
+
+
+def shadow_state(shadow: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.11 (6): lawyer_method.schema_shadow as the state keeps it for the nightly -- every key but the per-record
+    items (current/schema maps, agree, false_exclusions [article, cat, why], extra, no_schema, recall), JSON-safe."""
+    return _jsonable({k: v for k, v in (shadow or {}).items() if k != "items"})
+
+
+def shadow_counters(counts: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
+    """v79.11 (6): ELEMENT_SCHEMAS -- over the clients' selection counts: schema_shadow {agree, false_exclusions, extra,
+    candidate_recall (the current admissions the schema admits too / the current admissions, on records with a schema;
+    None with none)} and main_lines_by_rule {the main line's admitting rule: n}. Neutral with the flag off."""
+    from . import element_schemas
+    shadow: Dict[str, Any] = {"agree": 0, "false_exclusions": 0, "extra": 0, "candidate_recall": None}
+    out: Dict[str, Any] = {"schema_shadow": shadow, "main_lines_by_rule": {}}
+    if not element_schemas.enabled():
+        return out
+    hit = of = 0
+    for c in counts:
+        sh = c.get("schema_shadow") or {}
+        for k in ("agree", "false_exclusions", "extra"):
+            shadow[k] += int(sh.get(k) or 0)
+        hit, of = hit + int(sh.get("recall_hit") or 0), of + int(sh.get("recall_of") or 0)
+        if "main_admitted_by" in c:
+            rule = str(c.get("main_admitted_by") or "")
+            out["main_lines_by_rule"][rule] = out["main_lines_by_rule"].get(rule, 0) + 1
+    shadow["candidate_recall"] = round(hit / of, 3) if of else None
+    return out
 
 
 def single_shot_timings(state: Dict[str, Any], t0: float, t1: float) -> Dict[str, Any]:

@@ -17,6 +17,25 @@ CHECKS   numbers_not_in_text, abrogated_as_live (a card line, without the word "
          failed. finish_reason=length: once more, shorter, then failed. Prompts to look, not verdicts; but the chatbot gives
          the writer only cards with none (src/rag/article_cards.py), the official text otherwise. Summed up at the end.
 SAMPLE   --sample N: N random cards, shared out by code, each beside its text, in markdown (--out).
+
+v79.11 SCHEMAS  --schemas: the element schemas (src/rag/element_schemas.py: SCHEMA_SYSTEM, user_message, parse_reply,
+         make_line) into --schema-file (default element_schemas.schema_file(), data/article_schemas.jsonl); the card mode
+         above is untouched. Order: (a) every article of the cards file (--file), in its order; (b) the rest of c.c., c.p.,
+         c.p.c., c.p.p. by number; (c) each --doc. A text that is only "(abrogato)" gets no schema; each line carries the
+         raw article text ("text") for scripts/schema_show.py. Endpoint: --url (SCHEMA_LLM_BASE_URL, else LLM_BASE_URL on
+         port 8003), --model (SCHEMA_LLM_MODEL, else qwen38-27b), thinking off, --json-mode (on; --no-json-mode) asks
+         response_format json_object, max_tokens SCHEMA_TOKENS. Same --concurrency, --max-per-hour (Throttle). A schema is
+         made again when its source_hash or generation_hash (schema version, prompt, model) changed or it failed
+         (--force: all) -- NEVER for a label the lawyer reviewed (data/article_schemas_reviewed.jsonl, reviewed: true):
+         "reviewed, kept"; one whose text changed after the review is counted "reviewed_stale" (the runtime takes the
+         text path) and its generated line records the text now (current_source_hash, current_text) so that
+         scripts/schema_show.py --stale shows it; the overlay is never written. Cut: once more with element_schemas.SHORTER_NOTE, then failed; invalid JSON: once more with
+         JSON_NOTE, then failed. Accounting every 25 and at the end (made, failed, unusable by check, tokens, wall time,
+         articles an hour, seconds a call); the end: coverage by code (usable / unusable / without), the checks, the cost.
+         --dry-run: the order and the coverage, no call.
+
+    venv/bin/python scripts/article_cards_bulk.py --schemas --dry-run                      # the order and the coverage
+    nohup venv/bin/python scripts/article_cards_bulk.py --schemas > article_schemas_bulk.log 2>&1 &
 """
 
 import argparse
@@ -41,6 +60,9 @@ _spec.loader.exec_module(ac)
 DEFAULT_FILE = os.getenv("ARTICLE_CARDS_FILE") or os.path.join(   # v77: the runtime state folder (src/state_paths.py)
     os.getenv("STATE_DIR") or ("/opt/chatbot/state" if os.path.isdir("/opt/chatbot") else "state"), "article_cards.jsonl")
 TOP = 500
+SCHEMA_TOKENS = 6000                      # v79.11: --schemas' max_tokens
+SCHEMA_MODEL, SCHEMA_PORT = "qwen38-27b", 8003
+SCHEMA_CODES = ("c.c.", "c.p.", "c.p.c.", "c.p.p.")
 SHORTER = "\n\nLa risposta precedente è stata troncata: sii più compatto, senza omettere commi o voci."
 _ARTICLE_NAME_RE = re.compile(r"^(\d+(?:-[a-z]+)?)(?:[._]|$)", re.IGNORECASE)
 _LABEL_RE = re.compile(r"^(?:art\.?\s*)?(\d+(?:-[a-z]+)?)\s+(.+)$", re.IGNORECASE)
@@ -315,6 +337,312 @@ def render_sample(chosen: list, texts: dict) -> str:
     return "\n".join(L)
 
 
+# --- v79.11: element schemas (--schemas) -----------------------------------------------------------------------------
+
+def _es():
+    from src.rag import element_schemas
+    return element_schemas
+
+
+def schema_model(args) -> str:
+    return getattr(args, "model", None) or os.getenv("SCHEMA_LLM_MODEL") or SCHEMA_MODEL
+
+
+def schema_endpoint(args) -> dict:
+    """v79.11: the schema model -- --url, else SCHEMA_LLM_BASE_URL, else LLM_BASE_URL on port 8003; --model, else
+    SCHEMA_LLM_MODEL, else qwen38-27b; thinking off; response_format json_object unless --no-json-mode; SCHEMA_TOKENS."""
+    base = os.getenv("LLM_BASE_URL") or ""
+    url = getattr(args, "url", None) or os.getenv("SCHEMA_LLM_BASE_URL") or (
+        re.sub(r":\d+(?=/|$)", f":{SCHEMA_PORT}", base, count=1) if re.search(r":\d+(?:/|$)", base) else "")
+    if not url:
+        sys.exit(f"LLM_BASE_URL has no port to change to {SCHEMA_PORT}: give --url or SCHEMA_LLM_BASE_URL ({base})")
+    key = os.getenv("LLM_API_KEY") or ""
+    if not key:
+        sys.exit("LLM_API_KEY must be set")
+    extra = {"chat_template_kwargs": {"enable_thinking": False}}
+    if getattr(args, "json_mode", True):
+        extra["response_format"] = {"type": "json_object"}
+    return {"url": url, "key": key, "model": schema_model(args), "max_tokens": SCHEMA_TOKENS, "extra": extra}
+
+
+def schema_label(article: dict) -> str:
+    es = _es()
+    return es.norm_label(es.label_of(article["number"], article["code"]))
+
+
+def reviewed_labels() -> set:
+    """The labels the lawyer reviewed (the overlay's reviewed: true lines): never generated again."""
+    return {label for label, line in _es().reviewed().items() if line.get("reviewed") is True}
+
+
+def reviewed_hashes() -> dict:
+    """v79.11: {label: the source_hash the lawyer reviewed against} of the overlay's reviewed: true lines -- the labels
+    never generated again (reviewed_labels), each with the hash schema_due checks for a stale review."""
+    return {label: line.get("source_hash") for label, line in _es().reviewed().items() if line.get("reviewed") is True}
+
+
+def schema_due(article: dict, doc: str, have: dict, model: str, reviewed=frozenset(), force: bool = False) -> str:
+    """Why the article's schema is to be made: "new", "source" (its text changed), "generation" (schema version, prompt
+    or model changed), "failed", "force"; "" when its line is current; "reviewed" for a label the lawyer reviewed --
+    never made again, --force or not; "reviewed_stale" for one whose review's source_hash is no longer the text's (when
+    reviewed is reviewed_hashes()' {label: hash}; a set of labels gives "reviewed"), never made again either."""
+    es = _es()
+    label = schema_label(article)
+    if label in reviewed:
+        base = reviewed.get(label) if isinstance(reviewed, dict) else None
+        return "reviewed_stale" if base and base != es.text_hash(article["text"]) else "reviewed"
+    record = have.get((doc, article["number"]))
+    if not record:
+        return "new"
+    source = es.text_hash(article["text"])
+    if record.get("source_hash") != source:
+        return "source"
+    if record.get("generation_hash") != es.generation_hash(source, model):
+        return "generation"
+    if (record.get("checks") or {}).get("failed"):
+        return "failed"
+    return "force" if force else ""
+
+
+def is_due(why: str) -> bool:
+    return why not in ("", "reviewed", "reviewed_stale")
+
+
+def text_now(record: dict, article: dict):
+    """v79.11: a reviewed label's generated line with the article's text now recorded beside it (current_source_hash,
+    current_text: what schema_show --stale and --edit read) -- its schema, source_hash and text (what the model read)
+    untouched, so the runtime still never takes it for the new text; None when the line already records it."""
+    es = _es()
+    now = es.text_hash(article["text"])
+    if (record.get("current_source_hash") or record.get("source_hash")) == now:
+        return None
+    line = {k: v for k, v in record.items() if k not in ("current_source_hash", "current_text")}
+    if line.get("source_hash") != now:
+        line.update(current_source_hash=now, current_text=article["text"])
+    return line
+
+
+def make_schema(endpoint: dict, doc: str, article: dict, stats: dict = None) -> dict:
+    """v79.11: the schema file's line for the article (element_schemas.make_line). Cut (finish_reason length): once more
+    with SHORTER_NOTE; invalid JSON: once more with JSON_NOTE; then failed. Never raises for a bad reply. stats, when
+    given, gains "calls" and "call_seconds"."""
+    es = _es()
+    usage = {"prompt_tokens": 0, "completion_tokens": 0}
+    notes, retried, schema, failed, cut = [], set(), None, "", False
+    started = time.time()
+    while True:
+        got, problem, reply = {}, None, ""
+        t0 = time.time()
+        try:
+            reply = ac.call(endpoint, es.user_message(article, " ".join(notes)), system=es.SCHEMA_SYSTEM, usage=got)
+        except ValueError as exc:
+            problem = exc
+        for k in usage:
+            usage[k] += int(got.get(k) or 0)
+        if stats is not None:
+            stats["calls"] = stats.get("calls", 0) + 1
+            stats["call_seconds"] = stats.get("call_seconds", 0.0) + time.time() - t0
+        if problem is not None:
+            if "cut at max_tokens" in str(problem) and "cut" not in retried:
+                retried.add("cut")
+                notes.append(es.SHORTER_NOTE)
+                continue
+            cut = "cut at max_tokens" in str(problem)
+            failed = str(problem)[:300]
+            break
+        try:
+            schema = es.parse_reply(reply)
+            break
+        except ValueError as exc:
+            if "json" not in retried:
+                retried.add("json")
+                notes.append(es.JSON_NOTE)
+                continue
+            failed = f"invalid JSON: {exc}"[:300]
+            break
+    try:
+        return es.make_line(article, endpoint["model"], schema, failed=failed, cut=cut, seconds=time.time() - started,
+                            usage=usage, doc=doc)
+    except Exception as exc:  # noqa: BLE001 -- a reply the checks cannot read is a failed line, never a stopped run
+        return es.make_line(article, endpoint["model"], None, failed=f"unreadable schema: {exc}"[:300],
+                            seconds=time.time() - started, usage=usage, doc=doc)
+
+
+def unusable_checks(line: dict) -> list:
+    """The blocking checks a made (not failed) line raised."""
+    es = _es()
+    return [k for k in es.raised(line.get("checks")) if k not in ("failed", "cut")]
+
+
+def accounting(acc: dict, done: int, total: int, started: float) -> str:
+    wall = max(time.time() - started, 1e-9)
+    unusable = ", ".join(f"{k} {v}" for k, v in sorted(acc["unusable"].items())) or "none"
+    return (f"{done:,}/{total:,}: {acc['made']:,} made, {acc['failed']:,} failed, unusable by check: {unusable}; tokens "
+            f"{acc['prompt_tokens']:,} prompt + {acc['completion_tokens']:,} completion; {wall:,.0f}s, "
+            f"{done * 3600 / wall:,.0f} articles an hour, {acc['call_seconds'] / max(acc['calls'], 1):.1f}s a call "
+            f"({acc['calls']:,} calls)")
+
+
+def run_schemas(items: list, endpoint: dict, path: str, have: dict, concurrency: int, throttle: Throttle,
+                force: bool = False, reviewed=frozenset(), every: int = 25) -> dict:
+    """items: [(doc, article)]. Appends each line as it is made (the last line of an article wins); a reviewed label is
+    never made ("reviewed_kept"). The accounting printed every `every` and at the end; returned with the counts."""
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    reasons, todo = Counter(), []
+    for doc, article in items:
+        why = schema_due(article, doc, have, endpoint["model"], reviewed, force)
+        reasons[why or "current"] += 1
+        if is_due(why):
+            todo.append((doc, article))
+        elif why in ("reviewed", "reviewed_stale") and have.get((doc, article["number"])):
+            line = text_now(have[(doc, article["number"])], article)        # the text now beside a reviewed label's
+            if line is not None:                                            # line; the overlay never written
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+                have[(doc, article["number"])] = line
+    lock = threading.Lock()
+    acc = {"made": 0, "failed": 0, "unusable": Counter(), "prompt_tokens": 0, "completion_tokens": 0, "calls": 0,
+           "call_seconds": 0.0}
+    started = time.time()
+
+    def one(item):
+        doc, article = item
+        throttle.wait()
+        stats = {}
+        line = make_schema(endpoint, doc, article, stats)
+        with lock:
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(line, ensure_ascii=False) + "\n")
+            have[(doc, article["number"])] = line
+            acc["failed" if line["checks"]["failed"] else "made"] += 1
+            if not line["checks"]["failed"]:
+                acc["unusable"].update(unusable_checks(line))
+            acc["prompt_tokens"] += line["usage"]["prompt_tokens"]
+            acc["completion_tokens"] += line["usage"]["completion_tokens"]
+            acc["calls"] += stats.get("calls", 0)
+            acc["call_seconds"] += stats.get("call_seconds", 0.0)
+            done = acc["made"] + acc["failed"]
+            if done % every == 0 or done == len(todo):
+                print(accounting(acc, done, len(todo), started) + f", last: art. {article['number']} {article['code']}",
+                      flush=True)
+    with ThreadPoolExecutor(max_workers=max(concurrency, 1)) as pool:
+        list(pool.map(one, todo))
+    wall = time.time() - started
+    done = acc["made"] + acc["failed"]
+    return {"due": len(todo), "reviewed_kept": reasons["reviewed"] + reasons["reviewed_stale"],
+            "reviewed_stale": reasons["reviewed_stale"], "current": reasons["current"],
+            "why": {k: v for k, v in reasons.items() if k not in ("current", "reviewed", "reviewed_stale")},
+            "made": acc["made"], "failed": acc["failed"],
+            "unusable": dict(acc["unusable"]), "prompt_tokens": acc["prompt_tokens"],
+            "completion_tokens": acc["completion_tokens"], "calls": acc["calls"], "seconds": round(wall, 1),
+            "per_hour": round(done * 3600 / wall) if wall > 0 and done else 0,
+            "mean_call_seconds": round(acc["call_seconds"] / acc["calls"], 1) if acc["calls"] else 0.0}
+
+
+def schema_coverage(items: list, have: dict, reviewed=frozenset()) -> dict:
+    """{code: Counter(usable, unusable, without, reviewed)} over the order's articles: a line with a usable schema, one
+    with an unusable schema, none (or a failed one); reviewed counts the lawyer's labels besides."""
+    es = _es()
+    out = defaultdict(Counter)
+    for doc, article in items:
+        counts = out[article["code"]]
+        line = have.get((doc, article["number"]))
+        if not line or not isinstance(line.get("schema"), dict):
+            counts["without"] += 1
+        else:
+            counts["usable" if es.usable(line) else "unusable"] += 1
+        if schema_label(article) in reviewed:
+            counts["reviewed"] += 1
+    return dict(out)
+
+
+def schema_summary(lines: list, coverage: dict) -> list:
+    """The end of a run: coverage by code, the checks raised over the file's lines, the cost."""
+    es = _es()
+    L = ["Coverage of the order (with a usable schema / an unusable one / without; reviewed by the lawyer):",
+         f"  {'code':<28}{'usable':>9}{'unusable':>10}{'without':>9}{'reviewed':>10}"]
+    total = Counter()
+    for code in sorted(coverage, key=lambda c: (c not in SCHEMA_CODES, SCHEMA_CODES.index(c) if c in SCHEMA_CODES else 0, c)):
+        c = coverage[code]
+        total.update(c)
+        L.append(f"  {code[:27]:<28}{c['usable']:>9,}{c['unusable']:>10,}{c['without']:>9,}{c['reviewed']:>10,}")
+    L.append(f"  {'all':<28}{total['usable']:>9,}{total['unusable']:>10,}{total['without']:>9,}{total['reviewed']:>10,}")
+    counts = Counter(k for line in lines for k in es.BLOCKING + es.NON_BLOCKING if (line.get("checks") or {}).get(k))
+    L.append(f"{len(lines):,} lines in the file, {sum(1 for x in lines if es.usable(x)):,} usable; checks raised "
+             "(blocking, then reported):")
+    L += [f"  {name:<32}{counts.get(name, 0):>7,}" for name in es.BLOCKING + es.NON_BLOCKING]
+    prompt = sum(int((x.get("usage") or {}).get("prompt_tokens") or 0) for x in lines)
+    completion = sum(int((x.get("usage") or {}).get("completion_tokens") or 0) for x in lines)
+    seconds = sum(float(x.get("seconds") or 0) for x in lines)
+    L.append(f"Cost: {prompt:,} prompt + {completion:,} completion tokens, {seconds:,.0f}s of calls "
+             f"({seconds / max(len(lines), 1):.1f}s an article)")
+    return L
+
+
+def schema_items(cards: list, documents: dict, code_docs: list, specials: list = ()) -> tuple:
+    """v79.11: (items [(doc, article)], bare, carded) -- the order of --schemas: (a) the cards file's articles in its
+    order (those still in their document), (b) the codes' documents by number, (c) the --doc ones; each once; "bare" the
+    ones whose text is only "(abrogato)" (no schema), left out of items."""
+    carded = [(d, str(n).lower()) for d, n in cards if str(n).lower() in documents.get(d, {})]
+    codes = {doc: sorted(documents[doc], key=number_key) for doc in code_docs}
+    extra = {doc: sorted(documents[doc], key=number_key) for doc in specials}
+    every = [(doc, documents[doc][number]) for doc, number in order_refs(carded, codes, extra)]
+    return [x for x in every if has_body(x[1])], [x for x in every if not has_body(x[1])], carded
+
+
+def schemas_main(args) -> None:
+    """v79.11: --schemas (see the module's docstring)."""
+    sys.path.insert(0, os.getcwd())
+    from dotenv import load_dotenv
+    load_dotenv(args.env)
+    uri = os.getenv("NEO4J_URI")
+    if not uri:
+        sys.exit(f"NEO4J_URI is not set ({args.env})")
+    es = _es()
+    path = args.schema_file or es.schema_file()
+    have = read_file(path)
+    cards = list(read_file(args.file))            # (doc, article), in the cards file's order
+    reviewed = reviewed_hashes()                  # v79.11: the labels never made again, with their review's hash
+    import neo4j
+    with neo4j.GraphDatabase.driver(uri, auth=(os.getenv("NEO4J_USER"), os.getenv("NEO4J_PASSWORD"))) as driver:
+        with driver.session(database=os.getenv("NEO4J_DATABASE", "neo4j"), default_access_mode=neo4j.READ_ACCESS) as session:
+            code_of = {code_document(session, code): code for code in SCHEMA_CODES}
+            code_of.pop("", None)
+            documents = {doc: read_document(session, doc, code) for doc, code in code_of.items()}
+            for doc in dict.fromkeys(d for d, _ in cards):
+                if doc not in documents:
+                    documents[doc] = read_document(session, doc, code_of.get(doc, doc))
+            for doc in args.doc:
+                if doc not in documents:
+                    documents[doc] = read_document(session, doc, doc)
+                if not documents[doc]:
+                    sys.exit(f"--doc: no articles in {doc!r} (the exact document name)")
+    items, bare, carded = schema_items(cards, documents, list(code_of), args.doc)
+    if args.limit:
+        items = items[:args.limit]
+    model = schema_model(args)
+    whys = Counter(schema_due(a, d, have, model, reviewed, args.force) for d, a in items)
+    print(f"{len(items):,} articles: {len(carded):,} carded ({len(cards) - len(carded):,} of the cards file not found), "
+          f"then the codes, then {len(args.doc)} --doc; {len(bare):,} only \"(abrogato)\", no schema; "
+          f"{sum(v for k, v in whys.items() if is_due(k)):,} to make ({model}), "
+          f"{whys['reviewed'] + whys['reviewed_stale']:,} reviewed, kept ({whys['reviewed_stale']:,} stale: the text "
+          "changed after the review, the text path runs until the lawyer reviews it again)", flush=True)
+    if args.dry_run:
+        for doc, article in items[:30]:
+            print(f"  art. {article['number']} {doc}")
+        print("\n".join(schema_summary(list(have.values()), schema_coverage(items, have, reviewed))))
+        return
+    endpoint = schema_endpoint(args)
+    print(f"{endpoint['model']} at {endpoint['url']}, {args.concurrency} at once, json mode "
+          f"{'on' if 'response_format' in endpoint['extra'] else 'off'}" +
+          (f", at most {args.max_per_hour} an hour" if args.max_per_hour else ""), flush=True)
+    outcome = run_schemas(items, endpoint, path, have, args.concurrency, Throttle(args.max_per_hour), args.force,
+                          reviewed)
+    compact(path, have)
+    print(f"This run: {outcome}")
+    print("\n".join(schema_summary(list(have.values()), schema_coverage(items, have, reviewed))))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--file", default=DEFAULT_FILE)
@@ -332,7 +660,15 @@ def main() -> None:
     parser.add_argument("--url", help="the model's base URL (default: LLM_BASE_URL)")
     parser.add_argument("--model", help="default: LLM_MODEL")
     parser.add_argument("--env", default=os.path.join(os.getcwd(), ".env"))
+    parser.add_argument("--schemas", action="store_true", help="v79.11: element schemas instead of cards")
+    parser.add_argument("--schema-file", help="--schemas: default element_schemas.schema_file()")
+    parser.add_argument("--json-mode", dest="json_mode", action="store_true", default=True,
+                        help="--schemas: response_format json_object (default)")
+    parser.add_argument("--no-json-mode", dest="json_mode", action="store_false")
     args = parser.parse_args()
+    if args.schemas:
+        schemas_main(args)
+        return
     sys.path.insert(0, os.getcwd())
     from dotenv import load_dotenv
     load_dotenv(args.env)

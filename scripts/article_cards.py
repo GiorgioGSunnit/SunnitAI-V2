@@ -229,10 +229,13 @@ def clean_reply(content: str) -> str:
     return text.strip()
 
 
-def call(endpoint: dict, user: str) -> str:
-    """The card; ValueError when the reply is unusable. Network and 5xx errors are tried TRIES times."""
+def call(endpoint: dict, user: str, system: str = None, usage: dict = None) -> str:
+    """The card; ValueError when the reply is unusable. Network and 5xx errors are tried TRIES times. v79.11: system (default
+    SYSTEM) is the system prompt -- article_cards_bulk.py --schemas sends element_schemas.SCHEMA_SYSTEM; usage, when given,
+    is filled with the reply's "usage" (prompt_tokens, completion_tokens), a cut reply's too."""
     payload = {"model": endpoint["model"], "temperature": 0, "max_tokens": endpoint["max_tokens"],
-               "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": user}],
+               "messages": [{"role": "system", "content": SYSTEM if system is None else system},
+                            {"role": "user", "content": user}],
                **endpoint.get("extra", {})}
     request = urllib.request.Request(endpoint["url"].rstrip("/") + "/chat/completions", method="POST",
                                      data=json.dumps(payload).encode("utf-8"),
@@ -242,7 +245,10 @@ def call(endpoint: dict, user: str) -> str:
     for attempt in range(1, TRIES + 1):
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT) as reply:
-                choice = json.load(reply)["choices"][0]
+                body = json.load(reply)
+                choice = body["choices"][0]
+            if usage is not None and isinstance(body.get("usage"), dict):
+                usage.update(body["usage"])
             text = clean_reply((choice.get("message") or {}).get("content") or "")
             if choice.get("finish_reason") == "length":
                 raise ValueError(f"reply cut at max_tokens {endpoint['max_tokens']}")

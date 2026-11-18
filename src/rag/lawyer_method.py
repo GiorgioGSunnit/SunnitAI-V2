@@ -1734,8 +1734,58 @@ def active_modules(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         hit = [m for m in mods if text and module_hit(m, text)]
         hit = [m for m in hit if m.get("requires") != "professional_counterparty" or professional_counterparty(ctx)]
         if hit:
+            schema_module_disagree(ctx, mods, hit)          # v79.11 (6): logged only, ELEMENT_SCHEMAS
             return [staged(m, ctx) for m in hit]
-    return []
+    found = schema_modules(ctx, mods)                       # v79.11 (6): ELEMENT_SCHEMAS only; [] off
+    if found:
+        _log("schema_modules", {"modules": [m["id"] for m in found], "rapporti": schema_rapporti(ctx, True)})
+    shadow = [m["id"] for m in schema_modules(ctx, mods, reviewed_only=False) if m not in found]
+    if shadow:                                              # an unreviewed schema's module: logged, never active
+        _log("schema_modules_shadow", {"modules": shadow, "rapporti": schema_rapporti(ctx)})
+    return [staged(m, ctx) for m in found]
+
+
+def schema_rapporti(ctx: Dict[str, Any], reviewed_only: bool = False) -> Dict[str, List[str]]:
+    """v79.11 (6): ELEMENT_SCHEMAS -- {rapporto: [articles]} of the schemas of ctx["records"] (rec["schema"]) whose side
+    is not «threat» (the client's norms); {} with the flag off or no records (family_gate.context passes none).
+    reviewed_only: only the lawyer's reviewed schemas (rec["schema"]["reviewed"] True)."""
+    from . import element_schemas
+    if not element_schemas.enabled():
+        return {}
+    out: Dict[str, List[str]] = {}
+    for label, rec in (ctx.get("records") or {}).items():
+        if not isinstance(rec, dict) or rec.get("side") == "threat" or not isinstance(rec.get("schema"), dict):
+            continue
+        if reviewed_only and rec["schema"].get("reviewed") is not True:
+            continue
+        rapporto = rec["schema"].get("rapporto")
+        if isinstance(rapporto, str) and rapporto.strip():
+            out.setdefault(rapporto.strip(), []).append(label)
+    return out
+
+
+def schema_modules(ctx: Dict[str, Any], mods: Sequence[Dict[str, Any]],
+                   reviewed_only: bool = True) -> List[Dict[str, Any]]:
+    """v79.11 (6): when the patterns find no module -- the modules whose id is a rapporto of the records' REVIEWED
+    schemas (schema_rapporti): an active module refuses and subordinates claims, and an unreviewed schema never
+    excludes, so a generated schema's module is only logged (schema_modules_shadow, reviewed_only=False). A
+    professional counterparty still required where the module requires one; [] with the flag off."""
+    rapporti = schema_rapporti(ctx, reviewed_only)
+    hit = [m for m in mods if m.get("id") in rapporti]
+    return [m for m in hit if m.get("requires") != "professional_counterparty" or professional_counterparty(ctx)]
+
+
+def schema_module_disagree(ctx: Dict[str, Any], mods: Sequence[Dict[str, Any]], hit: Sequence[Dict[str, Any]]) -> None:
+    """v79.11 (6): the patterns found modules -- a schema rapporto naming another module is logged
+    (schema_module_disagree), and changes nothing."""
+    rapporti = schema_rapporti(ctx)
+    if not rapporti:
+        return
+    ids = {m.get("id") for m in mods}
+    found = [m.get("id") for m in hit]
+    other = {r: arts for r, arts in rapporti.items() if r in ids and r not in found}
+    if other:
+        _log("schema_module_disagree", {"patterns": found, "schema": other})
 
 
 def claim_admission(label: str, modules: Sequence[Dict[str, Any]], consumer: bool = True) -> Tuple[str, str, Tuple]:
@@ -2292,6 +2342,11 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
     ctx["timings"], its input and every reply logged (thesis_log)."""
     from langchain_core.messages import HumanMessage, SystemMessage
     ctx["candidates"] = thesis_candidates(ctx)
+    if schemas_enabled():               # v79.11 (6): the schemas' admission, shadow only -- the candidates untouched
+        try:
+            ctx["schema_shadow"] = schema_shadow(ctx)
+        except Exception as exc:        # noqa: BLE001 -- a shadow never fails the plan
+            logger.warning("lawyer_method: schema shadow failed: %s", exc)
     system = METHOD_SYSTEM + "\n\n" + method_text(ctx.get("rito") or "", ctx.get("areas") or ())
     if ctx.get("rulings_record"):       # v78: a passage on a contested element can lower a thesis' realism
         from . import rulings
@@ -2336,6 +2391,90 @@ def method_plan(ctx: Dict[str, Any], call: Optional[Callable] = None) -> Dict[st
     return plan
 
 
+def schemas_enabled() -> bool:
+    from . import element_schemas
+    return element_schemas.enabled()
+
+
+# v79.11 (6, 7): the candidates' kinds by the schema's admission categories
+SHADOW_CATEGORIES = {"claim": ("claim", "riconvenzionale", "remedy", "claim_offence", "parte_civile"),
+                     "defence": ("scriminante", "defence", "attenuante"),
+                     "contest": ("contest_excluded", "contest_open", "contest_integrated", "eccezione", "requalify")}
+
+
+def _shadow_line(rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The record's schema (rec["schema"], the summary decomposition kept) as the line shadow_admission reads; None
+    without one (an article read on the text path)."""
+    s = rec.get("schema") if isinstance(rec, dict) else None
+    if not isinstance(s, dict):
+        return None
+    return {"schema": {"tipo": list(s.get("tipo") or []), "legittimato": list(s.get("legittimato") or []),
+                       "rapporto": s.get("rapporto")}, "reviewed": s.get("reviewed") is True,
+            "source": s.get("source") or ""}
+
+
+def _admits(label: str, articles: Sequence[str]) -> bool:
+    return any(a == label or same_article(label, a) for a in articles)
+
+
+def schema_shadow(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.11 (6, 7): what the schemas would admit (element_schemas.shadow_admission) for every record of ctx["records"]
+    -- those thesis_candidates filters out before admission too -- against the current candidates, by article and
+    category (SHADOW_CATEGORIES): {"items", "current": {cat: [articles]}, "schema": {cat: [articles]}, "agree" (the
+    record-categories both read alike, records with a schema), "false_exclusions": [(article, cat, why)] (admitted now,
+    refused by the schema), "extra": [(article, cat)] (the schema's only), "no_schema": [articles], "recall_hit",
+    "recall_of", "candidate_recall"}; logged (schema_admission). Shadow only: nothing in ctx changes but the caller's
+    ctx["schema_shadow"]."""
+    from . import element_schemas
+    role = str((ctx.get("posture") or {}).get("role") or "")
+    owner = {str(r.get("id")): label for label, rec in (ctx.get("records") or {}).items()
+             for r in (rec or {}).get("requisites") or [] if r.get("id")}
+    current: Dict[str, List[str]] = {cat: [] for cat in SHADOW_CATEGORIES}
+    for c in ctx.get("candidates") or []:
+        cat = next((k for k, kinds in SHADOW_CATEGORIES.items() if c.get("kind") in kinds), "")
+        if not cat:
+            continue
+        # a candidate's articles: its own, a remedy's list, else (a contest) the records of the elements it names
+        arts = [c["article"]] if c.get("article") else list(c.get("articles") or []) or \
+            [owner[str(i)] for i in list(c.get("contesta") or []) + list(c.get("poggia_su") or []) if str(i) in owner]
+        for a in arts:
+            if a and str(a) not in current[cat]:
+                current[cat].append(str(a))
+    schema: Dict[str, List[str]] = {cat: [] for cat in SHADOW_CATEGORIES}
+    items, no_schema, false_ex, extra = [], [], [], []
+    agree = hit = of = 0
+    admitted, rejected = [], []
+    for label, rec in (ctx.get("records") or {}).items():
+        item = element_schemas.shadow_admission(label, _shadow_line(rec), role, (rec or {}).get("side"))
+        items.append(item)
+        if not item.get("schema"):
+            no_schema.append(label)
+            continue
+        for cat in SHADOW_CATEGORIES:
+            now, then = _admits(label, current[cat]), bool(item.get(cat))
+            why = "; ".join(w for w in item.get("why") or [] if str(w).startswith(f"{cat}:"))
+            if then:
+                schema[cat].append(label)
+                admitted.append((label, cat, bool(item.get("conditional"))))
+            else:
+                rejected.append((label, cat, why))
+            if now:
+                of += 1
+                hit += then
+            if now == then:
+                agree += 1
+            elif now:
+                false_ex.append((label, cat, why))
+            else:
+                extra.append((label, cat))
+    out = {"items": items, "current": current, "schema": schema, "agree": agree, "false_exclusions": false_ex,
+           "extra": extra, "no_schema": no_schema, "recall_hit": hit, "recall_of": of,
+           "candidate_recall": round(hit / of, 3) if of else None}
+    _log("schema_admission", {"role": role, "admitted": admitted, "rejected": rejected, "false_exclusions": false_ex,
+                              "extra": extra, "no_schema": no_schema, "candidate_recall": out["candidate_recall"]})
+    return out
+
+
 COUNT_KEYS = ("offered", "parsed", "valued", "barred", "unverifiable", "minoritaria", "chosen", "main_is_fallback")
 
 
@@ -2353,13 +2492,16 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
     """v79 (A2): where the candidates went -- offered (the code's), parsed (reached the selection as soluzioni), valued
     (v79.7: the candidates the kept reply gave a realismo, every kind), barred (contest an «integrato» element, unlabelled), unverifiable,
     minoritaria, the main line chosen (its candidate id, «fallback» when the selection inserted one) and whether it is
-    the fallback (the posture's or the remedies table's line, no candidate of the code's)."""
+    the fallback (the posture's or the remedies table's line, no candidate of the code's). v79.11 (6): main_admitted_by
+    (the main line's candidate's admitted_by, "" when none) and, with ELEMENT_SCHEMAS, schema_shadow's numbers."""
     cands = ctx.get("candidates") or []
     vals = valuations(raw, cands)
     sols, main, _ = selection(ctx, plan)
     m = sols[main] if sols else {}
     inserted = bool(m.get("fallback")) and not m.get("candidate")
-    return {"offered": len(cands), "parsed": sum(1 for t in plan.get("soluzioni") or [] if t.get("candidate")),
+    main_cand = next((c for c in cands if m.get("candidate") and c.get("id") == m.get("candidate")), {})
+    shadow = ctx.get("schema_shadow") if isinstance(ctx.get("schema_shadow"), dict) else None
+    out = {"offered": len(cands), "parsed": sum(1 for t in plan.get("soluzioni") or [] if t.get("candidate")),
             "valued": sum(1 for c in cands if _plain((vals.get(c["id"]) or {}).get("realismo")).lower() in REALISMO),
             "model_argued": sum(1 for c in cands if c.get("argued", "model") == "model"),
             "barred": sum(1 for t in sols if t.get("barred")),
@@ -2393,6 +2535,13 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
                 c["article"], family_context(ctx), [str((ctx.get("assessment") or {}).get("article") or "")] +
                 [x for x, r in (ctx.get("records") or {}).items() if r.get("side") == "threat"])),
             "candidates_family_dropped": len(ctx.get("family_dropped") or [])}
+    # v79.11 (6): the rule admitting the main line's candidate ("" when none: a fallback, no candidate) -- always; the
+    # schemas' shadow admission in numbers (ELEMENT_SCHEMAS: only when method_plan computed it)
+    out["main_admitted_by"] = str(main_cand.get("admitted_by") or "")
+    if shadow is not None:
+        out["schema_shadow"] = {k: (len(v) if isinstance(v, list) else v) for k, v in shadow.items()
+                                if k in ("agree", "false_exclusions", "extra", "recall_hit", "recall_of")}
+    return out
 
 
 # --- v73: the objections, written for the selected line --------------------------------------------------------------------
@@ -4024,8 +4173,10 @@ def method_records(records: Dict[str, Dict[str, Any]], log: Optional[Dict[str, L
     log = log if log is not None else {}
     out: Dict[str, Dict[str, Any]] = {}
     for label, rec in (records or {}).items():
+        schema = rec.get("schema") if isinstance(rec.get("schema"), dict) and schemas_enabled() else None   # v79.11
         if rec.get("not_fattispecie") or not issue_records.decomposed_by_gate(
-                label, str(rec.get("rubrica") or ""), defence=rec.get("decomposed_for") == issue_records.DEFENCE_WHY):
+                label, str(rec.get("rubrica") or ""), defence=rec.get("decomposed_for") == issue_records.DEFENCE_WHY,
+                **({"schema": schema} if schema is not None else {})):
             log.setdefault("gated", []).append(label)
             continue
         if rec.get("undecomposed") or not issue_records.decomposed(rec):

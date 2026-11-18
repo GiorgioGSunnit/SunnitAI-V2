@@ -536,6 +536,36 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - D4: a ruling's reference is printed whole or not at all. Every written section (all but §5, which prints the record's estremi) loses a reference with no court head before it («Sez. 4, n. 29558/2025», «4, n. 29558/2025»), logged as `headless_citations_out`. The nightly check and the stripper share one test (`rulings.headless`); another court's head («Corte cost.», «Cons. St.» …) and a law's number («d.lgs. n. 23/2015») are not headless. 1458's criminal ruling: the filter dropped a criminal ruling's sentences that did not name the civil institution, but the ruling stayed ranked and was printed with its estremi alone. Now the ruling itself goes (counted in `penal_on_civil`), and on a civil record the printed passage must name the institution. — `rulings.penal_ruling`, `build`.
   - D5: a scriminante's every comma after its base one is a record of its own («52 c.p. co. 2»), so its thesis lists only the base comma's elements. A later comma is a thesis of its own only when a fact touches it. An untouched one is v78's fact-free noise. — `lawyer_method.scriminante_commi`, `touched`.
 
+### 11.5 v79.11 (`ELEMENT_SCHEMAS`)
+
+Element schemas: what an article requires, element by element, made once from its text and reviewed by the lawyer. With the flag off, nothing below runs, and every output, status, candidate, log line and existing counter is as in v79.9. With it on, an article without a usable schema runs the text path unchanged.
+
+- **The schema.** One line per article in `data/article_schemas.jsonl`, made by `scripts/article_cards_bulk.py --schemas`. It holds:
+  - the article's tipo (claim-conferring, defence, scriminante, limiting, definitional, procedural, sanction, other);
+  - who it binds, who may invoke it and who suffers the conduct, each with an optional condition;
+  - the rapporto;
+  - the elements, each with its kind, comma, branches, connective and parts, and its grounding with the text passage;
+  - the logic tree joining the elements, the eccezioni, the conseguenza, the special commi and the collegati.
+
+  The code checks every line against the article's text: invalid structure, ungrounded explicit elements, fragments, branches with no «o» in the text, logic errors. A line with a blocking check is never used. The lawyer's overlay, `data/article_schemas_reviewed.jsonl` (`scripts/schema_show.py --edit`), wins while its source hash is the article's; a stale one sends the article to the text path. — `element_schemas.check`, `for_row`.
+- **Decomposition.** An article whose row has a usable schema, of the same raw-text hash, gets the schema's elements in place of the text split. Their shape is `_requisites`' own (`"split": "schema"`, plus `schema_kind`, `schema_connective`, `schema_parti`, `schema_id`, `schema_grounding`). A fragment is still dropped. Kinds quantificazione, competenza and onere della prova are no requisites. A schema giving no element leaves the text path. Every decomposed record carries `element_path` {path: schema | reviewed | text, why}, and with a schema `rec["schema"]` (its summary: tipo, roles, rapporto, logic, reviewed). They are logged as `element_path` and kept in `state["element_paths"]`. — `issue_records._requisites`, `element_path`; `interactive_flow.decompose_records`.
+- **General-part gate.** A schema's tipo joins the v74 gate at all three sites (build, decompose_records, method_records):
+  - A sanction, claim-conferring, defence or scriminante tipo decomposes the article. The hard invariants stay: a procedural code's article, the general provisions, and c.p. Libro I other than 50-54 are never decomposed by a schema.
+  - A tipo only limiting, definitional, procedural or other gates an article out only when the schema is reviewed. An unreviewed one never gates out what the current gate admits.
+  - Disagreements are logged as `schema_gate_disagree`.
+
+  — `issue_records.decomposed_by_gate(..., schema=)`, `element_schemas.decide`.
+- **Grading.** One selector, `element_rule`, chooses the check for settle, polarity and the counters. It returns mental, duty, condition, termine, branches or plain. With no schema key on the element, it selects exactly what v79.9's regexes did.
+  - A schema «elemento soggettivo» is a mental element too, so 79.9-A applies even when the text has no mental word. The union holds both ways: the regex still applies under any kind.
+  - A «condizione» joined by «e» gets the 79.8-C3 per-part check, on its parts. A requisito gets it too. Half proven is «da provare», naming the missing part.
+  - A «termine» stays «provato» only on a supporting fatto certo stating a date or a duration, or when the computed terms decided it. Otherwise it is «da provare» («termine: nessuna data accertata nei fatti»). This stands in for 79.10-D1.
+  - A kind never sets or raises a status. Each schema element records `grading_rule` {rule, source, before, after}, logged as `element_rule`.
+
+  — `issue_records.element_rule`, `condition_rule`, `termine_check`.
+- **Admission, in shadow only.** After `thesis_candidates`, every record's schema is read for the client's role and the record's side: claim, defence, contest (SPEC §7). It is compared with the current candidates by article and category: agree, false exclusions with their reasons, extra, no schema, candidate recall. The 79.8 admission stays authoritative: the candidates never change. It is logged as `schema_admission`. `selection_counts` adds `main_admitted_by`, the main line's admitting rule, always. — `lawyer_method.schema_shadow`.
+- **Module stage.** When the patterns find no institution module, a module whose id is the rapporto of a client-side record's schema is used, still staged. When the patterns found modules, a schema naming another is only logged (`schema_module_disagree`). — `lawyer_method.active_modules`, `schema_modules`.
+- **Counters** (neutral with the flag off): `elements_per_article` and `elements_per_article_by_path`, `element_paths`, `schema_rejected` (a schema there but not used: hash_mismatch, unusable:<check>, reviewed_stale, schema_empty), `rules_selected`, `schema_shadow` {agree, false_exclusions, extra, candidate_recall}, `main_lines_by_rule`. — `interactive_flow.element_counters`, `shadow_counters`.
+
 ### 11.6 79.10 (addendum A4–A5)
 
 - **A4. The amministrativo family and module.**
@@ -609,4 +639,5 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
 | v79.6 | Questions answered first, several clients, repealed articles, alternative elements, role derived, keyword hits by matter |
 | v79.9 | Mental and duty elements graded by polarity, riqualificazione in the same code naming the differing element (A); module stages, special laws and the missing-laws line, the consumer's professional counterparty (B); the family allowlist on every candidate source (C); allegations by attribution only, more fragments, fraud indicators, whole citations, scriminante commi (D) |
 | v79.10 (A4–A5) | The amministrativo family and module (L. 241/1990, c.p.a., TU edilizia) with strong and weak signals; the family gate's override doors and its alarm (dropped rows graded in shadow, the nightly's first section) |
+| v79.11 | Element schemas (`ELEMENT_SCHEMAS`): per-article schemas checked against the text and reviewed by the lawyer; schema elements in place of the text split, the path per record; the schema's tipo in the general-part gate within the hard invariants; one rule selector for grading (mental by kind, a condition's parts, a termine's date); admission and module stage in shadow; the counters |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |
