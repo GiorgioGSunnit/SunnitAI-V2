@@ -162,7 +162,11 @@
         "1590 c.c.",
         "1591 c.c."
       ],
-      "name": "locazione"
+      "name": "locazione",
+      "laws": [
+        "L. 392/1978",
+        "L. 431/1998"
+      ]
     },
     {
       "id": "mutuo",

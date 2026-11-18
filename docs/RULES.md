@@ -519,6 +519,16 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
   - B2: the primary documents' names are read once at the API's startup and cached (`corpus_laws.warm`). When an active module's laws are absent, §1 and §9 print one fixed line: «La disciplina speciale di <istituto> (<leggi>) non è nell'archivio: il parere si limita alle norme del codice». With the names unknown (the graph not read) nothing is said to be missing. A module's «non_actions» (2118, 2119 for a dismissed worker) are never a claim, so never the main line. Counter: `missing_laws_lines`. — `lawyer_method.missing_laws`, `MISSING_LAWS_LINE`, `claim_admission`.
   - B3: the consumer qualification needs a professional counterparty as a certain fact (a business, a shop, a s.r.l. …). «venditore privato», «tra privati» or no sign of a business negates it: the consumer module is not active and no consumer-code article is a claim. — `lawyer_method.professional_counterparty`.
   - B4: `data/corpus_expected.json` holds, per module, the laws expected (the modules' «laws», kept equal by a test), how each is matched (number and year in a primary document's name, or an alias), and the defaults Block C admits for every case. `scripts/corpus_gaps.py --env .env` prints the missing ones for ingestion (read-only; `--selftest` without a database).
+- **C. The gate's side doors and the corpus noise.**
+  - C1: a document-level allowlist per matter family (`family_gate`), on every row before grading: retrieval, the first read's institution rows, the rules' anchors, the regimes' rows, and the area gate's «altri profili» rows. A last check runs on the candidates (a riqualificazione, a ranked candidate, a claim), keeping the charge's own articles. Admitted:
+    - the codes (c.c., c.p., c.p.c., c.p.p., c.p.a., Costituzione, preleggi, disposizioni di attuazione);
+    - the defaults: strada, stupefacenti, mediazione, and consumo only with a professional counterparty (B3);
+    - an active module's laws;
+    - a special-law table law whose family signal is in the first read's words (else the case's);
+    - a law the user names (its number and year or its name), or an article the user names.
+
+    Everything else goes: banking, finance, antiriciclaggio, data protection, insurance, DORA, Banca d'Italia circulars, the schools TU, nautica, public contracts without their signal, and any special law no module names. The special-law table gained a «family» per law (and number/year, so «… 1993, n. 385» is the TUB) and seven entries (antiriciclaggio, the privacy code, the insurance code, the schools TU, the nautica code, the public contracts codes, the Banca d'Italia circulars). Locazione's module names L. 392/1978 and L. 431/1998. The code-level matter gate (v79.6/v79.8 A1) is unchanged.
+  - C2: the counters are `candidates_out_of_family` (must be 0), `candidates_family_dropped`, `family_gate_dropped` and `family_admitted_outside_codes`. The nightly lists, per cell, every document admitted outside the codes with what admitted it (default, module, the signal's words, the user naming it) and every row the gate dropped. — `lawyer_method.family_context`, `scripts/nightly_sim.py:family_lines`.
 
 ## By version
 
@@ -565,5 +575,5 @@ Each rule below has synthetic tests only. None of them was tuned on a real or ev
 | v76b | Element splitting: riserva and default clauses, qualified subjects, means and purpose markers, civil split, special-law penal provisions, non-fattispecie rubriche |
 | v77 | No pipeline rule: version footer and `/api/version`, held-out set, acceptance on the nightly plus the lawyer's held-out scores |
 | v79.6 | Questions answered first, several clients, repealed articles, alternative elements, role derived, keyword hits by matter |
-| v79.9 | Mental and duty elements graded by polarity, riqualificazione in the same code naming the differing element (A); module stages, special laws and the missing-laws line, the consumer's professional counterparty (B) |
+| v79.9 | Mental and duty elements graded by polarity, riqualificazione in the same code naming the differing element (A); module stages, special laws and the missing-laws line, the consumer's professional counterparty (B); the family allowlist on every candidate source (C) |
 | v79 | Measurement (selection counts, deterministic choice and mode, code candidates never unverifiable); grounded rule statements; then charge and role, defences, forecast and wording, rulings as printed (79.2–79.5) |

@@ -147,6 +147,7 @@ def run_cell(spec: Dict[str, Any]) -> Dict[str, Any]:
             out["thesis_counts"]["defence_gate_dropped"] = len(gate.get("dropped") or [])
             out["defence_gate"] = gate
         out["ranked_trace"] = list((result.get("state") or {}).get("ranked_trace") or [])        # v79.7 (item 3)
+        out["family_gate"] = dict((result.get("state") or {}).get("family_gate") or {})          # v79.9 (C2)
         st = result.get("state") or {}                  # v79.8: every block's counters, the timings line's
         out["counters"] = dict((st.get("single_shot_timings") or {}).get("counters") or
                                interactive_flow.case_counters(st, round(time.time() - t0, 1)))
@@ -393,6 +394,24 @@ def counter_lines(results: List[Dict[str, Any]], baseline: Optional[Dict[str, An
     return lines
 
 
+def family_lines(results: List[Dict[str, Any]]) -> List[str]:
+    """v79.9 (C2): per cell, every document admitted outside the codes with what admitted it (a default, a module, the
+    signal's words, the user naming it), and the rows the family gate dropped."""
+    rows = [c for c in results if c.get("family_gate")]
+    if not rows:
+        return []
+    lines = ["", "## Documents outside the codes (per cell; the family gate)", "", "| cell | document | family | admitted by |",
+             "|---|---|---|---|"]
+    for c in rows:
+        for x in c["family_gate"].get("admitted") or []:
+            lines.append(f"| {c['id']} | {x.get('doc')} | {x.get('family')} | {x.get('by')} |")
+    gone = [(c["id"], x) for c in rows for x in c["family_gate"].get("dropped") or []]
+    if gone:
+        lines += ["", "Dropped by the family gate: " + "; ".join(
+            f"{cid}: {x.get('article')} ({x.get('family')}, {x.get('source')})" for cid, x in gone)]
+    return lines
+
+
 def ranked_lines(results: List[Dict[str, Any]]) -> List[str]:
     """v79.7 (item 3): per cell, the retrieval's top-ranked articles -- in record / candidate / dropped, with why."""
     rows = [c for c in results if c.get("ranked_trace")]
@@ -501,6 +520,7 @@ def report(results: List[Dict[str, Any]], stages: Optional[Dict[str, Any]], regr
     lines += counts_lines(results, baseline)
     lines += counter_lines(results, baseline)
     lines += ranked_lines(results)
+    lines += family_lines(results)                  # v79.9 (C2)
     lines += rulings_lines(results)
     lines += lawyer or []
     return "\n".join(lines) + "\n"

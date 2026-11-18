@@ -1300,6 +1300,25 @@ def _rubrica_tail(rec: Dict[str, Any]) -> str:
     return f" ({rubrica})" if rubrica else ""
 
 
+def family_context(ctx: Dict[str, Any]) -> Dict[str, Any]:
+    """v79.9 (C1): the case's family context (family_gate.context), once per ctx."""
+    if "family_ctx" not in ctx:
+        from . import family_gate
+        ctx["family_ctx"] = family_gate.context(ctx.get("case") or "", ctx.get("family_words") or "",
+                                                ctx.get("institutions") or [])
+    return ctx["family_ctx"]
+
+
+def family_gate_ok(label: str, fam: Dict[str, Any], named: Sequence[str] = ()) -> bool:
+    from . import family_gate
+    return family_gate.label_admitted(label, fam, [x for x in named if x])[0]
+
+
+def family_of_label(label: str) -> str:
+    from . import family_gate
+    return family_gate.classify(str(label).partition(" ")[2])[0]
+
+
 def label_code(label: str) -> str:
     """v79.9 (A3): an article label's code («582 c.p.» -> «c.p.»; «2 l. 604/1966» -> «l. 604/1966»)."""
     return str(label or "").strip().partition(" ")[2].strip().lower()
@@ -1512,6 +1531,15 @@ def thesis_candidates(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         out[:] = [c for c in out if c["kind"] not in PENAL_KINDS]
         if dropped:
             _log("penal_candidates_dropped", {"rito": _family_key(posture), "kinds": dropped})
+    # v79.9 (C1): every candidate's article inside the case's families (family_gate) -- a riqualificazione, a ranked
+    # candidate, a claim from a document the case's families do not admit is no candidate; the charge's own are kept
+    fam = family_context(ctx)
+    gated = [c for c in out if c.get("article") and not family_gate_ok(c["article"], fam, threats + [charge])]
+    if gated:
+        ctx["family_dropped"] = [{"article": c["article"], "kind": c["kind"],
+                                  "family": family_of_label(c["article"])} for c in gated]
+        out[:] = [c for c in out if c not in gated]
+        _log("candidates_out_of_family", ctx["family_dropped"])
     keep = [c for c in out if c.get("fallback")]
     rest = [c for c in out if not c.get("fallback")]
     if offender:                # v79.7: past the cap, the minority contests go first, the containment line never
@@ -2318,7 +2346,12 @@ def selection_counts(ctx: Dict[str, Any], plan: Dict[str, Any], raw: Any = None)
                                                 label_code(c.get("article")) != label_code(c.get("charge"))),
             "requalify_refused_code": len((ctx.get("candidates_trace") or {}).get("requalify_out_of_code") or []),
             "requalify_unnamed": sum(1 for c in cands if c.get("kind") == "requalify" and c.get("id") not in
-                                     {t.get("candidate") for t in plan.get("soluzioni") or []})}
+                                     {t.get("candidate") for t in plan.get("soluzioni") or []}),
+            # v79.9 (C2): a candidate from a document outside the case's families (must be 0); those the gate dropped
+            "candidates_out_of_family": sum(1 for c in cands if c.get("article") and not family_gate_ok(
+                c["article"], family_context(ctx), [str((ctx.get("assessment") or {}).get("article") or "")] +
+                [x for x, r in (ctx.get("records") or {}).items() if r.get("side") == "threat"])),
+            "candidates_family_dropped": len(ctx.get("family_dropped") or [])}
 
 
 # --- v73: the objections, written for the selected line --------------------------------------------------------------------
@@ -3755,6 +3788,13 @@ def issue_records_certain(sentence: Dict[str, Any]) -> bool:
     return issue_records.certain_fact(sentence)
 
 
+def family_words(state: Dict[str, Any], case: str) -> str:
+    """v79.9 (C1): the words a family's signal is read in -- the first read's (special_laws.read_text), else the case."""
+    from . import special_laws
+    read = state.get("read")
+    return special_laws.read_text(read) if isinstance(read, dict) and read else (case or "")
+
+
 def fact_events(state: Dict[str, Any]) -> List[str]:
     """v79.9 (B1): the kinds of the events the facts extraction read (fact_signals: consegna, fine lavori, scoperta
     vizio, denuncia/reclamo …) -- the ones the terms of §8 start from."""
@@ -3819,7 +3859,8 @@ def prepare(state: Dict[str, Any], posture: Dict[str, Any], rows: Sequence[Dict[
            "institutions": read_institutions(state.get("read") or {}),        # v79.8 (B2)
            # v79.9 (B1): the stage's sources -- the certain facts and the events the terms read
            "certain_text": " ".join(str(x.get("text") or "") for x in sentences if issue_records_certain(x)),
-           "events": fact_events(state)}
+           "events": fact_events(state),
+           "family_words": family_words(state, case)}                        # v79.9 (C1)
     _log("prepare", {"assessment": a, "circumstances": {x: [r.get("status") for r in rec.get("requisites") or []]
                                                         for x, rec in circ.items()}, "circumstances_link": circ_log,
                      "aggravante_note": note, "riti": len(riti), "temporal": ctx["temporal"][:200],

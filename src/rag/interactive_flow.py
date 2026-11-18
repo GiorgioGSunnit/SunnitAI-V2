@@ -920,6 +920,32 @@ def _retrieve(text: str, request: str, lang: str, analysis: Dict[str, Any], pend
             out["special_law_gate"] = {"dropped": special_out + special_regime,
                                        "from": "prima lettura" if first_read else "testo del caso"}
             _log("special_law_gate", out["special_law_gate"])
+        # v79.9 (C1): the document-level allowlist per matter family -- every row, the first read's and the rules'
+        # anchors' included, and the area gate's «altri profili» rows (family_gate)
+        from . import family_gate
+        fam_ctx = family_gate.context(case, words, read_institutions(first_read) if first_read else [])
+        fam = {"modules": fam_ctx["modules"], "dropped": [], "admitted": []}
+        for name, part in (("retrieval", "article_rows"), ("regimes", "regime_rows"), ("altri profili", "outside")):
+            rows_now = {"article_rows": article_rows, "regime_rows": regime_rows, "outside": outside}[part]
+            got = _isolated("family_gate", lambda: family_gate.gate(rows_now, fam_ctx, named_keys, name), None)
+            if got is None:
+                continue
+            kept_rows, gone_rows, admitted_docs = got
+            fam["dropped"] += gone_rows
+            fam["admitted"] += [x for x in admitted_docs if x not in fam["admitted"]]
+            if part == "article_rows":
+                article_rows = kept_rows
+            elif part == "regime_rows":
+                regime_rows = kept_rows
+            else:
+                outside = kept_rows
+        track_gate(top, gates, "family_gate", article_rows)
+        if fam["dropped"]:
+            gone = {_key(_parse_label(x["article"])) for x in fam["dropped"]}
+            anchor_keep = [a for a in anchor_keep if _key(_parse_label(a)) not in gone]
+            must = [a for a in must if _key(_parse_label(a)) not in gone]
+        out["family_gate"] = fam
+        _log("family_gate", fam)
         if case_first:
             from . import intake as intake_mod      # v69: c.p.c. 409-447 only when the case's rito is «lavoro»
             labour = intake_mod.rito_rule(case)[0] == "lavoro"
@@ -1422,6 +1448,7 @@ def analyse_case(text: str, request: str = "", lang: str = "it") -> Dict[str, An
         "ranked": list(found.get("ranked") or []),                         # v79 (D2)
         "retrieval_top": _jsonable(found.get("retrieval_top") or []),      # v79.7 (item 3)
         "defence_gate": _jsonable(found.get("defence_gate") or {}),         # v79 (D1, D4)
+        "family_gate": _jsonable(found.get("family_gate") or {}),           # v79.9 (C1, C2)
         "tool_rows": [_compact_row(r) for r in found["regime_rows"]],
         "pool": [{"_article": list(r["_article"]), "_multi_signal": bool(r.get("_multi_signal")),
                   "rubrica": str((r.get("s") or {}).get("titolo_articolo") or "")}
@@ -8067,8 +8094,12 @@ def case_counters(state: Dict[str, Any], total_s: Optional[float] = None) -> Dic
     out["unadmitted_candidates"] = sum(int(c.get("unadmitted") or 0) for c in counts)              # v79.8 (B4)
     out["main_outside_institution"] = sum(1 for c in counts if c.get("main_outside_institution"))
     out["no_action_lines"] = sum(int(c.get("no_action") or 0) for c in counts)                    # v79.8.5
-    for k in ("riqualificazione_out_of_code", "requalify_refused_code", "requalify_unnamed"):       # v79.9 (A3)
+    for k in ("riqualificazione_out_of_code", "requalify_refused_code", "requalify_unnamed",       # v79.9 (A3)
+              "candidates_out_of_family", "candidates_family_dropped"):                            # v79.9 (C2)
         out[k] = sum(int(c.get(k) or 0) for c in counts)
+    fam = state.get("family_gate") or {}                                                            # v79.9 (C2)
+    out["family_gate_dropped"] = len(fam.get("dropped") or [])
+    out["family_admitted_outside_codes"] = len(fam.get("admitted") or [])
     out.update(grading_counters(state))                                                             # v79.8 (C4)
     out.update(state.get("block_counters") or {})          # v79.8 D-E: their counters, set where they are computed
     return out

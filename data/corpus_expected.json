@@ -65,9 +65,25 @@
       "aliases": [
         "testo unico stupefacenti"
       ]
+    },
+    "L. 392/1978": {
+      "number": "392",
+      "year": "1978",
+      "aliases": [
+        "equo canone"
+      ]
+    },
+    "L. 431/1998": {
+      "number": "431",
+      "year": "1998",
+      "aliases": []
     }
   },
   "modules": {
+    "locazione": [
+      "L. 392/1978",
+      "L. 431/1998"
+    ],
     "licenziamento": [
       "L. 604/1966",
       "L. 300/1970",

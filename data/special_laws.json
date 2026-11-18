@@ -1,11 +1,14 @@
 {
- "_about": "v65: the special-law codes (src/rag/special_laws.py) a case admits only with their domain signal in the first read (its facts, goal, hypotheses, parties, alternatives): an article of one of them is no candidate, and none of their computed term lines is shown, unless the signal is there or the user names the article. code: a regular expression on the row's code or document name; signal: one expression that must match, or signal_all: every expression must match (the consumer code: a professional seller AND a consumer). The list and the expressions are Code's draft; the corpus' document names are to be checked on the server. v75: a regulation (Reg. / Regolamento (UE) nn/yyyy) needs an entry of its own -- its own domain signal, never the sector's (DORA: ICT risk, not «banca»); a regulation with no entry never reaches grading unless the user names it (special_laws.gate). v75b: the store's other regulations -- Reg. 692/2014, Direttiva 94/25/CE, the Regolamento generale and the Provvedimento 2022/1917 of the Banca d'Italia -- each with its own signal.",
+ "_about": "v65: the special-law codes (src/rag/special_laws.py) a case admits only with their domain signal in the first read (its facts, goal, hypotheses, parties, alternatives): an article of one of them is no candidate, and none of their computed term lines is shown, unless the signal is there or the user names the article. code: a regular expression on the row's code or document name; signal: one expression that must match, or signal_all: every expression must match (the consumer code: a professional seller AND a consumer). The list and the expressions are Code's draft; the corpus' document names are to be checked on the server. v75: a regulation (Reg. / Regolamento (UE) nn/yyyy) needs an entry of its own -- its own domain signal, never the sector's (DORA: ICT risk, not «banca»); a regulation with no entry never reaches grading unless the user names it (special_laws.gate). v75b: the store's other regulations -- Reg. 692/2014, Direttiva 94/25/CE, the Regolamento generale and the Provvedimento 2022/1917 of the Banca d'Italia -- each with its own signal. v79.9 (Block C): every law carries its «family» (and, where known, «number»/«year»: a document named «… n. 385» of 1993 is the TUB). The family gate (src/rag/family_gate.py) admits a document only by its family: the codes always; the defaults (strada, stupefacenti, mediazione, consumo with a professional counterparty); a family law with its signal; an active module's laws (data/corpus_expected.json); a law the user names. New entries: antiriciclaggio, the privacy code, the insurance code, the schools TU, the nautica code, the public contracts code, the Banca d'Italia circulars.",
  "laws": [
   {
    "id": "codice_della_strada",
    "name": "Codice della strada",
    "code": "c\\.\\s?d\\.\\s?s\\.|codice della strada|285\\s*/\\s*1992",
-   "signal": "\\bveicol|\\bautomobil|\\bautovettur|\\bauto\\b|\\bmoto\\b|\\bmotocicl|\\bciclomotor|\\bcamion|\\bfurgon|\\bautocarr|\\bautobus|\\bguid[aeo]|\\bconducent|\\bpatente|\\bsinistr\\w*\\s+strad|\\bincident\\w*\\s+strad|\\bcircolazion|\\bstrad[ae]\\b|\\bparcheggi|\\bsemafor|\\bincroci|\\bpedon|\\balcoltest|\\btasso\\s+alcolemic|\\bbicicl|\\bmonopattin|\\bcarreggiat"
+   "signal": "\\bveicol|\\bautomobil|\\bautovettur|\\bauto\\b|\\bmoto\\b|\\bmotocicl|\\bciclomotor|\\bcamion|\\bfurgon|\\bautocarr|\\bautobus|\\bguid[aeo]|\\bconducent|\\bpatente|\\bsinistr\\w*\\s+strad|\\bincident\\w*\\s+strad|\\bcircolazion|\\bstrad[ae]\\b|\\bparcheggi|\\bsemafor|\\bincroci|\\bpedon|\\balcoltest|\\btasso\\s+alcolemic|\\bbicicl|\\bmonopattin|\\bcarreggiat",
+   "family": "strada",
+   "number": "285",
+   "year": "1992"
   },
   {
    "id": "codice_del_consumo",
@@ -14,103 +17,207 @@
    "signal_all": [
     "\\bconsumator|\\bprivat[oaie]\\b|\\bper\\s+uso\\s+(?:personale|domestico|familiare)|\\bper\\s+s[eé]\\b",
     "\\bnegozi|\\bvenditor|\\brivenditor|\\bconcessionari|\\besercizi\\w*\\s+commercial|\\bimpres|\\bsociet|\\baziend|\\bprofessionist|\\be-commerce|\\bonline\\b|\\bsito\\s+(?:internet|web)|\\bcatena\\b|\\bfornitor|\\boperator\\w*\\s+(?:telefonic|commercial)"
-   ]
+   ],
+   "family": "consumo",
+   "number": "206",
+   "year": "2005"
   },
   {
    "id": "testo_unico_bancario",
    "name": "Testo unico bancario",
    "code": "385\\s*/\\s*1993|testo unico bancario|\\bt\\.?\\s?u\\.?\\s?b\\.?\\b",
-   "signal": "\\bbanc|\\bmutu[oi]\\b|\\bconto\\s+corrent|\\bfinanziament|\\bcredit[oi]\\s+al\\s+consumo|\\bprestit|\\bfideiussion|\\btass[oi]\\s+(?:di\\s+interesse|usurari)"
+   "signal": "\\bbanc|\\bmutu[oi]\\b|\\bconto\\s+corrent|\\bfinanziament|\\bcredit[oi]\\s+al\\s+consumo|\\bprestit|\\bfideiussion|\\btass[oi]\\s+(?:di\\s+interesse|usurari)",
+   "family": "bancario",
+   "number": "385",
+   "year": "1993"
   },
   {
    "id": "testo_unico_finanza",
    "name": "Testo unico della finanza",
    "code": "58\\s*/\\s*1998|testo unico (?:delle disposizioni in materia di intermediazione finanziaria|della finanza)|\\bt\\.?\\s?u\\.?\\s?f\\.?\\b",
-   "signal": "\\binvestiment|\\bintermediar|\\bstrumenti\\s+finanziari|\\btitoli\\b|\\bobbligazion\\w*\\s+(?:bancari|societari)|\\bconsob|\\brisparmiator|\\bconsulen\\w*\\s+finanziari"
+   "signal": "\\binvestiment|\\bintermediar|\\bstrumenti\\s+finanziari|\\btitoli\\b|\\bobbligazion\\w*\\s+(?:bancari|societari)|\\bconsob|\\brisparmiator|\\bconsulen\\w*\\s+finanziari",
+   "family": "finanza",
+   "number": "58",
+   "year": "1998"
   },
   {
    "id": "testo_unico_edilizia",
    "name": "Testo unico dell'edilizia",
    "code": "380\\s*/\\s*2001|testo unico (?:delle disposizioni legislative e regolamentari in materia )?(?:dell['’]\\s*)?edilizi",
-   "signal": "\\bedili|\\bcostruzion|\\bpermesso\\s+di\\s+costruire|\\babus\\w*\\s+edili|\\bcantier|\\bristruttur|\\bsanatori|\\bcondon|\\bfabbricat|\\bsopraelevaz|\\bscia\\b|\\bdia\\b"
+   "signal": "\\bedili|\\bcostruzion|\\bpermesso\\s+di\\s+costruire|\\babus\\w*\\s+edili|\\bcantier|\\bristruttur|\\bsanatori|\\bcondon|\\bfabbricat|\\bsopraelevaz|\\bscia\\b|\\bdia\\b",
+   "family": "edilizia",
+   "number": "380",
+   "year": "2001"
   },
   {
    "id": "testo_unico_immigrazione",
    "name": "Testo unico sull'immigrazione",
    "code": "286\\s*/\\s*1998|testo unico (?:delle disposizioni concernenti la disciplina )?(?:dell['’]\\s*|sull['’]\\s*)?immigrazion",
-   "signal": "\\bstranier|\\bextracomunitar|\\bpermesso\\s+di\\s+soggiorno|\\bimmigra|\\bespulsion|\\bclandestin|\\bsoggiorn\\w*\\s+irregolar"
+   "signal": "\\bstranier|\\bextracomunitar|\\bpermesso\\s+di\\s+soggiorno|\\bimmigra|\\bespulsion|\\bclandestin|\\bsoggiorn\\w*\\s+irregolar",
+   "family": "immigrazione",
+   "number": "286",
+   "year": "1998"
   },
   {
    "id": "testo_unico_stupefacenti",
    "name": "Testo unico sugli stupefacenti",
    "code": "309\\s*/\\s*1990|stupefacent",
-   "signal": "\\bstupefacent|\\bdrog|\\bhashish|\\bcocain|\\beroin|\\bmarijuana|\\bcannabis|\\bspaccio|\\bsostanz\\w*\\s+(?:stupefacent|psicotrop)"
+   "signal": "\\bstupefacent|\\bdrog|\\bhashish|\\bcocain|\\beroin|\\bmarijuana|\\bcannabis|\\bspaccio|\\bsostanz\\w*\\s+(?:stupefacent|psicotrop)",
+   "family": "stupefacenti",
+   "number": "309",
+   "year": "1990"
   },
   {
    "id": "testo_unico_sicurezza_lavoro",
    "name": "Testo unico sulla sicurezza sul lavoro",
    "code": "81\\s*/\\s*2008|sicurezza (?:sul|nei luoghi di) lavoro",
-   "signal": "\\binfortun|\\bsicurezza\\s+sul\\s+lavoro|\\bcantier|\\bdatore\\s+di\\s+lavoro|\\blavorator|\\bdispositiv\\w*\\s+di\\s+protezione|\\brspp\\b|\\bmacchinar"
+   "signal": "\\binfortun|\\bsicurezza\\s+sul\\s+lavoro|\\bcantier|\\bdatore\\s+di\\s+lavoro|\\blavorator|\\bdispositiv\\w*\\s+di\\s+protezione|\\brspp\\b|\\bmacchinar",
+   "family": "sicurezza sul lavoro",
+   "number": "81",
+   "year": "2008"
   },
   {
    "id": "testo_unico_enti_locali",
    "name": "Testo unico degli enti locali",
    "code": "267\\s*/\\s*2000|\\btuel\\b|testo unico delle leggi sull['’]\\s*ordinamento degli enti locali",
-   "signal": "\\bcomun[ei]\\b|\\bsindac|\\bconsiglio\\s+comunal|\\bgiunta\\b|\\bente\\s+local|\\bprovinc|\\bmunicipal"
+   "signal": "\\bcomun[ei]\\b|\\bsindac|\\bconsiglio\\s+comunal|\\bgiunta\\b|\\bente\\s+local|\\bprovinc|\\bmunicipal",
+   "family": "enti locali",
+   "number": "267",
+   "year": "2000"
   },
   {
    "id": "testo_unico_imposte_redditi",
    "name": "Testo unico delle imposte sui redditi",
    "code": "917\\s*/\\s*1986|\\btuir\\b|imposte sui redditi",
-   "signal": "\\btribut|\\bimpost[ae]\\b|\\breddit|\\bfiscal|\\birpef|\\bdichiarazione\\s+dei\\s+redditi|\\bagenzia\\s+delle\\s+entrate"
+   "signal": "\\btribut|\\bimpost[ae]\\b|\\breddit|\\bfiscal|\\birpef|\\bdichiarazione\\s+dei\\s+redditi|\\bagenzia\\s+delle\\s+entrate",
+   "family": "tributario",
+   "number": "917",
+   "year": "1986"
   },
   {
    "id": "dlgs_231_2001",
    "name": "D.lgs. 231/2001 (responsabilità amministrativa degli enti)",
    "code": "231\\s*/\\s*2001|responsabilit\\w*\\s+amministrativ\\w*\\s+(?:degli|delle)\\s+(?:enti|persone\\s+giuridiche)",
-   "signal": "\\bsociet[àa]\\b|\\bent[ei]\\b|\\bdatore\\s+di\\s+lavoro\\b|\\bdatori\\s+di\\s+lavoro\\b"
+   "signal": "\\bsociet[àa]\\b|\\bent[ei]\\b|\\bdatore\\s+di\\s+lavoro\\b|\\bdatori\\s+di\\s+lavoro\\b",
+   "family": "responsabilità degli enti",
+   "number": "231",
+   "year": "2001"
   },
   {
    "id": "dora",
    "name": "Reg. (UE) 2022/2554 (DORA, resilienza operativa digitale)",
    "code": "2022\\s*/\\s*2554|resilienza\\s+operativa\\s+digitale|\\bDORA\\b",
-   "signal": "\\bDORA\\b|resilienza\\s+operativa|\\brischi\\w*\\s+(?:ict|informatic\\w*|tecnologic\\w*)|\\bict\\b|fornitor\\w*\\s+(?:terz\\w*\\s+)?(?:di\\s+servizi\\s+)?ict|incident\\w*\\s+(?:gravi?\\s+)?(?:ict|connessi\\s+alle\\s+tecnologie)"
+   "signal": "\\bDORA\\b|resilienza\\s+operativa|\\brischi\\w*\\s+(?:ict|informatic\\w*|tecnologic\\w*)|\\bict\\b|fornitor\\w*\\s+(?:terz\\w*\\s+)?(?:di\\s+servizi\\s+)?ict|incident\\w*\\s+(?:gravi?\\s+)?(?:ict|connessi\\s+alle\\s+tecnologie)",
+   "family": "DORA",
+   "number": "2554",
+   "year": "2022"
   },
   {
    "id": "gdpr",
    "name": "Reg. (UE) 2016/679 (GDPR, protezione dei dati personali)",
    "code": "2016\\s*/\\s*679|\\bGDPR\\b|protezione\\s+(?:delle\\s+persone\\s+fisiche\\s+con\\s+riguardo\\s+al\\s+trattamento\\s+)?dei\\s+dati\\s+personali",
-   "signal": "\\bprivacy\\b|\\bdati\\s+personali\\b|\\btrattamento\\s+dei\\s+dati\\b|\\bGDPR\\b|\\bgarante\\s+(?:della\\s+)?privacy|\\bdata\\s+breach\\b|\\bconsenso\\s+al\\s+trattamento"
+   "signal": "\\bprivacy\\b|\\bdati\\s+personali\\b|\\btrattamento\\s+dei\\s+dati\\b|\\bGDPR\\b|\\bgarante\\s+(?:della\\s+)?privacy|\\bdata\\s+breach\\b|\\bconsenso\\s+al\\s+trattamento",
+   "family": "protezione dei dati",
+   "number": "679",
+   "year": "2016"
   },
   {
    "id": "dlgs_11_2010",
    "name": "D.lgs. 11/2010 (servizi di pagamento, PSD)",
    "code": "\\b11\\s*/\\s*2010\\b|servizi\\s+di\\s+pagamento",
-   "signal": "\\bphishing\\b|\\bbonific\\w*|\\bcarta\\s+di\\s+(?:credito|debito|pagamento)|\\bhome\\s+banking\\b|\\bconto\\s+corrente\\b|\\boperazion\\w*\\s+(?:di\\s+pagamento\\s+)?non\\s+autorizzat|\\baddebit\\w*\\s+non\\s+autorizzat|\\bpagament\\w*\\s+(?:elettronic|online|digital)|\\bprelievo\\b|\\bPSD2?\\b|\\bsmishing\\b|\\bvishing\\b|\\bspoofing\\b"
+   "signal": "\\bphishing\\b|\\bbonific\\w*|\\bcarta\\s+di\\s+(?:credito|debito|pagamento)|\\bhome\\s+banking\\b|\\bconto\\s+corrente\\b|\\boperazion\\w*\\s+(?:di\\s+pagamento\\s+)?non\\s+autorizzat|\\baddebit\\w*\\s+non\\s+autorizzat|\\bpagament\\w*\\s+(?:elettronic|online|digital)|\\bprelievo\\b|\\bPSD2?\\b|\\bsmishing\\b|\\bvishing\\b|\\bspoofing\\b",
+   "family": "bancario",
+   "number": "11",
+   "year": "2010"
   },
   {
    "id": "reg_692_2014",
    "name": "Reg. (UE) 692/2014 (misure restrittive: Crimea e Sebastopoli)",
    "code": "\\b692\\s*/\\s*2014\\b|misure\\s+restrittive\\s+in\\s+risposta\\s+all['’]annessione",
-   "signal": "\\bsanzion\\w*\\s+(?:internazional|economic|dell['’]unione|ue\\b|europe|contro\\s+la\\s+russia)|\\bembarg\\w*|\\bcrimea\\b|\\bsebastopoli\\b|\\bmisure\\s+restrittive\\b"
+   "signal": "\\bsanzion\\w*\\s+(?:internazional|economic|dell['’]unione|ue\\b|europe|contro\\s+la\\s+russia)|\\bembarg\\w*|\\bcrimea\\b|\\bsebastopoli\\b|\\bmisure\\s+restrittive\\b",
+   "family": "sanzioni internazionali",
+   "number": "692",
+   "year": "2014"
   },
   {
    "id": "dir_94_25",
    "name": "Direttiva 94/25/CE (imbarcazioni da diporto)",
    "code": "\\b94\\s*/\\s*25\\b|imbarcazioni\\s+da\\s+diporto",
-   "signal": "\\bimbarcazion\\w*|\\bdiporto\\b|\\bnatant\\w*|\\byacht\\b|\\bbarc[ah]\\w*\\b|\\bnautic\\w*|\\bgommon\\w*|\\bunit[àa]\\s+da\\s+diporto"
+   "signal": "\\bimbarcazion\\w*|\\bdiporto\\b|\\bnatant\\w*|\\byacht\\b|\\bbarc[ah]\\w*\\b|\\bnautic\\w*|\\bgommon\\w*|\\bunit[àa]\\s+da\\s+diporto",
+   "family": "nautica"
   },
   {
    "id": "bdi_regolamento_generale",
    "name": "Regolamento generale della Banca d'Italia (vigilanza, segnalazioni)",
    "code": "regolamento\\s+generale\\s+(?:della\\s+)?banca\\s+d['’]\\s*italia",
-   "signal": "\\bvigilanz\\w*|\\bsegnalazion\\w*\\s+(?:di\\s+vigilanza|alla\\s+banca\\s+d['’]\\s*italia|prudenzial)|\\borgan\\w*\\s+di\\s+vigilanza"
+   "signal": "\\bvigilanz\\w*|\\bsegnalazion\\w*\\s+(?:di\\s+vigilanza|alla\\s+banca\\s+d['’]\\s*italia|prudenzial)|\\borgan\\w*\\s+di\\s+vigilanza",
+   "family": "Banca d'Italia"
   },
   {
    "id": "bdi_provv_2022_1917",
    "name": "Provvedimento Banca d'Italia 2022/1917 (segnalazioni statistiche)",
    "code": "\\b2022\\s*/\\s*1917\\b|\\b1917\\s*/\\s*2022\\b|segnalazioni\\s+statistiche",
-   "signal": "\\bsegnalazion\\w*\\s+statistic\\w*|\\bstatistich\\w*\\s+(?:bancari|creditizi|di\\s+vigilanza)|\\bmatrice\\s+dei\\s+conti\\b"
+   "signal": "\\bsegnalazion\\w*\\s+statistic\\w*|\\bstatistich\\w*\\s+(?:bancari|creditizi|di\\s+vigilanza)|\\bmatrice\\s+dei\\s+conti\\b",
+   "family": "Banca d'Italia"
+  },
+  {
+   "id": "antiriciclaggio",
+   "name": "D.lgs. 231/2007 (antiriciclaggio)",
+   "family": "antiriciclaggio",
+   "number": "231",
+   "year": "2007",
+   "code": "\\b231\\s*/\\s*2007\\b|antiriciclaggio|riciclaggio\\s+dei\\s+proventi",
+   "signal": "\\briciclagg\\w*|\\bantiriciclagg\\w*|\\badeguata\\s+verifica|\\boperazion\\w*\\s+sospett\\w*|\\btitolare\\s+effettivo|\\bUIF\\b|\\bcontante\\b"
+  },
+  {
+   "id": "codice_privacy",
+   "name": "D.lgs. 196/2003 (codice della privacy)",
+   "family": "protezione dei dati",
+   "number": "196",
+   "year": "2003",
+   "code": "\\b196\\s*/\\s*2003\\b|codice\\s+in\\s+materia\\s+di\\s+protezione\\s+dei\\s+dati",
+   "signal": "\\bprivacy\\b|\\bdati\\s+personali\\b|\\btrattamento\\s+dei\\s+(?:suoi\\s+|propri\\s+|miei\\s+)?dati\\b|\\bgaranteprivacy|\\bgarante\\s+(?:per\\s+la\\s+)?(?:protezione\\s+dei\\s+dati|privacy)|\\bvideosorveglianz\\w*|\\bdata\\s+breach"
+  },
+  {
+   "id": "codice_assicurazioni",
+   "name": "D.lgs. 209/2005 (codice delle assicurazioni private)",
+   "family": "assicurativo",
+   "number": "209",
+   "year": "2005",
+   "code": "\\b209\\s*/\\s*2005\\b|codice\\s+delle\\s+assicurazioni",
+   "signal": "\\bassicura\\w*|\\bpolizz\\w*|\\bcompagnia\\s+di\\s+assicurazion\\w*|\\bsinistr\\w*|\\bindennizz\\w*|\\bIVASS\\b|\\bRC\\s*auto\\b|\\bresponsabilit\\w*\\s+civile\\s+auto"
+  },
+  {
+   "id": "testo_unico_istruzione",
+   "name": "D.lgs. 297/1994 (testo unico sull'istruzione)",
+   "family": "istruzione",
+   "number": "297",
+   "year": "1994",
+   "code": "\\b297\\s*/\\s*1994\\b|testo\\s+unico\\s+(?:delle\\s+disposizioni\\s+legislative\\s+vigenti\\s+in\\s+materia\\s+di\\s+)?istruzione",
+   "signal": "\\bscuol\\w*|\\bistituto\\s+scolastic\\w*|\\bdocent\\w*|\\binsegnant\\w*|\\bstudent\\w*|\\balunn\\w*|\\bdirigente\\s+scolastic\\w*|\\bpersonale\\s+ATA\\b"
+  },
+  {
+   "id": "codice_nautica",
+   "name": "D.lgs. 171/2005 (codice della nautica da diporto)",
+   "family": "nautica",
+   "number": "171",
+   "year": "2005",
+   "code": "\\b171\\s*/\\s*2005\\b|codice\\s+della\\s+nautica",
+   "signal": "\\bimbarcazion\\w*|\\bdiporto\\b|\\bnatant\\w*|\\byacht\\b|\\bbarc[ah]\\w*\\b|\\bnautic\\w*|\\bgommon\\w*|\\bormegg\\w*|\\bposto\\s+barca"
+  },
+  {
+   "id": "appalti_pubblici",
+   "name": "Codice dei contratti pubblici (d.lgs. 36/2023, d.lgs. 50/2016)",
+   "family": "appalti pubblici",
+   "code": "\\b36\\s*/\\s*2023\\b|\\b50\\s*/\\s*2016\\b|contratti\\s+pubblici",
+   "signal": "\\bgara\\s+(?:d['’]appalto|pubblic\\w*)|\\bappalt\\w*\\s+pubblic\\w*|\\bstazione\\s+appaltant\\w*|\\bbando\\s+di\\s+gara|\\baggiudicazion\\w*|\\bcontratt\\w*\\s+pubblic\\w*|\\bpubblica\\s+amministrazione\\s+(?:appaltant|committent)\\w*|\\bANAC\\b"
+  },
+  {
+   "id": "bdi_circolari",
+   "name": "Circolari e disposizioni di vigilanza della Banca d'Italia",
+   "family": "Banca d'Italia",
+   "code": "circolare\\s+(?:n\\.\\s*\\d+\\s+)?(?:della\\s+)?banca\\s+d['’]\\s*italia|banca\\s+d['’]\\s*italia.{0,40}circolare|disposizioni\\s+di\\s+vigilanza",
+   "signal": "\\bvigilanz\\w*\\s+(?:bancari|prudenzial)\\w*|\\bsegnalazion\\w*\\s+(?:di\\s+vigilanza|alla\\s+banca\\s+d['’]\\s*italia)|\\bBanca\\s+d['’]\\s*Italia\\b"
   }
  ]
 }
