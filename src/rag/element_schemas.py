@@ -725,6 +725,15 @@ def _op_children(node: Dict[str, Any]) -> List[Any]:
     return out + [node[k] for k in ("arg", "if", "then", "else") if node.get(k) is not None]
 
 
+def _bare_ref(child: Any, log) -> Any:
+    """Hotfix 79.12.6: a child the model wrote as a bare ref string («E3», in place of {"ref": "E3"}) read as that ref
+    node, logged as a mapping; any other child as it is (a non-string stays: _logic reads it invalid)."""
+    if isinstance(child, str) and child.strip():
+        log("ref", child, {"ref": child.strip()})
+        return {"ref": child.strip()}
+    return child
+
+
 def _map_ops(node: Any, log, depth: int = 0) -> Any:
     """v79.12.5 (item 0): a logic tree with each op in the vocabulary's own spelling and each op it maps to no op
     («other», «altro») lifted -- the node replaced by its children, themselves mapped: one child is the node; several
@@ -739,11 +748,14 @@ def _map_ops(node: Any, log, depth: int = 0) -> Any:
     got = canon_op(op)
     out = dict(node)
     if isinstance(node.get("args"), list):     # only a lifted node with no child leaves (a null the model wrote stays)
-        mapped_args = [(a, _map_ops(a, log, depth + 1)) for a in node["args"]]
+        args = [_bare_ref(a, log) for a in node["args"]]
+        mapped_args = [(a, _map_ops(a, log, depth + 1)) for a in args]
         out["args"] = [x for a, x in mapped_args if x is not None or not isinstance(a, dict)]
     for key in ("arg", "if", "then", "else"):
-        if isinstance(node.get(key), dict):
-            mapped = _map_ops(node[key], log, depth + 1)
+        if key in node:
+            out[key] = _bare_ref(node[key], log)
+        if isinstance(out.get(key), dict):
+            mapped = _map_ops(out[key], log, depth + 1)
             if mapped is None:
                 out.pop(key, None)
             else:
@@ -754,7 +766,8 @@ def _map_ops(node: Any, log, depth: int = 0) -> Any:
         if "ref" in out:                        # a node with both ref and op: its ref is a child too
             children.insert(0, {"ref": out["ref"]})
         lifted = None if not children else children[0] if len(children) == 1 else {"op": "all_of", "args": children}
-        log("op", op, None if lifted is None else lifted.get("op", "ref"), *(("op",) if unknown else ()))
+        to = lifted.get("op", "ref") if isinstance(lifted, dict) else None if lifted is None else type(lifted).__name__
+        log("op", op, to, *(("op",) if unknown else ()))
         return lifted
     if got is not _UNKNOWN and got != op:
         log("op", op, got)
